@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS machines (
     subnet TEXT NOT NULL DEFAULT '',
     management_ip TEXT NOT NULL DEFAULT '',
     endpoint TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL DEFAULT ''
+    updated_at TEXT NOT NULL DEFAULT '',
+    version INTEGER NOT NULL DEFAULT 1
 );
 `

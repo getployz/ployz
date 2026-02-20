@@ -7,26 +7,24 @@ import (
 
 	"ployz/cmd/ployz/cmdutil"
 	"ployz/cmd/ployz/ui"
-	machinelib "ployz/internal/machine"
 
 	"github.com/spf13/cobra"
 )
 
 func listCmd() *cobra.Command {
 	var nf cmdutil.NetworkFlags
+	var socketPath string
 
 	cmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List machines in the network",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctrl, err := machinelib.New()
+			svc, err := service(socketPath)
 			if err != nil {
 				return err
 			}
-			defer ctrl.Close()
-
-			machines, err := ctrl.ListMachines(cmd.Context(), nf.Config())
+			machines, err := svc.ListMachines(cmd.Context(), nf.Network)
 			if err != nil {
 				return err
 			}
@@ -41,18 +39,23 @@ func listCmd() *cobra.Command {
 				if updated == "" {
 					updated = "-"
 				}
+				version := "-"
+				if m.Version > 0 {
+					version = strconv.FormatInt(m.Version, 10)
+				}
 				rows[i] = []string{
 					strconv.Itoa(i + 1),
 					m.ID,
 					m.Subnet,
-					m.Management,
+					m.ManagementIP,
 					m.Endpoint,
+					version,
 					updated,
 				}
 			}
 
 			fmt.Println(ui.Table(
-				[]string{"#", "ID", "Subnet", "Management", "Endpoint", "Updated"},
+				[]string{"#", "ID", "Subnet", "Management", "Endpoint", "Version", "Updated"},
 				rows,
 			))
 			return nil
@@ -60,5 +63,6 @@ func listCmd() *cobra.Command {
 	}
 
 	nf.Bind(cmd)
+	cmd.Flags().StringVar(&socketPath, "socket", cmdutil.DefaultSocketPath(), "ployzd unix socket path")
 	return cmd
 }

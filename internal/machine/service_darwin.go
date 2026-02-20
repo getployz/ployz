@@ -34,72 +34,45 @@ func New() (*Controller, error) {
 	return &Controller{cli: cli}, nil
 }
 
+type darwinRuntimeOps struct {
+	ctrl   *Controller
+	helper *linuxHelper
+}
+
+func (o darwinRuntimeOps) Prepare(ctx context.Context, _ Config) error {
+	if err := waitDockerReady(ctx, o.ctrl.cli); err != nil {
+		return err
+	}
+	return o.helper.preflight(ctx)
+}
+
+func (o darwinRuntimeOps) ConfigureWireGuard(ctx context.Context, cfg Config, state *State) error {
+	return configureWireGuardWithHelper(ctx, o.helper, cfg, state)
+}
+
+func (o darwinRuntimeOps) EnsureDockerNetwork(ctx context.Context, cfg Config, _ *State) error {
+	return ensureDockerNetworkWithHelper(ctx, o.ctrl.cli, o.helper, cfg)
+}
+
+func (o darwinRuntimeOps) CleanupDockerNetwork(ctx context.Context, cfg Config, state *State) error {
+	return cleanupDockerNetworkWithHelper(ctx, o.ctrl.cli, o.helper, cfg, state)
+}
+
+func (o darwinRuntimeOps) CleanupWireGuard(ctx context.Context, _ Config, state *State) error {
+	return cleanupWireGuardWithHelper(ctx, o.helper, state.WGInterface)
+}
+
+func (o darwinRuntimeOps) AfterStop(ctx context.Context, _ Config, _ *State) error {
+	return o.helper.stop(ctx)
+}
+
 func (c *Controller) Start(ctx context.Context, in Config) (Config, error) {
 	cfg, err := NormalizeConfig(in)
 	if err != nil {
 		return Config{}, err
 	}
-	if err := ensureUniqueHostCIDR(cfg); err != nil {
-		return Config{}, err
-	}
-	if err := waitDockerReady(ctx, c.cli); err != nil {
-		return Config{}, err
-	}
-
 	helper := &linuxHelper{cli: c.cli, image: cfg.HelperImage, name: cfg.HelperName}
-	if err := helper.preflight(ctx); err != nil {
-		return Config{}, err
-	}
-
-	state, _, err := ensureState(cfg)
-	if err != nil {
-		return Config{}, err
-	}
-	if cfg.Subnet.IsValid() && state.Subnet != cfg.Subnet.String() {
-		return Config{}, fmt.Errorf("network %q already initialized with subnet %s", cfg.Network, state.Subnet)
-	}
-	if cfg.NetworkCIDR.IsValid() && state.CIDR != "" && state.CIDR != cfg.NetworkCIDR.String() {
-		return Config{}, fmt.Errorf("network %q already initialized with cidr %s", cfg.Network, state.CIDR)
-	}
-	if cfg.AdvertiseEP != "" && cfg.AdvertiseEP != state.Advertise {
-		state.Advertise = cfg.AdvertiseEP
-	}
-	if cfg.WGPort != 0 && state.WGPort != cfg.WGPort {
-		state.WGPort = cfg.WGPort
-	}
-	if len(cfg.CorrosionBootstrap) > 0 {
-		state.Bootstrap = append([]string(nil), cfg.CorrosionBootstrap...)
-	}
-	if cfg.NetworkCIDR.IsValid() {
-		state.CIDR = cfg.NetworkCIDR.String()
-	}
-	cfg, err = hydrateConfigFromState(cfg, state)
-	if err != nil {
-		return Config{}, err
-	}
-
-	if err := configureWireGuardWithHelper(ctx, helper, cfg, state); err != nil {
-		return Config{}, err
-	}
-	if err := configureCorrosion(cfg); err != nil {
-		return Config{}, err
-	}
-	if err := startCorrosion(ctx, c.cli, cfg); err != nil {
-		return Config{}, err
-	}
-	if err := ensureDockerNetworkWithHelper(ctx, c.cli, helper, cfg); err != nil {
-		return Config{}, err
-	}
-	state.Running = true
-	if err := saveState(cfg.DataDir, state); err != nil {
-		return Config{}, err
-	}
-
-	if _, err := c.Reconcile(ctx, cfg); err != nil {
-		return Config{}, err
-	}
-
-	return cfg, nil
+	return c.startRuntime(ctx, in, darwinRuntimeOps{ctrl: c, helper: helper})
 }
 
 func (c *Controller) Stop(ctx context.Context, in Config, purge bool) (Config, error) {
@@ -107,53 +80,8 @@ func (c *Controller) Stop(ctx context.Context, in Config, purge bool) (Config, e
 	if err != nil {
 		return Config{}, err
 	}
-
-	state, err := loadState(cfg.DataDir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return cfg, nil
-		}
-		return Config{}, err
-	}
-
-	if err := waitDockerReady(ctx, c.cli); err != nil {
-		return Config{}, err
-	}
-	cfg, err = hydrateConfigFromState(cfg, state)
-	if err != nil {
-		return Config{}, err
-	}
-
 	helper := &linuxHelper{cli: c.cli, image: cfg.HelperImage, name: cfg.HelperName}
-	if err := helper.preflight(ctx); err != nil {
-		return Config{}, err
-	}
-	if err := cleanupDockerNetworkWithHelper(ctx, c.cli, helper, cfg, state); err != nil {
-		return Config{}, err
-	}
-	if err := stopCorrosion(ctx, c.cli, state.CorrosionName); err != nil {
-		return Config{}, err
-	}
-	if err := cleanupWireGuardWithHelper(ctx, helper, state.WGInterface); err != nil {
-		return Config{}, err
-	}
-	if err := helper.stop(ctx); err != nil {
-		return Config{}, err
-	}
-
-	state.Running = false
-	if purge {
-		if err := deleteState(cfg.DataDir); err != nil {
-			return Config{}, err
-		}
-		if err := os.RemoveAll(cfg.DataDir); err != nil {
-			return Config{}, fmt.Errorf("purge data dir: %w", err)
-		}
-	} else if err := saveState(cfg.DataDir, state); err != nil {
-		return Config{}, err
-	}
-
-	return cfg, nil
+	return c.stopRuntime(ctx, in, purge, darwinRuntimeOps{ctrl: c, helper: helper})
 }
 
 func (c *Controller) Status(ctx context.Context, in Config) (Status, error) {
@@ -172,10 +100,11 @@ func (c *Controller) Status(ctx context.Context, in Config) (Status, error) {
 	}
 	out.Configured = true
 	out.Running = s.Running
-	cfg, err = hydrateConfigFromState(cfg, s)
+	resolved, err := Resolve(cfg, s)
 	if err != nil {
 		return Status{}, err
 	}
+	cfg = resolved.Config()
 
 	if err := waitDockerReady(ctx, c.cli); err == nil {
 		helper := &linuxHelper{cli: c.cli, image: cfg.HelperImage, name: cfg.HelperName}

@@ -5,6 +5,8 @@ package machine
 import (
 	"context"
 	"errors"
+
+	"ployz/internal/machine/registry"
 )
 
 func New() (*Controller, error) {
@@ -35,8 +37,8 @@ func (c *Controller) Reconcile(_ context.Context, _ Config) (int, error) {
 	return 0, errors.New("reconcile is supported on linux and darwin only")
 }
 
-func (c *Controller) PlanJoin(_ context.Context, _ Config, _ string) (JoinPlan, error) {
-	return JoinPlan{}, errors.New("machine join planning is supported on linux and darwin only")
+func (c *Controller) ReconcilePeers(_ context.Context, _ Config, _ []registry.MachineRow) (int, error) {
+	return 0, errors.New("peer reconcile is supported on linux and darwin only")
 }
 
 func (c *Controller) ListMachines(_ context.Context, _ Config) ([]Machine, error) {

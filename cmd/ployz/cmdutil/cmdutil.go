@@ -7,7 +7,9 @@ import (
 	"os/exec"
 	"strings"
 
-	"ployz/internal/machine"
+	"ployz/pkg/sdk/client"
+	"ployz/pkg/sdk/cluster"
+	"ployz/pkg/sdk/defaults"
 
 	"github.com/spf13/cobra"
 )
@@ -19,39 +21,106 @@ type NetworkFlags struct {
 }
 
 func (f *NetworkFlags) Bind(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&f.Network, "network", "default", "Network identifier")
-	cmd.Flags().StringVar(&f.DataRoot, "data-root", machine.DefaultDataRoot(), "Machine data root")
+	def := currentDefaults()
+	cmd.Flags().StringVar(&f.Network, "network", def.network, "Network identifier")
+	cmd.Flags().StringVar(&f.DataRoot, "data-root", def.dataRoot, "Machine data root")
 	cmd.Flags().StringVar(&f.HelperImage, "helper-image", "", "Linux helper image for macOS")
 }
 
-func (f *NetworkFlags) Config() machine.Config {
-	return machine.Config{
-		Network:     f.Network,
-		DataRoot:    f.DataRoot,
-		HelperImage: f.HelperImage,
+func DefaultSocketPath() string {
+	def := currentDefaults()
+	return def.socket
+}
+
+func DefaultDataRoot() string {
+	def := currentDefaults()
+	return def.dataRoot
+}
+
+func DefaultNetwork() string {
+	def := currentDefaults()
+	return def.network
+}
+
+func ResolveSocketPath(in string) (string, error) {
+	if strings.TrimSpace(in) != "" {
+		return strings.TrimSpace(in), nil
 	}
+	return currentDefaults().socket, nil
 }
 
-func ShellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
-}
-
-func RunDockerExecScript(ctx context.Context, containerName, script string) error {
-	_, err := RunDockerExecScriptOutput(ctx, containerName, script)
-	return err
-}
-
-func RunDockerExecScriptOutput(ctx context.Context, containerName, script string) (string, error) {
-	cmd := exec.CommandContext(ctx, "docker", "exec", containerName, "sh", "-lc", script)
-	out, err := cmd.CombinedOutput()
+func SaveOrUpdateCurrentCluster(network, dataRoot, socketPath string) (string, error) {
+	cfg, err := cluster.LoadDefault()
 	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			return "", fmt.Errorf("docker exec %s: %w", containerName, err)
-		}
-		return "", fmt.Errorf("docker exec %s: %w: %s", containerName, err, msg)
+		return "", fmt.Errorf("read cluster config: %w", err)
 	}
-	return strings.TrimSpace(string(out)), nil
+
+	network = strings.TrimSpace(network)
+	if network == "" {
+		network = "default"
+	}
+	dataRoot = strings.TrimSpace(dataRoot)
+	if dataRoot == "" {
+		dataRoot = defaults.DataRoot()
+	}
+	socketPath = strings.TrimSpace(socketPath)
+	if socketPath == "" {
+		socketPath = client.DefaultSocketPath()
+	}
+
+	name := strings.TrimSpace(cfg.CurrentCluster)
+	if env := strings.TrimSpace(os.Getenv("PLOYZ_CLUSTER")); env != "" {
+		name = env
+	}
+	if name == "" {
+		name = network
+	}
+
+	entry, _ := cfg.Cluster(name)
+	entry.Network = network
+	entry.DataRoot = dataRoot
+	entry.Socket = socketPath
+	cfg.Upsert(name, entry)
+	cfg.CurrentCluster = name
+
+	if err := cfg.Save(); err != nil {
+		return "", fmt.Errorf("save cluster config: %w", err)
+	}
+	return name, nil
+}
+
+type defaultsSnapshot struct {
+	network  string
+	dataRoot string
+	socket   string
+}
+
+func currentDefaults() defaultsSnapshot {
+	out := defaultsSnapshot{
+		network:  "default",
+		dataRoot: defaults.DataRoot(),
+		socket:   client.DefaultSocketPath(),
+	}
+
+	cfg, err := cluster.LoadDefault()
+	if err != nil {
+		return out
+	}
+	_, cl, ok := cfg.Current()
+	if !ok {
+		return out
+	}
+
+	if n := strings.TrimSpace(cl.Network); n != "" {
+		out.network = n
+	}
+	if d := strings.TrimSpace(cl.DataRoot); d != "" {
+		out.dataRoot = d
+	}
+	if s := strings.TrimSpace(cl.Socket); s != "" {
+		out.socket = s
+	}
+	return out
 }
 
 func RunSudo(ctx context.Context, name string, args ...string) error {

@@ -1,16 +1,5 @@
 package machine
 
-import "net/netip"
-
-type JoinPlan struct {
-	NetworkCIDR netip.Prefix
-	Subnet      netip.Prefix
-	Bootstrap   []string
-	LocalSubnet netip.Prefix
-	LocalMgmtIP netip.Addr
-	LocalWGKey  string
-}
-
 type Machine struct {
 	ID          string
 	PublicKey   string
@@ -18,4 +7,7 @@ type Machine struct {
 	Management  string
 	Endpoint    string
 	LastUpdated string
+	Version     int64
+
+	ExpectedVersion int64
 }

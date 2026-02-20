@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -22,13 +23,20 @@ type execResponse struct {
 }
 
 type queryEvent struct {
-	Columns []string         `json:"columns"`
-	Row     *rowEvent        `json:"row"`
-	EOQ     *json.RawMessage `json:"eoq"`
-	Error   *string          `json:"error"`
+	Columns []string     `json:"columns"`
+	Row     *rowEvent    `json:"row"`
+	EOQ     *endOfQuery  `json:"eoq"`
+	Change  *changeEvent `json:"change"`
+	Error   *string      `json:"error"`
+}
+
+type endOfQuery struct {
+	Time     float64 `json:"time"`
+	ChangeID *uint64 `json:"change_id"`
 }
 
 type rowEvent struct {
+	RowID  uint64
 	Values []json.RawMessage
 }
 
@@ -40,7 +48,43 @@ func (r *rowEvent) UnmarshalJSON(data []byte) error {
 	if len(raw) != 2 {
 		return fmt.Errorf("invalid row event")
 	}
+	if err := json.Unmarshal(raw[0], &r.RowID); err != nil {
+		return err
+	}
 	return json.Unmarshal(raw[1], &r.Values)
+}
+
+type changeEvent struct {
+	Type     string
+	RowID    uint64
+	Values   []json.RawMessage
+	ChangeID uint64
+}
+
+func (c *changeEvent) UnmarshalJSON(data []byte) error {
+	var raw []json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if len(raw) != 4 {
+		return fmt.Errorf("invalid change event")
+	}
+	if err := json.Unmarshal(raw[0], &c.Type); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(raw[1], &c.RowID); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(raw[2], &c.Values); err != nil {
+		return err
+	}
+	return json.Unmarshal(raw[3], &c.ChangeID)
+}
+
+type subscriptionStream struct {
+	ID      string
+	Body    io.ReadCloser
+	Decoder *json.Decoder
 }
 
 func (s Store) exec(ctx context.Context, query string, args ...any) error {
@@ -133,4 +177,60 @@ func (s Store) query(ctx context.Context, query string, args ...any) ([][]json.R
 	}
 
 	return rows, nil
+}
+
+func (s Store) subscribe(ctx context.Context, query string, args []any) (*subscriptionStream, error) {
+	body, err := json.Marshal(statement{Query: query, Params: args})
+	if err != nil {
+		return nil, fmt.Errorf("marshal corrosion subscription: %w", err)
+	}
+
+	url := "http://" + s.apiAddr.String() + "/v1/subscriptions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create corrosion subscription request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("execute corrosion subscription: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("corrosion subscription failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+
+	id := strings.TrimSpace(resp.Header.Get("corro-query-id"))
+	if id == "" {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("corrosion subscription missing id header")
+	}
+
+	return &subscriptionStream{ID: id, Body: resp.Body, Decoder: json.NewDecoder(resp.Body)}, nil
+}
+
+func (s Store) resubscribe(ctx context.Context, id string, fromChange uint64) (*subscriptionStream, error) {
+	base := "http://" + s.apiAddr.String() + "/v1/subscriptions/" + id
+	url := base + "?from=" + strconv.FormatUint(fromChange, 10)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create corrosion resubscribe request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("execute corrosion resubscribe: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("corrosion resubscribe failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+
+	return &subscriptionStream{ID: id, Body: resp.Body, Decoder: json.NewDecoder(resp.Body)}, nil
 }

@@ -1,0 +1,137 @@
+syntax = "proto3";
+
+package ployz;
+
+option go_package = "ployz/internal/daemon/pb";
+
+service Daemon {
+  rpc ApplyNetworkSpec(ApplyNetworkSpecRequest) returns (ApplyResult);
+  rpc DisableNetwork(DisableNetworkRequest) returns (DisableNetworkResponse);
+  rpc GetStatus(GetStatusRequest) returns (NetworkStatus);
+  rpc GetIdentity(GetIdentityRequest) returns (Identity);
+  rpc ListMachines(ListMachinesRequest) returns (ListMachinesResponse);
+  rpc UpsertMachine(UpsertMachineRequest) returns (UpsertMachineResponse);
+  rpc RemoveMachine(RemoveMachineRequest) returns (RemoveMachineResponse);
+  rpc TriggerReconcile(TriggerReconcileRequest) returns (TriggerReconcileResponse);
+  rpc StreamEvents(StreamEventsRequest) returns (stream Event);
+}
+
+message NetworkSpec {
+  string network = 1;
+  string data_root = 2;
+  string network_cidr = 3;
+  string subnet = 4;
+  string management_ip = 5;
+  string advertise_endpoint = 6;
+  int32 wg_port = 7;
+  repeated string bootstrap = 8;
+  string helper_image = 9;
+}
+
+message ApplyNetworkSpecRequest {
+  NetworkSpec spec = 1;
+}
+
+message ApplyResult {
+  string network = 1;
+  string network_cidr = 2;
+  string subnet = 3;
+  string management_ip = 4;
+  string wg_interface = 5;
+  int32 wg_port = 6;
+  string advertise_endpoint = 7;
+  string corrosion_name = 8;
+  string corrosion_api_addr = 9;
+  string corrosion_gossip_addr = 10;
+  string docker_network = 11;
+  bool convergence_running = 12;
+}
+
+message DisableNetworkRequest {
+  string network = 1;
+  bool purge = 2;
+}
+
+message DisableNetworkResponse {}
+
+message GetStatusRequest {
+  string network = 1;
+}
+
+message NetworkStatus {
+  bool configured = 1;
+  bool running = 2;
+  bool wireguard = 3;
+  bool corrosion = 4;
+  bool docker = 5;
+  string state_path = 6;
+  bool worker_running = 7;
+}
+
+message GetIdentityRequest {
+  string network = 1;
+}
+
+message Identity {
+  string id = 1;
+  string public_key = 2;
+  string subnet = 3;
+  string management_ip = 4;
+  string advertise_endpoint = 5;
+  string network_cidr = 6;
+  string wg_interface = 7;
+  int32 wg_port = 8;
+  string helper_name = 9;
+  int32 corrosion_gossip_port = 10;
+  bool running = 11;
+}
+
+message MachineEntry {
+  string id = 1;
+  string public_key = 2;
+  string subnet = 3;
+  string management_ip = 4;
+  string endpoint = 5;
+  string last_updated = 6;
+  int64 version = 7;
+  int64 expected_version = 8;
+}
+
+message ListMachinesRequest {
+  string network = 1;
+}
+
+message ListMachinesResponse {
+  repeated MachineEntry machines = 1;
+}
+
+message UpsertMachineRequest {
+  string network = 1;
+  MachineEntry machine = 2;
+}
+
+message UpsertMachineResponse {}
+
+message RemoveMachineRequest {
+  string network = 1;
+  string id_or_endpoint = 2;
+}
+
+message RemoveMachineResponse {}
+
+message TriggerReconcileRequest {
+  string network = 1;
+}
+
+message TriggerReconcileResponse {}
+
+message StreamEventsRequest {
+  string network = 1;
+}
+
+message Event {
+  string type = 1;
+  string network = 2;
+  string message = 3;
+  string at = 4;
+}

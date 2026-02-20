@@ -14,7 +14,8 @@ import (
 
 	"ployz/cmd/ployz/cmdutil"
 	"ployz/cmd/ployz/ui"
-	"ployz/internal/machine"
+	"ployz/pkg/sdk/client"
+	sdkmachine "ployz/pkg/sdk/machine"
 
 	"github.com/spf13/cobra"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
@@ -27,6 +28,7 @@ type session interface {
 
 func Cmd() *cobra.Command {
 	var nf cmdutil.NetworkFlags
+	var socketPath string
 
 	cmd := &cobra.Command{
 		Use:   "access",
@@ -46,26 +48,34 @@ func Cmd() *cobra.Command {
 				}
 			}
 
-			cfg, err := machine.NormalizeConfig(nf.Config())
+			resolvedSocket, err := cmdutil.ResolveSocketPath(socketPath)
+			if err != nil {
+				return err
+			}
+			api, err := client.NewUnix(resolvedSocket)
+			if err != nil {
+				return fmt.Errorf("connect to daemon: %w", err)
+			}
+			svc := sdkmachine.New(api)
+
+			status, err := svc.Status(cmd.Context(), nf.Network)
+			if err != nil {
+				return err
+			}
+			if !status.Running {
+				return fmt.Errorf("machine runtime for network %q is not running", nf.Network)
+			}
+
+			identity, err := svc.Identity(cmd.Context(), nf.Network)
 			if err != nil {
 				return err
 			}
 
-			st, err := machine.LoadState(cfg)
-			if err != nil {
-				return err
-			}
-			if !st.Running {
-				return fmt.Errorf("machine runtime for network %q is not running", cfg.Network)
-			}
-			if st.WGInterface == "" {
+			wgInterface := strings.TrimSpace(identity.WGInterface)
+			if wgInterface == "" {
 				return fmt.Errorf("missing wireguard interface in state")
 			}
-			if st.WGPort == 0 {
-				st.WGPort = machine.DefaultWGPort(cfg.Network)
-			}
-
-			localSubnet, err := netip.ParsePrefix(st.Subnet)
+			localSubnet, err := netip.ParsePrefix(strings.TrimSpace(identity.Subnet))
 			if err != nil {
 				return fmt.Errorf("parse local subnet from state: %w", err)
 			}
@@ -74,12 +84,12 @@ func Cmd() *cobra.Command {
 				return err
 			}
 
-			networkCIDR := st.CIDR
+			networkCIDR := strings.TrimSpace(identity.NetworkCIDR)
 			if strings.TrimSpace(networkCIDR) == "" {
 				networkCIDR = localSubnet.String()
 			}
 
-			helperIP, err := helperIPv4(cmd.Context(), cfg.HelperName)
+			endpoint, err := svc.HostAccessEndpoint(cmd.Context(), nf.Network)
 			if err != nil {
 				return err
 			}
@@ -90,56 +100,34 @@ func Cmd() *cobra.Command {
 			}
 			hostPub := hostPriv.PublicKey().String()
 
-			peerAddScript := fmt.Sprintf(
-				`set -eu; wg set %q peer %q persistent-keepalive 25 allowed-ips %q; ip route replace %q dev %q`,
-				st.WGInterface,
-				hostPub,
-				hostIP.String()+"/32",
-				hostIP.String()+"/32",
-				st.WGInterface,
-			)
-			if err := cmdutil.RunDockerExecScript(cmd.Context(), cfg.HelperName, peerAddScript); err != nil {
-				return fmt.Errorf("configure helper peer: %w", err)
+			if err := svc.AddHostAccessPeer(cmd.Context(), nf.Network, hostPub, hostIP); err != nil {
+				return fmt.Errorf("configure host access peer: %w", err)
 			}
 
 			sess, err := startSession(
 				cmd.Context(),
-				cfg.Network,
+				nf.Network,
 				hostPriv.String(),
 				hostIP,
-				st.WGPublic,
-				netip.AddrPortFrom(helperIP, uint16(st.WGPort)),
+				identity.PublicKey,
+				endpoint,
 				networkCIDR,
 			)
 			if err != nil {
-				peerRemove := fmt.Sprintf(
-					`set -eu; wg set %q peer %q remove || true; ip route del %q dev %q >/dev/null 2>&1 || true`,
-					st.WGInterface,
-					hostPub,
-					hostIP.String()+"/32",
-					st.WGInterface,
-				)
-				_ = cmdutil.RunDockerExecScript(context.Background(), cfg.HelperName, peerRemove)
+				_ = svc.RemoveHostAccessPeer(context.Background(), nf.Network, hostPub, hostIP)
 				return fmt.Errorf("start host wireguard access: %w", err)
 			}
 
 			cleanup := func() {
 				_ = sess.Close(context.Background())
-				peerRemove := fmt.Sprintf(
-					`set -eu; wg set %q peer %q remove || true; ip route del %q dev %q >/dev/null 2>&1 || true`,
-					st.WGInterface,
-					hostPub,
-					hostIP.String()+"/32",
-					st.WGInterface,
-				)
-				_ = cmdutil.RunDockerExecScript(context.Background(), cfg.HelperName, peerRemove)
+				_ = svc.RemoveHostAccessPeer(context.Background(), nf.Network, hostPub, hostIP)
 			}
 
-			fmt.Println(ui.InfoMsg("host access active for network %s", ui.Accent(cfg.Network)))
+			fmt.Println(ui.InfoMsg("host access active for network %s", ui.Accent(nf.Network)))
 			fmt.Print(ui.KeyValues("  ",
 				ui.KV("interface", sess.InterfaceName()),
 				ui.KV("host ip", hostIP.String()),
-				ui.KV("endpoint", fmt.Sprintf("%s:%d", helperIP, st.WGPort)),
+				ui.KV("endpoint", endpoint.String()),
 				ui.KV("routes", networkCIDR),
 			))
 			fmt.Println(ui.Muted("Press Ctrl-C to tear down host access"))
@@ -154,6 +142,9 @@ func Cmd() *cobra.Command {
 	}
 
 	nf.Bind(cmd)
+	_ = cmd.Flags().MarkHidden("data-root")
+	_ = cmd.Flags().MarkHidden("helper-image")
+	cmd.Flags().StringVar(&socketPath, "socket", cmdutil.DefaultSocketPath(), "ployzd unix socket path")
 	return cmd
 }
 
@@ -176,20 +167,6 @@ func pickHostAccessIP(subnet netip.Prefix) (netip.Addr, error) {
 	var out [4]byte
 	binary.BigEndian.PutUint32(out[:], candidate)
 	return netip.AddrFrom4(out), nil
-}
-
-func helperIPv4(ctx context.Context, helperName string) (netip.Addr, error) {
-	out, err := cmdutil.RunDockerExecScriptOutput(ctx, helperName, `set -eu
-ip -4 -o addr show dev eth0 | awk 'NR==1 {print $4}' | cut -d/ -f1`)
-	if err != nil {
-		return netip.Addr{}, fmt.Errorf("read helper eth0 address: %w", err)
-	}
-	ip := strings.TrimSpace(out)
-	addr, err := netip.ParseAddr(ip)
-	if err != nil {
-		return netip.Addr{}, fmt.Errorf("parse helper IP %q: %w", ip, err)
-	}
-	return addr, nil
 }
 
 func maybeReexecWithSudo() error {

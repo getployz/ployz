@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"time"
@@ -353,57 +352,4 @@ func LoadState(cfg Config) (*State, error) {
 		return nil, err
 	}
 	return loadState(norm.DataDir)
-}
-
-func hydrateConfigFromState(cfg Config, s *State) (Config, error) {
-	if cfg.Network == "" {
-		cfg.Network = s.Network
-	}
-	if cfg.WGInterface == "" {
-		cfg.WGInterface = s.WGInterface
-	}
-	if cfg.WGPort == 0 {
-		cfg.WGPort = s.WGPort
-	}
-	if cfg.DockerNetwork == "" {
-		cfg.DockerNetwork = s.DockerNetwork
-	}
-	if cfg.CorrosionName == "" {
-		cfg.CorrosionName = s.CorrosionName
-	}
-	if cfg.CorrosionImg == "" {
-		cfg.CorrosionImg = s.CorrosionImg
-	}
-	if !cfg.NetworkCIDR.IsValid() {
-		if s.CIDR != "" {
-			cidr, err := netip.ParsePrefix(s.CIDR)
-			if err != nil {
-				return Config{}, fmt.Errorf("parse cidr from state: %w", err)
-			}
-			cfg.NetworkCIDR = cidr
-		} else {
-			cfg.NetworkCIDR = defaultNetwork()
-		}
-	}
-	if len(cfg.CorrosionBootstrap) == 0 && len(s.Bootstrap) > 0 {
-		cfg.CorrosionBootstrap = append([]string(nil), s.Bootstrap...)
-	}
-	if cfg.AdvertiseEP == "" {
-		cfg.AdvertiseEP = s.Advertise
-	}
-	if !cfg.Subnet.IsValid() {
-		subnet, err := netip.ParsePrefix(s.Subnet)
-		if err != nil {
-			return Config{}, fmt.Errorf("parse subnet from state: %w", err)
-		}
-		cfg.Subnet = subnet
-	}
-	mgmt, err := netip.ParseAddr(s.Management)
-	if err != nil {
-		return Config{}, fmt.Errorf("parse management IP from state: %w", err)
-	}
-	cfg.Management = mgmt
-	refreshCorrosionGossipAddr(&cfg)
-	cfg.CorrosionGossipAP = netip.AddrPortFrom(cfg.CorrosionGossipIP, uint16(cfg.CorrosionGossip))
-	return cfg, nil
 }

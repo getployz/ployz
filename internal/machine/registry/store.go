@@ -3,8 +3,10 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/netip"
+	"strconv"
 	"strings"
 )
 
@@ -14,8 +16,14 @@ const (
 	machinesTable      = "machines"
 )
 
+var ErrConflict = errors.New("registry version conflict")
+
 type Store struct {
 	apiAddr netip.AddrPort
+}
+
+type NetworkConfigRow struct {
+	CIDR string
 }
 
 type MachineRow struct {
@@ -25,6 +33,7 @@ type MachineRow struct {
 	Management string
 	Endpoint   string
 	UpdatedAt  string
+	Version    int64
 }
 
 func New(apiAddr netip.AddrPort) Store {
@@ -39,9 +48,19 @@ CREATE TABLE IF NOT EXISTS %s (
     subnet TEXT NOT NULL,
     management_ip TEXT NOT NULL,
     endpoint TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1
 )`, machinesTable)
-	return s.exec(ctx, query)
+	if err := s.exec(ctx, query); err != nil {
+		return err
+	}
+	if err := s.exec(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN version INTEGER NOT NULL DEFAULT 1", machinesTable)); err != nil {
+		errMsg := strings.ToLower(strings.TrimSpace(err.Error()))
+		if !strings.Contains(errMsg, "duplicate column") {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s Store) EnsureNetworkConfigTable(ctx context.Context) error {
@@ -92,11 +111,53 @@ func (s Store) EnsureNetworkCIDR(
 }
 
 func (s Store) RegisterMachine(ctx context.Context, row MachineRow) error {
+	return s.UpsertMachine(ctx, "", row, 0)
+}
+
+func (s Store) UpsertMachine(ctx context.Context, _ string, row MachineRow, expectedVersion int64) error {
+	row.ID = strings.TrimSpace(row.ID)
+	if row.ID == "" {
+		return fmt.Errorf("machine id is required")
+	}
+
+	current, exists, err := s.machineByID(ctx, row.ID)
+	if err != nil {
+		return err
+	}
+
+	if exists {
+		if expectedVersion > 0 && current.Version != expectedVersion {
+			return ErrConflict
+		}
+		if current.PublicKey == row.PublicKey &&
+			current.Subnet == row.Subnet &&
+			current.Management == row.Management &&
+			current.Endpoint == row.Endpoint {
+			return nil
+		}
+		row.Version = current.Version + 1
+		query := fmt.Sprintf(
+			"UPDATE %s SET public_key = ?, subnet = ?, management_ip = ?, endpoint = ?, updated_at = ?, version = ? WHERE id = ?",
+			machinesTable,
+		)
+		return s.exec(ctx, query, row.PublicKey, row.Subnet, row.Management, row.Endpoint, row.UpdatedAt, row.Version, row.ID)
+	}
+
+	if expectedVersion > 0 {
+		return ErrConflict
+	}
+	if row.Version <= 0 {
+		row.Version = 1
+	}
 	query := fmt.Sprintf(
-		"INSERT OR REPLACE INTO %s (id, public_key, subnet, management_ip, endpoint, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+		"INSERT INTO %s (id, public_key, subnet, management_ip, endpoint, updated_at, version) VALUES (?, ?, ?, ?, ?, ?, ?)",
 		machinesTable,
 	)
-	return s.exec(ctx, query, row.ID, row.PublicKey, row.Subnet, row.Management, row.Endpoint, row.UpdatedAt)
+	return s.exec(ctx, query, row.ID, row.PublicKey, row.Subnet, row.Management, row.Endpoint, row.UpdatedAt, row.Version)
+}
+
+func (s Store) RemoveMachine(ctx context.Context, _ string, id string) error {
+	return s.DeleteMachine(ctx, id)
 }
 
 func (s Store) DeleteByEndpointExceptID(ctx context.Context, endpoint, id string) error {
@@ -109,39 +170,40 @@ func (s Store) DeleteMachine(ctx context.Context, machineID string) error {
 	return s.exec(ctx, query, machineID, machineID)
 }
 
+func (s Store) ListMachines(ctx context.Context, _ string) ([]MachineRow, error) {
+	return s.ListMachineRows(ctx)
+}
+
 func (s Store) ListMachineRows(ctx context.Context) ([]MachineRow, error) {
-	query := fmt.Sprintf("SELECT id, public_key, subnet, management_ip, endpoint, updated_at FROM %s ORDER BY id", machinesTable)
+	query := fmt.Sprintf("SELECT id, public_key, subnet, management_ip, endpoint, updated_at, version FROM %s ORDER BY id", machinesTable)
 	rows, err := s.query(ctx, query)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]MachineRow, 0, len(rows))
 	for _, row := range rows {
-		if len(row) != 6 {
-			continue
-		}
-		var r MachineRow
-		if r.ID, err = decodeString(row[0], "machine id"); err != nil {
-			return nil, err
-		}
-		if r.PublicKey, err = decodeString(row[1], "machine public key"); err != nil {
-			return nil, err
-		}
-		if r.Subnet, err = decodeString(row[2], "machine subnet"); err != nil {
-			return nil, err
-		}
-		if r.Management, err = decodeString(row[3], "machine management ip"); err != nil {
-			return nil, err
-		}
-		if r.Endpoint, err = decodeString(row[4], "machine endpoint"); err != nil {
-			return nil, err
-		}
-		if r.UpdatedAt, err = decodeString(row[5], "machine updated_at"); err != nil {
-			return nil, err
+		r, rErr := decodeMachineRow(row)
+		if rErr != nil {
+			return nil, rErr
 		}
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+func (s Store) GetNetworkConfig(ctx context.Context, _ string) (NetworkConfigRow, error) {
+	value, err := s.networkConfigValue(ctx, networkConfigKey)
+	if err != nil {
+		return NetworkConfigRow{}, err
+	}
+	return NetworkConfigRow{CIDR: value}, nil
+}
+
+func (s Store) EnsureNetworkConfig(ctx context.Context, _ string, cfg NetworkConfigRow) error {
+	if strings.TrimSpace(cfg.CIDR) == "" {
+		return nil
+	}
+	return s.setNetworkConfigValue(ctx, networkConfigKey, cfg.CIDR)
 }
 
 func (s Store) networkConfigValue(ctx context.Context, key string) (string, error) {
@@ -164,6 +226,25 @@ func (s Store) setNetworkConfigValue(ctx context.Context, key, value string) err
 	return s.exec(ctx, query, key, value)
 }
 
+func (s Store) machineByID(ctx context.Context, id string) (MachineRow, bool, error) {
+	query := fmt.Sprintf(
+		"SELECT id, public_key, subnet, management_ip, endpoint, updated_at, version FROM %s WHERE id = ?",
+		machinesTable,
+	)
+	rows, err := s.query(ctx, query, id)
+	if err != nil {
+		return MachineRow{}, false, err
+	}
+	if len(rows) == 0 {
+		return MachineRow{}, false, nil
+	}
+	out, err := decodeMachineRow(rows[0])
+	if err != nil {
+		return MachineRow{}, false, err
+	}
+	return out, true, nil
+}
+
 func decodeString(raw json.RawMessage, label string) (string, error) {
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
@@ -177,4 +258,23 @@ func decodeString(raw json.RawMessage, label string) (string, error) {
 		return *p, nil
 	}
 	return "", fmt.Errorf("decode %s", label)
+}
+
+func decodeInt64(raw json.RawMessage, label string) (int64, error) {
+	var n int64
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n, nil
+	}
+	var f float64
+	if err := json.Unmarshal(raw, &f); err == nil {
+		return int64(f), nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		i, convErr := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+		if convErr == nil {
+			return i, nil
+		}
+	}
+	return 0, fmt.Errorf("decode %s", label)
 }

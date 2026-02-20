@@ -5,25 +5,23 @@ import (
 
 	"ployz/cmd/ployz/cmdutil"
 	"ployz/cmd/ployz/ui"
-	machinelib "ployz/internal/machine"
 
 	"github.com/spf13/cobra"
 )
 
 func statusCmd() *cobra.Command {
 	var nf cmdutil.NetworkFlags
+	var socketPath string
 
 	cmd := &cobra.Command{
 		Use:   "status",
-		Short: "Show local machine runtime status",
+		Short: "Show network status from ployzd",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctrl, err := machinelib.New()
+			svc, err := service(socketPath)
 			if err != nil {
 				return err
 			}
-			defer ctrl.Close()
-
-			status, err := ctrl.Status(cmd.Context(), nf.Config())
+			status, err := svc.Status(cmd.Context(), nf.Network)
 			if err != nil {
 				return err
 			}
@@ -33,6 +31,7 @@ func statusCmd() *cobra.Command {
 				ui.KV("wireguard", ui.Bool(status.WireGuard)),
 				ui.KV("corrosion", ui.Bool(status.Corrosion)),
 				ui.KV("docker", ui.Bool(status.DockerNet)),
+				ui.KV("worker", ui.Bool(status.WorkerRunning)),
 				ui.KV("state", status.StatePath),
 			))
 			return nil
@@ -40,5 +39,6 @@ func statusCmd() *cobra.Command {
 	}
 
 	nf.Bind(cmd)
+	cmd.Flags().StringVar(&socketPath, "socket", cmdutil.DefaultSocketPath(), "ployzd unix socket path")
 	return cmd
 }

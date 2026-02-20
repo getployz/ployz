@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 
+	"ployz/cmd/ployz/cluster"
+	"ployz/cmd/ployz/daemon"
 	"ployz/cmd/ployz/host"
 	"ployz/cmd/ployz/machine"
 
@@ -18,6 +20,8 @@ func main() {
 
 	root.AddCommand(machine.Cmd())
 	root.AddCommand(host.Cmd())
+	root.AddCommand(daemon.Cmd())
+	root.AddCommand(cluster.Cmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

@@ -11,8 +11,10 @@ fi
 
 SSH_PORT="${SSH_PORT:-22}"
 TARGETS_RAW="${TARGETS:-}"
-DEST_PATH="${DEST_PATH:-/usr/local/bin/ployz}"
-BIN_PATH="$ROOT_DIR/bin/ployz-linux-amd64"
+BIN_PLOYZ="$ROOT_DIR/bin/ployz-linux-amd64"
+BIN_PLOYZD="$ROOT_DIR/bin/ployzd-linux-amd64"
+DEST_PLOYZ="/usr/local/bin/ployz"
+DEST_PLOYZD="/usr/local/bin/ployzd"
 
 local_sha256() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -35,29 +37,44 @@ fi
 
 read -r -a TARGET_LIST <<<"$TARGETS_RAW"
 
-echo "==> Building Linux binary"
-GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "$BIN_PATH" ./cmd/ployz
+echo "==> Building Linux binaries"
+# GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "$BIN_PLOYZ" ./cmd/ployz
+GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "$BIN_PLOYZD" ./cmd/ployzd
 
-LOCAL_SHA="$(local_sha256 "$BIN_PATH")"
+# BINS=("$BIN_PLOYZ:$DEST_PLOYZ" "$BIN_PLOYZD:$DEST_PLOYZD")
+BINS=("$BIN_PLOYZD:$DEST_PLOYZD")
 
 for target in "${TARGET_LIST[@]}"; do
   [[ -z "$target" ]] && continue
   echo "==> Deploying to $target"
 
-  TMP_PATH="/tmp/ployz-$$"
+  for entry in "${BINS[@]}"; do
+    bin_path="${entry%%:*}"
+    dest_path="${entry##*:}"
+    bin_name="$(basename "$dest_path")"
+    local_sha="$(local_sha256 "$bin_path")"
+    tmp_path="/tmp/${bin_name}-$$"
 
-  REMOTE_SHA="$(ssh -p "$SSH_PORT" "$target" "if [ -f '$DEST_PATH' ]; then sudo ${remote_sha256_cmd} '$DEST_PATH' | awk '{print \$1}'; fi" 2>/dev/null || true)"
-  if [[ -n "$REMOTE_SHA" && "$REMOTE_SHA" == "$LOCAL_SHA" ]]; then
-    echo "   unchanged, skipping upload"
-    continue
-  fi
+    remote_sha="$(ssh -p "$SSH_PORT" "$target" "if [ -f '$dest_path' ]; then sudo ${remote_sha256_cmd} '$dest_path' | awk '{print \$1}'; fi" 2>/dev/null || true)"
+    if [[ -n "$remote_sha" && "$remote_sha" == "$local_sha" ]]; then
+      echo "   $bin_name unchanged, skipping"
+      continue
+    fi
 
-  if command -v rsync >/dev/null 2>&1; then
-    rsync -az --progress -e "ssh -p $SSH_PORT" "$BIN_PATH" "$target:$TMP_PATH"
-  else
-    scp -C -P "$SSH_PORT" "$BIN_PATH" "$target:$TMP_PATH"
+    echo "   uploading $bin_name"
+    if command -v rsync >/dev/null 2>&1; then
+      rsync -az --progress -e "ssh -p $SSH_PORT" "$bin_path" "$target:$tmp_path"
+    else
+      scp -C -P "$SSH_PORT" "$bin_path" "$target:$tmp_path"
+    fi
+    ssh -p "$SSH_PORT" "$target" "sudo install -m 0755 '$tmp_path' '$dest_path' && rm -f '$tmp_path'"
+    NEEDS_RESTART=1
+  done
+
+  if [[ "${NEEDS_RESTART:-}" == "1" ]]; then
+    echo "   restarting ployzd"
+    ssh -p "$SSH_PORT" "$target" "sudo pkill ployzd || true; sleep 1; sudo rm -f /var/run/ployzd.sock"
   fi
-  ssh -p "$SSH_PORT" "$target" "sudo install -m 0755 '$TMP_PATH' '$DEST_PATH' && rm -f '$TMP_PATH' && '$DEST_PATH' --help >/dev/null"
 done
 
 echo "Deploy complete"

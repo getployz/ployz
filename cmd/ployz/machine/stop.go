@@ -5,7 +5,6 @@ import (
 
 	"ployz/cmd/ployz/cmdutil"
 	"ployz/cmd/ployz/ui"
-	machinelib "ployz/internal/machine"
 
 	"github.com/spf13/cobra"
 )
@@ -13,22 +12,20 @@ import (
 func stopCmd() *cobra.Command {
 	var nf cmdutil.NetworkFlags
 	var purge bool
+	var socketPath string
 
 	cmd := &cobra.Command{
 		Use:   "stop",
-		Short: "Stop local machine runtime for a network",
+		Short: "Disable network through ployzd",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctrl, err := machinelib.New()
+			svc, err := service(socketPath)
 			if err != nil {
 				return err
 			}
-			defer ctrl.Close()
-
-			out, err := ctrl.Stop(cmd.Context(), nf.Config(), purge)
-			if err != nil {
+			if err := svc.Stop(cmd.Context(), nf.Network, purge); err != nil {
 				return err
 			}
-			fmt.Println(ui.SuccessMsg("stopped machine for network %s", ui.Accent(out.Network)))
+			fmt.Println(ui.SuccessMsg("disabled network %s", ui.Accent(nf.Network)))
 			if purge {
 				fmt.Println(ui.Muted("  state purged"))
 			}
@@ -37,6 +34,7 @@ func stopCmd() *cobra.Command {
 	}
 
 	nf.Bind(cmd)
-	cmd.Flags().BoolVar(&purge, "purge", false, "Remove network state directory after stop")
+	cmd.Flags().BoolVar(&purge, "purge", false, "Remove network state after disable")
+	cmd.Flags().StringVar(&socketPath, "socket", cmdutil.DefaultSocketPath(), "ployzd unix socket path")
 	return cmd
 }

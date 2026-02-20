@@ -3,6 +3,7 @@ default:
 
 build:
     go build -o bin/ployz ./cmd/ployz
+    go build -o bin/ployzd ./cmd/ployzd
 
 run *args:
     go run ./cmd/ployz {{args}}
@@ -18,6 +19,10 @@ lint:
 
 tidy:
     go mod tidy
+
+proto:
+    protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+        --proto_path=. internal/daemon/pb/daemon.proto
 
 bootstrap *targets:
     ./scripts/bootstrap-remote.sh {{targets}}

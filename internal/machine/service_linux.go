@@ -31,115 +31,40 @@ func New() (*Controller, error) {
 	return &Controller{cli: cli}, nil
 }
 
+type linuxRuntimeOps struct {
+	ctrl *Controller
+}
+
+func (o linuxRuntimeOps) Prepare(ctx context.Context, _ Config) error {
+	return waitDockerReady(ctx, o.ctrl.cli)
+}
+
+func (o linuxRuntimeOps) ConfigureWireGuard(_ context.Context, cfg Config, state *State) error {
+	return configureWireGuard(cfg, state)
+}
+
+func (o linuxRuntimeOps) EnsureDockerNetwork(ctx context.Context, cfg Config, _ *State) error {
+	return ensureDockerNetwork(ctx, o.ctrl.cli, cfg)
+}
+
+func (o linuxRuntimeOps) CleanupDockerNetwork(ctx context.Context, cfg Config, state *State) error {
+	return cleanupDockerNetwork(ctx, o.ctrl.cli, cfg, state)
+}
+
+func (o linuxRuntimeOps) CleanupWireGuard(_ context.Context, _ Config, state *State) error {
+	return cleanupWireGuard(state.WGInterface)
+}
+
+func (o linuxRuntimeOps) AfterStop(_ context.Context, _ Config, _ *State) error {
+	return nil
+}
+
 func (c *Controller) Start(ctx context.Context, in Config) (Config, error) {
-	cfg, err := NormalizeConfig(in)
-	if err != nil {
-		return Config{}, err
-	}
-	if err := ensureUniqueHostCIDR(cfg); err != nil {
-		return Config{}, err
-	}
-	if err := waitDockerReady(ctx, c.cli); err != nil {
-		return Config{}, err
-	}
-
-	state, _, err := ensureState(cfg)
-	if err != nil {
-		return Config{}, err
-	}
-
-	if cfg.Subnet.IsValid() && state.Subnet != cfg.Subnet.String() {
-		return Config{}, fmt.Errorf("network %q already initialized with subnet %s", cfg.Network, state.Subnet)
-	}
-	if cfg.NetworkCIDR.IsValid() && state.CIDR != "" && state.CIDR != cfg.NetworkCIDR.String() {
-		return Config{}, fmt.Errorf("network %q already initialized with cidr %s", cfg.Network, state.CIDR)
-	}
-	if cfg.AdvertiseEP != "" && cfg.AdvertiseEP != state.Advertise {
-		state.Advertise = cfg.AdvertiseEP
-	}
-	if cfg.WGPort != 0 && state.WGPort != cfg.WGPort {
-		state.WGPort = cfg.WGPort
-	}
-	if len(cfg.CorrosionBootstrap) > 0 {
-		state.Bootstrap = append([]string(nil), cfg.CorrosionBootstrap...)
-	}
-	if cfg.NetworkCIDR.IsValid() {
-		state.CIDR = cfg.NetworkCIDR.String()
-	}
-	cfg, err = hydrateConfigFromState(cfg, state)
-	if err != nil {
-		return Config{}, err
-	}
-
-	if err := configureWireGuard(cfg, state); err != nil {
-		return Config{}, err
-	}
-	if err := configureCorrosion(cfg); err != nil {
-		return Config{}, err
-	}
-	if err := startCorrosion(ctx, c.cli, cfg); err != nil {
-		return Config{}, err
-	}
-	if err := ensureDockerNetwork(ctx, c.cli, cfg); err != nil {
-		return Config{}, err
-	}
-	state.Running = true
-	if err := saveState(cfg.DataDir, state); err != nil {
-		return Config{}, err
-	}
-
-	if _, err := c.Reconcile(ctx, cfg); err != nil {
-		return Config{}, err
-	}
-
-	return cfg, nil
+	return c.startRuntime(ctx, in, linuxRuntimeOps{ctrl: c})
 }
 
 func (c *Controller) Stop(ctx context.Context, in Config, purge bool) (Config, error) {
-	cfg, err := NormalizeConfig(in)
-	if err != nil {
-		return Config{}, err
-	}
-
-	state, err := loadState(cfg.DataDir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return cfg, nil
-		}
-		return Config{}, err
-	}
-
-	if err := waitDockerReady(ctx, c.cli); err != nil {
-		return Config{}, err
-	}
-	cfg, err = hydrateConfigFromState(cfg, state)
-	if err != nil {
-		return Config{}, err
-	}
-
-	if err := cleanupDockerNetwork(ctx, c.cli, cfg, state); err != nil {
-		return Config{}, err
-	}
-	if err := stopCorrosion(ctx, c.cli, state.CorrosionName); err != nil {
-		return Config{}, err
-	}
-	if err := cleanupWireGuard(state.WGInterface); err != nil {
-		return Config{}, err
-	}
-
-	state.Running = false
-	if purge {
-		if err := deleteState(cfg.DataDir); err != nil {
-			return Config{}, err
-		}
-		if err := os.RemoveAll(cfg.DataDir); err != nil {
-			return Config{}, fmt.Errorf("purge data dir: %w", err)
-		}
-	} else if err := saveState(cfg.DataDir, state); err != nil {
-		return Config{}, err
-	}
-
-	return cfg, nil
+	return c.stopRuntime(ctx, in, purge, linuxRuntimeOps{ctrl: c})
 }
 
 func (c *Controller) Status(ctx context.Context, in Config) (Status, error) {
@@ -158,10 +83,11 @@ func (c *Controller) Status(ctx context.Context, in Config) (Status, error) {
 	}
 	out.Configured = true
 	out.Running = s.Running
-	cfg, err = hydrateConfigFromState(cfg, s)
+	resolved, err := Resolve(cfg, s)
 	if err != nil {
 		return Status{}, err
 	}
+	cfg = resolved.Config()
 
 	if _, err := netlink.LinkByName(s.WGInterface); err == nil {
 		out.WireGuard = true

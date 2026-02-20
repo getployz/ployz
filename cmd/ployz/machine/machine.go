@@ -14,6 +14,6 @@ func Cmd() *cobra.Command {
 	cmd.AddCommand(listCmd())
 	cmd.AddCommand(removeCmd())
 	cmd.AddCommand(reconcileCmd())
-	cmd.AddCommand(watchCmd())
+	cmd.AddCommand(doctorCmd())
 	return cmd
 }
