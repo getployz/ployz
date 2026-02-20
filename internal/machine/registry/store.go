@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
-
-	"ployz/internal/machine/corroapi"
 )
 
 const (
@@ -164,14 +162,6 @@ func (s Store) networkConfigValue(ctx context.Context, key string) (string, erro
 func (s Store) setNetworkConfigValue(ctx context.Context, key, value string) error {
 	query := fmt.Sprintf("INSERT OR REPLACE INTO %s (key, value) VALUES (?, ?)", networkConfigTable)
 	return s.exec(ctx, query, key, value)
-}
-
-func (s Store) exec(ctx context.Context, query string, args ...any) error {
-	return corroapi.Exec(ctx, s.apiAddr, query, args...)
-}
-
-func (s Store) query(ctx context.Context, query string, args ...any) ([][]json.RawMessage, error) {
-	return corroapi.Query(ctx, s.apiAddr, query, args...)
 }
 
 func decodeString(raw json.RawMessage, label string) (string, error) {

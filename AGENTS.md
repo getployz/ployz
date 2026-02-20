@@ -78,8 +78,38 @@ Notes:
 ## Architecture Snapshot
 
 - `cmd/ployz/`: Cobra CLI commands.
+  - `main.go` - entrypoint, root command.
+  - `machine.go` - `machine start/stop/status/reconcile/watch` subcommands.
+  - `machine_membership.go` - `machine add/list/remove` subcommands (remote join workflow).
+  - `host.go` - `host access` subcommand (macOS WireGuard tunnel from host).
+  - `host_access_darwin.go` / `host_access_stub.go` - platform-specific host access session.
+  - `helpers.go` - shared CLI helpers (`networkFlags`, `shellQuote`, `runDockerExecScript`, `runSudo`).
 - `internal/machine/`: machine runtime, WireGuard, Corrosion, membership, reconcile.
-- `internal/agent/`, `pkg/network/`, `pkg/runtime/`: store/reactive orchestration model.
+  - `config.go` - Config struct, NormalizeConfig, defaults.
+  - `types.go` - JoinPlan, Machine types.
+  - `controller.go` - Controller struct (wraps Docker client).
+  - `controlplane.go` - Reconcile, PlanJoin, ListMachines, UpsertMachine, RemoveMachine.
+  - `state.go` - SQLite-backed local network state (load/save/ensure).
+  - `peers.go` - Peer type, normalization, WireGuard peer spec building.
+  - `peer_ops.go` - AddPeer, RemovePeer, ListPeers.
+  - `ipam.go` - subnet allocation within a network CIDR.
+  - `cidr_guard.go` - cross-network CIDR overlap detection.
+  - `management_ip.go` - deterministic IPv6 management IP from WireGuard public key.
+  - `corrosion.go` - adapter from Config to corroservice types.
+  - `docker_ready.go` - Docker daemon readiness polling.
+  - `service_linux.go` / `service_darwin.go` / `service_stub.go` - platform-specific Start/Stop/Status/applyPeerConfig.
+- `internal/machine/registry/`: Corrosion-backed distributed machine registry.
+  - `store.go` - Store type, machine CRUD, network config.
+  - `corrosion.go` - Corrosion HTTP API client (exec/query).
+- `internal/machine/corroservice/`: Corrosion container lifecycle.
+  - `config.go` - write Corrosion config/schema files.
+  - `runtime.go` - start/stop Corrosion Docker container.
+  - `schema.go` - Corrosion SQL schema.
+- `internal/machine/dockerutil/`: Docker helpers.
+  - `network.go` - purge containers from a Docker network.
+- `internal/machine/remote/`: SSH-based remote machine operations.
+  - `ssh.go` - SSH command execution.
+  - `scripts.go` - remote shell scripts for preflight, start, bootstrap, reconcile.
 - Source of truth principle: write desired state to store, subscribers reconcile dataplane.
 
 ## Style and Conventions
@@ -162,17 +192,3 @@ Notes:
 - Before finishing, run at least:
   - `just test`
   - `just build`
-
-## Cursor and Copilot Rules
-
-Checked locations:
-
-- `.cursor/rules/`
-- `.cursorrules`
-- `.github/copilot-instructions.md`
-
-Current status:
-
-- No Cursor or Copilot instruction files were found in this repository.
-
-If those files are added later, merge their directives into this document.

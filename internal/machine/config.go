@@ -79,7 +79,7 @@ func NormalizeConfig(cfg Config) (Config, error) {
 		cfg.WGPort = DefaultWGPort(cfg.Network)
 	}
 	if cfg.WGInterface == "" {
-		cfg.WGInterface = ifaceName(cfg.Network)
+		cfg.WGInterface = InterfaceName(cfg.Network)
 	}
 	if cfg.DockerNetwork == "" {
 		cfg.DockerNetwork = "ployz-" + cfg.Network
@@ -120,7 +120,7 @@ func NormalizeConfig(cfg Config) (Config, error) {
 	return cfg, nil
 }
 
-func ifaceName(network string) string {
+func InterfaceName(network string) string {
 	name := "plz-" + network
 	if len(name) <= 15 {
 		return name

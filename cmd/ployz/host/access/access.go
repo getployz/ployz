@@ -1,4 +1,4 @@
-package main
+package access
 
 import (
 	"context"
@@ -12,30 +12,21 @@ import (
 	"strings"
 	"syscall"
 
+	"ployz/cmd/ployz/cmdutil"
+	"ployz/cmd/ployz/ui"
 	"ployz/internal/machine"
 
 	"github.com/spf13/cobra"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-type hostAccessSession interface {
+type session interface {
 	InterfaceName() string
 	Close(ctx context.Context) error
 }
 
-func hostCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "host",
-		Short: "Host-level access helpers",
-	}
-	cmd.AddCommand(hostAccessCmd())
-	return cmd
-}
-
-func hostAccessCmd() *cobra.Command {
-	var networkName string
-	var dataRoot string
-	var helperImage string
+func Cmd() *cobra.Command {
+	var nf cmdutil.NetworkFlags
 
 	cmd := &cobra.Command{
 		Use:   "access",
@@ -45,7 +36,7 @@ func hostAccessCmd() *cobra.Command {
 			if runtime.GOOS != "darwin" {
 				return fmt.Errorf("host access is currently supported on macOS only")
 			}
-			if err := maybeReexecHostAccessWithSudo(); err != nil {
+			if err := maybeReexecWithSudo(); err != nil {
 				return err
 			}
 
@@ -55,11 +46,7 @@ func hostAccessCmd() *cobra.Command {
 				}
 			}
 
-			cfg, err := machine.NormalizeConfig(machine.Config{
-				Network:     networkName,
-				DataRoot:    dataRoot,
-				HelperImage: helperImage,
-			})
+			cfg, err := machine.NormalizeConfig(nf.Config())
 			if err != nil {
 				return err
 			}
@@ -111,11 +98,11 @@ func hostAccessCmd() *cobra.Command {
 				hostIP.String()+"/32",
 				st.WGInterface,
 			)
-			if err := runDockerExecScript(cmd.Context(), cfg.HelperName, peerAddScript); err != nil {
+			if err := cmdutil.RunDockerExecScript(cmd.Context(), cfg.HelperName, peerAddScript); err != nil {
 				return fmt.Errorf("configure helper peer: %w", err)
 			}
 
-			session, err := startHostAccessSession(
+			sess, err := startSession(
 				cmd.Context(),
 				cfg.Network,
 				hostPriv.String(),
@@ -132,12 +119,12 @@ func hostAccessCmd() *cobra.Command {
 					hostIP.String()+"/32",
 					st.WGInterface,
 				)
-				_ = runDockerExecScript(context.Background(), cfg.HelperName, peerRemove)
+				_ = cmdutil.RunDockerExecScript(context.Background(), cfg.HelperName, peerRemove)
 				return fmt.Errorf("start host wireguard access: %w", err)
 			}
 
 			cleanup := func() {
-				_ = session.Close(context.Background())
+				_ = sess.Close(context.Background())
 				peerRemove := fmt.Sprintf(
 					`set -eu; wg set %q peer %q remove || true; ip route del %q dev %q >/dev/null 2>&1 || true`,
 					st.WGInterface,
@@ -145,28 +132,28 @@ func hostAccessCmd() *cobra.Command {
 					hostIP.String()+"/32",
 					st.WGInterface,
 				)
-				_ = runDockerExecScript(context.Background(), cfg.HelperName, peerRemove)
+				_ = cmdutil.RunDockerExecScript(context.Background(), cfg.HelperName, peerRemove)
 			}
 
-			fmt.Printf("host access active for network %q\n", cfg.Network)
-			fmt.Printf("  interface: %s\n", session.InterfaceName())
-			fmt.Printf("  host ip:   %s\n", hostIP)
-			fmt.Printf("  endpoint:  %s:%d\n", helperIP, st.WGPort)
-			fmt.Printf("  routes:    %s\n", networkCIDR)
-			fmt.Println("Press Ctrl-C to tear down host access")
+			fmt.Println(ui.InfoMsg("host access active for network %s", ui.Accent(cfg.Network)))
+			fmt.Print(ui.KeyValues("  ",
+				ui.KV("interface", sess.InterfaceName()),
+				ui.KV("host ip", hostIP.String()),
+				ui.KV("endpoint", fmt.Sprintf("%s:%d", helperIP, st.WGPort)),
+				ui.KV("routes", networkCIDR),
+			))
+			fmt.Println(ui.Muted("Press Ctrl-C to tear down host access"))
 
 			sigCtx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			<-sigCtx.Done()
 			cleanup()
-			fmt.Println("host access stopped")
+			fmt.Println(ui.SuccessMsg("host access stopped"))
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&networkName, "network", "default", "Network identifier")
-	cmd.Flags().StringVar(&dataRoot, "data-root", machine.DefaultDataRoot(), "Machine data root")
-	cmd.Flags().StringVar(&helperImage, "helper-image", "", "Linux helper image for macOS")
+	nf.Bind(cmd)
 	return cmd
 }
 
@@ -192,7 +179,7 @@ func pickHostAccessIP(subnet netip.Prefix) (netip.Addr, error) {
 }
 
 func helperIPv4(ctx context.Context, helperName string) (netip.Addr, error) {
-	out, err := runDockerExecScriptOutput(ctx, helperName, `set -eu
+	out, err := cmdutil.RunDockerExecScriptOutput(ctx, helperName, `set -eu
 ip -4 -o addr show dev eth0 | awk 'NR==1 {print $4}' | cut -d/ -f1`)
 	if err != nil {
 		return netip.Addr{}, fmt.Errorf("read helper eth0 address: %w", err)
@@ -205,52 +192,7 @@ ip -4 -o addr show dev eth0 | awk 'NR==1 {print $4}' | cut -d/ -f1`)
 	return addr, nil
 }
 
-func runDockerExecScript(ctx context.Context, containerName, script string) error {
-	_, err := runDockerExecScriptOutput(ctx, containerName, script)
-	return err
-}
-
-func runDockerExecScriptOutput(ctx context.Context, containerName, script string) (string, error) {
-	cmd := exec.CommandContext(ctx, "docker", "exec", containerName, "sh", "-lc", script)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			return "", fmt.Errorf("docker exec %s failed: %w", containerName, err)
-		}
-		return "", fmt.Errorf("docker exec %s failed: %w: %s", containerName, err, msg)
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-func runSudo(ctx context.Context, name string, args ...string) error {
-	if os.Geteuid() == 0 {
-		cmd := exec.CommandContext(ctx, name, args...)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			msg := strings.TrimSpace(string(out))
-			if msg == "" {
-				return fmt.Errorf("%s failed: %w", name, err)
-			}
-			return fmt.Errorf("%s failed: %w: %s", name, err, msg)
-		}
-		return nil
-	}
-
-	all := append([]string{name}, args...)
-	cmd := exec.CommandContext(ctx, "sudo", append([]string{"-n"}, all...)...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			return fmt.Errorf("sudo %s failed: %w (run command with sudo privileges)", name, err)
-		}
-		return fmt.Errorf("sudo %s failed: %w: %s", name, err, msg)
-	}
-	return nil
-}
-
-func maybeReexecHostAccessWithSudo() error {
+func maybeReexecWithSudo() error {
 	if os.Geteuid() == 0 {
 		return nil
 	}
@@ -271,16 +213,4 @@ func maybeReexecHostAccessWithSudo() error {
 	args := []string{"sudo", "--preserve-env=" + preserve, "PLOYZ_HOST_ACCESS_SUDO=1", exe}
 	args = append(args, os.Args[1:]...)
 	return syscall.Exec(sudoPath, args, os.Environ())
-}
-
-func hostInterfaceName(network string) string {
-	n := strings.TrimSpace(network)
-	if n == "" {
-		n = "default"
-	}
-	name := "plzhost-" + n
-	if len(name) > 15 {
-		name = name[:15]
-	}
-	return name
 }

@@ -1,6 +1,6 @@
 //go:build darwin
 
-package main
+package access
 
 import (
 	"context"
@@ -9,20 +9,22 @@ import (
 	"net/netip"
 	"strings"
 
+	"ployz/cmd/ployz/cmdutil"
+
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-type darwinHostAccessSession struct {
+type darwinSession struct {
 	dev       *device.Device
 	tun       tun.Device
 	ifaceName string
 	routeCIDR string
 }
 
-func startHostAccessSession(
+func startSession(
 	ctx context.Context,
 	network string,
 	privateKey string,
@@ -30,7 +32,7 @@ func startHostAccessSession(
 	helperPublicKey string,
 	helperEndpoint netip.AddrPort,
 	allowedCIDR string,
-) (hostAccessSession, error) {
+) (session, error) {
 	localKey, err := wgtypes.ParseKey(privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("parse host private key: %w", err)
@@ -74,20 +76,20 @@ func startHostAccessSession(
 		return nil, fmt.Errorf("enable host wireguard device: %w", err)
 	}
 
-	if err := setHostInterfaceAddress(ctx, iface, hostIP); err != nil {
+	if err := setInterfaceAddress(ctx, iface, hostIP); err != nil {
 		dev.Close()
 		tunDev.Close()
 		return nil, err
 	}
 
-	_ = runSudo(ctx, "route", "-n", "delete", "-net", allowedCIDR, "-interface", iface)
-	if err := runSudo(ctx, "route", "-n", "add", "-net", allowedCIDR, "-interface", iface); err != nil {
+	_ = cmdutil.RunSudo(ctx, "route", "-n", "delete", "-net", allowedCIDR, "-interface", iface)
+	if err := cmdutil.RunSudo(ctx, "route", "-n", "add", "-net", allowedCIDR, "-interface", iface); err != nil {
 		dev.Close()
 		tunDev.Close()
 		return nil, fmt.Errorf("add route %s via %s: %w", allowedCIDR, iface, err)
 	}
 
-	return &darwinHostAccessSession{
+	return &darwinSession{
 		dev:       dev,
 		tun:       tunDev,
 		ifaceName: iface,
@@ -95,7 +97,7 @@ func startHostAccessSession(
 	}, nil
 }
 
-func setHostInterfaceAddress(ctx context.Context, iface string, ip netip.Addr) error {
+func setInterfaceAddress(ctx context.Context, iface string, ip netip.Addr) error {
 	ipStr := ip.String()
 	attempts := [][]string{
 		{"ifconfig", iface, "inet", ipStr, ipStr, "up"},
@@ -104,7 +106,7 @@ func setHostInterfaceAddress(ctx context.Context, iface string, ip netip.Addr) e
 
 	var lastErr error
 	for _, args := range attempts {
-		if err := runSudo(ctx, args[0], args[1:]...); err == nil {
+		if err := cmdutil.RunSudo(ctx, args[0], args[1:]...); err == nil {
 			return nil
 		} else {
 			lastErr = err
@@ -117,14 +119,14 @@ func setHostInterfaceAddress(ctx context.Context, iface string, ip netip.Addr) e
 	return fmt.Errorf("configure host interface %s address %s: %w", iface, ipStr, lastErr)
 }
 
-func (s *darwinHostAccessSession) InterfaceName() string {
+func (s *darwinSession) InterfaceName() string {
 	return s.ifaceName
 }
 
-func (s *darwinHostAccessSession) Close(ctx context.Context) error {
+func (s *darwinSession) Close(ctx context.Context) error {
 	var errs []error
 	if strings.TrimSpace(s.routeCIDR) != "" {
-		if err := runSudo(ctx, "route", "-n", "delete", "-net", s.routeCIDR, "-interface", s.ifaceName); err != nil {
+		if err := cmdutil.RunSudo(ctx, "route", "-n", "delete", "-net", s.routeCIDR, "-interface", s.ifaceName); err != nil {
 			errs = append(errs, err)
 		}
 	}

@@ -1,6 +1,6 @@
 //go:build !darwin
 
-package main
+package access
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"net/netip"
 )
 
-func startHostAccessSession(
+func startSession(
 	_ context.Context,
 	_ string,
 	_ string,
@@ -16,6 +16,6 @@ func startHostAccessSession(
 	_ string,
 	_ netip.AddrPort,
 	_ string,
-) (hostAccessSession, error) {
+) (session, error) {
 	return nil, fmt.Errorf("host access is currently supported on macOS only")
 }

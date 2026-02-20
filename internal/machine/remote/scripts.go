@@ -90,7 +90,7 @@ exit 1`, shellQuote(network)))
 }
 
 func WireGuardBootstrapScript(network, localPublicKey string, localSubnet netip.Prefix, localMgmt netip.Addr) string {
-	iface := interfaceName(network)
+	iface := machine.InterfaceName(network)
 	allowedIPs := localSubnet.String()
 	localMgmtPrefix := ""
 	if localMgmt.IsValid() {
@@ -152,14 +152,6 @@ if [ "$synced" -eq 0 ]; then
   exit 0
 fi
 $SUDO ployz machine reconcile --network %s`, shellQuote(network), shellQuote(network))) + "\n"
-}
-
-func interfaceName(network string) string {
-	name := "plz-" + strings.TrimSpace(network)
-	if len(name) <= 15 {
-		return name
-	}
-	return name[:15]
 }
 
 func wireGuardBootstrapManagementRouteLine(localMgmtPrefix, routeCmd string) string {

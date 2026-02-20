@@ -1,4 +1,4 @@
-package corroapi
+package registry
 
 import (
 	"bytes"
@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/netip"
 	"strings"
 )
 
@@ -44,13 +43,13 @@ func (r *rowEvent) UnmarshalJSON(data []byte) error {
 	return json.Unmarshal(raw[1], &r.Values)
 }
 
-func Exec(ctx context.Context, apiAddr netip.AddrPort, query string, args ...any) error {
+func (s Store) exec(ctx context.Context, query string, args ...any) error {
 	body, err := json.Marshal([]statement{{Query: query, Params: args}})
 	if err != nil {
 		return fmt.Errorf("marshal corrosion transaction: %w", err)
 	}
 
-	url := "http://" + apiAddr.String() + "/v1/transactions"
+	url := "http://" + s.apiAddr.String() + "/v1/transactions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create corrosion request: %w", err)
@@ -80,13 +79,13 @@ func Exec(ctx context.Context, apiAddr netip.AddrPort, query string, args ...any
 	return nil
 }
 
-func Query(ctx context.Context, apiAddr netip.AddrPort, query string, args ...any) ([][]json.RawMessage, error) {
+func (s Store) query(ctx context.Context, query string, args ...any) ([][]json.RawMessage, error) {
 	body, err := json.Marshal(statement{Query: query, Params: args})
 	if err != nil {
 		return nil, fmt.Errorf("marshal corrosion query: %w", err)
 	}
 
-	url := "http://" + apiAddr.String() + "/v1/queries"
+	url := "http://" + s.apiAddr.String() + "/v1/queries"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create corrosion query request: %w", err)
