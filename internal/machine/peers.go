@@ -13,11 +13,10 @@ import (
 const peerKeepalive = 25 * time.Second
 
 type Peer struct {
-	PublicKey    string   `json:"public_key"`
-	Subnet       string   `json:"subnet,omitempty"`
-	Management   string   `json:"management,omitempty"`
-	Endpoint     string   `json:"endpoint,omitempty"`
-	AllEndpoints []string `json:"all_endpoints,omitempty"`
+	PublicKey   string
+	Subnet     string
+	Management string
+	Endpoint   string
 }
 
 type peerSpec struct {
@@ -64,9 +63,6 @@ func parsePeerSpec(in Peer) (peerSpec, error) {
 	}
 
 	epStr := strings.TrimSpace(in.Endpoint)
-	if epStr == "" && len(in.AllEndpoints) > 0 {
-		epStr = strings.TrimSpace(in.AllEndpoints[0])
-	}
 	if epStr != "" {
 		ep, err := netip.ParseAddrPort(epStr)
 		if err != nil {

@@ -31,7 +31,6 @@ type State struct {
 	CorrosionName string   `json:"corrosion_name"`
 	CorrosionImg  string   `json:"corrosion_img"`
 	Bootstrap     []string `json:"corrosion_bootstrap,omitempty"`
-	Peers         []Peer   `json:"peers,omitempty"`
 	Running       bool     `json:"running"`
 }
 
@@ -74,7 +73,6 @@ SELECT
 	corrosion_name,
 	corrosion_img,
 	coalesce(bootstrap_json, '[]'),
-	coalesce(peers_json, '[]'),
 	running
 FROM network_state
 WHERE network = ?`
@@ -82,7 +80,6 @@ WHERE network = ?`
 	row := db.QueryRow(query, network)
 	var s State
 	var bootstrapJSON string
-	var peersJSON string
 	var running int
 	if err := row.Scan(
 		&s.Network,
@@ -98,7 +95,6 @@ WHERE network = ?`
 		&s.CorrosionName,
 		&s.CorrosionImg,
 		&bootstrapJSON,
-		&peersJSON,
 		&running,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -110,9 +106,6 @@ WHERE network = ?`
 
 	if err := json.Unmarshal([]byte(bootstrapJSON), &s.Bootstrap); err != nil {
 		return nil, fmt.Errorf("parse state bootstrap: %w", err)
-	}
-	if err := json.Unmarshal([]byte(peersJSON), &s.Peers); err != nil {
-		return nil, fmt.Errorf("parse state peers: %w", err)
 	}
 
 	managementIP, err := ManagementIPFromPublicKey(s.WGPublic)
@@ -146,10 +139,6 @@ func saveState(dataDir string, s *State) error {
 	if err != nil {
 		return fmt.Errorf("marshal state bootstrap: %w", err)
 	}
-	peersJSON, err := json.Marshal(s.Peers)
-	if err != nil {
-		return fmt.Errorf("marshal state peers: %w", err)
-	}
 
 	running := 0
 	if s.Running {
@@ -171,10 +160,9 @@ INSERT INTO network_state (
 	corrosion_name,
 	corrosion_img,
 	bootstrap_json,
-	peers_json,
 	running,
 	updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(network) DO UPDATE SET
 	cidr = excluded.cidr,
 	subnet = excluded.subnet,
@@ -188,7 +176,6 @@ ON CONFLICT(network) DO UPDATE SET
 	corrosion_name = excluded.corrosion_name,
 	corrosion_img = excluded.corrosion_img,
 	bootstrap_json = excluded.bootstrap_json,
-	peers_json = excluded.peers_json,
 	running = excluded.running,
 	updated_at = excluded.updated_at`
 
@@ -207,7 +194,6 @@ ON CONFLICT(network) DO UPDATE SET
 		s.CorrosionName,
 		s.CorrosionImg,
 		string(bootstrapJSON),
-		string(peersJSON),
 		running,
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
@@ -275,7 +261,6 @@ CREATE TABLE IF NOT EXISTS network_state (
 	corrosion_name TEXT NOT NULL,
 	corrosion_img TEXT NOT NULL,
 	bootstrap_json TEXT NOT NULL DEFAULT '[]',
-	peers_json TEXT NOT NULL DEFAULT '[]',
 	running INTEGER NOT NULL DEFAULT 0,
 	updated_at TEXT NOT NULL
 )`
@@ -339,8 +324,6 @@ func ensureState(cfg Config) (*State, bool, error) {
 		CorrosionName: cfg.CorrosionName,
 		CorrosionImg:  cfg.CorrosionImg,
 		Bootstrap:     cfg.CorrosionBootstrap,
-		Peers:         nil,
-		Running:       false,
 	}
 	if err := saveState(cfg.DataDir, s); err != nil {
 		return nil, false, err

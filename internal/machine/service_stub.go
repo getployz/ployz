@@ -29,7 +29,7 @@ func (c *Controller) Status(_ context.Context, in Config) (Status, error) {
 	return Status{StatePath: statePath(cfg.DataDir)}, nil
 }
 
-func (c *Controller) applyPeerConfig(_ context.Context, _ Config, _ *State) error {
+func (c *Controller) applyPeerConfig(_ context.Context, _ Config, _ *State, _ []Peer) error {
 	return errors.New("peer configuration is supported on linux and darwin only")
 }
 

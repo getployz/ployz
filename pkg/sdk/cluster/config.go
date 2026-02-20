@@ -3,10 +3,10 @@ package cluster
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"ployz/pkg/sdk/client"
@@ -21,23 +21,6 @@ type Connection struct {
 	SSH        string `yaml:"ssh,omitempty"`
 	SSHKeyFile string `yaml:"ssh_key_file,omitempty"`
 	DataRoot   string `yaml:"data_root,omitempty"`
-}
-
-func (c Connection) Validate() error {
-	set := 0
-	if c.Unix != "" {
-		set++
-	}
-	if c.SSH != "" {
-		set++
-	}
-	if set == 0 {
-		return fmt.Errorf("connection must set one of unix or ssh")
-	}
-	if set > 1 {
-		return fmt.Errorf("connection must set exactly one of unix or ssh")
-	}
-	return nil
 }
 
 func (c Connection) Type() string {
@@ -246,16 +229,10 @@ func dialConnection(_ context.Context, conn Connection) (*client.Client, error) 
 
 // parseSSHTarget splits "user@host:port" into target and port.
 func parseSSHTarget(s string) (string, int) {
-	// Check for user@host:port format.
 	if idx := strings.LastIndex(s, ":"); idx > 0 {
-		host := s[:idx]
-		portStr := s[idx+1:]
-		if _, err := net.LookupPort("tcp", portStr); err == nil {
-			port := 0
-			fmt.Sscanf(portStr, "%d", &port)
-			if port > 0 {
-				return host, port
-			}
+		port, err := strconv.Atoi(s[idx+1:])
+		if err == nil && port > 0 && port <= 65535 {
+			return s[:idx], port
 		}
 	}
 	return s, 0

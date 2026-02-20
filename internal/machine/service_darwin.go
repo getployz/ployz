@@ -47,7 +47,7 @@ func (o darwinRuntimeOps) Prepare(ctx context.Context, _ Config) error {
 }
 
 func (o darwinRuntimeOps) ConfigureWireGuard(ctx context.Context, cfg Config, state *State) error {
-	return configureWireGuardWithHelper(ctx, o.helper, cfg, state)
+	return configureWireGuardWithHelper(ctx, o.helper, cfg, state, nil)
 }
 
 func (o darwinRuntimeOps) EnsureDockerNetwork(ctx context.Context, cfg Config, _ *State) error {
@@ -121,12 +121,12 @@ func (c *Controller) Status(ctx context.Context, in Config) (Status, error) {
 	return out, nil
 }
 
-func (c *Controller) applyPeerConfig(ctx context.Context, cfg Config, state *State) error {
+func (c *Controller) applyPeerConfig(ctx context.Context, cfg Config, state *State, peers []Peer) error {
 	helper := &linuxHelper{cli: c.cli, image: cfg.HelperImage, name: cfg.HelperName}
 	if err := helper.preflight(ctx); err != nil {
 		return err
 	}
-	return configureWireGuardWithHelper(ctx, helper, cfg, state)
+	return configureWireGuardWithHelper(ctx, helper, cfg, state, peers)
 }
 
 func (h *linuxHelper) preflight(ctx context.Context) error {
@@ -264,8 +264,8 @@ func (h *linuxHelper) runStatus(ctx context.Context, script string) (int64, stri
 	return int64(inspect.ExitCode), strings.TrimSpace(string(data)), nil
 }
 
-func configureWireGuardWithHelper(ctx context.Context, helper *linuxHelper, cfg Config, state *State) error {
-	specs, err := buildPeerSpecs(state.Peers)
+func configureWireGuardWithHelper(ctx context.Context, helper *linuxHelper, cfg Config, state *State, peers []Peer) error {
+	specs, err := buildPeerSpecs(peers)
 	if err != nil {
 		return fmt.Errorf("build peer specs: %w", err)
 	}

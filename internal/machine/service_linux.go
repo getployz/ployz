@@ -40,7 +40,7 @@ func (o linuxRuntimeOps) Prepare(ctx context.Context, _ Config) error {
 }
 
 func (o linuxRuntimeOps) ConfigureWireGuard(_ context.Context, cfg Config, state *State) error {
-	return configureWireGuard(cfg, state)
+	return configureWireGuard(cfg, state, nil)
 }
 
 func (o linuxRuntimeOps) EnsureDockerNetwork(ctx context.Context, cfg Config, _ *State) error {
@@ -103,11 +103,11 @@ func (c *Controller) Status(ctx context.Context, in Config) (Status, error) {
 	return out, nil
 }
 
-func (c *Controller) applyPeerConfig(_ context.Context, cfg Config, state *State) error {
-	return configureWireGuard(cfg, state)
+func (c *Controller) applyPeerConfig(_ context.Context, cfg Config, state *State, peers []Peer) error {
+	return configureWireGuard(cfg, state, peers)
 }
 
-func configureWireGuard(cfg Config, state *State) error {
+func configureWireGuard(cfg Config, state *State, peers []Peer) error {
 	link, err := netlink.LinkByName(state.WGInterface)
 	if err != nil {
 		if _, ok := err.(netlink.LinkNotFoundError); !ok {
@@ -133,7 +133,7 @@ func configureWireGuard(cfg Config, state *State) error {
 		return fmt.Errorf("parse private key: %w", err)
 	}
 
-	specs, err := buildPeerSpecs(state.Peers)
+	specs, err := buildPeerSpecs(peers)
 	if err != nil {
 		return fmt.Errorf("build peer specs: %w", err)
 	}

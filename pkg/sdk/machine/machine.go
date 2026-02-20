@@ -58,10 +58,6 @@ func (s *Service) RemoveMachine(ctx context.Context, network, machineID string) 
 	return s.api.TriggerReconcile(ctx, network)
 }
 
-func (s *Service) Reconcile(ctx context.Context, network string) error {
-	return s.api.TriggerReconcile(ctx, network)
-}
-
 func (s *Service) HostAccessEndpoint(ctx context.Context, network string) (netip.AddrPort, error) {
 	id, helperName, err := s.identityForHostAccess(ctx, network)
 	if err != nil {

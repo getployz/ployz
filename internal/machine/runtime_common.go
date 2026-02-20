@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"os"
 
 	"ployz/internal/machine/corroservice"
@@ -64,10 +66,27 @@ func (c *Controller) startRuntime(ctx context.Context, in Config, ops runtimeOps
 	if err := ops.ConfigureWireGuard(ctx, cfg, state); err != nil {
 		return Config{}, err
 	}
-	if err := configureCorrosion(cfg); err != nil {
+	if err := corroservice.WriteConfig(corroservice.Config{
+		Dir:          cfg.CorrosionDir,
+		SchemaPath:   cfg.CorrosionSchema,
+		ConfigPath:   cfg.CorrosionConfig,
+		AdminSock:    cfg.CorrosionAdminSock,
+		Bootstrap:    cfg.CorrosionBootstrap,
+		GossipAddr:   cfg.CorrosionGossipAP,
+		APIAddr:      cfg.CorrosionAPIAddr,
+		GossipMaxMTU: corrosionGossipMaxMTU(cfg.CorrosionGossipIP),
+		User:         cfg.CorrosionUser,
+	}); err != nil {
 		return Config{}, err
 	}
-	if err := startCorrosion(ctx, c.cli, cfg); err != nil {
+	if err := corroservice.Start(ctx, c.cli, corroservice.RuntimeConfig{
+		Name:       cfg.CorrosionName,
+		Image:      cfg.CorrosionImg,
+		ConfigPath: cfg.CorrosionConfig,
+		DataDir:    cfg.CorrosionDir,
+		User:       cfg.CorrosionUser,
+		APIAddr:    cfg.CorrosionAPIAddr,
+	}); err != nil {
 		return Config{}, err
 	}
 	if err := ops.EnsureDockerNetwork(ctx, cfg, state); err != nil {
@@ -80,6 +99,14 @@ func (c *Controller) startRuntime(ctx context.Context, in Config, ops runtimeOps
 	}
 
 	return cfg, nil
+}
+
+func corrosionGossipMaxMTU(addr netip.Addr) int {
+	const udpHeaderLen = 8
+	if addr.Is4() {
+		return defaultWireGuardMTU - net.IPv4len - udpHeaderLen
+	}
+	return defaultWireGuardMTU - net.IPv6len - udpHeaderLen
 }
 
 func (c *Controller) stopRuntime(ctx context.Context, in Config, purge bool, ops runtimeOps) (Config, error) {

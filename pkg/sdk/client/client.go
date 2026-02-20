@@ -241,7 +241,12 @@ func machineFromProto(p *pb.MachineEntry) types.MachineEntry {
 	}
 }
 
-var ErrConflict = errors.New("version conflict")
+var (
+	ErrConflict    = errors.New("version conflict")
+	ErrNotFound    = errors.New("not found")
+	ErrValidation  = errors.New("validation error")
+	ErrUnavailable = errors.New("unavailable")
+)
 
 func grpcErr(err error) error {
 	if err == nil {
@@ -251,8 +256,16 @@ func grpcErr(err error) error {
 	if !ok {
 		return err
 	}
-	if st.Code() == codes.FailedPrecondition {
-		return ErrConflict
+	switch st.Code() {
+	case codes.NotFound:
+		return fmt.Errorf("%w: %s", ErrNotFound, st.Message())
+	case codes.InvalidArgument:
+		return fmt.Errorf("%w: %s", ErrValidation, st.Message())
+	case codes.Unavailable:
+		return fmt.Errorf("%w: %s", ErrUnavailable, st.Message())
+	case codes.FailedPrecondition:
+		return fmt.Errorf("%w: %s", ErrConflict, st.Message())
+	default:
+		return errors.New(st.Message())
 	}
-	return errors.New(st.Message())
 }

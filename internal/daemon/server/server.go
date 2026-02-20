@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 
 	pb "ployz/internal/daemon/pb"
 	"ployz/internal/daemon/supervisor"
@@ -75,14 +76,14 @@ func (s *Server) ApplyNetworkSpec(ctx context.Context, req *pb.ApplyNetworkSpecR
 	}
 	out, err := s.mgr.ApplyNetworkSpec(ctx, req.Spec)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "%v", err)
+		return nil, toGRPCError(err)
 	}
 	return out, nil
 }
 
 func (s *Server) DisableNetwork(ctx context.Context, req *pb.DisableNetworkRequest) (*pb.DisableNetworkResponse, error) {
 	if err := s.mgr.DisableNetwork(ctx, req.Network, req.Purge); err != nil {
-		return nil, status.Errorf(codes.Internal, "%v", err)
+		return nil, toGRPCError(err)
 	}
 	return &pb.DisableNetworkResponse{}, nil
 }
@@ -90,7 +91,7 @@ func (s *Server) DisableNetwork(ctx context.Context, req *pb.DisableNetworkReque
 func (s *Server) GetStatus(ctx context.Context, req *pb.GetStatusRequest) (*pb.NetworkStatus, error) {
 	st, err := s.mgr.GetStatus(ctx, req.Network)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "%v", err)
+		return nil, toGRPCError(err)
 	}
 	return st, nil
 }
@@ -98,7 +99,7 @@ func (s *Server) GetStatus(ctx context.Context, req *pb.GetStatusRequest) (*pb.N
 func (s *Server) GetIdentity(ctx context.Context, req *pb.GetIdentityRequest) (*pb.Identity, error) {
 	id, err := s.mgr.GetIdentity(ctx, req.Network)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "%v", err)
+		return nil, toGRPCError(err)
 	}
 	return id, nil
 }
@@ -106,7 +107,7 @@ func (s *Server) GetIdentity(ctx context.Context, req *pb.GetIdentityRequest) (*
 func (s *Server) ListMachines(ctx context.Context, req *pb.ListMachinesRequest) (*pb.ListMachinesResponse, error) {
 	machines, err := s.mgr.ListMachines(ctx, req.Network)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "%v", err)
+		return nil, toGRPCError(err)
 	}
 	return &pb.ListMachinesResponse{Machines: machines}, nil
 }
@@ -115,26 +116,22 @@ func (s *Server) UpsertMachine(ctx context.Context, req *pb.UpsertMachineRequest
 	if req.Machine == nil {
 		return nil, status.Error(codes.InvalidArgument, "machine is required")
 	}
-	err := s.mgr.UpsertMachine(ctx, req.Network, req.Machine)
-	if err != nil {
-		if errors.Is(err, registry.ErrConflict) {
-			return nil, status.Error(codes.FailedPrecondition, "version conflict")
-		}
-		return nil, status.Errorf(codes.Internal, "%v", err)
+	if err := s.mgr.UpsertMachine(ctx, req.Network, req.Machine); err != nil {
+		return nil, toGRPCError(err)
 	}
 	return &pb.UpsertMachineResponse{}, nil
 }
 
 func (s *Server) RemoveMachine(ctx context.Context, req *pb.RemoveMachineRequest) (*pb.RemoveMachineResponse, error) {
 	if err := s.mgr.RemoveMachine(ctx, req.Network, req.IdOrEndpoint); err != nil {
-		return nil, status.Errorf(codes.Internal, "%v", err)
+		return nil, toGRPCError(err)
 	}
 	return &pb.RemoveMachineResponse{}, nil
 }
 
 func (s *Server) TriggerReconcile(ctx context.Context, req *pb.TriggerReconcileRequest) (*pb.TriggerReconcileResponse, error) {
 	if err := s.mgr.TriggerReconcile(ctx, req.Network); err != nil {
-		return nil, status.Errorf(codes.Internal, "%v", err)
+		return nil, toGRPCError(err)
 	}
 	return &pb.TriggerReconcileResponse{}, nil
 }
@@ -142,7 +139,7 @@ func (s *Server) TriggerReconcile(ctx context.Context, req *pb.TriggerReconcileR
 func (s *Server) StreamEvents(req *pb.StreamEventsRequest, stream pb.Daemon_StreamEventsServer) error {
 	events, err := s.mgr.StreamEvents(stream.Context(), req.Network)
 	if err != nil {
-		return status.Errorf(codes.Internal, "%v", err)
+		return toGRPCError(err)
 	}
 	for ev := range events {
 		if err := stream.Send(ev); err != nil {
@@ -150,6 +147,36 @@ func (s *Server) StreamEvents(req *pb.StreamEventsRequest, stream pb.Daemon_Stre
 		}
 	}
 	return nil
+}
+
+func toGRPCError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	if errors.Is(err, os.ErrNotExist) {
+		return status.Error(codes.NotFound, err.Error())
+	}
+	if errors.Is(err, registry.ErrConflict) {
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
+
+	msg := err.Error()
+
+	if strings.Contains(msg, "is not initialized") {
+		return status.Error(codes.NotFound, msg)
+	}
+	if strings.Contains(msg, "is required") ||
+		strings.Contains(msg, "must be") ||
+		strings.Contains(msg, "parse ") {
+		return status.Error(codes.InvalidArgument, msg)
+	}
+	if strings.Contains(msg, "connect to docker") ||
+		strings.Contains(msg, "docker daemon") {
+		return status.Error(codes.Unavailable, msg)
+	}
+
+	return status.Error(codes.Internal, msg)
 }
 
 func ensureSocketGroup(socketPath string) error {

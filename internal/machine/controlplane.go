@@ -237,20 +237,18 @@ func (c *Controller) reconcilePeerRows(ctx context.Context, cfg Config, s *State
 			continue
 		}
 		peers = append(peers, Peer{
-			PublicKey:    row.PublicKey,
-			Subnet:       row.Subnet,
-			Management:   row.Management,
-			Endpoint:     row.Endpoint,
-			AllEndpoints: []string{row.Endpoint},
+			PublicKey:   row.PublicKey,
+			Subnet:     row.Subnet,
+			Management: row.Management,
+			Endpoint:   row.Endpoint,
 		})
 	}
 
-	s.Peers = peers
 	if err := saveState(cfg.DataDir, s); err != nil {
 		return 0, err
 	}
 
-	if err := c.applyPeerConfig(ctx, cfg, s); err != nil {
+	if err := c.applyPeerConfig(ctx, cfg, s, peers); err != nil {
 		return 0, err
 	}
 
