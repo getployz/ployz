@@ -2,10 +2,8 @@ package machine
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
-	"math"
 	"net/netip"
 	"os/exec"
 	"runtime"
@@ -13,6 +11,7 @@ import (
 	"time"
 
 	"ployz/internal/machine/remote"
+	"ployz/pkg/ipam"
 	"ployz/pkg/sdk/client"
 	"ployz/pkg/sdk/defaults"
 	"ployz/pkg/sdk/types"
@@ -22,7 +21,6 @@ const (
 	remoteDaemonSocketPath = "/var/run/ployzd.sock"
 	remoteLinuxDataRoot    = "/var/lib/ployz/networks"
 	addWaitTimeout         = 45 * time.Second
-	machineSubnetBits      = 24
 )
 
 type Service struct {
@@ -143,7 +141,7 @@ type AddResult struct {
 }
 
 func (s *Service) AddMachine(ctx context.Context, opts AddOptions) (AddResult, error) {
-	network := normalizeNetwork(opts.Network)
+	network := defaults.NormalizeNetwork(opts.Network)
 	target := strings.TrimSpace(opts.Target)
 	if target == "" {
 		return AddResult{}, fmt.Errorf("target is required")
@@ -393,92 +391,7 @@ func chooseRemoteSubnet(networkCIDR netip.Prefix, machines []types.MachineEntry,
 		}
 		allocated = append(allocated, subnet)
 	}
-	return allocateSubnet(networkCIDR, allocated)
-}
-
-func allocateSubnet(network netip.Prefix, allocated []netip.Prefix) (netip.Prefix, error) {
-	if !network.IsValid() {
-		return netip.Prefix{}, fmt.Errorf("network cidr is required")
-	}
-	network = network.Masked()
-	if !network.Addr().Is4() {
-		return netip.Prefix{}, fmt.Errorf("only ipv4 network cidr is supported")
-	}
-	if machineSubnetBits < network.Bits() || machineSubnetBits > 32 {
-		return netip.Prefix{}, fmt.Errorf("invalid subnet size /%d for network %s", machineSubnetBits, network)
-	}
-
-	start, end, err := prefixRange4(network)
-	if err != nil {
-		return netip.Prefix{}, err
-	}
-	step := uint32(1) << (32 - machineSubnetBits)
-
-	ranges := make([][2]uint32, 0, len(allocated))
-	for _, subnet := range allocated {
-		if !subnet.IsValid() || !subnet.Addr().Is4() {
-			continue
-		}
-		if !network.Contains(subnet.Masked().Addr()) {
-			continue
-		}
-		aStart, aEnd, rErr := prefixRange4(subnet)
-		if rErr != nil {
-			continue
-		}
-		ranges = append(ranges, [2]uint32{aStart, aEnd})
-	}
-
-	for curr := start; curr <= end; {
-		subnet := netip.PrefixFrom(uint32ToAddr(curr), machineSubnetBits)
-		sStart, sEnd, _ := prefixRange4(subnet)
-
-		overlap := false
-		for _, r := range ranges {
-			if rangesOverlap(sStart, sEnd, r[0], r[1]) {
-				overlap = true
-				break
-			}
-		}
-		if !overlap {
-			return subnet, nil
-		}
-
-		if curr > math.MaxUint32-step {
-			break
-		}
-		curr += step
-	}
-
-	return netip.Prefix{}, fmt.Errorf("no available /%d subnet in %s", machineSubnetBits, network)
-}
-
-func prefixRange4(prefix netip.Prefix) (uint32, uint32, error) {
-	prefix = prefix.Masked()
-	if !prefix.Addr().Is4() {
-		return 0, 0, fmt.Errorf("prefix %s is not ipv4", prefix)
-	}
-	b := prefix.Addr().As4()
-	start := binary.BigEndian.Uint32(b[:])
-	hostBits := 32 - prefix.Bits()
-	if hostBits <= 0 {
-		return start, start, nil
-	}
-	if hostBits >= 32 {
-		return 0, math.MaxUint32, nil
-	}
-	size := uint32(1) << hostBits
-	return start, start + size - 1, nil
-}
-
-func rangesOverlap(aStart, aEnd, bStart, bEnd uint32) bool {
-	return !(aEnd < bStart || bEnd < aStart)
-}
-
-func uint32ToAddr(v uint32) netip.Addr {
-	var b [4]byte
-	binary.BigEndian.PutUint32(b[:], v)
-	return netip.AddrFrom4(b)
+	return ipam.AllocateSubnet(networkCIDR, allocated)
 }
 
 func resolveAdvertiseEndpoint(target, override string, wgPort int) (string, error) {
@@ -501,14 +414,6 @@ func resolveAdvertiseEndpoint(target, override string, wgPort int) (string, erro
 		return "", fmt.Errorf("target host %q is not an IP address; use --endpoint ip:port", host)
 	}
 	return netip.AddrPortFrom(addr, uint16(wgPort)).String(), nil
-}
-
-func normalizeNetwork(network string) string {
-	network = strings.TrimSpace(network)
-	if network == "" {
-		return "default"
-	}
-	return network
 }
 
 func remoteDataRoot(dataRoot string) string {

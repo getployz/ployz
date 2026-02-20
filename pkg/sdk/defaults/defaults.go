@@ -41,12 +41,27 @@ func HelperName(network string) string {
 }
 
 func CorrosionGossipPort(network string) int {
+	return 53000 + int(networkOffset(network))
+}
+
+func CorrosionAPIPort(network string) int {
+	return 52000 + int(networkOffset(network))
+}
+
+func NormalizeNetwork(network string) string {
+	network = strings.TrimSpace(network)
+	if network == "" {
+		return "default"
+	}
+	return network
+}
+
+func networkOffset(network string) uint32 {
 	n := strings.TrimSpace(network)
 	if n == "" {
 		n = "default"
 	}
-	off := int(hashMod(n, 800))
-	return 53000 + off
+	return hashMod(n, 800)
 }
 
 func hashMod(s string, m uint32) uint32 {

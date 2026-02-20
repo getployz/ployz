@@ -6,6 +6,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+
+	"ployz/pkg/ipam"
 )
 
 func ensureUniqueHostCIDR(cfg Config) error {
@@ -60,15 +62,15 @@ func prefixesOverlap(a, b netip.Prefix) (bool, error) {
 		return false, fmt.Errorf("invalid prefix")
 	}
 	if a.Addr().Is4() && b.Addr().Is4() {
-		aStart, aEnd, err := prefixRange4(a)
+		aStart, aEnd, err := ipam.PrefixRange4(a)
 		if err != nil {
 			return false, err
 		}
-		bStart, bEnd, err := prefixRange4(b)
+		bStart, bEnd, err := ipam.PrefixRange4(b)
 		if err != nil {
 			return false, err
 		}
-		return rangesOverlap(aStart, aEnd, bStart, bEnd), nil
+		return ipam.RangesOverlap(aStart, aEnd, bStart, bEnd), nil
 	}
 	if a.Addr().Is6() && b.Addr().Is6() {
 		return a.Contains(b.Addr()) || b.Contains(a.Addr()), nil

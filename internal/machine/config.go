@@ -2,20 +2,19 @@ package machine
 
 import (
 	"fmt"
-	"hash/fnv"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"ployz/pkg/sdk/defaults"
 )
 
 const (
-	defaultLinuxDataRoot  = "/var/lib/ployz/networks"
-	defaultDarwinDataRoot = "Library/Application Support/ployz/networks"
-	defaultDarwinHelper   = "ghcr.io/linuxserver/wireguard:latest"
-	defaultCorrosionImg   = "ghcr.io/psviderski/corrosion:latest"
-	defaultWireGuardMTU   = 1280
+	defaultDarwinHelper = "ghcr.io/linuxserver/wireguard:latest"
+	defaultCorrosionImg = "ghcr.io/psviderski/corrosion:latest"
+	defaultWireGuardMTU = 1280
 )
 
 var defaultCorrosionBootstrapIP = netip.MustParseAddr("127.0.0.1")
@@ -51,14 +50,7 @@ type Config struct {
 }
 
 func DefaultDataRoot() string {
-	if runtime.GOOS == "darwin" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return defaultLinuxDataRoot
-		}
-		return filepath.Join(home, defaultDarwinDataRoot)
-	}
-	return defaultLinuxDataRoot
+	return defaults.DataRoot()
 }
 
 func NormalizeConfig(cfg Config) (Config, error) {
@@ -112,9 +104,8 @@ func NormalizeConfig(cfg Config) (Config, error) {
 
 	refreshCorrosionGossipAddr(&cfg)
 
-	off := int(hashMod(cfg.Network, 800))
-	cfg.CorrosionAPIPort = 52000 + off
-	cfg.CorrosionGossip = 53000 + off
+	cfg.CorrosionAPIPort = defaults.CorrosionAPIPort(cfg.Network)
+	cfg.CorrosionGossip = defaults.CorrosionGossipPort(cfg.Network)
 	cfg.CorrosionAPIAddr = netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(cfg.CorrosionAPIPort))
 	cfg.CorrosionGossipAP = netip.AddrPortFrom(cfg.CorrosionGossipIP, uint16(cfg.CorrosionGossip))
 	return cfg, nil
@@ -129,17 +120,7 @@ func InterfaceName(network string) string {
 }
 
 func DefaultWGPort(network string) int {
-	n := strings.TrimSpace(network)
-	if n == "" || n == "default" {
-		return 51820
-	}
-	return 51821 + int(hashMod(n, 500))
-}
-
-func hashMod(s string, m uint32) uint32 {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(s))
-	return h.Sum32() % m
+	return defaults.WGPort(network)
 }
 
 func refreshCorrosionGossipAddr(cfg *Config) {

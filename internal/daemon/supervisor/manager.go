@@ -14,6 +14,7 @@ import (
 	"ployz/internal/daemon/reconcile"
 	"ployz/internal/machine"
 	"ployz/internal/machine/registry"
+	"ployz/pkg/sdk/defaults"
 )
 
 type workerHandle struct {
@@ -108,7 +109,7 @@ func (m *Manager) ApplyNetworkSpec(ctx context.Context, spec *pb.NetworkSpec) (*
 }
 
 func (m *Manager) DisableNetwork(ctx context.Context, network string, purge bool) error {
-	network = normalizeNetwork(network)
+	network = defaults.NormalizeNetwork(network)
 	if network == "" {
 		return fmt.Errorf("network is required")
 	}
@@ -146,7 +147,7 @@ func (m *Manager) DisableNetwork(ctx context.Context, network string, purge bool
 }
 
 func (m *Manager) GetStatus(ctx context.Context, network string) (*pb.NetworkStatus, error) {
-	spec, err := m.resolveSpec(normalizeNetwork(network))
+	spec, err := m.resolveSpec(defaults.NormalizeNetwork(network))
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +177,7 @@ func (m *Manager) GetStatus(ctx context.Context, network string) (*pb.NetworkSta
 }
 
 func (m *Manager) GetIdentity(_ context.Context, network string) (*pb.Identity, error) {
-	spec, err := m.resolveSpec(normalizeNetwork(network))
+	spec, err := m.resolveSpec(defaults.NormalizeNetwork(network))
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +209,7 @@ func (m *Manager) GetIdentity(_ context.Context, network string) (*pb.Identity, 
 }
 
 func (m *Manager) ListMachines(ctx context.Context, network string) ([]*pb.MachineEntry, error) {
-	spec, err := m.resolveSpec(normalizeNetwork(network))
+	spec, err := m.resolveSpec(defaults.NormalizeNetwork(network))
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +238,7 @@ func (m *Manager) ListMachines(ctx context.Context, network string) ([]*pb.Machi
 }
 
 func (m *Manager) UpsertMachine(ctx context.Context, network string, entry *pb.MachineEntry) error {
-	spec, err := m.resolveSpec(normalizeNetwork(network))
+	spec, err := m.resolveSpec(defaults.NormalizeNetwork(network))
 	if err != nil {
 		return err
 	}
@@ -264,7 +265,7 @@ func (m *Manager) UpsertMachine(ctx context.Context, network string, entry *pb.M
 }
 
 func (m *Manager) RemoveMachine(ctx context.Context, network, idOrEndpoint string) error {
-	spec, err := m.resolveSpec(normalizeNetwork(network))
+	spec, err := m.resolveSpec(defaults.NormalizeNetwork(network))
 	if err != nil {
 		return err
 	}
@@ -277,7 +278,7 @@ func (m *Manager) RemoveMachine(ctx context.Context, network, idOrEndpoint strin
 }
 
 func (m *Manager) TriggerReconcile(ctx context.Context, network string) error {
-	spec, err := m.resolveSpec(normalizeNetwork(network))
+	spec, err := m.resolveSpec(defaults.NormalizeNetwork(network))
 	if err != nil {
 		return err
 	}
@@ -296,7 +297,7 @@ func (m *Manager) TriggerReconcile(ctx context.Context, network string) error {
 }
 
 func (m *Manager) StreamEvents(ctx context.Context, network string) (<-chan *pb.Event, error) {
-	network = normalizeNetwork(network)
+	network = defaults.NormalizeNetwork(network)
 	if network == "" {
 		return nil, fmt.Errorf("network is required")
 	}
@@ -304,7 +305,7 @@ func (m *Manager) StreamEvents(ctx context.Context, network string) (<-chan *pb.
 }
 
 func (m *Manager) startWorkerLocked(spec *pb.NetworkSpec, alreadyApplied bool) {
-	network := normalizeNetwork(spec.Network)
+	network := defaults.NormalizeNetwork(spec.Network)
 	if network == "" {
 		return
 	}
@@ -399,7 +400,7 @@ func (m *Manager) applyOnce(ctx context.Context, spec *pb.NetworkSpec) (*pb.Appl
 }
 
 func (m *Manager) normalizeSpec(spec *pb.NetworkSpec) {
-	spec.Network = normalizeNetwork(spec.Network)
+	spec.Network = defaults.NormalizeNetwork(spec.Network)
 	if spec.DataRoot == "" {
 		spec.DataRoot = m.dataRoot
 	}
@@ -422,17 +423,9 @@ func (m *Manager) resolveSpec(network string) (*pb.NetworkSpec, error) {
 	return spec, nil
 }
 
-func normalizeNetwork(network string) string {
-	network = strings.TrimSpace(network)
-	if network == "" {
-		return "default"
-	}
-	return network
-}
-
 func configFromSpec(spec *pb.NetworkSpec) (machine.Config, error) {
 	cfg := machine.Config{
-		Network:     normalizeNetwork(spec.Network),
+		Network:     defaults.NormalizeNetwork(spec.Network),
 		DataRoot:    strings.TrimSpace(spec.DataRoot),
 		AdvertiseEP: strings.TrimSpace(spec.AdvertiseEndpoint),
 		WGPort:      int(spec.WgPort),
