@@ -22,7 +22,7 @@ type MachineChange struct {
 	Machine MachineRow
 }
 
-func (s Store) SubscribeMachines(ctx context.Context, _ string) ([]MachineRow, <-chan MachineChange, error) {
+func (s Store) SubscribeMachines(ctx context.Context) ([]MachineRow, <-chan MachineChange, error) {
 	query := fmt.Sprintf("SELECT id, public_key, subnet, management_ip, endpoint, updated_at, version FROM %s ORDER BY id", machinesTable)
 	stream, snapshot, lastChangeID, err := s.openMachinesSubscription(ctx, query)
 	if err != nil {

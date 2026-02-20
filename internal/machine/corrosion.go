@@ -35,10 +35,6 @@ func startCorrosion(ctx context.Context, cli *client.Client, cfg Config) error {
 	})
 }
 
-func stopCorrosion(ctx context.Context, cli *client.Client, name string) error {
-	return corroservice.Stop(ctx, cli, name)
-}
-
 func corrosionGossipMaxMTU(addr netip.Addr) int {
 	const udpHeaderLen = 8
 	if addr.Is4() {

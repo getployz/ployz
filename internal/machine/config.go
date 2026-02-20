@@ -49,10 +49,6 @@ type Config struct {
 	CorrosionGossipAP  netip.AddrPort
 }
 
-func DefaultDataRoot() string {
-	return defaults.DataRoot()
-}
-
 func NormalizeConfig(cfg Config) (Config, error) {
 	if strings.TrimSpace(cfg.Network) == "" {
 		cfg.Network = "default"
@@ -64,11 +60,11 @@ func NormalizeConfig(cfg Config) (Config, error) {
 		}
 	}
 	if cfg.DataRoot == "" {
-		cfg.DataRoot = DefaultDataRoot()
+		cfg.DataRoot = defaults.DataRoot()
 	}
 	cfg.DataDir = filepath.Join(cfg.DataRoot, cfg.Network)
 	if cfg.WGPort == 0 {
-		cfg.WGPort = DefaultWGPort(cfg.Network)
+		cfg.WGPort = defaults.WGPort(cfg.Network)
 	}
 	if cfg.WGInterface == "" {
 		cfg.WGInterface = InterfaceName(cfg.Network)
@@ -117,10 +113,6 @@ func InterfaceName(network string) string {
 		return name
 	}
 	return name[:15]
-}
-
-func DefaultWGPort(network string) int {
-	return defaults.WGPort(network)
 }
 
 func refreshCorrosionGossipAddr(cfg *Config) {

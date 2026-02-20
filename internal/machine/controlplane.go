@@ -26,11 +26,10 @@ func (c *Controller) Reconcile(ctx context.Context, in Config) (int, error) {
 		return 0, fmt.Errorf("load state: %w", err)
 	}
 
-	resolved, err := Resolve(cfg, s)
+	cfg, err = Resolve(cfg, s)
 	if err != nil {
 		return 0, err
 	}
-	cfg = resolved.Config()
 
 	r := registry.New(cfg.CorrosionAPIAddr)
 	if err := r.EnsureMachineTable(ctx); err != nil {
@@ -48,14 +47,14 @@ func (c *Controller) Reconcile(ctx context.Context, in Config) (int, error) {
 		s.CIDR = cidr.String()
 	}
 
-	if err := r.RegisterMachine(ctx, registry.MachineRow{
+	if err := r.UpsertMachine(ctx, registry.MachineRow{
 		ID:         s.WGPublic,
 		PublicKey:  s.WGPublic,
 		Subnet:     s.Subnet,
 		Management: s.Management,
 		Endpoint:   s.Advertise,
 		UpdatedAt:  time.Now().UTC().Format(time.RFC3339),
-	}); err != nil {
+	}, 0); err != nil {
 		return 0, err
 	}
 
@@ -119,11 +118,10 @@ func (c *Controller) UpsertMachine(ctx context.Context, in Config, m Machine) er
 	if err != nil {
 		return fmt.Errorf("load state: %w", err)
 	}
-	resolved, err := Resolve(cfg, s)
+	cfg, err = Resolve(cfg, s)
 	if err != nil {
 		return err
 	}
-	cfg = resolved.Config()
 
 	m.ID = strings.TrimSpace(m.ID)
 	m.PublicKey = strings.TrimSpace(m.PublicKey)
@@ -179,7 +177,7 @@ func (c *Controller) UpsertMachine(ctx context.Context, in Config, m Machine) er
 		}
 	}
 
-	err = r.UpsertMachine(ctx, cfg.Network, registry.MachineRow{
+	err = r.UpsertMachine(ctx, registry.MachineRow{
 		ID:         m.ID,
 		PublicKey:  m.PublicKey,
 		Subnet:     m.Subnet,

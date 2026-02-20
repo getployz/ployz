@@ -6,12 +6,7 @@ import (
 	"ployz/pkg/ipam"
 )
 
-const (
-	DefaultNetworkCIDR = "10.210.0.0/16"
-	MachineSubnetBits  = ipam.SubnetBits
-)
-
-var defaultNetworkPrefix = netip.MustParsePrefix(DefaultNetworkCIDR)
+var defaultNetworkPrefix = netip.MustParsePrefix("10.210.0.0/16")
 
 func defaultNetwork() netip.Prefix {
 	return defaultNetworkPrefix

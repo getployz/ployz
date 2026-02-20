@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"slices"
 	"strings"
 	"time"
 
@@ -30,114 +29,65 @@ type peerSpec struct {
 	subnet          *netip.Prefix
 }
 
-func normalizePeer(in Peer) (Peer, error) {
-	p := Peer{
-		PublicKey:  strings.TrimSpace(in.PublicKey),
-		Subnet:     strings.TrimSpace(in.Subnet),
-		Management: strings.TrimSpace(in.Management),
-		Endpoint:   strings.TrimSpace(in.Endpoint),
+func parsePeerSpec(in Peer) (peerSpec, error) {
+	pubKeyStr := strings.TrimSpace(in.PublicKey)
+	if pubKeyStr == "" {
+		return peerSpec{}, fmt.Errorf("public key is required")
+	}
+	key, err := wgtypes.ParseKey(pubKeyStr)
+	if err != nil {
+		return peerSpec{}, fmt.Errorf("parse public key: %w", err)
 	}
 
-	for _, ep := range in.AllEndpoints {
-		ep = strings.TrimSpace(ep)
-		if ep == "" {
-			continue
-		}
-		p.AllEndpoints = append(p.AllEndpoints, ep)
+	subnetStr := strings.TrimSpace(in.Subnet)
+	mgmtStr := strings.TrimSpace(in.Management)
+	if subnetStr == "" && mgmtStr == "" {
+		return peerSpec{}, fmt.Errorf("peer subnet or management ip is required")
 	}
 
-	if p.PublicKey == "" {
-		return Peer{}, fmt.Errorf("public key is required")
+	spec := peerSpec{publicKeyString: pubKeyStr, publicKey: key}
+
+	if mgmtStr != "" {
+		ip, err := netip.ParseAddr(mgmtStr)
+		if err != nil {
+			return peerSpec{}, fmt.Errorf("parse management ip: %w", err)
+		}
+		spec.allowedPrefixes = append(spec.allowedPrefixes, singleIPPrefix(ip))
 	}
-	if _, err := wgtypes.ParseKey(p.PublicKey); err != nil {
-		return Peer{}, fmt.Errorf("parse public key: %w", err)
+	if subnetStr != "" {
+		subnet, err := netip.ParsePrefix(subnetStr)
+		if err != nil {
+			return peerSpec{}, fmt.Errorf("parse peer subnet: %w", err)
+		}
+		spec.subnet = &subnet
+		spec.allowedPrefixes = append(spec.allowedPrefixes, subnet)
 	}
 
-	if p.Subnet == "" && p.Management == "" {
-		return Peer{}, fmt.Errorf("peer subnet or management ip is required")
+	epStr := strings.TrimSpace(in.Endpoint)
+	if epStr == "" && len(in.AllEndpoints) > 0 {
+		epStr = strings.TrimSpace(in.AllEndpoints[0])
 	}
-	if p.Subnet != "" {
-		if _, err := netip.ParsePrefix(p.Subnet); err != nil {
-			return Peer{}, fmt.Errorf("parse peer subnet: %w", err)
+	if epStr != "" {
+		ep, err := netip.ParseAddrPort(epStr)
+		if err != nil {
+			return peerSpec{}, fmt.Errorf("parse endpoint: %w", err)
 		}
-	}
-	if p.Management != "" {
-		if _, err := netip.ParseAddr(p.Management); err != nil {
-			return Peer{}, fmt.Errorf("parse management ip: %w", err)
-		}
+		spec.endpoint = &ep
 	}
 
-	if p.Endpoint == "" && len(p.AllEndpoints) > 0 {
-		p.Endpoint = p.AllEndpoints[0]
+	spec.allowedIPNets = make([]net.IPNet, len(spec.allowedPrefixes))
+	for i, pref := range spec.allowedPrefixes {
+		spec.allowedIPNets[i] = prefixToIPNet(pref)
 	}
-	if p.Endpoint != "" {
-		if _, err := netip.ParseAddrPort(p.Endpoint); err != nil {
-			return Peer{}, fmt.Errorf("parse endpoint: %w", err)
-		}
-		if len(p.AllEndpoints) == 0 {
-			p.AllEndpoints = []string{p.Endpoint}
-		}
-		if !slices.Contains(p.AllEndpoints, p.Endpoint) {
-			p.AllEndpoints = append([]string{p.Endpoint}, p.AllEndpoints...)
-		}
-	}
-
-	for _, ep := range p.AllEndpoints {
-		if _, err := netip.ParseAddrPort(ep); err != nil {
-			return Peer{}, fmt.Errorf("parse endpoint %q: %w", ep, err)
-		}
-	}
-
-	return p, nil
+	return spec, nil
 }
 
 func buildPeerSpecs(peers []Peer) ([]peerSpec, error) {
 	out := make([]peerSpec, 0, len(peers))
-	for _, raw := range peers {
-		p, err := normalizePeer(raw)
+	for _, p := range peers {
+		spec, err := parsePeerSpec(p)
 		if err != nil {
 			return nil, err
-		}
-
-		key, err := wgtypes.ParseKey(p.PublicKey)
-		if err != nil {
-			return nil, fmt.Errorf("parse public key %q: %w", p.PublicKey, err)
-		}
-
-		spec := peerSpec{publicKeyString: p.PublicKey, publicKey: key}
-
-		if p.Endpoint != "" {
-			ep, err := netip.ParseAddrPort(p.Endpoint)
-			if err != nil {
-				return nil, fmt.Errorf("parse endpoint %q: %w", p.Endpoint, err)
-			}
-			spec.endpoint = &ep
-		}
-
-		if p.Management != "" {
-			ip, err := netip.ParseAddr(p.Management)
-			if err != nil {
-				return nil, fmt.Errorf("parse management ip %q: %w", p.Management, err)
-			}
-			spec.allowedPrefixes = append(spec.allowedPrefixes, singleIPPrefix(ip))
-		}
-
-		if p.Subnet != "" {
-			subnet, err := netip.ParsePrefix(p.Subnet)
-			if err != nil {
-				return nil, fmt.Errorf("parse peer subnet %q: %w", p.Subnet, err)
-			}
-			spec.subnet = &subnet
-			spec.allowedPrefixes = append(spec.allowedPrefixes, subnet)
-		}
-
-		if len(spec.allowedPrefixes) == 0 {
-			return nil, fmt.Errorf("peer %q has no allowed IPs", p.PublicKey)
-		}
-
-		spec.allowedIPNets = make([]net.IPNet, len(spec.allowedPrefixes))
-		for i, pref := range spec.allowedPrefixes {
-			spec.allowedIPNets[i] = prefixToIPNet(pref)
 		}
 		out = append(out, spec)
 	}

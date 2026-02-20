@@ -9,7 +9,7 @@ import (
 
 	"ployz/cmd/ployz/cmdutil"
 	"ployz/cmd/ployz/ui"
-	sdkdaemon "ployz/pkg/sdk/daemon"
+	"ployz/internal/daemon/app"
 
 	"github.com/spf13/cobra"
 )
@@ -44,7 +44,7 @@ func runCmd(opts *options) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
-			return sdkdaemon.Run(ctx, opts.socket, opts.dataRoot)
+			return app.Run(ctx, opts.socket, opts.dataRoot)
 		},
 	}
 }

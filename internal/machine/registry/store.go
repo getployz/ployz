@@ -22,10 +22,6 @@ type Store struct {
 	apiAddr netip.AddrPort
 }
 
-type NetworkConfigRow struct {
-	CIDR string
-}
-
 type MachineRow struct {
 	ID         string
 	PublicKey  string
@@ -110,11 +106,7 @@ func (s Store) EnsureNetworkCIDR(
 	return parsed, nil
 }
 
-func (s Store) RegisterMachine(ctx context.Context, row MachineRow) error {
-	return s.UpsertMachine(ctx, "", row, 0)
-}
-
-func (s Store) UpsertMachine(ctx context.Context, _ string, row MachineRow, expectedVersion int64) error {
+func (s Store) UpsertMachine(ctx context.Context, row MachineRow, expectedVersion int64) error {
 	row.ID = strings.TrimSpace(row.ID)
 	if row.ID == "" {
 		return fmt.Errorf("machine id is required")
@@ -156,10 +148,6 @@ func (s Store) UpsertMachine(ctx context.Context, _ string, row MachineRow, expe
 	return s.exec(ctx, query, row.ID, row.PublicKey, row.Subnet, row.Management, row.Endpoint, row.UpdatedAt, row.Version)
 }
 
-func (s Store) RemoveMachine(ctx context.Context, _ string, id string) error {
-	return s.DeleteMachine(ctx, id)
-}
-
 func (s Store) DeleteByEndpointExceptID(ctx context.Context, endpoint, id string) error {
 	query := fmt.Sprintf("DELETE FROM %s WHERE endpoint = ? AND id <> ?", machinesTable)
 	return s.exec(ctx, query, endpoint, id)
@@ -168,10 +156,6 @@ func (s Store) DeleteByEndpointExceptID(ctx context.Context, endpoint, id string
 func (s Store) DeleteMachine(ctx context.Context, machineID string) error {
 	query := fmt.Sprintf("DELETE FROM %s WHERE id = ? OR endpoint = ?", machinesTable)
 	return s.exec(ctx, query, machineID, machineID)
-}
-
-func (s Store) ListMachines(ctx context.Context, _ string) ([]MachineRow, error) {
-	return s.ListMachineRows(ctx)
 }
 
 func (s Store) ListMachineRows(ctx context.Context) ([]MachineRow, error) {
@@ -189,21 +173,6 @@ func (s Store) ListMachineRows(ctx context.Context) ([]MachineRow, error) {
 		out = append(out, r)
 	}
 	return out, nil
-}
-
-func (s Store) GetNetworkConfig(ctx context.Context, _ string) (NetworkConfigRow, error) {
-	value, err := s.networkConfigValue(ctx, networkConfigKey)
-	if err != nil {
-		return NetworkConfigRow{}, err
-	}
-	return NetworkConfigRow{CIDR: value}, nil
-}
-
-func (s Store) EnsureNetworkConfig(ctx context.Context, _ string, cfg NetworkConfigRow) error {
-	if strings.TrimSpace(cfg.CIDR) == "" {
-		return nil
-	}
-	return s.setNetworkConfigValue(ctx, networkConfigKey, cfg.CIDR)
 }
 
 func (s Store) networkConfigValue(ctx context.Context, key string) (string, error) {

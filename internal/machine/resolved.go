@@ -5,19 +5,13 @@ import (
 	"net/netip"
 )
 
-type Resolved Config
-
-func (r Resolved) Config() Config {
-	return Config(r)
-}
-
-func Resolve(cfg Config, s *State) (Resolved, error) {
+func Resolve(cfg Config, s *State) (Config, error) {
 	norm, err := NormalizeConfig(cfg)
 	if err != nil {
-		return Resolved{}, err
+		return Config{}, err
 	}
 	if s == nil {
-		return Resolved(norm), nil
+		return norm, nil
 	}
 
 	if norm.Network == "" {
@@ -42,7 +36,7 @@ func Resolve(cfg Config, s *State) (Resolved, error) {
 		if s.CIDR != "" {
 			cidr, err := netip.ParsePrefix(s.CIDR)
 			if err != nil {
-				return Resolved{}, fmt.Errorf("parse cidr from state: %w", err)
+				return Config{}, fmt.Errorf("parse cidr from state: %w", err)
 			}
 			norm.NetworkCIDR = cidr
 		} else {
@@ -58,17 +52,17 @@ func Resolve(cfg Config, s *State) (Resolved, error) {
 	if !norm.Subnet.IsValid() {
 		subnet, err := netip.ParsePrefix(s.Subnet)
 		if err != nil {
-			return Resolved{}, fmt.Errorf("parse subnet from state: %w", err)
+			return Config{}, fmt.Errorf("parse subnet from state: %w", err)
 		}
 		norm.Subnet = subnet
 	}
 	mgmt, err := netip.ParseAddr(s.Management)
 	if err != nil {
-		return Resolved{}, fmt.Errorf("parse management IP from state: %w", err)
+		return Config{}, fmt.Errorf("parse management IP from state: %w", err)
 	}
 	norm.Management = mgmt
 	refreshCorrosionGossipAddr(&norm)
 	norm.CorrosionGossipAP = netip.AddrPortFrom(norm.CorrosionGossipIP, uint16(norm.CorrosionGossip))
 
-	return Resolved(norm), nil
+	return norm, nil
 }

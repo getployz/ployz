@@ -7,8 +7,8 @@ import (
 	"syscall"
 
 	"ployz/internal/daemon/app"
-	"ployz/internal/machine"
 	"ployz/pkg/sdk/client"
+	"ployz/pkg/sdk/defaults"
 
 	"github.com/spf13/cobra"
 )
@@ -35,7 +35,7 @@ func rootCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&socketPath, "socket", client.DefaultSocketPath(), "Unix socket path")
-	cmd.Flags().StringVar(&dataRoot, "data-root", machine.DefaultDataRoot(), "Machine data root")
+	cmd.Flags().StringVar(&dataRoot, "data-root", defaults.DataRoot(), "Machine data root")
 	cmd.AddCommand(dialStdioCmd())
 	return cmd
 }

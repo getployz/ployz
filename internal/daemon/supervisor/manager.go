@@ -36,7 +36,7 @@ type Manager struct {
 
 func New(ctx context.Context, dataRoot string) (*Manager, error) {
 	if strings.TrimSpace(dataRoot) == "" {
-		dataRoot = machine.DefaultDataRoot()
+		dataRoot = defaults.DataRoot()
 	}
 	statePath := filepath.Join(dataRoot, "daemon.db")
 	store, err := newSpecStore(statePath)
@@ -118,12 +118,7 @@ func (m *Manager) DisableNetwork(ctx context.Context, network string, purge bool
 	m.stopWorkerLocked(network)
 	m.mu.Unlock()
 
-	spec, err := m.resolveSpec(network)
-	if err != nil {
-		return err
-	}
-
-	cfg, err := configFromSpec(spec)
+	spec, cfg, err := m.resolveConfig(network)
 	if err != nil {
 		return err
 	}
@@ -147,11 +142,7 @@ func (m *Manager) DisableNetwork(ctx context.Context, network string, purge bool
 }
 
 func (m *Manager) GetStatus(ctx context.Context, network string) (*pb.NetworkStatus, error) {
-	spec, err := m.resolveSpec(defaults.NormalizeNetwork(network))
-	if err != nil {
-		return nil, err
-	}
-	cfg, err := configFromSpec(spec)
+	spec, cfg, err := m.resolveConfig(defaults.NormalizeNetwork(network))
 	if err != nil {
 		return nil, err
 	}
@@ -177,11 +168,7 @@ func (m *Manager) GetStatus(ctx context.Context, network string) (*pb.NetworkSta
 }
 
 func (m *Manager) GetIdentity(_ context.Context, network string) (*pb.Identity, error) {
-	spec, err := m.resolveSpec(defaults.NormalizeNetwork(network))
-	if err != nil {
-		return nil, err
-	}
-	cfg, err := configFromSpec(spec)
+	spec, cfg, err := m.resolveConfig(defaults.NormalizeNetwork(network))
 	if err != nil {
 		return nil, err
 	}
@@ -209,11 +196,7 @@ func (m *Manager) GetIdentity(_ context.Context, network string) (*pb.Identity, 
 }
 
 func (m *Manager) ListMachines(ctx context.Context, network string) ([]*pb.MachineEntry, error) {
-	spec, err := m.resolveSpec(defaults.NormalizeNetwork(network))
-	if err != nil {
-		return nil, err
-	}
-	cfg, err := configFromSpec(spec)
+	_, cfg, err := m.resolveConfig(defaults.NormalizeNetwork(network))
 	if err != nil {
 		return nil, err
 	}
@@ -238,11 +221,7 @@ func (m *Manager) ListMachines(ctx context.Context, network string) ([]*pb.Machi
 }
 
 func (m *Manager) UpsertMachine(ctx context.Context, network string, entry *pb.MachineEntry) error {
-	spec, err := m.resolveSpec(defaults.NormalizeNetwork(network))
-	if err != nil {
-		return err
-	}
-	cfg, err := configFromSpec(spec)
+	_, cfg, err := m.resolveConfig(defaults.NormalizeNetwork(network))
 	if err != nil {
 		return err
 	}
@@ -265,11 +244,7 @@ func (m *Manager) UpsertMachine(ctx context.Context, network string, entry *pb.M
 }
 
 func (m *Manager) RemoveMachine(ctx context.Context, network, idOrEndpoint string) error {
-	spec, err := m.resolveSpec(defaults.NormalizeNetwork(network))
-	if err != nil {
-		return err
-	}
-	cfg, err := configFromSpec(spec)
+	_, cfg, err := m.resolveConfig(defaults.NormalizeNetwork(network))
 	if err != nil {
 		return err
 	}
@@ -278,11 +253,7 @@ func (m *Manager) RemoveMachine(ctx context.Context, network, idOrEndpoint strin
 }
 
 func (m *Manager) TriggerReconcile(ctx context.Context, network string) error {
-	spec, err := m.resolveSpec(defaults.NormalizeNetwork(network))
-	if err != nil {
-		return err
-	}
-	cfg, err := configFromSpec(spec)
+	spec, cfg, err := m.resolveConfig(defaults.NormalizeNetwork(network))
 	if err != nil {
 		return err
 	}
@@ -421,6 +392,18 @@ func (m *Manager) resolveSpec(network string) (*pb.NetworkSpec, error) {
 	spec := &pb.NetworkSpec{Network: network}
 	m.normalizeSpec(spec)
 	return spec, nil
+}
+
+func (m *Manager) resolveConfig(network string) (*pb.NetworkSpec, machine.Config, error) {
+	spec, err := m.resolveSpec(network)
+	if err != nil {
+		return nil, machine.Config{}, err
+	}
+	cfg, err := configFromSpec(spec)
+	if err != nil {
+		return nil, machine.Config{}, err
+	}
+	return spec, cfg, nil
 }
 
 func configFromSpec(spec *pb.NetworkSpec) (machine.Config, error) {

@@ -83,11 +83,10 @@ func (c *Controller) Status(ctx context.Context, in Config) (Status, error) {
 	}
 	out.Configured = true
 	out.Running = s.Running
-	resolved, err := Resolve(cfg, s)
+	cfg, err = Resolve(cfg, s)
 	if err != nil {
 		return Status{}, err
 	}
-	cfg = resolved.Config()
 
 	if _, err := netlink.LinkByName(s.WGInterface); err == nil {
 		out.WireGuard = true

@@ -27,6 +27,27 @@ func (w *Worker) fail(err error) {
 	}
 }
 
+func (w *Worker) reconcileAndReport(ctx context.Context, ctrl *machine.Controller, cfg machine.Config, machines []registry.MachineRow) {
+	count, err := ctrl.ReconcilePeers(ctx, cfg, machines)
+	if err != nil {
+		w.emit("reconcile.error", err.Error())
+		w.fail(err)
+		return
+	}
+	w.emit("reconcile.success", fmt.Sprintf("reconciled %d peers", count))
+}
+
+func (w *Worker) refreshAndReconcile(ctx context.Context, reg registry.Store, ctrl *machine.Controller, cfg machine.Config) ([]registry.MachineRow, bool) {
+	snap, err := reg.ListMachineRows(ctx)
+	if err != nil {
+		w.emit("reconcile.error", err.Error())
+		w.fail(err)
+		return nil, false
+	}
+	w.reconcileAndReport(ctx, ctrl, cfg, snap)
+	return snap, true
+}
+
 func (w *Worker) Run(ctx context.Context) error {
 	cfg, err := machine.NormalizeConfig(w.Spec)
 	if err != nil {
@@ -49,12 +70,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		return err
 	}
 	w.emit("subscribe.ready", fmt.Sprintf("machine subscription snapshot size %d", len(machines)))
-	if count, rErr := ctrl.ReconcilePeers(ctx, cfg, machines); rErr != nil {
-		w.emit("reconcile.error", rErr.Error())
-		w.fail(rErr)
-	} else {
-		w.emit("reconcile.success", fmt.Sprintf("reconciled %d peers", count))
-	}
+	w.reconcileAndReport(ctx, ctrl, cfg, machines)
 
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -70,46 +86,22 @@ func (w *Worker) Run(ctx context.Context) error {
 					return err
 				}
 				w.emit("subscribe.ready", fmt.Sprintf("machine subscription restored (%d machines)", len(machines)))
-				if count, rErr := ctrl.ReconcilePeers(ctx, cfg, machines); rErr != nil {
-					w.emit("reconcile.error", rErr.Error())
-					w.fail(rErr)
-				} else {
-					w.emit("reconcile.success", fmt.Sprintf("reconciled %d peers", count))
-				}
+				w.reconcileAndReport(ctx, ctrl, cfg, machines)
 				continue
 			}
 
 			if change.Kind == registry.ChangeResync {
 				w.emit("subscribe.resync", "machine subscription resynced")
-				snap, snapErr := reg.ListMachines(ctx, cfg.Network)
-				if snapErr != nil {
-					w.emit("reconcile.error", snapErr.Error())
-					w.fail(snapErr)
-					continue
+				if snap, ok := w.refreshAndReconcile(ctx, reg, ctrl, cfg); ok {
+					machines = snap
 				}
-				machines = snap
-			} else {
-				machines = applyMachineChange(machines, change)
-			}
-			if count, rErr := ctrl.ReconcilePeers(ctx, cfg, machines); rErr != nil {
-				w.emit("reconcile.error", rErr.Error())
-				w.fail(rErr)
-			} else {
-				w.emit("reconcile.success", fmt.Sprintf("reconciled %d peers", count))
-			}
-		case <-ticker.C:
-			snap, snapErr := reg.ListMachines(ctx, cfg.Network)
-			if snapErr != nil {
-				w.emit("reconcile.error", snapErr.Error())
-				w.fail(snapErr)
 				continue
 			}
-			machines = snap
-			if count, rErr := ctrl.ReconcilePeers(ctx, cfg, machines); rErr != nil {
-				w.emit("reconcile.error", rErr.Error())
-				w.fail(rErr)
-			} else {
-				w.emit("reconcile.success", fmt.Sprintf("reconciled %d peers", count))
+			machines = applyMachineChange(machines, change)
+			w.reconcileAndReport(ctx, ctrl, cfg, machines)
+		case <-ticker.C:
+			if snap, ok := w.refreshAndReconcile(ctx, reg, ctrl, cfg); ok {
+				machines = snap
 			}
 		}
 	}
@@ -159,7 +151,7 @@ func (w *Worker) subscribeMachinesWithRetry(
 				continue
 			}
 		}
-		machines, changes, err := reg.SubscribeMachines(ctx, cfg.Network)
+		machines, changes, err := reg.SubscribeMachines(ctx)
 		if err == nil {
 			return machines, changes, nil
 		}

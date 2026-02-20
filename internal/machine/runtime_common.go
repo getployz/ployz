@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+
+	"ployz/internal/machine/corroservice"
 )
 
 type runtimeOps interface {
@@ -54,11 +56,10 @@ func (c *Controller) startRuntime(ctx context.Context, in Config, ops runtimeOps
 		state.CIDR = cfg.NetworkCIDR.String()
 	}
 
-	resolved, err := Resolve(cfg, state)
+	cfg, err = Resolve(cfg, state)
 	if err != nil {
 		return Config{}, err
 	}
-	cfg = resolved.Config()
 
 	if err := ops.ConfigureWireGuard(ctx, cfg, state); err != nil {
 		return Config{}, err
@@ -99,16 +100,15 @@ func (c *Controller) stopRuntime(ctx context.Context, in Config, purge bool, ops
 		return Config{}, err
 	}
 
-	resolved, err := Resolve(cfg, state)
+	cfg, err = Resolve(cfg, state)
 	if err != nil {
 		return Config{}, err
 	}
-	cfg = resolved.Config()
 
 	if err := ops.CleanupDockerNetwork(ctx, cfg, state); err != nil {
 		return Config{}, err
 	}
-	if err := stopCorrosion(ctx, c.cli, state.CorrosionName); err != nil {
+	if err := corroservice.Stop(ctx, c.cli, state.CorrosionName); err != nil {
 		return Config{}, err
 	}
 	if err := ops.CleanupWireGuard(ctx, cfg, state); err != nil {
