@@ -19,11 +19,10 @@ func listCmd() *cobra.Command {
 		Aliases: []string{"ls"},
 		Short:   "List nodes in the cluster",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, svc, err := service(cmd.Context(), &cf)
+			_, svc, cl, err := service(cmd.Context(), &cf)
 			if err != nil {
 				return err
 			}
-			_, cl, _ := cf.Resolve()
 
 			machines, err := svc.ListMachines(cmd.Context(), cl.Network)
 			if err != nil {

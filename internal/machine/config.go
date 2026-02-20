@@ -17,7 +17,10 @@ const (
 	defaultWireGuardMTU = 1280
 )
 
-var defaultCorrosionBootstrapIP = netip.MustParseAddr("127.0.0.1")
+var (
+	defaultNetworkPrefix         = netip.MustParsePrefix("10.210.0.0/16")
+	defaultCorrosionBootstrapIP = netip.MustParseAddr("127.0.0.1")
+)
 
 type Config struct {
 	Network     string

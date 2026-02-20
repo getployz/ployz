@@ -16,11 +16,10 @@ func statusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Show cluster node status",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, svc, err := service(cmd.Context(), &cf)
+			_, svc, cl, err := service(cmd.Context(), &cf)
 			if err != nil {
 				return err
 			}
-			_, cl, _ := cf.Resolve()
 
 			status, err := svc.Status(cmd.Context(), cl.Network)
 			if err != nil {

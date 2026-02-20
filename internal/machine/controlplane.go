@@ -39,7 +39,7 @@ func (c *Controller) Reconcile(ctx context.Context, in Config) (int, error) {
 		return 0, err
 	}
 
-	cidr, err := r.EnsureNetworkCIDR(ctx, cfg.NetworkCIDR, s.CIDR, defaultNetwork())
+	cidr, err := r.EnsureNetworkCIDR(ctx, cfg.NetworkCIDR, s.CIDR, defaultNetworkPrefix)
 	if err != nil {
 		return 0, err
 	}
@@ -167,7 +167,7 @@ func (c *Controller) UpsertMachine(ctx context.Context, in Config, m Machine) er
 	if err := r.EnsureNetworkConfigTable(ctx); err != nil {
 		return err
 	}
-	if _, err := r.EnsureNetworkCIDR(ctx, cfg.NetworkCIDR, s.CIDR, defaultNetwork()); err != nil {
+	if _, err := r.EnsureNetworkCIDR(ctx, cfg.NetworkCIDR, s.CIDR, defaultNetworkPrefix); err != nil {
 		return err
 	}
 

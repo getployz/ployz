@@ -82,7 +82,7 @@ func dialSSH(ctx context.Context, target string, opts SSHOptions) (net.Conn, err
 
 func dialStdioRemoteArgs(target, socketPath string) []string {
 	args := []string{remotePloyzdPath, "dial-stdio", "--socket", socketPath}
-	if remoteUser(target) != "" && remoteUser(target) != "root" {
+	if user := remoteUser(target); user != "" && user != "root" {
 		return append([]string{"sudo", "-n"}, args...)
 	}
 	return args

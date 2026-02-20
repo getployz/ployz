@@ -64,6 +64,10 @@ func runList() error {
 		if hasCurrent && currentName == name {
 			current = "*"
 		}
+		network := strings.TrimSpace(cl.Network)
+		if network == "" {
+			network = "-"
+		}
 		connType := "-"
 		if len(cl.Connections) > 0 {
 			connType = cl.Connections[0].Type()
@@ -71,7 +75,7 @@ func runList() error {
 		rows = append(rows, []string{
 			name,
 			current,
-			valueOrDash(cl.Network),
+			network,
 			connType,
 		})
 	}
@@ -105,13 +109,15 @@ func currentCmd() *cobra.Command {
 					connSummary = "unix:" + c.Unix
 				case c.SSH != "":
 					connSummary = "ssh:" + c.SSH
-				case c.TCP != "":
-					connSummary = "tcp:" + c.TCP
 				}
+			}
+			network := strings.TrimSpace(cl.Network)
+			if network == "" {
+				network = "default"
 			}
 			fmt.Print(ui.KeyValues("",
 				ui.KV("name", name),
-				ui.KV("network", valueOrDefault(cl.Network, "default")),
+				ui.KV("network", network),
 				ui.KV("connection", connSummary),
 			))
 			return nil
@@ -246,18 +252,3 @@ func removeCmd() *cobra.Command {
 	}
 }
 
-func valueOrDash(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return "-"
-	}
-	return s
-}
-
-func valueOrDefault(s, fallback string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return fallback
-	}
-	return s
-}

@@ -31,7 +31,7 @@ func ensureUniqueHostCIDR(cfg Config) error {
 		if sErr != nil {
 			continue
 		}
-		otherCIDR := defaultNetwork()
+		otherCIDR := defaultNetworkPrefix
 		if s.CIDR != "" {
 			parsed, pErr := netip.ParsePrefix(s.CIDR)
 			if pErr == nil {

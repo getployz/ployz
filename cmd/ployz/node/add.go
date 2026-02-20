@@ -23,11 +23,10 @@ func addCmd() *cobra.Command {
 		Short: "Add a node to the cluster over SSH",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			clusterName, svc, err := service(cmd.Context(), &cf)
+			clusterName, svc, cl, err := service(cmd.Context(), &cf)
 			if err != nil {
 				return err
 			}
-			_, cl, _ := cf.Resolve()
 
 			result, err := svc.AddMachine(cmd.Context(), sdkmachine.AddOptions{
 				Network:  cl.Network,

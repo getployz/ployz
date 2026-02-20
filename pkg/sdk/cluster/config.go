@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -18,11 +17,10 @@ import (
 const envCluster = "PLOYZ_CLUSTER"
 
 type Connection struct {
-	Unix       string `yaml:"unix,omitempty" json:"-"`
-	SSH        string `yaml:"ssh,omitempty" json:"-"`
-	SSHKeyFile string `yaml:"ssh_key_file,omitempty" json:"-"`
-	TCP        string `yaml:"tcp,omitempty" json:"-"`
-	DataRoot   string `yaml:"data_root,omitempty" json:"-"`
+	Unix       string `yaml:"unix,omitempty"`
+	SSH        string `yaml:"ssh,omitempty"`
+	SSHKeyFile string `yaml:"ssh_key_file,omitempty"`
+	DataRoot   string `yaml:"data_root,omitempty"`
 }
 
 func (c Connection) Validate() error {
@@ -33,14 +31,11 @@ func (c Connection) Validate() error {
 	if c.SSH != "" {
 		set++
 	}
-	if c.TCP != "" {
-		set++
-	}
 	if set == 0 {
-		return fmt.Errorf("connection must set one of unix, ssh, or tcp")
+		return fmt.Errorf("connection must set one of unix or ssh")
 	}
 	if set > 1 {
-		return fmt.Errorf("connection must set exactly one of unix, ssh, or tcp")
+		return fmt.Errorf("connection must set exactly one of unix or ssh")
 	}
 	return nil
 }
@@ -51,20 +46,14 @@ func (c Connection) Type() string {
 		return "unix"
 	case c.SSH != "":
 		return "ssh"
-	case c.TCP != "":
-		return "tcp"
 	default:
 		return ""
 	}
 }
 
 type Cluster struct {
-	Network     string       `yaml:"network" json:"network,omitempty"`
-	Connections []Connection `yaml:"connections" json:"-"`
-
-	// Legacy JSON fields — used only for migration.
-	Socket   string `yaml:"-" json:"socket,omitempty"`
-	DataRoot string `yaml:"-" json:"data_root,omitempty"`
+	Network     string       `yaml:"network"`
+	Connections []Connection `yaml:"connections"`
 }
 
 type Config struct {
@@ -89,18 +78,6 @@ func DefaultPath() string {
 	return filepath.Join(dir, "ployz", "config.yaml")
 }
 
-func legacyJSONPath() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		home, homeErr := os.UserHomeDir()
-		if homeErr != nil {
-			return filepath.Join(".config", "ployz", "config.json")
-		}
-		return filepath.Join(home, ".config", "ployz", "config.json")
-	}
-	return filepath.Join(dir, "ployz", "config.json")
-}
-
 func LoadDefault() (*Config, error) {
 	return Load(DefaultPath())
 }
@@ -115,10 +92,6 @@ func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// Try JSON migration.
-			if migrated, migErr := migrateFromJSON(path); migErr == nil && migrated != nil {
-				return migrated, nil
-			}
 			return cfg, nil
 		}
 		return nil, fmt.Errorf("read config file %q: %w", path, err)
@@ -133,60 +106,6 @@ func Load(path string) (*Config, error) {
 		cfg.Clusters = map[string]Cluster{}
 	}
 	cfg.path = path
-	return cfg, nil
-}
-
-func migrateFromJSON(yamlPath string) (*Config, error) {
-	jsonPath := legacyJSONPath()
-	if fromEnv := strings.TrimSpace(os.Getenv("PLOYZ_CONFIG")); fromEnv != "" {
-		// If PLOYZ_CONFIG was set, check for .json variant.
-		jsonPath = strings.TrimSuffix(fromEnv, ".yaml") + ".json"
-	}
-
-	data, err := os.ReadFile(jsonPath)
-	if err != nil {
-		return nil, err
-	}
-	if len(data) == 0 {
-		return nil, fmt.Errorf("empty json config")
-	}
-
-	// Parse old JSON format.
-	var old struct {
-		CurrentCluster string             `json:"current_cluster"`
-		Clusters       map[string]Cluster `json:"clusters"`
-	}
-	if err := json.Unmarshal(data, &old); err != nil {
-		return nil, fmt.Errorf("parse legacy json config: %w", err)
-	}
-
-	cfg := &Config{
-		CurrentCluster: old.CurrentCluster,
-		Clusters:       make(map[string]Cluster, len(old.Clusters)),
-		path:           yamlPath,
-	}
-
-	for name, entry := range old.Clusters {
-		conn := Connection{}
-		if entry.Socket != "" {
-			conn.Unix = entry.Socket
-		} else {
-			conn.Unix = client.DefaultSocketPath()
-		}
-		if entry.DataRoot != "" {
-			conn.DataRoot = entry.DataRoot
-		}
-		cfg.Clusters[name] = Cluster{
-			Network:     entry.Network,
-			Connections: []Connection{conn},
-		}
-	}
-
-	if err := cfg.Save(); err != nil {
-		return nil, fmt.Errorf("save migrated yaml config: %w", err)
-	}
-
-	_ = os.Rename(jsonPath, jsonPath+".bak")
 	return cfg, nil
 }
 
@@ -319,9 +238,6 @@ func dialConnection(_ context.Context, conn Connection) (*client.Client, error) 
 			KeyPath:    conn.SSHKeyFile,
 			SocketPath: socketPath,
 		})
-
-	case conn.TCP != "":
-		return nil, fmt.Errorf("tcp connections not yet implemented")
 
 	default:
 		return nil, fmt.Errorf("invalid connection: no transport set")

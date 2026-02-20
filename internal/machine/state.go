@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"ployz/pkg/ipam"
+
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 	_ "modernc.org/sqlite"
 )
@@ -312,10 +314,10 @@ func ensureState(cfg Config) (*State, bool, error) {
 	}
 
 	if !cfg.NetworkCIDR.IsValid() {
-		cfg.NetworkCIDR = defaultNetwork()
+		cfg.NetworkCIDR = defaultNetworkPrefix
 	}
 	if !cfg.Subnet.IsValid() {
-		subnet, allocErr := allocateMachineSubnet(cfg.NetworkCIDR, nil)
+		subnet, allocErr := ipam.AllocateSubnet(cfg.NetworkCIDR, nil)
 		if allocErr != nil {
 			return nil, false, fmt.Errorf("allocate machine subnet: %w", allocErr)
 		}

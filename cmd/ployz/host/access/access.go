@@ -46,11 +46,10 @@ func Cmd() *cobra.Command {
 				}
 			}
 
-			clusterName, api, cl, err := cf.DialService(cmd.Context())
+			_, api, cl, err := cf.DialService(cmd.Context())
 			if err != nil {
 				return err
 			}
-			_ = clusterName
 			svc := sdkmachine.New(api)
 
 			status, err := svc.Status(cmd.Context(), cl.Network)
@@ -80,7 +79,7 @@ func Cmd() *cobra.Command {
 			}
 
 			networkCIDR := strings.TrimSpace(identity.NetworkCIDR)
-			if strings.TrimSpace(networkCIDR) == "" {
+			if networkCIDR == "" {
 				networkCIDR = localSubnet.String()
 			}
 
@@ -137,7 +136,6 @@ func Cmd() *cobra.Command {
 	}
 
 	cf.Bind(cmd)
-	_ = cmd.Flags().MarkHidden("helper-image")
 	return cmd
 }
 

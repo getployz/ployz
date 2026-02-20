@@ -15,13 +15,11 @@ import (
 )
 
 type ClusterFlags struct {
-	Cluster     string
-	HelperImage string
+	Cluster string
 }
 
 func (f *ClusterFlags) Bind(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&f.Cluster, "cluster", "", "Cluster name (overrides current)")
-	cmd.Flags().StringVar(&f.HelperImage, "helper-image", "", "Linux helper image for macOS")
 }
 
 func (f *ClusterFlags) Resolve() (string, cluster.Cluster, error) {

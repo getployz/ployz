@@ -40,7 +40,7 @@ func Resolve(cfg Config, s *State) (Config, error) {
 			}
 			norm.NetworkCIDR = cidr
 		} else {
-			norm.NetworkCIDR = defaultNetwork()
+			norm.NetworkCIDR = defaultNetworkPrefix
 		}
 	}
 	if len(norm.CorrosionBootstrap) == 0 && len(s.Bootstrap) > 0 {
