@@ -1,4 +1,4 @@
-package machine
+package node
 
 import (
 	"fmt"
@@ -12,24 +12,25 @@ import (
 )
 
 func listCmd() *cobra.Command {
-	var nf cmdutil.NetworkFlags
-	var socketPath string
+	var cf cmdutil.ClusterFlags
 
 	cmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
-		Short:   "List machines in the network",
+		Short:   "List nodes in the cluster",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			svc, err := service(socketPath)
+			_, svc, err := service(cmd.Context(), &cf)
 			if err != nil {
 				return err
 			}
-			machines, err := svc.ListMachines(cmd.Context(), nf.Network)
+			_, cl, _ := cf.Resolve()
+
+			machines, err := svc.ListMachines(cmd.Context(), cl.Network)
 			if err != nil {
 				return err
 			}
 			if len(machines) == 0 {
-				fmt.Println(ui.Muted("no machines registered"))
+				fmt.Println(ui.Muted("no nodes registered"))
 				return nil
 			}
 
@@ -62,7 +63,6 @@ func listCmd() *cobra.Command {
 		},
 	}
 
-	nf.Bind(cmd)
-	cmd.Flags().StringVar(&socketPath, "socket", cmdutil.DefaultSocketPath(), "ployzd unix socket path")
+	cf.Bind(cmd)
 	return cmd
 }

@@ -1,8 +1,7 @@
-package machine
+package node
 
 import (
 	"fmt"
-	"strings"
 
 	"ployz/cmd/ployz/cmdutil"
 	"ployz/cmd/ployz/ui"
@@ -11,33 +10,28 @@ import (
 )
 
 func doctorCmd() *cobra.Command {
-	var nf cmdutil.NetworkFlags
-	var socketPath string
+	var cf cmdutil.ClusterFlags
 
 	cmd := &cobra.Command{
 		Use:   "doctor",
-		Short: "Diagnose per-component health from ployzd",
+		Short: "Diagnose per-component health",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			svc, err := service(socketPath)
+			clusterName, svc, err := service(cmd.Context(), &cf)
 			if err != nil {
 				return err
 			}
-			socketArg := ""
-			if strings.TrimSpace(socketPath) != "" {
-				socketArg = " --socket " + socketPath
-			}
-			startCmd := "ployz machine start --network " + nf.Network + socketArg
-			reconcileCmd := "ployz machine reconcile --network " + nf.Network + socketArg
-			daemonStartCmd := "ployz daemon start" + socketArg
+			_, cl, _ := cf.Resolve()
 
-			status, err := svc.Status(cmd.Context(), nf.Network)
+			initCmd := "ployz init " + clusterName
+
+			status, err := svc.Status(cmd.Context(), cl.Network)
 			if err != nil {
 				return err
 			}
 
-			identity, _ := svc.Identity(cmd.Context(), nf.Network)
+			identity, _ := svc.Identity(cmd.Context(), cl.Network)
 
-			fmt.Println(ui.InfoMsg("network %s diagnostic", ui.Accent(nf.Network)))
+			fmt.Println(ui.InfoMsg("cluster %s diagnostic", ui.Accent(clusterName)))
 			fmt.Print(ui.KeyValues("  ",
 				ui.KV("configured", ui.Bool(status.Configured)),
 				ui.KV("running", ui.Bool(status.Running)),
@@ -63,46 +57,46 @@ func doctorCmd() *cobra.Command {
 				issues = append(issues, issue{
 					component: "config",
 					problem:   "network spec is not applied on this machine",
-					fix:       startCmd,
+					fix:       initCmd,
 				})
 			}
 			if status.Configured && !status.Running {
 				issues = append(issues, issue{
 					component: "runtime",
 					problem:   "network state exists but runtime is stopped",
-					fix:       startCmd,
+					fix:       initCmd,
 				})
 			}
 			if !status.WireGuard {
 				problem := "wireguard interface is missing or down"
-				if strings.TrimSpace(identity.WGInterface) != "" {
+				if identity.WGInterface != "" {
 					problem = "wireguard interface " + identity.WGInterface + " is missing or down"
 				}
 				issues = append(issues, issue{
 					component: "wireguard",
 					problem:   problem,
-					fix:       startCmd,
+					fix:       initCmd,
 				})
 			}
 			if !status.Corrosion {
 				issues = append(issues, issue{
 					component: "corrosion",
 					problem:   "corrosion container is not healthy",
-					fix:       startCmd,
+					fix:       initCmd,
 				})
 			}
 			if !status.DockerNet {
 				issues = append(issues, issue{
 					component: "docker",
 					problem:   "overlay docker network is missing",
-					fix:       startCmd,
+					fix:       initCmd,
 				})
 			}
 			if !status.WorkerRunning {
 				issues = append(issues, issue{
 					component: "daemon",
 					problem:   "reconcile worker is not running",
-					fix:       daemonStartCmd + " && " + reconcileCmd,
+					fix:       "ployz daemon start",
 				})
 			}
 
@@ -120,7 +114,6 @@ func doctorCmd() *cobra.Command {
 		},
 	}
 
-	nf.Bind(cmd)
-	cmd.Flags().StringVar(&socketPath, "socket", cmdutil.DefaultSocketPath(), "ployzd unix socket path")
+	cf.Bind(cmd)
 	return cmd
 }

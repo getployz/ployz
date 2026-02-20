@@ -7,7 +7,7 @@ import (
 	"ployz/cmd/ployz/cluster"
 	"ployz/cmd/ployz/daemon"
 	"ployz/cmd/ployz/host"
-	"ployz/cmd/ployz/machine"
+	"ployz/cmd/ployz/node"
 
 	"github.com/spf13/cobra"
 )
@@ -18,10 +18,14 @@ func main() {
 		Short: "Container orchestration with overlay networking",
 	}
 
-	root.AddCommand(machine.Cmd())
-	root.AddCommand(host.Cmd())
-	root.AddCommand(daemon.Cmd())
+	root.AddCommand(initCmd())
+	root.AddCommand(node.Cmd())
 	root.AddCommand(cluster.Cmd())
+	root.AddCommand(host.Cmd())
+
+	daemonCmd := daemon.Cmd()
+	daemonCmd.Hidden = true
+	root.AddCommand(daemonCmd)
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

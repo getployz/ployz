@@ -1,4 +1,4 @@
-package machine
+package node
 
 import (
 	"fmt"
@@ -10,18 +10,19 @@ import (
 )
 
 func statusCmd() *cobra.Command {
-	var nf cmdutil.NetworkFlags
-	var socketPath string
+	var cf cmdutil.ClusterFlags
 
 	cmd := &cobra.Command{
 		Use:   "status",
-		Short: "Show network status from ployzd",
+		Short: "Show cluster node status",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			svc, err := service(socketPath)
+			_, svc, err := service(cmd.Context(), &cf)
 			if err != nil {
 				return err
 			}
-			status, err := svc.Status(cmd.Context(), nf.Network)
+			_, cl, _ := cf.Resolve()
+
+			status, err := svc.Status(cmd.Context(), cl.Network)
 			if err != nil {
 				return err
 			}
@@ -38,7 +39,6 @@ func statusCmd() *cobra.Command {
 		},
 	}
 
-	nf.Bind(cmd)
-	cmd.Flags().StringVar(&socketPath, "socket", cmdutil.DefaultSocketPath(), "ployzd unix socket path")
+	cf.Bind(cmd)
 	return cmd
 }

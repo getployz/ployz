@@ -2,13 +2,11 @@ package cluster
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"ployz/cmd/ployz/ui"
-	"ployz/pkg/sdk/client"
 	config "ployz/pkg/sdk/cluster"
-	"ployz/pkg/sdk/defaults"
+	sdkmachine "ployz/pkg/sdk/machine"
 
 	"github.com/spf13/cobra"
 )
@@ -26,8 +24,12 @@ func Cmd() *cobra.Command {
 	cmd.AddCommand(listCmd())
 	cmd.AddCommand(currentCmd())
 	cmd.AddCommand(useCmd())
-	cmd.AddCommand(setCmd())
 	cmd.AddCommand(removeCmd())
+
+	set := setCmd()
+	set.Hidden = true
+	cmd.AddCommand(set)
+
 	return cmd
 }
 
@@ -50,7 +52,7 @@ func runList() error {
 	names := cfg.ClusterNames()
 	if len(names) == 0 {
 		fmt.Println(ui.Muted("no clusters configured"))
-		fmt.Println(ui.Muted("  run: ployz machine start --network <name>"))
+		fmt.Println(ui.Muted("  run: ployz init"))
 		return nil
 	}
 	currentName, _, hasCurrent := cfg.Current()
@@ -62,17 +64,20 @@ func runList() error {
 		if hasCurrent && currentName == name {
 			current = "*"
 		}
+		connType := "-"
+		if len(cl.Connections) > 0 {
+			connType = cl.Connections[0].Type()
+		}
 		rows = append(rows, []string{
 			name,
 			current,
 			valueOrDash(cl.Network),
-			valueOrDash(cl.Socket),
-			valueOrDash(cl.DataRoot),
+			connType,
 		})
 	}
 
 	fmt.Println(ui.Table(
-		[]string{"Name", "Current", "Network", "Socket", "Data Root"},
+		[]string{"Name", "Current", "Network", "Connection"},
 		rows,
 	))
 	fmt.Println(ui.Muted("config: " + cfg.Path()))
@@ -92,11 +97,22 @@ func currentCmd() *cobra.Command {
 			if !ok {
 				return fmt.Errorf("no current cluster configured")
 			}
+			connSummary := "-"
+			if len(cl.Connections) > 0 {
+				c := cl.Connections[0]
+				switch {
+				case c.Unix != "":
+					connSummary = "unix:" + c.Unix
+				case c.SSH != "":
+					connSummary = "ssh:" + c.SSH
+				case c.TCP != "":
+					connSummary = "tcp:" + c.TCP
+				}
+			}
 			fmt.Print(ui.KeyValues("",
 				ui.KV("name", name),
 				ui.KV("network", valueOrDefault(cl.Network, "default")),
-				ui.KV("socket", valueOrDefault(cl.Socket, client.DefaultSocketPath())),
-				ui.KV("data-root", valueOrDefault(cl.DataRoot, defaults.DataRoot())),
+				ui.KV("connection", connSummary),
 			))
 			return nil
 		},
@@ -130,7 +146,6 @@ func useCmd() *cobra.Command {
 func setCmd() *cobra.Command {
 	var network string
 	var socket string
-	var dataRoot string
 	var setCurrent bool
 
 	cmd := &cobra.Command{
@@ -153,20 +168,11 @@ func setCmd() *cobra.Command {
 				entry.Network = strings.TrimSpace(network)
 			}
 			if cmd.Flags().Changed("socket") {
-				entry.Socket = strings.TrimSpace(socket)
-			}
-			if cmd.Flags().Changed("data-root") {
-				entry.DataRoot = strings.TrimSpace(dataRoot)
+				entry.Connections = []config.Connection{{Unix: strings.TrimSpace(socket)}}
 			}
 
 			if strings.TrimSpace(entry.Network) == "" {
 				entry.Network = "default"
-			}
-			if strings.TrimSpace(entry.Socket) == "" {
-				entry.Socket = client.DefaultSocketPath()
-			}
-			if strings.TrimSpace(entry.DataRoot) == "" {
-				entry.DataRoot = defaults.DataRoot()
 			}
 
 			cfg.Upsert(name, entry)
@@ -179,19 +185,12 @@ func setCmd() *cobra.Command {
 			}
 
 			fmt.Println(ui.SuccessMsg("saved cluster %s", ui.Accent(name)))
-			fmt.Print(ui.KeyValues("  ",
-				ui.KV("network", entry.Network),
-				ui.KV("socket", entry.Socket),
-				ui.KV("data-root", entry.DataRoot),
-				ui.KV("current", strconv.FormatBool(cfg.CurrentCluster == name)),
-			))
 			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&network, "network", "", "Network name for this cluster")
 	cmd.Flags().StringVar(&socket, "socket", "", "Daemon socket path for this cluster")
-	cmd.Flags().StringVar(&dataRoot, "data-root", "", "Data root for this cluster")
 	cmd.Flags().BoolVar(&setCurrent, "current", true, "Set this cluster as current")
 	return cmd
 }
@@ -200,7 +199,7 @@ func removeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "remove <name>",
 		Aliases: []string{"rm", "delete"},
-		Short:   "Remove a cluster profile",
+		Short:   "Remove a cluster and tear down its runtime",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := strings.TrimSpace(args[0])
@@ -208,8 +207,21 @@ func removeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if _, ok := cfg.Cluster(name); !ok {
+			cl, ok := cfg.Cluster(name)
+			if !ok {
 				return fmt.Errorf("cluster %q not found", name)
+			}
+
+			// Tear down runtime via daemon.
+			api, dialErr := cl.Dial(cmd.Context())
+			if dialErr == nil {
+				svc := sdkmachine.New(api)
+				if err := svc.Stop(cmd.Context(), cl.Network, true); err != nil {
+					fmt.Println(ui.WarnMsg("could not stop runtime: %v", err))
+				} else {
+					fmt.Println(ui.SuccessMsg("tore down runtime for %s", ui.Accent(cl.Network)))
+				}
+				_ = api.Close()
 			}
 
 			cfg.Delete(name)

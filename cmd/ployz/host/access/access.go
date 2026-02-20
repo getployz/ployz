@@ -14,7 +14,6 @@ import (
 
 	"ployz/cmd/ployz/cmdutil"
 	"ployz/cmd/ployz/ui"
-	"ployz/pkg/sdk/client"
 	sdkmachine "ployz/pkg/sdk/machine"
 
 	"github.com/spf13/cobra"
@@ -27,8 +26,7 @@ type session interface {
 }
 
 func Cmd() *cobra.Command {
-	var nf cmdutil.NetworkFlags
-	var socketPath string
+	var cf cmdutil.ClusterFlags
 
 	cmd := &cobra.Command{
 		Use:   "access",
@@ -48,25 +46,22 @@ func Cmd() *cobra.Command {
 				}
 			}
 
-			resolvedSocket, err := cmdutil.ResolveSocketPath(socketPath)
+			clusterName, api, cl, err := cf.DialService(cmd.Context())
 			if err != nil {
 				return err
 			}
-			api, err := client.NewUnix(resolvedSocket)
-			if err != nil {
-				return fmt.Errorf("connect to daemon: %w", err)
-			}
+			_ = clusterName
 			svc := sdkmachine.New(api)
 
-			status, err := svc.Status(cmd.Context(), nf.Network)
+			status, err := svc.Status(cmd.Context(), cl.Network)
 			if err != nil {
 				return err
 			}
 			if !status.Running {
-				return fmt.Errorf("machine runtime for network %q is not running", nf.Network)
+				return fmt.Errorf("cluster %q is not running", cl.Network)
 			}
 
-			identity, err := svc.Identity(cmd.Context(), nf.Network)
+			identity, err := svc.Identity(cmd.Context(), cl.Network)
 			if err != nil {
 				return err
 			}
@@ -89,7 +84,7 @@ func Cmd() *cobra.Command {
 				networkCIDR = localSubnet.String()
 			}
 
-			endpoint, err := svc.HostAccessEndpoint(cmd.Context(), nf.Network)
+			endpoint, err := svc.HostAccessEndpoint(cmd.Context(), cl.Network)
 			if err != nil {
 				return err
 			}
@@ -100,13 +95,13 @@ func Cmd() *cobra.Command {
 			}
 			hostPub := hostPriv.PublicKey().String()
 
-			if err := svc.AddHostAccessPeer(cmd.Context(), nf.Network, hostPub, hostIP); err != nil {
+			if err := svc.AddHostAccessPeer(cmd.Context(), cl.Network, hostPub, hostIP); err != nil {
 				return fmt.Errorf("configure host access peer: %w", err)
 			}
 
 			sess, err := startSession(
 				cmd.Context(),
-				nf.Network,
+				cl.Network,
 				hostPriv.String(),
 				hostIP,
 				identity.PublicKey,
@@ -114,16 +109,16 @@ func Cmd() *cobra.Command {
 				networkCIDR,
 			)
 			if err != nil {
-				_ = svc.RemoveHostAccessPeer(context.Background(), nf.Network, hostPub, hostIP)
+				_ = svc.RemoveHostAccessPeer(context.Background(), cl.Network, hostPub, hostIP)
 				return fmt.Errorf("start host wireguard access: %w", err)
 			}
 
 			cleanup := func() {
 				_ = sess.Close(context.Background())
-				_ = svc.RemoveHostAccessPeer(context.Background(), nf.Network, hostPub, hostIP)
+				_ = svc.RemoveHostAccessPeer(context.Background(), cl.Network, hostPub, hostIP)
 			}
 
-			fmt.Println(ui.InfoMsg("host access active for network %s", ui.Accent(nf.Network)))
+			fmt.Println(ui.InfoMsg("host access active for cluster %s", ui.Accent(cl.Network)))
 			fmt.Print(ui.KeyValues("  ",
 				ui.KV("interface", sess.InterfaceName()),
 				ui.KV("host ip", hostIP.String()),
@@ -141,10 +136,8 @@ func Cmd() *cobra.Command {
 		},
 	}
 
-	nf.Bind(cmd)
-	_ = cmd.Flags().MarkHidden("data-root")
+	cf.Bind(cmd)
 	_ = cmd.Flags().MarkHidden("helper-image")
-	cmd.Flags().StringVar(&socketPath, "socket", cmdutil.DefaultSocketPath(), "ployzd unix socket path")
 	return cmd
 }
 

@@ -1,19 +1,17 @@
-package machine
+package node
 
 import "github.com/spf13/cobra"
 
 func Cmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "machine",
-		Short: "Manage machine runtime and membership",
+		Use:     "node",
+		Aliases: []string{"machine"},
+		Short:   "Manage cluster nodes",
 	}
-	cmd.AddCommand(startCmd())
-	cmd.AddCommand(stopCmd())
-	cmd.AddCommand(statusCmd())
 	cmd.AddCommand(addCmd())
 	cmd.AddCommand(listCmd())
 	cmd.AddCommand(removeCmd())
-	cmd.AddCommand(reconcileCmd())
+	cmd.AddCommand(statusCmd())
 	cmd.AddCommand(doctorCmd())
 	return cmd
 }
