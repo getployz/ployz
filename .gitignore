@@ -1,0 +1,16 @@
+# Build output
+/bin/
+
+# Environment files
+.env*
+!.env*.example
+
+# IDE
+.vscode/
+.idea/
+.claude/
+.opencode/
+
+# OS
+.git/
+.DS_Store
