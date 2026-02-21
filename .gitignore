@@ -2,6 +2,7 @@
 /bin/
 /ployz
 /dist/
+/install.sh
 
 # Environment files
 .env*
