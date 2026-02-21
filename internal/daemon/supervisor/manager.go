@@ -159,6 +159,8 @@ func (m *Manager) GetIdentity(_ context.Context, network string) (*pb.Identity, 
 		WgPort:              int32(st.WGPort),
 		HelperName:          cfg.HelperName,
 		CorrosionGossipPort: int32(cfg.CorrosionGossip),
+		CorrosionMemberId:   st.CorrosionMemberID,
+		CorrosionApiToken:   st.CorrosionAPIToken,
 		Running:             st.Running,
 	}, nil
 }
@@ -308,11 +310,13 @@ func (m *Manager) applyOnce(ctx context.Context, spec *pb.NetworkSpec) (*pb.Appl
 
 func configFromSpec(spec *pb.NetworkSpec) (netctrl.Config, error) {
 	cfg := netctrl.Config{
-		Network:     defaults.NormalizeNetwork(spec.Network),
-		DataRoot:    strings.TrimSpace(spec.DataRoot),
-		AdvertiseEP: strings.TrimSpace(spec.AdvertiseEndpoint),
-		WGPort:      int(spec.WgPort),
-		HelperImage: strings.TrimSpace(spec.HelperImage),
+		Network:           defaults.NormalizeNetwork(spec.Network),
+		DataRoot:          strings.TrimSpace(spec.DataRoot),
+		AdvertiseEP:       strings.TrimSpace(spec.AdvertiseEndpoint),
+		WGPort:            int(spec.WgPort),
+		CorrosionMemberID: spec.CorrosionMemberId,
+		CorrosionAPIToken: strings.TrimSpace(spec.CorrosionApiToken),
+		HelperImage:       strings.TrimSpace(spec.HelperImage),
 	}
 	for _, bs := range spec.Bootstrap {
 		bs = strings.TrimSpace(bs)

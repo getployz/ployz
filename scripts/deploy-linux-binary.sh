@@ -15,6 +15,8 @@ BIN_PLOYZD="$ROOT_DIR/bin/ployzd-linux-amd64"
 BIN_RUNTIME="$ROOT_DIR/bin/ployz-runtime-linux-amd64"
 DEST_PLOYZD="/usr/local/bin/ployzd"
 DEST_RUNTIME="/usr/local/bin/ployz-runtime"
+UNIT_PLOYZD="$ROOT_DIR/packaging/systemd/ployzd.service"
+UNIT_RUNTIME="$ROOT_DIR/packaging/systemd/ployz-runtime.service"
 
 local_sha256() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -42,6 +44,7 @@ GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "$BIN_PLOYZD" ./cmd/ployzd
 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "$BIN_RUNTIME" ./cmd/ployz-runtime
 
 BINS=("$BIN_PLOYZD:$DEST_PLOYZD" "$BIN_RUNTIME:$DEST_RUNTIME")
+UNITS=("$UNIT_PLOYZD:/etc/systemd/system/ployzd.service" "$UNIT_RUNTIME:/etc/systemd/system/ployz-runtime.service")
 
 for target in "${TARGET_LIST[@]}"; do
   [[ -z "$target" ]] && continue
@@ -68,6 +71,29 @@ for target in "${TARGET_LIST[@]}"; do
       scp -C -P "$SSH_PORT" "$bin_path" "$target:$tmp_path"
     fi
     ssh -p "$SSH_PORT" "$target" "sudo install -m 0755 '$tmp_path' '$dest_path' && rm -f '$tmp_path'"
+    NEEDS_RESTART=1
+  done
+
+  for entry in "${UNITS[@]}"; do
+    unit_src="${entry%%:*}"
+    unit_dest="${entry##*:}"
+    unit_name="$(basename "$unit_dest")"
+    local_sha="$(local_sha256 "$unit_src")"
+    tmp_path="/tmp/${unit_name}-$$"
+
+    remote_sha="$(ssh -p "$SSH_PORT" "$target" "if [ -f '$unit_dest' ]; then sudo ${remote_sha256_cmd} '$unit_dest' | awk '{print \$1}'; fi" 2>/dev/null || true)"
+    if [[ -n "$remote_sha" && "$remote_sha" == "$local_sha" ]]; then
+      echo "   $unit_name unchanged, skipping"
+      continue
+    fi
+
+    echo "   uploading $unit_name"
+    if command -v rsync >/dev/null 2>&1; then
+      rsync -az --progress -e "ssh -p $SSH_PORT" "$unit_src" "$target:$tmp_path"
+    else
+      scp -C -P "$SSH_PORT" "$unit_src" "$target:$tmp_path"
+    fi
+    ssh -p "$SSH_PORT" "$target" "sudo install -m 0644 '$tmp_path' '$unit_dest' && rm -f '$tmp_path'"
     NEEDS_RESTART=1
   done
 

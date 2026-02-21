@@ -234,11 +234,13 @@ func specSignature(spec *pb.NetworkSpec) string {
 
 func configFromSpec(spec *pb.NetworkSpec) (netctrl.Config, error) {
 	cfg := netctrl.Config{
-		Network:     defaults.NormalizeNetwork(spec.Network),
-		DataRoot:    strings.TrimSpace(spec.DataRoot),
-		AdvertiseEP: strings.TrimSpace(spec.AdvertiseEndpoint),
-		WGPort:      int(spec.WgPort),
-		HelperImage: strings.TrimSpace(spec.HelperImage),
+		Network:           defaults.NormalizeNetwork(spec.Network),
+		DataRoot:          strings.TrimSpace(spec.DataRoot),
+		AdvertiseEP:       strings.TrimSpace(spec.AdvertiseEndpoint),
+		WGPort:            int(spec.WgPort),
+		CorrosionMemberID: spec.CorrosionMemberId,
+		CorrosionAPIToken: strings.TrimSpace(spec.CorrosionApiToken),
+		HelperImage:       strings.TrimSpace(spec.HelperImage),
 	}
 	for _, bs := range spec.Bootstrap {
 		bs = strings.TrimSpace(bs)
