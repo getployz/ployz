@@ -59,7 +59,7 @@ esac
 
 # --- version ---
 
-if [ "$PLOYZ_VERSION" = "__PLOYZ_VERSION__" ] || [ -z "$PLOYZ_VERSION" ]; then
+if echo "$PLOYZ_VERSION" | grep -q '^__.*__$' || [ -z "$PLOYZ_VERSION" ]; then
     fatal "PLOYZ_VERSION is not set and no default was baked in"
 fi
 
