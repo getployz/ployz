@@ -82,10 +82,10 @@ func (d *darwinService) Install(ctx context.Context, cfg InstallConfig) error {
 		return fmt.Errorf("write runtime plist: %w", err)
 	}
 
-	if err := launchctlBootstrap(ctx, daemonPath); err != nil {
+	if err := launchctlBootstrap(ctx, daemonLabel, daemonPath); err != nil {
 		return fmt.Errorf("bootstrap daemon: %w", err)
 	}
-	if err := launchctlBootstrap(ctx, runtimePath); err != nil {
+	if err := launchctlBootstrap(ctx, runtimeLabel, runtimePath); err != nil {
 		return fmt.Errorf("bootstrap runtime: %w", err)
 	}
 
@@ -126,9 +126,15 @@ func launchAgentsDir() (string, error) {
 	return filepath.Join(home, "Library", "LaunchAgents"), nil
 }
 
-func launchctlBootstrap(ctx context.Context, plistPath string) error {
+func launchctlBootstrap(ctx context.Context, label, plistPath string) error {
 	uid := fmt.Sprintf("gui/%d", os.Getuid())
 	out, err := exec.CommandContext(ctx, "launchctl", "bootstrap", uid, plistPath).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	// already loaded — bootout and retry
+	_ = launchctlBootout(ctx, label)
+	out, err = exec.CommandContext(ctx, "launchctl", "bootstrap", uid, plistPath).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("launchctl bootstrap: %s: %w", strings.TrimSpace(string(out)), err)
 	}

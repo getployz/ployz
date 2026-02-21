@@ -28,5 +28,8 @@ proto:
 bootstrap *targets:
     ./scripts/bootstrap-remote.sh {{targets}}
 
+deploy *targets:
+    ./scripts/deploy-linux-binary.sh {{targets}}
+
 deploy-linux *targets:
     ./scripts/deploy-linux-binary.sh {{targets}}
