@@ -2,6 +2,9 @@ version: 2
 
 project_name: ployz
 
+release:
+  prerelease: auto
+
 before:
   hooks:
     - go mod tidy
@@ -31,6 +34,46 @@ builds:
     ldflags:
       - -s -w -X ployz/internal/buildinfo.Version={{.Version}}
 
+archives:
+  - id: ployz-bundle
+    ids: [ployz, ployzd, ployz-runtime]
+
+brews:
+  - name: ployz
+    ids: [ployz-bundle]
+    directory: Formula
+    repository:
+      owner: getployz
+      name: ployz
+      branch: main
+      token: "{{ .Env.GITHUB_TOKEN }}"
+    homepage: https://github.com/getployz/ployz
+    description: Ployz CLI, daemon, and runtime
+    license: MIT
+    install: |
+      bin.install "ployz"
+      bin.install "ployzd"
+      bin.install "ployz-runtime"
+    test: |
+      system "#{bin}/ployz", "--help"
+      system "#{bin}/ployzd", "--help"
+      system "#{bin}/ployz-runtime", "--help"
+    caveats: |
+      The formula installs three binaries:
+        - ployz
+        - ployzd
+        - ployz-runtime
+
+      To run daemon and runtime together in user mode:
+        ployz dev run
+    custom_block: |
+      service do
+        run [opt_bin/"ployz", "dev", "run"]
+        keep_alive true
+        log_path var/"log/ployz.log"
+        error_log_path var/"log/ployz.log"
+      end
+
 nfpms:
   - id: ployz-linux
     package_name: ployz
@@ -41,7 +84,7 @@ nfpms:
     license: MIT
     bindir: /usr/local/bin
     formats: [deb, rpm]
-    builds: [ployz, ployzd, ployz-runtime]
+    ids: [ployz, ployzd, ployz-runtime]
     contents:
       - src: packaging/systemd/ployzd.service
         dst: /etc/systemd/system/ployzd.service
