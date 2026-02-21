@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"ployz/cmd/ployz/agent"
 	"ployz/cmd/ployz/cluster"
 	"ployz/cmd/ployz/daemon"
 	devcmd "ployz/cmd/ployz/dev"
@@ -26,12 +27,16 @@ func main() {
 	root.AddCommand(node.Cmd())
 	root.AddCommand(cluster.Cmd())
 	root.AddCommand(host.Cmd())
-	root.AddCommand(runtimecmd.Cmd())
+	root.AddCommand(agent.Cmd())
 	root.AddCommand(devcmd.Cmd())
 
 	daemonCmd := daemon.Cmd()
 	daemonCmd.Hidden = true
 	root.AddCommand(daemonCmd)
+
+	runtimeCmd := runtimecmd.Cmd()
+	runtimeCmd.Hidden = true
+	root.AddCommand(runtimeCmd)
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

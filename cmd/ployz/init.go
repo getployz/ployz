@@ -2,8 +2,9 @@ package main
 
 import (
 	"fmt"
+	"time"
 
-	"ployz/cmd/ployz/cmdutil"
+	"ployz/cmd/ployz/agent"
 	"ployz/cmd/ployz/ui"
 	"ployz/pkg/sdk/client"
 	"ployz/pkg/sdk/cluster"
@@ -52,11 +53,15 @@ func initCmd() *cobra.Command {
 
 			fmt.Println(ui.InfoMsg("initializing cluster %s", ui.Accent(name)))
 
-			if err := cmdutil.EnsureDaemon(cmd.Context(), socketPath, dataRoot); err != nil {
-				return fmt.Errorf("start daemon: %w", err)
+			platform := agent.NewPlatformService()
+			if err := platform.Install(cmd.Context(), agent.InstallConfig{
+				DataRoot:   dataRoot,
+				SocketPath: socketPath,
+			}); err != nil {
+				return fmt.Errorf("install agent: %w", err)
 			}
-			if err := cmdutil.EnsureRuntime(cmd.Context(), dataRoot); err != nil {
-				return fmt.Errorf("start runtime: %w", err)
+			if err := agent.WaitReady(cmd.Context(), socketPath, 15*time.Second); err != nil {
+				return fmt.Errorf("agent not ready: %w", err)
 			}
 
 			api, err := client.NewUnix(socketPath)

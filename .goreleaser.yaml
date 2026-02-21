@@ -50,14 +50,9 @@ homebrew_casks:
     homepage: https://github.com/getployz/ployz
     description: Ployz CLI, daemon, and runtime
     license: MIT
-    caveats: |
-      The cask installs three binaries:
-        - ployz
-        - ployzd
-        - ployz-runtime
-
-      To run daemon and runtime together in user mode:
-        ployz dev run
+    dependencies:
+      - formula: wireguard-tools
+      - cask: docker
     hooks:
       post:
         install: |
@@ -78,6 +73,12 @@ nfpms:
     bindir: /usr/local/bin
     formats: [deb, rpm]
     ids: [ployz, ployzd, ployz-runtime]
+    dependencies:
+      - iproute2
+      - iptables
+      - wireguard-tools
+    recommends:
+      - docker-ce
     contents:
       - src: packaging/systemd/ployzd.service
         dst: /etc/systemd/system/ployzd.service

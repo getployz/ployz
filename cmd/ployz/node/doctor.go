@@ -95,7 +95,7 @@ func doctorCmd() *cobra.Command {
 				issues = append(issues, issue{
 					component: "runtime",
 					problem:   "runtime reconcile loop is not running",
-					fix:       "ployz runtime start",
+					fix:       "ployz agent install",
 				})
 			}
 
