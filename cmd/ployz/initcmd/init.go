@@ -1,4 +1,4 @@
-package main
+package initcmd
 
 import (
 	"fmt"
@@ -16,7 +16,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func initCmd() *cobra.Command {
+func Cmd() *cobra.Command {
 	var (
 		cidr              string
 		advertiseEndpoint string

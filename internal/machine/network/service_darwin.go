@@ -191,7 +191,7 @@ func (h *linuxHelper) ensureRunning(ctx context.Context) error {
 
 	cfg := &container.Config{
 		Image:      h.image,
-		Entrypoint: []string{"sh", "-lc"},
+		Entrypoint: []string{"sh", "-c"},
 		Cmd:        []string{"while true; do sleep 3600; done"},
 	}
 	hostCfg := &container.HostConfig{
@@ -269,7 +269,7 @@ func (h *linuxHelper) runStatus(ctx context.Context, script string) (int64, stri
 	execResp, err := h.cli.ContainerExecCreate(ctx, h.name, container.ExecOptions{
 		AttachStdout: true,
 		AttachStderr: true,
-		Cmd:          []string{"sh", "-lc", script},
+		Cmd:          []string{"sh", "-c", script},
 		Tty:          true,
 	})
 	if err != nil {
@@ -300,6 +300,7 @@ func ensureIptablesRulesWithHelper(ctx context.Context, helper *linuxHelper, wgI
 iface=%q
 bridge=%q
 subnet=%q
+iptables -L DOCKER-USER -n >/dev/null 2>&1 || iptables -N DOCKER-USER
 iptables -C DOCKER-USER -i "$iface" -o "$bridge" -j ACCEPT >/dev/null 2>&1 || iptables -I DOCKER-USER 1 -i "$iface" -o "$bridge" -j ACCEPT
 iptables -t nat -D POSTROUTING -s "$subnet" -o "$iface" -j RETURN >/dev/null 2>&1 || true
 iptables -t nat -I POSTROUTING 1 -s "$subnet" -o "$iface" -j RETURN`, wgIface, bridge, subnet)

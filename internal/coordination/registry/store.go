@@ -48,16 +48,7 @@ CREATE TABLE IF NOT EXISTS %s (
     updated_at TEXT NOT NULL,
     version INTEGER NOT NULL DEFAULT 1
 )`, machinesTable)
-	if err := s.exec(ctx, query); err != nil {
-		return err
-	}
-	if err := s.exec(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN version INTEGER NOT NULL DEFAULT 1", machinesTable)); err != nil {
-		errMsg := strings.ToLower(strings.TrimSpace(err.Error()))
-		if !strings.Contains(errMsg, "duplicate column") {
-			return err
-		}
-	}
-	return nil
+	return s.exec(ctx, query)
 }
 
 func (s Store) EnsureNetworkConfigTable(ctx context.Context) error {

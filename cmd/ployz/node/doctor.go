@@ -40,7 +40,7 @@ func doctorCmd() *cobra.Command {
 				ui.KV("runtime", ui.Bool(status.WorkerRunning)),
 			))
 
-			if status.Configured && status.Running && status.WireGuard && status.Corrosion && status.DockerNet {
+			if status.Configured && status.Running && status.WireGuard && status.Corrosion && status.DockerNet && status.WorkerRunning {
 				fmt.Println(ui.SuccessMsg("no issues detected"))
 				return nil
 			}

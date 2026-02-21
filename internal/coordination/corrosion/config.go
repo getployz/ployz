@@ -13,7 +13,6 @@ import (
 
 type Config struct {
 	Dir          string
-	SchemaPath   string
 	ConfigPath   string
 	AdminSock    string
 	Bootstrap    []string
@@ -32,13 +31,8 @@ func WriteConfig(cfg Config) error {
 	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
 		return fmt.Errorf("create corrosion dir: %w", err)
 	}
-	if err := os.WriteFile(cfg.SchemaPath, []byte(Schema), 0o644); err != nil {
-		return fmt.Errorf("write corrosion schema: %w", err)
-	}
-
 	content := fmt.Sprintf(`[db]
 path = %q
-schema_paths = [%q]
 
 [gossip]
 addr = %q
@@ -50,11 +44,10 @@ disable_gso = true
 
 [api]
 addr = %q
-authz.bearer-token = %q
 
 [admin]
 path = %q
-`, filepath.Join(cfg.Dir, "store.db"), cfg.SchemaPath, cfg.GossipAddr.String(), tomlStringArray(cfg.Bootstrap), cfg.MemberID, cfg.GossipMaxMTU, cfg.APIAddr.String(), cfg.APIToken, cfg.AdminSock)
+`, filepath.Join(cfg.Dir, "store.db"), cfg.GossipAddr.String(), tomlStringArray(cfg.Bootstrap), cfg.MemberID, cfg.GossipMaxMTU, cfg.APIAddr.String(), cfg.AdminSock)
 
 	if err := os.WriteFile(cfg.ConfigPath, []byte(content), 0o600); err != nil {
 		return fmt.Errorf("write corrosion config: %w", err)

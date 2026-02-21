@@ -149,7 +149,7 @@ func (e *Engine) runWorkerLoop(ctx context.Context, spec *pb.NetworkSpec) {
 			}
 			continue
 		}
-		_, startErr := ctrl.Start(ctx, cfg)
+		runtimeCfg, startErr := ctrl.Start(ctx, cfg)
 		_ = ctrl.Close()
 		if startErr != nil {
 			_ = e.store.SetRuntimeStatus(network, false, startErr.Error())
@@ -162,7 +162,7 @@ func (e *Engine) runWorkerLoop(ctx context.Context, spec *pb.NetworkSpec) {
 		_ = e.store.SetRuntimeStatus(network, true, "")
 
 		worker := reconcile.Worker{
-			Spec: cfg,
+			Spec: runtimeCfg,
 			OnFailure: func(err error) {
 				if err == nil {
 					return

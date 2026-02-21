@@ -291,27 +291,8 @@ CREATE TABLE IF NOT EXISTS network_state (
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize machine db schema: %w", err)
 	}
-	if err := addStateColumnIfMissing(db, "ALTER TABLE network_state ADD COLUMN corrosion_member_id INTEGER NOT NULL DEFAULT 0"); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if err := addStateColumnIfMissing(db, "ALTER TABLE network_state ADD COLUMN corrosion_api_token TEXT NOT NULL DEFAULT ''"); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
 
 	return db, nil
-}
-
-func addStateColumnIfMissing(db *sql.DB, query string) error {
-	if _, err := db.Exec(query); err != nil {
-		errMsg := strings.ToLower(strings.TrimSpace(err.Error()))
-		if strings.Contains(errMsg, "duplicate column") {
-			return nil
-		}
-		return fmt.Errorf("migrate machine db schema: %w", err)
-	}
-	return nil
 }
 
 func machineDBPath(dataDir string) string {

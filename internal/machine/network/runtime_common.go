@@ -96,7 +96,6 @@ func (c *Controller) startRuntime(ctx context.Context, in Config, ops runtimeOps
 	}
 	if err := corrosion.WriteConfig(corrosion.Config{
 		Dir:          cfg.CorrosionDir,
-		SchemaPath:   cfg.CorrosionSchema,
 		ConfigPath:   cfg.CorrosionConfig,
 		AdminSock:    cfg.CorrosionAdminSock,
 		Bootstrap:    cfg.CorrosionBootstrap,

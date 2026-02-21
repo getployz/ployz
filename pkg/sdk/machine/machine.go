@@ -460,7 +460,7 @@ func runDockerExecScript(ctx context.Context, containerName, script string) erro
 }
 
 func runDockerExecScriptOutput(ctx context.Context, containerName, script string) (string, error) {
-	cmd := exec.CommandContext(ctx, "docker", "exec", containerName, "sh", "-lc", script)
+	cmd := exec.CommandContext(ctx, "docker", "exec", containerName, "sh", "-c", script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))

@@ -9,6 +9,7 @@ import (
 	"ployz/cmd/ployz/daemon"
 	devcmd "ployz/cmd/ployz/dev"
 	"ployz/cmd/ployz/host"
+	"ployz/cmd/ployz/initcmd"
 	"ployz/cmd/ployz/node"
 	runtimecmd "ployz/cmd/ployz/runtime"
 	"ployz/internal/buildinfo"
@@ -23,7 +24,7 @@ func main() {
 		Version: buildinfo.Version,
 	}
 
-	root.AddCommand(initCmd())
+	root.AddCommand(initcmd.Cmd())
 	root.AddCommand(node.Cmd())
 	root.AddCommand(cluster.Cmd())
 	root.AddCommand(host.Cmd())
