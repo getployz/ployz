@@ -1,6 +1,6 @@
 //go:build linux || darwin
 
-package machine
+package network
 
 import (
 	"context"
@@ -10,7 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"ployz/internal/machine/registry"
+	"ployz/internal/registry"
+	"ployz/internal/wireguard"
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
@@ -143,7 +144,7 @@ func (c *Controller) UpsertMachine(ctx context.Context, in Config, m Machine) er
 	if _, err := wgtypes.ParseKey(m.PublicKey); err != nil {
 		return fmt.Errorf("parse machine public key: %w", err)
 	}
-	managementIP, err := ManagementIPFromPublicKey(m.PublicKey)
+	managementIP, err := wireguard.ManagementIPFromPublicKey(m.PublicKey)
 	if err != nil {
 		return fmt.Errorf("derive machine management IP: %w", err)
 	}
@@ -215,7 +216,7 @@ func (c *Controller) RemoveMachine(ctx context.Context, in Config, machineID str
 func normalizeRegistryRows(rows []registry.MachineRow) ([]registry.MachineRow, error) {
 	out := make([]registry.MachineRow, len(rows))
 	for i, row := range rows {
-		managementIP, err := ManagementIPFromPublicKey(row.PublicKey)
+		managementIP, err := wireguard.ManagementIPFromPublicKey(row.PublicKey)
 		if err != nil {
 			return nil, fmt.Errorf("derive machine management ip: %w", err)
 		}

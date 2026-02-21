@@ -11,6 +11,7 @@ Practical guidance for coding agents working in this repository.
 ## Ground Rules
 
 - Prefer small, focused changes.
+- Be aggressive about future TODOs: when scope grows, ship a minimal step and leave a clear follow-up TODO for additional functionality instead of trying to do everything in one pass.
 - Match existing patterns before introducing new abstractions.
 - Preserve cross-platform behavior (`linux`, `darwin`, and stubs).
 - Do not silently change CLI behavior without updating command output/help text.

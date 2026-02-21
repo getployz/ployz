@@ -1,4 +1,4 @@
-package machine
+package docker
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"github.com/docker/docker/client"
 )
 
-func waitDockerReady(ctx context.Context, cli *client.Client) error {
+func WaitReady(ctx context.Context, cli *client.Client) error {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {

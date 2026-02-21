@@ -1,12 +1,12 @@
 //go:build !linux && !darwin
 
-package machine
+package network
 
 import (
 	"context"
 	"errors"
 
-	"ployz/internal/machine/registry"
+	"ployz/internal/registry"
 )
 
 func New() (*Controller, error) {

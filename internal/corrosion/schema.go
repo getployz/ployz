@@ -1,4 +1,4 @@
-package corroservice
+package corrosion
 
 const Schema = `
 CREATE TABLE IF NOT EXISTS cluster (

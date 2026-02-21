@@ -14,7 +14,7 @@ import (
 
 	pb "ployz/internal/daemon/pb"
 	"ployz/internal/daemon/supervisor"
-	"ployz/internal/machine/registry"
+	"ployz/internal/registry"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"

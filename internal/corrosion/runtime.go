@@ -1,4 +1,4 @@
-package corroservice
+package corrosion
 
 import (
 	"bytes"

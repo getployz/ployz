@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"time"
 
-	"ployz/internal/machine"
-	"ployz/internal/machine/registry"
+	"ployz/internal/network"
+	"ployz/internal/registry"
 )
 
 type Worker struct {
-	Spec      machine.Config
+	Spec      network.Config
 	OnEvent   func(eventType, message string)
 	OnFailure func(error)
 }
@@ -27,7 +27,7 @@ func (w *Worker) fail(err error) {
 	}
 }
 
-func (w *Worker) reconcileAndReport(ctx context.Context, ctrl *machine.Controller, cfg machine.Config, machines []registry.MachineRow) {
+func (w *Worker) reconcileAndReport(ctx context.Context, ctrl *network.Controller, cfg network.Config, machines []registry.MachineRow) {
 	count, err := ctrl.ReconcilePeers(ctx, cfg, machines)
 	if err != nil {
 		w.emit("reconcile.error", err.Error())
@@ -37,7 +37,7 @@ func (w *Worker) reconcileAndReport(ctx context.Context, ctrl *machine.Controlle
 	w.emit("reconcile.success", fmt.Sprintf("reconciled %d peers", count))
 }
 
-func (w *Worker) refreshAndReconcile(ctx context.Context, reg registry.Store, ctrl *machine.Controller, cfg machine.Config) ([]registry.MachineRow, bool) {
+func (w *Worker) refreshAndReconcile(ctx context.Context, reg registry.Store, ctrl *network.Controller, cfg network.Config) ([]registry.MachineRow, bool) {
 	snap, err := reg.ListMachineRows(ctx)
 	if err != nil {
 		w.emit("reconcile.error", err.Error())
@@ -49,12 +49,12 @@ func (w *Worker) refreshAndReconcile(ctx context.Context, reg registry.Store, ct
 }
 
 func (w *Worker) Run(ctx context.Context) error {
-	cfg, err := machine.NormalizeConfig(w.Spec)
+	cfg, err := network.NormalizeConfig(w.Spec)
 	if err != nil {
 		return err
 	}
 
-	ctrl, err := machine.New()
+	ctrl, err := network.New()
 	if err != nil {
 		return err
 	}
@@ -140,7 +140,7 @@ func applyMachineChange(machines []registry.MachineRow, change registry.MachineC
 func (w *Worker) subscribeMachinesWithRetry(
 	ctx context.Context,
 	reg registry.Store,
-	cfg machine.Config,
+	cfg network.Config,
 ) ([]registry.MachineRow, <-chan registry.MachineChange, error) {
 	for {
 		if err := reg.EnsureMachineTable(ctx); err != nil {

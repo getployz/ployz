@@ -12,8 +12,8 @@ import (
 
 	pb "ployz/internal/daemon/pb"
 	"ployz/internal/daemon/reconcile"
-	"ployz/internal/machine"
-	"ployz/internal/machine/registry"
+	netctrl "ployz/internal/network"
+	"ployz/internal/registry"
 	"ployz/pkg/sdk/defaults"
 )
 
@@ -27,7 +27,7 @@ type Manager struct {
 	ctx      context.Context
 	dataRoot string
 	store    *specStore
-	ctrl     *machine.Controller
+	ctrl     *netctrl.Controller
 	hub      *eventHub
 
 	mu      sync.Mutex
@@ -43,7 +43,7 @@ func New(ctx context.Context, dataRoot string) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	ctrl, err := machine.New()
+	ctrl, err := netctrl.New()
 	if err != nil {
 		_ = store.close()
 		return nil, err
@@ -172,7 +172,7 @@ func (m *Manager) GetIdentity(_ context.Context, network string) (*pb.Identity, 
 	if err != nil {
 		return nil, err
 	}
-	st, err := machine.LoadState(cfg)
+	st, err := netctrl.LoadState(cfg)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("network %q is not initialized", spec.Network)
@@ -226,7 +226,7 @@ func (m *Manager) UpsertMachine(ctx context.Context, network string, entry *pb.M
 		return err
 	}
 
-	err = m.ctrl.UpsertMachine(ctx, cfg, machine.Machine{
+	err = m.ctrl.UpsertMachine(ctx, cfg, netctrl.Machine{
 		ID:              entry.Id,
 		PublicKey:       entry.PublicKey,
 		Subnet:          entry.Subnet,
@@ -394,20 +394,20 @@ func (m *Manager) resolveSpec(network string) (*pb.NetworkSpec, error) {
 	return spec, nil
 }
 
-func (m *Manager) resolveConfig(network string) (*pb.NetworkSpec, machine.Config, error) {
+func (m *Manager) resolveConfig(network string) (*pb.NetworkSpec, netctrl.Config, error) {
 	spec, err := m.resolveSpec(network)
 	if err != nil {
-		return nil, machine.Config{}, err
+		return nil, netctrl.Config{}, err
 	}
 	cfg, err := configFromSpec(spec)
 	if err != nil {
-		return nil, machine.Config{}, err
+		return nil, netctrl.Config{}, err
 	}
 	return spec, cfg, nil
 }
 
-func configFromSpec(spec *pb.NetworkSpec) (machine.Config, error) {
-	cfg := machine.Config{
+func configFromSpec(spec *pb.NetworkSpec) (netctrl.Config, error) {
+	cfg := netctrl.Config{
 		Network:     defaults.NormalizeNetwork(spec.Network),
 		DataRoot:    strings.TrimSpace(spec.DataRoot),
 		AdvertiseEP: strings.TrimSpace(spec.AdvertiseEndpoint),
@@ -425,24 +425,24 @@ func configFromSpec(spec *pb.NetworkSpec) (machine.Config, error) {
 	if strings.TrimSpace(spec.NetworkCidr) != "" {
 		pfx, err := netip.ParsePrefix(strings.TrimSpace(spec.NetworkCidr))
 		if err != nil {
-			return machine.Config{}, fmt.Errorf("parse network cidr: %w", err)
+			return netctrl.Config{}, fmt.Errorf("parse network cidr: %w", err)
 		}
 		cfg.NetworkCIDR = pfx
 	}
 	if strings.TrimSpace(spec.Subnet) != "" {
 		pfx, err := netip.ParsePrefix(strings.TrimSpace(spec.Subnet))
 		if err != nil {
-			return machine.Config{}, fmt.Errorf("parse subnet: %w", err)
+			return netctrl.Config{}, fmt.Errorf("parse subnet: %w", err)
 		}
 		cfg.Subnet = pfx
 	}
 	if strings.TrimSpace(spec.ManagementIp) != "" {
 		addr, err := netip.ParseAddr(strings.TrimSpace(spec.ManagementIp))
 		if err != nil {
-			return machine.Config{}, fmt.Errorf("parse management ip: %w", err)
+			return netctrl.Config{}, fmt.Errorf("parse management ip: %w", err)
 		}
 		cfg.Management = addr
 	}
 
-	return machine.NormalizeConfig(cfg)
+	return netctrl.NormalizeConfig(cfg)
 }

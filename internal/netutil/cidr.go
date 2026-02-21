@@ -1,4 +1,4 @@
-package machine
+package netutil
 
 import (
 	"errors"
@@ -10,11 +10,14 @@ import (
 	"ployz/pkg/ipam"
 )
 
-func ensureUniqueHostCIDR(cfg Config) error {
-	if !cfg.NetworkCIDR.IsValid() || cfg.DataRoot == "" {
+// CIDRLoader loads the CIDR string for a network stored in the given data directory.
+type CIDRLoader func(dataDir string) (string, error)
+
+func EnsureUniqueHostCIDR(networkCIDR netip.Prefix, dataRoot, network string, defaultCIDR netip.Prefix, loadCIDR CIDRLoader) error {
+	if !networkCIDR.IsValid() || dataRoot == "" {
 		return nil
 	}
-	entries, err := os.ReadDir(cfg.DataRoot)
+	entries, err := os.ReadDir(dataRoot)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -23,30 +26,29 @@ func ensureUniqueHostCIDR(cfg Config) error {
 	}
 
 	for _, e := range entries {
-		if !e.IsDir() || e.Name() == cfg.Network {
+		if !e.IsDir() || e.Name() == network {
 			continue
 		}
-		otherStatePath := filepath.Join(cfg.DataRoot, e.Name())
-		s, sErr := loadState(otherStatePath)
+		otherCIDRStr, sErr := loadCIDR(filepath.Join(dataRoot, e.Name()))
 		if sErr != nil {
 			continue
 		}
-		otherCIDR := defaultNetworkPrefix
-		if s.CIDR != "" {
-			parsed, pErr := netip.ParsePrefix(s.CIDR)
+		otherCIDR := defaultCIDR
+		if otherCIDRStr != "" {
+			parsed, pErr := netip.ParsePrefix(otherCIDRStr)
 			if pErr == nil {
 				otherCIDR = parsed
 			}
 		}
-		overlap, oErr := prefixesOverlap(cfg.NetworkCIDR, otherCIDR)
+		overlap, oErr := PrefixesOverlap(networkCIDR, otherCIDR)
 		if oErr != nil {
 			continue
 		}
 		if overlap {
 			return fmt.Errorf(
 				"network %q CIDR %s overlaps with network %q CIDR %s on this host",
-				cfg.Network,
-				cfg.NetworkCIDR,
+				network,
+				networkCIDR,
 				e.Name(),
 				otherCIDR,
 			)
@@ -55,7 +57,7 @@ func ensureUniqueHostCIDR(cfg Config) error {
 	return nil
 }
 
-func prefixesOverlap(a, b netip.Prefix) (bool, error) {
+func PrefixesOverlap(a, b netip.Prefix) (bool, error) {
 	a = a.Masked()
 	b = b.Masked()
 	if !a.IsValid() || !b.IsValid() {

@@ -1,4 +1,4 @@
-package machine
+package network
 
 type Machine struct {
 	ID          string

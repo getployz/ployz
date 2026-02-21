@@ -1,6 +1,6 @@
 //go:build linux || darwin
 
-package machine
+package network
 
 import (
 	"context"
@@ -10,7 +10,8 @@ import (
 	"net/netip"
 	"os"
 
-	"ployz/internal/machine/corroservice"
+	"ployz/internal/corrosion"
+	"ployz/internal/netutil"
 )
 
 type runtimeOps interface {
@@ -27,7 +28,13 @@ func (c *Controller) startRuntime(ctx context.Context, in Config, ops runtimeOps
 	if err != nil {
 		return Config{}, err
 	}
-	if err := ensureUniqueHostCIDR(cfg); err != nil {
+	if err := netutil.EnsureUniqueHostCIDR(cfg.NetworkCIDR, cfg.DataRoot, cfg.Network, defaultNetworkPrefix, func(dataDir string) (string, error) {
+		s, err := loadState(dataDir)
+		if err != nil {
+			return "", err
+		}
+		return s.CIDR, nil
+	}); err != nil {
 		return Config{}, err
 	}
 	if err := ops.Prepare(ctx, cfg); err != nil {
@@ -66,7 +73,7 @@ func (c *Controller) startRuntime(ctx context.Context, in Config, ops runtimeOps
 	if err := ops.ConfigureWireGuard(ctx, cfg, state); err != nil {
 		return Config{}, err
 	}
-	if err := corroservice.WriteConfig(corroservice.Config{
+	if err := corrosion.WriteConfig(corrosion.Config{
 		Dir:          cfg.CorrosionDir,
 		SchemaPath:   cfg.CorrosionSchema,
 		ConfigPath:   cfg.CorrosionConfig,
@@ -79,7 +86,7 @@ func (c *Controller) startRuntime(ctx context.Context, in Config, ops runtimeOps
 	}); err != nil {
 		return Config{}, err
 	}
-	if err := corroservice.Start(ctx, c.cli, corroservice.RuntimeConfig{
+	if err := corrosion.Start(ctx, c.cli, corrosion.RuntimeConfig{
 		Name:       cfg.CorrosionName,
 		Image:      cfg.CorrosionImg,
 		ConfigPath: cfg.CorrosionConfig,
@@ -135,7 +142,7 @@ func (c *Controller) stopRuntime(ctx context.Context, in Config, purge bool, ops
 	if err := ops.CleanupDockerNetwork(ctx, cfg, state); err != nil {
 		return Config{}, err
 	}
-	if err := corroservice.Stop(ctx, c.cli, state.CorrosionName); err != nil {
+	if err := corrosion.Stop(ctx, c.cli, state.CorrosionName); err != nil {
 		return Config{}, err
 	}
 	if err := ops.CleanupWireGuard(ctx, cfg, state); err != nil {

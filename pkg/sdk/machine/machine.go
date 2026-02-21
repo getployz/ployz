@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"ployz/internal/machine/remote"
+	"ployz/internal/remote"
 	"ployz/pkg/ipam"
 	"ployz/pkg/sdk/client"
 	"ployz/pkg/sdk/defaults"

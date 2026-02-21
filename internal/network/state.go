@@ -1,4 +1,4 @@
-package machine
+package network
 
 import (
 	"database/sql"
@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"ployz/internal/wireguard"
 	"ployz/pkg/ipam"
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
@@ -108,7 +109,7 @@ WHERE network = ?`
 		return nil, fmt.Errorf("parse state bootstrap: %w", err)
 	}
 
-	managementIP, err := ManagementIPFromPublicKey(s.WGPublic)
+	managementIP, err := wireguard.ManagementIPFromPublicKey(s.WGPublic)
 	if err != nil {
 		return nil, fmt.Errorf("derive management IP from state key: %w", err)
 	}
@@ -308,7 +309,7 @@ func ensureState(cfg Config) (*State, bool, error) {
 		}
 		cfg.Subnet = subnet
 	}
-	cfg.Management = managementIPFromWGKey(priv.PublicKey())
+	cfg.Management = wireguard.ManagementIPFromWGKey(priv.PublicKey())
 
 	s = &State{
 		Network:       cfg.Network,
