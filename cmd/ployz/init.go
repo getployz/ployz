@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"ployz/cmd/ployz/agent"
+	"ployz/cmd/ployz/cmdutil"
 	"ployz/cmd/ployz/ui"
 	"ployz/pkg/sdk/client"
 	"ployz/pkg/sdk/cluster"
@@ -29,8 +30,8 @@ func initCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "init [name] [user@host]",
-		Short: "Create a cluster and start the daemon",
-		Long:  "Creates a new cluster, starts the local daemon, and optionally adds a remote machine.",
+		Short: "Bootstrap a cluster and install the agent",
+		Long:  "Creates a new cluster, installs the agent if needed, and optionally adds a remote machine.",
 		Args:  cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := "default"
@@ -53,15 +54,17 @@ func initCmd() *cobra.Command {
 
 			fmt.Println(ui.InfoMsg("initializing cluster %s", ui.Accent(name)))
 
-			platform := agent.NewPlatformService()
-			if err := platform.Install(cmd.Context(), agent.InstallConfig{
-				DataRoot:   dataRoot,
-				SocketPath: socketPath,
-			}); err != nil {
-				return fmt.Errorf("install agent: %w", err)
-			}
-			if err := agent.WaitReady(cmd.Context(), socketPath, 15*time.Second); err != nil {
-				return fmt.Errorf("agent not ready: %w", err)
+			if !cmdutil.IsDaemonRunning(cmd.Context(), socketPath) {
+				platform := agent.NewPlatformService()
+				if err := platform.Install(cmd.Context(), agent.InstallConfig{
+					DataRoot:   dataRoot,
+					SocketPath: socketPath,
+				}); err != nil {
+					return fmt.Errorf("install agent: %w", err)
+				}
+				if err := agent.WaitReady(cmd.Context(), socketPath, 15*time.Second); err != nil {
+					return fmt.Errorf("agent not ready: %w", err)
+				}
 			}
 
 			api, err := client.NewUnix(socketPath)

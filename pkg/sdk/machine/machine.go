@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"ployz/internal/buildinfo"
 	"ployz/internal/remote"
 	"ployz/pkg/ipam"
 	"ployz/pkg/sdk/client"
@@ -185,10 +186,7 @@ func (s *Service) AddMachine(ctx context.Context, opts AddOptions) (AddResult, e
 	}
 
 	sshOpts := remote.SSHOptions{Port: opts.SSHPort, KeyPath: opts.SSHKey}
-	if err := remote.RunScript(ctx, target, sshOpts, remote.PreflightScript()); err != nil {
-		return AddResult{}, err
-	}
-	if err := remote.RunScript(ctx, target, sshOpts, remote.EnsureDaemonScript(remoteDaemonSocketPath, remoteRoot)); err != nil {
+	if err := remote.RunScript(ctx, target, sshOpts, remote.InstallScript(buildinfo.Version)); err != nil {
 		return AddResult{}, err
 	}
 

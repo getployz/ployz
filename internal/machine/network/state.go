@@ -415,6 +415,7 @@ func generateCorrosionMemberID() (uint64, error) {
 		return 0, err
 	}
 	v := binary.LittleEndian.Uint64(raw[:])
+	v &^= 1 << 63 // clear high bit — database/sql rejects uint64 > max int64
 	if v == 0 {
 		v = 1
 	}

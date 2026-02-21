@@ -8,6 +8,7 @@ release:
 before:
   hooks:
     - go mod tidy
+    - cmd: sh -c "sed 's/__PLOYZ_VERSION__/{{ .Version }}/g' internal/remote/install.sh > dist/install.sh && chmod +x dist/install.sh"
 
 builds:
   - id: ployz
@@ -87,3 +88,6 @@ nfpms:
     scripts:
       postinstall: packaging/nfpm/postinstall.sh
       postremove: packaging/nfpm/postremove.sh
+
+extra_files:
+  - glob: dist/install.sh

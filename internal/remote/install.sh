@@ -1,0 +1,201 @@
+#!/bin/sh
+set -eu
+
+PLOYZ_VERSION="${PLOYZ_VERSION:-__PLOYZ_VERSION__}"
+GITHUB_REPO="getployz/ployz"
+
+# --- helpers ---
+
+info()  { echo "[ployz] $*"; }
+fatal() { echo "[ployz] ERROR: $*" >&2; exit 1; }
+
+has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+download() {
+    url=$1; dest=$2
+    if has_cmd curl; then
+        curl -fsSL -o "$dest" "$url"
+    elif has_cmd wget; then
+        wget -qO "$dest" "$url"
+    else
+        fatal "curl or wget is required"
+    fi
+}
+
+checksum() {
+    file=$1
+    if has_cmd sha256sum; then
+        sha256sum "$file" | awk '{print $1}'
+    elif has_cmd shasum; then
+        shasum -a 256 "$file" | awk '{print $1}'
+    else
+        fatal "sha256sum or shasum is required"
+    fi
+}
+
+# --- root check ---
+
+if [ "$(id -u)" -ne 0 ]; then
+    fatal "must be run as root"
+fi
+
+# --- platform ---
+
+OS=$(uname -s)
+case "$OS" in
+    Linux)  PLATFORM="linux" ;;
+    Darwin) PLATFORM="darwin" ;;
+    *) fatal "unsupported OS: $OS" ;;
+esac
+
+# --- architecture ---
+
+UNAME_M=$(uname -m)
+case "$UNAME_M" in
+    x86_64|amd64)  ARCH="amd64" ;;
+    aarch64|arm64) ARCH="arm64" ;;
+    *) fatal "unsupported architecture: $UNAME_M" ;;
+esac
+
+# --- version ---
+
+if [ "$PLOYZ_VERSION" = "__PLOYZ_VERSION__" ] || [ -z "$PLOYZ_VERSION" ]; then
+    fatal "PLOYZ_VERSION is not set and no default was baked in"
+fi
+
+# strip leading v if present
+PLOYZ_VERSION=$(echo "$PLOYZ_VERSION" | sed 's/^v//')
+
+info "installing ployz $PLOYZ_VERSION ($PLATFORM/$ARCH)"
+
+# --- idempotency: skip if correct version already installed ---
+
+if has_cmd ployzd; then
+    INSTALLED=$(ployzd --version 2>/dev/null || true)
+    if [ "$INSTALLED" = "$PLOYZ_VERSION" ] || [ "$INSTALLED" = "v$PLOYZ_VERSION" ]; then
+        info "ployz $PLOYZ_VERSION is already installed"
+        if [ "$PLATFORM" = "linux" ]; then
+            systemctl enable --now ployzd.service ployz-runtime.service >/dev/null 2>&1 || true
+            for i in $(seq 1 30); do
+                if [ -S /var/run/ployzd.sock ]; then
+                    exit 0
+                fi
+                sleep 1
+            done
+            fatal "ployzd did not become ready at /var/run/ployzd.sock"
+        fi
+        exit 0
+    fi
+fi
+
+# --- download checksums ---
+
+BASE_URL="https://github.com/${GITHUB_REPO}/releases/download/v${PLOYZ_VERSION}"
+CHECKSUMS_PATH="/tmp/ployz_checksums.txt"
+
+info "downloading checksums"
+download "${BASE_URL}/checksums.txt" "$CHECKSUMS_PATH"
+
+# --- platform-specific install ---
+
+if [ "$PLATFORM" = "linux" ]; then
+    # --- Linux: .deb or .rpm ---
+
+    if has_cmd apt-get; then
+        PKG_MGR="apt"
+        PKG_EXT="deb"
+    elif has_cmd dnf; then
+        PKG_MGR="dnf"
+        PKG_EXT="rpm"
+    elif has_cmd yum; then
+        PKG_MGR="yum"
+        PKG_EXT="rpm"
+    else
+        fatal "no supported package manager found (need apt-get, dnf, or yum)"
+    fi
+
+    PKG_FILE="ployz_${PLOYZ_VERSION}_${ARCH}.${PKG_EXT}"
+    PKG_PATH="/tmp/${PKG_FILE}"
+
+    info "downloading ${PKG_FILE}"
+    download "${BASE_URL}/${PKG_FILE}" "$PKG_PATH"
+
+    EXPECTED=$(grep "${PKG_FILE}" "$CHECKSUMS_PATH" | awk '{print $1}')
+    if [ -z "$EXPECTED" ]; then
+        fatal "${PKG_FILE} not found in checksums.txt"
+    fi
+    ACTUAL=$(checksum "$PKG_PATH")
+    if [ "$ACTUAL" != "$EXPECTED" ]; then
+        fatal "checksum mismatch: expected ${EXPECTED}, got ${ACTUAL}"
+    fi
+    info "checksum verified"
+
+    info "installing via ${PKG_MGR}"
+    case "$PKG_MGR" in
+        apt) apt-get install -y "$PKG_PATH" ;;
+        dnf) dnf install -y "$PKG_PATH" ;;
+        yum) yum install -y "$PKG_PATH" ;;
+    esac
+
+    rm -f "$PKG_PATH"
+
+else
+    # --- macOS: archive tarball ---
+
+    ARCHIVE_FILE="ployz_${PLOYZ_VERSION}_${PLATFORM}_${ARCH}.tar.gz"
+    ARCHIVE_PATH="/tmp/${ARCHIVE_FILE}"
+
+    info "downloading ${ARCHIVE_FILE}"
+    download "${BASE_URL}/${ARCHIVE_FILE}" "$ARCHIVE_PATH"
+
+    EXPECTED=$(grep "${ARCHIVE_FILE}" "$CHECKSUMS_PATH" | awk '{print $1}')
+    if [ -z "$EXPECTED" ]; then
+        fatal "${ARCHIVE_FILE} not found in checksums.txt"
+    fi
+    ACTUAL=$(checksum "$ARCHIVE_PATH")
+    if [ "$ACTUAL" != "$EXPECTED" ]; then
+        fatal "checksum mismatch: expected ${EXPECTED}, got ${ACTUAL}"
+    fi
+    info "checksum verified"
+
+    EXTRACT_DIR="/tmp/ployz_extract_$$"
+    mkdir -p "$EXTRACT_DIR"
+    tar -xzf "$ARCHIVE_PATH" -C "$EXTRACT_DIR"
+
+    for bin in ployz ployzd ployz-runtime; do
+        found=$(find "$EXTRACT_DIR" -name "$bin" -type f | head -1)
+        if [ -z "$found" ]; then
+            fatal "binary $bin not found in archive"
+        fi
+        install -m 755 "$found" /usr/local/bin/"$bin"
+    done
+
+    rm -rf "$EXTRACT_DIR" "$ARCHIVE_PATH"
+fi
+
+rm -f "$CHECKSUMS_PATH"
+
+# --- check docker ---
+
+if ! has_cmd docker; then
+    fatal "docker is not installed — install Docker first (https://docs.docker.com/engine/install/)"
+fi
+if ! docker info >/dev/null 2>&1; then
+    fatal "docker daemon is not running"
+fi
+
+# --- Linux: wait for socket ---
+
+if [ "$PLATFORM" = "linux" ]; then
+    info "waiting for ployzd"
+    for i in $(seq 1 30); do
+        if [ -S /var/run/ployzd.sock ]; then
+            info "ployz $PLOYZ_VERSION installed and running"
+            exit 0
+        fi
+        sleep 1
+    done
+    fatal "ployzd did not become ready at /var/run/ployzd.sock within 30s"
+fi
+
+info "ployz $PLOYZ_VERSION installed"
