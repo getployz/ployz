@@ -19,13 +19,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
-
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/go-build
-          key: go-build-${{ runner.os }}-${{ hashFiles('go.sum') }}
-          restore-keys: go-build-${{ runner.os }}-
 
       - uses: goreleaser/goreleaser-action@v6
         with:

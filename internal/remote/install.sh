@@ -94,7 +94,7 @@ BASE_URL="https://github.com/${GITHUB_REPO}/releases/download/v${PLOYZ_VERSION}"
 CHECKSUMS_PATH="/tmp/ployz_checksums.txt"
 
 info "downloading checksums"
-download "${BASE_URL}/checksums.txt" "$CHECKSUMS_PATH"
+download "${BASE_URL}/ployz_${PLOYZ_VERSION}_checksums.txt" "$CHECKSUMS_PATH"
 
 # --- platform-specific install ---
 
