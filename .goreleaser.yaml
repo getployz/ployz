@@ -10,7 +10,7 @@ release:
 before:
   hooks:
     - go mod tidy
-    - sh -c "sed 's/__PLOYZ_VERSION__/{{ .Version }}/g' internal/remote/install.sh > dist/install.sh && chmod +x dist/install.sh"
+    - sh -c "mkdir -p dist && sed 's/__PLOYZ_VERSION__/{{ .Version }}/g' internal/remote/install.sh > dist/install.sh && chmod +x dist/install.sh"
 
 builds:
   - id: ployz
