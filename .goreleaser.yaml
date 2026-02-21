@@ -38,41 +38,34 @@ archives:
   - id: ployz-bundle
     ids: [ployz, ployzd, ployz-runtime]
 
-brews:
+homebrew_casks:
   - name: ployz
     ids: [ployz-bundle]
-    directory: Formula
+    directory: Casks
     repository:
       owner: getployz
-      name: ployz
+      name: homebrew-ployz
       branch: main
-      token: "{{ .Env.GITHUB_TOKEN }}"
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: https://github.com/getployz/ployz
     description: Ployz CLI, daemon, and runtime
     license: MIT
-    install: |
-      bin.install "ployz"
-      bin.install "ployzd"
-      bin.install "ployz-runtime"
-    test: |
-      system "#{bin}/ployz", "--help"
-      system "#{bin}/ployzd", "--help"
-      system "#{bin}/ployz-runtime", "--help"
     caveats: |
-      The formula installs three binaries:
+      The cask installs three binaries:
         - ployz
         - ployzd
         - ployz-runtime
 
       To run daemon and runtime together in user mode:
         ployz dev run
-    custom_block: |
-      service do
-        run [opt_bin/"ployz", "dev", "run"]
-        keep_alive true
-        log_path var/"log/ployz.log"
-        error_log_path var/"log/ployz.log"
-      end
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            %w[ployz ployzd ployz-runtime].each do |b|
+              system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/#{b}"]
+            end
+          end
 
 nfpms:
   - id: ployz-linux

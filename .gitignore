@@ -1,6 +1,7 @@
 # Build output
 /bin/
 /ployz
+/dist/
 
 # Environment files
 .env*
