@@ -5,12 +5,13 @@ project_name: ployz
 release:
   prerelease: auto
   extra_files:
-    - glob: dist/install.sh
+    - glob: /tmp/ployz_install.sh
+      name_template: install.sh
 
 before:
   hooks:
     - go mod tidy
-    - sh -c "mkdir -p dist && sed 's/__PLOYZ_VERSION__/{{ .Version }}/g' internal/remote/install.sh > dist/install.sh && chmod +x dist/install.sh"
+    - sh -c "sed 's/__PLOYZ_VERSION__/{{ .Version }}/g' internal/remote/install.sh > /tmp/ployz_install.sh && chmod +x /tmp/ployz_install.sh"
 
 builds:
   - id: ployz
