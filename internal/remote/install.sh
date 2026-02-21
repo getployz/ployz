@@ -175,14 +175,63 @@ fi
 
 rm -f "$CHECKSUMS_PATH"
 
-# --- check docker ---
+# --- docker ---
 
-if ! has_cmd docker; then
-    fatal "docker is not installed — install Docker first (https://docs.docker.com/engine/install/)"
-fi
-if ! docker info >/dev/null 2>&1; then
-    fatal "docker daemon is not running"
-fi
+install_docker() {
+    if has_cmd docker; then
+        info "docker is already installed"
+        return
+    fi
+
+    info "installing docker"
+
+    if [ "$PLATFORM" != "linux" ]; then
+        fatal "docker must be installed manually on macOS — https://orbstack.dev"
+    fi
+
+    # try the official convenience script first
+    if has_cmd curl; then
+        curl -fsSL https://get.docker.com | sh
+    elif has_cmd wget; then
+        wget -qO- https://get.docker.com | sh
+    else
+        fatal "curl or wget is required to install docker"
+    fi
+
+    if ! has_cmd docker; then
+        fatal "docker installation failed — install manually: https://docs.docker.com/engine/install/"
+    fi
+
+    info "docker installed"
+}
+
+start_docker() {
+    if docker info >/dev/null 2>&1; then
+        return
+    fi
+
+    info "starting docker"
+
+    if has_cmd systemctl; then
+        systemctl enable --now docker >/dev/null 2>&1
+    elif has_cmd service; then
+        service docker start >/dev/null 2>&1
+    else
+        fatal "could not start docker — no service manager found"
+    fi
+
+    # wait for daemon to be ready
+    for i in $(seq 1 30); do
+        if docker info >/dev/null 2>&1; then
+            return
+        fi
+        sleep 1
+    done
+    fatal "docker daemon did not start within 30s"
+}
+
+install_docker
+start_docker
 
 # --- Linux: wait for socket ---
 
