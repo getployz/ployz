@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"ployz/internal/registry"
-	"ployz/internal/wireguard"
+	"ployz/internal/coordination/registry"
+	"ployz/internal/platform/wireguard"
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
@@ -32,7 +32,7 @@ func (c *Controller) Reconcile(ctx context.Context, in Config) (int, error) {
 		return 0, err
 	}
 
-	r := registry.New(cfg.CorrosionAPIAddr)
+	r := registry.New(cfg.CorrosionAPIAddr, cfg.CorrosionAPIToken)
 	if err := r.EnsureMachineTable(ctx); err != nil {
 		return 0, err
 	}
@@ -81,7 +81,7 @@ func (c *Controller) ListMachines(ctx context.Context, in Config) ([]Machine, er
 		return nil, err
 	}
 
-	r := registry.New(cfg.CorrosionAPIAddr)
+	r := registry.New(cfg.CorrosionAPIAddr, cfg.CorrosionAPIToken)
 	if err := r.EnsureMachineTable(ctx); err != nil {
 		return nil, err
 	}
@@ -161,7 +161,7 @@ func (c *Controller) UpsertMachine(ctx context.Context, in Config, m Machine) er
 		}
 	}
 
-	r := registry.New(cfg.CorrosionAPIAddr)
+	r := registry.New(cfg.CorrosionAPIAddr, cfg.CorrosionAPIToken)
 	if err := r.EnsureMachineTable(ctx); err != nil {
 		return err
 	}
@@ -202,7 +202,7 @@ func (c *Controller) RemoveMachine(ctx context.Context, in Config, machineID str
 		return fmt.Errorf("machine id is required")
 	}
 
-	r := registry.New(cfg.CorrosionAPIAddr)
+	r := registry.New(cfg.CorrosionAPIAddr, cfg.CorrosionAPIToken)
 	if err := r.EnsureMachineTable(ctx); err != nil {
 		return err
 	}
@@ -238,7 +238,7 @@ func (c *Controller) reconcilePeerRows(ctx context.Context, cfg Config, s *State
 			continue
 		}
 		peers = append(peers, Peer{
-			PublicKey:   row.PublicKey,
+			PublicKey:  row.PublicKey,
 			Subnet:     row.Subnet,
 			Management: row.Management,
 			Endpoint:   row.Endpoint,

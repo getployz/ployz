@@ -31,7 +31,7 @@ func statusCmd() *cobra.Command {
 				ui.KV("wireguard", ui.Bool(status.WireGuard)),
 				ui.KV("corrosion", ui.Bool(status.Corrosion)),
 				ui.KV("docker", ui.Bool(status.DockerNet)),
-				ui.KV("worker", ui.Bool(status.WorkerRunning)),
+				ui.KV("runtime", ui.Bool(status.WorkerRunning)),
 				ui.KV("state", status.StatePath),
 			))
 			return nil

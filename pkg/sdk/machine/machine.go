@@ -179,12 +179,16 @@ func (s *Service) AddMachine(ctx context.Context, opts AddOptions) (AddResult, e
 		return AddResult{}, fmt.Errorf("parse local management ip: %w", err)
 	}
 	bootstrap := collectBootstrapAddrs(localMachines, localMgmtIP, gossipPort)
+	remoteRoot := remoteDataRoot(opts.DataRoot)
+	if remoteRoot != remoteLinuxDataRoot {
+		return AddResult{}, fmt.Errorf("remote service mode currently supports data root %q only", remoteLinuxDataRoot)
+	}
 
 	sshOpts := remote.SSHOptions{Port: opts.SSHPort, KeyPath: opts.SSHKey}
 	if err := remote.RunScript(ctx, target, sshOpts, remote.PreflightScript()); err != nil {
 		return AddResult{}, err
 	}
-	if err := remote.RunScript(ctx, target, sshOpts, remote.EnsureDaemonScript(remoteDaemonSocketPath, remoteDataRoot(opts.DataRoot))); err != nil {
+	if err := remote.RunScript(ctx, target, sshOpts, remote.EnsureDaemonScript(remoteDaemonSocketPath, remoteRoot)); err != nil {
 		return AddResult{}, err
 	}
 
@@ -196,13 +200,16 @@ func (s *Service) AddMachine(ctx context.Context, opts AddOptions) (AddResult, e
 	if err != nil {
 		return AddResult{}, fmt.Errorf("connect to remote daemon: %w", err)
 	}
+	defer func() { _ = remoteAPI.Close() }()
 
 	if _, err := remoteAPI.ApplyNetworkSpec(ctx, types.NetworkSpec{
 		Network:           network,
-		DataRoot:          remoteDataRoot(opts.DataRoot),
+		DataRoot:          remoteRoot,
 		NetworkCIDR:       networkCIDR.String(),
 		Subnet:            remoteSubnet.String(),
 		WGPort:            opts.WGPort,
+		CorrosionMemberID: localIdentity.CorrosionMemberID,
+		CorrosionAPIToken: localIdentity.CorrosionAPIToken,
 		AdvertiseEndpoint: remoteEP,
 		Bootstrap:         bootstrap,
 	}); err != nil {
@@ -232,14 +239,6 @@ func (s *Service) AddMachine(ctx context.Context, opts AddOptions) (AddResult, e
 
 	waitCtx, cancel := context.WithTimeout(ctx, addWaitTimeout)
 	defer cancel()
-	localEvents, err := s.api.StreamEvents(waitCtx, network)
-	if err != nil {
-		return AddResult{}, err
-	}
-	remoteEvents, err := remoteAPI.StreamEvents(waitCtx, network)
-	if err != nil {
-		return AddResult{}, err
-	}
 
 	if err := s.api.TriggerReconcile(waitCtx, network); err != nil {
 		return AddResult{}, err
@@ -248,10 +247,10 @@ func (s *Service) AddMachine(ctx context.Context, opts AddOptions) (AddResult, e
 		return AddResult{}, err
 	}
 
-	if err := waitForReconcile(waitCtx, "local", localEvents); err != nil {
+	if err := waitForMachine(waitCtx, s.api, network, entry.ID, "local"); err != nil {
 		return AddResult{}, err
 	}
-	if err := waitForReconcile(waitCtx, "remote", remoteEvents); err != nil {
+	if err := waitForMachine(waitCtx, remoteAPI, network, localIdentity.ID, "remote"); err != nil {
 		return AddResult{}, err
 	}
 
@@ -262,23 +261,28 @@ func (s *Service) AddMachine(ctx context.Context, opts AddOptions) (AddResult, e
 	return AddResult{Machine: entry, Peers: len(machines)}, nil
 }
 
-func waitForReconcile(ctx context.Context, who string, events <-chan types.Event) error {
+func waitForMachine(ctx context.Context, api client.API, network, machineID, who string) error {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	machineID = strings.TrimSpace(machineID)
+	if machineID == "" {
+		return fmt.Errorf("wait for %s daemon converge: machine id is required", who)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("wait for %s daemon converge: %w", who, ctx.Err())
-		case ev, ok := <-events:
-			if !ok {
-				return fmt.Errorf("%s daemon event stream closed before convergence", who)
+		case <-ticker.C:
+			machines, err := api.ListMachines(ctx, network)
+			if err != nil {
+				continue
 			}
-			switch ev.Type {
-			case "reconcile.success":
-				return nil
-			case "reconcile.error", "worker.error":
-				if strings.TrimSpace(ev.Message) == "" {
-					return fmt.Errorf("%s daemon reported %s", who, ev.Type)
+			for _, m := range machines {
+				if strings.TrimSpace(m.ID) == machineID {
+					return nil
 				}
-				return fmt.Errorf("%s daemon %s: %s", who, ev.Type, ev.Message)
 			}
 		}
 	}

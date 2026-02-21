@@ -9,9 +9,10 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"strings"
 
-	"ployz/internal/corrosion"
-	"ployz/internal/netutil"
+	"ployz/internal/coordination/corrosion"
+	"ployz/internal/platform/netutil"
 )
 
 type runtimeOps interface {
@@ -64,6 +65,26 @@ func (c *Controller) startRuntime(ctx context.Context, in Config, ops runtimeOps
 	if cfg.NetworkCIDR.IsValid() {
 		state.CIDR = cfg.NetworkCIDR.String()
 	}
+	if cfg.CorrosionMemberID != 0 {
+		if state.CorrosionMemberID != 0 && cfg.CorrosionMemberID != state.CorrosionMemberID {
+			return Config{}, fmt.Errorf("network %q already initialized with corrosion member id %d", cfg.Network, state.CorrosionMemberID)
+		}
+		state.CorrosionMemberID = cfg.CorrosionMemberID
+	}
+	if cfg.CorrosionAPIToken != "" {
+		if strings.TrimSpace(state.CorrosionAPIToken) != "" && cfg.CorrosionAPIToken != state.CorrosionAPIToken {
+			return Config{}, fmt.Errorf("network %q already initialized with different corrosion api token", cfg.Network)
+		}
+		state.CorrosionAPIToken = cfg.CorrosionAPIToken
+	}
+	if state.CorrosionMemberID == 0 || strings.TrimSpace(state.CorrosionAPIToken) == "" {
+		memberID, apiToken, err := ensureCorrosionSecurity(state.CorrosionMemberID, state.CorrosionAPIToken)
+		if err != nil {
+			return Config{}, err
+		}
+		state.CorrosionMemberID = memberID
+		state.CorrosionAPIToken = apiToken
+	}
 
 	cfg, err = Resolve(cfg, state)
 	if err != nil {
@@ -80,7 +101,9 @@ func (c *Controller) startRuntime(ctx context.Context, in Config, ops runtimeOps
 		AdminSock:    cfg.CorrosionAdminSock,
 		Bootstrap:    cfg.CorrosionBootstrap,
 		GossipAddr:   cfg.CorrosionGossipAP,
+		MemberID:     cfg.CorrosionMemberID,
 		APIAddr:      cfg.CorrosionAPIAddr,
+		APIToken:     cfg.CorrosionAPIToken,
 		GossipMaxMTU: corrosionGossipMaxMTU(cfg.CorrosionGossipIP),
 		User:         cfg.CorrosionUser,
 	}); err != nil {
@@ -93,6 +116,7 @@ func (c *Controller) startRuntime(ctx context.Context, in Config, ops runtimeOps
 		DataDir:    cfg.CorrosionDir,
 		User:       cfg.CorrosionUser,
 		APIAddr:    cfg.CorrosionAPIAddr,
+		APIToken:   cfg.CorrosionAPIToken,
 	}); err != nil {
 		return Config{}, err
 	}

@@ -11,10 +11,10 @@ fi
 
 SSH_PORT="${SSH_PORT:-22}"
 TARGETS_RAW="${TARGETS:-}"
-BIN_PLOYZ="$ROOT_DIR/bin/ployz-linux-amd64"
 BIN_PLOYZD="$ROOT_DIR/bin/ployzd-linux-amd64"
-DEST_PLOYZ="/usr/local/bin/ployz"
+BIN_RUNTIME="$ROOT_DIR/bin/ployz-runtime-linux-amd64"
 DEST_PLOYZD="/usr/local/bin/ployzd"
+DEST_RUNTIME="/usr/local/bin/ployz-runtime"
 
 local_sha256() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -38,15 +38,15 @@ fi
 read -r -a TARGET_LIST <<<"$TARGETS_RAW"
 
 echo "==> Building Linux binaries"
-# GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "$BIN_PLOYZ" ./cmd/ployz
 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "$BIN_PLOYZD" ./cmd/ployzd
+GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "$BIN_RUNTIME" ./cmd/ployz-runtime
 
-# BINS=("$BIN_PLOYZ:$DEST_PLOYZ" "$BIN_PLOYZD:$DEST_PLOYZD")
-BINS=("$BIN_PLOYZD:$DEST_PLOYZD")
+BINS=("$BIN_PLOYZD:$DEST_PLOYZD" "$BIN_RUNTIME:$DEST_RUNTIME")
 
 for target in "${TARGET_LIST[@]}"; do
   [[ -z "$target" ]] && continue
   echo "==> Deploying to $target"
+  NEEDS_RESTART=0
 
   for entry in "${BINS[@]}"; do
     bin_path="${entry%%:*}"
@@ -71,9 +71,9 @@ for target in "${TARGET_LIST[@]}"; do
     NEEDS_RESTART=1
   done
 
-  if [[ "${NEEDS_RESTART:-}" == "1" ]]; then
-    echo "   restarting ployzd"
-    ssh -p "$SSH_PORT" "$target" "sudo pkill ployzd || true; sleep 1; sudo rm -f /var/run/ployzd.sock"
+  if [[ "$NEEDS_RESTART" == "1" ]]; then
+    echo "   restarting ployzd and ployz-runtime"
+    ssh -p "$SSH_PORT" "$target" "sudo systemctl daemon-reload || true; sudo systemctl restart ployzd.service ployz-runtime.service"
   fi
 done
 

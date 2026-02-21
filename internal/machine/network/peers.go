@@ -13,7 +13,7 @@ import (
 const peerKeepalive = 25 * time.Second
 
 type Peer struct {
-	PublicKey   string
+	PublicKey  string
 	Subnet     string
 	Management string
 	Endpoint   string

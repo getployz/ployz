@@ -1,0 +1,15 @@
+[Unit]
+Description=Ployz control plane daemon
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ployzd --socket /var/run/ployzd.sock --data-root /var/lib/ployz/networks
+Restart=always
+RestartSec=2
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

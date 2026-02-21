@@ -12,13 +12,13 @@ import (
 )
 
 const (
-	defaultDarwinHelper = "ghcr.io/linuxserver/wireguard:latest"
-	defaultCorrosionImg = "ghcr.io/psviderski/corrosion:latest"
+	defaultDarwinHelper = "ghcr.io/linuxserver/wireguard@sha256:2c33534e332d158e6cfebebef23acc044586b6f285ad422b92b03870db98cccd"
+	defaultCorrosionImg = "ghcr.io/psviderski/corrosion@sha256:66f5ff30bf2d35d134973dab501380c6cf4c81134205fcf3b3528a605541aafd"
 	defaultWireGuardMTU = 1280
 )
 
 var (
-	defaultNetworkPrefix         = netip.MustParsePrefix("10.210.0.0/16")
+	defaultNetworkPrefix        = netip.MustParsePrefix("10.210.0.0/16")
 	defaultCorrosionBootstrapIP = netip.MustParseAddr("127.0.0.1")
 )
 
@@ -46,6 +46,8 @@ type Config struct {
 	CorrosionAdminSock string
 	CorrosionAPIPort   int
 	CorrosionGossip    int
+	CorrosionMemberID  uint64
+	CorrosionAPIToken  string
 	CorrosionBootstrap []string
 	CorrosionGossipIP  netip.Addr
 	CorrosionAPIAddr   netip.AddrPort
@@ -95,6 +97,7 @@ func NormalizeConfig(cfg Config) (Config, error) {
 	for i := range cfg.CorrosionBootstrap {
 		cfg.CorrosionBootstrap[i] = strings.TrimSpace(cfg.CorrosionBootstrap[i])
 	}
+	cfg.CorrosionAPIToken = strings.TrimSpace(cfg.CorrosionAPIToken)
 
 	cfg.CorrosionDir = filepath.Join(cfg.DataDir, "corrosion")
 	cfg.CorrosionConfig = filepath.Join(cfg.CorrosionDir, "config.toml")

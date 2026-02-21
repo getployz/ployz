@@ -9,8 +9,8 @@ import (
 	"net/netip"
 	"os"
 
-	"ployz/internal/docker"
-	"ployz/internal/wireguard"
+	"ployz/internal/platform/docker"
+	"ployz/internal/platform/wireguard"
 
 	dockernetwork "github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"

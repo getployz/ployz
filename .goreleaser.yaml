@@ -1,0 +1,52 @@
+version: 2
+
+project_name: ployz
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: ployz
+    main: ./cmd/ployz
+    binary: ployz
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X ployz/internal/buildinfo.Version={{.Version}}
+
+  - id: ployzd
+    main: ./cmd/ployzd
+    binary: ployzd
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X ployz/internal/buildinfo.Version={{.Version}}
+
+  - id: ployz-runtime
+    main: ./cmd/ployz-runtime
+    binary: ployz-runtime
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X ployz/internal/buildinfo.Version={{.Version}}
+
+nfpms:
+  - id: ployz-linux
+    package_name: ployz
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}"
+    vendor: ployz
+    maintainer: ployz
+    description: Ployz control plane and runtime
+    license: MIT
+    bindir: /usr/local/bin
+    formats: [deb, rpm]
+    builds: [ployz, ployzd, ployz-runtime]
+    contents:
+      - src: packaging/systemd/ployzd.service
+        dst: /etc/systemd/system/ployzd.service
+      - src: packaging/systemd/ployz-runtime.service
+        dst: /etc/systemd/system/ployz-runtime.service
+    scripts:
+      postinstall: packaging/nfpm/postinstall.sh
+      postremove: packaging/nfpm/postremove.sh

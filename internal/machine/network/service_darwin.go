@@ -10,8 +10,8 @@ import (
 	"os"
 	"strings"
 
-	"ployz/internal/docker"
-	"ployz/internal/wireguard"
+	"ployz/internal/platform/docker"
+	"ployz/internal/platform/wireguard"
 
 	"github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"

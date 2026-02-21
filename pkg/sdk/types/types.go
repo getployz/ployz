@@ -8,6 +8,8 @@ type NetworkSpec struct {
 	ManagementIP      string   `json:"management_ip,omitempty"`
 	AdvertiseEndpoint string   `json:"advertise_endpoint,omitempty"`
 	WGPort            int      `json:"wg_port,omitempty"`
+	CorrosionMemberID uint64   `json:"corrosion_member_id,omitempty"`
+	CorrosionAPIToken string   `json:"corrosion_api_token,omitempty"`
 	Bootstrap         []string `json:"bootstrap,omitempty"`
 	HelperImage       string   `json:"helper_image,omitempty"`
 }
@@ -48,6 +50,8 @@ type Identity struct {
 	WGPort            int    `json:"wg_port,omitempty"`
 	HelperName        string `json:"helper_name,omitempty"`
 	CorrosionGossip   int    `json:"corrosion_gossip_port,omitempty"`
+	CorrosionMemberID uint64 `json:"corrosion_member_id,omitempty"`
+	CorrosionAPIToken string `json:"corrosion_api_token,omitempty"`
 	Running           bool   `json:"running"`
 }
 
@@ -60,11 +64,4 @@ type MachineEntry struct {
 	LastUpdated     string `json:"last_updated,omitempty"`
 	Version         int64  `json:"version,omitempty"`
 	ExpectedVersion int64  `json:"expected_version,omitempty"`
-}
-
-type Event struct {
-	Type    string `json:"type"`
-	Network string `json:"network"`
-	Message string `json:"message"`
-	At      string `json:"at"`
 }

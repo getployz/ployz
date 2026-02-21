@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"ployz/internal/network"
-	"ployz/internal/registry"
+	"ployz/internal/coordination/registry"
+	"ployz/internal/machine/network"
 )
 
 type Worker struct {
@@ -60,7 +60,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 	defer ctrl.Close()
 
-	reg := registry.New(cfg.CorrosionAPIAddr)
+	reg := registry.New(cfg.CorrosionAPIAddr, cfg.CorrosionAPIToken)
 	if err := reg.EnsureMachineTable(ctx); err != nil {
 		return err
 	}

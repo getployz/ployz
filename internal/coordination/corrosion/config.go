@@ -18,12 +18,17 @@ type Config struct {
 	AdminSock    string
 	Bootstrap    []string
 	GossipAddr   netip.AddrPort
+	MemberID     uint64
 	APIAddr      netip.AddrPort
+	APIToken     string
 	GossipMaxMTU int
 	User         string
 }
 
 func WriteConfig(cfg Config) error {
+	if cfg.MemberID == 0 {
+		cfg.MemberID = 1
+	}
 	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
 		return fmt.Errorf("create corrosion dir: %w", err)
 	}
@@ -39,15 +44,17 @@ schema_paths = [%q]
 addr = %q
 bootstrap = %s
 plaintext = true
+member_id = %d
 max_mtu = %d
 disable_gso = true
 
 [api]
 addr = %q
+authz.bearer-token = %q
 
 [admin]
 path = %q
-`, filepath.Join(cfg.Dir, "store.db"), cfg.SchemaPath, cfg.GossipAddr.String(), tomlStringArray(cfg.Bootstrap), cfg.GossipMaxMTU, cfg.APIAddr.String(), cfg.AdminSock)
+`, filepath.Join(cfg.Dir, "store.db"), cfg.SchemaPath, cfg.GossipAddr.String(), tomlStringArray(cfg.Bootstrap), cfg.MemberID, cfg.GossipMaxMTU, cfg.APIAddr.String(), cfg.APIToken, cfg.AdminSock)
 
 	if err := os.WriteFile(cfg.ConfigPath, []byte(content), 0o600); err != nil {
 		return fmt.Errorf("write corrosion config: %w", err)

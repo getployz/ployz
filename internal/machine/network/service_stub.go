@@ -6,7 +6,7 @@ import (
 	"context"
 	"errors"
 
-	"ployz/internal/registry"
+	"ployz/internal/coordination/registry"
 )
 
 func New() (*Controller, error) {

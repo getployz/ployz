@@ -55,6 +55,9 @@ func initCmd() *cobra.Command {
 			if err := cmdutil.EnsureDaemon(cmd.Context(), socketPath, dataRoot); err != nil {
 				return fmt.Errorf("start daemon: %w", err)
 			}
+			if err := cmdutil.EnsureRuntime(cmd.Context(), dataRoot); err != nil {
+				return fmt.Errorf("start runtime: %w", err)
+			}
 
 			api, err := client.NewUnix(socketPath)
 			if err != nil {

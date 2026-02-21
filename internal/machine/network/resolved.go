@@ -32,6 +32,12 @@ func Resolve(cfg Config, s *State) (Config, error) {
 	if norm.CorrosionImg == "" {
 		norm.CorrosionImg = s.CorrosionImg
 	}
+	if norm.CorrosionMemberID == 0 {
+		norm.CorrosionMemberID = s.CorrosionMemberID
+	}
+	if norm.CorrosionAPIToken == "" {
+		norm.CorrosionAPIToken = s.CorrosionAPIToken
+	}
 	if !norm.NetworkCIDR.IsValid() {
 		if s.CIDR != "" {
 			cidr, err := netip.ParsePrefix(s.CIDR)

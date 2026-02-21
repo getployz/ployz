@@ -20,15 +20,16 @@ Practical guidance for coding agents working in this repository.
 
 ## Architecture
 
-Ployz is a machine network control plane with three layers:
+Ployz is a machine network control plane with four layers:
 
-- **Daemon (`cmd/ployzd`)**: always-on per-machine process. Owns local runtime convergence (WireGuard, Docker networking, Corrosion). Exposes a typed API over unix socket.
+- **Daemon (`cmd/ployzd`)**: control-plane process. Owns desired state and exposes typed API over unix socket.
+- **Runtime (`cmd/ployz-runtime`)**: data-plane reconciliation process. Runs continuous convergence loops independent from daemon restarts.
 - **SDK (`pkg/sdk`)**: client library for multi-machine choreography (bootstrap, join, remove). All cluster workflows live here.
 - **CLI (`cmd/ployz`)**: thin UX shell over the SDK. No direct runtime mutations.
 
 ### Key architectural rules
 
-- **Imperative setup, event-driven convergence.** Standing up infrastructure (WG interface, Docker network, firewall, Corrosion) is imperative — runs once, succeeds or fails. Only peer tracking is a continuous event-driven loop.
+- **Imperative setup, event-driven convergence.** Standing up infrastructure (WG interface, Docker network, firewall, Corrosion) is imperative — runs once, succeeds or fails. Peer tracking stays continuous in runtime loops.
 - **Data plane does not depend on control plane.** Peer convergence must keep running even if setup/teardown is broken.
 - **Typed Corrosion subscriptions.** Every hot-path table driving convergence gets a typed `Subscribe<Table>` API in the registry layer. No raw SQL or Corrosion protocol details leak to consumers.
 - **SDK always goes through daemon.** No direct Corrosion access from SDK. Daemon is the single writer to local state.
@@ -40,9 +41,13 @@ Ployz is a machine network control plane with three layers:
 ```
 cmd/ployz/       CLI (thin over pkg/sdk)
 cmd/ployzd/      daemon entrypoint
+cmd/ployz-runtime/ runtime reconciler entrypoint
 pkg/sdk/         client SDK (workflows, daemon client, types)
-internal/daemon/ daemon internals (server, supervisor, reconcile)
-internal/machine/ machine runtime, registry, platform ops, IPAM, remote
+internal/daemon/ daemon internals (server, supervisor)
+internal/runtime/ runtime internals (engine, reconcile)
+internal/machine/ machine components
+internal/coordination/ distributed state/registry concerns
+internal/platform/ platform-specific host integrations
 ```
 
 Explore the tree for current state — this is actively being restructured.

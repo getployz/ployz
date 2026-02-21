@@ -39,7 +39,6 @@ type API interface {
 	UpsertMachine(ctx context.Context, network string, m types.MachineEntry) error
 	RemoveMachine(ctx context.Context, network string, idOrEndpoint string) error
 	TriggerReconcile(ctx context.Context, network string) error
-	StreamEvents(ctx context.Context, network string) (<-chan types.Event, error)
 }
 
 type Client struct {
@@ -119,6 +118,8 @@ func (c *Client) GetIdentity(ctx context.Context, network string) (types.Identit
 		WGPort:            int(resp.WgPort),
 		HelperName:        resp.HelperName,
 		CorrosionGossip:   int(resp.CorrosionGossipPort),
+		CorrosionMemberID: resp.CorrosionMemberId,
+		CorrosionAPIToken: resp.CorrosionApiToken,
 		Running:           resp.Running,
 	}, nil
 }
@@ -156,34 +157,6 @@ func (c *Client) TriggerReconcile(ctx context.Context, network string) error {
 	return grpcErr(err)
 }
 
-func (c *Client) StreamEvents(ctx context.Context, network string) (<-chan types.Event, error) {
-	stream, err := c.daemon.StreamEvents(ctx, &pb.StreamEventsRequest{Network: network})
-	if err != nil {
-		return nil, grpcErr(err)
-	}
-	out := make(chan types.Event, 128)
-	go func() {
-		defer close(out)
-		for {
-			ev, err := stream.Recv()
-			if err != nil {
-				return
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case out <- types.Event{
-				Type:    ev.Type,
-				Network: ev.Network,
-				Message: ev.Message,
-				At:      ev.At,
-			}:
-			}
-		}
-	}()
-	return out, nil
-}
-
 func specToProto(s types.NetworkSpec) *pb.NetworkSpec {
 	return &pb.NetworkSpec{
 		Network:           s.Network,
@@ -193,6 +166,8 @@ func specToProto(s types.NetworkSpec) *pb.NetworkSpec {
 		ManagementIp:      s.ManagementIP,
 		AdvertiseEndpoint: s.AdvertiseEndpoint,
 		WgPort:            int32(s.WGPort),
+		CorrosionMemberId: s.CorrosionMemberID,
+		CorrosionApiToken: s.CorrosionAPIToken,
 		Bootstrap:         s.Bootstrap,
 		HelperImage:       s.HelperImage,
 	}

@@ -87,6 +87,13 @@ type subscriptionStream struct {
 	Decoder *json.Decoder
 }
 
+func (s Store) setAuthHeader(req *http.Request) {
+	if s.apiToken == "" {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+s.apiToken)
+}
+
 func (s Store) exec(ctx context.Context, query string, args ...any) error {
 	body, err := json.Marshal([]statement{{Query: query, Params: args}})
 	if err != nil {
@@ -100,6 +107,7 @@ func (s Store) exec(ctx context.Context, query string, args ...any) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	s.setAuthHeader(req)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -136,6 +144,7 @@ func (s Store) query(ctx context.Context, query string, args ...any) ([][]json.R
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	s.setAuthHeader(req)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -192,6 +201,7 @@ func (s Store) subscribe(ctx context.Context, query string, args []any) (*subscr
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	s.setAuthHeader(req)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -221,6 +231,7 @@ func (s Store) resubscribe(ctx context.Context, id string, fromChange uint64) (*
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	s.setAuthHeader(req)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

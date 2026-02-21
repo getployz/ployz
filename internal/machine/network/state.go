@@ -1,15 +1,19 @@
 package network
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
-	"ployz/internal/wireguard"
+	"ployz/internal/platform/wireguard"
 	"ployz/pkg/ipam"
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
@@ -28,11 +32,13 @@ type State struct {
 	WGPrivate   string `json:"wg_private"`
 	WGPublic    string `json:"wg_public"`
 
-	DockerNetwork string   `json:"docker_network"`
-	CorrosionName string   `json:"corrosion_name"`
-	CorrosionImg  string   `json:"corrosion_img"`
-	Bootstrap     []string `json:"corrosion_bootstrap,omitempty"`
-	Running       bool     `json:"running"`
+	DockerNetwork     string   `json:"docker_network"`
+	CorrosionName     string   `json:"corrosion_name"`
+	CorrosionImg      string   `json:"corrosion_img"`
+	CorrosionMemberID uint64   `json:"corrosion_member_id"`
+	CorrosionAPIToken string   `json:"corrosion_api_token,omitempty"`
+	Bootstrap         []string `json:"corrosion_bootstrap,omitempty"`
+	Running           bool     `json:"running"`
 }
 
 func statePath(dataDir string) string {
@@ -73,6 +79,8 @@ SELECT
 	docker_network,
 	corrosion_name,
 	corrosion_img,
+	coalesce(corrosion_member_id, 0),
+	coalesce(corrosion_api_token, ''),
 	coalesce(bootstrap_json, '[]'),
 	running
 FROM network_state
@@ -80,6 +88,7 @@ WHERE network = ?`
 
 	row := db.QueryRow(query, network)
 	var s State
+	var memberID int64
 	var bootstrapJSON string
 	var running int
 	if err := row.Scan(
@@ -95,6 +104,8 @@ WHERE network = ?`
 		&s.DockerNetwork,
 		&s.CorrosionName,
 		&s.CorrosionImg,
+		&memberID,
+		&s.CorrosionAPIToken,
 		&bootstrapJSON,
 		&running,
 	); err != nil {
@@ -104,6 +115,9 @@ WHERE network = ?`
 		return nil, fmt.Errorf("read machine state: %w", err)
 	}
 	s.Running = running != 0
+	if memberID > 0 {
+		s.CorrosionMemberID = uint64(memberID)
+	}
 
 	if err := json.Unmarshal([]byte(bootstrapJSON), &s.Bootstrap); err != nil {
 		return nil, fmt.Errorf("parse state bootstrap: %w", err)
@@ -160,10 +174,12 @@ INSERT INTO network_state (
 	docker_network,
 	corrosion_name,
 	corrosion_img,
+	corrosion_member_id,
+	corrosion_api_token,
 	bootstrap_json,
 	running,
 	updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(network) DO UPDATE SET
 	cidr = excluded.cidr,
 	subnet = excluded.subnet,
@@ -176,6 +192,8 @@ ON CONFLICT(network) DO UPDATE SET
 	docker_network = excluded.docker_network,
 	corrosion_name = excluded.corrosion_name,
 	corrosion_img = excluded.corrosion_img,
+	corrosion_member_id = excluded.corrosion_member_id,
+	corrosion_api_token = excluded.corrosion_api_token,
 	bootstrap_json = excluded.bootstrap_json,
 	running = excluded.running,
 	updated_at = excluded.updated_at`
@@ -194,6 +212,8 @@ ON CONFLICT(network) DO UPDATE SET
 		s.DockerNetwork,
 		s.CorrosionName,
 		s.CorrosionImg,
+		s.CorrosionMemberID,
+		s.CorrosionAPIToken,
 		string(bootstrapJSON),
 		running,
 		time.Now().UTC().Format(time.RFC3339),
@@ -261,6 +281,8 @@ CREATE TABLE IF NOT EXISTS network_state (
 	docker_network TEXT NOT NULL,
 	corrosion_name TEXT NOT NULL,
 	corrosion_img TEXT NOT NULL,
+	corrosion_member_id INTEGER NOT NULL DEFAULT 0,
+	corrosion_api_token TEXT NOT NULL DEFAULT '',
 	bootstrap_json TEXT NOT NULL DEFAULT '[]',
 	running INTEGER NOT NULL DEFAULT 0,
 	updated_at TEXT NOT NULL
@@ -269,8 +291,27 @@ CREATE TABLE IF NOT EXISTS network_state (
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize machine db schema: %w", err)
 	}
+	if err := addStateColumnIfMissing(db, "ALTER TABLE network_state ADD COLUMN corrosion_member_id INTEGER NOT NULL DEFAULT 0"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := addStateColumnIfMissing(db, "ALTER TABLE network_state ADD COLUMN corrosion_api_token TEXT NOT NULL DEFAULT ''"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
 	return db, nil
+}
+
+func addStateColumnIfMissing(db *sql.DB, query string) error {
+	if _, err := db.Exec(query); err != nil {
+		errMsg := strings.ToLower(strings.TrimSpace(err.Error()))
+		if strings.Contains(errMsg, "duplicate column") {
+			return nil
+		}
+		return fmt.Errorf("migrate machine db schema: %w", err)
+	}
+	return nil
 }
 
 func machineDBPath(dataDir string) string {
@@ -311,20 +352,27 @@ func ensureState(cfg Config) (*State, bool, error) {
 	}
 	cfg.Management = wireguard.ManagementIPFromWGKey(priv.PublicKey())
 
+	memberID, apiToken, err := ensureCorrosionSecurity(cfg.CorrosionMemberID, cfg.CorrosionAPIToken)
+	if err != nil {
+		return nil, false, err
+	}
+
 	s = &State{
-		Network:       cfg.Network,
-		CIDR:          cfg.NetworkCIDR.String(),
-		Subnet:        cfg.Subnet.String(),
-		Management:    cfg.Management.String(),
-		Advertise:     cfg.AdvertiseEP,
-		WGInterface:   cfg.WGInterface,
-		WGPort:        cfg.WGPort,
-		WGPrivate:     priv.String(),
-		WGPublic:      priv.PublicKey().String(),
-		DockerNetwork: cfg.DockerNetwork,
-		CorrosionName: cfg.CorrosionName,
-		CorrosionImg:  cfg.CorrosionImg,
-		Bootstrap:     cfg.CorrosionBootstrap,
+		Network:           cfg.Network,
+		CIDR:              cfg.NetworkCIDR.String(),
+		Subnet:            cfg.Subnet.String(),
+		Management:        cfg.Management.String(),
+		Advertise:         cfg.AdvertiseEP,
+		WGInterface:       cfg.WGInterface,
+		WGPort:            cfg.WGPort,
+		WGPrivate:         priv.String(),
+		WGPublic:          priv.PublicKey().String(),
+		DockerNetwork:     cfg.DockerNetwork,
+		CorrosionName:     cfg.CorrosionName,
+		CorrosionImg:      cfg.CorrosionImg,
+		CorrosionMemberID: memberID,
+		CorrosionAPIToken: apiToken,
+		Bootstrap:         cfg.CorrosionBootstrap,
 	}
 	if err := saveState(cfg.DataDir, s); err != nil {
 		return nil, false, err
@@ -338,4 +386,45 @@ func LoadState(cfg Config) (*State, error) {
 		return nil, err
 	}
 	return loadState(norm.DataDir)
+}
+
+func ensureCorrosionSecurity(memberID uint64, apiToken string) (uint64, string, error) {
+	if memberID == 0 {
+		var err error
+		memberID, err = generateCorrosionMemberID()
+		if err != nil {
+			return 0, "", fmt.Errorf("generate corrosion member id: %w", err)
+		}
+	}
+
+	apiToken = strings.TrimSpace(apiToken)
+	if apiToken == "" {
+		var err error
+		apiToken, err = generateCorrosionAPIToken()
+		if err != nil {
+			return 0, "", fmt.Errorf("generate corrosion api token: %w", err)
+		}
+	}
+
+	return memberID, apiToken, nil
+}
+
+func generateCorrosionMemberID() (uint64, error) {
+	var raw [8]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return 0, err
+	}
+	v := binary.LittleEndian.Uint64(raw[:])
+	if v == 0 {
+		v = 1
+	}
+	return v, nil
+}
+
+func generateCorrosionAPIToken() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw), nil
 }

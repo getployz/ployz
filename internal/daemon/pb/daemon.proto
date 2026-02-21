@@ -13,7 +13,6 @@ service Daemon {
   rpc UpsertMachine(UpsertMachineRequest) returns (UpsertMachineResponse);
   rpc RemoveMachine(RemoveMachineRequest) returns (RemoveMachineResponse);
   rpc TriggerReconcile(TriggerReconcileRequest) returns (TriggerReconcileResponse);
-  rpc StreamEvents(StreamEventsRequest) returns (stream Event);
 }
 
 message NetworkSpec {
@@ -26,6 +25,8 @@ message NetworkSpec {
   int32 wg_port = 7;
   repeated string bootstrap = 8;
   string helper_image = 9;
+  uint64 corrosion_member_id = 10;
+  string corrosion_api_token = 11;
 }
 
 message ApplyNetworkSpecRequest {
@@ -84,6 +85,8 @@ message Identity {
   string helper_name = 9;
   int32 corrosion_gossip_port = 10;
   bool running = 11;
+  uint64 corrosion_member_id = 12;
+  string corrosion_api_token = 13;
 }
 
 message MachineEntry {
@@ -124,14 +127,3 @@ message TriggerReconcileRequest {
 }
 
 message TriggerReconcileResponse {}
-
-message StreamEventsRequest {
-  string network = 1;
-}
-
-message Event {
-  string type = 1;
-  string network = 2;
-  string message = 3;
-  string at = 4;
-}

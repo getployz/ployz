@@ -19,7 +19,8 @@ const (
 var ErrConflict = errors.New("registry version conflict")
 
 type Store struct {
-	apiAddr netip.AddrPort
+	apiAddr  netip.AddrPort
+	apiToken string
 }
 
 type MachineRow struct {
@@ -32,8 +33,8 @@ type MachineRow struct {
 	Version    int64
 }
 
-func New(apiAddr netip.AddrPort) Store {
-	return Store{apiAddr: apiAddr}
+func New(apiAddr netip.AddrPort, apiToken string) Store {
+	return Store{apiAddr: apiAddr, apiToken: strings.TrimSpace(apiToken)}
 }
 
 func (s Store) EnsureMachineTable(ctx context.Context) error {

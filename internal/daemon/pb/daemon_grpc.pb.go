@@ -27,7 +27,6 @@ const (
 	Daemon_UpsertMachine_FullMethodName    = "/ployz.Daemon/UpsertMachine"
 	Daemon_RemoveMachine_FullMethodName    = "/ployz.Daemon/RemoveMachine"
 	Daemon_TriggerReconcile_FullMethodName = "/ployz.Daemon/TriggerReconcile"
-	Daemon_StreamEvents_FullMethodName     = "/ployz.Daemon/StreamEvents"
 )
 
 // DaemonClient is the client API for Daemon service.
@@ -42,7 +41,6 @@ type DaemonClient interface {
 	UpsertMachine(ctx context.Context, in *UpsertMachineRequest, opts ...grpc.CallOption) (*UpsertMachineResponse, error)
 	RemoveMachine(ctx context.Context, in *RemoveMachineRequest, opts ...grpc.CallOption) (*RemoveMachineResponse, error)
 	TriggerReconcile(ctx context.Context, in *TriggerReconcileRequest, opts ...grpc.CallOption) (*TriggerReconcileResponse, error)
-	StreamEvents(ctx context.Context, in *StreamEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Event], error)
 }
 
 type daemonClient struct {
@@ -133,25 +131,6 @@ func (c *daemonClient) TriggerReconcile(ctx context.Context, in *TriggerReconcil
 	return out, nil
 }
 
-func (c *daemonClient) StreamEvents(ctx context.Context, in *StreamEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Event], error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Daemon_ServiceDesc.Streams[0], Daemon_StreamEvents_FullMethodName, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	x := &grpc.GenericClientStream[StreamEventsRequest, Event]{ClientStream: stream}
-	if err := x.ClientStream.SendMsg(in); err != nil {
-		return nil, err
-	}
-	if err := x.ClientStream.CloseSend(); err != nil {
-		return nil, err
-	}
-	return x, nil
-}
-
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type Daemon_StreamEventsClient = grpc.ServerStreamingClient[Event]
-
 // DaemonServer is the server API for Daemon service.
 // All implementations must embed UnimplementedDaemonServer
 // for forward compatibility.
@@ -164,7 +143,6 @@ type DaemonServer interface {
 	UpsertMachine(context.Context, *UpsertMachineRequest) (*UpsertMachineResponse, error)
 	RemoveMachine(context.Context, *RemoveMachineRequest) (*RemoveMachineResponse, error)
 	TriggerReconcile(context.Context, *TriggerReconcileRequest) (*TriggerReconcileResponse, error)
-	StreamEvents(*StreamEventsRequest, grpc.ServerStreamingServer[Event]) error
 	mustEmbedUnimplementedDaemonServer()
 }
 
@@ -198,9 +176,6 @@ func (UnimplementedDaemonServer) RemoveMachine(context.Context, *RemoveMachineRe
 }
 func (UnimplementedDaemonServer) TriggerReconcile(context.Context, *TriggerReconcileRequest) (*TriggerReconcileResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method TriggerReconcile not implemented")
-}
-func (UnimplementedDaemonServer) StreamEvents(*StreamEventsRequest, grpc.ServerStreamingServer[Event]) error {
-	return status.Errorf(codes.Unimplemented, "method StreamEvents not implemented")
 }
 func (UnimplementedDaemonServer) mustEmbedUnimplementedDaemonServer() {}
 func (UnimplementedDaemonServer) testEmbeddedByValue()                {}
@@ -367,17 +342,6 @@ func _Daemon_TriggerReconcile_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
-func _Daemon_StreamEvents_Handler(srv interface{}, stream grpc.ServerStream) error {
-	m := new(StreamEventsRequest)
-	if err := stream.RecvMsg(m); err != nil {
-		return err
-	}
-	return srv.(DaemonServer).StreamEvents(m, &grpc.GenericServerStream[StreamEventsRequest, Event]{ServerStream: stream})
-}
-
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type Daemon_StreamEventsServer = grpc.ServerStreamingServer[Event]
-
 // Daemon_ServiceDesc is the grpc.ServiceDesc for Daemon service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -418,12 +382,6 @@ var Daemon_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Daemon_TriggerReconcile_Handler,
 		},
 	},
-	Streams: []grpc.StreamDesc{
-		{
-			StreamName:    "StreamEvents",
-			Handler:       _Daemon_StreamEvents_Handler,
-			ServerStreams: true,
-		},
-	},
+	Streams:  []grpc.StreamDesc{},
 	Metadata: "internal/daemon/pb/daemon.proto",
 }

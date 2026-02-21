@@ -37,7 +37,7 @@ func doctorCmd() *cobra.Command {
 				ui.KV("wireguard", ui.Bool(status.WireGuard)),
 				ui.KV("corrosion", ui.Bool(status.Corrosion)),
 				ui.KV("docker", ui.Bool(status.DockerNet)),
-				ui.KV("worker", ui.Bool(status.WorkerRunning)),
+				ui.KV("runtime", ui.Bool(status.WorkerRunning)),
 			))
 
 			if status.Configured && status.Running && status.WireGuard && status.Corrosion && status.DockerNet {
@@ -93,9 +93,9 @@ func doctorCmd() *cobra.Command {
 			}
 			if !status.WorkerRunning {
 				issues = append(issues, issue{
-					component: "daemon",
-					problem:   "reconcile worker is not running",
-					fix:       "ployz daemon start",
+					component: "runtime",
+					problem:   "runtime reconcile loop is not running",
+					fix:       "ployz runtime start",
 				})
 			}
 

@@ -251,4 +251,3 @@ func removeCmd() *cobra.Command {
 		},
 	}
 }
-

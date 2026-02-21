@@ -12,9 +12,9 @@ import (
 	"strconv"
 	"strings"
 
+	"ployz/internal/coordination/registry"
 	pb "ployz/internal/daemon/pb"
 	"ployz/internal/daemon/supervisor"
-	"ployz/internal/registry"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -134,19 +134,6 @@ func (s *Server) TriggerReconcile(ctx context.Context, req *pb.TriggerReconcileR
 		return nil, toGRPCError(err)
 	}
 	return &pb.TriggerReconcileResponse{}, nil
-}
-
-func (s *Server) StreamEvents(req *pb.StreamEventsRequest, stream pb.Daemon_StreamEventsServer) error {
-	events, err := s.mgr.StreamEvents(stream.Context(), req.Network)
-	if err != nil {
-		return toGRPCError(err)
-	}
-	for ev := range events {
-		if err := stream.Send(ev); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func toGRPCError(err error) error {

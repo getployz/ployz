@@ -25,6 +25,7 @@ type RuntimeConfig struct {
 	DataDir    string
 	User       string
 	APIAddr    netip.AddrPort
+	APIToken   string
 }
 
 func Start(ctx context.Context, cli *client.Client, cfg RuntimeConfig) error {
@@ -55,7 +56,7 @@ func Start(ctx context.Context, cli *client.Client, cfg RuntimeConfig) error {
 	if err := cli.ContainerStart(ctx, cfg.Name, container.StartOptions{}); err != nil {
 		return fmt.Errorf("start corrosion container: %w", err)
 	}
-	if err := WaitReady(ctx, cfg.APIAddr, 20*time.Second); err != nil {
+	if err := WaitReady(ctx, cfg.APIAddr, cfg.APIToken, 20*time.Second); err != nil {
 		return err
 	}
 	return nil
@@ -71,7 +72,7 @@ func Stop(ctx context.Context, cli *client.Client, name string) error {
 	return nil
 }
 
-func WaitReady(ctx context.Context, apiAddr netip.AddrPort, timeout time.Duration) error {
+func WaitReady(ctx context.Context, apiAddr netip.AddrPort, apiToken string, timeout time.Duration) error {
 	client := &http.Client{Timeout: 2 * time.Second}
 	body := []byte(`{"query":"SELECT 1 FROM cluster LIMIT 1","params":[]}`)
 	url := "http://" + apiAddr.String() + "/v1/queries"
@@ -94,6 +95,9 @@ func WaitReady(ctx context.Context, apiAddr netip.AddrPort, timeout time.Duratio
 			}
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Accept", "application/json")
+			if apiToken != "" {
+				req.Header.Set("Authorization", "Bearer "+apiToken)
+			}
 
 			resp, err := client.Do(req)
 			if err != nil {
