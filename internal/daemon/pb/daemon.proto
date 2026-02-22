@@ -13,6 +13,7 @@ service Daemon {
   rpc UpsertMachine(UpsertMachineRequest) returns (UpsertMachineResponse);
   rpc RemoveMachine(RemoveMachineRequest) returns (RemoveMachineResponse);
   rpc TriggerReconcile(TriggerReconcileRequest) returns (TriggerReconcileResponse);
+  rpc GetPeerHealth(GetPeerHealthRequest) returns (GetPeerHealthResponse);
 }
 
 message NetworkSpec {
@@ -59,6 +60,12 @@ message GetStatusRequest {
   string network = 1;
 }
 
+message ClockHealth {
+  double ntp_offset_ms = 1;
+  bool ntp_healthy = 2;
+  string ntp_error = 3;
+}
+
 message NetworkStatus {
   bool configured = 1;
   bool running = 2;
@@ -67,6 +74,7 @@ message NetworkStatus {
   bool docker = 5;
   string state_path = 6;
   bool worker_running = 7;
+  ClockHealth clock_health = 8;
 }
 
 message GetIdentityRequest {
@@ -98,6 +106,9 @@ message MachineEntry {
   string last_updated = 6;
   int64 version = 7;
   int64 expected_version = 8;
+  double freshness_ms = 9;
+  bool stale = 10;
+  double replication_lag_ms = 11;
 }
 
 message ListMachinesRequest {
@@ -127,3 +138,46 @@ message TriggerReconcileRequest {
 }
 
 message TriggerReconcileResponse {}
+
+message GetPeerHealthRequest {
+  string network = 1;
+}
+
+message PeerLag {
+  string node_id = 1;
+  double freshness_ms = 2;
+  bool stale = 3;
+  double replication_lag_ms = 4;
+  double ping_ms = 5;  // TCP connect RTT in ms, -1 = unreachable
+}
+
+// Metadata injected by the gRPC proxy into One2Many responses.
+message Metadata {
+  string machine_addr = 1;
+  string error = 2;
+  string machine_id = 3;
+}
+
+// Helper message for marshalling a single metadata field. Used by the proxy to
+// inject metadata into response messages and to build error-only responses.
+message Empty {
+  Metadata metadata = 1;
+}
+
+// EmptyResponse wraps repeated Empty for One2Many error concatenation.
+message EmptyResponse {
+  repeated Empty messages = 1;
+}
+
+// PeerHealthReply is a single node's health report, compatible with One2Many proxy.
+// The metadata field is injected by the proxy and is nil for direct (non-proxied) calls.
+message PeerHealthReply {
+  Metadata metadata = 1;
+  string node_id = 2;
+  ClockHealth ntp = 3;
+  repeated PeerLag peers = 4;
+}
+
+message GetPeerHealthResponse {
+  repeated PeerHealthReply messages = 1;
+}

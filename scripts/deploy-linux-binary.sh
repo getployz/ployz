@@ -69,7 +69,7 @@ read -r -a TARGET_LIST <<<"$TARGETS_RAW"
 # --- build ---
 
 echo "==> Building Linux binaries"
-for cmd in ployz ployzd ployz-runtime; do
+for cmd in ployz ployzd; do
   GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "$ROOT_DIR/bin/${cmd}-linux-amd64" "./cmd/$cmd"
 done
 
@@ -79,9 +79,7 @@ done
 FILES=(
   "$ROOT_DIR/bin/ployz-linux-amd64:/usr/local/bin/ployz:0755"
   "$ROOT_DIR/bin/ployzd-linux-amd64:/usr/local/bin/ployzd:0755"
-  "$ROOT_DIR/bin/ployz-runtime-linux-amd64:/usr/local/bin/ployz-runtime:0755"
   "$ROOT_DIR/packaging/systemd/ployzd.service:/etc/systemd/system/ployzd.service:0644"
-  "$ROOT_DIR/packaging/systemd/ployz-runtime.service:/etc/systemd/system/ployz-runtime.service:0644"
 )
 
 RESTART_FLAG=$(mktemp)
@@ -110,8 +108,8 @@ for target in "${TARGET_LIST[@]}"; do
   fi
 
   if [[ -f "$RESTART_FLAG" ]]; then
-    echo "   restarting ployzd and ployz-runtime"
-    ssh -p "$SSH_PORT" "$target" "sudo systemctl daemon-reload || true; sudo systemctl restart ployzd.service ployz-runtime.service"
+    echo "   restarting ployzd"
+    ssh -p "$SSH_PORT" "$target" "sudo systemctl daemon-reload || true; sudo systemctl restart ployzd.service"
   fi
 done
 

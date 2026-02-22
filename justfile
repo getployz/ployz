@@ -4,7 +4,6 @@ default:
 build:
     go build -o bin/ployz ./cmd/ployz
     go build -o bin/ployzd ./cmd/ployzd
-    go build -o bin/ployz-runtime ./cmd/ployz-runtime
 
 run *args:
     go run ./cmd/ployz {{args}}

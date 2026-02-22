@@ -1,5 +1,7 @@
 package types
 
+import "time"
+
 type NetworkSpec struct {
 	Network           string   `json:"network"`
 	DataRoot          string   `json:"data_root,omitempty"`
@@ -29,14 +31,21 @@ type ApplyResult struct {
 	ConvergenceRunning bool   `json:"convergence_running"`
 }
 
+type ClockHealth struct {
+	NTPOffsetMs float64 `json:"ntp_offset_ms"`
+	NTPHealthy  bool    `json:"ntp_healthy"`
+	NTPError    string  `json:"ntp_error,omitempty"`
+}
+
 type NetworkStatus struct {
-	Configured    bool   `json:"configured"`
-	Running       bool   `json:"running"`
-	WireGuard     bool   `json:"wireguard"`
-	Corrosion     bool   `json:"corrosion"`
-	DockerNet     bool   `json:"docker"`
-	StatePath     string `json:"state_path"`
-	WorkerRunning bool   `json:"worker_running"`
+	Configured    bool        `json:"configured"`
+	Running       bool        `json:"running"`
+	WireGuard     bool        `json:"wireguard"`
+	Corrosion     bool        `json:"corrosion"`
+	DockerNet     bool        `json:"docker"`
+	StatePath     string      `json:"state_path"`
+	WorkerRunning bool        `json:"worker_running"`
+	ClockHealth   ClockHealth `json:"clock_health"`
 }
 
 type Identity struct {
@@ -56,12 +65,32 @@ type Identity struct {
 }
 
 type MachineEntry struct {
-	ID              string `json:"id"`
-	PublicKey       string `json:"public_key"`
-	Subnet          string `json:"subnet"`
-	ManagementIP    string `json:"management_ip"`
-	Endpoint        string `json:"endpoint"`
-	LastUpdated     string `json:"last_updated,omitempty"`
-	Version         int64  `json:"version,omitempty"`
-	ExpectedVersion int64  `json:"expected_version,omitempty"`
+	ID              string        `json:"id"`
+	PublicKey       string        `json:"public_key"`
+	Subnet          string        `json:"subnet"`
+	ManagementIP    string        `json:"management_ip"`
+	Endpoint        string        `json:"endpoint"`
+	LastUpdated     string        `json:"last_updated,omitempty"`
+	Version         int64         `json:"version,omitempty"`
+	ExpectedVersion int64         `json:"expected_version,omitempty"`
+	Freshness       time.Duration `json:"freshness,omitempty"`
+	Stale           bool          `json:"stale,omitempty"`
+	ReplicationLag  time.Duration `json:"replication_lag,omitempty"`
+}
+
+type PeerLag struct {
+	NodeID         string        `json:"node_id"`
+	Freshness      time.Duration `json:"freshness"`
+	Stale          bool          `json:"stale"`
+	ReplicationLag time.Duration `json:"replication_lag"`
+	PingRTT        time.Duration `json:"ping_rtt"` // -1 = unreachable, 0 = no data
+}
+
+type PeerHealthResponse struct {
+	NodeID      string      `json:"node_id"`
+	MachineAddr string      `json:"machine_addr,omitempty"`
+	MachineID   string      `json:"machine_id,omitempty"`
+	Error       string      `json:"error,omitempty"`
+	NTP         ClockHealth `json:"ntp"`
+	Peers       []PeerLag   `json:"peers"`
 }

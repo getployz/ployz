@@ -13,10 +13,7 @@ import (
 	"ployz/cmd/ployz/cmdutil"
 )
 
-const (
-	daemonLabel  = "com.ployz.ployzd"
-	runtimeLabel = "com.ployz.ployz-runtime"
-)
+const daemonLabel = "com.ployz.ployzd"
 
 type darwinService struct{}
 
@@ -25,12 +22,16 @@ func NewPlatformService() PlatformService {
 }
 
 func (d *darwinService) Install(ctx context.Context, cfg InstallConfig) error {
-	agentsDir, err := launchAgentsDir()
-	if err != nil {
-		return err
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("agent install requires root — run with sudo")
 	}
-	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
-		return fmt.Errorf("create LaunchAgents dir: %w", err)
+
+	// Migrate: remove old user-level LaunchAgent if present.
+	migrateOldUserAgent(ctx)
+
+	daemonsDir := launchDaemonsDir()
+	if err := os.MkdirAll(daemonsDir, 0o755); err != nil {
+		return fmt.Errorf("create LaunchDaemons dir: %w", err)
 	}
 	if err := os.MkdirAll(cfg.DataRoot, 0o755); err != nil {
 		return fmt.Errorf("create data root: %w", err)
@@ -42,99 +43,81 @@ func (d *darwinService) Install(ctx context.Context, cfg InstallConfig) error {
 	}
 
 	daemonPlist, err := renderPlist(daemonPlistTmpl, plistData{
-		Label:      daemonLabel,
-		Program:    ployzBin,
-		Args:       []string{"daemon", "run", "--socket", cfg.SocketPath, "--data-root", cfg.DataRoot},
-		LogPath:    cmdutil.DaemonLogPath(cfg.DataRoot),
-		RunAtLoad:  true,
-		KeepAlive:  true,
+		Label:     daemonLabel,
+		Program:   ployzBin,
+		Args:      []string{"daemon", "run", "--socket", cfg.SocketPath, "--data-root", cfg.DataRoot},
+		LogPath:   cmdutil.DaemonLogPath(cfg.DataRoot),
+		RunAtLoad: true,
+		KeepAlive: true,
 	})
 	if err != nil {
 		return fmt.Errorf("render daemon plist: %w", err)
 	}
 
-	runtimeBin := resolveRuntimeBinary(ployzBin)
-	runtimeArgs := runtimeBinArgs(runtimeBin, ployzBin, cfg.DataRoot)
+	daemonPath := filepath.Join(daemonsDir, daemonLabel+".plist")
 
-	runtimePlist, err := renderPlist(runtimePlistTmpl, plistData{
-		Label:      runtimeLabel,
-		Program:    runtimeArgs[0],
-		Args:       runtimeArgs[1:],
-		LogPath:    cmdutil.RuntimeLogPath(cfg.DataRoot),
-		RunAtLoad:  true,
-		KeepAlive:  true,
-	})
-	if err != nil {
-		return fmt.Errorf("render runtime plist: %w", err)
-	}
-
-	daemonPath := filepath.Join(agentsDir, daemonLabel+".plist")
-	runtimePath := filepath.Join(agentsDir, runtimeLabel+".plist")
-
-	// Idempotent: bootout before bootstrap
+	// Idempotent: bootout before bootstrap.
 	_ = launchctlBootout(ctx, daemonLabel)
-	_ = launchctlBootout(ctx, runtimeLabel)
 
 	if err := os.WriteFile(daemonPath, daemonPlist, 0o644); err != nil {
 		return fmt.Errorf("write daemon plist: %w", err)
 	}
-	if err := os.WriteFile(runtimePath, runtimePlist, 0o644); err != nil {
-		return fmt.Errorf("write runtime plist: %w", err)
-	}
 
 	if err := launchctlBootstrap(ctx, daemonLabel, daemonPath); err != nil {
 		return fmt.Errorf("bootstrap daemon: %w", err)
-	}
-	if err := launchctlBootstrap(ctx, runtimeLabel, runtimePath); err != nil {
-		return fmt.Errorf("bootstrap runtime: %w", err)
 	}
 
 	return nil
 }
 
 func (d *darwinService) Uninstall(ctx context.Context) error {
-	agentsDir, err := launchAgentsDir()
-	if err != nil {
-		return err
-	}
-
 	_ = launchctlBootout(ctx, daemonLabel)
-	_ = launchctlBootout(ctx, runtimeLabel)
+	os.Remove(filepath.Join(launchDaemonsDir(), daemonLabel+".plist"))
 
-	os.Remove(filepath.Join(agentsDir, daemonLabel+".plist"))
-	os.Remove(filepath.Join(agentsDir, runtimeLabel+".plist"))
+	// Also clean up old user-level plist if it exists.
+	migrateOldUserAgent(ctx)
 	return nil
 }
 
 func (d *darwinService) Status(ctx context.Context) (ServiceStatus, error) {
 	return ServiceStatus{
-		DaemonInstalled:  launchctlLoaded(ctx, daemonLabel),
-		DaemonRunning:    launchctlRunning(ctx, daemonLabel),
-		RuntimeInstalled: launchctlLoaded(ctx, runtimeLabel),
-		RuntimeRunning:   launchctlRunning(ctx, runtimeLabel),
-		Platform:         "launchd",
+		DaemonInstalled: launchctlLoaded(ctx, daemonLabel),
+		DaemonRunning:   launchctlRunning(ctx, daemonLabel),
+		Platform:        "launchd",
 	}, nil
+}
+
+// migrateOldUserAgent removes the old user-level LaunchAgent plist if present.
+func migrateOldUserAgent(ctx context.Context) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	oldPlist := filepath.Join(home, "Library", "LaunchAgents", daemonLabel+".plist")
+	if _, err := os.Stat(oldPlist); err != nil {
+		return
+	}
+	// Bootout from old user domain.
+	uid := fmt.Sprintf("gui/%d", os.Getuid())
+	target := uid + "/" + daemonLabel
+	_ = exec.CommandContext(ctx, "launchctl", "bootout", target).Run()
+	_ = os.Remove(oldPlist)
 }
 
 // launchd helpers
 
-func launchAgentsDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("get home directory: %w", err)
-	}
-	return filepath.Join(home, "Library", "LaunchAgents"), nil
+func launchDaemonsDir() string {
+	return "/Library/LaunchDaemons"
 }
 
 func launchctlBootstrap(ctx context.Context, label, plistPath string) error {
-	uid := fmt.Sprintf("gui/%d", os.Getuid())
-	out, err := exec.CommandContext(ctx, "launchctl", "bootstrap", uid, plistPath).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "launchctl", "bootstrap", "system", plistPath).CombinedOutput()
 	if err == nil {
 		return nil
 	}
 	// already loaded — bootout and retry
 	_ = launchctlBootout(ctx, label)
-	out, err = exec.CommandContext(ctx, "launchctl", "bootstrap", uid, plistPath).CombinedOutput()
+	out, err = exec.CommandContext(ctx, "launchctl", "bootstrap", "system", plistPath).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("launchctl bootstrap: %s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -142,8 +125,7 @@ func launchctlBootstrap(ctx context.Context, label, plistPath string) error {
 }
 
 func launchctlBootout(ctx context.Context, label string) error {
-	uid := fmt.Sprintf("gui/%d", os.Getuid())
-	target := uid + "/" + label
+	target := "system/" + label
 	out, err := exec.CommandContext(ctx, "launchctl", "bootout", target).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("launchctl bootout: %s: %w", strings.TrimSpace(string(out)), err)
@@ -152,15 +134,13 @@ func launchctlBootout(ctx context.Context, label string) error {
 }
 
 func launchctlLoaded(_ context.Context, label string) bool {
-	uid := fmt.Sprintf("gui/%d", os.Getuid())
-	target := uid + "/" + label
+	target := "system/" + label
 	err := exec.Command("launchctl", "print", target).Run()
 	return err == nil
 }
 
 func launchctlRunning(_ context.Context, label string) bool {
-	uid := fmt.Sprintf("gui/%d", os.Getuid())
-	target := uid + "/" + label
+	target := "system/" + label
 	out, err := exec.Command("launchctl", "print", target).CombinedOutput()
 	if err != nil {
 		return false
@@ -184,25 +164,6 @@ func resolveBinary(name string) (string, error) {
 	return "", fmt.Errorf("%s not found in PATH or next to executable", name)
 }
 
-func resolveRuntimeBinary(ployzBin string) string {
-	dir := filepath.Dir(ployzBin)
-	candidate := filepath.Join(dir, "ployz-runtime")
-	if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
-		return candidate
-	}
-	if p, err := exec.LookPath("ployz-runtime"); err == nil {
-		return p
-	}
-	return ""
-}
-
-func runtimeBinArgs(runtimeBin, ployzBin, dataRoot string) []string {
-	if runtimeBin != "" {
-		return []string{runtimeBin, "--data-root", dataRoot}
-	}
-	return []string{ployzBin, "runtime", "run", "--data-root", dataRoot}
-}
-
 // plist templates
 
 type plistData struct {
@@ -215,7 +176,6 @@ type plistData struct {
 }
 
 var daemonPlistTmpl = template.Must(template.New("daemon").Parse(plistXML))
-var runtimePlistTmpl = template.Must(template.New("runtime").Parse(plistXML))
 
 const plistXML = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

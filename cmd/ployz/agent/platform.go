@@ -14,11 +14,9 @@ type InstallConfig struct {
 }
 
 type ServiceStatus struct {
-	DaemonInstalled  bool
-	DaemonRunning    bool
-	RuntimeInstalled bool
-	RuntimeRunning   bool
-	Platform         string
+	DaemonInstalled bool
+	DaemonRunning   bool
+	Platform        string
 }
 
 type PlatformService interface {

@@ -2,6 +2,6 @@
 set -e
 
 if command -v systemctl >/dev/null 2>&1; then
-  systemctl disable --now ployzd.service ployz-runtime.service >/dev/null 2>&1 || true
+  systemctl disable --now ployzd.service >/dev/null 2>&1 || true
   systemctl daemon-reload || true
 fi

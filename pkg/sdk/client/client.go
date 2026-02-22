@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"time"
 
 	pb "ployz/internal/daemon/pb"
 	"ployz/pkg/sdk/types"
@@ -15,6 +16,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -39,6 +41,7 @@ type API interface {
 	UpsertMachine(ctx context.Context, network string, m types.MachineEntry) error
 	RemoveMachine(ctx context.Context, network string, idOrEndpoint string) error
 	TriggerReconcile(ctx context.Context, network string) error
+	GetPeerHealth(ctx context.Context, network string) ([]types.PeerHealthResponse, error)
 }
 
 type Client struct {
@@ -91,7 +94,7 @@ func (c *Client) GetStatus(ctx context.Context, network string) (types.NetworkSt
 	if err != nil {
 		return types.NetworkStatus{}, grpcErr(err)
 	}
-	return types.NetworkStatus{
+	st := types.NetworkStatus{
 		Configured:    resp.Configured,
 		Running:       resp.Running,
 		WireGuard:     resp.Wireguard,
@@ -99,7 +102,15 @@ func (c *Client) GetStatus(ctx context.Context, network string) (types.NetworkSt
 		DockerNet:     resp.Docker,
 		StatePath:     resp.StatePath,
 		WorkerRunning: resp.WorkerRunning,
-	}, nil
+	}
+	if resp.ClockHealth != nil {
+		st.ClockHealth = types.ClockHealth{
+			NTPOffsetMs: resp.ClockHealth.NtpOffsetMs,
+			NTPHealthy:  resp.ClockHealth.NtpHealthy,
+			NTPError:    resp.ClockHealth.NtpError,
+		}
+	}
+	return st, nil
 }
 
 func (c *Client) GetIdentity(ctx context.Context, network string) (types.Identity, error) {
@@ -155,6 +166,61 @@ func (c *Client) RemoveMachine(ctx context.Context, network string, idOrEndpoint
 func (c *Client) TriggerReconcile(ctx context.Context, network string) error {
 	_, err := c.daemon.TriggerReconcile(ctx, &pb.TriggerReconcileRequest{Network: network})
 	return grpcErr(err)
+}
+
+func (c *Client) GetPeerHealth(ctx context.Context, network string) ([]types.PeerHealthResponse, error) {
+	resp, err := c.daemon.GetPeerHealth(ctx, &pb.GetPeerHealthRequest{Network: network})
+	if err != nil {
+		return nil, grpcErr(err)
+	}
+	out := make([]types.PeerHealthResponse, 0, len(resp.Messages))
+	for _, msg := range resp.Messages {
+		r := types.PeerHealthResponse{
+			NodeID: msg.NodeId,
+		}
+		if msg.Metadata != nil {
+			r.MachineAddr = msg.Metadata.MachineAddr
+			r.MachineID = msg.Metadata.MachineId
+			r.Error = msg.Metadata.Error
+		}
+		if msg.Ntp != nil {
+			r.NTP = types.ClockHealth{
+				NTPOffsetMs: msg.Ntp.NtpOffsetMs,
+				NTPHealthy:  msg.Ntp.NtpHealthy,
+				NTPError:    msg.Ntp.NtpError,
+			}
+		}
+		for _, p := range msg.Peers {
+			pingRTT := time.Duration(p.PingMs * float64(time.Millisecond))
+			if p.PingMs < 0 {
+				pingRTT = -1
+			}
+			r.Peers = append(r.Peers, types.PeerLag{
+				NodeID:         p.NodeId,
+				Freshness:      time.Duration(p.FreshnessMs) * time.Millisecond,
+				Stale:          p.Stale,
+				ReplicationLag: time.Duration(p.ReplicationLagMs) * time.Millisecond,
+				PingRTT:        pingRTT,
+			})
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// ProxyMachinesContext returns a context that routes gRPC requests through
+// the proxy to the specified machines. If nodeIDs is nil, all machines are targeted.
+func ProxyMachinesContext(ctx context.Context, network string, nodeIDs []string) context.Context {
+	md := metadata.New(nil)
+	md.Set("proxy-network", network)
+	if len(nodeIDs) == 0 {
+		md.Append("machines", "*")
+	} else {
+		for _, id := range nodeIDs {
+			md.Append("machines", id)
+		}
+	}
+	return metadata.NewOutgoingContext(ctx, md)
 }
 
 func specToProto(s types.NetworkSpec) *pb.NetworkSpec {
@@ -213,6 +279,9 @@ func machineFromProto(p *pb.MachineEntry) types.MachineEntry {
 		LastUpdated:     p.LastUpdated,
 		Version:         p.Version,
 		ExpectedVersion: p.ExpectedVersion,
+		Freshness:       time.Duration(p.FreshnessMs) * time.Millisecond,
+		Stale:           p.Stale,
+		ReplicationLag:  time.Duration(p.ReplicationLagMs) * time.Millisecond,
 	}
 }
 

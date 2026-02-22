@@ -24,8 +24,6 @@ func statusCmd() *cobra.Command {
 				ui.KV("platform", st.Platform),
 				ui.KV("daemon installed", ui.Bool(st.DaemonInstalled)),
 				ui.KV("daemon running", ui.Bool(st.DaemonRunning)),
-				ui.KV("runtime installed", ui.Bool(st.RuntimeInstalled)),
-				ui.KV("runtime running", ui.Bool(st.RuntimeRunning)),
 			))
 			return nil
 		},

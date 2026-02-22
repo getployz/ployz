@@ -1,6 +1,7 @@
 package defaults
 
 import (
+	"fmt"
 	"hash/fnv"
 	"os"
 	"path/filepath"
@@ -22,6 +23,17 @@ func DataRoot() string {
 		return filepath.Join(home, defaultDarwinDataRoot)
 	}
 	return defaultLinuxDataRoot
+}
+
+// EnsureDataRoot creates the data root directory if it doesn't exist.
+func EnsureDataRoot(dataRoot string) error {
+	if dataRoot == "" {
+		dataRoot = DataRoot()
+	}
+	if err := os.MkdirAll(dataRoot, 0o755); err != nil {
+		return fmt.Errorf("create data root: %w", err)
+	}
+	return nil
 }
 
 func WGPort(network string) int {
@@ -46,6 +58,10 @@ func CorrosionGossipPort(network string) int {
 
 func CorrosionAPIPort(network string) int {
 	return 52000 + int(networkOffset(network))
+}
+
+func DaemonAPIPort(network string) int {
+	return 54000 + int(networkOffset(network))
 }
 
 func NormalizeNetwork(network string) string {

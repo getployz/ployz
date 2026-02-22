@@ -2,6 +2,7 @@ package node
 
 import (
 	"fmt"
+	"os"
 
 	"ployz/cmd/ployz/cmdutil"
 	"ployz/cmd/ployz/ui"
@@ -28,14 +29,20 @@ func addCmd() *cobra.Command {
 				return err
 			}
 
+			fmt.Fprintln(os.Stderr, ui.InfoMsg("adding node %s", ui.Accent(args[0])))
+
+			ck := ui.NewChecklist()
+
 			result, err := svc.AddMachine(cmd.Context(), sdkmachine.AddOptions{
-				Network:  cl.Network,
-				Target:   args[0],
-				Endpoint: endpoint,
-				SSHPort:  sshPort,
-				SSHKey:   sshKey,
-				WGPort:   wgPort,
+				Network:    cl.Network,
+				Target:     args[0],
+				Endpoint:   endpoint,
+				SSHPort:    sshPort,
+				SSHKey:     sshKey,
+				WGPort:     wgPort,
+				OnProgress: ck.OnProgress,
 			})
+			ck.Close()
 			if err != nil {
 				return err
 			}

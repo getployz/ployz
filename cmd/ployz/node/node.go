@@ -13,5 +13,6 @@ func Cmd() *cobra.Command {
 	cmd.AddCommand(removeCmd())
 	cmd.AddCommand(statusCmd())
 	cmd.AddCommand(doctorCmd())
+	cmd.AddCommand(lagCmd())
 	return cmd
 }

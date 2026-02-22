@@ -27,6 +27,7 @@ const (
 	Daemon_UpsertMachine_FullMethodName    = "/ployz.Daemon/UpsertMachine"
 	Daemon_RemoveMachine_FullMethodName    = "/ployz.Daemon/RemoveMachine"
 	Daemon_TriggerReconcile_FullMethodName = "/ployz.Daemon/TriggerReconcile"
+	Daemon_GetPeerHealth_FullMethodName    = "/ployz.Daemon/GetPeerHealth"
 )
 
 // DaemonClient is the client API for Daemon service.
@@ -41,6 +42,7 @@ type DaemonClient interface {
 	UpsertMachine(ctx context.Context, in *UpsertMachineRequest, opts ...grpc.CallOption) (*UpsertMachineResponse, error)
 	RemoveMachine(ctx context.Context, in *RemoveMachineRequest, opts ...grpc.CallOption) (*RemoveMachineResponse, error)
 	TriggerReconcile(ctx context.Context, in *TriggerReconcileRequest, opts ...grpc.CallOption) (*TriggerReconcileResponse, error)
+	GetPeerHealth(ctx context.Context, in *GetPeerHealthRequest, opts ...grpc.CallOption) (*GetPeerHealthResponse, error)
 }
 
 type daemonClient struct {
@@ -131,6 +133,16 @@ func (c *daemonClient) TriggerReconcile(ctx context.Context, in *TriggerReconcil
 	return out, nil
 }
 
+func (c *daemonClient) GetPeerHealth(ctx context.Context, in *GetPeerHealthRequest, opts ...grpc.CallOption) (*GetPeerHealthResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetPeerHealthResponse)
+	err := c.cc.Invoke(ctx, Daemon_GetPeerHealth_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DaemonServer is the server API for Daemon service.
 // All implementations must embed UnimplementedDaemonServer
 // for forward compatibility.
@@ -143,6 +155,7 @@ type DaemonServer interface {
 	UpsertMachine(context.Context, *UpsertMachineRequest) (*UpsertMachineResponse, error)
 	RemoveMachine(context.Context, *RemoveMachineRequest) (*RemoveMachineResponse, error)
 	TriggerReconcile(context.Context, *TriggerReconcileRequest) (*TriggerReconcileResponse, error)
+	GetPeerHealth(context.Context, *GetPeerHealthRequest) (*GetPeerHealthResponse, error)
 	mustEmbedUnimplementedDaemonServer()
 }
 
@@ -176,6 +189,9 @@ func (UnimplementedDaemonServer) RemoveMachine(context.Context, *RemoveMachineRe
 }
 func (UnimplementedDaemonServer) TriggerReconcile(context.Context, *TriggerReconcileRequest) (*TriggerReconcileResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method TriggerReconcile not implemented")
+}
+func (UnimplementedDaemonServer) GetPeerHealth(context.Context, *GetPeerHealthRequest) (*GetPeerHealthResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetPeerHealth not implemented")
 }
 func (UnimplementedDaemonServer) mustEmbedUnimplementedDaemonServer() {}
 func (UnimplementedDaemonServer) testEmbeddedByValue()                {}
@@ -342,6 +358,24 @@ func _Daemon_TriggerReconcile_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Daemon_GetPeerHealth_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetPeerHealthRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServer).GetPeerHealth(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Daemon_GetPeerHealth_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServer).GetPeerHealth(ctx, req.(*GetPeerHealthRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Daemon_ServiceDesc is the grpc.ServiceDesc for Daemon service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -380,6 +414,10 @@ var Daemon_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TriggerReconcile",
 			Handler:    _Daemon_TriggerReconcile_Handler,
+		},
+		{
+			MethodName: "GetPeerHealth",
+			Handler:    _Daemon_GetPeerHealth_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

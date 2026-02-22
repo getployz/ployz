@@ -49,7 +49,6 @@ func installCmd() *cobra.Command {
 				ui.KV("socket", socketPath),
 				ui.KV("data root", dataRoot),
 				ui.KV("daemon log", cmdutil.DaemonLogPath(dataRoot)),
-				ui.KV("runtime log", cmdutil.RuntimeLogPath(dataRoot)),
 			))
 			return nil
 		},

@@ -83,7 +83,7 @@ start_docker() {
 }
 
 enable_services() {
-    systemctl enable --now ployzd.service ployz-runtime.service >/dev/null 2>&1 || true
+    systemctl enable --now ployzd.service >/dev/null 2>&1 || true
 }
 
 wait_for_ployzd() {
@@ -132,7 +132,7 @@ PLOYZ_VERSION=$(echo "$PLOYZ_VERSION" | sed 's/^v//')
 
 if [ "$PLOYZ_VERSION" = "dev" ]; then
     MISSING=""
-    for bin in ployz ployzd ployz-runtime; do
+    for bin in ployz ployzd; do
         if ! [ -x "/usr/local/bin/$bin" ]; then
             MISSING="$MISSING $bin"
         fi
@@ -245,7 +245,7 @@ else
     mkdir -p "$EXTRACT_DIR"
     tar -xzf "$ARCHIVE_PATH" -C "$EXTRACT_DIR"
 
-    for bin in ployz ployzd ployz-runtime; do
+    for bin in ployz ployzd; do
         found=$(find "$EXTRACT_DIR" -name "$bin" -type f | head -1)
         if [ -z "$found" ]; then
             fatal "binary $bin not found in archive"

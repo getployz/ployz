@@ -43,6 +43,17 @@ func listCmd() *cobra.Command {
 				if m.Version > 0 {
 					version = strconv.FormatInt(m.Version, 10)
 				}
+				lag := "-"
+				if m.ReplicationLag > 0 {
+					lag = fmt.Sprintf("%.0fms", float64(m.ReplicationLag.Milliseconds()))
+				}
+				freshness := "-"
+				if m.Freshness > 0 {
+					freshness = fmt.Sprintf("%.0fms", float64(m.Freshness.Milliseconds()))
+					if m.Stale {
+						freshness = ui.Warn(freshness)
+					}
+				}
 				rows[i] = []string{
 					strconv.Itoa(i + 1),
 					m.ID,
@@ -50,12 +61,14 @@ func listCmd() *cobra.Command {
 					m.ManagementIP,
 					m.Endpoint,
 					version,
+					lag,
+					freshness,
 					updated,
 				}
 			}
 
 			fmt.Println(ui.Table(
-				[]string{"#", "ID", "Subnet", "Management", "Endpoint", "Version", "Updated"},
+				[]string{"#", "ID", "Subnet", "Management", "Endpoint", "Version", "Lag", "Freshness", "Updated"},
 				rows,
 			))
 			return nil

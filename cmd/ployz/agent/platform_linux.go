@@ -11,10 +11,7 @@ import (
 	"ployz/cmd/ployz/cmdutil"
 )
 
-const (
-	daemonUnit  = "ployzd.service"
-	runtimeUnit = "ployz-runtime.service"
-)
+const daemonUnit = "ployzd.service"
 
 type linuxService struct{}
 
@@ -30,14 +27,6 @@ func (l *linuxService) Install(ctx context.Context, cfg InstallConfig) error {
 	ployzBin, err := resolveBinary("ployz")
 	if err != nil {
 		return fmt.Errorf("resolve ployz binary: %w", err)
-	}
-
-	runtimeBin := resolveRuntimeBinary(ployzBin)
-	runtimeExec := runtimeBin
-	runtimeArgs := "--data-root " + cfg.DataRoot
-	if runtimeExec == "" {
-		runtimeExec = ployzBin
-		runtimeArgs = "runtime run --data-root " + cfg.DataRoot
 	}
 
 	daemonContent := fmt.Sprintf(`[Unit]
@@ -58,30 +47,9 @@ WantedBy=default.target
 `, ployzBin, cfg.SocketPath, cfg.DataRoot,
 		cmdutil.DaemonLogPath(cfg.DataRoot), cmdutil.DaemonLogPath(cfg.DataRoot))
 
-	runtimeContent := fmt.Sprintf(`[Unit]
-Description=ployz runtime
-After=ployzd.service
-Wants=ployzd.service
-
-[Service]
-Type=simple
-ExecStart=%s %s
-Restart=always
-RestartSec=5
-StandardOutput=append:%s
-StandardError=append:%s
-
-[Install]
-WantedBy=default.target
-`, runtimeExec, runtimeArgs,
-		cmdutil.RuntimeLogPath(cfg.DataRoot), cmdutil.RuntimeLogPath(cfg.DataRoot))
-
 	unitDir := "/etc/systemd/system"
 	if err := os.WriteFile(filepath.Join(unitDir, daemonUnit), []byte(daemonContent), 0o644); err != nil {
 		return fmt.Errorf("write daemon unit: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(unitDir, runtimeUnit), []byte(runtimeContent), 0o644); err != nil {
-		return fmt.Errorf("write runtime unit: %w", err)
 	}
 
 	if err := systemctl(ctx, "daemon-reload"); err != nil {
@@ -90,19 +58,14 @@ WantedBy=default.target
 	if err := systemctl(ctx, "enable", "--now", daemonUnit); err != nil {
 		return fmt.Errorf("enable daemon: %w", err)
 	}
-	if err := systemctl(ctx, "enable", "--now", runtimeUnit); err != nil {
-		return fmt.Errorf("enable runtime: %w", err)
-	}
 	return nil
 }
 
 func (l *linuxService) Uninstall(ctx context.Context) error {
-	_ = systemctl(ctx, "disable", "--now", runtimeUnit)
 	_ = systemctl(ctx, "disable", "--now", daemonUnit)
 
 	unitDir := "/etc/systemd/system"
 	os.Remove(filepath.Join(unitDir, daemonUnit))
-	os.Remove(filepath.Join(unitDir, runtimeUnit))
 
 	_ = systemctl(ctx, "daemon-reload")
 	return nil
@@ -110,11 +73,9 @@ func (l *linuxService) Uninstall(ctx context.Context) error {
 
 func (l *linuxService) Status(ctx context.Context) (ServiceStatus, error) {
 	return ServiceStatus{
-		DaemonInstalled:  systemctlEnabled(ctx, daemonUnit),
-		DaemonRunning:    systemctlActive(ctx, daemonUnit),
-		RuntimeInstalled: systemctlEnabled(ctx, runtimeUnit),
-		RuntimeRunning:   systemctlActive(ctx, runtimeUnit),
-		Platform:         "systemd",
+		DaemonInstalled: systemctlEnabled(ctx, daemonUnit),
+		DaemonRunning:   systemctlActive(ctx, daemonUnit),
+		Platform:        "systemd",
 	}, nil
 }
 
@@ -131,17 +92,6 @@ func resolveBinary(name string) (string, error) {
 		return p, nil
 	}
 	return "", fmt.Errorf("%s not found in PATH or next to executable", name)
-}
-
-func resolveRuntimeBinary(ployzBin string) string {
-	candidate := filepath.Join(filepath.Dir(ployzBin), "ployz-runtime")
-	if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
-		return candidate
-	}
-	if p, err := exec.LookPath("ployz-runtime"); err == nil {
-		return p
-	}
-	return ""
 }
 
 // systemd helpers

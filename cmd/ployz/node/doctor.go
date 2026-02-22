@@ -37,10 +37,15 @@ func doctorCmd() *cobra.Command {
 				ui.KV("wireguard", ui.Bool(status.WireGuard)),
 				ui.KV("corrosion", ui.Bool(status.Corrosion)),
 				ui.KV("docker", ui.Bool(status.DockerNet)),
-				ui.KV("runtime", ui.Bool(status.WorkerRunning)),
+				ui.KV("convergence", ui.Bool(status.WorkerRunning)),
+				ui.KV("clock sync", ui.Bool(status.ClockHealth.NTPHealthy)),
 			))
 
-			if status.Configured && status.Running && status.WireGuard && status.Corrosion && status.DockerNet && status.WorkerRunning {
+			allHealthy := status.Configured && status.Running && status.WireGuard &&
+				status.Corrosion && status.DockerNet && status.WorkerRunning &&
+				status.ClockHealth.NTPHealthy
+
+			if allHealthy {
 				fmt.Println(ui.SuccessMsg("no issues detected"))
 				return nil
 			}
@@ -50,7 +55,7 @@ func doctorCmd() *cobra.Command {
 				problem   string
 				fix       string
 			}
-			issues := make([]issue, 0, 6)
+			issues := make([]issue, 0, 8)
 
 			if !status.Configured {
 				issues = append(issues, issue{
@@ -93,9 +98,22 @@ func doctorCmd() *cobra.Command {
 			}
 			if !status.WorkerRunning {
 				issues = append(issues, issue{
-					component: "runtime",
-					problem:   "runtime reconcile loop is not running",
+					component: "convergence",
+					problem:   "convergence loop is not running",
 					fix:       "ployz agent install",
+				})
+			}
+			if !status.ClockHealth.NTPHealthy {
+				problem := "clock is not synchronized with NTP"
+				if status.ClockHealth.NTPError != "" {
+					problem = "NTP check failed: " + status.ClockHealth.NTPError
+				} else {
+					problem = fmt.Sprintf("clock offset %.1fms exceeds threshold", status.ClockHealth.NTPOffsetMs)
+				}
+				issues = append(issues, issue{
+					component: "clock",
+					problem:   problem,
+					fix:       "ensure NTP is configured (ntpd, chrony, or systemd-timesyncd)",
 				})
 			}
 

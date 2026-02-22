@@ -23,5 +23,6 @@ func Cmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&opts.dataRoot, "data-root", cmdutil.DefaultDataRoot(), "Machine data root")
 
 	cmd.AddCommand(runCmd(opts))
+	cmd.AddCommand(privHelperCmd())
 	return cmd
 }

@@ -25,13 +25,22 @@ func statusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+
+			ntpDisplay := ui.Bool(status.ClockHealth.NTPHealthy)
+			if status.ClockHealth.NTPError != "" {
+				ntpDisplay = ui.Warn(status.ClockHealth.NTPError)
+			} else if status.ClockHealth.NTPOffsetMs != 0 {
+				ntpDisplay = fmt.Sprintf("%s (offset %.1fms)", ntpDisplay, status.ClockHealth.NTPOffsetMs)
+			}
+
 			fmt.Print(ui.KeyValues("",
 				ui.KV("configured", ui.Bool(status.Configured)),
 				ui.KV("running", ui.Bool(status.Running)),
 				ui.KV("wireguard", ui.Bool(status.WireGuard)),
 				ui.KV("corrosion", ui.Bool(status.Corrosion)),
 				ui.KV("docker", ui.Bool(status.DockerNet)),
-				ui.KV("runtime", ui.Bool(status.WorkerRunning)),
+				ui.KV("convergence", ui.Bool(status.WorkerRunning)),
+				ui.KV("clock sync", ntpDisplay),
 				ui.KV("state", status.StatePath),
 			))
 			return nil

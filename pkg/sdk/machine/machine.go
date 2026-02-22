@@ -15,6 +15,7 @@ import (
 	"ployz/pkg/ipam"
 	"ployz/pkg/sdk/client"
 	"ployz/pkg/sdk/defaults"
+	"ployz/pkg/sdk/progress"
 	"ployz/pkg/sdk/types"
 )
 
@@ -50,6 +51,10 @@ func (s *Service) Identity(ctx context.Context, network string) (types.Identity,
 
 func (s *Service) ListMachines(ctx context.Context, network string) ([]types.MachineEntry, error) {
 	return s.api.ListMachines(ctx, network)
+}
+
+func (s *Service) GetPeerHealth(ctx context.Context, network string) ([]types.PeerHealthResponse, error) {
+	return s.api.GetPeerHealth(ctx, network)
 }
 
 func (s *Service) RemoveMachine(ctx context.Context, network, machineID string) error {
@@ -130,6 +135,8 @@ type AddOptions struct {
 	SSHPort  int
 	SSHKey   string
 	WGPort   int
+
+	OnProgress progress.Reporter
 }
 
 type AddResult struct {
@@ -138,37 +145,65 @@ type AddResult struct {
 }
 
 func (s *Service) AddMachine(ctx context.Context, opts AddOptions) (AddResult, error) {
+	op, err := newAddOp(ctx, s.api, opts)
+	if err != nil {
+		return AddResult{}, err
+	}
+	defer op.close()
+	return op.run()
+}
+
+// addOp holds shared state for the AddMachine workflow steps.
+type addOp struct {
+	ctx           context.Context
+	api           client.API
+	opts          AddOptions
+	network       string
+	target        string
+	remoteEP      string
+	networkCIDR   netip.Prefix
+	remoteSubnet  netip.Prefix
+	remoteRoot    string
+	bootstrap     []string
+	localIdentity types.Identity
+	localMachines []types.MachineEntry
+	remoteAPI     *client.Client
+	entry         types.MachineEntry
+	tracker       *progress.Tracker
+}
+
+func newAddOp(ctx context.Context, api client.API, opts AddOptions) (*addOp, error) {
 	network := defaults.NormalizeNetwork(opts.Network)
 	target := strings.TrimSpace(opts.Target)
 	if target == "" {
-		return AddResult{}, fmt.Errorf("target is required")
+		return nil, fmt.Errorf("target is required")
 	}
 	if opts.WGPort == 0 {
 		opts.WGPort = defaults.WGPort(network)
 	}
 
-	localIdentity, err := s.api.GetIdentity(ctx, network)
+	localIdentity, err := api.GetIdentity(ctx, network)
 	if err != nil {
-		return AddResult{}, err
+		return nil, err
 	}
-	localMachines, err := s.api.ListMachines(ctx, network)
+	localMachines, err := api.ListMachines(ctx, network)
 	if err != nil {
-		return AddResult{}, err
+		return nil, err
 	}
 
 	remoteEP, err := resolveAdvertiseEndpoint(target, opts.Endpoint, opts.WGPort)
 	if err != nil {
-		return AddResult{}, err
+		return nil, err
 	}
 
 	networkCIDR, err := netip.ParsePrefix(strings.TrimSpace(localIdentity.NetworkCIDR))
 	if err != nil {
-		return AddResult{}, fmt.Errorf("parse local network cidr: %w", err)
+		return nil, fmt.Errorf("parse local network cidr: %w", err)
 	}
 
 	remoteSubnet, err := chooseRemoteSubnet(networkCIDR, localMachines, remoteEP)
 	if err != nil {
-		return AddResult{}, err
+		return nil, err
 	}
 
 	gossipPort := localIdentity.CorrosionGossip
@@ -177,86 +212,153 @@ func (s *Service) AddMachine(ctx context.Context, opts AddOptions) (AddResult, e
 	}
 	localMgmtIP, err := netip.ParseAddr(strings.TrimSpace(localIdentity.ManagementIP))
 	if err != nil {
-		return AddResult{}, fmt.Errorf("parse local management ip: %w", err)
+		return nil, fmt.Errorf("parse local management ip: %w", err)
 	}
-	bootstrap := collectBootstrapAddrs(localMachines, localMgmtIP, gossipPort)
+
 	remoteRoot := remoteDataRoot(opts.DataRoot)
 	if remoteRoot != remoteLinuxDataRoot {
-		return AddResult{}, fmt.Errorf("remote service mode currently supports data root %q only", remoteLinuxDataRoot)
+		return nil, fmt.Errorf("remote service mode currently supports data root %q only", remoteLinuxDataRoot)
 	}
 
-	sshOpts := remote.SSHOptions{Port: opts.SSHPort, KeyPath: opts.SSHKey}
-	if err := remote.RunScript(ctx, target, sshOpts, remote.InstallScript(buildinfo.Version)); err != nil {
+	return &addOp{
+		ctx:           ctx,
+		api:           api,
+		opts:          opts,
+		network:       network,
+		target:        target,
+		remoteEP:      remoteEP,
+		networkCIDR:   networkCIDR,
+		remoteSubnet:  remoteSubnet,
+		remoteRoot:    remoteRoot,
+		bootstrap:     collectBootstrapAddrs(localMachines, localMgmtIP, gossipPort),
+		localIdentity: localIdentity,
+		localMachines: localMachines,
+		tracker: progress.New(opts.OnProgress,
+			progress.StepConfig{ID: "install", Title: "installing ployz on remote", DoneTitle: "installed ployz on remote", FailedTitle: "failed to install ployz on remote"},
+			progress.StepConfig{ID: "connect", Title: "connecting to remote daemon", DoneTitle: "connected to remote daemon", FailedTitle: "failed to connect to remote daemon"},
+			progress.StepConfig{ID: "configure", Title: "configuring network", DoneTitle: "configured network", FailedTitle: "failed to configure network"},
+			progress.StepConfig{ID: "register", Title: "registering node in cluster", DoneTitle: "registered node in cluster", FailedTitle: "failed to register node in cluster"},
+			progress.StepConfig{ID: "converge", Title: "waiting for cluster convergence", DoneTitle: "cluster converged", FailedTitle: "cluster convergence failed"},
+		),
+	}, nil
+}
+
+func (a *addOp) close() {
+	if a.remoteAPI != nil {
+		_ = a.remoteAPI.Close()
+	}
+}
+
+func (a *addOp) run() (AddResult, error) {
+	steps := []struct {
+		id string
+		fn func() error
+	}{
+		{"install", a.install},
+		{"connect", a.connect},
+		{"configure", a.configure},
+		{"register", a.register},
+		{"converge", a.converge},
+	}
+	for _, s := range steps {
+		if err := a.tracker.Do(s.id, s.fn); err != nil {
+			return AddResult{}, err
+		}
+	}
+
+	machines, err := a.api.ListMachines(a.ctx, a.network)
+	if err != nil {
 		return AddResult{}, err
 	}
+	return AddResult{Machine: a.entry, Peers: len(machines)}, nil
+}
 
-	remoteAPI, err := client.NewSSH(target, client.SSHOptions{
-		Port:       opts.SSHPort,
-		KeyPath:    opts.SSHKey,
+func (a *addOp) install() error {
+	sshOpts := remote.SSHOptions{Port: a.opts.SSHPort, KeyPath: a.opts.SSHKey}
+	return remote.RunScript(a.ctx, a.target, sshOpts, remote.InstallScript(buildinfo.Version))
+}
+
+func (a *addOp) connect() error {
+	var err error
+	a.remoteAPI, err = client.NewSSH(a.target, client.SSHOptions{
+		Port:       a.opts.SSHPort,
+		KeyPath:    a.opts.SSHKey,
 		SocketPath: remoteDaemonSocketPath,
 	})
 	if err != nil {
-		return AddResult{}, fmt.Errorf("connect to remote daemon: %w", err)
+		return fmt.Errorf("connect to remote daemon: %w", err)
 	}
-	defer func() { _ = remoteAPI.Close() }()
+	return nil
+}
 
-	if _, err := remoteAPI.ApplyNetworkSpec(ctx, types.NetworkSpec{
-		Network:           network,
-		DataRoot:          remoteRoot,
-		NetworkCIDR:       networkCIDR.String(),
-		Subnet:            remoteSubnet.String(),
-		WGPort:            opts.WGPort,
-		CorrosionMemberID: localIdentity.CorrosionMemberID,
-		CorrosionAPIToken: localIdentity.CorrosionAPIToken,
-		AdvertiseEndpoint: remoteEP,
-		Bootstrap:         bootstrap,
+func (a *addOp) configure() error {
+	if _, err := a.remoteAPI.ApplyNetworkSpec(a.ctx, types.NetworkSpec{
+		Network:           a.network,
+		DataRoot:          a.remoteRoot,
+		NetworkCIDR:       a.networkCIDR.String(),
+		Subnet:            a.remoteSubnet.String(),
+		WGPort:            a.opts.WGPort,
+		CorrosionMemberID: a.localIdentity.CorrosionMemberID,
+		CorrosionAPIToken: a.localIdentity.CorrosionAPIToken,
+		AdvertiseEndpoint: a.remoteEP,
+		Bootstrap:         a.bootstrap,
 	}); err != nil {
-		return AddResult{}, err
+		return err
 	}
 
-	remoteIdentity, err := remoteAPI.GetIdentity(ctx, network)
+	id, err := a.remoteAPI.GetIdentity(a.ctx, a.network)
 	if err != nil {
-		return AddResult{}, err
+		return err
 	}
 
-	entry := types.MachineEntry{
-		ID:           strings.TrimSpace(remoteIdentity.ID),
-		PublicKey:    strings.TrimSpace(remoteIdentity.PublicKey),
-		Subnet:       strings.TrimSpace(remoteIdentity.Subnet),
-		ManagementIP: strings.TrimSpace(remoteIdentity.ManagementIP),
-		Endpoint:     remoteEP,
+	a.entry = types.MachineEntry{
+		ID:           strings.TrimSpace(id.ID),
+		PublicKey:    strings.TrimSpace(id.PublicKey),
+		Subnet:       strings.TrimSpace(id.Subnet),
+		ManagementIP: strings.TrimSpace(id.ManagementIP),
+		Endpoint:     a.remoteEP,
 	}
-	if entry.Subnet == "" {
-		entry.Subnet = remoteSubnet.String()
+	if a.entry.Subnet == "" {
+		a.entry.Subnet = a.remoteSubnet.String()
 	}
-	entry.ExpectedVersion = findExpectedVersion(localMachines, entry.ID, entry.Endpoint)
+	a.entry.ExpectedVersion = findExpectedVersion(a.localMachines, a.entry.ID, a.entry.Endpoint)
+	return nil
+}
 
-	if err := upsertMachineWithRetry(ctx, s.api, network, &entry); err != nil {
-		return AddResult{}, err
-	}
+func (a *addOp) register() error {
+	return upsertMachineWithRetry(a.ctx, a.api, a.network, &a.entry)
+}
 
-	waitCtx, cancel := context.WithTimeout(ctx, addWaitTimeout)
+func (a *addOp) converge() error {
+	waitCtx, cancel := context.WithTimeout(a.ctx, addWaitTimeout)
 	defer cancel()
 
-	if err := s.api.TriggerReconcile(waitCtx, network); err != nil {
-		return AddResult{}, err
+	// Seed the local machine entry into the remote's Corrosion directly.
+	// Without this, the remote has no way to learn about the local node:
+	// Corrosion gossip runs over WireGuard, but the remote won't add the
+	// local as a WG peer until it sees it in Corrosion — a chicken-and-egg
+	// problem when the local node is behind NAT with no public endpoint.
+	localEntry := types.MachineEntry{
+		ID:           strings.TrimSpace(a.localIdentity.ID),
+		PublicKey:    strings.TrimSpace(a.localIdentity.PublicKey),
+		Subnet:       strings.TrimSpace(a.localIdentity.Subnet),
+		ManagementIP: strings.TrimSpace(a.localIdentity.ManagementIP),
+		Endpoint:     strings.TrimSpace(a.localIdentity.AdvertiseEndpoint),
 	}
-	if err := remoteAPI.TriggerReconcile(waitCtx, network); err != nil {
-		return AddResult{}, err
+	localEntry.ExpectedVersion = findExpectedVersion(a.localMachines, localEntry.ID, localEntry.Endpoint)
+	if err := upsertMachineWithRetry(a.ctx, a.remoteAPI, a.network, &localEntry); err != nil {
+		return fmt.Errorf("seed local machine on remote: %w", err)
 	}
-
-	if err := waitForMachine(waitCtx, s.api, network, entry.ID, "local"); err != nil {
-		return AddResult{}, err
+	if err := a.api.TriggerReconcile(waitCtx, a.network); err != nil {
+		return err
 	}
-	if err := waitForMachine(waitCtx, remoteAPI, network, localIdentity.ID, "remote"); err != nil {
-		return AddResult{}, err
+	if err := a.remoteAPI.TriggerReconcile(waitCtx, a.network); err != nil {
+		return err
 	}
-
-	machines, err := s.api.ListMachines(ctx, network)
-	if err != nil {
-		return AddResult{}, err
+	if err := waitForMachine(waitCtx, a.api, a.network, a.entry.ID, "local"); err != nil {
+		return err
 	}
-	return AddResult{Machine: entry, Peers: len(machines)}, nil
+	return waitForMachine(waitCtx, a.remoteAPI, a.network, a.localIdentity.ID, "remote")
 }
 
 func waitForMachine(ctx context.Context, api client.API, network, machineID, who string) error {
@@ -268,15 +370,17 @@ func waitForMachine(ctx context.Context, api client.API, network, machineID, who
 		return fmt.Errorf("wait for %s daemon converge: machine id is required", who)
 	}
 
+	var lastSeen int
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("wait for %s daemon converge: %w", who, ctx.Err())
+			return fmt.Errorf("wait for %s daemon converge: %w (visible machines: %d, waiting for %s)", who, ctx.Err(), lastSeen, machineID)
 		case <-ticker.C:
 			machines, err := api.ListMachines(ctx, network)
 			if err != nil {
 				continue
 			}
+			lastSeen = len(machines)
 			for _, m := range machines {
 				if strings.TrimSpace(m.ID) == machineID {
 					return nil
