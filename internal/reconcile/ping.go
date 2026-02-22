@@ -14,6 +14,9 @@ const pingDialTimeout = 3 * time.Second
 type PingTracker struct {
 	mu   sync.RWMutex
 	rtts map[string]time.Duration // nodeID → RTT, -1 = unreachable
+
+	// DialFunc overrides TCP dialing for testing. If nil, real TCP dial is used.
+	DialFunc func(ctx context.Context, addr string) (time.Duration, error)
 }
 
 // NewPingTracker creates a PingTracker ready to run.
@@ -62,7 +65,7 @@ func (pt *PingTracker) probeAll(ctx context.Context, selfID string, addrs map[st
 		wg.Add(1)
 		go func(id, a string) {
 			defer wg.Done()
-			rtt := tcpPing(ctx, a)
+			rtt := pt.dial(ctx, a)
 			ch <- result{nodeID: id, rtt: rtt}
 		}(nodeID, addr)
 	}
@@ -77,6 +80,17 @@ func (pt *PingTracker) probeAll(ctx context.Context, selfID string, addrs map[st
 		pt.rtts[r.nodeID] = r.rtt
 	}
 	pt.mu.Unlock()
+}
+
+func (pt *PingTracker) dial(ctx context.Context, addr string) time.Duration {
+	if pt.DialFunc != nil {
+		rtt, err := pt.DialFunc(ctx, addr)
+		if err != nil {
+			return -1
+		}
+		return rtt
+	}
+	return tcpPing(ctx, addr)
 }
 
 func tcpPing(ctx context.Context, addr string) time.Duration {

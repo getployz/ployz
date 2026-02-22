@@ -50,6 +50,7 @@ internal/adapter/     all external system integrations:
   adapter/wireguard/    WireGuard device management (implements PeerApplier)
   adapter/sqlite/       local state persistence (load/save)
   adapter/platform/     platform runtime ops (darwin/linux/stub)
+  adapter/fake/         shared fake adapters for chaos/integration testing
 internal/daemon/      daemon internals (server, supervisor, proxy, protobuf)
 internal/remote/      SSH + remote install scripts
 internal/logging/     slog configuration
@@ -216,5 +217,7 @@ Three groups in order: stdlib, third-party, local (`ployz/...`).
 - Table-driven tests for parsing, normalization, reconciliation logic.
 - Cover success + at least one failure path per public function change.
 - Isolate pure logic from network/SSH/Docker dependencies for unit testability.
-- Fakes live in `_test.go` files in the consumer package (e.g. `reconcile/reconcile_test.go` contains `fakeRegistry`). Never in a shared `testutil` or `mocks` package.
+- **Inline stubs** for simple, single-test fakes live in `_test.go` files in the consumer package.
+- **Shared fake adapters** (`adapter/fake/`) for multi-test or cross-package use: `fake.Clock`, `fake.StateStore`, `fake.ContainerRuntime`, `fake.Cluster`, `fake.Registry`, etc. All fakes embed `CallRecorder` for call assertion, support per-method error injection, and are thread-safe.
+- `fake.Cluster` simulates a Corrosion gossip cluster with per-node state, configurable topology (latency, partitions, drop rates), and deterministic replication via `Tick()`/`Drain()`.
 - Run single tests with: `go test ./path/to/pkg -run '^TestName$' -count=1 -v`
