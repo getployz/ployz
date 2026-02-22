@@ -6,13 +6,13 @@ import (
 	"net/netip"
 	"sync"
 
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 )
 
-var _ network.ContainerRuntime = (*ContainerRuntime)(nil)
+var _ mesh.ContainerRuntime = (*ContainerRuntime)(nil)
 
 type containerState struct {
-	Config  network.ContainerCreateConfig
+	Config  mesh.ContainerCreateConfig
 	Running bool
 }
 
@@ -21,7 +21,7 @@ type networkState struct {
 	Subnet string
 }
 
-// ContainerRuntime is an in-memory implementation of network.ContainerRuntime.
+// ContainerRuntime is an in-memory implementation of mesh.ContainerRuntime.
 type ContainerRuntime struct {
 	CallRecorder
 	mu         sync.Mutex
@@ -36,7 +36,7 @@ type ContainerRuntime struct {
 	ContainerStopErr  func(ctx context.Context, name string) error
 	ContainerRemoveErr func(ctx context.Context, name string, force bool) error
 	ContainerLogsErr  func(ctx context.Context, name string, lines int) error
-	ContainerCreateErr func(ctx context.Context, cfg network.ContainerCreateConfig) error
+	ContainerCreateErr func(ctx context.Context, cfg mesh.ContainerCreateConfig) error
 	ImagePullErr      func(ctx context.Context, image string) error
 	NetworkInspectErr func(ctx context.Context, name string) error
 	NetworkCreateErr  func(ctx context.Context, name string, subnet netip.Prefix, wgIface string) error
@@ -68,11 +68,11 @@ func (r *ContainerRuntime) WaitReady(ctx context.Context) error {
 	return nil
 }
 
-func (r *ContainerRuntime) ContainerInspect(ctx context.Context, name string) (network.ContainerInfo, error) {
+func (r *ContainerRuntime) ContainerInspect(ctx context.Context, name string) (mesh.ContainerInfo, error) {
 	r.record("ContainerInspect", name)
 	if r.ContainerInspectErr != nil {
 		if err := r.ContainerInspectErr(ctx, name); err != nil {
-			return network.ContainerInfo{}, err
+			return mesh.ContainerInfo{}, err
 		}
 	}
 	r.mu.Lock()
@@ -80,9 +80,9 @@ func (r *ContainerRuntime) ContainerInspect(ctx context.Context, name string) (n
 
 	cs, ok := r.containers[name]
 	if !ok {
-		return network.ContainerInfo{Exists: false}, nil
+		return mesh.ContainerInfo{Exists: false}, nil
 	}
-	return network.ContainerInfo{Exists: true, Running: cs.Running}, nil
+	return mesh.ContainerInfo{Exists: true, Running: cs.Running}, nil
 }
 
 func (r *ContainerRuntime) ContainerStart(ctx context.Context, name string) error {
@@ -153,7 +153,7 @@ func (r *ContainerRuntime) ContainerLogs(ctx context.Context, name string, lines
 	return "", nil
 }
 
-func (r *ContainerRuntime) ContainerCreate(ctx context.Context, cfg network.ContainerCreateConfig) error {
+func (r *ContainerRuntime) ContainerCreate(ctx context.Context, cfg mesh.ContainerCreateConfig) error {
 	r.record("ContainerCreate", cfg)
 	if r.ContainerCreateErr != nil {
 		if err := r.ContainerCreateErr(ctx, cfg); err != nil {
@@ -181,11 +181,11 @@ func (r *ContainerRuntime) ImagePull(ctx context.Context, image string) error {
 	return nil
 }
 
-func (r *ContainerRuntime) NetworkInspect(ctx context.Context, name string) (network.NetworkInfo, error) {
+func (r *ContainerRuntime) NetworkInspect(ctx context.Context, name string) (mesh.NetworkInfo, error) {
 	r.record("NetworkInspect", name)
 	if r.NetworkInspectErr != nil {
 		if err := r.NetworkInspectErr(ctx, name); err != nil {
-			return network.NetworkInfo{}, err
+			return mesh.NetworkInfo{}, err
 		}
 	}
 	r.mu.Lock()
@@ -193,9 +193,9 @@ func (r *ContainerRuntime) NetworkInspect(ctx context.Context, name string) (net
 
 	ns, ok := r.networks[name]
 	if !ok {
-		return network.NetworkInfo{Exists: false}, nil
+		return mesh.NetworkInfo{Exists: false}, nil
 	}
-	return network.NetworkInfo{ID: ns.ID, Subnet: ns.Subnet, Exists: true}, nil
+	return mesh.NetworkInfo{ID: ns.ID, Subnet: ns.Subnet, Exists: true}, nil
 }
 
 func (r *ContainerRuntime) NetworkCreate(ctx context.Context, name string, subnet netip.Prefix, wgIface string) error {

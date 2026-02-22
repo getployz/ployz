@@ -5,19 +5,19 @@ import (
 	"errors"
 	"testing"
 
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 )
 
 func TestPeerReconciler_ReconcilePeers(t *testing.T) {
 	rec := NewPeerReconciler()
 	ctx := context.Background()
 
-	rows := []network.MachineRow{
+	rows := []mesh.MachineRow{
 		{ID: "m1", PublicKey: "pk1"},
 		{ID: "m2", PublicKey: "pk2"},
 	}
 
-	n, err := rec.ReconcilePeers(ctx, network.Config{}, rows)
+	n, err := rec.ReconcilePeers(ctx, mesh.Config{}, rows)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,11 +46,11 @@ func TestPeerReconciler_ErrorInjection(t *testing.T) {
 	rec := NewPeerReconciler()
 	injected := errors.New("reconcile failed")
 
-	rec.ReconcilePeersErr = func(context.Context, network.Config, []network.MachineRow) error {
+	rec.ReconcilePeersErr = func(context.Context, mesh.Config, []mesh.MachineRow) error {
 		return injected
 	}
 
-	_, err := rec.ReconcilePeers(context.Background(), network.Config{}, nil)
+	_, err := rec.ReconcilePeers(context.Background(), mesh.Config{}, nil)
 	if !errors.Is(err, injected) {
 		t.Errorf("expected injected error, got %v", err)
 	}
@@ -60,7 +60,7 @@ func TestPeerReconciler_CallRecording(t *testing.T) {
 	rec := NewPeerReconciler()
 	ctx := context.Background()
 
-	_, _ = rec.ReconcilePeers(ctx, network.Config{}, nil)
+	_, _ = rec.ReconcilePeers(ctx, mesh.Config{}, nil)
 	_ = rec.Close()
 
 	if len(rec.Calls("ReconcilePeers")) != 1 {

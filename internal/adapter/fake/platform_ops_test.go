@@ -5,15 +5,15 @@ import (
 	"errors"
 	"testing"
 
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 )
 
 func TestPlatformOps_AllMethodsRecordCalls(t *testing.T) {
 	ctx := context.Background()
 	ops := &PlatformOps{}
-	cfg := network.Config{}
-	state := &network.State{}
-	peers := []network.Peer{{PublicKey: "key1"}}
+	cfg := mesh.Config{}
+	state := &mesh.State{}
+	peers := []mesh.Peer{{PublicKey: "key1"}}
 
 	_ = ops.Prepare(ctx, cfg, nil)
 	_ = ops.ConfigureWireGuard(ctx, cfg, state)
@@ -44,12 +44,12 @@ func TestPlatformOps_AllMethodsRecordCalls(t *testing.T) {
 func TestPlatformOps_ApplyPeerConfigCaptures(t *testing.T) {
 	ctx := context.Background()
 	ops := &PlatformOps{}
-	peers := []network.Peer{
+	peers := []mesh.Peer{
 		{PublicKey: "key1", Endpoint: "1.2.3.4:51820"},
 		{PublicKey: "key2", Endpoint: "5.6.7.8:51820"},
 	}
 
-	if err := ops.ApplyPeerConfig(ctx, network.Config{}, &network.State{}, peers); err != nil {
+	if err := ops.ApplyPeerConfig(ctx, mesh.Config{}, &mesh.State{}, peers); err != nil {
 		t.Fatal(err)
 	}
 	if len(ops.Peers) != 2 {
@@ -65,16 +65,16 @@ func TestPlatformOps_ErrorInjection(t *testing.T) {
 	ops := &PlatformOps{}
 	injected := errors.New("wg setup failed")
 
-	ops.ConfigureWireGuardErr = func(context.Context, network.Config, *network.State) error {
+	ops.ConfigureWireGuardErr = func(context.Context, mesh.Config, *mesh.State) error {
 		return injected
 	}
 
-	if err := ops.ConfigureWireGuard(ctx, network.Config{}, &network.State{}); !errors.Is(err, injected) {
+	if err := ops.ConfigureWireGuard(ctx, mesh.Config{}, &mesh.State{}); !errors.Is(err, injected) {
 		t.Errorf("expected injected error, got %v", err)
 	}
 
 	// Other methods should still succeed.
-	if err := ops.Prepare(ctx, network.Config{}, nil); err != nil {
+	if err := ops.Prepare(ctx, mesh.Config{}, nil); err != nil {
 		t.Errorf("expected nil error from Prepare, got %v", err)
 	}
 }

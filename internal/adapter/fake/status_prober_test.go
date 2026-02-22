@@ -5,14 +5,14 @@ import (
 	"errors"
 	"testing"
 
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 )
 
 func TestStatusProber_CannedValues(t *testing.T) {
 	ctx := context.Background()
 	p := &StatusProber{WG: true, DockerNet: true, Corrosion: false}
 
-	wg, dn, cr, err := p.ProbeInfra(ctx, &network.State{})
+	wg, dn, cr, err := p.ProbeInfra(ctx, &mesh.State{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,10 +26,10 @@ func TestStatusProber_ErrorInjection(t *testing.T) {
 	injected := errors.New("probe failed")
 	p := &StatusProber{
 		WG:            true,
-		ProbeInfraErr: func(context.Context, *network.State) error { return injected },
+		ProbeInfraErr: func(context.Context, *mesh.State) error { return injected },
 	}
 
-	_, _, _, err := p.ProbeInfra(ctx, &network.State{})
+	_, _, _, err := p.ProbeInfra(ctx, &mesh.State{})
 	if !errors.Is(err, injected) {
 		t.Errorf("expected injected error, got %v", err)
 	}
@@ -39,7 +39,7 @@ func TestStatusProber_CallRecording(t *testing.T) {
 	ctx := context.Background()
 	p := &StatusProber{}
 	_, _, _, _ = p.ProbeInfra(ctx, nil)
-	_, _, _, _ = p.ProbeInfra(ctx, &network.State{})
+	_, _, _, _ = p.ProbeInfra(ctx, &mesh.State{})
 
 	if len(p.Calls("ProbeInfra")) != 2 {
 		t.Errorf("expected 2 ProbeInfra calls, got %d", len(p.Calls("ProbeInfra")))

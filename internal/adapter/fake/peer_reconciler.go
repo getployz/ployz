@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 	"ployz/internal/reconcile"
 )
 
@@ -14,10 +14,10 @@ var _ reconcile.PeerReconciler = (*PeerReconciler)(nil)
 type PeerReconciler struct {
 	CallRecorder
 	mu       sync.Mutex
-	LastRows []network.MachineRow
+	LastRows []mesh.MachineRow
 	Closed   bool
 
-	ReconcilePeersErr func(ctx context.Context, cfg network.Config, rows []network.MachineRow) error
+	ReconcilePeersErr func(ctx context.Context, cfg mesh.Config, rows []mesh.MachineRow) error
 }
 
 // NewPeerReconciler creates a PeerReconciler.
@@ -25,7 +25,7 @@ func NewPeerReconciler() *PeerReconciler {
 	return &PeerReconciler{}
 }
 
-func (r *PeerReconciler) ReconcilePeers(ctx context.Context, cfg network.Config, rows []network.MachineRow) (int, error) {
+func (r *PeerReconciler) ReconcilePeers(ctx context.Context, cfg mesh.Config, rows []mesh.MachineRow) (int, error) {
 	r.record("ReconcilePeers", cfg, rows)
 	if r.ReconcilePeersErr != nil {
 		if err := r.ReconcilePeersErr(ctx, cfg, rows); err != nil {
@@ -35,7 +35,7 @@ func (r *PeerReconciler) ReconcilePeers(ctx context.Context, cfg network.Config,
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.LastRows = make([]network.MachineRow, len(rows))
+	r.LastRows = make([]mesh.MachineRow, len(rows))
 	copy(r.LastRows, rows)
 	return len(rows), nil
 }

@@ -2,6 +2,7 @@ package fake
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/netip"
@@ -9,8 +10,11 @@ import (
 	"sync"
 	"time"
 
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 )
+
+// ErrNodeDead is returned by Registry methods when the node has been killed.
+var ErrNodeDead = errors.New("node is dead")
 
 // Cluster simulates a Corrosion gossip cluster with N nodes.
 // All operations are deterministic — no goroutines, no real time.
@@ -20,17 +24,18 @@ type Cluster struct {
 	nodes     map[string]*nodeState
 	links     map[link]*LinkConfig
 	blocked   map[link]bool
+	killed    map[string]bool
 	pending   []pendingWrite
 	rng       *rand.Rand
 	nodeAddrs map[string]string // addr → nodeID, for DialFunc lookups
 }
 
 type nodeState struct {
-	machines    map[string]network.MachineRow
-	heartbeats  map[string]network.HeartbeatRow
+	machines    map[string]mesh.MachineRow
+	heartbeats  map[string]mesh.HeartbeatRow
 	networkCIDR netip.Prefix
-	machSubs    []chan<- network.MachineChange
-	hbSubs      []chan<- network.HeartbeatChange
+	machSubs    []chan<- mesh.MachineChange
+	hbSubs      []chan<- mesh.HeartbeatChange
 }
 
 // LinkConfig controls replication behavior between two nodes.
@@ -51,8 +56,8 @@ type pendingWrite struct {
 
 type writeOp struct {
 	kind      writeKind
-	machine   network.MachineRow
-	heartbeat network.HeartbeatRow
+	machine   mesh.MachineRow
+	heartbeat mesh.HeartbeatRow
 	deleteID  string
 }
 
@@ -66,18 +71,18 @@ const (
 
 // NodeSnapshot is a point-in-time view of a node's local data.
 type NodeSnapshot struct {
-	Machines   []network.MachineRow
-	Heartbeats []network.HeartbeatRow
+	Machines   []mesh.MachineRow
+	Heartbeats []mesh.HeartbeatRow
 }
 
 // Machine returns the machine row with the given ID, if present.
-func (s NodeSnapshot) Machine(id string) (network.MachineRow, bool) {
+func (s NodeSnapshot) Machine(id string) (mesh.MachineRow, bool) {
 	for _, m := range s.Machines {
 		if m.ID == id {
 			return m, true
 		}
 	}
-	return network.MachineRow{}, false
+	return mesh.MachineRow{}, false
 }
 
 // NewCluster creates a cluster backed by the given fake clock.
@@ -88,6 +93,7 @@ func NewCluster(clock *Clock) *Cluster {
 		nodes:     make(map[string]*nodeState),
 		links:     make(map[link]*LinkConfig),
 		blocked:   make(map[link]bool),
+		killed:    make(map[string]bool),
 		rng:       rand.New(rand.NewSource(42)),
 		nodeAddrs: make(map[string]string),
 	}
@@ -97,8 +103,8 @@ func (c *Cluster) ensureNode(id string) *nodeState {
 	n, ok := c.nodes[id]
 	if !ok {
 		n = &nodeState{
-			machines:   make(map[string]network.MachineRow),
-			heartbeats: make(map[string]network.HeartbeatRow),
+			machines:   make(map[string]mesh.MachineRow),
+			heartbeats: make(map[string]mesh.HeartbeatRow),
 		}
 		c.nodes[id] = n
 	}
@@ -153,6 +159,101 @@ func (c *Cluster) Heal() {
 	c.blocked = make(map[link]bool)
 }
 
+// KillNode marks a node as dead. Registry ops return ErrNodeDead,
+// replication to/from is blocked, subscription channels go silent.
+// Local state is preserved (simulates SQLite surviving crash).
+func (c *Cluster) KillNode(nodeID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.killed[nodeID] = true
+}
+
+// RestartNode marks a killed node as alive and runs anti-entropy sync
+// from reachable peers. Consumers must re-subscribe after restart.
+func (c *Cluster) RestartNode(nodeID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.killed, nodeID)
+	c.antiEntropy(nodeID)
+}
+
+// IsKilled reports whether a node is currently killed.
+func (c *Cluster) IsKilled(nodeID string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.killed[nodeID]
+}
+
+// isNodeDead checks killed state. Caller must hold c.mu.
+func (c *Cluster) isNodeDead(nodeID string) bool {
+	return c.killed[nodeID]
+}
+
+// antiEntropy merges state from all reachable, non-killed, non-blocked peers
+// into the given node. For machines: highest version wins. For heartbeats:
+// highest seq wins. Machines that exist locally but on zero reachable peers
+// are deleted (unless no peers are reachable at all).
+// Must be called with c.mu held.
+func (c *Cluster) antiEntropy(nodeID string) {
+	n, ok := c.nodes[nodeID]
+	if !ok {
+		return
+	}
+
+	// Collect reachable peers.
+	var reachable []*nodeState
+	for peerID, peerState := range c.nodes {
+		if peerID == nodeID {
+			continue
+		}
+		if c.killed[peerID] {
+			continue
+		}
+		if c.blocked[link{peerID, nodeID}] || c.blocked[link{nodeID, peerID}] {
+			continue
+		}
+		reachable = append(reachable, peerState)
+	}
+
+	if len(reachable) == 0 {
+		return
+	}
+
+	// Merge machines: highest version wins.
+	for _, peer := range reachable {
+		for id, peerRow := range peer.machines {
+			local, exists := n.machines[id]
+			if !exists || peerRow.Version > local.Version {
+				n.machines[id] = peerRow
+			}
+		}
+	}
+
+	// Delete machines that exist locally but on zero reachable peers.
+	for id := range n.machines {
+		found := false
+		for _, peer := range reachable {
+			if _, ok := peer.machines[id]; ok {
+				found = true
+				break
+			}
+		}
+		if !found {
+			delete(n.machines, id)
+		}
+	}
+
+	// Merge heartbeats: highest seq wins.
+	for _, peer := range reachable {
+		for id, peerHB := range peer.heartbeats {
+			local, exists := n.heartbeats[id]
+			if !exists || peerHB.Seq > local.Seq {
+				n.heartbeats[id] = peerHB
+			}
+		}
+	}
+}
+
 // Tick delivers pending writes up to clock.Now().
 func (c *Cluster) Tick() {
 	c.mu.Lock()
@@ -161,14 +262,20 @@ func (c *Cluster) Tick() {
 }
 
 // Drain delivers ALL pending writes regardless of time.
+// Writes targeting killed nodes are retained.
 func (c *Cluster) Drain() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	var remaining []pendingWrite
 	for _, pw := range c.pending {
+		if c.isNodeDead(pw.target) {
+			remaining = append(remaining, pw)
+			continue
+		}
 		c.applyWrite(pw.target, pw.write)
 	}
-	c.pending = nil
+	c.pending = remaining
 }
 
 // Snapshot returns a point-in-time view of a node's local data.
@@ -229,9 +336,9 @@ func (c *Cluster) DialFunc(fromNodeID string) func(ctx context.Context, addr str
 	}
 }
 
-// NetworkRegistryFactory returns a network.RegistryFactory for the given node.
-func (c *Cluster) NetworkRegistryFactory(nodeID string) network.RegistryFactory {
-	return func(addr netip.AddrPort, token string) network.Registry {
+// NetworkRegistryFactory returns a mesh.RegistryFactory for the given node.
+func (c *Cluster) NetworkRegistryFactory(nodeID string) mesh.RegistryFactory {
+	return func(addr netip.AddrPort, token string) mesh.Registry {
 		return c.Registry(nodeID)
 	}
 }
@@ -245,7 +352,7 @@ func (c *Cluster) ReconcileRegistryFactory(nodeID string) func(addr netip.AddrPo
 }
 
 // Internal: upsert a machine from the perspective of writerNode.
-func (c *Cluster) upsertMachine(writerNode string, row network.MachineRow) error {
+func (c *Cluster) upsertMachine(writerNode string, row mesh.MachineRow) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -255,14 +362,14 @@ func (c *Cluster) upsertMachine(writerNode string, row network.MachineRow) error
 	if existing, ok := n.machines[row.ID]; ok {
 		// Version is bumped by the caller. Check happens before write.
 		if row.Version > 0 && existing.Version != row.Version-1 {
-			return network.ErrConflict
+			return mesh.ErrConflict
 		}
 	}
 
 	n.machines[row.ID] = row
 
 	// Notify local subscribers.
-	change := network.MachineChange{Kind: network.ChangeUpdated, Machine: row}
+	change := mesh.MachineChange{Kind: mesh.ChangeUpdated, Machine: row}
 	for _, ch := range n.machSubs {
 		select {
 		case ch <- change:
@@ -288,7 +395,7 @@ func (c *Cluster) deleteMachine(writerNode string, machineID string) {
 	}
 	delete(n.machines, machineID)
 
-	change := network.MachineChange{Kind: network.ChangeDeleted, Machine: row}
+	change := mesh.MachineChange{Kind: mesh.ChangeDeleted, Machine: row}
 	for _, ch := range n.machSubs {
 		select {
 		case ch <- change:
@@ -317,7 +424,7 @@ func (c *Cluster) deleteByEndpointExceptID(writerNode string, endpoint string, e
 		row := n.machines[id]
 		delete(n.machines, id)
 
-		change := network.MachineChange{Kind: network.ChangeDeleted, Machine: row}
+		change := mesh.MachineChange{Kind: mesh.ChangeDeleted, Machine: row}
 		for _, ch := range n.machSubs {
 			select {
 			case ch <- change:
@@ -337,14 +444,14 @@ func (c *Cluster) bumpHeartbeat(writerNode string, nodeID string, updatedAt stri
 
 	n := c.ensureNode(writerNode)
 	existing := n.heartbeats[nodeID]
-	hb := network.HeartbeatRow{
+	hb := mesh.HeartbeatRow{
 		NodeID:    nodeID,
 		Seq:       existing.Seq + 1,
 		UpdatedAt: updatedAt,
 	}
 	n.heartbeats[nodeID] = hb
 
-	change := network.HeartbeatChange{Kind: network.ChangeUpdated, Heartbeat: hb}
+	change := mesh.HeartbeatChange{Kind: mesh.ChangeUpdated, Heartbeat: hb}
 	for _, ch := range n.hbSubs {
 		select {
 		case ch <- change:
@@ -388,7 +495,7 @@ func (c *Cluster) ensureNetworkCIDR(writerNode string, requested netip.Prefix, f
 }
 
 // Internal: list machines for a specific node's local view.
-func (c *Cluster) listMachines(nodeID string) []network.MachineRow {
+func (c *Cluster) listMachines(nodeID string) []mesh.MachineRow {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -400,7 +507,7 @@ func (c *Cluster) listMachines(nodeID string) []network.MachineRow {
 }
 
 // Internal: list heartbeats for a specific node's local view.
-func (c *Cluster) listHeartbeats(nodeID string) []network.HeartbeatRow {
+func (c *Cluster) listHeartbeats(nodeID string) []mesh.HeartbeatRow {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -412,13 +519,13 @@ func (c *Cluster) listHeartbeats(nodeID string) []network.HeartbeatRow {
 }
 
 // Internal: subscribe to machine changes on a specific node.
-func (c *Cluster) subscribeMachines(ctx context.Context, nodeID string) ([]network.MachineRow, <-chan network.MachineChange, error) {
+func (c *Cluster) subscribeMachines(ctx context.Context, nodeID string) ([]mesh.MachineRow, <-chan mesh.MachineChange, error) {
 	c.mu.Lock()
 	n := c.ensureNode(nodeID)
 
 	snapshot := sortedMachines(n.machines)
 	// TODO: configurable subscription buffer size
-	ch := make(chan network.MachineChange, 256)
+	ch := make(chan mesh.MachineChange, 256)
 	n.machSubs = append(n.machSubs, ch)
 	c.mu.Unlock()
 
@@ -440,12 +547,12 @@ func (c *Cluster) subscribeMachines(ctx context.Context, nodeID string) ([]netwo
 }
 
 // Internal: subscribe to heartbeat changes on a specific node.
-func (c *Cluster) subscribeHeartbeats(ctx context.Context, nodeID string) ([]network.HeartbeatRow, <-chan network.HeartbeatChange, error) {
+func (c *Cluster) subscribeHeartbeats(ctx context.Context, nodeID string) ([]mesh.HeartbeatRow, <-chan mesh.HeartbeatChange, error) {
 	c.mu.Lock()
 	n := c.ensureNode(nodeID)
 
 	snapshot := sortedHeartbeats(n.heartbeats)
-	ch := make(chan network.HeartbeatChange, 256)
+	ch := make(chan mesh.HeartbeatChange, 256)
 	n.hbSubs = append(n.hbSubs, ch)
 	c.mu.Unlock()
 
@@ -469,8 +576,14 @@ func (c *Cluster) subscribeHeartbeats(ctx context.Context, nodeID string) ([]net
 // fanOut replicates a write to all nodes except the writer.
 // Must be called with c.mu held.
 func (c *Cluster) fanOut(writerNode string, op writeOp) {
+	if c.isNodeDead(writerNode) {
+		return
+	}
 	for nodeID := range c.nodes {
 		if nodeID == writerNode {
+			continue
+		}
+		if c.isNodeDead(nodeID) {
 			continue
 		}
 		l := link{writerNode, nodeID}
@@ -512,7 +625,7 @@ func (c *Cluster) applyWrite(target string, op writeOp) {
 	switch op.kind {
 	case writeUpsertMachine:
 		n.machines[op.machine.ID] = op.machine
-		change := network.MachineChange{Kind: network.ChangeUpdated, Machine: op.machine}
+		change := mesh.MachineChange{Kind: mesh.ChangeUpdated, Machine: op.machine}
 		for _, ch := range n.machSubs {
 			select {
 			case ch <- change:
@@ -522,7 +635,7 @@ func (c *Cluster) applyWrite(target string, op writeOp) {
 
 	case writeDeleteMachine:
 		delete(n.machines, op.deleteID)
-		change := network.MachineChange{Kind: network.ChangeDeleted, Machine: op.machine}
+		change := mesh.MachineChange{Kind: mesh.ChangeDeleted, Machine: op.machine}
 		for _, ch := range n.machSubs {
 			select {
 			case ch <- change:
@@ -532,7 +645,7 @@ func (c *Cluster) applyWrite(target string, op writeOp) {
 
 	case writeHeartbeat:
 		n.heartbeats[op.heartbeat.NodeID] = op.heartbeat
-		change := network.HeartbeatChange{Kind: network.ChangeUpdated, Heartbeat: op.heartbeat}
+		change := mesh.HeartbeatChange{Kind: mesh.ChangeUpdated, Heartbeat: op.heartbeat}
 		for _, ch := range n.hbSubs {
 			select {
 			case ch <- change:
@@ -547,6 +660,10 @@ func (c *Cluster) applyWrite(target string, op writeOp) {
 func (c *Cluster) deliverUpTo(t time.Time) {
 	var remaining []pendingWrite
 	for _, pw := range c.pending {
+		if c.isNodeDead(pw.target) {
+			remaining = append(remaining, pw)
+			continue
+		}
 		if !pw.deliverAt.After(t) {
 			c.applyWrite(pw.target, pw.write)
 		} else {
@@ -573,8 +690,8 @@ func (c *Cluster) nodeByAddr(addr string) string {
 	return ""
 }
 
-func sortedMachines(m map[string]network.MachineRow) []network.MachineRow {
-	out := make([]network.MachineRow, 0, len(m))
+func sortedMachines(m map[string]mesh.MachineRow) []mesh.MachineRow {
+	out := make([]mesh.MachineRow, 0, len(m))
 	for _, row := range m {
 		out = append(out, row)
 	}
@@ -582,8 +699,8 @@ func sortedMachines(m map[string]network.MachineRow) []network.MachineRow {
 	return out
 }
 
-func sortedHeartbeats(m map[string]network.HeartbeatRow) []network.HeartbeatRow {
-	out := make([]network.HeartbeatRow, 0, len(m))
+func sortedHeartbeats(m map[string]mesh.HeartbeatRow) []mesh.HeartbeatRow {
+	out := make([]mesh.HeartbeatRow, 0, len(m))
 	for _, row := range m {
 		out = append(out, row)
 	}

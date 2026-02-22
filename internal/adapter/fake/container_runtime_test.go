@@ -6,7 +6,7 @@ import (
 	"net/netip"
 	"testing"
 
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 )
 
 func TestContainerRuntime_Lifecycle(t *testing.T) {
@@ -14,7 +14,7 @@ func TestContainerRuntime_Lifecycle(t *testing.T) {
 	rt := NewContainerRuntime()
 
 	// Create container
-	cfg := network.ContainerCreateConfig{Name: "test-container", Image: "alpine:latest"}
+	cfg := mesh.ContainerCreateConfig{Name: "test-container", Image: "alpine:latest"}
 	if err := rt.ContainerCreate(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestContainerRuntime_ForceRemoveRunning(t *testing.T) {
 	ctx := context.Background()
 	rt := NewContainerRuntime()
 
-	_ = rt.ContainerCreate(ctx, network.ContainerCreateConfig{Name: "c1"})
+	_ = rt.ContainerCreate(ctx, mesh.ContainerCreateConfig{Name: "c1"})
 	_ = rt.ContainerStart(ctx, "c1")
 	if err := rt.ContainerRemove(ctx, "c1", true); err != nil {
 		t.Fatalf("force remove should succeed on running container: %v", err)
@@ -113,17 +113,17 @@ func TestContainerRuntime_ErrorInjection(t *testing.T) {
 	rt := NewContainerRuntime()
 	injected := errors.New("disk full")
 
-	rt.ContainerCreateErr = func(_ context.Context, cfg network.ContainerCreateConfig) error {
+	rt.ContainerCreateErr = func(_ context.Context, cfg mesh.ContainerCreateConfig) error {
 		if cfg.Name == "bad" {
 			return injected
 		}
 		return nil
 	}
 
-	if err := rt.ContainerCreate(ctx, network.ContainerCreateConfig{Name: "bad"}); !errors.Is(err, injected) {
+	if err := rt.ContainerCreate(ctx, mesh.ContainerCreateConfig{Name: "bad"}); !errors.Is(err, injected) {
 		t.Errorf("expected injected error for 'bad', got %v", err)
 	}
-	if err := rt.ContainerCreate(ctx, network.ContainerCreateConfig{Name: "good"}); err != nil {
+	if err := rt.ContainerCreate(ctx, mesh.ContainerCreateConfig{Name: "good"}); err != nil {
 		t.Errorf("expected no error for 'good', got %v", err)
 	}
 }

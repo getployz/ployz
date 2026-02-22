@@ -3,10 +3,10 @@ package fake
 import (
 	"context"
 
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 )
 
-var _ network.StatusProber = (*StatusProber)(nil)
+var _ mesh.StatusProber = (*StatusProber)(nil)
 
 // StatusProber returns canned status probe results.
 type StatusProber struct {
@@ -15,10 +15,10 @@ type StatusProber struct {
 	DockerNet bool
 	Corrosion bool
 
-	ProbeInfraErr func(ctx context.Context, state *network.State) error
+	ProbeInfraErr func(ctx context.Context, state *mesh.State) error
 }
 
-func (p *StatusProber) ProbeInfra(ctx context.Context, state *network.State) (bool, bool, bool, error) {
+func (p *StatusProber) ProbeInfra(ctx context.Context, state *mesh.State) (bool, bool, bool, error) {
 	p.record("ProbeInfra", state)
 	if p.ProbeInfraErr != nil {
 		if err := p.ProbeInfraErr(ctx, state); err != nil {

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	pb "ployz/internal/daemon/pb"
-	netctrl "ployz/internal/network"
+	netctrl "ployz/internal/mesh"
 	"ployz/internal/reconcile"
 	"ployz/pkg/sdk/defaults"
 )

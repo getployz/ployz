@@ -5,28 +5,28 @@ import (
 	"os"
 	"sync"
 
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 )
 
-var _ network.StateStore = (*StateStore)(nil)
+var _ mesh.StateStore = (*StateStore)(nil)
 
-// StateStore is an in-memory implementation of network.StateStore.
+// StateStore is an in-memory implementation of mesh.StateStore.
 type StateStore struct {
 	CallRecorder
 	mu     sync.Mutex
-	states map[string]*network.State
+	states map[string]*mesh.State
 
 	LoadErr   func(dataDir string) error
-	SaveErr   func(dataDir string, s *network.State) error
+	SaveErr   func(dataDir string, s *mesh.State) error
 	DeleteErr func(dataDir string) error
 }
 
 // NewStateStore creates a StateStore with no stored state.
 func NewStateStore() *StateStore {
-	return &StateStore{states: make(map[string]*network.State)}
+	return &StateStore{states: make(map[string]*mesh.State)}
 }
 
-func (s *StateStore) Load(dataDir string) (*network.State, error) {
+func (s *StateStore) Load(dataDir string) (*mesh.State, error) {
 	s.record("Load", dataDir)
 	if s.LoadErr != nil {
 		if err := s.LoadErr(dataDir); err != nil {
@@ -43,7 +43,7 @@ func (s *StateStore) Load(dataDir string) (*network.State, error) {
 	return deepCopyState(st), nil
 }
 
-func (s *StateStore) Save(dataDir string, st *network.State) error {
+func (s *StateStore) Save(dataDir string, st *mesh.State) error {
 	s.record("Save", dataDir, st)
 	if s.SaveErr != nil {
 		if err := s.SaveErr(dataDir, st); err != nil {
@@ -76,9 +76,9 @@ func (s *StateStore) StatePath(dataDir string) string {
 	return "fake://" + dataDir
 }
 
-func deepCopyState(s *network.State) *network.State {
+func deepCopyState(s *mesh.State) *mesh.State {
 	data, _ := json.Marshal(s)
-	var out network.State
+	var out mesh.State
 	_ = json.Unmarshal(data, &out)
 	return &out
 }

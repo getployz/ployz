@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 )
 
-func (s Store) SubscribeMachines(ctx context.Context) ([]network.MachineRow, <-chan network.MachineChange, error) {
+func (s Store) SubscribeMachines(ctx context.Context) ([]mesh.MachineRow, <-chan mesh.MachineChange, error) {
 	query := fmt.Sprintf("SELECT id, public_key, subnet, management_ip, endpoint, updated_at, version FROM %s ORDER BY id", machinesTable)
 	stream, snapshot, lastChangeID, err := s.openMachinesSubscription(ctx, query)
 	if err != nil {
@@ -18,7 +18,7 @@ func (s Store) SubscribeMachines(ctx context.Context) ([]network.MachineRow, <-c
 	}
 	slog.Debug("registry machine subscription opened", "rows", len(snapshot), "change_id", lastChangeID)
 
-	changes := make(chan network.MachineChange, 128)
+	changes := make(chan mesh.MachineChange, 128)
 	go s.runMachineChanges(ctx, stream, lastChangeID, changes)
 	return snapshot, changes, nil
 }
@@ -26,7 +26,7 @@ func (s Store) SubscribeMachines(ctx context.Context) ([]network.MachineRow, <-c
 func (s Store) openMachinesSubscription(
 	ctx context.Context,
 	query string,
-) (*subscriptionStream, []network.MachineRow, uint64, error) {
+) (*subscriptionStream, []mesh.MachineRow, uint64, error) {
 	stream, err := s.subscribe(ctx, query, nil)
 	if err != nil {
 		return nil, nil, 0, err
@@ -42,7 +42,7 @@ func (s Store) openMachinesSubscription(
 		return nil, nil, 0, fmt.Errorf("corrosion subscription error: %s", *ev.Error)
 	}
 
-	snapshot := make([]network.MachineRow, 0)
+	snapshot := make([]mesh.MachineRow, 0)
 	var lastChange uint64
 	for {
 		ev = queryEvent{}
@@ -78,7 +78,7 @@ func (s Store) runMachineChanges(
 	ctx context.Context,
 	stream *subscriptionStream,
 	lastChangeID uint64,
-	out chan<- network.MachineChange,
+	out chan<- mesh.MachineChange,
 ) {
 	defer close(out)
 	defer stream.Body.Close()
@@ -118,21 +118,21 @@ func (s Store) runMachineChanges(
 			continue
 		}
 
-		kind := network.ChangeUpdated
+		kind := mesh.ChangeUpdated
 		switch strings.ToLower(strings.TrimSpace(ev.Change.Type)) {
 		case "insert":
-			kind = network.ChangeAdded
+			kind = mesh.ChangeAdded
 		case "update":
-			kind = network.ChangeUpdated
+			kind = mesh.ChangeUpdated
 		case "delete":
-			kind = network.ChangeDeleted
+			kind = mesh.ChangeDeleted
 		}
 		lastChangeID = ev.Change.ChangeID
 
 		select {
 		case <-ctx.Done():
 			return
-		case out <- network.MachineChange{Kind: kind, Machine: row}:
+		case out <- mesh.MachineChange{Kind: kind, Machine: row}:
 		}
 	}
 }
@@ -141,7 +141,7 @@ func (s Store) resubscribeMachines(
 	ctx context.Context,
 	stream *subscriptionStream,
 	lastChangeID *uint64,
-	out chan<- network.MachineChange,
+	out chan<- mesh.MachineChange,
 ) bool {
 	_ = stream.Body.Close()
 
@@ -162,7 +162,7 @@ func (s Store) resubscribeMachines(
 			case <-ctx.Done():
 				_ = stream.Body.Close()
 				return false
-			case out <- network.MachineChange{Kind: network.ChangeResync}:
+			case out <- mesh.MachineChange{Kind: mesh.ChangeResync}:
 			}
 			return true
 		}
@@ -178,7 +178,7 @@ func (s Store) resubscribeMachines(
 	}
 }
 
-func (s Store) SubscribeHeartbeats(ctx context.Context) ([]network.HeartbeatRow, <-chan network.HeartbeatChange, error) {
+func (s Store) SubscribeHeartbeats(ctx context.Context) ([]mesh.HeartbeatRow, <-chan mesh.HeartbeatChange, error) {
 	query := fmt.Sprintf("SELECT node_id, seq, updated_at FROM %s ORDER BY node_id", heartbeatsTable)
 	stream, snapshot, lastChangeID, err := s.openHeartbeatSubscription(ctx, query)
 	if err != nil {
@@ -186,7 +186,7 @@ func (s Store) SubscribeHeartbeats(ctx context.Context) ([]network.HeartbeatRow,
 	}
 	slog.Debug("registry heartbeat subscription opened", "rows", len(snapshot), "change_id", lastChangeID)
 
-	changes := make(chan network.HeartbeatChange, 128)
+	changes := make(chan mesh.HeartbeatChange, 128)
 	go s.runHeartbeatChanges(ctx, stream, lastChangeID, changes)
 	return snapshot, changes, nil
 }
@@ -194,7 +194,7 @@ func (s Store) SubscribeHeartbeats(ctx context.Context) ([]network.HeartbeatRow,
 func (s Store) openHeartbeatSubscription(
 	ctx context.Context,
 	query string,
-) (*subscriptionStream, []network.HeartbeatRow, uint64, error) {
+) (*subscriptionStream, []mesh.HeartbeatRow, uint64, error) {
 	stream, err := s.subscribe(ctx, query, nil)
 	if err != nil {
 		return nil, nil, 0, err
@@ -210,7 +210,7 @@ func (s Store) openHeartbeatSubscription(
 		return nil, nil, 0, fmt.Errorf("heartbeat subscription error: %s", *ev.Error)
 	}
 
-	snapshot := make([]network.HeartbeatRow, 0)
+	snapshot := make([]mesh.HeartbeatRow, 0)
 	var lastChange uint64
 	for {
 		ev = queryEvent{}
@@ -246,7 +246,7 @@ func (s Store) runHeartbeatChanges(
 	ctx context.Context,
 	stream *subscriptionStream,
 	lastChangeID uint64,
-	out chan<- network.HeartbeatChange,
+	out chan<- mesh.HeartbeatChange,
 ) {
 	defer close(out)
 	defer stream.Body.Close()
@@ -286,21 +286,21 @@ func (s Store) runHeartbeatChanges(
 			continue
 		}
 
-		kind := network.ChangeUpdated
+		kind := mesh.ChangeUpdated
 		switch strings.ToLower(strings.TrimSpace(ev.Change.Type)) {
 		case "insert":
-			kind = network.ChangeAdded
+			kind = mesh.ChangeAdded
 		case "update":
-			kind = network.ChangeUpdated
+			kind = mesh.ChangeUpdated
 		case "delete":
-			kind = network.ChangeDeleted
+			kind = mesh.ChangeDeleted
 		}
 		lastChangeID = ev.Change.ChangeID
 
 		select {
 		case <-ctx.Done():
 			return
-		case out <- network.HeartbeatChange{Kind: kind, Heartbeat: row}:
+		case out <- mesh.HeartbeatChange{Kind: kind, Heartbeat: row}:
 		}
 	}
 }
@@ -309,7 +309,7 @@ func (s Store) resubscribeHeartbeats(
 	ctx context.Context,
 	stream *subscriptionStream,
 	lastChangeID *uint64,
-	out chan<- network.HeartbeatChange,
+	out chan<- mesh.HeartbeatChange,
 ) bool {
 	_ = stream.Body.Close()
 
@@ -330,7 +330,7 @@ func (s Store) resubscribeHeartbeats(
 			case <-ctx.Done():
 				_ = stream.Body.Close()
 				return false
-			case out <- network.HeartbeatChange{Kind: network.ChangeResync}:
+			case out <- mesh.HeartbeatChange{Kind: mesh.ChangeResync}:
 			}
 			return true
 		}

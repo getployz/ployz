@@ -5,7 +5,7 @@ import (
 	"sync"
 
 	"ployz/internal/engine"
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 	"ployz/internal/reconcile"
 )
 
@@ -17,21 +17,21 @@ type NetworkController struct {
 	mu           sync.Mutex
 	Started      bool
 	Closed       bool
-	ReturnConfig network.Config
+	ReturnConfig mesh.Config
 
-	StartErr func(ctx context.Context, cfg network.Config) error
+	StartErr func(ctx context.Context, cfg mesh.Config) error
 }
 
 // NewNetworkController creates a NetworkController that returns the given config on Start.
-func NewNetworkController(returnCfg network.Config) *NetworkController {
+func NewNetworkController(returnCfg mesh.Config) *NetworkController {
 	return &NetworkController{ReturnConfig: returnCfg}
 }
 
-func (c *NetworkController) Start(ctx context.Context, cfg network.Config) (network.Config, error) {
+func (c *NetworkController) Start(ctx context.Context, cfg mesh.Config) (mesh.Config, error) {
 	c.record("Start", cfg)
 	if c.StartErr != nil {
 		if err := c.StartErr(ctx, cfg); err != nil {
-			return network.Config{}, err
+			return mesh.Config{}, err
 		}
 	}
 	c.mu.Lock()

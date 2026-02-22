@@ -4,12 +4,12 @@ import (
 	"context"
 
 	"ployz/internal/adapter/docker"
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 )
 
-var _ network.CorrosionRuntime = (*Adapter)(nil)
+var _ mesh.CorrosionRuntime = (*Adapter)(nil)
 
-// Adapter implements network.CorrosionRuntime using the existing container functions
+// Adapter implements mesh.CorrosionRuntime using the existing container functions
 // and a docker.Runtime for container operations.
 type Adapter struct {
 	rt *docker.Runtime
@@ -20,7 +20,7 @@ func NewAdapter(rt *docker.Runtime) *Adapter {
 	return &Adapter{rt: rt}
 }
 
-func (a *Adapter) WriteConfig(cfg network.CorrosionConfig) error {
+func (a *Adapter) WriteConfig(cfg mesh.CorrosionConfig) error {
 	return WriteConfig(Config{
 		Dir:          cfg.Dir,
 		ConfigPath:   cfg.ConfigPath,
@@ -35,7 +35,7 @@ func (a *Adapter) WriteConfig(cfg network.CorrosionConfig) error {
 	})
 }
 
-func (a *Adapter) Start(ctx context.Context, cfg network.CorrosionConfig) error {
+func (a *Adapter) Start(ctx context.Context, cfg mesh.CorrosionConfig) error {
 	return Start(ctx, a.rt.Client(), RuntimeConfig{
 		Name:       cfg.Name,
 		Image:      cfg.Image,

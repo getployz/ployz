@@ -8,28 +8,28 @@ import (
 	"sync"
 	"time"
 
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 	"ployz/pkg/sdk/defaults"
 )
 
 type Worker struct {
-	Spec           network.Config
+	Spec           mesh.Config
 	Registry       Registry              // injected: Corrosion machine/heartbeat store
 	PeerReconciler PeerReconciler        // injected: applies peer configuration
-	StateStore     network.StateStore    // injected: state persistence
+	StateStore     mesh.StateStore    // injected: state persistence
 	Freshness      *FreshnessTracker
 	NTP            *NTPChecker
 	Ping           *PingTracker
-	Clock          network.Clock
+	Clock          mesh.Clock
 	OnEvent        func(eventType, message string)
 	OnFailure      func(error)
 }
 
-func (w *Worker) getClock() network.Clock {
+func (w *Worker) getClock() mesh.Clock {
 	if w.Clock != nil {
 		return w.Clock
 	}
-	return network.RealClock{}
+	return mesh.RealClock{}
 }
 
 func (w *Worker) emit(eventType, message string) {
@@ -48,7 +48,7 @@ func (w *Worker) fail(err error) {
 	}
 }
 
-func (w *Worker) reconcileAndReport(ctx context.Context, cfg network.Config, machines []network.MachineRow) {
+func (w *Worker) reconcileAndReport(ctx context.Context, cfg mesh.Config, machines []mesh.MachineRow) {
 	count, err := w.PeerReconciler.ReconcilePeers(ctx, cfg, machines)
 	if err != nil {
 		w.emit("reconcile.error", err.Error())
@@ -58,7 +58,7 @@ func (w *Worker) reconcileAndReport(ctx context.Context, cfg network.Config, mac
 	w.emit("reconcile.success", fmt.Sprintf("reconciled %d peers", count))
 }
 
-func (w *Worker) refreshAndReconcile(ctx context.Context, cfg network.Config) ([]network.MachineRow, bool) {
+func (w *Worker) refreshAndReconcile(ctx context.Context, cfg mesh.Config) ([]mesh.MachineRow, bool) {
 	snap, err := w.Registry.ListMachineRows(ctx)
 	if err != nil {
 		w.emit("reconcile.error", err.Error())
@@ -70,7 +70,7 @@ func (w *Worker) refreshAndReconcile(ctx context.Context, cfg network.Config) ([
 }
 
 func (w *Worker) Run(ctx context.Context) error {
-	cfg, err := network.NormalizeConfig(w.Spec)
+	cfg, err := mesh.NormalizeConfig(w.Spec)
 	if err != nil {
 		return err
 	}
@@ -86,7 +86,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	// Determine self ID from WireGuard public key.
 	selfID := ""
 	if w.StateStore != nil {
-		if st, err := network.LoadState(w.StateStore, cfg); err == nil {
+		if st, err := mesh.LoadState(w.StateStore, cfg); err == nil {
 			selfID = st.WGPublic
 		}
 	}
@@ -111,14 +111,14 @@ func (w *Worker) Run(ctx context.Context) error {
 
 	// Mutex-protected machines snapshot for the ping goroutine.
 	var machinesMu sync.RWMutex
-	setMachines := func(m []network.MachineRow) {
+	setMachines := func(m []mesh.MachineRow) {
 		machinesMu.Lock()
 		machines = m
 		machinesMu.Unlock()
 	}
-	getMachinesSnapshot := func() []network.MachineRow {
+	getMachinesSnapshot := func() []mesh.MachineRow {
 		machinesMu.RLock()
-		snap := make([]network.MachineRow, len(machines))
+		snap := make([]mesh.MachineRow, len(machines))
 		copy(snap, machines)
 		machinesMu.RUnlock()
 		return snap
@@ -132,7 +132,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 
 	// Subscribe to heartbeats for freshness tracking.
-	var hbCh <-chan network.HeartbeatChange
+	var hbCh <-chan mesh.HeartbeatChange
 	if w.Freshness != nil {
 		hbSnap, ch, hbErr := w.subscribeHeartbeatsWithRetry(ctx, reg)
 		if hbErr == nil {
@@ -165,7 +165,7 @@ func (w *Worker) Run(ctx context.Context) error {
 				continue
 			}
 
-			if change.Kind == network.ChangeResync {
+			if change.Kind == mesh.ChangeResync {
 				w.emit("subscribe.resync", "machine subscription resynced")
 				if snap, ok := w.refreshAndReconcile(ctx, cfg); ok {
 					setMachines(snap)
@@ -193,11 +193,11 @@ func (w *Worker) Run(ctx context.Context) error {
 			if w.Freshness == nil {
 				continue
 			}
-			if hbChange.Kind == network.ChangeDeleted {
+			if hbChange.Kind == mesh.ChangeDeleted {
 				w.Freshness.Remove(hbChange.Heartbeat.NodeID)
 				continue
 			}
-			if hbChange.Kind == network.ChangeResync {
+			if hbChange.Kind == mesh.ChangeResync {
 				continue
 			}
 			if t, pErr := time.Parse(time.RFC3339Nano, hbChange.Heartbeat.UpdatedAt); pErr == nil {
@@ -211,7 +211,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 }
 
-func runHeartbeat(ctx context.Context, reg Registry, nodeID string, clock network.Clock) {
+func runHeartbeat(ctx context.Context, reg Registry, nodeID string, clock mesh.Clock) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
@@ -227,9 +227,9 @@ func runHeartbeat(ctx context.Context, reg Registry, nodeID string, clock networ
 	}
 }
 
-func applyMachineChange(machines []network.MachineRow, change network.MachineChange) []network.MachineRow {
+func applyMachineChange(machines []mesh.MachineRow, change mesh.MachineChange) []mesh.MachineRow {
 	switch change.Kind {
-	case network.ChangeAdded, network.ChangeUpdated:
+	case mesh.ChangeAdded, mesh.ChangeUpdated:
 		replaced := false
 		for i := range machines {
 			if machines[i].ID == change.Machine.ID {
@@ -241,7 +241,7 @@ func applyMachineChange(machines []network.MachineRow, change network.MachineCha
 		if !replaced {
 			machines = append(machines, change.Machine)
 		}
-	case network.ChangeDeleted:
+	case mesh.ChangeDeleted:
 		out := machines[:0]
 		for _, m := range machines {
 			if change.Machine.ID != "" && m.ID == change.Machine.ID {
@@ -258,7 +258,7 @@ func applyMachineChange(machines []network.MachineRow, change network.MachineCha
 }
 
 // resolvePingAddrs derives overlay IPv4 + daemon API port for each machine.
-func resolvePingAddrs(machines []network.MachineRow, network string) map[string]string {
+func resolvePingAddrs(machines []mesh.MachineRow, network string) map[string]string {
 	port := defaults.DaemonAPIPort(network)
 	out := make(map[string]string, len(machines))
 	for _, m := range machines {
@@ -279,7 +279,7 @@ func resolvePingAddrs(machines []network.MachineRow, network string) map[string]
 func (w *Worker) subscribeMachinesWithRetry(
 	ctx context.Context,
 	reg Registry,
-) ([]network.MachineRow, <-chan network.MachineChange, error) {
+) ([]mesh.MachineRow, <-chan mesh.MachineChange, error) {
 	for {
 		if err := reg.EnsureMachineTable(ctx); err != nil {
 			select {
@@ -305,7 +305,7 @@ func (w *Worker) subscribeMachinesWithRetry(
 func (w *Worker) subscribeHeartbeatsWithRetry(
 	ctx context.Context,
 	reg Registry,
-) ([]network.HeartbeatRow, <-chan network.HeartbeatChange, error) {
+) ([]mesh.HeartbeatRow, <-chan mesh.HeartbeatChange, error) {
 	for attempts := 0; attempts < 3; attempts++ {
 		if err := reg.EnsureHeartbeatTable(ctx); err != nil {
 			select {

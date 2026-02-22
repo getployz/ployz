@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 )
 
 func mustPrefix(s string) netip.Prefix {
@@ -24,7 +24,7 @@ func TestRegistry_CallRecording(t *testing.T) {
 	_ = reg.EnsureNetworkConfigTable(ctx)
 	_ = reg.EnsureHeartbeatTable(ctx)
 
-	row := network.MachineRow{ID: "m1", PublicKey: "pk1"}
+	row := mesh.MachineRow{ID: "m1", PublicKey: "pk1"}
 	_ = reg.UpsertMachine(ctx, row, 0)
 	_, _ = reg.ListMachineRows(ctx)
 
@@ -47,10 +47,10 @@ func TestRegistry_ErrorInjection(t *testing.T) {
 	ctx := context.Background()
 	injected := errors.New("network unreachable")
 
-	reg.UpsertMachineErr = func(context.Context, network.MachineRow, int64) error {
+	reg.UpsertMachineErr = func(context.Context, mesh.MachineRow, int64) error {
 		return injected
 	}
-	err := reg.UpsertMachine(ctx, network.MachineRow{ID: "m1"}, 0)
+	err := reg.UpsertMachine(ctx, mesh.MachineRow{ID: "m1"}, 0)
 	if !errors.Is(err, injected) {
 		t.Errorf("expected injected error, got %v", err)
 	}
@@ -82,9 +82,9 @@ func TestRegistry_DeleteByEndpointExceptID(t *testing.T) {
 	reg := c.Registry("node-a")
 
 	ctx := context.Background()
-	_ = reg.UpsertMachine(ctx, network.MachineRow{ID: "m1", Endpoint: "1.2.3.4:51820"}, 0)
-	_ = reg.UpsertMachine(ctx, network.MachineRow{ID: "m2", Endpoint: "1.2.3.4:51820"}, 0)
-	_ = reg.UpsertMachine(ctx, network.MachineRow{ID: "m3", Endpoint: "5.6.7.8:51820"}, 0)
+	_ = reg.UpsertMachine(ctx, mesh.MachineRow{ID: "m1", Endpoint: "1.2.3.4:51820"}, 0)
+	_ = reg.UpsertMachine(ctx, mesh.MachineRow{ID: "m2", Endpoint: "1.2.3.4:51820"}, 0)
+	_ = reg.UpsertMachine(ctx, mesh.MachineRow{ID: "m3", Endpoint: "5.6.7.8:51820"}, 0)
 
 	// Delete all with endpoint 1.2.3.4:51820 except m1.
 	if err := reg.DeleteByEndpointExceptID(ctx, "1.2.3.4:51820", "m1"); err != nil {

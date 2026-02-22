@@ -9,20 +9,20 @@ import (
 	"path/filepath"
 	"time"
 
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 	"ployz/pkg/sdk/defaults"
 )
 
-// NetworkStateStore implements network.StateStore using SQLite.
+// NetworkStateStore implements mesh.StateStore using SQLite.
 type NetworkStateStore struct{}
 
-var _ network.StateStore = NetworkStateStore{}
+var _ mesh.StateStore = NetworkStateStore{}
 
-func (NetworkStateStore) Load(dataDir string) (*network.State, error) {
+func (NetworkStateStore) Load(dataDir string) (*mesh.State, error) {
 	return loadNetworkState(dataDir)
 }
 
-func (NetworkStateStore) Save(dataDir string, s *network.State) error {
+func (NetworkStateStore) Save(dataDir string, s *mesh.State) error {
 	return saveNetworkState(dataDir, s)
 }
 
@@ -44,7 +44,7 @@ func networkStatePath(dataDir string) string {
 	return dbPath + "#" + net
 }
 
-func loadNetworkState(dataDir string) (*network.State, error) {
+func loadNetworkState(dataDir string) (*mesh.State, error) {
 	net := networkFromDataDir(dataDir)
 	if net == "" {
 		return nil, fmt.Errorf("resolve network name from data dir %q", dataDir)
@@ -83,7 +83,7 @@ FROM network_state
 WHERE network = ?`
 
 	row := db.QueryRow(query, net)
-	var s network.State
+	var s mesh.State
 	var memberID int64
 	var bootstrapJSON string
 	var running int
@@ -121,7 +121,7 @@ WHERE network = ?`
 		return nil, fmt.Errorf("parse state bootstrap: %w", err)
 	}
 
-	managementIP, err := network.ManagementIPFromPublicKey(s.WGPublic)
+	managementIP, err := mesh.ManagementIPFromPublicKey(s.WGPublic)
 	if err != nil {
 		return nil, fmt.Errorf("derive management IP from state key: %w", err)
 	}
@@ -130,7 +130,7 @@ WHERE network = ?`
 	return &s, nil
 }
 
-func saveNetworkState(dataDir string, s *network.State) error {
+func saveNetworkState(dataDir string, s *mesh.State) error {
 	net := networkFromDataDir(dataDir)
 	if net == "" {
 		return fmt.Errorf("resolve network name from data dir %q", dataDir)

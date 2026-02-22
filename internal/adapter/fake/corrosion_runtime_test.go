@@ -5,14 +5,14 @@ import (
 	"errors"
 	"testing"
 
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 )
 
 func TestCorrosionRuntime_Lifecycle(t *testing.T) {
 	ctx := context.Background()
 	cr := NewCorrosionRuntime()
 
-	cfg := network.CorrosionConfig{Name: "corrosion-testnet", Image: "corrosion:latest"}
+	cfg := mesh.CorrosionConfig{Name: "corrosion-testnet", Image: "corrosion:latest"}
 	if err := cr.WriteConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -40,14 +40,14 @@ func TestCorrosionRuntime_ErrorInjection(t *testing.T) {
 	cr := NewCorrosionRuntime()
 	injected := errors.New("permission denied")
 
-	cr.StartErr = func(_ context.Context, cfg network.CorrosionConfig) error {
+	cr.StartErr = func(_ context.Context, cfg mesh.CorrosionConfig) error {
 		if cfg.Name == "corrosion-testnet" {
 			return injected
 		}
 		return nil
 	}
 
-	cfg := network.CorrosionConfig{Name: "corrosion-testnet"}
+	cfg := mesh.CorrosionConfig{Name: "corrosion-testnet"}
 	if err := cr.Start(ctx, cfg); !errors.Is(err, injected) {
 		t.Errorf("expected injected error, got %v", err)
 	}
@@ -60,7 +60,7 @@ func TestCorrosionRuntime_CallRecording(t *testing.T) {
 	ctx := context.Background()
 	cr := NewCorrosionRuntime()
 
-	cfg := network.CorrosionConfig{Name: "c1"}
+	cfg := mesh.CorrosionConfig{Name: "c1"}
 	_ = cr.WriteConfig(cfg)
 	_ = cr.Start(ctx, cfg)
 	_ = cr.Stop(ctx, "c1")

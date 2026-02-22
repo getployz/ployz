@@ -1,4 +1,4 @@
-package network
+package mesh
 
 // Option configures a Controller.
 type Option func(*Controller)

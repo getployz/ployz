@@ -4,25 +4,25 @@ import (
 	"context"
 	"net/netip"
 
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 	"ployz/internal/reconcile"
 )
 
 // NetworkController manages a network's imperative lifecycle (start/stop).
-// Production: *network.Controller
+// Production: *mesh.Controller
 // Testing: fake that tracks start/stop state
 type NetworkController interface {
-	Start(ctx context.Context, cfg network.Config) (network.Config, error)
+	Start(ctx context.Context, cfg mesh.Config) (mesh.Config, error)
 	Close() error
 }
 
 // NetworkControllerFactory creates controllers for starting networks.
-// Production: returns *network.Controller with real Docker client
+// Production: returns *mesh.Controller with real Docker client
 // Testing: returns fake controller
 type NetworkControllerFactory func() (NetworkController, error)
 
 // PeerReconcilerFactory creates peer reconcilers for continuous reconciliation.
-// Production: returns *network.Controller
+// Production: returns *mesh.Controller
 // Testing: returns fake reconciler
 type PeerReconcilerFactory func() (reconcile.PeerReconciler, error)
 

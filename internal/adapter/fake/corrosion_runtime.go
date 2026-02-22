@@ -4,20 +4,20 @@ import (
 	"context"
 	"sync"
 
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 )
 
-var _ network.CorrosionRuntime = (*CorrosionRuntime)(nil)
+var _ mesh.CorrosionRuntime = (*CorrosionRuntime)(nil)
 
-// CorrosionRuntime is an in-memory implementation of network.CorrosionRuntime.
+// CorrosionRuntime is an in-memory implementation of mesh.CorrosionRuntime.
 type CorrosionRuntime struct {
 	CallRecorder
 	mu         sync.Mutex
-	LastConfig network.CorrosionConfig
+	LastConfig mesh.CorrosionConfig
 	Running    map[string]bool
 
-	WriteConfigErr func(cfg network.CorrosionConfig) error
-	StartErr       func(ctx context.Context, cfg network.CorrosionConfig) error
+	WriteConfigErr func(cfg mesh.CorrosionConfig) error
+	StartErr       func(ctx context.Context, cfg mesh.CorrosionConfig) error
 	StopErr        func(ctx context.Context, name string) error
 }
 
@@ -26,7 +26,7 @@ func NewCorrosionRuntime() *CorrosionRuntime {
 	return &CorrosionRuntime{Running: make(map[string]bool)}
 }
 
-func (r *CorrosionRuntime) WriteConfig(cfg network.CorrosionConfig) error {
+func (r *CorrosionRuntime) WriteConfig(cfg mesh.CorrosionConfig) error {
 	r.record("WriteConfig", cfg)
 	if r.WriteConfigErr != nil {
 		if err := r.WriteConfigErr(cfg); err != nil {
@@ -40,7 +40,7 @@ func (r *CorrosionRuntime) WriteConfig(cfg network.CorrosionConfig) error {
 	return nil
 }
 
-func (r *CorrosionRuntime) Start(ctx context.Context, cfg network.CorrosionConfig) error {
+func (r *CorrosionRuntime) Start(ctx context.Context, cfg mesh.CorrosionConfig) error {
 	r.record("Start", cfg)
 	if r.StartErr != nil {
 		if err := r.StartErr(ctx, cfg); err != nil {

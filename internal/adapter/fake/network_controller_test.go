@@ -5,15 +5,15 @@ import (
 	"errors"
 	"testing"
 
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 )
 
 func TestNetworkController_StartClose(t *testing.T) {
 	ctx := context.Background()
-	returnCfg := network.Config{Network: "test-net"}
+	returnCfg := mesh.Config{Network: "test-net"}
 	ctrl := NewNetworkController(returnCfg)
 
-	cfg, err := ctrl.Start(ctx, network.Config{})
+	cfg, err := ctrl.Start(ctx, mesh.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,10 +35,10 @@ func TestNetworkController_StartClose(t *testing.T) {
 func TestNetworkController_ErrorInjection(t *testing.T) {
 	ctx := context.Background()
 	injected := errors.New("start failed")
-	ctrl := NewNetworkController(network.Config{})
+	ctrl := NewNetworkController(mesh.Config{})
 
-	ctrl.StartErr = func(context.Context, network.Config) error { return injected }
-	_, err := ctrl.Start(ctx, network.Config{})
+	ctrl.StartErr = func(context.Context, mesh.Config) error { return injected }
+	_, err := ctrl.Start(ctx, mesh.Config{})
 	if !errors.Is(err, injected) {
 		t.Errorf("expected injected error, got %v", err)
 	}
@@ -48,7 +48,7 @@ func TestNetworkController_ErrorInjection(t *testing.T) {
 }
 
 func TestNetworkController_Factory(t *testing.T) {
-	ctrl := NewNetworkController(network.Config{Network: "net1"})
+	ctrl := NewNetworkController(mesh.Config{Network: "net1"})
 	factory := ControllerFactory(ctrl)
 
 	nc, err := factory()
@@ -75,9 +75,9 @@ func TestReconcilerFactory(t *testing.T) {
 
 func TestNetworkController_CallRecording(t *testing.T) {
 	ctx := context.Background()
-	ctrl := NewNetworkController(network.Config{})
+	ctrl := NewNetworkController(mesh.Config{})
 
-	_, _ = ctrl.Start(ctx, network.Config{})
+	_, _ = ctrl.Start(ctx, mesh.Config{})
 	_ = ctrl.Close()
 
 	if len(ctrl.Calls("Start")) != 1 {

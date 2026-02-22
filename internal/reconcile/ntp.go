@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 
 	"github.com/beevik/ntp"
 )
@@ -29,10 +29,10 @@ type NTPChecker struct {
 	pool      string
 	interval  time.Duration
 	threshold time.Duration
-	clock     network.Clock
+	clock     mesh.Clock
 }
 
-func NewNTPChecker(clock network.Clock) *NTPChecker {
+func NewNTPChecker(clock mesh.Clock) *NTPChecker {
 	return &NTPChecker{
 		pool:      defaultNTPPool,
 		interval:  defaultNTPInterval,

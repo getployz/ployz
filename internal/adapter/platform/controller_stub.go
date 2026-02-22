@@ -7,49 +7,49 @@ import (
 	"errors"
 
 	"ployz/internal/adapter/sqlite"
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 )
 
 // NewController creates a Controller with stub implementations for unsupported platforms.
-func NewController(opts ...network.Option) (*network.Controller, error) {
-	defaults := []network.Option{
-		network.WithStatusProber(stubStatusProber{}),
-		network.WithStateStore(sqlite.NetworkStateStore{}),
-		network.WithClock(network.RealClock{}),
-		network.WithPlatformOps(stubPlatformOps{}),
+func NewController(opts ...mesh.Option) (*mesh.Controller, error) {
+	defaults := []mesh.Option{
+		mesh.WithStatusProber(stubStatusProber{}),
+		mesh.WithStateStore(sqlite.NetworkStateStore{}),
+		mesh.WithClock(mesh.RealClock{}),
+		mesh.WithPlatformOps(stubPlatformOps{}),
 	}
-	return network.New(append(defaults, opts...)...)
+	return mesh.New(append(defaults, opts...)...)
 }
 
 type stubPlatformOps struct{}
 
-func (stubPlatformOps) Prepare(_ context.Context, _ network.Config, _ network.StateStore) error {
+func (stubPlatformOps) Prepare(_ context.Context, _ mesh.Config, _ mesh.StateStore) error {
 	return errors.New("platform not supported")
 }
-func (stubPlatformOps) ConfigureWireGuard(_ context.Context, _ network.Config, _ *network.State) error {
+func (stubPlatformOps) ConfigureWireGuard(_ context.Context, _ mesh.Config, _ *mesh.State) error {
 	return errors.New("platform not supported")
 }
-func (stubPlatformOps) EnsureDockerNetwork(_ context.Context, _ network.Config, _ *network.State) error {
+func (stubPlatformOps) EnsureDockerNetwork(_ context.Context, _ mesh.Config, _ *mesh.State) error {
 	return errors.New("platform not supported")
 }
-func (stubPlatformOps) CleanupDockerNetwork(_ context.Context, _ network.Config, _ *network.State) error {
+func (stubPlatformOps) CleanupDockerNetwork(_ context.Context, _ mesh.Config, _ *mesh.State) error {
 	return errors.New("platform not supported")
 }
-func (stubPlatformOps) CleanupWireGuard(_ context.Context, _ network.Config, _ *network.State) error {
+func (stubPlatformOps) CleanupWireGuard(_ context.Context, _ mesh.Config, _ *mesh.State) error {
 	return errors.New("platform not supported")
 }
-func (stubPlatformOps) AfterStart(_ context.Context, _ network.Config) error {
+func (stubPlatformOps) AfterStart(_ context.Context, _ mesh.Config) error {
 	return errors.New("platform not supported")
 }
-func (stubPlatformOps) AfterStop(_ context.Context, _ network.Config, _ *network.State) error {
+func (stubPlatformOps) AfterStop(_ context.Context, _ mesh.Config, _ *mesh.State) error {
 	return errors.New("platform not supported")
 }
-func (stubPlatformOps) ApplyPeerConfig(_ context.Context, _ network.Config, _ *network.State, _ []network.Peer) error {
+func (stubPlatformOps) ApplyPeerConfig(_ context.Context, _ mesh.Config, _ *mesh.State, _ []mesh.Peer) error {
 	return errors.New("platform not supported")
 }
 
 type stubStatusProber struct{}
 
-func (stubStatusProber) ProbeInfra(_ context.Context, _ *network.State) (bool, bool, bool, error) {
+func (stubStatusProber) ProbeInfra(_ context.Context, _ *mesh.State) (bool, bool, bool, error) {
 	return false, false, false, nil
 }

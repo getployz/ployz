@@ -5,13 +5,13 @@ import (
 	"os"
 	"testing"
 
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 )
 
 func TestStateStore_SaveLoad(t *testing.T) {
 	ss := NewStateStore()
 
-	state := &network.State{Network: "test-net", Subnet: "10.0.0.0/24"}
+	state := &mesh.State{Network: "test-net", Subnet: "10.0.0.0/24"}
 	if err := ss.Save("/data/test-net", state); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestStateStore_LoadMissing(t *testing.T) {
 
 func TestStateStore_Delete(t *testing.T) {
 	ss := NewStateStore()
-	_ = ss.Save("/data/test", &network.State{Network: "test"})
+	_ = ss.Save("/data/test", &mesh.State{Network: "test"})
 	if err := ss.Delete("/data/test"); err != nil {
 		t.Fatal(err)
 	}
@@ -59,13 +59,13 @@ func TestStateStore_ErrorInjection(t *testing.T) {
 	ss := NewStateStore()
 	injected := errors.New("disk full")
 
-	ss.SaveErr = func(string, *network.State) error { return injected }
-	if err := ss.Save("/data/x", &network.State{}); !errors.Is(err, injected) {
+	ss.SaveErr = func(string, *mesh.State) error { return injected }
+	if err := ss.Save("/data/x", &mesh.State{}); !errors.Is(err, injected) {
 		t.Errorf("expected injected error, got %v", err)
 	}
 
 	ss.SaveErr = nil
-	_ = ss.Save("/data/x", &network.State{})
+	_ = ss.Save("/data/x", &mesh.State{})
 
 	ss.LoadErr = func(string) error { return injected }
 	_, err := ss.Load("/data/x")
@@ -83,7 +83,7 @@ func TestStateStore_StatePath(t *testing.T) {
 
 func TestStateStore_CallRecording(t *testing.T) {
 	ss := NewStateStore()
-	_ = ss.Save("/data/a", &network.State{})
+	_ = ss.Save("/data/a", &mesh.State{})
 	_, _ = ss.Load("/data/a")
 	_ = ss.Delete("/data/a")
 

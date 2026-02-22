@@ -15,7 +15,7 @@ import (
 	"ployz/internal/adapter/sqlite"
 	pb "ployz/internal/daemon/pb"
 	"ployz/internal/engine"
-	netctrl "ployz/internal/network"
+	netctrl "ployz/internal/mesh"
 	"ployz/internal/reconcile"
 	"ployz/pkg/sdk/defaults"
 )

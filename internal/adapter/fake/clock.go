@@ -4,10 +4,10 @@ import (
 	"sync"
 	"time"
 
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 )
 
-var _ network.Clock = (*Clock)(nil)
+var _ mesh.Clock = (*Clock)(nil)
 
 // Clock is a deterministic clock for testing.
 type Clock struct {

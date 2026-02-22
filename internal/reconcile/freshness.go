@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 )
 
 const defaultStaleAge = 3 * time.Second
@@ -27,10 +27,10 @@ type FreshnessTracker struct {
 	peers    map[string]peerState
 	selfID   string
 	staleAge time.Duration
-	clock    network.Clock
+	clock    mesh.Clock
 }
 
-func NewFreshnessTracker(selfID string, clock network.Clock) *FreshnessTracker {
+func NewFreshnessTracker(selfID string, clock mesh.Clock) *FreshnessTracker {
 	return &FreshnessTracker{
 		peers:    make(map[string]peerState),
 		selfID:   selfID,

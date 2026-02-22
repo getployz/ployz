@@ -18,7 +18,7 @@ import (
 	pb "ployz/internal/daemon/pb"
 	proxymod "ployz/internal/daemon/proxy"
 	"ployz/internal/daemon/supervisor"
-	"ployz/internal/network"
+	"ployz/internal/mesh"
 	"ployz/pkg/sdk/defaults"
 
 	grpcproxy "github.com/siderolabs/grpc-proxy/proxy"
@@ -248,7 +248,7 @@ func toGRPCError(err error) error {
 	if errors.Is(err, os.ErrNotExist) {
 		return status.Error(codes.NotFound, err.Error())
 	}
-	if errors.Is(err, network.ErrConflict) {
+	if errors.Is(err, mesh.ErrConflict) {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 
