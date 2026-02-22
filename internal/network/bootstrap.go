@@ -1,25 +1,9 @@
 package network
 
-import (
-	"net/netip"
-	"strings"
-)
+import "strings"
 
 func NormalizeBootstrapAddrPort(raw string) string {
-	addrPort := strings.TrimSpace(raw)
-	if addrPort == "" {
-		return ""
-	}
-
-	parsed, err := netip.ParseAddrPort(addrPort)
-	if err != nil {
-		return addrPort
-	}
-
-	if migrated, ok := MigrateLegacyManagementAddr(parsed.Addr()); ok {
-		return netip.AddrPortFrom(migrated, parsed.Port()).String()
-	}
-	return addrPort
+	return strings.TrimSpace(raw)
 }
 
 func normalizeBootstrapAddrs(values []string) []string {

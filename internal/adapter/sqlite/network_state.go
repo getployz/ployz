@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"ployz/internal/network"
@@ -283,6 +282,8 @@ CREATE TABLE IF NOT EXISTS network_state (
 	wg_port INTEGER NOT NULL,
 	wg_private TEXT NOT NULL,
 	wg_public TEXT NOT NULL,
+	host_wg_private TEXT NOT NULL DEFAULT '',
+	host_wg_public TEXT NOT NULL DEFAULT '',
 	docker_network TEXT NOT NULL,
 	corrosion_name TEXT NOT NULL,
 	corrosion_img TEXT NOT NULL,
@@ -295,19 +296,6 @@ CREATE TABLE IF NOT EXISTS network_state (
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize machine db schema: %w", err)
-	}
-
-	// Schema migrations — swallow "duplicate column" errors.
-	for _, col := range []string{
-		`ALTER TABLE network_state ADD COLUMN host_wg_private TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE network_state ADD COLUMN host_wg_public TEXT NOT NULL DEFAULT ''`,
-	} {
-		if _, err := db.Exec(col); err != nil {
-			if !strings.Contains(err.Error(), "duplicate column") {
-				_ = db.Close()
-				return nil, fmt.Errorf("migrate machine db: %w", err)
-			}
-		}
 	}
 
 	return db, nil

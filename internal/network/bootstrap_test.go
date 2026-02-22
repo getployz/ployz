@@ -2,8 +2,8 @@ package network
 
 import "testing"
 
-func TestNormalizeBootstrapAddrPortMigratesLegacyPrefix(t *testing.T) {
-	got := NormalizeBootstrapAddrPort("[fdcc:6fa8:a9a6:b2f6:2302:cde1:c2b:e64d]:53094")
+func TestNormalizeBootstrapAddrPortTrimsSpace(t *testing.T) {
+	got := NormalizeBootstrapAddrPort("  [fd8c:88ad:7f06:6fa8:a9a6:b2f6:2302:cde1]:53094  ")
 	if want := "[fd8c:88ad:7f06:6fa8:a9a6:b2f6:2302:cde1]:53094"; got != want {
 		t.Fatalf("NormalizeBootstrapAddrPort() = %q, want %q", got, want)
 	}
@@ -11,7 +11,7 @@ func TestNormalizeBootstrapAddrPortMigratesLegacyPrefix(t *testing.T) {
 
 func TestNormalizeBootstrapAddrs(t *testing.T) {
 	got := normalizeBootstrapAddrs([]string{
-		" [fdcc:6fa8:a9a6:b2f6:2302:cde1:c2b:e64d]:53094 ",
+		" [fd8c:88ad:7f06:6fa8:a9a6:b2f6:2302:cde1]:53094 ",
 		"[fd8c:88ad:7f06:6fa8:a9a6:b2f6:2302:cde1]:53094",
 		"",
 		"5.9.85.203:53094",

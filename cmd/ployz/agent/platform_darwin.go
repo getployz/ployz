@@ -26,9 +26,6 @@ func (d *darwinService) Install(ctx context.Context, cfg InstallConfig) error {
 		return fmt.Errorf("agent install requires root — run with sudo")
 	}
 
-	// Migrate: remove old user-level LaunchAgent if present.
-	migrateOldUserAgent(ctx)
-
 	daemonsDir := launchDaemonsDir()
 	if err := os.MkdirAll(daemonsDir, 0o755); err != nil {
 		return fmt.Errorf("create LaunchDaemons dir: %w", err)
@@ -74,8 +71,6 @@ func (d *darwinService) Uninstall(ctx context.Context) error {
 	_ = launchctlBootout(ctx, daemonLabel)
 	os.Remove(filepath.Join(launchDaemonsDir(), daemonLabel+".plist"))
 
-	// Also clean up old user-level plist if it exists.
-	migrateOldUserAgent(ctx)
 	return nil
 }
 
@@ -85,23 +80,6 @@ func (d *darwinService) Status(ctx context.Context) (ServiceStatus, error) {
 		DaemonRunning:   launchctlRunning(ctx, daemonLabel),
 		Platform:        "launchd",
 	}, nil
-}
-
-// migrateOldUserAgent removes the old user-level LaunchAgent plist if present.
-func migrateOldUserAgent(ctx context.Context) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return
-	}
-	oldPlist := filepath.Join(home, "Library", "LaunchAgents", daemonLabel+".plist")
-	if _, err := os.Stat(oldPlist); err != nil {
-		return
-	}
-	// Bootout from old user domain.
-	uid := fmt.Sprintf("gui/%d", os.Getuid())
-	target := uid + "/" + daemonLabel
-	_ = exec.CommandContext(ctx, "launchctl", "bootout", target).Run()
-	_ = os.Remove(oldPlist)
 }
 
 // launchd helpers
