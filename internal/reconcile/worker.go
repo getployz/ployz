@@ -14,13 +14,22 @@ import (
 
 type Worker struct {
 	Spec           network.Config
-	Registry       Registry       // injected: Corrosion machine/heartbeat store
-	PeerReconciler PeerReconciler // injected: applies peer configuration
+	Registry       Registry              // injected: Corrosion machine/heartbeat store
+	PeerReconciler PeerReconciler        // injected: applies peer configuration
+	StateStore     network.StateStore    // injected: state persistence
 	Freshness      *FreshnessTracker
 	NTP            *NTPChecker
 	Ping           *PingTracker
+	Clock          network.Clock
 	OnEvent        func(eventType, message string)
 	OnFailure      func(error)
+}
+
+func (w *Worker) getClock() network.Clock {
+	if w.Clock != nil {
+		return w.Clock
+	}
+	return network.RealClock{}
 }
 
 func (w *Worker) emit(eventType, message string) {
@@ -76,13 +85,15 @@ func (w *Worker) Run(ctx context.Context) error {
 
 	// Determine self ID from WireGuard public key.
 	selfID := ""
-	if st, err := network.LoadState(cfg); err == nil {
-		selfID = st.WGPublic
+	if w.StateStore != nil {
+		if st, err := network.LoadState(w.StateStore, cfg); err == nil {
+			selfID = st.WGPublic
+		}
 	}
 
 	// Start heartbeat writer goroutine.
 	if selfID != "" {
-		go runHeartbeat(ctx, reg, selfID)
+		go runHeartbeat(ctx, reg, selfID, w.getClock())
 	}
 
 	// Start NTP checker goroutine.
@@ -200,12 +211,12 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 }
 
-func runHeartbeat(ctx context.Context, reg Registry, nodeID string) {
+func runHeartbeat(ctx context.Context, reg Registry, nodeID string, clock network.Clock) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for {
-		now := time.Now().UTC().Format(time.RFC3339Nano)
+		now := clock.Now().UTC().Format(time.RFC3339Nano)
 		_ = reg.BumpHeartbeat(ctx, nodeID, now)
 
 		select {

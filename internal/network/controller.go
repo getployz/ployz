@@ -1,7 +1,5 @@
 package network
 
-import "github.com/docker/docker/client"
-
 // Option configures a Controller.
 type Option func(*Controller)
 
@@ -15,10 +13,48 @@ func WithStateStore(s StateStore) Option {
 	return func(c *Controller) { c.state = s }
 }
 
+// WithClock sets the clock used for timestamps.
+func WithClock(clock Clock) Option {
+	return func(c *Controller) { c.clock = clock }
+}
+
+// WithContainerRuntime sets the container runtime backend.
+func WithContainerRuntime(rt ContainerRuntime) Option {
+	return func(c *Controller) { c.containers = rt }
+}
+
+// WithCorrosionRuntime sets the corrosion container lifecycle backend.
+func WithCorrosionRuntime(rt CorrosionRuntime) Option {
+	return func(c *Controller) { c.corrosion = rt }
+}
+
+// WithStatusProber sets the infrastructure status prober.
+func WithStatusProber(p StatusProber) Option {
+	return func(c *Controller) { c.statusProber = p }
+}
+
+// WithPlatformOps sets the platform-specific runtime operations.
+func WithPlatformOps(ops PlatformOps) Option {
+	return func(c *Controller) { c.platformOps = ops }
+}
+
+// New creates a Controller with the given options.
+func New(opts ...Option) (*Controller, error) {
+	c := &Controller{}
+	for _, o := range opts {
+		o(c)
+	}
+	return c, nil
+}
+
 type Controller struct {
-	cli         *client.Client
-	newRegistry RegistryFactory
-	state       StateStore
+	containers   ContainerRuntime
+	corrosion    CorrosionRuntime
+	statusProber StatusProber
+	platformOps  PlatformOps
+	newRegistry  RegistryFactory
+	state        StateStore
+	clock        Clock
 }
 
 type Status struct {
@@ -31,8 +67,8 @@ type Status struct {
 }
 
 func (c *Controller) Close() error {
-	if c == nil || c.cli == nil {
+	if c == nil || c.containers == nil {
 		return nil
 	}
-	return c.cli.Close()
+	return c.containers.Close()
 }

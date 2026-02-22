@@ -118,6 +118,3 @@ func refreshCorrosionGossipAddr(cfg *Config) {
 	}
 }
 
-func machineIP(subnet netip.Prefix) netip.Addr {
-	return subnet.Masked().Addr().Next()
-}

@@ -1,5 +1,3 @@
-//go:build linux || darwin
-
 package network
 
 import (
@@ -11,37 +9,38 @@ import (
 	"net/netip"
 	"os"
 	"strings"
-
-	corrosion "ployz/internal/adapter/corrosion/container"
-	"ployz/internal/adapter/platform"
 )
 
-type runtimeOps interface {
-	Prepare(ctx context.Context, cfg Config) error
-	ConfigureWireGuard(ctx context.Context, cfg Config, state *State) error
-	EnsureDockerNetwork(ctx context.Context, cfg Config, state *State) error
-	CleanupDockerNetwork(ctx context.Context, cfg Config, state *State) error
-	CleanupWireGuard(ctx context.Context, cfg Config, state *State) error
-	AfterStop(ctx context.Context, cfg Config, state *State) error
+func (c *Controller) Start(ctx context.Context, in Config) (Config, error) {
+	if c.platformOps == nil {
+		return Config{}, errors.New("controller start requires platform ops")
+	}
+	out, err := c.startRuntime(ctx, in)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := c.platformOps.AfterStart(ctx, out); err != nil {
+		slog.Warn("after-start hook failed", "network", out.Network, "err", err)
+	}
+	return out, nil
 }
 
-func (c *Controller) startRuntime(ctx context.Context, in Config, ops runtimeOps) (Config, error) {
+func (c *Controller) Stop(ctx context.Context, in Config, purge bool) (Config, error) {
+	if c.platformOps == nil {
+		return Config{}, errors.New("controller stop requires platform ops")
+	}
+	return c.stopRuntime(ctx, in, purge)
+}
+
+func (c *Controller) startRuntime(ctx context.Context, in Config) (Config, error) {
 	cfg, err := NormalizeConfig(in)
 	if err != nil {
 		return Config{}, err
 	}
 	log := slog.With("component", "network-runtime", "network", cfg.Network)
 	log.Info("start requested")
-	if err := platform.EnsureUniqueHostCIDR(cfg.NetworkCIDR, cfg.DataRoot, cfg.Network, defaultNetworkPrefix, func(dataDir string) (string, error) {
-		s, err := c.state.Load(dataDir)
-		if err != nil {
-			return "", err
-		}
-		return s.CIDR, nil
-	}); err != nil {
-		return Config{}, err
-	}
-	if err := ops.Prepare(ctx, cfg); err != nil {
+
+	if err := c.platformOps.Prepare(ctx, cfg, c.state); err != nil {
 		log.Error("prepare failed", "err", err)
 		return Config{}, err
 	}
@@ -100,14 +99,17 @@ func (c *Controller) startRuntime(ctx context.Context, in Config, ops runtimeOps
 		state.Bootstrap = append([]string(nil), cfg.CorrosionBootstrap...)
 	}
 
-	if err := ops.ConfigureWireGuard(ctx, cfg, state); err != nil {
+	if err := c.platformOps.ConfigureWireGuard(ctx, cfg, state); err != nil {
 		log.Error("wireguard configure failed", "err", err)
 		return Config{}, err
 	}
 	log.Debug("wireguard configured", "iface", state.WGInterface)
-	if err := corrosion.WriteConfig(corrosion.Config{
+	corrosionCfg := CorrosionConfig{
+		Name:         cfg.CorrosionName,
+		Image:        cfg.CorrosionImg,
 		Dir:          cfg.CorrosionDir,
 		ConfigPath:   cfg.CorrosionConfig,
+		DataDir:      cfg.CorrosionDir,
 		AdminSock:    cfg.CorrosionAdminSock,
 		Bootstrap:    cfg.CorrosionBootstrap,
 		GossipAddr:   cfg.CorrosionGossipAP,
@@ -116,23 +118,16 @@ func (c *Controller) startRuntime(ctx context.Context, in Config, ops runtimeOps
 		APIToken:     cfg.CorrosionAPIToken,
 		GossipMaxMTU: corrosionGossipMaxMTU(cfg.CorrosionGossipIP),
 		User:         cfg.CorrosionUser,
-	}); err != nil {
+	}
+	if err := c.corrosion.WriteConfig(corrosionCfg); err != nil {
 		log.Error("write corrosion config failed", "err", err)
 		return Config{}, err
 	}
-	if err := corrosion.Start(ctx, c.cli, corrosion.RuntimeConfig{
-		Name:       cfg.CorrosionName,
-		Image:      cfg.CorrosionImg,
-		ConfigPath: cfg.CorrosionConfig,
-		DataDir:    cfg.CorrosionDir,
-		User:       cfg.CorrosionUser,
-		APIAddr:    cfg.CorrosionAPIAddr,
-		APIToken:   cfg.CorrosionAPIToken,
-	}); err != nil {
+	if err := c.corrosion.Start(ctx, corrosionCfg); err != nil {
 		log.Error("start corrosion failed", "err", err)
 		return Config{}, err
 	}
-	if err := ops.EnsureDockerNetwork(ctx, cfg, state); err != nil {
+	if err := c.platformOps.EnsureDockerNetwork(ctx, cfg, state); err != nil {
 		log.Error("ensure docker network failed", "err", err)
 		return Config{}, err
 	}
@@ -155,7 +150,7 @@ func corrosionGossipMaxMTU(addr netip.Addr) int {
 	return defaultWireGuardMTU - net.IPv6len - udpHeaderLen
 }
 
-func (c *Controller) stopRuntime(ctx context.Context, in Config, purge bool, ops runtimeOps) (Config, error) {
+func (c *Controller) stopRuntime(ctx context.Context, in Config, purge bool) (Config, error) {
 	cfg, err := NormalizeConfig(in)
 	if err != nil {
 		return Config{}, err
@@ -171,7 +166,7 @@ func (c *Controller) stopRuntime(ctx context.Context, in Config, purge bool, ops
 		return Config{}, err
 	}
 
-	if err := ops.Prepare(ctx, cfg); err != nil {
+	if err := c.platformOps.Prepare(ctx, cfg, c.state); err != nil {
 		log.Error("prepare failed", "err", err)
 		return Config{}, err
 	}
@@ -181,19 +176,19 @@ func (c *Controller) stopRuntime(ctx context.Context, in Config, purge bool, ops
 		return Config{}, err
 	}
 
-	if err := ops.CleanupDockerNetwork(ctx, cfg, state); err != nil {
+	if err := c.platformOps.CleanupDockerNetwork(ctx, cfg, state); err != nil {
 		log.Error("cleanup docker network failed", "err", err)
 		return Config{}, err
 	}
-	if err := corrosion.Stop(ctx, c.cli, state.CorrosionName); err != nil {
+	if err := c.corrosion.Stop(ctx, state.CorrosionName); err != nil {
 		log.Error("stop corrosion failed", "err", err)
 		return Config{}, err
 	}
-	if err := ops.CleanupWireGuard(ctx, cfg, state); err != nil {
+	if err := c.platformOps.CleanupWireGuard(ctx, cfg, state); err != nil {
 		log.Error("cleanup wireguard failed", "err", err)
 		return Config{}, err
 	}
-	if err := ops.AfterStop(ctx, cfg, state); err != nil {
+	if err := c.platformOps.AfterStop(ctx, cfg, state); err != nil {
 		log.Error("after-stop hook failed", "err", err)
 		return Config{}, err
 	}

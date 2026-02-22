@@ -29,6 +29,7 @@ Ployz is a machine network control plane with three layers:
 ### Key architectural rules
 
 - **Imperative setup, event-driven convergence.** Standing up infrastructure (WG interface, Docker network, firewall, Corrosion) is imperative — runs once, succeeds or fails. Peer tracking stays continuous in runtime loops within the daemon process.
+- **All external dependencies are injected interfaces.** `Controller` holds no concrete adapter types. Docker, Corrosion, WireGuard, state persistence, and clock are all injected via interfaces defined in `network/ports.go`. Platform-specific `New()` functions wire the concrete implementations.
 - **Typed Corrosion subscriptions.** Every hot-path table driving convergence gets a typed `Subscribe<Table>` API in the registry layer. No raw SQL or Corrosion protocol details leak to consumers.
 - **SDK always goes through daemon.** No direct Corrosion access from SDK. Daemon is the single writer to local state.
 - **Health is reporting, not auto-fix.** Daemon reports per-component health via `GetStatus`. `machine doctor` surfaces problems. Operator decides what to fix.
@@ -40,12 +41,12 @@ Ployz is a machine network control plane with three layers:
 cmd/ployz/            CLI (thin over pkg/sdk)
 cmd/ployzd/           daemon entrypoint
 pkg/sdk/              client SDK (workflows, daemon client, types)
-internal/network/     core types (MachineRow, Peer, Config) + pure logic (diff, peers, config)
+internal/network/     core types, interfaces (ports.go), pure logic, Controller
 internal/reconcile/   reconciliation loop, health tracking, interfaces (ports.go)
 internal/engine/      worker pool, lifecycle orchestration
 internal/adapter/     all external system integrations:
   adapter/corrosion/    Corrosion HTTP client + subscriptions (implements reconcile.Registry)
-  adapter/docker/       Docker API (networks, containers, iptables)
+  adapter/docker/       Docker Runtime (implements network.ContainerRuntime)
   adapter/wireguard/    WireGuard device management (implements PeerApplier)
   adapter/sqlite/       local state persistence (load/save)
   adapter/platform/     platform runtime ops (darwin/linux/stub)
@@ -55,7 +56,35 @@ internal/logging/     slog configuration
 internal/buildinfo/   version info
 ```
 
-This layout is being migrated to. Code still in old paths (`internal/machine/network/`, `internal/coordination/`, `internal/runtime/`, `internal/platform/`) must follow the same Core Rules — apply the principles in place until the code is moved.
+### Key files in `internal/network/`
+
+| File | Purpose |
+|------|---------|
+| `ports.go` | All consumer-defined interfaces: `Clock`, `ContainerRuntime`, `CorrosionRuntime`, `StatusProber`, `StateStore`, `Registry`, `RegistryFactory` |
+| `controller.go` | `Controller` struct (holds all injected dependencies), `Option` funcs, `Status` struct |
+| `status.go` | Shared `Status()` method (platform-independent, delegates to `StatusProber`) |
+| `management.go` | Pure functions: `ManagementIPFromPublicKey`, `ManagementIPFromWGKey`, `MigrateLegacyManagementAddr` |
+| `docker_runtime.go` | Bridge wrappers: `adapter/docker.Runtime` → `ContainerRuntime`, `adapter/corrosion.Adapter` → `CorrosionRuntime` (build-tagged linux/darwin) |
+| `service_linux.go` | Linux `New()`, `linuxStatusProber`, `linuxRuntimeOps` |
+| `service_darwin.go` | Darwin `New()`, `darwinStatusProber`, `darwinRuntimeOps` |
+| `service_stub.go` | Stub `New()` + `stubStatusProber` for unsupported platforms |
+| `runtime_common.go` | Shared start/stop logic using `runtimeOps` + injected interfaces |
+
+### Dependency injection flow
+
+Platform-specific `New()` functions wire everything:
+
+1. Create `adapter/docker.Runtime` (concrete Docker client)
+2. Wrap it in `dockerContainerRuntime` (adapts to `ContainerRuntime` interface)
+3. Wrap it in `corrosionRuntimeAdapter` (adapts to `CorrosionRuntime` interface)
+4. Create platform-specific `StatusProber` (e.g. `linuxStatusProber`)
+5. Set all fields on `Controller`
+
+Tests inject fakes for any of these interfaces via `With*` options.
+
+### Bridge layer pattern
+
+Core packages define interfaces with their own types (`network.ContainerInfo`, `network.Mount`, etc.). Adapter packages define their own matching types (`docker.ContainerInfo`, `docker.Mount`). Build-tagged bridge files in `network/` (e.g. `docker_runtime.go`) contain thin wrappers that convert between the two, avoiding import cycles.
 
 ## Core Rules
 
@@ -79,11 +108,21 @@ The adapter (`adapter/corrosion/`) implements it without importing the consumer.
 
 Decision logic in `network/`, `reconcile/`, and `engine/` must be pure: data in, data out. No Docker calls, no HTTP, no WireGuard, no disk I/O, no `time.Now()`. Orchestration code in these packages may call injected interfaces (ports), but never imports adapter packages directly.
 
-If a function needs the current time, accept it as a parameter or inject a clock. If it needs to apply a change, return a plan and let the caller apply it.
+All external dependencies are abstracted behind interfaces in `network/ports.go`:
+- `Clock` — time source (inject `RealClock{}` in production, fake in tests)
+- `ContainerRuntime` — Docker/Podman container and network operations
+- `CorrosionRuntime` — Corrosion container lifecycle (WriteConfig, Start, Stop)
+- `StatusProber` — platform-specific infrastructure health checks
+- `StateStore` — state persistence (SQLite in production)
+- `Registry` / `RegistryFactory` — Corrosion data access
+
+If a function needs the current time, use the injected `Clock`. If it needs to apply a change, call an injected interface or return a plan and let the caller apply it.
 
 ### 3. All infra calls in adapters
 
 Every call to an external system (Corrosion HTTP API, Docker API, WireGuard kernel/userspace, SQLite, filesystem, SSH) lives in `internal/adapter/`. Core logic never imports adapter packages. Dependency direction is always inward.
+
+**Bridge layer exception**: build-tagged files in `network/` (e.g. `docker_runtime.go`) may import adapter packages to wire concrete implementations into interface wrappers. These files contain only type conversion — no business logic. Platform-specific `New()` functions (`service_linux.go`, `service_darwin.go`) are the only code that creates adapter instances.
 
 ### 4. No hidden constructors in loops
 
@@ -164,6 +203,8 @@ Three groups in order: stdlib, third-party, local (`ployz/...`).
 
 - OS-specific behavior behind build-tagged files: `*_linux.go`, `*_darwin.go`, `*_stub.go`.
 - Explicit errors where a platform isn't supported.
+- Each platform's `New()` wires concrete adapters into the `Controller` via interfaces.
+- Platform-specific `StatusProber` and `runtimeOps` implementations live in platform files; shared `Status()` and `startRuntime()`/`stopRuntime()` live in common files.
 
 ### Types
 

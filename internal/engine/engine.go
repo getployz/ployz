@@ -53,6 +53,7 @@ type Engine struct {
 	newController   NetworkControllerFactory   // creates controllers for Start
 	newReconciler   PeerReconcilerFactory      // creates peer reconcilers for workers
 	newRegistry     RegistryFactory            // creates registries for workers
+	stateStore      netctrl.StateStore         // state persistence for LoadState
 }
 
 type EngineOption func(*Engine)
@@ -67,6 +68,10 @@ func WithPeerReconcilerFactory(f PeerReconcilerFactory) EngineOption {
 
 func WithRegistryFactory(f RegistryFactory) EngineOption {
 	return func(e *Engine) { e.newRegistry = f }
+}
+
+func WithStateStore(s netctrl.StateStore) EngineOption {
+	return func(e *Engine) { e.stateStore = s }
 }
 
 func New(ctx context.Context, opts ...EngineOption) *Engine {
@@ -101,14 +106,16 @@ func (e *Engine) StartNetwork(ctx context.Context, spec *pb.NetworkSpec) error {
 
 	// Determine self ID for freshness tracker.
 	selfID := ""
-	if cfg, err := configFromSpec(spec); err == nil {
-		if st, loadErr := netctrl.LoadState(cfg); loadErr == nil {
-			selfID = st.WGPublic
+	if e.stateStore != nil {
+		if cfg, err := configFromSpec(spec); err == nil {
+			if st, loadErr := netctrl.LoadState(e.stateStore, cfg); loadErr == nil {
+				selfID = st.WGPublic
+			}
 		}
 	}
 
-	ft := reconcile.NewFreshnessTracker(selfID)
-	ntpChecker := reconcile.NewNTPChecker()
+	ft := reconcile.NewFreshnessTracker(selfID, netctrl.RealClock{})
+	ntpChecker := reconcile.NewNTPChecker(netctrl.RealClock{})
 	pingTracker := reconcile.NewPingTracker()
 
 	ws := &workerState{
@@ -277,6 +284,7 @@ func (e *Engine) runWorkerLoop(ctx context.Context, ws *workerState, spec *pb.Ne
 			Spec:           runtimeCfg,
 			Registry:       reg,
 			PeerReconciler: peerCtrl,
+			StateStore:     e.stateStore,
 			Freshness:      ws.freshness,
 			NTP:            ws.ntp,
 			Ping:           ws.ping,

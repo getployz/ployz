@@ -1,5 +1,3 @@
-//go:build linux || darwin
-
 package network
 
 import (
@@ -10,12 +8,14 @@ import (
 	"strings"
 	"time"
 
-	"ployz/internal/adapter/wireguard"
-
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 func (c *Controller) Reconcile(ctx context.Context, in Config) (int, error) {
+	if c.platformOps == nil {
+		return 0, errors.New("reconcile requires platform ops")
+	}
+
 	cfg, err := NormalizeConfig(in)
 	if err != nil {
 		return 0, err
@@ -43,9 +43,7 @@ func (c *Controller) Reconcile(ctx context.Context, in Config) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if s.CIDR != cidr.String() {
-		s.CIDR = cidr.String()
-	}
+	s.CIDR = cidr.String()
 
 	if err := r.UpsertMachine(ctx, MachineRow{
 		ID:         s.WGPublic,
@@ -53,7 +51,7 @@ func (c *Controller) Reconcile(ctx context.Context, in Config) (int, error) {
 		Subnet:     s.Subnet,
 		Management: s.Management,
 		Endpoint:   s.Advertise,
-		UpdatedAt:  time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt:  c.clock.Now().UTC().Format(time.RFC3339),
 	}, 0); err != nil {
 		return 0, err
 	}
@@ -143,7 +141,7 @@ func (c *Controller) UpsertMachine(ctx context.Context, in Config, m Machine) er
 	if _, err := wgtypes.ParseKey(m.PublicKey); err != nil {
 		return fmt.Errorf("parse machine public key: %w", err)
 	}
-	managementIP, err := wireguard.ManagementIPFromPublicKey(m.PublicKey)
+	managementIP, err := ManagementIPFromPublicKey(m.PublicKey)
 	if err != nil {
 		return fmt.Errorf("derive machine management IP: %w", err)
 	}
@@ -183,7 +181,7 @@ func (c *Controller) UpsertMachine(ctx context.Context, in Config, m Machine) er
 		Subnet:     m.Subnet,
 		Management: m.Management,
 		Endpoint:   m.Endpoint,
-		UpdatedAt:  time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt:  c.clock.Now().UTC().Format(time.RFC3339),
 	}, m.ExpectedVersion)
 	if errors.Is(err, ErrConflict) {
 		return fmt.Errorf("upsert machine conflict: %w", err)
@@ -215,7 +213,7 @@ func (c *Controller) RemoveMachine(ctx context.Context, in Config, machineID str
 func normalizeRegistryRows(rows []MachineRow) ([]MachineRow, error) {
 	out := make([]MachineRow, len(rows))
 	for i, row := range rows {
-		managementIP, err := wireguard.ManagementIPFromPublicKey(row.PublicKey)
+		managementIP, err := ManagementIPFromPublicKey(row.PublicKey)
 		if err != nil {
 			return nil, fmt.Errorf("derive machine management ip: %w", err)
 		}
@@ -248,7 +246,7 @@ func (c *Controller) reconcilePeerRows(ctx context.Context, cfg Config, s *State
 		return 0, err
 	}
 
-	if err := c.applyPeerConfig(ctx, cfg, s, peers); err != nil {
+	if err := c.platformOps.ApplyPeerConfig(ctx, cfg, s, peers); err != nil {
 		return 0, err
 	}
 

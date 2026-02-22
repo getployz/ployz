@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"ployz/internal/adapter/corrosion"
+	"ployz/internal/adapter/platform"
 	"ployz/internal/adapter/sqlite"
 	pb "ployz/internal/daemon/pb"
 	"ployz/internal/engine"
@@ -20,11 +21,12 @@ import (
 )
 
 type Manager struct {
-	ctx      context.Context
-	dataRoot string
-	store    *sqlite.Store
-	ctrl     *netctrl.Controller
-	engine   *engine.Engine
+	ctx        context.Context
+	dataRoot   string
+	store      *sqlite.Store
+	stateStore netctrl.StateStore
+	ctrl       *netctrl.Controller
+	engine     *engine.Engine
 }
 
 func New(ctx context.Context, dataRoot string) (*Manager, error) {
@@ -44,7 +46,8 @@ func New(ctx context.Context, dataRoot string) (*Manager, error) {
 	registryFactory := netctrl.RegistryFactory(func(addr netip.AddrPort, token string) netctrl.Registry {
 		return corrosion.NewStore(addr, token)
 	})
-	ctrl, err := netctrl.New(netctrl.WithRegistryFactory(registryFactory))
+	netStateStore := sqlite.NetworkStateStore{}
+	ctrl, err := platform.NewController(netctrl.WithRegistryFactory(registryFactory))
 	if err != nil {
 		_ = store.Close()
 		return nil, err
@@ -52,22 +55,24 @@ func New(ctx context.Context, dataRoot string) (*Manager, error) {
 
 	eng := engine.New(ctx,
 		engine.WithControllerFactory(func() (engine.NetworkController, error) {
-			return netctrl.New(netctrl.WithRegistryFactory(registryFactory))
+			return platform.NewController(netctrl.WithRegistryFactory(registryFactory))
 		}),
 		engine.WithPeerReconcilerFactory(func() (reconcile.PeerReconciler, error) {
-			return netctrl.New(netctrl.WithRegistryFactory(registryFactory))
+			return platform.NewController(netctrl.WithRegistryFactory(registryFactory))
 		}),
 		engine.WithRegistryFactory(func(addr netip.AddrPort, token string) reconcile.Registry {
 			return corrosion.NewStore(addr, token)
 		}),
+		engine.WithStateStore(netStateStore),
 	)
 
 	m := &Manager{
-		ctx:      ctx,
-		dataRoot: dataRoot,
-		store:    store,
-		ctrl:     ctrl,
-		engine:   eng,
+		ctx:        ctx,
+		dataRoot:   dataRoot,
+		store:      store,
+		stateStore: netStateStore,
+		ctrl:       ctrl,
+		engine:     eng,
 	}
 	if err := startPlatformServices(ctx); err != nil {
 		_ = m.ctrl.Close()
@@ -207,7 +212,7 @@ func (m *Manager) GetIdentity(_ context.Context, network string) (*pb.Identity, 
 	if err != nil {
 		return nil, err
 	}
-	st, err := netctrl.LoadState(cfg)
+	st, err := netctrl.LoadState(m.stateStore, cfg)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("network %q is not initialized", spec.Network)

@@ -2,15 +2,11 @@ package network
 
 import (
 	"fmt"
-	"net"
 	"net/netip"
 	"strings"
-	"time"
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
-
-const peerKeepalive = 25 * time.Second
 
 type Peer struct {
 	PublicKey  string
@@ -19,67 +15,60 @@ type Peer struct {
 	Endpoint   string
 }
 
-type peerSpec struct {
-	publicKeyString string
-	publicKey       wgtypes.Key
-	endpoint        *netip.AddrPort
-	allowedPrefixes []netip.Prefix
-	allowedIPNets   []net.IPNet
-	subnet          *netip.Prefix
+// PeerSpec holds resolved WireGuard peer parameters.
+type PeerSpec struct {
+	PublicKey       wgtypes.Key
+	Endpoint        *netip.AddrPort
+	AllowedPrefixes []netip.Prefix
 }
 
-func parsePeerSpec(in Peer) (peerSpec, error) {
+func parsePeerSpec(in Peer) (PeerSpec, error) {
 	pubKeyStr := strings.TrimSpace(in.PublicKey)
 	if pubKeyStr == "" {
-		return peerSpec{}, fmt.Errorf("public key is required")
+		return PeerSpec{}, fmt.Errorf("public key is required")
 	}
 	key, err := wgtypes.ParseKey(pubKeyStr)
 	if err != nil {
-		return peerSpec{}, fmt.Errorf("parse public key: %w", err)
+		return PeerSpec{}, fmt.Errorf("parse public key: %w", err)
 	}
 
 	subnetStr := strings.TrimSpace(in.Subnet)
 	mgmtStr := strings.TrimSpace(in.Management)
 	if subnetStr == "" && mgmtStr == "" {
-		return peerSpec{}, fmt.Errorf("peer subnet or management ip is required")
+		return PeerSpec{}, fmt.Errorf("peer subnet or management ip is required")
 	}
 
-	spec := peerSpec{publicKeyString: pubKeyStr, publicKey: key}
+	spec := PeerSpec{PublicKey: key}
 
 	if mgmtStr != "" {
 		ip, err := netip.ParseAddr(mgmtStr)
 		if err != nil {
-			return peerSpec{}, fmt.Errorf("parse management ip: %w", err)
+			return PeerSpec{}, fmt.Errorf("parse management ip: %w", err)
 		}
-		spec.allowedPrefixes = append(spec.allowedPrefixes, singleIPPrefix(ip))
+		spec.AllowedPrefixes = append(spec.AllowedPrefixes, SingleIPPrefix(ip))
 	}
 	if subnetStr != "" {
 		subnet, err := netip.ParsePrefix(subnetStr)
 		if err != nil {
-			return peerSpec{}, fmt.Errorf("parse peer subnet: %w", err)
+			return PeerSpec{}, fmt.Errorf("parse peer subnet: %w", err)
 		}
-		spec.subnet = &subnet
-		spec.allowedPrefixes = append(spec.allowedPrefixes, subnet)
+		spec.AllowedPrefixes = append(spec.AllowedPrefixes, subnet)
 	}
 
 	epStr := strings.TrimSpace(in.Endpoint)
 	if epStr != "" {
 		ep, err := netip.ParseAddrPort(epStr)
 		if err != nil {
-			return peerSpec{}, fmt.Errorf("parse endpoint: %w", err)
+			return PeerSpec{}, fmt.Errorf("parse endpoint: %w", err)
 		}
-		spec.endpoint = &ep
+		spec.Endpoint = &ep
 	}
 
-	spec.allowedIPNets = make([]net.IPNet, len(spec.allowedPrefixes))
-	for i, pref := range spec.allowedPrefixes {
-		spec.allowedIPNets[i] = prefixToIPNet(pref)
-	}
 	return spec, nil
 }
 
-func buildPeerSpecs(peers []Peer) ([]peerSpec, error) {
-	out := make([]peerSpec, 0, len(peers))
+func BuildPeerSpecs(peers []Peer) ([]PeerSpec, error) {
+	out := make([]PeerSpec, 0, len(peers))
 	for _, p := range peers {
 		spec, err := parsePeerSpec(p)
 		if err != nil {
@@ -90,26 +79,15 @@ func buildPeerSpecs(peers []Peer) ([]peerSpec, error) {
 	return out, nil
 }
 
-func singleIPPrefix(addr netip.Addr) netip.Prefix {
+// SingleIPPrefix returns a /32 or /128 prefix for a single IP.
+func SingleIPPrefix(addr netip.Addr) netip.Prefix {
 	if addr.Is6() {
 		return netip.PrefixFrom(addr, 128)
 	}
 	return netip.PrefixFrom(addr, 32)
 }
 
-func prefixToIPNet(pref netip.Prefix) net.IPNet {
-	bits := 32
-	if pref.Addr().Is6() {
-		bits = 128
-	}
-	return net.IPNet{IP: pref.Addr().AsSlice(), Mask: net.CIDRMask(pref.Bits(), bits)}
-}
-
-func ipNetToPrefix(n net.IPNet) (netip.Prefix, error) {
-	a, ok := netip.AddrFromSlice(n.IP)
-	if !ok {
-		return netip.Prefix{}, fmt.Errorf("invalid IP %v", n.IP)
-	}
-	one, _ := n.Mask.Size()
-	return netip.PrefixFrom(a.Unmap(), one), nil
+// MachineIP returns the first host IP in a subnet prefix.
+func MachineIP(subnet netip.Prefix) netip.Addr {
+	return subnet.Masked().Addr().Next()
 }

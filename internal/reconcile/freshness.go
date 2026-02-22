@@ -3,6 +3,8 @@ package reconcile
 import (
 	"sync"
 	"time"
+
+	"ployz/internal/network"
 )
 
 const defaultStaleAge = 3 * time.Second
@@ -25,13 +27,15 @@ type FreshnessTracker struct {
 	peers    map[string]peerState
 	selfID   string
 	staleAge time.Duration
+	clock    network.Clock
 }
 
-func NewFreshnessTracker(selfID string) *FreshnessTracker {
+func NewFreshnessTracker(selfID string, clock network.Clock) *FreshnessTracker {
 	return &FreshnessTracker{
 		peers:    make(map[string]peerState),
 		selfID:   selfID,
 		staleAge: defaultStaleAge,
+		clock:    clock,
 	}
 }
 
@@ -40,7 +44,7 @@ func (ft *FreshnessTracker) RecordSeen(nodeID string, updatedAt time.Time) {
 		return
 	}
 
-	now := time.Now()
+	now := ft.clock.Now()
 
 	ft.mu.Lock()
 	ft.peers[nodeID] = peerState{
@@ -61,7 +65,7 @@ func (ft *FreshnessTracker) Snapshot() map[string]PeerHealth {
 	ft.mu.RLock()
 	defer ft.mu.RUnlock()
 
-	now := time.Now()
+	now := ft.clock.Now()
 	out := make(map[string]PeerHealth, len(ft.peers))
 	for id, p := range ft.peers {
 		freshness := now.Sub(p.lastSeen)

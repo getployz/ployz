@@ -3,8 +3,6 @@ package network
 import (
 	"net/netip"
 	"strings"
-
-	"ployz/internal/adapter/wireguard"
 )
 
 func NormalizeBootstrapAddrPort(raw string) string {
@@ -18,7 +16,7 @@ func NormalizeBootstrapAddrPort(raw string) string {
 		return addrPort
 	}
 
-	if migrated, ok := wireguard.MigrateLegacyManagementAddr(parsed.Addr()); ok {
+	if migrated, ok := MigrateLegacyManagementAddr(parsed.Addr()); ok {
 		return netip.AddrPortFrom(migrated, parsed.Port()).String()
 	}
 	return addrPort

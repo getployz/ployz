@@ -5,6 +5,8 @@ import (
 	"sync"
 	"time"
 
+	"ployz/internal/network"
+
 	"github.com/beevik/ntp"
 )
 
@@ -27,13 +29,15 @@ type NTPChecker struct {
 	pool      string
 	interval  time.Duration
 	threshold time.Duration
+	clock     network.Clock
 }
 
-func NewNTPChecker() *NTPChecker {
+func NewNTPChecker(clock network.Clock) *NTPChecker {
 	return &NTPChecker{
 		pool:      defaultNTPPool,
 		interval:  defaultNTPInterval,
 		threshold: defaultNTPThreshold,
+		clock:     clock,
 	}
 }
 
@@ -59,7 +63,7 @@ func (n *NTPChecker) check() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	now := time.Now()
+	now := n.clock.Now()
 	if err != nil {
 		n.status = NTPStatus{
 			Error:     err.Error(),
