@@ -4,12 +4,45 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
 )
+
+// newJSONRequest creates an HTTP request with JSON content headers and auth.
+func (s Store) newJSONRequest(ctx context.Context, method, url string, body []byte) (*http.Request, error) {
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, reader)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	if s.apiToken != "" {
+		req.Header.Set("Authorization", "Bearer "+s.apiToken)
+	}
+	return req, nil
+}
+
+// doJSON sends a JSON request and returns the response, returning an error for non-200 status.
+func (s Store) doJSON(req *http.Request) (*http.Response, error) {
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096)) // best-effort, bounded
+		resp.Body.Close()
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	return resp, nil
+}
 
 type statement struct {
 	Query  string `json:"query"`
@@ -87,37 +120,22 @@ type subscriptionStream struct {
 	Decoder *json.Decoder
 }
 
-func (s Store) setAuthHeader(req *http.Request) {
-	if s.apiToken == "" {
-		return
-	}
-	req.Header.Set("Authorization", "Bearer "+s.apiToken)
-}
-
 func (s Store) exec(ctx context.Context, query string, args ...any) error {
 	body, err := json.Marshal([]statement{{Query: query, Params: args}})
 	if err != nil {
 		return fmt.Errorf("marshal corrosion transaction: %w", err)
 	}
 
-	url := "http://" + s.apiAddr.String() + "/v1/transactions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := s.newJSONRequest(ctx, http.MethodPost, s.baseURL+"/v1/transactions", body)
 	if err != nil {
 		return fmt.Errorf("create corrosion request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	s.setAuthHeader(req)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.doJSON(req)
 	if err != nil {
-		return fmt.Errorf("execute corrosion transaction: %w", err)
+		return fmt.Errorf("corrosion transaction: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		data, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("corrosion transaction failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
-	}
 
 	var out execResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -137,24 +155,16 @@ func (s Store) query(ctx context.Context, query string, args ...any) ([][]json.R
 		return nil, fmt.Errorf("marshal corrosion query: %w", err)
 	}
 
-	url := "http://" + s.apiAddr.String() + "/v1/queries"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := s.newJSONRequest(ctx, http.MethodPost, s.baseURL+"/v1/queries", body)
 	if err != nil {
 		return nil, fmt.Errorf("create corrosion query request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	s.setAuthHeader(req)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.doJSON(req)
 	if err != nil {
-		return nil, fmt.Errorf("execute corrosion query: %w", err)
+		return nil, fmt.Errorf("corrosion query: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		data, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("corrosion query failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
-	}
 
 	dec := json.NewDecoder(resp.Body)
 	var ev queryEvent
@@ -165,11 +175,11 @@ func (s Store) query(ctx context.Context, query string, args ...any) ([][]json.R
 		return nil, fmt.Errorf("corrosion query error: %s", *ev.Error)
 	}
 
-	rows := make([][]json.RawMessage, 0)
+	var rows [][]json.RawMessage
 	for {
 		ev = queryEvent{}
 		if err := dec.Decode(&ev); err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			return nil, fmt.Errorf("decode corrosion query event: %w", err)
@@ -194,28 +204,19 @@ func (s Store) subscribe(ctx context.Context, query string, args []any) (*subscr
 		return nil, fmt.Errorf("marshal corrosion subscription: %w", err)
 	}
 
-	url := "http://" + s.apiAddr.String() + "/v1/subscriptions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := s.newJSONRequest(ctx, http.MethodPost, s.baseURL+"/v1/subscriptions", body)
 	if err != nil {
 		return nil, fmt.Errorf("create corrosion subscription request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	s.setAuthHeader(req)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.doJSON(req)
 	if err != nil {
-		return nil, fmt.Errorf("execute corrosion subscription: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		data, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		return nil, fmt.Errorf("corrosion subscription failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+		return nil, fmt.Errorf("corrosion subscription: %w", err)
 	}
 
 	id := strings.TrimSpace(resp.Header.Get("corro-query-id"))
 	if id == "" {
-		_ = resp.Body.Close()
+		resp.Body.Close()
 		return nil, fmt.Errorf("corrosion subscription missing id header")
 	}
 
@@ -223,24 +224,15 @@ func (s Store) subscribe(ctx context.Context, query string, args []any) (*subscr
 }
 
 func (s Store) resubscribe(ctx context.Context, id string, fromChange uint64) (*subscriptionStream, error) {
-	base := "http://" + s.apiAddr.String() + "/v1/subscriptions/" + id
-	url := base + "?from=" + strconv.FormatUint(fromChange, 10)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	url := s.baseURL + "/v1/subscriptions/" + id + "?from=" + strconv.FormatUint(fromChange, 10)
+	req, err := s.newJSONRequest(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create corrosion resubscribe request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	s.setAuthHeader(req)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.doJSON(req)
 	if err != nil {
-		return nil, fmt.Errorf("execute corrosion resubscribe: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		data, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		return nil, fmt.Errorf("corrosion resubscribe failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+		return nil, fmt.Errorf("corrosion resubscribe: %w", err)
 	}
 
 	return &subscriptionStream{ID: id, Body: resp.Body, Decoder: json.NewDecoder(resp.Body)}, nil

@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"ployz/internal/check"
 	"ployz/internal/mesh"
 )
 
@@ -31,6 +32,7 @@ type FreshnessTracker struct {
 }
 
 func NewFreshnessTracker(selfID string, clock mesh.Clock) *FreshnessTracker {
+	check.Assert(clock != nil, "NewFreshnessTracker: clock must not be nil")
 	return &FreshnessTracker{
 		peers:    make(map[string]peerState),
 		selfID:   selfID,

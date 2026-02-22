@@ -16,6 +16,7 @@ test:
 
 lint:
     go vet ./...
+    golangci-lint run ./...
 
 tidy:
     go mod tidy

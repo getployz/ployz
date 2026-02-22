@@ -12,23 +12,17 @@ import (
 )
 
 func (c *Controller) Start(ctx context.Context, in Config) (Config, error) {
-	if c.platformOps == nil {
-		return Config{}, errors.New("controller start requires platform ops")
-	}
 	out, err := c.startRuntime(ctx, in)
 	if err != nil {
 		return Config{}, err
 	}
 	if err := c.platformOps.AfterStart(ctx, out); err != nil {
-		slog.Warn("after-start hook failed", "network", out.Network, "err", err)
+		return Config{}, fmt.Errorf("after-start hook: %w", err)
 	}
 	return out, nil
 }
 
 func (c *Controller) Stop(ctx context.Context, in Config, purge bool) (Config, error) {
-	if c.platformOps == nil {
-		return Config{}, errors.New("controller stop requires platform ops")
-	}
 	return c.stopRuntime(ctx, in, purge)
 }
 
@@ -56,14 +50,11 @@ func (c *Controller) startRuntime(ctx context.Context, in Config) (Config, error
 	if cfg.NetworkCIDR.IsValid() && state.CIDR != "" && state.CIDR != cfg.NetworkCIDR.String() {
 		return Config{}, fmt.Errorf("network %q already initialized with cidr %s", cfg.Network, state.CIDR)
 	}
-	if cfg.AdvertiseEP != "" && cfg.AdvertiseEP != state.Advertise {
-		state.Advertise = cfg.AdvertiseEP
+	if cfg.AdvertiseEndpoint != "" && cfg.AdvertiseEndpoint != state.Advertise {
+		state.Advertise = cfg.AdvertiseEndpoint
 	}
 	if cfg.WGPort != 0 && state.WGPort != cfg.WGPort {
 		state.WGPort = cfg.WGPort
-	}
-	if len(cfg.CorrosionBootstrap) > 0 {
-		state.Bootstrap = append([]string(nil), cfg.CorrosionBootstrap...)
 	}
 	if cfg.NetworkCIDR.IsValid() {
 		state.CIDR = cfg.NetworkCIDR.String()
@@ -106,13 +97,13 @@ func (c *Controller) startRuntime(ctx context.Context, in Config) (Config, error
 	log.Debug("wireguard configured", "iface", state.WGInterface)
 	corrosionCfg := CorrosionConfig{
 		Name:         cfg.CorrosionName,
-		Image:        cfg.CorrosionImg,
+		Image:        cfg.CorrosionImage,
 		Dir:          cfg.CorrosionDir,
 		ConfigPath:   cfg.CorrosionConfig,
 		DataDir:      cfg.CorrosionDir,
 		AdminSock:    cfg.CorrosionAdminSock,
 		Bootstrap:    cfg.CorrosionBootstrap,
-		GossipAddr:   cfg.CorrosionGossipAP,
+		GossipAddr:   cfg.CorrosionGossipAddrPort,
 		MemberID:     cfg.CorrosionMemberID,
 		APIAddr:      cfg.CorrosionAPIAddr,
 		APIToken:     cfg.CorrosionAPIToken,

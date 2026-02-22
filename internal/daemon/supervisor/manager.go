@@ -10,78 +10,95 @@ import (
 	"path/filepath"
 	"strings"
 
+	"ployz/internal/check"
+
 	"ployz/internal/adapter/corrosion"
 	"ployz/internal/adapter/platform"
 	"ployz/internal/adapter/sqlite"
-	pb "ployz/internal/daemon/pb"
 	"ployz/internal/engine"
 	netctrl "ployz/internal/mesh"
 	"ployz/internal/reconcile"
+	"ployz/pkg/sdk/client"
 	"ployz/pkg/sdk/defaults"
+	"ployz/pkg/sdk/types"
 )
+
+// Compile-time check: Manager implements client.API.
+var _ client.API = (*Manager)(nil)
 
 type Manager struct {
 	ctx        context.Context
 	dataRoot   string
-	store      *sqlite.Store
+	store      SpecStore
 	stateStore netctrl.StateStore
 	ctrl       *netctrl.Controller
 	engine     *engine.Engine
 }
 
-func New(ctx context.Context, dataRoot string) (*Manager, error) {
+type managerCfg struct {
+	specStore  SpecStore
+	stateStore netctrl.StateStore
+	ctrl       *netctrl.Controller
+	eng        *engine.Engine
+}
+
+// ManagerOption configures a Manager.
+type ManagerOption func(*managerCfg)
+
+// WithSpecStore injects a SpecStore (default: sqlite).
+func WithSpecStore(s SpecStore) ManagerOption {
+	return func(c *managerCfg) { c.specStore = s }
+}
+
+// WithManagerStateStore injects a mesh.StateStore (default: sqlite).
+func WithManagerStateStore(s netctrl.StateStore) ManagerOption {
+	return func(c *managerCfg) { c.stateStore = s }
+}
+
+// WithManagerController injects a pre-built Controller.
+func WithManagerController(ctrl *netctrl.Controller) ManagerOption {
+	return func(c *managerCfg) { c.ctrl = ctrl }
+}
+
+// WithManagerEngine injects a pre-built Engine.
+func WithManagerEngine(e *engine.Engine) ManagerOption {
+	return func(c *managerCfg) { c.eng = e }
+}
+
+func New(ctx context.Context, dataRoot string, opts ...ManagerOption) (*Manager, error) {
 	log := slog.With("component", "supervisor")
 	if strings.TrimSpace(dataRoot) == "" {
 		dataRoot = defaults.DataRoot()
 	}
-	log.Debug("initializing", "data_root", dataRoot)
-	if err := defaults.EnsureDataRoot(dataRoot); err != nil {
-		return nil, err
-	}
-	statePath := filepath.Join(dataRoot, "daemon.db")
-	store, err := sqlite.Open(statePath)
-	if err != nil {
-		return nil, err
-	}
-	registryFactory := netctrl.RegistryFactory(func(addr netip.AddrPort, token string) netctrl.Registry {
-		return corrosion.NewStore(addr, token)
-	})
-	netStateStore := sqlite.NetworkStateStore{}
-	ctrl, err := platform.NewController(netctrl.WithRegistryFactory(registryFactory))
-	if err != nil {
-		_ = store.Close()
-		return nil, err
+
+	var cfg managerCfg
+	for _, o := range opts {
+		o(&cfg)
 	}
 
-	eng := engine.New(ctx,
-		engine.WithControllerFactory(func() (engine.NetworkController, error) {
-			return platform.NewController(netctrl.WithRegistryFactory(registryFactory))
-		}),
-		engine.WithPeerReconcilerFactory(func() (reconcile.PeerReconciler, error) {
-			return platform.NewController(netctrl.WithRegistryFactory(registryFactory))
-		}),
-		engine.WithRegistryFactory(func(addr netip.AddrPort, token string) reconcile.Registry {
-			return corrosion.NewStore(addr, token)
-		}),
-		engine.WithStateStore(netStateStore),
-	)
+	// When all deps are injected, skip platform setup entirely.
+	if cfg.specStore == nil || cfg.stateStore == nil || cfg.ctrl == nil || cfg.eng == nil {
+		if err := initPlatformDefaults(ctx, dataRoot, &cfg); err != nil {
+			return nil, err
+		}
+	}
+
+	check.Assert(cfg.specStore != nil, "specStore must be set after init")
+	check.Assert(cfg.stateStore != nil, "stateStore must be set after init")
+	check.Assert(cfg.ctrl != nil, "ctrl must be set after init")
+	check.Assert(cfg.eng != nil, "eng must be set after init")
 
 	m := &Manager{
 		ctx:        ctx,
 		dataRoot:   dataRoot,
-		store:      store,
-		stateStore: netStateStore,
-		ctrl:       ctrl,
-		engine:     eng,
-	}
-	if err := startPlatformServices(ctx); err != nil {
-		_ = m.ctrl.Close()
-		_ = m.store.Close()
-		return nil, err
+		store:      cfg.specStore,
+		stateStore: cfg.stateStore,
+		ctrl:       cfg.ctrl,
+		engine:     cfg.eng,
 	}
 
 	// Start workers for all enabled specs.
-	if specs, err := store.ListSpecs(); err == nil {
+	if specs, err := m.store.ListSpecs(); err == nil {
 		for _, item := range specs {
 			if !item.Enabled {
 				continue
@@ -95,25 +112,79 @@ func New(ctx context.Context, dataRoot string) (*Manager, error) {
 				item.Spec.DataRoot = dataRoot
 			}
 			log.Info("restoring enabled network", "network", network)
-			_ = eng.StartNetwork(ctx, item.Spec)
+			if startErr := m.engine.StartNetwork(ctx, item.Spec); startErr != nil {
+				log.Warn("failed to restore network worker", "network", network, "err", startErr)
+			}
 		}
 	}
 
 	go func() {
 		<-ctx.Done()
 		log.Info("stopping")
-		eng.StopAll()
-		_ = m.ctrl.Close()
-		_ = m.store.Close()
+		m.engine.StopAll()
+		_ = m.ctrl.Close()  // best-effort cleanup
+		_ = m.store.Close() // best-effort cleanup
 	}()
 
 	return m, nil
 }
 
-func (m *Manager) ApplyNetworkSpec(ctx context.Context, spec *pb.NetworkSpec) (*pb.ApplyResult, error) {
-	m.normalizeSpec(spec)
+// initPlatformDefaults fills any nil fields on cfg with real platform
+// implementations backed by SQLite, Corrosion, and the platform controller.
+func initPlatformDefaults(ctx context.Context, dataRoot string, cfg *managerCfg) error {
+	log := slog.With("component", "supervisor")
+	log.Debug("initializing", "data_root", dataRoot)
+
+	if err := defaults.EnsureDataRoot(dataRoot); err != nil {
+		return err
+	}
+
+	statePath := filepath.Join(dataRoot, "daemon.db")
+	sqlStore, err := sqlite.Open(statePath)
+	if err != nil {
+		return err
+	}
+	cfg.specStore = &sqliteSpecStore{s: sqlStore}
+
+	registryFactory := netctrl.RegistryFactory(func(addr netip.AddrPort, token string) netctrl.Registry {
+		return corrosion.NewStore(addr, token)
+	})
+	netStateStore := sqlite.NetworkStateStore{}
+	cfg.stateStore = netStateStore
+
+	ctrl, err := platform.NewController(netctrl.WithRegistryFactory(registryFactory))
+	if err != nil {
+		_ = cfg.specStore.Close() // best-effort cleanup
+		return err
+	}
+	cfg.ctrl = ctrl
+
+	cfg.eng = engine.New(ctx,
+		engine.WithControllerFactory(func() (engine.NetworkController, error) {
+			return platform.NewController(netctrl.WithRegistryFactory(registryFactory))
+		}),
+		engine.WithPeerReconcilerFactory(func() (reconcile.PeerReconciler, error) {
+			return platform.NewController(netctrl.WithRegistryFactory(registryFactory))
+		}),
+		engine.WithRegistryFactory(func(addr netip.AddrPort, token string) reconcile.Registry {
+			return corrosion.NewStore(addr, token)
+		}),
+		engine.WithStateStore(netStateStore),
+	)
+
+	if err := startPlatformServices(ctx); err != nil {
+		_ = ctrl.Close()          // best-effort cleanup
+		_ = cfg.specStore.Close() // best-effort cleanup
+		return err
+	}
+
+	return nil
+}
+
+func (m *Manager) ApplyNetworkSpec(ctx context.Context, spec types.NetworkSpec) (types.ApplyResult, error) {
+	m.normalizeSpec(&spec)
 	if spec.Network == "" {
-		return nil, fmt.Errorf("network is required")
+		return types.ApplyResult{}, fmt.Errorf("network is required")
 	}
 	log := slog.With("component", "supervisor", "network", spec.Network)
 	log.Info("apply network spec requested")
@@ -121,14 +192,16 @@ func (m *Manager) ApplyNetworkSpec(ctx context.Context, spec *pb.NetworkSpec) (*
 	result, err := m.applyOnce(ctx, spec)
 	if err != nil {
 		log.Error("apply network spec failed", "err", err)
-		return nil, err
+		return types.ApplyResult{}, err
 	}
 	if err := m.store.SaveSpec(spec, true); err != nil {
-		return nil, err
+		return types.ApplyResult{}, err
 	}
 
 	// Start the convergence worker in-process.
-	_ = m.engine.StartNetwork(ctx, spec)
+	if err := m.engine.StartNetwork(m.ctx, spec); err != nil {
+		return types.ApplyResult{}, fmt.Errorf("start convergence worker: %w", err)
+	}
 
 	running, _ := m.engine.Status(spec.Network)
 	result.ConvergenceRunning = running
@@ -151,7 +224,9 @@ func (m *Manager) DisableNetwork(ctx context.Context, network string, purge bool
 	}
 
 	// Stop the convergence worker first.
-	_ = m.engine.StopNetwork(network)
+	if stopErr := m.engine.StopNetwork(network); stopErr != nil {
+		log.Warn("failed to stop convergence worker", "err", stopErr)
+	}
 
 	if _, err := m.ctrl.Stop(ctx, cfg, purge); err != nil {
 		return err
@@ -174,70 +249,64 @@ func (m *Manager) DisableNetwork(ctx context.Context, network string, purge bool
 	return nil
 }
 
-func (m *Manager) GetStatus(ctx context.Context, network string) (*pb.NetworkStatus, error) {
+func (m *Manager) GetStatus(ctx context.Context, network string) (types.NetworkStatus, error) {
 	network = defaults.NormalizeNetwork(network)
 	_, cfg, err := m.resolveConfig(network)
 	if err != nil {
-		return nil, err
+		return types.NetworkStatus{}, err
 	}
 
 	status, err := m.ctrl.Status(ctx, cfg)
 	if err != nil {
-		return nil, err
+		return types.NetworkStatus{}, err
 	}
 
 	running, _ := m.engine.Status(network)
 	health := m.engine.Health(network)
 
-	clockHealth := &pb.ClockHealth{
-		NtpOffsetMs: float64(health.NTPStatus.Offset.Milliseconds()),
-		NtpHealthy:  health.NTPStatus.Healthy,
-		NtpError:    health.NTPStatus.Error,
-	}
-
-	return &pb.NetworkStatus{
+	return types.NetworkStatus{
 		Configured:    status.Configured,
 		Running:       status.Running,
-		Wireguard:     status.WireGuard,
+		WireGuard:     status.WireGuard,
 		Corrosion:     status.Corrosion,
-		Docker:        status.DockerNet,
+		DockerNet:     status.DockerNet,
 		StatePath:     status.StatePath,
 		WorkerRunning: running,
-		ClockHealth:   clockHealth,
+		ClockHealth:   clockHealth(health.NTPStatus),
 	}, nil
 }
 
-func (m *Manager) GetIdentity(_ context.Context, network string) (*pb.Identity, error) {
+func (m *Manager) GetIdentity(_ context.Context, network string) (types.Identity, error) {
 	spec, cfg, err := m.resolveConfig(defaults.NormalizeNetwork(network))
 	if err != nil {
-		return nil, err
+		return types.Identity{}, err
 	}
 	st, err := netctrl.LoadState(m.stateStore, cfg)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("network %q is not initialized", spec.Network)
+			return types.Identity{}, fmt.Errorf("network %q: %w", spec.Network, netctrl.ErrNotInitialized)
 		}
-		return nil, err
+		return types.Identity{}, err
 	}
 
-	return &pb.Identity{
-		Id:                  st.WGPublic,
-		PublicKey:           st.WGPublic,
-		Subnet:              st.Subnet,
-		ManagementIp:        st.Management,
-		AdvertiseEndpoint:   st.Advertise,
-		NetworkCidr:         st.CIDR,
-		WgInterface:         st.WGInterface,
-		WgPort:              int32(st.WGPort),
-		HelperName:          cfg.HelperName,
-		CorrosionGossipPort: int32(cfg.CorrosionGossip),
-		CorrosionMemberId:   st.CorrosionMemberID,
-		CorrosionApiToken:   st.CorrosionAPIToken,
-		Running:             st.Running,
+	return types.Identity{
+		ID:                st.WGPublic,
+		PublicKey:         st.WGPublic,
+		Subnet:            st.Subnet,
+		ManagementIP:      st.Management,
+		AdvertiseEndpoint: st.Advertise,
+		NetworkCIDR:       st.CIDR,
+		WGInterface:       st.WGInterface,
+		WGPort:            st.WGPort,
+		HelperName:        cfg.HelperName,
+		CorrosionGossipPort: cfg.CorrosionGossipPort,
+		CorrosionMemberID: st.CorrosionMemberID,
+		CorrosionAPIToken: st.CorrosionAPIToken,
+		Running:           st.Running,
 	}, nil
 }
 
-func (m *Manager) ListMachines(ctx context.Context, network string) ([]*pb.MachineEntry, error) {
+func (m *Manager) ListMachines(ctx context.Context, network string) ([]types.MachineEntry, error) {
 	network = defaults.NormalizeNetwork(network)
 	_, cfg, err := m.resolveConfig(network)
 	if err != nil {
@@ -251,38 +320,38 @@ func (m *Manager) ListMachines(ctx context.Context, network string) ([]*pb.Machi
 
 	health := m.engine.Health(network)
 
-	out := make([]*pb.MachineEntry, 0, len(rows))
+	out := make([]types.MachineEntry, 0, len(rows))
 	for _, row := range rows {
-		entry := &pb.MachineEntry{
-			Id:           row.ID,
+		entry := types.MachineEntry{
+			ID:           row.ID,
 			PublicKey:    row.PublicKey,
 			Subnet:       row.Subnet,
-			ManagementIp: row.Management,
+			ManagementIP: row.ManagementIP,
 			Endpoint:     row.Endpoint,
 			LastUpdated:  row.LastUpdated,
 			Version:      row.Version,
 		}
 		if ph, ok := health.Peers[row.ID]; ok {
-			entry.FreshnessMs = float64(ph.Freshness.Milliseconds())
+			entry.Freshness = ph.Freshness
 			entry.Stale = ph.Stale
-			entry.ReplicationLagMs = float64(ph.ReplicationLag.Milliseconds())
+			entry.ReplicationLag = ph.ReplicationLag
 		}
 		out = append(out, entry)
 	}
 	return out, nil
 }
 
-func (m *Manager) UpsertMachine(ctx context.Context, network string, entry *pb.MachineEntry) error {
+func (m *Manager) UpsertMachine(ctx context.Context, network string, entry types.MachineEntry) error {
 	_, cfg, err := m.resolveConfig(defaults.NormalizeNetwork(network))
 	if err != nil {
 		return err
 	}
 
 	err = m.ctrl.UpsertMachine(ctx, cfg, netctrl.Machine{
-		ID:              entry.Id,
+		ID:              entry.ID,
 		PublicKey:       entry.PublicKey,
 		Subnet:          entry.Subnet,
-		Management:      entry.ManagementIp,
+		ManagementIP:    entry.ManagementIP,
 		Endpoint:        entry.Endpoint,
 		ExpectedVersion: entry.ExpectedVersion,
 	})
@@ -310,7 +379,9 @@ func (m *Manager) TriggerReconcile(ctx context.Context, network string) error {
 	log.Debug("trigger reconcile requested")
 
 	// Stop and restart the worker — forces a fresh reconciliation.
-	_ = m.engine.StopNetwork(network)
+	if stopErr := m.engine.StopNetwork(network); stopErr != nil {
+		log.Warn("failed to stop worker before reconcile", "err", stopErr)
+	}
 
 	spec, cfg, err := m.resolveConfig(network)
 	if err != nil {
@@ -324,65 +395,49 @@ func (m *Manager) TriggerReconcile(ctx context.Context, network string) error {
 	}
 
 	// Restart convergence worker.
-	_ = m.engine.StartNetwork(ctx, &pb.NetworkSpec{
-		Network:           spec.Network,
-		DataRoot:          spec.DataRoot,
-		NetworkCidr:       spec.NetworkCidr,
-		Subnet:            spec.Subnet,
-		ManagementIp:      spec.ManagementIp,
-		AdvertiseEndpoint: spec.AdvertiseEndpoint,
-		WgPort:            spec.WgPort,
-		Bootstrap:         spec.Bootstrap,
-		HelperImage:       spec.HelperImage,
-		CorrosionMemberId: spec.CorrosionMemberId,
-		CorrosionApiToken: spec.CorrosionApiToken,
-	})
+	if startErr := m.engine.StartNetwork(m.ctx, spec); startErr != nil {
+		log.Warn("failed to restart convergence worker", "err", startErr)
+	}
 	log.Debug("worker restart requested")
 
 	return nil
 }
 
-func (m *Manager) GetPeerHealth(ctx context.Context, network string) (*pb.GetPeerHealthResponse, error) {
+func (m *Manager) GetPeerHealth(ctx context.Context, network string) ([]types.PeerHealthResponse, error) {
 	network = defaults.NormalizeNetwork(network)
 	health := m.engine.Health(network)
 
 	// Determine self ID.
 	selfID := ""
 	if identity, err := m.GetIdentity(ctx, network); err == nil {
-		selfID = identity.Id
+		selfID = identity.ID
 	}
 
-	peers := make([]*pb.PeerLag, 0, len(health.Peers))
+	peers := make([]types.PeerLag, 0, len(health.Peers))
 	for nodeID, ph := range health.Peers {
-		pingMs := float64(ph.PingRTT.Milliseconds())
-		if ph.PingRTT < 0 {
-			pingMs = -1
-		} else if ph.PingRTT > 0 {
-			// Sub-millisecond precision.
-			pingMs = float64(ph.PingRTT.Microseconds()) / 1000.0
-		}
-		peers = append(peers, &pb.PeerLag{
-			NodeId:           nodeID,
-			FreshnessMs:      float64(ph.Freshness.Milliseconds()),
-			Stale:            ph.Stale,
-			ReplicationLagMs: float64(ph.ReplicationLag.Milliseconds()),
-			PingMs:           pingMs,
+		peers = append(peers, types.PeerLag{
+			NodeID:         nodeID,
+			Freshness:      ph.Freshness,
+			Stale:          ph.Stale,
+			ReplicationLag: ph.ReplicationLag,
+			PingRTT:        ph.PingRTT,
 		})
 	}
 
-	return &pb.GetPeerHealthResponse{
-		Messages: []*pb.PeerHealthReply{
-			{
-				NodeId: selfID,
-				Ntp: &pb.ClockHealth{
-					NtpOffsetMs: float64(health.NTPStatus.Offset.Milliseconds()),
-					NtpHealthy:  health.NTPStatus.Healthy,
-					NtpError:    health.NTPStatus.Error,
-				},
-				Peers: peers,
-			},
+	return []types.PeerHealthResponse{
+		{
+			NodeID: selfID,
+			NTP:    clockHealth(health.NTPStatus),
+			Peers:  peers,
 		},
 	}, nil
+}
+
+// MachineAddr holds minimal machine info for proxy routing.
+type MachineAddr struct {
+	ID           string
+	ManagementIP string
+	OverlayIP    string
 }
 
 // ListMachineAddrs returns machine info for proxy routing.
@@ -400,130 +455,124 @@ func (m *Manager) ListMachineAddrs(ctx context.Context, network string) ([]Machi
 
 	out := make([]MachineAddr, 0, len(rows))
 	for _, row := range rows {
-		if row.Management == "" {
+		if row.ManagementIP == "" {
 			continue
 		}
 		addr := MachineAddr{
 			ID:           row.ID,
-			ManagementIP: row.Management,
+			ManagementIP: row.ManagementIP,
 		}
-		// Derive the machine's overlay IPv4 from its subnet (first host IP).
 		if prefix, err := netip.ParsePrefix(row.Subnet); err == nil {
-			addr.OverlayIP = prefix.Masked().Addr().Next().String()
+			addr.OverlayIP = netctrl.MachineIP(prefix).String()
 		}
 		out = append(out, addr)
 	}
 	return out, nil
 }
 
-// MachineAddr holds minimal machine info for proxy routing.
-type MachineAddr struct {
-	ID           string
-	ManagementIP string
-	OverlayIP    string
-}
-
-func (m *Manager) normalizeSpec(spec *pb.NetworkSpec) {
+func (m *Manager) normalizeSpec(spec *types.NetworkSpec) {
 	spec.Network = defaults.NormalizeNetwork(spec.Network)
 	if spec.DataRoot == "" {
 		spec.DataRoot = m.dataRoot
 	}
 }
 
-func (m *Manager) resolveSpec(network string) (*pb.NetworkSpec, error) {
+func (m *Manager) resolveSpec(network string) (types.NetworkSpec, error) {
 	if network == "" {
-		return nil, fmt.Errorf("network is required")
+		return types.NetworkSpec{}, fmt.Errorf("network is required")
 	}
 	persisted, ok, err := m.store.GetSpec(network)
 	if err != nil {
-		return nil, err
+		return types.NetworkSpec{}, err
 	}
 	if ok {
-		m.normalizeSpec(persisted.Spec)
+		m.normalizeSpec(&persisted.Spec)
 		return persisted.Spec, nil
 	}
-	spec := &pb.NetworkSpec{Network: network}
-	m.normalizeSpec(spec)
+	spec := types.NetworkSpec{Network: network}
+	m.normalizeSpec(&spec)
 	return spec, nil
 }
 
-func (m *Manager) resolveConfig(network string) (*pb.NetworkSpec, netctrl.Config, error) {
+func (m *Manager) resolveConfig(network string) (types.NetworkSpec, netctrl.Config, error) {
 	spec, err := m.resolveSpec(network)
 	if err != nil {
-		return nil, netctrl.Config{}, err
+		return types.NetworkSpec{}, netctrl.Config{}, err
 	}
-	cfg, err := configFromSpec(spec)
+	cfg, err := netctrl.ConfigFromSpec(spec)
 	if err != nil {
-		return nil, netctrl.Config{}, err
+		return types.NetworkSpec{}, netctrl.Config{}, err
 	}
 	return spec, cfg, nil
 }
 
-func (m *Manager) applyOnce(ctx context.Context, spec *pb.NetworkSpec) (*pb.ApplyResult, error) {
-	cfg, err := configFromSpec(spec)
+func (m *Manager) applyOnce(ctx context.Context, spec types.NetworkSpec) (types.ApplyResult, error) {
+	cfg, err := netctrl.ConfigFromSpec(spec)
 	if err != nil {
-		return nil, err
+		return types.ApplyResult{}, err
 	}
 
 	out, err := m.ctrl.Start(ctx, cfg)
 	if err != nil {
-		return nil, err
+		return types.ApplyResult{}, err
 	}
 
-	return &pb.ApplyResult{
-		Network:             out.Network,
-		NetworkCidr:         out.NetworkCIDR.String(),
-		Subnet:              out.Subnet.String(),
-		ManagementIp:        out.Management.String(),
-		WgInterface:         out.WGInterface,
-		WgPort:              int32(out.WGPort),
-		AdvertiseEndpoint:   out.AdvertiseEP,
-		CorrosionName:       out.CorrosionName,
-		CorrosionApiAddr:    out.CorrosionAPIAddr.String(),
-		CorrosionGossipAddr: out.CorrosionGossipAP.String(),
-		DockerNetwork:       out.DockerNetwork,
+	return types.ApplyResult{
+		Network:           out.Network,
+		NetworkCIDR:       out.NetworkCIDR.String(),
+		Subnet:            out.Subnet.String(),
+		ManagementIP:      out.Management.String(),
+		WGInterface:       out.WGInterface,
+		WGPort:            out.WGPort,
+		AdvertiseEndpoint: out.AdvertiseEndpoint,
+		CorrosionName:     out.CorrosionName,
+		CorrosionAPIAddr:  out.CorrosionAPIAddr.String(),
+		CorrosionGossipAddrPort: out.CorrosionGossipAddrPort.String(),
+		DockerNetwork:     out.DockerNetwork,
 	}, nil
 }
 
-func configFromSpec(spec *pb.NetworkSpec) (netctrl.Config, error) {
-	cfg := netctrl.Config{
-		Network:           defaults.NormalizeNetwork(spec.Network),
-		DataRoot:          strings.TrimSpace(spec.DataRoot),
-		AdvertiseEP:       strings.TrimSpace(spec.AdvertiseEndpoint),
-		WGPort:            int(spec.WgPort),
-		CorrosionMemberID: spec.CorrosionMemberId,
-		CorrosionAPIToken: strings.TrimSpace(spec.CorrosionApiToken),
-		HelperImage:       strings.TrimSpace(spec.HelperImage),
+func clockHealth(ntp reconcile.NTPStatus) types.ClockHealth {
+	return types.ClockHealth{
+		NTPOffsetMs: float64(ntp.Offset.Milliseconds()),
+		NTPHealthy:  ntp.Healthy,
+		NTPError:    ntp.Error,
 	}
-	for _, bs := range spec.Bootstrap {
-		bs = netctrl.NormalizeBootstrapAddrPort(bs)
-		if bs == "" {
-			continue
-		}
-		cfg.CorrosionBootstrap = append(cfg.CorrosionBootstrap, bs)
-	}
+}
 
-	if strings.TrimSpace(spec.NetworkCidr) != "" {
-		pfx, err := netip.ParsePrefix(strings.TrimSpace(spec.NetworkCidr))
-		if err != nil {
-			return netctrl.Config{}, fmt.Errorf("parse network cidr: %w", err)
-		}
-		cfg.NetworkCIDR = pfx
-	}
-	if strings.TrimSpace(spec.Subnet) != "" {
-		pfx, err := netip.ParsePrefix(strings.TrimSpace(spec.Subnet))
-		if err != nil {
-			return netctrl.Config{}, fmt.Errorf("parse subnet: %w", err)
-		}
-		cfg.Subnet = pfx
-	}
-	if strings.TrimSpace(spec.ManagementIp) != "" {
-		addr, err := netip.ParseAddr(strings.TrimSpace(spec.ManagementIp))
-		if err != nil {
-			return netctrl.Config{}, fmt.Errorf("parse management ip: %w", err)
-		}
-		cfg.Management = addr
-	}
+// sqliteSpecStore adapts *sqlite.Store to the SpecStore interface.
+type sqliteSpecStore struct {
+	s *sqlite.Store
+}
 
-	return netctrl.NormalizeConfig(cfg)
+func (a *sqliteSpecStore) SaveSpec(spec types.NetworkSpec, enabled bool) error {
+	return a.s.SaveSpec(spec, enabled)
+}
+
+func (a *sqliteSpecStore) GetSpec(network string) (PersistedSpec, bool, error) {
+	p, ok, err := a.s.GetSpec(network)
+	if err != nil || !ok {
+		return PersistedSpec{}, ok, err
+	}
+	return PersistedSpec{Spec: p.Spec, Enabled: p.Enabled}, true, nil
+}
+
+func (a *sqliteSpecStore) ListSpecs() ([]PersistedSpec, error) {
+	items, err := a.s.ListSpecs()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PersistedSpec, len(items))
+	for i, item := range items {
+		out[i] = PersistedSpec{Spec: item.Spec, Enabled: item.Enabled}
+	}
+	return out, nil
+}
+
+func (a *sqliteSpecStore) DeleteSpec(network string) error {
+	return a.s.DeleteSpec(network)
+}
+
+func (a *sqliteSpecStore) Close() error {
+	return a.s.Close()
 }

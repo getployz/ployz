@@ -51,6 +51,7 @@ internal/adapter/     all external system integrations:
   adapter/sqlite/       local state persistence (load/save)
   adapter/platform/     platform runtime ops (darwin/linux/stub)
   adapter/fake/         shared fake adapters for chaos/integration testing
+internal/check/       build-tagged assertions (debug panics, release no-ops)
 internal/daemon/      daemon internals (server, supervisor, proxy, protobuf)
 internal/remote/      SSH + remote install scripts
 internal/logging/     slog configuration
@@ -86,6 +87,14 @@ Tests inject fakes for any of these interfaces via `With*` options.
 ### Bridge layer pattern
 
 Core packages define interfaces with their own types (`mesh.ContainerInfo`, `mesh.Mount`, etc.). Adapter packages define their own matching types (`docker.ContainerInfo`, `docker.Mount`). Build-tagged bridge files in `mesh/` (e.g. `docker_runtime.go`) contain thin wrappers that convert between the two, avoiding import cycles.
+
+## Go! Tiger Style
+
+This codebase follows [Go! Tiger Style](https://predixus.com) — a Go-specific adaptation of TigerBeetle's engineering discipline. The full audit checklist lives in `.claude/skills/tiger-audit/SKILL.md`. The principles below are integrated into the relevant sections of this document.
+
+The three priorities, in order: **Safety, Performance, Developer Experience**.
+
+Zero technical debt: solve problems right the first time. Don't allow potential issues to slip into production. Simplicity requires hard work and discipline — it's achieved through iteration, not first attempts.
 
 ## Core Rules
 
@@ -172,12 +181,88 @@ Core packages must not call `time.Now()` or `time.Sleep()` directly. Accept time
 
 Every change must pass `just test` and `just build` before merge. No exceptions. If a test is flaky, fix or delete it — never skip it.
 
+### 11. Build-tagged assertions for programmer errors
+
+Use `internal/check.Assert()` for preconditions, postconditions, and invariants that indicate **programmer errors** (wiring bugs, impossible states). These use build tags: panics under `//go:build debug`, no-ops in release.
+
+Assertions are not a replacement for error handling. Errors handle runtime failures (bad input, network down). Assertions catch bugs that should never reach production.
+
+```go
+// Precondition: constructor wiring bug
+func NewWorker(reg Registry, rec PeerReconciler) *Worker {
+    check.Assert(reg != nil, "NewWorker: registry must not be nil")
+    check.Assert(rec != nil, "NewWorker: reconciler must not be nil")
+    return &Worker{Registry: reg, PeerReconciler: rec}
+}
+
+// Postcondition: derived value must be valid
+ip, err := ManagementIPFromPublicKey(key)
+if err != nil { return err }
+check.Assert(ip.IsValid() && ip.Is6(), "management IP must be valid IPv6")
+
+// Invariant: exhaustive switch
+switch change.Kind {
+case mesh.ChangeAdded: ...
+case mesh.ChangeUpdated: ...
+case mesh.ChangeDeleted: ...
+default:
+    check.Assert(false, "unknown change kind: "+string(change.Kind))
+}
+```
+
+Where to assert:
+- Constructor functions after options applied — all required deps non-nil
+- Public method entry — preconditions that would cause nil derefs downstream
+- After derivation — postconditions on computed values (valid IP, non-empty key)
+- Switch on typed constants — default case asserts exhaustiveness
+- Port casts — `0 < port && port <= 65535` before narrowing to uint16
+
+### 12. Explicit capacity in `make()`
+
+When allocating slices, maps, or channels, be explicit about capacity when the size is known or bounded.
+
+```go
+// Good: final size known from input
+peers := make([]Peer, 0, len(rows))
+
+// Good: approximate size known
+users := make(map[string]User, expectedCount)
+
+// Good: channel buffer as named constant
+const subscriptionBufCap = 128
+ch := make(chan MachineChange, subscriptionBufCap)
+
+// Fine: size genuinely unknown, document why
+var results []Result // unbounded: depends on external query
+```
+
+Don't pick arbitrary numbers when the size is genuinely unknown — that's worse than letting Go's growth strategy handle it.
+
+### 13. Bounds on everything
+
+All loops and queues must have fixed upper bounds. Reality has limits.
+
+- Retry loops need max attempts. If a sibling function has `attempts < 3`, the retry loop next to it shouldn't be unbounded.
+- `io.ReadAll` on untrusted input needs `io.LimitReader`.
+- Maps and slices used as caches or trackers need eviction or a cap.
+- `for {}` event loops are acceptable — they terminate via context cancellation. Document this explicitly if it isn't obvious.
+
 ## Style and Conventions
 
 ### Formatting
 
 - Standard `gofmt` formatting. Keep `go vet` clean.
 - Avoid style-only churn in unrelated lines.
+
+### Function Length & Control Flow
+
+Function length is a correlated smell, not the disease. The disease is deep nesting, multiple responsibilities, intertwined state, and difficulty reasoning about what happens when.
+
+A 120-line function that reads like a script — sequential steps, shallow nesting, state flowing top to bottom — is fine. Don't split it into 6 helpers called exactly once just to hit a line count. That scatters a linear process and increases cognitive load.
+
+A 60-line function with 4 levels of nesting, a switch inside a for inside a select, and 8 intermediate variables mutating through branches — that needs breaking up regardless of length.
+
+The reasons to extract a helper: it isolates state, it names a domain concept (better than a comment), or it's independently testable. "It's too long" by itself is not a reason.
 
 ### Imports
 
@@ -187,12 +272,16 @@ Three groups in order: stdlib, third-party, local (`ployz/...`).
 
 - Exported: `PascalCase`. Unexported: `camelCase`. Packages: short, lowercase, no underscores.
 - Keep initialisms consistent: `API`, `CIDR`, `DNS`, `IP`, `WG`.
+- Name every magic number. Durations, buffer sizes, port numbers, retry counts — all get named constants. Same literal repeated in multiple locations must be defined once as `const`.
+- Use consistent names across packages for the same concept. Don't call it `Management` in one package and `ManagementIP` in another.
 
 ### Error Handling
 
-- Return errors, don't panic.
-- Wrap with context: `fmt.Errorf("parse endpoint: %w", err)`.
-- Use `errors.Is` / `errors.As` for sentinel/typed checks.
+- Return errors, don't panic. Panics are for programmer bugs caught by assertions (see rule 11), not runtime failures.
+- Wrap with context at package boundaries: `fmt.Errorf("parse endpoint: %w", err)`. Don't wrap mechanically at every level — that creates stutter.
+- Use `errors.Is` / `errors.As` for sentinel/typed checks. Never classify errors by string matching (`strings.Contains(err.Error(), ...)`).
+- Never silently discard errors with `_ = expr`. Either handle it, log it, or add a comment explaining why it's safe to ignore.
+- All errors must be handled explicitly. Silent fallbacks (defaulting when an operation fails without diagnostic) are bugs.
 
 ### Context and Concurrency
 
@@ -221,3 +310,16 @@ Three groups in order: stdlib, third-party, local (`ployz/...`).
 - **Shared fake adapters** (`adapter/fake/`) for multi-test or cross-package use: `fake.Clock`, `fake.StateStore`, `fake.ContainerRuntime`, `fake.Cluster`, `fake.Registry`, etc. All fakes embed `CallRecorder` for call assertion, support per-method error injection, and are thread-safe.
 - `fake.Cluster` simulates a Corrosion gossip cluster with per-node state, configurable topology (latency, partitions, drop rates), and deterministic replication via `Tick()`/`Drain()`.
 - Run single tests with: `go test ./path/to/pkg -run '^TestName$' -count=1 -v`
+- Run tests with assertions enabled: `go test -tags debug ./...`
+
+### Property-Based Testing (Fuzz)
+
+Pure functions that parse, normalize, or derive values are candidates for Go's native fuzzer (`testing.F`). Property-based testing complements table-driven tests — tables verify specific points, fuzz tests verify properties across the input space.
+
+Key properties to test:
+- **Idempotency**: `Normalize(Normalize(x)) == Normalize(x)`
+- **Inverse operations**: encode/decode, serialize/deserialize round-trip to identity
+- **Invariants**: result always within expected bounds (valid IP, prefix within CIDR, interface name <= 15 chars)
+- **Determinism**: same input always produces same output
+
+Assertions (rule 11) are a force multiplier for fuzzing — they catch invariant violations the fuzzer wouldn't know to check for.

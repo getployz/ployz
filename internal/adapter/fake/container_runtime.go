@@ -30,6 +30,10 @@ type ContainerRuntime struct {
 	networks   map[string]*networkState
 	images     map[string]bool
 
+	// LogsOutput is returned by ContainerLogs when non-empty,
+	// allowing tests to inject canned log output.
+	LogsOutput string
+
 	WaitReadyErr      func(ctx context.Context) error
 	ContainerInspectErr func(ctx context.Context, name string) error
 	ContainerStartErr func(ctx context.Context, name string) error
@@ -149,8 +153,9 @@ func (r *ContainerRuntime) ContainerLogs(ctx context.Context, name string, lines
 			return "", err
 		}
 	}
-	// TODO: ContainerLogs canned output support
-	return "", nil
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.LogsOutput, nil
 }
 
 func (r *ContainerRuntime) ContainerCreate(ctx context.Context, cfg mesh.ContainerCreateConfig) error {

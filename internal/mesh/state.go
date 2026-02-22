@@ -31,7 +31,7 @@ type State struct {
 
 	DockerNetwork     string   `json:"docker_network"`
 	CorrosionName     string   `json:"corrosion_name"`
-	CorrosionImg      string   `json:"corrosion_img"`
+	CorrosionImage    string   `json:"corrosion_img"`
 	CorrosionMemberID uint64   `json:"corrosion_member_id"`
 	CorrosionAPIToken string   `json:"corrosion_api_token,omitempty"`
 	Bootstrap         []string `json:"corrosion_bootstrap,omitempty"`
@@ -74,14 +74,14 @@ func ensureState(store StateStore, cfg Config) (*State, bool, error) {
 		CIDR:              cfg.NetworkCIDR.String(),
 		Subnet:            cfg.Subnet.String(),
 		Management:        cfg.Management.String(),
-		Advertise:         cfg.AdvertiseEP,
+		Advertise:         cfg.AdvertiseEndpoint,
 		WGInterface:       cfg.WGInterface,
 		WGPort:            cfg.WGPort,
 		WGPrivate:         priv.String(),
 		WGPublic:          priv.PublicKey().String(),
 		DockerNetwork:     cfg.DockerNetwork,
 		CorrosionName:     cfg.CorrosionName,
-		CorrosionImg:      cfg.CorrosionImg,
+		CorrosionImage:    cfg.CorrosionImage,
 		CorrosionMemberID: memberID,
 		CorrosionAPIToken: apiToken,
 		Bootstrap:         cfg.CorrosionBootstrap,
@@ -135,23 +135,12 @@ func generateCorrosionMemberID() (uint64, error) {
 	return v, nil
 }
 
+const corrosionAPITokenLengthBytes = 32 // 32 bytes → 64 hex chars, sufficient entropy for cluster auth
+
 func generateCorrosionAPIToken() (string, error) {
-	raw := make([]byte, 32)
+	raw := make([]byte, corrosionAPITokenLengthBytes)
 	if _, err := rand.Read(raw); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(raw), nil
-}
-
-func ensureHostKeys(s *State) error {
-	if s.HostWGPrivate != "" {
-		return nil
-	}
-	priv, err := wgtypes.GeneratePrivateKey()
-	if err != nil {
-		return fmt.Errorf("generate host wireguard key: %w", err)
-	}
-	s.HostWGPrivate = priv.String()
-	s.HostWGPublic = priv.PublicKey().String()
-	return nil
 }

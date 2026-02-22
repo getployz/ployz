@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/netip"
 
+	"ployz/internal/check"
 	"ployz/internal/mesh"
 	"ployz/internal/reconcile"
 )
@@ -36,6 +37,8 @@ type Registry struct {
 
 // NewRegistry creates a Registry for the given node in the cluster.
 func NewRegistry(cluster *Cluster, nodeID string) *Registry {
+	check.Assert(cluster != nil, "NewRegistry: cluster must not be nil")
+	check.Assert(nodeID != "", "NewRegistry: nodeID must not be empty")
 	return &Registry{cluster: cluster, nodeID: nodeID}
 }
 
@@ -86,8 +89,7 @@ func (r *Registry) UpsertMachine(ctx context.Context, row mesh.MachineRow, expec
 			return err
 		}
 	}
-	row.Version = expectedVersion + 1
-	return r.cluster.upsertMachine(r.nodeID, row)
+	return r.cluster.upsertMachine(r.nodeID, row, expectedVersion)
 }
 
 func (r *Registry) DeleteByEndpointExceptID(ctx context.Context, endpoint string, id string) error {

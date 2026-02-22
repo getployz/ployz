@@ -6,6 +6,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"ployz/internal/check"
 )
 
 const pingDialTimeout = 3 * time.Second
@@ -29,6 +31,8 @@ func NewPingTracker() *PingTracker {
 // Run measures TCP connect time to all peers every interval.
 // resolveAddrs is called each cycle and returns nodeID → "host:port".
 func (pt *PingTracker) Run(ctx context.Context, selfID string, interval time.Duration, resolveAddrs func() map[string]string) {
+	check.Assert(resolveAddrs != nil, "PingTracker.Run: resolveAddrs must not be nil")
+	check.Assert(interval > 0, "PingTracker.Run: interval must be positive")
 	log := slog.With("component", "ping-tracker")
 	log.Debug("starting", "interval", interval)
 

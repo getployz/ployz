@@ -10,8 +10,10 @@ import (
 )
 
 const (
-	defaultCorrosionImg = "ghcr.io/psviderski/corrosion@sha256:66f5ff30bf2d35d134973dab501380c6cf4c81134205fcf3b3528a605541aafd"
-	defaultWireGuardMTU = 1280
+	defaultCorrosionImage = "ghcr.io/psviderski/corrosion@sha256:66f5ff30bf2d35d134973dab501380c6cf4c81134205fcf3b3528a605541aafd"
+	// defaultWireGuardMTU is 1280: safe minimum that avoids fragmentation across all tunnel encapsulations.
+	defaultWireGuardMTU    = 1280
+	maxInterfaceNameLength = 15 // Linux kernel IFNAMSIZ limit
 )
 
 var (
@@ -20,44 +22,44 @@ var (
 )
 
 type Config struct {
-	Network     string
-	DataRoot    string
-	DataDir     string
-	NetworkCIDR netip.Prefix
-	Subnet      netip.Prefix
-	Management  netip.Addr
-	AdvertiseEP string
-	WGInterface string
-	WGPort      int
+	Network           string
+	DataRoot          string
+	DataDir           string
+	NetworkCIDR       netip.Prefix
+	Subnet            netip.Prefix
+	Management        netip.Addr
+	AdvertiseEndpoint string
+	WGInterface       string
+	WGPort            int
 
-	DockerNetwork string
-	CorrosionName string
-	CorrosionImg  string
-	CorrosionUser string
-	HelperImage   string
-	HelperName    string
+	DockerNetwork  string
+	CorrosionName  string
+	CorrosionImage string
+	CorrosionUser  string
+	HelperImage    string
+	HelperName     string
 
-	CorrosionDir       string
-	CorrosionConfig    string
-	CorrosionSchema    string
-	CorrosionAdminSock string
-	CorrosionAPIPort   int
-	CorrosionGossip    int
-	CorrosionMemberID  uint64
-	CorrosionAPIToken  string
-	CorrosionBootstrap []string
-	CorrosionGossipIP  netip.Addr
-	CorrosionAPIAddr   netip.AddrPort
-	CorrosionGossipAP  netip.AddrPort
+	CorrosionDir            string
+	CorrosionConfig         string
+	CorrosionSchema         string
+	CorrosionAdminSock      string
+	CorrosionAPIPort        int
+	CorrosionGossipPort     int
+	CorrosionMemberID       uint64
+	CorrosionAPIToken       string
+	CorrosionBootstrap      []string
+	CorrosionGossipIP       netip.Addr
+	CorrosionAPIAddr        netip.AddrPort
+	CorrosionGossipAddrPort netip.AddrPort
 }
 
 func NormalizeConfig(cfg Config) (Config, error) {
 	if strings.TrimSpace(cfg.Network) == "" {
 		cfg.Network = "default"
 	}
-	cfg.AdvertiseEP = strings.TrimSpace(cfg.AdvertiseEP)
-	if cfg.AdvertiseEP != "" {
-		if _, err := netip.ParseAddrPort(cfg.AdvertiseEP); err != nil {
+	cfg.AdvertiseEndpoint = strings.TrimSpace(cfg.AdvertiseEndpoint)
+	if cfg.AdvertiseEndpoint != "" {
+		if _, err := netip.ParseAddrPort(cfg.AdvertiseEndpoint); err != nil {
 			return cfg, fmt.Errorf("parse advertise endpoint: %w", err)
 		}
 	}
@@ -80,8 +82,8 @@ func NormalizeConfig(cfg Config) (Config, error) {
 	if cfg.HelperName == "" {
 		cfg.HelperName = "ployz-helper-" + cfg.Network
 	}
-	if cfg.CorrosionImg == "" {
-		cfg.CorrosionImg = defaultCorrosionImg
+	if cfg.CorrosionImage == "" {
+		cfg.CorrosionImage = defaultCorrosionImage
 	}
 	cfg.CorrosionBootstrap = normalizeBootstrapAddrs(cfg.CorrosionBootstrap)
 	cfg.CorrosionAPIToken = strings.TrimSpace(cfg.CorrosionAPIToken)
@@ -94,18 +96,18 @@ func NormalizeConfig(cfg Config) (Config, error) {
 	refreshCorrosionGossipAddr(&cfg)
 
 	cfg.CorrosionAPIPort = defaults.CorrosionAPIPort(cfg.Network)
-	cfg.CorrosionGossip = defaults.CorrosionGossipPort(cfg.Network)
+	cfg.CorrosionGossipPort = defaults.CorrosionGossipPort(cfg.Network)
 	cfg.CorrosionAPIAddr = netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(cfg.CorrosionAPIPort))
-	cfg.CorrosionGossipAP = netip.AddrPortFrom(cfg.CorrosionGossipIP, uint16(cfg.CorrosionGossip))
+	cfg.CorrosionGossipAddrPort = netip.AddrPortFrom(cfg.CorrosionGossipIP, uint16(cfg.CorrosionGossipPort))
 	return cfg, nil
 }
 
 func InterfaceName(network string) string {
 	name := "plz-" + network
-	if len(name) <= 15 {
+	if len(name) <= maxInterfaceNameLength {
 		return name
 	}
-	return name[:15]
+	return name[:maxInterfaceNameLength]
 }
 
 func refreshCorrosionGossipAddr(cfg *Config) {
@@ -117,4 +119,3 @@ func refreshCorrosionGossipAddr(cfg *Config) {
 		cfg.CorrosionGossipIP = defaultCorrosionBootstrapIP
 	}
 }
-

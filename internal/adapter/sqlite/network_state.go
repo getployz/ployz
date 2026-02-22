@@ -19,32 +19,6 @@ type NetworkStateStore struct{}
 var _ mesh.StateStore = NetworkStateStore{}
 
 func (NetworkStateStore) Load(dataDir string) (*mesh.State, error) {
-	return loadNetworkState(dataDir)
-}
-
-func (NetworkStateStore) Save(dataDir string, s *mesh.State) error {
-	return saveNetworkState(dataDir, s)
-}
-
-func (NetworkStateStore) Delete(dataDir string) error {
-	return deleteNetworkState(dataDir)
-}
-
-// StatePath returns the display path for the state DB entry.
-func (NetworkStateStore) StatePath(dataDir string) string {
-	return networkStatePath(dataDir)
-}
-
-func networkStatePath(dataDir string) string {
-	dbPath := machineDBPath(dataDir)
-	net := networkFromDataDir(dataDir)
-	if net == "" {
-		return dbPath
-	}
-	return dbPath + "#" + net
-}
-
-func loadNetworkState(dataDir string) (*mesh.State, error) {
 	net := networkFromDataDir(dataDir)
 	if net == "" {
 		return nil, fmt.Errorf("resolve network name from data dir %q", dataDir)
@@ -82,12 +56,11 @@ SELECT
 FROM network_state
 WHERE network = ?`
 
-	row := db.QueryRow(query, net)
 	var s mesh.State
 	var memberID int64
 	var bootstrapJSON string
 	var running int
-	if err := row.Scan(
+	if err := db.QueryRow(query, net).Scan(
 		&s.Network,
 		&s.CIDR,
 		&s.Subnet,
@@ -101,7 +74,7 @@ WHERE network = ?`
 		&s.HostWGPublic,
 		&s.DockerNetwork,
 		&s.CorrosionName,
-		&s.CorrosionImg,
+		&s.CorrosionImage,
 		&memberID,
 		&s.CorrosionAPIToken,
 		&bootstrapJSON,
@@ -112,11 +85,11 @@ WHERE network = ?`
 		}
 		return nil, fmt.Errorf("read machine state: %w", err)
 	}
+
 	s.Running = running != 0
 	if memberID > 0 {
 		s.CorrosionMemberID = uint64(memberID)
 	}
-
 	if err := json.Unmarshal([]byte(bootstrapJSON), &s.Bootstrap); err != nil {
 		return nil, fmt.Errorf("parse state bootstrap: %w", err)
 	}
@@ -130,7 +103,7 @@ WHERE network = ?`
 	return &s, nil
 }
 
-func saveNetworkState(dataDir string, s *mesh.State) error {
+func (NetworkStateStore) Save(dataDir string, s *mesh.State) error {
 	net := networkFromDataDir(dataDir)
 	if net == "" {
 		return fmt.Errorf("resolve network name from data dir %q", dataDir)
@@ -151,11 +124,6 @@ func saveNetworkState(dataDir string, s *mesh.State) error {
 	bootstrapJSON, err := json.Marshal(s.Bootstrap)
 	if err != nil {
 		return fmt.Errorf("marshal state bootstrap: %w", err)
-	}
-
-	running := 0
-	if s.Running {
-		running = 1
 	}
 
 	const upsert = `
@@ -215,11 +183,11 @@ ON CONFLICT(network) DO UPDATE SET
 		s.HostWGPublic,
 		s.DockerNetwork,
 		s.CorrosionName,
-		s.CorrosionImg,
+		s.CorrosionImage,
 		s.CorrosionMemberID,
 		s.CorrosionAPIToken,
 		string(bootstrapJSON),
-		running,
+		boolToInt(s.Running),
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
 		return fmt.Errorf("write machine state: %w", err)
@@ -227,11 +195,12 @@ ON CONFLICT(network) DO UPDATE SET
 	return nil
 }
 
-func deleteNetworkState(dataDir string) error {
+func (NetworkStateStore) Delete(dataDir string) error {
 	net := networkFromDataDir(dataDir)
 	if net == "" {
 		return fmt.Errorf("resolve network name from data dir %q", dataDir)
 	}
+
 	db, err := openMachineDB(machineDBPath(dataDir))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -247,6 +216,16 @@ func deleteNetworkState(dataDir string) error {
 	return nil
 }
 
+// StatePath returns the display path for the state DB entry.
+func (NetworkStateStore) StatePath(dataDir string) string {
+	dbPath := machineDBPath(dataDir)
+	net := networkFromDataDir(dataDir)
+	if net == "" {
+		return dbPath
+	}
+	return dbPath + "#" + net
+}
+
 func openMachineDB(path string) (*sql.DB, error) {
 	if _, err := os.Stat(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -258,17 +237,9 @@ func openMachineDB(path string) (*sql.DB, error) {
 		}
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := openDB(path)
 	if err != nil {
 		return nil, err
-	}
-	if _, err := db.Exec(`PRAGMA journal_mode = WAL`); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("set sqlite journal mode: %w", err)
-	}
-	if _, err := db.Exec(`PRAGMA busy_timeout = 5000`); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("set sqlite busy timeout: %w", err)
 	}
 
 	const schema = `

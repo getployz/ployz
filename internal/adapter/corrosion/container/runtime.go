@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,8 +56,8 @@ func Start(ctx context.Context, cli *client.Client, cfg RuntimeConfig) error {
 		if pullErr != nil {
 			return fmt.Errorf("pull corrosion image: %w", pullErr)
 		}
-		_, _ = io.Copy(io.Discard, pull)
-		_ = pull.Close()
+		_, _ = io.Copy(io.Discard, pull) // drain pull stream to completion
+		_ = pull.Close()                 // best-effort cleanup
 		if _, err = cli.ContainerCreate(ctx, containerConfig(cfg), hostConfig(cfg), nil, nil, cfg.Name); err != nil {
 			return fmt.Errorf("create corrosion container after pull: %w", err)
 		}
@@ -89,13 +90,7 @@ func Stop(ctx context.Context, cli *client.Client, name string) error {
 }
 
 func isRemoveOK(err error) bool {
-	if err == nil {
-		return true
-	}
-	if errdefs.IsNotFound(err) {
-		return true
-	}
-	return isRemovalInProgress(err)
+	return err == nil || errdefs.IsNotFound(err) || isRemovalInProgress(err)
 }
 
 func isRemovalInProgress(err error) bool {
@@ -194,8 +189,8 @@ func waitReady(ctx context.Context, cli *client.Client, name string, apiAddr net
 			}
 
 			if resp.StatusCode != http.StatusOK {
-				data, _ := io.ReadAll(resp.Body)
-				_ = resp.Body.Close()
+				data, _ := io.ReadAll(resp.Body) // best-effort error body
+				_ = resp.Body.Close()            // best-effort cleanup
 				lastErr = fmt.Sprintf("status %d: %s", resp.StatusCode, bytes.TrimSpace(data))
 				continue
 			}
@@ -204,7 +199,7 @@ func waitReady(ctx context.Context, cli *client.Client, name string, apiAddr net
 				Error *string `json:"error"`
 			}
 			err = json.NewDecoder(resp.Body).Decode(&event)
-			_ = resp.Body.Close()
+			_ = resp.Body.Close() // best-effort cleanup
 			if err != nil {
 				lastErr = "decode response: " + err.Error()
 				continue
@@ -246,7 +241,7 @@ func applySchema(ctx context.Context, apiAddr netip.AddrPort, apiToken string) e
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		data, _ := io.ReadAll(resp.Body)
+		data, _ := io.ReadAll(resp.Body) // best-effort error body
 		return fmt.Errorf("apply schema: status %d: %s", resp.StatusCode, bytes.TrimSpace(data))
 	}
 
@@ -267,13 +262,13 @@ func applySchema(ctx context.Context, apiAddr netip.AddrPort, apiToken string) e
 }
 
 func containerLogs(ctx context.Context, cli *client.Client, name string, lines int) string {
-	opts := container.LogsOptions{ShowStdout: true, ShowStderr: true, Tail: fmt.Sprintf("%d", lines)}
+	opts := container.LogsOptions{ShowStdout: true, ShowStderr: true, Tail: strconv.Itoa(lines)}
 	rc, err := cli.ContainerLogs(ctx, name, opts)
 	if err != nil {
 		return ""
 	}
 	defer rc.Close()
-	data, _ := io.ReadAll(rc)
+	data, _ := io.ReadAll(rc) // best-effort; log output may be truncated on error
 	// strip docker stream framing (8-byte header per chunk)
 	var clean []byte
 	for len(data) >= 8 {

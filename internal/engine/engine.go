@@ -2,24 +2,33 @@ package engine
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
-	"net/netip"
-	"strings"
 	"sync"
 	"time"
 
-	pb "ployz/internal/daemon/pb"
+	"ployz/internal/check"
 	netctrl "ployz/internal/mesh"
 	"ployz/internal/reconcile"
 	"ployz/pkg/sdk/defaults"
+	"ployz/pkg/sdk/types"
+)
+
+const (
+	// workerRetryDelay is 2s: short enough for quick recovery, long enough to avoid tight spin on persistent failures.
+	workerRetryDelay = 2 * time.Second
+	// workerMaxRetryDelay is 60s: caps exponential backoff to avoid excessive wait.
+	workerMaxRetryDelay = 60 * time.Second
+	// workerMaxConsecutiveFailures is 100: give up after sustained failure (~15 min at cap).
+	workerMaxConsecutiveFailures = 100
+	// stopNetworkTimeout is 30s: maximum time to wait for a worker goroutine to exit.
+	stopNetworkTimeout = 30 * time.Second
 )
 
 type workerState struct {
 	cancel    context.CancelFunc
 	done      chan struct{}
-	spec      *pb.NetworkSpec
+	spec      types.NetworkSpec
 	freshness *reconcile.FreshnessTracker
 	ntp       *reconcile.NTPChecker
 	ping      *reconcile.PingTracker
@@ -47,13 +56,16 @@ type NetworkHealth struct {
 }
 
 type Engine struct {
-	mu              sync.Mutex
-	workers         map[string]*workerState
-	rootCtx         context.Context
-	newController   NetworkControllerFactory   // creates controllers for Start
-	newReconciler   PeerReconcilerFactory      // creates peer reconcilers for workers
-	newRegistry     RegistryFactory            // creates registries for workers
-	stateStore      netctrl.StateStore         // state persistence for LoadState
+	mu            sync.Mutex
+	workers       map[string]*workerState
+	rootCtx       context.Context
+	newController NetworkControllerFactory
+	newReconciler PeerReconcilerFactory
+	newRegistry   RegistryFactory
+	stateStore    netctrl.StateStore
+	clock         netctrl.Clock
+	pingDialFunc  func(context.Context, string) (time.Duration, error)
+	ntpCheckFunc  func() reconcile.NTPStatus
 }
 
 type EngineOption func(*Engine)
@@ -74,6 +86,18 @@ func WithStateStore(s netctrl.StateStore) EngineOption {
 	return func(e *Engine) { e.stateStore = s }
 }
 
+func WithClock(c netctrl.Clock) EngineOption {
+	return func(e *Engine) { e.clock = c }
+}
+
+func WithPingDialFunc(f func(context.Context, string) (time.Duration, error)) EngineOption {
+	return func(e *Engine) { e.pingDialFunc = f }
+}
+
+func WithNTPCheckFunc(f func() reconcile.NTPStatus) EngineOption {
+	return func(e *Engine) { e.ntpCheckFunc = f }
+}
+
 func New(ctx context.Context, opts ...EngineOption) *Engine {
 	e := &Engine{
 		workers: make(map[string]*workerState),
@@ -82,13 +106,19 @@ func New(ctx context.Context, opts ...EngineOption) *Engine {
 	for _, opt := range opts {
 		opt(e)
 	}
+	check.Assert(e.newController != nil, "Engine.New: NetworkControllerFactory is required")
+	check.Assert(e.newReconciler != nil, "Engine.New: PeerReconcilerFactory is required")
+	check.Assert(e.newRegistry != nil, "Engine.New: RegistryFactory is required")
 	return e
 }
 
-func (e *Engine) StartNetwork(ctx context.Context, spec *pb.NetworkSpec) error {
+func (e *Engine) StartNetwork(ctx context.Context, spec types.NetworkSpec) error {
 	network := defaults.NormalizeNetwork(spec.Network)
 	if network == "" {
 		return fmt.Errorf("network is required")
+	}
+	if err := e.rootCtx.Err(); err != nil {
+		return fmt.Errorf("engine is shutting down: %w", err)
 	}
 	log := slog.With("component", "runtime-engine", "network", network)
 
@@ -104,27 +134,23 @@ func (e *Engine) StartNetwork(ctx context.Context, spec *pb.NetworkSpec) error {
 
 	workerCtx, cancel := context.WithCancel(e.rootCtx)
 
-	// Determine self ID for freshness tracker.
-	selfID := ""
-	if e.stateStore != nil {
-		if cfg, err := configFromSpec(spec); err == nil {
-			if st, loadErr := netctrl.LoadState(e.stateStore, cfg); loadErr == nil {
-				selfID = st.WGPublic
-			}
-		}
-	}
+	selfID := e.loadSelfID(spec)
 
-	ft := reconcile.NewFreshnessTracker(selfID, netctrl.RealClock{})
-	ntpChecker := reconcile.NewNTPChecker(netctrl.RealClock{})
-	pingTracker := reconcile.NewPingTracker()
+	clk := e.clockOrDefault()
 
 	ws := &workerState{
 		cancel:    cancel,
 		done:      make(chan struct{}),
 		spec:      spec,
-		freshness: ft,
-		ntp:       ntpChecker,
-		ping:      pingTracker,
+		freshness: reconcile.NewFreshnessTracker(selfID, clk),
+		ntp:       reconcile.NewNTPChecker(clk),
+		ping:      reconcile.NewPingTracker(),
+	}
+	if e.ntpCheckFunc != nil {
+		ws.ntp.CheckFunc = e.ntpCheckFunc
+	}
+	if e.pingDialFunc != nil {
+		ws.ping.DialFunc = e.pingDialFunc
 	}
 	e.workers[network] = ws
 	log.Info("starting worker")
@@ -151,8 +177,12 @@ func (e *Engine) StopNetwork(network string) error {
 	delete(e.workers, network)
 	e.mu.Unlock()
 
-	<-ws.done
-	log.Info("worker stopped")
+	select {
+	case <-ws.done:
+		log.Info("worker stopped")
+	case <-time.After(stopNetworkTimeout):
+		log.Warn("worker stop timed out")
+	}
 	return nil
 }
 
@@ -180,66 +210,80 @@ func (e *Engine) Health(network string) NetworkHealth {
 		return NetworkHealth{}
 	}
 
-	var peers map[string]reconcile.PeerHealth
-	if ws.freshness != nil {
-		peers = ws.freshness.Snapshot()
-	}
+	peers := ws.freshness.Snapshot()
 
 	// Merge ping RTTs into peer health.
-	if ws.ping != nil {
-		pings := ws.ping.Snapshot()
-		if peers == nil {
-			peers = make(map[string]reconcile.PeerHealth)
-		}
-		for nodeID, rtt := range pings {
-			ph := peers[nodeID]
-			ph.PingRTT = rtt
-			peers[nodeID] = ph
-		}
+	pings := ws.ping.Snapshot()
+	if len(pings) > 0 && peers == nil {
+		peers = make(map[string]reconcile.PeerHealth)
 	}
-
-	var ntpStatus reconcile.NTPStatus
-	if ws.ntp != nil {
-		ntpStatus = ws.ntp.Status()
+	for nodeID, rtt := range pings {
+		ph := peers[nodeID]
+		ph.PingRTT = rtt
+		peers[nodeID] = ph
 	}
 
 	return NetworkHealth{
 		Peers:     peers,
-		NTPStatus: ntpStatus,
+		NTPStatus: ws.ntp.Status(),
 	}
 }
 
 func (e *Engine) StopAll() {
 	log := slog.With("component", "runtime-engine")
+
 	e.mu.Lock()
-	workers := make(map[string]*workerState, len(e.workers))
-	for k, v := range e.workers {
-		workers[k] = v
-	}
+	workers := e.workers
+	e.workers = make(map[string]*workerState)
 	e.mu.Unlock()
 
-	if len(workers) > 0 {
-		log.Info("stopping all workers", "count", len(workers))
+	if len(workers) == 0 {
+		return
+	}
+
+	log.Info("stopping all workers", "count", len(workers))
+	for _, ws := range workers {
+		ws.cancel()
 	}
 	for network, ws := range workers {
-		ws.cancel()
-		<-ws.done
-		e.mu.Lock()
-		delete(e.workers, network)
-		e.mu.Unlock()
-		log.Debug("worker stopped", "network", network)
+		select {
+		case <-ws.done:
+			log.Debug("worker stopped", "network", network)
+		case <-time.After(stopNetworkTimeout):
+			log.Warn("worker stop timed out", "network", network)
+		}
 	}
 }
 
-func (e *Engine) runWorkerLoop(ctx context.Context, ws *workerState, spec *pb.NetworkSpec) {
+func (e *Engine) runWorkerLoop(ctx context.Context, ws *workerState, spec types.NetworkSpec) {
 	network := defaults.NormalizeNetwork(spec.Network)
 	log := slog.With("component", "runtime-engine", "network", network)
+
+	var consecutiveFailures int
+	retryDelay := workerRetryDelay
+
+	// backoff logs the error, updates status, sleeps, and bumps the failure counter.
+	// Returns false if the context was cancelled or max failures reached.
+	backoff := func(msg string, err error) bool {
+		log.Debug(msg, "err", err)
+		ws.setStatus(false, err.Error())
+		if !sleepWithContext(ctx, retryDelay) {
+			return false
+		}
+		consecutiveFailures++
+		if consecutiveFailures >= workerMaxConsecutiveFailures {
+			log.Error("worker giving up after too many consecutive failures", "failures", consecutiveFailures)
+			ws.setStatus(false, fmt.Sprintf("gave up after %d consecutive failures: %v", consecutiveFailures, err))
+			return false
+		}
+		retryDelay = min(retryDelay*2, workerMaxRetryDelay)
+		return true
+	}
+
 	for {
-		cfg, err := configFromSpec(spec)
+		cfg, err := netctrl.ConfigFromSpec(spec)
 		if err != nil {
-			log.Debug("invalid network spec", "err", err)
-			ws.setStatus(false, err.Error())
-			if !sleepWithContext(ctx, 2*time.Second) {
+			if !backoff("invalid network spec", err) {
 				return
 			}
 			continue
@@ -247,9 +291,7 @@ func (e *Engine) runWorkerLoop(ctx context.Context, ws *workerState, spec *pb.Ne
 
 		startCtrl, err := e.newController()
 		if err != nil {
-			log.Debug("create controller failed", "err", err)
-			ws.setStatus(false, err.Error())
-			if !sleepWithContext(ctx, 2*time.Second) {
+			if !backoff("create controller failed", err) {
 				return
 			}
 			continue
@@ -257,9 +299,7 @@ func (e *Engine) runWorkerLoop(ctx context.Context, ws *workerState, spec *pb.Ne
 		runtimeCfg, startErr := startCtrl.Start(ctx, cfg)
 		_ = startCtrl.Close()
 		if startErr != nil {
-			log.Debug("start runtime failed", "err", startErr)
-			ws.setStatus(false, startErr.Error())
-			if !sleepWithContext(ctx, 2*time.Second) {
+			if !backoff("start runtime failed", startErr) {
 				return
 			}
 			continue
@@ -267,9 +307,7 @@ func (e *Engine) runWorkerLoop(ctx context.Context, ws *workerState, spec *pb.Ne
 
 		peerCtrl, err := e.newReconciler()
 		if err != nil {
-			log.Debug("create peer reconciler failed", "err", err)
-			ws.setStatus(false, err.Error())
-			if !sleepWithContext(ctx, 2*time.Second) {
+			if !backoff("create peer reconciler failed", err) {
 				return
 			}
 			continue
@@ -277,6 +315,9 @@ func (e *Engine) runWorkerLoop(ctx context.Context, ws *workerState, spec *pb.Ne
 
 		reg := e.newRegistry(runtimeCfg.CorrosionAPIAddr, runtimeCfg.CorrosionAPIToken)
 
+		// Reset failure tracking on successful setup.
+		consecutiveFailures = 0
+		retryDelay = workerRetryDelay
 		ws.setStatus(true, "")
 		log.Debug("runtime prepared, entering reconcile loop")
 
@@ -298,7 +339,7 @@ func (e *Engine) runWorkerLoop(ctx context.Context, ws *workerState, spec *pb.Ne
 
 		err = worker.Run(ctx)
 		_ = peerCtrl.Close()
-		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+		if ctx.Err() != nil {
 			ws.setStatus(false, "")
 			log.Debug("worker loop canceled")
 			return
@@ -311,10 +352,32 @@ func (e *Engine) runWorkerLoop(ctx context.Context, ws *workerState, spec *pb.Ne
 			ws.setStatus(false, "")
 		}
 
-		if !sleepWithContext(ctx, 2*time.Second) {
+		if !sleepWithContext(ctx, retryDelay) {
 			return
 		}
 	}
+}
+
+func (e *Engine) clockOrDefault() netctrl.Clock {
+	if e.clock != nil {
+		return e.clock
+	}
+	return netctrl.RealClock{}
+}
+
+func (e *Engine) loadSelfID(spec types.NetworkSpec) string {
+	if e.stateStore == nil {
+		return ""
+	}
+	cfg, err := netctrl.ConfigFromSpec(spec)
+	if err != nil {
+		return ""
+	}
+	st, err := netctrl.LoadState(e.stateStore, cfg)
+	if err != nil {
+		return ""
+	}
+	return st.WGPublic
 }
 
 func sleepWithContext(ctx context.Context, d time.Duration) bool {
@@ -328,45 +391,3 @@ func sleepWithContext(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-func configFromSpec(spec *pb.NetworkSpec) (netctrl.Config, error) {
-	cfg := netctrl.Config{
-		Network:           defaults.NormalizeNetwork(spec.Network),
-		DataRoot:          strings.TrimSpace(spec.DataRoot),
-		AdvertiseEP:       strings.TrimSpace(spec.AdvertiseEndpoint),
-		WGPort:            int(spec.WgPort),
-		CorrosionMemberID: spec.CorrosionMemberId,
-		CorrosionAPIToken: strings.TrimSpace(spec.CorrosionApiToken),
-		HelperImage:       strings.TrimSpace(spec.HelperImage),
-	}
-	for _, bs := range spec.Bootstrap {
-		bs = netctrl.NormalizeBootstrapAddrPort(bs)
-		if bs == "" {
-			continue
-		}
-		cfg.CorrosionBootstrap = append(cfg.CorrosionBootstrap, bs)
-	}
-
-	if strings.TrimSpace(spec.NetworkCidr) != "" {
-		pfx, err := netip.ParsePrefix(strings.TrimSpace(spec.NetworkCidr))
-		if err != nil {
-			return netctrl.Config{}, fmt.Errorf("parse network cidr: %w", err)
-		}
-		cfg.NetworkCIDR = pfx
-	}
-	if strings.TrimSpace(spec.Subnet) != "" {
-		pfx, err := netip.ParsePrefix(strings.TrimSpace(spec.Subnet))
-		if err != nil {
-			return netctrl.Config{}, fmt.Errorf("parse subnet: %w", err)
-		}
-		cfg.Subnet = pfx
-	}
-	if strings.TrimSpace(spec.ManagementIp) != "" {
-		addr, err := netip.ParseAddr(strings.TrimSpace(spec.ManagementIp))
-		if err != nil {
-			return netctrl.Config{}, fmt.Errorf("parse management ip: %w", err)
-		}
-		cfg.Management = addr
-	}
-
-	return netctrl.NormalizeConfig(cfg)
-}

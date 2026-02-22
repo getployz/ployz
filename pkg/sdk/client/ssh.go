@@ -40,7 +40,7 @@ func dialSSH(ctx context.Context, target string, opts SSHOptions) (net.Conn, err
 	if opts.Port > 0 {
 		args = append(args, "-p", fmt.Sprintf("%d", opts.Port))
 	}
-	if strings.TrimSpace(opts.KeyPath) != "" {
+	if opts.KeyPath != "" {
 		args = append(args, "-i", opts.KeyPath)
 	}
 	args = append(args, target)
@@ -107,12 +107,11 @@ func (c *sshCommandConn) Write(p []byte) (int, error) {
 
 func (c *sshCommandConn) Close() error {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.closed {
-		c.mu.Unlock()
 		return nil
 	}
 	c.closed = true
-	c.mu.Unlock()
 
 	_ = c.stdin.Close()
 	_ = c.stdout.Close()
@@ -166,13 +165,9 @@ func (a stringAddr) String() string {
 }
 
 func remoteUser(target string) string {
-	target = strings.TrimSpace(target)
-	if target == "" {
-		return ""
-	}
-	parts := strings.SplitN(target, "@", 2)
-	if len(parts) == 2 {
-		return strings.TrimSpace(parts[0])
+	user, _, found := strings.Cut(target, "@")
+	if found {
+		return user
 	}
 	return ""
 }

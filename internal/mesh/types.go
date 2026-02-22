@@ -4,7 +4,7 @@ type Machine struct {
 	ID          string
 	PublicKey   string
 	Subnet      string
-	Management  string
+	ManagementIP string
 	Endpoint    string
 	LastUpdated string
 	Version     int64

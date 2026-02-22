@@ -23,15 +23,13 @@ func (c *Controller) Status(ctx context.Context, in Config) (Status, error) {
 	out.Configured = true
 	out.Running = s.Running
 
-	if c.statusProber != nil {
-		wg, dockerNet, corr, probeErr := c.statusProber.ProbeInfra(ctx, s)
-		if probeErr != nil {
-			return Status{}, probeErr
-		}
-		out.WireGuard = wg
-		out.DockerNet = dockerNet
-		out.Corrosion = corr
+	wg, dockerNet, corr, probeErr := c.statusProber.ProbeInfra(ctx, s)
+	if probeErr != nil {
+		return Status{}, probeErr
 	}
+	out.WireGuard = wg
+	out.DockerNet = dockerNet
+	out.Corrosion = corr
 
 	return out, nil
 }

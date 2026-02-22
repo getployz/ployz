@@ -46,14 +46,7 @@ func AllocateSubnet(network netip.Prefix, allocated []netip.Prefix) (netip.Prefi
 		subnet := netip.PrefixFrom(Uint32ToAddr(curr), SubnetBits)
 		sStart, sEnd, _ := PrefixRange4(subnet)
 
-		overlap := false
-		for _, r := range ranges {
-			if RangesOverlap(sStart, sEnd, r[0], r[1]) {
-				overlap = true
-				break
-			}
-		}
-		if !overlap {
+		if !overlapsAny(sStart, sEnd, ranges) {
 			return subnet, nil
 		}
 
@@ -82,6 +75,15 @@ func PrefixRange4(p netip.Prefix) (uint32, uint32, error) {
 	}
 	size := uint32(1) << hostBits
 	return start, start + size - 1, nil
+}
+
+func overlapsAny(start, end uint32, ranges [][2]uint32) bool {
+	for _, r := range ranges {
+		if RangesOverlap(start, end, r[0], r[1]) {
+			return true
+		}
+	}
+	return false
 }
 
 func RangesOverlap(aStart, aEnd, bStart, bEnd uint32) bool {

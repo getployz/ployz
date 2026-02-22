@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ployz/internal/buildinfo"
+	"ployz/internal/check"
 	"ployz/internal/remote"
 	"ployz/pkg/ipam"
 	"ployz/pkg/sdk/client"
@@ -22,7 +23,12 @@ import (
 const (
 	remoteDaemonSocketPath = "/var/run/ployzd.sock"
 	remoteLinuxDataRoot    = "/var/lib/ployz/networks"
+	// addWaitTimeout is 45s: allows time for remote install, WireGuard handshake, and Corrosion gossip convergence.
 	addWaitTimeout         = 45 * time.Second
+	// convergencePollInterval is 500ms: fast enough to detect convergence quickly, slow enough to avoid hammering the API.
+	convergencePollInterval = 500 * time.Millisecond
+	// persistentKeepaliveIntervalSec is 25: keeps NAT mappings alive; standard WireGuard recommendation.
+	persistentKeepaliveIntervalSec = 25
 )
 
 type Service struct {
@@ -30,6 +36,7 @@ type Service struct {
 }
 
 func New(api client.API) *Service {
+	check.Assert(api != nil, "machine.New: API client must not be nil")
 	return &Service{api: api}
 }
 
@@ -65,11 +72,11 @@ func (s *Service) RemoveMachine(ctx context.Context, network, machineID string) 
 }
 
 func (s *Service) HostAccessEndpoint(ctx context.Context, network string) (netip.AddrPort, error) {
-	id, helperName, err := s.identityForHostAccess(ctx, network)
+	id, err := s.identityForHostAccess(ctx, network)
 	if err != nil {
 		return netip.AddrPort{}, err
 	}
-	helperIP, err := helperIPv4(ctx, helperName)
+	helperIP, err := helperIPv4(ctx, id.HelperName)
 	if err != nil {
 		return netip.AddrPort{}, err
 	}
@@ -81,7 +88,7 @@ func (s *Service) HostAccessEndpoint(ctx context.Context, network string) (netip
 }
 
 func (s *Service) AddHostAccessPeer(ctx context.Context, network, hostPublicKey string, hostIP netip.Addr) error {
-	id, _, err := s.identityForHostAccess(ctx, network)
+	id, err := s.identityForHostAccess(ctx, network)
 	if err != nil {
 		return err
 	}
@@ -92,19 +99,21 @@ func (s *Service) AddHostAccessPeer(ctx context.Context, network, hostPublicKey 
 		return fmt.Errorf("host ip is required")
 	}
 
+	hostCIDR := hostIP.String() + "/32"
 	script := fmt.Sprintf(
-		`set -eu; wg set %q peer %q persistent-keepalive 25 allowed-ips %q; ip route replace %q dev %q`,
+		`set -eu; wg set %q peer %q persistent-keepalive %d allowed-ips %q; ip route replace %q dev %q`,
 		id.WGInterface,
 		hostPublicKey,
-		hostIP.String()+"/32",
-		hostIP.String()+"/32",
+		persistentKeepaliveIntervalSec,
+		hostCIDR,
+		hostCIDR,
 		id.WGInterface,
 	)
-	return runDockerExecScript(ctx, strings.TrimSpace(id.HelperName), script)
+	return runDockerExecScript(ctx, id.HelperName, script)
 }
 
 func (s *Service) RemoveHostAccessPeer(ctx context.Context, network, hostPublicKey string, hostIP netip.Addr) error {
-	id, _, err := s.identityForHostAccess(ctx, network)
+	id, err := s.identityForHostAccess(ctx, network)
 	if err != nil {
 		return err
 	}
@@ -123,7 +132,7 @@ func (s *Service) RemoveHostAccessPeer(ctx context.Context, network, hostPublicK
 		hostCIDR,
 		id.WGInterface,
 	)
-	return runDockerExecScript(ctx, strings.TrimSpace(id.HelperName), script)
+	return runDockerExecScript(ctx, id.HelperName, script)
 }
 
 type AddOptions struct {
@@ -135,6 +144,11 @@ type AddOptions struct {
 	SSHPort  int
 	SSHKey   string
 	WGPort   int
+
+	// ConnectFunc overrides SSH-based remote connection. When set,
+	// install() is skipped and connect() calls this instead. If the
+	// returned API implements io.Closer, it is closed on cleanup.
+	ConnectFunc func(ctx context.Context) (client.API, error)
 
 	OnProgress progress.Reporter
 }
@@ -167,7 +181,8 @@ type addOp struct {
 	bootstrap     []string
 	localIdentity types.Identity
 	localMachines []types.MachineEntry
-	remoteAPI     *client.Client
+	remoteAPI     client.API
+	remoteCloser  func()
 	entry         types.MachineEntry
 	tracker       *progress.Tracker
 }
@@ -175,7 +190,7 @@ type addOp struct {
 func newAddOp(ctx context.Context, api client.API, opts AddOptions) (*addOp, error) {
 	network := defaults.NormalizeNetwork(opts.Network)
 	target := strings.TrimSpace(opts.Target)
-	if target == "" {
+	if target == "" && opts.ConnectFunc == nil {
 		return nil, fmt.Errorf("target is required")
 	}
 	if opts.WGPort == 0 {
@@ -191,9 +206,14 @@ func newAddOp(ctx context.Context, api client.API, opts AddOptions) (*addOp, err
 		return nil, err
 	}
 
-	remoteEP, err := resolveAdvertiseEndpoint(target, opts.Endpoint, opts.WGPort)
-	if err != nil {
-		return nil, err
+	var remoteEP string
+	if target != "" {
+		remoteEP, err = resolveAdvertiseEndpoint(target, opts.Endpoint, opts.WGPort)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		remoteEP = strings.TrimSpace(opts.Endpoint)
 	}
 
 	networkCIDR, err := netip.ParsePrefix(strings.TrimSpace(localIdentity.NetworkCIDR))
@@ -206,7 +226,7 @@ func newAddOp(ctx context.Context, api client.API, opts AddOptions) (*addOp, err
 		return nil, err
 	}
 
-	gossipPort := localIdentity.CorrosionGossip
+	gossipPort := localIdentity.CorrosionGossipPort
 	if gossipPort == 0 {
 		gossipPort = defaults.CorrosionGossipPort(network)
 	}
@@ -216,7 +236,7 @@ func newAddOp(ctx context.Context, api client.API, opts AddOptions) (*addOp, err
 	}
 
 	remoteRoot := remoteDataRoot(opts.DataRoot)
-	if remoteRoot != remoteLinuxDataRoot {
+	if opts.ConnectFunc == nil && remoteRoot != remoteLinuxDataRoot {
 		return nil, fmt.Errorf("remote service mode currently supports data root %q only", remoteLinuxDataRoot)
 	}
 
@@ -244,8 +264,8 @@ func newAddOp(ctx context.Context, api client.API, opts AddOptions) (*addOp, err
 }
 
 func (a *addOp) close() {
-	if a.remoteAPI != nil {
-		_ = a.remoteAPI.Close()
+	if a.remoteCloser != nil {
+		a.remoteCloser()
 	}
 }
 
@@ -274,13 +294,26 @@ func (a *addOp) run() (AddResult, error) {
 }
 
 func (a *addOp) install() error {
+	if a.opts.ConnectFunc != nil {
+		return nil // skip install when using injected connection
+	}
 	sshOpts := remote.SSHOptions{Port: a.opts.SSHPort, KeyPath: a.opts.SSHKey}
 	return remote.RunScript(a.ctx, a.target, sshOpts, remote.InstallScript(buildinfo.Version))
 }
 
 func (a *addOp) connect() error {
-	var err error
-	a.remoteAPI, err = client.NewSSH(a.target, client.SSHOptions{
+	if a.opts.ConnectFunc != nil {
+		api, err := a.opts.ConnectFunc(a.ctx)
+		if err != nil {
+			return fmt.Errorf("connect to remote daemon: %w", err)
+		}
+		a.remoteAPI = api
+		if closer, ok := api.(interface{ Close() error }); ok {
+			a.remoteCloser = func() { _ = closer.Close() }
+		}
+		return nil
+	}
+	c, err := client.NewSSH(a.target, client.SSHOptions{
 		Port:       a.opts.SSHPort,
 		KeyPath:    a.opts.SSHKey,
 		SocketPath: remoteDaemonSocketPath,
@@ -288,6 +321,8 @@ func (a *addOp) connect() error {
 	if err != nil {
 		return fmt.Errorf("connect to remote daemon: %w", err)
 	}
+	a.remoteAPI = c
+	a.remoteCloser = func() { _ = c.Close() }
 	return nil
 }
 
@@ -362,7 +397,7 @@ func (a *addOp) converge() error {
 }
 
 func waitForMachine(ctx context.Context, api client.API, network, machineID, who string) error {
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(convergencePollInterval)
 	defer ticker.Stop()
 
 	machineID = strings.TrimSpace(machineID)
@@ -411,42 +446,26 @@ func findExpectedVersion(machines []types.MachineEntry, id, endpoint string) int
 	if id != "" {
 		for _, m := range machines {
 			if strings.TrimSpace(m.ID) == id {
-				if m.Version > 0 {
-					return m.Version
-				}
-				return 0
+				return m.Version
 			}
 		}
 	}
 	if endpoint != "" {
 		for _, m := range machines {
 			if strings.TrimSpace(m.Endpoint) == endpoint {
-				if m.Version > 0 {
-					return m.Version
-				}
-				return 0
+				return m.Version
 			}
 		}
 	}
 	return 0
 }
 
-func collectBootstrapAddrs(machines []types.MachineEntry, fallbackMgmt netip.Addr, gossipPort int, exclude ...netip.Addr) []string {
+func collectBootstrapAddrs(machines []types.MachineEntry, fallbackMgmt netip.Addr, gossipPort int) []string {
 	seen := make(map[string]struct{})
 	bootstrap := make([]string, 0, len(machines)+1)
-	excluded := make(map[string]struct{}, len(exclude))
-	for _, addr := range exclude {
-		if !addr.IsValid() {
-			continue
-		}
-		excluded[addr.String()] = struct{}{}
-	}
 
 	appendAddr := func(addr netip.Addr) {
 		if !addr.IsValid() {
-			return
-		}
-		if _, ok := excluded[addr.String()]; ok {
 			return
 		}
 		addrPort := netip.AddrPortFrom(addr, uint16(gossipPort)).String()
@@ -458,8 +477,8 @@ func collectBootstrapAddrs(machines []types.MachineEntry, fallbackMgmt netip.Add
 	}
 
 	appendAddr(fallbackMgmt)
-	for _, machine := range machines {
-		mgmt := strings.TrimSpace(machine.ManagementIP)
+	for _, m := range machines {
+		mgmt := strings.TrimSpace(m.ManagementIP)
 		if mgmt == "" {
 			continue
 		}
@@ -474,11 +493,11 @@ func collectBootstrapAddrs(machines []types.MachineEntry, fallbackMgmt netip.Add
 }
 
 func chooseRemoteSubnet(networkCIDR netip.Prefix, machines []types.MachineEntry, remoteEndpoint string) (netip.Prefix, error) {
-	for _, machine := range machines {
-		if strings.TrimSpace(machine.Endpoint) != strings.TrimSpace(remoteEndpoint) {
+	for _, m := range machines {
+		if strings.TrimSpace(m.Endpoint) != remoteEndpoint {
 			continue
 		}
-		subnet, err := netip.ParsePrefix(strings.TrimSpace(machine.Subnet))
+		subnet, err := netip.ParsePrefix(strings.TrimSpace(m.Subnet))
 		if err != nil {
 			return netip.Prefix{}, fmt.Errorf("parse existing machine subnet: %w", err)
 		}
@@ -486,8 +505,8 @@ func chooseRemoteSubnet(networkCIDR netip.Prefix, machines []types.MachineEntry,
 	}
 
 	allocated := make([]netip.Prefix, 0, len(machines))
-	for _, machine := range machines {
-		subnet, err := netip.ParsePrefix(strings.TrimSpace(machine.Subnet))
+	for _, m := range machines {
+		subnet, err := netip.ParsePrefix(strings.TrimSpace(m.Subnet))
 		if err != nil {
 			continue
 		}
@@ -506,9 +525,8 @@ func resolveAdvertiseEndpoint(target, override string, wgPort int) (string, erro
 	}
 
 	host := target
-	if strings.Contains(target, "@") {
-		parts := strings.SplitN(target, "@", 2)
-		host = parts[1]
+	if _, after, ok := strings.Cut(target, "@"); ok {
+		host = after
 	}
 	host = strings.TrimSpace(host)
 	addr, err := netip.ParseAddr(host)
@@ -529,23 +547,19 @@ func remoteDataRoot(dataRoot string) string {
 	return dataRoot
 }
 
-func (s *Service) identityForHostAccess(ctx context.Context, network string) (types.Identity, string, error) {
+func (s *Service) identityForHostAccess(ctx context.Context, network string) (types.Identity, error) {
 	id, err := s.api.GetIdentity(ctx, network)
 	if err != nil {
-		return types.Identity{}, "", err
+		return types.Identity{}, err
 	}
-	helperName := strings.TrimSpace(id.HelperName)
-	if helperName == "" {
-		helperName = defaults.HelperName(network)
+	id.HelperName = strings.TrimSpace(id.HelperName)
+	if id.HelperName == "" {
+		id.HelperName = defaults.HelperName(network)
 	}
-	id.HelperName = helperName
-	return id, helperName, nil
+	return id, nil
 }
 
 func helperIPv4(ctx context.Context, helperName string) (netip.Addr, error) {
-	if strings.TrimSpace(helperName) == "" {
-		return netip.Addr{}, fmt.Errorf("helper container name is required")
-	}
 	out, err := runDockerExecScriptOutput(ctx, helperName, `set -eu
 ip -4 -o addr show dev eth0 | awk 'NR==1 {print $4}' | cut -d/ -f1`)
 	if err != nil {

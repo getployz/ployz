@@ -1,7 +1,6 @@
 package container
 
 import (
-	"bytes"
 	"fmt"
 	"net/netip"
 	"os"
@@ -83,20 +82,20 @@ func tomlStringArray(values []string) string {
 }
 
 func chownToUser(path, owner string) error {
-	parts := bytes.Split([]byte(owner), []byte(":"))
-	if len(parts) != 2 {
+	uidStr, gidStr, ok := strings.Cut(owner, ":")
+	if !ok {
 		return fmt.Errorf("invalid owner %q, expected uid:gid", owner)
 	}
-	uid, err := strconv.Atoi(string(parts[0]))
+	uid, err := strconv.Atoi(uidStr)
 	if err != nil {
-		if _, lookupErr := user.Lookup(string(parts[0])); lookupErr != nil {
-			return fmt.Errorf("parse uid %q: %w", parts[0], err)
+		if _, lookupErr := user.Lookup(uidStr); lookupErr != nil {
+			return fmt.Errorf("parse uid %q: %w", uidStr, err)
 		}
 		return nil
 	}
-	gid, err := strconv.Atoi(string(parts[1]))
+	gid, err := strconv.Atoi(gidStr)
 	if err != nil {
-		return fmt.Errorf("parse gid %q: %w", parts[1], err)
+		return fmt.Errorf("parse gid %q: %w", gidStr, err)
 	}
 	if err := os.Chown(path, uid, gid); err != nil {
 		return fmt.Errorf("chown %s: %w", path, err)

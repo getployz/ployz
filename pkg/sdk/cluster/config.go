@@ -2,7 +2,9 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -73,10 +75,10 @@ func Load(path string) (*Config, error) {
 	cfg := &Config{path: path, Clusters: map[string]Cluster{}}
 
 	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return cfg, nil
+	}
 	if err != nil {
-		if os.IsNotExist(err) {
-			return cfg, nil
-		}
 		return nil, fmt.Errorf("read config file %q: %w", path, err)
 	}
 	if len(data) == 0 {
@@ -182,12 +184,7 @@ func (c *Config) ClusterNames() []string {
 	if c == nil || len(c.Clusters) == 0 {
 		return nil
 	}
-	names := make([]string, 0, len(c.Clusters))
-	for name := range c.Clusters {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	return names
+	return slices.Sorted(maps.Keys(c.Clusters))
 }
 
 // Dial tries connections in order and returns the first successful client.
@@ -215,11 +212,10 @@ func dialConnection(_ context.Context, conn Connection) (*client.Client, error) 
 
 	case conn.SSH != "":
 		target, port := parseSSHTarget(conn.SSH)
-		socketPath := client.DefaultSocketPath()
 		return client.NewSSH(target, client.SSHOptions{
 			Port:       port,
 			KeyPath:    conn.SSHKeyFile,
-			SocketPath: socketPath,
+			SocketPath: client.DefaultSocketPath(),
 		})
 
 	default:
@@ -228,14 +224,17 @@ func dialConnection(_ context.Context, conn Connection) (*client.Client, error) 
 }
 
 // parseSSHTarget splits "user@host:port" into target and port.
+// Uses LastIndex to handle IPv6 addresses correctly.
 func parseSSHTarget(s string) (string, int) {
-	if idx := strings.LastIndex(s, ":"); idx > 0 {
-		port, err := strconv.Atoi(s[idx+1:])
-		if err == nil && port > 0 && port <= 65535 {
-			return s[:idx], port
-		}
+	idx := strings.LastIndex(s, ":")
+	if idx <= 0 {
+		return s, 0
 	}
-	return s, 0
+	port, err := strconv.Atoi(s[idx+1:])
+	if err != nil || port <= 0 || port > 65535 {
+		return s, 0
+	}
+	return s[:idx], port
 }
 
 // SocketPath returns the unix socket path from the first unix connection, or empty string.

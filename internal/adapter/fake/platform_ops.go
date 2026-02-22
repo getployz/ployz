@@ -93,3 +93,15 @@ func (o *PlatformOps) ApplyPeerConfig(ctx context.Context, cfg mesh.Config, stat
 	copy(o.Peers, peers)
 	return nil
 }
+
+// HasPeer reports whether a peer with the given public key has been applied.
+func (o *PlatformOps) HasPeer(publicKey string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, p := range o.Peers {
+		if p.PublicKey == publicKey {
+			return true
+		}
+	}
+	return false
+}

@@ -8,15 +8,31 @@ import (
 	"sync"
 	"time"
 
+	"ployz/internal/check"
 	"ployz/internal/mesh"
 	"ployz/pkg/sdk/defaults"
 )
 
+const (
+	// fullReconcileInterval is 30s: long enough to batch changes, short enough to catch missed events.
+	fullReconcileInterval = 30 * time.Second
+	// heartbeatInterval is 1s: frequent enough for sub-second freshness tracking.
+	heartbeatInterval = 1 * time.Second
+	// pingInterval is 1s: matches heartbeat cadence for consistent health reporting.
+	pingInterval = 1 * time.Second
+	// heartbeatSubscribeMaxRetries is 3: heartbeat is non-critical, fail fast and degrade gracefully.
+	heartbeatSubscribeMaxRetries = 3
+	// maxMachineSubscribeRetries is 30: ~30s of retries before giving up on machine subscription.
+	maxMachineSubscribeRetries = 30
+	// maxHeartbeatBumpFailures is 10: consecutive heartbeat bump failures before logging a warning.
+	maxHeartbeatBumpFailures = 10
+)
+
 type Worker struct {
 	Spec           mesh.Config
-	Registry       Registry              // injected: Corrosion machine/heartbeat store
-	PeerReconciler PeerReconciler        // injected: applies peer configuration
-	StateStore     mesh.StateStore    // injected: state persistence
+	Registry       Registry       // injected: Corrosion machine/heartbeat store
+	PeerReconciler PeerReconciler // injected: applies peer configuration
+	StateStore     mesh.StateStore
 	Freshness      *FreshnessTracker
 	NTP            *NTPChecker
 	Ping           *PingTracker
@@ -69,17 +85,27 @@ func (w *Worker) refreshAndReconcile(ctx context.Context, cfg mesh.Config) ([]me
 	return snap, true
 }
 
+func (w *Worker) hydrateHeartbeats(rows []mesh.HeartbeatRow) {
+	for _, hb := range rows {
+		if t, err := time.Parse(time.RFC3339Nano, hb.UpdatedAt); err == nil {
+			w.Freshness.RecordSeen(hb.NodeID, t)
+		}
+	}
+}
+
 func (w *Worker) Run(ctx context.Context) error {
+	check.Assert(w.Registry != nil, "Worker.Run: Registry must not be nil")
+	check.Assert(w.PeerReconciler != nil, "Worker.Run: PeerReconciler must not be nil")
+
 	cfg, err := mesh.NormalizeConfig(w.Spec)
 	if err != nil {
 		return err
 	}
 
-	reg := w.Registry
-	if err := reg.EnsureMachineTable(ctx); err != nil {
+	if err := w.Registry.EnsureMachineTable(ctx); err != nil {
 		return err
 	}
-	if err := reg.EnsureHeartbeatTable(ctx); err != nil {
+	if err := w.Registry.EnsureHeartbeatTable(ctx); err != nil {
 		return err
 	}
 
@@ -93,7 +119,7 @@ func (w *Worker) Run(ctx context.Context) error {
 
 	// Start heartbeat writer goroutine.
 	if selfID != "" {
-		go runHeartbeat(ctx, reg, selfID, w.getClock())
+		go runHeartbeat(ctx, w.Registry, selfID, w.getClock())
 	}
 
 	// Start NTP checker goroutine.
@@ -102,7 +128,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 
 	// Subscribe to machines.
-	machines, machCh, err := w.subscribeMachinesWithRetry(ctx, reg)
+	machines, machCh, err := w.subscribeMachinesWithRetry(ctx)
 	if err != nil {
 		return err
 	}
@@ -126,26 +152,22 @@ func (w *Worker) Run(ctx context.Context) error {
 
 	// Start ping tracker goroutine.
 	if w.Ping != nil && selfID != "" {
-		go w.Ping.Run(ctx, selfID, 1*time.Second, func() map[string]string {
+		go w.Ping.Run(ctx, selfID, pingInterval, func() map[string]string {
 			return resolvePingAddrs(getMachinesSnapshot(), cfg.Network)
 		})
 	}
 
 	// Subscribe to heartbeats for freshness tracking.
-	var hbCh <-chan mesh.HeartbeatChange
+	var heartbeatChanges <-chan mesh.HeartbeatChange
 	if w.Freshness != nil {
-		hbSnap, ch, hbErr := w.subscribeHeartbeatsWithRetry(ctx, reg)
+		heartbeatSnapshot, ch, hbErr := w.subscribeHeartbeatsWithRetry(ctx)
 		if hbErr == nil {
-			hbCh = ch
-			for _, hb := range hbSnap {
-				if t, pErr := time.Parse(time.RFC3339Nano, hb.UpdatedAt); pErr == nil {
-					w.Freshness.RecordSeen(hb.NodeID, t)
-				}
-			}
+			heartbeatChanges = ch
+			w.hydrateHeartbeats(heartbeatSnapshot)
 		}
 	}
 
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(fullReconcileInterval)
 	defer ticker.Stop()
 
 	for {
@@ -154,7 +176,7 @@ func (w *Worker) Run(ctx context.Context) error {
 			return ctx.Err()
 		case change, ok := <-machCh:
 			if !ok {
-				m, ch, subErr := w.subscribeMachinesWithRetry(ctx, reg)
+				m, ch, subErr := w.subscribeMachinesWithRetry(ctx)
 				if subErr != nil {
 					return subErr
 				}
@@ -172,36 +194,33 @@ func (w *Worker) Run(ctx context.Context) error {
 				}
 				continue
 			}
-			setMachines(applyMachineChange(getMachinesSnapshot(), change))
-			w.reconcileAndReport(ctx, cfg, getMachinesSnapshot())
-		case hbChange, ok := <-hbCh:
+			updated := applyMachineChange(getMachinesSnapshot(), change)
+			setMachines(updated)
+			w.reconcileAndReport(ctx, cfg, updated)
+		case hbChange, ok := <-heartbeatChanges:
 			if !ok {
 				// Heartbeat subscription closed — try to restore.
-				hbSnap, ch, hbErr := w.subscribeHeartbeatsWithRetry(ctx, reg)
+				snapshot, ch, hbErr := w.subscribeHeartbeatsWithRetry(ctx)
 				if hbErr == nil {
-					hbCh = ch
-					for _, hb := range hbSnap {
-						if t, pErr := time.Parse(time.RFC3339Nano, hb.UpdatedAt); pErr == nil {
-							w.Freshness.RecordSeen(hb.NodeID, t)
-						}
-					}
+					heartbeatChanges = ch
+					w.hydrateHeartbeats(snapshot)
 				} else {
-					hbCh = nil
+					heartbeatChanges = nil
 				}
 				continue
 			}
 			if w.Freshness == nil {
 				continue
 			}
-			if hbChange.Kind == mesh.ChangeDeleted {
+			switch hbChange.Kind {
+			case mesh.ChangeDeleted:
 				w.Freshness.Remove(hbChange.Heartbeat.NodeID)
-				continue
-			}
-			if hbChange.Kind == mesh.ChangeResync {
-				continue
-			}
-			if t, pErr := time.Parse(time.RFC3339Nano, hbChange.Heartbeat.UpdatedAt); pErr == nil {
-				w.Freshness.RecordSeen(hbChange.Heartbeat.NodeID, t)
+			case mesh.ChangeResync:
+				// Nothing to do — next full reconcile will re-sync.
+			default:
+				if t, err := time.Parse(time.RFC3339Nano, hbChange.Heartbeat.UpdatedAt); err == nil {
+					w.Freshness.RecordSeen(hbChange.Heartbeat.NodeID, t)
+				}
 			}
 		case <-ticker.C:
 			if snap, ok := w.refreshAndReconcile(ctx, cfg); ok {
@@ -212,12 +231,20 @@ func (w *Worker) Run(ctx context.Context) error {
 }
 
 func runHeartbeat(ctx context.Context, reg Registry, nodeID string, clock mesh.Clock) {
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
 
+	var consecutiveFailures int
 	for {
 		now := clock.Now().UTC().Format(time.RFC3339Nano)
-		_ = reg.BumpHeartbeat(ctx, nodeID, now)
+		if err := reg.BumpHeartbeat(ctx, nodeID, now); err != nil {
+			consecutiveFailures++
+			if consecutiveFailures == maxHeartbeatBumpFailures {
+				slog.Warn("heartbeat bump failing repeatedly", "failures", consecutiveFailures, "err", err)
+			}
+		} else {
+			consecutiveFailures = 0
+		}
 
 		select {
 		case <-ctx.Done():
@@ -269,19 +296,14 @@ func resolvePingAddrs(machines []mesh.MachineRow, network string) map[string]str
 		if err != nil {
 			continue
 		}
-		// First host IP in the subnet.
-		host := prefix.Masked().Addr().Next()
-		out[m.ID] = fmt.Sprintf("%s:%d", host, port)
+		out[m.ID] = fmt.Sprintf("%s:%d", mesh.MachineIP(prefix), port)
 	}
 	return out
 }
 
-func (w *Worker) subscribeMachinesWithRetry(
-	ctx context.Context,
-	reg Registry,
-) ([]mesh.MachineRow, <-chan mesh.MachineChange, error) {
-	for {
-		if err := reg.EnsureMachineTable(ctx); err != nil {
+func (w *Worker) subscribeMachinesWithRetry(ctx context.Context) ([]mesh.MachineRow, <-chan mesh.MachineChange, error) {
+	for range maxMachineSubscribeRetries {
+		if err := w.Registry.EnsureMachineTable(ctx); err != nil {
 			select {
 			case <-ctx.Done():
 				return nil, nil, ctx.Err()
@@ -289,7 +311,7 @@ func (w *Worker) subscribeMachinesWithRetry(
 				continue
 			}
 		}
-		machines, changes, err := reg.SubscribeMachines(ctx)
+		machines, changes, err := w.Registry.SubscribeMachines(ctx)
 		if err == nil {
 			return machines, changes, nil
 		}
@@ -300,14 +322,12 @@ func (w *Worker) subscribeMachinesWithRetry(
 		case <-time.After(time.Second):
 		}
 	}
+	return nil, nil, fmt.Errorf("machine subscription failed after %d retries", maxMachineSubscribeRetries)
 }
 
-func (w *Worker) subscribeHeartbeatsWithRetry(
-	ctx context.Context,
-	reg Registry,
-) ([]mesh.HeartbeatRow, <-chan mesh.HeartbeatChange, error) {
-	for attempts := 0; attempts < 3; attempts++ {
-		if err := reg.EnsureHeartbeatTable(ctx); err != nil {
+func (w *Worker) subscribeHeartbeatsWithRetry(ctx context.Context) ([]mesh.HeartbeatRow, <-chan mesh.HeartbeatChange, error) {
+	for range heartbeatSubscribeMaxRetries {
+		if err := w.Registry.EnsureHeartbeatTable(ctx); err != nil {
 			select {
 			case <-ctx.Done():
 				return nil, nil, ctx.Err()
@@ -315,7 +335,7 @@ func (w *Worker) subscribeHeartbeatsWithRetry(
 				continue
 			}
 		}
-		hbs, changes, err := reg.SubscribeHeartbeats(ctx)
+		hbs, changes, err := w.Registry.SubscribeHeartbeats(ctx)
 		if err == nil {
 			return hbs, changes, nil
 		}

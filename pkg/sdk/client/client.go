@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	pb "ployz/internal/daemon/pb"
+	"ployz/internal/daemon/pb"
 	"ployz/pkg/sdk/types"
 
 	"google.golang.org/grpc"
@@ -128,7 +128,7 @@ func (c *Client) GetIdentity(ctx context.Context, network string) (types.Identit
 		WGInterface:       resp.WgInterface,
 		WGPort:            int(resp.WgPort),
 		HelperName:        resp.HelperName,
-		CorrosionGossip:   int(resp.CorrosionGossipPort),
+		CorrosionGossipPort: int(resp.CorrosionGossipPort),
 		CorrosionMemberID: resp.CorrosionMemberId,
 		CorrosionAPIToken: resp.CorrosionApiToken,
 		Running:           resp.Running,
@@ -173,8 +173,8 @@ func (c *Client) GetPeerHealth(ctx context.Context, network string) ([]types.Pee
 	if err != nil {
 		return nil, grpcErr(err)
 	}
-	out := make([]types.PeerHealthResponse, 0, len(resp.Messages))
-	for _, msg := range resp.Messages {
+	out := make([]types.PeerHealthResponse, len(resp.Messages))
+	for i, msg := range resp.Messages {
 		r := types.PeerHealthResponse{
 			NodeID: msg.NodeId,
 		}
@@ -190,35 +190,35 @@ func (c *Client) GetPeerHealth(ctx context.Context, network string) ([]types.Pee
 				NTPError:    msg.Ntp.NtpError,
 			}
 		}
-		for _, p := range msg.Peers {
+		r.Peers = make([]types.PeerLag, len(msg.Peers))
+		for j, p := range msg.Peers {
 			pingRTT := time.Duration(p.PingMs * float64(time.Millisecond))
 			if p.PingMs < 0 {
 				pingRTT = -1
 			}
-			r.Peers = append(r.Peers, types.PeerLag{
+			r.Peers[j] = types.PeerLag{
 				NodeID:         p.NodeId,
 				Freshness:      time.Duration(p.FreshnessMs) * time.Millisecond,
 				Stale:          p.Stale,
 				ReplicationLag: time.Duration(p.ReplicationLagMs) * time.Millisecond,
 				PingRTT:        pingRTT,
-			})
+			}
 		}
-		out = append(out, r)
+		out[i] = r
 	}
 	return out, nil
 }
 
 // ProxyMachinesContext returns a context that routes gRPC requests through
-// the proxy to the specified machines. If nodeIDs is nil, all machines are targeted.
+// the proxy to the specified machines. If nodeIDs is empty, all machines are targeted.
 func ProxyMachinesContext(ctx context.Context, network string, nodeIDs []string) context.Context {
-	md := metadata.New(nil)
-	md.Set("proxy-network", network)
-	if len(nodeIDs) == 0 {
-		md.Append("machines", "*")
-	} else {
-		for _, id := range nodeIDs {
-			md.Append("machines", id)
-		}
+	md := metadata.Pairs("proxy-network", network)
+	targets := nodeIDs
+	if len(targets) == 0 {
+		targets = []string{"*"}
+	}
+	for _, id := range targets {
+		md.Append("machines", id)
 	}
 	return metadata.NewOutgoingContext(ctx, md)
 }
@@ -250,7 +250,7 @@ func applyResultFromProto(r *pb.ApplyResult) types.ApplyResult {
 		AdvertiseEndpoint:  r.AdvertiseEndpoint,
 		CorrosionName:      r.CorrosionName,
 		CorrosionAPIAddr:   r.CorrosionApiAddr,
-		CorrosionGossipAP:  r.CorrosionGossipAddr,
+		CorrosionGossipAddrPort:  r.CorrosionGossipAddr,
 		DockerNetwork:      r.DockerNetwork,
 		ConvergenceRunning: r.ConvergenceRunning,
 	}

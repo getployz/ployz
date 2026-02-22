@@ -26,7 +26,7 @@ type ApplyResult struct {
 	AdvertiseEndpoint  string `json:"advertise_endpoint,omitempty"`
 	CorrosionName      string `json:"corrosion_name"`
 	CorrosionAPIAddr   string `json:"corrosion_api_addr"`
-	CorrosionGossipAP  string `json:"corrosion_gossip_addr"`
+	CorrosionGossipAddrPort  string `json:"corrosion_gossip_addr"`
 	DockerNetwork      string `json:"docker_network"`
 	ConvergenceRunning bool   `json:"convergence_running"`
 }
@@ -58,7 +58,7 @@ type Identity struct {
 	WGInterface       string `json:"wg_interface,omitempty"`
 	WGPort            int    `json:"wg_port,omitempty"`
 	HelperName        string `json:"helper_name,omitempty"`
-	CorrosionGossip   int    `json:"corrosion_gossip_port,omitempty"`
+	CorrosionGossipPort int    `json:"corrosion_gossip_port,omitempty"`
 	CorrosionMemberID uint64 `json:"corrosion_member_id,omitempty"`
 	CorrosionAPIToken string `json:"corrosion_api_token,omitempty"`
 	Running           bool   `json:"running"`

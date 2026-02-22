@@ -21,10 +21,15 @@ const (
 type Store struct {
 	apiAddr  netip.AddrPort
 	apiToken string
+	baseURL  string // pre-computed "http://<addr>" to avoid repeated string concat on hot path
 }
 
 func NewStore(apiAddr netip.AddrPort, apiToken string) Store {
-	return Store{apiAddr: apiAddr, apiToken: strings.TrimSpace(apiToken)}
+	return Store{
+		apiAddr:  apiAddr,
+		apiToken: strings.TrimSpace(apiToken),
+		baseURL:  "http://" + apiAddr.String(),
+	}
 }
 
 func (s Store) EnsureMachineTable(ctx context.Context) error {
@@ -105,7 +110,7 @@ func (s Store) UpsertMachine(ctx context.Context, row mesh.MachineRow, expectedV
 		}
 		if current.PublicKey == row.PublicKey &&
 			current.Subnet == row.Subnet &&
-			current.Management == row.Management &&
+			current.ManagementIP == row.ManagementIP &&
 			current.Endpoint == row.Endpoint {
 			return nil
 		}
@@ -114,7 +119,7 @@ func (s Store) UpsertMachine(ctx context.Context, row mesh.MachineRow, expectedV
 			"UPDATE %s SET public_key = ?, subnet = ?, management_ip = ?, endpoint = ?, updated_at = ?, version = ? WHERE id = ?",
 			machinesTable,
 		)
-		return s.exec(ctx, query, row.PublicKey, row.Subnet, row.Management, row.Endpoint, row.UpdatedAt, row.Version, row.ID)
+		return s.exec(ctx, query, row.PublicKey, row.Subnet, row.ManagementIP, row.Endpoint, row.UpdatedAt, row.Version, row.ID)
 	}
 
 	if expectedVersion > 0 {
@@ -127,7 +132,7 @@ func (s Store) UpsertMachine(ctx context.Context, row mesh.MachineRow, expectedV
 		"INSERT INTO %s (id, public_key, subnet, management_ip, endpoint, updated_at, version) VALUES (?, ?, ?, ?, ?, ?, ?)",
 		machinesTable,
 	)
-	return s.exec(ctx, query, row.ID, row.PublicKey, row.Subnet, row.Management, row.Endpoint, row.UpdatedAt, row.Version)
+	return s.exec(ctx, query, row.ID, row.PublicKey, row.Subnet, row.ManagementIP, row.Endpoint, row.UpdatedAt, row.Version)
 }
 
 func (s Store) DeleteByEndpointExceptID(ctx context.Context, endpoint, id string) error {
@@ -165,11 +170,7 @@ func (s Store) networkConfigValue(ctx context.Context, key string) (string, erro
 	if len(rows) == 0 || len(rows[0]) == 0 {
 		return "", nil
 	}
-	value, err := decodeString(rows[0][0], "network config value")
-	if err != nil {
-		return "", err
-	}
-	return value, nil
+	return decodeString(rows[0][0], "network config value")
 }
 
 func (s Store) setNetworkConfigValue(ctx context.Context, key, value string) error {
@@ -197,18 +198,15 @@ func (s Store) machineByID(ctx context.Context, id string) (mesh.MachineRow, boo
 }
 
 func decodeString(raw json.RawMessage, label string) (string, error) {
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		return s, nil
-	}
+	// Try nullable string first to handle both "value" and null in one pass.
 	var p *string
-	if err := json.Unmarshal(raw, &p); err == nil {
-		if p == nil {
-			return "", nil
-		}
-		return *p, nil
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return "", fmt.Errorf("decode %s: %w", label, err)
 	}
-	return "", fmt.Errorf("decode %s", label)
+	if p == nil {
+		return "", nil
+	}
+	return *p, nil
 }
 
 func (s Store) EnsureHeartbeatTable(ctx context.Context) error {
@@ -235,23 +233,23 @@ func decodeInt64(raw json.RawMessage, label string) (int64, error) {
 	if err := json.Unmarshal(raw, &n); err == nil {
 		return n, nil
 	}
+	// Corrosion may return numbers as floats or strings; try both fallbacks.
 	var f float64
 	if err := json.Unmarshal(raw, &f); err == nil {
 		return int64(f), nil
 	}
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
-		i, convErr := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
-		if convErr == nil {
+		if i, convErr := strconv.ParseInt(strings.TrimSpace(s), 10, 64); convErr == nil {
 			return i, nil
 		}
 	}
-	return 0, fmt.Errorf("decode %s", label)
+	return 0, fmt.Errorf("decode %s: %s", label, string(raw))
 }
 
 func decodeMachineRow(values []json.RawMessage) (mesh.MachineRow, error) {
 	if len(values) != 6 && len(values) != 7 {
-		return mesh.MachineRow{}, fmt.Errorf("decode machine row")
+		return mesh.MachineRow{}, fmt.Errorf("decode machine row: expected 6 or 7 columns, got %d", len(values))
 	}
 
 	var out mesh.MachineRow
@@ -265,7 +263,7 @@ func decodeMachineRow(values []json.RawMessage) (mesh.MachineRow, error) {
 	if out.Subnet, err = decodeString(values[2], "machine subnet"); err != nil {
 		return mesh.MachineRow{}, err
 	}
-	if out.Management, err = decodeString(values[3], "machine management ip"); err != nil {
+	if out.ManagementIP, err = decodeString(values[3], "machine management ip"); err != nil {
 		return mesh.MachineRow{}, err
 	}
 	if out.Endpoint, err = decodeString(values[4], "machine endpoint"); err != nil {

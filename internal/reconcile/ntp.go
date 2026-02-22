@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"ployz/internal/check"
 	"ployz/internal/mesh"
 
 	"github.com/beevik/ntp"
@@ -30,9 +31,14 @@ type NTPChecker struct {
 	interval  time.Duration
 	threshold time.Duration
 	clock     mesh.Clock
+
+	// CheckFunc overrides real NTP queries for testing.
+	// When set, check() calls this instead of ntp.Query().
+	CheckFunc func() NTPStatus
 }
 
 func NewNTPChecker(clock mesh.Clock) *NTPChecker {
+	check.Assert(clock != nil, "NewNTPChecker: clock must not be nil")
 	return &NTPChecker{
 		pool:      defaultNTPPool,
 		interval:  defaultNTPInterval,
@@ -58,6 +64,13 @@ func (n *NTPChecker) Run(ctx context.Context) {
 }
 
 func (n *NTPChecker) check() {
+	if n.CheckFunc != nil {
+		n.mu.Lock()
+		n.status = n.CheckFunc()
+		n.mu.Unlock()
+		return
+	}
+
 	resp, err := ntp.Query(n.pool)
 
 	n.mu.Lock()
@@ -73,14 +86,9 @@ func (n *NTPChecker) check() {
 		return
 	}
 
-	offset := resp.ClockOffset
-	if offset < 0 {
-		offset = -offset
-	}
-
 	n.status = NTPStatus{
 		Offset:    resp.ClockOffset,
-		Healthy:   offset < n.threshold,
+		Healthy:   resp.ClockOffset.Abs() < n.threshold,
 		CheckedAt: now,
 	}
 }

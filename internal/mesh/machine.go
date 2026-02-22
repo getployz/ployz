@@ -10,7 +10,7 @@ type MachineRow struct {
 	ID         string
 	PublicKey  string
 	Subnet     string
-	Management string
+	ManagementIP string
 	Endpoint   string
 	UpdatedAt  string
 	Version    int64

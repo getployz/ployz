@@ -1,17 +1,39 @@
 package fake
 
 import (
+	"cmp"
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
-	"math/rand"
+	mathrand "math/rand"
 	"net/netip"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
+	"ployz/internal/check"
 	"ployz/internal/mesh"
+	"ployz/internal/reconcile"
 )
+
+// ClusterOption configures optional Cluster behavior.
+type ClusterOption func(*clusterConfig)
+
+type clusterConfig struct {
+	seed    int64
+	seedSet bool
+}
+
+// WithRandSeed sets a deterministic seed for the RNG used in drop-rate
+// decisions. If not provided, the seed is derived from crypto/rand.
+func WithRandSeed(seed int64) ClusterOption {
+	return func(cfg *clusterConfig) {
+		cfg.seed = seed
+		cfg.seedSet = true
+	}
+}
 
 // ErrNodeDead is returned by Registry methods when the node has been killed.
 var ErrNodeDead = errors.New("node is dead")
@@ -19,23 +41,25 @@ var ErrNodeDead = errors.New("node is dead")
 // Cluster simulates a Corrosion gossip cluster with N nodes.
 // All operations are deterministic — no goroutines, no real time.
 type Cluster struct {
-	mu        sync.RWMutex
-	clock     *Clock
-	nodes     map[string]*nodeState
-	links     map[link]*LinkConfig
-	blocked   map[link]bool
-	killed    map[string]bool
-	pending   []pendingWrite
-	rng       *rand.Rand
-	nodeAddrs map[string]string // addr → nodeID, for DialFunc lookups
+	mu         sync.RWMutex
+	clock      mesh.Clock
+	nodes      map[string]*nodeState
+	registries map[string]*Registry             // cached per-node registries
+	links      map[link]*LinkConfig
+	blocked    map[link]bool
+	killed     map[string]bool
+	pending    []pendingWrite
+	rng        *mathrand.Rand
+	nodeAddrs  map[string]string                // addr → nodeID, for DialFunc lookups
+	linkPred   func(from, to string) bool       // if non-nil, consulted before delivery
 }
 
 type nodeState struct {
 	machines    map[string]mesh.MachineRow
 	heartbeats  map[string]mesh.HeartbeatRow
 	networkCIDR netip.Prefix
-	machSubs    []chan<- mesh.MachineChange
-	hbSubs      []chan<- mesh.HeartbeatChange
+	machineSubscriptions   []chan<- mesh.MachineChange
+	heartbeatSubscriptions []chan<- mesh.HeartbeatChange
 }
 
 // LinkConfig controls replication behavior between two nodes.
@@ -50,6 +74,7 @@ type link struct{ from, to string }
 
 type pendingWrite struct {
 	deliverAt time.Time
+	from      string
 	target    string
 	write     writeOp
 }
@@ -67,6 +92,9 @@ const (
 	writeUpsertMachine writeKind = iota
 	writeDeleteMachine
 	writeHeartbeat
+
+	// subscriptionBufCapacity is 256: sized to absorb burst from full cluster anti-entropy.
+	subscriptionBufCapacity = 256
 )
 
 // NodeSnapshot is a point-in-time view of a node's local data.
@@ -86,16 +114,31 @@ func (s NodeSnapshot) Machine(id string) (mesh.MachineRow, bool) {
 }
 
 // NewCluster creates a cluster backed by the given fake clock.
-func NewCluster(clock *Clock) *Cluster {
-	// TODO: random seed for Drop rate (currently uses math/rand)
+// Options can configure deterministic seeding for drop-rate RNG via WithRandSeed.
+func NewCluster(clock mesh.Clock, opts ...ClusterOption) *Cluster {
+	check.Assert(clock != nil, "NewCluster: clock must not be nil")
+
+	var cfg clusterConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	seed := cfg.seed
+	if !cfg.seedSet {
+		var buf [8]byte
+		_, _ = rand.Read(buf[:])
+		seed = int64(binary.LittleEndian.Uint64(buf[:]))
+	}
+
 	return &Cluster{
-		clock:     clock,
-		nodes:     make(map[string]*nodeState),
-		links:     make(map[link]*LinkConfig),
-		blocked:   make(map[link]bool),
-		killed:    make(map[string]bool),
-		rng:       rand.New(rand.NewSource(42)),
-		nodeAddrs: make(map[string]string),
+		clock:      clock,
+		nodes:      make(map[string]*nodeState),
+		registries: make(map[string]*Registry),
+		links:      make(map[link]*LinkConfig),
+		blocked:    make(map[link]bool),
+		killed:     make(map[string]bool),
+		rng:        mathrand.New(mathrand.NewSource(seed)),
+		nodeAddrs:  make(map[string]string),
 	}
 }
 
@@ -111,12 +154,19 @@ func (c *Cluster) ensureNode(id string) *nodeState {
 	return n
 }
 
-// Registry returns (or creates) a Registry view for the given node.
+// Registry returns the cached Registry for the given node, creating it on first call.
+// The same *Registry is returned for the same nodeID, so error injection hooks
+// set on the returned value affect all components using this node's registry.
 func (c *Cluster) Registry(nodeID string) *Registry {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.ensureNode(nodeID)
-	c.mu.Unlock()
-	return NewRegistry(c, nodeID)
+	if r, ok := c.registries[nodeID]; ok {
+		return r
+	}
+	r := NewRegistry(c, nodeID)
+	c.registries[nodeID] = r
+	return r
 }
 
 // RegisterAddr maps an address (e.g. "host:port") to a node ID for DialFunc lookups.
@@ -152,6 +202,16 @@ func (c *Cluster) Partition(groupA, groupB []string) {
 	}
 }
 
+// SetLinkPredicate installs a callback consulted before delivering writes.
+// If pred returns false for a (from, to) pair, the write stays in pending
+// and is re-checked on every Tick/Drain (modeling gossip retry to unreachable peers).
+// Pass nil to remove the predicate.
+func (c *Cluster) SetLinkPredicate(pred func(from, to string) bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.linkPred = pred
+}
+
 // Heal removes all partitions.
 func (c *Cluster) Heal() {
 	c.mu.Lock()
@@ -181,11 +241,6 @@ func (c *Cluster) RestartNode(nodeID string) {
 func (c *Cluster) IsKilled(nodeID string) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.killed[nodeID]
-}
-
-// isNodeDead checks killed state. Caller must hold c.mu.
-func (c *Cluster) isNodeDead(nodeID string) bool {
 	return c.killed[nodeID]
 }
 
@@ -266,16 +321,7 @@ func (c *Cluster) Tick() {
 func (c *Cluster) Drain() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	var remaining []pendingWrite
-	for _, pw := range c.pending {
-		if c.isNodeDead(pw.target) {
-			remaining = append(remaining, pw)
-			continue
-		}
-		c.applyWrite(pw.target, pw.write)
-	}
-	c.pending = remaining
+	c.deliverUpTo(time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC))
 }
 
 // Snapshot returns a point-in-time view of a node's local data.
@@ -315,7 +361,6 @@ func (c *Cluster) DialFunc(fromNodeID string) func(ctx context.Context, addr str
 		c.mu.RLock()
 		defer c.mu.RUnlock()
 
-		// Find which node owns this address by checking machine endpoints.
 		targetNode := c.nodeByAddr(addr)
 		if targetNode == "" {
 			return -1, fmt.Errorf("no node found for address %s", addr)
@@ -343,43 +388,41 @@ func (c *Cluster) NetworkRegistryFactory(nodeID string) mesh.RegistryFactory {
 	}
 }
 
-// ReconcileRegistryFactory returns an engine.RegistryFactory for the given node.
-// It returns the same *Registry cast to reconcile.Registry.
-func (c *Cluster) ReconcileRegistryFactory(nodeID string) func(addr netip.AddrPort, token string) *Registry {
-	return func(addr netip.AddrPort, token string) *Registry {
+// ReconcileRegistryFactory returns a factory for the given node that produces
+// reconcile.Registry values. Used to wire Workers in test harnesses.
+func (c *Cluster) ReconcileRegistryFactory(nodeID string) func(addr netip.AddrPort, token string) reconcile.Registry {
+	return func(addr netip.AddrPort, token string) reconcile.Registry {
 		return c.Registry(nodeID)
 	}
 }
 
 // Internal: upsert a machine from the perspective of writerNode.
-func (c *Cluster) upsertMachine(writerNode string, row mesh.MachineRow) error {
+// Matches real Corrosion semantics: expectedVersion=0 means unconditional write,
+// expectedVersion>0 requires the existing row's version to match exactly.
+func (c *Cluster) upsertMachine(writerNode string, row mesh.MachineRow, expectedVersion int64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	n := c.ensureNode(writerNode)
 
-	// Optimistic concurrency: check version if expectedVersion set in row.
 	if existing, ok := n.machines[row.ID]; ok {
-		// Version is bumped by the caller. Check happens before write.
-		if row.Version > 0 && existing.Version != row.Version-1 {
+		if expectedVersion > 0 && existing.Version != expectedVersion {
 			return mesh.ErrConflict
+		}
+		row.Version = existing.Version + 1
+	} else {
+		if expectedVersion > 0 {
+			return mesh.ErrConflict
+		}
+		if row.Version <= 0 {
+			row.Version = 1
 		}
 	}
 
 	n.machines[row.ID] = row
+	notifyMachineSubs(n, mesh.MachineChange{Kind: mesh.ChangeUpdated, Machine: row})
 
-	// Notify local subscribers.
-	change := mesh.MachineChange{Kind: mesh.ChangeUpdated, Machine: row}
-	for _, ch := range n.machSubs {
-		select {
-		case ch <- change:
-		default:
-		}
-	}
-
-	// Fan out to other nodes.
-	op := writeOp{kind: writeUpsertMachine, machine: row}
-	c.fanOut(writerNode, op)
+	c.fanOut(writerNode, writeOp{kind: writeUpsertMachine, machine: row})
 	return nil
 }
 
@@ -394,17 +437,9 @@ func (c *Cluster) deleteMachine(writerNode string, machineID string) {
 		return
 	}
 	delete(n.machines, machineID)
+	notifyMachineSubs(n, mesh.MachineChange{Kind: mesh.ChangeDeleted, Machine: row})
 
-	change := mesh.MachineChange{Kind: mesh.ChangeDeleted, Machine: row}
-	for _, ch := range n.machSubs {
-		select {
-		case ch <- change:
-		default:
-		}
-	}
-
-	op := writeOp{kind: writeDeleteMachine, deleteID: machineID, machine: row}
-	c.fanOut(writerNode, op)
+	c.fanOut(writerNode, writeOp{kind: writeDeleteMachine, deleteID: machineID, machine: row})
 }
 
 // Internal: delete machines by endpoint except a specific ID.
@@ -423,17 +458,8 @@ func (c *Cluster) deleteByEndpointExceptID(writerNode string, endpoint string, e
 	for _, id := range toDelete {
 		row := n.machines[id]
 		delete(n.machines, id)
-
-		change := mesh.MachineChange{Kind: mesh.ChangeDeleted, Machine: row}
-		for _, ch := range n.machSubs {
-			select {
-			case ch <- change:
-			default:
-			}
-		}
-
-		op := writeOp{kind: writeDeleteMachine, deleteID: id, machine: row}
-		c.fanOut(writerNode, op)
+		notifyMachineSubs(n, mesh.MachineChange{Kind: mesh.ChangeDeleted, Machine: row})
+		c.fanOut(writerNode, writeOp{kind: writeDeleteMachine, deleteID: id, machine: row})
 	}
 }
 
@@ -450,17 +476,9 @@ func (c *Cluster) bumpHeartbeat(writerNode string, nodeID string, updatedAt stri
 		UpdatedAt: updatedAt,
 	}
 	n.heartbeats[nodeID] = hb
+	notifyHeartbeatSubs(n, mesh.HeartbeatChange{Kind: mesh.ChangeUpdated, Heartbeat: hb})
 
-	change := mesh.HeartbeatChange{Kind: mesh.ChangeUpdated, Heartbeat: hb}
-	for _, ch := range n.hbSubs {
-		select {
-		case ch <- change:
-		default:
-		}
-	}
-
-	op := writeOp{kind: writeHeartbeat, heartbeat: hb}
-	c.fanOut(writerNode, op)
+	c.fanOut(writerNode, writeOp{kind: writeHeartbeat, heartbeat: hb})
 }
 
 // Internal: ensure network CIDR with first-writer-wins semantics.
@@ -506,37 +524,24 @@ func (c *Cluster) listMachines(nodeID string) []mesh.MachineRow {
 	return sortedMachines(n.machines)
 }
 
-// Internal: list heartbeats for a specific node's local view.
-func (c *Cluster) listHeartbeats(nodeID string) []mesh.HeartbeatRow {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	n, ok := c.nodes[nodeID]
-	if !ok {
-		return nil
-	}
-	return sortedHeartbeats(n.heartbeats)
-}
-
 // Internal: subscribe to machine changes on a specific node.
 func (c *Cluster) subscribeMachines(ctx context.Context, nodeID string) ([]mesh.MachineRow, <-chan mesh.MachineChange, error) {
 	c.mu.Lock()
 	n := c.ensureNode(nodeID)
 
 	snapshot := sortedMachines(n.machines)
-	// TODO: configurable subscription buffer size
-	ch := make(chan mesh.MachineChange, 256)
-	n.machSubs = append(n.machSubs, ch)
+	ch := make(chan mesh.MachineChange, subscriptionBufCapacity)
+	n.machineSubscriptions = append(n.machineSubscriptions, ch)
 	c.mu.Unlock()
 
 	go func() {
 		<-ctx.Done()
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		subs := c.nodes[nodeID].machSubs
+		subs := c.nodes[nodeID].machineSubscriptions
 		for i, s := range subs {
 			if s == ch {
-				c.nodes[nodeID].machSubs = append(subs[:i], subs[i+1:]...)
+				c.nodes[nodeID].machineSubscriptions = append(subs[:i], subs[i+1:]...)
 				break
 			}
 		}
@@ -552,18 +557,18 @@ func (c *Cluster) subscribeHeartbeats(ctx context.Context, nodeID string) ([]mes
 	n := c.ensureNode(nodeID)
 
 	snapshot := sortedHeartbeats(n.heartbeats)
-	ch := make(chan mesh.HeartbeatChange, 256)
-	n.hbSubs = append(n.hbSubs, ch)
+	ch := make(chan mesh.HeartbeatChange, subscriptionBufCapacity)
+	n.heartbeatSubscriptions = append(n.heartbeatSubscriptions, ch)
 	c.mu.Unlock()
 
 	go func() {
 		<-ctx.Done()
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		subs := c.nodes[nodeID].hbSubs
+		subs := c.nodes[nodeID].heartbeatSubscriptions
 		for i, s := range subs {
 			if s == ch {
-				c.nodes[nodeID].hbSubs = append(subs[:i], subs[i+1:]...)
+				c.nodes[nodeID].heartbeatSubscriptions = append(subs[:i], subs[i+1:]...)
 				break
 			}
 		}
@@ -576,19 +581,30 @@ func (c *Cluster) subscribeHeartbeats(ctx context.Context, nodeID string) ([]mes
 // fanOut replicates a write to all nodes except the writer.
 // Must be called with c.mu held.
 func (c *Cluster) fanOut(writerNode string, op writeOp) {
-	if c.isNodeDead(writerNode) {
+	if c.killed[writerNode] {
 		return
 	}
 	for nodeID := range c.nodes {
 		if nodeID == writerNode {
 			continue
 		}
-		if c.isNodeDead(nodeID) {
+		if c.killed[nodeID] {
 			continue
 		}
 		l := link{writerNode, nodeID}
 
 		if c.blocked[l] {
+			continue
+		}
+
+		// LinkPredicate: if set and returns false, enqueue as pending for retry.
+		if c.linkPred != nil && !c.linkPred(writerNode, nodeID) {
+			c.pending = append(c.pending, pendingWrite{
+				deliverAt: c.clock.Now(),
+				from:      writerNode,
+				target:    nodeID,
+				write:     op,
+			})
 			continue
 		}
 
@@ -605,6 +621,7 @@ func (c *Cluster) fanOut(writerNode string, op writeOp) {
 			if lc.Latency > 0 {
 				c.pending = append(c.pending, pendingWrite{
 					deliverAt: c.clock.Now().Add(lc.Latency),
+					from:      writerNode,
 					target:    nodeID,
 					write:     op,
 				})
@@ -625,33 +642,18 @@ func (c *Cluster) applyWrite(target string, op writeOp) {
 	switch op.kind {
 	case writeUpsertMachine:
 		n.machines[op.machine.ID] = op.machine
-		change := mesh.MachineChange{Kind: mesh.ChangeUpdated, Machine: op.machine}
-		for _, ch := range n.machSubs {
-			select {
-			case ch <- change:
-			default:
-			}
-		}
+		notifyMachineSubs(n, mesh.MachineChange{Kind: mesh.ChangeUpdated, Machine: op.machine})
 
 	case writeDeleteMachine:
 		delete(n.machines, op.deleteID)
-		change := mesh.MachineChange{Kind: mesh.ChangeDeleted, Machine: op.machine}
-		for _, ch := range n.machSubs {
-			select {
-			case ch <- change:
-			default:
-			}
-		}
+		notifyMachineSubs(n, mesh.MachineChange{Kind: mesh.ChangeDeleted, Machine: op.machine})
 
 	case writeHeartbeat:
 		n.heartbeats[op.heartbeat.NodeID] = op.heartbeat
-		change := mesh.HeartbeatChange{Kind: mesh.ChangeUpdated, Heartbeat: op.heartbeat}
-		for _, ch := range n.hbSubs {
-			select {
-			case ch <- change:
-			default:
-			}
-		}
+		notifyHeartbeatSubs(n, mesh.HeartbeatChange{Kind: mesh.ChangeUpdated, Heartbeat: op.heartbeat})
+
+	default:
+		panic(fmt.Sprintf("unknown writeKind: %d", op.kind))
 	}
 }
 
@@ -660,7 +662,11 @@ func (c *Cluster) applyWrite(target string, op writeOp) {
 func (c *Cluster) deliverUpTo(t time.Time) {
 	var remaining []pendingWrite
 	for _, pw := range c.pending {
-		if c.isNodeDead(pw.target) {
+		if c.killed[pw.target] {
+			remaining = append(remaining, pw)
+			continue
+		}
+		if c.linkPred != nil && pw.from != "" && !c.linkPred(pw.from, pw.target) {
 			remaining = append(remaining, pw)
 			continue
 		}
@@ -690,12 +696,34 @@ func (c *Cluster) nodeByAddr(addr string) string {
 	return ""
 }
 
+// notifyMachineSubs sends a change to all machine subscription channels on the node.
+// Drops the change if a channel's buffer is full. Must be called with c.mu held.
+func notifyMachineSubs(n *nodeState, change mesh.MachineChange) {
+	for _, ch := range n.machineSubscriptions {
+		select {
+		case ch <- change:
+		default:
+		}
+	}
+}
+
+// notifyHeartbeatSubs sends a change to all heartbeat subscription channels on the node.
+// Drops the change if a channel's buffer is full. Must be called with c.mu held.
+func notifyHeartbeatSubs(n *nodeState, change mesh.HeartbeatChange) {
+	for _, ch := range n.heartbeatSubscriptions {
+		select {
+		case ch <- change:
+		default:
+		}
+	}
+}
+
 func sortedMachines(m map[string]mesh.MachineRow) []mesh.MachineRow {
 	out := make([]mesh.MachineRow, 0, len(m))
 	for _, row := range m {
 		out = append(out, row)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	slices.SortFunc(out, func(a, b mesh.MachineRow) int { return cmp.Compare(a.ID, b.ID) })
 	return out
 }
 
@@ -704,6 +732,6 @@ func sortedHeartbeats(m map[string]mesh.HeartbeatRow) []mesh.HeartbeatRow {
 	for _, row := range m {
 		out = append(out, row)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
+	slices.SortFunc(out, func(a, b mesh.HeartbeatRow) int { return cmp.Compare(a.NodeID, b.NodeID) })
 	return out
 }

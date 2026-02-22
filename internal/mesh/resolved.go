@@ -14,24 +14,10 @@ func Resolve(cfg Config, s *State) (Config, error) {
 		return norm, nil
 	}
 
-	if norm.Network == "" {
-		norm.Network = s.Network
-	}
-	if norm.WGInterface == "" {
-		norm.WGInterface = s.WGInterface
-	}
-	if norm.WGPort == 0 {
-		norm.WGPort = s.WGPort
-	}
-	if norm.DockerNetwork == "" {
-		norm.DockerNetwork = s.DockerNetwork
-	}
-	if norm.CorrosionName == "" {
-		norm.CorrosionName = s.CorrosionName
-	}
-	if norm.CorrosionImg == "" {
-		norm.CorrosionImg = s.CorrosionImg
-	}
+	// NormalizeConfig guarantees Network, WGInterface, WGPort, DockerNetwork,
+	// CorrosionName, and CorrosionImage are always populated, so only fields
+	// that NormalizeConfig cannot derive need state fallbacks.
+
 	if norm.CorrosionMemberID == 0 {
 		norm.CorrosionMemberID = s.CorrosionMemberID
 	}
@@ -52,8 +38,8 @@ func Resolve(cfg Config, s *State) (Config, error) {
 	if len(norm.CorrosionBootstrap) == 0 && len(s.Bootstrap) > 0 {
 		norm.CorrosionBootstrap = normalizeBootstrapAddrs(s.Bootstrap)
 	}
-	if norm.AdvertiseEP == "" {
-		norm.AdvertiseEP = s.Advertise
+	if norm.AdvertiseEndpoint == "" {
+		norm.AdvertiseEndpoint = s.Advertise
 	}
 	if !norm.Subnet.IsValid() {
 		subnet, err := netip.ParsePrefix(s.Subnet)
@@ -68,7 +54,7 @@ func Resolve(cfg Config, s *State) (Config, error) {
 	}
 	norm.Management = mgmt
 	refreshCorrosionGossipAddr(&norm)
-	norm.CorrosionGossipAP = netip.AddrPortFrom(norm.CorrosionGossipIP, uint16(norm.CorrosionGossip))
+	norm.CorrosionGossipAddrPort = netip.AddrPortFrom(norm.CorrosionGossipIP, uint16(norm.CorrosionGossipPort))
 
 	return norm, nil
 }

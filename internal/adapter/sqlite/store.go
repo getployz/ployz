@@ -9,14 +9,14 @@ import (
 	"strings"
 	"time"
 
-	pb "ployz/internal/daemon/pb"
 	"ployz/pkg/sdk/defaults"
+	"ployz/pkg/sdk/types"
 
 	_ "modernc.org/sqlite"
 )
 
 type PersistedSpec struct {
-	Spec    *pb.NetworkSpec
+	Spec    types.NetworkSpec
 	Enabled bool
 }
 
@@ -29,17 +29,9 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("create state directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := openDB(path)
 	if err != nil {
 		return nil, fmt.Errorf("open state db: %w", err)
-	}
-	if _, err := db.Exec(`PRAGMA journal_mode = WAL`); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("set state db journal mode: %w", err)
-	}
-	if _, err := db.Exec(`PRAGMA busy_timeout = 5000`); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("set state db busy timeout: %w", err)
 	}
 	if _, err := db.Exec(`
 CREATE TABLE IF NOT EXISTS network_specs (
@@ -69,20 +61,16 @@ func (s *Store) ListSpecs() ([]PersistedSpec, error) {
 	}
 	defer rows.Close()
 
-	out := make([]PersistedSpec, 0)
+	var out []PersistedSpec
 	for rows.Next() {
-		var network string
-		var specJSON string
+		var network, specJSON string
 		var enabled int
 		if err := rows.Scan(&network, &specJSON, &enabled); err != nil {
 			return nil, fmt.Errorf("scan network spec row: %w", err)
 		}
-		spec := &pb.NetworkSpec{}
-		if err := json.Unmarshal([]byte(specJSON), spec); err != nil {
-			return nil, fmt.Errorf("unmarshal network spec %q: %w", network, err)
-		}
-		if strings.TrimSpace(spec.Network) == "" {
-			spec.Network = network
+		spec, err := unmarshalSpec(network, specJSON)
+		if err != nil {
+			return nil, err
 		}
 		out = append(out, PersistedSpec{Spec: spec, Enabled: enabled != 0})
 	}
@@ -103,27 +91,19 @@ func (s *Store) GetSpec(network string) (PersistedSpec, bool, error) {
 		return PersistedSpec{}, false, fmt.Errorf("query network spec %q: %w", network, err)
 	}
 
-	spec := &pb.NetworkSpec{}
-	if err := json.Unmarshal([]byte(specJSON), spec); err != nil {
-		return PersistedSpec{}, false, fmt.Errorf("unmarshal network spec %q: %w", network, err)
-	}
-	if strings.TrimSpace(spec.Network) == "" {
-		spec.Network = network
+	spec, err := unmarshalSpec(network, specJSON)
+	if err != nil {
+		return PersistedSpec{}, false, err
 	}
 	return PersistedSpec{Spec: spec, Enabled: enabled != 0}, true, nil
 }
 
-func (s *Store) SaveSpec(spec *pb.NetworkSpec, enabled bool) error {
+func (s *Store) SaveSpec(spec types.NetworkSpec, enabled bool) error {
 	payload, err := json.Marshal(spec)
 	if err != nil {
 		return fmt.Errorf("marshal network spec: %w", err)
 	}
-	enabledInt := 0
-	if enabled {
-		enabledInt = 1
-	}
 
-	network := strings.TrimSpace(spec.Network)
 	_, err = s.db.Exec(
 		`INSERT INTO network_specs (network, spec_json, enabled, updated_at)
 		 VALUES (?, ?, ?, ?)
@@ -131,9 +111,9 @@ func (s *Store) SaveSpec(spec *pb.NetworkSpec, enabled bool) error {
 		 spec_json = excluded.spec_json,
 		 enabled = excluded.enabled,
 		 updated_at = excluded.updated_at`,
-		network,
+		strings.TrimSpace(spec.Network),
 		string(payload),
-		enabledInt,
+		boolToInt(enabled),
 		time.Now().UTC().Format(time.RFC3339),
 	)
 	if err != nil {
@@ -147,4 +127,40 @@ func (s *Store) DeleteSpec(network string) error {
 		return fmt.Errorf("delete network spec: %w", err)
 	}
 	return nil
+}
+
+// openDB opens a SQLite database with standard pragmas (WAL mode, busy timeout).
+func openDB(path string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := db.Exec(`PRAGMA journal_mode = WAL`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("set journal mode: %w", err)
+	}
+	if _, err := db.Exec(`PRAGMA busy_timeout = 5000`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("set busy timeout: %w", err)
+	}
+	return db, nil
+}
+
+// unmarshalSpec decodes a JSON spec and backfills the network name if missing.
+func unmarshalSpec(network, specJSON string) (types.NetworkSpec, error) {
+	var spec types.NetworkSpec
+	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+		return types.NetworkSpec{}, fmt.Errorf("unmarshal network spec %q: %w", network, err)
+	}
+	if strings.TrimSpace(spec.Network) == "" {
+		spec.Network = network
+	}
+	return spec, nil
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

@@ -11,8 +11,8 @@ import (
 type Peer struct {
 	PublicKey  string
 	Subnet     string
-	Management string
-	Endpoint   string
+	ManagementIP string
+	Endpoint     string
 }
 
 // PeerSpec holds resolved WireGuard peer parameters.
@@ -33,7 +33,7 @@ func parsePeerSpec(in Peer) (PeerSpec, error) {
 	}
 
 	subnetStr := strings.TrimSpace(in.Subnet)
-	mgmtStr := strings.TrimSpace(in.Management)
+	mgmtStr := strings.TrimSpace(in.ManagementIP)
 	if subnetStr == "" && mgmtStr == "" {
 		return PeerSpec{}, fmt.Errorf("peer subnet or management ip is required")
 	}

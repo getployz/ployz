@@ -2,6 +2,7 @@ package corrosion
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -10,191 +11,83 @@ import (
 	"ployz/internal/mesh"
 )
 
+const (
+	changeBufCapacity      = 128
+	maxResubscribeBackoff  = 15 * time.Second
+	maxResubscribeAttempts = 20
+)
+
+// parseChangeKind maps Corrosion change type strings to mesh.ChangeKind values.
+func parseChangeKind(typ string) mesh.ChangeKind {
+	switch strings.ToLower(strings.TrimSpace(typ)) {
+	case "insert":
+		return mesh.ChangeAdded
+	case "delete":
+		return mesh.ChangeDeleted
+	default:
+		return mesh.ChangeUpdated
+	}
+}
+
+// subscriptionSpec parameterizes the generic subscription loop for a specific row/change type.
+type subscriptionSpec[Row any, Change any] struct {
+	label      string
+	decodeRow  func([]json.RawMessage) (Row, error)
+	makeChange func(mesh.ChangeKind, Row) Change
+	resyncMsg  Change
+}
+
+var machineSpec = subscriptionSpec[mesh.MachineRow, mesh.MachineChange]{
+	label:     "machine",
+	decodeRow: decodeMachineRow,
+	makeChange: func(kind mesh.ChangeKind, row mesh.MachineRow) mesh.MachineChange {
+		return mesh.MachineChange{Kind: kind, Machine: row}
+	},
+	resyncMsg: mesh.MachineChange{Kind: mesh.ChangeResync},
+}
+
+var heartbeatSpec = subscriptionSpec[mesh.HeartbeatRow, mesh.HeartbeatChange]{
+	label:     "heartbeat",
+	decodeRow: decodeHeartbeatRow,
+	makeChange: func(kind mesh.ChangeKind, row mesh.HeartbeatRow) mesh.HeartbeatChange {
+		return mesh.HeartbeatChange{Kind: kind, Heartbeat: row}
+	},
+	resyncMsg: mesh.HeartbeatChange{Kind: mesh.ChangeResync},
+}
+
 func (s Store) SubscribeMachines(ctx context.Context) ([]mesh.MachineRow, <-chan mesh.MachineChange, error) {
 	query := fmt.Sprintf("SELECT id, public_key, subnet, management_ip, endpoint, updated_at, version FROM %s ORDER BY id", machinesTable)
-	stream, snapshot, lastChangeID, err := s.openMachinesSubscription(ctx, query)
-	if err != nil {
-		return nil, nil, err
-	}
-	slog.Debug("registry machine subscription opened", "rows", len(snapshot), "change_id", lastChangeID)
-
-	changes := make(chan mesh.MachineChange, 128)
-	go s.runMachineChanges(ctx, stream, lastChangeID, changes)
-	return snapshot, changes, nil
-}
-
-func (s Store) openMachinesSubscription(
-	ctx context.Context,
-	query string,
-) (*subscriptionStream, []mesh.MachineRow, uint64, error) {
-	stream, err := s.subscribe(ctx, query, nil)
-	if err != nil {
-		return nil, nil, 0, err
-	}
-
-	var ev queryEvent
-	if err := stream.Decoder.Decode(&ev); err != nil {
-		_ = stream.Body.Close()
-		return nil, nil, 0, fmt.Errorf("decode corrosion subscription columns: %w", err)
-	}
-	if ev.Error != nil {
-		_ = stream.Body.Close()
-		return nil, nil, 0, fmt.Errorf("corrosion subscription error: %s", *ev.Error)
-	}
-
-	snapshot := make([]mesh.MachineRow, 0)
-	var lastChange uint64
-	for {
-		ev = queryEvent{}
-		if err := stream.Decoder.Decode(&ev); err != nil {
-			_ = stream.Body.Close()
-			return nil, nil, 0, fmt.Errorf("decode corrosion subscription row: %w", err)
-		}
-		if ev.Error != nil {
-			_ = stream.Body.Close()
-			return nil, nil, 0, fmt.Errorf("corrosion subscription error: %s", *ev.Error)
-		}
-		if ev.Row != nil {
-			row, rowErr := decodeMachineRow(ev.Row.Values)
-			if rowErr != nil {
-				_ = stream.Body.Close()
-				return nil, nil, 0, rowErr
-			}
-			snapshot = append(snapshot, row)
-			continue
-		}
-		if ev.EOQ != nil {
-			if ev.EOQ.ChangeID != nil {
-				lastChange = *ev.EOQ.ChangeID
-			}
-			break
-		}
-	}
-
-	return stream, snapshot, lastChange, nil
-}
-
-func (s Store) runMachineChanges(
-	ctx context.Context,
-	stream *subscriptionStream,
-	lastChangeID uint64,
-	out chan<- mesh.MachineChange,
-) {
-	defer close(out)
-	defer stream.Body.Close()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		var ev queryEvent
-		if err := stream.Decoder.Decode(&ev); err != nil {
-			slog.Debug("registry machine subscription decode failed; resubscribing", "err", err)
-			if !s.resubscribeMachines(ctx, stream, &lastChangeID, out) {
-				return
-			}
-			continue
-		}
-		if ev.Error != nil {
-			slog.Debug("registry machine subscription stream error; resubscribing", "err", *ev.Error)
-			if !s.resubscribeMachines(ctx, stream, &lastChangeID, out) {
-				return
-			}
-			continue
-		}
-		if ev.Change == nil {
-			continue
-		}
-
-		row, err := decodeMachineRow(ev.Change.Values)
-		if err != nil {
-			slog.Debug("registry machine change decode failed; resubscribing", "err", err)
-			if !s.resubscribeMachines(ctx, stream, &lastChangeID, out) {
-				return
-			}
-			continue
-		}
-
-		kind := mesh.ChangeUpdated
-		switch strings.ToLower(strings.TrimSpace(ev.Change.Type)) {
-		case "insert":
-			kind = mesh.ChangeAdded
-		case "update":
-			kind = mesh.ChangeUpdated
-		case "delete":
-			kind = mesh.ChangeDeleted
-		}
-		lastChangeID = ev.Change.ChangeID
-
-		select {
-		case <-ctx.Done():
-			return
-		case out <- mesh.MachineChange{Kind: kind, Machine: row}:
-		}
-	}
-}
-
-func (s Store) resubscribeMachines(
-	ctx context.Context,
-	stream *subscriptionStream,
-	lastChangeID *uint64,
-	out chan<- mesh.MachineChange,
-) bool {
-	_ = stream.Body.Close()
-
-	backoff := time.Second
-	for {
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(backoff):
-		}
-
-		next, err := s.resubscribe(ctx, stream.ID, *lastChangeID)
-		if err == nil {
-			stream.Body = next.Body
-			stream.Decoder = next.Decoder
-			slog.Info("registry machine subscription restored", "change_id", *lastChangeID)
-			select {
-			case <-ctx.Done():
-				_ = stream.Body.Close()
-				return false
-			case out <- mesh.MachineChange{Kind: mesh.ChangeResync}:
-			}
-			return true
-		}
-
-		slog.Debug("registry machine resubscribe failed", "change_id", *lastChangeID, "backoff", backoff.String(), "err", err)
-
-		if backoff < 15*time.Second {
-			backoff *= 2
-			if backoff > 15*time.Second {
-				backoff = 15 * time.Second
-			}
-		}
-	}
+	return openAndRun(ctx, s, query, machineSpec)
 }
 
 func (s Store) SubscribeHeartbeats(ctx context.Context) ([]mesh.HeartbeatRow, <-chan mesh.HeartbeatChange, error) {
 	query := fmt.Sprintf("SELECT node_id, seq, updated_at FROM %s ORDER BY node_id", heartbeatsTable)
-	stream, snapshot, lastChangeID, err := s.openHeartbeatSubscription(ctx, query)
+	return openAndRun(ctx, s, query, heartbeatSpec)
+}
+
+func openAndRun[Row any, Change any](
+	ctx context.Context,
+	s Store,
+	query string,
+	spec subscriptionSpec[Row, Change],
+) ([]Row, <-chan Change, error) {
+	stream, snapshot, lastChangeID, err := openSubscription(ctx, s, query, spec)
 	if err != nil {
 		return nil, nil, err
 	}
-	slog.Debug("registry heartbeat subscription opened", "rows", len(snapshot), "change_id", lastChangeID)
+	slog.Debug("registry "+spec.label+" subscription opened", "rows", len(snapshot), "change_id", lastChangeID)
 
-	changes := make(chan mesh.HeartbeatChange, 128)
-	go s.runHeartbeatChanges(ctx, stream, lastChangeID, changes)
+	changes := make(chan Change, changeBufCapacity)
+	go runChanges(ctx, s, stream, lastChangeID, changes, spec)
 	return snapshot, changes, nil
 }
 
-func (s Store) openHeartbeatSubscription(
+func openSubscription[Row any, Change any](
 	ctx context.Context,
+	s Store,
 	query string,
-) (*subscriptionStream, []mesh.HeartbeatRow, uint64, error) {
+	spec subscriptionSpec[Row, Change],
+) (*subscriptionStream, []Row, uint64, error) {
 	stream, err := s.subscribe(ctx, query, nil)
 	if err != nil {
 		return nil, nil, 0, err
@@ -202,30 +95,30 @@ func (s Store) openHeartbeatSubscription(
 
 	var ev queryEvent
 	if err := stream.Decoder.Decode(&ev); err != nil {
-		_ = stream.Body.Close()
-		return nil, nil, 0, fmt.Errorf("decode heartbeat subscription columns: %w", err)
+		stream.Body.Close()
+		return nil, nil, 0, fmt.Errorf("decode %s subscription columns: %w", spec.label, err)
 	}
 	if ev.Error != nil {
-		_ = stream.Body.Close()
-		return nil, nil, 0, fmt.Errorf("heartbeat subscription error: %s", *ev.Error)
+		stream.Body.Close()
+		return nil, nil, 0, fmt.Errorf("%s subscription error: %s", spec.label, *ev.Error)
 	}
 
-	snapshot := make([]mesh.HeartbeatRow, 0)
+	var snapshot []Row
 	var lastChange uint64
 	for {
 		ev = queryEvent{}
 		if err := stream.Decoder.Decode(&ev); err != nil {
-			_ = stream.Body.Close()
-			return nil, nil, 0, fmt.Errorf("decode heartbeat subscription row: %w", err)
+			stream.Body.Close()
+			return nil, nil, 0, fmt.Errorf("decode %s subscription row: %w", spec.label, err)
 		}
 		if ev.Error != nil {
-			_ = stream.Body.Close()
-			return nil, nil, 0, fmt.Errorf("heartbeat subscription error: %s", *ev.Error)
+			stream.Body.Close()
+			return nil, nil, 0, fmt.Errorf("%s subscription error: %s", spec.label, *ev.Error)
 		}
 		if ev.Row != nil {
-			row, rowErr := decodeHeartbeatRow(ev.Row.Values)
+			row, rowErr := spec.decodeRow(ev.Row.Values)
 			if rowErr != nil {
-				_ = stream.Body.Close()
+				stream.Body.Close()
 				return nil, nil, 0, rowErr
 			}
 			snapshot = append(snapshot, row)
@@ -242,11 +135,13 @@ func (s Store) openHeartbeatSubscription(
 	return stream, snapshot, lastChange, nil
 }
 
-func (s Store) runHeartbeatChanges(
+func runChanges[Row any, Change any](
 	ctx context.Context,
+	s Store,
 	stream *subscriptionStream,
 	lastChangeID uint64,
-	out chan<- mesh.HeartbeatChange,
+	out chan<- Change,
+	spec subscriptionSpec[Row, Change],
 ) {
 	defer close(out)
 	defer stream.Body.Close()
@@ -260,15 +155,15 @@ func (s Store) runHeartbeatChanges(
 
 		var ev queryEvent
 		if err := stream.Decoder.Decode(&ev); err != nil {
-			slog.Debug("registry heartbeat subscription decode failed; resubscribing", "err", err)
-			if !s.resubscribeHeartbeats(ctx, stream, &lastChangeID, out) {
+			slog.Debug("registry "+spec.label+" subscription decode failed; resubscribing", "err", err)
+			if !resubscribeLoop(ctx, s, stream, &lastChangeID, out, spec) {
 				return
 			}
 			continue
 		}
 		if ev.Error != nil {
-			slog.Debug("registry heartbeat subscription stream error; resubscribing", "err", *ev.Error)
-			if !s.resubscribeHeartbeats(ctx, stream, &lastChangeID, out) {
+			slog.Debug("registry "+spec.label+" subscription stream error; resubscribing", "err", *ev.Error)
+			if !resubscribeLoop(ctx, s, stream, &lastChangeID, out, spec) {
 				return
 			}
 			continue
@@ -277,44 +172,37 @@ func (s Store) runHeartbeatChanges(
 			continue
 		}
 
-		row, err := decodeHeartbeatRow(ev.Change.Values)
+		row, err := spec.decodeRow(ev.Change.Values)
 		if err != nil {
-			slog.Debug("registry heartbeat change decode failed; resubscribing", "err", err)
-			if !s.resubscribeHeartbeats(ctx, stream, &lastChangeID, out) {
+			slog.Debug("registry "+spec.label+" change decode failed; resubscribing", "err", err)
+			if !resubscribeLoop(ctx, s, stream, &lastChangeID, out, spec) {
 				return
 			}
 			continue
 		}
 
-		kind := mesh.ChangeUpdated
-		switch strings.ToLower(strings.TrimSpace(ev.Change.Type)) {
-		case "insert":
-			kind = mesh.ChangeAdded
-		case "update":
-			kind = mesh.ChangeUpdated
-		case "delete":
-			kind = mesh.ChangeDeleted
-		}
 		lastChangeID = ev.Change.ChangeID
 
 		select {
 		case <-ctx.Done():
 			return
-		case out <- mesh.HeartbeatChange{Kind: kind, Heartbeat: row}:
+		case out <- spec.makeChange(parseChangeKind(ev.Change.Type), row):
 		}
 	}
 }
 
-func (s Store) resubscribeHeartbeats(
+func resubscribeLoop[Row any, Change any](
 	ctx context.Context,
+	s Store,
 	stream *subscriptionStream,
 	lastChangeID *uint64,
-	out chan<- mesh.HeartbeatChange,
+	out chan<- Change,
+	spec subscriptionSpec[Row, Change],
 ) bool {
-	_ = stream.Body.Close()
+	stream.Body.Close()
 
 	backoff := time.Second
-	for {
+	for attempt := range maxResubscribeAttempts {
 		select {
 		case <-ctx.Done():
 			return false
@@ -325,23 +213,19 @@ func (s Store) resubscribeHeartbeats(
 		if err == nil {
 			stream.Body = next.Body
 			stream.Decoder = next.Decoder
-			slog.Info("registry heartbeat subscription restored", "change_id", *lastChangeID)
+			slog.Info("registry "+spec.label+" subscription restored", "change_id", *lastChangeID)
 			select {
 			case <-ctx.Done():
-				_ = stream.Body.Close()
+				stream.Body.Close()
 				return false
-			case out <- mesh.HeartbeatChange{Kind: mesh.ChangeResync}:
+			case out <- spec.resyncMsg:
 			}
 			return true
 		}
 
-		slog.Debug("registry heartbeat resubscribe failed", "change_id", *lastChangeID, "backoff", backoff.String(), "err", err)
-
-		if backoff < 15*time.Second {
-			backoff *= 2
-			if backoff > 15*time.Second {
-				backoff = 15 * time.Second
-			}
-		}
+		slog.Debug("registry "+spec.label+" resubscribe failed", "change_id", *lastChangeID, "attempt", attempt+1, "backoff", backoff.String(), "err", err)
+		backoff = min(backoff*2, maxResubscribeBackoff)
 	}
+	slog.Warn("registry "+spec.label+" resubscribe exhausted retries", "change_id", *lastChangeID, "attempts", maxResubscribeAttempts)
+	return false
 }

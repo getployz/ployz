@@ -12,10 +12,6 @@ import (
 )
 
 func (c *Controller) Reconcile(ctx context.Context, in Config) (int, error) {
-	if c.platformOps == nil {
-		return 0, errors.New("reconcile requires platform ops")
-	}
-
 	cfg, err := NormalizeConfig(in)
 	if err != nil {
 		return 0, err
@@ -49,7 +45,7 @@ func (c *Controller) Reconcile(ctx context.Context, in Config) (int, error) {
 		ID:         s.WGPublic,
 		PublicKey:  s.WGPublic,
 		Subnet:     s.Subnet,
-		Management: s.Management,
+		ManagementIP: s.Management,
 		Endpoint:   s.Advertise,
 		UpdatedAt:  c.clock.Now().UTC().Format(time.RFC3339),
 	}, 0); err != nil {
@@ -97,9 +93,9 @@ func (c *Controller) ListMachines(ctx context.Context, in Config) ([]Machine, er
 			ID:          row.ID,
 			PublicKey:   row.PublicKey,
 			Subnet:      row.Subnet,
-			Management:  row.Management,
-			Endpoint:    row.Endpoint,
-			LastUpdated: row.UpdatedAt,
+			ManagementIP: row.ManagementIP,
+			Endpoint:     row.Endpoint,
+			LastUpdated:  row.UpdatedAt,
 			Version:     row.Version,
 		})
 	}
@@ -145,7 +141,7 @@ func (c *Controller) UpsertMachine(ctx context.Context, in Config, m Machine) er
 	if err != nil {
 		return fmt.Errorf("derive machine management IP: %w", err)
 	}
-	m.Management = managementIP.String()
+	m.ManagementIP = managementIP.String()
 	if m.Subnet == "" {
 		return fmt.Errorf("machine subnet is required")
 	}
@@ -179,7 +175,7 @@ func (c *Controller) UpsertMachine(ctx context.Context, in Config, m Machine) er
 		ID:         m.ID,
 		PublicKey:  m.PublicKey,
 		Subnet:     m.Subnet,
-		Management: m.Management,
+		ManagementIP: m.ManagementIP,
 		Endpoint:   m.Endpoint,
 		UpdatedAt:  c.clock.Now().UTC().Format(time.RFC3339),
 	}, m.ExpectedVersion)
@@ -217,7 +213,7 @@ func normalizeRegistryRows(rows []MachineRow) ([]MachineRow, error) {
 		if err != nil {
 			return nil, fmt.Errorf("derive machine management ip: %w", err)
 		}
-		row.Management = managementIP.String()
+		row.ManagementIP = managementIP.String()
 		out[i] = row
 	}
 	return out, nil
@@ -237,7 +233,7 @@ func (c *Controller) reconcilePeerRows(ctx context.Context, cfg Config, s *State
 		peers = append(peers, Peer{
 			PublicKey:  row.PublicKey,
 			Subnet:     row.Subnet,
-			Management: row.Management,
+			ManagementIP: row.ManagementIP,
 			Endpoint:   row.Endpoint,
 		})
 	}

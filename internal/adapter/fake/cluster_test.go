@@ -196,16 +196,19 @@ func TestCluster_OptimisticConcurrency(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Version is now 1. Trying to upsert with expectedVersion=0 again should conflict.
-	// UpsertMachine sets row.Version = expectedVersion+1, then cluster checks existing.Version != row.Version-1.
-	// existing.Version = 1, row.Version = expectedVersion+1 = 1, row.Version-1 = 0, existing != 0 → conflict.
-	err := reg.UpsertMachine(ctx, row, 0)
-	if err != mesh.ErrConflict {
-		t.Errorf("expected ErrConflict, got %v", err)
+	// expectedVersion=0 means unconditional write — should succeed even if row exists.
+	if err := reg.UpsertMachine(ctx, row, 0); err != nil {
+		t.Errorf("expected unconditional write to succeed, got %v", err)
 	}
 
-	// Correct version should work.
-	if err := reg.UpsertMachine(ctx, row, 1); err != nil {
+	// Wrong expectedVersion should conflict.
+	err := reg.UpsertMachine(ctx, row, 999)
+	if err != mesh.ErrConflict {
+		t.Errorf("expected ErrConflict for wrong version, got %v", err)
+	}
+
+	// Correct version should work. After two upserts (insert + unconditional), version is 2.
+	if err := reg.UpsertMachine(ctx, row, 2); err != nil {
 		t.Errorf("expected success with correct version, got %v", err)
 	}
 }
