@@ -17,7 +17,7 @@ func TestCluster_TwoNodesShare(t *testing.T) {
 	regA := c.Registry("node-a")
 	regB := c.Registry("node-b")
 
-	ctx := context.Background()
+	ctx := t.Context()
 	row := mesh.MachineRow{ID: "m1", PublicKey: "pk1", Endpoint: "1.2.3.4:51820", Version: 0}
 	if err := regA.UpsertMachine(ctx, row, 0); err != nil {
 		t.Fatal(err)
@@ -40,7 +40,7 @@ func TestCluster_Subscription(t *testing.T) {
 	regA := c.Registry("node-a")
 	regB := c.Registry("node-b")
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	_, ch, err := regB.SubscribeMachines(ctx)
@@ -72,7 +72,7 @@ func TestCluster_Partition(t *testing.T) {
 
 	c.Partition([]string{"node-a"}, []string{"node-b"})
 
-	ctx := context.Background()
+	ctx := t.Context()
 	row := mesh.MachineRow{ID: "m1", PublicKey: "pk1"}
 	if err := regA.UpsertMachine(ctx, row, 0); err != nil {
 		t.Fatal(err)
@@ -101,7 +101,7 @@ func TestCluster_HealAndDrain(t *testing.T) {
 	// Set latency so writes queue up.
 	c.SetLink("node-a", "node-b", LinkConfig{Latency: 200 * time.Millisecond})
 
-	ctx := context.Background()
+	ctx := t.Context()
 	row := mesh.MachineRow{ID: "m1", PublicKey: "pk1"}
 	if err := regA.UpsertMachine(ctx, row, 0); err != nil {
 		t.Fatal(err)
@@ -130,7 +130,7 @@ func TestCluster_Latency(t *testing.T) {
 
 	c.SetLink("node-a", "node-b", LinkConfig{Latency: 200 * time.Millisecond})
 
-	ctx := context.Background()
+	ctx := t.Context()
 	row := mesh.MachineRow{ID: "m1", PublicKey: "pk1"}
 	_ = regA.UpsertMachine(ctx, row, 0)
 
@@ -160,7 +160,7 @@ func TestCluster_AsymmetricBlock(t *testing.T) {
 
 	c.BlockLink("node-a", "node-b") // A→B blocked, B→A open
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// A writes — B should NOT see it.
 	rowA := mesh.MachineRow{ID: "m1", PublicKey: "pk1"}
@@ -190,7 +190,7 @@ func TestCluster_OptimisticConcurrency(t *testing.T) {
 	c := NewCluster(clock)
 
 	reg := c.Registry("node-a")
-	ctx := context.Background()
+	ctx := t.Context()
 
 	row := mesh.MachineRow{ID: "m1", PublicKey: "pk1"}
 	if err := reg.UpsertMachine(ctx, row, 0); err != nil {
@@ -221,7 +221,7 @@ func TestCluster_EnsureNetworkCIDR_FirstWriterWins(t *testing.T) {
 	regA := c.Registry("node-a")
 	regB := c.Registry("node-b")
 
-	ctx := context.Background()
+	ctx := t.Context()
 	defaultCIDR := mustPrefix("10.0.0.0/16")
 
 	// First write sets the CIDR.
@@ -250,7 +250,7 @@ func TestCluster_Heartbeat(t *testing.T) {
 	regA := c.Registry("node-a")
 	regB := c.Registry("node-b")
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	_, hbCh, err := regB.SubscribeHeartbeats(ctx)
@@ -279,7 +279,7 @@ func TestCluster_DeleteMachine(t *testing.T) {
 	reg := c.Registry("node-a")
 	_ = c.Registry("node-b") // ensure node-b exists
 
-	ctx := context.Background()
+	ctx := t.Context()
 	row := mesh.MachineRow{ID: "m1", PublicKey: "pk1"}
 	_ = reg.UpsertMachine(ctx, row, 0)
 
@@ -303,7 +303,7 @@ func TestCluster_Snapshot(t *testing.T) {
 	c := NewCluster(clock)
 
 	reg := c.Registry("node-a")
-	ctx := context.Background()
+	ctx := t.Context()
 	_ = reg.UpsertMachine(ctx, mesh.MachineRow{ID: "m1"}, 0)
 	_ = reg.UpsertMachine(ctx, mesh.MachineRow{ID: "m2"}, 0)
 
@@ -353,7 +353,7 @@ func TestCluster_DialFunc(t *testing.T) {
 	c.SetLink("node-a", "node-b", LinkConfig{PingRTT: 25 * time.Millisecond})
 
 	dial := c.DialFunc("node-a")
-	ctx := context.Background()
+	ctx := t.Context()
 
 	rtt, err := dial(ctx, "5.6.7.8:51820")
 	if err != nil {
@@ -378,7 +378,7 @@ func TestCluster_KillNode_RegistryReturnsError(t *testing.T) {
 	regA := c.Registry("node-a")
 	regB := c.Registry("node-b")
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	c.KillNode("node-a")
 
@@ -423,7 +423,7 @@ func TestCluster_KillNode_ReplicationBlocked(t *testing.T) {
 	regB := c.Registry("node-b")
 	regC := c.Registry("node-c")
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Kill B, write on A — C sees it, B doesn't.
 	c.KillNode("node-b")
@@ -463,7 +463,7 @@ func TestCluster_RestartNode_SyncCatchesUp(t *testing.T) {
 	regB := c.Registry("node-b")
 	c.Registry("node-c") // ensure node-c exists
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Write initial data visible to all.
 	row := mesh.MachineRow{ID: "m-existing", PublicKey: "pk0", Version: 0}
@@ -516,7 +516,7 @@ func TestCluster_KillDeleteRestart_DeletionPropagated(t *testing.T) {
 	regA := c.Registry("node-a")
 	c.Registry("node-b")
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Write a machine visible to all.
 	row := mesh.MachineRow{ID: "m-doomed", PublicKey: "pk1"}
@@ -558,7 +558,7 @@ func TestCluster_KillRestart_LocalStatePreserved(t *testing.T) {
 	regA := c.Registry("node-a")
 	c.Registry("node-b")
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Write data on A.
 	row := mesh.MachineRow{ID: "m1", PublicKey: "pk1"}
@@ -608,7 +608,7 @@ func TestCluster_ThreeNode_SplitBrain_Convergence(t *testing.T) {
 	regB := c.Registry("node-b")
 	c.Registry("node-c")
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Shared machine visible to all.
 	shared := mesh.MachineRow{ID: "m-shared", PublicKey: "pk-shared"}

@@ -95,3 +95,91 @@ func TestPlatformOps_FaultFailOnce(t *testing.T) {
 		t.Fatalf("second Prepare() error = %v, want nil", err)
 	}
 }
+
+func TestPlatformOps_FaultPoints(t *testing.T) {
+	ctx := t.Context()
+	cfg := mesh.Config{}
+	state := &mesh.State{}
+	peers := []mesh.Peer{{PublicKey: "key1"}}
+
+	tests := []struct {
+		name  string
+		point string
+		run   func(*PlatformOps) error
+	}{
+		{
+			name:  "prepare",
+			point: FaultPlatformPrepare,
+			run: func(ops *PlatformOps) error {
+				return ops.Prepare(ctx, cfg, nil)
+			},
+		},
+		{
+			name:  "configure wireguard",
+			point: FaultPlatformConfigureWireGuard,
+			run: func(ops *PlatformOps) error {
+				return ops.ConfigureWireGuard(ctx, cfg, state)
+			},
+		},
+		{
+			name:  "ensure docker network",
+			point: FaultPlatformEnsureDocker,
+			run: func(ops *PlatformOps) error {
+				return ops.EnsureDockerNetwork(ctx, cfg, state)
+			},
+		},
+		{
+			name:  "cleanup docker network",
+			point: FaultPlatformCleanupDocker,
+			run: func(ops *PlatformOps) error {
+				return ops.CleanupDockerNetwork(ctx, cfg, state)
+			},
+		},
+		{
+			name:  "cleanup wireguard",
+			point: FaultPlatformCleanupWireGuard,
+			run: func(ops *PlatformOps) error {
+				return ops.CleanupWireGuard(ctx, cfg, state)
+			},
+		},
+		{
+			name:  "after start",
+			point: FaultPlatformAfterStart,
+			run: func(ops *PlatformOps) error {
+				return ops.AfterStart(ctx, cfg)
+			},
+		},
+		{
+			name:  "after stop",
+			point: FaultPlatformAfterStop,
+			run: func(ops *PlatformOps) error {
+				return ops.AfterStop(ctx, cfg, state)
+			},
+		},
+		{
+			name:  "apply peer config",
+			point: FaultPlatformApplyPeerConfig,
+			run: func(ops *PlatformOps) error {
+				return ops.ApplyPeerConfig(ctx, cfg, state, peers)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ops := &PlatformOps{}
+			injected := errors.New("injected")
+			ops.FailOnce(tt.point, injected)
+
+			err := tt.run(ops)
+			if !errors.Is(err, injected) {
+				t.Fatalf("first call error = %v, want injected", err)
+			}
+
+			err = tt.run(ops)
+			if err != nil {
+				t.Fatalf("second call error = %v, want nil", err)
+			}
+		})
+	}
+}

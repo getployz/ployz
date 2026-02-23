@@ -42,6 +42,7 @@ func (a *Adapter) Start(ctx context.Context, cfg mesh.CorrosionConfig) error {
 		ConfigPath: cfg.ConfigPath,
 		DataDir:    cfg.DataDir,
 		User:       cfg.User,
+		GossipAddr: cfg.GossipAddr,
 		APIAddr:    cfg.APIAddr,
 		APIToken:   cfg.APIToken,
 	})

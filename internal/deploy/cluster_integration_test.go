@@ -315,3 +315,66 @@ func TestClusterDeploy_OwnershipReplication(t *testing.T) {
 		t.Fatal("AcquireOwnership(B) expected ownership conflict")
 	}
 }
+
+func TestClusterDeploy_ContainerVersionConflict(t *testing.T) {
+	clock := fakeleaf.NewClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	cluster := fakecluster.NewCluster(clock)
+
+	_ = fakecluster.NewClusterContainerStore(cluster, "A")
+	_ = fakecluster.NewClusterContainerStore(cluster, "B")
+
+	cluster.BlockLink("A", "B")
+	cluster.BlockLink("B", "A")
+
+	rowV1 := deploy.ContainerRow{
+		ID:            "deploy-v/ployz-web-app-a001",
+		Namespace:     "web",
+		DeployID:      "deploy-v",
+		Service:       "app",
+		MachineID:     "A",
+		ContainerName: "ployz-web-app-a001",
+		SpecJSON:      `{"name":"app","image":"ghcr.io/example/web:v1"}`,
+		Status:        "running",
+		Version:       1,
+		CreatedAt:     "2026-01-01T00:00:00Z",
+		UpdatedAt:     "2026-01-01T00:00:00Z",
+	}
+	rowV2 := deploy.ContainerRow{
+		ID:            "deploy-v/ployz-web-app-a001",
+		Namespace:     "web",
+		DeployID:      "deploy-v",
+		Service:       "app",
+		MachineID:     "B",
+		ContainerName: "ployz-web-app-a001",
+		SpecJSON:      `{"name":"app","image":"ghcr.io/example/web:v2"}`,
+		Status:        "running",
+		Version:       2,
+		CreatedAt:     "2026-01-01T00:00:01Z",
+		UpdatedAt:     "2026-01-01T00:00:01Z",
+	}
+
+	cluster.WriteContainer("A", rowV1)
+	cluster.WriteContainer("B", rowV2)
+
+	aBefore := cluster.ReadContainers("A")
+	bBefore := cluster.ReadContainers("B")
+	if len(aBefore) != 1 || aBefore[0].Version != 1 {
+		t.Fatalf("node A before heal = %+v, want v1", aBefore)
+	}
+	if len(bBefore) != 1 || bBefore[0].Version != 2 {
+		t.Fatalf("node B before heal = %+v, want v2", bBefore)
+	}
+
+	cluster.Heal()
+	cluster.RestartNode("A")
+	cluster.RestartNode("B")
+
+	aAfter := cluster.ReadContainers("A")
+	bAfter := cluster.ReadContainers("B")
+	if len(aAfter) != 1 || aAfter[0].Version != 2 || aAfter[0].SpecJSON != rowV2.SpecJSON {
+		t.Fatalf("node A after conflict resolution = %+v, want v2", aAfter)
+	}
+	if len(bAfter) != 1 || bAfter[0].Version != 2 || bAfter[0].SpecJSON != rowV2.SpecJSON {
+		t.Fatalf("node B after conflict resolution = %+v, want v2", bAfter)
+	}
+}

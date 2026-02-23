@@ -12,6 +12,7 @@ import (
 	"ployz/cmd/ployz/host"
 	"ployz/cmd/ployz/initcmd"
 	"ployz/cmd/ployz/node"
+	"ployz/cmd/ployz/service"
 	"ployz/internal/buildinfo"
 	"ployz/internal/logging"
 
@@ -44,6 +45,7 @@ func main() {
 	root.AddCommand(node.Cmd())
 	root.AddCommand(cluster.Cmd())
 	root.AddCommand(host.Cmd())
+	root.AddCommand(service.Cmd())
 	root.AddCommand(agent.Cmd())
 	root.AddCommand(devcmd.Cmd())
 

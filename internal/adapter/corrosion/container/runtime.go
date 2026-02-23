@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/netip"
 	"strconv"
@@ -27,6 +28,7 @@ type RuntimeConfig struct {
 	ConfigPath string
 	DataDir    string
 	User       string
+	GossipAddr netip.AddrPort
 	APIAddr    netip.AddrPort
 	APIToken   string
 }
@@ -34,6 +36,9 @@ type RuntimeConfig struct {
 func Start(ctx context.Context, cli *client.Client, cfg RuntimeConfig) error {
 	log := slog.With("component", "corrosion-runtime", "container", cfg.Name)
 	log.Info("starting")
+	if err := validateGossipBindAddr(cfg.GossipAddr); err != nil {
+		return fmt.Errorf("validate corrosion gossip bind address: %w", err)
+	}
 	_, err := cli.ContainerInspect(ctx, cfg.Name)
 	if err == nil {
 		log.Debug("removing existing container")
@@ -128,6 +133,70 @@ func waitContainerRemoved(ctx context.Context, cli *client.Client, name string, 
 		case <-ticker.C:
 		}
 	}
+}
+
+func validateGossipBindAddr(gossipAddr netip.AddrPort) error {
+	localAddrs, err := localInterfaceAddrs()
+	if err != nil {
+		return fmt.Errorf("list host interface addresses: %w", err)
+	}
+	if err := validateGossipBindAddrWithLocalAddrs(gossipAddr, localAddrs); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateGossipBindAddrWithLocalAddrs(gossipAddr netip.AddrPort, localAddrs []netip.Addr) error {
+	bindAddr := gossipAddr.Addr()
+	if !bindAddr.IsValid() {
+		return fmt.Errorf("corrosion gossip bind address is invalid")
+	}
+	if bindAddr.IsUnspecified() {
+		return nil
+	}
+	bindAddr = bindAddr.Unmap()
+	for _, localAddr := range localAddrs {
+		if !localAddr.IsValid() {
+			continue
+		}
+		if localAddr.Unmap() == bindAddr {
+			return nil
+		}
+	}
+	return fmt.Errorf("corrosion gossip bind address %s is not assigned on this host; ensure wireguard management IP is configured before starting corrosion", bindAddr)
+}
+
+func localInterfaceAddrs() ([]netip.Addr, error) {
+	ifaceAddrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+	addrs := make([]netip.Addr, 0, len(ifaceAddrs))
+	for _, addr := range ifaceAddrs {
+		ip, ok := netipAddrFromInterfaceAddr(addr)
+		if !ok {
+			continue
+		}
+		addrs = append(addrs, ip)
+	}
+	return addrs, nil
+}
+
+func netipAddrFromInterfaceAddr(addr net.Addr) (netip.Addr, bool) {
+	var ip net.IP
+	switch typed := addr.(type) {
+	case *net.IPNet:
+		ip = typed.IP
+	case *net.IPAddr:
+		ip = typed.IP
+	default:
+		return netip.Addr{}, false
+	}
+	parsed, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return netip.Addr{}, false
+	}
+	return parsed.Unmap(), true
 }
 
 func waitReady(ctx context.Context, cli *client.Client, name string, apiAddr netip.AddrPort, apiToken string, timeout time.Duration) error {

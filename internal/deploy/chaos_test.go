@@ -33,6 +33,12 @@ type runtimeStateReader struct {
 	runtime *fakeleaf.ContainerRuntime
 }
 
+type clusterAwareStateReader struct {
+	runtime       *fakeleaf.ContainerRuntime
+	cluster       *fakecluster.Cluster
+	failMachineID string
+}
+
 func (r *runtimeStateReader) ReadMachineState(ctx context.Context, machineID, namespace string) ([]deploy.ContainerState, error) {
 	entries, err := r.runtime.ContainerList(ctx, map[string]string{"ployz.namespace": namespace})
 	if err != nil {
@@ -48,6 +54,14 @@ func (r *runtimeStateReader) ReadMachineState(ctx context.Context, machineID, na
 		})
 	}
 	return out, nil
+}
+
+func (r *clusterAwareStateReader) ReadMachineState(ctx context.Context, machineID, namespace string) ([]deploy.ContainerState, error) {
+	if machineID == r.failMachineID && r.cluster.IsKilled(machineID) {
+		return nil, errors.New("machine unavailable")
+	}
+	reader := runtimeStateReader{runtime: r.runtime}
+	return reader.ReadMachineState(ctx, machineID, namespace)
 }
 
 func newChaosHarness(t *testing.T, nodeIDs ...string) *chaosHarness {
@@ -696,6 +710,59 @@ func TestChaos_ScaleUp_PartialFailure(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("rows after rollback = %+v, want only two original rows", rows)
 	}
+}
+
+func TestChaos_MachineDeath_MidTier(t *testing.T) {
+	h := newChaosHarness(t, "A", "B", "C")
+	nodeC := h.node("C")
+	stateReader := &clusterAwareStateReader{
+		runtime:       nodeC.runtime,
+		cluster:       h.cluster,
+		failMachineID: "C",
+	}
+
+	plan := deploy.DeployPlan{
+		Namespace: "frontend",
+		DeployID:  "deploy-machine-death",
+		Tiers: []deploy.Tier{{
+			Services: []deploy.ServicePlan{{
+				Name:        "postgres",
+				HealthCheck: &deploy.HealthCheck{Test: []string{"CMD", "true"}},
+				Create: []deploy.PlanEntry{{
+					MachineID:     "C",
+					ContainerName: "ployz-frontend-postgres-c001",
+					Spec: deploy.ServiceSpec{
+						Name:  "postgres",
+						Image: "postgres:16",
+					},
+				}},
+			}},
+		}},
+	}
+
+	nodeC.health.SetHealthy("ployz-frontend-postgres-c001")
+	nodeC.health.WaitHealthyErr = func(ctx context.Context, containerName string) error {
+		h.cluster.KillNode("C")
+		return nil
+	}
+
+	_, err := deploy.ApplyPlan(
+		context.Background(),
+		nodeC.runtime,
+		deploy.Stores{Containers: nodeC.containers, Deployments: nodeC.deploys},
+		nodeC.health,
+		stateReader,
+		plan,
+		"C",
+		h.clock,
+		nil,
+	)
+	if err == nil {
+		t.Fatal("ApplyPlan() expected postcondition failure")
+	}
+	assertDeployErrorPhase(t, err, "postcondition")
+
+	mustRunning(t, nodeC.runtime, "ployz-frontend-postgres-c001")
 }
 
 func mustSeedRunningContainer(t *testing.T, node *chaosNode, row deploy.ContainerRow, spec deploy.ServiceSpec) deploy.ContainerRow {

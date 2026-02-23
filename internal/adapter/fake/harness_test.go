@@ -15,7 +15,7 @@ func TestHarness_BasicConvergence(t *testing.T) {
 		h := NewHarness(HarnessConfig{
 			NodeIDs: []string{"a", "b", "c"},
 		})
-		h.Start(context.Background())
+		h.Start(t.Context())
 
 		// Let workers subscribe and reconcile initial snapshot.
 		synctest.Wait()
@@ -51,14 +51,14 @@ func TestHarness_PartitionAndHeal(t *testing.T) {
 		h := NewHarness(HarnessConfig{
 			NodeIDs: []string{"a", "b", "c"},
 		})
-		h.Start(context.Background())
+		h.Start(t.Context())
 		synctest.Wait()
 
 		// Partition: A isolated from {B, C}.
 		h.Cluster.Partition([]string{"a"}, []string{"b", "c"})
 
 		// Upsert a new machine on A's registry.
-		ctx := context.Background()
+		ctx := t.Context()
 		newRow := mesh.MachineRow{
 			ID:        "m-new",
 			PublicKey: "pk-new",
@@ -116,7 +116,7 @@ func TestHarness_FailureInjection(t *testing.T) {
 			return injectedErr
 		}
 
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		h.Start(ctx)
 
 		// B will fail its subscribe retry loop and block on time.After(1s).
@@ -160,14 +160,14 @@ func TestHarness_Latency(t *testing.T) {
 		h := NewHarness(HarnessConfig{
 			NodeIDs: []string{"a", "b", "c"},
 		})
-		h.Start(context.Background())
+		h.Start(t.Context())
 		synctest.Wait()
 
 		// Set 200ms replication latency from A to B.
 		h.Cluster.SetLink("a", "b", LinkConfig{Latency: 200 * time.Millisecond})
 
 		// Upsert a new machine on A.
-		ctx := context.Background()
+		ctx := t.Context()
 		newRow := mesh.MachineRow{
 			ID:        "m-delayed",
 			PublicKey: "pk-delayed",

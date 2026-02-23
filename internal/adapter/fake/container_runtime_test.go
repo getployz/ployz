@@ -10,7 +10,7 @@ import (
 )
 
 func TestContainerRuntime_Lifecycle(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	rt := NewContainerRuntime()
 
 	// Create container
@@ -62,7 +62,7 @@ func TestContainerRuntime_Lifecycle(t *testing.T) {
 }
 
 func TestContainerRuntime_ForceRemoveRunning(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	rt := NewContainerRuntime()
 
 	_ = rt.ContainerCreate(ctx, mesh.ContainerCreateConfig{Name: "c1"})
@@ -73,7 +73,7 @@ func TestContainerRuntime_ForceRemoveRunning(t *testing.T) {
 }
 
 func TestContainerRuntime_Network(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	rt := NewContainerRuntime()
 
 	subnet := netip.MustParsePrefix("10.0.0.0/24")
@@ -99,7 +99,7 @@ func TestContainerRuntime_Network(t *testing.T) {
 }
 
 func TestContainerRuntime_NotReady(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	rt := NewContainerRuntime()
 	rt.SetReady(false)
 
@@ -109,7 +109,7 @@ func TestContainerRuntime_NotReady(t *testing.T) {
 }
 
 func TestContainerRuntime_ErrorInjection(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	rt := NewContainerRuntime()
 	injected := errors.New("disk full")
 
@@ -129,7 +129,7 @@ func TestContainerRuntime_ErrorInjection(t *testing.T) {
 }
 
 func TestContainerRuntime_FaultFailOnce(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	rt := NewContainerRuntime()
 	injected := errors.New("injected once")
 	rt.FailOnce(FaultContainerRuntimeCreate, injected)
@@ -146,7 +146,7 @@ func TestContainerRuntime_FaultFailOnce(t *testing.T) {
 }
 
 func TestContainerRuntime_FaultHook(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	rt := NewContainerRuntime()
 	injected := errors.New("blocked image")
 	rt.SetFaultHook(FaultContainerRuntimeImagePull, func(args ...any) error {
@@ -172,7 +172,7 @@ func TestContainerRuntime_FaultHook(t *testing.T) {
 }
 
 func TestContainerRuntime_ImagePull(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	rt := NewContainerRuntime()
 
 	if err := rt.ImagePull(ctx, "alpine:latest"); err != nil {
@@ -184,7 +184,7 @@ func TestContainerRuntime_ImagePull(t *testing.T) {
 }
 
 func TestContainerRuntime_StartMissing(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	rt := NewContainerRuntime()
 
 	if err := rt.ContainerStart(ctx, "nonexistent"); err == nil {
@@ -193,7 +193,7 @@ func TestContainerRuntime_StartMissing(t *testing.T) {
 }
 
 func TestContainerRuntime_ContainerListLabelFilter(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	rt := NewContainerRuntime()
 
 	_ = rt.ContainerCreate(ctx, mesh.ContainerCreateConfig{
@@ -224,7 +224,7 @@ func TestContainerRuntime_ContainerListLabelFilter(t *testing.T) {
 }
 
 func TestContainerRuntime_ContainerUpdate(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	rt := NewContainerRuntime()
 
 	_ = rt.ContainerCreate(ctx, mesh.ContainerCreateConfig{Name: "api-1", Image: "api:latest"})
