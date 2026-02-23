@@ -9,7 +9,7 @@ import (
 )
 
 func TestCorrosionRuntime_Lifecycle(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	cr := NewCorrosionRuntime()
 
 	cfg := mesh.CorrosionConfig{Name: "corrosion-testnet", Image: "corrosion:latest"}
@@ -36,7 +36,7 @@ func TestCorrosionRuntime_Lifecycle(t *testing.T) {
 }
 
 func TestCorrosionRuntime_ErrorInjection(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	cr := NewCorrosionRuntime()
 	injected := errors.New("permission denied")
 
@@ -57,7 +57,7 @@ func TestCorrosionRuntime_ErrorInjection(t *testing.T) {
 }
 
 func TestCorrosionRuntime_CallRecording(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	cr := NewCorrosionRuntime()
 
 	cfg := mesh.CorrosionConfig{Name: "c1"}
@@ -73,5 +73,26 @@ func TestCorrosionRuntime_CallRecording(t *testing.T) {
 	}
 	if len(cr.Calls("Stop")) != 1 {
 		t.Errorf("expected 1 Stop call, got %d", len(cr.Calls("Stop")))
+	}
+}
+
+func TestCorrosionRuntime_FaultFailOnce(t *testing.T) {
+	ctx := t.Context()
+	cr := NewCorrosionRuntime()
+	injected := errors.New("injected")
+	cr.FailOnce(FaultCorrosionStart, injected)
+
+	cfg := mesh.CorrosionConfig{Name: "c1"}
+	err := cr.Start(ctx, cfg)
+	if !errors.Is(err, injected) {
+		t.Fatalf("first Start() error = %v, want injected", err)
+	}
+
+	err = cr.Start(ctx, cfg)
+	if err != nil {
+		t.Fatalf("second Start() error = %v, want nil", err)
+	}
+	if !cr.Running["c1"] {
+		t.Fatal("second Start() should mark c1 running")
 	}
 }

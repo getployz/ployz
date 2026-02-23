@@ -21,15 +21,6 @@ type fdTUN struct {
 	closeOnce sync.Once
 }
 
-func newFDTUN(file *os.File, ifaceName string, mtu int) *fdTUN {
-	return &fdTUN{
-		file:      file,
-		ifaceName: strings.TrimSpace(ifaceName),
-		mtu:       mtu,
-		events:    make(chan tun.Event),
-	}
-}
-
 func (t *fdTUN) File() *os.File {
 	return t.file
 }
@@ -130,4 +121,13 @@ func (t *fdTUN) Close() error {
 
 func (t *fdTUN) BatchSize() int {
 	return 1
+}
+
+func newFDTUN(file *os.File, ifaceName string, mtu int) *fdTUN {
+	return &fdTUN{
+		file:      file,
+		ifaceName: strings.TrimSpace(ifaceName),
+		mtu:       mtu,
+		events:    make(chan tun.Event),
+	}
 }

@@ -18,7 +18,7 @@ func runCmd(opts *options) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
-			mgr, err := supervisor.New(ctx, opts.dataRoot)
+			mgr, err := supervisor.NewProduction(ctx, opts.dataRoot)
 			if err != nil {
 				return err
 			}

@@ -42,6 +42,12 @@ type API interface {
 	RemoveMachine(ctx context.Context, network string, idOrEndpoint string) error
 	TriggerReconcile(ctx context.Context, network string) error
 	GetPeerHealth(ctx context.Context, network string) ([]types.PeerHealthResponse, error)
+
+	PlanDeploy(ctx context.Context, network, namespace string, composeSpec []byte) (types.DeployPlan, error)
+	ApplyDeploy(ctx context.Context, network, namespace string, composeSpec []byte, events chan<- types.DeployProgressEvent) (types.DeployResult, error)
+	ListDeployments(ctx context.Context, network, namespace string) ([]types.DeploymentEntry, error)
+	RemoveNamespace(ctx context.Context, network, namespace string) error
+	ReadContainerState(ctx context.Context, network, namespace string) ([]types.ContainerState, error)
 }
 
 type Client struct {
@@ -119,19 +125,19 @@ func (c *Client) GetIdentity(ctx context.Context, network string) (types.Identit
 		return types.Identity{}, grpcErr(err)
 	}
 	return types.Identity{
-		ID:                resp.Id,
-		PublicKey:         resp.PublicKey,
-		Subnet:            resp.Subnet,
-		ManagementIP:      resp.ManagementIp,
-		AdvertiseEndpoint: resp.AdvertiseEndpoint,
-		NetworkCIDR:       resp.NetworkCidr,
-		WGInterface:       resp.WgInterface,
-		WGPort:            int(resp.WgPort),
-		HelperName:        resp.HelperName,
+		ID:                  resp.Id,
+		PublicKey:           resp.PublicKey,
+		Subnet:              resp.Subnet,
+		ManagementIP:        resp.ManagementIp,
+		AdvertiseEndpoint:   resp.AdvertiseEndpoint,
+		NetworkCIDR:         resp.NetworkCidr,
+		WGInterface:         resp.WgInterface,
+		WGPort:              int(resp.WgPort),
+		HelperName:          resp.HelperName,
 		CorrosionGossipPort: int(resp.CorrosionGossipPort),
-		CorrosionMemberID: resp.CorrosionMemberId,
-		CorrosionAPIToken: resp.CorrosionApiToken,
-		Running:           resp.Running,
+		CorrosionMemberID:   resp.CorrosionMemberId,
+		CorrosionAPIToken:   resp.CorrosionApiToken,
+		Running:             resp.Running,
 	}, nil
 }
 
@@ -241,18 +247,18 @@ func specToProto(s types.NetworkSpec) *pb.NetworkSpec {
 
 func applyResultFromProto(r *pb.ApplyResult) types.ApplyResult {
 	return types.ApplyResult{
-		Network:            r.Network,
-		NetworkCIDR:        r.NetworkCidr,
-		Subnet:             r.Subnet,
-		ManagementIP:       r.ManagementIp,
-		WGInterface:        r.WgInterface,
-		WGPort:             int(r.WgPort),
-		AdvertiseEndpoint:  r.AdvertiseEndpoint,
-		CorrosionName:      r.CorrosionName,
-		CorrosionAPIAddr:   r.CorrosionApiAddr,
-		CorrosionGossipAddrPort:  r.CorrosionGossipAddr,
-		DockerNetwork:      r.DockerNetwork,
-		ConvergenceRunning: r.ConvergenceRunning,
+		Network:                 r.Network,
+		NetworkCIDR:             r.NetworkCidr,
+		Subnet:                  r.Subnet,
+		ManagementIP:            r.ManagementIp,
+		WGInterface:             r.WgInterface,
+		WGPort:                  int(r.WgPort),
+		AdvertiseEndpoint:       r.AdvertiseEndpoint,
+		CorrosionName:           r.CorrosionName,
+		CorrosionAPIAddr:        r.CorrosionApiAddr,
+		CorrosionGossipAddrPort: r.CorrosionGossipAddr,
+		DockerNetwork:           r.DockerNetwork,
+		ConvergenceRunning:      r.ConvergenceRunning,
 	}
 }
 

@@ -97,3 +97,19 @@ func TestStateStore_CallRecording(t *testing.T) {
 		t.Errorf("expected 1 Delete call, got %d", len(ss.Calls("Delete")))
 	}
 }
+
+func TestStateStore_FaultFailOnce(t *testing.T) {
+	ss := NewStateStore()
+	injected := errors.New("fault save")
+	ss.FailOnce(FaultStateStoreSave, injected)
+
+	err := ss.Save("/data/fault", &mesh.State{Network: "n"})
+	if !errors.Is(err, injected) {
+		t.Fatalf("first Save error = %v, want %v", err, injected)
+	}
+
+	err = ss.Save("/data/fault", &mesh.State{Network: "n"})
+	if err != nil {
+		t.Fatalf("second Save error = %v, want nil", err)
+	}
+}

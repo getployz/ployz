@@ -62,6 +62,55 @@ func TestRegistry_ErrorInjection(t *testing.T) {
 	}
 }
 
+func TestRegistry_FaultFailOnce(t *testing.T) {
+	clock := NewClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	c := NewCluster(clock)
+	reg := c.Registry("node-a")
+
+	ctx := context.Background()
+	injected := errors.New("fail once")
+	reg.FailOnce(FaultRegistryUpsertMachine, injected)
+
+	err := reg.UpsertMachine(ctx, mesh.MachineRow{ID: "m1", PublicKey: "pk1"}, 0)
+	if !errors.Is(err, injected) {
+		t.Fatalf("first UpsertMachine error = %v, want %v", err, injected)
+	}
+
+	err = reg.UpsertMachine(ctx, mesh.MachineRow{ID: "m1", PublicKey: "pk1"}, 0)
+	if err != nil {
+		t.Fatalf("second UpsertMachine error = %v, want nil", err)
+	}
+}
+
+func TestRegistry_FaultHook(t *testing.T) {
+	clock := NewClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	c := NewCluster(clock)
+	reg := c.Registry("node-a")
+
+	ctx := context.Background()
+	injected := errors.New("bad machine id")
+	reg.SetFaultHook(FaultRegistryUpsertMachine, func(args ...any) error {
+		if len(args) < 2 {
+			return nil
+		}
+		row, _ := args[1].(mesh.MachineRow)
+		if row.ID == "bad" {
+			return injected
+		}
+		return nil
+	})
+
+	err := reg.UpsertMachine(ctx, mesh.MachineRow{ID: "bad", PublicKey: "pk-bad"}, 0)
+	if !errors.Is(err, injected) {
+		t.Fatalf("bad machine upsert error = %v, want %v", err, injected)
+	}
+
+	err = reg.UpsertMachine(ctx, mesh.MachineRow{ID: "ok", PublicKey: "pk-ok"}, 0)
+	if err != nil {
+		t.Fatalf("ok machine upsert error = %v, want nil", err)
+	}
+}
+
 func TestRegistry_SubscribeMachinesError(t *testing.T) {
 	clock := NewClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
 	c := NewCluster(clock)

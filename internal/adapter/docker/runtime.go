@@ -7,16 +7,20 @@ import (
 	"io"
 	"log/slog"
 	"net/netip"
+	"strconv"
+	"strings"
 	"time"
 
 	"ployz/internal/mesh"
 
 	"github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
+	dockerfilters "github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	dockernetwork "github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
+	"github.com/docker/go-connections/nat"
 )
 
 var _ mesh.ContainerRuntime = (*Runtime)(nil)
@@ -102,17 +106,48 @@ func (r *Runtime) ContainerLogs(ctx context.Context, name string, lines int) (st
 
 func (r *Runtime) ContainerCreate(ctx context.Context, cfg mesh.ContainerCreateConfig) error {
 	cc := &container.Config{
-		Image: cfg.Image,
-		Cmd:   cfg.Cmd,
-		Env:   cfg.Env,
-		User:  cfg.User,
+		Image:  cfg.Image,
+		Cmd:    cfg.Cmd,
+		Env:    cfg.Env,
+		User:   cfg.User,
+		Labels: cfg.Labels,
+	}
+	if cfg.HealthCheck != nil {
+		cc.Healthcheck = &container.HealthConfig{
+			Test:        cfg.HealthCheck.Test,
+			Interval:    cfg.HealthCheck.Interval,
+			Timeout:     cfg.HealthCheck.Timeout,
+			Retries:     cfg.HealthCheck.Retries,
+			StartPeriod: cfg.HealthCheck.StartPeriod,
+		}
+	}
+
+	restartPolicy := container.RestartPolicy{Name: container.RestartPolicyAlways}
+	if strings.TrimSpace(cfg.RestartPolicy) != "" {
+		restartPolicy = parseRestartPolicy(cfg.RestartPolicy)
 	}
 	hc := &container.HostConfig{
-		NetworkMode: container.NetworkMode(cfg.NetworkMode),
-		RestartPolicy: container.RestartPolicy{
-			Name: container.RestartPolicyAlways,
-		},
+		NetworkMode:   container.NetworkMode(cfg.NetworkMode),
+		RestartPolicy: restartPolicy,
 	}
+
+	if len(cfg.Ports) > 0 {
+		portBindings := make(nat.PortMap, len(cfg.Ports))
+		exposedPorts := make(nat.PortSet, len(cfg.Ports))
+		for _, p := range cfg.Ports {
+			proto := strings.ToLower(strings.TrimSpace(p.Protocol))
+			if proto == "" {
+				proto = "tcp"
+			}
+			containerPort := nat.Port(fmt.Sprintf("%d/%s", p.ContainerPort, proto))
+			exposedPorts[containerPort] = struct{}{}
+			portBindings[containerPort] = []nat.PortBinding{{HostPort: strconv.Itoa(int(p.HostPort))}}
+		}
+		cc.ExposedPorts = exposedPorts
+		hc.PortBindings = portBindings
+	}
+
+	hc.Mounts = make([]mount.Mount, 0, len(cfg.Mounts))
 	for _, m := range cfg.Mounts {
 		hc.Mounts = append(hc.Mounts, mount.Mount{
 			Type:     mount.TypeBind,
@@ -123,6 +158,56 @@ func (r *Runtime) ContainerCreate(ctx context.Context, cfg mesh.ContainerCreateC
 	}
 	_, err := r.cli.ContainerCreate(ctx, cc, hc, nil, nil, cfg.Name)
 	return err
+}
+
+func (r *Runtime) ContainerList(ctx context.Context, labelFilter map[string]string) ([]mesh.ContainerListEntry, error) {
+	filters := dockerfilters.NewArgs()
+	for key, value := range labelFilter {
+		filters.Add("label", key+"="+value)
+	}
+
+	containers, err := r.cli.ContainerList(ctx, container.ListOptions{All: true, Filters: filters})
+	if err != nil {
+		return nil, fmt.Errorf("list containers: %w", err)
+	}
+
+	out := make([]mesh.ContainerListEntry, 0, len(containers))
+	for _, c := range containers {
+		name := ""
+		if len(c.Names) > 0 {
+			name = strings.TrimPrefix(c.Names[0], "/")
+		}
+
+		labels := make(map[string]string, len(c.Labels))
+		for key, value := range c.Labels {
+			labels[key] = value
+		}
+
+		out = append(out, mesh.ContainerListEntry{
+			Name:    name,
+			Image:   c.Image,
+			Running: c.State == "running",
+			Labels:  labels,
+		})
+	}
+
+	return out, nil
+}
+
+func (r *Runtime) ContainerUpdate(ctx context.Context, name string, resources mesh.ResourceConfig) error {
+	updateConfig := container.UpdateConfig{}
+	if resources.CPULimit > 0 {
+		updateConfig.Resources.NanoCPUs = int64(resources.CPULimit * 1e9)
+	}
+	if resources.MemoryLimit > 0 {
+		updateConfig.Resources.Memory = resources.MemoryLimit
+	}
+
+	_, err := r.cli.ContainerUpdate(ctx, name, updateConfig)
+	if err != nil {
+		return fmt.Errorf("update container %q resources: %w", name, err)
+	}
+	return nil
 }
 
 func (r *Runtime) ImagePull(ctx context.Context, img string) error {
@@ -174,6 +259,21 @@ func (r *Runtime) NetworkRemove(ctx context.Context, name string) error {
 
 func (r *Runtime) Close() error {
 	return r.cli.Close()
+}
+
+func parseRestartPolicy(policy string) container.RestartPolicy {
+	switch strings.TrimSpace(policy) {
+	case "no", "":
+		return container.RestartPolicy{Name: container.RestartPolicyDisabled}
+	case "always":
+		return container.RestartPolicy{Name: container.RestartPolicyAlways}
+	case "on-failure":
+		return container.RestartPolicy{Name: container.RestartPolicyOnFailure}
+	case "unless-stopped":
+		return container.RestartPolicy{Name: container.RestartPolicyUnlessStopped}
+	default:
+		return container.RestartPolicy{Name: container.RestartPolicyAlways}
+	}
 }
 
 // WaitContainerRemoved polls until a container is removed or timeout.

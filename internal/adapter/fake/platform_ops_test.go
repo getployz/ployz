@@ -9,7 +9,7 @@ import (
 )
 
 func TestPlatformOps_AllMethodsRecordCalls(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ops := &PlatformOps{}
 	cfg := mesh.Config{}
 	state := &mesh.State{}
@@ -42,7 +42,7 @@ func TestPlatformOps_AllMethodsRecordCalls(t *testing.T) {
 }
 
 func TestPlatformOps_ApplyPeerConfigCaptures(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ops := &PlatformOps{}
 	peers := []mesh.Peer{
 		{PublicKey: "key1", Endpoint: "1.2.3.4:51820"},
@@ -61,7 +61,7 @@ func TestPlatformOps_ApplyPeerConfigCaptures(t *testing.T) {
 }
 
 func TestPlatformOps_ErrorInjection(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ops := &PlatformOps{}
 	injected := errors.New("wg setup failed")
 
@@ -76,5 +76,22 @@ func TestPlatformOps_ErrorInjection(t *testing.T) {
 	// Other methods should still succeed.
 	if err := ops.Prepare(ctx, mesh.Config{}, nil); err != nil {
 		t.Errorf("expected nil error from Prepare, got %v", err)
+	}
+}
+
+func TestPlatformOps_FaultFailOnce(t *testing.T) {
+	ctx := t.Context()
+	ops := &PlatformOps{}
+	injected := errors.New("injected")
+	ops.FailOnce(FaultPlatformPrepare, injected)
+
+	err := ops.Prepare(ctx, mesh.Config{}, nil)
+	if !errors.Is(err, injected) {
+		t.Fatalf("first Prepare() error = %v, want injected", err)
+	}
+
+	err = ops.Prepare(ctx, mesh.Config{}, nil)
+	if err != nil {
+		t.Fatalf("second Prepare() error = %v, want nil", err)
 	}
 }

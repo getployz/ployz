@@ -9,7 +9,7 @@ import (
 )
 
 func TestNetworkController_StartClose(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	returnCfg := mesh.Config{Network: "test-net"}
 	ctrl := NewNetworkController(returnCfg)
 
@@ -33,7 +33,7 @@ func TestNetworkController_StartClose(t *testing.T) {
 }
 
 func TestNetworkController_ErrorInjection(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	injected := errors.New("start failed")
 	ctrl := NewNetworkController(mesh.Config{})
 
@@ -74,7 +74,7 @@ func TestReconcilerFactory(t *testing.T) {
 }
 
 func TestNetworkController_CallRecording(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ctrl := NewNetworkController(mesh.Config{})
 
 	_, _ = ctrl.Start(ctx, mesh.Config{})
@@ -85,5 +85,25 @@ func TestNetworkController_CallRecording(t *testing.T) {
 	}
 	if len(ctrl.Calls("Close")) != 1 {
 		t.Error("expected 1 Close call")
+	}
+}
+
+func TestNetworkController_FaultFailOnce(t *testing.T) {
+	ctx := t.Context()
+	ctrl := NewNetworkController(mesh.Config{Network: "n1"})
+	injected := errors.New("injected")
+	ctrl.FailOnce(FaultNetworkControllerStart, injected)
+
+	_, err := ctrl.Start(ctx, mesh.Config{})
+	if !errors.Is(err, injected) {
+		t.Fatalf("first Start() error = %v, want injected", err)
+	}
+
+	cfg, err := ctrl.Start(ctx, mesh.Config{})
+	if err != nil {
+		t.Fatalf("second Start() error = %v, want nil", err)
+	}
+	if cfg.Network != "n1" {
+		t.Fatalf("second Start() network = %q, want n1", cfg.Network)
 	}
 }

@@ -58,6 +58,8 @@ type ContainerRuntime interface {
 	ContainerRemove(ctx context.Context, name string, force bool) error
 	ContainerLogs(ctx context.Context, name string, lines int) (string, error)
 	ContainerCreate(ctx context.Context, cfg ContainerCreateConfig) error
+	ContainerList(ctx context.Context, labelFilter map[string]string) ([]ContainerListEntry, error)
+	ContainerUpdate(ctx context.Context, name string, resources ResourceConfig) error
 	ImagePull(ctx context.Context, image string) error
 
 	// Overlay network
@@ -83,19 +85,53 @@ type NetworkInfo struct {
 
 // ContainerCreateConfig holds parameters for creating a container.
 type ContainerCreateConfig struct {
-	Name        string
-	Image       string
-	Cmd         []string
-	Env         []string
-	NetworkMode string
-	User        string
-	Mounts      []Mount
+	Name          string
+	Image         string
+	Cmd           []string
+	Env           []string
+	NetworkMode   string
+	User          string
+	Mounts        []Mount
+	Ports         []PortBinding
+	Labels        map[string]string
+	RestartPolicy string
+	HealthCheck   *HealthCheckConfig
+}
+
+// PortBinding describes a host-to-container port mapping.
+type PortBinding struct {
+	HostPort      uint16
+	ContainerPort uint16
+	Protocol      string
+}
+
+// HealthCheckConfig configures a container health check.
+type HealthCheckConfig struct {
+	Test        []string
+	Interval    time.Duration
+	Timeout     time.Duration
+	Retries     int
+	StartPeriod time.Duration
+}
+
+// ContainerListEntry describes one container from a list operation.
+type ContainerListEntry struct {
+	Name    string
+	Image   string
+	Running bool
+	Labels  map[string]string
+}
+
+// ResourceConfig describes in-place resource updates for a container.
+type ResourceConfig struct {
+	CPULimit    float64
+	MemoryLimit int64
 }
 
 // Mount describes a bind mount for a container.
 type Mount struct {
 	Source   string
-	Target  string
+	Target   string
 	ReadOnly bool
 }
 

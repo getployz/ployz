@@ -25,31 +25,6 @@ const (
 	stopNetworkTimeout = 30 * time.Second
 )
 
-type workerState struct {
-	cancel    context.CancelFunc
-	done      chan struct{}
-	spec      types.NetworkSpec
-	freshness *reconcile.FreshnessTracker
-	ntp       *reconcile.NTPChecker
-	ping      *reconcile.PingTracker
-	running   bool
-	lastErr   string
-	mu        sync.RWMutex
-}
-
-func (w *workerState) setStatus(running bool, lastErr string) {
-	w.mu.Lock()
-	w.running = running
-	w.lastErr = lastErr
-	w.mu.Unlock()
-}
-
-func (w *workerState) status() (bool, string) {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-	return w.running, w.lastErr
-}
-
 type NetworkHealth struct {
 	Peers     map[string]reconcile.PeerHealth
 	NTPStatus reconcile.NTPStatus
@@ -255,6 +230,31 @@ func (e *Engine) StopAll() {
 	}
 }
 
+type workerState struct {
+	cancel    context.CancelFunc
+	done      chan struct{}
+	spec      types.NetworkSpec
+	freshness *reconcile.FreshnessTracker
+	ntp       *reconcile.NTPChecker
+	ping      *reconcile.PingTracker
+	running   bool
+	lastErr   string
+	mu        sync.RWMutex
+}
+
+func (w *workerState) setStatus(running bool, lastErr string) {
+	w.mu.Lock()
+	w.running = running
+	w.lastErr = lastErr
+	w.mu.Unlock()
+}
+
+func (w *workerState) status() (bool, string) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.running, w.lastErr
+}
+
 func (e *Engine) runWorkerLoop(ctx context.Context, ws *workerState, spec types.NetworkSpec) {
 	network := defaults.NormalizeNetwork(spec.Network)
 	log := slog.With("component", "runtime-engine", "network", network)
@@ -390,4 +390,3 @@ func sleepWithContext(ctx context.Context, d time.Duration) bool {
 		return true
 	}
 }
-

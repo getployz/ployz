@@ -88,3 +88,19 @@ func (c *Controller) Close() error {
 	}
 	return c.containers.Close()
 }
+
+// ContainerRuntime returns the configured container runtime implementation.
+func (c *Controller) ContainerRuntime() ContainerRuntime {
+	if c == nil {
+		return nil
+	}
+	return c.containers
+}
+
+// Clock returns the configured clock implementation.
+func (c *Controller) Clock() Clock {
+	if c == nil {
+		return nil
+	}
+	return c.clock
+}

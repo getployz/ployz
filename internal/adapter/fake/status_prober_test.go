@@ -9,7 +9,7 @@ import (
 )
 
 func TestStatusProber_CannedValues(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	p := &StatusProber{WG: true, DockerNet: true, Corrosion: false}
 
 	wg, dn, cr, err := p.ProbeInfra(ctx, &mesh.State{})
@@ -22,7 +22,7 @@ func TestStatusProber_CannedValues(t *testing.T) {
 }
 
 func TestStatusProber_ErrorInjection(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	injected := errors.New("probe failed")
 	p := &StatusProber{
 		WG:            true,
@@ -36,12 +36,32 @@ func TestStatusProber_ErrorInjection(t *testing.T) {
 }
 
 func TestStatusProber_CallRecording(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	p := &StatusProber{}
 	_, _, _, _ = p.ProbeInfra(ctx, nil)
 	_, _, _, _ = p.ProbeInfra(ctx, &mesh.State{})
 
 	if len(p.Calls("ProbeInfra")) != 2 {
 		t.Errorf("expected 2 ProbeInfra calls, got %d", len(p.Calls("ProbeInfra")))
+	}
+}
+
+func TestStatusProber_FaultFailOnce(t *testing.T) {
+	ctx := t.Context()
+	p := &StatusProber{WG: true, DockerNet: true, Corrosion: true}
+	injected := errors.New("injected")
+	p.FailOnce(FaultStatusProberProbeInfra, injected)
+
+	_, _, _, err := p.ProbeInfra(ctx, &mesh.State{})
+	if !errors.Is(err, injected) {
+		t.Fatalf("first ProbeInfra() error = %v, want injected", err)
+	}
+
+	wg, dn, cr, err := p.ProbeInfra(ctx, &mesh.State{})
+	if err != nil {
+		t.Fatalf("second ProbeInfra() error = %v, want nil", err)
+	}
+	if !wg || !dn || !cr {
+		t.Fatalf("second ProbeInfra() values = (%v,%v,%v), want all true", wg, dn, cr)
 	}
 }

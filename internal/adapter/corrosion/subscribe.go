@@ -17,6 +17,16 @@ const (
 	maxResubscribeAttempts = 20
 )
 
+func (s Store) SubscribeMachines(ctx context.Context) ([]mesh.MachineRow, <-chan mesh.MachineChange, error) {
+	query := fmt.Sprintf("SELECT id, public_key, subnet, management_ip, endpoint, updated_at, version FROM %s ORDER BY id", machinesTable)
+	return openAndRun(ctx, s, query, machineSpec)
+}
+
+func (s Store) SubscribeHeartbeats(ctx context.Context) ([]mesh.HeartbeatRow, <-chan mesh.HeartbeatChange, error) {
+	query := fmt.Sprintf("SELECT node_id, seq, updated_at FROM %s ORDER BY node_id", heartbeatsTable)
+	return openAndRun(ctx, s, query, heartbeatSpec)
+}
+
 // parseChangeKind maps Corrosion change type strings to mesh.ChangeKind values.
 func parseChangeKind(typ string) mesh.ChangeKind {
 	switch strings.ToLower(strings.TrimSpace(typ)) {
@@ -53,16 +63,6 @@ var heartbeatSpec = subscriptionSpec[mesh.HeartbeatRow, mesh.HeartbeatChange]{
 		return mesh.HeartbeatChange{Kind: kind, Heartbeat: row}
 	},
 	resyncMsg: mesh.HeartbeatChange{Kind: mesh.ChangeResync},
-}
-
-func (s Store) SubscribeMachines(ctx context.Context) ([]mesh.MachineRow, <-chan mesh.MachineChange, error) {
-	query := fmt.Sprintf("SELECT id, public_key, subnet, management_ip, endpoint, updated_at, version FROM %s ORDER BY id", machinesTable)
-	return openAndRun(ctx, s, query, machineSpec)
-}
-
-func (s Store) SubscribeHeartbeats(ctx context.Context) ([]mesh.HeartbeatRow, <-chan mesh.HeartbeatChange, error) {
-	query := fmt.Sprintf("SELECT node_id, seq, updated_at FROM %s ORDER BY node_id", heartbeatsTable)
-	return openAndRun(ctx, s, query, heartbeatSpec)
 }
 
 func openAndRun[Row any, Change any](

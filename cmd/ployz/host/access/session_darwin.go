@@ -24,6 +24,31 @@ type darwinSession struct {
 	routeCIDR string
 }
 
+func (s *darwinSession) InterfaceName() string {
+	return s.ifaceName
+}
+
+func (s *darwinSession) Close(ctx context.Context) error {
+	var errs []error
+	if strings.TrimSpace(s.routeCIDR) != "" {
+		if err := cmdutil.RunSudo(ctx, "route", "-n", "delete", "-net", s.routeCIDR, "-interface", s.ifaceName); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if s.dev != nil {
+		s.dev.Close()
+		s.dev = nil
+	}
+	if s.tun != nil {
+		_ = s.tun.Close()
+		s.tun = nil
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
 func startSession(
 	ctx context.Context,
 	network string,
@@ -117,29 +142,4 @@ func setInterfaceAddress(ctx context.Context, iface string, ip netip.Addr) error
 		lastErr = fmt.Errorf("unknown error")
 	}
 	return fmt.Errorf("configure host interface %s address %s: %w", iface, ipStr, lastErr)
-}
-
-func (s *darwinSession) InterfaceName() string {
-	return s.ifaceName
-}
-
-func (s *darwinSession) Close(ctx context.Context) error {
-	var errs []error
-	if strings.TrimSpace(s.routeCIDR) != "" {
-		if err := cmdutil.RunSudo(ctx, "route", "-n", "delete", "-net", s.routeCIDR, "-interface", s.ifaceName); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if s.dev != nil {
-		s.dev.Close()
-		s.dev = nil
-	}
-	if s.tun != nil {
-		_ = s.tun.Close()
-		s.tun = nil
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	return nil
 }

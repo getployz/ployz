@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"ployz/internal/check"
+	"ployz/internal/deploy"
 	"ployz/internal/mesh"
 	"ployz/internal/reconcile"
 )
@@ -44,20 +45,22 @@ type Cluster struct {
 	mu         sync.RWMutex
 	clock      mesh.Clock
 	nodes      map[string]*nodeState
-	registries map[string]*Registry             // cached per-node registries
+	registries map[string]*Registry // cached per-node registries
 	links      map[link]*LinkConfig
 	blocked    map[link]bool
 	killed     map[string]bool
 	pending    []pendingWrite
 	rng        *mathrand.Rand
-	nodeAddrs  map[string]string                // addr → nodeID, for DialFunc lookups
-	linkPred   func(from, to string) bool       // if non-nil, consulted before delivery
+	nodeAddrs  map[string]string          // addr → nodeID, for DialFunc lookups
+	linkPred   func(from, to string) bool // if non-nil, consulted before delivery
 }
 
 type nodeState struct {
-	machines    map[string]mesh.MachineRow
-	heartbeats  map[string]mesh.HeartbeatRow
-	networkCIDR netip.Prefix
+	machines               map[string]mesh.MachineRow
+	heartbeats             map[string]mesh.HeartbeatRow
+	containers             map[string]deploy.ContainerRow
+	deployments            map[string]deploy.DeploymentRow
+	networkCIDR            netip.Prefix
 	machineSubscriptions   []chan<- mesh.MachineChange
 	heartbeatSubscriptions []chan<- mesh.HeartbeatChange
 }
@@ -80,10 +83,12 @@ type pendingWrite struct {
 }
 
 type writeOp struct {
-	kind      writeKind
-	machine   mesh.MachineRow
-	heartbeat mesh.HeartbeatRow
-	deleteID  string
+	kind       writeKind
+	machine    mesh.MachineRow
+	heartbeat  mesh.HeartbeatRow
+	container  deploy.ContainerRow
+	deployment deploy.DeploymentRow
+	deleteID   string
 }
 
 type writeKind int
@@ -92,6 +97,10 @@ const (
 	writeUpsertMachine writeKind = iota
 	writeDeleteMachine
 	writeHeartbeat
+	writeUpsertContainer
+	writeDeleteContainer
+	writeUpsertDeployment
+	writeDeleteDeployment
 
 	// subscriptionBufCapacity is 256: sized to absorb burst from full cluster anti-entropy.
 	subscriptionBufCapacity = 256
@@ -99,8 +108,10 @@ const (
 
 // NodeSnapshot is a point-in-time view of a node's local data.
 type NodeSnapshot struct {
-	Machines   []mesh.MachineRow
-	Heartbeats []mesh.HeartbeatRow
+	Machines    []mesh.MachineRow
+	Heartbeats  []mesh.HeartbeatRow
+	Containers  []deploy.ContainerRow
+	Deployments []deploy.DeploymentRow
 }
 
 // Machine returns the machine row with the given ID, if present.
@@ -146,8 +157,10 @@ func (c *Cluster) ensureNode(id string) *nodeState {
 	n, ok := c.nodes[id]
 	if !ok {
 		n = &nodeState{
-			machines:   make(map[string]mesh.MachineRow),
-			heartbeats: make(map[string]mesh.HeartbeatRow),
+			machines:    make(map[string]mesh.MachineRow),
+			heartbeats:  make(map[string]mesh.HeartbeatRow),
+			containers:  make(map[string]deploy.ContainerRow),
+			deployments: make(map[string]deploy.DeploymentRow),
 		}
 		c.nodes[id] = n
 	}
@@ -212,11 +225,29 @@ func (c *Cluster) SetLinkPredicate(pred func(from, to string) bool) {
 	c.linkPred = pred
 }
 
-// Heal removes all partitions.
+// Heal removes all partitions and schedules one gossip replay pass.
 func (c *Cluster) Heal() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.blocked = make(map[link]bool)
+
+	for nodeID, n := range c.nodes {
+		if c.killed[nodeID] {
+			continue
+		}
+		for _, row := range n.machines {
+			c.fanOut(nodeID, writeOp{kind: writeUpsertMachine, machine: row})
+		}
+		for _, hb := range n.heartbeats {
+			c.fanOut(nodeID, writeOp{kind: writeHeartbeat, heartbeat: hb})
+		}
+		for _, row := range n.containers {
+			c.fanOut(nodeID, writeOp{kind: writeUpsertContainer, container: row})
+		}
+		for _, row := range n.deployments {
+			c.fanOut(nodeID, writeOp{kind: writeUpsertDeployment, deployment: row})
+		}
+	}
 }
 
 // KillNode marks a node as dead. Registry ops return ErrNodeDead,
@@ -307,6 +338,54 @@ func (c *Cluster) antiEntropy(nodeID string) {
 			}
 		}
 	}
+
+	// Merge containers: highest version wins.
+	for _, peer := range reachable {
+		for id, peerRow := range peer.containers {
+			local, exists := n.containers[id]
+			if !exists || peerRow.Version > local.Version {
+				n.containers[id] = peerRow
+			}
+		}
+	}
+
+	// Delete containers that exist locally but on zero reachable peers.
+	for id := range n.containers {
+		found := false
+		for _, peer := range reachable {
+			if _, ok := peer.containers[id]; ok {
+				found = true
+				break
+			}
+		}
+		if !found {
+			delete(n.containers, id)
+		}
+	}
+
+	// Merge deployments: highest version wins.
+	for _, peer := range reachable {
+		for id, peerRow := range peer.deployments {
+			local, exists := n.deployments[id]
+			if !exists || peerRow.Version > local.Version {
+				n.deployments[id] = peerRow
+			}
+		}
+	}
+
+	// Delete deployments that exist locally but on zero reachable peers.
+	for id := range n.deployments {
+		found := false
+		for _, peer := range reachable {
+			if _, ok := peer.deployments[id]; ok {
+				found = true
+				break
+			}
+		}
+		if !found {
+			delete(n.deployments, id)
+		}
+	}
 }
 
 // Tick delivers pending writes up to clock.Now().
@@ -334,8 +413,10 @@ func (c *Cluster) Snapshot(nodeID string) NodeSnapshot {
 		return NodeSnapshot{}
 	}
 	return NodeSnapshot{
-		Machines:   sortedMachines(n.machines),
-		Heartbeats: sortedHeartbeats(n.heartbeats),
+		Machines:    sortedMachines(n.machines),
+		Heartbeats:  sortedHeartbeats(n.heartbeats),
+		Containers:  sortedContainers(n.containers),
+		Deployments: sortedDeployments(n.deployments),
 	}
 }
 
@@ -524,6 +605,115 @@ func (c *Cluster) listMachines(nodeID string) []mesh.MachineRow {
 	return sortedMachines(n.machines)
 }
 
+// WriteContainer writes a container row to a node and replicates it.
+func (c *Cluster) WriteContainer(nodeID string, row deploy.ContainerRow) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	n := c.ensureNode(nodeID)
+	existing, ok := n.containers[row.ID]
+	if ok && row.Version <= existing.Version {
+		row.Version = existing.Version + 1
+	}
+	if !ok && row.Version <= 0 {
+		row.Version = 1
+	}
+	n.containers[row.ID] = row
+
+	c.fanOut(nodeID, writeOp{kind: writeUpsertContainer, container: row})
+}
+
+// DeleteContainer deletes a container row from a node and replicates the deletion.
+func (c *Cluster) DeleteContainer(nodeID, containerID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	n := c.ensureNode(nodeID)
+	row, ok := n.containers[containerID]
+	if !ok {
+		return
+	}
+	delete(n.containers, containerID)
+
+	c.fanOut(nodeID, writeOp{kind: writeDeleteContainer, deleteID: containerID, container: row})
+}
+
+// ReadContainers returns all container rows visible on nodeID.
+func (c *Cluster) ReadContainers(nodeID string) []deploy.ContainerRow {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	n, ok := c.nodes[nodeID]
+	if !ok {
+		return nil
+	}
+	return sortedContainers(n.containers)
+}
+
+// ReadContainersByNamespace returns namespace-filtered container rows for nodeID.
+func (c *Cluster) ReadContainersByNamespace(nodeID, namespace string) []deploy.ContainerRow {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	n, ok := c.nodes[nodeID]
+	if !ok {
+		return nil
+	}
+	out := make([]deploy.ContainerRow, 0, len(n.containers))
+	for _, row := range n.containers {
+		if row.Namespace == namespace {
+			out = append(out, row)
+		}
+	}
+	sortContainerRows(out)
+	return out
+}
+
+// WriteDeployment writes a deployment row to a node and replicates it.
+func (c *Cluster) WriteDeployment(nodeID string, row deploy.DeploymentRow) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	n := c.ensureNode(nodeID)
+	existing, ok := n.deployments[row.ID]
+	if ok && row.Version <= existing.Version {
+		row.Version = existing.Version + 1
+	}
+	if !ok && row.Version <= 0 {
+		row.Version = 1
+	}
+	n.deployments[row.ID] = row
+
+	c.fanOut(nodeID, writeOp{kind: writeUpsertDeployment, deployment: row})
+}
+
+// DeleteDeployment deletes a deployment row from a node and replicates the deletion.
+func (c *Cluster) DeleteDeployment(nodeID, deploymentID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	n := c.ensureNode(nodeID)
+	row, ok := n.deployments[deploymentID]
+	if !ok {
+		return
+	}
+	delete(n.deployments, deploymentID)
+
+	c.fanOut(nodeID, writeOp{kind: writeDeleteDeployment, deleteID: deploymentID, deployment: row})
+}
+
+// ReadDeployments returns all deployment rows visible on nodeID.
+func (c *Cluster) ReadDeployments(nodeID string) []deploy.DeploymentRow {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	n, ok := c.nodes[nodeID]
+	if !ok {
+		return nil
+	}
+	return sortedDeployments(n.deployments)
+}
+
 // Internal: subscribe to machine changes on a specific node.
 func (c *Cluster) subscribeMachines(ctx context.Context, nodeID string) ([]mesh.MachineRow, <-chan mesh.MachineChange, error) {
 	c.mu.Lock()
@@ -641,16 +831,40 @@ func (c *Cluster) applyWrite(target string, op writeOp) {
 
 	switch op.kind {
 	case writeUpsertMachine:
-		n.machines[op.machine.ID] = op.machine
-		notifyMachineSubs(n, mesh.MachineChange{Kind: mesh.ChangeUpdated, Machine: op.machine})
+		current, ok := n.machines[op.machine.ID]
+		if !ok || op.machine.Version >= current.Version {
+			n.machines[op.machine.ID] = op.machine
+			notifyMachineSubs(n, mesh.MachineChange{Kind: mesh.ChangeUpdated, Machine: op.machine})
+		}
 
 	case writeDeleteMachine:
 		delete(n.machines, op.deleteID)
 		notifyMachineSubs(n, mesh.MachineChange{Kind: mesh.ChangeDeleted, Machine: op.machine})
 
 	case writeHeartbeat:
-		n.heartbeats[op.heartbeat.NodeID] = op.heartbeat
-		notifyHeartbeatSubs(n, mesh.HeartbeatChange{Kind: mesh.ChangeUpdated, Heartbeat: op.heartbeat})
+		current, ok := n.heartbeats[op.heartbeat.NodeID]
+		if !ok || op.heartbeat.Seq >= current.Seq {
+			n.heartbeats[op.heartbeat.NodeID] = op.heartbeat
+			notifyHeartbeatSubs(n, mesh.HeartbeatChange{Kind: mesh.ChangeUpdated, Heartbeat: op.heartbeat})
+		}
+
+	case writeUpsertContainer:
+		current, ok := n.containers[op.container.ID]
+		if !ok || op.container.Version >= current.Version {
+			n.containers[op.container.ID] = op.container
+		}
+
+	case writeDeleteContainer:
+		delete(n.containers, op.deleteID)
+
+	case writeUpsertDeployment:
+		current, ok := n.deployments[op.deployment.ID]
+		if !ok || op.deployment.Version >= current.Version {
+			n.deployments[op.deployment.ID] = op.deployment
+		}
+
+	case writeDeleteDeployment:
+		delete(n.deployments, op.deleteID)
 
 	default:
 		panic(fmt.Sprintf("unknown writeKind: %d", op.kind))
@@ -733,5 +947,28 @@ func sortedHeartbeats(m map[string]mesh.HeartbeatRow) []mesh.HeartbeatRow {
 		out = append(out, row)
 	}
 	slices.SortFunc(out, func(a, b mesh.HeartbeatRow) int { return cmp.Compare(a.NodeID, b.NodeID) })
+	return out
+}
+
+func sortedContainers(m map[string]deploy.ContainerRow) []deploy.ContainerRow {
+	out := make([]deploy.ContainerRow, 0, len(m))
+	for _, row := range m {
+		out = append(out, row)
+	}
+	sortContainerRows(out)
+	return out
+}
+
+func sortedDeployments(m map[string]deploy.DeploymentRow) []deploy.DeploymentRow {
+	out := make([]deploy.DeploymentRow, 0, len(m))
+	for _, row := range m {
+		out = append(out, row)
+	}
+	slices.SortFunc(out, func(a, b deploy.DeploymentRow) int {
+		if a.CreatedAt != b.CreatedAt {
+			return cmp.Compare(b.CreatedAt, a.CreatedAt)
+		}
+		return cmp.Compare(b.ID, a.ID)
+	})
 	return out
 }

@@ -51,8 +51,13 @@ internal/adapter/     all external system integrations:
   adapter/sqlite/       local state persistence (load/save)
   adapter/platform/     platform runtime ops (darwin/linux/stub)
   adapter/fake/         shared fake adapters for chaos/integration testing
+    fake/leaf/            leaf fakes (stores, runtimes, platform/status)
+    fake/cluster/         cluster-backed fakes and chaos topology controls
+    fake/fault/           shared fault injector (FailOnce/FailAlways/SetHook)
 internal/check/       build-tagged assertions (debug panics, release no-ops)
 internal/daemon/      daemon internals (server, supervisor, proxy, protobuf)
+internal/testkit/     shared high-level test composition helpers
+  testkit/scenario/     multi-node manager + fake cluster wiring for integration tests
 internal/remote/      SSH + remote install scripts
 internal/logging/     slog configuration
 internal/buildinfo/   version info
@@ -308,9 +313,30 @@ Three groups in order: stdlib, third-party, local (`ployz/...`).
 - Isolate pure logic from mesh/SSH/Docker dependencies for unit testability.
 - **Inline stubs** for simple, single-test fakes live in `_test.go` files in the consumer package.
 - **Shared fake adapters** (`adapter/fake/`) for multi-test or cross-package use: `fake.Clock`, `fake.StateStore`, `fake.ContainerRuntime`, `fake.Cluster`, `fake.Registry`, etc. All fakes embed `CallRecorder` for call assertion, support per-method error injection, and are thread-safe.
+- Prefer the shared fault injector (`internal/adapter/fake/fault`) for new tests: use `FailOnce`, `FailAlways`, and `SetHook` on fake adapters before adding new per-method `...Err` fields.
+- **Shared scenario testkit** (`internal/testkit/scenario`) for multi-node workflow tests. Use this when tests need real `supervisor` + `engine` + `reconcile` orchestration across nodes, but with fake adapters.
 - `fake.Cluster` simulates a Corrosion gossip cluster with per-node state, configurable topology (latency, partitions, drop rates), and deterministic replication via `Tick()`/`Drain()`.
 - Run single tests with: `go test ./path/to/pkg -run '^TestName$' -count=1 -v`
 - Run tests with assertions enabled: `go test -tags debug ./...`
+
+### Multi-node Scenario Testkit
+
+Use `internal/testkit/scenario` as the default for SDK/daemon behavior tests that involve more than one machine.
+
+- Build scenarios with `scenario.MustNew(t, t.Context(), scenario.Config{...})`.
+- Access node-level handles via `s.Node("id")` (`Manager`, `PlatformOps`, stores, runtimes).
+- Dynamically add/remove managed nodes with `s.AddNode("id")` and `s.RemoveNode("id")`.
+- Use `s.Cluster` for low-level registry fault injection and topology controls.
+- Use `s.SetLink`, `s.BlockLink`, `s.Partition`, `s.Heal`, `s.KillNode`, `s.RestartNode`, `s.Tick`, and `s.Drain()` for manual chaos control.
+- Use `s.Snapshot("id")` for deterministic invariant checks after fault/topology transitions.
+- When using `testing/synctest`, pair cluster drains with `synctest.Wait()` (prefer `t.Cleanup(synctest.Wait)` in setup).
+- Keep `DataRootBase` unique per test to avoid accidental state collisions in `/tmp`.
+
+### Constructor split (production vs tests)
+
+- `supervisor.NewProduction(ctx, dataRoot)` is the production entrypoint; it wires sqlite/platform/corrosion dependencies.
+- `supervisor.New(ctx, dataRoot, opts...)` is the pure constructor for injected dependencies and test composition.
+- Avoid mixing production wiring into tests; prefer `scenario` or explicit dependency injection.
 
 ### Property-Based Testing (Fuzz)
 

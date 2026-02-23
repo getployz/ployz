@@ -14,6 +14,17 @@ service Daemon {
   rpc RemoveMachine(RemoveMachineRequest) returns (RemoveMachineResponse);
   rpc TriggerReconcile(TriggerReconcileRequest) returns (TriggerReconcileResponse);
   rpc GetPeerHealth(GetPeerHealthRequest) returns (GetPeerHealthResponse);
+
+  // PlanDeploy parses compose YAML and returns a dry-run execution plan.
+  rpc PlanDeploy(PlanDeployRequest) returns (PlanDeployResponse);
+  // ApplyDeploy executes a deploy and streams progress + final result.
+  rpc ApplyDeploy(ApplyDeployRequest) returns (stream DeployProgressEvent);
+  // ListDeployments returns deployment rows for a namespace.
+  rpc ListDeployments(ListDeploymentsRequest) returns (ListDeploymentsResponse);
+  // RemoveNamespace removes all namespace containers on this machine.
+  rpc RemoveNamespace(RemoveNamespaceRequest) returns (RemoveNamespaceResponse);
+  // ReadContainerState returns actual local container runtime state.
+  rpc ReadContainerState(ReadContainerStateRequest) returns (ReadContainerStateResponse);
 }
 
 message NetworkSpec {
@@ -180,4 +191,157 @@ message PeerHealthReply {
 
 message GetPeerHealthResponse {
   repeated PeerHealthReply messages = 1;
+}
+
+// --- PlanDeploy ---
+
+message PlanDeployRequest {
+  string network = 1;
+  string namespace = 2;
+  bytes compose_spec = 3;
+}
+
+message PlanDeployResponse {
+  DeployPlanProto plan = 1;
+}
+
+message DeployPlanProto {
+  string namespace = 1;
+  string deploy_id = 2;
+  repeated TierProto tiers = 3;
+}
+
+message TierProto {
+  repeated ServicePlanProto services = 1;
+}
+
+message ServicePlanProto {
+  string name = 1;
+  repeated PlanEntryProto up_to_date = 2;
+  repeated PlanEntryProto needs_spec_update = 3;
+  repeated PlanEntryProto needs_update = 4;
+  repeated PlanEntryProto needs_recreate = 5;
+  repeated PlanEntryProto create = 6;
+  repeated PlanEntryProto remove = 7;
+  UpdateConfigProto update_config = 8;
+  HealthCheckProto health_check = 9;
+}
+
+message PlanEntryProto {
+  string machine_id = 1;
+  string container_name = 2;
+  string spec_json = 3;
+  string current_row_json = 4;
+  string reason = 5;
+}
+
+message UpdateConfigProto {
+  string order = 1;
+  int32 parallelism = 2;
+  string failure_action = 3;
+}
+
+message HealthCheckProto {
+  repeated string test = 1;
+  int64 interval_ns = 2;
+  int64 timeout_ns = 3;
+  int32 retries = 4;
+  int64 start_period_ns = 5;
+}
+
+// --- ApplyDeploy ---
+
+message ApplyDeployRequest {
+  string network = 1;
+  string namespace = 2;
+  bytes compose_spec = 3;
+}
+
+message DeployProgressEvent {
+  ProgressEventProto progress = 1;
+  DeployResultProto result = 2;
+}
+
+message ProgressEventProto {
+  string type = 1;
+  int32 tier = 2;
+  string service = 3;
+  string machine_id = 4;
+  string container = 5;
+  string message = 6;
+}
+
+message DeployResultProto {
+  string namespace = 1;
+  string deploy_id = 2;
+  string status = 3;
+  repeated TierResultProto tiers = 4;
+  string error_message = 5;
+  string error_phase = 6;
+  int32 error_tier = 7;
+}
+
+message TierResultProto {
+  string name = 1;
+  string status = 2;
+  repeated ContainerResultProto containers = 3;
+}
+
+message ContainerResultProto {
+  string machine_id = 1;
+  string container_name = 2;
+  string expected = 3;
+  string actual = 4;
+  bool match = 5;
+}
+
+// --- ListDeployments ---
+
+message ListDeploymentsRequest {
+  string network = 1;
+  string namespace = 2;
+}
+
+message ListDeploymentsResponse {
+  repeated DeploymentEntryProto deployments = 1;
+}
+
+message DeploymentEntryProto {
+  string id = 1;
+  string namespace = 2;
+  string status = 3;
+  string owner = 4;
+  string owner_heartbeat = 5;
+  map<string, string> labels = 6;
+  repeated string machine_ids = 7;
+  int64 version = 8;
+  string created_at = 9;
+  string updated_at = 10;
+}
+
+// --- RemoveNamespace ---
+
+message RemoveNamespaceRequest {
+  string network = 1;
+  string namespace = 2;
+}
+
+message RemoveNamespaceResponse {}
+
+// --- ReadContainerState ---
+
+message ReadContainerStateRequest {
+  string network = 1;
+  string namespace = 2;
+}
+
+message ReadContainerStateResponse {
+  repeated ContainerStateProto containers = 1;
+}
+
+message ContainerStateProto {
+  string container_name = 1;
+  string image = 2;
+  bool running = 3;
+  bool healthy = 4;
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	pb "ployz/internal/daemon/pb"
+	"ployz/internal/deploy"
 	"ployz/internal/mesh"
 	"ployz/pkg/sdk/types"
 
@@ -122,6 +123,65 @@ func TestToGRPCError(t *testing.T) {
 			}
 			if st.Code() != tt.wantCode {
 				t.Errorf("code: got %v, want %v", st.Code(), tt.wantCode)
+			}
+		})
+	}
+}
+
+func TestDeployErrToStatus(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode codes.Code
+	}{
+		{
+			name: "ownership phase",
+			err: &deploy.DeployError{
+				Phase:   "ownership",
+				Message: "deploy ownership lost",
+			},
+			wantCode: codes.Aborted,
+		},
+		{
+			name: "pre-pull phase",
+			err: &deploy.DeployError{
+				Phase:   "pre-pull",
+				Message: "image pull failed",
+			},
+			wantCode: codes.Unavailable,
+		},
+		{
+			name: "health phase",
+			err: &deploy.DeployError{
+				Phase:   "health",
+				Message: "container unhealthy",
+			},
+			wantCode: codes.FailedPrecondition,
+		},
+		{
+			name: "postcondition phase",
+			err: &deploy.DeployError{
+				Phase:   "postcondition",
+				Message: "state mismatch",
+			},
+			wantCode: codes.Aborted,
+		},
+		{
+			name:     "fallback",
+			err:      errors.New("network is required"),
+			wantCode: codes.InvalidArgument,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := deployErrToStatus(tt.err)
+			st, ok := status.FromError(got)
+			if !ok {
+				t.Fatalf("deployErrToStatus() returned non-status error: %v", got)
+			}
+			if st.Code() != tt.wantCode {
+				t.Fatalf("status code = %v, want %v", st.Code(), tt.wantCode)
 			}
 		})
 	}

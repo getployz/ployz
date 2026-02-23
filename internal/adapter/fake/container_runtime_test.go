@@ -128,6 +128,49 @@ func TestContainerRuntime_ErrorInjection(t *testing.T) {
 	}
 }
 
+func TestContainerRuntime_FaultFailOnce(t *testing.T) {
+	ctx := context.Background()
+	rt := NewContainerRuntime()
+	injected := errors.New("injected once")
+	rt.FailOnce(FaultContainerRuntimeCreate, injected)
+
+	err := rt.ContainerCreate(ctx, mesh.ContainerCreateConfig{Name: "c1"})
+	if !errors.Is(err, injected) {
+		t.Fatalf("first ContainerCreate error = %v, want %v", err, injected)
+	}
+
+	err = rt.ContainerCreate(ctx, mesh.ContainerCreateConfig{Name: "c1"})
+	if err != nil {
+		t.Fatalf("second ContainerCreate error = %v, want nil", err)
+	}
+}
+
+func TestContainerRuntime_FaultHook(t *testing.T) {
+	ctx := context.Background()
+	rt := NewContainerRuntime()
+	injected := errors.New("blocked image")
+	rt.SetFaultHook(FaultContainerRuntimeImagePull, func(args ...any) error {
+		if len(args) < 2 {
+			return nil
+		}
+		image, _ := args[1].(string)
+		if image == "bad:latest" {
+			return injected
+		}
+		return nil
+	})
+
+	err := rt.ImagePull(ctx, "bad:latest")
+	if !errors.Is(err, injected) {
+		t.Fatalf("bad image pull error = %v, want %v", err, injected)
+	}
+
+	err = rt.ImagePull(ctx, "alpine:latest")
+	if err != nil {
+		t.Fatalf("good image pull error = %v, want nil", err)
+	}
+}
+
 func TestContainerRuntime_ImagePull(t *testing.T) {
 	ctx := context.Background()
 	rt := NewContainerRuntime()
@@ -146,5 +189,51 @@ func TestContainerRuntime_StartMissing(t *testing.T) {
 
 	if err := rt.ContainerStart(ctx, "nonexistent"); err == nil {
 		t.Error("expected error starting nonexistent container")
+	}
+}
+
+func TestContainerRuntime_ContainerListLabelFilter(t *testing.T) {
+	ctx := context.Background()
+	rt := NewContainerRuntime()
+
+	_ = rt.ContainerCreate(ctx, mesh.ContainerCreateConfig{
+		Name:   "api-1",
+		Image:  "api:latest",
+		Labels: map[string]string{"ployz.namespace": "frontend", "service": "api"},
+	})
+	_ = rt.ContainerCreate(ctx, mesh.ContainerCreateConfig{
+		Name:   "db-1",
+		Image:  "postgres:16",
+		Labels: map[string]string{"ployz.namespace": "backend", "service": "db"},
+	})
+	_ = rt.ContainerStart(ctx, "api-1")
+
+	entries, err := rt.ContainerList(ctx, map[string]string{"ployz.namespace": "frontend"})
+	if err != nil {
+		t.Fatalf("ContainerList() error = %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("ContainerList() len = %d, want 1", len(entries))
+	}
+	if entries[0].Name != "api-1" {
+		t.Fatalf("ContainerList()[0].Name = %q, want %q", entries[0].Name, "api-1")
+	}
+	if !entries[0].Running {
+		t.Fatal("ContainerList()[0].Running = false, want true")
+	}
+}
+
+func TestContainerRuntime_ContainerUpdate(t *testing.T) {
+	ctx := context.Background()
+	rt := NewContainerRuntime()
+
+	_ = rt.ContainerCreate(ctx, mesh.ContainerCreateConfig{Name: "api-1", Image: "api:latest"})
+	err := rt.ContainerUpdate(ctx, "api-1", mesh.ResourceConfig{CPULimit: 2, MemoryLimit: 256 * 1024 * 1024})
+	if err != nil {
+		t.Fatalf("ContainerUpdate() error = %v", err)
+	}
+
+	if err := rt.ContainerUpdate(ctx, "missing", mesh.ResourceConfig{CPULimit: 1}); err == nil {
+		t.Fatal("ContainerUpdate() expected missing container error")
 	}
 }

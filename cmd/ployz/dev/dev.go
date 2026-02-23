@@ -30,7 +30,7 @@ func Cmd() *cobra.Command {
 				return nil
 			}
 
-			mgr, err := supervisor.New(ctx, dataRoot)
+			mgr, err := supervisor.NewProduction(ctx, dataRoot)
 			if err != nil {
 				return err
 			}

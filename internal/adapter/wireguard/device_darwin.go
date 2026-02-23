@@ -29,75 +29,6 @@ var (
 	errNoProvisionedTUN = errors.New("no provisioned macOS tun")
 )
 
-type darwinSession struct {
-	dev       *device.Device
-	tun       tun.Device
-	ifaceName string
-	routeCIDR string
-	mgmtCIDR  string
-}
-
-type provisionedTUN struct {
-	file      *os.File
-	ifaceName string
-	mtu       int
-}
-
-func installProvisionedTUN(file *os.File, ifaceName string, mtu int) error {
-	if file == nil {
-		return fmt.Errorf("tun file descriptor is required")
-	}
-	ifaceName = strings.TrimSpace(ifaceName)
-	if ifaceName == "" {
-		return fmt.Errorf("tun interface name is required")
-	}
-
-	activeMu.Lock()
-	prev := provisionedState
-	provisionedState = &provisionedTUN{
-		file:      file,
-		ifaceName: ifaceName,
-		mtu:       mtu,
-	}
-	activeMu.Unlock()
-
-	if prev != nil && prev.file != nil {
-		_ = prev.file.Close()
-	}
-
-	return nil
-}
-
-// cloneProvisionedTUN duplicates the provisioned utun descriptor.
-// Caller must hold activeMu.
-func cloneProvisionedTUN() (tun.Device, string, error) {
-	state := provisionedState
-	if state == nil || state.file == nil {
-		return nil, "", errNoProvisionedTUN
-	}
-	dupFD, err := unix.Dup(int(state.file.Fd()))
-	ifaceName := state.ifaceName
-	mtu := state.mtu
-	if err != nil {
-		return nil, "", fmt.Errorf("duplicate tun descriptor: %w", err)
-	}
-
-	file := os.NewFile(uintptr(dupFD), ifaceName)
-	if file == nil {
-		_ = unix.Close(dupFD)
-		return nil, "", fmt.Errorf("wrap tun descriptor")
-	}
-
-	tunDev := newFDTUN(file, ifaceName, mtu)
-	tunName, err := tunDev.Name()
-	if err != nil {
-		_ = tunDev.Close()
-		return nil, "", fmt.Errorf("get tun name: %w", err)
-	}
-
-	return tunDev, tunName, nil
-}
-
 // Configure creates (or reuses) a userspace WireGuard TUN device on macOS,
 // configures the private key, listen port, peers, interface addresses and routes.
 func Configure(ctx context.Context, iface string, mtu int, privateKey string,
@@ -206,6 +137,75 @@ func IsActive() bool {
 	activeMu.Lock()
 	defer activeMu.Unlock()
 	return activeSession != nil
+}
+
+type darwinSession struct {
+	dev       *device.Device
+	tun       tun.Device
+	ifaceName string
+	routeCIDR string
+	mgmtCIDR  string
+}
+
+type provisionedTUN struct {
+	file      *os.File
+	ifaceName string
+	mtu       int
+}
+
+func installProvisionedTUN(file *os.File, ifaceName string, mtu int) error {
+	if file == nil {
+		return fmt.Errorf("tun file descriptor is required")
+	}
+	ifaceName = strings.TrimSpace(ifaceName)
+	if ifaceName == "" {
+		return fmt.Errorf("tun interface name is required")
+	}
+
+	activeMu.Lock()
+	prev := provisionedState
+	provisionedState = &provisionedTUN{
+		file:      file,
+		ifaceName: ifaceName,
+		mtu:       mtu,
+	}
+	activeMu.Unlock()
+
+	if prev != nil && prev.file != nil {
+		_ = prev.file.Close()
+	}
+
+	return nil
+}
+
+// cloneProvisionedTUN duplicates the provisioned utun descriptor.
+// Caller must hold activeMu.
+func cloneProvisionedTUN() (tun.Device, string, error) {
+	state := provisionedState
+	if state == nil || state.file == nil {
+		return nil, "", errNoProvisionedTUN
+	}
+	dupFD, err := unix.Dup(int(state.file.Fd()))
+	ifaceName := state.ifaceName
+	mtu := state.mtu
+	if err != nil {
+		return nil, "", fmt.Errorf("duplicate tun descriptor: %w", err)
+	}
+
+	file := os.NewFile(uintptr(dupFD), ifaceName)
+	if file == nil {
+		_ = unix.Close(dupFD)
+		return nil, "", fmt.Errorf("wrap tun descriptor")
+	}
+
+	tunDev := newFDTUN(file, ifaceName, mtu)
+	tunName, err := tunDev.Name()
+	if err != nil {
+		_ = tunDev.Close()
+		return nil, "", fmt.Errorf("get tun name: %w", err)
+	}
+
+	return tunDev, tunName, nil
 }
 
 func buildIPC(priv wgtypes.Key, port int, peers []PeerConfig) string {

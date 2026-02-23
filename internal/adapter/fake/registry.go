@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/netip"
 
+	"ployz/internal/adapter/fake/fault"
 	"ployz/internal/check"
 	"ployz/internal/mesh"
 	"ployz/internal/reconcile"
@@ -11,8 +12,22 @@ import (
 
 // Compile-time interface assertions.
 var (
-	_ mesh.Registry   = (*Registry)(nil)
+	_ mesh.Registry      = (*Registry)(nil)
 	_ reconcile.Registry = (*Registry)(nil)
+)
+
+const (
+	FaultRegistryEnsureMachineTable       = "registry.ensure_machine_table"
+	FaultRegistryEnsureHeartbeatTable     = "registry.ensure_heartbeat_table"
+	FaultRegistryEnsureNetworkConfigTable = "registry.ensure_network_config_table"
+	FaultRegistryEnsureNetworkCIDR        = "registry.ensure_network_cidr"
+	FaultRegistryUpsertMachine            = "registry.upsert_machine"
+	FaultRegistryListMachineRows          = "registry.list_machine_rows"
+	FaultRegistrySubscribeMachines        = "registry.subscribe_machines"
+	FaultRegistrySubscribeHeartbeats      = "registry.subscribe_heartbeats"
+	FaultRegistryBumpHeartbeat            = "registry.bump_heartbeat"
+	FaultRegistryDeleteMachine            = "registry.delete_machine"
+	FaultRegistryDeleteByEndpointExceptID = "registry.delete_by_endpoint_except_id"
 )
 
 // Registry is a per-node view into a Cluster. It implements both
@@ -21,6 +36,7 @@ type Registry struct {
 	CallRecorder
 	cluster *Cluster
 	nodeID  string
+	faults  *fault.Injector
 
 	EnsureMachineTableErr       func(ctx context.Context) error
 	EnsureHeartbeatTableErr     func(ctx context.Context) error
@@ -39,7 +55,36 @@ type Registry struct {
 func NewRegistry(cluster *Cluster, nodeID string) *Registry {
 	check.Assert(cluster != nil, "NewRegistry: cluster must not be nil")
 	check.Assert(nodeID != "", "NewRegistry: nodeID must not be empty")
-	return &Registry{cluster: cluster, nodeID: nodeID}
+	return &Registry{cluster: cluster, nodeID: nodeID, faults: fault.NewInjector()}
+}
+
+func (r *Registry) FailOnce(point string, err error) {
+	r.faults.FailOnce(point, err)
+}
+
+func (r *Registry) FailAlways(point string, err error) {
+	r.faults.FailAlways(point, err)
+}
+
+func (r *Registry) SetFaultHook(point string, hook fault.Hook) {
+	r.faults.SetHook(point, hook)
+}
+
+func (r *Registry) ClearFault(point string) {
+	r.faults.Clear(point)
+}
+
+func (r *Registry) ResetFaults() {
+	r.faults.Reset()
+}
+
+func (r *Registry) evalFault(point string, args ...any) error {
+	check.Assert(r != nil, "Registry.evalFault: receiver must not be nil")
+	check.Assert(r.faults != nil, "Registry.evalFault: faults injector must not be nil")
+	if r == nil || r.faults == nil {
+		return nil
+	}
+	return r.faults.Eval(point, args...)
 }
 
 // --- mesh.Registry ---
@@ -48,6 +93,9 @@ func (r *Registry) EnsureMachineTable(ctx context.Context) error {
 	r.record("EnsureMachineTable")
 	if r.cluster.IsKilled(r.nodeID) {
 		return ErrNodeDead
+	}
+	if err := r.evalFault(FaultRegistryEnsureMachineTable, ctx); err != nil {
+		return err
 	}
 	if r.EnsureMachineTableErr != nil {
 		return r.EnsureMachineTableErr(ctx)
@@ -60,6 +108,9 @@ func (r *Registry) EnsureNetworkConfigTable(ctx context.Context) error {
 	if r.cluster.IsKilled(r.nodeID) {
 		return ErrNodeDead
 	}
+	if err := r.evalFault(FaultRegistryEnsureNetworkConfigTable, ctx); err != nil {
+		return err
+	}
 	if r.EnsureNetworkConfigTableErr != nil {
 		return r.EnsureNetworkConfigTableErr(ctx)
 	}
@@ -70,6 +121,9 @@ func (r *Registry) EnsureNetworkCIDR(ctx context.Context, requested netip.Prefix
 	r.record("EnsureNetworkCIDR", requested, fallbackCIDR, defaultCIDR)
 	if r.cluster.IsKilled(r.nodeID) {
 		return netip.Prefix{}, ErrNodeDead
+	}
+	if err := r.evalFault(FaultRegistryEnsureNetworkCIDR, ctx, requested, fallbackCIDR, defaultCIDR); err != nil {
+		return netip.Prefix{}, err
 	}
 	if r.EnsureNetworkCIDRErr != nil {
 		if err := r.EnsureNetworkCIDRErr(ctx); err != nil {
@@ -84,6 +138,9 @@ func (r *Registry) UpsertMachine(ctx context.Context, row mesh.MachineRow, expec
 	if r.cluster.IsKilled(r.nodeID) {
 		return ErrNodeDead
 	}
+	if err := r.evalFault(FaultRegistryUpsertMachine, ctx, row, expectedVersion); err != nil {
+		return err
+	}
 	if r.UpsertMachineErr != nil {
 		if err := r.UpsertMachineErr(ctx, row, expectedVersion); err != nil {
 			return err
@@ -96,6 +153,9 @@ func (r *Registry) DeleteByEndpointExceptID(ctx context.Context, endpoint string
 	r.record("DeleteByEndpointExceptID", endpoint, id)
 	if r.cluster.IsKilled(r.nodeID) {
 		return ErrNodeDead
+	}
+	if err := r.evalFault(FaultRegistryDeleteByEndpointExceptID, ctx, endpoint, id); err != nil {
+		return err
 	}
 	if r.DeleteByEndpointExceptIDErr != nil {
 		if err := r.DeleteByEndpointExceptIDErr(ctx, endpoint, id); err != nil {
@@ -111,6 +171,9 @@ func (r *Registry) DeleteMachine(ctx context.Context, machineID string) error {
 	if r.cluster.IsKilled(r.nodeID) {
 		return ErrNodeDead
 	}
+	if err := r.evalFault(FaultRegistryDeleteMachine, ctx, machineID); err != nil {
+		return err
+	}
 	if r.DeleteMachineErr != nil {
 		if err := r.DeleteMachineErr(ctx, machineID); err != nil {
 			return err
@@ -124,6 +187,9 @@ func (r *Registry) ListMachineRows(ctx context.Context) ([]mesh.MachineRow, erro
 	r.record("ListMachineRows")
 	if r.cluster.IsKilled(r.nodeID) {
 		return nil, ErrNodeDead
+	}
+	if err := r.evalFault(FaultRegistryListMachineRows, ctx); err != nil {
+		return nil, err
 	}
 	if r.ListMachineRowsErr != nil {
 		if err := r.ListMachineRowsErr(ctx); err != nil {
@@ -140,6 +206,9 @@ func (r *Registry) EnsureHeartbeatTable(ctx context.Context) error {
 	if r.cluster.IsKilled(r.nodeID) {
 		return ErrNodeDead
 	}
+	if err := r.evalFault(FaultRegistryEnsureHeartbeatTable, ctx); err != nil {
+		return err
+	}
 	if r.EnsureHeartbeatTableErr != nil {
 		return r.EnsureHeartbeatTableErr(ctx)
 	}
@@ -150,6 +219,9 @@ func (r *Registry) SubscribeMachines(ctx context.Context) ([]mesh.MachineRow, <-
 	r.record("SubscribeMachines")
 	if r.cluster.IsKilled(r.nodeID) {
 		return nil, nil, ErrNodeDead
+	}
+	if err := r.evalFault(FaultRegistrySubscribeMachines, ctx); err != nil {
+		return nil, nil, err
 	}
 	if r.SubscribeMachinesErr != nil {
 		if err := r.SubscribeMachinesErr(ctx); err != nil {
@@ -164,6 +236,9 @@ func (r *Registry) SubscribeHeartbeats(ctx context.Context) ([]mesh.HeartbeatRow
 	if r.cluster.IsKilled(r.nodeID) {
 		return nil, nil, ErrNodeDead
 	}
+	if err := r.evalFault(FaultRegistrySubscribeHeartbeats, ctx); err != nil {
+		return nil, nil, err
+	}
 	if r.SubscribeHeartbeatsErr != nil {
 		if err := r.SubscribeHeartbeatsErr(ctx); err != nil {
 			return nil, nil, err
@@ -176,6 +251,9 @@ func (r *Registry) BumpHeartbeat(ctx context.Context, nodeID string, updatedAt s
 	r.record("BumpHeartbeat", nodeID, updatedAt)
 	if r.cluster.IsKilled(r.nodeID) {
 		return ErrNodeDead
+	}
+	if err := r.evalFault(FaultRegistryBumpHeartbeat, ctx, nodeID, updatedAt); err != nil {
+		return err
 	}
 	if r.BumpHeartbeatErr != nil {
 		if err := r.BumpHeartbeatErr(ctx, nodeID, updatedAt); err != nil {

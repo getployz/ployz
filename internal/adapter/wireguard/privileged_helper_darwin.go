@@ -19,6 +19,70 @@ import (
 	"time"
 )
 
+func RunPrivilegedHelper(ctx context.Context, socketPath, token string) error {
+	path := strings.TrimSpace(socketPath)
+	tok := strings.TrimSpace(token)
+	if path == "" {
+		return fmt.Errorf("privileged helper socket path is required")
+	}
+	if tok == "" {
+		return fmt.Errorf("privileged helper token is required")
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create privileged helper socket dir: %w", err)
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove stale privileged helper socket: %w", err)
+	}
+
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		return fmt.Errorf("listen privileged helper socket: %w", err)
+	}
+	pidPath := path + ".pid"
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		_ = ln.Close()
+		_ = os.Remove(path)
+		return fmt.Errorf("write privileged helper pid file: %w", err)
+	}
+	if err := os.Chmod(path, 0o666); err != nil {
+		_ = ln.Close()
+		_ = os.Remove(path)
+		_ = os.Remove(pidPath)
+		return fmt.Errorf("set privileged helper socket permissions: %w", err)
+	}
+
+	log := slog.With("component", "wireguard-priv-helper", "socket", path)
+	log.Info("privileged helper started")
+
+	go func() {
+		<-ctx.Done()
+		_ = ln.Close()
+	}()
+
+	defer func() {
+		_ = ln.Close()
+		_ = os.Remove(path)
+		_ = os.Remove(pidPath)
+		log.Info("privileged helper stopped")
+	}()
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			if ne, ok := err.(net.Error); ok && ne.Temporary() {
+				continue
+			}
+			return fmt.Errorf("accept privileged helper request: %w", err)
+		}
+		go servePrivilegedConn(ctx, conn, tok)
+	}
+}
+
 var (
 	privilegedMu     sync.RWMutex
 	privilegedBroker *privilegedBrokerConfig
@@ -116,70 +180,6 @@ func runPrivilegedCommand(ctx context.Context, name string, args ...string) ([]b
 		return out, errors.New(resp.Error)
 	}
 	return out, nil
-}
-
-func RunPrivilegedHelper(ctx context.Context, socketPath, token string) error {
-	path := strings.TrimSpace(socketPath)
-	tok := strings.TrimSpace(token)
-	if path == "" {
-		return fmt.Errorf("privileged helper socket path is required")
-	}
-	if tok == "" {
-		return fmt.Errorf("privileged helper token is required")
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create privileged helper socket dir: %w", err)
-	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove stale privileged helper socket: %w", err)
-	}
-
-	ln, err := net.Listen("unix", path)
-	if err != nil {
-		return fmt.Errorf("listen privileged helper socket: %w", err)
-	}
-	pidPath := path + ".pid"
-	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
-		_ = ln.Close()
-		_ = os.Remove(path)
-		return fmt.Errorf("write privileged helper pid file: %w", err)
-	}
-	if err := os.Chmod(path, 0o666); err != nil {
-		_ = ln.Close()
-		_ = os.Remove(path)
-		_ = os.Remove(pidPath)
-		return fmt.Errorf("set privileged helper socket permissions: %w", err)
-	}
-
-	log := slog.With("component", "wireguard-priv-helper", "socket", path)
-	log.Info("privileged helper started")
-
-	go func() {
-		<-ctx.Done()
-		_ = ln.Close()
-	}()
-
-	defer func() {
-		_ = ln.Close()
-		_ = os.Remove(path)
-		_ = os.Remove(pidPath)
-		log.Info("privileged helper stopped")
-	}()
-
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			if ne, ok := err.(net.Error); ok && ne.Temporary() {
-				continue
-			}
-			return fmt.Errorf("accept privileged helper request: %w", err)
-		}
-		go servePrivilegedConn(ctx, conn, tok)
-	}
 }
 
 func privilegedBrokerSnapshot() (privilegedBrokerConfig, error) {

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"ployz/internal/deploy"
 	"ployz/internal/mesh"
 )
 
@@ -658,5 +659,59 @@ func TestCluster_ThreeNode_SplitBrain_Convergence(t *testing.T) {
 	// m-shared should be gone (deleted on all peers).
 	if _, ok := snap.Machine("m-shared"); ok {
 		t.Error("restarted node-c should not have m-shared (deleted on peers)")
+	}
+}
+
+func TestCluster_ContainerDeleteReplication(t *testing.T) {
+	clock := NewClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	c := NewCluster(clock)
+
+	c.Registry("node-a")
+	c.Registry("node-b")
+
+	c.WriteContainer("node-a", deploy.ContainerRow{
+		ID:            "c1",
+		Namespace:     "ns",
+		DeployID:      "d1",
+		Service:       "api",
+		MachineID:     "node-a",
+		ContainerName: "ns-api-1",
+	})
+
+	if got := c.ReadContainers("node-b"); len(got) != 1 {
+		t.Fatalf("before delete: node-b got %d rows, want 1", len(got))
+	}
+
+	c.DeleteContainer("node-a", "c1")
+
+	if got := c.ReadContainers("node-a"); len(got) != 0 {
+		t.Fatalf("node-a got %d rows after delete, want 0", len(got))
+	}
+	if got := c.ReadContainers("node-b"); len(got) != 0 {
+		t.Fatalf("node-b got %d rows after replicated delete, want 0", len(got))
+	}
+}
+
+func TestCluster_DeploymentHighestVersionWinsOnRestart(t *testing.T) {
+	clock := NewClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	c := NewCluster(clock)
+
+	c.Registry("node-a")
+	c.Registry("node-b")
+
+	c.Partition([]string{"node-a"}, []string{"node-b"})
+
+	c.WriteDeployment("node-a", deploy.DeploymentRow{ID: "d1", Namespace: "ns", Version: 2, Owner: "node-a"})
+	c.WriteDeployment("node-b", deploy.DeploymentRow{ID: "d1", Namespace: "ns", Version: 7, Owner: "node-b"})
+
+	c.Heal()
+	c.RestartNode("node-a")
+
+	rows := c.ReadDeployments("node-a")
+	if len(rows) != 1 {
+		t.Fatalf("node-a got %d deployment rows, want 1", len(rows))
+	}
+	if rows[0].Version != 7 || rows[0].Owner != "node-b" {
+		t.Fatalf("node-a merged row = %+v, want version=7 owner=node-b", rows[0])
 	}
 }

@@ -12,62 +12,6 @@ import (
 	"strings"
 )
 
-// newJSONRequest creates an HTTP request with JSON content headers and auth.
-func (s Store) newJSONRequest(ctx context.Context, method, url string, body []byte) (*http.Request, error) {
-	var reader io.Reader
-	if body != nil {
-		reader = bytes.NewReader(body)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, url, reader)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	if s.apiToken != "" {
-		req.Header.Set("Authorization", "Bearer "+s.apiToken)
-	}
-	return req, nil
-}
-
-// doJSON sends a JSON request and returns the response, returning an error for non-200 status.
-func (s Store) doJSON(req *http.Request) (*http.Response, error) {
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096)) // best-effort, bounded
-		resp.Body.Close()
-		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
-	}
-	return resp, nil
-}
-
-type statement struct {
-	Query  string `json:"query"`
-	Params []any  `json:"params"`
-}
-
-type execResponse struct {
-	Results []struct {
-		Error *string `json:"error"`
-	} `json:"results"`
-}
-
-type queryEvent struct {
-	Columns []string     `json:"columns"`
-	Row     *rowEvent    `json:"row"`
-	EOQ     *endOfQuery  `json:"eoq"`
-	Change  *changeEvent `json:"change"`
-	Error   *string      `json:"error"`
-}
-
-type endOfQuery struct {
-	Time     float64 `json:"time"`
-	ChangeID *uint64 `json:"change_id"`
-}
-
 type rowEvent struct {
 	RowID  uint64
 	Values []json.RawMessage
@@ -114,10 +58,66 @@ func (c *changeEvent) UnmarshalJSON(data []byte) error {
 	return json.Unmarshal(raw[3], &c.ChangeID)
 }
 
+type statement struct {
+	Query  string `json:"query"`
+	Params []any  `json:"params"`
+}
+
+type execResponse struct {
+	Results []struct {
+		Error *string `json:"error"`
+	} `json:"results"`
+}
+
+type queryEvent struct {
+	Columns []string     `json:"columns"`
+	Row     *rowEvent    `json:"row"`
+	EOQ     *endOfQuery  `json:"eoq"`
+	Change  *changeEvent `json:"change"`
+	Error   *string      `json:"error"`
+}
+
+type endOfQuery struct {
+	Time     float64 `json:"time"`
+	ChangeID *uint64 `json:"change_id"`
+}
+
 type subscriptionStream struct {
 	ID      string
 	Body    io.ReadCloser
 	Decoder *json.Decoder
+}
+
+// newJSONRequest creates an HTTP request with JSON content headers and auth.
+func (s Store) newJSONRequest(ctx context.Context, method, url string, body []byte) (*http.Request, error) {
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, reader)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	if s.apiToken != "" {
+		req.Header.Set("Authorization", "Bearer "+s.apiToken)
+	}
+	return req, nil
+}
+
+// doJSON sends a JSON request and returns the response, returning an error for non-200 status.
+func (s Store) doJSON(req *http.Request) (*http.Response, error) {
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096)) // best-effort, bounded
+		resp.Body.Close()
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	return resp, nil
 }
 
 func (s Store) exec(ctx context.Context, query string, args ...any) error {

@@ -19,15 +19,20 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Daemon_ApplyNetworkSpec_FullMethodName = "/ployz.Daemon/ApplyNetworkSpec"
-	Daemon_DisableNetwork_FullMethodName   = "/ployz.Daemon/DisableNetwork"
-	Daemon_GetStatus_FullMethodName        = "/ployz.Daemon/GetStatus"
-	Daemon_GetIdentity_FullMethodName      = "/ployz.Daemon/GetIdentity"
-	Daemon_ListMachines_FullMethodName     = "/ployz.Daemon/ListMachines"
-	Daemon_UpsertMachine_FullMethodName    = "/ployz.Daemon/UpsertMachine"
-	Daemon_RemoveMachine_FullMethodName    = "/ployz.Daemon/RemoveMachine"
-	Daemon_TriggerReconcile_FullMethodName = "/ployz.Daemon/TriggerReconcile"
-	Daemon_GetPeerHealth_FullMethodName    = "/ployz.Daemon/GetPeerHealth"
+	Daemon_ApplyNetworkSpec_FullMethodName   = "/ployz.Daemon/ApplyNetworkSpec"
+	Daemon_DisableNetwork_FullMethodName     = "/ployz.Daemon/DisableNetwork"
+	Daemon_GetStatus_FullMethodName          = "/ployz.Daemon/GetStatus"
+	Daemon_GetIdentity_FullMethodName        = "/ployz.Daemon/GetIdentity"
+	Daemon_ListMachines_FullMethodName       = "/ployz.Daemon/ListMachines"
+	Daemon_UpsertMachine_FullMethodName      = "/ployz.Daemon/UpsertMachine"
+	Daemon_RemoveMachine_FullMethodName      = "/ployz.Daemon/RemoveMachine"
+	Daemon_TriggerReconcile_FullMethodName   = "/ployz.Daemon/TriggerReconcile"
+	Daemon_GetPeerHealth_FullMethodName      = "/ployz.Daemon/GetPeerHealth"
+	Daemon_PlanDeploy_FullMethodName         = "/ployz.Daemon/PlanDeploy"
+	Daemon_ApplyDeploy_FullMethodName        = "/ployz.Daemon/ApplyDeploy"
+	Daemon_ListDeployments_FullMethodName    = "/ployz.Daemon/ListDeployments"
+	Daemon_RemoveNamespace_FullMethodName    = "/ployz.Daemon/RemoveNamespace"
+	Daemon_ReadContainerState_FullMethodName = "/ployz.Daemon/ReadContainerState"
 )
 
 // DaemonClient is the client API for Daemon service.
@@ -43,6 +48,16 @@ type DaemonClient interface {
 	RemoveMachine(ctx context.Context, in *RemoveMachineRequest, opts ...grpc.CallOption) (*RemoveMachineResponse, error)
 	TriggerReconcile(ctx context.Context, in *TriggerReconcileRequest, opts ...grpc.CallOption) (*TriggerReconcileResponse, error)
 	GetPeerHealth(ctx context.Context, in *GetPeerHealthRequest, opts ...grpc.CallOption) (*GetPeerHealthResponse, error)
+	// PlanDeploy parses compose YAML and returns a dry-run execution plan.
+	PlanDeploy(ctx context.Context, in *PlanDeployRequest, opts ...grpc.CallOption) (*PlanDeployResponse, error)
+	// ApplyDeploy executes a deploy and streams progress + final result.
+	ApplyDeploy(ctx context.Context, in *ApplyDeployRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DeployProgressEvent], error)
+	// ListDeployments returns deployment rows for a namespace.
+	ListDeployments(ctx context.Context, in *ListDeploymentsRequest, opts ...grpc.CallOption) (*ListDeploymentsResponse, error)
+	// RemoveNamespace removes all namespace containers on this machine.
+	RemoveNamespace(ctx context.Context, in *RemoveNamespaceRequest, opts ...grpc.CallOption) (*RemoveNamespaceResponse, error)
+	// ReadContainerState returns actual local container runtime state.
+	ReadContainerState(ctx context.Context, in *ReadContainerStateRequest, opts ...grpc.CallOption) (*ReadContainerStateResponse, error)
 }
 
 type daemonClient struct {
@@ -143,6 +158,65 @@ func (c *daemonClient) GetPeerHealth(ctx context.Context, in *GetPeerHealthReque
 	return out, nil
 }
 
+func (c *daemonClient) PlanDeploy(ctx context.Context, in *PlanDeployRequest, opts ...grpc.CallOption) (*PlanDeployResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PlanDeployResponse)
+	err := c.cc.Invoke(ctx, Daemon_PlanDeploy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonClient) ApplyDeploy(ctx context.Context, in *ApplyDeployRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DeployProgressEvent], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Daemon_ServiceDesc.Streams[0], Daemon_ApplyDeploy_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[ApplyDeployRequest, DeployProgressEvent]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Daemon_ApplyDeployClient = grpc.ServerStreamingClient[DeployProgressEvent]
+
+func (c *daemonClient) ListDeployments(ctx context.Context, in *ListDeploymentsRequest, opts ...grpc.CallOption) (*ListDeploymentsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListDeploymentsResponse)
+	err := c.cc.Invoke(ctx, Daemon_ListDeployments_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonClient) RemoveNamespace(ctx context.Context, in *RemoveNamespaceRequest, opts ...grpc.CallOption) (*RemoveNamespaceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveNamespaceResponse)
+	err := c.cc.Invoke(ctx, Daemon_RemoveNamespace_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonClient) ReadContainerState(ctx context.Context, in *ReadContainerStateRequest, opts ...grpc.CallOption) (*ReadContainerStateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReadContainerStateResponse)
+	err := c.cc.Invoke(ctx, Daemon_ReadContainerState_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DaemonServer is the server API for Daemon service.
 // All implementations must embed UnimplementedDaemonServer
 // for forward compatibility.
@@ -156,6 +230,16 @@ type DaemonServer interface {
 	RemoveMachine(context.Context, *RemoveMachineRequest) (*RemoveMachineResponse, error)
 	TriggerReconcile(context.Context, *TriggerReconcileRequest) (*TriggerReconcileResponse, error)
 	GetPeerHealth(context.Context, *GetPeerHealthRequest) (*GetPeerHealthResponse, error)
+	// PlanDeploy parses compose YAML and returns a dry-run execution plan.
+	PlanDeploy(context.Context, *PlanDeployRequest) (*PlanDeployResponse, error)
+	// ApplyDeploy executes a deploy and streams progress + final result.
+	ApplyDeploy(*ApplyDeployRequest, grpc.ServerStreamingServer[DeployProgressEvent]) error
+	// ListDeployments returns deployment rows for a namespace.
+	ListDeployments(context.Context, *ListDeploymentsRequest) (*ListDeploymentsResponse, error)
+	// RemoveNamespace removes all namespace containers on this machine.
+	RemoveNamespace(context.Context, *RemoveNamespaceRequest) (*RemoveNamespaceResponse, error)
+	// ReadContainerState returns actual local container runtime state.
+	ReadContainerState(context.Context, *ReadContainerStateRequest) (*ReadContainerStateResponse, error)
 	mustEmbedUnimplementedDaemonServer()
 }
 
@@ -192,6 +276,21 @@ func (UnimplementedDaemonServer) TriggerReconcile(context.Context, *TriggerRecon
 }
 func (UnimplementedDaemonServer) GetPeerHealth(context.Context, *GetPeerHealthRequest) (*GetPeerHealthResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetPeerHealth not implemented")
+}
+func (UnimplementedDaemonServer) PlanDeploy(context.Context, *PlanDeployRequest) (*PlanDeployResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PlanDeploy not implemented")
+}
+func (UnimplementedDaemonServer) ApplyDeploy(*ApplyDeployRequest, grpc.ServerStreamingServer[DeployProgressEvent]) error {
+	return status.Errorf(codes.Unimplemented, "method ApplyDeploy not implemented")
+}
+func (UnimplementedDaemonServer) ListDeployments(context.Context, *ListDeploymentsRequest) (*ListDeploymentsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListDeployments not implemented")
+}
+func (UnimplementedDaemonServer) RemoveNamespace(context.Context, *RemoveNamespaceRequest) (*RemoveNamespaceResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RemoveNamespace not implemented")
+}
+func (UnimplementedDaemonServer) ReadContainerState(context.Context, *ReadContainerStateRequest) (*ReadContainerStateResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReadContainerState not implemented")
 }
 func (UnimplementedDaemonServer) mustEmbedUnimplementedDaemonServer() {}
 func (UnimplementedDaemonServer) testEmbeddedByValue()                {}
@@ -376,6 +475,89 @@ func _Daemon_GetPeerHealth_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Daemon_PlanDeploy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PlanDeployRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServer).PlanDeploy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Daemon_PlanDeploy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServer).PlanDeploy(ctx, req.(*PlanDeployRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Daemon_ApplyDeploy_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(ApplyDeployRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(DaemonServer).ApplyDeploy(m, &grpc.GenericServerStream[ApplyDeployRequest, DeployProgressEvent]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Daemon_ApplyDeployServer = grpc.ServerStreamingServer[DeployProgressEvent]
+
+func _Daemon_ListDeployments_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListDeploymentsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServer).ListDeployments(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Daemon_ListDeployments_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServer).ListDeployments(ctx, req.(*ListDeploymentsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Daemon_RemoveNamespace_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveNamespaceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServer).RemoveNamespace(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Daemon_RemoveNamespace_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServer).RemoveNamespace(ctx, req.(*RemoveNamespaceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Daemon_ReadContainerState_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReadContainerStateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServer).ReadContainerState(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Daemon_ReadContainerState_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServer).ReadContainerState(ctx, req.(*ReadContainerStateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Daemon_ServiceDesc is the grpc.ServiceDesc for Daemon service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -419,7 +601,29 @@ var Daemon_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "GetPeerHealth",
 			Handler:    _Daemon_GetPeerHealth_Handler,
 		},
+		{
+			MethodName: "PlanDeploy",
+			Handler:    _Daemon_PlanDeploy_Handler,
+		},
+		{
+			MethodName: "ListDeployments",
+			Handler:    _Daemon_ListDeployments_Handler,
+		},
+		{
+			MethodName: "RemoveNamespace",
+			Handler:    _Daemon_RemoveNamespace_Handler,
+		},
+		{
+			MethodName: "ReadContainerState",
+			Handler:    _Daemon_ReadContainerState_Handler,
+		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "ApplyDeploy",
+			Handler:       _Daemon_ApplyDeploy_Handler,
+			ServerStreams: true,
+		},
+	},
 	Metadata: "internal/daemon/pb/daemon.proto",
 }

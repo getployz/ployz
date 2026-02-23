@@ -12,22 +12,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func dialStdioCmd() *cobra.Command {
-	var socketPath string
-
-	cmd := &cobra.Command{
-		Use:    "dial-stdio",
-		Short:  "Proxy stdio to ployzd socket",
-		Hidden: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDialStdio(cmd.Context(), socketPath, os.Stdin, os.Stdout)
-		},
-	}
-
-	cmd.Flags().StringVar(&socketPath, "socket", client.DefaultSocketPath(), "Path to the ployzd Unix socket")
-	return cmd
-}
-
 type halfReadCloser interface {
 	io.Reader
 	CloseRead() error
@@ -52,6 +36,22 @@ type halfWriteCloserWrapper struct {
 
 func (x *halfWriteCloserWrapper) CloseWrite() error {
 	return x.Close()
+}
+
+func dialStdioCmd() *cobra.Command {
+	var socketPath string
+
+	cmd := &cobra.Command{
+		Use:    "dial-stdio",
+		Short:  "Proxy stdio to ployzd socket",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDialStdio(cmd.Context(), socketPath, os.Stdin, os.Stdout)
+		},
+	}
+
+	cmd.Flags().StringVar(&socketPath, "socket", client.DefaultSocketPath(), "Path to the ployzd Unix socket")
+	return cmd
 }
 
 func runDialStdio(ctx context.Context, socketPath string, stdin io.Reader, stdout io.Writer) error {

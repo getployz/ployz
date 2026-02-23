@@ -47,7 +47,7 @@ func rootCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			mgr, err := supervisor.New(ctx, dataRoot)
+			mgr, err := supervisor.NewProduction(ctx, dataRoot)
 			if err != nil {
 				return err
 			}
