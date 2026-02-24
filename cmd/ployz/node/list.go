@@ -1,12 +1,15 @@
 package node
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
 
 	"ployz/cmd/ployz/cmdutil"
 	"ployz/cmd/ployz/ui"
+	sdkmachine "ployz/pkg/sdk/machine"
+	"ployz/pkg/sdk/types"
 
 	"github.com/spf13/cobra"
 )
@@ -24,9 +27,23 @@ func listCmd() *cobra.Command {
 				return err
 			}
 
+			status, statusErr := svc.Status(cmd.Context(), cl.Network)
+
 			machines, err := svc.ListMachines(cmd.Context(), cl.Network)
 			if err != nil {
-				return err
+				if statusErr != nil || status.Corrosion {
+					return err
+				}
+
+				fallback, fallbackErr := fallbackLocalMachine(cmd.Context(), svc, cl.Network)
+				if fallbackErr != nil {
+					return err
+				}
+				machines = fallback
+				fmt.Println(ui.WarnMsg("corrosion is unhealthy; showing local runtime only"))
+				fmt.Println(ui.Muted("  " + err.Error()))
+			} else if statusErr == nil && !status.Corrosion {
+				fmt.Println(ui.WarnMsg("corrosion is unhealthy; membership data may be stale"))
 			}
 			if len(machines) == 0 {
 				fmt.Println(ui.Muted("no nodes registered"))
@@ -77,4 +94,35 @@ func listCmd() *cobra.Command {
 
 	cf.Bind(cmd)
 	return cmd
+}
+
+func fallbackLocalMachine(ctx context.Context, svc *sdkmachine.Service, network string) ([]types.MachineEntry, error) {
+	identity, err := svc.Identity(ctx, network)
+	if err != nil {
+		return nil, err
+	}
+
+	entry, err := localMachineFromIdentity(identity)
+	if err != nil {
+		return nil, err
+	}
+	return []types.MachineEntry{entry}, nil
+}
+
+func localMachineFromIdentity(identity types.Identity) (types.MachineEntry, error) {
+	id := strings.TrimSpace(identity.ID)
+	if id == "" {
+		id = strings.TrimSpace(identity.PublicKey)
+	}
+	if id == "" {
+		return types.MachineEntry{}, fmt.Errorf("missing machine identity")
+	}
+
+	return types.MachineEntry{
+		ID:           id,
+		PublicKey:    strings.TrimSpace(identity.PublicKey),
+		Subnet:       strings.TrimSpace(identity.Subnet),
+		ManagementIP: strings.TrimSpace(identity.ManagementIP),
+		Endpoint:     strings.TrimSpace(identity.AdvertiseEndpoint),
+	}, nil
 }

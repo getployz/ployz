@@ -2,6 +2,7 @@ package supervisor_test
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"strings"
 	"testing"
@@ -118,11 +119,79 @@ func TestDisableNetworkPurgeDeletesSpec(t *testing.T) {
 	}
 }
 
+func TestApplyNetworkSpecReapplyStopsExistingRuntime(t *testing.T) {
+	ctx := t.Context()
+	deps, err := newDeps(ctx, "node-reapply-stop")
+	if err != nil {
+		t.Fatalf("create deps: %v", err)
+	}
+
+	mgr, err := supervisor.New(ctx, "/tmp/supervisor-reapply-stop",
+		supervisor.WithSpecStore(deps.specStore),
+		supervisor.WithManagerStateStore(deps.stateStore),
+		supervisor.WithManagerController(deps.controller),
+		supervisor.WithManagerEngine(deps.engine),
+	)
+	if err != nil {
+		t.Fatalf("supervisor.New: %v", err)
+	}
+
+	spec := types.NetworkSpec{Network: "default", DataRoot: "/tmp/supervisor-reapply-stop"}
+	if _, err := mgr.ApplyNetworkSpec(ctx, spec); err != nil {
+		t.Fatalf("first ApplyNetworkSpec: %v", err)
+	}
+	stopsBefore := len(deps.corrosionRT.Calls("Stop"))
+
+	if _, err := mgr.ApplyNetworkSpec(ctx, spec); err != nil {
+		t.Fatalf("second ApplyNetworkSpec: %v", err)
+	}
+	stopsAfter := len(deps.corrosionRT.Calls("Stop"))
+	if stopsAfter <= stopsBefore {
+		t.Fatalf("expected re-apply to stop existing runtime, stops before=%d after=%d", stopsBefore, stopsAfter)
+	}
+}
+
+func TestApplyNetworkSpecReapplyContinuesWhenStopFails(t *testing.T) {
+	ctx := t.Context()
+	deps, err := newDeps(ctx, "node-reapply-stop-fail")
+	if err != nil {
+		t.Fatalf("create deps: %v", err)
+	}
+
+	stopCalled := 0
+	deps.corrosionRT.StopErr = func(context.Context, string) error {
+		stopCalled++
+		return errors.New("injected stop failure")
+	}
+
+	mgr, err := supervisor.New(ctx, "/tmp/supervisor-reapply-stop-fail",
+		supervisor.WithSpecStore(deps.specStore),
+		supervisor.WithManagerStateStore(deps.stateStore),
+		supervisor.WithManagerController(deps.controller),
+		supervisor.WithManagerEngine(deps.engine),
+	)
+	if err != nil {
+		t.Fatalf("supervisor.New: %v", err)
+	}
+
+	spec := types.NetworkSpec{Network: "default", DataRoot: "/tmp/supervisor-reapply-stop-fail"}
+	if _, err := mgr.ApplyNetworkSpec(ctx, spec); err != nil {
+		t.Fatalf("first ApplyNetworkSpec: %v", err)
+	}
+	if _, err := mgr.ApplyNetworkSpec(ctx, spec); err != nil {
+		t.Fatalf("second ApplyNetworkSpec with stop failure should still succeed: %v", err)
+	}
+	if stopCalled == 0 {
+		t.Fatal("expected injected stop failure path to be exercised")
+	}
+}
+
 type testDeps struct {
-	specStore  *leaffake.SpecStore
-	stateStore *leaffake.StateStore
-	controller *mesh.Controller
-	engine     *engine.Engine
+	specStore   *leaffake.SpecStore
+	stateStore  *leaffake.StateStore
+	controller  *mesh.Controller
+	engine      *engine.Engine
+	corrosionRT *leaffake.CorrosionRuntime
 }
 
 func newDeps(ctx context.Context, nodeID string) (testDeps, error) {
@@ -167,9 +236,10 @@ func newDeps(ctx context.Context, nodeID string) (testDeps, error) {
 	)
 
 	return testDeps{
-		specStore:  specStore,
-		stateStore: stateStore,
-		controller: ctrl,
-		engine:     eng,
+		specStore:   specStore,
+		stateStore:  stateStore,
+		controller:  ctrl,
+		engine:      eng,
+		corrosionRT: corrosionRT,
 	}, nil
 }

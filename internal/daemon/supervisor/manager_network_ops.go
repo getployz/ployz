@@ -18,6 +18,31 @@ func (m *Manager) ApplyNetworkSpec(ctx context.Context, spec types.NetworkSpec) 
 	log := slog.With("component", "supervisor", "network", spec.Network)
 	log.Info("apply network spec requested")
 
+	// Stop the existing convergence worker before re-applying.
+	if stopErr := m.engine.StopNetwork(spec.Network); stopErr != nil {
+		log.Warn("failed to stop existing worker before apply", "err", stopErr)
+	}
+
+	// If this network already exists in persisted config, stop its currently
+	// configured runtime first (WireGuard/Corrosion/Docker) before starting
+	// again. This avoids apply/start races on shared runtime resources.
+	persisted, exists, err := m.store.GetSpec(spec.Network)
+	if err != nil {
+		return types.ApplyResult{}, err
+	}
+	if exists {
+		existingSpec := persisted.Spec
+		m.normalizeSpec(&existingSpec)
+		existingCfg, cfgErr := netctrl.ConfigFromSpec(existingSpec)
+		if cfgErr != nil {
+			log.Warn("failed to resolve existing config before apply", "err", cfgErr)
+		} else {
+			if _, stopErr := m.ctrl.Stop(ctx, existingCfg, false); stopErr != nil {
+				log.Warn("failed to stop existing runtime before apply", "err", stopErr)
+			}
+		}
+	}
+
 	result, err := m.applyOnce(ctx, spec)
 	if err != nil {
 		log.Error("apply network spec failed", "err", err)

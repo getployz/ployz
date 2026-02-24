@@ -1,7 +1,7 @@
 package main
 
 import (
-	"log/slog"
+	"fmt"
 	"os"
 
 	"ployz/cmd/ployz/agent"
@@ -27,9 +27,11 @@ func main() {
 	}
 
 	root := &cobra.Command{
-		Use:     "ployz",
-		Short:   "Container orchestration with overlay networking",
-		Version: buildinfo.Version,
+		Use:           "ployz",
+		Short:         "Container orchestration with overlay networking",
+		Version:       buildinfo.Version,
+		SilenceErrors: true,
+		SilenceUsage:  true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			level := logging.LevelWarn
 			if debug {
@@ -54,7 +56,7 @@ func main() {
 	root.AddCommand(daemonCmd)
 
 	if err := root.Execute(); err != nil {
-		slog.Error("command failed", "err", err)
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 }
