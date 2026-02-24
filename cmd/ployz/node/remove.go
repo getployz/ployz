@@ -18,12 +18,12 @@ func removeCmd() *cobra.Command {
 		Short:   "Remove a node from the cluster",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			clusterName, svc, cl, err := service(cmd.Context(), &cf)
+			clusterName, svc, _, err := service(cmd.Context(), &cf)
 			if err != nil {
 				return err
 			}
 
-			if err := svc.RemoveMachine(cmd.Context(), cl.Network, args[0]); err != nil {
+			if err := svc.RemoveMachine(cmd.Context(), args[0]); err != nil {
 				return err
 			}
 			fmt.Println(ui.SuccessMsg("removed node %s from cluster %s", ui.Accent(args[0]), ui.Accent(clusterName)))

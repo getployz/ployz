@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"ployz/internal/mesh"
+	"ployz/internal/network"
 
 	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/conn"
@@ -98,7 +98,7 @@ func Configure(ctx context.Context, iface string, mtu int, privateKey string,
 		dev:       dev,
 		tun:       tunDev,
 		ifaceName: tunName,
-		mgmtCIDR:  mesh.ManagementCIDR,
+		mgmtCIDR:  network.ManagementCIDR,
 	}
 
 	log.Debug("wireguard active", "iface", tunName)
@@ -261,8 +261,8 @@ func syncRoutes(ctx context.Context, iface string, machineIP, mgmtIP netip.Addr,
 	}
 
 	// Management CIDR route.
-	_, _ = runPrivilegedCommand(ctx, "route", "-n", "delete", "-inet6", mesh.ManagementCIDR, "-interface", iface)
-	if out, err := runPrivilegedCommand(ctx, "route", "-n", "add", "-inet6", mesh.ManagementCIDR, "-interface", iface); err != nil {
+	_, _ = runPrivilegedCommand(ctx, "route", "-n", "delete", "-inet6", network.ManagementCIDR, "-interface", iface)
+	if out, err := runPrivilegedCommand(ctx, "route", "-n", "add", "-inet6", network.ManagementCIDR, "-interface", iface); err != nil {
 		slog.Debug("IPv6 management route failed (non-fatal)", "err", err, "output", strings.TrimSpace(string(out)))
 	}
 

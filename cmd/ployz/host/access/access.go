@@ -52,7 +52,7 @@ func Cmd() *cobra.Command {
 			}
 			svc := sdkmachine.New(api)
 
-			status, err := svc.Status(cmd.Context(), cl.Network)
+			status, err := svc.Status(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -60,7 +60,7 @@ func Cmd() *cobra.Command {
 				return fmt.Errorf("cluster %q is not running", cl.Network)
 			}
 
-			identity, err := svc.Identity(cmd.Context(), cl.Network)
+			identity, err := svc.Identity(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -83,7 +83,7 @@ func Cmd() *cobra.Command {
 				networkCIDR = localSubnet.String()
 			}
 
-			endpoint, err := svc.HostAccessEndpoint(cmd.Context(), cl.Network)
+			endpoint, err := svc.HostAccessEndpoint(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -94,7 +94,7 @@ func Cmd() *cobra.Command {
 			}
 			hostPub := hostPriv.PublicKey().String()
 
-			if err := svc.AddHostAccessPeer(cmd.Context(), cl.Network, hostPub, hostIP); err != nil {
+			if err := svc.AddHostAccessPeer(cmd.Context(), hostPub, hostIP); err != nil {
 				return fmt.Errorf("configure host access peer: %w", err)
 			}
 
@@ -108,13 +108,13 @@ func Cmd() *cobra.Command {
 				networkCIDR,
 			)
 			if err != nil {
-				_ = svc.RemoveHostAccessPeer(context.Background(), cl.Network, hostPub, hostIP)
+				_ = svc.RemoveHostAccessPeer(context.Background(), hostPub, hostIP)
 				return fmt.Errorf("start host wireguard access: %w", err)
 			}
 
 			cleanup := func() {
 				_ = sess.Close(context.Background())
-				_ = svc.RemoveHostAccessPeer(context.Background(), cl.Network, hostPub, hostIP)
+				_ = svc.RemoveHostAccessPeer(context.Background(), hostPub, hostIP)
 			}
 
 			fmt.Println(ui.InfoMsg("host access active for cluster %s", ui.Accent(cl.Network)))

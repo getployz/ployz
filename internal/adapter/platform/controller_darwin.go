@@ -13,33 +13,33 @@ import (
 	"ployz/internal/adapter/docker"
 	"ployz/internal/adapter/sqlite"
 	"ployz/internal/adapter/wireguard"
-	"ployz/internal/mesh"
+	"ployz/internal/network"
 	"ployz/pkg/sdk/defaults"
 )
 
 // NewController creates a Controller wired with Darwin-specific dependencies.
-func NewController(opts ...mesh.Option) (*mesh.Controller, error) {
+func NewController(opts ...network.Option) (*network.Controller, error) {
 	rt, err := docker.NewRuntime()
 	if err != nil {
 		return nil, err
 	}
-	defaults := []mesh.Option{
-		mesh.WithContainerRuntime(rt),
-		mesh.WithCorrosionRuntime(corrosion.NewAdapter(rt)),
-		mesh.WithStatusProber(DarwinStatusProber{RT: rt}),
-		mesh.WithStateStore(sqlite.NetworkStateStore{}),
-		mesh.WithClock(mesh.RealClock{}),
-		mesh.WithPlatformOps(DarwinPlatformOps{RT: rt}),
+	defaults := []network.Option{
+		network.WithContainerRuntime(rt),
+		network.WithCorrosionRuntime(corrosion.NewAdapter(rt)),
+		network.WithStatusProber(DarwinStatusProber{RT: rt}),
+		network.WithStateStore(sqlite.NetworkStateStore{}),
+		network.WithClock(network.RealClock{}),
+		network.WithPlatformOps(DarwinPlatformOps{RT: rt}),
 	}
-	return mesh.New(append(defaults, opts...)...)
+	return network.New(append(defaults, opts...)...)
 }
 
-// DarwinPlatformOps implements mesh.PlatformOps for macOS.
+// DarwinPlatformOps implements network.PlatformOps for macOS.
 type DarwinPlatformOps struct {
-	RT mesh.ContainerRuntime
+	RT network.ContainerRuntime
 }
 
-func (o DarwinPlatformOps) Prepare(ctx context.Context, cfg mesh.Config, state mesh.StateStore) error {
+func (o DarwinPlatformOps) Prepare(ctx context.Context, cfg network.Config, state network.StateStore) error {
 	if err := EnsureUniqueHostCIDR(cfg.NetworkCIDR, cfg.DataRoot, cfg.Network, defaultNetworkPrefix, func(dataDir string) (string, error) {
 		s, err := state.Load(dataDir)
 		if err != nil {
@@ -52,45 +52,45 @@ func (o DarwinPlatformOps) Prepare(ctx context.Context, cfg mesh.Config, state m
 	return o.RT.WaitReady(ctx)
 }
 
-func (o DarwinPlatformOps) ConfigureWireGuard(ctx context.Context, cfg mesh.Config, state *mesh.State) error {
+func (o DarwinPlatformOps) ConfigureWireGuard(ctx context.Context, cfg network.Config, state *network.State) error {
 	return configureWireGuardDarwin(ctx, cfg, state, nil)
 }
 
-func (o DarwinPlatformOps) EnsureDockerNetwork(_ context.Context, _ mesh.Config, _ *mesh.State) error {
+func (o DarwinPlatformOps) EnsureDockerNetwork(_ context.Context, _ network.Config, _ *network.State) error {
 	return nil // no containers on the overlay on macOS
 }
 
-func (o DarwinPlatformOps) CleanupDockerNetwork(_ context.Context, _ mesh.Config, _ *mesh.State) error {
+func (o DarwinPlatformOps) CleanupDockerNetwork(_ context.Context, _ network.Config, _ *network.State) error {
 	return nil
 }
 
-func (o DarwinPlatformOps) CleanupWireGuard(ctx context.Context, _ mesh.Config, _ *mesh.State) error {
+func (o DarwinPlatformOps) CleanupWireGuard(ctx context.Context, _ network.Config, _ *network.State) error {
 	return wireguard.Cleanup(ctx)
 }
 
-func (o DarwinPlatformOps) AfterStart(ctx context.Context, cfg mesh.Config) error {
+func (o DarwinPlatformOps) AfterStart(ctx context.Context, cfg network.Config) error {
 	// Start a TCP ping listener on the overlay IP so remote nodes can measure
 	// latency. With userspace WireGuard on the host we can bind directly.
-	overlayIP := mesh.MachineIP(cfg.Subnet)
+	overlayIP := network.MachineIP(cfg.Subnet)
 	pingPort := defaults.DaemonAPIPort(cfg.Network)
 	go startPingListener(ctx, overlayIP, pingPort, cfg.Network)
 	return nil
 }
 
-func (o DarwinPlatformOps) AfterStop(_ context.Context, _ mesh.Config, _ *mesh.State) error {
+func (o DarwinPlatformOps) AfterStop(_ context.Context, _ network.Config, _ *network.State) error {
 	return nil
 }
 
-func (o DarwinPlatformOps) ApplyPeerConfig(ctx context.Context, cfg mesh.Config, state *mesh.State, peers []mesh.Peer) error {
+func (o DarwinPlatformOps) ApplyPeerConfig(ctx context.Context, cfg network.Config, state *network.State, peers []network.Peer) error {
 	return configureWireGuardDarwin(ctx, cfg, state, peers)
 }
 
-// DarwinStatusProber implements mesh.StatusProber for macOS.
+// DarwinStatusProber implements network.StatusProber for macOS.
 type DarwinStatusProber struct {
-	RT mesh.ContainerRuntime
+	RT network.ContainerRuntime
 }
 
-func (p DarwinStatusProber) ProbeInfra(ctx context.Context, state *mesh.State) (wg bool, dockerNet bool, corr bool, err error) {
+func (p DarwinStatusProber) ProbeInfra(ctx context.Context, state *network.State) (wg bool, dockerNet bool, corr bool, err error) {
 	wg = wireguard.IsActive()
 
 	if err := p.RT.WaitReady(ctx); err == nil {
@@ -104,8 +104,8 @@ func (p DarwinStatusProber) ProbeInfra(ctx context.Context, state *mesh.State) (
 	return wg, dockerNet, corr, nil
 }
 
-func configureWireGuardDarwin(ctx context.Context, cfg mesh.Config, state *mesh.State, peers []mesh.Peer) error {
-	specs, err := mesh.BuildPeerSpecs(peers)
+func configureWireGuardDarwin(ctx context.Context, cfg network.Config, state *network.State, peers []network.Peer) error {
+	specs, err := network.BuildPeerSpecs(peers)
 	if err != nil {
 		return fmt.Errorf("build peer specs: %w", err)
 	}
@@ -119,7 +119,7 @@ func configureWireGuardDarwin(ctx context.Context, cfg mesh.Config, state *mesh.
 	}
 	return wireguard.Configure(ctx,
 		state.WGInterface, defaultWireGuardMTU, state.WGPrivate, state.WGPort,
-		mesh.MachineIP(cfg.Subnet), cfg.Management, wgPeers)
+		network.MachineIP(cfg.Subnet), cfg.Management, wgPeers)
 }
 
 // startPingListener runs a TCP accept loop on the overlay IP so remote peers

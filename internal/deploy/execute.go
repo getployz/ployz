@@ -11,25 +11,11 @@ import (
 	"time"
 
 	"ployz/internal/check"
-	"ployz/internal/mesh"
+	"ployz/internal/network"
 )
 
 const (
 	ownerHeartbeatInterval = 5 * time.Second
-
-	deployStatusInProgress = "in_progress"
-	deployStatusSucceeded  = "succeeded"
-	deployStatusFailed     = "failed"
-
-	tierStatusCompleted  = "completed"
-	tierStatusFailed     = "failed"
-	tierStatusRolledBack = "rolled_back"
-
-	phaseOwnership     = "ownership"
-	phasePrePull       = "pre-pull"
-	phaseExecute       = "execute"
-	phaseHealth        = "health"
-	phasePostcondition = "postcondition"
 
 	labelNamespace = "ployz.namespace"
 	labelService   = "ployz.service"
@@ -45,13 +31,13 @@ const (
 // sent with non-blocking writes and may be dropped if the channel is full.
 func ApplyPlan(
 	ctx context.Context,
-	rt mesh.ContainerRuntime,
+	rt network.ContainerRuntime,
 	stores Stores,
 	health HealthChecker,
 	stateReader StateReader,
 	plan DeployPlan,
 	machineID string,
-	clock mesh.Clock,
+	clock network.Clock,
 	events chan<- ProgressEvent,
 ) (result ApplyResult, retErr error) {
 	check.Assert(rt != nil, "ApplyPlan: container runtime must not be nil")
@@ -73,7 +59,7 @@ func ApplyPlan(
 	}
 	defer cancelHeartbeat()
 
-	finalStatus := deployStatusFailed
+	finalStatus := DeployFailed
 	defer func() {
 		if err := postFlight(ctx, stores, plan, finalStatus, clock); err != nil {
 			if retErr == nil {
@@ -87,7 +73,7 @@ func ApplyPlan(
 	for tierIdx, tier := range plan.Tiers {
 		if err := ctx.Err(); err != nil {
 			tierName := tierDisplayName(tier, tierIdx)
-			retErr = decorateDeployError(err, phaseExecute, plan.Namespace, tierIdx, tierName, result.Tiers)
+			retErr = decorateDeployError(err, DeployErrorPhaseExecute, plan.Namespace, tierIdx, tierName, result.Tiers)
 			emit(events, ProgressEvent{Type: "deploy_failed", Tier: tierIdx, Message: retErr.Error()})
 			return result, retErr
 		}
@@ -96,24 +82,24 @@ func ApplyPlan(
 		emit(events, ProgressEvent{Type: "tier_started", Tier: tierIdx, Message: tierName})
 
 		if err := checkOwnership(ctx, stores, plan, machineID, tierIdx, tierName); err != nil {
-			retErr = decorateDeployError(err, phaseOwnership, plan.Namespace, tierIdx, tierName, result.Tiers)
+			retErr = decorateDeployError(err, DeployErrorPhaseOwnership, plan.Namespace, tierIdx, tierName, result.Tiers)
 			emit(events, ProgressEvent{Type: "deploy_failed", Tier: tierIdx, Message: retErr.Error()})
 			return result, retErr
 		}
 
 		if err := prePullTier(ctx, rt, tier, tierIdx, machineID, events); err != nil {
-			retErr = decorateDeployError(err, phasePrePull, plan.Namespace, tierIdx, tierName, result.Tiers)
+			retErr = decorateDeployError(err, DeployErrorPhasePrePull, plan.Namespace, tierIdx, tierName, result.Tiers)
 			emit(events, ProgressEvent{Type: "deploy_failed", Tier: tierIdx, Message: retErr.Error()})
 			return result, retErr
 		}
 
 		tierResult, err := executeTier(ctx, rt, stores, health, tier, tierIdx, plan, machineID, clock, events)
 		if err != nil {
-			if tierResult.Status == "" {
-				tierResult.Status = tierStatusFailed
+			if tierResult.Status == 0 {
+				tierResult.Status = TierFailed
 			}
 			result.Tiers = append(result.Tiers, tierResult)
-			retErr = decorateDeployError(err, phaseExecute, plan.Namespace, tierIdx, tierName, result.Tiers)
+			retErr = decorateDeployError(err, DeployErrorPhaseExecute, plan.Namespace, tierIdx, tierName, result.Tiers)
 			emit(events, ProgressEvent{Type: "deploy_failed", Tier: tierIdx, Message: retErr.Error()})
 			return result, retErr
 		}
@@ -121,19 +107,19 @@ func ApplyPlan(
 		postconditionRows, err := assertPostcondition(ctx, stateReader, tier, tierIdx, plan, machineID)
 		tierResult.Containers = postconditionRows
 		if err != nil {
-			tierResult.Status = tierStatusFailed
+			tierResult.Status = TierFailed
 			result.Tiers = append(result.Tiers, tierResult)
-			retErr = decorateDeployError(err, phasePostcondition, plan.Namespace, tierIdx, tierName, result.Tiers)
+			retErr = decorateDeployError(err, DeployErrorPhasePostcondition, plan.Namespace, tierIdx, tierName, result.Tiers)
 			emit(events, ProgressEvent{Type: "deploy_failed", Tier: tierIdx, Message: retErr.Error()})
 			return result, retErr
 		}
 
-		tierResult.Status = tierStatusCompleted
+		tierResult.Status = TierCompleted
 		result.Tiers = append(result.Tiers, tierResult)
 		emit(events, ProgressEvent{Type: "tier_complete", Tier: tierIdx, Message: tierName})
 	}
 
-	finalStatus = deployStatusSucceeded
+	finalStatus = DeploySucceeded
 	emit(events, ProgressEvent{Type: "deploy_complete", Message: plan.DeployID})
 	return result, nil
 }
@@ -155,7 +141,7 @@ func preFlight(
 	stores Stores,
 	plan DeployPlan,
 	machineID string,
-	clock mesh.Clock,
+	clock network.Clock,
 ) (cancel func(), err error) {
 	now := clock.Now().UTC().Format(time.RFC3339Nano)
 	specJSONBytes, err := json.Marshal(plan)
@@ -168,7 +154,7 @@ func preFlight(
 		Namespace:      plan.Namespace,
 		SpecJSON:       string(specJSONBytes),
 		Labels:         map[string]string{},
-		Status:         deployStatusInProgress,
+		Status:         DeployInProgress,
 		Owner:          machineID,
 		OwnerHeartbeat: now,
 		MachineIDs:     planMachineIDs(plan),
@@ -235,7 +221,7 @@ func checkOwnership(
 	if err := stores.Deployments.CheckOwnership(ctx, plan.DeployID, machineID); err != nil {
 		return &DeployError{
 			Namespace: plan.Namespace,
-			Phase:     phaseOwnership,
+			Phase:     DeployErrorPhaseOwnership,
 			Tier:      tier,
 			TierName:  tierName,
 			Message:   err.Error(),
@@ -247,7 +233,7 @@ func checkOwnership(
 // prePullTier pulls all unique images for local create/recreate operations.
 func prePullTier(
 	ctx context.Context,
-	rt mesh.ContainerRuntime,
+	rt network.ContainerRuntime,
 	tier Tier,
 	tierIdx int,
 	machineID string,
@@ -276,7 +262,7 @@ func prePullTier(
 	for _, image := range images {
 		if err := rt.ImagePull(ctx, image); err != nil {
 			return &DeployError{
-				Phase:   phasePrePull,
+				Phase:   DeployErrorPhasePrePull,
 				Tier:    tierIdx,
 				Message: fmt.Sprintf("pull image %q: %v", image, err),
 			}
@@ -290,20 +276,20 @@ func prePullTier(
 // executeTier applies one tier for the local machine only.
 func executeTier(
 	ctx context.Context,
-	rt mesh.ContainerRuntime,
+	rt network.ContainerRuntime,
 	stores Stores,
 	health HealthChecker,
 	tier Tier,
 	tierIdx int,
 	plan DeployPlan,
 	machineID string,
-	clock mesh.Clock,
+	clock network.Clock,
 	events chan<- ProgressEvent,
 ) (TierResult, error) {
 	tierName := tierDisplayName(tier, tierIdx)
 	result := TierResult{
 		Name:   tierName,
-		Status: tierStatusCompleted,
+		Status: TierCompleted,
 	}
 
 	rollbackActions := make([]rollbackAction, 0)
@@ -312,27 +298,27 @@ func executeTier(
 
 	for _, service := range tier.Services {
 		if err := ctx.Err(); err != nil {
-			return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: err.Error()}
+			return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: err.Error()}
 		}
 
 		for _, entry := range filterEntriesForMachine(service.Remove, machineID) {
 			if entry.CurrentRow == nil {
-				return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("service %s remove %s has nil current row", service.Name, entry.ContainerName)}
+				return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("service %s remove %s has nil current row", service.Name, entry.ContainerName)}
 			}
 			oldRow := *entry.CurrentRow
 			oldSpec, err := decodeServiceSpec(oldRow.SpecJSON)
 			if err != nil {
-				return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("decode current spec for %s: %v", oldRow.ContainerName, err)}
+				return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("decode current spec for %s: %v", oldRow.ContainerName, err)}
 			}
 
 			if err := rt.ContainerStop(ctx, oldRow.ContainerName); err != nil {
-				return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("stop container %s: %v", oldRow.ContainerName, err)}
+				return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("stop container %s: %v", oldRow.ContainerName, err)}
 			}
 			if err := rt.ContainerRemove(ctx, oldRow.ContainerName, true); err != nil {
-				return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("remove container %s: %v", oldRow.ContainerName, err)}
+				return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("remove container %s: %v", oldRow.ContainerName, err)}
 			}
 			if err := stores.Containers.DeleteContainer(ctx, oldRow.ID); err != nil {
-				return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("delete container row %s: %v", oldRow.ID, err)}
+				return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("delete container row %s: %v", oldRow.ID, err)}
 			}
 
 			rollbackActions = append(rollbackActions, rollbackAction{
@@ -359,23 +345,23 @@ func executeTier(
 			now := clock.Now().UTC().Format(time.RFC3339Nano)
 			specJSON, err := marshalSpecJSON(entry.Spec)
 			if err != nil {
-				return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("marshal spec for %s: %v", entry.ContainerName, err)}
+				return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("marshal spec for %s: %v", entry.ContainerName, err)}
 			}
 
 			cfg := createConfigForSpec(plan.Namespace, plan.DeployID, entry.MachineID, service.Name, entry.ContainerName, entry.Spec)
 			if err := rt.ContainerCreate(ctx, cfg); err != nil {
-				return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("create container %s: %v", entry.ContainerName, err)}
+				return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("create container %s: %v", entry.ContainerName, err)}
 			}
 			emit(events, ProgressEvent{Type: "container_created", Tier: tierIdx, Service: service.Name, MachineID: entry.MachineID, Container: entry.ContainerName})
 
 			if err := rt.ContainerStart(ctx, entry.ContainerName); err != nil {
-				return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("start container %s: %v", entry.ContainerName, err)}
+				return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("start container %s: %v", entry.ContainerName, err)}
 			}
 			emit(events, ProgressEvent{Type: "container_started", Tier: tierIdx, Service: service.Name, MachineID: entry.MachineID, Container: entry.ContainerName})
 
 			row := buildContainerRow(plan, service.Name, entry, specJSON, now)
 			if err := stores.Containers.InsertContainer(ctx, row); err != nil {
-				return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("insert container row %s: %v", row.ID, err)}
+				return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("insert container row %s: %v", row.ID, err)}
 			}
 
 			newRow := row
@@ -404,12 +390,12 @@ func executeTier(
 
 		for _, entry := range filterEntriesForMachine(service.NeedsSpecUpdate, machineID) {
 			if entry.CurrentRow == nil {
-				return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("service %s spec update %s has nil current row", service.Name, entry.ContainerName)}
+				return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("service %s spec update %s has nil current row", service.Name, entry.ContainerName)}
 			}
 			now := clock.Now().UTC().Format(time.RFC3339Nano)
 			specJSON, err := marshalSpecJSON(entry.Spec)
 			if err != nil {
-				return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("marshal spec for %s: %v", entry.ContainerName, err)}
+				return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("marshal spec for %s: %v", entry.ContainerName, err)}
 			}
 
 			updated := *entry.CurrentRow
@@ -420,7 +406,7 @@ func executeTier(
 			}
 
 			if err := stores.Containers.UpdateContainer(ctx, updated); err != nil {
-				return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("update container row %s: %v", updated.ID, err)}
+				return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("update container row %s: %v", updated.ID, err)}
 			}
 
 			oldRow := *entry.CurrentRow
@@ -439,21 +425,21 @@ func executeTier(
 
 		for _, entry := range filterEntriesForMachine(service.NeedsUpdate, machineID) {
 			if entry.CurrentRow == nil {
-				return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("service %s update %s has nil current row", service.Name, entry.ContainerName)}
+				return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("service %s update %s has nil current row", service.Name, entry.ContainerName)}
 			}
 			oldSpec, err := decodeServiceSpec(entry.CurrentRow.SpecJSON)
 			if err != nil {
-				return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("decode current spec for %s: %v", entry.CurrentRow.ContainerName, err)}
+				return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("decode current spec for %s: %v", entry.CurrentRow.ContainerName, err)}
 			}
 
 			if err := rt.ContainerUpdate(ctx, entry.CurrentRow.ContainerName, resourceConfigFromSpec(entry.Spec)); err != nil {
-				return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("update container resources %s: %v", entry.CurrentRow.ContainerName, err)}
+				return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("update container resources %s: %v", entry.CurrentRow.ContainerName, err)}
 			}
 
 			now := clock.Now().UTC().Format(time.RFC3339Nano)
 			specJSON, err := marshalSpecJSON(entry.Spec)
 			if err != nil {
-				return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("marshal spec for %s: %v", entry.ContainerName, err)}
+				return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("marshal spec for %s: %v", entry.ContainerName, err)}
 			}
 
 			updated := *entry.CurrentRow
@@ -464,7 +450,7 @@ func executeTier(
 			}
 
 			if err := stores.Containers.UpdateContainer(ctx, updated); err != nil {
-				return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("update container row %s: %v", updated.ID, err)}
+				return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("update container row %s: %v", updated.ID, err)}
 			}
 
 			oldRow := *entry.CurrentRow
@@ -515,22 +501,22 @@ func executeTier(
 				oldRow    ContainerRow
 				oldSpec   ServiceSpec
 				newRow    ContainerRow
-				newConfig mesh.ContainerCreateConfig
+				newConfig network.ContainerCreateConfig
 			}
 			prepared := make([]recreatePrepared, 0, len(batch))
 			for _, entry := range batch {
 				if entry.CurrentRow == nil {
-					return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("service %s recreate %s has nil current row", service.Name, entry.ContainerName)}
+					return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("service %s recreate %s has nil current row", service.Name, entry.ContainerName)}
 				}
 				oldRow := *entry.CurrentRow
 				oldSpec, err := decodeServiceSpec(oldRow.SpecJSON)
 				if err != nil {
-					return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("decode current spec for %s: %v", oldRow.ContainerName, err)}
+					return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("decode current spec for %s: %v", oldRow.ContainerName, err)}
 				}
 				now := clock.Now().UTC().Format(time.RFC3339Nano)
 				specJSON, err := marshalSpecJSON(entry.Spec)
 				if err != nil {
-					return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("marshal spec for %s: %v", entry.ContainerName, err)}
+					return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("marshal spec for %s: %v", entry.ContainerName, err)}
 				}
 				prepared = append(prepared, recreatePrepared{
 					entry:     entry,
@@ -544,28 +530,28 @@ func executeTier(
 			if order == updateOrderStopFirst {
 				for _, item := range prepared {
 					if err := rt.ContainerStop(ctx, item.oldRow.ContainerName); err != nil {
-						return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("stop old container %s: %v", item.oldRow.ContainerName, err)}
+						return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("stop old container %s: %v", item.oldRow.ContainerName, err)}
 					}
 					if err := rt.ContainerRemove(ctx, item.oldRow.ContainerName, true); err != nil {
-						return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("remove old container %s: %v", item.oldRow.ContainerName, err)}
+						return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("remove old container %s: %v", item.oldRow.ContainerName, err)}
 					}
 				}
 				for _, item := range prepared {
 					if err := rt.ContainerCreate(ctx, item.newConfig); err != nil {
-						return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("create new container %s: %v", item.entry.ContainerName, err)}
+						return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("create new container %s: %v", item.entry.ContainerName, err)}
 					}
 					emit(events, ProgressEvent{Type: "container_created", Tier: tierIdx, Service: service.Name, MachineID: item.entry.MachineID, Container: item.entry.ContainerName})
 
 					if err := rt.ContainerStart(ctx, item.entry.ContainerName); err != nil {
-						return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("start new container %s: %v", item.entry.ContainerName, err)}
+						return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("start new container %s: %v", item.entry.ContainerName, err)}
 					}
 					emit(events, ProgressEvent{Type: "container_started", Tier: tierIdx, Service: service.Name, MachineID: item.entry.MachineID, Container: item.entry.ContainerName})
 
 					if err := stores.Containers.DeleteContainer(ctx, item.oldRow.ID); err != nil {
-						return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("delete old row %s: %v", item.oldRow.ID, err)}
+						return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("delete old row %s: %v", item.oldRow.ID, err)}
 					}
 					if err := stores.Containers.InsertContainer(ctx, item.newRow); err != nil {
-						return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("insert new row %s: %v", item.newRow.ID, err)}
+						return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("insert new row %s: %v", item.newRow.ID, err)}
 					}
 
 					rollbackItem := item
@@ -607,12 +593,12 @@ func executeTier(
 			// start-first
 			for _, item := range prepared {
 				if err := rt.ContainerCreate(ctx, item.newConfig); err != nil {
-					return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("create new container %s: %v", item.entry.ContainerName, err)}
+					return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("create new container %s: %v", item.entry.ContainerName, err)}
 				}
 				emit(events, ProgressEvent{Type: "container_created", Tier: tierIdx, Service: service.Name, MachineID: item.entry.MachineID, Container: item.entry.ContainerName})
 
 				if err := rt.ContainerStart(ctx, item.entry.ContainerName); err != nil {
-					return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("start new container %s: %v", item.entry.ContainerName, err)}
+					return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("start new container %s: %v", item.entry.ContainerName, err)}
 				}
 				emit(events, ProgressEvent{Type: "container_started", Tier: tierIdx, Service: service.Name, MachineID: item.entry.MachineID, Container: item.entry.ContainerName})
 
@@ -637,25 +623,25 @@ func executeTier(
 						if rbErr != nil {
 							msg = msg + "; rollback: " + rbErr.Error()
 						}
-						result.Status = tierStatusRolledBack
-						return result, &DeployError{Phase: phaseHealth, Tier: tierIdx, TierName: tierName, Message: msg}
+						result.Status = TierRolledBack
+						return result, &DeployError{Phase: DeployErrorPhaseHealth, Tier: tierIdx, TierName: tierName, Message: msg}
 					}
 					emit(events, ProgressEvent{Type: "health_check_passed", Tier: tierIdx, Service: service.Name, MachineID: item.entry.MachineID, Container: item.entry.ContainerName})
 					healthChecked[item.entry.ContainerName] = true
 				}
 
 				if err := rt.ContainerStop(ctx, item.oldRow.ContainerName); err != nil {
-					return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("stop old container %s: %v", item.oldRow.ContainerName, err)}
+					return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("stop old container %s: %v", item.oldRow.ContainerName, err)}
 				}
 				if err := rt.ContainerRemove(ctx, item.oldRow.ContainerName, true); err != nil {
-					return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("remove old container %s: %v", item.oldRow.ContainerName, err)}
+					return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("remove old container %s: %v", item.oldRow.ContainerName, err)}
 				}
 
 				if err := stores.Containers.DeleteContainer(ctx, item.oldRow.ID); err != nil {
-					return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("delete old row %s: %v", item.oldRow.ID, err)}
+					return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("delete old row %s: %v", item.oldRow.ID, err)}
 				}
 				if err := stores.Containers.InsertContainer(ctx, item.newRow); err != nil {
-					return result, &DeployError{Phase: phaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("insert new row %s: %v", item.newRow.ID, err)}
+					return result, &DeployError{Phase: DeployErrorPhaseExecute, Tier: tierIdx, TierName: tierName, Message: fmt.Sprintf("insert new row %s: %v", item.newRow.ID, err)}
 				}
 
 				rollbackActions[rollbackIndex] = rollbackAction{
@@ -695,8 +681,8 @@ func executeTier(
 			if rbErr != nil {
 				msg = msg + "; rollback: " + rbErr.Error()
 			}
-			result.Status = tierStatusRolledBack
-			return result, &DeployError{Phase: phaseHealth, Tier: tierIdx, TierName: tierName, Message: msg}
+			result.Status = TierRolledBack
+			return result, &DeployError{Phase: DeployErrorPhaseHealth, Tier: tierIdx, TierName: tierName, Message: msg}
 		}
 		emit(events, ProgressEvent{Type: "health_check_passed", Tier: tierIdx, Service: target.service, MachineID: machineID, Container: target.container})
 	}
@@ -736,7 +722,7 @@ func assertPostcondition(
 	if err != nil {
 		return nil, &DeployError{
 			Namespace: plan.Namespace,
-			Phase:     phasePostcondition,
+			Phase:     DeployErrorPhasePostcondition,
 			Tier:      tierIdx,
 			TierName:  tierDisplayName(tier, tierIdx),
 			Message:   fmt.Sprintf("read machine state: %v", err),
@@ -750,13 +736,13 @@ func assertPostcondition(
 
 	return rows, &DeployError{
 		Namespace: plan.Namespace,
-		Phase:     phasePostcondition,
+		Phase:     DeployErrorPhasePostcondition,
 		Tier:      tierIdx,
 		TierName:  tierDisplayName(tier, tierIdx),
 		Message:   "container state mismatch",
 		Tiers: []TierResult{{
 			Name:       tierDisplayName(tier, tierIdx),
-			Status:     tierStatusFailed,
+			Status:     TierFailed,
 			Containers: rows,
 		}},
 	}
@@ -767,8 +753,8 @@ func postFlight(
 	ctx context.Context,
 	stores Stores,
 	plan DeployPlan,
-	status string,
-	clock mesh.Clock,
+	status DeployPhase,
+	clock network.Clock,
 ) error {
 	row, ok, err := stores.Deployments.GetDeployment(ctx, plan.DeployID)
 	if err != nil {
@@ -792,7 +778,7 @@ func postFlight(
 }
 
 // specToCreateConfig converts a ServiceSpec into runtime create config.
-func specToCreateConfig(name string, spec ServiceSpec, networkMode string) mesh.ContainerCreateConfig {
+func specToCreateConfig(name string, spec ServiceSpec, networkMode string) network.ContainerCreateConfig {
 	cmd := make([]string, 0, len(spec.Entrypoint)+len(spec.Command))
 	cmd = append(cmd, spec.Entrypoint...)
 	cmd = append(cmd, spec.Command...)
@@ -800,14 +786,14 @@ func specToCreateConfig(name string, spec ServiceSpec, networkMode string) mesh.
 		cmd = nil
 	}
 
-	mounts := make([]mesh.Mount, 0, len(spec.Mounts))
+	mounts := make([]network.Mount, 0, len(spec.Mounts))
 	for _, m := range spec.Mounts {
-		mounts = append(mounts, mesh.Mount{Source: m.Source, Target: m.Target, ReadOnly: m.ReadOnly})
+		mounts = append(mounts, network.Mount{Source: m.Source, Target: m.Target, ReadOnly: m.ReadOnly})
 	}
 
-	ports := make([]mesh.PortBinding, 0, len(spec.Ports))
+	ports := make([]network.PortBinding, 0, len(spec.Ports))
 	for _, p := range spec.Ports {
-		ports = append(ports, mesh.PortBinding{HostPort: p.HostPort, ContainerPort: p.ContainerPort, Protocol: p.Protocol})
+		ports = append(ports, network.PortBinding{HostPort: p.HostPort, ContainerPort: p.ContainerPort, Protocol: p.Protocol})
 	}
 
 	labels := make(map[string]string, len(spec.Labels))
@@ -815,9 +801,9 @@ func specToCreateConfig(name string, spec ServiceSpec, networkMode string) mesh.
 		labels[key] = value
 	}
 
-	var healthConfig *mesh.HealthCheckConfig
+	var healthConfig *network.HealthCheckConfig
 	if spec.HealthCheck != nil {
-		healthConfig = &mesh.HealthCheckConfig{
+		healthConfig = &network.HealthCheckConfig{
 			Test:        append([]string(nil), spec.HealthCheck.Test...),
 			Interval:    spec.HealthCheck.Interval,
 			Timeout:     spec.HealthCheck.Timeout,
@@ -826,7 +812,7 @@ func specToCreateConfig(name string, spec ServiceSpec, networkMode string) mesh.
 		}
 	}
 
-	return mesh.ContainerCreateConfig{
+	return network.ContainerCreateConfig{
 		Name:          name,
 		Image:         spec.Image,
 		Cmd:           cmd,
@@ -852,14 +838,14 @@ func emit(events chan<- ProgressEvent, ev ProgressEvent) {
 	}
 }
 
-func decorateDeployError(err error, phase, namespace string, tier int, tierName string, tiers []TierResult) error {
+func decorateDeployError(err error, phase DeployErrorPhase, namespace string, tier int, tierName string, tiers []TierResult) error {
 	var de *DeployError
 	if errors.As(err, &de) {
 		out := *de
 		if out.Namespace == "" {
 			out.Namespace = namespace
 		}
-		if out.Phase == "" {
+		if !out.Phase.IsValid() {
 			out.Phase = phase
 		}
 		if out.TierName == "" {
@@ -913,7 +899,7 @@ func filterEntriesForMachine(entries []PlanEntry, machineID string) []PlanEntry 
 	return out
 }
 
-func createConfigForSpec(namespace, deployID, machineID, service, containerName string, spec ServiceSpec) mesh.ContainerCreateConfig {
+func createConfigForSpec(namespace, deployID, machineID, service, containerName string, spec ServiceSpec) network.ContainerCreateConfig {
 	cfg := specToCreateConfig(containerName, spec, namespace)
 	cfg.Labels = mergeManagedLabels(cfg.Labels, namespace, service, deployID, machineID)
 	return cfg
@@ -959,11 +945,11 @@ func containerRowID(deployID, containerName string) string {
 	return deployID + "/" + containerName
 }
 
-func resourceConfigFromSpec(spec ServiceSpec) mesh.ResourceConfig {
+func resourceConfigFromSpec(spec ServiceSpec) network.ResourceConfig {
 	if spec.Resources == nil {
-		return mesh.ResourceConfig{}
+		return network.ResourceConfig{}
 	}
-	return mesh.ResourceConfig{
+	return network.ResourceConfig{
 		CPULimit:    spec.Resources.CPULimit,
 		MemoryLimit: spec.Resources.MemoryLimit,
 	}

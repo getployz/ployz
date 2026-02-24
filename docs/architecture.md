@@ -41,7 +41,7 @@ internal/
     wireguard/    WireGuard device management
     sqlite/       Local state persistence (daemon spec store)
     platform/     CIDR utilities
-  daemon/         gRPC server, supervisor, proxy (unchanged)
+  controlplane/   gRPC API, manager, proxy, protobuf
   remote/         SSH + install scripts (unchanged)
   logging/        slog setup (unchanged)
 ```
@@ -60,4 +60,4 @@ Shared types (`MachineRow`, `HeartbeatRow`, `ChangeKind`, etc.) move from the `r
 
 ### What doesn't change
 
-No logic changes. Same behavior. The daemon supervisor wires the real implementations at startup. The only difference is indirection through interfaces — which makes every layer independently testable.
+No logic changes. Same behavior. The controlplane manager wires the real implementations at startup. The only difference is indirection through interfaces — which makes every layer independently testable.

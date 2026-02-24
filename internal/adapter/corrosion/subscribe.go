@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"ployz/internal/mesh"
+	"ployz/internal/network"
 )
 
 const (
@@ -17,25 +17,25 @@ const (
 	maxResubscribeAttempts = 20
 )
 
-func (s Store) SubscribeMachines(ctx context.Context) ([]mesh.MachineRow, <-chan mesh.MachineChange, error) {
+func (s Store) SubscribeMachines(ctx context.Context) ([]network.MachineRow, <-chan network.MachineChange, error) {
 	query := fmt.Sprintf("SELECT id, public_key, subnet, management_ip, endpoint, updated_at, version FROM %s ORDER BY id", machinesTable)
 	return openAndRun(ctx, s, query, machineSpec)
 }
 
-func (s Store) SubscribeHeartbeats(ctx context.Context) ([]mesh.HeartbeatRow, <-chan mesh.HeartbeatChange, error) {
+func (s Store) SubscribeHeartbeats(ctx context.Context) ([]network.HeartbeatRow, <-chan network.HeartbeatChange, error) {
 	query := fmt.Sprintf("SELECT node_id, seq, updated_at FROM %s ORDER BY node_id", heartbeatsTable)
 	return openAndRun(ctx, s, query, heartbeatSpec)
 }
 
-// parseChangeKind maps Corrosion change type strings to mesh.ChangeKind values.
-func parseChangeKind(typ string) mesh.ChangeKind {
+// parseChangeKind maps Corrosion change type strings to network.ChangeKind values.
+func parseChangeKind(typ string) network.ChangeKind {
 	switch strings.ToLower(strings.TrimSpace(typ)) {
 	case "insert":
-		return mesh.ChangeAdded
+		return network.ChangeAdded
 	case "delete":
-		return mesh.ChangeDeleted
+		return network.ChangeDeleted
 	default:
-		return mesh.ChangeUpdated
+		return network.ChangeUpdated
 	}
 }
 
@@ -43,26 +43,26 @@ func parseChangeKind(typ string) mesh.ChangeKind {
 type subscriptionSpec[Row any, Change any] struct {
 	label      string
 	decodeRow  func([]json.RawMessage) (Row, error)
-	makeChange func(mesh.ChangeKind, Row) Change
+	makeChange func(network.ChangeKind, Row) Change
 	resyncMsg  Change
 }
 
-var machineSpec = subscriptionSpec[mesh.MachineRow, mesh.MachineChange]{
+var machineSpec = subscriptionSpec[network.MachineRow, network.MachineChange]{
 	label:     "machine",
 	decodeRow: decodeMachineRow,
-	makeChange: func(kind mesh.ChangeKind, row mesh.MachineRow) mesh.MachineChange {
-		return mesh.MachineChange{Kind: kind, Machine: row}
+	makeChange: func(kind network.ChangeKind, row network.MachineRow) network.MachineChange {
+		return network.MachineChange{Kind: kind, Machine: row}
 	},
-	resyncMsg: mesh.MachineChange{Kind: mesh.ChangeResync},
+	resyncMsg: network.MachineChange{Kind: network.ChangeResync},
 }
 
-var heartbeatSpec = subscriptionSpec[mesh.HeartbeatRow, mesh.HeartbeatChange]{
+var heartbeatSpec = subscriptionSpec[network.HeartbeatRow, network.HeartbeatChange]{
 	label:     "heartbeat",
 	decodeRow: decodeHeartbeatRow,
-	makeChange: func(kind mesh.ChangeKind, row mesh.HeartbeatRow) mesh.HeartbeatChange {
-		return mesh.HeartbeatChange{Kind: kind, Heartbeat: row}
+	makeChange: func(kind network.ChangeKind, row network.HeartbeatRow) network.HeartbeatChange {
+		return network.HeartbeatChange{Kind: kind, Heartbeat: row}
 	},
-	resyncMsg: mesh.HeartbeatChange{Kind: mesh.ChangeResync},
+	resyncMsg: network.HeartbeatChange{Kind: network.ChangeResync},
 }
 
 func openAndRun[Row any, Change any](
@@ -145,10 +145,14 @@ func runChanges[Row any, Change any](
 ) {
 	defer close(out)
 	defer stream.Body.Close()
+	phase := SubscriptionOpening
+	phase = phase.Transition(SubscriptionStreaming)
 
 	for {
 		select {
 		case <-ctx.Done():
+			phase = phase.Transition(SubscriptionClosedContext)
+			slog.Debug("registry "+spec.label+" subscription closed", "phase", phase.String())
 			return
 		default:
 		}
@@ -156,14 +160,16 @@ func runChanges[Row any, Change any](
 		var ev queryEvent
 		if err := stream.Decoder.Decode(&ev); err != nil {
 			slog.Debug("registry "+spec.label+" subscription decode failed; resubscribing", "err", err)
-			if !resubscribeLoop(ctx, s, stream, &lastChangeID, out, spec) {
+			phase = phase.Transition(SubscriptionResubscribing)
+			if !resubscribeLoop(ctx, s, stream, &lastChangeID, out, spec, &phase) {
 				return
 			}
 			continue
 		}
 		if ev.Error != nil {
 			slog.Debug("registry "+spec.label+" subscription stream error; resubscribing", "err", *ev.Error)
-			if !resubscribeLoop(ctx, s, stream, &lastChangeID, out, spec) {
+			phase = phase.Transition(SubscriptionResubscribing)
+			if !resubscribeLoop(ctx, s, stream, &lastChangeID, out, spec, &phase) {
 				return
 			}
 			continue
@@ -175,7 +181,8 @@ func runChanges[Row any, Change any](
 		row, err := spec.decodeRow(ev.Change.Values)
 		if err != nil {
 			slog.Debug("registry "+spec.label+" change decode failed; resubscribing", "err", err)
-			if !resubscribeLoop(ctx, s, stream, &lastChangeID, out, spec) {
+			phase = phase.Transition(SubscriptionResubscribing)
+			if !resubscribeLoop(ctx, s, stream, &lastChangeID, out, spec, &phase) {
 				return
 			}
 			continue
@@ -198,6 +205,7 @@ func resubscribeLoop[Row any, Change any](
 	lastChangeID *uint64,
 	out chan<- Change,
 	spec subscriptionSpec[Row, Change],
+	phase *SubscriptionPhase,
 ) bool {
 	stream.Body.Close()
 
@@ -205,6 +213,9 @@ func resubscribeLoop[Row any, Change any](
 	for attempt := range maxResubscribeAttempts {
 		select {
 		case <-ctx.Done():
+			if phase != nil {
+				*phase = phase.Transition(SubscriptionClosedContext)
+			}
 			return false
 		case <-time.After(backoff):
 		}
@@ -213,9 +224,15 @@ func resubscribeLoop[Row any, Change any](
 		if err == nil {
 			stream.Body = next.Body
 			stream.Decoder = next.Decoder
+			if phase != nil {
+				*phase = phase.Transition(SubscriptionStreaming)
+			}
 			slog.Info("registry "+spec.label+" subscription restored", "change_id", *lastChangeID)
 			select {
 			case <-ctx.Done():
+				if phase != nil {
+					*phase = phase.Transition(SubscriptionClosedContext)
+				}
 				stream.Body.Close()
 				return false
 			case out <- spec.resyncMsg:
@@ -225,6 +242,9 @@ func resubscribeLoop[Row any, Change any](
 
 		slog.Debug("registry "+spec.label+" resubscribe failed", "change_id", *lastChangeID, "attempt", attempt+1, "backoff", backoff.String(), "err", err)
 		backoff = min(backoff*2, maxResubscribeBackoff)
+	}
+	if phase != nil {
+		*phase = phase.Transition(SubscriptionClosedExhausted)
 	}
 	slog.Warn("registry "+spec.label+" resubscribe exhausted retries", "change_id", *lastChangeID, "attempts", maxResubscribeAttempts)
 	return false

@@ -24,7 +24,7 @@ const (
 	remoteDaemonSocketPath = "/var/run/ployzd.sock"
 	remoteLinuxDataRoot    = "/var/lib/ployz/networks"
 	// addWaitTimeout is 45s: allows time for remote install, WireGuard handshake, and Corrosion gossip convergence.
-	addWaitTimeout         = 45 * time.Second
+	addWaitTimeout = 45 * time.Second
 	// convergencePollInterval is 500ms: fast enough to detect convergence quickly, slow enough to avoid hammering the API.
 	convergencePollInterval = 500 * time.Millisecond
 	// persistentKeepaliveIntervalSec is 25: keeps NAT mappings alive; standard WireGuard recommendation.
@@ -44,35 +44,35 @@ func (s *Service) Start(ctx context.Context, spec types.NetworkSpec) (types.Appl
 	return s.api.ApplyNetworkSpec(ctx, spec)
 }
 
-func (s *Service) Stop(ctx context.Context, network string, purge bool) error {
-	return s.api.DisableNetwork(ctx, network, purge)
+func (s *Service) Stop(ctx context.Context, purge bool) error {
+	return s.api.DisableNetwork(ctx, purge)
 }
 
-func (s *Service) Status(ctx context.Context, network string) (types.NetworkStatus, error) {
-	return s.api.GetStatus(ctx, network)
+func (s *Service) Status(ctx context.Context) (types.NetworkStatus, error) {
+	return s.api.GetStatus(ctx)
 }
 
-func (s *Service) Identity(ctx context.Context, network string) (types.Identity, error) {
-	return s.api.GetIdentity(ctx, network)
+func (s *Service) Identity(ctx context.Context) (types.Identity, error) {
+	return s.api.GetIdentity(ctx)
 }
 
-func (s *Service) ListMachines(ctx context.Context, network string) ([]types.MachineEntry, error) {
-	return s.api.ListMachines(ctx, network)
+func (s *Service) ListMachines(ctx context.Context) ([]types.MachineEntry, error) {
+	return s.api.ListMachines(ctx)
 }
 
-func (s *Service) GetPeerHealth(ctx context.Context, network string) ([]types.PeerHealthResponse, error) {
-	return s.api.GetPeerHealth(ctx, network)
+func (s *Service) GetPeerHealth(ctx context.Context) ([]types.PeerHealthResponse, error) {
+	return s.api.GetPeerHealth(ctx)
 }
 
-func (s *Service) RemoveMachine(ctx context.Context, network, machineID string) error {
-	if err := s.api.RemoveMachine(ctx, network, machineID); err != nil {
+func (s *Service) RemoveMachine(ctx context.Context, machineID string) error {
+	if err := s.api.RemoveMachine(ctx, machineID); err != nil {
 		return err
 	}
-	return s.api.TriggerReconcile(ctx, network)
+	return s.api.TriggerReconcile(ctx)
 }
 
-func (s *Service) HostAccessEndpoint(ctx context.Context, network string) (netip.AddrPort, error) {
-	id, err := s.identityForHostAccess(ctx, network)
+func (s *Service) HostAccessEndpoint(ctx context.Context) (netip.AddrPort, error) {
+	id, err := s.identityForHostAccess(ctx)
 	if err != nil {
 		return netip.AddrPort{}, err
 	}
@@ -82,13 +82,13 @@ func (s *Service) HostAccessEndpoint(ctx context.Context, network string) (netip
 	}
 	wgPort := id.WGPort
 	if wgPort == 0 {
-		wgPort = defaults.WGPort(network)
+		wgPort = defaults.WGPort(defaults.NormalizeNetwork("default"))
 	}
 	return netip.AddrPortFrom(helperIP, uint16(wgPort)), nil
 }
 
-func (s *Service) AddHostAccessPeer(ctx context.Context, network, hostPublicKey string, hostIP netip.Addr) error {
-	id, err := s.identityForHostAccess(ctx, network)
+func (s *Service) AddHostAccessPeer(ctx context.Context, hostPublicKey string, hostIP netip.Addr) error {
+	id, err := s.identityForHostAccess(ctx)
 	if err != nil {
 		return err
 	}
@@ -112,8 +112,8 @@ func (s *Service) AddHostAccessPeer(ctx context.Context, network, hostPublicKey 
 	return runDockerExecScript(ctx, id.HelperName, script)
 }
 
-func (s *Service) RemoveHostAccessPeer(ctx context.Context, network, hostPublicKey string, hostIP netip.Addr) error {
-	id, err := s.identityForHostAccess(ctx, network)
+func (s *Service) RemoveHostAccessPeer(ctx context.Context, hostPublicKey string, hostIP netip.Addr) error {
+	id, err := s.identityForHostAccess(ctx)
 	if err != nil {
 		return err
 	}
@@ -172,6 +172,7 @@ type addOp struct {
 	ctx           context.Context
 	api           client.API
 	opts          AddOptions
+	phase         AddPhase
 	network       string
 	target        string
 	remoteEP      string
@@ -197,11 +198,11 @@ func newAddOp(ctx context.Context, api client.API, opts AddOptions) (*addOp, err
 		opts.WGPort = defaults.WGPort(network)
 	}
 
-	localIdentity, err := api.GetIdentity(ctx, network)
+	localIdentity, err := api.GetIdentity(ctx)
 	if err != nil {
 		return nil, err
 	}
-	localMachines, err := api.ListMachines(ctx, network)
+	localMachines, err := api.ListMachines(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -244,6 +245,7 @@ func newAddOp(ctx context.Context, api client.API, opts AddOptions) (*addOp, err
 		ctx:           ctx,
 		api:           api,
 		opts:          opts,
+		phase:         AddInstall,
 		network:       network,
 		target:        target,
 		remoteEP:      remoteEP,
@@ -282,15 +284,32 @@ func (a *addOp) run() (AddResult, error) {
 	}
 	for _, s := range steps {
 		if err := a.tracker.Do(s.id, s.fn); err != nil {
+			a.phase = a.phase.Transition(AddFailed)
 			return AddResult{}, err
 		}
+		a.advancePhase(s.id)
 	}
 
-	machines, err := a.api.ListMachines(a.ctx, a.network)
+	machines, err := a.api.ListMachines(a.ctx)
 	if err != nil {
 		return AddResult{}, err
 	}
 	return AddResult{Machine: a.entry, Peers: len(machines)}, nil
+}
+
+func (a *addOp) advancePhase(stepID string) {
+	switch stepID {
+	case "install":
+		a.phase = a.phase.Transition(AddConnect)
+	case "connect":
+		a.phase = a.phase.Transition(AddConfigure)
+	case "configure":
+		a.phase = a.phase.Transition(AddRegister)
+	case "register":
+		a.phase = a.phase.Transition(AddConverge)
+	case "converge":
+		a.phase = a.phase.Transition(AddDone)
+	}
 }
 
 func (a *addOp) install() error {
@@ -341,7 +360,7 @@ func (a *addOp) configure() error {
 		return err
 	}
 
-	id, err := a.remoteAPI.GetIdentity(a.ctx, a.network)
+	id, err := a.remoteAPI.GetIdentity(a.ctx)
 	if err != nil {
 		return err
 	}
@@ -361,7 +380,7 @@ func (a *addOp) configure() error {
 }
 
 func (a *addOp) register() error {
-	return upsertMachineWithRetry(a.ctx, a.api, a.network, &a.entry)
+	return upsertMachineWithRetry(a.ctx, a.api, &a.entry)
 }
 
 func (a *addOp) converge() error {
@@ -381,22 +400,22 @@ func (a *addOp) converge() error {
 		Endpoint:     strings.TrimSpace(a.localIdentity.AdvertiseEndpoint),
 	}
 	localEntry.ExpectedVersion = findExpectedVersion(a.localMachines, localEntry.ID, localEntry.Endpoint)
-	if err := upsertMachineWithRetry(a.ctx, a.remoteAPI, a.network, &localEntry); err != nil {
+	if err := upsertMachineWithRetry(a.ctx, a.remoteAPI, &localEntry); err != nil {
 		return fmt.Errorf("seed local machine on remote: %w", err)
 	}
-	if err := a.api.TriggerReconcile(waitCtx, a.network); err != nil {
+	if err := a.api.TriggerReconcile(waitCtx); err != nil {
 		return err
 	}
-	if err := a.remoteAPI.TriggerReconcile(waitCtx, a.network); err != nil {
+	if err := a.remoteAPI.TriggerReconcile(waitCtx); err != nil {
 		return err
 	}
-	if err := waitForMachine(waitCtx, a.api, a.network, a.entry.ID, "local"); err != nil {
+	if err := waitForMachine(waitCtx, a.api, a.entry.ID, "local"); err != nil {
 		return err
 	}
-	return waitForMachine(waitCtx, a.remoteAPI, a.network, a.localIdentity.ID, "remote")
+	return waitForMachine(waitCtx, a.remoteAPI, a.localIdentity.ID, "remote")
 }
 
-func waitForMachine(ctx context.Context, api client.API, network, machineID, who string) error {
+func waitForMachine(ctx context.Context, api client.API, machineID, who string) error {
 	ticker := time.NewTicker(convergencePollInterval)
 	defer ticker.Stop()
 
@@ -411,7 +430,7 @@ func waitForMachine(ctx context.Context, api client.API, network, machineID, who
 		case <-ctx.Done():
 			return fmt.Errorf("wait for %s daemon converge: %w (visible machines: %d, waiting for %s)", who, ctx.Err(), lastSeen, machineID)
 		case <-ticker.C:
-			machines, err := api.ListMachines(ctx, network)
+			machines, err := api.ListMachines(ctx)
 			if err != nil {
 				continue
 			}
@@ -425,19 +444,19 @@ func waitForMachine(ctx context.Context, api client.API, network, machineID, who
 	}
 }
 
-func upsertMachineWithRetry(ctx context.Context, api client.API, network string, entry *types.MachineEntry) error {
-	if err := api.UpsertMachine(ctx, network, *entry); err == nil {
+func upsertMachineWithRetry(ctx context.Context, api client.API, entry *types.MachineEntry) error {
+	if err := api.UpsertMachine(ctx, *entry); err == nil {
 		return nil
 	} else if !errors.Is(err, client.ErrConflict) {
 		return err
 	}
 
-	latest, err := api.ListMachines(ctx, network)
+	latest, err := api.ListMachines(ctx)
 	if err != nil {
 		return err
 	}
 	entry.ExpectedVersion = findExpectedVersion(latest, entry.ID, entry.Endpoint)
-	return api.UpsertMachine(ctx, network, *entry)
+	return api.UpsertMachine(ctx, *entry)
 }
 
 func findExpectedVersion(machines []types.MachineEntry, id, endpoint string) int64 {
@@ -547,14 +566,14 @@ func remoteDataRoot(dataRoot string) string {
 	return dataRoot
 }
 
-func (s *Service) identityForHostAccess(ctx context.Context, network string) (types.Identity, error) {
-	id, err := s.api.GetIdentity(ctx, network)
+func (s *Service) identityForHostAccess(ctx context.Context) (types.Identity, error) {
+	id, err := s.api.GetIdentity(ctx)
 	if err != nil {
 		return types.Identity{}, err
 	}
 	id.HelperName = strings.TrimSpace(id.HelperName)
 	if id.HelperName == "" {
-		id.HelperName = defaults.HelperName(network)
+		id.HelperName = defaults.HelperName(defaults.NormalizeNetwork("default"))
 	}
 	return id, nil
 }

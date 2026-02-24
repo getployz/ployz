@@ -58,7 +58,7 @@ func runCmd() *cobra.Command {
 		Short: "Run or update a single-image service",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			clusterName, api, cl, err := cf.DialService(cmd.Context())
+			clusterName, api, _, err := cf.DialService(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -77,7 +77,7 @@ func runCmd() *cobra.Command {
 			}
 
 			if dryRun {
-				plan, err := api.PlanDeploy(cmd.Context(), cl.Network, name, composeSpec)
+				plan, err := api.PlanDeploy(cmd.Context(), name, composeSpec)
 				if err != nil {
 					return err
 				}
@@ -114,7 +114,7 @@ func runCmd() *cobra.Command {
 				}
 			}()
 
-			result, err := api.ApplyDeploy(cmd.Context(), cl.Network, name, composeSpec, events)
+			result, err := api.ApplyDeploy(cmd.Context(), name, composeSpec, events)
 			close(events)
 			<-done
 			if err != nil {

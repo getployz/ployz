@@ -155,6 +155,10 @@ func (s Store) InsertDeployment(ctx context.Context, row deploy.DeploymentRow) e
 	if err != nil {
 		return err
 	}
+	status, err := deploymentStatusString(row.Status)
+	if err != nil {
+		return fmt.Errorf("insert deployment: %w", err)
+	}
 	query := fmt.Sprintf(
 		"INSERT INTO %s (id, namespace, spec_json, labels_json, status, owner, owner_heartbeat, machine_ids_json, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		deploymentsTable,
@@ -164,7 +168,7 @@ func (s Store) InsertDeployment(ctx context.Context, row deploy.DeploymentRow) e
 		row.Namespace,
 		row.SpecJSON,
 		labelsJSON,
-		row.Status,
+		status,
 		row.Owner,
 		row.OwnerHeartbeat,
 		machineIDsJSON,
@@ -186,6 +190,10 @@ func (s Store) UpdateDeployment(ctx context.Context, row deploy.DeploymentRow) e
 	if err != nil {
 		return err
 	}
+	status, err := deploymentStatusString(row.Status)
+	if err != nil {
+		return fmt.Errorf("update deployment: %w", err)
+	}
 	query := fmt.Sprintf(
 		"UPDATE %s SET spec_json = ?, labels_json = ?, status = ?, owner = ?, owner_heartbeat = ?, machine_ids_json = ?, version = version + 1, updated_at = ? WHERE id = ?",
 		deploymentsTable,
@@ -193,7 +201,7 @@ func (s Store) UpdateDeployment(ctx context.Context, row deploy.DeploymentRow) e
 	return s.exec(ctx, query,
 		row.SpecJSON,
 		labelsJSON,
-		row.Status,
+		status,
 		row.Owner,
 		row.OwnerHeartbeat,
 		machineIDsJSON,
@@ -222,11 +230,15 @@ func (s Store) GetDeployment(ctx context.Context, id string) (deploy.DeploymentR
 }
 
 func (s Store) GetActiveDeployment(ctx context.Context, namespace string) (deploy.DeploymentRow, bool, error) {
+	activeStatus, err := deploymentStatusString(deploy.DeployInProgress)
+	if err != nil {
+		return deploy.DeploymentRow{}, false, fmt.Errorf("get active deployment status: %w", err)
+	}
 	query := fmt.Sprintf(
-		"SELECT id, namespace, spec_json, labels_json, status, owner, owner_heartbeat, machine_ids_json, version, created_at, updated_at FROM %s WHERE namespace = ? AND status = 'in_progress' ORDER BY created_at DESC LIMIT 1",
+		"SELECT id, namespace, spec_json, labels_json, status, owner, owner_heartbeat, machine_ids_json, version, created_at, updated_at FROM %s WHERE namespace = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
 		deploymentsTable,
 	)
-	rows, err := s.query(ctx, query, namespace)
+	rows, err := s.query(ctx, query, namespace, activeStatus)
 	if err != nil {
 		return deploy.DeploymentRow{}, false, err
 	}
@@ -261,11 +273,15 @@ func (s Store) ListByNamespace(ctx context.Context, namespace string) ([]deploy.
 }
 
 func (s Store) LatestSuccessful(ctx context.Context, namespace string) (deploy.DeploymentRow, bool, error) {
+	successStatus, err := deploymentStatusString(deploy.DeploySucceeded)
+	if err != nil {
+		return deploy.DeploymentRow{}, false, fmt.Errorf("latest successful deployment status: %w", err)
+	}
 	query := fmt.Sprintf(
-		"SELECT id, namespace, spec_json, labels_json, status, owner, owner_heartbeat, machine_ids_json, version, created_at, updated_at FROM %s WHERE namespace = ? AND status = 'succeeded' ORDER BY created_at DESC LIMIT 1",
+		"SELECT id, namespace, spec_json, labels_json, status, owner, owner_heartbeat, machine_ids_json, version, created_at, updated_at FROM %s WHERE namespace = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
 		deploymentsTable,
 	)
-	rows, err := s.query(ctx, query, namespace)
+	rows, err := s.query(ctx, query, namespace, successStatus)
 	if err != nil {
 		return deploy.DeploymentRow{}, false, err
 	}
@@ -346,6 +362,13 @@ func marshalJSONString(v any, label string) (string, error) {
 	return string(data), nil
 }
 
+func deploymentStatusString(status deploy.DeployPhase) (string, error) {
+	if !status.IsValid() {
+		return "", fmt.Errorf("invalid deployment status phase: %d", status)
+	}
+	return status.String(), nil
+}
+
 func decodeContainerRow(values []json.RawMessage) (deploy.ContainerRow, error) {
 	if len(values) != 11 {
 		return deploy.ContainerRow{}, fmt.Errorf("decode container row: expected 11 columns, got %d", len(values))
@@ -412,9 +435,15 @@ func decodeDeploymentRow(values []json.RawMessage) (deploy.DeploymentRow, error)
 	if err != nil {
 		return deploy.DeploymentRow{}, err
 	}
-	if out.Status, err = decodeString(values[4], "deployment status"); err != nil {
+	statusRaw, err := decodeString(values[4], "deployment status")
+	if err != nil {
 		return deploy.DeploymentRow{}, err
 	}
+	phase, ok := deploy.ParseDeployPhase(statusRaw)
+	if !ok {
+		return deploy.DeploymentRow{}, fmt.Errorf("decode deployment status: invalid value %q", statusRaw)
+	}
+	out.Status = phase
 	if out.Owner, err = decodeString(values[5], "deployment owner"); err != nil {
 		return deploy.DeploymentRow{}, err
 	}

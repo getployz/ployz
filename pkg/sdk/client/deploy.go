@@ -6,13 +6,12 @@ import (
 	"io"
 	"time"
 
-	"ployz/internal/daemon/pb"
+	"ployz/internal/controlplane/pb"
 	"ployz/pkg/sdk/types"
 )
 
-func (c *Client) PlanDeploy(ctx context.Context, network, namespace string, composeSpec []byte) (types.DeployPlan, error) {
+func (c *Client) PlanDeploy(ctx context.Context, namespace string, composeSpec []byte) (types.DeployPlan, error) {
 	resp, err := c.daemon.PlanDeploy(ctx, &pb.PlanDeployRequest{
-		Network:     network,
 		Namespace:   namespace,
 		ComposeSpec: composeSpec,
 	})
@@ -22,9 +21,8 @@ func (c *Client) PlanDeploy(ctx context.Context, network, namespace string, comp
 	return deployPlanFromProto(resp.Plan), nil
 }
 
-func (c *Client) ApplyDeploy(ctx context.Context, network, namespace string, composeSpec []byte, events chan<- types.DeployProgressEvent) (types.DeployResult, error) {
+func (c *Client) ApplyDeploy(ctx context.Context, namespace string, composeSpec []byte, events chan<- types.DeployProgressEvent) (types.DeployResult, error) {
 	stream, err := c.daemon.ApplyDeploy(ctx, &pb.ApplyDeployRequest{
-		Network:     network,
 		Namespace:   namespace,
 		ComposeSpec: composeSpec,
 	})
@@ -57,9 +55,8 @@ func (c *Client) ApplyDeploy(ctx context.Context, network, namespace string, com
 	}
 }
 
-func (c *Client) ListDeployments(ctx context.Context, network, namespace string) ([]types.DeploymentEntry, error) {
+func (c *Client) ListDeployments(ctx context.Context, namespace string) ([]types.DeploymentEntry, error) {
 	resp, err := c.daemon.ListDeployments(ctx, &pb.ListDeploymentsRequest{
-		Network:   network,
 		Namespace: namespace,
 	})
 	if err != nil {
@@ -73,17 +70,15 @@ func (c *Client) ListDeployments(ctx context.Context, network, namespace string)
 	return out, nil
 }
 
-func (c *Client) RemoveNamespace(ctx context.Context, network, namespace string) error {
+func (c *Client) RemoveNamespace(ctx context.Context, namespace string) error {
 	_, err := c.daemon.RemoveNamespace(ctx, &pb.RemoveNamespaceRequest{
-		Network:   network,
 		Namespace: namespace,
 	})
 	return grpcErr(err)
 }
 
-func (c *Client) ReadContainerState(ctx context.Context, network, namespace string) ([]types.ContainerState, error) {
+func (c *Client) ReadContainerState(ctx context.Context, namespace string) ([]types.ContainerState, error) {
 	resp, err := c.daemon.ReadContainerState(ctx, &pb.ReadContainerStateRequest{
-		Network:   network,
 		Namespace: namespace,
 	})
 	if err != nil {

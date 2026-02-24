@@ -9,16 +9,16 @@ import (
 	"path/filepath"
 	"time"
 
-	"ployz/internal/mesh"
+	"ployz/internal/network"
 	"ployz/pkg/sdk/defaults"
 )
 
-// NetworkStateStore implements mesh.StateStore using SQLite.
+// NetworkStateStore implements network.StateStore using SQLite.
 type NetworkStateStore struct{}
 
-var _ mesh.StateStore = NetworkStateStore{}
+var _ network.StateStore = NetworkStateStore{}
 
-func (NetworkStateStore) Load(dataDir string) (*mesh.State, error) {
+func (NetworkStateStore) Load(dataDir string) (*network.State, error) {
 	net := networkFromDataDir(dataDir)
 	if net == "" {
 		return nil, fmt.Errorf("resolve network name from data dir %q", dataDir)
@@ -52,13 +52,15 @@ SELECT
 	coalesce(corrosion_member_id, 0),
 	coalesce(corrosion_api_token, ''),
 	coalesce(bootstrap_json, '[]'),
+	coalesce(runtime_phase, ''),
 	running
 FROM network_state
 WHERE network = ?`
 
-	var s mesh.State
+	var s network.State
 	var memberID int64
 	var bootstrapJSON string
+	var runtimePhase string
 	var running int
 	if err := db.QueryRow(query, net).Scan(
 		&s.Network,
@@ -78,6 +80,7 @@ WHERE network = ?`
 		&memberID,
 		&s.CorrosionAPIToken,
 		&bootstrapJSON,
+		&runtimePhase,
 		&running,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -86,7 +89,7 @@ WHERE network = ?`
 		return nil, fmt.Errorf("read machine state: %w", err)
 	}
 
-	s.Running = running != 0
+	s.Phase = parseRuntimePhase(runtimePhase, running)
 	if memberID > 0 {
 		s.CorrosionMemberID = uint64(memberID)
 	}
@@ -94,7 +97,7 @@ WHERE network = ?`
 		return nil, fmt.Errorf("parse state bootstrap: %w", err)
 	}
 
-	managementIP, err := mesh.ManagementIPFromPublicKey(s.WGPublic)
+	managementIP, err := network.ManagementIPFromPublicKey(s.WGPublic)
 	if err != nil {
 		return nil, fmt.Errorf("derive management IP from state key: %w", err)
 	}
@@ -103,7 +106,7 @@ WHERE network = ?`
 	return &s, nil
 }
 
-func (NetworkStateStore) Save(dataDir string, s *mesh.State) error {
+func (NetworkStateStore) Save(dataDir string, s *network.State) error {
 	net := networkFromDataDir(dataDir)
 	if net == "" {
 		return fmt.Errorf("resolve network name from data dir %q", dataDir)
@@ -145,9 +148,10 @@ INSERT INTO network_state (
 	corrosion_member_id,
 	corrosion_api_token,
 	bootstrap_json,
+	runtime_phase,
 	running,
 	updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(network) DO UPDATE SET
 	cidr = excluded.cidr,
 	subnet = excluded.subnet,
@@ -165,8 +169,13 @@ ON CONFLICT(network) DO UPDATE SET
 	corrosion_member_id = excluded.corrosion_member_id,
 	corrosion_api_token = excluded.corrosion_api_token,
 	bootstrap_json = excluded.bootstrap_json,
+	runtime_phase = excluded.runtime_phase,
 	running = excluded.running,
 	updated_at = excluded.updated_at`
+
+	if s.Phase == 0 {
+		s.Phase = network.NetworkStopped
+	}
 
 	if _, err := db.Exec(
 		upsert,
@@ -187,7 +196,8 @@ ON CONFLICT(network) DO UPDATE SET
 		s.CorrosionMemberID,
 		s.CorrosionAPIToken,
 		string(bootstrapJSON),
-		boolToInt(s.Running),
+		s.Phase.String(),
+		boolToInt(s.Phase == network.NetworkRunning),
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
 		return fmt.Errorf("write machine state: %w", err)
@@ -261,12 +271,16 @@ CREATE TABLE IF NOT EXISTS network_state (
 	corrosion_member_id INTEGER NOT NULL DEFAULT 0,
 	corrosion_api_token TEXT NOT NULL DEFAULT '',
 	bootstrap_json TEXT NOT NULL DEFAULT '[]',
+	runtime_phase TEXT NOT NULL DEFAULT '',
 	running INTEGER NOT NULL DEFAULT 0,
 	updated_at TEXT NOT NULL
 )`
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize machine db schema: %w", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE network_state ADD COLUMN runtime_phase TEXT NOT NULL DEFAULT ''`); err != nil {
+		_ = err
 	}
 
 	return db, nil
@@ -282,4 +296,28 @@ func networkFromDataDir(dataDir string) string {
 		return ""
 	}
 	return n
+}
+
+func parseRuntimePhase(raw string, running int) network.NetworkRuntimePhase {
+	switch raw {
+	case "unconfigured":
+		return network.NetworkUnconfigured
+	case "stopped":
+		return network.NetworkStopped
+	case "starting":
+		return network.NetworkStarting
+	case "running":
+		return network.NetworkRunning
+	case "stopping":
+		return network.NetworkStopping
+	case "purged":
+		return network.NetworkPurged
+	case "failed":
+		return network.NetworkFailed
+	default:
+		if running != 0 {
+			return network.NetworkRunning
+		}
+		return network.NetworkStopped
+	}
 }

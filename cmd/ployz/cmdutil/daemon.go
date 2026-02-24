@@ -29,7 +29,7 @@ func HealthCheck(ctx context.Context, socketPath string) error {
 	}
 	defer func() { _ = api.Close() }()
 
-	if _, err := api.GetStatus(checkCtx, "default"); err != nil {
+	if _, err := api.GetStatus(checkCtx); err != nil {
 		return fmt.Errorf("daemon health check: %w", err)
 	}
 	return nil

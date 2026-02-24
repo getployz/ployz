@@ -3,7 +3,7 @@ package reconcile
 import (
 	"context"
 
-	"ployz/internal/mesh"
+	"ployz/internal/network"
 )
 
 // Registry abstracts Corrosion's machine/heartbeat storage.
@@ -12,16 +12,16 @@ import (
 type Registry interface {
 	EnsureMachineTable(ctx context.Context) error
 	EnsureHeartbeatTable(ctx context.Context) error
-	SubscribeMachines(ctx context.Context) ([]mesh.MachineRow, <-chan mesh.MachineChange, error)
-	SubscribeHeartbeats(ctx context.Context) ([]mesh.HeartbeatRow, <-chan mesh.HeartbeatChange, error)
-	ListMachineRows(ctx context.Context) ([]mesh.MachineRow, error)
+	SubscribeMachines(ctx context.Context) ([]network.MachineRow, <-chan network.MachineChange, error)
+	SubscribeHeartbeats(ctx context.Context) ([]network.HeartbeatRow, <-chan network.HeartbeatChange, error)
+	ListMachineRows(ctx context.Context) ([]network.MachineRow, error)
 	BumpHeartbeat(ctx context.Context, nodeID string, updatedAt string) error
 }
 
 // PeerReconciler applies peer configuration changes.
-// Production: *mesh.Controller
+// Production: *network.Controller
 // Testing: fake that tracks peer state in memory
 type PeerReconciler interface {
-	ReconcilePeers(ctx context.Context, cfg mesh.Config, rows []mesh.MachineRow) (int, error)
+	ReconcilePeers(ctx context.Context, cfg network.Config, rows []network.MachineRow) (int, error)
 	Close() error
 }

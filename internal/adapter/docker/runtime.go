@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"ployz/internal/mesh"
+	"ployz/internal/network"
 
 	"github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
@@ -23,9 +23,9 @@ import (
 	"github.com/docker/go-connections/nat"
 )
 
-var _ mesh.ContainerRuntime = (*Runtime)(nil)
+var _ network.ContainerRuntime = (*Runtime)(nil)
 
-// Runtime implements mesh.ContainerRuntime using the Docker Engine API.
+// Runtime implements network.ContainerRuntime using the Docker Engine API.
 type Runtime struct {
 	cli *client.Client
 }
@@ -54,16 +54,16 @@ func (r *Runtime) WaitReady(ctx context.Context) error {
 	return WaitReady(ctx, r.cli)
 }
 
-func (r *Runtime) ContainerInspect(ctx context.Context, name string) (mesh.ContainerInfo, error) {
+func (r *Runtime) ContainerInspect(ctx context.Context, name string) (network.ContainerInfo, error) {
 	info, err := r.cli.ContainerInspect(ctx, name)
 	if err != nil {
 		if errdefs.IsNotFound(err) {
-			return mesh.ContainerInfo{Exists: false}, nil
+			return network.ContainerInfo{Exists: false}, nil
 		}
-		return mesh.ContainerInfo{}, fmt.Errorf("inspect container %q: %w", name, err)
+		return network.ContainerInfo{}, fmt.Errorf("inspect container %q: %w", name, err)
 	}
 	running := info.State != nil && info.State.Running
-	return mesh.ContainerInfo{Exists: true, Running: running}, nil
+	return network.ContainerInfo{Exists: true, Running: running}, nil
 }
 
 func (r *Runtime) ContainerStart(ctx context.Context, name string) error {
@@ -104,7 +104,7 @@ func (r *Runtime) ContainerLogs(ctx context.Context, name string, lines int) (st
 	return string(bytes.TrimSpace(clean)), nil
 }
 
-func (r *Runtime) ContainerCreate(ctx context.Context, cfg mesh.ContainerCreateConfig) error {
+func (r *Runtime) ContainerCreate(ctx context.Context, cfg network.ContainerCreateConfig) error {
 	cc := &container.Config{
 		Image:  cfg.Image,
 		Cmd:    cfg.Cmd,
@@ -160,7 +160,7 @@ func (r *Runtime) ContainerCreate(ctx context.Context, cfg mesh.ContainerCreateC
 	return err
 }
 
-func (r *Runtime) ContainerList(ctx context.Context, labelFilter map[string]string) ([]mesh.ContainerListEntry, error) {
+func (r *Runtime) ContainerList(ctx context.Context, labelFilter map[string]string) ([]network.ContainerListEntry, error) {
 	filters := dockerfilters.NewArgs()
 	for key, value := range labelFilter {
 		filters.Add("label", key+"="+value)
@@ -171,7 +171,7 @@ func (r *Runtime) ContainerList(ctx context.Context, labelFilter map[string]stri
 		return nil, fmt.Errorf("list containers: %w", err)
 	}
 
-	out := make([]mesh.ContainerListEntry, 0, len(containers))
+	out := make([]network.ContainerListEntry, 0, len(containers))
 	for _, c := range containers {
 		name := ""
 		if len(c.Names) > 0 {
@@ -183,7 +183,7 @@ func (r *Runtime) ContainerList(ctx context.Context, labelFilter map[string]stri
 			labels[key] = value
 		}
 
-		out = append(out, mesh.ContainerListEntry{
+		out = append(out, network.ContainerListEntry{
 			Name:    name,
 			Image:   c.Image,
 			Running: c.State == "running",
@@ -194,7 +194,7 @@ func (r *Runtime) ContainerList(ctx context.Context, labelFilter map[string]stri
 	return out, nil
 }
 
-func (r *Runtime) ContainerUpdate(ctx context.Context, name string, resources mesh.ResourceConfig) error {
+func (r *Runtime) ContainerUpdate(ctx context.Context, name string, resources network.ResourceConfig) error {
 	updateConfig := container.UpdateConfig{}
 	if resources.CPULimit > 0 {
 		updateConfig.Resources.NanoCPUs = int64(resources.CPULimit * 1e9)
@@ -220,19 +220,19 @@ func (r *Runtime) ImagePull(ctx context.Context, img string) error {
 	return nil
 }
 
-func (r *Runtime) NetworkInspect(ctx context.Context, name string) (mesh.NetworkInfo, error) {
+func (r *Runtime) NetworkInspect(ctx context.Context, name string) (network.NetworkInfo, error) {
 	nw, err := r.cli.NetworkInspect(ctx, name, dockernetwork.InspectOptions{})
 	if err != nil {
 		if errdefs.IsNotFound(err) {
-			return mesh.NetworkInfo{Exists: false}, nil
+			return network.NetworkInfo{Exists: false}, nil
 		}
-		return mesh.NetworkInfo{}, fmt.Errorf("inspect network %q: %w", name, err)
+		return network.NetworkInfo{}, fmt.Errorf("inspect network %q: %w", name, err)
 	}
 	var subnet string
 	if len(nw.IPAM.Config) > 0 {
 		subnet = nw.IPAM.Config[0].Subnet
 	}
-	return mesh.NetworkInfo{ID: nw.ID, Subnet: subnet, Exists: true}, nil
+	return network.NetworkInfo{ID: nw.ID, Subnet: subnet, Exists: true}, nil
 }
 
 func (r *Runtime) NetworkCreate(ctx context.Context, name string, subnet netip.Prefix, wgIface string) error {
@@ -241,7 +241,7 @@ func (r *Runtime) NetworkCreate(ctx context.Context, name string, subnet netip.P
 		Scope:  "local",
 		IPAM:   &dockernetwork.IPAM{Config: []dockernetwork.IPAMConfig{{Subnet: subnet.String()}}},
 		Options: map[string]string{
-			"com.docker.mesh.bridge.trusted_host_interfaces": wgIface,
+			"com.docker.network.bridge.trusted_host_interfaces": wgIface,
 		},
 	})
 	if err != nil {

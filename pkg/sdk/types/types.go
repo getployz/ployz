@@ -17,18 +17,18 @@ type NetworkSpec struct {
 }
 
 type ApplyResult struct {
-	Network            string `json:"network"`
-	NetworkCIDR        string `json:"network_cidr"`
-	Subnet             string `json:"subnet"`
-	ManagementIP       string `json:"management_ip"`
-	WGInterface        string `json:"wg_interface"`
-	WGPort             int    `json:"wg_port"`
-	AdvertiseEndpoint  string `json:"advertise_endpoint,omitempty"`
-	CorrosionName      string `json:"corrosion_name"`
-	CorrosionAPIAddr   string `json:"corrosion_api_addr"`
-	CorrosionGossipAddrPort  string `json:"corrosion_gossip_addr"`
-	DockerNetwork      string `json:"docker_network"`
-	ConvergenceRunning bool   `json:"convergence_running"`
+	Network                 string `json:"network"`
+	NetworkCIDR             string `json:"network_cidr"`
+	Subnet                  string `json:"subnet"`
+	ManagementIP            string `json:"management_ip"`
+	WGInterface             string `json:"wg_interface"`
+	WGPort                  int    `json:"wg_port"`
+	AdvertiseEndpoint       string `json:"advertise_endpoint,omitempty"`
+	CorrosionName           string `json:"corrosion_name"`
+	CorrosionAPIAddr        string `json:"corrosion_api_addr"`
+	CorrosionGossipAddrPort string `json:"corrosion_gossip_addr"`
+	DockerNetwork           string `json:"docker_network"`
+	ConvergenceRunning      bool   `json:"convergence_running"`
 }
 
 type ClockHealth struct {
@@ -49,19 +49,19 @@ type NetworkStatus struct {
 }
 
 type Identity struct {
-	ID                string `json:"id"`
-	PublicKey         string `json:"public_key"`
-	Subnet            string `json:"subnet"`
-	ManagementIP      string `json:"management_ip"`
-	AdvertiseEndpoint string `json:"advertise_endpoint,omitempty"`
-	NetworkCIDR       string `json:"network_cidr,omitempty"`
-	WGInterface       string `json:"wg_interface,omitempty"`
-	WGPort            int    `json:"wg_port,omitempty"`
-	HelperName        string `json:"helper_name,omitempty"`
+	ID                  string `json:"id"`
+	PublicKey           string `json:"public_key"`
+	Subnet              string `json:"subnet"`
+	ManagementIP        string `json:"management_ip"`
+	AdvertiseEndpoint   string `json:"advertise_endpoint,omitempty"`
+	NetworkCIDR         string `json:"network_cidr,omitempty"`
+	WGInterface         string `json:"wg_interface,omitempty"`
+	WGPort              int    `json:"wg_port,omitempty"`
+	HelperName          string `json:"helper_name,omitempty"`
 	CorrosionGossipPort int    `json:"corrosion_gossip_port,omitempty"`
-	CorrosionMemberID uint64 `json:"corrosion_member_id,omitempty"`
-	CorrosionAPIToken string `json:"corrosion_api_token,omitempty"`
-	Running           bool   `json:"running"`
+	CorrosionMemberID   uint64 `json:"corrosion_member_id,omitempty"`
+	CorrosionAPIToken   string `json:"corrosion_api_token,omitempty"`
+	Running             bool   `json:"running"`
 }
 
 type MachineEntry struct {

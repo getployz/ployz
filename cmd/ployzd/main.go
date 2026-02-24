@@ -7,8 +7,8 @@ import (
 	"syscall"
 
 	"ployz/internal/buildinfo"
-	"ployz/internal/daemon/server"
-	"ployz/internal/daemon/supervisor"
+	"ployz/internal/controlplane/api"
+	"ployz/internal/controlplane/manager"
 	"ployz/internal/logging"
 	"ployz/pkg/sdk/client"
 	"ployz/pkg/sdk/defaults"
@@ -47,11 +47,11 @@ func rootCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			mgr, err := supervisor.NewProduction(ctx, dataRoot)
+			mgr, err := manager.NewProduction(ctx, dataRoot)
 			if err != nil {
 				return err
 			}
-			srv := server.New(mgr)
+			srv := api.New(mgr)
 			return srv.ListenAndServe(ctx, socketPath)
 		},
 	}

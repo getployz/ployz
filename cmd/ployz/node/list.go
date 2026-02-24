@@ -22,20 +22,20 @@ func listCmd() *cobra.Command {
 		Aliases: []string{"ls"},
 		Short:   "List nodes in the cluster",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, svc, cl, err := service(cmd.Context(), &cf)
+			_, svc, _, err := service(cmd.Context(), &cf)
 			if err != nil {
 				return err
 			}
 
-			status, statusErr := svc.Status(cmd.Context(), cl.Network)
+			status, statusErr := svc.Status(cmd.Context())
 
-			machines, err := svc.ListMachines(cmd.Context(), cl.Network)
+			machines, err := svc.ListMachines(cmd.Context())
 			if err != nil {
 				if statusErr != nil || status.Corrosion {
 					return err
 				}
 
-				fallback, fallbackErr := fallbackLocalMachine(cmd.Context(), svc, cl.Network)
+				fallback, fallbackErr := fallbackLocalMachine(cmd.Context(), svc)
 				if fallbackErr != nil {
 					return err
 				}
@@ -96,8 +96,8 @@ func listCmd() *cobra.Command {
 	return cmd
 }
 
-func fallbackLocalMachine(ctx context.Context, svc *sdkmachine.Service, network string) ([]types.MachineEntry, error) {
-	identity, err := svc.Identity(ctx, network)
+func fallbackLocalMachine(ctx context.Context, svc *sdkmachine.Service) ([]types.MachineEntry, error) {
+	identity, err := svc.Identity(ctx)
 	if err != nil {
 		return nil, err
 	}

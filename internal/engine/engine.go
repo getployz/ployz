@@ -8,8 +8,11 @@ import (
 	"time"
 
 	"ployz/internal/check"
-	netctrl "ployz/internal/mesh"
+	"ployz/internal/network"
 	"ployz/internal/reconcile"
+	"ployz/internal/signal/freshness"
+	"ployz/internal/signal/ntp"
+	"ployz/internal/signal/ping"
 	"ployz/pkg/sdk/defaults"
 	"ployz/pkg/sdk/types"
 )
@@ -26,21 +29,21 @@ const (
 )
 
 type NetworkHealth struct {
-	Peers     map[string]reconcile.PeerHealth
-	NTPStatus reconcile.NTPStatus
+	Peers     map[string]freshness.PeerHealth
+	NTPStatus ntp.Status
 }
 
 type Engine struct {
 	mu            sync.Mutex
-	workers       map[string]*workerState
+	worker        *workerState
 	rootCtx       context.Context
 	newController NetworkControllerFactory
 	newReconciler PeerReconcilerFactory
 	newRegistry   RegistryFactory
-	stateStore    netctrl.StateStore
-	clock         netctrl.Clock
+	stateStore    network.StateStore
+	clock         network.Clock
 	pingDialFunc  func(context.Context, string) (time.Duration, error)
-	ntpCheckFunc  func() reconcile.NTPStatus
+	ntpCheckFunc  func() ntp.Status
 }
 
 type EngineOption func(*Engine)
@@ -57,11 +60,11 @@ func WithRegistryFactory(f RegistryFactory) EngineOption {
 	return func(e *Engine) { e.newRegistry = f }
 }
 
-func WithStateStore(s netctrl.StateStore) EngineOption {
+func WithStateStore(s network.StateStore) EngineOption {
 	return func(e *Engine) { e.stateStore = s }
 }
 
-func WithClock(c netctrl.Clock) EngineOption {
+func WithClock(c network.Clock) EngineOption {
 	return func(e *Engine) { e.clock = c }
 }
 
@@ -69,13 +72,12 @@ func WithPingDialFunc(f func(context.Context, string) (time.Duration, error)) En
 	return func(e *Engine) { e.pingDialFunc = f }
 }
 
-func WithNTPCheckFunc(f func() reconcile.NTPStatus) EngineOption {
+func WithNTPCheckFunc(f func() ntp.Status) EngineOption {
 	return func(e *Engine) { e.ntpCheckFunc = f }
 }
 
 func New(ctx context.Context, opts ...EngineOption) *Engine {
 	e := &Engine{
-		workers: make(map[string]*workerState),
 		rootCtx: ctx,
 	}
 	for _, opt := range opts {
@@ -87,24 +89,24 @@ func New(ctx context.Context, opts ...EngineOption) *Engine {
 	return e
 }
 
-func (e *Engine) StartNetwork(ctx context.Context, spec types.NetworkSpec) error {
-	network := defaults.NormalizeNetwork(spec.Network)
-	if network == "" {
+func (e *Engine) Start(ctx context.Context, spec types.NetworkSpec) error {
+	networkName := defaults.NormalizeNetwork(spec.Network)
+	if networkName == "" {
 		return fmt.Errorf("network is required")
 	}
 	if err := e.rootCtx.Err(); err != nil {
 		return fmt.Errorf("engine is shutting down: %w", err)
 	}
-	log := slog.With("component", "runtime-engine", "network", network)
+	log := slog.With("component", "runtime-engine", "network", networkName)
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if existing, ok := e.workers[network]; ok {
+	if existing := e.worker; existing != nil {
 		log.Info("restarting worker")
 		existing.cancel()
 		<-existing.done
-		delete(e.workers, network)
+		e.worker = nil
 	}
 
 	workerCtx, cancel := context.WithCancel(e.rootCtx)
@@ -117,9 +119,9 @@ func (e *Engine) StartNetwork(ctx context.Context, spec types.NetworkSpec) error
 		cancel:    cancel,
 		done:      make(chan struct{}),
 		spec:      spec,
-		freshness: reconcile.NewFreshnessTracker(selfID, clk),
-		ntp:       reconcile.NewNTPChecker(clk),
-		ping:      reconcile.NewPingTracker(),
+		freshness: freshness.NewTracker(selfID, clk),
+		ntp:       ntp.NewChecker(clk),
+		ping:      ping.NewTracker(),
 	}
 	if e.ntpCheckFunc != nil {
 		ws.ntp.CheckFunc = e.ntpCheckFunc
@@ -127,7 +129,7 @@ func (e *Engine) StartNetwork(ctx context.Context, spec types.NetworkSpec) error
 	if e.pingDialFunc != nil {
 		ws.ping.DialFunc = e.pingDialFunc
 	}
-	e.workers[network] = ws
+	e.worker = ws
 	log.Info("starting worker")
 
 	go func() {
@@ -138,18 +140,23 @@ func (e *Engine) StartNetwork(ctx context.Context, spec types.NetworkSpec) error
 	return nil
 }
 
-func (e *Engine) StopNetwork(network string) error {
-	network = defaults.NormalizeNetwork(network)
-	log := slog.With("component", "runtime-engine", "network", network)
+func (e *Engine) Stop() error {
+	networkName := ""
+	e.mu.Lock()
+	if e.worker != nil {
+		networkName = defaults.NormalizeNetwork(e.worker.spec.Network)
+	}
+	e.mu.Unlock()
+	log := slog.With("component", "runtime-engine", "network", networkName)
 
 	e.mu.Lock()
-	ws, ok := e.workers[network]
-	if !ok {
+	ws := e.worker
+	if ws == nil {
 		e.mu.Unlock()
 		return nil
 	}
 	ws.cancel()
-	delete(e.workers, network)
+	e.worker = nil
 	e.mu.Unlock()
 
 	select {
@@ -161,27 +168,23 @@ func (e *Engine) StopNetwork(network string) error {
 	return nil
 }
 
-func (e *Engine) Status(network string) (running bool, lastErr string) {
-	network = defaults.NormalizeNetwork(network)
-
+func (e *Engine) Status() (phase WorkerPhase, lastErr string) {
 	e.mu.Lock()
-	ws, ok := e.workers[network]
+	ws := e.worker
 	e.mu.Unlock()
 
-	if !ok {
-		return false, ""
+	if ws == nil {
+		return WorkerAbsent, ""
 	}
 	return ws.status()
 }
 
-func (e *Engine) Health(network string) NetworkHealth {
-	network = defaults.NormalizeNetwork(network)
-
+func (e *Engine) Health() NetworkHealth {
 	e.mu.Lock()
-	ws, ok := e.workers[network]
+	ws := e.worker
 	e.mu.Unlock()
 
-	if !ok {
+	if ws == nil {
 		return NetworkHealth{}
 	}
 
@@ -190,11 +193,12 @@ func (e *Engine) Health(network string) NetworkHealth {
 	// Merge ping RTTs into peer health.
 	pings := ws.ping.Snapshot()
 	if len(pings) > 0 && peers == nil {
-		peers = make(map[string]reconcile.PeerHealth)
+		peers = make(map[string]freshness.PeerHealth)
 	}
-	for nodeID, rtt := range pings {
+	for nodeID, sample := range pings {
 		ph := peers[nodeID]
-		ph.PingRTT = rtt
+		ph.PingPhase = sample.Phase
+		ph.PingRTT = sample.RTT
 		peers[nodeID] = ph
 	}
 
@@ -205,59 +209,44 @@ func (e *Engine) Health(network string) NetworkHealth {
 }
 
 func (e *Engine) StopAll() {
-	log := slog.With("component", "runtime-engine")
-
-	e.mu.Lock()
-	workers := e.workers
-	e.workers = make(map[string]*workerState)
-	e.mu.Unlock()
-
-	if len(workers) == 0 {
-		return
-	}
-
-	log.Info("stopping all workers", "count", len(workers))
-	for _, ws := range workers {
-		ws.cancel()
-	}
-	for network, ws := range workers {
-		select {
-		case <-ws.done:
-			log.Debug("worker stopped", "network", network)
-		case <-time.After(stopNetworkTimeout):
-			log.Warn("worker stop timed out", "network", network)
-		}
-	}
+	_ = e.Stop()
 }
 
 type workerState struct {
 	cancel    context.CancelFunc
 	done      chan struct{}
 	spec      types.NetworkSpec
-	freshness *reconcile.FreshnessTracker
-	ntp       *reconcile.NTPChecker
-	ping      *reconcile.PingTracker
-	running   bool
+	freshness *freshness.Tracker
+	ntp       *ntp.Checker
+	ping      *ping.Tracker
+	phase     WorkerPhase
 	lastErr   string
 	mu        sync.RWMutex
 }
 
-func (w *workerState) setStatus(running bool, lastErr string) {
+func (w *workerState) setStatus(phase WorkerPhase, lastErr string) {
 	w.mu.Lock()
-	w.running = running
+	if w.phase == 0 {
+		w.phase = WorkerAbsent
+	}
+	w.phase = w.phase.Transition(phase)
 	w.lastErr = lastErr
 	w.mu.Unlock()
 }
 
-func (w *workerState) status() (bool, string) {
+func (w *workerState) status() (WorkerPhase, string) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	return w.running, w.lastErr
+	if w.phase == 0 {
+		return WorkerAbsent, w.lastErr
+	}
+	return w.phase, w.lastErr
 }
 
 func (e *Engine) runWorkerLoop(ctx context.Context, ws *workerState, spec types.NetworkSpec) {
-	network := defaults.NormalizeNetwork(spec.Network)
-	log := slog.With("component", "runtime-engine", "network", network)
+	networkName := defaults.NormalizeNetwork(spec.Network)
+	log := slog.With("component", "runtime-engine", "network", networkName)
+	ws.setStatus(WorkerStarting, "")
 
 	var consecutiveFailures int
 	retryDelay := workerRetryDelay
@@ -266,14 +255,14 @@ func (e *Engine) runWorkerLoop(ctx context.Context, ws *workerState, spec types.
 	// Returns false if the context was cancelled or max failures reached.
 	backoff := func(msg string, err error) bool {
 		log.Debug(msg, "err", err)
-		ws.setStatus(false, err.Error())
+		ws.setStatus(WorkerBackoff, err.Error())
 		if !sleepWithContext(ctx, retryDelay) {
 			return false
 		}
 		consecutiveFailures++
 		if consecutiveFailures >= workerMaxConsecutiveFailures {
 			log.Error("worker giving up after too many consecutive failures", "failures", consecutiveFailures)
-			ws.setStatus(false, fmt.Sprintf("gave up after %d consecutive failures: %v", consecutiveFailures, err))
+			ws.setStatus(WorkerGivingUp, fmt.Sprintf("gave up after %d consecutive failures: %v", consecutiveFailures, err))
 			return false
 		}
 		retryDelay = min(retryDelay*2, workerMaxRetryDelay)
@@ -281,7 +270,7 @@ func (e *Engine) runWorkerLoop(ctx context.Context, ws *workerState, spec types.
 	}
 
 	for {
-		cfg, err := netctrl.ConfigFromSpec(spec)
+		cfg, err := network.ConfigFromSpec(spec)
 		if err != nil {
 			if !backoff("invalid network spec", err) {
 				return
@@ -318,7 +307,7 @@ func (e *Engine) runWorkerLoop(ctx context.Context, ws *workerState, spec types.
 		// Reset failure tracking on successful setup.
 		consecutiveFailures = 0
 		retryDelay = workerRetryDelay
-		ws.setStatus(true, "")
+		ws.setStatus(WorkerRunning, "")
 		log.Debug("runtime prepared, entering reconcile loop")
 
 		worker := reconcile.Worker{
@@ -333,23 +322,24 @@ func (e *Engine) runWorkerLoop(ctx context.Context, ws *workerState, spec types.
 				if err == nil {
 					return
 				}
-				ws.setStatus(true, err.Error())
+				ws.setStatus(WorkerDegraded, err.Error())
 			},
 		}
 
 		err = worker.Run(ctx)
 		_ = peerCtrl.Close()
 		if ctx.Err() != nil {
-			ws.setStatus(false, "")
+			ws.setStatus(WorkerStopping, "")
+			ws.setStatus(WorkerAbsent, "")
 			log.Debug("worker loop canceled")
 			return
 		}
 		if err != nil {
 			log.Warn("worker loop exited with error", "err", err)
-			ws.setStatus(false, err.Error())
+			ws.setStatus(WorkerBackoff, err.Error())
 		} else {
 			log.Debug("worker loop exited cleanly")
-			ws.setStatus(false, "")
+			ws.setStatus(WorkerBackoff, "")
 		}
 
 		if !sleepWithContext(ctx, retryDelay) {
@@ -358,22 +348,22 @@ func (e *Engine) runWorkerLoop(ctx context.Context, ws *workerState, spec types.
 	}
 }
 
-func (e *Engine) clockOrDefault() netctrl.Clock {
+func (e *Engine) clockOrDefault() network.Clock {
 	if e.clock != nil {
 		return e.clock
 	}
-	return netctrl.RealClock{}
+	return network.RealClock{}
 }
 
 func (e *Engine) loadSelfID(spec types.NetworkSpec) string {
 	if e.stateStore == nil {
 		return ""
 	}
-	cfg, err := netctrl.ConfigFromSpec(spec)
+	cfg, err := network.ConfigFromSpec(spec)
 	if err != nil {
 		return ""
 	}
-	st, err := netctrl.LoadState(e.stateStore, cfg)
+	st, err := network.LoadState(e.stateStore, cfg)
 	if err != nil {
 		return ""
 	}

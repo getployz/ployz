@@ -32,7 +32,7 @@ func removeCmd() *cobra.Command {
 			api, dialErr := cl.Dial(cmd.Context())
 			if dialErr == nil {
 				svc := sdkmachine.New(api)
-				if err := svc.Stop(cmd.Context(), cl.Network, true); err != nil {
+				if err := svc.Stop(cmd.Context(), true); err != nil {
 					fmt.Println(ui.WarnMsg("could not stop runtime: %v", err))
 				} else {
 					fmt.Println(ui.SuccessMsg("tore down runtime for %s", ui.Accent(cl.Network)))

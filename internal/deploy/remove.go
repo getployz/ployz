@@ -5,14 +5,14 @@ import (
 	"fmt"
 
 	"ployz/internal/check"
-	"ployz/internal/mesh"
+	"ployz/internal/network"
 )
 
 // RemoveNamespace removes all local containers for a namespace and deletes
 // namespace container rows from the store.
 func RemoveNamespace(
 	ctx context.Context,
-	rt mesh.ContainerRuntime,
+	rt network.ContainerRuntime,
 	stores Stores,
 	namespace string,
 	machineID string,

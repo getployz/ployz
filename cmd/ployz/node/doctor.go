@@ -16,19 +16,19 @@ func doctorCmd() *cobra.Command {
 		Use:   "doctor",
 		Short: "Diagnose per-component health",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			clusterName, svc, cl, err := service(cmd.Context(), &cf)
+			clusterName, svc, _, err := service(cmd.Context(), &cf)
 			if err != nil {
 				return err
 			}
 
 			initCmd := "ployz init " + clusterName
 
-			status, err := svc.Status(cmd.Context(), cl.Network)
+			status, err := svc.Status(cmd.Context())
 			if err != nil {
 				return err
 			}
 
-			identity, _ := svc.Identity(cmd.Context(), cl.Network)
+			identity, _ := svc.Identity(cmd.Context())
 
 			fmt.Println(ui.InfoMsg("cluster %s diagnostic", ui.Accent(clusterName)))
 			fmt.Print(ui.KeyValues("  ",

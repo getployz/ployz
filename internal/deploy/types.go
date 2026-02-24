@@ -84,7 +84,7 @@ type DeploymentRow struct {
 	Namespace      string            `json:"namespace"`
 	SpecJSON       string            `json:"spec_json"`
 	Labels         map[string]string `json:"labels"`
-	Status         string            `json:"status"`
+	Status         DeployPhase       `json:"status"`
 	Owner          string            `json:"owner"`
 	OwnerHeartbeat string            `json:"owner_heartbeat"`
 	MachineIDs     []string          `json:"machine_ids"`
@@ -168,7 +168,7 @@ type ApplyResult struct {
 
 type TierResult struct {
 	Name       string
-	Status     string
+	Status     TierPhase
 	Containers []ContainerResult
 }
 
@@ -183,7 +183,7 @@ type ContainerResult struct {
 // DeployError carries structured context for deploy failures.
 type DeployError struct {
 	Namespace string
-	Phase     string
+	Phase     DeployErrorPhase
 	Tier      int
 	TierName  string
 	Tiers     []TierResult

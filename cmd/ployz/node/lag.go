@@ -24,14 +24,14 @@ func lagCmd() *cobra.Command {
 		Use:   "lag",
 		Short: "Show replication lag and ping latency across nodes",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			clusterName, svc, cl, err := service(cmd.Context(), &cf)
+			clusterName, svc, _, err := service(cmd.Context(), &cf)
 			if err != nil {
 				return err
 			}
 
 			// Fan out GetPeerHealth to all nodes via the proxy.
-			ctx := client.ProxyMachinesContext(cmd.Context(), cl.Network, nil)
-			responses, err := svc.GetPeerHealth(ctx, cl.Network)
+			ctx := client.ProxyMachinesContext(cmd.Context(), nil)
+			responses, err := svc.GetPeerHealth(ctx)
 			if err != nil {
 				return err
 			}

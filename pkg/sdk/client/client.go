@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"ployz/internal/daemon/pb"
+	"ployz/internal/controlplane/pb"
 	"ployz/pkg/sdk/types"
 
 	"google.golang.org/grpc"
@@ -34,20 +34,20 @@ func DefaultSocketPath() string {
 
 type API interface {
 	ApplyNetworkSpec(ctx context.Context, spec types.NetworkSpec) (types.ApplyResult, error)
-	DisableNetwork(ctx context.Context, network string, purge bool) error
-	GetStatus(ctx context.Context, network string) (types.NetworkStatus, error)
-	GetIdentity(ctx context.Context, network string) (types.Identity, error)
-	ListMachines(ctx context.Context, network string) ([]types.MachineEntry, error)
-	UpsertMachine(ctx context.Context, network string, m types.MachineEntry) error
-	RemoveMachine(ctx context.Context, network string, idOrEndpoint string) error
-	TriggerReconcile(ctx context.Context, network string) error
-	GetPeerHealth(ctx context.Context, network string) ([]types.PeerHealthResponse, error)
+	DisableNetwork(ctx context.Context, purge bool) error
+	GetStatus(ctx context.Context) (types.NetworkStatus, error)
+	GetIdentity(ctx context.Context) (types.Identity, error)
+	ListMachines(ctx context.Context) ([]types.MachineEntry, error)
+	UpsertMachine(ctx context.Context, m types.MachineEntry) error
+	RemoveMachine(ctx context.Context, idOrEndpoint string) error
+	TriggerReconcile(ctx context.Context) error
+	GetPeerHealth(ctx context.Context) ([]types.PeerHealthResponse, error)
 
-	PlanDeploy(ctx context.Context, network, namespace string, composeSpec []byte) (types.DeployPlan, error)
-	ApplyDeploy(ctx context.Context, network, namespace string, composeSpec []byte, events chan<- types.DeployProgressEvent) (types.DeployResult, error)
-	ListDeployments(ctx context.Context, network, namespace string) ([]types.DeploymentEntry, error)
-	RemoveNamespace(ctx context.Context, network, namespace string) error
-	ReadContainerState(ctx context.Context, network, namespace string) ([]types.ContainerState, error)
+	PlanDeploy(ctx context.Context, namespace string, composeSpec []byte) (types.DeployPlan, error)
+	ApplyDeploy(ctx context.Context, namespace string, composeSpec []byte, events chan<- types.DeployProgressEvent) (types.DeployResult, error)
+	ListDeployments(ctx context.Context, namespace string) ([]types.DeploymentEntry, error)
+	RemoveNamespace(ctx context.Context, namespace string) error
+	ReadContainerState(ctx context.Context, namespace string) ([]types.ContainerState, error)
 }
 
 type Client struct {
@@ -90,13 +90,13 @@ func (c *Client) ApplyNetworkSpec(ctx context.Context, spec types.NetworkSpec) (
 	return applyResultFromProto(resp), nil
 }
 
-func (c *Client) DisableNetwork(ctx context.Context, network string, purge bool) error {
-	_, err := c.daemon.DisableNetwork(ctx, &pb.DisableNetworkRequest{Network: network, Purge: purge})
+func (c *Client) DisableNetwork(ctx context.Context, purge bool) error {
+	_, err := c.daemon.DisableNetwork(ctx, &pb.DisableNetworkRequest{Purge: purge})
 	return grpcErr(err)
 }
 
-func (c *Client) GetStatus(ctx context.Context, network string) (types.NetworkStatus, error) {
-	resp, err := c.daemon.GetStatus(ctx, &pb.GetStatusRequest{Network: network})
+func (c *Client) GetStatus(ctx context.Context) (types.NetworkStatus, error) {
+	resp, err := c.daemon.GetStatus(ctx, &pb.GetStatusRequest{})
 	if err != nil {
 		return types.NetworkStatus{}, grpcErr(err)
 	}
@@ -119,8 +119,8 @@ func (c *Client) GetStatus(ctx context.Context, network string) (types.NetworkSt
 	return st, nil
 }
 
-func (c *Client) GetIdentity(ctx context.Context, network string) (types.Identity, error) {
-	resp, err := c.daemon.GetIdentity(ctx, &pb.GetIdentityRequest{Network: network})
+func (c *Client) GetIdentity(ctx context.Context) (types.Identity, error) {
+	resp, err := c.daemon.GetIdentity(ctx, &pb.GetIdentityRequest{})
 	if err != nil {
 		return types.Identity{}, grpcErr(err)
 	}
@@ -141,8 +141,8 @@ func (c *Client) GetIdentity(ctx context.Context, network string) (types.Identit
 	}, nil
 }
 
-func (c *Client) ListMachines(ctx context.Context, network string) ([]types.MachineEntry, error) {
-	resp, err := c.daemon.ListMachines(ctx, &pb.ListMachinesRequest{Network: network})
+func (c *Client) ListMachines(ctx context.Context) ([]types.MachineEntry, error) {
+	resp, err := c.daemon.ListMachines(ctx, &pb.ListMachinesRequest{})
 	if err != nil {
 		return nil, grpcErr(err)
 	}
@@ -153,29 +153,27 @@ func (c *Client) ListMachines(ctx context.Context, network string) ([]types.Mach
 	return out, nil
 }
 
-func (c *Client) UpsertMachine(ctx context.Context, network string, m types.MachineEntry) error {
+func (c *Client) UpsertMachine(ctx context.Context, m types.MachineEntry) error {
 	_, err := c.daemon.UpsertMachine(ctx, &pb.UpsertMachineRequest{
-		Network: network,
 		Machine: machineToProto(m),
 	})
 	return grpcErr(err)
 }
 
-func (c *Client) RemoveMachine(ctx context.Context, network string, idOrEndpoint string) error {
+func (c *Client) RemoveMachine(ctx context.Context, idOrEndpoint string) error {
 	_, err := c.daemon.RemoveMachine(ctx, &pb.RemoveMachineRequest{
-		Network:      network,
 		IdOrEndpoint: idOrEndpoint,
 	})
 	return grpcErr(err)
 }
 
-func (c *Client) TriggerReconcile(ctx context.Context, network string) error {
-	_, err := c.daemon.TriggerReconcile(ctx, &pb.TriggerReconcileRequest{Network: network})
+func (c *Client) TriggerReconcile(ctx context.Context) error {
+	_, err := c.daemon.TriggerReconcile(ctx, &pb.TriggerReconcileRequest{})
 	return grpcErr(err)
 }
 
-func (c *Client) GetPeerHealth(ctx context.Context, network string) ([]types.PeerHealthResponse, error) {
-	resp, err := c.daemon.GetPeerHealth(ctx, &pb.GetPeerHealthRequest{Network: network})
+func (c *Client) GetPeerHealth(ctx context.Context) ([]types.PeerHealthResponse, error) {
+	resp, err := c.daemon.GetPeerHealth(ctx, &pb.GetPeerHealthRequest{})
 	if err != nil {
 		return nil, grpcErr(err)
 	}
@@ -217,8 +215,8 @@ func (c *Client) GetPeerHealth(ctx context.Context, network string) ([]types.Pee
 
 // ProxyMachinesContext returns a context that routes gRPC requests through
 // the proxy to the specified machines. If nodeIDs is empty, all machines are targeted.
-func ProxyMachinesContext(ctx context.Context, network string, nodeIDs []string) context.Context {
-	md := metadata.Pairs("proxy-network", network)
+func ProxyMachinesContext(ctx context.Context, nodeIDs []string) context.Context {
+	md := metadata.Pairs()
 	targets := nodeIDs
 	if len(targets) == 0 {
 		targets = []string{"*"}
