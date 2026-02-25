@@ -13,6 +13,7 @@ import (
 	"ployz/internal/controlplane/pb"
 	"ployz/pkg/sdk/types"
 
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -40,7 +41,6 @@ type API interface {
 	ListMachines(ctx context.Context) ([]types.MachineEntry, error)
 	UpsertMachine(ctx context.Context, m types.MachineEntry) error
 	RemoveMachine(ctx context.Context, idOrEndpoint string) error
-	TriggerReconcile(ctx context.Context) error
 	GetPeerHealth(ctx context.Context) ([]types.PeerHealthResponse, error)
 
 	PlanDeploy(ctx context.Context, namespace string, composeSpec []byte) (types.DeployPlan, error)
@@ -59,6 +59,7 @@ func NewUnix(socketPath string) (*Client, error) {
 	conn, err := grpc.NewClient(
 		"unix://"+socketPath,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("grpc dial unix socket: %w", err)
@@ -71,6 +72,7 @@ func NewWithDialer(dialer func(ctx context.Context, addr string) (net.Conn, erro
 		"passthrough:///ployzd",
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(dialer),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("grpc dial with custom dialer: %w", err)
@@ -101,13 +103,19 @@ func (c *Client) GetStatus(ctx context.Context) (types.NetworkStatus, error) {
 		return types.NetworkStatus{}, grpcErr(err)
 	}
 	st := types.NetworkStatus{
-		Configured:    resp.Configured,
-		Running:       resp.Running,
-		WireGuard:     resp.Wireguard,
-		Corrosion:     resp.Corrosion,
-		DockerNet:     resp.Docker,
-		StatePath:     resp.StatePath,
-		WorkerRunning: resp.WorkerRunning,
+		Configured:        resp.Configured,
+		Running:           resp.Running,
+		WireGuard:         resp.Wireguard,
+		Corrosion:         resp.Corrosion,
+		DockerNet:         resp.Docker,
+		StatePath:         resp.StatePath,
+		SupervisorRunning: resp.SupervisorRunning,
+		NetworkPhase:      resp.NetworkPhase,
+		SupervisorPhase:   resp.SupervisorPhase,
+		SupervisorError:   resp.SupervisorError,
+		ClockPhase:        resp.ClockPhase,
+		DockerRequired:    resp.DockerRequired,
+		RuntimeTree:       stateNodeFromProto(resp.RuntimeTree),
 	}
 	if resp.ClockHealth != nil {
 		st.ClockHealth = types.ClockHealth{
@@ -117,6 +125,29 @@ func (c *Client) GetStatus(ctx context.Context) (types.NetworkStatus, error) {
 		}
 	}
 	return st, nil
+}
+
+func stateNodeFromProto(node *pb.StateNode) types.StateNode {
+	if node == nil {
+		return types.StateNode{}
+	}
+	out := types.StateNode{
+		Component:     node.Component,
+		Phase:         node.Phase,
+		Required:      node.Required,
+		Healthy:       node.Healthy,
+		LastErrorCode: node.LastErrorCode,
+		LastError:     node.LastError,
+		Hint:          node.Hint,
+	}
+	if len(node.Children) == 0 {
+		return out
+	}
+	out.Children = make([]types.StateNode, len(node.Children))
+	for i, child := range node.Children {
+		out.Children[i] = stateNodeFromProto(child)
+	}
+	return out
 }
 
 func (c *Client) GetIdentity(ctx context.Context) (types.Identity, error) {
@@ -164,11 +195,6 @@ func (c *Client) RemoveMachine(ctx context.Context, idOrEndpoint string) error {
 	_, err := c.daemon.RemoveMachine(ctx, &pb.RemoveMachineRequest{
 		IdOrEndpoint: idOrEndpoint,
 	})
-	return grpcErr(err)
-}
-
-func (c *Client) TriggerReconcile(ctx context.Context) error {
-	_, err := c.daemon.TriggerReconcile(ctx, &pb.TriggerReconcileRequest{})
 	return grpcErr(err)
 }
 
@@ -256,7 +282,7 @@ func applyResultFromProto(r *pb.ApplyResult) types.ApplyResult {
 		CorrosionAPIAddr:        r.CorrosionApiAddr,
 		CorrosionGossipAddrPort: r.CorrosionGossipAddr,
 		DockerNetwork:           r.DockerNetwork,
-		ConvergenceRunning:      r.ConvergenceRunning,
+		SupervisorRunning:       r.SupervisorRunning,
 	}
 }
 
@@ -290,10 +316,11 @@ func machineFromProto(p *pb.MachineEntry) types.MachineEntry {
 }
 
 var (
-	ErrConflict    = errors.New("version conflict")
-	ErrNotFound    = errors.New("not found")
-	ErrValidation  = errors.New("validation error")
-	ErrUnavailable = errors.New("unavailable")
+	ErrConflict     = errors.New("version conflict")
+	ErrNotFound     = errors.New("not found")
+	ErrValidation   = errors.New("validation error")
+	ErrUnavailable  = errors.New("unavailable")
+	ErrPrecondition = errors.New("precondition failed")
 )
 
 func grpcErr(err error) error {
@@ -311,8 +338,10 @@ func grpcErr(err error) error {
 		return fmt.Errorf("%w: %s", ErrValidation, st.Message())
 	case codes.Unavailable:
 		return fmt.Errorf("%w: %s", ErrUnavailable, st.Message())
-	case codes.FailedPrecondition:
+	case codes.Aborted:
 		return fmt.Errorf("%w: %s", ErrConflict, st.Message())
+	case codes.FailedPrecondition:
+		return fmt.Errorf("%w: %s", ErrPrecondition, st.Message())
 	default:
 		return errors.New(st.Message())
 	}

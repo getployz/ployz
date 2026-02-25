@@ -1,13 +1,15 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"time"
 
-	"ployz/cmd/ployz/cmdutil"
 	"ployz/cmd/ployz/ui"
+	sdkagent "ployz/pkg/sdk/agent"
 	"ployz/pkg/sdk/client"
 	"ployz/pkg/sdk/defaults"
+	"ployz/pkg/sdk/telemetry"
 
 	"github.com/spf13/cobra"
 )
@@ -29,26 +31,50 @@ func installCmd() *cobra.Command {
 				socketPath = client.DefaultSocketPath()
 			}
 
-			svc := NewPlatformService()
-			fmt.Println(ui.InfoMsg("installing agent services"))
+			svc := sdkagent.NewPlatformService()
+			telemetryOut := ui.NewTelemetryOutput()
+			defer telemetryOut.Close()
 
-			if err := svc.Install(cmd.Context(), InstallConfig{
-				DataRoot:   dataRoot,
-				SocketPath: socketPath,
-			}); err != nil {
-				return fmt.Errorf("install agent: %w", err)
+			op, err := telemetry.EmitPlan(cmd.Context(), telemetryOut.Tracer("ployz/cmd/agent"), "agent.install", telemetry.Plan{Steps: []telemetry.PlannedStep{
+				{ID: "install", Title: "installing agent services"},
+				{ID: "wait_ready", Title: "waiting for daemon readiness"},
+			}})
+			if err != nil {
+				return err
+			}
+			var opErr error
+			defer func() {
+				op.End(opErr)
+			}()
+
+			opErr = op.RunStep(op.Context(), "install", func(stepCtx context.Context) error {
+				if installErr := svc.Install(stepCtx, sdkagent.InstallConfig{
+					DataRoot:   dataRoot,
+					SocketPath: socketPath,
+				}); installErr != nil {
+					return fmt.Errorf("install agent: %w", installErr)
+				}
+				return nil
+			})
+			if opErr != nil {
+				return opErr
 			}
 
-			fmt.Println(ui.InfoMsg("waiting for daemon to become ready"))
-			if err := WaitReady(cmd.Context(), socketPath, 15*time.Second); err != nil {
-				return err
+			opErr = op.RunStep(op.Context(), "wait_ready", func(stepCtx context.Context) error {
+				if waitErr := sdkagent.WaitReady(stepCtx, socketPath, 15*time.Second); waitErr != nil {
+					return fmt.Errorf("%w (check daemon log: %s)", waitErr, sdkagent.DaemonLogPath(dataRoot))
+				}
+				return nil
+			})
+			if opErr != nil {
+				return opErr
 			}
 
 			fmt.Println(ui.SuccessMsg("agent installed and running"))
 			fmt.Print(ui.KeyValues("  ",
 				ui.KV("socket", socketPath),
 				ui.KV("data root", dataRoot),
-				ui.KV("daemon log", cmdutil.DaemonLogPath(dataRoot)),
+				ui.KV("daemon log", sdkagent.DaemonLogPath(dataRoot)),
 			))
 			return nil
 		},

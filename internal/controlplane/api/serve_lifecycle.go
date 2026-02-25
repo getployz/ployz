@@ -11,6 +11,7 @@ import (
 	"ployz/pkg/sdk/defaults"
 
 	grpcproxy "github.com/siderolabs/grpc-proxy/proxy"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 )
 
@@ -21,7 +22,7 @@ func (s *Server) ListenAndServe(ctx context.Context, socketPath string) error {
 	phase := ServeStartingInternal
 
 	// Always start the direct gRPC server on the internal socket.
-	directSrv := grpc.NewServer()
+	directSrv := grpc.NewServer(grpc.StatsHandler(otelgrpc.NewServerHandler()))
 	pb.RegisterDaemonServer(directSrv, s)
 
 	directLn, err := listenUnix(internalSockPath)
@@ -39,6 +40,7 @@ func (s *Server) ListenAndServe(ctx context.Context, socketPath string) error {
 	director := proxymod.NewDirector(internalSockPath, remotePort, mapper)
 
 	proxySrv := grpc.NewServer(
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 		grpc.ForceServerCodecV2(grpcproxy.Codec()),
 		grpc.UnknownServiceHandler(grpcproxy.TransparentHandler(director.Director)),
 	)

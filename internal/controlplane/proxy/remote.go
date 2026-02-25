@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/siderolabs/grpc-proxy/proxy"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/credentials/insecure"
@@ -76,6 +77,7 @@ func (b *RemoteBackend) GetConnection(ctx context.Context, _ string) (context.Co
 	b.conn, err = grpc.NewClient(
 		b.target,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 		grpc.WithConnectParams(grpc.ConnectParams{
 			Backoff:           backoffConfig,
 			MinConnectTimeout: 10 * time.Second,

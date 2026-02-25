@@ -2,9 +2,11 @@ package node
 
 import (
 	"fmt"
+	"strings"
 
 	"ployz/cmd/ployz/cmdutil"
 	"ployz/cmd/ployz/ui"
+	"ployz/pkg/sdk/types"
 
 	"github.com/spf13/cobra"
 )
@@ -14,118 +16,49 @@ func doctorCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "doctor",
-		Short: "Diagnose per-component health",
+		Short: "Diagnose runtime state-machine health",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			clusterName, svc, _, err := service(cmd.Context(), &cf)
 			if err != nil {
 				return err
 			}
 
-			initCmd := "ployz init " + clusterName
-
-			status, err := svc.Status(cmd.Context())
+			diag, err := svc.Diagnose(cmd.Context())
 			if err != nil {
 				return err
 			}
-
-			identity, _ := svc.Identity(cmd.Context())
+			status := diag.Status
 
 			fmt.Println(ui.InfoMsg("cluster %s diagnostic", ui.Accent(clusterName)))
 			fmt.Print(ui.KeyValues("  ",
-				ui.KV("configured", ui.Bool(status.Configured)),
-				ui.KV("running", ui.Bool(status.Running)),
-				ui.KV("wireguard", ui.Bool(status.WireGuard)),
-				ui.KV("corrosion", ui.Bool(status.Corrosion)),
-				ui.KV("docker", ui.Bool(status.DockerNet)),
-				ui.KV("convergence", ui.Bool(status.WorkerRunning)),
-				ui.KV("clock sync", ui.Bool(status.ClockHealth.NTPHealthy)),
+				ui.KV("network phase", status.NetworkPhase),
+				ui.KV("supervisor phase", status.SupervisorPhase),
+				ui.KV("clock phase", status.ClockPhase),
+				ui.KV("service ready", ui.Bool(diag.ServiceReady())),
+				ui.KV("control plane ready", ui.Bool(diag.ControlPlaneReady())),
+				ui.KV("state", status.StatePath),
 			))
 
-			allHealthy := status.Configured && status.Running && status.WireGuard &&
-				status.Corrosion && status.DockerNet && status.WorkerRunning &&
-				status.ClockHealth.NTPHealthy
+			if tree := status.RuntimeTree; strings.TrimSpace(tree.Component) != "" {
+				fmt.Println(ui.InfoMsg("state tree"))
+				printStateNode("  ", tree)
+			}
 
-			if allHealthy {
+			if len(diag.ControlPlaneBlockers) == 0 && len(diag.Warnings) == 0 {
 				fmt.Println(ui.SuccessMsg("no issues detected"))
 				return nil
 			}
 
-			type issue struct {
-				component string
-				problem   string
-				fix       string
+			if len(diag.ControlPlaneBlockers) > 0 {
+				fmt.Println(ui.ErrorMsg("blocking issues:"))
+				cmdutil.PrintStatusIssues(cmd.OutOrStdout(), diag.ControlPlaneBlockers, cmdutil.IssueLevelBlocker)
 			}
-			issues := make([]issue, 0, 8)
-
-			if !status.Configured {
-				issues = append(issues, issue{
-					component: "config",
-					problem:   "network spec is not applied on this machine",
-					fix:       initCmd,
-				})
+			if len(diag.Warnings) > 0 {
+				fmt.Println(ui.WarnMsg("warnings:"))
+				cmdutil.PrintStatusIssues(cmd.OutOrStdout(), diag.Warnings, cmdutil.IssueLevelWarning)
 			}
-			if status.Configured && !status.Running {
-				issues = append(issues, issue{
-					component: "runtime",
-					problem:   "network state exists but runtime is stopped",
-					fix:       initCmd,
-				})
-			}
-			if !status.WireGuard {
-				problem := "wireguard interface is missing or down"
-				if identity.WGInterface != "" {
-					problem = "wireguard interface " + identity.WGInterface + " is missing or down"
-				}
-				issues = append(issues, issue{
-					component: "wireguard",
-					problem:   problem,
-					fix:       initCmd,
-				})
-			}
-			if !status.Corrosion {
-				issues = append(issues, issue{
-					component: "corrosion",
-					problem:   "corrosion container is not healthy",
-					fix:       initCmd,
-				})
-			}
-			if !status.DockerNet {
-				issues = append(issues, issue{
-					component: "docker",
-					problem:   "overlay docker network is missing",
-					fix:       initCmd,
-				})
-			}
-			if !status.WorkerRunning {
-				issues = append(issues, issue{
-					component: "convergence",
-					problem:   "convergence loop is not running",
-					fix:       "ployz agent install",
-				})
-			}
-			if !status.ClockHealth.NTPHealthy {
-				problem := "clock is not synchronized with NTP"
-				if status.ClockHealth.NTPError != "" {
-					problem = "NTP check failed: " + status.ClockHealth.NTPError
-				} else {
-					problem = fmt.Sprintf("clock offset %.1fms exceeds threshold", status.ClockHealth.NTPOffsetMs)
-				}
-				issues = append(issues, issue{
-					component: "clock",
-					problem:   problem,
-					fix:       "ensure NTP is configured (ntpd, chrony, or systemd-timesyncd)",
-				})
-			}
-
-			if len(issues) == 0 {
-				fmt.Println(ui.SuccessMsg("no actionable issues detected"))
-				return nil
-			}
-
-			fmt.Println(ui.WarnMsg("detected issues:"))
-			for i, issue := range issues {
-				fmt.Printf("  %d) %s: %s\n", i+1, issue.component, issue.problem)
-				fmt.Println(ui.Muted("     fix: " + issue.fix))
+			if len(diag.ControlPlaneBlockers) > 0 {
+				return fmt.Errorf("%d blocking issues detected", len(diag.ControlPlaneBlockers))
 			}
 			return nil
 		},
@@ -133,4 +66,19 @@ func doctorCmd() *cobra.Command {
 
 	cf.Bind(cmd)
 	return cmd
+}
+
+func printStateNode(prefix string, node types.StateNode) {
+	health := ui.Bool(node.Healthy)
+	if !node.Required {
+		health = health + " (optional)"
+	}
+	line := fmt.Sprintf("%s- %s phase=%s healthy=%s", prefix, node.Component, node.Phase, health)
+	if strings.TrimSpace(node.LastError) != "" {
+		line += " error=" + node.LastError
+	}
+	fmt.Println(line)
+	for _, child := range node.Children {
+		printStateNode(prefix+"  ", child)
+	}
 }

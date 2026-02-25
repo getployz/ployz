@@ -9,7 +9,7 @@ const (
 	AddConnect
 	AddConfigure
 	AddRegister
-	AddConverge
+	AddSync
 	AddDone
 	AddFailed
 )
@@ -24,8 +24,8 @@ func (p AddPhase) String() string {
 		return "configure"
 	case AddRegister:
 		return "register"
-	case AddConverge:
-		return "converge"
+	case AddSync:
+		return "sync"
 	case AddDone:
 		return "done"
 	case AddFailed:
@@ -45,8 +45,8 @@ func (p AddPhase) Transition(to AddPhase) AddPhase {
 	case AddConfigure:
 		ok = to == AddRegister || to == AddFailed
 	case AddRegister:
-		ok = to == AddConverge || to == AddFailed
-	case AddConverge:
+		ok = to == AddSync || to == AddFailed
+	case AddSync:
 		ok = to == AddDone || to == AddFailed
 	case AddDone, AddFailed:
 		ok = false

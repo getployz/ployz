@@ -94,6 +94,7 @@ func (m *Manager) ApplyDeploy(ctx context.Context, namespace string, composeSpec
 	out := applyResultToSDK(applyResult)
 	if applyErr != nil {
 		out.Status = deploy.DeployFailed.String()
+		out.ErrorReason = deploy.DeployErrorReasonUnknown.String()
 		var deployErr *deploy.DeployError
 		if errors.As(applyErr, &deployErr) {
 			out.ErrorMessage = deployErr.Message
@@ -101,6 +102,7 @@ func (m *Manager) ApplyDeploy(ctx context.Context, namespace string, composeSpec
 				out.ErrorMessage = deployErr.Error()
 			}
 			out.ErrorPhase = deployErr.Phase.String()
+			out.ErrorReason = deployErr.Reason.String()
 			out.ErrorTier = deployErr.Tier
 		}
 		return out, applyErr
@@ -211,6 +213,14 @@ func (m *Manager) buildDeployPlan(ctx context.Context, namespace string, compose
 		return deploy.DeployPlan{}, network.Config{}, fmt.Errorf("compose spec is required")
 	}
 
+	status, err := m.GetStatus(ctx)
+	if err != nil {
+		return deploy.DeployPlan{}, network.Config{}, fmt.Errorf("read runtime status: %w", err)
+	}
+	if blockers := status.ServiceBlockerIssues(); len(blockers) > 0 {
+		return deploy.DeployPlan{}, network.Config{}, fmt.Errorf("%w: %s", ErrRuntimeNotReadyForServices, joinStatusIssues(blockers))
+	}
+
 	project, err := deploy.LoadSpec(ctx, composeSpec, namespace)
 	if err != nil {
 		return deploy.DeployPlan{}, network.Config{}, fmt.Errorf("load compose spec: %w", err)
@@ -261,6 +271,26 @@ func (m *Manager) buildDeployPlan(ctx context.Context, namespace string, compose
 		return deploy.DeployPlan{}, network.Config{}, fmt.Errorf("plan deploy: %w", err)
 	}
 	return plan, cfg, nil
+}
+
+func joinStatusIssues(issues []types.StatusIssue) string {
+	parts := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		message := strings.TrimSpace(issue.Message)
+		if message == "" {
+			continue
+		}
+		component := strings.TrimSpace(issue.Component)
+		if component == "" {
+			parts = append(parts, message)
+			continue
+		}
+		parts = append(parts, component+": "+message)
+	}
+	if len(parts) == 0 {
+		return "runtime has unresolved blockers"
+	}
+	return strings.Join(parts, "; ")
 }
 
 func composeProjectToDeploySpec(project *compose.Project, namespace, networkName string) (deploy.DeploySpec, error) {
@@ -444,6 +474,7 @@ func deployEntriesToSDK(entries []deploy.PlanEntry) ([]types.DeployPlanEntry, er
 			ContainerName:  entry.ContainerName,
 			SpecJSON:       string(specJSON),
 			CurrentRowJSON: currentRowJSON,
+			ReasonCode:     entry.ReasonCode.String(),
 			Reason:         entry.Reason,
 		})
 	}

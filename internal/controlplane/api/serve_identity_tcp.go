@@ -15,6 +15,7 @@ import (
 	"ployz/pkg/sdk/types"
 
 	grpcproxy "github.com/siderolabs/grpc-proxy/proxy"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 )
 
@@ -51,6 +52,7 @@ func (s *Server) watchIdentityAndServeTCP(ctx context.Context, director *proxymo
 	}
 
 	tcpSrv := grpc.NewServer(
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 		grpc.ForceServerCodecV2(grpcproxy.Codec()),
 		grpc.UnknownServiceHandler(grpcproxy.TransparentHandler(director.Director)),
 	)

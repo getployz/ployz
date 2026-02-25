@@ -29,7 +29,7 @@ func WithContainerRuntime(rt ContainerRuntime) Option {
 	return func(c *Controller) { c.containers = rt }
 }
 
-// WithCorrosionRuntime sets the corrosion container lifecycle backend.
+// WithCorrosionRuntime sets the corrosion lifecycle backend.
 func WithCorrosionRuntime(rt CorrosionRuntime) Option {
 	check.Assert(rt != nil, "WithCorrosionRuntime: runtime must not be nil")
 	return func(c *Controller) { c.corrosion = rt }
@@ -79,6 +79,7 @@ type Status struct {
 	WireGuard  bool
 	Corrosion  bool
 	DockerNet  bool
+	Phase      string
 	StatePath  string
 }
 

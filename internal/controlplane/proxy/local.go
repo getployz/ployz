@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/siderolabs/grpc-proxy/proxy"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
@@ -56,6 +57,7 @@ func (b *LocalBackend) GetConnection(ctx context.Context, _ string) (context.Con
 	b.conn, err = grpc.NewClient(
 		"unix://"+b.sockPath,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 		grpc.WithDefaultCallOptions(
 			grpc.ForceCodecV2(proxy.Codec()),
 		),

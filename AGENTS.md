@@ -42,10 +42,10 @@ cmd/ployz/            CLI (thin over pkg/sdk)
 cmd/ployzd/           daemon entrypoint
 pkg/sdk/              client SDK (workflows, daemon client, types)
 internal/network/     core types, interfaces (ports.go), pure logic, Controller
-internal/reconcile/   reconciliation loop, health tracking, interfaces (ports.go)
+internal/supervisor/  runtime supervision loop, health tracking, interfaces (ports.go)
 internal/engine/      worker pool, lifecycle orchestration
 internal/adapter/     all external system integrations:
-  adapter/corrosion/    Corrosion HTTP client + subscriptions (implements reconcile.Registry)
+  adapter/corrosion/    Corrosion HTTP client + subscriptions (implements supervisor.Registry)
   adapter/docker/       Docker Runtime (implements network.ContainerRuntime)
   adapter/wireguard/    WireGuard device management (implements PeerApplier)
   adapter/sqlite/       local state persistence (load/save)
@@ -104,7 +104,7 @@ Non-negotiable architectural rules for all changes. These exist to keep the code
 Define interfaces where they're used, not where they're implemented. Place them in a `ports.go` file next to the consumer.
 
 ```go
-// internal/reconcile/ports.go — the consumer defines what it needs
+// internal/supervisor/ports.go — the consumer defines what it needs
 type Registry interface {
     ListMachineRows(ctx context.Context) ([]network.MachineRow, error)
     SubscribeMachines(ctx context.Context) ([]network.MachineRow, <-chan network.MachineChange, error)
@@ -115,7 +115,7 @@ The adapter (`adapter/corrosion/`) implements it without importing the consumer.
 
 ### 2. No side effects in core logic
 
-Decision logic in `network/`, `reconcile/`, and `engine/` must be pure: data in, data out. No Docker calls, no HTTP, no WireGuard, no disk I/O, no `time.Now()`. Orchestration code in these packages may call injected interfaces (ports), but never imports adapter packages directly.
+Decision logic in `network/`, `supervisor/`, and `engine/` must be pure: data in, data out. No Docker calls, no HTTP, no WireGuard, no disk I/O, no `time.Now()`. Orchestration code in these packages may call injected interfaces (ports), but never imports adapter packages directly.
 
 All external dependencies are abstracted behind interfaces in `network/ports.go`:
 - `Clock` — time source (inject `RealClock{}` in production, fake in tests)
@@ -158,7 +158,7 @@ Struct definitions, validation, and serialization helpers live in core packages 
 
 ### 6. Every core change has success + failure test
 
-Any change to `network/`, `reconcile/`, or `engine/` must include at least one success-path and one failure-path test. Use table-driven tests for pure logic and focused orchestration coverage.
+Any change to `network/`, `supervisor/`, or `engine/` must include at least one success-path and one failure-path test. Use table-driven tests for pure logic and focused orchestration coverage.
 
 ### 7. Error wrapping with context
 

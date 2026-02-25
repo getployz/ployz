@@ -8,8 +8,9 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"time"
 
-	corrosion "ployz/internal/adapter/corrosion/container"
+	corrosion "ployz/internal/adapter/corrosion/process"
 	"ployz/internal/adapter/docker"
 	"ployz/internal/adapter/sqlite"
 	"ployz/internal/adapter/wireguard"
@@ -25,7 +26,7 @@ func NewController(opts ...network.Option) (*network.Controller, error) {
 	}
 	defaults := []network.Option{
 		network.WithContainerRuntime(rt),
-		network.WithCorrosionRuntime(corrosion.NewAdapter(rt)),
+		network.WithCorrosionRuntime(corrosion.NewAdapter()),
 		network.WithStatusProber(DarwinStatusProber{RT: rt}),
 		network.WithStateStore(sqlite.NetworkStateStore{}),
 		network.WithClock(network.RealClock{}),
@@ -92,15 +93,20 @@ type DarwinStatusProber struct {
 
 func (p DarwinStatusProber) ProbeInfra(ctx context.Context, state *network.State) (wg bool, dockerNet bool, corr bool, err error) {
 	wg = wireguard.IsActive()
+	if state == nil {
+		return wg, false, false, nil
+	}
 
 	if err := p.RT.WaitReady(ctx); err == nil {
-		if nw, nErr := p.RT.NetworkInspect(ctx, state.DockerNetwork); nErr == nil && nw.Exists {
-			dockerNet = true
-		}
-		if ctr, cErr := p.RT.ContainerInspect(ctx, state.CorrosionName); cErr == nil && ctr.Running {
-			corr = true
-		}
+		// macOS does not create/require the Linux overlay network.
+		dockerNet = true
 	}
+
+	apiAddr := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(defaults.CorrosionAPIPort(state.Network)))
+	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	corr = corrosion.APIReady(probeCtx, apiAddr, state.CorrosionAPIToken)
+	cancel()
+
 	return wg, dockerNet, corr, nil
 }
 

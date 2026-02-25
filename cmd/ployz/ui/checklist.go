@@ -5,30 +5,29 @@ import (
 	"os"
 	"sync"
 	"time"
-
-	"ployz/pkg/sdk/progress"
 )
 
 var spinFrames = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-// Checklist renders SDK progress snapshots as a terminal checklist.
+// Checklist renders telemetry snapshots as a terminal checklist.
 // Pending steps are muted, running steps show a braille spinner,
 // done steps show a checkmark, failed steps show a red x.
 type Checklist struct {
-	steps []progress.Step
-	mu    sync.Mutex
-	stop  chan struct{}
-	frame int
-	once  sync.Once
+	steps         []stepState
+	renderedLines int
+	mu            sync.Mutex
+	stop          chan struct{}
+	frame         int
+	once          sync.Once
 }
 
-// NewChecklist creates a Checklist ready to receive progress snapshots.
+// NewChecklist creates a Checklist ready to receive telemetry snapshots.
 func NewChecklist() *Checklist {
 	return &Checklist{stop: make(chan struct{})}
 }
 
-// OnProgress is a progress.Reporter that updates the checklist on each snapshot.
-func (c *Checklist) OnProgress(snap progress.Snapshot) {
+// OnSnapshot updates the checklist on each telemetry snapshot.
+func (c *Checklist) OnSnapshot(snap stepSnapshot) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -40,6 +39,7 @@ func (c *Checklist) OnProgress(snap progress.Snapshot) {
 			icon, label := c.stepStyle(s)
 			fmt.Fprintf(os.Stderr, "%s%s %s\n", stepIndent(s), icon, label)
 		}
+		c.renderedLines = len(c.steps)
 		go c.spin()
 		return
 	}
@@ -71,11 +71,12 @@ func (c *Checklist) spin() {
 
 // redraw reprints all step lines in place. Caller must hold c.mu.
 func (c *Checklist) redraw() {
-	n := len(c.steps)
-	if n == 0 {
+	if len(c.steps) == 0 && c.renderedLines == 0 {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "\033[%dA", n)
+	if c.renderedLines > 0 {
+		fmt.Fprintf(os.Stderr, "\033[%dA", c.renderedLines)
+	}
 	for _, s := range c.steps {
 		icon, label := c.stepStyle(s)
 		line := fmt.Sprintf("%s%s %s", stepIndent(s), icon, label)
@@ -84,22 +85,26 @@ func (c *Checklist) redraw() {
 		}
 		fmt.Fprintf(os.Stderr, "\r%s\033[K\n", line)
 	}
+	for i := len(c.steps); i < c.renderedLines; i++ {
+		fmt.Fprint(os.Stderr, "\r\033[K\n")
+	}
+	c.renderedLines = len(c.steps)
 }
 
-func (c *Checklist) stepStyle(s progress.Step) (icon, label string) {
+func (c *Checklist) stepStyle(s stepState) (icon, label string) {
 	switch s.Status {
-	case progress.Running:
+	case stepRunning:
 		return Accent(spinFrames[c.frame]), s.Title
-	case progress.Done:
+	case stepDone:
 		return Success("\u2713"), s.Title
-	case progress.Failed:
+	case stepFailed:
 		return ErrorStyle.Render("\u2717"), ErrorStyle.Render(s.Title)
 	default:
 		return Muted("\u25cf"), Muted(s.Title)
 	}
 }
 
-func stepIndent(s progress.Step) string {
+func stepIndent(s stepState) string {
 	if s.ParentID != "" {
 		return "    "
 	}

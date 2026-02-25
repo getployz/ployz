@@ -11,6 +11,7 @@ func AssertTierState(actual []ContainerState, expected []ContainerResult) *Deplo
 	}
 	return &DeployError{
 		Phase:   DeployErrorPhasePostcondition,
+		Reason:  DeployErrorReasonPostconditionMismatch,
 		Message: "container state mismatch",
 		Tiers: []TierResult{{
 			Name:       "postcondition",

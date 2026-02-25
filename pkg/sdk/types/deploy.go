@@ -29,6 +29,7 @@ type DeployPlanEntry struct {
 	ContainerName  string `json:"container_name"`
 	SpecJSON       string `json:"spec_json"`
 	CurrentRowJSON string `json:"current_row_json,omitempty"`
+	ReasonCode     string `json:"reason_code,omitempty"`
 	Reason         string `json:"reason,omitempty"`
 }
 
@@ -53,6 +54,7 @@ type DeployResult struct {
 	Tiers        []DeployTierResult `json:"tiers,omitempty"`
 	ErrorMessage string             `json:"error_message,omitempty"`
 	ErrorPhase   string             `json:"error_phase,omitempty"`
+	ErrorReason  string             `json:"error_reason,omitempty"`
 	ErrorTier    int                `json:"error_tier,omitempty"`
 }
 

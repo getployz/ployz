@@ -1,16 +1,19 @@
 package initcmd
 
 import (
+	"context"
 	"fmt"
+	"strings"
 	"time"
 
-	"ployz/cmd/ployz/agent"
 	"ployz/cmd/ployz/cmdutil"
 	"ployz/cmd/ployz/ui"
+	"ployz/pkg/sdk/agent"
 	"ployz/pkg/sdk/client"
 	"ployz/pkg/sdk/cluster"
 	"ployz/pkg/sdk/defaults"
 	sdkmachine "ployz/pkg/sdk/machine"
+	"ployz/pkg/sdk/telemetry"
 	"ployz/pkg/sdk/types"
 
 	"github.com/spf13/cobra"
@@ -44,34 +47,93 @@ func Cmd() *cobra.Command {
 			}
 			socketPath := client.DefaultSocketPath()
 
-			cfg, err := cluster.LoadDefault()
+			telemetryOut := ui.NewTelemetryOutput()
+			defer telemetryOut.Close()
+			tracer := telemetryOut.Tracer("ployz/cmd/init")
+
+			planSteps := []telemetry.PlannedStep{
+				{ID: "validate", Title: "validating cluster setup"},
+				{ID: "ensure_agent", Title: "ensuring local agent"},
+				{ID: "connect_daemon", Title: "connecting to daemon"},
+				{ID: "apply", Title: "applying network spec"},
+				{ID: "apply/rpc", ParentID: "apply", Title: "submitting spec to daemon"},
+				{ID: "apply/status", ParentID: "apply", Title: "probing daemon status"},
+				{ID: "apply/diagnose", ParentID: "apply", Title: "evaluating runtime state machine"},
+				{ID: "persist", Title: "saving cluster config"},
+			}
+			if len(args) >= 2 {
+				planSteps = append(planSteps, telemetry.PlannedStep{ID: "add_node", Title: "adding remote node"})
+			}
+
+			op, err := telemetry.EmitPlan(cmd.Context(), tracer, "cluster.init", telemetry.Plan{Steps: planSteps})
 			if err != nil {
 				return err
 			}
-			if _, exists := cfg.Cluster(name); exists && !force {
-				return fmt.Errorf("cluster %q already exists (use --force to re-create)", name)
+			var opErr error
+			defer func() {
+				op.End(opErr)
+			}()
+
+			var cfg *cluster.Config
+			opErr = op.RunStep(op.Context(), "validate", func(context.Context) error {
+				loaded, loadErr := cluster.LoadDefault()
+				if loadErr != nil {
+					return loadErr
+				}
+				cfg = loaded
+				if _, exists := cfg.Cluster(name); exists && !force {
+					return fmt.Errorf("cluster %q already exists (use --force to re-create)", name)
+				}
+				return nil
+			})
+			if opErr != nil {
+				return opErr
 			}
 
 			fmt.Println(ui.InfoMsg("initializing cluster %s", ui.Accent(name)))
 
-			if !cmdutil.IsDaemonRunning(cmd.Context(), socketPath) {
+			opErr = op.RunStep(op.Context(), "ensure_agent", func(stepCtx context.Context) error {
+				if cmdutil.IsDaemonRunning(stepCtx, socketPath) {
+					return nil
+				}
+
 				platform := agent.NewPlatformService()
-				if err := platform.Install(cmd.Context(), agent.InstallConfig{
+				if installErr := platform.Install(stepCtx, agent.InstallConfig{
 					DataRoot:   dataRoot,
 					SocketPath: socketPath,
-				}); err != nil {
-					return fmt.Errorf("install agent: %w", err)
+				}); installErr != nil {
+					return fmt.Errorf("install agent: %w", installErr)
 				}
-				if err := agent.WaitReady(cmd.Context(), socketPath, 15*time.Second); err != nil {
-					return fmt.Errorf("agent not ready: %w", err)
+				if readyErr := agent.WaitReady(stepCtx, socketPath, 15*time.Second); readyErr != nil {
+					return fmt.Errorf("agent not ready: %w", readyErr)
 				}
+				return nil
+			})
+			if opErr != nil {
+				return opErr
 			}
 
-			api, err := client.NewUnix(socketPath)
-			if err != nil {
-				return fmt.Errorf("connect to daemon: %w", err)
+			var (
+				api *client.Client
+				svc *sdkmachine.Service
+			)
+			opErr = op.RunStep(op.Context(), "connect_daemon", func(context.Context) error {
+				conn, connectErr := client.NewUnix(socketPath)
+				if connectErr != nil {
+					return fmt.Errorf("connect to daemon: %w", connectErr)
+				}
+				api = conn
+				svc = sdkmachine.New(conn)
+				return nil
+			})
+			if opErr != nil {
+				return opErr
 			}
-			svc := sdkmachine.New(api)
+			defer func() {
+				if api != nil {
+					_ = api.Close()
+				}
+			}()
 
 			spec := types.NetworkSpec{
 				Network:           name,
@@ -81,9 +143,76 @@ func Cmd() *cobra.Command {
 				AdvertiseEndpoint: advertiseEndpoint,
 				HelperImage:       helperImage,
 			}
-			out, err := svc.Start(cmd.Context(), spec)
-			if err != nil {
-				return fmt.Errorf("apply network spec: %w", err)
+
+			var (
+				out       types.ApplyResult
+				diag      sdkmachine.Diagnosis
+				haveDiag  bool
+				warnings  []string
+				probeWait = 20 * time.Second
+			)
+
+			opErr = op.RunStep(op.Context(), "apply", func(applyCtx context.Context) error {
+				if err := op.RunStep(applyCtx, "apply/rpc", func(stepCtx context.Context) error {
+					applied, applyErr := svc.Start(stepCtx, spec)
+					if applyErr != nil {
+						return fmt.Errorf("apply network spec: %w", applyErr)
+					}
+					out = applied
+					return nil
+				}); err != nil {
+					return err
+				}
+
+				if err := op.RunStep(applyCtx, "apply/status", func(stepCtx context.Context) error {
+					probeCtx, cancel := context.WithTimeout(stepCtx, probeWait)
+					defer cancel()
+					ticker := time.NewTicker(500 * time.Millisecond)
+					defer ticker.Stop()
+
+					for {
+						current, diagErr := svc.Diagnose(probeCtx)
+						if diagErr == nil {
+							diag = current
+							haveDiag = true
+							if diag.ControlPlaneReady() {
+								return nil
+							}
+						}
+
+						select {
+						case <-probeCtx.Done():
+							if !haveDiag {
+								return fmt.Errorf("runtime diagnose probe timed out before daemon returned status")
+							}
+							warnings = append(warnings, "status probe timed out before runtime reached ready phase")
+							return nil
+						case <-ticker.C:
+						}
+					}
+				}); err != nil {
+					return err
+				}
+
+				if err := op.RunStep(applyCtx, "apply/diagnose", func(context.Context) error {
+					for _, blocker := range diag.ControlPlaneBlockers {
+						warnings = append(warnings, blocker.Component+": "+blocker.Message)
+					}
+					for _, warning := range diag.Warnings {
+						warnings = append(warnings, warning.Component+": "+warning.Message)
+					}
+					if len(diag.ControlPlaneBlockers) > 0 {
+						return fmt.Errorf("runtime not ready after apply: %s", strings.Join(warnings, "; "))
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
+
+				return nil
+			})
+			if opErr != nil {
+				return opErr
 			}
 
 			entry := cluster.Cluster{
@@ -93,10 +222,16 @@ func Cmd() *cobra.Command {
 					DataRoot: dataRoot,
 				}},
 			}
-			cfg.Upsert(name, entry)
-			cfg.CurrentCluster = name
-			if err := cfg.Save(); err != nil {
-				fmt.Println(ui.WarnMsg("could not save cluster config: %v", err))
+			opErr = op.RunStep(op.Context(), "persist", func(context.Context) error {
+				cfg.Upsert(name, entry)
+				cfg.CurrentCluster = name
+				if saveErr := cfg.Save(); saveErr != nil {
+					return fmt.Errorf("save cluster config: %w", saveErr)
+				}
+				return nil
+			})
+			if opErr != nil {
+				return opErr
 			}
 
 			kvs := []ui.Pair{
@@ -110,37 +245,55 @@ func Cmd() *cobra.Command {
 			}
 			fmt.Println(ui.SuccessMsg("cluster %s created", ui.Accent(name)))
 			fmt.Print(ui.KeyValues("  ", kvs...))
+			for _, warning := range warnings {
+				fmt.Println(ui.WarnMsg("%s", warning))
+			}
 
 			if len(args) >= 2 {
 				target := args[1]
 				fmt.Println(ui.InfoMsg("adding node %s", ui.Accent(target)))
-				result, err := svc.AddMachine(cmd.Context(), sdkmachine.AddOptions{
-					Network:  name,
-					DataRoot: dataRoot,
-					Target:   target,
-					SSHPort:  sshPort,
-					SSHKey:   sshKey,
-					WGPort:   wgPort,
+				opErr = op.RunStep(op.Context(), "add_node", func(stepCtx context.Context) error {
+					result, addErr := svc.AddMachine(stepCtx, sdkmachine.AddOptions{
+						Network:  name,
+						DataRoot: dataRoot,
+						Target:   target,
+						SSHPort:  sshPort,
+						SSHKey:   sshKey,
+						WGPort:   wgPort,
+						Tracer:   tracer,
+					})
+					if addErr != nil {
+						return fmt.Errorf("add node: %w", addErr)
+					}
+
+					cfg, addLoadErr := cluster.LoadDefault()
+					if addLoadErr != nil {
+						return fmt.Errorf("load cluster config: %w", addLoadErr)
+					}
+					entry, ok := cfg.Cluster(name)
+					if !ok {
+						return fmt.Errorf("cluster %q not found in config", name)
+					}
+					entry.Connections = append(entry.Connections, cluster.Connection{
+						SSH:        target,
+						SSHKeyFile: sshKey,
+					})
+					cfg.Upsert(name, entry)
+					if saveErr := cfg.Save(); saveErr != nil {
+						return fmt.Errorf("save cluster config: %w", saveErr)
+					}
+
+					fmt.Println(ui.SuccessMsg("added node %s", ui.Accent(target)))
+					fmt.Print(ui.KeyValues("  ",
+						ui.KV("endpoint", result.Machine.Endpoint),
+						ui.KV("subnet", result.Machine.Subnet),
+						ui.KV("peers", fmt.Sprintf("%d", result.Peers)),
+					))
+					return nil
 				})
-				if err != nil {
-					return fmt.Errorf("add node: %w", err)
+				if opErr != nil {
+					return opErr
 				}
-
-				cfg, _ = cluster.LoadDefault()
-				entry, _ := cfg.Cluster(name)
-				entry.Connections = append(entry.Connections, cluster.Connection{
-					SSH:        target,
-					SSHKeyFile: sshKey,
-				})
-				cfg.Upsert(name, entry)
-				_ = cfg.Save()
-
-				fmt.Println(ui.SuccessMsg("added node %s", ui.Accent(target)))
-				fmt.Print(ui.KeyValues("  ",
-					ui.KV("endpoint", result.Machine.Endpoint),
-					ui.KV("subnet", result.Machine.Subnet),
-					ui.KV("peers", fmt.Sprintf("%d", result.Peers)),
-				))
 			}
 
 			return nil

@@ -8,6 +8,7 @@ import (
 
 	"ployz/cmd/ployz/cmdutil"
 	"ployz/cmd/ployz/ui"
+	sdkmachine "ployz/pkg/sdk/machine"
 	"ployz/pkg/sdk/types"
 
 	"github.com/spf13/cobra"
@@ -62,6 +63,7 @@ func runCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			svc := sdkmachine.New(api)
 
 			name := strings.TrimSpace(args[0])
 			if name == "" {
@@ -74,6 +76,15 @@ func runCmd() *cobra.Command {
 			composeSpec, err := buildServiceComposeSpec(name, image, replicas, ports, envVars)
 			if err != nil {
 				return err
+			}
+
+			diag, err := svc.Diagnose(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("diagnose runtime: %w", err)
+			}
+			if !diag.ServiceReady() {
+				cmdutil.PrintStatusIssues(os.Stderr, diag.ServiceBlockers, cmdutil.IssueLevelBlocker)
+				return fmt.Errorf("runtime is not ready for service deployment; run `ployz node doctor`")
 			}
 
 			if dryRun {

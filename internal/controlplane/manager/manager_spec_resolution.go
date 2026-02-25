@@ -21,7 +21,7 @@ func (m *Manager) resolveSpec() (types.NetworkSpec, error) {
 		return types.NetworkSpec{}, err
 	}
 	if !ok {
-		return types.NetworkSpec{}, fmt.Errorf("network is not configured")
+		return types.NetworkSpec{}, fmt.Errorf("%w", ErrNetworkNotConfigured)
 	}
 	m.normalizeSpec(&persisted.Spec)
 	if persisted.Spec.Network == "" {

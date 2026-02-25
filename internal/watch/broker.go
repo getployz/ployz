@@ -98,18 +98,22 @@ func (b *Broker) startMachines() error {
 		return nil
 	}
 	topicCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 	b.machines.cancel = cancel
-	b.machines.done = make(chan struct{})
+	b.machines.done = done
 	b.machines.mu.Unlock()
 
 	snapshot, changes, err := b.source.SubscribeMachines(topicCtx)
 	if err != nil {
 		cancel()
+		close(done)
 		b.machines.mu.Lock()
-		b.machines.cancel = nil
-		b.machines.done = nil
-		b.machines.snapshot = nil
-		b.machines.replay = nil
+		if b.machines.done == done {
+			b.machines.cancel = nil
+			b.machines.done = nil
+			b.machines.snapshot = nil
+			b.machines.replay = nil
+		}
 		b.machines.mu.Unlock()
 		return err
 	}
@@ -118,7 +122,7 @@ func (b *Broker) startMachines() error {
 	b.machines.snapshot = append([]network.MachineRow(nil), snapshot...)
 	b.machines.mu.Unlock()
 
-	go b.runMachines(topicCtx, changes)
+	go b.runMachines(topicCtx, changes, done)
 	slog.Debug("watch topic started", "topic", TopicMachines)
 	return nil
 }
@@ -130,18 +134,22 @@ func (b *Broker) startHeartbeats() error {
 		return nil
 	}
 	topicCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 	b.hearts.cancel = cancel
-	b.hearts.done = make(chan struct{})
+	b.hearts.done = done
 	b.hearts.mu.Unlock()
 
 	snapshot, changes, err := b.source.SubscribeHeartbeats(topicCtx)
 	if err != nil {
 		cancel()
+		close(done)
 		b.hearts.mu.Lock()
-		b.hearts.cancel = nil
-		b.hearts.done = nil
-		b.hearts.snapshot = nil
-		b.hearts.replay = nil
+		if b.hearts.done == done {
+			b.hearts.cancel = nil
+			b.hearts.done = nil
+			b.hearts.snapshot = nil
+			b.hearts.replay = nil
+		}
 		b.hearts.mu.Unlock()
 		return err
 	}
@@ -150,13 +158,13 @@ func (b *Broker) startHeartbeats() error {
 	b.hearts.snapshot = append([]network.HeartbeatRow(nil), snapshot...)
 	b.hearts.mu.Unlock()
 
-	go b.runHeartbeats(topicCtx, changes)
+	go b.runHeartbeats(topicCtx, changes, done)
 	slog.Debug("watch topic started", "topic", TopicHeartbeats)
 	return nil
 }
 
-func (b *Broker) runMachines(ctx context.Context, changes <-chan network.MachineChange) {
-	defer b.finishMachines()
+func (b *Broker) runMachines(ctx context.Context, changes <-chan network.MachineChange, done chan struct{}) {
+	defer close(done)
 	for {
 		select {
 		case <-ctx.Done():
@@ -185,8 +193,8 @@ func (b *Broker) runMachines(ctx context.Context, changes <-chan network.Machine
 	}
 }
 
-func (b *Broker) runHeartbeats(ctx context.Context, changes <-chan network.HeartbeatChange) {
-	defer b.finishHeartbeats()
+func (b *Broker) runHeartbeats(ctx context.Context, changes <-chan network.HeartbeatChange, done chan struct{}) {
+	defer close(done)
 	for {
 		select {
 		case <-ctx.Done():
@@ -346,23 +354,6 @@ func (b *Broker) stopHeartbeatsIfIdle() {
 	}
 	slog.Debug("watch topic stopped", "topic", TopicHeartbeats)
 }
-
-func (b *Broker) finishMachines() {
-	b.machines.mu.Lock()
-	if b.machines.done != nil {
-		close(b.machines.done)
-	}
-	b.machines.mu.Unlock()
-}
-
-func (b *Broker) finishHeartbeats() {
-	b.hearts.mu.Lock()
-	if b.hearts.done != nil {
-		close(b.hearts.done)
-	}
-	b.hearts.mu.Unlock()
-}
-
 func appendMachineReplay(replay []network.MachineChange, change network.MachineChange) []network.MachineChange {
 	if len(replay) < watchReplayBufferCapacity {
 		return append(replay, change)

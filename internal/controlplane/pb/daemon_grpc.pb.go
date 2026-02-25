@@ -26,7 +26,6 @@ const (
 	Daemon_ListMachines_FullMethodName       = "/ployz.Daemon/ListMachines"
 	Daemon_UpsertMachine_FullMethodName      = "/ployz.Daemon/UpsertMachine"
 	Daemon_RemoveMachine_FullMethodName      = "/ployz.Daemon/RemoveMachine"
-	Daemon_TriggerReconcile_FullMethodName   = "/ployz.Daemon/TriggerReconcile"
 	Daemon_GetPeerHealth_FullMethodName      = "/ployz.Daemon/GetPeerHealth"
 	Daemon_PlanDeploy_FullMethodName         = "/ployz.Daemon/PlanDeploy"
 	Daemon_ApplyDeploy_FullMethodName        = "/ployz.Daemon/ApplyDeploy"
@@ -46,7 +45,6 @@ type DaemonClient interface {
 	ListMachines(ctx context.Context, in *ListMachinesRequest, opts ...grpc.CallOption) (*ListMachinesResponse, error)
 	UpsertMachine(ctx context.Context, in *UpsertMachineRequest, opts ...grpc.CallOption) (*UpsertMachineResponse, error)
 	RemoveMachine(ctx context.Context, in *RemoveMachineRequest, opts ...grpc.CallOption) (*RemoveMachineResponse, error)
-	TriggerReconcile(ctx context.Context, in *TriggerReconcileRequest, opts ...grpc.CallOption) (*TriggerReconcileResponse, error)
 	GetPeerHealth(ctx context.Context, in *GetPeerHealthRequest, opts ...grpc.CallOption) (*GetPeerHealthResponse, error)
 	// PlanDeploy parses compose YAML and returns a dry-run execution plan.
 	PlanDeploy(ctx context.Context, in *PlanDeployRequest, opts ...grpc.CallOption) (*PlanDeployResponse, error)
@@ -138,16 +136,6 @@ func (c *daemonClient) RemoveMachine(ctx context.Context, in *RemoveMachineReque
 	return out, nil
 }
 
-func (c *daemonClient) TriggerReconcile(ctx context.Context, in *TriggerReconcileRequest, opts ...grpc.CallOption) (*TriggerReconcileResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(TriggerReconcileResponse)
-	err := c.cc.Invoke(ctx, Daemon_TriggerReconcile_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *daemonClient) GetPeerHealth(ctx context.Context, in *GetPeerHealthRequest, opts ...grpc.CallOption) (*GetPeerHealthResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetPeerHealthResponse)
@@ -228,7 +216,6 @@ type DaemonServer interface {
 	ListMachines(context.Context, *ListMachinesRequest) (*ListMachinesResponse, error)
 	UpsertMachine(context.Context, *UpsertMachineRequest) (*UpsertMachineResponse, error)
 	RemoveMachine(context.Context, *RemoveMachineRequest) (*RemoveMachineResponse, error)
-	TriggerReconcile(context.Context, *TriggerReconcileRequest) (*TriggerReconcileResponse, error)
 	GetPeerHealth(context.Context, *GetPeerHealthRequest) (*GetPeerHealthResponse, error)
 	// PlanDeploy parses compose YAML and returns a dry-run execution plan.
 	PlanDeploy(context.Context, *PlanDeployRequest) (*PlanDeployResponse, error)
@@ -270,9 +257,6 @@ func (UnimplementedDaemonServer) UpsertMachine(context.Context, *UpsertMachineRe
 }
 func (UnimplementedDaemonServer) RemoveMachine(context.Context, *RemoveMachineRequest) (*RemoveMachineResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RemoveMachine not implemented")
-}
-func (UnimplementedDaemonServer) TriggerReconcile(context.Context, *TriggerReconcileRequest) (*TriggerReconcileResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method TriggerReconcile not implemented")
 }
 func (UnimplementedDaemonServer) GetPeerHealth(context.Context, *GetPeerHealthRequest) (*GetPeerHealthResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetPeerHealth not implemented")
@@ -439,24 +423,6 @@ func _Daemon_RemoveMachine_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
-func _Daemon_TriggerReconcile_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(TriggerReconcileRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(DaemonServer).TriggerReconcile(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: Daemon_TriggerReconcile_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(DaemonServer).TriggerReconcile(ctx, req.(*TriggerReconcileRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _Daemon_GetPeerHealth_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetPeerHealthRequest)
 	if err := dec(in); err != nil {
@@ -592,10 +558,6 @@ var Daemon_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RemoveMachine",
 			Handler:    _Daemon_RemoveMachine_Handler,
-		},
-		{
-			MethodName: "TriggerReconcile",
-			Handler:    _Daemon_TriggerReconcile_Handler,
 		},
 		{
 			MethodName: "GetPeerHealth",

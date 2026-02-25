@@ -65,11 +65,17 @@ func (s *Server) ApplyDeploy(req *pb.ApplyDeployRequest, stream pb.Daemon_ApplyD
 					if result.Status == "" {
 						result.Status = deploy.DeployFailed.String()
 					}
+					if result.ErrorReason == "" {
+						result.ErrorReason = deploy.DeployErrorReasonUnknown.String()
+					}
 
 					var deployErr *deploy.DeployError
 					if errors.As(applyErr, &deployErr) {
 						if result.ErrorPhase == "" {
 							result.ErrorPhase = deployErr.Phase.String()
+						}
+						if result.ErrorReason == "" || result.ErrorReason == deploy.DeployErrorReasonUnknown.String() {
+							result.ErrorReason = deployErr.Reason.String()
 						}
 						if result.ErrorTier == 0 {
 							result.ErrorTier = deployErr.Tier
@@ -227,6 +233,7 @@ func deployPlanEntriesToProto(entries []types.DeployPlanEntry) []*pb.PlanEntryPr
 			ContainerName:  entry.ContainerName,
 			SpecJson:       entry.SpecJSON,
 			CurrentRowJson: entry.CurrentRowJSON,
+			ReasonCode:     entry.ReasonCode,
 			Reason:         entry.Reason,
 		})
 	}
@@ -251,6 +258,7 @@ func deployResultToProto(result types.DeployResult) *pb.DeployResultProto {
 		Status:       result.Status,
 		ErrorMessage: result.ErrorMessage,
 		ErrorPhase:   result.ErrorPhase,
+		ErrorReason:  result.ErrorReason,
 		ErrorTier:    int32(result.ErrorTier),
 		Tiers:        make([]*pb.TierResultProto, 0, len(result.Tiers)),
 	}

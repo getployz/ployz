@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"ployz/internal/controlplane/manager"
 	"ployz/internal/network"
 
 	"google.golang.org/grpc/codes"
@@ -21,8 +22,11 @@ func toGRPCError(err error) error {
 	if errors.Is(err, os.ErrNotExist) || errors.Is(err, network.ErrNotInitialized) {
 		return status.Error(codes.NotFound, err.Error())
 	}
-	if errors.Is(err, network.ErrConflict) {
+	if errors.Is(err, manager.ErrNetworkNotConfigured) || errors.Is(err, manager.ErrRuntimeNotReadyForServices) {
 		return status.Error(codes.FailedPrecondition, err.Error())
+	}
+	if errors.Is(err, network.ErrConflict) {
+		return status.Error(codes.Aborted, err.Error())
 	}
 	var valErr *network.ValidationError
 	if errors.As(err, &valErr) {

@@ -57,7 +57,7 @@ func Start(ctx context.Context, cli *client.Client, cfg RuntimeConfig) error {
 	phase = phase.Transition(ContainerCreating)
 	if _, err := cli.ContainerCreate(ctx, containerConfig(cfg), hostConfig(cfg), nil, nil, cfg.Name); err != nil {
 		if !errdefs.IsNotFound(err) {
-			return fmt.Errorf("create corrosion container: %w", err)
+			return wrapCorrosionDataPermissionError("create corrosion container", cfg.DataDir, err)
 		}
 		phase = phase.Transition(ContainerPullingImage)
 		log.Info("pulling image", "image", cfg.Image)
@@ -69,7 +69,7 @@ func Start(ctx context.Context, cli *client.Client, cfg RuntimeConfig) error {
 		_ = pull.Close()                 // best-effort cleanup
 		phase = phase.Transition(ContainerCreating)
 		if _, err = cli.ContainerCreate(ctx, containerConfig(cfg), hostConfig(cfg), nil, nil, cfg.Name); err != nil {
-			return fmt.Errorf("create corrosion container after pull: %w", err)
+			return wrapCorrosionDataPermissionError("create corrosion container after pull", cfg.DataDir, err)
 		}
 	}
 
@@ -79,7 +79,7 @@ func Start(ctx context.Context, cli *client.Client, cfg RuntimeConfig) error {
 	}
 	log.Info("container started")
 	phase = phase.Transition(ContainerWaitingReady)
-	if err := waitReady(ctx, cli, cfg.Name, cfg.APIAddr, cfg.APIToken, 30*time.Second); err != nil {
+	if err := waitReady(ctx, cli, cfg.Name, cfg.APIAddr, cfg.APIToken, cfg.DataDir, 30*time.Second); err != nil {
 		return err
 	}
 	log.Info("api ready", "api_addr", cfg.APIAddr.String())
@@ -116,6 +116,25 @@ func isRemovalInProgress(err error) bool {
 	return strings.Contains(msg, "already in progress") ||
 		strings.Contains(msg, "already being removed") ||
 		strings.Contains(msg, "marked for removal")
+}
+
+func wrapCorrosionDataPermissionError(action, dataDir string, err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "permission denied") {
+		return fmt.Errorf("%s: %w (corrosion data dir %s may be inaccessible to docker backend; run `sudo ployz configure`)", action, err, dataDir)
+	}
+	return fmt.Errorf("%s: %w", action, err)
+}
+
+func corrosionDataPermissionHint(logs, dataDir string) string {
+	lower := strings.ToLower(logs)
+	if strings.Contains(lower, "unable to open database file") || strings.Contains(lower, "error code 14") || strings.Contains(lower, "permission denied") {
+		return fmt.Sprintf("corrosion data directory %s is not writable; run `sudo ployz configure` to reconcile permissions", dataDir)
+	}
+	return ""
 }
 
 func waitContainerRemoved(ctx context.Context, cli *client.Client, name string, timeout time.Duration) error {
@@ -209,7 +228,7 @@ func netipAddrFromInterfaceAddr(addr net.Addr) (netip.Addr, bool) {
 	return parsed.Unmap(), true
 }
 
-func waitReady(ctx context.Context, cli *client.Client, name string, apiAddr netip.AddrPort, apiToken string, timeout time.Duration) error {
+func waitReady(ctx context.Context, cli *client.Client, name string, apiAddr netip.AddrPort, apiToken, dataDir string, timeout time.Duration) error {
 	log := slog.With("component", "corrosion-runtime", "container", name, "api_addr", apiAddr.String())
 	httpCli := &http.Client{Timeout: 2 * time.Second}
 	body := []byte(`{"query":"SELECT 1","params":[]}`)
@@ -232,6 +251,9 @@ func waitReady(ctx context.Context, cli *client.Client, name string, apiAddr net
 			}
 			if logs := containerLogs(ctx, cli, name, 10); logs != "" {
 				msg += "\n" + logs
+				if hint := corrosionDataPermissionHint(logs, dataDir); hint != "" {
+					msg += "\n" + hint
+				}
 			}
 			log.Warn("readiness timeout", "detail", msg)
 			return fmt.Errorf("%s", msg)
@@ -246,6 +268,9 @@ func waitReady(ctx context.Context, cli *client.Client, name string, apiAddr net
 				msg := fmt.Sprintf("corrosion container exited (status %d)", info.State.ExitCode)
 				if logs := containerLogs(ctx, cli, name, 20); logs != "" {
 					msg += "\n" + logs
+					if hint := corrosionDataPermissionHint(logs, dataDir); hint != "" {
+						msg += "\n" + hint
+					}
 				}
 				log.Error("container exited before readiness", "exit_code", info.State.ExitCode)
 				return fmt.Errorf("%s", msg)

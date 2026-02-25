@@ -2,58 +2,58 @@ package engine
 
 import "ployz/internal/check"
 
-type WorkerPhase uint8
+type SupervisorPhase uint8
 
 const (
-	WorkerAbsent WorkerPhase = iota + 1
-	WorkerStarting
-	WorkerRunning
-	WorkerDegraded
-	WorkerBackoff
-	WorkerGivingUp
-	WorkerStopping
+	SupervisorAbsent SupervisorPhase = iota + 1
+	SupervisorStarting
+	SupervisorRunning
+	SupervisorDegraded
+	SupervisorBackoff
+	SupervisorGivingUp
+	SupervisorStopping
 )
 
-func (p WorkerPhase) String() string {
+func (p SupervisorPhase) String() string {
 	switch p {
-	case WorkerAbsent:
+	case SupervisorAbsent:
 		return "absent"
-	case WorkerStarting:
+	case SupervisorStarting:
 		return "starting"
-	case WorkerRunning:
+	case SupervisorRunning:
 		return "running"
-	case WorkerDegraded:
+	case SupervisorDegraded:
 		return "degraded"
-	case WorkerBackoff:
+	case SupervisorBackoff:
 		return "backoff"
-	case WorkerGivingUp:
+	case SupervisorGivingUp:
 		return "giving_up"
-	case WorkerStopping:
+	case SupervisorStopping:
 		return "stopping"
 	default:
 		return "unknown"
 	}
 }
 
-func (p WorkerPhase) Transition(to WorkerPhase) WorkerPhase {
+func (p SupervisorPhase) Transition(to SupervisorPhase) SupervisorPhase {
 	ok := false
 	switch p {
-	case WorkerAbsent:
-		ok = to == WorkerStarting
-	case WorkerStarting:
-		ok = to == WorkerRunning || to == WorkerBackoff || to == WorkerStopping
-	case WorkerRunning:
-		ok = to == WorkerDegraded || to == WorkerStopping
-	case WorkerDegraded:
-		ok = to == WorkerRunning || to == WorkerBackoff || to == WorkerStopping
-	case WorkerBackoff:
-		ok = to == WorkerStarting || to == WorkerGivingUp || to == WorkerStopping
-	case WorkerGivingUp:
+	case SupervisorAbsent:
+		ok = to == SupervisorStarting
+	case SupervisorStarting:
+		ok = to == SupervisorRunning || to == SupervisorBackoff || to == SupervisorStopping
+	case SupervisorRunning:
+		ok = to == SupervisorDegraded || to == SupervisorStopping
+	case SupervisorDegraded:
+		ok = to == SupervisorRunning || to == SupervisorBackoff || to == SupervisorStopping
+	case SupervisorBackoff:
+		ok = to == SupervisorStarting || to == SupervisorGivingUp || to == SupervisorStopping
+	case SupervisorGivingUp:
 		ok = false
-	case WorkerStopping:
-		ok = to == WorkerAbsent
+	case SupervisorStopping:
+		ok = to == SupervisorAbsent
 	}
-	check.Assertf(ok, "worker phase transition: %s -> %s", p, to)
+	check.Assertf(ok, "supervisor phase transition: %s -> %s", p, to)
 	if !ok {
 		return p
 	}

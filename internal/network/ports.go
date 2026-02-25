@@ -135,8 +135,8 @@ type Mount struct {
 	ReadOnly bool
 }
 
-// CorrosionRuntime manages the Corrosion container lifecycle.
-// Production: adapter/corrosion/container.Adapter
+// CorrosionRuntime manages the Corrosion lifecycle backend.
+// Production: adapter/corrosion/process.Adapter (darwin), adapter/corrosion/container.Adapter (linux)
 // Testing: fake that records calls
 type CorrosionRuntime interface {
 	WriteConfig(cfg CorrosionConfig) error

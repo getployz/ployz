@@ -29,33 +29,50 @@ func addCmd() *cobra.Command {
 				return err
 			}
 
+			diag, err := svc.Diagnose(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("diagnose runtime: %w", err)
+			}
+			if !diag.ControlPlaneReady() {
+				cmdutil.PrintStatusIssues(os.Stderr, diag.ControlPlaneBlockers, cmdutil.IssueLevelBlocker)
+				return fmt.Errorf("control plane is not ready; run `ployz node doctor`")
+			}
+
 			fmt.Fprintln(os.Stderr, ui.InfoMsg("adding node %s", ui.Accent(args[0])))
 
-			ck := ui.NewChecklist()
+			telemetryOut := ui.NewTelemetryOutput()
+			defer telemetryOut.Close()
 
 			result, err := svc.AddMachine(cmd.Context(), sdkmachine.AddOptions{
-				Network:    cl.Network,
-				Target:     args[0],
-				Endpoint:   endpoint,
-				SSHPort:    sshPort,
-				SSHKey:     sshKey,
-				WGPort:     wgPort,
-				OnProgress: ck.OnProgress,
+				Network:  cl.Network,
+				Target:   args[0],
+				Endpoint: endpoint,
+				SSHPort:  sshPort,
+				SSHKey:   sshKey,
+				WGPort:   wgPort,
+				Tracer:   telemetryOut.Tracer("ployz/sdk/machine"),
 			})
-			ck.Close()
 			if err != nil {
 				return err
 			}
 
 			// Persist the SSH connection to config.
-			cfg, _ := cluster.LoadDefault()
-			entry, _ := cfg.Cluster(clusterName)
+			cfg, err := cluster.LoadDefault()
+			if err != nil {
+				return fmt.Errorf("load cluster config: %w", err)
+			}
+			entry, ok := cfg.Cluster(clusterName)
+			if !ok {
+				return fmt.Errorf("cluster %q not found in config", clusterName)
+			}
 			entry.Connections = append(entry.Connections, cluster.Connection{
 				SSH:        args[0],
 				SSHKeyFile: sshKey,
 			})
 			cfg.Upsert(clusterName, entry)
-			_ = cfg.Save()
+			if err := cfg.Save(); err != nil {
+				return fmt.Errorf("save cluster config: %w", err)
+			}
 
 			fmt.Println(ui.SuccessMsg("added node %s to cluster %s", ui.Accent(args[0]), ui.Accent(clusterName)))
 			fmt.Print(ui.KeyValues("  ",

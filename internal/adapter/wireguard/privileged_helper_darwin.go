@@ -17,17 +17,34 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"golang.zx2c4.com/wireguard/tun"
 )
 
-func RunPrivilegedHelper(ctx context.Context, socketPath, token string) error {
-	path := strings.TrimSpace(socketPath)
-	tok := strings.TrimSpace(token)
+const (
+	helperProvisionRetryWait = 200 * time.Millisecond
+	helperProvisionLogEvery  = 25
+)
+
+func RunPrivilegedHelper(ctx context.Context, cfg HelperConfig) error {
+	path := strings.TrimSpace(cfg.SocketPath)
+	tok := strings.TrimSpace(cfg.Token)
+	tunSocketPath := strings.TrimSpace(cfg.TUNSocketPath)
 	if path == "" {
 		return fmt.Errorf("privileged helper socket path is required")
 	}
 	if tok == "" {
 		return fmt.Errorf("privileged helper token is required")
 	}
+	if tunSocketPath == "" {
+		return fmt.Errorf("tun socket path is required")
+	}
+	if cfg.MTU <= 0 {
+		return fmt.Errorf("invalid tun mtu %d", cfg.MTU)
+	}
+	cfg.SocketPath = path
+	cfg.Token = tok
+	cfg.TUNSocketPath = tunSocketPath
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create privileged helper socket dir: %w", err)
@@ -68,6 +85,12 @@ func RunPrivilegedHelper(ctx context.Context, socketPath, token string) error {
 		log.Info("privileged helper stopped")
 	}()
 
+	stopProvisioner, err := startTUNProvisionLoop(ctx, cfg, log)
+	if err != nil {
+		return err
+	}
+	defer stopProvisioner()
+
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -81,6 +104,83 @@ func RunPrivilegedHelper(ctx context.Context, socketPath, token string) error {
 		}
 		go servePrivilegedConn(ctx, conn, tok)
 	}
+}
+
+func startTUNProvisionLoop(ctx context.Context, cfg HelperConfig, log *slog.Logger) (func(), error) {
+	tunDev, tunFile, tunName, err := newProvisionedTUN(cfg.MTU)
+	if err != nil {
+		return nil, err
+	}
+	log.Info("privileged helper tun ready", "iface", tunName, "mtu", cfg.MTU)
+
+	provisionCtx, cancel := context.WithCancel(ctx)
+	go provisionTUNUntilReady(provisionCtx, cfg, tunFile, tunName, log)
+
+	return func() {
+		cancel()
+		_ = tunDev.Close()
+	}, nil
+}
+
+func newProvisionedTUN(mtu int) (tun.Device, *os.File, string, error) {
+	tunDev, err := tun.CreateTUN("utun", mtu)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("create tun device: %w", err)
+	}
+
+	tunName, err := tunDev.Name()
+	if err != nil {
+		_ = tunDev.Close()
+		return nil, nil, "", fmt.Errorf("get tun interface name: %w", err)
+	}
+
+	fileBacked, ok := tunDev.(interface{ File() *os.File })
+	if !ok {
+		_ = tunDev.Close()
+		return nil, nil, "", fmt.Errorf("tun implementation does not expose file descriptor: %T", tunDev)
+	}
+	tunFile := fileBacked.File()
+	if tunFile == nil {
+		_ = tunDev.Close()
+		return nil, nil, "", fmt.Errorf("tun file descriptor is nil")
+	}
+
+	return tunDev, tunFile, tunName, nil
+}
+
+func provisionTUNUntilReady(ctx context.Context, cfg HelperConfig, tunFile *os.File, tunName string, log *slog.Logger) {
+	attempts := 0
+	for {
+		err := SendTUN(cfg.TUNSocketPath, tunFile, tunName, cfg.MTU, cfg.SocketPath, cfg.Token)
+		if err == nil {
+			log.Info("provisioned tun descriptor", "iface", tunName, "socket", cfg.TUNSocketPath)
+			return
+		}
+
+		attempts++
+		if !shouldRetryTUNProvision(err) {
+			log.Warn("send tun descriptor failed", "err", err)
+		} else if attempts == 1 || attempts%helperProvisionLogEvery == 0 {
+			log.Debug("waiting for daemon tun listener", "socket", cfg.TUNSocketPath, "err", err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(helperProvisionRetryWait):
+		}
+	}
+}
+
+func shouldRetryTUNProvision(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, os.ErrNotExist) ||
+		errors.Is(err, syscall.ENOENT) ||
+		errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE)
 }
 
 var (

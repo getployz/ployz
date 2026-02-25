@@ -52,8 +52,10 @@ homebrew_casks:
       post:
         install: |
           if OS.mac?
-            %w[ployz ployzd].each do |b|
-              system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/#{b}"]
+            %w[ployz ployzd corrosion].each do |b|
+              path = "#{staged_path}/#{b}"
+              next unless File.exist?(path)
+              system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", path]
             end
           end
 

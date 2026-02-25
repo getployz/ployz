@@ -5,7 +5,7 @@ import (
 	"net/netip"
 
 	"ployz/internal/network"
-	"ployz/internal/reconcile"
+	"ployz/internal/supervisor"
 )
 
 // NetworkController manages a network's imperative lifecycle (start/stop).
@@ -24,9 +24,9 @@ type NetworkControllerFactory func() (NetworkController, error)
 // PeerReconcilerFactory creates peer reconcilers for continuous reconciliation.
 // Production: returns *network.Controller
 // Testing: returns fake reconciler
-type PeerReconcilerFactory func() (reconcile.PeerReconciler, error)
+type PeerReconcilerFactory func() (supervisor.PeerReconciler, error)
 
 // RegistryFactory creates a Registry from Corrosion connection details.
 // Production: func(addr, token) { return corrosion.NewStore(addr, token) }
 // Testing: returns in-memory fake
-type RegistryFactory func(addr netip.AddrPort, token string) reconcile.Registry
+type RegistryFactory func(addr netip.AddrPort, token string) supervisor.Registry

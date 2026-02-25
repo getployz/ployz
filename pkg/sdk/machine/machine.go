@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"os/exec"
 	"runtime"
 	"strings"
 	"time"
@@ -16,28 +15,30 @@ import (
 	"ployz/pkg/ipam"
 	"ployz/pkg/sdk/client"
 	"ployz/pkg/sdk/defaults"
-	"ployz/pkg/sdk/progress"
+	"ployz/pkg/sdk/telemetry"
 	"ployz/pkg/sdk/types"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
 	remoteDaemonSocketPath = "/var/run/ployzd.sock"
 	remoteLinuxDataRoot    = "/var/lib/ployz/networks"
-	// addWaitTimeout is 45s: allows time for remote install, WireGuard handshake, and Corrosion gossip convergence.
+	// addWaitTimeout is 45s: allows time for remote install, WireGuard handshake, and supervisor sync.
 	addWaitTimeout = 45 * time.Second
-	// convergencePollInterval is 500ms: fast enough to detect convergence quickly, slow enough to avoid hammering the API.
-	convergencePollInterval = 500 * time.Millisecond
-	// persistentKeepaliveIntervalSec is 25: keeps NAT mappings alive; standard WireGuard recommendation.
-	persistentKeepaliveIntervalSec = 25
+	// supervisorSyncPollInterval is 500ms: fast enough to detect sync quickly, slow enough to avoid hammering the API.
+	supervisorSyncPollInterval = 500 * time.Millisecond
 )
 
 type Service struct {
-	api client.API
+	api    client.API
+	tracer trace.Tracer
 }
 
 func New(api client.API) *Service {
 	check.Assert(api != nil, "machine.New: API client must not be nil")
-	return &Service{api: api}
+	return &Service{api: api, tracer: otel.Tracer("ployz/sdk/machine")}
 }
 
 func (s *Service) Start(ctx context.Context, spec types.NetworkSpec) (types.ApplyResult, error) {
@@ -65,74 +66,7 @@ func (s *Service) GetPeerHealth(ctx context.Context) ([]types.PeerHealthResponse
 }
 
 func (s *Service) RemoveMachine(ctx context.Context, machineID string) error {
-	if err := s.api.RemoveMachine(ctx, machineID); err != nil {
-		return err
-	}
-	return s.api.TriggerReconcile(ctx)
-}
-
-func (s *Service) HostAccessEndpoint(ctx context.Context) (netip.AddrPort, error) {
-	id, err := s.identityForHostAccess(ctx)
-	if err != nil {
-		return netip.AddrPort{}, err
-	}
-	helperIP, err := helperIPv4(ctx, id.HelperName)
-	if err != nil {
-		return netip.AddrPort{}, err
-	}
-	wgPort := id.WGPort
-	if wgPort == 0 {
-		wgPort = defaults.WGPort(defaults.NormalizeNetwork("default"))
-	}
-	return netip.AddrPortFrom(helperIP, uint16(wgPort)), nil
-}
-
-func (s *Service) AddHostAccessPeer(ctx context.Context, hostPublicKey string, hostIP netip.Addr) error {
-	id, err := s.identityForHostAccess(ctx)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(id.WGInterface) == "" {
-		return fmt.Errorf("missing wireguard interface in daemon identity")
-	}
-	if !hostIP.IsValid() {
-		return fmt.Errorf("host ip is required")
-	}
-
-	hostCIDR := hostIP.String() + "/32"
-	script := fmt.Sprintf(
-		`set -eu; wg set %q peer %q persistent-keepalive %d allowed-ips %q; ip route replace %q dev %q`,
-		id.WGInterface,
-		hostPublicKey,
-		persistentKeepaliveIntervalSec,
-		hostCIDR,
-		hostCIDR,
-		id.WGInterface,
-	)
-	return runDockerExecScript(ctx, id.HelperName, script)
-}
-
-func (s *Service) RemoveHostAccessPeer(ctx context.Context, hostPublicKey string, hostIP netip.Addr) error {
-	id, err := s.identityForHostAccess(ctx)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(id.WGInterface) == "" {
-		return nil
-	}
-
-	hostCIDR := ""
-	if hostIP.IsValid() {
-		hostCIDR = hostIP.String() + "/32"
-	}
-	script := fmt.Sprintf(
-		`set -eu; wg set %q peer %q remove || true; ip route del %q dev %q >/dev/null 2>&1 || true`,
-		id.WGInterface,
-		hostPublicKey,
-		hostCIDR,
-		id.WGInterface,
-	)
-	return runDockerExecScript(ctx, id.HelperName, script)
+	return s.api.RemoveMachine(ctx, machineID)
 }
 
 type AddOptions struct {
@@ -150,7 +84,7 @@ type AddOptions struct {
 	// returned API implements io.Closer, it is closed on cleanup.
 	ConnectFunc func(ctx context.Context) (client.API, error)
 
-	OnProgress progress.Reporter
+	Tracer trace.Tracer
 }
 
 type AddResult struct {
@@ -159,12 +93,39 @@ type AddResult struct {
 }
 
 func (s *Service) AddMachine(ctx context.Context, opts AddOptions) (AddResult, error) {
-	op, err := newAddOp(ctx, s.api, opts)
+	tracer := opts.Tracer
+	if tracer == nil {
+		tracer = s.tracer
+	}
+	op, err := telemetry.EmitPlan(ctx, tracer, "machine.add", telemetry.Plan{Steps: []telemetry.PlannedStep{
+		{ID: "install", Title: "installing ployz on remote"},
+		{ID: "connect", Title: "connecting to remote daemon"},
+		{ID: "configure", Title: "configuring network"},
+		{ID: "register", Title: "registering node in cluster"},
+		{ID: "sync", Title: "waiting for supervisor sync"},
+	}})
 	if err != nil {
 		return AddResult{}, err
 	}
-	defer op.close()
-	return op.run()
+
+	var opErr error
+	defer func() {
+		op.End(opErr)
+	}()
+
+	add, err := newAddOp(op.Context(), s.api, opts, op)
+	if err != nil {
+		opErr = err
+		return AddResult{}, err
+	}
+	defer add.close()
+
+	result, err := add.run()
+	opErr = err
+	if err != nil {
+		return AddResult{}, err
+	}
+	return result, nil
 }
 
 // addOp holds shared state for the AddMachine workflow steps.
@@ -185,10 +146,12 @@ type addOp struct {
 	remoteAPI     client.API
 	remoteCloser  func()
 	entry         types.MachineEntry
-	tracker       *progress.Tracker
+	op            *telemetry.Operation
 }
 
-func newAddOp(ctx context.Context, api client.API, opts AddOptions) (*addOp, error) {
+func newAddOp(ctx context.Context, api client.API, opts AddOptions, op *telemetry.Operation) (*addOp, error) {
+	check.Assert(op != nil, "machine.newAddOp: operation must not be nil")
+
 	network := defaults.NormalizeNetwork(opts.Network)
 	target := strings.TrimSpace(opts.Target)
 	if target == "" && opts.ConnectFunc == nil {
@@ -255,13 +218,7 @@ func newAddOp(ctx context.Context, api client.API, opts AddOptions) (*addOp, err
 		bootstrap:     collectBootstrapAddrs(localMachines, localMgmtIP, gossipPort),
 		localIdentity: localIdentity,
 		localMachines: localMachines,
-		tracker: progress.New(opts.OnProgress,
-			progress.StepConfig{ID: "install", Title: "installing ployz on remote", DoneTitle: "installed ployz on remote", FailedTitle: "failed to install ployz on remote"},
-			progress.StepConfig{ID: "connect", Title: "connecting to remote daemon", DoneTitle: "connected to remote daemon", FailedTitle: "failed to connect to remote daemon"},
-			progress.StepConfig{ID: "configure", Title: "configuring network", DoneTitle: "configured network", FailedTitle: "failed to configure network"},
-			progress.StepConfig{ID: "register", Title: "registering node in cluster", DoneTitle: "registered node in cluster", FailedTitle: "failed to register node in cluster"},
-			progress.StepConfig{ID: "converge", Title: "waiting for cluster convergence", DoneTitle: "cluster converged", FailedTitle: "cluster convergence failed"},
-		),
+		op:            op,
 	}, nil
 }
 
@@ -274,16 +231,17 @@ func (a *addOp) close() {
 func (a *addOp) run() (AddResult, error) {
 	steps := []struct {
 		id string
-		fn func() error
+		fn func(context.Context) error
 	}{
 		{"install", a.install},
 		{"connect", a.connect},
 		{"configure", a.configure},
 		{"register", a.register},
-		{"converge", a.converge},
+		{"sync", a.syncSupervisor},
 	}
 	for _, s := range steps {
-		if err := a.tracker.Do(s.id, s.fn); err != nil {
+		err := a.op.RunStep(a.ctx, s.id, s.fn)
+		if err != nil {
 			a.phase = a.phase.Transition(AddFailed)
 			return AddResult{}, err
 		}
@@ -292,9 +250,12 @@ func (a *addOp) run() (AddResult, error) {
 
 	machines, err := a.api.ListMachines(a.ctx)
 	if err != nil {
+		a.phase = a.phase.Transition(AddFailed)
 		return AddResult{}, err
 	}
-	return AddResult{Machine: a.entry, Peers: len(machines)}, nil
+
+	result := AddResult{Machine: a.entry, Peers: len(machines)}
+	return result, nil
 }
 
 func (a *addOp) advancePhase(stepID string) {
@@ -306,23 +267,23 @@ func (a *addOp) advancePhase(stepID string) {
 	case "configure":
 		a.phase = a.phase.Transition(AddRegister)
 	case "register":
-		a.phase = a.phase.Transition(AddConverge)
-	case "converge":
+		a.phase = a.phase.Transition(AddSync)
+	case "sync":
 		a.phase = a.phase.Transition(AddDone)
 	}
 }
 
-func (a *addOp) install() error {
+func (a *addOp) install(ctx context.Context) error {
 	if a.opts.ConnectFunc != nil {
 		return nil // skip install when using injected connection
 	}
 	sshOpts := remote.SSHOptions{Port: a.opts.SSHPort, KeyPath: a.opts.SSHKey}
-	return remote.RunScript(a.ctx, a.target, sshOpts, remote.InstallScript(buildinfo.Version))
+	return remote.RunScript(ctx, a.target, sshOpts, remote.InstallScript(buildinfo.Version))
 }
 
-func (a *addOp) connect() error {
+func (a *addOp) connect(ctx context.Context) error {
 	if a.opts.ConnectFunc != nil {
-		api, err := a.opts.ConnectFunc(a.ctx)
+		api, err := a.opts.ConnectFunc(ctx)
 		if err != nil {
 			return fmt.Errorf("connect to remote daemon: %w", err)
 		}
@@ -345,8 +306,8 @@ func (a *addOp) connect() error {
 	return nil
 }
 
-func (a *addOp) configure() error {
-	if _, err := a.remoteAPI.ApplyNetworkSpec(a.ctx, types.NetworkSpec{
+func (a *addOp) configure(ctx context.Context) error {
+	if _, err := a.remoteAPI.ApplyNetworkSpec(ctx, types.NetworkSpec{
 		Network:           a.network,
 		DataRoot:          a.remoteRoot,
 		NetworkCIDR:       a.networkCIDR.String(),
@@ -360,7 +321,7 @@ func (a *addOp) configure() error {
 		return err
 	}
 
-	id, err := a.remoteAPI.GetIdentity(a.ctx)
+	id, err := a.remoteAPI.GetIdentity(ctx)
 	if err != nil {
 		return err
 	}
@@ -379,12 +340,12 @@ func (a *addOp) configure() error {
 	return nil
 }
 
-func (a *addOp) register() error {
-	return upsertMachineWithRetry(a.ctx, a.api, &a.entry)
+func (a *addOp) register(ctx context.Context) error {
+	return upsertMachineWithRetry(ctx, a.api, &a.entry)
 }
 
-func (a *addOp) converge() error {
-	waitCtx, cancel := context.WithTimeout(a.ctx, addWaitTimeout)
+func (a *addOp) syncSupervisor(ctx context.Context) error {
+	waitCtx, cancel := context.WithTimeout(ctx, addWaitTimeout)
 	defer cancel()
 
 	// Seed the local machine entry into the remote's Corrosion directly.
@@ -400,14 +361,8 @@ func (a *addOp) converge() error {
 		Endpoint:     strings.TrimSpace(a.localIdentity.AdvertiseEndpoint),
 	}
 	localEntry.ExpectedVersion = findExpectedVersion(a.localMachines, localEntry.ID, localEntry.Endpoint)
-	if err := upsertMachineWithRetry(a.ctx, a.remoteAPI, &localEntry); err != nil {
+	if err := upsertMachineWithRetry(ctx, a.remoteAPI, &localEntry); err != nil {
 		return fmt.Errorf("seed local machine on remote: %w", err)
-	}
-	if err := a.api.TriggerReconcile(waitCtx); err != nil {
-		return err
-	}
-	if err := a.remoteAPI.TriggerReconcile(waitCtx); err != nil {
-		return err
 	}
 	if err := waitForMachine(waitCtx, a.api, a.entry.ID, "local"); err != nil {
 		return err
@@ -416,19 +371,19 @@ func (a *addOp) converge() error {
 }
 
 func waitForMachine(ctx context.Context, api client.API, machineID, who string) error {
-	ticker := time.NewTicker(convergencePollInterval)
+	ticker := time.NewTicker(supervisorSyncPollInterval)
 	defer ticker.Stop()
 
 	machineID = strings.TrimSpace(machineID)
 	if machineID == "" {
-		return fmt.Errorf("wait for %s daemon converge: machine id is required", who)
+		return fmt.Errorf("wait for %s daemon supervisor sync: machine id is required", who)
 	}
 
 	var lastSeen int
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("wait for %s daemon converge: %w (visible machines: %d, waiting for %s)", who, ctx.Err(), lastSeen, machineID)
+			return fmt.Errorf("wait for %s daemon supervisor sync: %w (visible machines: %d, waiting for %s)", who, ctx.Err(), lastSeen, machineID)
 		case <-ticker.C:
 			machines, err := api.ListMachines(ctx)
 			if err != nil {
@@ -564,47 +519,4 @@ func remoteDataRoot(dataRoot string) string {
 		return remoteLinuxDataRoot
 	}
 	return dataRoot
-}
-
-func (s *Service) identityForHostAccess(ctx context.Context) (types.Identity, error) {
-	id, err := s.api.GetIdentity(ctx)
-	if err != nil {
-		return types.Identity{}, err
-	}
-	id.HelperName = strings.TrimSpace(id.HelperName)
-	if id.HelperName == "" {
-		id.HelperName = defaults.HelperName(defaults.NormalizeNetwork("default"))
-	}
-	return id, nil
-}
-
-func helperIPv4(ctx context.Context, helperName string) (netip.Addr, error) {
-	out, err := runDockerExecScriptOutput(ctx, helperName, `set -eu
-ip -4 -o addr show dev eth0 | awk 'NR==1 {print $4}' | cut -d/ -f1`)
-	if err != nil {
-		return netip.Addr{}, fmt.Errorf("read helper eth0 address: %w", err)
-	}
-	addr, err := netip.ParseAddr(strings.TrimSpace(out))
-	if err != nil {
-		return netip.Addr{}, fmt.Errorf("parse helper IPv4 address: %w", err)
-	}
-	return addr, nil
-}
-
-func runDockerExecScript(ctx context.Context, containerName, script string) error {
-	_, err := runDockerExecScriptOutput(ctx, containerName, script)
-	return err
-}
-
-func runDockerExecScriptOutput(ctx context.Context, containerName, script string) (string, error) {
-	cmd := exec.CommandContext(ctx, "docker", "exec", containerName, "sh", "-c", script)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			return "", fmt.Errorf("docker exec %s: %w", containerName, err)
-		}
-		return "", fmt.Errorf("docker exec %s: %w: %s", containerName, err, msg)
-	}
-	return strings.TrimSpace(string(out)), nil
 }

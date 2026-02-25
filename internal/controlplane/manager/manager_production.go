@@ -10,7 +10,7 @@ import (
 	"ployz/internal/adapter/sqlite"
 	"ployz/internal/engine"
 	"ployz/internal/network"
-	"ployz/internal/reconcile"
+	"ployz/internal/supervisor"
 	"ployz/pkg/sdk/defaults"
 	"ployz/pkg/sdk/types"
 )
@@ -70,10 +70,10 @@ func initPlatformDefaults(ctx context.Context, dataRoot string, cfg *managerCfg)
 		engine.WithControllerFactory(func() (engine.NetworkController, error) {
 			return platform.NewController(network.WithRegistryFactory(registryFactory))
 		}),
-		engine.WithPeerReconcilerFactory(func() (reconcile.PeerReconciler, error) {
+		engine.WithPeerReconcilerFactory(func() (supervisor.PeerReconciler, error) {
 			return platform.NewController(network.WithRegistryFactory(registryFactory))
 		}),
-		engine.WithRegistryFactory(func(addr netip.AddrPort, token string) reconcile.Registry {
+		engine.WithRegistryFactory(func(addr netip.AddrPort, token string) supervisor.Registry {
 			return corrosion.NewStore(addr, token)
 		}),
 		engine.WithStateStore(netStateStore),

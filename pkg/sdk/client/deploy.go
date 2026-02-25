@@ -145,6 +145,7 @@ func deployEntriesFromProto(entries []*pb.PlanEntryProto) []types.DeployPlanEntr
 			ContainerName:  entry.GetContainerName(),
 			SpecJSON:       entry.GetSpecJson(),
 			CurrentRowJSON: entry.GetCurrentRowJson(),
+			ReasonCode:     entry.GetReasonCode(),
 			Reason:         entry.GetReason(),
 		})
 	}
@@ -188,6 +189,7 @@ func deployResultFromProto(r *pb.DeployResultProto) types.DeployResult {
 		Status:       r.Status,
 		ErrorMessage: r.ErrorMessage,
 		ErrorPhase:   r.ErrorPhase,
+		ErrorReason:  r.ErrorReason,
 		ErrorTier:    int(r.ErrorTier),
 		Tiers:        make([]types.DeployTierResult, 0, len(r.Tiers)),
 	}

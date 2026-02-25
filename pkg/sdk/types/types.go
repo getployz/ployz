@@ -28,7 +28,7 @@ type ApplyResult struct {
 	CorrosionAPIAddr        string `json:"corrosion_api_addr"`
 	CorrosionGossipAddrPort string `json:"corrosion_gossip_addr"`
 	DockerNetwork           string `json:"docker_network"`
-	ConvergenceRunning      bool   `json:"convergence_running"`
+	SupervisorRunning       bool   `json:"supervisor_running"`
 }
 
 type ClockHealth struct {
@@ -37,15 +37,33 @@ type ClockHealth struct {
 	NTPError    string  `json:"ntp_error,omitempty"`
 }
 
+// StateNode is a normalized runtime state-machine node.
+type StateNode struct {
+	Component     string      `json:"component"`
+	Phase         string      `json:"phase"`
+	Required      bool        `json:"required"`
+	Healthy       bool        `json:"healthy"`
+	LastErrorCode string      `json:"last_error_code,omitempty"`
+	LastError     string      `json:"last_error,omitempty"`
+	Hint          string      `json:"hint,omitempty"`
+	Children      []StateNode `json:"children,omitempty"`
+}
+
 type NetworkStatus struct {
-	Configured    bool        `json:"configured"`
-	Running       bool        `json:"running"`
-	WireGuard     bool        `json:"wireguard"`
-	Corrosion     bool        `json:"corrosion"`
-	DockerNet     bool        `json:"docker"`
-	StatePath     string      `json:"state_path"`
-	WorkerRunning bool        `json:"worker_running"`
-	ClockHealth   ClockHealth `json:"clock_health"`
+	Configured        bool        `json:"configured"`
+	Running           bool        `json:"running"`
+	WireGuard         bool        `json:"wireguard"`
+	Corrosion         bool        `json:"corrosion"`
+	DockerNet         bool        `json:"docker"`
+	StatePath         string      `json:"state_path"`
+	SupervisorRunning bool        `json:"supervisor_running"`
+	ClockHealth       ClockHealth `json:"clock_health"`
+	NetworkPhase      string      `json:"network_phase,omitempty"`
+	SupervisorPhase   string      `json:"supervisor_phase,omitempty"`
+	SupervisorError   string      `json:"supervisor_error,omitempty"`
+	ClockPhase        string      `json:"clock_phase,omitempty"`
+	DockerRequired    bool        `json:"docker_required"`
+	RuntimeTree       StateNode   `json:"runtime_tree,omitempty"`
 }
 
 type Identity struct {

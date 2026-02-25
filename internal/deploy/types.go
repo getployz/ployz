@@ -146,6 +146,7 @@ type PlanEntry struct {
 	ContainerName string
 	Spec          ServiceSpec
 	CurrentRow    *ContainerRow
+	ReasonCode    PlanReasonCode
 	Reason        string
 }
 
@@ -184,6 +185,7 @@ type ContainerResult struct {
 type DeployError struct {
 	Namespace string
 	Phase     DeployErrorPhase
+	Reason    DeployErrorReason
 	Tier      int
 	TierName  string
 	Tiers     []TierResult
@@ -194,7 +196,7 @@ func (e *DeployError) Error() string {
 	if e == nil {
 		return "<nil>"
 	}
-	return fmt.Sprintf("deploy %q failed at %s (tier %d %q): %s", e.Namespace, e.Phase, e.Tier, e.TierName, e.Message)
+	return fmt.Sprintf("deploy %q failed at %s/%s (tier %d %q): %s", e.Namespace, e.Phase, e.Reason, e.Tier, e.TierName, e.Message)
 }
 
 type ProgressEvent struct {

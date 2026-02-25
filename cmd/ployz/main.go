@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -9,7 +10,6 @@ import (
 	configurecmd "ployz/cmd/ployz/configure"
 	"ployz/cmd/ployz/daemon"
 	devcmd "ployz/cmd/ployz/dev"
-	"ployz/cmd/ployz/host"
 	"ployz/cmd/ployz/initcmd"
 	"ployz/cmd/ployz/node"
 	"ployz/cmd/ployz/service"
@@ -17,9 +17,17 @@ import (
 	"ployz/internal/logging"
 
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 func main() {
+	tp := sdktrace.NewTracerProvider()
+	otel.SetTracerProvider(tp)
+	defer func() {
+		_ = tp.Shutdown(context.Background())
+	}()
+
 	var debug bool
 	if err := logging.Configure(logging.LevelWarn); err != nil {
 		_, _ = os.Stderr.WriteString("configure logger: " + err.Error() + "\n")
@@ -46,7 +54,6 @@ func main() {
 	root.AddCommand(configurecmd.Cmd())
 	root.AddCommand(node.Cmd())
 	root.AddCommand(cluster.Cmd())
-	root.AddCommand(host.Cmd())
 	root.AddCommand(service.Cmd())
 	root.AddCommand(agent.Cmd())
 	root.AddCommand(devcmd.Cmd())

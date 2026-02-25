@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -14,9 +15,17 @@ import (
 	"ployz/pkg/sdk/defaults"
 
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 func main() {
+	tp := sdktrace.NewTracerProvider()
+	otel.SetTracerProvider(tp)
+	defer func() {
+		_ = tp.Shutdown(context.Background())
+	}()
+
 	if err := logging.Configure(logging.LevelInfo); err != nil {
 		_, _ = os.Stderr.WriteString("configure logger: " + err.Error() + "\n")
 		os.Exit(1)

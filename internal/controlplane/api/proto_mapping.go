@@ -36,25 +36,51 @@ func applyResultToProto(r types.ApplyResult) *pb.ApplyResult {
 		CorrosionApiAddr:    r.CorrosionAPIAddr,
 		CorrosionGossipAddr: r.CorrosionGossipAddrPort,
 		DockerNetwork:       r.DockerNetwork,
-		ConvergenceRunning:  r.ConvergenceRunning,
+		SupervisorRunning:   r.SupervisorRunning,
 	}
 }
 
 func statusToProto(st types.NetworkStatus) *pb.NetworkStatus {
 	return &pb.NetworkStatus{
-		Configured:    st.Configured,
-		Running:       st.Running,
-		Wireguard:     st.WireGuard,
-		Corrosion:     st.Corrosion,
-		Docker:        st.DockerNet,
-		StatePath:     st.StatePath,
-		WorkerRunning: st.WorkerRunning,
+		Configured:        st.Configured,
+		Running:           st.Running,
+		Wireguard:         st.WireGuard,
+		Corrosion:         st.Corrosion,
+		Docker:            st.DockerNet,
+		StatePath:         st.StatePath,
+		SupervisorRunning: st.SupervisorRunning,
+		NetworkPhase:      st.NetworkPhase,
+		SupervisorPhase:   st.SupervisorPhase,
+		SupervisorError:   st.SupervisorError,
+		ClockPhase:        st.ClockPhase,
+		DockerRequired:    st.DockerRequired,
+		RuntimeTree:       stateNodeToProto(st.RuntimeTree),
 		ClockHealth: &pb.ClockHealth{
 			NtpOffsetMs: st.ClockHealth.NTPOffsetMs,
 			NtpHealthy:  st.ClockHealth.NTPHealthy,
 			NtpError:    st.ClockHealth.NTPError,
 		},
 	}
+}
+
+func stateNodeToProto(node types.StateNode) *pb.StateNode {
+	out := &pb.StateNode{
+		Component:     node.Component,
+		Phase:         node.Phase,
+		Required:      node.Required,
+		Healthy:       node.Healthy,
+		LastErrorCode: node.LastErrorCode,
+		LastError:     node.LastError,
+		Hint:          node.Hint,
+	}
+	if len(node.Children) == 0 {
+		return out
+	}
+	out.Children = make([]*pb.StateNode, len(node.Children))
+	for i, child := range node.Children {
+		out.Children[i] = stateNodeToProto(child)
+	}
+	return out
 }
 
 func identityToProto(id types.Identity) *pb.Identity {

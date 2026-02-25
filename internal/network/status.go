@@ -22,6 +22,7 @@ func (c *Controller) Status(ctx context.Context, in Config) (Status, error) {
 	}
 	out.Configured = true
 	out.Running = s.Phase == NetworkRunning
+	out.Phase = s.Phase.String()
 
 	wg, dockerNet, corr, probeErr := c.statusProber.ProbeInfra(ctx, s)
 	if probeErr != nil {

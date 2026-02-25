@@ -222,6 +222,7 @@ func checkOwnership(
 		return &DeployError{
 			Namespace: plan.Namespace,
 			Phase:     DeployErrorPhaseOwnership,
+			Reason:    DeployErrorReasonOwnershipCheckFailed,
 			Tier:      tier,
 			TierName:  tierName,
 			Message:   err.Error(),
@@ -263,6 +264,7 @@ func prePullTier(
 		if err := rt.ImagePull(ctx, image); err != nil {
 			return &DeployError{
 				Phase:   DeployErrorPhasePrePull,
+				Reason:  DeployErrorReasonImagePullFailed,
 				Tier:    tierIdx,
 				Message: fmt.Sprintf("pull image %q: %v", image, err),
 			}
@@ -723,6 +725,7 @@ func assertPostcondition(
 		return nil, &DeployError{
 			Namespace: plan.Namespace,
 			Phase:     DeployErrorPhasePostcondition,
+			Reason:    DeployErrorReasonPostconditionReadFailed,
 			Tier:      tierIdx,
 			TierName:  tierDisplayName(tier, tierIdx),
 			Message:   fmt.Sprintf("read machine state: %v", err),
@@ -737,6 +740,7 @@ func assertPostcondition(
 	return rows, &DeployError{
 		Namespace: plan.Namespace,
 		Phase:     DeployErrorPhasePostcondition,
+		Reason:    DeployErrorReasonPostconditionMismatch,
 		Tier:      tierIdx,
 		TierName:  tierDisplayName(tier, tierIdx),
 		Message:   "container state mismatch",
@@ -848,6 +852,13 @@ func decorateDeployError(err error, phase DeployErrorPhase, namespace string, ti
 		if !out.Phase.IsValid() {
 			out.Phase = phase
 		}
+		reason := inferDeployErrorReason(err, out.Phase)
+		if !reason.IsValid() {
+			reason = defaultDeployErrorReasonForPhase(out.Phase)
+		}
+		if !out.Reason.IsValid() {
+			out.Reason = reason
+		}
 		if out.TierName == "" {
 			out.Tier = tier
 			out.TierName = tierName
@@ -857,14 +868,26 @@ func decorateDeployError(err error, phase DeployErrorPhase, namespace string, ti
 		}
 		return &out
 	}
+	reason := inferDeployErrorReason(err, phase)
+	if !reason.IsValid() {
+		reason = defaultDeployErrorReasonForPhase(phase)
+	}
 	return &DeployError{
 		Namespace: namespace,
 		Phase:     phase,
+		Reason:    reason,
 		Tier:      tier,
 		TierName:  tierName,
 		Tiers:     cloneTierResults(tiers),
 		Message:   err.Error(),
 	}
+}
+
+func inferDeployErrorReason(err error, phase DeployErrorPhase) DeployErrorReason {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return DeployErrorReasonContextCanceled
+	}
+	return defaultDeployErrorReasonForPhase(phase)
 }
 
 func cloneTierResults(in []TierResult) []TierResult {

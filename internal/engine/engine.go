@@ -8,23 +8,23 @@ import (
 	"time"
 
 	"ployz/internal/check"
+	"ployz/internal/health/freshness"
+	"ployz/internal/health/ntp"
+	"ployz/internal/health/ping"
 	"ployz/internal/network"
-	"ployz/internal/reconcile"
-	"ployz/internal/signal/freshness"
-	"ployz/internal/signal/ntp"
-	"ployz/internal/signal/ping"
+	"ployz/internal/supervisor"
 	"ployz/pkg/sdk/defaults"
 	"ployz/pkg/sdk/types"
 )
 
 const (
-	// workerRetryDelay is 2s: short enough for quick recovery, long enough to avoid tight spin on persistent failures.
-	workerRetryDelay = 2 * time.Second
-	// workerMaxRetryDelay is 60s: caps exponential backoff to avoid excessive wait.
-	workerMaxRetryDelay = 60 * time.Second
-	// workerMaxConsecutiveFailures is 100: give up after sustained failure (~15 min at cap).
-	workerMaxConsecutiveFailures = 100
-	// stopNetworkTimeout is 30s: maximum time to wait for a worker goroutine to exit.
+	// supervisorRetryDelay is 2s: short enough for quick recovery, long enough to avoid tight spin on persistent failures.
+	supervisorRetryDelay = 2 * time.Second
+	// supervisorMaxRetryDelay is 60s: caps exponential backoff to avoid excessive wait.
+	supervisorMaxRetryDelay = 60 * time.Second
+	// supervisorMaxConsecutiveFailures is 100: give up after sustained failure (~15 min at cap).
+	supervisorMaxConsecutiveFailures = 100
+	// stopNetworkTimeout is 30s: maximum time to wait for a supervisor goroutine to exit.
 	stopNetworkTimeout = 30 * time.Second
 )
 
@@ -35,7 +35,7 @@ type NetworkHealth struct {
 
 type Engine struct {
 	mu            sync.Mutex
-	worker        *workerState
+	supervisor    *supervisorState
 	rootCtx       context.Context
 	newController NetworkControllerFactory
 	newReconciler PeerReconcilerFactory
@@ -102,20 +102,20 @@ func (e *Engine) Start(ctx context.Context, spec types.NetworkSpec) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if existing := e.worker; existing != nil {
-		log.Info("restarting worker")
+	if existing := e.supervisor; existing != nil {
+		log.Info("restarting supervisor loop")
 		existing.cancel()
 		<-existing.done
-		e.worker = nil
+		e.supervisor = nil
 	}
 
-	workerCtx, cancel := context.WithCancel(e.rootCtx)
+	supervisorCtx, cancel := context.WithCancel(e.rootCtx)
 
 	selfID := e.loadSelfID(spec)
 
 	clk := e.clockOrDefault()
 
-	ws := &workerState{
+	ss := &supervisorState{
 		cancel:    cancel,
 		done:      make(chan struct{}),
 		spec:      spec,
@@ -124,17 +124,17 @@ func (e *Engine) Start(ctx context.Context, spec types.NetworkSpec) error {
 		ping:      ping.NewTracker(),
 	}
 	if e.ntpCheckFunc != nil {
-		ws.ntp.CheckFunc = e.ntpCheckFunc
+		ss.ntp.CheckFunc = e.ntpCheckFunc
 	}
 	if e.pingDialFunc != nil {
-		ws.ping.DialFunc = e.pingDialFunc
+		ss.ping.DialFunc = e.pingDialFunc
 	}
-	e.worker = ws
-	log.Info("starting worker")
+	e.supervisor = ss
+	log.Info("starting supervisor loop")
 
 	go func() {
-		defer close(ws.done)
-		e.runWorkerLoop(workerCtx, ws, spec)
+		defer close(ss.done)
+		e.runSupervisorLoop(supervisorCtx, ss, spec)
 	}()
 
 	return nil
@@ -143,55 +143,55 @@ func (e *Engine) Start(ctx context.Context, spec types.NetworkSpec) error {
 func (e *Engine) Stop() error {
 	networkName := ""
 	e.mu.Lock()
-	if e.worker != nil {
-		networkName = defaults.NormalizeNetwork(e.worker.spec.Network)
+	if e.supervisor != nil {
+		networkName = defaults.NormalizeNetwork(e.supervisor.spec.Network)
 	}
 	e.mu.Unlock()
 	log := slog.With("component", "runtime-engine", "network", networkName)
 
 	e.mu.Lock()
-	ws := e.worker
-	if ws == nil {
+	ss := e.supervisor
+	if ss == nil {
 		e.mu.Unlock()
 		return nil
 	}
-	ws.cancel()
-	e.worker = nil
+	ss.cancel()
+	e.supervisor = nil
 	e.mu.Unlock()
 
 	select {
-	case <-ws.done:
-		log.Info("worker stopped")
+	case <-ss.done:
+		log.Info("supervisor loop stopped")
 	case <-time.After(stopNetworkTimeout):
-		log.Warn("worker stop timed out")
+		log.Warn("supervisor loop stop timed out")
 	}
 	return nil
 }
 
-func (e *Engine) Status() (phase WorkerPhase, lastErr string) {
+func (e *Engine) Status() (phase SupervisorPhase, lastErr string) {
 	e.mu.Lock()
-	ws := e.worker
+	ss := e.supervisor
 	e.mu.Unlock()
 
-	if ws == nil {
-		return WorkerAbsent, ""
+	if ss == nil {
+		return SupervisorAbsent, ""
 	}
-	return ws.status()
+	return ss.status()
 }
 
 func (e *Engine) Health() NetworkHealth {
 	e.mu.Lock()
-	ws := e.worker
+	ss := e.supervisor
 	e.mu.Unlock()
 
-	if ws == nil {
+	if ss == nil {
 		return NetworkHealth{}
 	}
 
-	peers := ws.freshness.Snapshot()
+	peers := ss.freshness.Snapshot()
 
 	// Merge ping RTTs into peer health.
-	pings := ws.ping.Snapshot()
+	pings := ss.ping.Snapshot()
 	if len(pings) > 0 && peers == nil {
 		peers = make(map[string]freshness.PeerHealth)
 	}
@@ -204,7 +204,7 @@ func (e *Engine) Health() NetworkHealth {
 
 	return NetworkHealth{
 		Peers:     peers,
-		NTPStatus: ws.ntp.Status(),
+		NTPStatus: ss.ntp.Status(),
 	}
 }
 
@@ -212,60 +212,60 @@ func (e *Engine) StopAll() {
 	_ = e.Stop()
 }
 
-type workerState struct {
+type supervisorState struct {
 	cancel    context.CancelFunc
 	done      chan struct{}
 	spec      types.NetworkSpec
 	freshness *freshness.Tracker
 	ntp       *ntp.Checker
 	ping      *ping.Tracker
-	phase     WorkerPhase
+	phase     SupervisorPhase
 	lastErr   string
 	mu        sync.RWMutex
 }
 
-func (w *workerState) setStatus(phase WorkerPhase, lastErr string) {
+func (w *supervisorState) setStatus(phase SupervisorPhase, lastErr string) {
 	w.mu.Lock()
 	if w.phase == 0 {
-		w.phase = WorkerAbsent
+		w.phase = SupervisorAbsent
 	}
 	w.phase = w.phase.Transition(phase)
 	w.lastErr = lastErr
 	w.mu.Unlock()
 }
 
-func (w *workerState) status() (WorkerPhase, string) {
+func (w *supervisorState) status() (SupervisorPhase, string) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	if w.phase == 0 {
-		return WorkerAbsent, w.lastErr
+		return SupervisorAbsent, w.lastErr
 	}
 	return w.phase, w.lastErr
 }
 
-func (e *Engine) runWorkerLoop(ctx context.Context, ws *workerState, spec types.NetworkSpec) {
+func (e *Engine) runSupervisorLoop(ctx context.Context, ss *supervisorState, spec types.NetworkSpec) {
 	networkName := defaults.NormalizeNetwork(spec.Network)
 	log := slog.With("component", "runtime-engine", "network", networkName)
-	ws.setStatus(WorkerStarting, "")
+	ss.setStatus(SupervisorStarting, "")
 
 	var consecutiveFailures int
-	retryDelay := workerRetryDelay
+	retryDelay := supervisorRetryDelay
 
 	// backoff logs the error, updates status, sleeps, and bumps the failure counter.
 	// Returns false if the context was cancelled or max failures reached.
 	backoff := func(msg string, err error) bool {
 		log.Debug(msg, "err", err)
-		ws.setStatus(WorkerBackoff, err.Error())
+		ss.setStatus(SupervisorBackoff, err.Error())
 		if !sleepWithContext(ctx, retryDelay) {
 			return false
 		}
 		consecutiveFailures++
-		if consecutiveFailures >= workerMaxConsecutiveFailures {
-			log.Error("worker giving up after too many consecutive failures", "failures", consecutiveFailures)
-			ws.setStatus(WorkerGivingUp, fmt.Sprintf("gave up after %d consecutive failures: %v", consecutiveFailures, err))
+		if consecutiveFailures >= supervisorMaxConsecutiveFailures {
+			log.Error("supervisor loop giving up after too many consecutive failures", "failures", consecutiveFailures)
+			ss.setStatus(SupervisorGivingUp, fmt.Sprintf("gave up after %d consecutive failures: %v", consecutiveFailures, err))
 			return false
 		}
-		retryDelay = min(retryDelay*2, workerMaxRetryDelay)
+		retryDelay = min(retryDelay*2, supervisorMaxRetryDelay)
 		return true
 	}
 
@@ -306,40 +306,40 @@ func (e *Engine) runWorkerLoop(ctx context.Context, ws *workerState, spec types.
 
 		// Reset failure tracking on successful setup.
 		consecutiveFailures = 0
-		retryDelay = workerRetryDelay
-		ws.setStatus(WorkerRunning, "")
-		log.Debug("runtime prepared, entering reconcile loop")
+		retryDelay = supervisorRetryDelay
+		ss.setStatus(SupervisorRunning, "")
+		log.Debug("runtime prepared, entering supervisor loop")
 
-		worker := reconcile.Worker{
+		supervisorLoop := supervisor.Supervisor{
 			Spec:           runtimeCfg,
 			Registry:       reg,
 			PeerReconciler: peerCtrl,
 			StateStore:     e.stateStore,
-			Freshness:      ws.freshness,
-			NTP:            ws.ntp,
-			Ping:           ws.ping,
+			Freshness:      ss.freshness,
+			NTP:            ss.ntp,
+			Ping:           ss.ping,
 			OnFailure: func(err error) {
 				if err == nil {
 					return
 				}
-				ws.setStatus(WorkerDegraded, err.Error())
+				ss.setStatus(SupervisorDegraded, err.Error())
 			},
 		}
 
-		err = worker.Run(ctx)
+		err = supervisorLoop.Run(ctx)
 		_ = peerCtrl.Close()
 		if ctx.Err() != nil {
-			ws.setStatus(WorkerStopping, "")
-			ws.setStatus(WorkerAbsent, "")
-			log.Debug("worker loop canceled")
+			ss.setStatus(SupervisorStopping, "")
+			ss.setStatus(SupervisorAbsent, "")
+			log.Debug("supervisor loop canceled")
 			return
 		}
 		if err != nil {
-			log.Warn("worker loop exited with error", "err", err)
-			ws.setStatus(WorkerBackoff, err.Error())
+			log.Warn("supervisor loop exited with error", "err", err)
+			ss.setStatus(SupervisorBackoff, err.Error())
 		} else {
-			log.Debug("worker loop exited cleanly")
-			ws.setStatus(WorkerBackoff, "")
+			log.Debug("supervisor loop exited cleanly")
+			ss.setStatus(SupervisorBackoff, "")
 		}
 
 		if !sleepWithContext(ctx, retryDelay) {

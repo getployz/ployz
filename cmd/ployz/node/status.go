@@ -21,32 +21,40 @@ func statusCmd() *cobra.Command {
 				return err
 			}
 
-			status, err := svc.Status(cmd.Context())
+			diag, err := svc.Diagnose(cmd.Context())
 			if err != nil {
 				return err
 			}
-
-			ntpDisplay := ui.Bool(status.ClockHealth.NTPHealthy)
-			if status.ClockHealth.NTPError != "" {
-				ntpDisplay = ui.Warn(status.ClockHealth.NTPError)
-			} else if status.ClockHealth.NTPOffsetMs != 0 {
-				ntpDisplay = fmt.Sprintf("%s (offset %.1fms)", ntpDisplay, status.ClockHealth.NTPOffsetMs)
-			}
+			status := diag.Status
 
 			fmt.Print(ui.KeyValues("",
-				ui.KV("configured", ui.Bool(status.Configured)),
-				ui.KV("running", ui.Bool(status.Running)),
-				ui.KV("wireguard", ui.Bool(status.WireGuard)),
-				ui.KV("corrosion", ui.Bool(status.Corrosion)),
-				ui.KV("docker", ui.Bool(status.DockerNet)),
-				ui.KV("convergence", ui.Bool(status.WorkerRunning)),
-				ui.KV("clock sync", ntpDisplay),
-				ui.KV("state", status.StatePath),
+				ui.KV("network phase", fallbackDash(status.NetworkPhase)),
+				ui.KV("supervisor phase", fallbackDash(status.SupervisorPhase)),
+				ui.KV("clock phase", fallbackDash(status.ClockPhase)),
+				ui.KV("service ready", ui.Bool(diag.ServiceReady())),
+				ui.KV("control plane ready", ui.Bool(diag.ControlPlaneReady())),
+				ui.KV("state", fallbackDash(status.StatePath)),
 			))
+
+			if len(diag.ControlPlaneBlockers) > 0 {
+				fmt.Println(ui.ErrorMsg("blocking issues:"))
+				cmdutil.PrintStatusIssues(cmd.OutOrStdout(), diag.ControlPlaneBlockers, cmdutil.IssueLevelBlocker)
+			}
+			if len(diag.Warnings) > 0 {
+				fmt.Println(ui.WarnMsg("warnings:"))
+				cmdutil.PrintStatusIssues(cmd.OutOrStdout(), diag.Warnings, cmdutil.IssueLevelWarning)
+			}
 			return nil
 		},
 	}
 
 	cf.Bind(cmd)
 	return cmd
+}
+
+func fallbackDash(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
 }

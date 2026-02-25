@@ -18,9 +18,9 @@ func (m *Manager) ApplyNetworkSpec(ctx context.Context, spec types.NetworkSpec) 
 	log := slog.With("component", "manager", "network", spec.Network)
 	log.Info("apply network spec requested")
 
-	// Stop the existing convergence worker before re-applying.
+	// Stop the existing supervisor loop before re-applying.
 	if stopErr := m.engine.Stop(); stopErr != nil {
-		log.Warn("failed to stop existing worker before apply", "err", stopErr)
+		log.Warn("failed to stop existing supervisor loop before apply", "err", stopErr)
 	}
 
 	// If this network already exists in persisted config, stop its currently
@@ -52,21 +52,21 @@ func (m *Manager) ApplyNetworkSpec(ctx context.Context, spec types.NetworkSpec) 
 		return types.ApplyResult{}, err
 	}
 
-	// Start the convergence worker in-process.
+	// Start the supervisor loop in-process.
 	if err := m.engine.Start(m.ctx, spec); err != nil {
-		return types.ApplyResult{}, fmt.Errorf("start convergence worker: %w", err)
+		return types.ApplyResult{}, fmt.Errorf("start supervisor loop: %w", err)
 	}
 
 	phase, _ := m.engine.Status()
-	result.ConvergenceRunning = workerPhaseRunning(phase)
-	log.Info("network apply complete", "worker_running", result.ConvergenceRunning)
+	result.SupervisorRunning = supervisorPhaseRunning(phase)
+	log.Info("network apply complete", "supervisor_running", result.SupervisorRunning)
 
 	return result, nil
 }
 
-func workerPhaseRunning(phase engine.WorkerPhase) bool {
+func supervisorPhaseRunning(phase engine.SupervisorPhase) bool {
 	switch phase {
-	case engine.WorkerStarting, engine.WorkerRunning, engine.WorkerDegraded, engine.WorkerBackoff:
+	case engine.SupervisorStarting, engine.SupervisorRunning, engine.SupervisorDegraded, engine.SupervisorBackoff:
 		return true
 	default:
 		return false
@@ -82,9 +82,9 @@ func (m *Manager) DisableNetwork(ctx context.Context, purge bool) error {
 	log := slog.With("component", "manager", "network", networkName, "purge", purge)
 	log.Info("disable requested")
 
-	// Stop the convergence worker first.
+	// Stop the supervisor loop first.
 	if stopErr := m.engine.Stop(); stopErr != nil {
-		log.Warn("failed to stop convergence worker", "err", stopErr)
+		log.Warn("failed to stop supervisor loop", "err", stopErr)
 	}
 
 	if _, err := m.ctrl.Stop(ctx, cfg, purge); err != nil {
@@ -104,35 +104,6 @@ func (m *Manager) DisableNetwork(ctx context.Context, purge bool) error {
 	}
 
 	log.Info("disable complete")
-
-	return nil
-}
-
-func (m *Manager) TriggerReconcile(ctx context.Context) error {
-	spec, cfg, err := m.resolveConfig()
-	if err != nil {
-		return err
-	}
-	networkName := spec.Network
-	log := slog.With("component", "manager", "network", networkName)
-	log.Debug("trigger reconcile requested")
-
-	// Stop and restart the worker - forces a fresh reconciliation.
-	if stopErr := m.engine.Stop(); stopErr != nil {
-		log.Warn("failed to stop worker before reconcile", "err", stopErr)
-	}
-
-	_, err = m.ctrl.Reconcile(ctx, cfg)
-	if err != nil {
-		log.Error("imperative reconcile failed", "err", err)
-		return err
-	}
-
-	// Restart convergence worker.
-	if startErr := m.engine.Start(m.ctx, spec); startErr != nil {
-		log.Warn("failed to restart convergence worker", "err", startErr)
-	}
-	log.Debug("worker restart requested")
 
 	return nil
 }

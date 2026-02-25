@@ -7,8 +7,8 @@ import (
 	"net/netip"
 	"os"
 
+	"ployz/internal/health/freshness"
 	"ployz/internal/network"
-	"ployz/internal/signal/freshness"
 	"ployz/pkg/sdk/types"
 )
 

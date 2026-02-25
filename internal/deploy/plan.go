@@ -77,11 +77,13 @@ func PlanDeploy(
 			for _, assignment := range assignments {
 				matched, ok := popCurrentRow(currentByServiceMachine, svc.Spec.Name, assignment.MachineID)
 				if !ok {
+					reasonCode, reason := createReason(svc.Spec.Name, currentCountByService, targetCountByService)
 					servicePlan.Create = append(servicePlan.Create, PlanEntry{
 						MachineID:     assignment.MachineID,
 						ContainerName: assignment.ContainerName,
 						Spec:          svc.Spec,
-						Reason:        createReason(svc.Spec.Name, currentCountByService, targetCountByService),
+						ReasonCode:    reasonCode,
+						Reason:        reason,
 					})
 					continue
 				}
@@ -94,16 +96,18 @@ func PlanDeploy(
 						ContainerName: assignment.ContainerName,
 						Spec:          svc.Spec,
 						CurrentRow:    cloneContainerRowPtr(matched),
+						ReasonCode:    PlanReasonCurrentSpecDecodeFailed,
 						Reason:        fmt.Sprintf("current spec decode failed: %v", parseErr),
 					})
 					continue
 				}
 
-				kind, reason := classifyPlannedChange(currentSpec, svc.Spec, matched.SpecJSON)
+				kind, reasonCode, reason := classifyPlannedChange(currentSpec, svc.Spec, matched.SpecJSON)
 				entry := PlanEntry{
 					MachineID:  assignment.MachineID,
 					Spec:       svc.Spec,
 					CurrentRow: cloneContainerRowPtr(matched),
+					ReasonCode: reasonCode,
 					Reason:     reason,
 				}
 				switch kind {
@@ -131,11 +135,13 @@ func PlanDeploy(
 						continue
 					}
 					usedRows[row.ID] = true
+					reasonCode, reason := removeReason(svc.Spec.Name, currentCountByService, targetCountByService)
 					servicePlan.Remove = append(servicePlan.Remove, PlanEntry{
 						MachineID:     row.MachineID,
 						ContainerName: row.ContainerName,
 						CurrentRow:    cloneContainerRowPtr(row),
-						Reason:        removeReason(svc.Spec.Name, currentCountByService, targetCountByService),
+						ReasonCode:    reasonCode,
+						Reason:        reason,
 					})
 				}
 			}
@@ -181,6 +187,7 @@ func PlanDeploy(
 					MachineID:     row.MachineID,
 					ContainerName: row.ContainerName,
 					CurrentRow:    cloneContainerRowPtr(row),
+					ReasonCode:    PlanReasonRemoveService,
 					Reason:        "service removed",
 				})
 			}
@@ -301,23 +308,23 @@ func DetectUpdateOrder(plan ServicePlan, incoming UpdateConfig) string {
 	return updateOrderStartFirst
 }
 
-func classifyPlannedChange(current, incoming ServiceSpec, rawCurrentSpecJSON string) (ChangeKind, string) {
+func classifyPlannedChange(current, incoming ServiceSpec, rawCurrentSpecJSON string) (ChangeKind, PlanReasonCode, string) {
 	kind := ClassifyChange(current, incoming)
 	switch kind {
 	case UpToDate:
 		incomingJSON, err := json.Marshal(canonicalSpec(incoming))
 		if err == nil && strings.TrimSpace(rawCurrentSpecJSON) != "" {
 			if strings.TrimSpace(rawCurrentSpecJSON) != string(incomingJSON) {
-				return NeedsSpecUpdate, "spec metadata changed"
+				return NeedsSpecUpdate, PlanReasonSpecMetadataChanged, "spec metadata changed"
 			}
 		}
-		return UpToDate, "up-to-date"
+		return UpToDate, PlanReasonUpToDate, "up-to-date"
 	case NeedsUpdate:
-		return NeedsUpdate, needsUpdateReason(current, incoming)
+		return NeedsUpdate, PlanReasonNeedsUpdate, needsUpdateReason(current, incoming)
 	case NeedsRecreate:
-		return NeedsRecreate, needsRecreateReason(current, incoming)
+		return NeedsRecreate, PlanReasonNeedsRecreate, needsRecreateReason(current, incoming)
 	default:
-		return kind, "spec changed"
+		return kind, PlanReasonUnknown, "spec changed"
 	}
 }
 
@@ -373,28 +380,28 @@ func needsRecreateReason(current, incoming ServiceSpec) string {
 	return "service spec changed"
 }
 
-func createReason(service string, currentCountByService, targetCountByService map[string]int) string {
+func createReason(service string, currentCountByService, targetCountByService map[string]int) (PlanReasonCode, string) {
 	current := currentCountByService[service]
 	target := targetCountByService[service]
 	if current == 0 {
-		return "new service"
+		return PlanReasonCreateNewService, "new service"
 	}
 	if target > current {
-		return fmt.Sprintf("scaling %d → %d: adding %d replicas", current, target, target-current)
+		return PlanReasonCreateScaleUp, fmt.Sprintf("scaling %d → %d: adding %d replicas", current, target, target-current)
 	}
-	return "new assignment"
+	return PlanReasonCreateNewAssignment, "new assignment"
 }
 
-func removeReason(service string, currentCountByService, targetCountByService map[string]int) string {
+func removeReason(service string, currentCountByService, targetCountByService map[string]int) (PlanReasonCode, string) {
 	current := currentCountByService[service]
 	target := targetCountByService[service]
 	if target == 0 {
-		return "service removed"
+		return PlanReasonRemoveService, "service removed"
 	}
 	if target < current {
-		return fmt.Sprintf("scaling %d → %d: removing %d replicas", current, target, current-target)
+		return PlanReasonRemoveScaleDown, fmt.Sprintf("scaling %d → %d: removing %d replicas", current, target, current-target)
 	}
-	return "remove stale assignment"
+	return PlanReasonRemoveStaleAssignment, "remove stale assignment"
 }
 
 func popCurrentRow(index map[string]map[string][]ContainerRow, service, machineID string) (ContainerRow, bool) {

@@ -74,13 +74,6 @@ func (s *Server) RemoveMachine(ctx context.Context, req *pb.RemoveMachineRequest
 	return &pb.RemoveMachineResponse{}, nil
 }
 
-func (s *Server) TriggerReconcile(ctx context.Context, req *pb.TriggerReconcileRequest) (*pb.TriggerReconcileResponse, error) {
-	if err := s.manager.TriggerReconcile(ctx); err != nil {
-		return nil, toGRPCError(err)
-	}
-	return &pb.TriggerReconcileResponse{}, nil
-}
-
 func (s *Server) GetPeerHealth(ctx context.Context, req *pb.GetPeerHealthRequest) (*pb.GetPeerHealthResponse, error) {
 	responses, err := s.manager.GetPeerHealth(ctx)
 	if err != nil {

@@ -1,4 +1,4 @@
-//go:build !darwin
+//go:build !darwin && !linux
 
 package wireguard
 
@@ -8,6 +8,6 @@ import (
 	"runtime"
 )
 
-func RunPrivilegedHelper(_ context.Context, _ string, _ string) error {
-	return fmt.Errorf("privileged helper is only supported on macOS (current: %s)", runtime.GOOS)
+func RunPrivilegedHelper(_ context.Context, _ HelperConfig) error {
+	return fmt.Errorf("privileged helper is only supported on linux and macOS (current: %s)", runtime.GOOS)
 }

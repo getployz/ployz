@@ -4,14 +4,18 @@ import (
 	"fmt"
 	"hash/fnv"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 )
 
 const (
+	dataRootDirModeDarwin = 0o775
+	dataRootDirModeUnix   = 0o755
+)
+
+const (
 	defaultLinuxDataRoot  = "/var/lib/ployz/networks"
-	defaultDarwinDataRoot = "Library/Application Support/ployz/networks"
+	defaultDarwinDataRoot = "/var/db/ployz/networks"
 
 	// defaultWireGuardPort is 51820: the standard WireGuard port, used for the "default" network.
 	defaultWireGuardPort = 51820
@@ -32,11 +36,7 @@ const (
 
 func DataRoot() string {
 	if runtime.GOOS == "darwin" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return defaultLinuxDataRoot
-		}
-		return filepath.Join(home, defaultDarwinDataRoot)
+		return defaultDarwinDataRoot
 	}
 	return defaultLinuxDataRoot
 }
@@ -46,10 +46,21 @@ func EnsureDataRoot(dataRoot string) error {
 	if dataRoot == "" {
 		dataRoot = DataRoot()
 	}
-	if err := os.MkdirAll(dataRoot, 0o755); err != nil {
+	mode := dataRootDirMode()
+	if err := os.MkdirAll(dataRoot, mode); err != nil {
 		return fmt.Errorf("create data root: %w", err)
 	}
+	if err := os.Chmod(dataRoot, mode); err != nil {
+		return fmt.Errorf("set data root permissions: %w", err)
+	}
 	return nil
+}
+
+func dataRootDirMode() os.FileMode {
+	if runtime.GOOS == "darwin" {
+		return dataRootDirModeDarwin
+	}
+	return dataRootDirModeUnix
 }
 
 func WGPort(network string) int {
