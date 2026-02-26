@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -8,7 +9,7 @@ import (
 
 	"ployz/cmd/ployz/cmdutil"
 	"ployz/cmd/ployz/ui"
-	sdkmachine "ployz/pkg/sdk/machine"
+	"ployz/pkg/sdk/client"
 	"ployz/pkg/sdk/types"
 
 	"github.com/spf13/cobra"
@@ -59,11 +60,13 @@ func runCmd() *cobra.Command {
 		Short: "Run or update a single-image service",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			clusterName, api, _, err := cf.DialService(cmd.Context())
+			clusterName, api, cl, err := cf.DialService(cmd.Context())
 			if err != nil {
 				return err
 			}
-			svc := sdkmachine.New(api)
+			defer func() {
+				_ = api.Close()
+			}()
 
 			name := strings.TrimSpace(args[0])
 			if name == "" {
@@ -78,19 +81,10 @@ func runCmd() *cobra.Command {
 				return err
 			}
 
-			diag, err := svc.Diagnose(cmd.Context())
-			if err != nil {
-				return fmt.Errorf("diagnose runtime: %w", err)
-			}
-			if !diag.ServiceReady() {
-				cmdutil.PrintStatusIssues(os.Stderr, diag.ServiceBlockers, cmdutil.IssueLevelBlocker)
-				return fmt.Errorf("runtime is not ready for service deployment; run `ployz node doctor`")
-			}
-
 			if dryRun {
 				plan, err := api.PlanDeploy(cmd.Context(), name, composeSpec)
 				if err != nil {
-					return err
+					return decorateDeployPreconditionError(err, strings.TrimSpace(cl.Network))
 				}
 				counts := countPlanActions(plan)
 				fmt.Println(ui.InfoMsg("planned service %s for cluster %s", ui.Accent(name), ui.Accent(clusterName)))
@@ -129,6 +123,9 @@ func runCmd() *cobra.Command {
 			close(events)
 			<-done
 			if err != nil {
+				if preflightErr := decorateDeployPreconditionError(err, strings.TrimSpace(cl.Network)); preflightErr != err {
+					return preflightErr
+				}
 				if msg := strings.TrimSpace(result.ErrorMessage); msg != "" {
 					fmt.Fprintln(os.Stderr, ui.ErrorMsg("%s", msg))
 				}
@@ -156,6 +153,28 @@ func runCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&envVars, "env", nil, "Environment variable (KEY=VALUE), repeatable")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Plan only; do not apply changes")
 	return cmd
+}
+
+func decorateDeployPreconditionError(err error, networkName string) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, client.ErrNoMachinesAvailable) {
+		if networkName == "" {
+			return fmt.Errorf("no schedulable machines available; run `ployz add <user@host>`")
+		}
+		return fmt.Errorf("no schedulable machines available for network %q; run `ployz add <user@host>`", networkName)
+	}
+	if errors.Is(err, client.ErrNetworkNotConfigured) {
+		return fmt.Errorf("network is not configured for this context; run `ployz init --force`")
+	}
+	if errors.Is(err, client.ErrRuntimeNotReadyForServices) {
+		return fmt.Errorf("runtime is not ready for service deployment; run `ployz status` or `ployz doctor`")
+	}
+	if !errors.Is(err, client.ErrPrecondition) {
+		return err
+	}
+	return fmt.Errorf("deploy precondition failed: %w (run `ployz status` or `ployz doctor`)", err)
 }
 
 func buildServiceComposeSpec(name, image string, replicas int, ports, envVars []string) ([]byte, error) {

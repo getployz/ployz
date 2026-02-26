@@ -6,8 +6,11 @@ import (
 	"strings"
 
 	"ployz/internal/controlplane/manager"
+	"ployz/internal/deploy"
 	"ployz/internal/network"
+	"ployz/pkg/sdk/types"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -22,8 +25,14 @@ func toGRPCError(err error) error {
 	if errors.Is(err, os.ErrNotExist) || errors.Is(err, network.ErrNotInitialized) {
 		return status.Error(codes.NotFound, err.Error())
 	}
-	if errors.Is(err, manager.ErrNetworkNotConfigured) || errors.Is(err, manager.ErrRuntimeNotReadyForServices) {
-		return status.Error(codes.FailedPrecondition, err.Error())
+	if errors.Is(err, manager.ErrNetworkNotConfigured) {
+		return preconditionStatus(types.PreconditionNetworkNotConfigured, "network", err.Error())
+	}
+	if errors.Is(err, manager.ErrRuntimeNotReadyForServices) {
+		return preconditionStatus(types.PreconditionRuntimeNotReadyForServices, "runtime", err.Error())
+	}
+	if errors.Is(err, deploy.ErrNoMachinesAvailable) {
+		return preconditionStatus(types.PreconditionDeployNoMachinesAvailable, "deploy", err.Error())
 	}
 	if errors.Is(err, network.ErrConflict) {
 		return status.Error(codes.Aborted, err.Error())
@@ -50,4 +59,21 @@ func toGRPCError(err error) error {
 	}
 
 	return status.Error(codes.Internal, msg)
+}
+
+func preconditionStatus(code types.PreconditionCode, subject, message string) error {
+	st := status.New(codes.FailedPrecondition, message)
+	withDetails, err := st.WithDetails(&errdetails.PreconditionFailure{
+		Violations: []*errdetails.PreconditionFailure_Violation{
+			{
+				Type:        string(code),
+				Subject:     subject,
+				Description: message,
+			},
+		},
+	})
+	if err != nil {
+		return st.Err()
+	}
+	return withDetails.Err()
 }

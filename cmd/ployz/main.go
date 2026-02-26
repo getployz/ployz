@@ -11,6 +11,7 @@ import (
 	"ployz/cmd/ployz/daemon"
 	devcmd "ployz/cmd/ployz/dev"
 	"ployz/cmd/ployz/initcmd"
+	"ployz/cmd/ployz/network"
 	"ployz/cmd/ployz/node"
 	"ployz/cmd/ployz/service"
 	"ployz/internal/buildinfo"
@@ -53,8 +54,13 @@ func main() {
 	root.AddCommand(initcmd.Cmd())
 	root.AddCommand(configurecmd.Cmd())
 	root.AddCommand(node.Cmd())
+	root.AddCommand(node.StatusCmd())
+	root.AddCommand(node.DoctorCmd())
+	root.AddCommand(node.AddCmd())
 	root.AddCommand(cluster.Cmd())
+	root.AddCommand(network.Cmd())
 	root.AddCommand(service.Cmd())
+	root.AddCommand(service.DeployCmd())
 	root.AddCommand(agent.Cmd())
 	root.AddCommand(devcmd.Cmd())
 

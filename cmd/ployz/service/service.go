@@ -6,9 +6,13 @@ func Cmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "service",
 		Aliases: []string{"svc"},
-		Short:   "Run and manage cluster services",
+		Short:   "Deploy and manage cluster services",
 	}
 
-	cmd.AddCommand(runCmd())
+	deploy := DeployCmd()
+	run := runCmd()
+	run.Hidden = true
+	cmd.AddCommand(deploy)
+	cmd.AddCommand(run)
 	return cmd
 }

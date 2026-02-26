@@ -106,3 +106,24 @@ func TestControlPlaneBlockerIssuesIncludesSupervisor(t *testing.T) {
 		t.Fatal("expected control-plane readiness to be false")
 	}
 }
+
+func TestControlPlaneBlockerIssuesBackoffWithoutSupervisorError(t *testing.T) {
+	st := NetworkStatus{
+		Configured:      true,
+		Running:         true,
+		WireGuard:       true,
+		Corrosion:       true,
+		DockerNet:       true,
+		NetworkPhase:    "running",
+		DockerRequired:  true,
+		SupervisorPhase: "backoff",
+	}
+
+	blockers := st.ControlPlaneBlockerIssues()
+	if len(blockers) != 1 {
+		t.Fatalf("expected 1 control-plane blocker, got %d", len(blockers))
+	}
+	if blockers[0].Message != "supervisor is retrying after a failure" {
+		t.Fatalf("unexpected supervisor blocker message %q", blockers[0].Message)
+	}
+}

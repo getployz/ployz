@@ -14,6 +14,7 @@ import (
 	"ployz/pkg/sdk/types"
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -321,6 +322,10 @@ var (
 	ErrValidation   = errors.New("validation error")
 	ErrUnavailable  = errors.New("unavailable")
 	ErrPrecondition = errors.New("precondition failed")
+
+	ErrNetworkNotConfigured       = errors.New("network is not configured")
+	ErrRuntimeNotReadyForServices = errors.New("runtime is not ready for service operations")
+	ErrNoMachinesAvailable        = errors.New("no schedulable machines available")
 )
 
 func grpcErr(err error) error {
@@ -341,8 +346,37 @@ func grpcErr(err error) error {
 	case codes.Aborted:
 		return fmt.Errorf("%w: %s", ErrConflict, st.Message())
 	case codes.FailedPrecondition:
+		if mapped := mapPreconditionDetail(st); mapped != nil {
+			return mapped
+		}
 		return fmt.Errorf("%w: %s", ErrPrecondition, st.Message())
 	default:
 		return errors.New(st.Message())
 	}
+}
+
+func mapPreconditionDetail(st *status.Status) error {
+	if st == nil {
+		return nil
+	}
+	for _, detail := range st.Details() {
+		failure, ok := detail.(*errdetails.PreconditionFailure)
+		if !ok || failure == nil {
+			continue
+		}
+		for _, violation := range failure.Violations {
+			if violation == nil {
+				continue
+			}
+			switch violation.Type {
+			case string(types.PreconditionNetworkNotConfigured):
+				return fmt.Errorf("%w: %w: %s", ErrPrecondition, ErrNetworkNotConfigured, st.Message())
+			case string(types.PreconditionRuntimeNotReadyForServices):
+				return fmt.Errorf("%w: %w: %s", ErrPrecondition, ErrRuntimeNotReadyForServices, st.Message())
+			case string(types.PreconditionDeployNoMachinesAvailable):
+				return fmt.Errorf("%w: %w: %s", ErrPrecondition, ErrNoMachinesAvailable, st.Message())
+			}
+		}
+	}
+	return nil
 }

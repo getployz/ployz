@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -10,6 +11,10 @@ import (
 const (
 	constraintLabelPrefix = "node.labels."
 	defaultReplicaCount   = 1
+)
+
+var (
+	ErrNoMachinesAvailable = errors.New("no schedulable machines available")
 )
 
 // Schedule assigns services to machines based on placement mode, constraints,
@@ -24,7 +29,7 @@ func Schedule(
 		return map[string][]MachineAssignment{}, nil
 	}
 	if len(machines) == 0 {
-		return nil, fmt.Errorf("schedule: no machines available")
+		return nil, ErrNoMachinesAvailable
 	}
 
 	machineByID := make(map[string]MachineInfo, len(machines))
@@ -37,7 +42,7 @@ func Schedule(
 		machineIDs = append(machineIDs, machine.ID)
 	}
 	if len(machineIDs) == 0 {
-		return nil, fmt.Errorf("schedule: no machines with valid IDs")
+		return nil, fmt.Errorf("%w: no machines with valid IDs", ErrNoMachinesAvailable)
 	}
 	sort.Strings(machineIDs)
 

@@ -161,7 +161,7 @@ func (s NetworkStatus) ControlPlaneBlockerIssues() []StatusIssue {
 		issue := StatusIssue{
 			Component: "supervisor",
 			Phase:     supervisorPhase,
-			Message:   "supervisor is not in a runnable state",
+			Message:   defaultSupervisorBlockerMessage(supervisorPhase),
 			Hint:      "check daemon logs for supervisor failures and backoff loops",
 		}
 		if msg := strings.TrimSpace(s.SupervisorError); msg != "" {
@@ -191,4 +191,21 @@ func phaseOrUnknown(phase string) string {
 		return "unknown"
 	}
 	return phase
+}
+
+func defaultSupervisorBlockerMessage(phase string) string {
+	switch phase {
+	case "backoff":
+		return "supervisor is retrying after a failure"
+	case "giving_up":
+		return "supervisor gave up after repeated failures"
+	case "starting":
+		return "supervisor is still starting"
+	case "stopping":
+		return "supervisor is stopping"
+	case "absent":
+		return "supervisor is not running"
+	default:
+		return "supervisor is not in a runnable state"
+	}
 }
