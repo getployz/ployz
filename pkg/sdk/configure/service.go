@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"ployz/internal/adapter/wireguard"
+	"ployz/internal/infra/wireguard"
 	"ployz/pkg/sdk/agent"
 	"ployz/pkg/sdk/client"
 	"ployz/pkg/sdk/defaults"

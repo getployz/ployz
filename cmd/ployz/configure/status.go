@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"ployz/cmd/ployz/ui"
-	"ployz/internal/adapter/wireguard"
+	"ployz/internal/infra/wireguard"
 	sdkconfigure "ployz/pkg/sdk/configure"
 	"ployz/pkg/sdk/telemetry"
 

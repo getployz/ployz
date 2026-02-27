@@ -7,8 +7,7 @@ import (
 	"syscall"
 
 	"ployz/cmd/ployz/cmdutil"
-	"ployz/internal/controlplane/api"
-	"ployz/internal/controlplane/manager"
+	daemonruntime "ployz/internal/daemon"
 
 	"github.com/spf13/cobra"
 )
@@ -30,15 +29,8 @@ func Cmd() *cobra.Command {
 				return nil
 			}
 
-			mgr, err := manager.NewProduction(ctx, dataRoot)
-			if err != nil {
-				return err
-			}
-			srv := api.New(mgr)
-
 			slog.Info("daemon listening", "socket", socketPath)
-
-			return srv.ListenAndServe(ctx, socketPath)
+			return daemonruntime.Run(ctx, dataRoot, socketPath)
 		},
 	}
 

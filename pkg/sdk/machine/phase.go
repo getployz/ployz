@@ -1,6 +1,6 @@
 package machine
 
-import "ployz/internal/check"
+import "ployz/internal/support/check"
 
 type AddPhase uint8
 

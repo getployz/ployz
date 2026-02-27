@@ -19,6 +19,8 @@ func statusCmd() *cobra.Command {
 		Short: "Show service deployment and container state",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			return deployUnavailableError()
+
 			contextName, api, cl, err := cf.DialService(cmd.Context())
 			if err != nil {
 				return err

@@ -19,6 +19,8 @@ func removeCmd() *cobra.Command {
 		Short:   "Remove a deployed service",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			return deployUnavailableError()
+
 			contextName, api, _, err := cf.DialService(cmd.Context())
 			if err != nil {
 				return err

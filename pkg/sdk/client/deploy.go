@@ -6,7 +6,7 @@ import (
 	"io"
 	"time"
 
-	"ployz/internal/controlplane/pb"
+	"ployz/internal/daemon/pb"
 	"ployz/pkg/sdk/types"
 )
 

@@ -60,6 +60,8 @@ func runCmd() *cobra.Command {
 		Short: "Run or update a single-image service",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			return deployUnavailableError()
+
 			contextName, api, cl, err := cf.DialService(cmd.Context())
 			if err != nil {
 				return err

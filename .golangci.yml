@@ -13,4 +13,4 @@ linters-settings:
 
 issues:
   exclude-dirs:
-    - internal/controlplane/pb
+    - internal/daemon/pb

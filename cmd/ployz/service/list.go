@@ -23,6 +23,8 @@ func listCmd() *cobra.Command {
 		Short:   "List services in the selected context",
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			return deployUnavailableError()
+
 			contextName, api, _, err := cf.DialService(cmd.Context())
 			if err != nil {
 				return err

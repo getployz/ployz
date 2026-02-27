@@ -10,7 +10,7 @@ release:
 before:
   hooks:
     - go mod tidy
-    - sh -c "sed 's/__PLOYZ_VERSION__/{{ .Version }}/g' internal/remote/install.sh > install.sh && chmod +x install.sh"
+    - sh -c "sed 's/__PLOYZ_VERSION__/{{ .Version }}/g' internal/support/remote/install.sh > install.sh && chmod +x install.sh"
 
 builds:
   - id: ployz
@@ -19,7 +19,7 @@ builds:
     goos: [linux, darwin]
     goarch: [amd64, arm64]
     ldflags:
-      - -s -w -X ployz/internal/buildinfo.Version={{.Version}}
+      - -s -w -X ployz/internal/support/buildinfo.Version={{.Version}}
 
   - id: ployzd
     main: ./cmd/ployzd
@@ -27,7 +27,7 @@ builds:
     goos: [linux, darwin]
     goarch: [amd64, arm64]
     ldflags:
-      - -s -w -X ployz/internal/buildinfo.Version={{.Version}}
+      - -s -w -X ployz/internal/support/buildinfo.Version={{.Version}}
 
 archives:
   - id: ployz-bundle

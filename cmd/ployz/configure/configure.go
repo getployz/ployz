@@ -5,7 +5,7 @@ import (
 	"strconv"
 
 	"ployz/cmd/ployz/ui"
-	"ployz/internal/adapter/wireguard"
+	"ployz/internal/infra/wireguard"
 	sdkconfigure "ployz/pkg/sdk/configure"
 
 	"github.com/spf13/cobra"

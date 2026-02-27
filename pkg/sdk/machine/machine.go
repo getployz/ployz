@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"ployz/internal/buildinfo"
-	"ployz/internal/check"
-	"ployz/internal/remote"
+	"ployz/internal/support/buildinfo"
+	"ployz/internal/support/check"
+	"ployz/internal/support/remote"
 	"ployz/pkg/ipam"
 	"ployz/pkg/sdk/client"
 	"ployz/pkg/sdk/defaults"

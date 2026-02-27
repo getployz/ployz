@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"ployz/internal/adapter/wireguard"
+	"ployz/internal/infra/wireguard"
 
 	"github.com/spf13/cobra"
 )

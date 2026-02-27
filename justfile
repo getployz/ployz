@@ -146,7 +146,7 @@ tidy:
 
 proto:
     protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative \
-        --proto_path=. internal/controlplane/pb/daemon.proto
+        --proto_path=. internal/daemon/pb/daemon.proto
 
 bootstrap *targets:
     ./scripts/bootstrap-remote.sh {{targets}}

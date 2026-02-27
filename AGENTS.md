@@ -22,14 +22,16 @@ Practical guidance for coding agents working in this repository.
 
 Ployz is a machine network control plane with three layers:
 
-- **Daemon (`cmd/ployzd`)**: single process. Owns desired state, exposes typed API over unix socket, and runs convergence loops in-process via the runtime engine.
+- **Daemon (`cmd/ployzd`)**: single process. Owns desired state, exposes typed API over unix socket, and runs convergence loops in-process via `internal/daemon`.
 - **SDK (`pkg/sdk`)**: client library for multi-machine choreography (bootstrap, join, remove). All cluster workflows live here.
 - **CLI (`cmd/ployz`)**: thin UX shell over the SDK. No direct runtime mutations.
 
 ### Key architectural rules
 
 - **Imperative setup, event-driven convergence.** Standing up infrastructure (WG interface, Docker network, firewall, Corrosion) is imperative — runs once, succeeds or fails. Peer tracking stays continuous in runtime loops within the daemon process.
-- **All external dependencies are injected interfaces.** `Controller` holds no concrete adapter types. Docker, Corrosion, WireGuard, state persistence, and clock are all injected via interfaces defined in `network/ports.go`. Platform-specific `New()` functions wire the concrete implementations.
+- **Manager orchestrates capabilities.** `daemon/manager` is the policy boundary. gRPC handlers delegate to manager; manager delegates to capabilities.
+- **Capability boundaries stay narrow.** `daemon/overlay`, `daemon/membership`, `daemon/convergence`, and `daemon/workload` depend on small ports/interfaces, not concrete services from sibling capabilities.
+- **All external dependencies are injected interfaces.** Core capabilities depend on ports in `daemon/*/ports.go`; concrete implementations are created in `daemon/wiring.go` and `infra/platform` wiring.
 - **Typed Corrosion subscriptions.** Every hot-path table driving convergence gets a typed `Subscribe<Table>` API in the registry layer. No raw SQL or Corrosion protocol details leak to consumers.
 - **SDK always goes through daemon.** No direct Corrosion access from SDK. Daemon is the single writer to local state.
 - **Health is reporting, not auto-fix.** Daemon reports per-component health via `GetStatus`. `machine doctor` surfaces problems. Operator decides what to fix.
@@ -41,51 +43,57 @@ Ployz is a machine network control plane with three layers:
 cmd/ployz/            CLI (thin over pkg/sdk)
 cmd/ployzd/           daemon entrypoint
 pkg/sdk/              client SDK (workflows, daemon client, types)
-internal/network/     core types, interfaces (ports.go), pure logic, Controller
-internal/supervisor/  runtime supervision loop, health tracking, interfaces (ports.go)
-internal/engine/      worker pool, lifecycle orchestration
-internal/adapter/     all external system integrations:
-  adapter/corrosion/    Corrosion HTTP client + subscriptions (implements supervisor.Registry)
-  adapter/docker/       Docker Runtime (implements network.ContainerRuntime)
-  adapter/wireguard/    WireGuard device management (implements PeerApplier)
-  adapter/sqlite/       local state persistence (load/save)
-  adapter/platform/     platform runtime ops (darwin/linux/stub)
-internal/check/       build-tagged assertions (debug panics, release no-ops)
-internal/controlplane/ daemon internals (api, manager, proxy, protobuf)
-internal/remote/      SSH + remote install scripts
-internal/logging/     slog configuration
-internal/buildinfo/   version info
+internal/daemon/      daemon internals:
+  daemon/run.go         daemon startup/shutdown entrypoint
+  daemon/wiring.go      composition root
+  daemon/manager/       orchestrator and policy
+  daemon/overlay/       one-shot infra lifecycle
+  daemon/membership/    machine/heartbeat CRUD + peer ops
+  daemon/convergence/   continuous sync loops + health trackers
+  daemon/workload/      deploy capability (currently stubbed)
+  daemon/api/           gRPC transport
+  daemon/proxy/         multi-machine routing
+  daemon/pb/            generated protobuf
+internal/infra/       external system integrations:
+  infra/corrosion/      Corrosion client + subscriptions
+  infra/docker/         Docker runtime
+  infra/wireguard/      WireGuard management
+  infra/sqlite/         local persistence
+  infra/platform/       platform wiring (darwin/linux/stub)
+internal/support/     cross-cutting support:
+  support/check/        build-tagged assertions (debug panics, release no-ops)
+  support/logging/      slog configuration
+  support/buildinfo/    version info
+  support/remote/       SSH + remote install scripts
 ```
 
-### Key files in `internal/network/`
+### Key files in `internal/daemon/overlay/`
 
 | File | Purpose |
 |------|---------|
-| `ports.go` | All consumer-defined interfaces: `Clock`, `ContainerRuntime`, `CorrosionRuntime`, `StatusProber`, `StateStore`, `Registry`, `RegistryFactory` |
-| `controller.go` | `Controller` struct (holds all injected dependencies), `Option` funcs, `Status` struct |
+| `ports.go` | Core overlay ports: `Clock`, `ContainerRuntime`, `CorrosionRuntime`, `StatusProber`, `StateStore`, `Registry`, `RegistryFactory` |
+| `controller.go` | Overlay `Controller`/`Service`, options, dependency fields |
 | `status.go` | Shared `Status()` method (platform-independent, delegates to `StatusProber`) |
-| `management.go` | Pure functions: `ManagementIPFromPublicKey`, `ManagementIPFromWGKey`, `MigrateLegacyManagementAddr` |
-| `docker_runtime.go` | Bridge wrappers: `adapter/docker.Runtime` → `ContainerRuntime`, `adapter/corrosion.Adapter` → `CorrosionRuntime` (build-tagged linux/darwin) |
-| `service_linux.go` | Linux `New()`, `linuxStatusProber`, `linuxRuntimeOps` |
-| `service_darwin.go` | Darwin `New()`, `darwinStatusProber`, `darwinRuntimeOps` |
-| `service_stub.go` | Stub `New()` + `stubStatusProber` for unsupported platforms |
-| `runtime_common.go` | Shared start/stop logic using `runtimeOps` + injected interfaces |
+| `management.go` | Management address derivation helpers |
+| `config.go` / `state.go` | Canonical config + persisted runtime state |
+| `runtime_common.go` | Shared start/stop logic using injected interfaces |
+| `controlplane.go` | Machine CRUD and peer reconciliation operations |
 
 ### Dependency injection flow
 
-Platform-specific `New()` functions wire everything:
+Production wiring is split between `daemon/wiring.go`, `daemon/manager/manager_production.go`, and `infra/platform/*`:
 
-1. Create `adapter/docker.Runtime` (concrete Docker client)
-2. Wrap it in `dockerContainerRuntime` (adapts to `ContainerRuntime` interface)
-3. Wrap it in `corrosionRuntimeAdapter` (adapts to `CorrosionRuntime` interface)
-4. Create platform-specific `StatusProber` (e.g. `linuxStatusProber`)
-5. Set all fields on `Controller`
+1. Open SQLite spec/state stores.
+2. Create `overlay.RegistryFactory` backed by `infra/corrosion.Store`.
+3. Build overlay service via `infra/platform.NewController(...)` with platform-specific runtime ops.
+4. Build membership (`membership.New(overlaySvc)`), convergence (`convergence.New(...)`), and workload (`workload.New()`).
+5. Build manager, then expose it through daemon API server.
 
 Tests inject fakes for any of these interfaces via `With*` options.
 
-### Bridge layer pattern
+### Type ownership pattern
 
-Core packages define interfaces with their own types (`network.ContainerInfo`, `network.Mount`, etc.). Adapter packages define their own matching types (`docker.ContainerInfo`, `docker.Mount`). Build-tagged bridge files in `network/` (e.g. `docker_runtime.go`) contain thin wrappers that convert between the two, avoiding import cycles.
+Core capability packages own domain/port types (`overlay.*`, `membership.*`, `convergence.*`). Infra packages implement those interfaces directly. Keep data-shape conversion explicit at capability boundaries (for example, API proto mapping in `daemon/api`).
 
 ## Go! Tiger Style
 
@@ -104,20 +112,20 @@ Non-negotiable architectural rules for all changes. These exist to keep the code
 Define interfaces where they're used, not where they're implemented. Place them in a `ports.go` file next to the consumer.
 
 ```go
-// internal/supervisor/ports.go — the consumer defines what it needs
-type Registry interface {
-    ListMachineRows(ctx context.Context) ([]network.MachineRow, error)
-    SubscribeMachines(ctx context.Context) ([]network.MachineRow, <-chan network.MachineChange, error)
+// internal/daemon/convergence/ports.go — the consumer defines what it needs
+type MachineRegistry interface {
+    ListMachineRows(ctx context.Context) ([]membership.MachineRow, error)
+    SubscribeMachines(ctx context.Context) ([]membership.MachineRow, <-chan membership.MachineChange, error)
 }
 ```
 
-The adapter (`adapter/corrosion/`) implements it without importing the consumer.
+The adapter (`infra/corrosion/`) implements it without importing the consumer.
 
 ### 2. No side effects in core logic
 
-Decision logic in `network/`, `supervisor/`, and `engine/` must be pure: data in, data out. No Docker calls, no HTTP, no WireGuard, no disk I/O, no `time.Now()`. Orchestration code in these packages may call injected interfaces (ports), but never imports adapter packages directly.
+Decision logic in `daemon/overlay`, `daemon/membership`, and `daemon/convergence` should stay pure where possible: data in, data out. No Docker calls, no HTTP, no WireGuard, no disk I/O, no `time.Now()`. Orchestration code in these packages may call injected interfaces (ports), but never imports infra packages directly.
 
-All external dependencies are abstracted behind interfaces in `network/ports.go`:
+All external dependencies are abstracted behind interfaces in daemon ports:
 - `Clock` — time source (inject `RealClock{}` in production, fake in tests)
 - `ContainerRuntime` — Docker/Podman container and network operations
 - `CorrosionRuntime` — Corrosion container lifecycle (WriteConfig, Start, Stop)
@@ -129,9 +137,9 @@ If a function needs the current time, use the injected `Clock`. If it needs to a
 
 ### 3. All infra calls in adapters
 
-Every call to an external system (Corrosion HTTP API, Docker API, WireGuard kernel/userspace, SQLite, filesystem, SSH) lives in `internal/adapter/`. Core logic never imports adapter packages. Dependency direction is always inward.
+Every call to an external system (Corrosion HTTP API, Docker API, WireGuard kernel/userspace, SQLite, filesystem, SSH) lives in `internal/infra/`. Core logic never imports infra packages. Dependency direction is always inward.
 
-**Bridge layer exception**: build-tagged files in `network/` (e.g. `docker_runtime.go`) may import adapter packages to wire concrete implementations into interface wrappers. These files contain only type conversion — no business logic. Platform-specific `New()` functions (`service_linux.go`, `service_darwin.go`) are the only code that creates adapter instances.
+Platform-specific constructors in `infra/platform/` are the only code that creates concrete adapter instances.
 
 ### 4. No hidden constructors in loops
 
@@ -141,7 +149,7 @@ Never call `New()` or create concrete dependencies inside `Run()` or hot loops. 
 // Bad: hardcoded inside Run()
 func (w *Worker) Run(ctx context.Context) error {
     reg := registry.New(addr, token)  // untestable
-    ctrl, _ := network.New()           // untestable
+    svc, _ := overlay.NewService()     // untestable
     // ...
 }
 
@@ -154,11 +162,11 @@ type Worker struct {
 
 ### 5. Persistence in adapters only
 
-Struct definitions, validation, and serialization helpers live in core packages (e.g. `network/state.go`). All database/file I/O lives in adapter packages (e.g. `adapter/sqlite/state.go`).
+Struct definitions, validation, and serialization helpers live in daemon capability packages (e.g. `daemon/overlay/state.go`). All database/file I/O lives in infra packages (e.g. `infra/sqlite/network_state.go`).
 
 ### 6. Every core change has success + failure test
 
-Any change to `network/`, `supervisor/`, or `engine/` must include at least one success-path and one failure-path test. Use table-driven tests for pure logic and focused orchestration coverage.
+Any change to `daemon/overlay`, `daemon/membership`, or `daemon/convergence` must include at least one success-path and one failure-path test. Use table-driven tests for pure logic and focused orchestration coverage.
 
 ### 7. Error wrapping with context
 
@@ -182,7 +190,7 @@ Every change must pass `just test` and `just build` before merge. No exceptions.
 
 ### 11. Build-tagged assertions for programmer errors
 
-Use `internal/check.Assert()` for preconditions, postconditions, and invariants that indicate **programmer errors** (wiring bugs, impossible states). These use build tags: panics under `//go:build debug`, no-ops in release.
+Use `internal/support/check.Assert()` for preconditions, postconditions, and invariants that indicate **programmer errors** (wiring bugs, impossible states). These use build tags: panics under `//go:build debug`, no-ops in release.
 
 Assertions are not a replacement for error handling. Errors handle runtime failures (bad input, network down). Assertions catch bugs that should never reach production.
 
@@ -201,9 +209,9 @@ check.Assert(ip.IsValid() && ip.Is6(), "management IP must be valid IPv6")
 
 // Invariant: exhaustive switch
 switch change.Kind {
-case network.ChangeAdded: ...
-case network.ChangeUpdated: ...
-case network.ChangeDeleted: ...
+case membership.ChangeAdded: ...
+case membership.ChangeUpdated: ...
+case membership.ChangeDeleted: ...
 default:
     check.Assert(false, "unknown change kind: "+string(change.Kind))
 }
@@ -292,8 +300,8 @@ Three groups in order: stdlib, third-party, local (`ployz/...`).
 
 - OS-specific behavior behind build-tagged files: `*_linux.go`, `*_darwin.go`, `*_stub.go`.
 - Explicit errors where a platform isn't supported.
-- Each platform's `New()` wires concrete adapters into the `Controller` via interfaces.
-- Platform-specific `StatusProber` and `runtimeOps` implementations live in platform files; shared `Status()` and `startRuntime()`/`stopRuntime()` live in common files.
+- Each platform's `NewController()` wires concrete adapters into overlay services via interfaces.
+- Platform-specific `StatusProber` and runtime-op implementations live in `infra/platform/*`; shared `Status()` and `startRuntime()`/`stopRuntime()` logic stays in `daemon/overlay` common files.
 
 ### Types
 
@@ -311,8 +319,8 @@ Three groups in order: stdlib, third-party, local (`ployz/...`).
 
 ### Constructor split (production vs tests)
 
-- `manager.NewProduction(ctx, dataRoot)` is the production entrypoint; it wires sqlite/platform/corrosion dependencies.
-- `manager.New(ctx, dataRoot, opts...)` is the pure constructor for injected dependencies and test composition.
+- `daemon/manager.NewProduction(ctx, dataRoot)` is the production entrypoint; it wires sqlite/platform/corrosion dependencies.
+- `daemon/manager.New(ctx, dataRoot, opts...)` is the pure constructor for injected dependencies and test composition.
 - Avoid mixing production wiring into tests; prefer `scenario` or explicit dependency injection.
 
 ### Property-Based Testing (Fuzz)

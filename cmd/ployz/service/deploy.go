@@ -6,6 +6,6 @@ func deployCmd() *cobra.Command {
 	cmd := runCmd()
 	cmd.Use = "deploy <name>"
 	cmd.Short = "Deploy or update a single-image service"
-	cmd.Aliases = nil
+	cmd.Aliases = []string{"run"}
 	return cmd
 }

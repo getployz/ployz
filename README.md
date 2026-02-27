@@ -44,3 +44,7 @@ for usage and commands.
 ---
 
 For more, see the [documentation](https://github.com/getployz/ployz).
+
+## References
+
+- Corrosion readiness and metrics reference: [`docs/corrosion-health.md`](docs/corrosion-health.md)

@@ -13,8 +13,8 @@ import (
 	"ployz/cmd/ployz/network"
 	"ployz/cmd/ployz/node"
 	"ployz/cmd/ployz/service"
-	"ployz/internal/buildinfo"
-	"ployz/internal/logging"
+	"ployz/internal/support/buildinfo"
+	"ployz/internal/support/logging"
 
 	"github.com/spf13/cobra"
 	"go.opentelemetry.io/otel"

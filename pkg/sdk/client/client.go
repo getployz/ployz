@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"ployz/internal/controlplane/pb"
+	"ployz/internal/daemon/pb"
 	"ployz/pkg/sdk/types"
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
