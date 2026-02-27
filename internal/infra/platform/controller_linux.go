@@ -6,12 +6,15 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"time"
 
-	corrosion "ployz/internal/infra/corrosion/container"
+	"ployz/internal/daemon/overlay"
+	corrosion "ployz/internal/infra/corrosion"
+	corrosioncontainer "ployz/internal/infra/corrosion/container"
 	"ployz/internal/infra/docker"
 	"ployz/internal/infra/sqlite"
 	"ployz/internal/infra/wireguard"
-	"ployz/internal/daemon/overlay"
+	"ployz/pkg/sdk/defaults"
 
 	"github.com/vishvananda/netlink"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
@@ -25,7 +28,7 @@ func NewController(opts ...overlay.Option) (*overlay.Service, error) {
 	}
 	defaults := []overlay.Option{
 		overlay.WithContainerRuntime(rt),
-		overlay.WithCorrosionRuntime(corrosion.NewAdapter(rt)),
+		overlay.WithCorrosionRuntime(corrosioncontainer.NewAdapter(rt)),
 		overlay.WithStatusProber(LinuxStatusProber{RT: rt}),
 		overlay.WithStateStore(sqlite.NetworkStateStore{}),
 		overlay.WithClock(overlay.RealClock{}),
@@ -96,7 +99,10 @@ type LinuxStatusProber struct {
 	RT overlay.ContainerRuntime
 }
 
-func (p LinuxStatusProber) ProbeInfra(ctx context.Context, state *overlay.State) (wg bool, dockerNet bool, corr bool, err error) {
+func (p LinuxStatusProber) ProbeInfra(ctx context.Context, state *overlay.State, expectedCorrosionMembers int) (wg bool, dockerNet bool, corr bool, err error) {
+	if state == nil {
+		return false, false, false, nil
+	}
 	if _, linkErr := netlink.LinkByName(state.WGInterface); linkErr == nil {
 		wg = true
 	}
@@ -105,7 +111,13 @@ func (p LinuxStatusProber) ProbeInfra(ctx context.Context, state *overlay.State)
 			dockerNet = true
 		}
 		if ctr, cErr := p.RT.ContainerInspect(ctx, state.CorrosionName); cErr == nil && ctr.Running {
-			corr = true
+			apiPort := defaults.CorrosionAPIPort(state.Network)
+			if apiPort > 0 && apiPort <= 65535 {
+				apiAddr := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(apiPort))
+				probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+				corr = corrosion.ProbeHealth(probeCtx, apiAddr, state.CorrosionAPIToken, expectedCorrosionMembers) == corrosion.HealthReady
+				cancel()
+			}
 		}
 	}
 	return wg, dockerNet, corr, nil

@@ -4,22 +4,21 @@ import (
 	"context"
 	"net/netip"
 
-	"ployz/internal/daemon/membership"
 	"ployz/internal/daemon/overlay"
 )
 
 // MachineRegistry abstracts machine storage and subscriptions.
 type MachineRegistry interface {
 	EnsureMachineTable(ctx context.Context) error
-	UpsertMachine(ctx context.Context, row overlay.MachineRow, expectedVersion int64) error
-	SubscribeMachines(ctx context.Context) ([]membership.MachineRow, <-chan membership.MachineChange, error)
-	ListMachineRows(ctx context.Context) ([]membership.MachineRow, error)
+	UpsertMachine(ctx context.Context, row overlay.MachineRow) error
+	SubscribeMachines(ctx context.Context) ([]overlay.MachineRow, <-chan overlay.MachineChange, error)
+	ListMachineRows(ctx context.Context) ([]overlay.MachineRow, error)
 }
 
 // HeartbeatRegistry abstracts heartbeat storage and subscriptions.
 type HeartbeatRegistry interface {
 	EnsureHeartbeatTable(ctx context.Context) error
-	SubscribeHeartbeats(ctx context.Context) ([]membership.HeartbeatRow, <-chan membership.HeartbeatChange, error)
+	SubscribeHeartbeats(ctx context.Context) ([]overlay.HeartbeatRow, <-chan overlay.HeartbeatChange, error)
 	BumpHeartbeat(ctx context.Context, nodeID string, updatedAt string) error
 }
 
@@ -32,10 +31,10 @@ type Registry interface {
 }
 
 // PeerReconciler applies peer configuration changes.
-// Production: membership.Service
+// Production: overlay controller via platform.NewController
 // Testing: fake that tracks peer state in memory
 type PeerReconciler interface {
-	ReconcilePeers(ctx context.Context, cfg overlay.Config, rows []membership.MachineRow) (int, error)
+	ReconcilePeers(ctx context.Context, cfg overlay.Config, rows []overlay.MachineRow) (int, error)
 	Close() error
 }
 

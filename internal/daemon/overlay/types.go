@@ -8,6 +8,4 @@ type Machine struct {
 	Endpoint     string
 	LastUpdated  string
 	Version      int64
-
-	ExpectedVersion int64
 }

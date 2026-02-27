@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"ployz/internal/daemon/membership"
+	"ployz/internal/daemon/overlay"
 	proxymod "ployz/internal/daemon/proxy"
 	"ployz/pkg/sdk/defaults"
 	"ployz/pkg/sdk/types"
@@ -48,7 +48,7 @@ func (s *Server) watchIdentityAndServeTCP(ctx context.Context, director *proxymo
 
 	listenAddrs := []string{net.JoinHostPort(mgmtIP, portStr)}
 	if prefix, err := netip.ParsePrefix(strings.TrimSpace(identity.Subnet)); err == nil {
-		listenAddrs = append(listenAddrs, net.JoinHostPort(membership.MachineIP(prefix).String(), portStr))
+		listenAddrs = append(listenAddrs, net.JoinHostPort(overlay.MachineIP(prefix).String(), portStr))
 	}
 
 	tcpSrv := grpc.NewServer(

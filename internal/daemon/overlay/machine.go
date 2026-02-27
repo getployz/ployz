@@ -1,10 +1,5 @@
 package overlay
 
-import "errors"
-
-// ErrConflict is returned when an optimistic-concurrency version check fails.
-var ErrConflict = errors.New("registry version conflict")
-
 // MachineRow represents a machine record in the registry.
 type MachineRow struct {
 	ID           string

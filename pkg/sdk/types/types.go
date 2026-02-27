@@ -83,17 +83,16 @@ type Identity struct {
 }
 
 type MachineEntry struct {
-	ID              string        `json:"id"`
-	PublicKey       string        `json:"public_key"`
-	Subnet          string        `json:"subnet"`
-	ManagementIP    string        `json:"management_ip"`
-	Endpoint        string        `json:"endpoint"`
-	LastUpdated     string        `json:"last_updated,omitempty"`
-	Version         int64         `json:"version,omitempty"`
-	ExpectedVersion int64         `json:"expected_version,omitempty"`
-	Freshness       time.Duration `json:"freshness,omitempty"`
-	Stale           bool          `json:"stale,omitempty"`
-	ReplicationLag  time.Duration `json:"replication_lag,omitempty"`
+	ID             string        `json:"id"`
+	PublicKey      string        `json:"public_key"`
+	Subnet         string        `json:"subnet"`
+	ManagementIP   string        `json:"management_ip"`
+	Endpoint       string        `json:"endpoint"`
+	LastUpdated    string        `json:"last_updated,omitempty"`
+	Version        int64         `json:"version,omitempty"`
+	Freshness      time.Duration `json:"freshness,omitempty"`
+	Stale          bool          `json:"stale,omitempty"`
+	ReplicationLag time.Duration `json:"replication_lag,omitempty"`
 }
 
 type PeerLag struct {

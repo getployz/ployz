@@ -110,7 +110,6 @@ func machineEntryToProto(m types.MachineEntry) *pb.MachineEntry {
 		Endpoint:         m.Endpoint,
 		LastUpdated:      m.LastUpdated,
 		Version:          m.Version,
-		ExpectedVersion:  m.ExpectedVersion,
 		FreshnessMs:      float64(m.Freshness.Milliseconds()),
 		Stale:            m.Stale,
 		ReplicationLagMs: float64(m.ReplicationLag.Milliseconds()),
@@ -119,14 +118,13 @@ func machineEntryToProto(m types.MachineEntry) *pb.MachineEntry {
 
 func machineEntryFromProto(p *pb.MachineEntry) types.MachineEntry {
 	return types.MachineEntry{
-		ID:              p.Id,
-		PublicKey:       p.PublicKey,
-		Subnet:          p.Subnet,
-		ManagementIP:    p.ManagementIp,
-		Endpoint:        p.Endpoint,
-		LastUpdated:     p.LastUpdated,
-		Version:         p.Version,
-		ExpectedVersion: p.ExpectedVersion,
+		ID:          p.Id,
+		PublicKey:   p.PublicKey,
+		Subnet:      p.Subnet,
+		ManagementIP: p.ManagementIp,
+		Endpoint:    p.Endpoint,
+		LastUpdated: p.LastUpdated,
+		Version:     p.Version,
 	}
 }
 

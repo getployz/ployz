@@ -8,7 +8,6 @@ import (
 	"os"
 
 	"ployz/internal/daemon/convergence"
-	"ployz/internal/daemon/membership"
 	"ployz/internal/daemon/overlay"
 	"ployz/pkg/sdk/types"
 )
@@ -83,17 +82,13 @@ func (m *Manager) UpsertMachine(ctx context.Context, entry types.MachineEntry) e
 		return err
 	}
 
-	err = m.membership.UpsertMachine(ctx, cfg, membership.Machine{
-		ID:              entry.ID,
-		PublicKey:       entry.PublicKey,
-		Subnet:          entry.Subnet,
-		ManagementIP:    entry.ManagementIP,
-		Endpoint:        entry.Endpoint,
-		ExpectedVersion: entry.ExpectedVersion,
+	err = m.membership.UpsertMachine(ctx, cfg, overlay.Machine{
+		ID:           entry.ID,
+		PublicKey:    entry.PublicKey,
+		Subnet:       entry.Subnet,
+		ManagementIP: entry.ManagementIP,
+		Endpoint:     entry.Endpoint,
 	})
-	if errors.Is(err, membership.ErrConflict) {
-		return fmt.Errorf("machine upsert conflict: %w", membership.ErrConflict)
-	}
 	if err != nil {
 		return fmt.Errorf("upsert machine: %w", err)
 	}
@@ -138,7 +133,7 @@ func (m *Manager) ListMachineAddrs(ctx context.Context) ([]MachineAddr, error) {
 			ManagementIP: row.ManagementIP,
 		}
 		if prefix, err := netip.ParsePrefix(row.Subnet); err == nil {
-			addr.OverlayIP = membership.MachineIP(prefix).String()
+			addr.OverlayIP = overlay.MachineIP(prefix).String()
 		}
 		out = append(out, addr)
 	}

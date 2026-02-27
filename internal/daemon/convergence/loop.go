@@ -8,9 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"ployz/internal/support/check"
-	"ployz/internal/daemon/membership"
 	"ployz/internal/daemon/overlay"
+	"ployz/internal/support/check"
 	"ployz/pkg/sdk/defaults"
 )
 
@@ -34,7 +33,6 @@ type Supervisor struct {
 	Registry       Registry       // injected: Corrosion machine/heartbeat store
 	PeerReconciler PeerReconciler // injected: applies peer configuration
 	StateStore     overlay.StateStore
-	Broker         *Broker
 	Freshness      *FreshnessTracker
 	NTP            *Checker
 	Ping           *PingTracker
@@ -66,7 +64,7 @@ func (w *Supervisor) fail(err error) {
 	}
 }
 
-func (w *Supervisor) syncPeersAndReport(ctx context.Context, cfg overlay.Config, machines []membership.MachineRow) {
+func (w *Supervisor) syncPeersAndReport(ctx context.Context, cfg overlay.Config, machines []overlay.MachineRow) {
 	count, err := w.PeerReconciler.ReconcilePeers(ctx, cfg, machines)
 	if err != nil {
 		w.emit("supervisor.sync.error", err.Error())
@@ -76,7 +74,7 @@ func (w *Supervisor) syncPeersAndReport(ctx context.Context, cfg overlay.Config,
 	w.emit("supervisor.sync.success", fmt.Sprintf("synchronized %d peers", count))
 }
 
-func (w *Supervisor) refreshAndSync(ctx context.Context, cfg overlay.Config) ([]membership.MachineRow, bool) {
+func (w *Supervisor) refreshAndSync(ctx context.Context, cfg overlay.Config) ([]overlay.MachineRow, bool) {
 	snap, err := w.Registry.ListMachineRows(ctx)
 	if err != nil {
 		w.emit("supervisor.sync.error", err.Error())
@@ -87,7 +85,7 @@ func (w *Supervisor) refreshAndSync(ctx context.Context, cfg overlay.Config) ([]
 	return snap, true
 }
 
-func (w *Supervisor) hydrateHeartbeats(rows []membership.HeartbeatRow) {
+func (w *Supervisor) hydrateHeartbeats(rows []overlay.HeartbeatRow) {
 	for _, hb := range rows {
 		if t, err := time.Parse(time.RFC3339Nano, hb.UpdatedAt); err == nil {
 			w.Freshness.RecordSeen(hb.NodeID, t)
@@ -110,9 +108,6 @@ func (w *Supervisor) Run(ctx context.Context) error {
 	if err := w.Registry.EnsureHeartbeatTable(ctx); err != nil {
 		return err
 	}
-	if w.Broker == nil {
-		w.Broker = NewBroker(w.Registry)
-	}
 
 	// Load persisted state and register the local machine.
 	selfID := ""
@@ -127,7 +122,7 @@ func (w *Supervisor) Run(ctx context.Context) error {
 					ManagementIP: st.Management,
 					Endpoint:     st.Advertise,
 					UpdatedAt:    w.getClock().Now().UTC().Format(time.RFC3339),
-				}, 0); err != nil {
+				}); err != nil {
 					return fmt.Errorf("register local machine: %w", err)
 				}
 				w.emit("self.registered", fmt.Sprintf("registered local machine %s", selfID[:8]))
@@ -155,14 +150,14 @@ func (w *Supervisor) Run(ctx context.Context) error {
 
 	// Mutex-protected machines snapshot for the ping goroutine.
 	var machinesMu sync.RWMutex
-	setMachines := func(m []membership.MachineRow) {
+	setMachines := func(m []overlay.MachineRow) {
 		machinesMu.Lock()
 		machines = m
 		machinesMu.Unlock()
 	}
-	getMachinesSnapshot := func() []membership.MachineRow {
+	getMachinesSnapshot := func() []overlay.MachineRow {
 		machinesMu.RLock()
-		snap := make([]membership.MachineRow, len(machines))
+		snap := make([]overlay.MachineRow, len(machines))
 		copy(snap, machines)
 		machinesMu.RUnlock()
 		return snap
@@ -176,7 +171,7 @@ func (w *Supervisor) Run(ctx context.Context) error {
 	}
 
 	// Subscribe to heartbeats for freshness tracking.
-	var heartbeatChanges <-chan membership.HeartbeatChange
+	var heartbeatChanges <-chan overlay.HeartbeatChange
 	if w.Freshness != nil {
 		heartbeatSnapshot, ch, hbErr := w.subscribeHeartbeatsWithRetry(ctx)
 		if hbErr == nil {
@@ -205,7 +200,7 @@ func (w *Supervisor) Run(ctx context.Context) error {
 				continue
 			}
 
-			if change.Kind == membership.ChangeResync {
+			if change.Kind == overlay.ChangeResync {
 				w.emit("subscribe.resync", "machine subscription resynced")
 				if snap, ok := w.refreshAndSync(ctx, cfg); ok {
 					setMachines(snap)
@@ -231,9 +226,9 @@ func (w *Supervisor) Run(ctx context.Context) error {
 				continue
 			}
 			switch hbChange.Kind {
-			case membership.ChangeDeleted:
+			case overlay.ChangeDeleted:
 				w.Freshness.Remove(hbChange.Heartbeat.NodeID)
-			case membership.ChangeResync:
+			case overlay.ChangeResync:
 				// Nothing to do — next full sync will re-sync.
 			default:
 				if t, err := time.Parse(time.RFC3339Nano, hbChange.Heartbeat.UpdatedAt); err == nil {
@@ -272,9 +267,9 @@ func runHeartbeat(ctx context.Context, reg Registry, nodeID string, clock overla
 	}
 }
 
-func applyMachineChange(machines []membership.MachineRow, change membership.MachineChange) []membership.MachineRow {
+func applyMachineChange(machines []overlay.MachineRow, change overlay.MachineChange) []overlay.MachineRow {
 	switch change.Kind {
-	case membership.ChangeAdded, membership.ChangeUpdated:
+	case overlay.ChangeAdded, overlay.ChangeUpdated:
 		replaced := false
 		for i := range machines {
 			if machines[i].ID == change.Machine.ID {
@@ -286,7 +281,7 @@ func applyMachineChange(machines []membership.MachineRow, change membership.Mach
 		if !replaced {
 			machines = append(machines, change.Machine)
 		}
-	case membership.ChangeDeleted:
+	case overlay.ChangeDeleted:
 		out := machines[:0]
 		for _, m := range machines {
 			if change.Machine.ID != "" && m.ID == change.Machine.ID {
@@ -303,7 +298,7 @@ func applyMachineChange(machines []membership.MachineRow, change membership.Mach
 }
 
 // resolvePingAddrs derives overlay IPv4 + daemon API port for each machine.
-func resolvePingAddrs(machines []membership.MachineRow, networkName string) map[string]string {
+func resolvePingAddrs(machines []overlay.MachineRow, networkName string) map[string]string {
 	port := defaults.DaemonAPIPort(networkName)
 	out := make(map[string]string, len(machines))
 	for _, m := range machines {
@@ -314,28 +309,12 @@ func resolvePingAddrs(machines []membership.MachineRow, networkName string) map[
 		if err != nil {
 			continue
 		}
-		out[m.ID] = fmt.Sprintf("%s:%d", membership.MachineIP(prefix), port)
+		out[m.ID] = fmt.Sprintf("%s:%d", overlay.MachineIP(prefix), port)
 	}
 	return out
 }
 
-func (w *Supervisor) subscribeMachinesWithRetry(ctx context.Context) ([]membership.MachineRow, <-chan membership.MachineChange, error) {
-	if w.Broker != nil {
-		for range maxMachineSubscribeRetries {
-			machines, changes, err := w.Broker.SubscribeMachines(ctx)
-			if err == nil {
-				return machines, changes, nil
-			}
-			w.emit("subscribe.error", err.Error())
-			select {
-			case <-ctx.Done():
-				return nil, nil, ctx.Err()
-			case <-time.After(time.Second):
-			}
-		}
-		return nil, nil, fmt.Errorf("machine subscription failed after %d retries", maxMachineSubscribeRetries)
-	}
-
+func (w *Supervisor) subscribeMachinesWithRetry(ctx context.Context) ([]overlay.MachineRow, <-chan overlay.MachineChange, error) {
 	for range maxMachineSubscribeRetries {
 		if err := w.Registry.EnsureMachineTable(ctx); err != nil {
 			select {
@@ -359,23 +338,7 @@ func (w *Supervisor) subscribeMachinesWithRetry(ctx context.Context) ([]membersh
 	return nil, nil, fmt.Errorf("machine subscription failed after %d retries", maxMachineSubscribeRetries)
 }
 
-func (w *Supervisor) subscribeHeartbeatsWithRetry(ctx context.Context) ([]membership.HeartbeatRow, <-chan membership.HeartbeatChange, error) {
-	if w.Broker != nil {
-		for range heartbeatSubscribeMaxRetries {
-			hbs, changes, err := w.Broker.SubscribeHeartbeats(ctx)
-			if err == nil {
-				return hbs, changes, nil
-			}
-			w.emit("subscribe.error", err.Error())
-			select {
-			case <-ctx.Done():
-				return nil, nil, ctx.Err()
-			case <-time.After(time.Second):
-			}
-		}
-		return nil, nil, fmt.Errorf("heartbeat subscription failed after retries")
-	}
-
+func (w *Supervisor) subscribeHeartbeatsWithRetry(ctx context.Context) ([]overlay.HeartbeatRow, <-chan overlay.HeartbeatChange, error) {
 	for range heartbeatSubscribeMaxRetries {
 		if err := w.Registry.EnsureHeartbeatTable(ctx); err != nil {
 			select {

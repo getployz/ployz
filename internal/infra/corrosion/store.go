@@ -76,8 +76,8 @@ func (s Store) EnsureNetworkCIDR(
 	return s.NetworkConfig().EnsureNetworkCIDR(ctx, requested, fallbackCIDR, defaultCIDR)
 }
 
-func (s Store) UpsertMachine(ctx context.Context, row overlay.MachineRow, expectedVersion int64) error {
-	return s.Machines().UpsertMachine(ctx, row, expectedVersion)
+func (s Store) UpsertMachine(ctx context.Context, row overlay.MachineRow) error {
+	return s.Machines().UpsertMachine(ctx, row)
 }
 
 func (s Store) DeleteByEndpointExceptID(ctx context.Context, endpoint, id string) error {

@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS %s (
 	return r.client.exec(ctx, query)
 }
 
-func (r MachineRepo) UpsertMachine(ctx context.Context, row overlay.MachineRow, expectedVersion int64) error {
+func (r MachineRepo) UpsertMachine(ctx context.Context, row overlay.MachineRow) error {
 	row.ID = strings.TrimSpace(row.ID)
 	if row.ID == "" {
 		return fmt.Errorf("machine id is required")
@@ -55,9 +55,6 @@ func (r MachineRepo) UpsertMachine(ctx context.Context, row overlay.MachineRow, 
 	}
 
 	if exists {
-		if expectedVersion > 0 && current.Version != expectedVersion {
-			return overlay.ErrConflict
-		}
 		if current.PublicKey == row.PublicKey &&
 			current.Subnet == row.Subnet &&
 			current.ManagementIP == row.ManagementIP &&
@@ -72,9 +69,6 @@ func (r MachineRepo) UpsertMachine(ctx context.Context, row overlay.MachineRow, 
 		return r.client.exec(ctx, query, row.PublicKey, row.Subnet, row.ManagementIP, row.Endpoint, row.UpdatedAt, row.Version, row.ID)
 	}
 
-	if expectedVersion > 0 {
-		return overlay.ErrConflict
-	}
 	if row.Version <= 0 {
 		row.Version = 1
 	}

@@ -145,14 +145,11 @@ func runChanges[Row any, Change any](
 ) {
 	defer close(out)
 	defer stream.Body.Close()
-	phase := SubscriptionOpening
-	phase = phase.Transition(SubscriptionStreaming)
 
 	for {
 		select {
 		case <-ctx.Done():
-			phase = phase.Transition(SubscriptionClosedContext)
-			slog.Debug("registry "+spec.label+" subscription closed", "phase", phase.String())
+			slog.Debug("registry "+spec.label+" subscription closed", "reason", "context_cancelled")
 			return
 		default:
 		}
@@ -160,16 +157,14 @@ func runChanges[Row any, Change any](
 		var ev queryEvent
 		if err := stream.Decoder.Decode(&ev); err != nil {
 			slog.Debug("registry "+spec.label+" subscription decode failed; resubscribing", "err", err)
-			phase = phase.Transition(SubscriptionResubscribing)
-			if !resubscribeLoop(ctx, c, stream, &lastChangeID, out, spec, &phase) {
+			if !resubscribeLoop(ctx, c, stream, &lastChangeID, out, spec) {
 				return
 			}
 			continue
 		}
 		if ev.Error != nil {
 			slog.Debug("registry "+spec.label+" subscription stream error; resubscribing", "err", *ev.Error)
-			phase = phase.Transition(SubscriptionResubscribing)
-			if !resubscribeLoop(ctx, c, stream, &lastChangeID, out, spec, &phase) {
+			if !resubscribeLoop(ctx, c, stream, &lastChangeID, out, spec) {
 				return
 			}
 			continue
@@ -181,8 +176,7 @@ func runChanges[Row any, Change any](
 		row, err := spec.decodeRow(ev.Change.Values)
 		if err != nil {
 			slog.Debug("registry "+spec.label+" change decode failed; resubscribing", "err", err)
-			phase = phase.Transition(SubscriptionResubscribing)
-			if !resubscribeLoop(ctx, c, stream, &lastChangeID, out, spec, &phase) {
+			if !resubscribeLoop(ctx, c, stream, &lastChangeID, out, spec) {
 				return
 			}
 			continue
@@ -205,7 +199,6 @@ func resubscribeLoop[Row any, Change any](
 	lastChangeID *uint64,
 	out chan<- Change,
 	spec subscriptionSpec[Row, Change],
-	phase *SubscriptionPhase,
 ) bool {
 	stream.Body.Close()
 
@@ -213,9 +206,7 @@ func resubscribeLoop[Row any, Change any](
 	for attempt := range maxResubscribeAttempts {
 		select {
 		case <-ctx.Done():
-			if phase != nil {
-				*phase = phase.Transition(SubscriptionClosedContext)
-			}
+			slog.Debug("registry "+spec.label+" subscription closed", "reason", "context_cancelled")
 			return false
 		case <-time.After(backoff):
 		}
@@ -224,15 +215,10 @@ func resubscribeLoop[Row any, Change any](
 		if err == nil {
 			stream.Body = next.Body
 			stream.Decoder = next.Decoder
-			if phase != nil {
-				*phase = phase.Transition(SubscriptionStreaming)
-			}
 			slog.Info("registry "+spec.label+" subscription restored", "change_id", *lastChangeID)
 			select {
 			case <-ctx.Done():
-				if phase != nil {
-					*phase = phase.Transition(SubscriptionClosedContext)
-				}
+				slog.Debug("registry "+spec.label+" subscription closed", "reason", "context_cancelled")
 				stream.Body.Close()
 				return false
 			case out <- spec.resyncMsg:
@@ -242,9 +228,6 @@ func resubscribeLoop[Row any, Change any](
 
 		slog.Debug("registry "+spec.label+" resubscribe failed", "change_id", *lastChangeID, "attempt", attempt+1, "backoff", backoff.String(), "err", err)
 		backoff = min(backoff*2, maxResubscribeBackoff)
-	}
-	if phase != nil {
-		*phase = phase.Transition(SubscriptionClosedExhausted)
 	}
 	slog.Warn("registry "+spec.label+" resubscribe exhausted retries", "change_id", *lastChangeID, "attempts", maxResubscribeAttempts)
 	return false

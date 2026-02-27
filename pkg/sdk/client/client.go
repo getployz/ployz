@@ -289,35 +289,32 @@ func applyResultFromProto(r *pb.ApplyResult) types.ApplyResult {
 
 func machineToProto(m types.MachineEntry) *pb.MachineEntry {
 	return &pb.MachineEntry{
-		Id:              m.ID,
-		PublicKey:       m.PublicKey,
-		Subnet:          m.Subnet,
-		ManagementIp:    m.ManagementIP,
-		Endpoint:        m.Endpoint,
-		LastUpdated:     m.LastUpdated,
-		Version:         m.Version,
-		ExpectedVersion: m.ExpectedVersion,
+		Id:          m.ID,
+		PublicKey:   m.PublicKey,
+		Subnet:      m.Subnet,
+		ManagementIp: m.ManagementIP,
+		Endpoint:    m.Endpoint,
+		LastUpdated: m.LastUpdated,
+		Version:     m.Version,
 	}
 }
 
 func machineFromProto(p *pb.MachineEntry) types.MachineEntry {
 	return types.MachineEntry{
-		ID:              p.Id,
-		PublicKey:       p.PublicKey,
-		Subnet:          p.Subnet,
-		ManagementIP:    p.ManagementIp,
-		Endpoint:        p.Endpoint,
-		LastUpdated:     p.LastUpdated,
-		Version:         p.Version,
-		ExpectedVersion: p.ExpectedVersion,
-		Freshness:       time.Duration(p.FreshnessMs) * time.Millisecond,
-		Stale:           p.Stale,
-		ReplicationLag:  time.Duration(p.ReplicationLagMs) * time.Millisecond,
+		ID:             p.Id,
+		PublicKey:      p.PublicKey,
+		Subnet:         p.Subnet,
+		ManagementIP:   p.ManagementIp,
+		Endpoint:       p.Endpoint,
+		LastUpdated:    p.LastUpdated,
+		Version:        p.Version,
+		Freshness:      time.Duration(p.FreshnessMs) * time.Millisecond,
+		Stale:          p.Stale,
+		ReplicationLag: time.Duration(p.ReplicationLagMs) * time.Millisecond,
 	}
 }
 
 var (
-	ErrConflict     = errors.New("version conflict")
 	ErrNotFound     = errors.New("not found")
 	ErrValidation   = errors.New("validation error")
 	ErrUnavailable  = errors.New("unavailable")
@@ -379,8 +376,6 @@ func grpcErr(err error) error {
 		return fmt.Errorf("%w: %s", ErrValidation, st.Message())
 	case codes.Unavailable:
 		return fmt.Errorf("%w: %s", ErrUnavailable, st.Message())
-	case codes.Aborted:
-		return fmt.Errorf("%w: %s", ErrConflict, st.Message())
 	case codes.FailedPrecondition:
 		if mapped := mapPreconditionDetail(st); mapped != nil {
 			return mapped

@@ -6,8 +6,8 @@ import (
 	"context"
 	"errors"
 
-	"ployz/internal/infra/sqlite"
 	"ployz/internal/daemon/overlay"
+	"ployz/internal/infra/sqlite"
 )
 
 // NewController creates an overlay service with stubs for unsupported platforms.
@@ -50,6 +50,6 @@ func (stubPlatformOps) ApplyPeerConfig(_ context.Context, _ overlay.Config, _ *o
 
 type stubStatusProber struct{}
 
-func (stubStatusProber) ProbeInfra(_ context.Context, _ *overlay.State) (bool, bool, bool, error) {
+func (stubStatusProber) ProbeInfra(_ context.Context, _ *overlay.State, _ int) (bool, bool, bool, error) {
 	return false, false, false, nil
 }

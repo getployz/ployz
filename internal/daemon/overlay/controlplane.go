@@ -2,7 +2,6 @@ package overlay
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -48,7 +47,7 @@ func (c *Controller) Reconcile(ctx context.Context, in Config) (int, error) {
 		ManagementIP: s.Management,
 		Endpoint:     s.Advertise,
 		UpdatedAt:    c.clock.Now().UTC().Format(time.RFC3339),
-	}, 0); err != nil {
+	}); err != nil {
 		return 0, err
 	}
 
@@ -121,9 +120,6 @@ func (c *Controller) UpsertMachine(ctx context.Context, in Config, m Machine) er
 	m.PublicKey = strings.TrimSpace(m.PublicKey)
 	m.Subnet = strings.TrimSpace(m.Subnet)
 	m.Endpoint = strings.TrimSpace(m.Endpoint)
-	if m.ExpectedVersion < 0 {
-		return fmt.Errorf("machine expected version must be >= 0")
-	}
 
 	if m.ID == "" {
 		m.ID = m.PublicKey
@@ -171,18 +167,14 @@ func (c *Controller) UpsertMachine(ctx context.Context, in Config, m Machine) er
 		}
 	}
 
-	err = r.UpsertMachine(ctx, MachineRow{
+	return r.UpsertMachine(ctx, MachineRow{
 		ID:           m.ID,
 		PublicKey:    m.PublicKey,
 		Subnet:       m.Subnet,
 		ManagementIP: m.ManagementIP,
 		Endpoint:     m.Endpoint,
 		UpdatedAt:    c.clock.Now().UTC().Format(time.RFC3339),
-	}, m.ExpectedVersion)
-	if errors.Is(err, ErrConflict) {
-		return fmt.Errorf("upsert machine conflict: %w", err)
-	}
-	return err
+	})
 }
 
 func (c *Controller) RemoveMachine(ctx context.Context, in Config, machineID string) error {

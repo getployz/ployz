@@ -2,7 +2,6 @@ package machine
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/netip"
 	"runtime"
@@ -336,12 +335,11 @@ func (a *addOp) configure(ctx context.Context) error {
 	if a.entry.Subnet == "" {
 		a.entry.Subnet = a.remoteSubnet.String()
 	}
-	a.entry.ExpectedVersion = findExpectedVersion(a.localMachines, a.entry.ID, a.entry.Endpoint)
 	return nil
 }
 
 func (a *addOp) register(ctx context.Context) error {
-	return upsertMachineWithRetry(ctx, a.api, &a.entry)
+	return a.api.UpsertMachine(ctx, a.entry)
 }
 
 func (a *addOp) syncSupervisor(ctx context.Context) error {
@@ -360,8 +358,7 @@ func (a *addOp) syncSupervisor(ctx context.Context) error {
 		ManagementIP: strings.TrimSpace(a.localIdentity.ManagementIP),
 		Endpoint:     strings.TrimSpace(a.localIdentity.AdvertiseEndpoint),
 	}
-	localEntry.ExpectedVersion = findExpectedVersion(a.localMachines, localEntry.ID, localEntry.Endpoint)
-	if err := upsertMachineWithRetry(ctx, a.remoteAPI, &localEntry); err != nil {
+	if err := a.remoteAPI.UpsertMachine(ctx, localEntry); err != nil {
 		return fmt.Errorf("seed local machine on remote: %w", err)
 	}
 	if err := waitForMachine(waitCtx, a.api, a.entry.ID, "local"); err != nil {
@@ -397,41 +394,6 @@ func waitForMachine(ctx context.Context, api client.API, machineID, who string) 
 			}
 		}
 	}
-}
-
-func upsertMachineWithRetry(ctx context.Context, api client.API, entry *types.MachineEntry) error {
-	if err := api.UpsertMachine(ctx, *entry); err == nil {
-		return nil
-	} else if !errors.Is(err, client.ErrConflict) {
-		return err
-	}
-
-	latest, err := api.ListMachines(ctx)
-	if err != nil {
-		return err
-	}
-	entry.ExpectedVersion = findExpectedVersion(latest, entry.ID, entry.Endpoint)
-	return api.UpsertMachine(ctx, *entry)
-}
-
-func findExpectedVersion(machines []types.MachineEntry, id, endpoint string) int64 {
-	id = strings.TrimSpace(id)
-	endpoint = strings.TrimSpace(endpoint)
-	if id != "" {
-		for _, m := range machines {
-			if strings.TrimSpace(m.ID) == id {
-				return m.Version
-			}
-		}
-	}
-	if endpoint != "" {
-		for _, m := range machines {
-			if strings.TrimSpace(m.Endpoint) == endpoint {
-				return m.Version
-			}
-		}
-	}
-	return 0
 }
 
 func collectBootstrapAddrs(machines []types.MachineEntry, fallbackMgmt netip.Addr, gossipPort int) []string {

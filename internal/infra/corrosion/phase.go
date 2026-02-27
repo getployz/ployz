@@ -1,49 +1,49 @@
 package corrosion
 
-import "ployz/internal/support/check"
-
-type SubscriptionPhase uint8
+type HealthPhase uint8
 
 const (
-	SubscriptionOpening SubscriptionPhase = iota + 1
-	SubscriptionStreaming
-	SubscriptionResubscribing
-	SubscriptionClosedExhausted
-	SubscriptionClosedContext
+	HealthUnreachable HealthPhase = iota + 1
+	HealthForming
+	HealthSyncing
+	HealthReady
 )
 
-func (p SubscriptionPhase) String() string {
+type HealthSample struct {
+	Reachable     bool
+	ThresholdsMet bool
+	Members       int
+	Gaps          uint64
+	QueueSize     uint64
+}
+
+func (p HealthPhase) String() string {
 	switch p {
-	case SubscriptionOpening:
-		return "opening"
-	case SubscriptionStreaming:
-		return "streaming"
-	case SubscriptionResubscribing:
-		return "resubscribing"
-	case SubscriptionClosedExhausted:
-		return "closed_exhausted"
-	case SubscriptionClosedContext:
-		return "closed_context"
+	case HealthUnreachable:
+		return "unreachable"
+	case HealthForming:
+		return "forming"
+	case HealthSyncing:
+		return "syncing"
+	case HealthReady:
+		return "ready"
 	default:
 		return "unknown"
 	}
 }
 
-func (p SubscriptionPhase) Transition(to SubscriptionPhase) SubscriptionPhase {
-	ok := false
-	switch p {
-	case SubscriptionOpening:
-		ok = to == SubscriptionStreaming || to == SubscriptionClosedExhausted || to == SubscriptionClosedContext
-	case SubscriptionStreaming:
-		ok = to == SubscriptionResubscribing || to == SubscriptionClosedContext || to == SubscriptionClosedExhausted
-	case SubscriptionResubscribing:
-		ok = to == SubscriptionStreaming || to == SubscriptionClosedExhausted || to == SubscriptionClosedContext
-	case SubscriptionClosedExhausted, SubscriptionClosedContext:
-		ok = false
+func ClassifyHealth(sample HealthSample, expectedMembers int) HealthPhase {
+	if expectedMembers < 1 {
+		expectedMembers = 1
 	}
-	check.Assertf(ok, "subscription transition: %s -> %s", p, to)
-	if !ok {
-		return p
+	if !sample.Reachable {
+		return HealthUnreachable
 	}
-	return to
+	if sample.Members < expectedMembers {
+		return HealthForming
+	}
+	if !sample.ThresholdsMet || sample.Gaps > 0 || sample.QueueSize > 0 {
+		return HealthSyncing
+	}
+	return HealthReady
 }

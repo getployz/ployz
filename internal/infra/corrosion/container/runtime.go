@@ -36,13 +36,11 @@ type RuntimeConfig struct {
 func Start(ctx context.Context, cli *client.Client, cfg RuntimeConfig) error {
 	log := slog.With("component", "corrosion-runtime", "container", cfg.Name)
 	log.Info("starting")
-	phase := ContainerNotPresent
 	if err := validateGossipBindAddr(cfg.GossipAddr); err != nil {
 		return fmt.Errorf("validate corrosion gossip bind address: %w", err)
 	}
 	_, err := cli.ContainerInspect(ctx, cfg.Name)
 	if err == nil {
-		phase = phase.Transition(ContainerRemovingStale)
 		log.Debug("removing existing container")
 		if err := cli.ContainerRemove(ctx, cfg.Name, container.RemoveOptions{Force: true}); err != nil && !isRemoveOK(err) {
 			return fmt.Errorf("remove old corrosion container: %w", err)
@@ -54,12 +52,10 @@ func Start(ctx context.Context, cli *client.Client, cfg RuntimeConfig) error {
 		return fmt.Errorf("inspect corrosion container: %w", err)
 	}
 
-	phase = phase.Transition(ContainerCreating)
 	if _, err := cli.ContainerCreate(ctx, containerConfig(cfg), hostConfig(cfg), nil, nil, cfg.Name); err != nil {
 		if !errdefs.IsNotFound(err) {
 			return wrapCorrosionDataPermissionError("create corrosion container", cfg.DataDir, err)
 		}
-		phase = phase.Transition(ContainerPullingImage)
 		log.Info("pulling image", "image", cfg.Image)
 		pull, pullErr := cli.ImagePull(ctx, cfg.Image, image.PullOptions{})
 		if pullErr != nil {
@@ -67,29 +63,23 @@ func Start(ctx context.Context, cli *client.Client, cfg RuntimeConfig) error {
 		}
 		_, _ = io.Copy(io.Discard, pull) // drain pull stream to completion
 		_ = pull.Close()                 // best-effort cleanup
-		phase = phase.Transition(ContainerCreating)
 		if _, err = cli.ContainerCreate(ctx, containerConfig(cfg), hostConfig(cfg), nil, nil, cfg.Name); err != nil {
 			return wrapCorrosionDataPermissionError("create corrosion container after pull", cfg.DataDir, err)
 		}
 	}
 
-	phase = phase.Transition(ContainerStarting)
 	if err := cli.ContainerStart(ctx, cfg.Name, container.StartOptions{}); err != nil {
 		return fmt.Errorf("start corrosion container: %w", err)
 	}
 	log.Info("container started")
-	phase = phase.Transition(ContainerWaitingReady)
 	if err := waitReady(ctx, cli, cfg.Name, cfg.APIAddr, cfg.APIToken, cfg.DataDir, 30*time.Second); err != nil {
 		return err
 	}
 	log.Info("api ready", "api_addr", cfg.APIAddr.String())
-	phase = phase.Transition(ContainerApplyingSchema)
 	if err := applySchema(ctx, cfg.APIAddr, cfg.APIToken); err != nil {
 		return err
 	}
-	phase = phase.Transition(ContainerOperational)
 	log.Info("schema applied")
-	log.Debug("container lifecycle phase", "phase", phase.String())
 	return nil
 }
 

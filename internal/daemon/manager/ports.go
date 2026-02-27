@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"ployz/internal/daemon/convergence"
-	"ployz/internal/daemon/membership"
 	"ployz/internal/daemon/overlay"
 	"ployz/pkg/sdk/types"
 )
@@ -34,8 +33,8 @@ type OverlayService interface {
 
 // MembershipService encapsulates machine CRUD operations.
 type MembershipService interface {
-	ListMachines(ctx context.Context, cfg overlay.Config) ([]membership.Machine, error)
-	UpsertMachine(ctx context.Context, cfg overlay.Config, machine membership.Machine) error
+	ListMachines(ctx context.Context, cfg overlay.Config) ([]overlay.Machine, error)
+	UpsertMachine(ctx context.Context, cfg overlay.Config, machine overlay.Machine) error
 	RemoveMachine(ctx context.Context, cfg overlay.Config, machineID string) error
 	Close() error
 }

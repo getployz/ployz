@@ -19,7 +19,7 @@ func (RealClock) Now() time.Time { return time.Now() }
 // MachineRegistry abstracts machine CRUD against Corrosion.
 type MachineRegistry interface {
 	EnsureMachineTable(ctx context.Context) error
-	UpsertMachine(ctx context.Context, row MachineRow, expectedVersion int64) error
+	UpsertMachine(ctx context.Context, row MachineRow) error
 	DeleteByEndpointExceptID(ctx context.Context, endpoint string, id string) error
 	DeleteMachine(ctx context.Context, machineID string) error
 	ListMachineRows(ctx context.Context) ([]MachineRow, error)
@@ -158,7 +158,7 @@ type CorrosionRuntime interface {
 // Production: darwinStatusProber / linuxStatusProber
 // Testing: fake that returns fixed values
 type StatusProber interface {
-	ProbeInfra(ctx context.Context, state *State) (wg bool, dockerNet bool, corrosion bool, err error)
+	ProbeInfra(ctx context.Context, state *State, expectedCorrosionMembers int) (wg bool, dockerNet bool, corrosion bool, err error)
 }
 
 // PlatformOps encapsulates platform-specific runtime operations.

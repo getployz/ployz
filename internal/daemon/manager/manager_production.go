@@ -5,13 +5,12 @@ import (
 	"net/netip"
 	"path/filepath"
 
+	"ployz/internal/daemon/convergence"
+	"ployz/internal/daemon/overlay"
+	"ployz/internal/daemon/workload"
 	"ployz/internal/infra/corrosion"
 	"ployz/internal/infra/platform"
 	"ployz/internal/infra/sqlite"
-	"ployz/internal/daemon/convergence"
-	"ployz/internal/daemon/membership"
-	"ployz/internal/daemon/overlay"
-	"ployz/internal/daemon/workload"
 	"ployz/pkg/sdk/defaults"
 	"ployz/pkg/sdk/types"
 )
@@ -69,7 +68,7 @@ func initPlatformDefaults(ctx context.Context, dataRoot string, cfg *managerCfg)
 		return err
 	}
 	cfg.overlay = ctrl
-	cfg.membership = membership.New(ctrl)
+	cfg.membership = ctrl
 	cfg.workload = workload.New()
 
 	cfg.convergence = convergence.New(ctx,

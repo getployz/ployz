@@ -127,10 +127,9 @@ message MachineEntry {
   string endpoint = 5;
   string last_updated = 6;
   int64 version = 7;
-  int64 expected_version = 8;
-  double freshness_ms = 9;
-  bool stale = 10;
-  double replication_lag_ms = 11;
+  double freshness_ms = 8;
+  bool stale = 9;
+  double replication_lag_ms = 10;
 }
 
 message ListMachinesRequest {}

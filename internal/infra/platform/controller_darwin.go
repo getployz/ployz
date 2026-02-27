@@ -10,11 +10,12 @@ import (
 	"net/netip"
 	"time"
 
-	corrosion "ployz/internal/infra/corrosion/process"
+	"ployz/internal/daemon/overlay"
+	corrosion "ployz/internal/infra/corrosion"
+	corrosionprocess "ployz/internal/infra/corrosion/process"
 	"ployz/internal/infra/docker"
 	"ployz/internal/infra/sqlite"
 	"ployz/internal/infra/wireguard"
-	"ployz/internal/daemon/overlay"
 	"ployz/pkg/sdk/defaults"
 )
 
@@ -26,7 +27,7 @@ func NewController(opts ...overlay.Option) (*overlay.Service, error) {
 	}
 	defaults := []overlay.Option{
 		overlay.WithContainerRuntime(rt),
-		overlay.WithCorrosionRuntime(corrosion.NewAdapter()),
+		overlay.WithCorrosionRuntime(corrosionprocess.NewAdapter()),
 		overlay.WithStatusProber(DarwinStatusProber{RT: rt}),
 		overlay.WithStateStore(sqlite.NetworkStateStore{}),
 		overlay.WithClock(overlay.RealClock{}),
@@ -91,7 +92,7 @@ type DarwinStatusProber struct {
 	RT overlay.ContainerRuntime
 }
 
-func (p DarwinStatusProber) ProbeInfra(ctx context.Context, state *overlay.State) (wg bool, dockerNet bool, corr bool, err error) {
+func (p DarwinStatusProber) ProbeInfra(ctx context.Context, state *overlay.State, expectedCorrosionMembers int) (wg bool, dockerNet bool, corr bool, err error) {
 	wg = wireguard.IsActive()
 	if state == nil {
 		return wg, false, false, nil
@@ -104,7 +105,7 @@ func (p DarwinStatusProber) ProbeInfra(ctx context.Context, state *overlay.State
 
 	apiAddr := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(defaults.CorrosionAPIPort(state.Network)))
 	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	corr = corrosion.APIReady(probeCtx, apiAddr, state.CorrosionAPIToken)
+	corr = corrosion.ProbeHealth(probeCtx, apiAddr, state.CorrosionAPIToken, expectedCorrosionMembers) == corrosion.HealthReady
 	cancel()
 
 	return wg, dockerNet, corr, nil

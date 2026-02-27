@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"ployz/internal/daemon/manager"
-	"ployz/internal/daemon/membership"
 	"ployz/internal/daemon/overlay"
 	"ployz/pkg/sdk/types"
 
@@ -56,9 +55,6 @@ func toGRPCError(err error) error {
 			err.Error(),
 			"remove attached machines first with `ployz machine remove <id>`",
 		)
-	}
-	if errors.Is(err, membership.ErrConflict) {
-		return status.Error(codes.Aborted, err.Error())
 	}
 	var valErr *overlay.ValidationError
 	if errors.As(err, &valErr) {
