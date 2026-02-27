@@ -10,15 +10,15 @@ import (
 )
 
 func removeCmd() *cobra.Command {
-	var cf cmdutil.ClusterFlags
+	var cf cmdutil.ContextFlags
 
 	cmd := &cobra.Command{
 		Use:     "remove <id-or-endpoint>",
 		Aliases: []string{"rm"},
-		Short:   "Remove a node from the cluster",
+		Short:   "Remove a machine",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			clusterName, svc, _, err := service(cmd.Context(), &cf)
+			contextName, svc, _, err := service(cmd.Context(), &cf)
 			if err != nil {
 				return err
 			}
@@ -26,7 +26,7 @@ func removeCmd() *cobra.Command {
 			if err := svc.RemoveMachine(cmd.Context(), args[0]); err != nil {
 				return err
 			}
-			fmt.Println(ui.SuccessMsg("removed node %s from cluster %s", ui.Accent(args[0]), ui.Accent(clusterName)))
+			fmt.Println(ui.SuccessMsg("removed machine %s via context %s", ui.Accent(args[0]), ui.Accent(contextName)))
 			return nil
 		},
 	}

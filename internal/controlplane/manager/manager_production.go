@@ -8,6 +8,7 @@ import (
 	"ployz/internal/adapter/corrosion"
 	"ployz/internal/adapter/platform"
 	"ployz/internal/adapter/sqlite"
+	"ployz/internal/deploy"
 	"ployz/internal/engine"
 	"ployz/internal/network"
 	"ployz/internal/supervisor"
@@ -29,6 +30,9 @@ func NewProduction(ctx context.Context, dataRoot string) (*Manager, error) {
 		WithManagerStateStore(cfg.stateStore),
 		WithManagerController(cfg.ctrl),
 		WithManagerEngine(cfg.eng),
+		WithDeployStoresFactory(cfg.newStores),
+		WithRuntimeContainerStore(cfg.runtimeStore),
+		WithRuntimeSyncCursorStore(cfg.runtimeCursorStore),
 	)
 	if err != nil {
 		_ = cfg.ctrl.Close()      // best-effort cleanup
@@ -56,8 +60,18 @@ func initPlatformDefaults(ctx context.Context, dataRoot string, cfg *managerCfg)
 	registryFactory := network.RegistryFactory(func(addr netip.AddrPort, token string) network.Registry {
 		return corrosion.NewStore(addr, token)
 	})
+	deployStoresFactory := DeployStoresFactory(func(addr netip.AddrPort, token string) deploy.Stores {
+		store := corrosion.NewStore(addr, token)
+		return deploy.Stores{
+			Containers:  store.Containers(),
+			Deployments: store.Deployments(),
+		}
+	})
+	cfg.newStores = deployStoresFactory
 	netStateStore := sqlite.NetworkStateStore{}
 	cfg.stateStore = netStateStore
+	cfg.runtimeStore = sqlite.RuntimeContainerStore{}
+	cfg.runtimeCursorStore = sqlite.RuntimeCursorStore{}
 
 	ctrl, err := platform.NewController(network.WithRegistryFactory(registryFactory))
 	if err != nil {

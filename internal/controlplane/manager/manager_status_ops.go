@@ -122,7 +122,7 @@ func buildRuntimeTree(st types.NetworkStatus) types.StateNode {
 		Phase:     boolPhase(st.Configured, "configured", "unconfigured"),
 		Required:  true,
 		Healthy:   st.Configured,
-		Hint:      "run `ployz init --force`",
+		Hint:      "run `ployz network create default --force`",
 	}
 	if !configNode.Healthy {
 		configNode.LastErrorCode = "network.unconfigured"
@@ -136,7 +136,7 @@ func buildRuntimeTree(st types.NetworkStatus) types.StateNode {
 		Phase:     normalizedNetworkPhase(st.NetworkPhase),
 		Required:  true,
 		Healthy:   networkHealthy,
-		Hint:      "wait for convergence or re-run `ployz init --force`",
+		Hint:      "wait for convergence or re-run `ployz network create default --force`",
 	}
 	if !networkNode.Healthy {
 		networkNode.LastErrorCode = "network.phase.not_running"
@@ -149,7 +149,7 @@ func buildRuntimeTree(st types.NetworkStatus) types.StateNode {
 		Phase:     boolPhase(st.WireGuard, "ready", "unready"),
 		Required:  true,
 		Healthy:   st.WireGuard,
-		Hint:      "run `sudo ployz configure` and `ployz init --force`",
+		Hint:      "run `sudo ployz configure` and `ployz network create default --force`",
 	}
 	if !wireguardNode.Healthy {
 		wireguardNode.LastErrorCode = "wireguard.not_ready"

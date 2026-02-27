@@ -7,6 +7,7 @@ type ContainerStore interface {
 	EnsureContainerTable(ctx context.Context) error
 	InsertContainer(ctx context.Context, row ContainerRow) error
 	UpdateContainer(ctx context.Context, row ContainerRow) error
+	ListContainers(ctx context.Context) ([]ContainerRow, error)
 	ListContainersByNamespace(ctx context.Context, namespace string) ([]ContainerRow, error)
 	ListContainersByDeploy(ctx context.Context, namespace, deployID string) ([]ContainerRow, error)
 	DeleteContainer(ctx context.Context, id string) error
@@ -20,6 +21,7 @@ type DeploymentStore interface {
 	UpdateDeployment(ctx context.Context, row DeploymentRow) error
 	GetDeployment(ctx context.Context, id string) (DeploymentRow, bool, error)
 	GetActiveDeployment(ctx context.Context, namespace string) (DeploymentRow, bool, error)
+	ListAll(ctx context.Context) ([]DeploymentRow, error)
 	ListByNamespace(ctx context.Context, namespace string) ([]DeploymentRow, error)
 	LatestSuccessful(ctx context.Context, namespace string) (DeploymentRow, bool, error)
 	DeleteDeployment(ctx context.Context, id string) error

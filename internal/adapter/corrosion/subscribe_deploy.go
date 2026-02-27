@@ -2,7 +2,6 @@ package corrosion
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -39,24 +38,29 @@ var containerSpec = subscriptionSpec[deploy.ContainerRow, ContainerChange]{
 }
 
 func (s Store) SubscribeDeployments(ctx context.Context, namespace string) ([]deploy.DeploymentRow, <-chan DeploymentChange, error) {
+	return s.Deployments().SubscribeDeployments(ctx, namespace)
+}
+
+func (r DeploymentRepo) SubscribeDeployments(ctx context.Context, namespace string) ([]deploy.DeploymentRow, <-chan DeploymentChange, error) {
 	namespace = strings.TrimSpace(namespace)
-	query := fmt.Sprintf("SELECT id, namespace, spec_json, labels_json, status, owner, owner_heartbeat, machine_ids_json, version, created_at, updated_at FROM %s ORDER BY created_at DESC", deploymentsTable)
-	if namespace != "" {
-		query = fmt.Sprintf("SELECT id, namespace, spec_json, labels_json, status, owner, owner_heartbeat, machine_ids_json, version, created_at, updated_at FROM %s WHERE namespace = %s ORDER BY created_at DESC", deploymentsTable, quoteSQLString(namespace))
+	if namespace == "" {
+		query := fmt.Sprintf("SELECT id, namespace, spec_json, labels_json, status, owner, owner_heartbeat, machine_ids_json, version, created_at, updated_at FROM %s ORDER BY created_at DESC", deploymentsTable)
+		return openAndRun(ctx, r.client, query, nil, deploymentSpec)
 	}
-	return openAndRun(ctx, s, query, deploymentSpec)
+	query := fmt.Sprintf("SELECT id, namespace, spec_json, labels_json, status, owner, owner_heartbeat, machine_ids_json, version, created_at, updated_at FROM %s WHERE namespace = ? ORDER BY created_at DESC", deploymentsTable)
+	return openAndRun(ctx, r.client, query, []any{namespace}, deploymentSpec)
 }
 
 func (s Store) SubscribeContainers(ctx context.Context, namespace string) ([]deploy.ContainerRow, <-chan ContainerChange, error) {
-	namespace = strings.TrimSpace(namespace)
-	query := fmt.Sprintf("SELECT id, namespace, deploy_id, service, machine_id, container_name, spec_json, status, version, created_at, updated_at FROM %s ORDER BY namespace, service, machine_id, container_name", containersTable)
-	if namespace != "" {
-		query = fmt.Sprintf("SELECT id, namespace, deploy_id, service, machine_id, container_name, spec_json, status, version, created_at, updated_at FROM %s WHERE namespace = %s ORDER BY service, machine_id, container_name", containersTable, quoteSQLString(namespace))
-	}
-	return openAndRun(ctx, s, query, containerSpec)
+	return s.Containers().SubscribeContainers(ctx, namespace)
 }
 
-func quoteSQLString(value string) string {
-	raw, _ := json.Marshal(value)
-	return string(raw)
+func (r ContainerRepo) SubscribeContainers(ctx context.Context, namespace string) ([]deploy.ContainerRow, <-chan ContainerChange, error) {
+	namespace = strings.TrimSpace(namespace)
+	if namespace == "" {
+		query := fmt.Sprintf("SELECT id, namespace, deploy_id, service, machine_id, container_name, spec_json, status, version, created_at, updated_at FROM %s ORDER BY namespace, service, machine_id, container_name", containersTable)
+		return openAndRun(ctx, r.client, query, nil, containerSpec)
+	}
+	query := fmt.Sprintf("SELECT id, namespace, deploy_id, service, machine_id, container_name, spec_json, status, version, created_at, updated_at FROM %s WHERE namespace = ? ORDER BY service, machine_id, container_name", containersTable)
+	return openAndRun(ctx, r.client, query, []any{namespace}, containerSpec)
 }

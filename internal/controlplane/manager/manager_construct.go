@@ -23,12 +23,17 @@ func New(ctx context.Context, dataRoot string, opts ...ManagerOption) (*Manager,
 	}
 
 	m := &Manager{
-		ctx:        ctx,
-		dataRoot:   dataRoot,
-		store:      cfg.specStore,
-		stateStore: cfg.stateStore,
-		ctrl:       cfg.ctrl,
-		engine:     cfg.eng,
+		ctx:                         ctx,
+		dataRoot:                    dataRoot,
+		store:                       cfg.specStore,
+		stateStore:                  cfg.stateStore,
+		ctrl:                        cfg.ctrl,
+		engine:                      cfg.eng,
+		newStores:                   cfg.newStores,
+		runtimeStore:                cfg.runtimeStore,
+		runtimeCursorStore:          cfg.runtimeCursorStore,
+		controlPlaneWorkloadSummary: cfg.controlPlaneWorkloadSummary,
+		attachedMachinesSummary:     cfg.attachedMachinesSummary,
 	}
 
 	m.restoreNetwork(ctx, dataRoot, log)

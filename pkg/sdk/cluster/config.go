@@ -16,7 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const envCluster = "PLOYZ_CLUSTER"
+const envContext = "PLOYZ_CONTEXT"
 
 type Connection struct {
 	Unix       string `yaml:"unix,omitempty"`
@@ -136,7 +136,7 @@ func (c *Config) Current() (string, Cluster, bool) {
 	if c == nil || len(c.Clusters) == 0 {
 		return "", Cluster{}, false
 	}
-	if override := strings.TrimSpace(os.Getenv(envCluster)); override != "" {
+	if override := strings.TrimSpace(os.Getenv(envContext)); override != "" {
 		if cl, ok := c.Clusters[override]; ok {
 			return override, cl, true
 		}
@@ -190,7 +190,7 @@ func (c *Config) ClusterNames() []string {
 // Dial tries connections in order and returns the first successful client.
 func (cl Cluster) Dial(ctx context.Context) (*client.Client, error) {
 	if len(cl.Connections) == 0 {
-		return nil, fmt.Errorf("cluster has no connections configured")
+		return nil, fmt.Errorf("context has no connections configured")
 	}
 
 	var lastErr error

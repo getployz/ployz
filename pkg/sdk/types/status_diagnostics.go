@@ -20,7 +20,7 @@ func (s NetworkStatus) ServiceBlockerIssues() []StatusIssue {
 			Component: "config",
 			Phase:     phaseOrUnknown(networkPhase),
 			Message:   "network is not configured",
-			Hint:      "run `ployz init --force`",
+			Hint:      "run `ployz network create default --force`",
 		})
 		return issues
 	}
@@ -40,7 +40,7 @@ func (s NetworkStatus) ServiceBlockerIssues() []StatusIssue {
 			Component: "runtime",
 			Phase:     networkPhase,
 			Message:   "network runtime is not operational",
-			Hint:      "run `ployz init --force`",
+			Hint:      "run `ployz network create default --force`",
 		})
 	default:
 		issues = append(issues, StatusIssue{
@@ -56,7 +56,7 @@ func (s NetworkStatus) ServiceBlockerIssues() []StatusIssue {
 			Component: "wireguard",
 			Phase:     phaseFromHealthy(s.WireGuard),
 			Message:   "wireguard is not ready",
-			Hint:      "run `sudo ployz configure` and retry `ployz init --force`",
+			Hint:      "run `sudo ployz configure` and retry `ployz network create default --force`",
 		})
 	}
 
@@ -74,7 +74,7 @@ func (s NetworkStatus) ServiceBlockerIssues() []StatusIssue {
 			Component: "docker",
 			Phase:     phaseFromHealthy(s.DockerNet),
 			Message:   "docker network is not ready",
-			Hint:      "ensure docker is running and retry `ployz init --force`",
+			Hint:      "ensure docker is running and retry `ployz network create default --force`",
 		})
 	}
 

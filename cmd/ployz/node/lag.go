@@ -17,19 +17,19 @@ import (
 )
 
 func lagCmd() *cobra.Command {
-	var cf cmdutil.ClusterFlags
+	var cf cmdutil.ContextFlags
 	var jsonOutput bool
 
 	cmd := &cobra.Command{
 		Use:   "lag",
-		Short: "Show replication lag and ping latency across nodes",
+		Short: "Show replication lag and ping latency across machines",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			clusterName, svc, _, err := service(cmd.Context(), &cf)
+			contextName, svc, _, err := service(cmd.Context(), &cf)
 			if err != nil {
 				return err
 			}
 
-			// Fan out GetPeerHealth to all nodes via the proxy.
+			// Fan out GetPeerHealth to all machines via the proxy.
 			ctx := client.ProxyMachinesContext(cmd.Context(), nil)
 			responses, err := svc.GetPeerHealth(ctx)
 			if err != nil {
@@ -42,7 +42,7 @@ func lagCmd() *cobra.Command {
 				return enc.Encode(responses)
 			}
 
-			return printLagMatrix(clusterName, responses)
+			return printLagMatrix(contextName, responses)
 		},
 	}
 
@@ -66,17 +66,17 @@ type matrixData struct {
 	formatCell func(c matrixCell) string
 }
 
-func printLagMatrix(clusterName string, responses []types.PeerHealthResponse) error {
+func printLagMatrix(contextName string, responses []types.PeerHealthResponse) error {
 	if len(responses) == 0 {
 		fmt.Println(ui.Muted("no peer health data available"))
 		return nil
 	}
 
-	// Collect all node IDs and build a lookup from node ID to short label.
+	// Collect all machine IDs and build a lookup from machine ID to short label.
 	nodeIDs := make([]string, 0, len(responses))
 	for _, r := range responses {
 		if r.Error != "" {
-			fmt.Fprintln(os.Stderr, ui.WarnMsg("node %s: %s", shortID(r.NodeID), r.Error))
+			fmt.Fprintln(os.Stderr, ui.WarnMsg("machine %s: %s", shortID(r.NodeID), r.Error))
 			continue
 		}
 		if r.NodeID != "" {
@@ -86,7 +86,7 @@ func printLagMatrix(clusterName string, responses []types.PeerHealthResponse) er
 	sort.Strings(nodeIDs)
 
 	if len(nodeIDs) == 0 {
-		fmt.Println(ui.Muted("no healthy nodes reported"))
+		fmt.Println(ui.Muted("no healthy machines reported"))
 		return nil
 	}
 
@@ -111,7 +111,7 @@ func printLagMatrix(clusterName string, responses []types.PeerHealthResponse) er
 		pingMatrix[i] = make([]matrixCell, n)
 	}
 
-	// Track clock health per node.
+	// Track clock health per machine.
 	var maxOffset float64
 	allHealthy := true
 
@@ -154,13 +154,13 @@ func printLagMatrix(clusterName string, responses []types.PeerHealthResponse) er
 	}
 
 	// Print header.
-	fmt.Println(ui.InfoMsg("replication lag for cluster %s", ui.Accent(clusterName)))
+	fmt.Println(ui.InfoMsg("replication lag via context %s", ui.Accent(contextName)))
 	clockStatus := ui.Success("healthy")
 	if !allHealthy {
 		clockStatus = ui.Warn("unhealthy")
 	}
 	fmt.Print(ui.KeyValues("  ",
-		ui.KV("nodes", fmt.Sprintf("%d", n)),
+		ui.KV("machines", fmt.Sprintf("%d", n)),
 		ui.KV("clock sync", fmt.Sprintf("%s (max_offset=%.1fms)", clockStatus, maxOffset)),
 	))
 

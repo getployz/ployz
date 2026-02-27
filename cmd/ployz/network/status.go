@@ -13,14 +13,14 @@ import (
 )
 
 func statusCmd() *cobra.Command {
-	var cf cmdutil.ClusterFlags
+	var cf cmdutil.ContextFlags
 
 	cmd := &cobra.Command{
 		Use:   "status [network]",
 		Short: "Show network readiness for the selected context",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			clusterName, api, cl, err := cf.DialService(cmd.Context())
+			contextName, api, cl, err := cf.DialService(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -33,7 +33,7 @@ func statusCmd() *cobra.Command {
 				expectedNetwork = strings.TrimSpace(args[0])
 			}
 			if expectedNetwork != "" && strings.TrimSpace(cl.Network) != expectedNetwork {
-				return fmt.Errorf("context %q targets network %q, not %q", clusterName, strings.TrimSpace(cl.Network), expectedNetwork)
+				return fmt.Errorf("context %q targets network %q, not %q", contextName, strings.TrimSpace(cl.Network), expectedNetwork)
 			}
 
 			svc := sdkmachine.New(api)
@@ -43,7 +43,7 @@ func statusCmd() *cobra.Command {
 			}
 
 			fmt.Print(ui.KeyValues("",
-				ui.KV("context", clusterName),
+				ui.KV("context", contextName),
 				ui.KV("network", cl.Network),
 				ui.KV("network phase", fallbackDash(diag.Status.NetworkPhase)),
 				ui.KV("service ready", ui.Bool(diag.ServiceReady())),

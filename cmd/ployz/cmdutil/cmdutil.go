@@ -14,47 +14,47 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type ClusterFlags struct {
-	Cluster string
+type ContextFlags struct {
+	Context string
 }
 
-func (f *ClusterFlags) Bind(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&f.Cluster, "cluster", "", "Cluster name (overrides current)")
+func (f *ContextFlags) Bind(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&f.Context, "context", "", "Context name (overrides current)")
 }
 
-func (f *ClusterFlags) Resolve() (string, cluster.Cluster, error) {
+func (f *ContextFlags) Resolve() (string, cluster.Cluster, error) {
 	cfg, err := cluster.LoadDefault()
 	if err != nil {
 		return "", cluster.Cluster{}, fmt.Errorf("load config: %w", err)
 	}
 
-	name := strings.TrimSpace(f.Cluster)
+	name := strings.TrimSpace(f.Context)
 	if name == "" {
-		name = strings.TrimSpace(os.Getenv("PLOYZ_CLUSTER"))
+		name = strings.TrimSpace(os.Getenv("PLOYZ_CONTEXT"))
 	}
 	if name != "" {
 		cl, ok := cfg.Cluster(name)
 		if !ok {
-			return "", cluster.Cluster{}, fmt.Errorf("cluster %q not found in config", name)
+			return "", cluster.Cluster{}, fmt.Errorf("context %q not found in config", name)
 		}
 		return name, cl, nil
 	}
 
 	n, cl, ok := cfg.Current()
 	if !ok {
-		return "", cluster.Cluster{}, fmt.Errorf("no cluster configured. Run 'ployz init' first.")
+		return "", cluster.Cluster{}, fmt.Errorf("no context configured. Run 'ployz network create default' first")
 	}
 	return n, cl, nil
 }
 
-func (f *ClusterFlags) DialService(ctx context.Context) (string, *client.Client, cluster.Cluster, error) {
+func (f *ContextFlags) DialService(ctx context.Context) (string, *client.Client, cluster.Cluster, error) {
 	name, cl, err := f.Resolve()
 	if err != nil {
 		return "", nil, cluster.Cluster{}, err
 	}
 	api, err := cl.Dial(ctx)
 	if err != nil {
-		return "", nil, cluster.Cluster{}, fmt.Errorf("connect to cluster %q: %w", name, err)
+		return "", nil, cluster.Cluster{}, fmt.Errorf("connect to context %q: %w", name, err)
 	}
 	return name, api, cl, nil
 }

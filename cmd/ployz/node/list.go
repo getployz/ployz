@@ -12,12 +12,12 @@ import (
 )
 
 func listCmd() *cobra.Command {
-	var cf cmdutil.ClusterFlags
+	var cf cmdutil.ContextFlags
 
 	cmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
-		Short:   "List nodes in the cluster",
+		Short:   "List machines in the selected context",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, svc, _, err := service(cmd.Context(), &cf)
 			if err != nil {
@@ -35,7 +35,7 @@ func listCmd() *cobra.Command {
 				return err
 			}
 			if len(machines) == 0 {
-				fmt.Println(ui.Muted("no nodes registered"))
+				fmt.Println(ui.Muted("no machines registered"))
 				return nil
 			}
 

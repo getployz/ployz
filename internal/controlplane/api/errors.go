@@ -26,13 +26,44 @@ func toGRPCError(err error) error {
 		return status.Error(codes.NotFound, err.Error())
 	}
 	if errors.Is(err, manager.ErrNetworkNotConfigured) {
-		return preconditionStatus(types.PreconditionNetworkNotConfigured, "network", err.Error())
+		return preconditionStatus(
+			types.PreconditionNetworkNotConfigured,
+			"network",
+			err.Error(),
+			"run `ployz network create <network> --force`",
+		)
 	}
 	if errors.Is(err, manager.ErrRuntimeNotReadyForServices) {
-		return preconditionStatus(types.PreconditionRuntimeNotReadyForServices, "runtime", err.Error())
+		return preconditionStatus(
+			types.PreconditionRuntimeNotReadyForServices,
+			"runtime",
+			err.Error(),
+			"run `ployz status` or `ployz doctor`",
+		)
+	}
+	if errors.Is(err, manager.ErrNetworkDestroyHasWorkloads) {
+		return preconditionStatus(
+			types.PreconditionNetworkDestroyHasWorkloads,
+			"network",
+			err.Error(),
+			"remove workloads first with `ployz service remove <name>`",
+		)
+	}
+	if errors.Is(err, manager.ErrNetworkDestroyHasMachines) {
+		return preconditionStatus(
+			types.PreconditionNetworkDestroyHasMachines,
+			"network",
+			err.Error(),
+			"remove attached machines first with `ployz machine remove <id>`",
+		)
 	}
 	if errors.Is(err, deploy.ErrNoMachinesAvailable) {
-		return preconditionStatus(types.PreconditionDeployNoMachinesAvailable, "deploy", err.Error())
+		return preconditionStatus(
+			types.PreconditionDeployNoMachinesAvailable,
+			"deploy",
+			err.Error(),
+			"run `ployz machine add <user@host>`",
+		)
 	}
 	if errors.Is(err, network.ErrConflict) {
 		return status.Error(codes.Aborted, err.Error())
@@ -61,17 +92,35 @@ func toGRPCError(err error) error {
 	return status.Error(codes.Internal, msg)
 }
 
-func preconditionStatus(code types.PreconditionCode, subject, message string) error {
+const (
+	preconditionErrorInfoReason = "PRECONDITION_FAILED"
+	preconditionErrorInfoDomain = "ployz.controlplane"
+
+	errorInfoMetadataPreconditionCode = "precondition_code"
+	errorInfoMetadataRemediationHint  = "remediation_hint"
+)
+
+func preconditionStatus(code types.PreconditionCode, subject, message, remediationHint string) error {
 	st := status.New(codes.FailedPrecondition, message)
-	withDetails, err := st.WithDetails(&errdetails.PreconditionFailure{
-		Violations: []*errdetails.PreconditionFailure_Violation{
-			{
-				Type:        string(code),
-				Subject:     subject,
-				Description: message,
+	withDetails, err := st.WithDetails(
+		&errdetails.PreconditionFailure{
+			Violations: []*errdetails.PreconditionFailure_Violation{
+				{
+					Type:        string(code),
+					Subject:     subject,
+					Description: message,
+				},
 			},
 		},
-	})
+		&errdetails.ErrorInfo{
+			Reason: preconditionErrorInfoReason,
+			Domain: preconditionErrorInfoDomain,
+			Metadata: map[string]string{
+				errorInfoMetadataPreconditionCode: string(code),
+				errorInfoMetadataRemediationHint:  remediationHint,
+			},
+		},
+	)
 	if err != nil {
 		return st.Err()
 	}

@@ -18,7 +18,7 @@ service Daemon {
   rpc PlanDeploy(PlanDeployRequest) returns (PlanDeployResponse);
   // ApplyDeploy executes a deploy and streams progress + final result.
   rpc ApplyDeploy(ApplyDeployRequest) returns (stream DeployProgressEvent);
-  // ListDeployments returns deployment rows for a namespace.
+  // ListDeployments returns deployment rows. If namespace is empty, returns all namespaces.
   rpc ListDeployments(ListDeploymentsRequest) returns (ListDeploymentsResponse);
   // RemoveNamespace removes all namespace containers on this machine.
   rpc RemoveNamespace(RemoveNamespaceRequest) returns (RemoveNamespaceResponse);
@@ -297,6 +297,7 @@ message ContainerResultProto {
 // --- ListDeployments ---
 
 message ListDeploymentsRequest {
+  // Optional namespace filter; empty means all namespaces.
   string namespace = 1;
 }
 

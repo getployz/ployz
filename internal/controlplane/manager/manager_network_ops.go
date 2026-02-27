@@ -4,10 +4,20 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
 
+	"ployz/internal/deploy"
 	"ployz/internal/engine"
 	"ployz/internal/network"
 	"ployz/pkg/sdk/types"
+)
+
+const (
+	managedLabelNamespace = "ployz.namespace"
+	managedLabelDeployID  = "ployz.deploy_id"
+	maxWorkloadContexts   = 3
+	maxAttachedMachines   = 5
 )
 
 func (m *Manager) ApplyNetworkSpec(ctx context.Context, spec types.NetworkSpec) (types.ApplyResult, error) {
@@ -82,6 +92,43 @@ func (m *Manager) DisableNetwork(ctx context.Context, purge bool) error {
 	log := slog.With("component", "manager", "network", networkName, "purge", purge)
 	log.Info("disable requested")
 
+	workloadCount, contexts, err := m.localManagedWorkloadSummary(ctx)
+	if err != nil {
+		return err
+	}
+
+	controlPlaneSummary := m.controlPlaneWorkloadSummary
+	if controlPlaneSummary == nil {
+		controlPlaneSummary = m.defaultControlPlaneManagedWorkloadSummary
+	}
+	controlPlaneCount, controlPlaneContexts, err := controlPlaneSummary(ctx, cfg)
+	if err != nil {
+		return err
+	}
+
+	if workloadCount > 0 || controlPlaneCount > 0 {
+		details := make([]string, 0, 2)
+		if workloadCount > 0 {
+			details = append(details, buildWorkloadBlockDetail("local runtime", workloadCount, contexts))
+		}
+		if controlPlaneCount > 0 {
+			details = append(details, buildWorkloadBlockDetail("control-plane", controlPlaneCount, controlPlaneContexts))
+		}
+		return fmt.Errorf("%w: %s", ErrNetworkDestroyHasWorkloads, strings.Join(details, "; "))
+	}
+
+	attachedSummary := m.attachedMachinesSummary
+	if attachedSummary == nil {
+		attachedSummary = m.defaultAttachedMachinesSummary
+	}
+	attachedCount, machineIDs, err := attachedSummary(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	if attachedCount > 0 {
+		return fmt.Errorf("%w: %s", ErrNetworkDestroyHasMachines, buildAttachedMachinesBlockDetail(attachedCount, machineIDs))
+	}
+
 	// Stop the supervisor loop first.
 	if stopErr := m.engine.Stop(); stopErr != nil {
 		log.Warn("failed to stop supervisor loop", "err", stopErr)
@@ -106,6 +153,153 @@ func (m *Manager) DisableNetwork(ctx context.Context, purge bool) error {
 	log.Info("disable complete")
 
 	return nil
+}
+
+func (m *Manager) localManagedWorkloadSummary(ctx context.Context) (int, []string, error) {
+	runtime := m.ctrl.ContainerRuntime()
+	if runtime == nil {
+		return 0, nil, fmt.Errorf("container runtime is unavailable")
+	}
+
+	entries, err := runtime.ContainerList(ctx, nil)
+	if err != nil {
+		return 0, nil, fmt.Errorf("list local runtime containers: %w", err)
+	}
+
+	count := 0
+	contexts := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		namespace := strings.TrimSpace(entry.Labels[managedLabelNamespace])
+		deployID := strings.TrimSpace(entry.Labels[managedLabelDeployID])
+		if namespace == "" || deployID == "" {
+			continue
+		}
+		count++
+		if len(contexts) < maxWorkloadContexts {
+			contexts[namespace] = struct{}{}
+		}
+	}
+
+	summary := make([]string, 0, len(contexts))
+	for context := range contexts {
+		summary = append(summary, context)
+	}
+	sort.Strings(summary)
+
+	return count, summary, nil
+}
+
+func (m *Manager) defaultControlPlaneManagedWorkloadSummary(ctx context.Context, cfg network.Config) (int, []string, error) {
+	stores, err := m.deployStores(cfg)
+	if err != nil {
+		return 0, nil, err
+	}
+	if stores.Containers == nil {
+		return 0, nil, fmt.Errorf("container store is unavailable")
+	}
+	if err := stores.Containers.EnsureContainerTable(ctx); err != nil {
+		return 0, nil, fmt.Errorf("ensure deploy container table: %w", err)
+	}
+
+	rows, err := stores.Containers.ListContainers(ctx)
+	if err != nil {
+		return 0, nil, fmt.Errorf("list deploy containers: %w", err)
+	}
+
+	count, contexts := deployWorkloadContextSummary(rows)
+	return count, contexts, nil
+}
+
+func deployWorkloadContextSummary(rows []deploy.ContainerRow) (int, []string) {
+	if len(rows) == 0 {
+		return 0, nil
+	}
+
+	contexts := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		if len(contexts) >= maxWorkloadContexts {
+			break
+		}
+
+		namespace := strings.TrimSpace(row.Namespace)
+		deployID := strings.TrimSpace(row.DeployID)
+		context := ""
+		switch {
+		case namespace != "":
+			context = namespace
+		case deployID != "":
+			context = "deploy/" + deployID
+		default:
+			context = strings.TrimSpace(row.ID)
+		}
+		if context != "" {
+			contexts[context] = struct{}{}
+		}
+	}
+
+	summary := make([]string, 0, len(contexts))
+	for context := range contexts {
+		summary = append(summary, context)
+	}
+	sort.Strings(summary)
+
+	return len(rows), summary
+}
+
+func buildWorkloadBlockDetail(source string, count int, contexts []string) string {
+	detail := fmt.Sprintf("%s has %d managed workload containers", source, count)
+	if len(contexts) == 0 {
+		return detail
+	}
+	sortedContexts := append([]string(nil), contexts...)
+	sort.Strings(sortedContexts)
+	return fmt.Sprintf("%s (%s)", detail, strings.Join(sortedContexts, ", "))
+}
+
+func (m *Manager) defaultAttachedMachinesSummary(ctx context.Context, cfg network.Config) (int, []string, error) {
+	rows, err := m.ctrl.ListMachines(ctx, cfg)
+	if err != nil {
+		return 0, nil, fmt.Errorf("list attached machines: %w", err)
+	}
+
+	localID := ""
+	identity, idErr := m.GetIdentity(ctx)
+	if idErr == nil {
+		localID = strings.TrimSpace(identity.ID)
+	}
+
+	machineSet := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		id := strings.TrimSpace(row.ID)
+		if id == "" {
+			continue
+		}
+		if localID != "" && id == localID {
+			continue
+		}
+		machineSet[id] = struct{}{}
+	}
+
+	machineIDs := make([]string, 0, len(machineSet))
+	for id := range machineSet {
+		machineIDs = append(machineIDs, id)
+	}
+	sort.Strings(machineIDs)
+	if len(machineIDs) > maxAttachedMachines {
+		machineIDs = machineIDs[:maxAttachedMachines]
+	}
+
+	return len(machineSet), machineIDs, nil
+}
+
+func buildAttachedMachinesBlockDetail(count int, machineIDs []string) string {
+	detail := fmt.Sprintf("network has %d attached machines", count)
+	if len(machineIDs) == 0 {
+		return detail
+	}
+	sortedIDs := append([]string(nil), machineIDs...)
+	sort.Strings(sortedIDs)
+	return fmt.Sprintf("%s (%s)", detail, strings.Join(sortedIDs, ", "))
 }
 
 func (m *Manager) applyOnce(ctx context.Context, spec types.NetworkSpec) (types.ApplyResult, error) {

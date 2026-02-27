@@ -118,7 +118,7 @@ func Start(ctx context.Context, cfg RuntimeConfig) error {
 	if err := waitReady(ctx, name, pid, cfg.APIAddr, cfg.APIToken, logPath, corrosionReadyTimeout, exitCh); err != nil {
 		_ = stopFromPIDFile(pidPath, pidStopGrace)
 		if dbExisted && strings.Contains(strings.ToLower(err.Error()), "segmentation fault") {
-			return fmt.Errorf("%s (existing corrosion database %s may be incompatible; move aside store.db, store.db-shm, and store.db-wal, then retry `ployz init --force`)", err.Error(), dbPath)
+			return fmt.Errorf("%s (existing corrosion database %s may be incompatible; move aside store.db, store.db-shm, and store.db-wal, then retry `ployz network create default --force`)", err.Error(), dbPath)
 		}
 		return err
 	}

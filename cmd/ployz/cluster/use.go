@@ -13,7 +13,7 @@ import (
 func useCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "use <name>",
-		Short: "Switch current cluster",
+		Short: "Switch current context",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := strings.TrimSpace(args[0])
@@ -22,13 +22,13 @@ func useCmd() *cobra.Command {
 				return err
 			}
 			if _, ok := cfg.Cluster(name); !ok {
-				return fmt.Errorf("cluster %q not found", name)
+				return fmt.Errorf("context %q not found", name)
 			}
 			cfg.CurrentCluster = name
 			if err := cfg.Save(); err != nil {
 				return err
 			}
-			fmt.Println(ui.SuccessMsg("current cluster is now %s", ui.Accent(name)))
+			fmt.Println(ui.SuccessMsg("current context is now %s", ui.Accent(name)))
 			return nil
 		},
 	}

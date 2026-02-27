@@ -13,7 +13,7 @@ import (
 )
 
 func addCmd() *cobra.Command {
-	var cf cmdutil.ClusterFlags
+	var cf cmdutil.ContextFlags
 	var endpoint string
 	var sshPort int
 	var sshKey string
@@ -21,10 +21,10 @@ func addCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "add <user@host>",
-		Short: "Add a node to the cluster over SSH",
+		Short: "Add a machine over SSH",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			clusterName, svc, cl, err := service(cmd.Context(), &cf)
+			contextName, svc, cl, err := service(cmd.Context(), &cf)
 			if err != nil {
 				return err
 			}
@@ -35,10 +35,10 @@ func addCmd() *cobra.Command {
 			}
 			if !diag.ControlPlaneReady() {
 				cmdutil.PrintStatusIssues(os.Stderr, diag.ControlPlaneBlockers, cmdutil.IssueLevelBlocker)
-				return fmt.Errorf("control plane is not ready; run `ployz node doctor`")
+				return fmt.Errorf("control plane is not ready; run `ployz doctor`")
 			}
 
-			fmt.Fprintln(os.Stderr, ui.InfoMsg("adding node %s", ui.Accent(args[0])))
+			fmt.Fprintln(os.Stderr, ui.InfoMsg("adding machine %s", ui.Accent(args[0])))
 
 			telemetryOut := ui.NewTelemetryOutput()
 			defer telemetryOut.Close()
@@ -59,22 +59,22 @@ func addCmd() *cobra.Command {
 			// Persist the SSH connection to config.
 			cfg, err := cluster.LoadDefault()
 			if err != nil {
-				return fmt.Errorf("load cluster config: %w", err)
+				return fmt.Errorf("load context config: %w", err)
 			}
-			entry, ok := cfg.Cluster(clusterName)
+			entry, ok := cfg.Cluster(contextName)
 			if !ok {
-				return fmt.Errorf("cluster %q not found in config", clusterName)
+				return fmt.Errorf("context %q not found in config", contextName)
 			}
 			entry.Connections = append(entry.Connections, cluster.Connection{
 				SSH:        args[0],
 				SSHKeyFile: sshKey,
 			})
-			cfg.Upsert(clusterName, entry)
+			cfg.Upsert(contextName, entry)
 			if err := cfg.Save(); err != nil {
-				return fmt.Errorf("save cluster config: %w", err)
+				return fmt.Errorf("save context config: %w", err)
 			}
 
-			fmt.Println(ui.SuccessMsg("added node %s to cluster %s", ui.Accent(args[0]), ui.Accent(clusterName)))
+			fmt.Println(ui.SuccessMsg("added machine %s via context %s", ui.Accent(args[0]), ui.Accent(contextName)))
 			fmt.Print(ui.KeyValues("  ",
 				ui.KV("endpoint", result.Machine.Endpoint),
 				ui.KV("key", result.Machine.PublicKey),

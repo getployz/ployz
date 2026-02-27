@@ -48,7 +48,7 @@ func (c deployPlanCounts) ChangeCount() int {
 }
 
 func runCmd() *cobra.Command {
-	var cf cmdutil.ClusterFlags
+	var cf cmdutil.ContextFlags
 	var image string
 	var replicas int
 	var ports []string
@@ -60,7 +60,7 @@ func runCmd() *cobra.Command {
 		Short: "Run or update a single-image service",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			clusterName, api, cl, err := cf.DialService(cmd.Context())
+			contextName, api, cl, err := cf.DialService(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -87,7 +87,7 @@ func runCmd() *cobra.Command {
 					return decorateDeployPreconditionError(err, strings.TrimSpace(cl.Network))
 				}
 				counts := countPlanActions(plan)
-				fmt.Println(ui.InfoMsg("planned service %s for cluster %s", ui.Accent(name), ui.Accent(clusterName)))
+				fmt.Println(ui.InfoMsg("planned service %s for context %s", ui.Accent(name), ui.Accent(contextName)))
 				fmt.Print(ui.KeyValues("  ",
 					ui.KV("namespace", plan.Namespace),
 					ui.KV("deploy", plan.DeployID),
@@ -105,7 +105,7 @@ func runCmd() *cobra.Command {
 				return nil
 			}
 
-			fmt.Fprintln(os.Stderr, ui.InfoMsg("deploying service %s to cluster %s", ui.Accent(name), ui.Accent(clusterName)))
+			fmt.Fprintln(os.Stderr, ui.InfoMsg("deploying service %s via context %s", ui.Accent(name), ui.Accent(contextName)))
 			events := make(chan types.DeployProgressEvent, deployEventsBufferCapacity)
 			done := make(chan struct{})
 			go func() {
@@ -135,7 +135,7 @@ func runCmd() *cobra.Command {
 				return err
 			}
 
-			fmt.Println(ui.SuccessMsg("service %s deployed to cluster %s", ui.Accent(name), ui.Accent(clusterName)))
+			fmt.Println(ui.SuccessMsg("service %s deployed via context %s", ui.Accent(name), ui.Accent(contextName)))
 			fmt.Print(ui.KeyValues("  ",
 				ui.KV("namespace", result.Namespace),
 				ui.KV("deploy", result.DeployID),
@@ -159,20 +159,50 @@ func decorateDeployPreconditionError(err error, networkName string) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, client.ErrNoMachinesAvailable) {
-		if networkName == "" {
-			return fmt.Errorf("no schedulable machines available; run `ployz add <user@host>`")
+	hint := strings.TrimSpace(client.PreconditionHint(err))
+	if hint != "" {
+		replacement := strings.TrimSpace(networkName)
+		if replacement == "" {
+			replacement = "default"
 		}
-		return fmt.Errorf("no schedulable machines available for network %q; run `ployz add <user@host>`", networkName)
+		hint = strings.ReplaceAll(hint, "<network>", replacement)
+	}
+	if errors.Is(err, client.ErrNoMachinesAvailable) {
+		action := hint
+		if action == "" {
+			action = "run `ployz machine add <user@host>`"
+		}
+		if networkName == "" {
+			return fmt.Errorf("no schedulable machines available; %s", action)
+		}
+		return fmt.Errorf("no schedulable machines available for network %q; %s", networkName, action)
 	}
 	if errors.Is(err, client.ErrNetworkNotConfigured) {
-		return fmt.Errorf("network is not configured for this context; run `ployz init --force`")
+		action := hint
+		if action == "" {
+			if networkName != "" {
+				action = fmt.Sprintf("run `ployz network create %s --force`", networkName)
+			} else {
+				action = "run `ployz network create default --force`"
+			}
+		}
+		if networkName != "" {
+			return fmt.Errorf("network %q is not configured in this context; %s", networkName, action)
+		}
+		return fmt.Errorf("network is not configured for this context; %s", action)
 	}
 	if errors.Is(err, client.ErrRuntimeNotReadyForServices) {
-		return fmt.Errorf("runtime is not ready for service deployment; run `ployz status` or `ployz doctor`")
+		action := hint
+		if action == "" {
+			action = "run `ployz status` or `ployz doctor`"
+		}
+		return fmt.Errorf("runtime is not ready for service deployment; %s", action)
 	}
 	if !errors.Is(err, client.ErrPrecondition) {
 		return err
+	}
+	if hint != "" {
+		return fmt.Errorf("deploy precondition failed: %w (%s)", err, hint)
 	}
 	return fmt.Errorf("deploy precondition failed: %w (run `ployz status` or `ployz doctor`)", err)
 }

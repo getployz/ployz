@@ -18,13 +18,11 @@ const (
 )
 
 func (s Store) SubscribeMachines(ctx context.Context) ([]network.MachineRow, <-chan network.MachineChange, error) {
-	query := fmt.Sprintf("SELECT id, public_key, subnet, management_ip, endpoint, updated_at, version FROM %s ORDER BY id", machinesTable)
-	return openAndRun(ctx, s, query, machineSpec)
+	return s.Machines().SubscribeMachines(ctx)
 }
 
 func (s Store) SubscribeHeartbeats(ctx context.Context) ([]network.HeartbeatRow, <-chan network.HeartbeatChange, error) {
-	query := fmt.Sprintf("SELECT node_id, seq, updated_at FROM %s ORDER BY node_id", heartbeatsTable)
-	return openAndRun(ctx, s, query, heartbeatSpec)
+	return s.Heartbeats().SubscribeHeartbeats(ctx)
 }
 
 // parseChangeKind maps Corrosion change type strings to network.ChangeKind values.
@@ -67,28 +65,30 @@ var heartbeatSpec = subscriptionSpec[network.HeartbeatRow, network.HeartbeatChan
 
 func openAndRun[Row any, Change any](
 	ctx context.Context,
-	s Store,
+	c corrosionClient,
 	query string,
+	args []any,
 	spec subscriptionSpec[Row, Change],
 ) ([]Row, <-chan Change, error) {
-	stream, snapshot, lastChangeID, err := openSubscription(ctx, s, query, spec)
+	stream, snapshot, lastChangeID, err := openSubscription(ctx, c, query, args, spec)
 	if err != nil {
 		return nil, nil, err
 	}
 	slog.Debug("registry "+spec.label+" subscription opened", "rows", len(snapshot), "change_id", lastChangeID)
 
 	changes := make(chan Change, changeBufCapacity)
-	go runChanges(ctx, s, stream, lastChangeID, changes, spec)
+	go runChanges(ctx, c, stream, lastChangeID, changes, spec)
 	return snapshot, changes, nil
 }
 
 func openSubscription[Row any, Change any](
 	ctx context.Context,
-	s Store,
+	c corrosionClient,
 	query string,
+	args []any,
 	spec subscriptionSpec[Row, Change],
 ) (*subscriptionStream, []Row, uint64, error) {
-	stream, err := s.subscribe(ctx, query, nil)
+	stream, err := c.subscribe(ctx, query, args)
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -137,7 +137,7 @@ func openSubscription[Row any, Change any](
 
 func runChanges[Row any, Change any](
 	ctx context.Context,
-	s Store,
+	c corrosionClient,
 	stream *subscriptionStream,
 	lastChangeID uint64,
 	out chan<- Change,
@@ -161,7 +161,7 @@ func runChanges[Row any, Change any](
 		if err := stream.Decoder.Decode(&ev); err != nil {
 			slog.Debug("registry "+spec.label+" subscription decode failed; resubscribing", "err", err)
 			phase = phase.Transition(SubscriptionResubscribing)
-			if !resubscribeLoop(ctx, s, stream, &lastChangeID, out, spec, &phase) {
+			if !resubscribeLoop(ctx, c, stream, &lastChangeID, out, spec, &phase) {
 				return
 			}
 			continue
@@ -169,7 +169,7 @@ func runChanges[Row any, Change any](
 		if ev.Error != nil {
 			slog.Debug("registry "+spec.label+" subscription stream error; resubscribing", "err", *ev.Error)
 			phase = phase.Transition(SubscriptionResubscribing)
-			if !resubscribeLoop(ctx, s, stream, &lastChangeID, out, spec, &phase) {
+			if !resubscribeLoop(ctx, c, stream, &lastChangeID, out, spec, &phase) {
 				return
 			}
 			continue
@@ -182,7 +182,7 @@ func runChanges[Row any, Change any](
 		if err != nil {
 			slog.Debug("registry "+spec.label+" change decode failed; resubscribing", "err", err)
 			phase = phase.Transition(SubscriptionResubscribing)
-			if !resubscribeLoop(ctx, s, stream, &lastChangeID, out, spec, &phase) {
+			if !resubscribeLoop(ctx, c, stream, &lastChangeID, out, spec, &phase) {
 				return
 			}
 			continue
@@ -200,7 +200,7 @@ func runChanges[Row any, Change any](
 
 func resubscribeLoop[Row any, Change any](
 	ctx context.Context,
-	s Store,
+	c corrosionClient,
 	stream *subscriptionStream,
 	lastChangeID *uint64,
 	out chan<- Change,
@@ -220,7 +220,7 @@ func resubscribeLoop[Row any, Change any](
 		case <-time.After(backoff):
 		}
 
-		next, err := s.resubscribe(ctx, stream.ID, *lastChangeID)
+		next, err := c.resubscribe(ctx, stream.ID, *lastChangeID)
 		if err == nil {
 			stream.Body = next.Body
 			stream.Decoder = next.Decoder

@@ -5,8 +5,10 @@ import "github.com/spf13/cobra"
 func Cmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "network",
-		Short: "Manage cluster networks",
+		Short: "Manage networks",
 	}
+	cmd.AddCommand(createCmd())
+	cmd.AddCommand(destroyCmd())
 	cmd.AddCommand(listCmd())
 	cmd.AddCommand(statusCmd())
 	return cmd

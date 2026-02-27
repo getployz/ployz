@@ -10,11 +10,11 @@ import (
 )
 
 func statusCmd() *cobra.Command {
-	var cf cmdutil.ClusterFlags
+	var cf cmdutil.ContextFlags
 
 	cmd := &cobra.Command{
 		Use:   "status",
-		Short: "Show cluster node status",
+		Short: "Show machine runtime status",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, svc, _, err := service(cmd.Context(), &cf)
 			if err != nil {

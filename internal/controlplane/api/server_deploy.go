@@ -99,9 +99,6 @@ func (s *Server) ListDeployments(ctx context.Context, req *pb.ListDeploymentsReq
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
-	if req.Namespace == "" {
-		return nil, status.Error(codes.InvalidArgument, "namespace is required")
-	}
 
 	rows, err := s.manager.ListDeployments(ctx, req.Namespace)
 	if err != nil {

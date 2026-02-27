@@ -326,7 +326,43 @@ var (
 	ErrNetworkNotConfigured       = errors.New("network is not configured")
 	ErrRuntimeNotReadyForServices = errors.New("runtime is not ready for service operations")
 	ErrNoMachinesAvailable        = errors.New("no schedulable machines available")
+	ErrNetworkDestroyHasWorkloads = errors.New("network destroy blocked by managed workloads")
+	ErrNetworkDestroyHasMachines  = errors.New("network destroy blocked by attached machines")
 )
+
+const (
+	errorInfoMetadataPreconditionCode = "precondition_code"
+	errorInfoMetadataRemediationHint  = "remediation_hint"
+)
+
+type hintedPreconditionError struct {
+	err  error
+	hint string
+}
+
+func (e *hintedPreconditionError) Error() string {
+	if e == nil || e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e *hintedPreconditionError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+// PreconditionHint returns a structured remediation hint attached to a mapped
+// precondition error. It returns an empty string when no hint is available.
+func PreconditionHint(err error) string {
+	var hinted *hintedPreconditionError
+	if !errors.As(err, &hinted) || hinted == nil {
+		return ""
+	}
+	return strings.TrimSpace(hinted.hint)
+}
 
 func grpcErr(err error) error {
 	if err == nil {
@@ -349,7 +385,11 @@ func grpcErr(err error) error {
 		if mapped := mapPreconditionDetail(st); mapped != nil {
 			return mapped
 		}
-		return fmt.Errorf("%w: %s", ErrPrecondition, st.Message())
+		base := fmt.Errorf("%w: %s", ErrPrecondition, st.Message())
+		if hint := preconditionHintFromStatus(st, ""); hint != "" {
+			return &hintedPreconditionError{err: base, hint: hint}
+		}
+		return base
 	default:
 		return errors.New(st.Message())
 	}
@@ -368,15 +408,64 @@ func mapPreconditionDetail(st *status.Status) error {
 			if violation == nil {
 				continue
 			}
+			hint := preconditionHintFromStatus(st, violation.Type)
 			switch violation.Type {
 			case string(types.PreconditionNetworkNotConfigured):
-				return fmt.Errorf("%w: %w: %s", ErrPrecondition, ErrNetworkNotConfigured, st.Message())
+				return wrapPreconditionWithHint(
+					fmt.Errorf("%w: %w: %s", ErrPrecondition, ErrNetworkNotConfigured, st.Message()),
+					hint,
+				)
 			case string(types.PreconditionRuntimeNotReadyForServices):
-				return fmt.Errorf("%w: %w: %s", ErrPrecondition, ErrRuntimeNotReadyForServices, st.Message())
+				return wrapPreconditionWithHint(
+					fmt.Errorf("%w: %w: %s", ErrPrecondition, ErrRuntimeNotReadyForServices, st.Message()),
+					hint,
+				)
 			case string(types.PreconditionDeployNoMachinesAvailable):
-				return fmt.Errorf("%w: %w: %s", ErrPrecondition, ErrNoMachinesAvailable, st.Message())
+				return wrapPreconditionWithHint(
+					fmt.Errorf("%w: %w: %s", ErrPrecondition, ErrNoMachinesAvailable, st.Message()),
+					hint,
+				)
+			case string(types.PreconditionNetworkDestroyHasWorkloads):
+				return wrapPreconditionWithHint(
+					fmt.Errorf("%w: %w: %s", ErrPrecondition, ErrNetworkDestroyHasWorkloads, st.Message()),
+					hint,
+				)
+			case string(types.PreconditionNetworkDestroyHasMachines):
+				return wrapPreconditionWithHint(
+					fmt.Errorf("%w: %w: %s", ErrPrecondition, ErrNetworkDestroyHasMachines, st.Message()),
+					hint,
+				)
 			}
 		}
 	}
 	return nil
+}
+
+func preconditionHintFromStatus(st *status.Status, code string) string {
+	if st == nil {
+		return ""
+	}
+	for _, detail := range st.Details() {
+		errInfo, ok := detail.(*errdetails.ErrorInfo)
+		if !ok || errInfo == nil {
+			continue
+		}
+		hint := strings.TrimSpace(errInfo.Metadata[errorInfoMetadataRemediationHint])
+		if hint == "" {
+			continue
+		}
+		metadataCode := strings.TrimSpace(errInfo.Metadata[errorInfoMetadataPreconditionCode])
+		if code == "" || metadataCode == "" || metadataCode == code {
+			return hint
+		}
+	}
+	return ""
+}
+
+func wrapPreconditionWithHint(err error, hint string) error {
+	hint = strings.TrimSpace(hint)
+	if hint == "" {
+		return err
+	}
+	return &hintedPreconditionError{err: err, hint: hint}
 }

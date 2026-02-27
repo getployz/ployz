@@ -4,15 +4,18 @@ import "github.com/spf13/cobra"
 
 func Cmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "service",
-		Aliases: []string{"svc"},
-		Short:   "Deploy and manage cluster services",
+		Use:   "service",
+		Short: "Deploy and manage services",
 	}
 
-	deploy := DeployCmd()
-	run := runCmd()
-	run.Hidden = true
+	deploy := deployCmd()
+	list := listCmd()
+	status := statusCmd()
+	remove := removeCmd()
+
 	cmd.AddCommand(deploy)
-	cmd.AddCommand(run)
+	cmd.AddCommand(list)
+	cmd.AddCommand(status)
+	cmd.AddCommand(remove)
 	return cmd
 }

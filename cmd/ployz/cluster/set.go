@@ -17,12 +17,12 @@ func setCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "set <name>",
-		Short: "Create or update a cluster profile",
+		Short: "Create or update a context profile",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := strings.TrimSpace(args[0])
 			if name == "" {
-				return fmt.Errorf("cluster name is required")
+				return fmt.Errorf("context name is required")
 			}
 
 			cfg, err := config.LoadDefault()
@@ -51,13 +51,13 @@ func setCmd() *cobra.Command {
 				return err
 			}
 
-			fmt.Println(ui.SuccessMsg("saved cluster %s", ui.Accent(name)))
+			fmt.Println(ui.SuccessMsg("saved context %s", ui.Accent(name)))
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&network, "network", "", "Network name for this cluster")
-	cmd.Flags().StringVar(&socket, "socket", "", "Daemon socket path for this cluster")
-	cmd.Flags().BoolVar(&setCurrent, "current", true, "Set this cluster as current")
+	cmd.Flags().StringVar(&network, "network", "", "Network name for this context")
+	cmd.Flags().StringVar(&socket, "socket", "", "Daemon socket path for this context")
+	cmd.Flags().BoolVar(&setCurrent, "current", true, "Set this context as current")
 	return cmd
 }

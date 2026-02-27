@@ -14,7 +14,7 @@ func listCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
-		Short:   "List configured clusters",
+		Short:   "List configured contexts",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runList()
 		},
@@ -28,8 +28,8 @@ func runList() error {
 	}
 	names := cfg.ClusterNames()
 	if len(names) == 0 {
-		fmt.Println(ui.Muted("no clusters configured"))
-		fmt.Println(ui.Muted("  run: ployz init"))
+		fmt.Println(ui.Muted("no contexts configured"))
+		fmt.Println(ui.Muted("  run: ployz network create default"))
 		return nil
 	}
 	currentName, _, hasCurrent := cfg.Current()

@@ -16,17 +16,27 @@ type RealClock struct{}
 
 func (RealClock) Now() time.Time { return time.Now() }
 
-// Registry abstracts machine CRUD against Corrosion.
-// Production: adapter/corrosion.Store
-// Testing: in-memory fake
-type Registry interface {
+// MachineRegistry abstracts machine CRUD against Corrosion.
+type MachineRegistry interface {
 	EnsureMachineTable(ctx context.Context) error
-	EnsureNetworkConfigTable(ctx context.Context) error
-	EnsureNetworkCIDR(ctx context.Context, requested netip.Prefix, fallbackCIDR string, defaultCIDR netip.Prefix) (netip.Prefix, error)
 	UpsertMachine(ctx context.Context, row MachineRow, expectedVersion int64) error
 	DeleteByEndpointExceptID(ctx context.Context, endpoint string, id string) error
 	DeleteMachine(ctx context.Context, machineID string) error
 	ListMachineRows(ctx context.Context) ([]MachineRow, error)
+}
+
+// NetworkConfigRegistry abstracts shared network configuration values.
+type NetworkConfigRegistry interface {
+	EnsureNetworkConfigTable(ctx context.Context) error
+	EnsureNetworkCIDR(ctx context.Context, requested netip.Prefix, fallbackCIDR string, defaultCIDR netip.Prefix) (netip.Prefix, error)
+}
+
+// Registry composes machine + network config operations.
+// Production: adapter/corrosion.Store
+// Testing: in-memory fake
+type Registry interface {
+	MachineRegistry
+	NetworkConfigRegistry
 }
 
 // RegistryFactory creates a Registry from Corrosion connection details.

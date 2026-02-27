@@ -8,7 +8,7 @@ import (
 	sdkmachine "ployz/pkg/sdk/machine"
 )
 
-func service(ctx context.Context, cf *cmdutil.ClusterFlags) (string, *sdkmachine.Service, cluster.Cluster, error) {
+func service(ctx context.Context, cf *cmdutil.ContextFlags) (string, *sdkmachine.Service, cluster.Cluster, error) {
 	name, api, cl, err := cf.DialService(ctx)
 	if err != nil {
 		return "", nil, cluster.Cluster{}, err

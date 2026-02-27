@@ -12,8 +12,9 @@ import (
 
 func currentCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "current",
-		Short: "Show current cluster",
+		Use:     "current",
+		Aliases: []string{"show"},
+		Short:   "Show current context",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.LoadDefault()
 			if err != nil {
@@ -21,7 +22,7 @@ func currentCmd() *cobra.Command {
 			}
 			name, cl, ok := cfg.Current()
 			if !ok {
-				return fmt.Errorf("no current cluster configured")
+				return fmt.Errorf("no current context configured")
 			}
 			connSummary := "-"
 			if len(cl.Connections) > 0 {

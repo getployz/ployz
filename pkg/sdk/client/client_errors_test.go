@@ -12,7 +12,7 @@ import (
 )
 
 func TestGRPCErrMapsNoMachinesPrecondition(t *testing.T) {
-	err := grpcErr(preconditionError(t, types.PreconditionDeployNoMachinesAvailable, "deploy failed"))
+	err := grpcErr(preconditionError(t, types.PreconditionDeployNoMachinesAvailable, "deploy failed", "run `ployz machine add <user@host>`"))
 	if !errors.Is(err, ErrPrecondition) {
 		t.Fatalf("expected ErrPrecondition, got %v", err)
 	}
@@ -22,7 +22,7 @@ func TestGRPCErrMapsNoMachinesPrecondition(t *testing.T) {
 }
 
 func TestGRPCErrMapsRuntimeNotReadyPrecondition(t *testing.T) {
-	err := grpcErr(preconditionError(t, types.PreconditionRuntimeNotReadyForServices, "runtime not ready"))
+	err := grpcErr(preconditionError(t, types.PreconditionRuntimeNotReadyForServices, "runtime not ready", "run `ployz status` or `ployz doctor`"))
 	if !errors.Is(err, ErrPrecondition) {
 		t.Fatalf("expected ErrPrecondition, got %v", err)
 	}
@@ -32,12 +32,47 @@ func TestGRPCErrMapsRuntimeNotReadyPrecondition(t *testing.T) {
 }
 
 func TestGRPCErrMapsNetworkNotConfiguredPrecondition(t *testing.T) {
-	err := grpcErr(preconditionError(t, types.PreconditionNetworkNotConfigured, "network missing"))
+	err := grpcErr(preconditionError(t, types.PreconditionNetworkNotConfigured, "network missing", "run `ployz network create <network> --force`"))
 	if !errors.Is(err, ErrPrecondition) {
 		t.Fatalf("expected ErrPrecondition, got %v", err)
 	}
 	if !errors.Is(err, ErrNetworkNotConfigured) {
 		t.Fatalf("expected ErrNetworkNotConfigured, got %v", err)
+	}
+}
+
+func TestGRPCErrMapsDestroyWorkloadsPrecondition(t *testing.T) {
+	err := grpcErr(preconditionError(t, types.PreconditionNetworkDestroyHasWorkloads, "destroy blocked", "remove workloads first with `ployz service remove <name>`"))
+	if !errors.Is(err, ErrPrecondition) {
+		t.Fatalf("expected ErrPrecondition, got %v", err)
+	}
+	if !errors.Is(err, ErrNetworkDestroyHasWorkloads) {
+		t.Fatalf("expected ErrNetworkDestroyHasWorkloads, got %v", err)
+	}
+}
+
+func TestGRPCErrMapsDestroyMachinesPrecondition(t *testing.T) {
+	err := grpcErr(preconditionError(t, types.PreconditionNetworkDestroyHasMachines, "destroy blocked", "remove attached machines first with `ployz machine remove <id>`"))
+	if !errors.Is(err, ErrPrecondition) {
+		t.Fatalf("expected ErrPrecondition, got %v", err)
+	}
+	if !errors.Is(err, ErrNetworkDestroyHasMachines) {
+		t.Fatalf("expected ErrNetworkDestroyHasMachines, got %v", err)
+	}
+}
+
+func TestPreconditionHintReturnsStructuredHint(t *testing.T) {
+	const hint = "run `ployz machine add <user@host>`"
+	err := grpcErr(preconditionError(t, types.PreconditionDeployNoMachinesAvailable, "deploy failed", hint))
+	if got := PreconditionHint(err); got != hint {
+		t.Fatalf("expected hint %q, got %q", hint, got)
+	}
+}
+
+func TestPreconditionHintEmptyWhenNoMetadata(t *testing.T) {
+	err := grpcErr(preconditionError(t, types.PreconditionDeployNoMachinesAvailable, "deploy failed", ""))
+	if got := PreconditionHint(err); got != "" {
+		t.Fatalf("expected empty hint, got %q", got)
 	}
 }
 
@@ -51,16 +86,32 @@ func TestGRPCErrPreconditionWithoutDetails(t *testing.T) {
 	}
 }
 
-func preconditionError(t *testing.T, code types.PreconditionCode, message string) error {
+func preconditionError(t *testing.T, code types.PreconditionCode, message, hint string) error {
 	t.Helper()
 	st := status.New(codes.FailedPrecondition, message)
-	withDetails, err := st.WithDetails(&errdetails.PreconditionFailure{
+	precondition := &errdetails.PreconditionFailure{
 		Violations: []*errdetails.PreconditionFailure_Violation{{
 			Type:        string(code),
 			Subject:     "test",
 			Description: message,
 		}},
-	})
+	}
+	var (
+		withDetails *status.Status
+		err         error
+	)
+	if hint == "" {
+		withDetails, err = st.WithDetails(precondition)
+	} else {
+		withDetails, err = st.WithDetails(precondition, &errdetails.ErrorInfo{
+			Reason: "PRECONDITION_FAILED",
+			Domain: "ployz.controlplane",
+			Metadata: map[string]string{
+				errorInfoMetadataPreconditionCode: string(code),
+				errorInfoMetadataRemediationHint:  hint,
+			},
+		})
+	}
 	if err != nil {
 		t.Fatalf("add precondition details: %v", err)
 	}

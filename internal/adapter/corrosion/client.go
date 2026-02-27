@@ -12,6 +12,27 @@ import (
 	"strings"
 )
 
+type corrosionClient interface {
+	exec(ctx context.Context, query string, args ...any) error
+	query(ctx context.Context, query string, args ...any) ([][]json.RawMessage, error)
+	subscribe(ctx context.Context, query string, args []any) (*subscriptionStream, error)
+	resubscribe(ctx context.Context, id string, fromChange uint64) (*subscriptionStream, error)
+}
+
+type httpCorrosionClient struct {
+	baseURL    string
+	apiToken   string
+	httpClient *http.Client
+}
+
+func newHTTPCorrosionClient(baseURL, apiToken string) *httpCorrosionClient {
+	return &httpCorrosionClient{
+		baseURL:    baseURL,
+		apiToken:   strings.TrimSpace(apiToken),
+		httpClient: http.DefaultClient,
+	}
+}
+
 type rowEvent struct {
 	RowID  uint64
 	Values []json.RawMessage
@@ -89,7 +110,7 @@ type subscriptionStream struct {
 }
 
 // newJSONRequest creates an HTTP request with JSON content headers and auth.
-func (s Store) newJSONRequest(ctx context.Context, method, url string, body []byte) (*http.Request, error) {
+func (c *httpCorrosionClient) newJSONRequest(ctx context.Context, method, url string, body []byte) (*http.Request, error) {
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
@@ -100,15 +121,19 @@ func (s Store) newJSONRequest(ctx context.Context, method, url string, body []by
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	if s.apiToken != "" {
-		req.Header.Set("Authorization", "Bearer "+s.apiToken)
+	if c.apiToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiToken)
 	}
 	return req, nil
 }
 
 // doJSON sends a JSON request and returns the response, returning an error for non-200 status.
-func (s Store) doJSON(req *http.Request) (*http.Response, error) {
-	resp, err := http.DefaultClient.Do(req)
+func (c *httpCorrosionClient) doJSON(req *http.Request) (*http.Response, error) {
+	httpClient := c.httpClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -120,18 +145,18 @@ func (s Store) doJSON(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
-func (s Store) exec(ctx context.Context, query string, args ...any) error {
+func (c *httpCorrosionClient) exec(ctx context.Context, query string, args ...any) error {
 	body, err := json.Marshal([]statement{{Query: query, Params: args}})
 	if err != nil {
 		return fmt.Errorf("marshal corrosion transaction: %w", err)
 	}
 
-	req, err := s.newJSONRequest(ctx, http.MethodPost, s.baseURL+"/v1/transactions", body)
+	req, err := c.newJSONRequest(ctx, http.MethodPost, c.baseURL+"/v1/transactions", body)
 	if err != nil {
 		return fmt.Errorf("create corrosion request: %w", err)
 	}
 
-	resp, err := s.doJSON(req)
+	resp, err := c.doJSON(req)
 	if err != nil {
 		return fmt.Errorf("corrosion transaction: %w", err)
 	}
@@ -149,18 +174,18 @@ func (s Store) exec(ctx context.Context, query string, args ...any) error {
 	return nil
 }
 
-func (s Store) query(ctx context.Context, query string, args ...any) ([][]json.RawMessage, error) {
+func (c *httpCorrosionClient) query(ctx context.Context, query string, args ...any) ([][]json.RawMessage, error) {
 	body, err := json.Marshal(statement{Query: query, Params: args})
 	if err != nil {
 		return nil, fmt.Errorf("marshal corrosion query: %w", err)
 	}
 
-	req, err := s.newJSONRequest(ctx, http.MethodPost, s.baseURL+"/v1/queries", body)
+	req, err := c.newJSONRequest(ctx, http.MethodPost, c.baseURL+"/v1/queries", body)
 	if err != nil {
 		return nil, fmt.Errorf("create corrosion query request: %w", err)
 	}
 
-	resp, err := s.doJSON(req)
+	resp, err := c.doJSON(req)
 	if err != nil {
 		return nil, fmt.Errorf("corrosion query: %w", err)
 	}
@@ -198,18 +223,18 @@ func (s Store) query(ctx context.Context, query string, args ...any) ([][]json.R
 	return rows, nil
 }
 
-func (s Store) subscribe(ctx context.Context, query string, args []any) (*subscriptionStream, error) {
+func (c *httpCorrosionClient) subscribe(ctx context.Context, query string, args []any) (*subscriptionStream, error) {
 	body, err := json.Marshal(statement{Query: query, Params: args})
 	if err != nil {
 		return nil, fmt.Errorf("marshal corrosion subscription: %w", err)
 	}
 
-	req, err := s.newJSONRequest(ctx, http.MethodPost, s.baseURL+"/v1/subscriptions", body)
+	req, err := c.newJSONRequest(ctx, http.MethodPost, c.baseURL+"/v1/subscriptions", body)
 	if err != nil {
 		return nil, fmt.Errorf("create corrosion subscription request: %w", err)
 	}
 
-	resp, err := s.doJSON(req)
+	resp, err := c.doJSON(req)
 	if err != nil {
 		return nil, fmt.Errorf("corrosion subscription: %w", err)
 	}
@@ -223,14 +248,14 @@ func (s Store) subscribe(ctx context.Context, query string, args []any) (*subscr
 	return &subscriptionStream{ID: id, Body: resp.Body, Decoder: json.NewDecoder(resp.Body)}, nil
 }
 
-func (s Store) resubscribe(ctx context.Context, id string, fromChange uint64) (*subscriptionStream, error) {
-	url := s.baseURL + "/v1/subscriptions/" + id + "?from=" + strconv.FormatUint(fromChange, 10)
-	req, err := s.newJSONRequest(ctx, http.MethodGet, url, nil)
+func (c *httpCorrosionClient) resubscribe(ctx context.Context, id string, fromChange uint64) (*subscriptionStream, error) {
+	url := c.baseURL + "/v1/subscriptions/" + id + "?from=" + strconv.FormatUint(fromChange, 10)
+	req, err := c.newJSONRequest(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create corrosion resubscribe request: %w", err)
 	}
 
-	resp, err := s.doJSON(req)
+	resp, err := c.doJSON(req)
 	if err != nil {
 		return nil, fmt.Errorf("corrosion resubscribe: %w", err)
 	}

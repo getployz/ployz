@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -12,10 +13,10 @@ import (
 
 	compose "github.com/compose-spec/compose-go/v2/types"
 
-	"ployz/internal/adapter/corrosion"
 	"ployz/internal/check"
 	"ployz/internal/deploy"
 	"ployz/internal/network"
+	"ployz/internal/observed"
 	"ployz/pkg/sdk/types"
 )
 
@@ -24,6 +25,13 @@ const (
 	defaultHealthPollInterval = 250 * time.Millisecond
 	defaultHealthTimeout      = 30 * time.Second
 )
+
+func (m *Manager) deployStores(cfg network.Config) (deploy.Stores, error) {
+	if m.newStores == nil {
+		return deploy.Stores{}, fmt.Errorf("deploy stores factory is not configured")
+	}
+	return m.newStores(cfg.CorrosionAPIAddr, cfg.CorrosionAPIToken), nil
+}
 
 func (m *Manager) PlanDeploy(ctx context.Context, namespace string, composeSpec []byte) (types.DeployPlan, error) {
 	plan, _, err := m.buildDeployPlan(ctx, namespace, composeSpec)
@@ -48,11 +56,23 @@ func (m *Manager) ApplyDeploy(ctx context.Context, namespace string, composeSpec
 		return types.DeployResult{}, fmt.Errorf("machine id is required")
 	}
 
-	store := corrosion.NewStore(cfg.CorrosionAPIAddr, cfg.CorrosionAPIToken)
-	if err := store.EnsureContainerTable(ctx); err != nil {
+	stores, err := m.deployStores(cfg)
+	if err != nil {
+		return types.DeployResult{}, err
+	}
+	check.Assert(stores.Containers != nil, "Manager.ApplyDeploy: container store must not be nil")
+	if stores.Containers == nil {
+		return types.DeployResult{}, fmt.Errorf("container store is unavailable")
+	}
+	check.Assert(stores.Deployments != nil, "Manager.ApplyDeploy: deployment store must not be nil")
+	if stores.Deployments == nil {
+		return types.DeployResult{}, fmt.Errorf("deployment store is unavailable")
+	}
+
+	if err := stores.Containers.EnsureContainerTable(ctx); err != nil {
 		return types.DeployResult{}, fmt.Errorf("ensure deploy container table: %w", err)
 	}
-	if err := store.EnsureDeploymentTable(ctx); err != nil {
+	if err := stores.Deployments.EnsureDeploymentTable(ctx); err != nil {
 		return types.DeployResult{}, fmt.Errorf("ensure deploy deployment table: %w", err)
 	}
 
@@ -67,7 +87,6 @@ func (m *Manager) ApplyDeploy(ctx context.Context, namespace string, composeSpec
 		clock = network.RealClock{}
 	}
 
-	stores := deploy.Stores{Containers: store, Deployments: store}
 	health := runtimeHealthChecker{runtime: runtime}
 	stateReader := localStateReader{runtime: runtime, machineID: machineID}
 
@@ -90,6 +109,10 @@ func (m *Manager) ApplyDeploy(ctx context.Context, namespace string, composeSpec
 	applyResult, applyErr := deploy.ApplyPlan(ctx, runtime, stores, health, stateReader, plan, machineID, clock, internalEvents)
 	close(internalEvents)
 	wg.Wait()
+
+	if cacheErr := m.refreshRuntimeNamespaceCache(ctx, cfg, machineID, namespace); cacheErr != nil {
+		slog.Warn("refresh runtime container cache after deploy", "namespace", namespace, "err", cacheErr)
+	}
 
 	out := applyResultToSDK(applyResult)
 	if applyErr != nil {
@@ -114,22 +137,34 @@ func (m *Manager) ApplyDeploy(ctx context.Context, namespace string, composeSpec
 
 func (m *Manager) ListDeployments(ctx context.Context, namespace string) ([]types.DeploymentEntry, error) {
 	namespace = strings.TrimSpace(namespace)
-	if namespace == "" {
-		return nil, fmt.Errorf("namespace is required")
-	}
 
 	_, cfg, err := m.resolveConfig()
 	if err != nil {
 		return nil, err
 	}
-	store := corrosion.NewStore(cfg.CorrosionAPIAddr, cfg.CorrosionAPIToken)
-	if err := store.EnsureDeploymentTable(ctx); err != nil {
+	stores, err := m.deployStores(cfg)
+	if err != nil {
+		return nil, err
+	}
+	check.Assert(stores.Deployments != nil, "Manager.ListDeployments: deployment store must not be nil")
+	if stores.Deployments == nil {
+		return nil, fmt.Errorf("deployment store is unavailable")
+	}
+	if err := stores.Deployments.EnsureDeploymentTable(ctx); err != nil {
 		return nil, fmt.Errorf("ensure deploy deployment table: %w", err)
 	}
 
-	rows, err := store.ListByNamespace(ctx, namespace)
-	if err != nil {
-		return nil, fmt.Errorf("list deployments for namespace %q: %w", namespace, err)
+	var rows []deploy.DeploymentRow
+	if namespace == "" {
+		rows, err = stores.Deployments.ListAll(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list deployments: %w", err)
+		}
+	} else {
+		rows, err = stores.Deployments.ListByNamespace(ctx, namespace)
+		if err != nil {
+			return nil, fmt.Errorf("list deployments for namespace %q: %w", namespace, err)
+		}
 	}
 
 	out := make([]types.DeploymentEntry, 0, len(rows))
@@ -156,8 +191,15 @@ func (m *Manager) RemoveNamespace(ctx context.Context, namespace string) error {
 	}
 	machineID := strings.TrimSpace(identity.ID)
 
-	store := corrosion.NewStore(cfg.CorrosionAPIAddr, cfg.CorrosionAPIToken)
-	if err := store.EnsureContainerTable(ctx); err != nil {
+	stores, err := m.deployStores(cfg)
+	if err != nil {
+		return err
+	}
+	check.Assert(stores.Containers != nil, "Manager.RemoveNamespace: container store must not be nil")
+	if stores.Containers == nil {
+		return fmt.Errorf("container store is unavailable")
+	}
+	if err := stores.Containers.EnsureContainerTable(ctx); err != nil {
 		return fmt.Errorf("ensure deploy container table: %w", err)
 	}
 
@@ -167,7 +209,15 @@ func (m *Manager) RemoveNamespace(ctx context.Context, namespace string) error {
 		return fmt.Errorf("container runtime is unavailable")
 	}
 
-	return deploy.RemoveNamespace(ctx, runtime, deploy.Stores{Containers: store}, namespace, machineID)
+	if err := deploy.RemoveNamespace(ctx, runtime, deploy.Stores{Containers: stores.Containers}, namespace, machineID); err != nil {
+		return err
+	}
+
+	if cacheErr := m.clearRuntimeNamespaceSnapshot(ctx, cfg.DataDir, machineID, namespace); cacheErr != nil {
+		slog.Warn("clear runtime container cache after namespace removal", "namespace", namespace, "err", cacheErr)
+	}
+
+	return nil
 }
 
 func (m *Manager) ReadContainerState(ctx context.Context, namespace string) ([]types.ContainerState, error) {
@@ -176,20 +226,30 @@ func (m *Manager) ReadContainerState(ctx context.Context, namespace string) ([]t
 		return nil, fmt.Errorf("namespace is required")
 	}
 
-	_, _, err := m.resolveConfig()
+	_, cfg, err := m.resolveConfig()
 	if err != nil {
 		return nil, err
 	}
 
 	runtime := m.ctrl.ContainerRuntime()
-	check.Assert(runtime != nil, "Manager.ReadContainerState: container runtime must not be nil")
 	if runtime == nil {
-		return nil, fmt.Errorf("container runtime is unavailable")
+		return m.readContainerStateFromCache(ctx, cfg.DataDir, namespace, fmt.Errorf("container runtime is unavailable"))
 	}
 
 	entries, err := runtime.ContainerList(ctx, map[string]string{"ployz.namespace": namespace})
 	if err != nil {
-		return nil, fmt.Errorf("list runtime containers for namespace %q: %w", namespace, err)
+		cause := fmt.Errorf("list runtime containers for namespace %q: %w", namespace, err)
+		return m.readContainerStateFromCache(ctx, cfg.DataDir, namespace, cause)
+	}
+
+	if m.runtimeStore != nil {
+		machineID, err := m.localMachineID(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if err := m.persistRuntimeNamespaceSnapshot(ctx, cfg.DataDir, machineID, namespace, entries); err != nil {
+			return nil, err
+		}
 	}
 
 	out := make([]types.ContainerState, 0, len(entries))
@@ -202,6 +262,123 @@ func (m *Manager) ReadContainerState(ctx context.Context, namespace string) ([]t
 		})
 	}
 	return out, nil
+}
+
+func (m *Manager) readContainerStateFromCache(ctx context.Context, dataDir, namespace string, cause error) ([]types.ContainerState, error) {
+	if m.runtimeStore == nil {
+		return nil, cause
+	}
+
+	records, err := m.runtimeStore.ListNamespace(ctx, dataDir, namespace)
+	if err != nil {
+		return nil, errors.Join(cause, fmt.Errorf("read local runtime container cache: %w", err))
+	}
+	if len(records) == 0 {
+		return nil, cause
+	}
+
+	out := make([]types.ContainerState, 0, len(records))
+	for _, row := range records {
+		out = append(out, types.ContainerState{
+			ContainerName: row.ContainerName,
+			Image:         row.Image,
+			Running:       row.Running,
+			Healthy:       row.Healthy,
+		})
+	}
+	return out, nil
+}
+
+func (m *Manager) localMachineID(ctx context.Context) (string, error) {
+	identity, err := m.GetIdentity(ctx)
+	if err != nil {
+		return "", fmt.Errorf("read local identity: %w", err)
+	}
+	machineID := strings.TrimSpace(identity.ID)
+	if machineID == "" {
+		return "", fmt.Errorf("machine id is required")
+	}
+	return machineID, nil
+}
+
+func (m *Manager) refreshRuntimeNamespaceCache(ctx context.Context, cfg network.Config, machineID, namespace string) error {
+	if m.runtimeStore == nil {
+		return nil
+	}
+	runtime := m.ctrl.ContainerRuntime()
+	if runtime == nil {
+		return nil
+	}
+	entries, err := runtime.ContainerList(ctx, map[string]string{"ployz.namespace": namespace})
+	if err != nil {
+		return fmt.Errorf("list runtime containers for namespace %q: %w", namespace, err)
+	}
+	return m.persistRuntimeNamespaceSnapshot(ctx, cfg.DataDir, machineID, namespace, entries)
+}
+
+func (m *Manager) persistRuntimeNamespaceSnapshot(ctx context.Context, dataDir, machineID, namespace string, entries []network.ContainerListEntry) error {
+	if m.runtimeStore == nil {
+		return nil
+	}
+	records := containerEntriesToObserved(namespace, machineID, entries)
+	clock := m.ctrl.Clock()
+	if clock == nil {
+		clock = network.RealClock{}
+	}
+	observedAt := clock.Now()
+	if err := m.runtimeStore.ReplaceNamespaceSnapshot(ctx, dataDir, machineID, namespace, records, observedAt); err != nil {
+		return fmt.Errorf("persist runtime container snapshot for namespace %q: %w", namespace, err)
+	}
+	if m.runtimeCursorStore != nil {
+		cursorName := runtimeNamespaceCursorName(namespace)
+		cursorValue := observedAt.UTC().Format(time.RFC3339Nano)
+		if err := m.runtimeCursorStore.SetCursor(ctx, dataDir, cursorName, cursorValue, observedAt); err != nil {
+			return fmt.Errorf("persist runtime namespace cursor %q: %w", namespace, err)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) clearRuntimeNamespaceSnapshot(ctx context.Context, dataDir, machineID, namespace string) error {
+	if m.runtimeStore == nil {
+		return nil
+	}
+	clock := m.ctrl.Clock()
+	if clock == nil {
+		clock = network.RealClock{}
+	}
+	observedAt := clock.Now()
+	if err := m.runtimeStore.ReplaceNamespaceSnapshot(ctx, dataDir, machineID, namespace, nil, observedAt); err != nil {
+		return fmt.Errorf("clear runtime container snapshot for namespace %q: %w", namespace, err)
+	}
+	if m.runtimeCursorStore != nil {
+		cursorName := runtimeNamespaceCursorName(namespace)
+		cursorValue := observedAt.UTC().Format(time.RFC3339Nano)
+		if err := m.runtimeCursorStore.SetCursor(ctx, dataDir, cursorName, cursorValue, observedAt); err != nil {
+			return fmt.Errorf("persist runtime namespace cursor clear %q: %w", namespace, err)
+		}
+	}
+	return nil
+}
+
+func containerEntriesToObserved(namespace, machineID string, entries []network.ContainerListEntry) []observed.ContainerRecord {
+	out := make([]observed.ContainerRecord, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, observed.ContainerRecord{
+			MachineID:     machineID,
+			Namespace:     namespace,
+			DeployID:      strings.TrimSpace(entry.Labels[managedLabelDeployID]),
+			ContainerName: strings.TrimSpace(entry.Name),
+			Image:         strings.TrimSpace(entry.Image),
+			Running:       entry.Running,
+			Healthy:       entry.Running,
+		})
+	}
+	return out
+}
+
+func runtimeNamespaceCursorName(namespace string) string {
+	return "runtime.namespace." + strings.TrimSpace(namespace)
 }
 
 func (m *Manager) buildDeployPlan(ctx context.Context, namespace string, composeSpec []byte) (deploy.DeployPlan, network.Config, error) {
@@ -240,11 +417,18 @@ func (m *Manager) buildDeployPlan(ctx context.Context, namespace string, compose
 		return deploy.DeployPlan{}, network.Config{}, err
 	}
 
-	store := corrosion.NewStore(cfg.CorrosionAPIAddr, cfg.CorrosionAPIToken)
-	if err := store.EnsureContainerTable(ctx); err != nil {
+	stores, err := m.deployStores(cfg)
+	if err != nil {
+		return deploy.DeployPlan{}, network.Config{}, err
+	}
+	check.Assert(stores.Containers != nil, "Manager.buildDeployPlan: container store must not be nil")
+	if stores.Containers == nil {
+		return deploy.DeployPlan{}, network.Config{}, fmt.Errorf("container store is unavailable")
+	}
+	if err := stores.Containers.EnsureContainerTable(ctx); err != nil {
 		return deploy.DeployPlan{}, network.Config{}, fmt.Errorf("ensure deploy container table: %w", err)
 	}
-	current, err := store.ListContainersByNamespace(ctx, namespace)
+	current, err := stores.Containers.ListContainersByNamespace(ctx, namespace)
 	if err != nil {
 		return deploy.DeployPlan{}, network.Config{}, fmt.Errorf("list containers for namespace %q: %w", namespace, err)
 	}

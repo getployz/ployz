@@ -33,8 +33,8 @@ func Cmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "init [name] [user@host]",
-		Short: "Bootstrap a cluster and install the agent",
-		Long:  "Creates a new cluster, installs the agent if needed, and optionally adds a remote machine.",
+		Short: "Bootstrap a network context and install the agent",
+		Long:  "Creates or refreshes a context, installs the agent if needed, and optionally adds a remote machine.",
 		Args:  cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := "default"
@@ -49,23 +49,23 @@ func Cmd() *cobra.Command {
 
 			telemetryOut := ui.NewTelemetryOutput()
 			defer telemetryOut.Close()
-			tracer := telemetryOut.Tracer("ployz/cmd/init")
+			tracer := telemetryOut.Tracer("ployz/cmd/network-create")
 
 			planSteps := []telemetry.PlannedStep{
-				{ID: "validate", Title: "validating cluster setup"},
+				{ID: "validate", Title: "validating context setup"},
 				{ID: "ensure_agent", Title: "ensuring local agent"},
 				{ID: "connect_daemon", Title: "connecting to daemon"},
 				{ID: "apply", Title: "applying network spec"},
 				{ID: "apply/rpc", ParentID: "apply", Title: "submitting spec to daemon"},
 				{ID: "apply/status", ParentID: "apply", Title: "probing daemon status"},
 				{ID: "apply/diagnose", ParentID: "apply", Title: "evaluating runtime state machine"},
-				{ID: "persist", Title: "saving cluster config"},
+				{ID: "persist", Title: "saving context config"},
 			}
 			if len(args) >= 2 {
-				planSteps = append(planSteps, telemetry.PlannedStep{ID: "add_node", Title: "adding remote node"})
+				planSteps = append(planSteps, telemetry.PlannedStep{ID: "add_machine", Title: "adding remote machine"})
 			}
 
-			op, err := telemetry.EmitPlan(cmd.Context(), tracer, "cluster.init", telemetry.Plan{Steps: planSteps})
+			op, err := telemetry.EmitPlan(cmd.Context(), tracer, "context.create", telemetry.Plan{Steps: planSteps})
 			if err != nil {
 				return err
 			}
@@ -74,23 +74,27 @@ func Cmd() *cobra.Command {
 				op.End(opErr)
 			}()
 
-			var cfg *cluster.Config
+			var (
+				cfg           *cluster.Config
+				contextExists bool
+			)
 			opErr = op.RunStep(op.Context(), "validate", func(context.Context) error {
 				loaded, loadErr := cluster.LoadDefault()
 				if loadErr != nil {
 					return loadErr
 				}
 				cfg = loaded
-				if _, exists := cfg.Cluster(name); exists && !force {
-					return fmt.Errorf("cluster %q already exists (use --force to re-create)", name)
-				}
+				_, contextExists = cfg.Cluster(name)
 				return nil
 			})
 			if opErr != nil {
 				return opErr
 			}
 
-			fmt.Println(ui.InfoMsg("initializing cluster %s", ui.Accent(name)))
+			fmt.Println(ui.InfoMsg("initializing context %s", ui.Accent(name)))
+			if contextExists && !force {
+				fmt.Println(ui.Muted("  context already exists; refreshing network runtime and local context settings"))
+			}
 
 			opErr = op.RunStep(op.Context(), "ensure_agent", func(stepCtx context.Context) error {
 				if cmdutil.IsDaemonRunning(stepCtx, socketPath) {
@@ -215,18 +219,21 @@ func Cmd() *cobra.Command {
 				return opErr
 			}
 
-			entry := cluster.Cluster{
-				Network: name,
-				Connections: []cluster.Connection{{
-					Unix:     socketPath,
-					DataRoot: dataRoot,
-				}},
-			}
 			opErr = op.RunStep(op.Context(), "persist", func(context.Context) error {
+				entry := cluster.Cluster{
+					Network: name,
+					Connections: []cluster.Connection{{
+						Unix:     socketPath,
+						DataRoot: dataRoot,
+					}},
+				}
+				if existing, ok := cfg.Cluster(name); ok && !force {
+					entry = mergeContextEntry(existing, entry)
+				}
 				cfg.Upsert(name, entry)
 				cfg.CurrentCluster = name
 				if saveErr := cfg.Save(); saveErr != nil {
-					return fmt.Errorf("save cluster config: %w", saveErr)
+					return fmt.Errorf("save context config: %w", saveErr)
 				}
 				return nil
 			})
@@ -243,7 +250,7 @@ func Cmd() *cobra.Command {
 			if out.AdvertiseEndpoint != "" {
 				kvs = append(kvs, ui.KV("advertise", out.AdvertiseEndpoint))
 			}
-			fmt.Println(ui.SuccessMsg("cluster %s created", ui.Accent(name)))
+			fmt.Println(ui.SuccessMsg("context %s ready", ui.Accent(name)))
 			fmt.Print(ui.KeyValues("  ", kvs...))
 			for _, warning := range warnings {
 				fmt.Println(ui.WarnMsg("%s", warning))
@@ -251,8 +258,8 @@ func Cmd() *cobra.Command {
 
 			if len(args) >= 2 {
 				target := args[1]
-				fmt.Println(ui.InfoMsg("adding node %s", ui.Accent(target)))
-				opErr = op.RunStep(op.Context(), "add_node", func(stepCtx context.Context) error {
+				fmt.Println(ui.InfoMsg("adding machine %s", ui.Accent(target)))
+				opErr = op.RunStep(op.Context(), "add_machine", func(stepCtx context.Context) error {
 					result, addErr := svc.AddMachine(stepCtx, sdkmachine.AddOptions{
 						Network:  name,
 						DataRoot: dataRoot,
@@ -263,16 +270,16 @@ func Cmd() *cobra.Command {
 						Tracer:   tracer,
 					})
 					if addErr != nil {
-						return fmt.Errorf("add node: %w", addErr)
+						return fmt.Errorf("add machine: %w", addErr)
 					}
 
 					cfg, addLoadErr := cluster.LoadDefault()
 					if addLoadErr != nil {
-						return fmt.Errorf("load cluster config: %w", addLoadErr)
+						return fmt.Errorf("load context config: %w", addLoadErr)
 					}
 					entry, ok := cfg.Cluster(name)
 					if !ok {
-						return fmt.Errorf("cluster %q not found in config", name)
+						return fmt.Errorf("context %q not found in config", name)
 					}
 					entry.Connections = append(entry.Connections, cluster.Connection{
 						SSH:        target,
@@ -280,10 +287,10 @@ func Cmd() *cobra.Command {
 					})
 					cfg.Upsert(name, entry)
 					if saveErr := cfg.Save(); saveErr != nil {
-						return fmt.Errorf("save cluster config: %w", saveErr)
+						return fmt.Errorf("save context config: %w", saveErr)
 					}
 
-					fmt.Println(ui.SuccessMsg("added node %s", ui.Accent(target)))
+					fmt.Println(ui.SuccessMsg("added machine %s", ui.Accent(target)))
 					fmt.Print(ui.KeyValues("  ",
 						ui.KV("endpoint", result.Machine.Endpoint),
 						ui.KV("subnet", result.Machine.Subnet),
@@ -307,6 +314,19 @@ func Cmd() *cobra.Command {
 	cmd.Flags().StringVar(&helperImage, "helper-image", "", "Linux helper image (macOS)")
 	cmd.Flags().IntVar(&sshPort, "ssh-port", 22, "SSH port for remote")
 	cmd.Flags().StringVar(&sshKey, "ssh-key", "", "SSH key for remote")
-	cmd.Flags().BoolVar(&force, "force", false, "Re-create if cluster already exists")
+	cmd.Flags().BoolVar(&force, "force", false, "Re-create context entry and replace local connections")
 	return cmd
+}
+
+func mergeContextEntry(existing, preferred cluster.Cluster) cluster.Cluster {
+	merged := cluster.Cluster{Network: preferred.Network}
+	merged.Connections = make([]cluster.Connection, 0, len(existing.Connections)+len(preferred.Connections))
+	merged.Connections = append(merged.Connections, preferred.Connections...)
+	for _, conn := range existing.Connections {
+		if strings.TrimSpace(conn.Unix) != "" {
+			continue
+		}
+		merged.Connections = append(merged.Connections, conn)
+	}
+	return merged
 }

@@ -12,13 +12,13 @@ import (
 )
 
 func doctorCmd() *cobra.Command {
-	var cf cmdutil.ClusterFlags
+	var cf cmdutil.ContextFlags
 
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Diagnose runtime state-machine health",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			clusterName, svc, _, err := service(cmd.Context(), &cf)
+			contextName, svc, _, err := service(cmd.Context(), &cf)
 			if err != nil {
 				return err
 			}
@@ -29,7 +29,7 @@ func doctorCmd() *cobra.Command {
 			}
 			status := diag.Status
 
-			fmt.Println(ui.InfoMsg("cluster %s diagnostic", ui.Accent(clusterName)))
+			fmt.Println(ui.InfoMsg("context %s diagnostic", ui.Accent(contextName)))
 			fmt.Print(ui.KeyValues("  ",
 				ui.KV("network phase", status.NetworkPhase),
 				ui.KV("supervisor phase", status.SupervisorPhase),
