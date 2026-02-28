@@ -1,5 +1,13 @@
 // Package convergence watches the registry for membership changes
 // and syncs WireGuard peers to match.
+//
+// TODO: Peer reachability tracking. Convergence should probe WireGuard peers
+// (handshake age) and mark unreachable ones as down. This drives the health
+// model: "expected members" is the count of reachable peers, not the store
+// total. Without this, a node that restarts after a peer was removed will
+// never satisfy a members>=N health gate because the dead peer won't respond
+// to gossip. See platform/corrorun/ready.go for why startup doesn't gate on
+// cluster health, and docs/corrosion-health.md for the health endpoint.
 package convergence
 
 import (

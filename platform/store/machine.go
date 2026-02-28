@@ -1,4 +1,4 @@
-package platform
+package store
 
 import (
 	"context"
@@ -13,20 +13,10 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-// ClusterStore implements machine.ClusterStore backed by Corrosion.
-type ClusterStore struct {
-	client *corrosion.Client
-}
-
-// NewClusterStore creates a ClusterStore using the given Corrosion client.
-func NewClusterStore(client *corrosion.Client) *ClusterStore {
-	return &ClusterStore{client: client}
-}
-
 const machinesQuery = `SELECT id, name, public_key, endpoints, overlay_ip, labels, updated_at FROM machines`
 
 // ListMachines returns all machine records from the cluster store.
-func (s *ClusterStore) ListMachines(ctx context.Context) ([]ployz.MachineRecord, error) {
+func (s *Store) ListMachines(ctx context.Context) ([]ployz.MachineRecord, error) {
 	rows, err := s.client.QueryContext(ctx, machinesQuery)
 	if err != nil {
 		return nil, fmt.Errorf("list machines: %w", err)
@@ -48,7 +38,7 @@ func (s *ClusterStore) ListMachines(ctx context.Context) ([]ployz.MachineRecord,
 }
 
 // SubscribeMachines returns the current machine set and a channel of change events.
-func (s *ClusterStore) SubscribeMachines(ctx context.Context) ([]ployz.MachineRecord, <-chan ployz.MachineEvent, error) {
+func (s *Store) SubscribeMachines(ctx context.Context) ([]ployz.MachineRecord, <-chan ployz.MachineEvent, error) {
 	sub, err := s.client.SubscribeContext(ctx, machinesQuery, nil, false)
 	if err != nil {
 		return nil, nil, fmt.Errorf("subscribe machines: %w", err)
@@ -101,7 +91,7 @@ func (s *ClusterStore) SubscribeMachines(ctx context.Context) ([]ployz.MachineRe
 }
 
 // UpsertMachine inserts or updates a machine record.
-func (s *ClusterStore) UpsertMachine(ctx context.Context, rec ployz.MachineRecord) error {
+func (s *Store) UpsertMachine(ctx context.Context, rec ployz.MachineRecord) error {
 	endpoints, err := json.Marshal(addrPortsToStrings(rec.Endpoints))
 	if err != nil {
 		return fmt.Errorf("upsert machine: marshal endpoints: %w", err)
@@ -129,7 +119,7 @@ func (s *ClusterStore) UpsertMachine(ctx context.Context, rec ployz.MachineRecor
 }
 
 // DeleteMachine removes a machine record by ID.
-func (s *ClusterStore) DeleteMachine(ctx context.Context, id string) error {
+func (s *Store) DeleteMachine(ctx context.Context, id string) error {
 	_, err := s.client.ExecContext(ctx, `DELETE FROM machines WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete machine %s: %w", id, err)
@@ -137,7 +127,6 @@ func (s *ClusterStore) DeleteMachine(ctx context.Context, id string) error {
 	return nil
 }
 
-// scanMachineRecord reads a MachineRecord from a Rows cursor.
 func scanMachineRecord(rows *corrosion.Rows) (ployz.MachineRecord, error) {
 	var (
 		id         string
