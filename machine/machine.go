@@ -2,26 +2,13 @@ package machine
 
 import (
 	"fmt"
-	"sync"
 
 	"ployz"
 	"ployz/internal/support/buildinfo"
-	"ployz/platform"
+	"ployz/machine/mesh"
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
-
-// NewProduction creates a machine with platform defaults.
-// This is the production entrypoint; use NewMachine with explicit
-// options for tests.
-func NewProduction(dataDir string) (*Machine, error) {
-	m, err := NewMachine(dataDir)
-	if err != nil {
-		return nil, err
-	}
-	m.wireGuard = platform.NewWireGuard(m.identity.PrivateKey)
-	return m, nil
-}
 
 // Identity is the minimum a machine needs to exist on a network.
 // The public key and management IP are derived from the private key.
@@ -30,25 +17,18 @@ type Identity struct {
 	Name       string
 }
 
-// Machine is a node. It owns local identity and orchestrates the network
-// components (WireGuard, cluster store, convergence) when the network is enabled.
+// Machine is a node. It owns local identity and optionally participates
+// in a mesh network. The mesh is nil when the machine is standalone.
 type Machine struct {
 	identity Identity
 	dataDir  string
-
-	wireGuard    WireGuard
-	storeRuntime StoreRuntime
-	store        ClusterStore
-	convergence  Convergence
-
-	mu    sync.Mutex
-	phase Phase
+	mesh     *mesh.Mesh
 
 	// started is closed when the machine is ready to serve requests.
 	started chan struct{}
 }
 
-// Option configures a Machine. Use these to inject test dependencies.
+// Option configures a Machine.
 type Option func(*Machine)
 
 // WithIdentity sets the machine's identity, skipping file I/O.
@@ -58,37 +38,15 @@ func WithIdentity(id Identity) Option {
 	}
 }
 
-// WithWireGuard injects a WireGuard implementation.
-func WithWireGuard(wg WireGuard) Option {
+// WithMesh attaches a mesh network stack to the machine.
+func WithMesh(msh *mesh.Mesh) Option {
 	return func(m *Machine) {
-		m.wireGuard = wg
-	}
-}
-
-// WithStoreRuntime injects a store runtime lifecycle.
-func WithStoreRuntime(r StoreRuntime) Option {
-	return func(m *Machine) {
-		m.storeRuntime = r
-	}
-}
-
-// WithClusterStore injects a distributed store implementation.
-func WithClusterStore(s ClusterStore) Option {
-	return func(m *Machine) {
-		m.store = s
-	}
-}
-
-// WithConvergence injects a convergence loop.
-func WithConvergence(c Convergence) Option {
-	return func(m *Machine) {
-		m.convergence = c
+		m.mesh = msh
 	}
 }
 
 // NewMachine creates a machine rooted at dataDir. Identity is loaded from
 // disk or generated on first run, unless injected via WithIdentity.
-// No platform defaults are applied — use NewProduction for that.
 func NewMachine(dataDir string, opts ...Option) (*Machine, error) {
 	m := &Machine{
 		dataDir: dataDir,
@@ -114,16 +72,26 @@ func (m *Machine) Identity() Identity {
 	return m.identity
 }
 
-// Phase returns the current network lifecycle phase.
-func (m *Machine) Phase() Phase {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.phase
+// Mesh returns the mesh network stack, or nil if standalone.
+func (m *Machine) Mesh() *mesh.Mesh {
+	return m.mesh
 }
 
-// Store returns the cluster store, or nil if none is configured.
-func (m *Machine) Store() ClusterStore {
-	return m.store
+// Phase returns the current network lifecycle phase.
+// Returns "stopped" if the machine has no mesh.
+func (m *Machine) Phase() mesh.Phase {
+	if m.mesh == nil {
+		return mesh.PhaseStopped
+	}
+	return m.mesh.Phase()
+}
+
+// Store returns the cluster store, or nil if standalone or not configured.
+func (m *Machine) Store() mesh.ClusterStore {
+	if m.mesh == nil {
+		return nil
+	}
+	return m.mesh.Store()
 }
 
 // Started returns a channel that is closed when the machine is ready.
@@ -133,12 +101,10 @@ func (m *Machine) Started() <-chan struct{} {
 
 // Status returns the machine's runtime status.
 func (m *Machine) Status() ployz.Machine {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	return ployz.Machine{
 		Name:         m.identity.Name,
 		PublicKey:    m.identity.PrivateKey.PublicKey().String(),
-		NetworkPhase: m.phase.String(),
+		NetworkPhase: m.Phase().String(),
 		Version:      buildinfo.Version,
 	}
 }

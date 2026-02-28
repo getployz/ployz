@@ -1,4 +1,4 @@
-package machine
+package mesh
 
 // Phase describes the network lifecycle state.
 type Phase uint8
@@ -8,7 +8,6 @@ const (
 	PhaseStarting
 	PhaseRunning
 	PhaseStopping
-	// TODO: PhaseDegraded — running but unhealthy. Add when convergence/health lands.
 )
 
 func (p Phase) String() string {

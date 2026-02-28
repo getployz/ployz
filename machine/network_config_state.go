@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"ployz/machine/mesh"
 )
 
 const networkConfigFileName = "network.json"
@@ -44,12 +46,9 @@ func (m *Machine) SaveNetworkConfig(cfg NetworkConfig) error {
 // RemoveNetworkConfig deletes the network config. Called when leaving a cluster.
 // The network must already be stopped.
 func (m *Machine) RemoveNetworkConfig() error {
-	m.mu.Lock()
-	if m.phase != PhaseStopped {
-		m.mu.Unlock()
-		return fmt.Errorf("cannot remove network config: network is %s", m.phase)
+	if m.Phase() != mesh.PhaseStopped {
+		return fmt.Errorf("cannot remove network config: network is %s", m.Phase())
 	}
-	m.mu.Unlock()
 
 	if err := os.Remove(m.networkConfigPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove network config: %w", err)
