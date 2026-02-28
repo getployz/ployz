@@ -96,7 +96,7 @@ func applyEvent(records []ployz.MachineRecord, event ployz.MachineEvent) []ployz
 		return append(records, event.Record)
 	case ployz.MachineUpdated:
 		for i, record := range records {
-			if record.PublicKey == event.Record.PublicKey {
+			if record.ID == event.Record.ID {
 				records[i] = event.Record
 				return records
 			}
@@ -105,7 +105,7 @@ func applyEvent(records []ployz.MachineRecord, event ployz.MachineEvent) []ployz
 	case ployz.MachineRemoved:
 		out := make([]ployz.MachineRecord, 0, len(records))
 		for _, record := range records {
-			if record.PublicKey != event.Record.PublicKey {
+			if record.ID != event.Record.ID {
 				out = append(out, record)
 			}
 		}

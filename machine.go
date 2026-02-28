@@ -9,6 +9,7 @@ import (
 
 // Machine is the runtime status of the local machine.
 type Machine struct {
+	ID           string
 	Name         string
 	PublicKey    string
 	NetworkPhase string
