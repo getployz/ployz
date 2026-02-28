@@ -19,9 +19,7 @@ func NewProduction(dataDir string) (*Machine, error) {
 	if err != nil {
 		return nil, err
 	}
-	if m.wireGuard == nil {
-		m.wireGuard = platform.NewWireGuard(m.identity.PrivateKey)
-	}
+	m.wireGuard = platform.NewWireGuard(m.identity.PrivateKey)
 	return m, nil
 }
 

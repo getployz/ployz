@@ -8,6 +8,7 @@ import (
 	"log/slog"
 
 	"ployz"
+	"ployz/internal/support/check"
 )
 
 // Loop watches the registry and reconciles WireGuard peers.
@@ -109,6 +110,8 @@ func applyEvent(records []ployz.MachineRecord, event ployz.MachineEvent) []ployz
 			}
 		}
 		return out
+	default:
+		check.Assertf(false, "unknown machine event kind: %d", event.Kind)
 	}
 	return records
 }

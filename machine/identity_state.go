@@ -66,7 +66,7 @@ func generateIdentity() (Identity, error) {
 		return Identity{}, fmt.Errorf("generate private key: %w", err)
 	}
 
-	hostname, _ := os.Hostname()
+	hostname, _ := os.Hostname() // best-effort; empty name is acceptable
 
 	return Identity{
 		PrivateKey: key,

@@ -51,11 +51,10 @@ func (m *Machine) RemoveNetworkConfig() error {
 	}
 	m.mu.Unlock()
 
-	err := os.Remove(m.networkConfigPath())
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
+	if err := os.Remove(m.networkConfigPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove network config: %w", err)
 	}
-	return err
+	return nil
 }
 
 func (m *Machine) networkConfigPath() string {

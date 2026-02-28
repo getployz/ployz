@@ -48,7 +48,7 @@ func (m *Machine) EnableNetwork(ctx context.Context) error {
 
 	if m.storeRuntime != nil {
 		if err := m.storeRuntime.Start(ctx); err != nil {
-			_ = m.wireGuard.Down(ctx)
+			_ = m.wireGuard.Down(ctx) // best-effort teardown; original error is more useful
 			m.phase = PhaseStopped
 			return fmt.Errorf("start registry: %w", err)
 		}
@@ -56,6 +56,7 @@ func (m *Machine) EnableNetwork(ctx context.Context) error {
 
 	if m.convergence != nil {
 		if err := m.convergence.Start(ctx); err != nil {
+			// best-effort teardown; original error is more useful
 			if m.storeRuntime != nil {
 				_ = m.storeRuntime.Stop(ctx)
 			}
