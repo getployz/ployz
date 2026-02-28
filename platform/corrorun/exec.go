@@ -10,7 +10,7 @@ import (
 )
 
 // Exec runs Corrosion as a child process.
-// Implements machine.StoreRuntime.
+// Implements the Start/Stop portion of mesh.Store.
 type Exec struct {
 	binary  string
 	paths   Paths

@@ -99,7 +99,7 @@ type retryRoundTripper struct {
 }
 
 func (rt *retryRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	roundTrip := func() (*http.Response, error) {
+	attempt := func() (*http.Response, error) {
 		resp, err := rt.base.RoundTrip(req)
 		if err != nil {
 			var opErr *net.OpError
@@ -112,5 +112,5 @@ func (rt *retryRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 		return resp, nil
 	}
 	boff := backoff.WithContext(rt.newBackoff(), req.Context())
-	return backoff.RetryWithData(roundTrip, boff)
+	return backoff.RetryWithData(attempt, boff)
 }

@@ -5,19 +5,18 @@ package mesh
 
 import "sync"
 
-// Mesh is the network stack. It orchestrates WireGuard, the store runtime
+// Mesh is the network stack. It orchestrates WireGuard, the store
 // (Corrosion), and convergence as a single unit.
 //
-// Start order:  WG up → store runtime start → convergence start.
-// Stop order:   convergence stop → store runtime stop → WG down.
+// Start order:  WG up → store start → convergence start.
+// Stop order:   convergence stop → store stop → WG down.
 //
 // Mesh is a concrete struct, not an interface. Tests construct a real Mesh
 // with fake leaf deps injected via With* options.
 type Mesh struct {
-	wireGuard    WireGuard
-	storeRuntime StoreRuntime
-	store        ClusterStore
-	convergence  Convergence
+	wireGuard   WireGuard
+	store       Store
+	convergence Convergence
 
 	mu    sync.Mutex
 	phase Phase
@@ -31,13 +30,8 @@ func WithWireGuard(wg WireGuard) Option {
 	return func(m *Mesh) { m.wireGuard = wg }
 }
 
-// WithStoreRuntime injects a store runtime lifecycle.
-func WithStoreRuntime(r StoreRuntime) Option {
-	return func(m *Mesh) { m.storeRuntime = r }
-}
-
-// WithClusterStore injects a cluster store implementation.
-func WithClusterStore(s ClusterStore) Option {
+// WithStore injects a store implementation.
+func WithStore(s Store) Option {
 	return func(m *Mesh) { m.store = s }
 }
 
@@ -62,7 +56,7 @@ func (m *Mesh) Phase() Phase {
 	return m.phase
 }
 
-// Store returns the cluster store, or nil if not configured.
-func (m *Mesh) Store() ClusterStore {
+// Store returns the store, or nil if not configured.
+func (m *Mesh) Store() Store {
 	return m.store
 }

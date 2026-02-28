@@ -11,6 +11,10 @@ import (
 	"time"
 )
 
+// maxFrameSize is the upper bound on a single Tokio length-delimited frame.
+// Corrosion admin responses are small JSON payloads; 16 MiB is generous.
+const maxFrameSize = 16 << 20
+
 // AdminClient talks to Corrosion's admin Unix domain socket.
 type AdminClient struct {
 	sockPath string
@@ -92,11 +96,14 @@ func encodeFrame(data []byte) []byte {
 
 // readFrame reads a length-delimited Tokio frame.
 func readFrame(conn net.Conn) ([]byte, error) {
-	head := make([]byte, 4)
-	if _, err := io.ReadFull(conn, head); err != nil {
+	var head [4]byte
+	if _, err := io.ReadFull(conn, head[:]); err != nil {
 		return nil, fmt.Errorf("read frame head: %w", err)
 	}
-	length := binary.BigEndian.Uint32(head)
+	length := binary.BigEndian.Uint32(head[:])
+	if length > maxFrameSize {
+		return nil, fmt.Errorf("frame too large: %d bytes (max %d)", length, maxFrameSize)
+	}
 	data := make([]byte, length)
 	if _, err := io.ReadFull(conn, data); err != nil {
 		return nil, fmt.Errorf("read frame data: %w", err)
@@ -130,9 +137,9 @@ func (c *AdminClient) ClusterMembers(latest bool) ([]ClusterMember, error) {
 	}
 
 	var (
-		members      []ClusterMember
-		latestByID   map[string]ClusterMember
-		parseErr     error
+		members    []ClusterMember
+		latestByID map[string]ClusterMember
+		parseErr   error
 	)
 	if latest {
 		latestByID = make(map[string]ClusterMember)

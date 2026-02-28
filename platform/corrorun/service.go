@@ -9,7 +9,7 @@ import (
 
 // Service assumes Corrosion is managed externally (systemd, etc.).
 // Start only health-checks; Stop is a no-op.
-// Implements machine.StoreRuntime.
+// Implements the Start/Stop portion of mesh.Store.
 type Service struct {
 	apiAddr netip.AddrPort
 }

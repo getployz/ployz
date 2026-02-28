@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"time"
 
@@ -12,6 +13,9 @@ import (
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
+
+// machineEventBufCap is the buffer size for the machine event channel.
+const machineEventBufCap = 64
 
 const machinesQuery = `SELECT id, name, public_key, endpoints, overlay_ip, labels, updated_at FROM machines`
 
@@ -68,17 +72,40 @@ func (s *Store) SubscribeMachines(ctx context.Context) ([]ployz.MachineRecord, <
 		return nil, nil, fmt.Errorf("subscribe machines changes: %w", err)
 	}
 
-	events := make(chan ployz.MachineEvent, 64)
+	events := make(chan ployz.MachineEvent, machineEventBufCap)
 	go func() {
 		defer close(events)
 		defer sub.Close()
 
+		// Track rowID → machine ID so we can resolve deletes.
+		// Seeded from insert/update events; initial rows don't carry rowIDs.
+		rowIndex := make(map[uint64]string)
+
 		for change := range changes {
-			event, err := changeToMachineEvent(change)
-			if err != nil {
-				// TODO: log and continue, or expose error channel
-				continue
+			var event ployz.MachineEvent
+
+			switch change.Type {
+			case corrosion.ChangeDelete:
+				machineID, ok := rowIndex[change.RowID]
+				if !ok {
+					slog.Warn("Delete for unknown rowID, skipping.", "rowid", change.RowID)
+					continue
+				}
+				delete(rowIndex, change.RowID)
+				event = ployz.MachineEvent{
+					Kind:   ployz.MachineRemoved,
+					Record: ployz.MachineRecord{ID: machineID},
+				}
+			default:
+				var err error
+				event, err = changeToMachineEvent(change)
+				if err != nil {
+					slog.Warn("Skipping malformed machine change event.", "err", err)
+					continue
+				}
+				rowIndex[change.RowID] = event.Record.ID
 			}
+
 			select {
 			case events <- event:
 			case <-ctx.Done():
@@ -177,6 +204,8 @@ func scanMachineRecord(rows *corrosion.Rows) (ployz.MachineRecord, error) {
 	}, nil
 }
 
+// changeToMachineEvent parses an insert or update change into a MachineEvent.
+// Deletes are handled by the caller using the rowID index.
 func changeToMachineEvent(change *corrosion.ChangeEvent) (ployz.MachineEvent, error) {
 	var kind ployz.MachineEventKind
 	switch change.Type {
@@ -184,15 +213,8 @@ func changeToMachineEvent(change *corrosion.ChangeEvent) (ployz.MachineEvent, er
 		kind = ployz.MachineAdded
 	case corrosion.ChangeUpdate:
 		kind = ployz.MachineUpdated
-	case corrosion.ChangeDelete:
-		kind = ployz.MachineRemoved
 	default:
 		return ployz.MachineEvent{}, fmt.Errorf("unknown change type: %s", change.Type)
-	}
-
-	// For deletes, we only have the row ID — the record will be sparse.
-	if change.Type == corrosion.ChangeDelete {
-		return ployz.MachineEvent{Kind: kind}, nil
 	}
 
 	var (
@@ -255,11 +277,11 @@ func parseAddrPorts(jsonStr string) ([]netip.AddrPort, error) {
 	}
 	addrs := make([]netip.AddrPort, len(strs))
 	for i, s := range strs {
-		var err error
-		addrs[i], err = netip.ParseAddrPort(s)
+		ap, err := netip.ParseAddrPort(s)
 		if err != nil {
 			return nil, fmt.Errorf("parse endpoint %q: %w", s, err)
 		}
+		addrs[i] = ap
 	}
 	return addrs, nil
 }

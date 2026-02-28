@@ -1,5 +1,7 @@
 package mesh
 
+import "ployz/internal/support/check"
+
 // Phase describes the network lifecycle state.
 type Phase uint8
 
@@ -21,6 +23,7 @@ func (p Phase) String() string {
 	case PhaseStopping:
 		return "stopping"
 	default:
+		check.Assertf(false, "unknown mesh phase: %d", p)
 		return "unknown"
 	}
 }

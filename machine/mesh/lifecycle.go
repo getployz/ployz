@@ -6,7 +6,7 @@ import (
 	"log/slog"
 )
 
-// Start brings up the network stack in order: WireGuard, store runtime,
+// Start brings up the network stack in order: WireGuard, store,
 // then convergence. On failure at any step, everything already started
 // is torn down in reverse and the original error is returned.
 func (m *Mesh) Start(ctx context.Context) error {
@@ -26,16 +26,16 @@ func (m *Mesh) Start(ctx context.Context) error {
 		}
 	}
 
-	if m.storeRuntime != nil {
-		if err := m.storeRuntime.Start(ctx); err != nil {
-			m.teardownFrom(ctx, 0) // tear down WG
-			return fmt.Errorf("store runtime start: %w", err)
+	if m.store != nil {
+		if err := m.store.Start(ctx); err != nil {
+			m.rollbackWireGuard(ctx)
+			return fmt.Errorf("store start: %w", err)
 		}
 	}
 
 	if m.convergence != nil {
 		if err := m.convergence.Start(ctx); err != nil {
-			m.teardownFrom(ctx, 1) // tear down runtime + WG
+			m.rollbackStoreAndWireGuard(ctx)
 			return fmt.Errorf("convergence start: %w", err)
 		}
 	}
@@ -45,7 +45,7 @@ func (m *Mesh) Start(ctx context.Context) error {
 }
 
 // Stop tears down the network stack in reverse order: convergence,
-// store runtime, then WireGuard. Continues through errors and returns
+// store, then WireGuard. Continues through errors and returns
 // the first one encountered.
 func (m *Mesh) Stop(ctx context.Context) error {
 	m.mu.Lock()
@@ -65,9 +65,9 @@ func (m *Mesh) Stop(ctx context.Context) error {
 		}
 	}
 
-	if m.storeRuntime != nil {
-		if err := m.storeRuntime.Stop(ctx); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("store runtime stop: %w", err)
+	if m.store != nil {
+		if err := m.store.Stop(ctx); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("store stop: %w", err)
 		}
 	}
 
@@ -81,20 +81,24 @@ func (m *Mesh) Stop(ctx context.Context) error {
 	return firstErr
 }
 
-// teardownFrom tears down components in reverse from the given step (inclusive).
-// Called during Start rollback. Caller must hold m.mu.
-//
-// Steps: 0=WG, 1=runtime, 2=convergence.
-func (m *Mesh) teardownFrom(ctx context.Context, lastSuccessful int) {
-	if lastSuccessful >= 1 && m.storeRuntime != nil {
-		if err := m.storeRuntime.Stop(ctx); err != nil {
-			slog.Error("rollback: store runtime stop", "err", err)
-		}
-	}
-	if lastSuccessful >= 0 && m.wireGuard != nil {
+// rollbackWireGuard tears down WireGuard during a failed Start.
+// Caller must hold m.mu.
+func (m *Mesh) rollbackWireGuard(ctx context.Context) {
+	if m.wireGuard != nil {
 		if err := m.wireGuard.Down(ctx); err != nil {
 			slog.Error("rollback: wireguard down", "err", err)
 		}
 	}
 	m.phase = PhaseStopped
+}
+
+// rollbackStoreAndWireGuard tears down the store and WireGuard
+// during a failed Start. Caller must hold m.mu.
+func (m *Mesh) rollbackStoreAndWireGuard(ctx context.Context) {
+	if m.store != nil {
+		if err := m.store.Stop(ctx); err != nil {
+			slog.Error("rollback: store stop", "err", err)
+		}
+	}
+	m.rollbackWireGuard(ctx)
 }

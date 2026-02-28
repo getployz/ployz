@@ -152,8 +152,10 @@ func (s *Subscription) readChanges() {
 		default:
 		}
 
-		var e QueryEvent
-		var err error
+		var (
+			e   QueryEvent
+			err error
+		)
 		if err = s.decoder.Decode(&e); err != nil {
 			if s.ctx.Err() != nil {
 				return // context cancelled, not an error
@@ -238,7 +240,7 @@ func (c *Client) SubscribeContext(
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
 		resp.Body.Close()
 		if err != nil {
 			return nil, fmt.Errorf("read subscribe response: %w", err)
@@ -275,7 +277,6 @@ func (c *Client) ResubscribeContext(ctx context.Context, id string, fromChange u
 	if err != nil {
 		return nil, fmt.Errorf("create resubscribe request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -284,7 +285,7 @@ func (c *Client) ResubscribeContext(ctx context.Context, id string, fromChange u
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
 		resp.Body.Close()
 		if err != nil {
 			return nil, fmt.Errorf("read resubscribe response: %w", err)

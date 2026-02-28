@@ -1,4 +1,4 @@
-// Package store implements machine.ClusterStore backed by Corrosion.
+// Package store implements mesh.Store backed by Corrosion.
 package store
 
 import (

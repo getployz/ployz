@@ -20,7 +20,7 @@ const (
 )
 
 // Container runs Corrosion as a Docker container.
-// Implements machine.StoreRuntime.
+// Implements the Start/Stop portion of mesh.Store.
 type Container struct {
 	docker  client.APIClient
 	image   string

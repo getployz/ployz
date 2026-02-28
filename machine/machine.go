@@ -45,9 +45,9 @@ func WithMesh(msh *mesh.Mesh) Option {
 	}
 }
 
-// NewMachine creates a machine rooted at dataDir. Identity is loaded from
+// New creates a machine rooted at dataDir. Identity is loaded from
 // disk or generated on first run, unless injected via WithIdentity.
-func NewMachine(dataDir string, opts ...Option) (*Machine, error) {
+func New(dataDir string, opts ...Option) (*Machine, error) {
 	m := &Machine{
 		dataDir: dataDir,
 		started: make(chan struct{}),
@@ -86,8 +86,8 @@ func (m *Machine) Phase() mesh.Phase {
 	return m.mesh.Phase()
 }
 
-// Store returns the cluster store, or nil if standalone or not configured.
-func (m *Machine) Store() mesh.ClusterStore {
+// Store returns the mesh store, or nil if standalone or not configured.
+func (m *Machine) Store() mesh.Store {
 	if m.mesh == nil {
 		return nil
 	}

@@ -50,7 +50,7 @@ func (c *Client) HealthContext(ctx context.Context, thresholds HealthThresholds)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusServiceUnavailable {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
 		return Health{}, false, fmt.Errorf("health check: unexpected status %d: %s", resp.StatusCode, body)
 	}
 

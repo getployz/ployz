@@ -12,7 +12,7 @@ type PeerPlanner interface {
 }
 
 // Subscriber provides a subscription to the current set of machines.
-// machine.ClusterStore satisfies this interface.
+// mesh.Store satisfies this interface.
 type Subscriber interface {
 	SubscribeMachines(ctx context.Context) ([]ployz.MachineRecord, <-chan ployz.MachineEvent, error)
 }

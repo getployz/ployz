@@ -10,6 +10,9 @@ import (
 	"net/http"
 )
 
+// maxErrorBodySize is the upper bound when reading error response bodies.
+const maxErrorBodySize = 1 << 20 // 1 MiB
+
 // Statement is a parameterized SQL statement.
 type Statement struct {
 	Query  string `json:"query"`
@@ -79,7 +82,7 @@ func (c *Client) ExecMultiContext(ctx context.Context, statements ...Statement) 
 	}
 
 	if resp.StatusCode == http.StatusInternalServerError {
-		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
 		if err != nil {
 			return nil, fmt.Errorf("read error response: %w", err)
 		}
@@ -92,7 +95,7 @@ func (c *Client) ExecMultiContext(ctx context.Context, statements ...Statement) 
 		return nil, fmt.Errorf("exec transaction: server error: %s", respBody)
 	}
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
@@ -159,7 +162,7 @@ func (c *Client) QueryContext(ctx context.Context, query string, args ...any) (*
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
 		resp.Body.Close()
 		if err != nil {
 			return nil, fmt.Errorf("read response: %w", err)

@@ -1,6 +1,6 @@
 // Package corrorun manages the Corrosion process lifecycle.
 // Three modes: container (Docker), exec (child process), and service (external).
-// All implement machine.StoreRuntime.
+// All implement the Start/Stop portion of mesh.Store.
 package corrorun
 
 import (
