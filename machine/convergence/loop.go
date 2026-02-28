@@ -16,7 +16,7 @@ import (
 	"log/slog"
 
 	"ployz"
-	"ployz/internal/support/check"
+	"ployz/internal/check"
 )
 
 // Loop watches the registry and reconciles WireGuard peers.

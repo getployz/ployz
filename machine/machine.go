@@ -4,8 +4,8 @@ import (
 	"fmt"
 
 	"ployz"
-	"ployz/internal/support/buildinfo"
 	"ployz/machine/mesh"
+	"ployz/platform/buildinfo"
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )

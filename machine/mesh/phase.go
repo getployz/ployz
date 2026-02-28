@@ -1,6 +1,6 @@
 package mesh
 
-import "ployz/internal/support/check"
+import "ployz/internal/check"
 
 // Phase describes the network lifecycle state.
 type Phase uint8
