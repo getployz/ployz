@@ -33,8 +33,8 @@ func (p HealthPhase) String() string {
 }
 
 func ClassifyHealth(sample HealthSample, expectedMembers int) HealthPhase {
-	if expectedMembers < 1 {
-		expectedMembers = 1
+	if expectedMembers < 0 {
+		expectedMembers = 0
 	}
 	if !sample.Reachable {
 		return HealthUnreachable

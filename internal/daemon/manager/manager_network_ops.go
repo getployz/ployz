@@ -168,12 +168,7 @@ func (m *Manager) localManagedWorkloadSummary(ctx context.Context) (int, []strin
 
 func buildWorkloadBlockDetail(source string, count int, contexts []string) string {
 	detail := fmt.Sprintf("%s has %d managed workload containers", source, count)
-	if len(contexts) == 0 {
-		return detail
-	}
-	sortedContexts := append([]string(nil), contexts...)
-	sort.Strings(sortedContexts)
-	return fmt.Sprintf("%s (%s)", detail, strings.Join(sortedContexts, ", "))
+	return appendDetailValues(detail, contexts)
 }
 
 func (m *Manager) defaultAttachedMachinesSummary(ctx context.Context, cfg overlay.Config) (int, []string, error) {
@@ -214,12 +209,18 @@ func (m *Manager) defaultAttachedMachinesSummary(ctx context.Context, cfg overla
 
 func buildAttachedMachinesBlockDetail(count int, machineIDs []string) string {
 	detail := fmt.Sprintf("network has %d attached machines", count)
-	if len(machineIDs) == 0 {
+	return appendDetailValues(detail, machineIDs)
+}
+
+func appendDetailValues(detail string, values []string) string {
+	if len(values) == 0 {
 		return detail
 	}
-	sortedIDs := append([]string(nil), machineIDs...)
-	sort.Strings(sortedIDs)
-	return fmt.Sprintf("%s (%s)", detail, strings.Join(sortedIDs, ", "))
+
+	sortedValues := append([]string(nil), values...)
+	sort.Strings(sortedValues)
+
+	return fmt.Sprintf("%s (%s)", detail, strings.Join(sortedValues, ", "))
 }
 
 func (m *Manager) applyOnce(ctx context.Context, spec types.NetworkSpec) (types.ApplyResult, error) {

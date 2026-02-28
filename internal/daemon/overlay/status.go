@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 )
 
 func (c *Controller) Status(ctx context.Context, in Config) (Status, error) {
@@ -37,13 +38,13 @@ func (c *Controller) Status(ctx context.Context, in Config) (Status, error) {
 }
 
 func (c *Controller) expectedCorrosionMembers(ctx context.Context, cfg Config, state *State) int {
-	const minExpectedMembers = 1
+	const minExpectedMembers = 0
 
 	expected := minExpectedMembers
 	if state == nil {
 		return expected
 	}
-	if n := len(state.Bootstrap) + 1; n > expected {
+	if n := len(state.Bootstrap); n > expected {
 		expected = n
 	}
 
@@ -55,8 +56,22 @@ func (c *Controller) expectedCorrosionMembers(ctx context.Context, cfg Config, s
 	if err != nil {
 		return expected
 	}
-	if len(rows) > expected {
-		expected = len(rows)
+
+	localID := strings.TrimSpace(state.WGPublic)
+	remoteRows := 0
+	for i := range rows {
+		rowID := strings.TrimSpace(rows[i].ID)
+		rowPubKey := strings.TrimSpace(rows[i].PublicKey)
+		if localID != "" && (rowID == localID || rowPubKey == localID) {
+			continue
+		}
+		remoteRows++
+	}
+	if localID == "" && len(rows) > 0 {
+		remoteRows = len(rows) - 1
+	}
+	if remoteRows > expected {
+		expected = remoteRows
 	}
 
 	return expected

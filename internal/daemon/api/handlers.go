@@ -15,7 +15,7 @@ func (s *Server) ApplyNetworkSpec(ctx context.Context, req *pb.ApplyNetworkSpecR
 	if req.Spec == nil {
 		return nil, status.Error(codes.InvalidArgument, "spec is required")
 	}
-	out, err := s.manager.ApplyNetworkSpec(ctx, specFromProto(req.Spec))
+	out, err := s.machine.ApplyNetworkSpec(ctx, specFromProto(req.Spec))
 	if err != nil {
 		return nil, toGRPCError(err)
 	}
@@ -23,14 +23,14 @@ func (s *Server) ApplyNetworkSpec(ctx context.Context, req *pb.ApplyNetworkSpecR
 }
 
 func (s *Server) DisableNetwork(ctx context.Context, req *pb.DisableNetworkRequest) (*pb.DisableNetworkResponse, error) {
-	if err := s.manager.DisableNetwork(ctx, req.Purge); err != nil {
+	if err := s.machine.DisableNetwork(ctx, req.Purge); err != nil {
 		return nil, toGRPCError(err)
 	}
 	return &pb.DisableNetworkResponse{}, nil
 }
 
 func (s *Server) GetStatus(ctx context.Context, req *pb.GetStatusRequest) (*pb.NetworkStatus, error) {
-	st, err := s.manager.GetStatus(ctx)
+	st, err := s.machine.GetStatus(ctx)
 	if err != nil {
 		return nil, toGRPCError(err)
 	}
@@ -38,7 +38,7 @@ func (s *Server) GetStatus(ctx context.Context, req *pb.GetStatusRequest) (*pb.N
 }
 
 func (s *Server) GetIdentity(ctx context.Context, req *pb.GetIdentityRequest) (*pb.Identity, error) {
-	id, err := s.manager.GetIdentity(ctx)
+	id, err := s.machine.GetIdentity(ctx)
 	if err != nil {
 		return nil, toGRPCError(err)
 	}
@@ -46,7 +46,7 @@ func (s *Server) GetIdentity(ctx context.Context, req *pb.GetIdentityRequest) (*
 }
 
 func (s *Server) ListMachines(ctx context.Context, req *pb.ListMachinesRequest) (*pb.ListMachinesResponse, error) {
-	machines, err := s.manager.ListMachines(ctx)
+	machines, err := s.machine.ListMachines(ctx)
 	if err != nil {
 		return nil, toGRPCError(err)
 	}
@@ -61,21 +61,21 @@ func (s *Server) UpsertMachine(ctx context.Context, req *pb.UpsertMachineRequest
 	if req.Machine == nil {
 		return nil, status.Error(codes.InvalidArgument, "machine is required")
 	}
-	if err := s.manager.UpsertMachine(ctx, machineEntryFromProto(req.Machine)); err != nil {
+	if err := s.machine.UpsertMachine(ctx, machineEntryFromProto(req.Machine)); err != nil {
 		return nil, toGRPCError(err)
 	}
 	return &pb.UpsertMachineResponse{}, nil
 }
 
 func (s *Server) RemoveMachine(ctx context.Context, req *pb.RemoveMachineRequest) (*pb.RemoveMachineResponse, error) {
-	if err := s.manager.RemoveMachine(ctx, req.IdOrEndpoint); err != nil {
+	if err := s.machine.RemoveMachine(ctx, req.IdOrEndpoint); err != nil {
 		return nil, toGRPCError(err)
 	}
 	return &pb.RemoveMachineResponse{}, nil
 }
 
 func (s *Server) GetPeerHealth(ctx context.Context, req *pb.GetPeerHealthRequest) (*pb.GetPeerHealthResponse, error) {
-	responses, err := s.manager.GetPeerHealth(ctx)
+	responses, err := s.machine.GetPeerHealth(ctx)
 	if err != nil {
 		return nil, toGRPCError(err)
 	}

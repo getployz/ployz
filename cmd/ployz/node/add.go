@@ -18,6 +18,7 @@ func addCmd() *cobra.Command {
 	var sshPort int
 	var sshKey string
 	var wgPort int
+	var existingRemote string
 
 	cmd := &cobra.Command{
 		Use:   "add <user@host>",
@@ -44,13 +45,14 @@ func addCmd() *cobra.Command {
 			defer telemetryOut.Close()
 
 			result, err := svc.AddMachine(cmd.Context(), sdkmachine.AddOptions{
-				Network:  cl.Network,
-				Target:   args[0],
-				Endpoint: endpoint,
-				SSHPort:  sshPort,
-				SSHKey:   sshKey,
-				WGPort:   wgPort,
-				Tracer:   telemetryOut.Tracer("ployz/sdk/machine"),
+				Network:        cl.Network,
+				Target:         args[0],
+				Endpoint:       endpoint,
+				SSHPort:        sshPort,
+				SSHKey:         sshKey,
+				WGPort:         wgPort,
+				ExistingRemote: sdkmachine.ExistingRemoteMode(existingRemote),
+				Tracer:         telemetryOut.Tracer("ployz/sdk/machine"),
 			})
 			if err != nil {
 				return err
@@ -90,5 +92,6 @@ func addCmd() *cobra.Command {
 	cmd.Flags().IntVar(&sshPort, "ssh-port", 22, "SSH port")
 	cmd.Flags().StringVar(&sshKey, "ssh-key", "", "SSH private key path")
 	cmd.Flags().IntVar(&wgPort, "wg-port", 0, "Remote WireGuard listen port (default derived from network)")
+	cmd.Flags().StringVar(&existingRemote, "existing-remote", string(sdkmachine.ExistingRemoteFail), "When remote is already configured: fail, reuse, or reset")
 	return cmd
 }

@@ -2,6 +2,7 @@ package machine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"runtime"
@@ -28,6 +29,14 @@ const (
 	addWaitTimeout = 45 * time.Second
 	// supervisorSyncPollInterval is 500ms: fast enough to detect sync quickly, slow enough to avoid hammering the API.
 	supervisorSyncPollInterval = 500 * time.Millisecond
+)
+
+type ExistingRemoteMode string
+
+const (
+	ExistingRemoteFail  ExistingRemoteMode = "fail"
+	ExistingRemoteReuse ExistingRemoteMode = "reuse"
+	ExistingRemoteReset ExistingRemoteMode = "reset"
 )
 
 type Service struct {
@@ -77,6 +86,13 @@ type AddOptions struct {
 	SSHPort  int
 	SSHKey   string
 	WGPort   int
+
+	// ExistingRemote controls behavior when the remote daemon reports an already
+	// configured network runtime:
+	// - fail (default): return an explicit error without mutating remote state.
+	// - reuse: keep existing remote state and continue registration.
+	// - reset: destroy remote runtime with purge=true, then re-initialize.
+	ExistingRemote ExistingRemoteMode
 
 	// ConnectFunc overrides SSH-based remote connection. When set,
 	// install() is skipped and connect() calls this instead. If the
@@ -133,6 +149,7 @@ type addOp struct {
 	api           client.API
 	opts          AddOptions
 	phase         AddPhase
+	existingMode  ExistingRemoteMode
 	network       string
 	target        string
 	remoteEP      string
@@ -158,6 +175,16 @@ func newAddOp(ctx context.Context, api client.API, opts AddOptions, op *telemetr
 	}
 	if opts.WGPort == 0 {
 		opts.WGPort = defaults.WGPort(network)
+	}
+
+	mode := opts.ExistingRemote
+	if mode == "" {
+		mode = ExistingRemoteFail
+	}
+	switch mode {
+	case ExistingRemoteFail, ExistingRemoteReuse, ExistingRemoteReset:
+	default:
+		return nil, fmt.Errorf("invalid existing remote mode %q (expected: %s, %s, or %s)", mode, ExistingRemoteFail, ExistingRemoteReuse, ExistingRemoteReset)
 	}
 
 	localIdentity, err := api.GetIdentity(ctx)
@@ -208,6 +235,7 @@ func newAddOp(ctx context.Context, api client.API, opts AddOptions, op *telemetr
 		api:           api,
 		opts:          opts,
 		phase:         AddInstall,
+		existingMode:  mode,
 		network:       network,
 		target:        target,
 		remoteEP:      remoteEP,
@@ -306,14 +334,34 @@ func (a *addOp) connect(ctx context.Context) error {
 }
 
 func (a *addOp) configure(ctx context.Context) error {
+	remoteStatus, err := a.remoteAPI.GetStatus(ctx)
+	if err != nil {
+		return fmt.Errorf("read remote status: %w", err)
+	}
+
+	if remoteStatus.Configured {
+		switch a.existingMode {
+		case ExistingRemoteFail:
+			target := strings.TrimSpace(a.target)
+			if target == "" {
+				target = a.remoteEP
+			}
+			return fmt.Errorf("remote %q already has configured network runtime; choose --existing-remote=%s to attach existing remote state or --existing-remote=%s to purge and reinitialize", target, ExistingRemoteReuse, ExistingRemoteReset)
+		case ExistingRemoteReset:
+			if err := a.remoteAPI.DisableNetwork(ctx, true); err != nil && !errors.Is(err, client.ErrNetworkNotConfigured) {
+				return fmt.Errorf("reset remote network runtime: %w", err)
+			}
+		case ExistingRemoteReuse:
+			// Reuse existing remote runtime state as-is.
+		}
+	}
+
 	if _, err := a.remoteAPI.ApplyNetworkSpec(ctx, types.NetworkSpec{
 		Network:           a.network,
 		DataRoot:          a.remoteRoot,
 		NetworkCIDR:       a.networkCIDR.String(),
 		Subnet:            a.remoteSubnet.String(),
 		WGPort:            a.opts.WGPort,
-		CorrosionMemberID: a.localIdentity.CorrosionMemberID,
-		CorrosionAPIToken: a.localIdentity.CorrosionAPIToken,
 		AdvertiseEndpoint: a.remoteEP,
 		Bootstrap:         a.bootstrap,
 	}); err != nil {

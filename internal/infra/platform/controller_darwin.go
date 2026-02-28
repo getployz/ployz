@@ -116,14 +116,7 @@ func configureWireGuardDarwin(ctx context.Context, cfg overlay.Config, state *ov
 	if err != nil {
 		return fmt.Errorf("build peer specs: %w", err)
 	}
-	wgPeers := make([]wireguard.PeerConfig, len(specs))
-	for i, s := range specs {
-		wgPeers[i] = wireguard.PeerConfig{
-			PublicKey:       s.PublicKey,
-			Endpoint:        s.Endpoint,
-			AllowedPrefixes: s.AllowedPrefixes,
-		}
-	}
+	wgPeers := peerConfigsFromSpecs(specs)
 	return wireguard.Configure(ctx,
 		state.WGInterface, defaultWireGuardMTU, state.WGPrivate, state.WGPort,
 		overlay.MachineIP(cfg.Subnet), cfg.Management, wgPeers)
@@ -156,7 +149,3 @@ func startPingListener(ctx context.Context, ip netip.Addr, port int, networkName
 		_ = conn.Close()
 	}
 }
-
-var defaultNetworkPrefix = netip.MustParsePrefix("10.210.0.0/16")
-
-const defaultWireGuardMTU = 1280

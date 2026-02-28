@@ -1,0 +1,938 @@
+syntax = "proto3";
+
+package ployz.control.v1;
+
+option go_package = "ployz/docs/planning/pb;planningpb";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+service ClusterService {
+  rpc GetClusterSummary(GetClusterSummaryRequest) returns (GetClusterSummaryResponse);
+  rpc InspectCluster(InspectClusterRequest) returns (InspectClusterResponse);
+}
+
+service WorkloadService {
+  rpc ListWorkloads(ListWorkloadsRequest) returns (ListWorkloadsResponse);
+  rpc InspectWorkload(InspectWorkloadRequest) returns (InspectWorkloadResponse);
+  rpc ExplainWorkload(ExplainWorkloadRequest) returns (ExplainWorkloadResponse);
+
+  rpc PlanDeploy(PlanDeployRequest) returns (PlanDeployResponse);
+  rpc ApplyDeploy(ApplyDeployRequest) returns (stream MutationEvent);
+
+  rpc PlanMigrate(PlanMigrateRequest) returns (PlanMigrateResponse);
+  rpc ApplyMigrate(ApplyMigrateRequest) returns (stream MutationEvent);
+}
+
+service TemplateService {
+  rpc ListTemplates(ListTemplatesRequest) returns (ListTemplatesResponse);
+  rpc InspectTemplate(InspectTemplateRequest) returns (InspectTemplateResponse);
+}
+
+service MachineService {
+  rpc ListMachines(ListMachinesRequest) returns (ListMachinesResponse);
+  rpc InspectMachine(InspectMachineRequest) returns (InspectMachineResponse);
+
+  rpc PlanDrainMachine(PlanDrainMachineRequest) returns (PlanDrainMachineResponse);
+  rpc ApplyDrainMachine(ApplyDrainMachineRequest) returns (stream MutationEvent);
+
+  rpc PlanAdoptMachine(PlanAdoptMachineRequest) returns (PlanAdoptMachineResponse);
+  rpc ApplyAdoptMachine(ApplyAdoptMachineRequest) returns (stream MutationEvent);
+
+  rpc PlanRemoveMachine(PlanRemoveMachineRequest) returns (PlanRemoveMachineResponse);
+  rpc ApplyRemoveMachine(ApplyRemoveMachineRequest) returns (stream MutationEvent);
+}
+
+service NetworkService {
+  rpc InspectNetwork(InspectNetworkRequest) returns (InspectNetworkResponse);
+  rpc GetNetworkStatus(GetNetworkStatusRequest) returns (GetNetworkStatusResponse);
+
+  rpc PlanRecreateNetwork(PlanRecreateNetworkRequest) returns (PlanRecreateNetworkResponse);
+  rpc ApplyRecreateNetwork(ApplyRecreateNetworkRequest) returns (stream MutationEvent);
+}
+
+service IntentService {
+  rpc ListIntents(ListIntentsRequest) returns (ListIntentsResponse);
+  rpc InspectIntent(InspectIntentRequest) returns (InspectIntentResponse);
+}
+
+service MetricsService {
+  rpc GetMetrics(GetMetricsRequest) returns (GetMetricsResponse);
+}
+
+service DiffService {
+  rpc GetDiff(GetDiffRequest) returns (GetDiffResponse);
+}
+
+service EventService {
+  rpc Watch(WatchRequest) returns (stream WatchEvent);
+}
+
+enum HealthState {
+  HEALTH_STATE_UNSPECIFIED = 0;
+  HEALTH_STATE_HEALTHY = 1;
+  HEALTH_STATE_DEGRADED = 2;
+  HEALTH_STATE_UNHEALTHY = 3;
+}
+
+enum StorageBackend {
+  STORAGE_BACKEND_UNSPECIFIED = 0;
+  STORAGE_BACKEND_ZFS = 1;
+  STORAGE_BACKEND_LOCAL = 2;
+  STORAGE_BACKEND_REMOTE = 3;
+}
+
+enum StorageRole {
+  STORAGE_ROLE_UNSPECIFIED = 0;
+  STORAGE_ROLE_PRIMARY = 1;
+  STORAGE_ROLE_REPLICA = 2;
+  STORAGE_ROLE_ARCHIVE = 3;
+}
+
+enum ReplicaState {
+  REPLICA_STATE_UNSPECIFIED = 0;
+  REPLICA_STATE_PENDING = 1;
+  REPLICA_STATE_STARTING = 2;
+  REPLICA_STATE_RUNNING = 3;
+  REPLICA_STATE_DRAINING = 4;
+  REPLICA_STATE_STOPPED = 5;
+  REPLICA_STATE_FAILED = 6;
+}
+
+enum ContainerState {
+  CONTAINER_STATE_UNSPECIFIED = 0;
+  CONTAINER_STATE_CREATED = 1;
+  CONTAINER_STATE_RUNNING = 2;
+  CONTAINER_STATE_EXITED = 3;
+  CONTAINER_STATE_DEAD = 4;
+}
+
+enum FailureReason {
+  FAILURE_REASON_UNSPECIFIED = 0;
+  FAILURE_REASON_NONE = 1;
+  FAILURE_REASON_LABEL_MISMATCH = 2;
+  FAILURE_REASON_INSUFFICIENT_STORAGE = 3;
+  FAILURE_REASON_MACHINE_UNAVAILABLE = 4;
+  FAILURE_REASON_IMAGE_PULL_FAILED = 5;
+  FAILURE_REASON_HEALTHCHECK_FAILED = 6;
+  FAILURE_REASON_STORAGE_BACKEND_UNSUPPORTED = 7;
+}
+
+enum EligibilityReason {
+  ELIGIBILITY_REASON_UNSPECIFIED = 0;
+  ELIGIBILITY_REASON_LABEL_MISMATCH = 1;
+  ELIGIBILITY_REASON_INSUFFICIENT_STORAGE = 2;
+  ELIGIBILITY_REASON_MACHINE_DRAINING = 3;
+  ELIGIBILITY_REASON_MACHINE_UNHEALTHY = 4;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_NOT_FOUND = 1;
+  ERROR_CODE_INVALID_ARGUMENT = 2;
+  ERROR_CODE_PRECONDITION_FAILED = 3;
+  ERROR_CODE_LABEL_MISMATCH = 4;
+  ERROR_CODE_INSUFFICIENT_STORAGE = 5;
+  ERROR_CODE_MACHINE_NOT_ELIGIBLE = 6;
+  ERROR_CODE_INVALID_TRANSITION = 7;
+  ERROR_CODE_STORAGE_BACKEND_DOES_NOT_SUPPORT_LIVE_MIGRATION = 8;
+  ERROR_CODE_NETWORK_UNHEALTHY = 9;
+  ERROR_CODE_CONFLICT = 10;
+  ERROR_CODE_INTERNAL = 11;
+}
+
+enum WarningCode {
+  WARNING_CODE_UNSPECIFIED = 0;
+  WARNING_CODE_PARTIAL_DEGRADED = 1;
+  WARNING_CODE_CAPACITY_TIGHT = 2;
+  WARNING_CODE_CLOCK_SKEW = 3;
+}
+
+enum ChangeType {
+  CHANGE_TYPE_UNSPECIFIED = 0;
+  CHANGE_TYPE_CONTAINER_START = 1;
+  CHANGE_TYPE_CONTAINER_DRAIN = 2;
+  CHANGE_TYPE_CONTAINER_STOP = 3;
+  CHANGE_TYPE_CONTAINER_RESTART = 4;
+  CHANGE_TYPE_LIVE_MIGRATION = 5;
+  CHANGE_TYPE_MACHINE_DRAIN = 6;
+  CHANGE_TYPE_MACHINE_ADOPT = 7;
+  CHANGE_TYPE_MACHINE_REMOVE = 8;
+  CHANGE_TYPE_NETWORK_RECREATE = 9;
+}
+
+enum ImpactType {
+  IMPACT_TYPE_UNSPECIFIED = 0;
+  IMPACT_TYPE_CONTAINER_MIGRATION = 1;
+  IMPACT_TYPE_VOLUME_TRANSFER = 2;
+  IMPACT_TYPE_NETWORK_DISRUPTION = 3;
+}
+
+enum MigrationType {
+  MIGRATION_TYPE_UNSPECIFIED = 0;
+  MIGRATION_TYPE_LIVE = 1;
+  MIGRATION_TYPE_COLD = 2;
+}
+
+enum MigrationStep {
+  MIGRATION_STEP_UNSPECIFIED = 0;
+  MIGRATION_STEP_ZFS_SNAPSHOT = 1;
+  MIGRATION_STEP_SEND_RECEIVE = 2;
+  MIGRATION_STEP_STOP_CONTAINER = 3;
+  MIGRATION_STEP_FINAL_DIFF = 4;
+  MIGRATION_STEP_START_CONTAINER = 5;
+}
+
+enum IntentType {
+  INTENT_TYPE_UNSPECIFIED = 0;
+  INTENT_TYPE_DEPLOY = 1;
+  INTENT_TYPE_MIGRATE = 2;
+  INTENT_TYPE_MACHINE_DRAIN = 3;
+  INTENT_TYPE_MACHINE_ADOPT = 4;
+  INTENT_TYPE_MACHINE_REMOVE = 5;
+  INTENT_TYPE_NETWORK_RECREATE = 6;
+}
+
+enum IntentState {
+  INTENT_STATE_UNSPECIFIED = 0;
+  INTENT_STATE_PENDING = 1;
+  INTENT_STATE_RUNNING = 2;
+  INTENT_STATE_SUCCEEDED = 3;
+  INTENT_STATE_FAILED = 4;
+  INTENT_STATE_CANCELLED = 5;
+}
+
+enum ExclusionReason {
+  EXCLUSION_REASON_UNSPECIFIED = 0;
+  EXCLUSION_REASON_LABEL_MISMATCH = 1;
+  EXCLUSION_REASON_INSUFFICIENT_STORAGE = 2;
+  EXCLUSION_REASON_UNSCHEDULABLE_MACHINE = 3;
+}
+
+enum DriftReason {
+  DRIFT_REASON_UNSPECIFIED = 0;
+  DRIFT_REASON_DESIRED_MISSING = 1;
+  DRIFT_REASON_ACTUAL_EXTRA = 2;
+  DRIFT_REASON_VALUE_MISMATCH = 3;
+}
+
+enum KnobType {
+  KNOB_TYPE_UNSPECIFIED = 0;
+  KNOB_TYPE_ENUM = 1;
+  KNOB_TYPE_NUMBER = 2;
+  KNOB_TYPE_STRING = 3;
+  KNOB_TYPE_BOOLEAN = 4;
+}
+
+enum WatchTopic {
+  WATCH_TOPIC_UNSPECIFIED = 0;
+  WATCH_TOPIC_CLUSTER = 1;
+  WATCH_TOPIC_WORKLOAD = 2;
+  WATCH_TOPIC_TEMPLATE = 3;
+  WATCH_TOPIC_MACHINE = 4;
+  WATCH_TOPIC_NETWORK = 6;
+  WATCH_TOPIC_INTENT = 7;
+  WATCH_TOPIC_DIFF = 8;
+  WATCH_TOPIC_METRICS = 9;
+  WATCH_TOPIC_MUTATION = 10;
+}
+
+enum WatchEventType {
+  WATCH_EVENT_TYPE_UNSPECIFIED = 0;
+  WATCH_EVENT_TYPE_SNAPSHOT = 1;
+  WATCH_EVENT_TYPE_ADDED = 2;
+  WATCH_EVENT_TYPE_UPDATED = 3;
+  WATCH_EVENT_TYPE_REMOVED = 4;
+  WATCH_EVENT_TYPE_HEARTBEAT = 5;
+}
+
+enum MutationOutcome {
+  MUTATION_OUTCOME_UNSPECIFIED = 0;
+  MUTATION_OUTCOME_SUCCEEDED = 1;
+  MUTATION_OUTCOME_FAILED = 2;
+  MUTATION_OUTCOME_CANCELLED = 3;
+}
+
+enum NetworkFailureCode {
+  NETWORK_FAILURE_CODE_UNSPECIFIED = 0;
+  NETWORK_FAILURE_CODE_PEER_UNREACHABLE = 1;
+  NETWORK_FAILURE_CODE_DNS_UNHEALTHY = 2;
+  NETWORK_FAILURE_CODE_ROUTE_MISSING = 3;
+}
+
+message ResponseMeta {
+  string api_version = 1;
+  string cluster_id = 2;
+  uint64 cluster_revision = 3;
+  google.protobuf.Timestamp observed_at = 4;
+}
+
+message TypedError {
+  ErrorCode code = 1;
+  string message = 2;
+  string subject_kind = 3;
+  string subject_id = 4;
+  bool retryable = 5;
+  map<string, string> details = 6;
+  repeated string remediation = 7;
+}
+
+message TypedWarning {
+  WarningCode code = 1;
+  string message = 2;
+  map<string, string> details = 3;
+}
+
+message Plan {
+  string plan_id = 1;
+  repeated PlannedChange changes = 2;
+  repeated Impact impacts = 3;
+  google.protobuf.Duration estimated_downtime = 4;
+  bool safe_to_apply = 5;
+  repeated TypedWarning warnings = 6;
+}
+
+message PlannedChange {
+  ChangeType type = 1;
+  string workload = 2;
+  string machine = 3;
+  string container = 4;
+  string image = 5;
+  oneof detail {
+    ContainerStartChange container_start = 10;
+    ContainerDrainChange container_drain = 11;
+    ContainerStopChange container_stop = 12;
+    LiveMigrationChange live_migration = 13;
+    MachineDrainChange machine_drain = 14;
+    MachineAdoptChange machine_adopt = 15;
+    MachineRemoveChange machine_remove = 16;
+    NetworkRecreateChange network_recreate = 17;
+  }
+}
+
+message ContainerStartChange {
+  string machine = 1;
+  string image = 2;
+}
+
+message ContainerDrainChange {
+  string machine = 1;
+}
+
+message ContainerStopChange {
+  string machine = 1;
+}
+
+message LiveMigrationChange {
+  string from_machine = 1;
+  string to_machine = 2;
+  repeated MigrationStep steps = 3;
+}
+
+message MachineDrainChange {
+  string machine = 1;
+}
+
+message MachineAdoptChange {
+  string machine = 1;
+}
+
+message MachineRemoveChange {
+  string machine = 1;
+}
+
+message NetworkRecreateChange {
+  string network = 1;
+}
+
+message Impact {
+  ImpactType type = 1;
+  string object_kind = 2;
+  string object_id = 3;
+  uint32 count = 4;
+  string message = 5;
+}
+
+message Explanation {
+  repeated Exclusion exclusions = 1;
+  repeated Constraint constraints = 2;
+  repeated Decision decisions = 3;
+}
+
+message Exclusion {
+  string machine = 1;
+  ExclusionReason reason = 2;
+  map<string, string> required_labels = 3;
+  map<string, string> actual_labels = 4;
+  uint64 required_storage_gb = 5;
+  uint64 available_storage_gb = 6;
+  string detail = 7;
+}
+
+message Constraint {
+  string key = 1;
+  string expected = 2;
+  string actual = 3;
+  bool satisfied = 4;
+}
+
+message Decision {
+  string summary = 1;
+  string detail = 2;
+}
+
+message HealthBreakdown {
+  uint32 healthy = 1;
+  uint32 degraded = 2;
+  uint32 unhealthy = 3;
+}
+
+message ClusterSummary {
+  uint32 machines = 1;
+  uint32 services = 2;
+  HealthBreakdown health = 3;
+  string network = 4;
+  StorageBackend storage_backend = 5;
+}
+
+message ClusterGraph {
+  repeated Machine machines = 1;
+  repeated Workload workloads = 2;
+  repeated Volume volumes = 4;
+  repeated Intent intents = 5;
+}
+
+message Workload {
+  string name = 1;
+  string template = 2;
+  string version = 3;
+  uint32 desired_replicas = 4;
+  uint32 actual_replicas = 5;
+  repeated Placement placements = 6;
+  HealthState health = 8;
+  FailureReason failure_reason = 9;
+  string failure_message = 10;
+  map<string, string> labels = 11;
+  google.protobuf.Timestamp updated_at = 12;
+}
+
+message Placement {
+  string machine = 1;
+  string instance_id = 2;
+  string container_id = 3;
+  ReplicaState state = 4;
+  bool healthy = 5;
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+message Machine {
+  string id = 1;
+  string name = 2;
+  map<string, string> labels = 3;
+  MachineEligibility eligibility = 4;
+  repeated StorageRole storage_roles = 5;
+  HealthState health = 6;
+  repeated ContainerRuntime containers = 7;
+  MachineCapacity capacity = 8;
+  google.protobuf.Timestamp updated_at = 9;
+}
+
+message MachineEligibility {
+  bool eligible = 1;
+  repeated EligibilityBlocker blockers = 2;
+}
+
+message EligibilityBlocker {
+  EligibilityReason reason = 1;
+  string message = 2;
+  map<string, string> details = 3;
+}
+
+message ContainerRuntime {
+  string id = 1;
+  string name = 2;
+  string workload = 3;
+  string image = 4;
+  ContainerState state = 5;
+  bool healthy = 6;
+  uint32 restart_count = 7;
+}
+
+message MachineCapacity {
+  double cpu_cores_total = 1;
+  double cpu_cores_used = 2;
+  uint64 memory_mb_total = 3;
+  uint64 memory_mb_used = 4;
+  uint64 storage_gb_total = 5;
+  uint64 storage_gb_used = 6;
+}
+
+message Volume {
+  string id = 1;
+  string name = 2;
+  string machine = 3;
+  StorageBackend backend = 4;
+  uint64 size_gb = 5;
+  uint64 used_gb = 6;
+  HealthState health = 7;
+  repeated string attached_workloads = 8;
+}
+
+message TemplateSummary {
+  string name = 1;
+  string description = 2;
+  string default_version = 3;
+}
+
+message Template {
+  string name = 1;
+  string description = 2;
+  string default_version = 3;
+  repeated TemplateKnob knobs = 4;
+}
+
+message TemplateKnob {
+  string name = 1;
+  KnobType type = 2;
+  bool required = 3;
+  string description = 4;
+  oneof schema {
+    EnumKnob enum_knob = 10;
+    NumberKnob number_knob = 11;
+    StringKnob string_knob = 12;
+    BoolKnob bool_knob = 13;
+  }
+}
+
+message EnumKnob {
+  repeated string values = 1;
+  string default_value = 2;
+}
+
+message NumberKnob {
+  double min = 1;
+  double max = 2;
+  double default_value = 3;
+}
+
+message StringKnob {
+  uint32 min_length = 1;
+  uint32 max_length = 2;
+  string default_value = 3;
+}
+
+message BoolKnob {
+  bool default_value = 1;
+}
+
+message NetworkStatus {
+  string network = 1;
+  HealthState health = 2;
+  uint32 peers = 3;
+  HealthState dns_health = 4;
+  uint32 routes = 5;
+  uint32 failures = 6;
+}
+
+message NetworkInfo {
+  string network = 1;
+  HealthState health = 2;
+  repeated MeshPeer peers = 3;
+  DNSStatus dns = 4;
+  repeated OverlayRoute routes = 5;
+  repeated NetworkFailure failures = 6;
+}
+
+message MeshPeer {
+  string machine_id = 1;
+  string endpoint = 2;
+  HealthState health = 3;
+  google.protobuf.Duration rtt = 4;
+  google.protobuf.Timestamp last_seen = 5;
+}
+
+message DNSStatus {
+  HealthState health = 1;
+  repeated DNSRecord records = 2;
+  repeated TypedError failures = 3;
+}
+
+message DNSRecord {
+  string name = 1;
+  string type = 2;
+  repeated string values = 3;
+}
+
+message OverlayRoute {
+  string destination = 1;
+  string via_peer = 2;
+  HealthState health = 3;
+}
+
+message NetworkFailure {
+  NetworkFailureCode code = 1;
+  string message = 2;
+  string subject = 3;
+}
+
+message Intent {
+  string id = 1;
+  IntentType type = 2;
+  IntentState state = 3;
+  string target_kind = 4;
+  string target_id = 5;
+  string submitted_by = 6;
+  google.protobuf.Timestamp submitted_at = 7;
+  google.protobuf.Timestamp started_at = 8;
+  google.protobuf.Timestamp completed_at = 9;
+  Plan plan = 10;
+  TypedError error = 11;
+}
+
+message DiffReport {
+  repeated Drift drifts = 1;
+}
+
+message Drift {
+  string object_kind = 1;
+  string object_id = 2;
+  repeated FieldDrift fields = 3;
+}
+
+message FieldDrift {
+  string field_path = 1;
+  string desired = 2;
+  string actual = 3;
+  DriftReason reason = 4;
+}
+
+message ResourceMetrics {
+  double cpu = 1;
+  uint64 memory_mb = 2;
+  uint32 restarts = 3;
+  double latency_ms_p95 = 4;
+  uint64 net_rx_bytes = 5;
+  uint64 net_tx_bytes = 6;
+}
+
+message MutationProgress {
+  string phase = 1;
+  string message = 2;
+  uint32 percent = 3;
+  repeated string completed_steps = 4;
+}
+
+message MutationResult {
+  MutationOutcome outcome = 1;
+  string intent_id = 2;
+  Plan applied_plan = 3;
+  google.protobuf.Timestamp completed_at = 4;
+}
+
+message MutationEvent {
+  ResponseMeta meta = 1;
+  string operation = 2;
+  oneof payload {
+    Plan plan = 10;
+    MutationProgress progress = 11;
+    MutationResult result = 12;
+    TypedError error = 13;
+  }
+}
+
+message GetClusterSummaryRequest {
+  bool explain = 1;
+}
+
+message GetClusterSummaryResponse {
+  ResponseMeta meta = 1;
+  ClusterSummary summary = 2;
+  Explanation explanation = 3;
+}
+
+message InspectClusterRequest {
+  bool explain = 1;
+}
+
+message InspectClusterResponse {
+  ResponseMeta meta = 1;
+  ClusterGraph graph = 2;
+  Explanation explanation = 3;
+}
+
+message ListWorkloadsRequest {
+  bool explain = 1;
+}
+
+message ListWorkloadsResponse {
+  ResponseMeta meta = 1;
+  repeated Workload workloads = 2;
+  Explanation explanation = 3;
+}
+
+message InspectWorkloadRequest {
+  string name = 1;
+  bool explain = 2;
+}
+
+message InspectWorkloadResponse {
+  ResponseMeta meta = 1;
+  Workload workload = 2;
+  Explanation explanation = 3;
+}
+
+message ExplainWorkloadRequest {
+  string name = 1;
+}
+
+message ExplainWorkloadResponse {
+  ResponseMeta meta = 1;
+  Explanation explanation = 2;
+}
+
+message DeploySpec {
+  string name = 1;
+  string template = 2;
+  string version = 3;
+  uint32 replicas = 4;
+  map<string, string> knobs = 5;
+  map<string, string> labels = 6;
+}
+
+message PlanDeployRequest {
+  DeploySpec desired = 1;
+  bool explain = 2;
+}
+
+message PlanDeployResponse {
+  ResponseMeta meta = 1;
+  Plan plan = 2;
+  Workload projected = 3;
+  Explanation explanation = 4;
+}
+
+message ApplyDeployRequest {
+  string plan_id = 1;
+  DeploySpec desired = 2;
+}
+
+message MigrationSpec {
+  string workload = 1;
+  string to_machine = 2;
+  MigrationType type = 3;
+}
+
+message PlanMigrateRequest {
+  MigrationSpec desired = 1;
+  bool explain = 2;
+}
+
+message PlanMigrateResponse {
+  ResponseMeta meta = 1;
+  Plan plan = 2;
+  Explanation explanation = 3;
+}
+
+message ApplyMigrateRequest {
+  string plan_id = 1;
+  MigrationSpec desired = 2;
+}
+
+message ListTemplatesRequest {}
+
+message ListTemplatesResponse {
+  ResponseMeta meta = 1;
+  repeated TemplateSummary templates = 2;
+}
+
+message InspectTemplateRequest {
+  string name = 1;
+}
+
+message InspectTemplateResponse {
+  ResponseMeta meta = 1;
+  Template template = 2;
+}
+
+message ListMachinesRequest {
+  bool explain = 1;
+}
+
+message ListMachinesResponse {
+  ResponseMeta meta = 1;
+  repeated Machine machines = 2;
+  Explanation explanation = 3;
+}
+
+message InspectMachineRequest {
+  string machine_id = 1;
+  bool explain = 2;
+}
+
+message InspectMachineResponse {
+  ResponseMeta meta = 1;
+  Machine machine = 2;
+  Explanation explanation = 3;
+}
+
+message PlanDrainMachineRequest {
+  string machine_id = 1;
+  bool force = 2;
+  bool explain = 3;
+}
+
+message PlanDrainMachineResponse {
+  ResponseMeta meta = 1;
+  Plan plan = 2;
+  Explanation explanation = 3;
+}
+
+message ApplyDrainMachineRequest {
+  string plan_id = 1;
+  string machine_id = 2;
+  bool force = 3;
+}
+
+message PlanAdoptMachineRequest {
+  string machine_id = 1;
+  bool explain = 2;
+}
+
+message PlanAdoptMachineResponse {
+  ResponseMeta meta = 1;
+  Plan plan = 2;
+  Explanation explanation = 3;
+}
+
+message ApplyAdoptMachineRequest {
+  string plan_id = 1;
+  string machine_id = 2;
+}
+
+message PlanRemoveMachineRequest {
+  string machine_id = 1;
+  bool force = 2;
+  bool explain = 3;
+}
+
+message PlanRemoveMachineResponse {
+  ResponseMeta meta = 1;
+  Plan plan = 2;
+  Explanation explanation = 3;
+}
+
+message ApplyRemoveMachineRequest {
+  string plan_id = 1;
+  string machine_id = 2;
+  bool force = 3;
+}
+
+message InspectNetworkRequest {
+  string network = 1;
+  bool explain = 2;
+}
+
+message InspectNetworkResponse {
+  ResponseMeta meta = 1;
+  NetworkInfo network = 2;
+  Explanation explanation = 3;
+}
+
+message GetNetworkStatusRequest {
+  string network = 1;
+  bool explain = 2;
+}
+
+message GetNetworkStatusResponse {
+  ResponseMeta meta = 1;
+  NetworkStatus status = 2;
+  Explanation explanation = 3;
+}
+
+message PlanRecreateNetworkRequest {
+  string network = 1;
+  bool force = 2;
+  bool explain = 3;
+}
+
+message PlanRecreateNetworkResponse {
+  ResponseMeta meta = 1;
+  Plan plan = 2;
+  Explanation explanation = 3;
+}
+
+message ApplyRecreateNetworkRequest {
+  string plan_id = 1;
+  string network = 2;
+  bool force = 3;
+}
+
+message ListIntentsRequest {
+  IntentState state = 1;
+  IntentType type = 2;
+  uint32 limit = 3;
+}
+
+message ListIntentsResponse {
+  ResponseMeta meta = 1;
+  repeated Intent intents = 2;
+}
+
+message InspectIntentRequest {
+  string intent_id = 1;
+}
+
+message InspectIntentResponse {
+  ResponseMeta meta = 1;
+  Intent intent = 2;
+}
+
+message GetMetricsRequest {
+  string target_kind = 1;
+  string target_id = 2;
+  google.protobuf.Duration window = 3;
+}
+
+message GetMetricsResponse {
+  ResponseMeta meta = 1;
+  ResourceMetrics metrics = 2;
+}
+
+message GetDiffRequest {
+  bool explain = 1;
+}
+
+message GetDiffResponse {
+  ResponseMeta meta = 1;
+  DiffReport diff = 2;
+  Explanation explanation = 3;
+}
+
+message WatchRequest {
+  uint64 from_sequence = 1;
+  repeated WatchTopic topics = 2;
+  repeated string object_ids = 3;
+  bool include_snapshot = 4;
+}
+
+message WatchEvent {
+  ResponseMeta meta = 1;
+  uint64 sequence = 2;
+  WatchTopic topic = 3;
+  WatchEventType event_type = 4;
+  string object_kind = 5;
+  string object_id = 6;
+  oneof payload {
+    ClusterSummary cluster_summary = 10;
+    ClusterGraph cluster_graph = 11;
+    Workload workload = 12;
+    Template template = 13;
+    Machine machine = 15;
+    NetworkInfo network = 16;
+    Intent intent = 17;
+    DiffReport diff = 18;
+    ResourceMetrics metrics = 19;
+    MutationProgress mutation = 20;
+    TypedError error = 21;
+  }
+}

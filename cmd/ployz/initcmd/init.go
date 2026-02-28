@@ -29,6 +29,7 @@ func Cmd() *cobra.Command {
 		sshPort           int
 		sshKey            string
 		force             bool
+		existingRemote    string
 	)
 
 	cmd := &cobra.Command{
@@ -261,13 +262,14 @@ func Cmd() *cobra.Command {
 				fmt.Println(ui.InfoMsg("adding machine %s", ui.Accent(target)))
 				opErr = op.RunStep(op.Context(), "add_machine", func(stepCtx context.Context) error {
 					result, addErr := svc.AddMachine(stepCtx, sdkmachine.AddOptions{
-						Network:  name,
-						DataRoot: dataRoot,
-						Target:   target,
-						SSHPort:  sshPort,
-						SSHKey:   sshKey,
-						WGPort:   wgPort,
-						Tracer:   tracer,
+						Network:        name,
+						DataRoot:       dataRoot,
+						Target:         target,
+						SSHPort:        sshPort,
+						SSHKey:         sshKey,
+						WGPort:         wgPort,
+						ExistingRemote: sdkmachine.ExistingRemoteMode(existingRemote),
+						Tracer:         tracer,
 					})
 					if addErr != nil {
 						return fmt.Errorf("add machine: %w", addErr)
@@ -315,6 +317,7 @@ func Cmd() *cobra.Command {
 	cmd.Flags().IntVar(&sshPort, "ssh-port", 22, "SSH port for remote")
 	cmd.Flags().StringVar(&sshKey, "ssh-key", "", "SSH key for remote")
 	cmd.Flags().BoolVar(&force, "force", false, "Re-create context entry and replace local connections")
+	cmd.Flags().StringVar(&existingRemote, "existing-remote", string(sdkmachine.ExistingRemoteFail), "When remote is already configured: fail, reuse, or reset")
 	return cmd
 }
 

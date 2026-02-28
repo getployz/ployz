@@ -68,7 +68,7 @@ func TestClassifyHealth(t *testing.T) {
 			want:            HealthReady,
 		},
 		{
-			name: "expected members defaults to one",
+			name: "single-node ready with zero expected peers",
 			sample: HealthSample{
 				Reachable:     true,
 				ThresholdsMet: true,
@@ -77,7 +77,19 @@ func TestClassifyHealth(t *testing.T) {
 				QueueSize:     0,
 			},
 			expectedMembers: 0,
-			want:            HealthForming,
+			want:            HealthReady,
+		},
+		{
+			name: "negative expected peers clamps to zero",
+			sample: HealthSample{
+				Reachable:     true,
+				ThresholdsMet: true,
+				Members:       0,
+				Gaps:          0,
+				QueueSize:     0,
+			},
+			expectedMembers: -3,
+			want:            HealthReady,
 		},
 	}
 

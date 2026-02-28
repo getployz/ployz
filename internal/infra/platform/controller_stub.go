@@ -10,6 +10,8 @@ import (
 	"ployz/internal/infra/sqlite"
 )
 
+var errPlatformNotSupported = errors.New("platform not supported")
+
 // NewController creates an overlay service with stubs for unsupported platforms.
 func NewController(opts ...overlay.Option) (*overlay.Service, error) {
 	defaults := []overlay.Option{
@@ -24,28 +26,28 @@ func NewController(opts ...overlay.Option) (*overlay.Service, error) {
 type stubPlatformOps struct{}
 
 func (stubPlatformOps) Prepare(_ context.Context, _ overlay.Config, _ overlay.StateStore) error {
-	return errors.New("platform not supported")
+	return errPlatformNotSupported
 }
 func (stubPlatformOps) ConfigureWireGuard(_ context.Context, _ overlay.Config, _ *overlay.State) error {
-	return errors.New("platform not supported")
+	return errPlatformNotSupported
 }
 func (stubPlatformOps) EnsureDockerNetwork(_ context.Context, _ overlay.Config, _ *overlay.State) error {
-	return errors.New("platform not supported")
+	return errPlatformNotSupported
 }
 func (stubPlatformOps) CleanupDockerNetwork(_ context.Context, _ overlay.Config, _ *overlay.State) error {
-	return errors.New("platform not supported")
+	return errPlatformNotSupported
 }
 func (stubPlatformOps) CleanupWireGuard(_ context.Context, _ overlay.Config, _ *overlay.State) error {
-	return errors.New("platform not supported")
+	return errPlatformNotSupported
 }
 func (stubPlatformOps) AfterStart(_ context.Context, _ overlay.Config) error {
-	return errors.New("platform not supported")
+	return errPlatformNotSupported
 }
 func (stubPlatformOps) AfterStop(_ context.Context, _ overlay.Config, _ *overlay.State) error {
-	return errors.New("platform not supported")
+	return errPlatformNotSupported
 }
 func (stubPlatformOps) ApplyPeerConfig(_ context.Context, _ overlay.Config, _ *overlay.State, _ []overlay.Peer) error {
-	return errors.New("platform not supported")
+	return errPlatformNotSupported
 }
 
 type stubStatusProber struct{}

@@ -51,7 +51,7 @@ func (m *Manager) GetStatus(ctx context.Context) (types.NetworkStatus, error) {
 	base.Corrosion = status.Corrosion
 	base.DockerNet = status.DockerNet
 	base.StatePath = status.StatePath
-	base.NetworkPhase = normalizedNetworkPhase(status.Phase)
+	base.NetworkPhase = phaseOrUnknown(status.Phase)
 	base.RuntimeTree = buildRuntimeTree(base)
 
 	return base, nil
@@ -98,18 +98,12 @@ func clockHealth(ntp convergence.Status) types.ClockHealth {
 	}
 }
 
-func normalizedNetworkPhase(phase string) string {
-	trimmed := strings.TrimSpace(phase)
-	if trimmed == "" {
-		return "unknown"
-	}
-	return trimmed
-}
-
 func buildRuntimeTree(st types.NetworkStatus) types.StateNode {
+	networkPhase := phaseOrUnknown(st.NetworkPhase)
+
 	root := types.StateNode{
 		Component: "runtime",
-		Phase:     normalizedNetworkPhase(st.NetworkPhase),
+		Phase:     networkPhase,
 		Required:  true,
 		Healthy:   len(st.ServiceBlockerIssues()) == 0,
 		Children:  make([]types.StateNode, 0, 7),
@@ -131,7 +125,7 @@ func buildRuntimeTree(st types.NetworkStatus) types.StateNode {
 	networkHealthy := st.Running && st.NetworkPhase == "running"
 	networkNode := types.StateNode{
 		Component: "network",
-		Phase:     normalizedNetworkPhase(st.NetworkPhase),
+		Phase:     networkPhase,
 		Required:  true,
 		Healthy:   networkHealthy,
 		Hint:      "wait for convergence or re-run `ployz network create default --force`",

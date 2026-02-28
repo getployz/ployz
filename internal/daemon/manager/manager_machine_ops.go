@@ -82,14 +82,13 @@ func (m *Manager) UpsertMachine(ctx context.Context, entry types.MachineEntry) e
 		return err
 	}
 
-	err = m.membership.UpsertMachine(ctx, cfg, overlay.Machine{
+	if err := m.membership.UpsertMachine(ctx, cfg, overlay.Machine{
 		ID:           entry.ID,
 		PublicKey:    entry.PublicKey,
 		Subnet:       entry.Subnet,
 		ManagementIP: entry.ManagementIP,
 		Endpoint:     entry.Endpoint,
-	})
-	if err != nil {
+	}); err != nil {
 		return fmt.Errorf("upsert machine: %w", err)
 	}
 	return nil

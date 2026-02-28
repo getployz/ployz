@@ -126,14 +126,13 @@ The adapter (`infra/corrosion/`) implements it without importing the consumer.
 Decision logic in `daemon/overlay`, `daemon/membership`, and `daemon/convergence` should stay pure where possible: data in, data out. No Docker calls, no HTTP, no WireGuard, no disk I/O, no `time.Now()`. Orchestration code in these packages may call injected interfaces (ports), but never imports infra packages directly.
 
 All external dependencies are abstracted behind interfaces in daemon ports:
-- `Clock` — time source (inject `RealClock{}` in production, fake in tests)
 - `ContainerRuntime` — Docker/Podman container and network operations
 - `CorrosionRuntime` — Corrosion container lifecycle (WriteConfig, Start, Stop)
 - `StatusProber` — platform-specific infrastructure health checks
 - `StateStore` — state persistence (SQLite in production)
 - `Registry` / `RegistryFactory` — Corrosion data access
 
-If a function needs the current time, use the injected `Clock`. If it needs to apply a change, call an injected interface or return a plan and let the caller apply it.
+Time is **not** injected — use the standard `time` package directly and test with `testing/synctest` (see rule 9). If a function needs to apply a change, call an injected interface or return a plan and let the caller apply it.
 
 ### 3. All infra calls in adapters
 
@@ -180,9 +179,9 @@ return fmt.Errorf("reconcile peers for %s: %w", network, err)
 
 Pass `context.Context` as first parameter for any blocking or I/O operation. Check `ctx.Done()` in loops. No goroutines without clear lifecycle ownership.
 
-### 9. No `time.Now()` or `time.Sleep()` in core logic
+### 9. Use `time` directly, test with `testing/synctest`
 
-Core packages must not call `time.Now()` or `time.Sleep()` directly. Accept timestamps as parameters or inject a clock so tests are deterministic and fast.
+Do **not** inject fake clocks. Use the standard `time` package (`time.Now()`, `time.Sleep()`, `time.After()`, etc.) directly in all code. For testing, use `testing/synctest` (Go 1.25+): wrap tests in `synctest.Test(t, func(t *testing.T) { ... })` to get automatic fake time and call `synctest.Wait()` to wait for goroutine quiescence. This eliminates the need for `Clock` interfaces entirely.
 
 ### 10. PR gate: `just test` + `just build` always green
 

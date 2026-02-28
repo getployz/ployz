@@ -41,6 +41,14 @@ func TestProbeHealthPhases(t *testing.T) {
 			want:            HealthForming,
 		},
 		{
+			name:            "ready on 200 for single-node remote peer target",
+			status:          http.StatusOK,
+			body:            `{"response":{"gaps":0,"members":0,"p99_lag":0.12,"queue_size":0}}`,
+			token:           "",
+			expectedMembers: 0,
+			want:            HealthReady,
+		},
+		{
 			name:            "syncing on 503",
 			status:          http.StatusServiceUnavailable,
 			body:            `{"response":{"gaps":0,"members":3,"p99_lag":7.01,"queue_size":0}}`,

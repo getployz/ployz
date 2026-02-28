@@ -3,7 +3,7 @@ package api
 import (
 	"time"
 
-	"ployz/internal/daemon/manager"
+	"ployz/machine"
 	pb "ployz/internal/daemon/pb"
 )
 
@@ -16,9 +16,9 @@ const (
 
 type Server struct {
 	pb.UnimplementedDaemonServer
-	manager *manager.Manager
+	machine *machine.Machine
 }
 
-func New(mgr *manager.Manager) *Server {
-	return &Server{manager: mgr}
+func New(m *machine.Machine) *Server {
+	return &Server{machine: m}
 }

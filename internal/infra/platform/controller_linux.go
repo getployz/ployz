@@ -132,14 +132,7 @@ func configureWireGuardLinux(cfg overlay.Config, state *overlay.State, peers []o
 	if err != nil {
 		return fmt.Errorf("build peer specs: %w", err)
 	}
-	wgPeers := make([]wireguard.PeerConfig, len(specs))
-	for i, s := range specs {
-		wgPeers[i] = wireguard.PeerConfig{
-			PublicKey:       s.PublicKey,
-			Endpoint:        s.Endpoint,
-			AllowedPrefixes: s.AllowedPrefixes,
-		}
-	}
+	wgPeers := peerConfigsFromSpecs(specs)
 	localMachineIP := overlay.MachineIP(cfg.Subnet)
 	return wireguard.Configure(
 		state.WGInterface, defaultWireGuardMTU, priv, state.WGPort,
@@ -147,7 +140,3 @@ func configureWireGuardLinux(cfg overlay.Config, state *overlay.State, peers []o
 		wgPeers, localMachineIP, cfg.Management,
 	)
 }
-
-var defaultNetworkPrefix = netip.MustParsePrefix("10.210.0.0/16")
-
-const defaultWireGuardMTU = 1280

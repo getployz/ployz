@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package ployz;
+
+option go_package = "ployz/api/pb";
+
+service Daemon {
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+}
+
+message GetStatusRequest {}
+
+message GetStatusResponse {
+  string name = 1;
+  string public_key = 2;
+  string network_phase = 3;
+  string version = 4;
+}
