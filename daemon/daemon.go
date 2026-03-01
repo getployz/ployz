@@ -2,11 +2,13 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"ployz/machine"
 
 	systemd "github.com/coreos/go-systemd/daemon"
+	"golang.org/x/sync/errgroup"
 )
 
 type Daemon struct {
@@ -14,7 +16,7 @@ type Daemon struct {
 }
 
 func New(dataDir string) (*Daemon, error) {
-	m, err := machine.NewProduction(dataDir)
+	m, err := machine.New(dataDir)
 	if err != nil {
 		return nil, err
 	}
@@ -22,7 +24,7 @@ func New(dataDir string) (*Daemon, error) {
 	return &Daemon{machine: m}, nil
 }
 
-func (d *Daemon) Run(ctx context.Context) error {
+func (d *Daemon) run(ctx context.Context) error {
 	slog.Info("Starting machine.")
 
 	// Notify systemd that the daemon is ready when the machine is started.
@@ -38,4 +40,19 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}()
 
 	return d.machine.Run(ctx)
+}
+
+// Run creates a daemon and gRPC server, then runs both until ctx is cancelled.
+func Run(ctx context.Context, dataRoot, socketPath string) error {
+	d, err := New(dataRoot)
+	if err != nil {
+		return fmt.Errorf("create daemon: %w", err)
+	}
+
+	srv := NewServer(d.machine)
+
+	g, ctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return d.run(ctx) })
+	g.Go(func() error { return srv.ListenAndServe(ctx, socketPath) })
+	return g.Wait()
 }

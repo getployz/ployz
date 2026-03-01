@@ -6,7 +6,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"ployz/pkg/sdk/client"
+	"ployz/daemon/pb"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func IsDaemonRunning(_ context.Context, socketPath string) bool {
@@ -23,13 +26,17 @@ func HealthCheck(ctx context.Context, socketPath string) error {
 	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
-	api, err := client.NewUnix(socketPath)
+	conn, err := grpc.NewClient(
+		"unix://"+socketPath,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
 	if err != nil {
 		return fmt.Errorf("connect to daemon: %w", err)
 	}
-	defer func() { _ = api.Close() }()
+	defer func() { _ = conn.Close() }()
 
-	if _, err := api.GetStatus(checkCtx); err != nil {
+	client := pb.NewDaemonClient(conn)
+	if _, err := client.GetStatus(checkCtx, &pb.GetStatusRequest{}); err != nil {
 		return fmt.Errorf("daemon health check: %w", err)
 	}
 	return nil

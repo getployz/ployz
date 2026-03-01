@@ -11,12 +11,15 @@ import (
 	"sync"
 
 	"ployz"
+	"ployz/infra/wireguard"
 
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
+
+const peerKeepaliveSec = 25
 
 // Config holds the static configuration for a userspace WireGuard device.
 type Config struct {
@@ -116,11 +119,7 @@ func (w *WG) SetPeers(ctx context.Context, peers []ployz.MachineRecord) error {
 		return fmt.Errorf("update wireguard config: %w", err)
 	}
 
-	if err := w.syncRoutes(ctx, peers); err != nil {
-		return err
-	}
-
-	return nil
+	return w.syncRoutes(ctx, peers)
 }
 
 // Down tears down the WireGuard device and removes routes.
@@ -171,7 +170,7 @@ func (w *WG) syncRoutes(ctx context.Context, peers []ployz.MachineRecord) error 
 		if !p.OverlayIP.IsValid() {
 			continue
 		}
-		prefix := overlayPrefix(p.OverlayIP)
+		prefix := wireguard.HostPrefix(p.OverlayIP)
 		cidr := prefix.String()
 		if prefix.Addr().Is4() {
 			_, _ = w.privRun(ctx, "route", "-n", "delete", "-net", cidr, "-interface", iface)
@@ -196,14 +195,6 @@ func (w *WG) syncRoutes(ctx context.Context, peers []ployz.MachineRecord) error 
 	return nil
 }
 
-// overlayPrefix returns a host prefix for the given overlay IP (/128 for v6, /32 for v4).
-func overlayPrefix(ip netip.Addr) netip.Prefix {
-	if ip.Is6() {
-		return netip.PrefixFrom(ip, 128)
-	}
-	return netip.PrefixFrom(ip, 32)
-}
-
 func buildIPC(priv wgtypes.Key, port int, peers []ployz.MachineRecord) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "private_key=%x\nlisten_port=%d\nreplace_peers=true\n", priv[:], port)
@@ -213,9 +204,9 @@ func buildIPC(priv wgtypes.Key, port int, peers []ployz.MachineRecord) string {
 			fmt.Fprintf(&b, "endpoint=%s\n", p.Endpoints[0].String())
 		}
 		if p.OverlayIP.IsValid() {
-			fmt.Fprintf(&b, "allowed_ip=%s\n", overlayPrefix(p.OverlayIP).String())
+			fmt.Fprintf(&b, "allowed_ip=%s\n", wireguard.HostPrefix(p.OverlayIP).String())
 		}
-		fmt.Fprintf(&b, "persistent_keepalive_interval=25\n")
+		fmt.Fprintf(&b, "persistent_keepalive_interval=%d\n", peerKeepaliveSec)
 	}
 	return b.String()
 }

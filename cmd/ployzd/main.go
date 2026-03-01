@@ -1,30 +1,20 @@
 package main
 
 import (
-	"context"
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 
+	daemonruntime "ployz/daemon"
+	"ployz/internal/logging"
 	"ployz/internal/support/buildinfo"
-	daemonruntime "ployz/internal/daemon"
-	"ployz/internal/support/logging"
-	"ployz/pkg/sdk/client"
-	"ployz/pkg/sdk/defaults"
 
 	"github.com/spf13/cobra"
-	"go.opentelemetry.io/otel"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 func main() {
-	tp := sdktrace.NewTracerProvider()
-	otel.SetTracerProvider(tp)
-	defer func() {
-		_ = tp.Shutdown(context.Background())
-	}()
-
 	if err := logging.Configure(logging.LevelInfo); err != nil {
 		_, _ = os.Stderr.WriteString("configure logger: " + err.Error() + "\n")
 		os.Exit(1)
@@ -60,8 +50,22 @@ func rootCmd() *cobra.Command {
 	}
 
 	cmd.PersistentFlags().BoolVar(&debug, "debug", false, "Enable debug logging")
-	cmd.Flags().StringVar(&socketPath, "socket", client.DefaultSocketPath(), "Unix socket path")
-	cmd.Flags().StringVar(&dataRoot, "data-root", defaults.DataRoot(), "Machine data root")
+	cmd.Flags().StringVar(&socketPath, "socket", defaultSocketPath(), "Unix socket path")
+	cmd.Flags().StringVar(&dataRoot, "data-root", defaultDataRoot(), "Machine data root")
 	cmd.AddCommand(dialStdioCmd())
 	return cmd
+}
+
+func defaultSocketPath() string {
+	if runtime.GOOS == "darwin" {
+		return "/tmp/ployzd.sock"
+	}
+	return "/var/run/ployzd.sock"
+}
+
+func defaultDataRoot() string {
+	if runtime.GOOS == "darwin" {
+		return "/usr/local/var/lib/ployz/networks"
+	}
+	return "/var/lib/ployz/networks"
 }

@@ -7,7 +7,7 @@ import (
 	"syscall"
 
 	"ployz/cmd/ployz/cmdutil"
-	daemonruntime "ployz/internal/daemon"
+	daemonruntime "ployz/daemon"
 
 	"github.com/spf13/cobra"
 )

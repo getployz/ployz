@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"ployz/internal/infra/wireguard"
+	"ployz/infra/wireguard"
 )
 
 func TestPrivHelperCmdReadsTokenFileAndRunsHelper(t *testing.T) {

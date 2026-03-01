@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ployz"
+	"ployz/infra/wireguard"
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -56,9 +57,8 @@ func (w *WG) Up(_ context.Context) error {
 	defer wg.Close()
 
 	wgCfg := wgtypes.Config{
-		PrivateKey:   &w.cfg.PrivateKey,
-		ListenPort:   &w.cfg.Port,
-		ReplacePeers: true,
+		PrivateKey: &w.cfg.PrivateKey,
+		ListenPort: &w.cfg.Port,
 	}
 	if err := wg.ConfigureDevice(w.cfg.Interface, wgCfg); err != nil {
 		return fmt.Errorf("configure wireguard device: %w", err)
@@ -105,11 +105,7 @@ func (w *WG) SetPeers(_ context.Context, peers []ployz.MachineRecord) error {
 		return fmt.Errorf("find wireguard interface %q: %w", w.cfg.Interface, err)
 	}
 
-	if err := syncRoutes(link, w.cfg.MachineIP, w.cfg.MgmtIP, peers); err != nil {
-		return err
-	}
-
-	return nil
+	return syncRoutes(link, w.cfg.MachineIP, w.cfg.MgmtIP, peers)
 }
 
 // Down removes the WireGuard interface.
@@ -150,14 +146,6 @@ func ensureLink(iface string, mtu int) (netlink.Link, error) {
 	return link, nil
 }
 
-// overlayPrefix returns a host prefix for the given overlay IP (/128 for v6, /32 for v4).
-func overlayPrefix(ip netip.Addr) netip.Prefix {
-	if ip.Is6() {
-		return netip.PrefixFrom(ip, 128)
-	}
-	return netip.PrefixFrom(ip, 32)
-}
-
 func buildPeerConfigs(dev *wgtypes.Device, peers []ployz.MachineRecord) []wgtypes.PeerConfig {
 	peerCfgs := make([]wgtypes.PeerConfig, 0, len(peers)+len(dev.Peers))
 	desired := make(map[string]struct{}, len(peers))
@@ -165,7 +153,7 @@ func buildPeerConfigs(dev *wgtypes.Device, peers []ployz.MachineRecord) []wgtype
 	for _, p := range peers {
 		var allowedIPs []net.IPNet
 		if p.OverlayIP.IsValid() {
-			allowedIPs = []net.IPNet{prefixToIPNet(overlayPrefix(p.OverlayIP))}
+			allowedIPs = []net.IPNet{prefixToIPNet(wireguard.HostPrefix(p.OverlayIP))}
 		}
 		pc := wgtypes.PeerConfig{
 			PublicKey:                   p.PublicKey,
@@ -230,7 +218,7 @@ func syncRoutes(link netlink.Link, localMachineIP, localMgmtIP netip.Addr, peers
 	desired := make(map[string]netip.Prefix, len(peers))
 	for _, p := range peers {
 		if p.OverlayIP.IsValid() {
-			pref := overlayPrefix(p.OverlayIP)
+			pref := wireguard.HostPrefix(p.OverlayIP)
 			desired[pref.String()] = pref
 		}
 	}
@@ -247,10 +235,10 @@ func syncRoutes(link netlink.Link, localMachineIP, localMgmtIP netip.Addr, peers
 
 	preserve := make(map[string]struct{}, 2)
 	if localMachineIP.IsValid() {
-		preserve[singleIPPrefix(localMachineIP).String()] = struct{}{}
+		preserve[wireguard.HostPrefix(localMachineIP).String()] = struct{}{}
 	}
 	if localMgmtIP.IsValid() {
-		preserve[singleIPPrefix(localMgmtIP).String()] = struct{}{}
+		preserve[wireguard.HostPrefix(localMgmtIP).String()] = struct{}{}
 	}
 
 	routes, err := netlink.RouteList(link, netlink.FAMILY_ALL)
@@ -281,13 +269,6 @@ func syncRoutes(link netlink.Link, localMachineIP, localMgmtIP netip.Addr, peers
 
 func ptrDuration(d time.Duration) *time.Duration { return &d }
 func ptrIPNet(n net.IPNet) *net.IPNet             { return &n }
-
-func singleIPPrefix(addr netip.Addr) netip.Prefix {
-	if addr.Is6() {
-		return netip.PrefixFrom(addr, 128)
-	}
-	return netip.PrefixFrom(addr, 32)
-}
 
 func prefixToIPNet(pref netip.Prefix) net.IPNet {
 	bits := 32

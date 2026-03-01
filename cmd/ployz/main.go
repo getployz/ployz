@@ -1,33 +1,18 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 
-	"ployz/cmd/ployz/agent"
-	"ployz/cmd/ployz/cluster"
-	configurecmd "ployz/cmd/ployz/configure"
 	"ployz/cmd/ployz/daemon"
 	devcmd "ployz/cmd/ployz/dev"
-	"ployz/cmd/ployz/network"
-	"ployz/cmd/ployz/node"
-	"ployz/cmd/ployz/service"
+	"ployz/internal/logging"
 	"ployz/internal/support/buildinfo"
-	"ployz/internal/support/logging"
 
 	"github.com/spf13/cobra"
-	"go.opentelemetry.io/otel"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 func main() {
-	tp := sdktrace.NewTracerProvider()
-	otel.SetTracerProvider(tp)
-	defer func() {
-		_ = tp.Shutdown(context.Background())
-	}()
-
 	var debug bool
 	if err := logging.Configure(logging.LevelWarn); err != nil {
 		_, _ = os.Stderr.WriteString("configure logger: " + err.Error() + "\n")
@@ -50,14 +35,6 @@ func main() {
 	}
 	root.PersistentFlags().BoolVar(&debug, "debug", false, "Enable debug logging")
 
-	root.AddCommand(configurecmd.Cmd())
-	root.AddCommand(node.Cmd())
-	root.AddCommand(node.StatusCmd())
-	root.AddCommand(node.DoctorCmd())
-	root.AddCommand(cluster.Cmd())
-	root.AddCommand(network.Cmd())
-	root.AddCommand(service.Cmd())
-	root.AddCommand(agent.Cmd())
 	root.AddCommand(devcmd.Cmd())
 
 	daemonCmd := daemon.Cmd()

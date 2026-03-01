@@ -7,8 +7,6 @@ import (
 	"net"
 	"os"
 
-	"ployz/pkg/sdk/client"
-
 	"github.com/spf13/cobra"
 )
 
@@ -50,7 +48,7 @@ func dialStdioCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&socketPath, "socket", client.DefaultSocketPath(), "Path to the ployzd Unix socket")
+	cmd.Flags().StringVar(&socketPath, "socket", defaultSocketPath(), "Path to the ployzd Unix socket")
 	return cmd
 }
 

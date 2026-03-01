@@ -5,7 +5,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	daemonruntime "ployz/internal/daemon"
+	daemonruntime "ployz/daemon"
 
 	"github.com/spf13/cobra"
 )

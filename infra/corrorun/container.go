@@ -6,7 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"net/netip"
-	"time"
 
 	"github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
@@ -20,14 +19,18 @@ const (
 	DefaultContainerName = "ployz-corrosion"
 )
 
+// ReadinessCheck blocks until the store is accepting queries.
+type ReadinessCheck func(ctx context.Context, addr netip.AddrPort) error
+
 // Container runs Corrosion as a Docker container.
 // Implements the Start/Stop portion of mesh.Store.
 type Container struct {
-	docker  client.APIClient
-	image   string
-	name    string
-	paths   Paths
-	apiAddr netip.AddrPort
+	docker     client.APIClient
+	image      string
+	name       string
+	paths      Paths
+	apiAddr    netip.AddrPort
+	readyCheck ReadinessCheck
 }
 
 // ContainerOption configures a Container runtime.
@@ -41,14 +44,20 @@ func WithContainerName(name string) ContainerOption {
 	return func(c *Container) { c.name = name }
 }
 
+// WithReadinessCheck overrides the default readiness check (WaitReady).
+func WithReadinessCheck(fn ReadinessCheck) ContainerOption {
+	return func(c *Container) { c.readyCheck = fn }
+}
+
 // NewContainer creates a Docker-based Corrosion runtime.
 func NewContainer(docker client.APIClient, paths Paths, apiAddr netip.AddrPort, opts ...ContainerOption) *Container {
 	c := &Container{
-		docker:  docker,
-		image:   DefaultImage,
-		name:    DefaultContainerName,
-		paths:   paths,
-		apiAddr: apiAddr,
+		docker:     docker,
+		image:      DefaultImage,
+		name:       DefaultContainerName,
+		paths:      paths,
+		apiAddr:    apiAddr,
+		readyCheck: WaitReady,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -56,21 +65,37 @@ func NewContainer(docker client.APIClient, paths Paths, apiAddr netip.AddrPort, 
 	return c
 }
 
-// Start pulls the image if needed, creates and starts the container,
-// then waits for Corrosion to be ready.
+// Start ensures the Corrosion container is running and ready. If the
+// container already exists and is running it reconnects without
+// restarting. If it exists but is stopped it starts it. Only when no
+// container exists does it create one from scratch.
 func (c *Container) Start(ctx context.Context) error {
-	// Remove any existing container.
-	_ = c.removeContainer(ctx) // best-effort; may not exist
+	info, err := c.docker.ContainerInspect(ctx, c.name)
+	if err == nil {
+		// Container exists.
+		if info.State.Running {
+			slog.Info("Reusing running Corrosion container.", "name", c.name)
+			return c.readyCheck(ctx, c.apiAddr)
+		}
 
-	if err := c.startContainer(ctx); err != nil {
+		// Exists but stopped — start it.
+		if err := c.docker.ContainerStart(ctx, c.name, container.StartOptions{}); err != nil {
+			return fmt.Errorf("start existing corrosion container: %w", err)
+		}
+		slog.Info("Started existing Corrosion container.", "name", c.name)
+		return c.readyCheck(ctx, c.apiAddr)
+	}
+
+	if !errdefs.IsNotFound(err) {
+		return fmt.Errorf("inspect corrosion container: %w", err)
+	}
+
+	// Container doesn't exist — create from scratch.
+	if err := c.createAndStart(ctx); err != nil {
 		return fmt.Errorf("start corrosion container: %w", err)
 	}
 
-	if err := WaitReady(ctx, c.apiAddr); err != nil {
-		// Clean up with a fresh context — the original may be cancelled.
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = c.removeContainer(cleanupCtx)
+	if err := c.readyCheck(ctx, c.apiAddr); err != nil {
 		return err
 	}
 
@@ -78,7 +103,8 @@ func (c *Container) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops and removes the container.
+// Stop stops and removes the container. This is only called from
+// Mesh.Destroy — daemon shutdown leaves the container running.
 func (c *Container) Stop(ctx context.Context) error {
 	if err := c.docker.ContainerStop(ctx, c.name, container.StopOptions{}); err != nil {
 		if !errdefs.IsNotFound(err) {
@@ -93,7 +119,7 @@ func (c *Container) Stop(ctx context.Context) error {
 	return nil
 }
 
-func (c *Container) startContainer(ctx context.Context) error {
+func (c *Container) createAndStart(ctx context.Context) error {
 	containerCfg := &container.Config{
 		Image: c.image,
 		Cmd:   []string{"corrosion", "agent", "-c", c.paths.Config},
@@ -143,8 +169,4 @@ func (c *Container) pullImage(ctx context.Context) error {
 		return fmt.Errorf("pull corrosion image: read response: %w", err)
 	}
 	return nil
-}
-
-func (c *Container) removeContainer(ctx context.Context) error {
-	return c.docker.ContainerRemove(ctx, c.name, container.RemoveOptions{Force: true})
 }
