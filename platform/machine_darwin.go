@@ -44,13 +44,23 @@ func buildMesh(id machine.Identity, dataDir string, docker client.APIClient) (*m
 		return nil, fmt.Errorf("write corrosion config: %w", err)
 	}
 
+	// Custom readiness check that dials through the overlay bridge.
+	readyCheck := func(ctx context.Context, addr netip.AddrPort) error {
+		c, err := corrosion.NewClient(addr, corrosion.WithDialFunc(wg.DialContext))
+		if err != nil {
+			return fmt.Errorf("create overlay client: %w", err)
+		}
+		return corrorun.WaitReadyWith(ctx, c)
+	}
+
 	runtime := corrorun.NewContainer(docker, paths, apiAddr,
 		corrorun.WithImage(CorrosionImage),
 		corrorun.WithContainerName(CorrosionContainerName),
 		corrorun.WithNetworkMode(container.NetworkMode("container:"+WireGuardContainerName)),
+		corrorun.WithReadinessCheck(readyCheck),
 	)
 
-	corroClient, err := corrosion.NewClient(apiAddr)
+	corroClient, err := corrosion.NewClient(apiAddr, corrosion.WithDialFunc(wg.DialContext))
 	if err != nil {
 		return nil, fmt.Errorf("create corrosion client: %w", err)
 	}
@@ -70,5 +80,6 @@ func buildMesh(id machine.Identity, dataDir string, docker client.APIClient) (*m
 		mesh.WithWireGuard(wg),
 		mesh.WithStore(st),
 		mesh.WithConvergence(conv),
+		mesh.WithOverlayNet(wg),
 	), nil
 }

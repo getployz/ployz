@@ -2,7 +2,6 @@ package container
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,6 +18,7 @@ import (
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
+	"github.com/docker/go-connections/nat"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
@@ -34,6 +34,9 @@ type Config struct {
 	Image         string
 	ContainerName string
 	NetworkName   string
+	// HostPort publishes the WG UDP port to the host when non-zero.
+	// Needed on macOS for the overlay bridge and inbound mesh peering.
+	HostPort int
 }
 
 // WG implements mesh.WireGuard by running WireGuard inside a Docker
@@ -43,7 +46,8 @@ type WG struct {
 	cfg    Config
 	docker client.APIClient
 
-	mu sync.Mutex
+	mu         sync.Mutex
+	peerOwners map[string]wireguard.PeerOwner // pubkey -> owner
 }
 
 // New creates a containerized WireGuard implementation.
@@ -84,9 +88,15 @@ func (w *WG) SetPeers(ctx context.Context, peers []ployz.MachineRecord) error {
 		return fmt.Errorf("list current peers: %w", err)
 	}
 
+	if w.peerOwners == nil {
+		w.peerOwners = make(map[string]wireguard.PeerOwner)
+	}
+
 	desired := make(map[string]struct{}, len(peers))
 	for _, p := range peers {
-		desired[p.PublicKey.String()] = struct{}{}
+		key := p.PublicKey.String()
+		desired[key] = struct{}{}
+		w.peerOwners[key] = wireguard.PeerOwnerMesh
 
 		args := []string{
 			"wg", "set", w.cfg.Interface,
@@ -108,15 +118,20 @@ func (w *WG) SetPeers(ctx context.Context, peers []ployz.MachineRecord) error {
 		}
 	}
 
-	// Remove stale peers.
+	// Remove stale mesh peers. Non-mesh peers (bridge, session) are
+	// managed by their respective owners and never removed here.
 	for _, key := range currentPeers {
 		if _, ok := desired[key]; ok {
+			continue
+		}
+		if owner := w.peerOwners[key]; owner != "" && owner != wireguard.PeerOwnerMesh {
 			continue
 		}
 		args := []string{"wg", "set", w.cfg.Interface, "peer", key, "remove"}
 		if _, err := exec(ctx, w.docker, w.cfg.ContainerName, args...); err != nil {
 			return fmt.Errorf("remove stale peer %s: %w", key, err)
 		}
+		delete(w.peerOwners, key)
 	}
 
 	// Sync routes for peer overlay IPs.
@@ -124,6 +139,36 @@ func (w *WG) SetPeers(ctx context.Context, peers []ployz.MachineRecord) error {
 		return fmt.Errorf("sync routes: %w", err)
 	}
 
+	return nil
+}
+
+// AddPeer registers a peer with the given owner. Peers added via AddPeer
+// are never removed by SetPeers. Must be called after Up().
+func (w *WG) AddPeer(ctx context.Context, owner wireguard.PeerOwner, pubKey wgtypes.Key, allowedIP netip.Addr) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.peerOwners == nil {
+		w.peerOwners = make(map[string]wireguard.PeerOwner)
+	}
+	w.peerOwners[pubKey.String()] = owner
+
+	prefix := wireguard.HostPrefix(allowedIP)
+	args := []string{
+		"wg", "set", w.cfg.Interface,
+		"peer", pubKey.String(),
+		"persistent-keepalive", fmt.Sprintf("%d", int(peerKeepalive.Seconds())),
+		"allowed-ips", prefix.String(),
+	}
+	if _, err := exec(ctx, w.docker, w.cfg.ContainerName, args...); err != nil {
+		return fmt.Errorf("add %s peer %s: %w", owner, pubKey, err)
+	}
+
+	if _, err := exec(ctx, w.docker, w.cfg.ContainerName,
+		"ip", "route", "replace", prefix.String(), "dev", w.cfg.Interface,
+	); err != nil {
+		return fmt.Errorf("add %s peer route %s: %w", owner, prefix, err)
+	}
 	return nil
 }
 
@@ -146,21 +191,28 @@ func (w *WG) Down(ctx context.Context) error {
 }
 
 // ensureContainer inspects, starts, or creates the WireGuard container.
+// If a HostPort is configured and an existing container lacks the published
+// port binding, the container is recreated.
 func (w *WG) ensureContainer(ctx context.Context) error {
 	info, err := w.docker.ContainerInspect(ctx, w.cfg.ContainerName)
 	if err == nil {
-		if info.State.Running {
-			slog.Info("Reusing running WireGuard container.", "name", w.cfg.ContainerName)
+		if w.cfg.HostPort != 0 && !w.hasPublishedPort(info) {
+			slog.Info("Recreating WireGuard container for port publishing.", "name", w.cfg.ContainerName)
+			if err := w.removeContainer(ctx); err != nil {
+				return fmt.Errorf("recreate wireguard container: %w", err)
+			}
+		} else {
+			if info.State.Running {
+				slog.Info("Reusing running WireGuard container.", "name", w.cfg.ContainerName)
+				return nil
+			}
+			if err := w.docker.ContainerStart(ctx, w.cfg.ContainerName, container.StartOptions{}); err != nil {
+				return fmt.Errorf("start existing wireguard container: %w", err)
+			}
+			slog.Info("Started existing WireGuard container.", "name", w.cfg.ContainerName)
 			return nil
 		}
-		if err := w.docker.ContainerStart(ctx, w.cfg.ContainerName, container.StartOptions{}); err != nil {
-			return fmt.Errorf("start existing wireguard container: %w", err)
-		}
-		slog.Info("Started existing WireGuard container.", "name", w.cfg.ContainerName)
-		return nil
-	}
-
-	if !errdefs.IsNotFound(err) {
+	} else if !errdefs.IsNotFound(err) {
 		return fmt.Errorf("inspect wireguard container: %w", err)
 	}
 
@@ -170,6 +222,41 @@ func (w *WG) ensureContainer(ctx context.Context) error {
 
 	slog.Info("WireGuard container started.", "name", w.cfg.ContainerName)
 	return nil
+}
+
+// removeContainer stops a container, waits for it to exit, then removes it.
+// Waiting ensures the host port binding is fully released before we try to
+// create a replacement container.
+func (w *WG) removeContainer(ctx context.Context) error {
+	_ = w.docker.ContainerStop(ctx, w.cfg.ContainerName, container.StopOptions{})
+
+	// Wait for the container to reach a non-running state so the kernel
+	// releases the port binding before we attempt to rebind it.
+	waitCh, errCh := w.docker.ContainerWait(ctx, w.cfg.ContainerName, container.WaitConditionNotRunning)
+	select {
+	case <-waitCh:
+	case err := <-errCh:
+		// NotFound means it's already gone — that's fine.
+		if err != nil && !errdefs.IsNotFound(err) {
+			slog.Warn("Error waiting for container stop.", "err", err)
+		}
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	if err := w.docker.ContainerRemove(ctx, w.cfg.ContainerName, container.RemoveOptions{Force: true}); err != nil {
+		if !errdefs.IsNotFound(err) {
+			return fmt.Errorf("remove container: %w", err)
+		}
+	}
+	return nil
+}
+
+// hasPublishedPort checks whether a container has the expected UDP port published.
+func (w *WG) hasPublishedPort(info container.InspectResponse) bool {
+	portKey := nat.Port(fmt.Sprintf("%d/udp", w.cfg.Port))
+	bindings, ok := info.HostConfig.PortBindings[portKey]
+	return ok && len(bindings) > 0
 }
 
 func (w *WG) createAndStart(ctx context.Context) error {
@@ -193,6 +280,16 @@ func (w *WG) createAndStart(ctx context.Context) error {
 		Sysctls: map[string]string{
 			"net.ipv4.conf.all.src_valid_mark": "1",
 		},
+	}
+
+	if w.cfg.HostPort != 0 {
+		containerPort := nat.Port(fmt.Sprintf("%d/udp", w.cfg.Port))
+		containerCfg.ExposedPorts = nat.PortSet{containerPort: struct{}{}}
+		hostCfg.PortBindings = nat.PortMap{
+			containerPort: []nat.PortBinding{{
+				HostPort: fmt.Sprintf("%d", w.cfg.HostPort),
+			}},
+		}
 	}
 
 	networkCfg := &network.NetworkingConfig{
@@ -238,8 +335,6 @@ func (w *WG) pullImage(ctx context.Context) error {
 func (w *WG) configureInterface(ctx context.Context) error {
 	name := w.cfg.ContainerName
 	iface := w.cfg.Interface
-	keyHex := hex.EncodeToString(w.cfg.PrivateKey[:])
-
 	// Create WireGuard interface.
 	if _, err := exec(ctx, w.docker, name, "ip", "link", "add", iface, "type", "wireguard"); err != nil {
 		// Interface may already exist from a previous Up.
@@ -253,20 +348,10 @@ func (w *WG) configureInterface(ctx context.Context) error {
 		return fmt.Errorf("set mtu: %w", err)
 	}
 
-	// Configure WireGuard private key and listen port via stdin pipe.
-	// wg set requires the key in hex on the command line or via a file.
-	// We use wg setconf with a generated config for atomicity but
-	// for initial setup, wg set is simpler.
-	if _, err := exec(ctx, w.docker, name,
-		"wg", "set", iface,
-		"private-key", "/dev/stdin",
-		"listen-port", fmt.Sprintf("%d", w.cfg.Port),
-	); err != nil {
-		// wg set can't read from /dev/stdin via docker exec easily.
-		// Fall back to writing a temp file.
-		if err := w.configureKeyViaFile(ctx, keyHex); err != nil {
-			return err
-		}
+	// Configure WireGuard private key and listen port.
+	// wg set reads the key from a file in base64 format.
+	if err := w.configureKeyViaFile(ctx); err != nil {
+		return err
 	}
 
 	// Assign management IP address.
@@ -291,14 +376,15 @@ func (w *WG) configureInterface(ctx context.Context) error {
 
 // configureKeyViaFile writes the private key to a temp file inside
 // the container and configures WireGuard from it.
-func (w *WG) configureKeyViaFile(ctx context.Context, keyHex string) error {
+func (w *WG) configureKeyViaFile(ctx context.Context) error {
 	name := w.cfg.ContainerName
 	iface := w.cfg.Interface
 	keyPath := "/tmp/wg-private-key"
+	keyBase64 := w.cfg.PrivateKey.String()
 
-	// Write key to file.
+	// Write key to file. wg expects base64 encoding.
 	if _, err := exec(ctx, w.docker, name,
-		"sh", "-c", fmt.Sprintf("echo '%s' > %s && chmod 600 %s", keyHex, keyPath, keyPath),
+		"sh", "-c", fmt.Sprintf("echo '%s' > %s && chmod 600 %s", keyBase64, keyPath, keyPath),
 	); err != nil {
 		return fmt.Errorf("write private key file: %w", err)
 	}

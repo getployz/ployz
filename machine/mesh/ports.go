@@ -2,6 +2,7 @@ package mesh
 
 import (
 	"context"
+	"net"
 
 	"ployz"
 )
@@ -30,4 +31,12 @@ type Store interface {
 type Convergence interface {
 	Start(ctx context.Context) error
 	Stop() error
+}
+
+// OverlayNet provides the host process with network access to the
+// WireGuard overlay. On Linux (kernel WG), overlay IPs are natively
+// routable and this wraps net.Dialer. On macOS (container WG), this
+// is backed by a userspace WireGuard bridge.
+type OverlayNet interface {
+	DialContext(ctx context.Context, network, addr string) (net.Conn, error)
 }

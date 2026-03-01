@@ -10,6 +10,7 @@ import (
 	"ployz"
 	"ployz/infra/corrorun"
 	"ployz/infra/corrosion"
+	"ployz/infra/overlay"
 	"ployz/infra/store"
 	"ployz/machine"
 	"ployz/machine/convergence"
@@ -58,5 +59,6 @@ func buildMesh(id machine.Identity, dataDir string) (*mesh.Mesh, error) {
 		mesh.WithWireGuard(wg),
 		mesh.WithStore(st),
 		mesh.WithConvergence(conv),
+		mesh.WithOverlayNet(overlay.Host{}),
 	), nil
 }

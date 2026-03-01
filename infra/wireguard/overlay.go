@@ -12,3 +12,16 @@ func HostPrefix(ip netip.Addr) netip.Prefix {
 	}
 	return netip.PrefixFrom(ip, bits)
 }
+
+// PeerOwner identifies who manages a WireGuard peer. Convergence
+// (SetPeers) only removes peers it owns (PeerOwnerMesh). Bridge and
+// future session peers survive convergence cycles.
+//
+// This lives in the shared wireguard package because peer ownership
+// applies to all WireGuard backends (kernel, container, future connect).
+type PeerOwner string
+
+const (
+	PeerOwnerMesh   PeerOwner = "mesh"   // convergence loop
+	PeerOwnerBridge PeerOwner = "bridge" // local overlay bridge
+)

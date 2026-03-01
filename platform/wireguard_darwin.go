@@ -10,13 +10,13 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-// NewWireGuard creates a containerized WireGuard implementation for macOS.
-// The WireGuard interface runs inside a Docker container (OrbStack VM)
-// where the kernel WireGuard module is available.
-func NewWireGuard(key wgtypes.Key, docker client.APIClient) *wgcontainer.WG {
+// NewWireGuard creates a containerized WireGuard implementation for macOS
+// with an in-process overlay bridge. The WireGuard interface runs inside
+// a Docker container; the bridge gives the daemon overlay access via netstack.
+func NewWireGuard(key wgtypes.Key, docker client.APIClient) *BridgedWG {
 	mgmtIP := ployz.ManagementIPFromKey(key.PublicKey())
 
-	return wgcontainer.New(wgcontainer.Config{
+	containerWG := wgcontainer.New(wgcontainer.Config{
 		Interface:     "ployz0",
 		MTU:           WireGuardMTU,
 		PrivateKey:    key,
@@ -25,5 +25,8 @@ func NewWireGuard(key wgtypes.Key, docker client.APIClient) *wgcontainer.WG {
 		Image:         WireGuardImage,
 		ContainerName: WireGuardContainerName,
 		NetworkName:   MeshNetworkName,
+		HostPort:      WireGuardPort,
 	}, docker)
+
+	return NewBridgedWG(containerWG, key)
 }

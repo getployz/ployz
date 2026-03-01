@@ -25,10 +25,14 @@ const (
 	resubscribeMaxRetryTime = 60 * time.Second
 )
 
+// DialFunc is a function that dials a network address.
+type DialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+
 // Client is an HTTP client for the Corrosion API.
 type Client struct {
 	baseURL         *url.URL
 	httpClient      *http.Client
+	dialFunc        DialFunc
 	newResubBackoff func() backoff.BackOff
 }
 
@@ -42,23 +46,6 @@ func NewClient(addr netip.AddrPort, opts ...ClientOption) (*Client, error) {
 
 	c := &Client{
 		baseURL: baseURL,
-		httpClient: &http.Client{
-			Transport: &retryRoundTripper{
-				base: &http2.Transport{
-					AllowHTTP: true,
-					DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-						return (&net.Dialer{Timeout: http2ConnectTimeout}).DialContext(ctx, network, addr)
-					},
-				},
-				newBackoff: func() backoff.BackOff {
-					return backoff.NewExponentialBackOff(
-						backoff.WithInitialInterval(100*time.Millisecond),
-						backoff.WithMaxInterval(1*time.Second),
-						backoff.WithMaxElapsedTime(http2MaxRetryTime),
-					)
-				},
-			},
-		},
 		newResubBackoff: func() backoff.BackOff {
 			return backoff.NewExponentialBackOff(
 				backoff.WithInitialInterval(100*time.Millisecond),
@@ -71,16 +58,54 @@ func NewClient(addr netip.AddrPort, opts ...ClientOption) (*Client, error) {
 	for _, opt := range opts {
 		opt(c)
 	}
+
+	// Build the default HTTP client if WithHTTPClient was not used.
+	if c.httpClient == nil {
+		dialFn := c.dialFunc
+		if dialFn == nil {
+			dialFn = (&net.Dialer{Timeout: http2ConnectTimeout}).DialContext
+		}
+		c.httpClient = &http.Client{
+			Transport: &retryRoundTripper{
+				base: &http2.Transport{
+					AllowHTTP: true,
+					DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+						ctx, cancel := context.WithTimeout(ctx, http2ConnectTimeout)
+						defer cancel()
+						return dialFn(ctx, network, addr)
+					},
+				},
+				newBackoff: func() backoff.BackOff {
+					return backoff.NewExponentialBackOff(
+						backoff.WithInitialInterval(100*time.Millisecond),
+						backoff.WithMaxInterval(1*time.Second),
+						backoff.WithMaxElapsedTime(http2MaxRetryTime),
+					)
+				},
+			},
+		}
+	}
+
 	return c, nil
 }
 
 // ClientOption configures a Client.
 type ClientOption func(*Client)
 
-// WithHTTPClient sets a custom HTTP client.
+// WithHTTPClient sets a custom HTTP client. Takes precedence over
+// WithDialFunc — if both are set the custom client is used as-is.
 func WithHTTPClient(client *http.Client) ClientOption {
 	return func(c *Client) {
 		c.httpClient = client
+	}
+}
+
+// WithDialFunc sets a custom dial function for the HTTP/2 transport.
+// Used on macOS where the overlay network is reached via a userspace
+// WireGuard bridge. Ignored if WithHTTPClient is also set.
+func WithDialFunc(fn DialFunc) ClientOption {
+	return func(c *Client) {
+		c.dialFunc = fn
 	}
 }
 

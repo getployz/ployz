@@ -18,6 +18,7 @@ type Mesh struct {
 	wireGuard   WireGuard
 	store       Store
 	convergence Convergence
+	overlayNet  OverlayNet
 
 	mu    sync.Mutex
 	phase Phase
@@ -41,6 +42,11 @@ func WithConvergence(c Convergence) Option {
 	return func(m *Mesh) { m.convergence = c }
 }
 
+// WithOverlayNet injects an overlay network dialer.
+func WithOverlayNet(o OverlayNet) Option {
+	return func(m *Mesh) { m.overlayNet = o }
+}
+
 // New creates a Mesh with the given options.
 func New(opts ...Option) *Mesh {
 	m := &Mesh{}
@@ -60,4 +66,9 @@ func (m *Mesh) Phase() Phase {
 // Store returns the store, or nil if not configured.
 func (m *Mesh) Store() Store {
 	return m.store
+}
+
+// OverlayNet returns the overlay network dialer, or nil if not configured.
+func (m *Mesh) OverlayNet() OverlayNet {
+	return m.overlayNet
 }

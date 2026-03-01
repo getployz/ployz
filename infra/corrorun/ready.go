@@ -37,7 +37,13 @@ func WaitReady(ctx context.Context, apiAddr netip.AddrPort) error {
 	if err != nil {
 		return fmt.Errorf("wait ready: create client: %w", err)
 	}
+	return WaitReadyWith(ctx, client)
+}
 
+// WaitReadyWith blocks until the given Corrosion client can successfully
+// query the machines table. Used when the client needs a custom dialer
+// (e.g. macOS overlay bridge).
+func WaitReadyWith(ctx context.Context, client *corrosion.Client) error {
 	check := func() error {
 		rows, err := client.QueryContext(ctx, "SELECT 1 FROM machines LIMIT 1")
 		if err != nil {
@@ -53,7 +59,7 @@ func WaitReady(ctx context.Context, apiAddr netip.AddrPort) error {
 		backoff.WithMaxElapsedTime(readyMaxElapsed),
 	)
 	if err := backoff.Retry(check, backoff.WithContext(b, ctx)); err != nil {
-		return fmt.Errorf("wait ready: corrosion not responding after %s: %w", readyMaxElapsed, err)
+		return fmt.Errorf("corrosion not responding after %s: %w", readyMaxElapsed, err)
 	}
 	return nil
 }
