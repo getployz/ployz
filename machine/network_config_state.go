@@ -19,9 +19,16 @@ type NetworkConfig struct {
 	Network string `json:"network"`
 }
 
-func (m *Machine) hasNetworkConfig() bool {
+// HasNetworkConfig reports whether a saved network config exists on disk.
+func (m *Machine) HasNetworkConfig() (bool, error) {
 	_, err := os.Stat(m.networkConfigPath())
-	return err == nil
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, fmt.Errorf("check network config: %w", err)
 }
 
 // SaveNetworkConfig persists the network config to the data dir.

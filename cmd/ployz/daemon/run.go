@@ -7,6 +7,7 @@ import (
 	"syscall"
 
 	daemonruntime "ployz/daemon"
+	"ployz/machine"
 	"ployz/platform"
 
 	"github.com/spf13/cobra"
@@ -20,12 +21,17 @@ func runCmd(opts *options) *cobra.Command {
 			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
 
-			m, err := platform.NewMachine(opts.dataRoot)
+			m, err := machine.New(opts.dataRoot)
 			if err != nil {
 				return fmt.Errorf("create machine: %w", err)
 			}
 
-			return daemonruntime.Run(ctx, m, opts.socket)
+			builder, err := platform.NewMeshBuilder(m.Identity(), opts.dataRoot)
+			if err != nil {
+				return fmt.Errorf("create mesh builder: %w", err)
+			}
+
+			return daemonruntime.Run(ctx, m, builder, opts.socket)
 		},
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"ployz/cmd/ployz/cmdutil"
 	daemonruntime "ployz/daemon"
+	"ployz/machine"
 	"ployz/platform"
 
 	"github.com/spf13/cobra"
@@ -31,13 +32,18 @@ func Cmd() *cobra.Command {
 				return nil
 			}
 
-			m, err := platform.NewMachine(dataRoot)
+			m, err := machine.New(dataRoot)
 			if err != nil {
 				return fmt.Errorf("create machine: %w", err)
 			}
 
+			builder, err := platform.NewMeshBuilder(m.Identity(), dataRoot)
+			if err != nil {
+				return fmt.Errorf("create mesh builder: %w", err)
+			}
+
 			slog.Info("daemon listening", "socket", socketPath)
-			return daemonruntime.Run(ctx, m, socketPath)
+			return daemonruntime.Run(ctx, m, builder, socketPath)
 		},
 	}
 

@@ -19,17 +19,17 @@ import (
 	"github.com/docker/docker/client"
 )
 
-// NewMachine creates a production machine for macOS. The mesh builder
-// wires containerized WireGuard, Corrosion, and convergence.
-func NewMachine(dataDir string) (*machine.Machine, error) {
+// NewMeshBuilder returns a builder that wires containerized WireGuard,
+// Corrosion, and convergence for macOS. Identity is captured in the closure.
+func NewMeshBuilder(id machine.Identity, dataDir string) (machine.MeshBuilder, error) {
 	docker, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		return nil, fmt.Errorf("create docker client: %w", err)
 	}
 
-	return machine.New(dataDir, machine.WithMeshBuilder(func(ctx context.Context, id machine.Identity) (machine.NetworkStack, error) {
+	return func(ctx context.Context) (machine.NetworkStack, error) {
 		return buildMesh(id, dataDir, docker)
-	}))
+	}, nil
 }
 
 func buildMesh(id machine.Identity, dataDir string, docker client.APIClient) (*mesh.Mesh, error) {
@@ -71,7 +71,7 @@ func buildMesh(id machine.Identity, dataDir string, docker client.APIClient) (*m
 	self := ployz.MachineRecord{
 		ID:        pub.String(),
 		Name:      id.Name,
-		PublicKey:  pub,
+		PublicKey: pub,
 		OverlayIP: mgmtIP,
 	}
 	conv := convergence.New(self,

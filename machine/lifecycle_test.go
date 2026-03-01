@@ -42,7 +42,7 @@ func TestRun_StartupFailureDestroysPartialMesh(t *testing.T) {
 	startErr := errors.New("store start failed")
 	net := &fakeNetwork{upErr: startErr}
 
-	m := newTestMachineWithNetworkConfig(t, net)
+	m := newTestMachineWithMesh(t, net)
 
 	err := m.Run(context.Background())
 	if err == nil {
@@ -62,7 +62,7 @@ func TestRun_StartupFailureIncludesDestroyError(t *testing.T) {
 	destroyErr := errors.New("wg down failed")
 	net := &fakeNetwork{upErr: startErr, destroyErr: destroyErr}
 
-	m := newTestMachineWithNetworkConfig(t, net)
+	m := newTestMachineWithMesh(t, net)
 
 	err := m.Run(context.Background())
 	if err == nil {
@@ -83,7 +83,7 @@ func TestRun_StartupFailureIncludesDestroyError(t *testing.T) {
 func TestRun_StartupCanceledSkipsDestroy(t *testing.T) {
 	net := &fakeNetwork{upErr: context.Canceled}
 
-	m := newTestMachineWithNetworkConfig(t, net)
+	m := newTestMachineWithMesh(t, net)
 
 	err := m.Run(context.Background())
 	if err == nil {
@@ -98,7 +98,86 @@ func TestRun_StartupCanceledSkipsDestroy(t *testing.T) {
 	}
 }
 
-func newTestMachineWithNetworkConfig(t *testing.T, ns NetworkStack) *Machine {
+func TestInitNetwork_NilNetworkStack(t *testing.T) {
+	m := newTestMachine(t)
+
+	err := m.InitNetwork(context.Background(), "test-net", nil)
+	if err == nil {
+		t.Fatal("InitNetwork should return error for nil network stack")
+	}
+
+	// No config should be saved.
+	has, _ := m.HasNetworkConfig()
+	if has {
+		t.Fatal("network config should not exist after nil ns error")
+	}
+}
+
+func TestInitNetwork_AlreadyRunning(t *testing.T) {
+	net := &fakeNetwork{}
+	m := newTestMachineWithMesh(t, net)
+
+	err := m.InitNetwork(context.Background(), "test-net", &fakeNetwork{})
+	if err == nil {
+		t.Fatal("InitNetwork should return error when mesh already attached")
+	}
+
+	if len(net.calls) != 0 {
+		t.Fatalf("existing mesh should not be touched, got calls: %v", net.calls)
+	}
+}
+
+func TestInitNetwork_Success(t *testing.T) {
+	m := newTestMachine(t)
+	net := &fakeNetwork{}
+
+	if err := m.InitNetwork(context.Background(), "test-net", net); err != nil {
+		t.Fatalf("InitNetwork failed: %v", err)
+	}
+
+	if !slices.Equal(net.calls, []string{"Up"}) {
+		t.Fatalf("network calls = %v, want [Up]", net.calls)
+	}
+
+	has, err := m.HasNetworkConfig()
+	if err != nil {
+		t.Fatalf("HasNetworkConfig: %v", err)
+	}
+	if !has {
+		t.Fatal("network config should exist after successful init")
+	}
+
+	if !m.HasMeshAttached() {
+		t.Fatal("mesh should be attached after successful init")
+	}
+}
+
+func TestInitNetwork_StartFailure_CleansUp(t *testing.T) {
+	m := newTestMachine(t)
+	startErr := errors.New("wg up failed")
+	net := &fakeNetwork{upErr: startErr}
+
+	err := m.InitNetwork(context.Background(), "test-net", net)
+	if err == nil {
+		t.Fatal("InitNetwork should return error on start failure")
+	}
+	if !errors.Is(err, startErr) {
+		t.Fatalf("InitNetwork error = %v, want %v", err, startErr)
+	}
+
+	// Config should be cleaned up.
+	has, _ := m.HasNetworkConfig()
+	if has {
+		t.Fatal("network config should be removed after start failure")
+	}
+
+	// Mesh should be nil'd.
+	if m.HasMeshAttached() {
+		t.Fatal("mesh should not be attached after start failure")
+	}
+}
+
+func newTestMachine(t *testing.T) *Machine {
 	t.Helper()
 
 	privateKey, err := wgtypes.GeneratePrivateKey()
@@ -109,15 +188,17 @@ func newTestMachineWithNetworkConfig(t *testing.T, ns NetworkStack) *Machine {
 	m, err := New(
 		t.TempDir(),
 		WithIdentity(Identity{PrivateKey: privateKey, Name: "test-machine"}),
-		WithMesh(ns),
 	)
 	if err != nil {
 		t.Fatalf("create machine: %v", err)
 	}
+	return m
+}
 
-	if err := m.SaveNetworkConfig(NetworkConfig{Network: "test-network"}); err != nil {
-		t.Fatalf("save network config: %v", err)
-	}
+func newTestMachineWithMesh(t *testing.T, ns NetworkStack) *Machine {
+	t.Helper()
 
+	m := newTestMachine(t)
+	m.SetMesh(ns)
 	return m
 }

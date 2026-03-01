@@ -30,6 +30,8 @@ Dependency direction is one-way:
 
 `platform/*` selects concrete implementations at the wiring edge.
 
+Startup ownership is strict: `platform/*` builds mesh builders, `daemon` decides when to invoke them, `machine` only runs attached mesh.
+
 ## Go Tiger Style
 
 This repository follows Go Tiger Style priorities, in order:
@@ -54,7 +56,7 @@ Use `.claude/skills/tiger-audit/SKILL.md` for the full audit checklist.
 1. Interfaces live in the consumer package (`ports.go` near the caller).
 2. Core logic packages (`machine`, `machine/mesh`, `machine/convergence`) do not import infra packages directly.
 3. All external side effects (network/filesystem/process/DB/SSH) belong in `infra/*`.
-4. Inject dependencies at construction; avoid hidden constructors in `Run()` or hot loops.
+4. Inject dependencies before lifecycle calls; no hidden constructors/build callbacks in `Run()`/`InitNetwork()`.
 5. Keep persistence I/O in adapters; keep domain types/validation in core packages.
 6. Pass `context.Context` first for blocking or I/O operations, and respect cancellation.
 7. Wrap errors with operation context; use `errors.Is`/`errors.As` for policy checks.
@@ -77,6 +79,7 @@ Assertions are not runtime error handling. Runtime failures should return errors
 - Behavior changes in `machine`, `machine/mesh`, or `machine/convergence` should include:
   - at least one success-path test
   - at least one failure-path test
+- Core unit tests (`machine*`) use fakes only; adapter tests (`platform/infra`) are integration-tagged.
 - Prefer table-driven tests for pure logic.
 - Keep test doubles local and small.
 - Useful commands:

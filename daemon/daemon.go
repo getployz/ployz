@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"ployz/machine"
@@ -11,9 +12,26 @@ import (
 )
 
 // Run starts the machine, gRPC server, and systemd notification, then
-// blocks until ctx is cancelled.
-func Run(ctx context.Context, m *machine.Machine, socketPath string) error {
-	srv := NewServer(m)
+// blocks until ctx is cancelled. If a saved network config exists and a
+// builder is available, the mesh is built and attached before starting.
+func Run(ctx context.Context, m *machine.Machine, buildMesh machine.MeshBuilder, socketPath string) error {
+	hasConfig, err := m.HasNetworkConfig()
+	if err != nil {
+		return fmt.Errorf("check network config: %w", err)
+	}
+	if hasConfig {
+		if buildMesh == nil {
+			return fmt.Errorf("saved network config exists but no mesh builder available")
+		}
+		slog.Info("Restoring mesh from saved config.")
+		ns, err := buildMesh(ctx)
+		if err != nil {
+			return fmt.Errorf("build mesh: %w", err)
+		}
+		m.SetMesh(ns)
+	}
+
+	srv := NewServer(m, buildMesh)
 
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {

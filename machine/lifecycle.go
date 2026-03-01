@@ -12,25 +12,14 @@ import (
 
 const startupCleanupTimeout = 15 * time.Second
 
-// Run starts the machine. If a network config exists from a previous init/join,
-// the mesh is built (if a builder is available) and started automatically.
-// Then blocks until ctx is cancelled.
+// Run starts the machine. If a mesh is attached (via SetMesh or WithMesh),
+// it is started automatically. Then blocks until ctx is cancelled.
 func (m *Machine) Run(ctx context.Context) error {
-	hasNetCfg := m.hasNetworkConfig()
-
-	if m.mesh == nil && m.buildMesh != nil && hasNetCfg {
-		msh, err := m.buildMesh(ctx, m.identity)
-		if err != nil {
-			return fmt.Errorf("build mesh from config: %w", err)
-		}
-		m.mesh = msh
-	}
-
-	if m.mesh != nil && hasNetCfg {
+	if m.getMesh() != nil {
 		if err := m.startMesh(ctx); err != nil {
 			return fmt.Errorf("start mesh: %w", err)
 		}
-		slog.Info("Mesh started from existing config.")
+		slog.Info("Mesh started.")
 	}
 
 	close(m.started)
@@ -40,30 +29,24 @@ func (m *Machine) Run(ctx context.Context) error {
 	return nil
 }
 
-// InitNetwork creates a new network. It builds a mesh via the builder,
-// persists the network config, starts the mesh, and registers the local
-// machine in the store.
-func (m *Machine) InitNetwork(ctx context.Context, name string) error {
-	if m.mesh != nil {
+// InitNetwork creates a new network with a pre-built mesh. It persists the
+// network config, starts the mesh, and registers the local machine in the store.
+func (m *Machine) InitNetwork(ctx context.Context, name string, ns NetworkStack) error {
+	if ns == nil {
+		return fmt.Errorf("nil network stack")
+	}
+	if m.getMesh() != nil {
 		return fmt.Errorf("network already running (phase %s)", m.Phase())
-	}
-	if m.buildMesh == nil {
-		return fmt.Errorf("no mesh builder configured")
-	}
-
-	msh, err := m.buildMesh(ctx, m.identity)
-	if err != nil {
-		return fmt.Errorf("create mesh: %w", err)
 	}
 
 	if err := m.SaveNetworkConfig(NetworkConfig{Network: name}); err != nil {
 		return fmt.Errorf("save network config: %w", err)
 	}
 
-	m.mesh = msh
+	m.setMesh(ns)
 
 	if err := m.startMesh(ctx); err != nil {
-		m.mesh = nil
+		m.setMesh(nil)
 		_ = m.RemoveNetworkConfig()
 		return fmt.Errorf("start mesh: %w", err)
 	}
@@ -74,7 +57,7 @@ func (m *Machine) InitNetwork(ctx context.Context, name string) error {
 		rec := ployz.MachineRecord{
 			ID:        pub.String(),
 			Name:      m.identity.Name,
-			PublicKey:  pub,
+			PublicKey: pub,
 			OverlayIP: ployz.ManagementIPFromKey(pub),
 			UpdatedAt: time.Now(),
 		}
@@ -90,7 +73,8 @@ func (m *Machine) InitNetwork(ctx context.Context, name string) error {
 // startMesh brings up the mesh and destroys partial state on failure.
 // Context cancellation is treated as intentional and skips cleanup.
 func (m *Machine) startMesh(ctx context.Context) error {
-	err := m.mesh.Up(ctx)
+	ns := m.getMesh()
+	err := ns.Up(ctx)
 	if err == nil {
 		return nil
 	}
@@ -101,17 +85,18 @@ func (m *Machine) startMesh(ctx context.Context) error {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), startupCleanupTimeout)
 	defer cancel()
 
-	if destroyErr := m.mesh.Destroy(cleanupCtx); destroyErr != nil {
+	if destroyErr := ns.Destroy(cleanupCtx); destroyErr != nil {
 		return errors.Join(err, fmt.Errorf("destroy partial mesh: %w", destroyErr))
 	}
 	return err
 }
 
 func (m *Machine) shutdown(ctx context.Context) {
-	if m.mesh == nil {
+	ns := m.getMesh()
+	if ns == nil {
 		return
 	}
-	if err := m.mesh.Detach(ctx); err != nil {
+	if err := ns.Detach(ctx); err != nil {
 		slog.Error("mesh shutdown", "err", err)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	daemonruntime "ployz/daemon"
 	"ployz/internal/logging"
 	"ployz/internal/support/buildinfo"
+	"ployz/machine"
 	"ployz/platform"
 
 	"github.com/spf13/cobra"
@@ -47,12 +48,17 @@ func rootCmd() *cobra.Command {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
-			m, err := platform.NewMachine(dataRoot)
+			m, err := machine.New(dataRoot)
 			if err != nil {
 				return fmt.Errorf("create machine: %w", err)
 			}
 
-			return daemonruntime.Run(ctx, m, socketPath)
+			builder, err := platform.NewMeshBuilder(m.Identity(), dataRoot)
+			if err != nil {
+				return fmt.Errorf("create mesh builder: %w", err)
+			}
+
+			return daemonruntime.Run(ctx, m, builder, socketPath)
 		},
 	}
 

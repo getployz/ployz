@@ -8,6 +8,7 @@ import (
 
 	"ployz"
 	"ployz/daemon/pb"
+	"ployz/machine"
 
 	"google.golang.org/grpc"
 )
@@ -15,16 +16,18 @@ import (
 // Machine is the interface the API server needs from the machine.
 type Machine interface {
 	Status() ployz.Machine
-	InitNetwork(ctx context.Context, name string) error
+	HasMeshAttached() bool
+	InitNetwork(ctx context.Context, name string, ns machine.NetworkStack) error
 }
 
 type Server struct {
 	pb.UnimplementedDaemonServer
-	machine Machine
+	machine   Machine
+	buildMesh machine.MeshBuilder
 }
 
-func NewServer(m Machine) *Server {
-	return &Server{machine: m}
+func NewServer(m Machine, buildMesh machine.MeshBuilder) *Server {
+	return &Server{machine: m, buildMesh: buildMesh}
 }
 
 func (s *Server) GetStatus(_ context.Context, _ *pb.GetStatusRequest) (*pb.GetStatusResponse, error) {
@@ -38,7 +41,18 @@ func (s *Server) GetStatus(_ context.Context, _ *pb.GetStatusRequest) (*pb.GetSt
 }
 
 func (s *Server) InitNetwork(ctx context.Context, req *pb.InitNetworkRequest) (*pb.InitNetworkResponse, error) {
-	if err := s.machine.InitNetwork(ctx, req.GetName()); err != nil {
+	// Preflight — avoid building if obviously not needed. Not authoritative; machine rechecks.
+	if s.machine.HasMeshAttached() {
+		return nil, fmt.Errorf("network already running")
+	}
+	if s.buildMesh == nil {
+		return nil, fmt.Errorf("networking not supported on this platform")
+	}
+	ns, err := s.buildMesh(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("build mesh: %w", err)
+	}
+	if err := s.machine.InitNetwork(ctx, req.GetName(), ns); err != nil {
 		return nil, err
 	}
 	return &pb.InitNetworkResponse{}, nil

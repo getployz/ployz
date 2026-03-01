@@ -3,10 +3,11 @@ package machine
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"ployz"
-	"ployz/machine/mesh"
 	"ployz/internal/support/buildinfo"
+	"ployz/machine/mesh"
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
@@ -21,9 +22,9 @@ type NetworkStack interface {
 	Store() mesh.Store
 }
 
-// MeshBuilder creates a network stack for the given identity. Platform wiring
-// sets this via WithMeshBuilder; tests inject fakes directly via WithMesh.
-type MeshBuilder func(ctx context.Context, id Identity) (NetworkStack, error)
+// MeshBuilder creates a network stack. The identity and data directory are
+// captured in the closure at construction time.
+type MeshBuilder func(ctx context.Context) (NetworkStack, error)
 
 // Identity is the minimum a machine needs to exist on a network.
 // The public key and management IP are derived from the private key.
@@ -35,10 +36,11 @@ type Identity struct {
 // Machine is a node. It owns local identity and optionally participates
 // in a mesh network. The mesh is nil when the machine is standalone.
 type Machine struct {
-	identity     Identity
-	dataDir      string
-	mesh       NetworkStack
-	buildMesh  MeshBuilder
+	identity Identity
+	dataDir  string
+
+	mu   sync.Mutex
+	mesh NetworkStack
 
 	// started is closed when the machine is ready to serve requests.
 	started chan struct{}
@@ -58,14 +60,6 @@ func WithIdentity(id Identity) Option {
 func WithMesh(ns NetworkStack) Option {
 	return func(m *Machine) {
 		m.mesh = ns
-	}
-}
-
-// WithMeshBuilder sets the function used to construct a mesh on InitNetwork
-// or when restoring from a saved network config.
-func WithMeshBuilder(b MeshBuilder) Option {
-	return func(m *Machine) {
-		m.buildMesh = b
 	}
 }
 
@@ -96,26 +90,47 @@ func (m *Machine) Identity() Identity {
 	return m.identity
 }
 
-// Mesh returns the network stack, or nil if standalone.
-func (m *Machine) Mesh() NetworkStack {
-	return m.mesh
+// SetMesh attaches a pre-built network stack. Called by the daemon
+// before Run when restoring from a saved network config.
+func (m *Machine) SetMesh(ns NetworkStack) {
+	m.setMesh(ns)
+}
+
+// HasMeshAttached reports whether a mesh is currently attached.
+// This is a factual check for preflight guards — not authoritative for races.
+func (m *Machine) HasMeshAttached() bool {
+	return m.getMesh() != nil
 }
 
 // Phase returns the current network lifecycle phase.
 // Returns "stopped" if the machine has no mesh.
 func (m *Machine) Phase() mesh.Phase {
-	if m.mesh == nil {
+	ns := m.getMesh()
+	if ns == nil {
 		return mesh.PhaseStopped
 	}
-	return m.mesh.Phase()
+	return ns.Phase()
 }
 
 // Store returns the mesh store, or nil if standalone or not configured.
 func (m *Machine) Store() mesh.Store {
-	if m.mesh == nil {
+	ns := m.getMesh()
+	if ns == nil {
 		return nil
 	}
-	return m.mesh.Store()
+	return ns.Store()
+}
+
+func (m *Machine) getMesh() NetworkStack {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.mesh
+}
+
+func (m *Machine) setMesh(ns NetworkStack) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mesh = ns
 }
 
 // Started returns a channel that is closed when the machine is ready.
