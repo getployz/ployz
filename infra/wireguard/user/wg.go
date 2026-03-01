@@ -64,12 +64,14 @@ func New(cfg Config, tunProv TUNProvider, privRun PrivilegedRunner) *WG {
 }
 
 // Up creates the userspace WireGuard device, configures it, and brings it up.
+// If the device is already up this is a no-op, making retries after partial
+// mesh startup failures safe.
 func (w *WG) Up(ctx context.Context) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	if w.dev != nil {
-		return fmt.Errorf("wireguard already up")
+		return nil
 	}
 
 	tunDev, tunName, err := w.tunProv()

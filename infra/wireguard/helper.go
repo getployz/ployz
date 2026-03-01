@@ -79,7 +79,7 @@ func runPrivilegedCommand(ctx context.Context, name string, args ...string) ([]b
 
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", cfg.socketPath)
 	if err != nil {
-		if shouldSuggestConfigure(err) {
+		if isTransientSocketError(err) {
 			return nil, configureRequiredError("privileged helper is unavailable", err)
 		}
 		return nil, fmt.Errorf("connect privileged helper: %w", err)
@@ -102,7 +102,7 @@ func runPrivilegedCommand(ctx context.Context, name string, args ...string) ([]b
 		Args:      append([]string(nil), args...),
 		TimeoutMS: timeoutMS,
 	}); err != nil {
-		if shouldSuggestConfigure(err) {
+		if isTransientSocketError(err) {
 			return nil, configureRequiredError("privileged helper is unavailable", err)
 		}
 		return nil, fmt.Errorf("send privileged request: %w", err)
@@ -110,7 +110,7 @@ func runPrivilegedCommand(ctx context.Context, name string, args ...string) ([]b
 
 	var resp privilegedResponse
 	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
-		if shouldSuggestConfigure(err) {
+		if isTransientSocketError(err) {
 			return nil, configureRequiredError("privileged helper is unavailable", err)
 		}
 		return nil, fmt.Errorf("read privileged response: %w", err)
@@ -149,10 +149,6 @@ func isTransientSocketError(err error) bool {
 		errors.Is(err, syscall.ECONNRESET) ||
 		errors.Is(err, syscall.EPIPE)
 }
-
-// shouldSuggestConfigure is an alias for isTransientSocketError, kept for
-// readability at call sites that surface the "run sudo ployz configure" hint.
-var shouldSuggestConfigure = isTransientSocketError
 
 func configureRequiredError(message string, err error) error {
 	if err != nil {

@@ -9,7 +9,11 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-const wgInterface = "ployz0"
+const (
+	wgInterface          = "ployz0"
+	PrivilegedSocketPath = "/run/ployz/helper.sock"
+	PrivilegedTokenPath  = "/var/lib/ployz/private/helper.token"
+)
 
 // NewWireGuard creates a kernel WireGuard implementation for Linux.
 func NewWireGuard(key wgtypes.Key) *kernel.WG {

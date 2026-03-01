@@ -10,7 +10,7 @@ import (
 // the mesh is started automatically. Then blocks until ctx is cancelled.
 func (m *Machine) Run(ctx context.Context) error {
 	if m.mesh != nil && m.hasNetworkConfig() {
-		if err := m.mesh.Start(ctx); err != nil {
+		if err := m.mesh.Up(ctx); err != nil {
 			return fmt.Errorf("start mesh: %w", err)
 		}
 		slog.Info("Mesh started from existing config.")
@@ -27,7 +27,7 @@ func (m *Machine) shutdown(ctx context.Context) {
 	if m.mesh == nil {
 		return
 	}
-	if err := m.mesh.Stop(ctx); err != nil {
+	if err := m.mesh.Detach(ctx); err != nil {
 		slog.Error("mesh shutdown", "err", err)
 	}
 }

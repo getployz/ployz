@@ -100,19 +100,19 @@ func sliceEqual(a, b []string) bool {
 
 // --- tests ---
 
-func TestStop_OnlyStopsConvergence(t *testing.T) {
+func TestDetach_OnlyStopsConvergence(t *testing.T) {
 	wg := &fakeWG{}
 	store := &fakeStore{}
 	conv := &fakeConvergence{}
 
 	m := New(WithWireGuard(wg), WithStore(store), WithConvergence(conv))
 
-	if err := m.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
+	if err := m.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
 	}
 
-	if err := m.Stop(context.Background()); err != nil {
-		t.Fatalf("Stop: %v", err)
+	if err := m.Detach(context.Background()); err != nil {
+		t.Fatalf("Detach: %v", err)
 	}
 
 	// Convergence must be stopped.
@@ -120,7 +120,7 @@ func TestStop_OnlyStopsConvergence(t *testing.T) {
 		t.Errorf("convergence calls = %v, want [Start Stop]", got)
 	}
 
-	// Store and WireGuard must NOT be touched during Stop.
+	// Store and WireGuard must NOT be touched during Detach.
 	if got := methods(store.calls); !sliceEqual(got, []string{"Start"}) {
 		t.Errorf("store calls = %v, want [Start] (no Stop)", got)
 	}
@@ -140,8 +140,8 @@ func TestDestroy_TearsDownInReverseOrder(t *testing.T) {
 
 	m := New(WithWireGuard(wg), WithStore(store), WithConvergence(conv))
 
-	if err := m.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
+	if err := m.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
 	}
 
 	if err := m.Destroy(context.Background()); err != nil {
@@ -174,8 +174,8 @@ func TestDestroy_ReturnsFirstError_ContinuesTeardown(t *testing.T) {
 
 	m := New(WithWireGuard(wg), WithStore(store), WithConvergence(conv))
 
-	if err := m.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
+	if err := m.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
 	}
 
 	err := m.Destroy(context.Background())
@@ -198,16 +198,16 @@ func TestDestroy_ReturnsFirstError_ContinuesTeardown(t *testing.T) {
 	}
 }
 
-func TestStart_ErrorDoesNotRollBack(t *testing.T) {
+func TestUp_ErrorDoesNotRollBack(t *testing.T) {
 	wg := &fakeWG{}
 	store := &fakeStore{startErr: errors.New("store connect failed")}
 	conv := &fakeConvergence{}
 
 	m := New(WithWireGuard(wg), WithStore(store), WithConvergence(conv))
 
-	err := m.Start(context.Background())
+	err := m.Up(context.Background())
 	if err == nil {
-		t.Fatal("Start should return an error")
+		t.Fatal("Up should return an error")
 	}
 
 	// WireGuard.Up was called but Down must NOT be called on failure.
@@ -222,5 +222,34 @@ func TestStart_ErrorDoesNotRollBack(t *testing.T) {
 
 	if m.Phase() != PhaseStopped {
 		t.Errorf("phase = %s, want stopped", m.Phase())
+	}
+}
+
+func TestDestroy_AfterPartialUp(t *testing.T) {
+	wg := &fakeWG{}
+	store := &fakeStore{startErr: errors.New("store connect failed")}
+	conv := &fakeConvergence{}
+
+	m := New(WithWireGuard(wg), WithStore(store), WithConvergence(conv))
+
+	// Up fails after WG is already up.
+	if err := m.Up(context.Background()); err == nil {
+		t.Fatal("Up should fail")
+	}
+
+	// Reset store error so Destroy's Stop call succeeds.
+	store.startErr = nil
+
+	// Destroy must still tear down WG even though phase is stopped.
+	if err := m.Destroy(context.Background()); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+
+	if got := methods(wg.calls); !sliceEqual(got, []string{"Up", "Down"}) {
+		t.Errorf("wg calls = %v, want [Up Down]", got)
+	}
+
+	if got := methods(store.calls); !sliceEqual(got, []string{"Start", "Stop"}) {
+		t.Errorf("store calls = %v, want [Start Stop]", got)
 	}
 }

@@ -4,12 +4,12 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"runtime"
 	"syscall"
 
 	daemonruntime "ployz/daemon"
 	"ployz/internal/logging"
 	"ployz/internal/support/buildinfo"
+	"ployz/platform"
 
 	"github.com/spf13/cobra"
 )
@@ -50,22 +50,8 @@ func rootCmd() *cobra.Command {
 	}
 
 	cmd.PersistentFlags().BoolVar(&debug, "debug", false, "Enable debug logging")
-	cmd.Flags().StringVar(&socketPath, "socket", defaultSocketPath(), "Unix socket path")
-	cmd.Flags().StringVar(&dataRoot, "data-root", defaultDataRoot(), "Machine data root")
+	cmd.Flags().StringVar(&socketPath, "socket", platform.DaemonSocketPath, "Unix socket path")
+	cmd.Flags().StringVar(&dataRoot, "data-root", platform.DaemonDataRoot, "Machine data root")
 	cmd.AddCommand(dialStdioCmd())
 	return cmd
-}
-
-func defaultSocketPath() string {
-	if runtime.GOOS == "darwin" {
-		return "/tmp/ployzd.sock"
-	}
-	return "/var/run/ployzd.sock"
-}
-
-func defaultDataRoot() string {
-	if runtime.GOOS == "darwin" {
-		return "/usr/local/var/lib/ployz/networks"
-	}
-	return "/var/lib/ployz/networks"
 }

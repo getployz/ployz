@@ -9,7 +9,8 @@ import "sync"
 // (Corrosion), and convergence as a single unit.
 //
 // Start order:  WG up → store start → convergence start.
-// Stop order:   convergence stop → store stop → WG down.
+// Detach order: convergence stop (infra stays running).
+// Destroy order: convergence stop → store stop → WG down.
 //
 // Mesh is a concrete struct, not an interface. Tests construct a real Mesh
 // with fake leaf deps injected via With* options.

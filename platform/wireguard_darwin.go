@@ -9,7 +9,11 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-const wgInterface = "utun"
+const (
+	wgInterface          = "utun"
+	PrivilegedSocketPath = "/tmp/ployz-priv.sock"
+	PrivilegedTokenPath  = "/var/db/ployz/private/helper.token"
+)
 
 // NewWireGuard creates a userspace WireGuard implementation for macOS.
 func NewWireGuard(key wgtypes.Key) *user.WG {

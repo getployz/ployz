@@ -5,11 +5,11 @@ import (
 	"fmt"
 )
 
-// Start brings up the network stack in order: WireGuard, store,
+// Up brings up the network stack in order: WireGuard, store,
 // then convergence. On failure the original error is returned but
 // infrastructure that was already running is left intact — a
-// subsequent Start or Destroy can deal with it.
-func (m *Mesh) Start(ctx context.Context) error {
+// subsequent Up or Destroy can deal with it.
+func (m *Mesh) Up(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -44,11 +44,11 @@ func (m *Mesh) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop is the control-plane shutdown path. It stops the convergence
+// Detach is the control-plane shutdown path. It stops the convergence
 // loop but leaves infrastructure (WireGuard interface, Corrosion
 // container) running so that workload traffic is unaffected by daemon
 // restarts. Use Destroy to tear down infrastructure.
-func (m *Mesh) Stop(_ context.Context) error {
+func (m *Mesh) Detach(_ context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -72,15 +72,12 @@ func (m *Mesh) Stop(_ context.Context) error {
 
 // Destroy tears down the full network stack in reverse order:
 // convergence, store, then WireGuard. This is the only path that
-// removes infrastructure. Continues through errors and returns the
-// first one encountered.
+// removes infrastructure. Safe to call after a partial Up failure —
+// each teardown step is idempotent. Continues through errors and
+// returns the first one encountered.
 func (m *Mesh) Destroy(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	if m.phase == PhaseStopped {
-		return nil
-	}
 
 	m.phase = PhaseStopping
 

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"ployz/infra/wireguard"
+	"ployz/platform"
 
 	"github.com/spf13/cobra"
 )
@@ -47,10 +48,10 @@ func privHelperCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&cfg.SocketPath, "socket", wireguard.DefaultPrivilegedSocketPath(), "Privileged helper unix socket path")
+	cmd.Flags().StringVar(&cfg.SocketPath, "socket", platform.PrivilegedSocketPath, "Privileged helper unix socket path")
 	cmd.Flags().StringVar(&token, "token", "", "Shared secret for helper requests (deprecated)")
-	cmd.Flags().StringVar(&tokenFile, "token-file", wireguard.DefaultPrivilegedTokenPath(), "Path to privileged helper token file")
-	cmd.Flags().StringVar(&cfg.TUNSocketPath, "tun-socket", wireguard.DefaultTUNSocketPath(), "Unix socket path used for TUN fd passing")
+	cmd.Flags().StringVar(&tokenFile, "token-file", platform.PrivilegedTokenPath, "Path to privileged helper token file")
+	cmd.Flags().StringVar(&cfg.TUNSocketPath, "tun-socket", platform.TUNSocketPath, "Unix socket path used for TUN fd passing")
 	cmd.Flags().IntVar(&cfg.MTU, "mtu", defaultHelperMTU, "TUN interface MTU")
 	_ = cmd.Flags().MarkHidden("token")
 
