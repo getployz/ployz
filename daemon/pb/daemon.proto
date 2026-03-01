@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package ployz;
 
-option go_package = "ployz/api/pb";
+option go_package = "ployz/daemon/pb";
 
 service Daemon {
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);

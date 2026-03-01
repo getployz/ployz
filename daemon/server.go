@@ -1,4 +1,4 @@
-package api
+package daemon
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"os"
 
 	"ployz"
-	"ployz/api/pb"
+	"ployz/daemon/pb"
 
 	"google.golang.org/grpc"
 )
@@ -22,7 +22,7 @@ type Server struct {
 	machine Machine
 }
 
-func New(m Machine) *Server {
+func NewServer(m Machine) *Server {
 	return &Server{machine: m}
 }
 

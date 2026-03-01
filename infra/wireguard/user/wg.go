@@ -1,6 +1,6 @@
 //go:build darwin
 
-package wguser
+package user
 
 import (
 	"context"
@@ -41,14 +41,14 @@ type PrivilegedRunner func(ctx context.Context, name string, args ...string) ([]
 
 // WG implements mesh.WireGuard using userspace wireguard-go on macOS.
 type WG struct {
-	cfg       Config
-	tunProv   TUNProvider
-	privRun   PrivilegedRunner
+	cfg     Config
+	tunProv TUNProvider
+	privRun PrivilegedRunner
 
-	mu      sync.Mutex
-	dev     *device.Device
-	tunDev  tun.Device
-	ifName  string
+	mu     sync.Mutex
+	dev    *device.Device
+	tunDev tun.Device
+	ifName string
 }
 
 // New creates a userspace WireGuard implementation.

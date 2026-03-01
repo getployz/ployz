@@ -11,8 +11,6 @@ import (
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
-
-	"ployz/platform/store"
 )
 
 const (
@@ -69,7 +67,8 @@ func NewPaths(dataDir string) Paths {
 }
 
 // WriteConfig writes the Corrosion config.toml and schema.sql to disk.
-func WriteConfig(paths Paths, gossipAddr netip.AddrPort, apiAddr netip.AddrPort, bootstrap []string) error {
+// The schema parameter is the SQL schema to apply on startup (typically store.Schema).
+func WriteConfig(paths Paths, schema string, gossipAddr netip.AddrPort, apiAddr netip.AddrPort, bootstrap []string) error {
 	if err := os.MkdirAll(paths.Dir, 0o700); err != nil {
 		return fmt.Errorf("create corrosion dir: %w", err)
 	}
@@ -100,7 +99,7 @@ func WriteConfig(paths Paths, gossipAddr netip.AddrPort, apiAddr netip.AddrPort,
 		return fmt.Errorf("write corrosion config: %w", err)
 	}
 
-	if err := os.WriteFile(paths.Schema, []byte(store.Schema), 0o644); err != nil {
+	if err := os.WriteFile(paths.Schema, []byte(schema), 0o644); err != nil {
 		return fmt.Errorf("write corrosion schema: %w", err)
 	}
 

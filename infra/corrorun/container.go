@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/netip"
+	"time"
 
 	"github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
@@ -66,8 +67,10 @@ func (c *Container) Start(ctx context.Context) error {
 	}
 
 	if err := WaitReady(ctx, c.apiAddr); err != nil {
-		// Try to clean up on failure.
-		_ = c.removeContainer(ctx) // best-effort cleanup
+		// Clean up with a fresh context — the original may be cancelled.
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = c.removeContainer(cleanupCtx)
 		return err
 	}
 

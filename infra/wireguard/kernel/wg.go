@@ -1,6 +1,6 @@
 //go:build linux
 
-package wgkernel
+package kernel
 
 import (
 	"context"
@@ -305,4 +305,3 @@ func ipNetToPrefix(n net.IPNet) (netip.Prefix, error) {
 	one, _ := n.Mask.Size()
 	return netip.PrefixFrom(a.Unmap(), one), nil
 }
-

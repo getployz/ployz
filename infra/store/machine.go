@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"ployz"
-	"ployz/platform/corrosion"
+	"ployz/infra/corrosion"
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )

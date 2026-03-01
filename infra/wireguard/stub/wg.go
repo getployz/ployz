@@ -1,6 +1,6 @@
 //go:build !linux && !darwin
 
-package wgstub
+package stub
 
 import (
 	"context"

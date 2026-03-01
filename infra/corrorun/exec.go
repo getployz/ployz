@@ -2,6 +2,7 @@ package corrorun
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -42,8 +43,10 @@ func NewExec(paths Paths, apiAddr netip.AddrPort, opts ...ExecOption) *Exec {
 }
 
 // Start launches the corrosion process and waits for it to be ready.
+// The process outlives the Start context — ctx only bounds the readiness wait.
+// Call Stop to terminate the process.
 func (e *Exec) Start(ctx context.Context) error {
-	e.cmd = exec.CommandContext(ctx, e.binary, "agent", "-c", e.paths.Config)
+	e.cmd = exec.Command(e.binary, "agent", "-c", e.paths.Config)
 	e.cmd.Stdout = os.Stdout
 	e.cmd.Stderr = os.Stderr
 
@@ -67,8 +70,10 @@ func (e *Exec) Stop(ctx context.Context) error {
 	}
 
 	if err := e.cmd.Process.Signal(os.Interrupt); err != nil {
-		// Process may have already exited.
-		return nil
+		if errors.Is(err, os.ErrProcessDone) {
+			return nil
+		}
+		return fmt.Errorf("signal corrosion process: %w", err)
 	}
 
 	done := make(chan error, 1)

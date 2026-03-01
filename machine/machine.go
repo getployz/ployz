@@ -5,7 +5,7 @@ import (
 
 	"ployz"
 	"ployz/machine/mesh"
-	"ployz/platform/buildinfo"
+	"ployz/internal/support/buildinfo"
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )

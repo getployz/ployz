@@ -4,7 +4,7 @@ package platform
 
 import (
 	"ployz"
-	"ployz/platform/wgkernel"
+	"ployz/infra/wireguard/kernel"
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
@@ -12,10 +12,10 @@ import (
 const wgInterface = "ployz0"
 
 // NewWireGuard creates a kernel WireGuard implementation for Linux.
-func NewWireGuard(key wgtypes.Key) *wgkernel.WG {
+func NewWireGuard(key wgtypes.Key) *kernel.WG {
 	mgmtIP := ployz.ManagementIPFromKey(key.PublicKey())
 
-	return wgkernel.New(wgkernel.Config{
+	return kernel.New(kernel.Config{
 		Interface:  wgInterface,
 		MTU:        WireGuardMTU,
 		PrivateKey: key,
