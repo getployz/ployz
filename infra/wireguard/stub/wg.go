@@ -6,8 +6,11 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"time"
 
 	"ployz"
+
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 // WG is a no-op WireGuard implementation for unsupported platforms.
@@ -24,3 +27,8 @@ func (w *WG) SetPeers(_ context.Context, _ []ployz.MachineRecord) error {
 }
 
 func (w *WG) Down(_ context.Context) error { return nil }
+
+// PeerHandshakes returns an empty map on unsupported platforms.
+func (w *WG) PeerHandshakes(_ context.Context) (map[wgtypes.Key]time.Time, error) {
+	return nil, nil
+}

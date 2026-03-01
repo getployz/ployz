@@ -8,6 +8,7 @@ type Phase uint8
 const (
 	PhaseStopped Phase = iota
 	PhaseStarting
+	PhaseBootstrapping
 	PhaseRunning
 	PhaseStopping
 )
@@ -22,6 +23,8 @@ func (p Phase) String() string {
 		return "running"
 	case PhaseStopping:
 		return "stopping"
+	case PhaseBootstrapping:
+		return "bootstrapping"
 	default:
 		check.Assertf(false, "unknown mesh phase: %d", p)
 		return "unknown"

@@ -74,12 +74,13 @@ func buildMesh(id machine.Identity, dataDir string, docker client.APIClient) (*m
 		PublicKey:  pub,
 		OverlayIP: mgmtIP,
 	}
-	conv := convergence.New(self, convergence.MeshPlanner{}, st, wg)
+	conv := convergence.New(self, convergence.MeshPlanner{}, st, wg, wg)
 
 	return mesh.New(
 		mesh.WithWireGuard(wg),
 		mesh.WithStore(st),
 		mesh.WithConvergence(conv),
+		mesh.WithStoreHealth(st),
 		mesh.WithOverlayNet(wg),
 	), nil
 }

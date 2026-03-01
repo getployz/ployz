@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"time"
 
 	"ployz"
 	"ployz/infra/wireguard"
@@ -103,6 +104,11 @@ func (b *BridgedWG) DialContext(ctx context.Context, network, addr string) (net.
 		return nil, fmt.Errorf("overlay bridge not started")
 	}
 	return b.bridge.DialContext(ctx, network, addr)
+}
+
+// PeerHandshakes delegates to the container WG.
+func (b *BridgedWG) PeerHandshakes(ctx context.Context) (map[wgtypes.Key]time.Time, error) {
+	return b.container.PeerHandshakes(ctx)
 }
 
 // Verify BridgedWG satisfies the mesh.WireGuard interface at compile time.

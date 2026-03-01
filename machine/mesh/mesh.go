@@ -3,7 +3,10 @@
 // startup ordering, rollback on failure, and reverse teardown.
 package mesh
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 // Mesh is the network stack. It orchestrates WireGuard, the store
 // (Corrosion), and convergence as a single unit.
@@ -14,11 +17,15 @@ import "sync"
 //
 // Mesh is a concrete struct, not an interface. Tests construct a real Mesh
 // with fake leaf deps injected via With* options.
+const defaultBootstrapTimeout = 30 * time.Minute
+
 type Mesh struct {
-	wireGuard   WireGuard
-	store       Store
-	convergence Convergence
-	overlayNet  OverlayNet
+	wireGuard        WireGuard
+	store            Store
+	convergence      Convergence
+	overlayNet       OverlayNet
+	storeHealth      StoreHealth
+	bootstrapTimeout time.Duration
 
 	mu    sync.Mutex
 	phase Phase
@@ -45,6 +52,16 @@ func WithConvergence(c Convergence) Option {
 // WithOverlayNet injects an overlay network dialer.
 func WithOverlayNet(o OverlayNet) Option {
 	return func(m *Mesh) { m.overlayNet = o }
+}
+
+// WithStoreHealth injects a store health checker for bootstrap gating.
+func WithStoreHealth(sh StoreHealth) Option {
+	return func(m *Mesh) { m.storeHealth = sh }
+}
+
+// WithBootstrapTimeout overrides the default bootstrap timeout (30m).
+func WithBootstrapTimeout(d time.Duration) Option {
+	return func(m *Mesh) { m.bootstrapTimeout = d }
 }
 
 // New creates a Mesh with the given options.

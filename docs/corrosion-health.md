@@ -108,3 +108,23 @@ When integrating into runtime state machines (for example, Ployz), keep the stat
 - `ready`: members ready and replication checks hold for consecutive polls.
 
 Use this state for workload/control-plane gating; treat ad-hoc lag views as diagnostics only.
+
+## Ployz Bootstrap Policy
+
+Ployz uses a binary startup gate based on WireGuard peer reachability:
+
+**Has reachable peers (Alive or New)?** Wait for Corrosion `gaps=0` (2 consecutive passes at 2s intervals). Reachable peers can serve all missing data, so gaps will resolve.
+
+**No reachable peers?** Ready immediately (2 consecutive passes). There is no one to sync from — gaps from dead/removed actors are unresolvable.
+
+### Why gaps (not queue_size)
+
+`gaps=0` is the true sync-completion signal. `queue_size=0` can be transiently true before all ranges have been requested. Gaps tracks what the node knows it is missing.
+
+### Why not members >= N
+
+A strict member count threshold fails when a node restarts after a peer has been removed. The dead peer never responds to gossip, so `members >= expected` is never satisfied. Instead, Ployz probes WireGuard handshakes to determine which peers are actually reachable and adjusts expectations accordingly.
+
+### Why skip the gate when alone
+
+When no peers are reachable (all Suspect), any gaps are from actors whose data no alive peer can provide. Waiting would block forever. The single-node and "peer removed while down" cases both hit this path.

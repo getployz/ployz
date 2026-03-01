@@ -2,8 +2,11 @@ package convergence
 
 import (
 	"context"
+	"time"
 
 	"ployz"
+
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 // PeerPlanner decides which machines become WireGuard peers for the local node.
@@ -20,4 +23,9 @@ type Subscriber interface {
 // PeerSetter applies the desired WireGuard peer set.
 type PeerSetter interface {
 	SetPeers(ctx context.Context, peers []ployz.MachineRecord) error
+}
+
+// PeerProber retrieves the last handshake time for each WireGuard peer.
+type PeerProber interface {
+	PeerHandshakes(ctx context.Context) (map[wgtypes.Key]time.Time, error)
 }

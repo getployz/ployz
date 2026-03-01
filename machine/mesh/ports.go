@@ -31,6 +31,13 @@ type Store interface {
 type Convergence interface {
 	Start(ctx context.Context) error
 	Stop() error
+	Health() ployz.HealthSummary
+}
+
+// StoreHealth checks whether the distributed store is caught up.
+type StoreHealth interface {
+	// Healthy returns true when Corrosion reports gaps=0.
+	Healthy(ctx context.Context) (bool, error)
 }
 
 // OverlayNet provides the host process with network access to the
