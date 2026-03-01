@@ -1,6 +1,7 @@
 package networkcmd
 
 import (
+	"context"
 	"fmt"
 
 	"ployz/cmd/ployz/cmdutil"
@@ -31,15 +32,24 @@ func createCmd() *cobra.Command {
 				dialTarget = target
 			}
 
-			client, err := sdk.Dial(cmd.Context(), dialTarget, opts...)
-			if err != nil {
-				return fmt.Errorf("connect to daemon: %w", err)
-			}
-			defer client.Close()
+			var client *sdk.Client
 
-			if err := client.CreateNetwork(cmd.Context(), name); err != nil {
+			err := ui.RunWithSpinner(cmd.Context(), fmt.Sprintf("Creating network %s", ui.Bold(name)), func(ctx context.Context) error {
+				var err error
+				client, err = sdk.Dial(ctx, dialTarget, opts...)
+				if err != nil {
+					return fmt.Errorf("connect to daemon: %w", err)
+				}
+
+				return client.CreateNetwork(ctx, name)
+			})
+			if err != nil {
+				if client != nil {
+					client.Close()
+				}
 				return err
 			}
+			defer client.Close()
 
 			fmt.Println(ui.SuccessMsg("Network %s created.", ui.Bold(name)))
 			return nil

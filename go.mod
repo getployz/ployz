@@ -5,6 +5,8 @@ go 1.25.5
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/cenkalti/backoff/v4 v4.3.0
+	github.com/charmbracelet/bubbles v1.0.0
+	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/containerd/errdefs v1.0.0
 	github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf
@@ -28,8 +30,6 @@ require (
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/charmbracelet/bubbles v1.0.0 // indirect
-	github.com/charmbracelet/bubbletea v1.3.10 // indirect
 	github.com/charmbracelet/colorprofile v0.4.1 // indirect
 	github.com/charmbracelet/x/ansi v0.11.6 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect

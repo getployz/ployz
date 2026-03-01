@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	ployz "ployz"
+	"ployz"
 	"ployz/cmd/ployz/cmdutil"
 	"ployz/cmd/ployz/ui"
 	"ployz/sdk"

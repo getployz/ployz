@@ -57,7 +57,22 @@ func listCmd() *cobra.Command {
 				rows = append(rows, []string{current, name, kind, target})
 			}
 
-			fmt.Println(ui.Table([]string{"", "NAME", "TYPE", "TARGET"}, rows))
+			selected, err := ui.InteractiveTable([]string{"", "NAME", "TYPE", "TARGET"}, rows)
+			if err != nil {
+				return err
+			}
+
+			if selected >= 0 && selected < len(names) {
+				name := names[selected]
+				if err := cfg.Use(name); err != nil {
+					return err
+				}
+				if err := cfg.Save(); err != nil {
+					return err
+				}
+				fmt.Println(ui.SuccessMsg("Switched to context %s.", ui.Bold(name)))
+			}
+
 			return nil
 		},
 	}
