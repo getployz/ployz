@@ -3,11 +3,19 @@ package mesh
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"ployz"
+)
+
+const (
+	testSignalDelay = bootstrapPollInterval / 40
+	testPhaseDelay  = bootstrapPollInterval / 20
+	testWaitTimeout = bootstrapPollInterval
 )
 
 // --- fakes ---
@@ -71,7 +79,7 @@ type fakeConvergence struct {
 
 func newFakeConvergence() *fakeConvergence {
 	fc := &fakeConvergence{}
-	h := ployz.HealthSummary{}
+	h := ployz.HealthSummary{Initialized: true}
 	fc.health.Store(&h)
 	return fc
 }
@@ -128,101 +136,107 @@ func sliceEqual(a, b []string) bool {
 // --- existing tests (updated for Health() on fakeConvergence) ---
 
 func TestDetach_OnlyStopsConvergence(t *testing.T) {
-	wg := &fakeWG{}
-	store := &fakeStore{}
-	conv := newFakeConvergence()
+	synctest.Test(t, func(t *testing.T) {
+		wg := &fakeWG{}
+		store := &fakeStore{}
+		conv := newFakeConvergence()
 
-	m := New(WithWireGuard(wg), WithStore(store), WithConvergence(conv))
+		m := New(WithWireGuard(wg), WithStore(store), WithConvergence(conv))
 
-	if err := m.Up(context.Background()); err != nil {
-		t.Fatalf("Up: %v", err)
-	}
+		if err := m.Up(context.Background()); err != nil {
+			t.Fatalf("Up: %v", err)
+		}
 
-	if err := m.Detach(context.Background()); err != nil {
-		t.Fatalf("Detach: %v", err)
-	}
+		if err := m.Detach(context.Background()); err != nil {
+			t.Fatalf("Detach: %v", err)
+		}
 
-	// Convergence must be stopped.
-	if got := methods(conv.calls); !sliceEqual(got, []string{"Start", "Stop"}) {
-		t.Errorf("convergence calls = %v, want [Start Stop]", got)
-	}
+		// Convergence must be stopped.
+		if got := methods(conv.calls); !sliceEqual(got, []string{"Start", "Stop"}) {
+			t.Errorf("convergence calls = %v, want [Start Stop]", got)
+		}
 
-	// Store and WireGuard must NOT be touched during Detach.
-	if got := methods(store.calls); !sliceEqual(got, []string{"Start"}) {
-		t.Errorf("store calls = %v, want [Start] (no Stop)", got)
-	}
-	if got := methods(wg.calls); !sliceEqual(got, []string{"Up"}) {
-		t.Errorf("wg calls = %v, want [Up] (no Down)", got)
-	}
+		// Store and WireGuard must NOT be touched during Detach.
+		if got := methods(store.calls); !sliceEqual(got, []string{"Start"}) {
+			t.Errorf("store calls = %v, want [Start] (no Stop)", got)
+		}
+		if got := methods(wg.calls); !sliceEqual(got, []string{"Up"}) {
+			t.Errorf("wg calls = %v, want [Up] (no Down)", got)
+		}
 
-	if m.Phase() != PhaseStopped {
-		t.Errorf("phase = %s, want stopped", m.Phase())
-	}
+		if m.Phase() != PhaseStopped {
+			t.Errorf("phase = %s, want stopped", m.Phase())
+		}
+	})
 }
 
 func TestDestroy_TearsDownInReverseOrder(t *testing.T) {
-	wg := &fakeWG{}
-	store := &fakeStore{}
-	conv := newFakeConvergence()
+	synctest.Test(t, func(t *testing.T) {
+		wg := &fakeWG{}
+		store := &fakeStore{}
+		conv := newFakeConvergence()
 
-	m := New(WithWireGuard(wg), WithStore(store), WithConvergence(conv))
+		m := New(WithWireGuard(wg), WithStore(store), WithConvergence(conv))
 
-	if err := m.Up(context.Background()); err != nil {
-		t.Fatalf("Up: %v", err)
-	}
+		if err := m.Up(context.Background()); err != nil {
+			t.Fatalf("Up: %v", err)
+		}
 
-	if err := m.Destroy(context.Background()); err != nil {
-		t.Fatalf("Destroy: %v", err)
-	}
+		if err := m.Destroy(context.Background()); err != nil {
+			t.Fatalf("Destroy: %v", err)
+		}
 
-	// Verify reverse order: convergence stop, store stop, WG down.
-	if got := methods(conv.calls); !sliceEqual(got, []string{"Start", "Stop"}) {
-		t.Errorf("convergence calls = %v, want [Start Stop]", got)
-	}
-	if got := methods(store.calls); !sliceEqual(got, []string{"Start", "Stop"}) {
-		t.Errorf("store calls = %v, want [Start Stop]", got)
-	}
-	if got := methods(wg.calls); !sliceEqual(got, []string{"Up", "Down"}) {
-		t.Errorf("wg calls = %v, want [Up Down]", got)
-	}
+		// Verify reverse order: convergence stop, store stop, WG down.
+		if got := methods(conv.calls); !sliceEqual(got, []string{"Start", "Stop"}) {
+			t.Errorf("convergence calls = %v, want [Start Stop]", got)
+		}
+		if got := methods(store.calls); !sliceEqual(got, []string{"Start", "Stop"}) {
+			t.Errorf("store calls = %v, want [Start Stop]", got)
+		}
+		if got := methods(wg.calls); !sliceEqual(got, []string{"Up", "Down"}) {
+			t.Errorf("wg calls = %v, want [Up Down]", got)
+		}
 
-	if m.Phase() != PhaseStopped {
-		t.Errorf("phase = %s, want stopped", m.Phase())
-	}
+		if m.Phase() != PhaseStopped {
+			t.Errorf("phase = %s, want stopped", m.Phase())
+		}
+	})
 }
 
 func TestDestroy_ReturnsFirstError_ContinuesTeardown(t *testing.T) {
-	storeErr := errors.New("store boom")
-	wgErr := errors.New("wg boom")
+	synctest.Test(t, func(t *testing.T) {
+		storeErr := errors.New("store boom")
+		wgErr := errors.New("wg boom")
 
-	wg := &fakeWG{downErr: wgErr}
-	store := &fakeStore{stopErr: storeErr}
-	conv := newFakeConvergence()
+		wg := &fakeWG{downErr: wgErr}
+		store := &fakeStore{stopErr: storeErr}
+		conv := newFakeConvergence()
 
-	m := New(WithWireGuard(wg), WithStore(store), WithConvergence(conv))
+		m := New(WithWireGuard(wg), WithStore(store), WithConvergence(conv))
 
-	if err := m.Up(context.Background()); err != nil {
-		t.Fatalf("Up: %v", err)
-	}
+		if err := m.Up(context.Background()); err != nil {
+			t.Fatalf("Up: %v", err)
+		}
 
-	err := m.Destroy(context.Background())
-	if err == nil {
-		t.Fatal("Destroy should return an error")
-	}
+		err := m.Destroy(context.Background())
+		if err == nil {
+			t.Fatal("Destroy should return an error")
+		}
 
-	// First error wins (store fails before WG).
-	if !errors.Is(err, storeErr) {
-		t.Errorf("got %v, want store error", err)
-	}
+		// First error wins (store fails before WG).
+		if !errors.Is(err, storeErr) {
+			t.Errorf("got %v, want store error", err)
+		}
 
-	// WG.Down must still be called despite store error.
-	if got := methods(wg.calls); !sliceEqual(got, []string{"Up", "Down"}) {
-		t.Errorf("wg calls = %v, want [Up Down] (should continue teardown)", got)
-	}
+		// WG.Down must still be called despite store error.
+		if got := methods(wg.calls); !sliceEqual(got, []string{"Up", "Down"}) {
+			t.Errorf("wg calls = %v, want [Up Down] (should continue teardown)", got)
+		}
 
-	if m.Phase() != PhaseStopped {
-		t.Errorf("phase = %s, want stopped", m.Phase())
-	}
+		if m.Phase() != PhaseStopped {
+			t.Errorf("phase = %s, want stopped", m.Phase())
+		}
+	})
 }
 
 func TestUp_ErrorDoesNotRollBack(t *testing.T) {
@@ -284,52 +298,56 @@ func TestDestroy_AfterPartialUp(t *testing.T) {
 // --- bootstrap gate tests ---
 
 func TestUp_BootstrapReachablePeers(t *testing.T) {
-	conv := newFakeConvergence()
-	sh := &fakeStoreHealth{}
+	synctest.Test(t, func(t *testing.T) {
+		conv := newFakeConvergence()
+		sh := &fakeStoreHealth{}
 
-	m := New(
-		WithConvergence(conv),
-		WithStoreHealth(sh),
-		WithBootstrapTimeout(5*time.Second),
-	)
+		m := New(
+			WithConvergence(conv),
+			WithStoreHealth(sh),
+			WithBootstrapTimeout(5*time.Second),
+		)
 
-	// Simulate: convergence reports reachable peers, store becomes healthy.
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		conv.setHealth(ployz.HealthSummary{Initialized: true, Total: 2, Alive: 2})
-		sh.healthy.Store(true)
-	}()
+		// Simulate: convergence reports reachable peers, store becomes healthy.
+		go func() {
+			time.Sleep(testSignalDelay)
+			conv.setHealth(ployz.HealthSummary{Initialized: true, Total: 2, Alive: 2})
+			sh.healthy.Store(true)
+		}()
 
-	if err := m.Up(context.Background()); err != nil {
-		t.Fatalf("Up: %v", err)
-	}
+		if err := m.Up(context.Background()); err != nil {
+			t.Fatalf("Up: %v", err)
+		}
 
-	if m.Phase() != PhaseRunning {
-		t.Errorf("phase = %s, want running", m.Phase())
-	}
+		if m.Phase() != PhaseRunning {
+			t.Errorf("phase = %s, want running", m.Phase())
+		}
+	})
 }
 
 func TestUp_BootstrapNoPeers(t *testing.T) {
-	conv := newFakeConvergence()
+	synctest.Test(t, func(t *testing.T) {
+		conv := newFakeConvergence()
 
-	m := New(
-		WithConvergence(conv),
-		WithBootstrapTimeout(5*time.Second),
-	)
+		m := New(
+			WithConvergence(conv),
+			WithBootstrapTimeout(5*time.Second),
+		)
 
-	// Simulate: no reachable peers — all suspect.
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		conv.setHealth(ployz.HealthSummary{Initialized: true, Total: 1, Suspect: 1})
-	}()
+		// Simulate: no reachable peers — all suspect.
+		go func() {
+			time.Sleep(testSignalDelay)
+			conv.setHealth(ployz.HealthSummary{Initialized: true, Total: 1, Suspect: 1})
+		}()
 
-	if err := m.Up(context.Background()); err != nil {
-		t.Fatalf("Up: %v", err)
-	}
+		if err := m.Up(context.Background()); err != nil {
+			t.Fatalf("Up: %v", err)
+		}
 
-	if m.Phase() != PhaseRunning {
-		t.Errorf("phase = %s, want running", m.Phase())
-	}
+		if m.Phase() != PhaseRunning {
+			t.Errorf("phase = %s, want running", m.Phase())
+		}
+	})
 }
 
 func TestUp_BootstrapTimeout(t *testing.T) {
@@ -349,34 +367,62 @@ func TestUp_BootstrapTimeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("Up should return a timeout error")
 	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		// We wrap the timeout, but the error message should mention "timed out".
-		t.Logf("got error: %v", err)
+	if !errors.Is(err, ErrBootstrapTimeout) {
+		t.Fatalf("Up error = %v, want ErrBootstrapTimeout", err)
 	}
 }
 
 func TestUp_BootstrapWaitsForInitialized(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		conv := newFakeConvergence()
+		sh := &fakeStoreHealth{}
+		conv.setHealth(ployz.HealthSummary{})
+
+		m := New(
+			WithConvergence(conv),
+			WithStoreHealth(sh),
+			WithBootstrapTimeout(5*time.Second),
+		)
+
+		// Simulate: uninitialized for a moment, then initialized with no peers.
+		go func() {
+			time.Sleep(testPhaseDelay)
+			conv.setHealth(ployz.HealthSummary{Initialized: true, Total: 0})
+		}()
+
+		if err := m.Up(context.Background()); err != nil {
+			t.Fatalf("Up: %v", err)
+		}
+
+		if m.Phase() != PhaseRunning {
+			t.Errorf("phase = %s, want running", m.Phase())
+		}
+	})
+}
+
+func TestUp_BootstrapContextCanceled(t *testing.T) {
 	conv := newFakeConvergence()
+	conv.setHealth(ployz.HealthSummary{Initialized: true, Total: 2, Alive: 1})
 	sh := &fakeStoreHealth{}
 
 	m := New(
 		WithConvergence(conv),
 		WithStoreHealth(sh),
-		WithBootstrapTimeout(5*time.Second),
+		WithBootstrapTimeout(30*time.Second),
 	)
 
-	// Simulate: uninitialized for a moment, then initialized with no peers.
+	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		time.Sleep(100 * time.Millisecond)
-		conv.setHealth(ployz.HealthSummary{Initialized: true, Total: 0})
+		time.Sleep(testSignalDelay)
+		cancel()
 	}()
 
-	if err := m.Up(context.Background()); err != nil {
-		t.Fatalf("Up: %v", err)
+	err := m.Up(ctx)
+	if err == nil {
+		t.Fatal("Up should return cancellation error")
 	}
-
-	if m.Phase() != PhaseRunning {
-		t.Errorf("phase = %s, want running", m.Phase())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Up error = %v, want context canceled", err)
 	}
 }
 
@@ -394,12 +440,14 @@ func TestUp_DestroyDuringBootstrap(t *testing.T) {
 	conv.setHealth(ployz.HealthSummary{Initialized: true, Total: 2, Alive: 1})
 
 	errCh := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	go func() {
-		errCh <- m.Up(context.Background())
+		errCh <- m.Up(ctx)
 	}()
 
 	// Wait for bootstrap phase.
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(testPhaseDelay)
 	if m.Phase() != PhaseBootstrapping {
 		t.Fatalf("phase = %s, want bootstrapping", m.Phase())
 	}
@@ -409,9 +457,15 @@ func TestUp_DestroyDuringBootstrap(t *testing.T) {
 		t.Fatalf("Detach: %v", err)
 	}
 
-	// Up's context is still running, but bootstrap should eventually
-	// timeout or detect the phase change. Cancel it externally.
-	// (In production, the parent context would be cancelled.)
+	cancel()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Up error = %v, want context canceled", err)
+		}
+	case <-time.After(testWaitTimeout):
+		t.Fatal("Up did not return after context cancellation")
+	}
 }
 
 func TestUp_NoHealthSources(t *testing.T) {
@@ -428,20 +482,22 @@ func TestUp_NoHealthSources(t *testing.T) {
 }
 
 func TestUp_ReachablePeersNoStoreHealth(t *testing.T) {
-	conv := newFakeConvergence()
-	conv.setHealth(ployz.HealthSummary{Initialized: true, Total: 2, Alive: 2})
+	synctest.Test(t, func(t *testing.T) {
+		conv := newFakeConvergence()
+		conv.setHealth(ployz.HealthSummary{Initialized: true, Total: 2, Alive: 2})
 
-	// No store health configured but convergence reports reachable peers.
-	m := New(
-		WithConvergence(conv),
-		WithBootstrapTimeout(2*time.Second),
-	)
+		// No store health configured but convergence reports reachable peers.
+		m := New(
+			WithConvergence(conv),
+			WithBootstrapTimeout(2*time.Second),
+		)
 
-	err := m.Up(context.Background())
-	if err == nil {
-		t.Fatal("Up should return an error when peers are reachable but no store health")
-	}
-	if got := err.Error(); !errors.Is(err, nil) {
-		t.Logf("got expected error: %v", got)
-	}
+		err := m.Up(context.Background())
+		if err == nil {
+			t.Fatal("Up should return an error when peers are reachable but no store health")
+		}
+		if !strings.Contains(err.Error(), "no store health checker") {
+			t.Fatalf("Up error = %v, want missing store health message", err)
+		}
+	})
 }

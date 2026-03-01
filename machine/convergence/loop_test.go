@@ -11,6 +11,8 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
+const probeTestBuffer = 250 * time.Millisecond
+
 // --- fakes ---
 
 type fakeProber struct {
@@ -103,8 +105,8 @@ func TestLoop_ProbeClassifiesPeers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Wait for at least one probe tick (5s) + some buffer.
-	time.Sleep(6 * time.Second)
+	// Wait for at least one probe tick + some buffer.
+	time.Sleep(probeInterval + probeTestBuffer)
 
 	h := l.Health()
 	if !h.Initialized {
@@ -172,7 +174,7 @@ func TestLoop_EndpointRotation(t *testing.T) {
 	l := New(self, MeshPlanner{}, sub, setter, prober)
 
 	// Initial reconcile to populate state.
-	if err := l.reconcile(context.Background(), records, nil); err != nil {
+	if err := l.reconcile(context.Background(), records); err != nil {
 		t.Fatal(err)
 	}
 
@@ -181,7 +183,7 @@ func TestLoop_EndpointRotation(t *testing.T) {
 
 	// Simulate time passing beyond endpointTimeout.
 	st := l.peerStates[peerKey]
-	st.endpointSetAt = time.Now().Add(-20 * time.Second)
+	st.endpointSetAt = time.Now().Add(-(endpointTimeout + 5*time.Second))
 
 	setterCalls := setter.calls
 	l.probe(context.Background(), records)
@@ -214,7 +216,7 @@ func TestLoop_NoRotationSingleEndpoint(t *testing.T) {
 	sub := &fakeSubscriber{records: records, events: make(chan ployz.MachineEvent)}
 
 	l := New(self, MeshPlanner{}, sub, setter, prober)
-	if err := l.reconcile(context.Background(), records, nil); err != nil {
+	if err := l.reconcile(context.Background(), records); err != nil {
 		t.Fatal(err)
 	}
 
@@ -222,7 +224,7 @@ func TestLoop_NoRotationSingleEndpoint(t *testing.T) {
 
 	// Force endpointSetAt into the past.
 	st := l.peerStates[peerKey]
-	st.endpointSetAt = time.Now().Add(-20 * time.Second)
+	st.endpointSetAt = time.Now().Add(-(endpointTimeout + 5*time.Second))
 
 	setterCalls := setter.calls
 	l.probe(context.Background(), records)
@@ -231,6 +233,86 @@ func TestLoop_NoRotationSingleEndpoint(t *testing.T) {
 	// (probe itself doesn't call SetPeers unless rotation happens)
 	if setter.calls != setterCalls {
 		t.Error("single-endpoint peer should not trigger rotation SetPeers")
+	}
+}
+
+func TestLoop_SingleEndpointTransitionsToSuspectAfterTimeout(t *testing.T) {
+	selfKey := mustKey(t)
+	peerKey := mustKey(t)
+
+	self := ployz.MachineRecord{ID: "self", PublicKey: selfKey}
+	peer := ployz.MachineRecord{
+		ID:        "peer1",
+		PublicKey: peerKey,
+		Endpoints: []netip.AddrPort{ep("10.0.0.2:51820")},
+	}
+
+	records := []ployz.MachineRecord{self, peer}
+	setter := &fakePeerSetter{}
+	prober := &fakeProber{handshakes: map[wgtypes.Key]time.Time{}}
+	sub := &fakeSubscriber{records: records, events: make(chan ployz.MachineEvent)}
+
+	l := New(self, MeshPlanner{}, sub, setter, prober)
+
+	// First probe: peer starts in New while first attempt is in-flight.
+	l.probe(context.Background(), records)
+	h := l.Health()
+	if h.New != 1 {
+		t.Fatalf("new = %d, want 1 after first probe", h.New)
+	}
+
+	// Age the first (and only) endpoint attempt past timeout.
+	st := l.peerStates[peerKey]
+	st.endpointSetAt = time.Now().Add(-(endpointTimeout + 5*time.Second))
+
+	l.probe(context.Background(), records)
+	h = l.Health()
+	if h.Suspect != 1 {
+		t.Fatalf("suspect = %d, want 1 after endpoint timeout", h.Suspect)
+	}
+	if h.New != 0 {
+		t.Fatalf("new = %d, want 0 after endpoint timeout", h.New)
+	}
+}
+
+func TestLoop_ReconcileKeepsRotatedEndpointSticky(t *testing.T) {
+	selfKey := mustKey(t)
+	peerKey := mustKey(t)
+
+	self := ployz.MachineRecord{ID: "self", PublicKey: selfKey}
+	peer := ployz.MachineRecord{
+		ID:        "peer1",
+		PublicKey: peerKey,
+		Endpoints: []netip.AddrPort{
+			ep("198.51.100.10:51820"),
+			ep("203.0.113.20:51820"),
+		},
+	}
+
+	records := []ployz.MachineRecord{self, peer}
+	setter := &fakePeerSetter{}
+	prober := &fakeProber{handshakes: map[wgtypes.Key]time.Time{}}
+	sub := &fakeSubscriber{records: records, events: make(chan ployz.MachineEvent)}
+
+	l := New(self, MeshPlanner{}, sub, setter, prober)
+
+	// Seed peer state as if failover previously selected endpoint index 1.
+	l.peerStates[peerKey] = &peerState{
+		endpointIndex: 1,
+		endpointCount: 2,
+	}
+
+	if err := l.reconcile(context.Background(), records); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if len(setter.lastPeers) != 1 {
+		t.Fatalf("lastPeers len = %d, want 1", len(setter.lastPeers))
+	}
+	got := setter.lastPeers[0].Endpoints[0]
+	want := peer.Endpoints[1]
+	if got != want {
+		t.Fatalf("active endpoint = %s, want %s", got, want)
 	}
 }
 
@@ -254,7 +336,7 @@ func TestLoop_HandshakeRecoveryResetsToAlive(t *testing.T) {
 	sub := &fakeSubscriber{records: records, events: make(chan ployz.MachineEvent)}
 
 	l := New(self, MeshPlanner{}, sub, setter, prober)
-	if err := l.reconcile(context.Background(), records, nil); err != nil {
+	if err := l.reconcile(context.Background(), records); err != nil {
 		t.Fatal(err)
 	}
 

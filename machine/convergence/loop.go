@@ -84,7 +84,7 @@ func (l *Loop) run(ctx context.Context) error {
 		return fmt.Errorf("subscribe to registry: %w", err)
 	}
 
-	if err := l.reconcile(ctx, records, nil); err != nil {
+	if err := l.reconcile(ctx, records); err != nil {
 		return fmt.Errorf("initial peer sync: %w", err)
 	}
 
@@ -98,7 +98,7 @@ func (l *Loop) run(ctx context.Context) error {
 					return fmt.Errorf("registry subscription lost")
 				}
 				records = applyEvent(records, event)
-				if err := l.reconcile(ctx, records, nil); err != nil {
+				if err := l.reconcile(ctx, records); err != nil {
 					slog.Error("peer sync failed", "err", err)
 				}
 			}
@@ -121,7 +121,7 @@ func (l *Loop) run(ctx context.Context) error {
 				return fmt.Errorf("registry subscription lost")
 			}
 			records = applyEvent(records, event)
-			if err := l.reconcile(ctx, records, nil); err != nil {
+			if err := l.reconcile(ctx, records); err != nil {
 				slog.Error("peer sync failed", "err", err)
 			}
 		case <-ticker.C:
@@ -204,11 +204,7 @@ func (l *Loop) probe(ctx context.Context, records []ployz.MachineRecord) {
 
 	// If any endpoints rotated, re-reconcile with rotation applied.
 	if len(rotated) > 0 {
-		rotatedSet := make(map[wgtypes.Key]struct{}, len(rotated))
-		for _, k := range rotated {
-			rotatedSet[k] = struct{}{}
-		}
-		if err := l.reconcile(ctx, records, rotatedSet); err != nil {
+		if err := l.reconcile(ctx, records); err != nil {
 			slog.Error("peer sync after rotation failed", "err", err)
 			// Roll back endpoint indices and endpointSetAt stays unchanged
 			// so timers stay accurate.
@@ -234,30 +230,24 @@ func (l *Loop) probe(ctx context.Context, records []ployz.MachineRecord) {
 	}
 }
 
-// reconcile plans peers and applies them via SetPeers. If rotations is
-// non-nil, endpoint ordering for those peers is adjusted so the active
-// endpoint (per peerState) is at index [0]. Never mutates the original
-// store records.
-func (l *Loop) reconcile(ctx context.Context, records []ployz.MachineRecord, rotations map[wgtypes.Key]struct{}) error {
+// reconcile plans peers and applies them via SetPeers. Endpoint ordering is
+// adjusted so each peer's active endpoint (per peerState) is at index [0].
+// Never mutates the original store records.
+func (l *Loop) reconcile(ctx context.Context, records []ployz.MachineRecord) error {
 	planned := l.planner.PlanPeers(l.self, records)
 
-	if rotations != nil {
-		for i := range planned {
-			if _, ok := rotations[planned[i].PublicKey]; !ok {
-				continue
-			}
-			st, ok := l.peerStates[planned[i].PublicKey]
-			if !ok || st.endpointIndex == 0 || len(planned[i].Endpoints) <= 1 {
-				continue
-			}
-			// Copy endpoints to avoid mutating the original record.
-			eps := make([]netip.AddrPort, len(planned[i].Endpoints))
-			copy(eps, planned[i].Endpoints)
-			// Move active endpoint to front.
-			idx := st.endpointIndex % len(eps)
-			eps[0], eps[idx] = eps[idx], eps[0]
-			planned[i].Endpoints = eps
+	for i := range planned {
+		st, ok := l.peerStates[planned[i].PublicKey]
+		if !ok || st.endpointIndex == 0 || len(planned[i].Endpoints) <= 1 {
+			continue
 		}
+		// Copy endpoints to avoid mutating the original record.
+		eps := make([]netip.AddrPort, len(planned[i].Endpoints))
+		copy(eps, planned[i].Endpoints)
+		// Move active endpoint to front.
+		idx := st.endpointIndex % len(eps)
+		eps[0], eps[idx] = eps[idx], eps[0]
+		planned[i].Endpoints = eps
 	}
 
 	return l.peers.SetPeers(ctx, planned)

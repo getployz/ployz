@@ -41,6 +41,13 @@ func classifyPeer(s *peerState, now time.Time) ployz.PeerHealth {
 		return ployz.PeerAlive
 	}
 
+	// Single-endpoint peers never rotate, so we still need to mark the first
+	// endpoint as "attempted" once its timeout elapses.
+	if s.endpointCount == 1 && s.endpointsAttempted == 0 &&
+		!s.endpointSetAt.IsZero() && now.Sub(s.endpointSetAt) >= endpointTimeout {
+		s.endpointsAttempted = 1
+	}
+
 	if s.endpointsAttempted < s.endpointCount {
 		s.health = ployz.PeerNew
 		return ployz.PeerNew

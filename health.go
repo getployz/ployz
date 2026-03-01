@@ -22,7 +22,7 @@ func (h PeerHealth) String() string {
 	}
 }
 
-// HealthSummary is a snapshot of peer health across the mesh.
+// HealthSummary is a snapshot of the current node's view of peer health.
 type HealthSummary struct {
 	Initialized bool // at least one probe cycle completed
 	Total       int

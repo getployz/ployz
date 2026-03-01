@@ -2,15 +2,19 @@ package mesh
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 )
 
 const (
-	bootstrapPollInterval    = 2 * time.Second
+	bootstrapPollInterval      = 2 * time.Second
 	bootstrapConsecutivePasses = 2
 )
+
+// ErrBootstrapTimeout is returned when mesh bootstrap exceeds the configured timeout.
+var ErrBootstrapTimeout = errors.New("mesh bootstrap timeout")
 
 // Up brings up the network stack in order: WireGuard, store,
 // then convergence. After components start, it gates on bootstrap
@@ -85,7 +89,8 @@ func (m *Mesh) waitBootstrap(ctx context.Context) error {
 		timeout = defaultBootstrapTimeout
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	parentCtx := ctx
+	ctx, cancel := context.WithTimeout(parentCtx, timeout)
 	defer cancel()
 
 	ticker := time.NewTicker(bootstrapPollInterval)
@@ -95,7 +100,10 @@ func (m *Mesh) waitBootstrap(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("mesh bootstrap timed out after %s", timeout)
+			if err := parentCtx.Err(); err != nil {
+				return err
+			}
+			return fmt.Errorf("%w after %s", ErrBootstrapTimeout, timeout)
 		case <-ticker.C:
 			pass, err := m.bootstrapPass(ctx)
 			if err != nil {
