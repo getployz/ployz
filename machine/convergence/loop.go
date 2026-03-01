@@ -1,6 +1,3 @@
-// Package convergence watches the registry for membership changes
-// and syncs WireGuard peers to match.
-//
 // TODO: Peer reachability tracking. Convergence should probe WireGuard peers
 // (handshake age) and mark unreachable ones as down. This drives the health
 // model: "expected members" is the count of reachable peers, not the store

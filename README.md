@@ -2,6 +2,25 @@
 
 **ployz** is a modern machine network control plane for secure, automated cluster networking and coordination.
 
+## Architecture (current)
+
+The active code path is intentionally split by responsibility:
+
+- `cmd/ployz`: operator CLI.
+- `cmd/ployzd`: daemon entrypoint.
+- `daemon`: unix-socket gRPC server and daemon runtime shell.
+- `machine`: local machine identity/state lifecycle; mesh attachment is optional.
+- `machine/mesh`: network stack lifecycle (WireGuard, store runtime, convergence).
+- `machine/convergence`: event-driven peer reconciliation loop.
+- `infra/*`: concrete adapters for external systems (WireGuard, Corrosion, SQLite, etc.).
+- `platform/*`: compile-time OS split (`linux`, `darwin`, fallback `stub`) and defaults.
+
+Dependency direction is one-way: `cmd/*` -> `daemon` -> `machine` -> `machine/*` -> `infra/*`.
+`platform/*` selects platform-specific concrete implementations at the wiring edge.
+
+Historical code is kept under `_internal_legacy_do_not_read/` for reference only and is
+not part of the active package graph.
+
 ## Quick Install
 
 Install the latest stable release with a single command (works for Linux or macOS):
