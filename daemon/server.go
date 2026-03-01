@@ -15,6 +15,7 @@ import (
 // Machine is the interface the API server needs from the machine.
 type Machine interface {
 	Status() ployz.Machine
+	InitNetwork(ctx context.Context, name string) error
 }
 
 type Server struct {
@@ -34,6 +35,13 @@ func (s *Server) GetStatus(_ context.Context, _ *pb.GetStatusRequest) (*pb.GetSt
 		NetworkPhase: st.NetworkPhase,
 		Version:      st.Version,
 	}, nil
+}
+
+func (s *Server) InitNetwork(ctx context.Context, req *pb.InitNetworkRequest) (*pb.InitNetworkResponse, error) {
+	if err := s.machine.InitNetwork(ctx, req.GetName()); err != nil {
+		return nil, err
+	}
+	return &pb.InitNetworkResponse{}, nil
 }
 
 // ListenAndServe starts the gRPC server on a unix socket and blocks until

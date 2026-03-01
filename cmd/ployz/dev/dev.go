@@ -1,6 +1,7 @@
 package devcmd
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -8,6 +9,7 @@ import (
 
 	"ployz/cmd/ployz/cmdutil"
 	daemonruntime "ployz/daemon"
+	"ployz/platform"
 
 	"github.com/spf13/cobra"
 )
@@ -29,8 +31,13 @@ func Cmd() *cobra.Command {
 				return nil
 			}
 
+			m, err := platform.NewMachine(dataRoot)
+			if err != nil {
+				return fmt.Errorf("create machine: %w", err)
+			}
+
 			slog.Info("daemon listening", "socket", socketPath)
-			return daemonruntime.Run(ctx, dataRoot, socketPath)
+			return daemonruntime.Run(ctx, m, socketPath)
 		},
 	}
 

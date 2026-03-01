@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 
 	daemonruntime "ployz/daemon"
+	"ployz/platform"
 
 	"github.com/spf13/cobra"
 )
@@ -17,7 +19,13 @@ func runCmd(opts *options) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
-			return daemonruntime.Run(ctx, opts.dataRoot, opts.socket)
+
+			m, err := platform.NewMachine(opts.dataRoot)
+			if err != nil {
+				return fmt.Errorf("create machine: %w", err)
+			}
+
+			return daemonruntime.Run(ctx, m, opts.socket)
 		},
 	}
 }

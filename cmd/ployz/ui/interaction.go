@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -8,6 +10,31 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 )
+
+// ErrCancelled is returned when the user cancels a prompt (Esc/Ctrl+C).
+var ErrCancelled = errors.New("cancelled")
+
+// ErrNoInteraction is returned when a prompt requires interaction but the
+// terminal is not interactive. The error message always includes a bypass hint
+// so the caller knows how to avoid the prompt (e.g. --yes flag).
+type ErrNoInteraction struct {
+	BypassHint string
+}
+
+func (e *ErrNoInteraction) Error() string {
+	return fmt.Sprintf("terminal is not interactive (%s)", e.BypassHint)
+}
+
+// RequireInteraction returns nil if the terminal is interactive, or an
+// *ErrNoInteraction with the given bypass hint if not. The bypassHint
+// describes how the caller can avoid the interactive prompt (e.g. "use --yes
+// to skip").
+func RequireInteraction(bypassHint string) error {
+	if IsInteractive() {
+		return nil
+	}
+	return &ErrNoInteraction{BypassHint: bypassHint}
+}
 
 const (
 	envNoInteraction = "NO_INTERACTION"

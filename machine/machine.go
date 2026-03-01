@@ -1,6 +1,7 @@
 package machine
 
 import (
+	"context"
 	"fmt"
 
 	"ployz"
@@ -9,6 +10,10 @@ import (
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
+
+// MeshBuilder creates a mesh for the given identity. Platform wiring sets this
+// via WithMeshBuilder; tests inject fakes directly via WithMesh.
+type MeshBuilder func(ctx context.Context, id Identity) (*mesh.Mesh, error)
 
 // Identity is the minimum a machine needs to exist on a network.
 // The public key and management IP are derived from the private key.
@@ -20,9 +25,10 @@ type Identity struct {
 // Machine is a node. It owns local identity and optionally participates
 // in a mesh network. The mesh is nil when the machine is standalone.
 type Machine struct {
-	identity Identity
-	dataDir  string
-	mesh     *mesh.Mesh
+	identity     Identity
+	dataDir      string
+	mesh       *mesh.Mesh
+	buildMesh  MeshBuilder
 
 	// started is closed when the machine is ready to serve requests.
 	started chan struct{}
@@ -42,6 +48,14 @@ func WithIdentity(id Identity) Option {
 func WithMesh(msh *mesh.Mesh) Option {
 	return func(m *Machine) {
 		m.mesh = msh
+	}
+}
+
+// WithMeshBuilder sets the function used to construct a mesh on InitNetwork
+// or when restoring from a saved network config.
+func WithMeshBuilder(b MeshBuilder) Option {
+	return func(m *Machine) {
+		m.buildMesh = b
 	}
 }
 

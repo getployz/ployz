@@ -2,26 +2,35 @@ package daemon
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 
+	"ployz"
 	"ployz/machine"
 
 	systemd "github.com/coreos/go-systemd/daemon"
 	"golang.org/x/sync/errgroup"
 )
 
+// Daemon is the runtime shell around a Machine. It manages the gRPC
+// server and systemd notifications. Construct the machine in cmd/ via
+// platform.NewMachine, then hand it here.
 type Daemon struct {
 	machine *machine.Machine
 }
 
-func New(dataDir string) (*Daemon, error) {
-	m, err := machine.New(dataDir)
-	if err != nil {
-		return nil, err
-	}
+// New wraps an existing machine in a daemon.
+func New(m *machine.Machine) *Daemon {
+	return &Daemon{machine: m}
+}
 
-	return &Daemon{machine: m}, nil
+// Status delegates to the machine.
+func (d *Daemon) Status() ployz.Machine {
+	return d.machine.Status()
+}
+
+// InitNetwork delegates to the machine.
+func (d *Daemon) InitNetwork(ctx context.Context, name string) error {
+	return d.machine.InitNetwork(ctx, name)
 }
 
 func (d *Daemon) run(ctx context.Context) error {
@@ -42,14 +51,10 @@ func (d *Daemon) run(ctx context.Context) error {
 	return d.machine.Run(ctx)
 }
 
-// Run creates a daemon and gRPC server, then runs both until ctx is cancelled.
-func Run(ctx context.Context, dataRoot, socketPath string) error {
-	d, err := New(dataRoot)
-	if err != nil {
-		return fmt.Errorf("create daemon: %w", err)
-	}
-
-	srv := NewServer(d.machine)
+// Run starts a daemon and gRPC server, then blocks until ctx is cancelled.
+func Run(ctx context.Context, m *machine.Machine, socketPath string) error {
+	d := New(m)
+	srv := NewServer(d)
 
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return d.run(ctx) })

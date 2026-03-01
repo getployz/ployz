@@ -182,7 +182,7 @@ func (w *WG) createAndStart(ctx context.Context) error {
 		RestartPolicy: container.RestartPolicy{
 			Name: container.RestartPolicyAlways,
 		},
-		CapAdd: []string{"NET_ADMIN", "SYS_MODULE"},
+		CapAdd: []string{"NET_ADMIN"},
 		Mounts: []mount.Mount{
 			{
 				Type:   mount.TypeBind,

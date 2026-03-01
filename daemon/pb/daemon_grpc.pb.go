@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v5.29.3
-// source: api/pb/daemon.proto
+// source: daemon/pb/daemon.proto
 
 package pb
 
@@ -19,7 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Daemon_GetStatus_FullMethodName = "/ployz.Daemon/GetStatus"
+	Daemon_GetStatus_FullMethodName   = "/ployz.Daemon/GetStatus"
+	Daemon_InitNetwork_FullMethodName = "/ployz.Daemon/InitNetwork"
 )
 
 // DaemonClient is the client API for Daemon service.
@@ -27,6 +28,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type DaemonClient interface {
 	GetStatus(ctx context.Context, in *GetStatusRequest, opts ...grpc.CallOption) (*GetStatusResponse, error)
+	InitNetwork(ctx context.Context, in *InitNetworkRequest, opts ...grpc.CallOption) (*InitNetworkResponse, error)
 }
 
 type daemonClient struct {
@@ -47,11 +49,22 @@ func (c *daemonClient) GetStatus(ctx context.Context, in *GetStatusRequest, opts
 	return out, nil
 }
 
+func (c *daemonClient) InitNetwork(ctx context.Context, in *InitNetworkRequest, opts ...grpc.CallOption) (*InitNetworkResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InitNetworkResponse)
+	err := c.cc.Invoke(ctx, Daemon_InitNetwork_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DaemonServer is the server API for Daemon service.
 // All implementations must embed UnimplementedDaemonServer
 // for forward compatibility.
 type DaemonServer interface {
 	GetStatus(context.Context, *GetStatusRequest) (*GetStatusResponse, error)
+	InitNetwork(context.Context, *InitNetworkRequest) (*InitNetworkResponse, error)
 	mustEmbedUnimplementedDaemonServer()
 }
 
@@ -64,6 +77,9 @@ type UnimplementedDaemonServer struct{}
 
 func (UnimplementedDaemonServer) GetStatus(context.Context, *GetStatusRequest) (*GetStatusResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetStatus not implemented")
+}
+func (UnimplementedDaemonServer) InitNetwork(context.Context, *InitNetworkRequest) (*InitNetworkResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method InitNetwork not implemented")
 }
 func (UnimplementedDaemonServer) mustEmbedUnimplementedDaemonServer() {}
 func (UnimplementedDaemonServer) testEmbeddedByValue()                {}
@@ -104,6 +120,24 @@ func _Daemon_GetStatus_Handler(srv interface{}, ctx context.Context, dec func(in
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Daemon_InitNetwork_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InitNetworkRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServer).InitNetwork(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Daemon_InitNetwork_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServer).InitNetwork(ctx, req.(*InitNetworkRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Daemon_ServiceDesc is the grpc.ServiceDesc for Daemon service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -115,7 +149,11 @@ var Daemon_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "GetStatus",
 			Handler:    _Daemon_GetStatus_Handler,
 		},
+		{
+			MethodName: "InitNetwork",
+			Handler:    _Daemon_InitNetwork_Handler,
+		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "api/pb/daemon.proto",
+	Metadata: "daemon/pb/daemon.proto",
 }

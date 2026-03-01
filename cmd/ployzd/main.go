@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -45,7 +46,13 @@ func rootCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			return daemonruntime.Run(ctx, dataRoot, socketPath)
+
+			m, err := platform.NewMachine(dataRoot)
+			if err != nil {
+				return fmt.Errorf("create machine: %w", err)
+			}
+
+			return daemonruntime.Run(ctx, m, socketPath)
 		},
 	}
 

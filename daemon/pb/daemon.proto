@@ -6,6 +6,7 @@ option go_package = "ployz/daemon/pb";
 
 service Daemon {
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+  rpc InitNetwork(InitNetworkRequest) returns (InitNetworkResponse);
 }
 
 message GetStatusRequest {}
@@ -16,3 +17,9 @@ message GetStatusResponse {
   string network_phase = 3;
   string version = 4;
 }
+
+message InitNetworkRequest {
+  string name = 1;
+}
+
+message InitNetworkResponse {}

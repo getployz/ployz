@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	DefaultImage         = "ghcr.io/superfly/corrosion:latest"
+	DefaultImage         = "ghcr.io/psviderski/corrosion:latest"
 	DefaultContainerName = "ployz-corrosion"
 )
 
