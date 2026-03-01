@@ -1,8 +1,10 @@
 package platform
 
 const (
-	WireGuardMTU  = 1420
-	WireGuardPort = 51820
-	SocketName    = "ployz.sock"
-	TUNSocketPath = "/tmp/ployz-tun.sock"
+	WireGuardMTU           = 1420
+	WireGuardPort          = 51820
+	WireGuardImage         = "linuxserver/wireguard"
+	WireGuardContainerName = "ployz-wireguard"
+	MeshNetworkName        = "ployz-mesh"
+	SocketName             = "ployz.sock"
 )

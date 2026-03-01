@@ -1,9 +1,7 @@
 // Package wireguard contains shared helpers used by OS-specific WireGuard adapters.
 //
 // Concrete mesh.WireGuard implementations live in subpackages:
-//   - kernel (linux)
-//   - user (darwin)
+//   - kernel (linux) — kernel WireGuard via netlink/wgctrl
+//   - container (darwin) — WireGuard in a Docker container
 //   - stub (!linux && !darwin)
-//
-// This package also contains privileged-helper plumbing used by platform wiring.
 package wireguard

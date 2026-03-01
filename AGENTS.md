@@ -5,331 +5,93 @@ Practical guidance for coding agents working in this repository.
 ## Scope
 
 - Language: Go
-- Module: `ployz` (see `go.mod` for version)
+- Module: `ployz` (see `go.mod`)
 - Build/run/test commands: see `justfile`
+
+## Active Architecture (Current)
+
+The active package graph is intentionally small:
+
+- `cmd/ployz`: operator CLI
+- `cmd/ployzd`: daemon entrypoint
+- `daemon`: runtime shell and unix-socket gRPC server (`daemon/pb`)
+- `machine`: local machine identity/state lifecycle
+- `machine/mesh`: network stack lifecycle (WireGuard, store runtime, convergence)
+- `machine/convergence`: event-driven peer reconciliation loop
+- `infra/*`: adapters for external systems (WireGuard, Corrosion, SQLite, etc.)
+- `platform/*`: OS-specific defaults and backend selection
+- `internal/*`: support packages (`check`, `logging`, `remote`, `support/buildinfo`)
+
+Historical code under `_internal_legacy_do_not_read/` is reference-only and not part of the active package graph.
+
+Dependency direction is one-way:
+
+`cmd/* -> daemon -> machine -> machine/* -> infra/*`
+
+`platform/*` selects concrete implementations at the wiring edge.
+
+## Go Tiger Style
+
+This repository follows Go Tiger Style priorities, in order:
+
+1. Safety
+2. Performance
+3. Developer Experience
+
+Use `.claude/skills/tiger-audit/SKILL.md` for the full audit checklist.
 
 ## Ground Rules
 
 - Prefer small, focused changes.
-- Be aggressive about future TODOs: when scope grows, ship a minimal step and leave a clear follow-up TODO for additional functionality instead of trying to do everything in one pass.
 - Match existing patterns before introducing new abstractions.
-- Preserve cross-platform behavior (`linux`, `darwin`, and stubs).
-- Do not silently change CLI behavior without updating command output/help text.
-- Before finishing, run at least `just test` and `just build`.
-- If you add dependencies, run `just tidy`.
-
-## Architecture
-
-Ployz is a machine network control plane with three layers:
-
-- **Daemon (`cmd/ployzd`)**: single process. Owns desired state, exposes typed API over unix socket, and runs convergence loops in-process via `internal/daemon`.
-- **SDK (`pkg/sdk`)**: client library for multi-machine choreography (bootstrap, join, remove). All cluster workflows live here.
-- **CLI (`cmd/ployz`)**: thin UX shell over the SDK. No direct runtime mutations.
-
-### Key architectural rules
-
-- **Imperative setup, event-driven convergence.** Standing up infrastructure (WG interface, Docker network, firewall, Corrosion) is imperative — runs once, succeeds or fails. Peer tracking stays continuous in runtime loops within the daemon process.
-- **Manager orchestrates capabilities.** `daemon/manager` is the policy boundary. gRPC handlers delegate to manager; manager delegates to capabilities.
-- **Capability boundaries stay narrow.** `daemon/overlay`, `daemon/membership`, `daemon/convergence`, and `daemon/workload` depend on small ports/interfaces, not concrete services from sibling capabilities.
-- **All external dependencies are injected interfaces.** Core capabilities depend on ports in `daemon/*/ports.go`; concrete implementations are created in `daemon/wiring.go` and `infra/platform` wiring.
-- **Typed Corrosion subscriptions.** Every hot-path table driving convergence gets a typed `Subscribe<Table>` API in the registry layer. No raw SQL or Corrosion protocol details leak to consumers.
-- **SDK always goes through daemon.** No direct Corrosion access from SDK. Daemon is the single writer to local state.
-- **Health is reporting, not auto-fix.** Daemon reports per-component health via `GetStatus`. `machine doctor` surfaces problems. Operator decides what to fix.
-
-
-## Package Layout
-
-```
-cmd/ployz/            CLI (thin over pkg/sdk)
-cmd/ployzd/           daemon entrypoint
-pkg/sdk/              client SDK (workflows, daemon client, types)
-internal/daemon/      daemon internals:
-  daemon/run.go         daemon startup/shutdown entrypoint
-  daemon/wiring.go      composition root
-  daemon/manager/       orchestrator and policy
-  daemon/overlay/       one-shot infra lifecycle
-  daemon/membership/    machine/heartbeat CRUD + peer ops
-  daemon/convergence/   continuous sync loops + health trackers
-  daemon/workload/      deploy capability (currently stubbed)
-  daemon/api/           gRPC transport
-  daemon/proxy/         multi-machine routing
-  daemon/pb/            generated protobuf
-internal/infra/       external system integrations:
-  infra/corrosion/      Corrosion client + subscriptions
-  infra/docker/         Docker runtime
-  infra/wireguard/      WireGuard management
-  infra/sqlite/         local persistence
-  infra/platform/       platform wiring (darwin/linux/stub)
-internal/support/     cross-cutting support:
-  support/check/        build-tagged assertions (debug panics, release no-ops)
-  support/logging/      slog configuration
-  support/buildinfo/    version info
-  support/remote/       SSH + remote install scripts
-```
-
-### Key files in `internal/daemon/overlay/`
-
-| File | Purpose |
-|------|---------|
-| `ports.go` | Core overlay ports: `Clock`, `ContainerRuntime`, `CorrosionRuntime`, `StatusProber`, `StateStore`, `Registry`, `RegistryFactory` |
-| `controller.go` | Overlay `Controller`/`Service`, options, dependency fields |
-| `status.go` | Shared `Status()` method (platform-independent, delegates to `StatusProber`) |
-| `management.go` | Management address derivation helpers |
-| `config.go` / `state.go` | Canonical config + persisted runtime state |
-| `runtime_common.go` | Shared start/stop logic using injected interfaces |
-| `controlplane.go` | Machine CRUD and peer reconciliation operations |
-
-### Dependency injection flow
-
-Production wiring is split between `daemon/wiring.go`, `daemon/manager/manager_production.go`, and `infra/platform/*`:
-
-1. Open SQLite spec/state stores.
-2. Create `overlay.RegistryFactory` backed by `infra/corrosion.Store`.
-3. Build overlay service via `infra/platform.NewController(...)` with platform-specific runtime ops.
-4. Build membership (`membership.New(overlaySvc)`), convergence (`convergence.New(...)`), and workload (`workload.New()`).
-5. Build manager, then expose it through daemon API server.
-
-Tests inject fakes for any of these interfaces via `With*` options.
-
-### Type ownership pattern
-
-Core capability packages own domain/port types (`overlay.*`, `membership.*`, `convergence.*`). Infra packages implement those interfaces directly. Keep data-shape conversion explicit at capability boundaries (for example, API proto mapping in `daemon/api`).
-
-## Go! Tiger Style
-
-This codebase follows [Go! Tiger Style](https://predixus.com) — a Go-specific adaptation of TigerBeetle's engineering discipline. The full audit checklist lives in `.claude/skills/tiger-audit/SKILL.md`. The principles below are integrated into the relevant sections of this document.
-
-The three priorities, in order: **Safety, Performance, Developer Experience**.
-
-Zero technical debt: solve problems right the first time. Don't allow potential issues to slip into production. Simplicity requires hard work and discipline — it's achieved through iteration, not first attempts.
-
-## Core Rules
-
-Non-negotiable architectural rules for all changes. These exist to keep the codebase testable, predictable, and safe to change.
-
-### 1. Interfaces in consumer packages
-
-Define interfaces where they're used, not where they're implemented. Place them in a `ports.go` file next to the consumer.
-
-```go
-// internal/daemon/convergence/ports.go — the consumer defines what it needs
-type MachineRegistry interface {
-    ListMachineRows(ctx context.Context) ([]membership.MachineRow, error)
-    SubscribeMachines(ctx context.Context) ([]membership.MachineRow, <-chan membership.MachineChange, error)
-}
-```
-
-The adapter (`infra/corrosion/`) implements it without importing the consumer.
-
-### 2. No side effects in core logic
-
-Decision logic in `daemon/overlay`, `daemon/membership`, and `daemon/convergence` should stay pure where possible: data in, data out. No Docker calls, no HTTP, no WireGuard, no disk I/O, no `time.Now()`. Orchestration code in these packages may call injected interfaces (ports), but never imports infra packages directly.
-
-All external dependencies are abstracted behind interfaces in daemon ports:
-- `ContainerRuntime` — Docker/Podman container and network operations
-- `CorrosionRuntime` — Corrosion container lifecycle (WriteConfig, Start, Stop)
-- `StatusProber` — platform-specific infrastructure health checks
-- `StateStore` — state persistence (SQLite in production)
-- `Registry` / `RegistryFactory` — Corrosion data access
-
-Time is **not** injected — use the standard `time` package directly and test with `testing/synctest` (see rule 9). If a function needs to apply a change, call an injected interface or return a plan and let the caller apply it.
-
-### 3. All infra calls in adapters
-
-Every call to an external system (Corrosion HTTP API, Docker API, WireGuard kernel/userspace, SQLite, filesystem, SSH) lives in `internal/infra/`. Core logic never imports infra packages. Dependency direction is always inward.
-
-Platform-specific constructors in `infra/platform/` are the only code that creates concrete adapter instances.
-
-### 4. No hidden constructors in loops
-
-Never call `New()` or create concrete dependencies inside `Run()` or hot loops. Inject dependencies at construction time so tests can substitute fakes.
-
-```go
-// Bad: hardcoded inside Run()
-func (w *Worker) Run(ctx context.Context) error {
-    reg := registry.New(addr, token)  // untestable
-    svc, _ := overlay.NewService()     // untestable
-    // ...
-}
-
-// Good: injected at construction
-type Worker struct {
-    Registry   Registry       // interface
-    Reconciler PeerReconciler // interface
-}
-```
-
-### 5. Persistence in adapters only
-
-Struct definitions, validation, and serialization helpers live in daemon capability packages (e.g. `daemon/overlay/state.go`). All database/file I/O lives in infra packages (e.g. `infra/sqlite/network_state.go`).
-
-### 6. Every core change has success + failure test
-
-Any change to `daemon/overlay`, `daemon/membership`, or `daemon/convergence` must include at least one success-path and one failure-path test. Use table-driven tests for pure logic and focused orchestration coverage.
-
-### 7. Error wrapping with context
-
-Always wrap errors with what was being attempted. Use sentinel errors and `errors.Is`/`errors.As` for policy decisions.
-
-```go
-return fmt.Errorf("reconcile peers for %s: %w", network, err)
-```
-
-### 8. Context first, cancellation respected
-
-Pass `context.Context` as first parameter for any blocking or I/O operation. Check `ctx.Done()` in loops. No goroutines without clear lifecycle ownership.
-
-### 9. Use `time` directly, test with `testing/synctest`
-
-Do **not** inject fake clocks. Use the standard `time` package (`time.Now()`, `time.Sleep()`, `time.After()`, etc.) directly in all code. For testing, use `testing/synctest` (Go 1.25+): wrap tests in `synctest.Test(t, func(t *testing.T) { ... })` to get automatic fake time and call `synctest.Wait()` to wait for goroutine quiescence. This eliminates the need for `Clock` interfaces entirely.
-
-### 10. PR gate: `just test` + `just build` always green
-
-Every change must pass `just test` and `just build` before merge. No exceptions. If a test is flaky, fix or delete it — never skip it.
-
-### 11. Build-tagged assertions for programmer errors
-
-Use `internal/support/check.Assert()` for preconditions, postconditions, and invariants that indicate **programmer errors** (wiring bugs, impossible states). These use build tags: panics under `//go:build debug`, no-ops in release.
-
-Assertions are not a replacement for error handling. Errors handle runtime failures (bad input, network down). Assertions catch bugs that should never reach production.
-
-```go
-// Precondition: constructor wiring bug
-func NewWorker(reg Registry, rec PeerReconciler) *Worker {
-    check.Assert(reg != nil, "NewWorker: registry must not be nil")
-    check.Assert(rec != nil, "NewWorker: reconciler must not be nil")
-    return &Worker{Registry: reg, PeerReconciler: rec}
-}
-
-// Postcondition: derived value must be valid
-ip, err := ManagementIPFromPublicKey(key)
-if err != nil { return err }
-check.Assert(ip.IsValid() && ip.Is6(), "management IP must be valid IPv6")
-
-// Invariant: exhaustive switch
-switch change.Kind {
-case membership.ChangeAdded: ...
-case membership.ChangeUpdated: ...
-case membership.ChangeDeleted: ...
-default:
-    check.Assert(false, "unknown change kind: "+string(change.Kind))
-}
-```
-
-Where to assert:
-- Constructor functions after options applied — all required deps non-nil
-- Public method entry — preconditions that would cause nil derefs downstream
-- After derivation — postconditions on computed values (valid IP, non-empty key)
-- Switch on typed constants — default case asserts exhaustiveness
-- Port casts — `0 < port && port <= 65535` before narrowing to uint16
-
-### 12. Explicit capacity in `make()`
-
-When allocating slices, maps, or channels, be explicit about capacity when the size is known or bounded.
-
-```go
-// Good: final size known from input
-peers := make([]Peer, 0, len(rows))
-
-// Good: approximate size known
-users := make(map[string]User, expectedCount)
-
-// Good: channel buffer as named constant
-const subscriptionBufCap = 128
-ch := make(chan MachineChange, subscriptionBufCap)
-
-// Fine: size genuinely unknown, document why
-var results []Result // unbounded: depends on external query
-```
-
-Don't pick arbitrary numbers when the size is genuinely unknown — that's worse than letting Go's growth strategy handle it.
-
-### 13. Bounds on everything
-
-All loops and queues must have fixed upper bounds. Reality has limits.
-
-- Retry loops need max attempts. If a sibling function has `attempts < 3`, the retry loop next to it shouldn't be unbounded.
-- `io.ReadAll` on untrusted input needs `io.LimitReader`.
-- Maps and slices used as caches or trackers need eviction or a cap.
-- `for {}` event loops are acceptable — they terminate via context cancellation. Document this explicitly if it isn't obvious.
+- Preserve cross-platform behavior (`linux`, `darwin`, and stubs/fallbacks).
+- Do not silently change CLI behavior without updating command help/output.
+- Before finishing, run `just test` and `just build`.
+- If dependencies changed, run `just tidy`.
+
+## Core Design Rules
+
+1. Interfaces live in the consumer package (`ports.go` near the caller).
+2. Core logic packages (`machine`, `machine/mesh`, `machine/convergence`) do not import infra packages directly.
+3. All external side effects (network/filesystem/process/DB/SSH) belong in `infra/*`.
+4. Inject dependencies at construction; avoid hidden constructors in `Run()` or hot loops.
+5. Keep persistence I/O in adapters; keep domain types/validation in core packages.
+6. Pass `context.Context` first for blocking or I/O operations, and respect cancellation.
+7. Wrap errors with operation context; use `errors.Is`/`errors.As` for policy checks.
+8. Do not silently discard errors unless the best-effort cleanup is intentional and documented.
+9. Use `time` directly in code; test time/concurrency with `testing/synctest`.
+10. Bound retries/queues/read sizes and name non-trivial constants.
+
+## Assertions and Invariants
+
+Use `internal/check.Assert()` for programmer errors (wiring bugs, impossible states):
+
+- constructor preconditions
+- derived-value postconditions
+- exhaustive `switch` defaults
+
+Assertions are not runtime error handling. Runtime failures should return errors.
+
+## Testing Expectations
+
+- Behavior changes in `machine`, `machine/mesh`, or `machine/convergence` should include:
+  - at least one success-path test
+  - at least one failure-path test
+- Prefer table-driven tests for pure logic.
+- Keep test doubles local and small.
+- Useful commands:
+  - `go test ./path/to/pkg -run '^TestName$' -count=1 -v`
+  - `go test -tags debug ./...`
 
 ## Style and Conventions
 
-### Formatting
-
-- Standard `gofmt` formatting. Keep `go vet` clean.
-- Avoid style-only churn in unrelated lines.
-
-### Function Length & Control Flow
-
-Function length is a correlated smell, not the disease. The disease is deep nesting, multiple responsibilities, intertwined state, and difficulty reasoning about what happens when.
-
-A 120-line function that reads like a script — sequential steps, shallow nesting, state flowing top to bottom — is fine. Don't split it into 6 helpers called exactly once just to hit a line count. That scatters a linear process and increases cognitive load.
-
-A 60-line function with 4 levels of nesting, a switch inside a for inside a select, and 8 intermediate variables mutating through branches — that needs breaking up regardless of length.
-
-The reasons to extract a helper: it isolates state, it names a domain concept (better than a comment), or it's independently testable. "It's too long" by itself is not a reason.
-
-### Imports
-
-Three groups in order: stdlib, third-party, local (`ployz/...`).
-
-### Naming
-
-- Exported: `PascalCase`. Unexported: `camelCase`. Packages: short, lowercase, no underscores.
-- Keep initialisms consistent: `API`, `CIDR`, `DNS`, `IP`, `WG`.
-- Name every magic number. Durations, buffer sizes, port numbers, retry counts — all get named constants. Same literal repeated in multiple locations must be defined once as `const`.
-- Use consistent names across packages for the same concept. Don't call it `Management` in one package and `ManagementIP` in another.
-
-### Error Handling
-
-- Return errors, don't panic. Panics are for programmer bugs caught by assertions (see rule 11), not runtime failures.
-- Wrap with context at package boundaries: `fmt.Errorf("parse endpoint: %w", err)`. Don't wrap mechanically at every level — that creates stutter.
-- Use `errors.Is` / `errors.As` for sentinel/typed checks. Never classify errors by string matching (`strings.Contains(err.Error(), ...)`).
-- Never silently discard errors with `_ = expr`. Either handle it, log it, or add a comment explaining why it's safe to ignore.
-- All errors must be handled explicitly. Silent fallbacks (defaulting when an operation fails without diagnostic) are bugs.
-
-### Context and Concurrency
-
-- Pass `context.Context` as first parameter for blocking/IO operations.
-- Respect cancellation in remote/network operations.
-- Don't introduce goroutines unless lifecycle/cancellation is clearly handled.
-
-### Platform-Specific Code
-
-- OS-specific behavior behind build-tagged files: `*_linux.go`, `*_darwin.go`, `*_stub.go`.
-- Explicit errors where a platform isn't supported.
-- Each platform's `NewController()` wires concrete adapters into overlay services via interfaces.
-- Platform-specific `StatusProber` and runtime-op implementations live in `infra/platform/*`; shared `Status()` and `startRuntime()`/`stopRuntime()` logic stays in `daemon/overlay` common files.
-
-### Types
-
+- Keep `gofmt` and `go vet` clean.
+- Imports in three groups: stdlib, third-party, local (`ployz/...`).
+- Use clear names and consistent initialisms (`API`, `CIDR`, `DNS`, `IP`, `WG`).
 - Prefer `net/netip` types (`netip.Addr`, `netip.Prefix`, `netip.AddrPort`).
-- Keep struct field names explicit in literals.
+- Avoid style-only churn unrelated to the task.
 
-## Testing
+## Practical Note
 
-- Table-driven tests for parsing, normalization, reconciliation logic.
-- Cover success + at least one failure path per public function change.
-- Isolate pure logic from network/SSH/Docker dependencies for unit testability.
-- Keep test doubles local to consumer packages; prefer small inline stubs over broad shared fake frameworks.
-- Run single tests with: `go test ./path/to/pkg -run '^TestName$' -count=1 -v`
-- Run tests with assertions enabled: `go test -tags debug ./...`
-
-### Constructor split (production vs tests)
-
-- `daemon/manager.NewProduction(ctx, dataRoot)` is the production entrypoint; it wires sqlite/platform/corrosion dependencies.
-- `daemon/manager.New(ctx, dataRoot, opts...)` is the pure constructor for injected dependencies and test composition.
-- Avoid mixing production wiring into tests; prefer `scenario` or explicit dependency injection.
-
-### Property-Based Testing (Fuzz)
-
-Pure functions that parse, normalize, or derive values are candidates for Go's native fuzzer (`testing.F`). Property-based testing complements table-driven tests — tables verify specific points, fuzz tests verify properties across the input space.
-
-Key properties to test:
-- **Idempotency**: `Normalize(Normalize(x)) == Normalize(x)`
-- **Inverse operations**: encode/decode, serialize/deserialize round-trip to identity
-- **Invariants**: result always within expected bounds (valid IP, prefix within CIDR, interface name <= 15 chars)
-- **Determinism**: same input always produces same output
-
-Assertions (rule 11) are a force multiplier for fuzzing — they catch invariant violations the fuzzer wouldn't know to check for.
+Function length alone is not the problem. Keep long functions that are linear and readable.
+Extract helpers when they isolate state, name a domain concept, or improve testability.

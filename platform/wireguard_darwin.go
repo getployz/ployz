@@ -4,27 +4,26 @@ package platform
 
 import (
 	"ployz"
-	"ployz/infra/wireguard/user"
+	wgcontainer "ployz/infra/wireguard/container"
 
+	"github.com/docker/docker/client"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-const (
-	wgInterface          = "utun"
-	PrivilegedSocketPath = "/tmp/ployz-priv.sock"
-	PrivilegedTokenPath  = "/var/db/ployz/private/helper.token"
-)
-
-// NewWireGuard creates a userspace WireGuard implementation for macOS.
-func NewWireGuard(key wgtypes.Key) *user.WG {
+// NewWireGuard creates a containerized WireGuard implementation for macOS.
+// The WireGuard interface runs inside a Docker container (OrbStack VM)
+// where the kernel WireGuard module is available.
+func NewWireGuard(key wgtypes.Key, docker client.APIClient) *wgcontainer.WG {
 	mgmtIP := ployz.ManagementIPFromKey(key.PublicKey())
 
-	return user.New(user.Config{
-		Interface:  wgInterface,
-		MTU:        WireGuardMTU,
-		PrivateKey: key,
-		Port:       WireGuardPort,
-		MgmtIP:     mgmtIP,
-		MgmtCIDR:   ployz.ManagementCIDR,
-	}, nil, nil) // TODO: wire TUNProvider and PrivilegedRunner
+	return wgcontainer.New(wgcontainer.Config{
+		Interface:     "ployz0",
+		MTU:           WireGuardMTU,
+		PrivateKey:    key,
+		Port:          WireGuardPort,
+		MgmtIP:        mgmtIP,
+		Image:         WireGuardImage,
+		ContainerName: WireGuardContainerName,
+		NetworkName:   MeshNetworkName,
+	}, docker)
 }

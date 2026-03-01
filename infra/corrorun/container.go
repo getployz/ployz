@@ -25,12 +25,13 @@ type ReadinessCheck func(ctx context.Context, addr netip.AddrPort) error
 // Container runs Corrosion as a Docker container.
 // Implements the Start/Stop portion of mesh.Store.
 type Container struct {
-	docker     client.APIClient
-	image      string
-	name       string
-	paths      Paths
-	apiAddr    netip.AddrPort
-	readyCheck ReadinessCheck
+	docker      client.APIClient
+	image       string
+	name        string
+	networkMode container.NetworkMode
+	paths       Paths
+	apiAddr     netip.AddrPort
+	readyCheck  ReadinessCheck
 }
 
 // ContainerOption configures a Container runtime.
@@ -44,6 +45,13 @@ func WithContainerName(name string) ContainerOption {
 	return func(c *Container) { c.name = name }
 }
 
+// WithNetworkMode overrides the Docker network mode. Defaults to "host".
+// On macOS, pass the shared mesh network name (e.g. "ployz-mesh") so
+// Corrosion joins the same bridge network as the WireGuard container.
+func WithNetworkMode(mode container.NetworkMode) ContainerOption {
+	return func(c *Container) { c.networkMode = mode }
+}
+
 // WithReadinessCheck overrides the default readiness check (WaitReady).
 func WithReadinessCheck(fn ReadinessCheck) ContainerOption {
 	return func(c *Container) { c.readyCheck = fn }
@@ -52,12 +60,13 @@ func WithReadinessCheck(fn ReadinessCheck) ContainerOption {
 // NewContainer creates a Docker-based Corrosion runtime.
 func NewContainer(docker client.APIClient, paths Paths, apiAddr netip.AddrPort, opts ...ContainerOption) *Container {
 	c := &Container{
-		docker:     docker,
-		image:      DefaultImage,
-		name:       DefaultContainerName,
-		paths:      paths,
-		apiAddr:    apiAddr,
-		readyCheck: WaitReady,
+		docker:      docker,
+		image:       DefaultImage,
+		name:        DefaultContainerName,
+		networkMode: "host",
+		paths:       paths,
+		apiAddr:     apiAddr,
+		readyCheck:  WaitReady,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -125,7 +134,7 @@ func (c *Container) createAndStart(ctx context.Context) error {
 		Cmd:   []string{"corrosion", "agent", "-c", c.paths.Config},
 	}
 	hostCfg := &container.HostConfig{
-		NetworkMode: "host",
+		NetworkMode: c.networkMode,
 		RestartPolicy: container.RestartPolicy{
 			Name: container.RestartPolicyAlways,
 		},
