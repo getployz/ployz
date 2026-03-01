@@ -11,15 +11,23 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
+
+// Docker is the subset of the Docker API used by container helpers.
+type Docker interface {
+	ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *ocispec.Platform, containerName string) (container.CreateResponse, error)
+	ContainerStart(ctx context.Context, containerID string, options container.StartOptions) error
+	ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error
+	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
+	ImagePull(ctx context.Context, refStr string, options image.PullOptions) (io.ReadCloser, error)
+}
 
 // CreateAndStart creates a Docker container and starts it. If the image is
 // not found locally, it pulls the image and retries the create.
 func CreateAndStart(
 	ctx context.Context,
-	docker client.APIClient,
+	docker Docker,
 	name, img string,
 	containerCfg *container.Config,
 	hostCfg *container.HostConfig,
@@ -45,7 +53,7 @@ func CreateAndStart(
 }
 
 // PullImage pulls a Docker image and drains the response to completion.
-func PullImage(ctx context.Context, docker client.APIClient, img string) error {
+func PullImage(ctx context.Context, docker Docker, img string) error {
 	slog.Info("Pulling image.", "image", img)
 	resp, err := docker.ImagePull(ctx, img, image.PullOptions{})
 	if err != nil {
@@ -60,7 +68,7 @@ func PullImage(ctx context.Context, docker client.APIClient, img string) error {
 
 // StopAndRemove stops and removes a container. Both operations are
 // idempotent — NotFound errors are silently ignored.
-func StopAndRemove(ctx context.Context, docker client.APIClient, name string) error {
+func StopAndRemove(ctx context.Context, docker Docker, name string) error {
 	if err := docker.ContainerStop(ctx, name, container.StopOptions{}); err != nil {
 		if !errdefs.IsNotFound(err) {
 			return fmt.Errorf("stop container %s: %w", name, err)

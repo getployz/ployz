@@ -3,6 +3,7 @@ package corrorun
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/netip"
 
@@ -10,8 +11,10 @@ import (
 
 	"github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/client"
+	"github.com/docker/docker/api/types/network"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 const (
@@ -19,13 +22,23 @@ const (
 	DefaultContainerName = "ployz-corrosion"
 )
 
+// Docker is the subset of the Docker API used by Container.
+type Docker interface {
+	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
+	ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *ocispec.Platform, containerName string) (container.CreateResponse, error)
+	ContainerStart(ctx context.Context, containerID string, options container.StartOptions) error
+	ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error
+	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
+	ImagePull(ctx context.Context, refStr string, options image.PullOptions) (io.ReadCloser, error)
+}
+
 // ReadinessCheck blocks until the store is accepting queries.
 type ReadinessCheck func(ctx context.Context, addr netip.AddrPort) error
 
 // Container runs Corrosion as a Docker container.
 // Implements the Start/Stop portion of mesh.Store.
 type Container struct {
-	docker      client.APIClient
+	docker      Docker
 	image       string
 	name        string
 	networkMode container.NetworkMode
@@ -58,7 +71,7 @@ func WithReadinessCheck(fn ReadinessCheck) ContainerOption {
 }
 
 // NewContainer creates a Docker-based Corrosion runtime.
-func NewContainer(docker client.APIClient, paths Paths, apiAddr netip.AddrPort, opts ...ContainerOption) *Container {
+func NewContainer(docker Docker, paths Paths, apiAddr netip.AddrPort, opts ...ContainerOption) *Container {
 	c := &Container{
 		docker:      docker,
 		image:       DefaultImage,

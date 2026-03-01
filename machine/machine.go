@@ -11,9 +11,19 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-// MeshBuilder creates a mesh for the given identity. Platform wiring sets this
-// via WithMeshBuilder; tests inject fakes directly via WithMesh.
-type MeshBuilder func(ctx context.Context, id Identity) (*mesh.Mesh, error)
+// NetworkStack is the mesh network lifecycle seen by Machine.
+// *mesh.Mesh satisfies this interface; tests inject a simple fake.
+type NetworkStack interface {
+	Up(ctx context.Context) error
+	Detach(ctx context.Context) error
+	Destroy(ctx context.Context) error
+	Phase() mesh.Phase
+	Store() mesh.Store
+}
+
+// MeshBuilder creates a network stack for the given identity. Platform wiring
+// sets this via WithMeshBuilder; tests inject fakes directly via WithMesh.
+type MeshBuilder func(ctx context.Context, id Identity) (NetworkStack, error)
 
 // Identity is the minimum a machine needs to exist on a network.
 // The public key and management IP are derived from the private key.
@@ -27,7 +37,7 @@ type Identity struct {
 type Machine struct {
 	identity     Identity
 	dataDir      string
-	mesh       *mesh.Mesh
+	mesh       NetworkStack
 	buildMesh  MeshBuilder
 
 	// started is closed when the machine is ready to serve requests.
@@ -44,10 +54,10 @@ func WithIdentity(id Identity) Option {
 	}
 }
 
-// WithMesh attaches a mesh network stack to the machine.
-func WithMesh(msh *mesh.Mesh) Option {
+// WithMesh attaches a network stack to the machine.
+func WithMesh(ns NetworkStack) Option {
 	return func(m *Machine) {
-		m.mesh = msh
+		m.mesh = ns
 	}
 }
 
@@ -86,8 +96,8 @@ func (m *Machine) Identity() Identity {
 	return m.identity
 }
 
-// Mesh returns the mesh network stack, or nil if standalone.
-func (m *Machine) Mesh() *mesh.Mesh {
+// Mesh returns the network stack, or nil if standalone.
+func (m *Machine) Mesh() NetworkStack {
 	return m.mesh
 }
 

@@ -34,16 +34,32 @@ type Loop struct {
 	done   chan struct{}
 }
 
-// New creates a convergence loop. If prober is nil, health probing is disabled.
-func New(self ployz.MachineRecord, planner PeerPlanner, subscriber Subscriber, peers PeerSetter, prober PeerProber) *Loop {
-	return &Loop{
+// Option configures a Loop.
+type Option func(*Loop)
+
+// WithPlanner sets the peer planning strategy. Defaults to MeshPlanner.
+func WithPlanner(p PeerPlanner) Option { return func(l *Loop) { l.planner = p } }
+
+// WithSubscriber sets the machine registry subscription source.
+func WithSubscriber(s Subscriber) Option { return func(l *Loop) { l.subscriber = s } }
+
+// WithPeerSetter sets the WireGuard peer configurator.
+func WithPeerSetter(p PeerSetter) Option { return func(l *Loop) { l.peers = p } }
+
+// WithProber sets the health prober. If nil (default), probing is disabled.
+func WithProber(p PeerProber) Option { return func(l *Loop) { l.prober = p } }
+
+// New creates a convergence loop.
+func New(self ployz.MachineRecord, opts ...Option) *Loop {
+	l := &Loop{
 		self:       self,
-		planner:    planner,
-		subscriber: subscriber,
-		peers:      peers,
-		prober:     prober,
+		planner:    MeshPlanner{},
 		peerStates: make(map[wgtypes.Key]*peerState),
 	}
+	for _, opt := range opts {
+		opt(l)
+	}
+	return l
 }
 
 // Health returns the latest peer health summary. Safe for concurrent use.

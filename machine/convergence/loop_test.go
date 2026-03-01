@@ -61,17 +61,62 @@ func ep(s string) netip.AddrPort {
 	return netip.MustParseAddrPort(s)
 }
 
+// loopFixture bundles common test state for convergence loop tests.
+type loopFixture struct {
+	loop    *Loop
+	self    ployz.MachineRecord
+	peer    ployz.MachineRecord
+	peerKey wgtypes.Key
+	records []ployz.MachineRecord
+	setter  *fakePeerSetter
+	prober  *fakeProber
+	sub     *fakeSubscriber
+}
+
+// newFixture creates a self + single peer with the given endpoints, wires all
+// fakes, and constructs a Loop with the options pattern. Tests that need custom
+// config can override fields after calling newFixture.
+func newFixture(t *testing.T, endpoints ...string) *loopFixture {
+	t.Helper()
+
+	selfKey := mustKey(t)
+	peerKey := mustKey(t)
+
+	self := ployz.MachineRecord{ID: "self", PublicKey: selfKey}
+	peer := ployz.MachineRecord{ID: "peer1", PublicKey: peerKey}
+	for _, e := range endpoints {
+		peer.Endpoints = append(peer.Endpoints, ep(e))
+	}
+
+	records := []ployz.MachineRecord{self, peer}
+	setter := &fakePeerSetter{}
+	prober := &fakeProber{handshakes: map[wgtypes.Key]time.Time{}}
+	sub := &fakeSubscriber{records: records, events: make(chan ployz.MachineEvent)}
+
+	l := New(self,
+		WithSubscriber(sub),
+		WithPeerSetter(setter),
+		WithProber(prober),
+	)
+
+	return &loopFixture{
+		loop:    l,
+		self:    self,
+		peer:    peer,
+		peerKey: peerKey,
+		records: records,
+		setter:  setter,
+		prober:  prober,
+		sub:     sub,
+	}
+}
+
 // --- tests ---
 
 func TestLoop_HealthUninitializedBeforeProbe(t *testing.T) {
-	self := ployz.MachineRecord{PublicKey: mustKey(t)}
-	sub := &fakeSubscriber{events: make(chan ployz.MachineEvent)}
-	setter := &fakePeerSetter{}
-	prober := &fakeProber{handshakes: map[wgtypes.Key]time.Time{}}
+	f := newFixture(t, "10.0.0.2:51820")
 
-	l := New(self, MeshPlanner{}, sub, setter, prober)
-
-	h := l.Health()
+	h := f.loop.Health()
 	if h.Initialized {
 		t.Error("health should not be initialized before first probe")
 	}
@@ -79,31 +124,11 @@ func TestLoop_HealthUninitializedBeforeProbe(t *testing.T) {
 
 func TestLoop_ProbeClassifiesPeers(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		selfKey := mustKey(t)
-		peerKey := mustKey(t)
-
-		self := ployz.MachineRecord{ID: "self", PublicKey: selfKey}
-		peer := ployz.MachineRecord{
-			ID:        "peer1",
-			PublicKey: peerKey,
-			Endpoints: []netip.AddrPort{ep("10.0.0.2:51820")},
-		}
-
-		sub := &fakeSubscriber{
-			records: []ployz.MachineRecord{self, peer},
-			events:  make(chan ployz.MachineEvent),
-		}
-		setter := &fakePeerSetter{}
-		prober := &fakeProber{
-			handshakes: map[wgtypes.Key]time.Time{
-				peerKey: time.Now().Add(-30 * time.Second),
-			},
-		}
-
-		l := New(self, MeshPlanner{}, sub, setter, prober)
+		f := newFixture(t, "10.0.0.2:51820")
+		f.prober.handshakes[f.peerKey] = time.Now().Add(-30 * time.Second)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		if err := l.Start(ctx); err != nil {
+		if err := f.loop.Start(ctx); err != nil {
 			t.Fatal(err)
 		}
 
@@ -111,7 +136,7 @@ func TestLoop_ProbeClassifiesPeers(t *testing.T) {
 		time.Sleep(probeInterval + probeTestBuffer)
 		synctest.Wait()
 
-		h := l.Health()
+		h := f.loop.Health()
 		if !h.Initialized {
 			t.Fatal("health should be initialized after probe")
 		}
@@ -123,77 +148,43 @@ func TestLoop_ProbeClassifiesPeers(t *testing.T) {
 		}
 
 		cancel()
-		l.Stop()
+		f.loop.Stop()
 	})
 }
 
 func TestLoop_ProberErrorDoesNotCrash(t *testing.T) {
-	selfKey := mustKey(t)
-	peerKey := mustKey(t)
-
-	self := ployz.MachineRecord{ID: "self", PublicKey: selfKey}
-	peer := ployz.MachineRecord{
-		ID:        "peer1",
-		PublicKey: peerKey,
-		Endpoints: []netip.AddrPort{ep("10.0.0.2:51820")},
-	}
-
-	records := []ployz.MachineRecord{self, peer}
-
-	sub := &fakeSubscriber{records: records, events: make(chan ployz.MachineEvent)}
-	setter := &fakePeerSetter{}
-	prober := &fakeProber{err: context.DeadlineExceeded}
-
-	l := New(self, MeshPlanner{}, sub, setter, prober)
+	f := newFixture(t, "10.0.0.2:51820")
+	f.prober.err = context.DeadlineExceeded
 
 	// Directly call probe — should not panic.
-	l.probe(context.Background(), records)
+	f.loop.probe(context.Background(), f.records)
 
-	h := l.Health()
+	h := f.loop.Health()
 	if h.Initialized {
 		t.Error("health should not be initialized on prober error")
 	}
 }
 
 func TestLoop_EndpointRotation(t *testing.T) {
-	selfKey := mustKey(t)
-	peerKey := mustKey(t)
-
-	self := ployz.MachineRecord{ID: "self", PublicKey: selfKey}
-	peer := ployz.MachineRecord{
-		ID:        "peer1",
-		PublicKey: peerKey,
-		Endpoints: []netip.AddrPort{
-			ep("10.0.0.2:51820"),
-			ep("1.2.3.4:51820"),
-			ep("5.6.7.8:51820"),
-		},
-	}
-
-	records := []ployz.MachineRecord{self, peer}
-	setter := &fakePeerSetter{}
-	prober := &fakeProber{handshakes: map[wgtypes.Key]time.Time{}}
-	sub := &fakeSubscriber{records: records, events: make(chan ployz.MachineEvent)}
-
-	l := New(self, MeshPlanner{}, sub, setter, prober)
+	f := newFixture(t, "10.0.0.2:51820", "1.2.3.4:51820", "5.6.7.8:51820")
 
 	// Initial reconcile to populate state.
-	if err := l.reconcile(context.Background(), records); err != nil {
+	if err := f.loop.reconcile(context.Background(), f.records); err != nil {
 		t.Fatal(err)
 	}
 
 	// First probe — creates peer state with endpointSetAt = now.
-	l.probe(context.Background(), records)
+	f.loop.probe(context.Background(), f.records)
 
 	// Simulate time passing beyond endpointTimeout.
-	st := l.peerStates[peerKey]
+	st := f.loop.peerStates[f.peerKey]
 	st.endpointSetAt = time.Now().Add(-(endpointTimeout + 5*time.Second))
 
-	setterCalls := setter.calls
-	l.probe(context.Background(), records)
+	setterCalls := f.setter.calls
+	f.loop.probe(context.Background(), f.records)
 
 	// Should have rotated and called SetPeers.
-	if setter.calls <= setterCalls {
+	if f.setter.calls <= setterCalls {
 		t.Error("expected SetPeers call after rotation")
 	}
 
@@ -204,73 +195,42 @@ func TestLoop_EndpointRotation(t *testing.T) {
 }
 
 func TestLoop_NoRotationSingleEndpoint(t *testing.T) {
-	selfKey := mustKey(t)
-	peerKey := mustKey(t)
+	f := newFixture(t, "10.0.0.2:51820")
 
-	self := ployz.MachineRecord{ID: "self", PublicKey: selfKey}
-	peer := ployz.MachineRecord{
-		ID:        "peer1",
-		PublicKey: peerKey,
-		Endpoints: []netip.AddrPort{ep("10.0.0.2:51820")},
-	}
-
-	records := []ployz.MachineRecord{self, peer}
-	setter := &fakePeerSetter{}
-	prober := &fakeProber{handshakes: map[wgtypes.Key]time.Time{}}
-	sub := &fakeSubscriber{records: records, events: make(chan ployz.MachineEvent)}
-
-	l := New(self, MeshPlanner{}, sub, setter, prober)
-	if err := l.reconcile(context.Background(), records); err != nil {
+	if err := f.loop.reconcile(context.Background(), f.records); err != nil {
 		t.Fatal(err)
 	}
-
-	l.probe(context.Background(), records)
+	f.loop.probe(context.Background(), f.records)
 
 	// Force endpointSetAt into the past.
-	st := l.peerStates[peerKey]
+	st := f.loop.peerStates[f.peerKey]
 	st.endpointSetAt = time.Now().Add(-(endpointTimeout + 5*time.Second))
 
-	setterCalls := setter.calls
-	l.probe(context.Background(), records)
+	setterCalls := f.setter.calls
+	f.loop.probe(context.Background(), f.records)
 
 	// Single-endpoint peer should NOT trigger extra SetPeers for rotation.
-	// (probe itself doesn't call SetPeers unless rotation happens)
-	if setter.calls != setterCalls {
+	if f.setter.calls != setterCalls {
 		t.Error("single-endpoint peer should not trigger rotation SetPeers")
 	}
 }
 
 func TestLoop_SingleEndpointTransitionsToSuspectAfterTimeout(t *testing.T) {
-	selfKey := mustKey(t)
-	peerKey := mustKey(t)
-
-	self := ployz.MachineRecord{ID: "self", PublicKey: selfKey}
-	peer := ployz.MachineRecord{
-		ID:        "peer1",
-		PublicKey: peerKey,
-		Endpoints: []netip.AddrPort{ep("10.0.0.2:51820")},
-	}
-
-	records := []ployz.MachineRecord{self, peer}
-	setter := &fakePeerSetter{}
-	prober := &fakeProber{handshakes: map[wgtypes.Key]time.Time{}}
-	sub := &fakeSubscriber{records: records, events: make(chan ployz.MachineEvent)}
-
-	l := New(self, MeshPlanner{}, sub, setter, prober)
+	f := newFixture(t, "10.0.0.2:51820")
 
 	// First probe: peer starts in New while first attempt is in-flight.
-	l.probe(context.Background(), records)
-	h := l.Health()
+	f.loop.probe(context.Background(), f.records)
+	h := f.loop.Health()
 	if h.New != 1 {
 		t.Fatalf("new = %d, want 1 after first probe", h.New)
 	}
 
 	// Age the first (and only) endpoint attempt past timeout.
-	st := l.peerStates[peerKey]
+	st := f.loop.peerStates[f.peerKey]
 	st.endpointSetAt = time.Now().Add(-(endpointTimeout + 5*time.Second))
 
-	l.probe(context.Background(), records)
-	h = l.Health()
+	f.loop.probe(context.Background(), f.records)
+	h = f.loop.Health()
 	if h.Suspect != 1 {
 		t.Fatalf("suspect = %d, want 1 after endpoint timeout", h.Suspect)
 	}
@@ -280,82 +240,47 @@ func TestLoop_SingleEndpointTransitionsToSuspectAfterTimeout(t *testing.T) {
 }
 
 func TestLoop_ReconcileKeepsRotatedEndpointSticky(t *testing.T) {
-	selfKey := mustKey(t)
-	peerKey := mustKey(t)
-
-	self := ployz.MachineRecord{ID: "self", PublicKey: selfKey}
-	peer := ployz.MachineRecord{
-		ID:        "peer1",
-		PublicKey: peerKey,
-		Endpoints: []netip.AddrPort{
-			ep("198.51.100.10:51820"),
-			ep("203.0.113.20:51820"),
-		},
-	}
-
-	records := []ployz.MachineRecord{self, peer}
-	setter := &fakePeerSetter{}
-	prober := &fakeProber{handshakes: map[wgtypes.Key]time.Time{}}
-	sub := &fakeSubscriber{records: records, events: make(chan ployz.MachineEvent)}
-
-	l := New(self, MeshPlanner{}, sub, setter, prober)
+	f := newFixture(t, "198.51.100.10:51820", "203.0.113.20:51820")
 
 	// Seed peer state as if failover previously selected endpoint index 1.
-	l.peerStates[peerKey] = &peerState{
+	f.loop.peerStates[f.peerKey] = &peerState{
 		endpointIndex: 1,
 		endpointCount: 2,
 	}
 
-	if err := l.reconcile(context.Background(), records); err != nil {
+	if err := f.loop.reconcile(context.Background(), f.records); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	if len(setter.lastPeers) != 1 {
-		t.Fatalf("lastPeers len = %d, want 1", len(setter.lastPeers))
+	if len(f.setter.lastPeers) != 1 {
+		t.Fatalf("lastPeers len = %d, want 1", len(f.setter.lastPeers))
 	}
-	got := setter.lastPeers[0].Endpoints[0]
-	want := peer.Endpoints[1]
+	got := f.setter.lastPeers[0].Endpoints[0]
+	want := f.peer.Endpoints[1]
 	if got != want {
 		t.Fatalf("active endpoint = %s, want %s", got, want)
 	}
 }
 
 func TestLoop_HandshakeRecoveryResetsToAlive(t *testing.T) {
-	selfKey := mustKey(t)
-	peerKey := mustKey(t)
+	f := newFixture(t, "10.0.0.2:51820", "1.2.3.4:51820")
 
-	self := ployz.MachineRecord{ID: "self", PublicKey: selfKey}
-	peer := ployz.MachineRecord{
-		ID:        "peer1",
-		PublicKey: peerKey,
-		Endpoints: []netip.AddrPort{
-			ep("10.0.0.2:51820"),
-			ep("1.2.3.4:51820"),
-		},
-	}
-
-	records := []ployz.MachineRecord{self, peer}
-	setter := &fakePeerSetter{}
-	prober := &fakeProber{handshakes: map[wgtypes.Key]time.Time{}}
-	sub := &fakeSubscriber{records: records, events: make(chan ployz.MachineEvent)}
-
-	l := New(self, MeshPlanner{}, sub, setter, prober)
-	if err := l.reconcile(context.Background(), records); err != nil {
+	if err := f.loop.reconcile(context.Background(), f.records); err != nil {
 		t.Fatal(err)
 	}
 
 	// First probe — no handshake, peer is New.
-	l.probe(context.Background(), records)
-	h := l.Health()
+	f.loop.probe(context.Background(), f.records)
+	h := f.loop.Health()
 	if h.Alive != 0 {
 		t.Errorf("alive = %d, want 0 (no handshake)", h.Alive)
 	}
 
 	// Now simulate a handshake.
-	prober.handshakes[peerKey] = time.Now()
-	l.probe(context.Background(), records)
+	f.prober.handshakes[f.peerKey] = time.Now()
+	f.loop.probe(context.Background(), f.records)
 
-	h = l.Health()
+	h = f.loop.Health()
 	if h.Alive != 1 {
 		t.Errorf("alive = %d, want 1 after handshake", h.Alive)
 	}
@@ -372,7 +297,10 @@ func TestLoop_NilProberSkipsProbing(t *testing.T) {
 		}
 		setter := &fakePeerSetter{}
 
-		l := New(self, MeshPlanner{}, sub, setter, nil)
+		l := New(self,
+			WithSubscriber(sub),
+			WithPeerSetter(setter),
+		)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		if err := l.Start(ctx); err != nil {

@@ -27,7 +27,7 @@ func NewMachine(dataDir string) (*machine.Machine, error) {
 		return nil, fmt.Errorf("create docker client: %w", err)
 	}
 
-	return machine.New(dataDir, machine.WithMeshBuilder(func(ctx context.Context, id machine.Identity) (*mesh.Mesh, error) {
+	return machine.New(dataDir, machine.WithMeshBuilder(func(ctx context.Context, id machine.Identity) (machine.NetworkStack, error) {
 		return buildMesh(id, dataDir, docker)
 	}))
 }
@@ -74,7 +74,11 @@ func buildMesh(id machine.Identity, dataDir string, docker client.APIClient) (*m
 		PublicKey:  pub,
 		OverlayIP: mgmtIP,
 	}
-	conv := convergence.New(self, convergence.MeshPlanner{}, st, wg, wg)
+	conv := convergence.New(self,
+		convergence.WithSubscriber(st),
+		convergence.WithPeerSetter(wg),
+		convergence.WithProber(wg),
+	)
 
 	return mesh.New(
 		mesh.WithWireGuard(wg),

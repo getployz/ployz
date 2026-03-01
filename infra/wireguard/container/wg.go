@@ -3,6 +3,7 @@ package container
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/netip"
 	"strings"
@@ -14,15 +15,33 @@ import (
 	"ployz/infra/wireguard"
 
 	"github.com/containerd/errdefs"
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/docker/go-connections/nat"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 const peerKeepalive = 25 * time.Second
+
+// Docker is the subset of the Docker API used by WG.
+type Docker interface {
+	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
+	ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *ocispec.Platform, containerName string) (container.CreateResponse, error)
+	ContainerStart(ctx context.Context, containerID string, options container.StartOptions) error
+	ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error
+	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
+	ContainerWait(ctx context.Context, containerID string, condition container.WaitCondition) (<-chan container.WaitResponse, <-chan error)
+	ContainerExecCreate(ctx context.Context, containerID string, options container.ExecOptions) (container.ExecCreateResponse, error)
+	ContainerExecAttach(ctx context.Context, execID string, config container.ExecAttachOptions) (types.HijackedResponse, error)
+	ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error)
+	ImagePull(ctx context.Context, refStr string, options image.PullOptions) (io.ReadCloser, error)
+	NetworkInspect(ctx context.Context, networkID string, options network.InspectOptions) (network.Inspect, error)
+	NetworkCreate(ctx context.Context, name string, options network.CreateOptions) (network.CreateResponse, error)
+}
 
 // Config holds the static configuration for a containerized WireGuard device.
 type Config struct {
@@ -44,14 +63,14 @@ type Config struct {
 // in the Docker VM (OrbStack on macOS).
 type WG struct {
 	cfg    Config
-	docker client.APIClient
+	docker Docker
 
 	mu         sync.Mutex
 	peerOwners map[string]wireguard.PeerOwner // pubkey -> owner
 }
 
 // New creates a containerized WireGuard implementation.
-func New(cfg Config, docker client.APIClient) *WG {
+func New(cfg Config, docker Docker) *WG {
 	return &WG{
 		cfg:        cfg,
 		docker:     docker,

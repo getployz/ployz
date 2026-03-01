@@ -6,13 +6,12 @@ import (
 	"fmt"
 
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 )
 
 // exec runs a command inside the named container and returns its
 // combined stdout. Stderr is captured separately for error reporting.
-func exec(ctx context.Context, docker client.APIClient, name string, cmd ...string) ([]byte, error) {
+func exec(ctx context.Context, docker Docker, name string, cmd ...string) ([]byte, error) {
 	execCfg := container.ExecOptions{
 		Cmd:          cmd,
 		AttachStdout: true,
