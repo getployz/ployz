@@ -41,8 +41,8 @@ func Cmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&socketPath, "socket", cmdutil.DefaultSocketPath(), "ployzd unix socket path")
-	cmd.Flags().StringVar(&dataRoot, "data-root", cmdutil.DefaultDataRoot(), "Machine data root")
+	cmd.Flags().StringVar(&socketPath, "socket", platform.DaemonSocketPath, "ployzd unix socket path")
+	cmd.Flags().StringVar(&dataRoot, "data-root", platform.DaemonDataRoot, "Machine data root")
 
 	return cmd
 }

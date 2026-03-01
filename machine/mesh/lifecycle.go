@@ -174,16 +174,15 @@ func (m *Mesh) Detach(_ context.Context) error {
 
 	m.phase = PhaseStopping
 
-	var firstErr error
-
 	if m.convergence != nil {
 		if err := m.convergence.Stop(); err != nil {
-			firstErr = fmt.Errorf("convergence stop: %w", err)
+			m.phase = PhaseStopped
+			return fmt.Errorf("convergence stop: %w", err)
 		}
 	}
 
 	m.phase = PhaseStopped
-	return firstErr
+	return nil
 }
 
 // Destroy tears down the full network stack in reverse order:

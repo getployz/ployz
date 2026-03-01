@@ -12,9 +12,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-func IsDaemonRunning(_ context.Context, socketPath string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+func IsDaemonRunning(ctx context.Context, socketPath string) bool {
 	return HealthCheck(ctx, socketPath) == nil
 }
 

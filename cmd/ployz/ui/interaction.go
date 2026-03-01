@@ -43,9 +43,8 @@ const (
 )
 
 type interactionConfig struct {
-	initialized   bool
-	noInteraction bool
-	interactive   bool
+	initialized bool
+	interactive bool
 }
 
 var interactionState struct {
@@ -58,9 +57,8 @@ func ConfigureInteraction(noInteraction bool) {
 
 	interactionState.mu.Lock()
 	interactionState.cfg = interactionConfig{
-		initialized:   true,
-		noInteraction: !interactive,
-		interactive:   interactive,
+		initialized: true,
+		interactive: interactive,
 	}
 	interactionState.mu.Unlock()
 

@@ -16,7 +16,9 @@ const startupCleanupTimeout = 15 * time.Second
 // the mesh is built (if a builder is available) and started automatically.
 // Then blocks until ctx is cancelled.
 func (m *Machine) Run(ctx context.Context) error {
-	if m.mesh == nil && m.buildMesh != nil && m.hasNetworkConfig() {
+	hasNetCfg := m.hasNetworkConfig()
+
+	if m.mesh == nil && m.buildMesh != nil && hasNetCfg {
 		msh, err := m.buildMesh(ctx, m.identity)
 		if err != nil {
 			return fmt.Errorf("build mesh from config: %w", err)
@@ -24,7 +26,7 @@ func (m *Machine) Run(ctx context.Context) error {
 		m.mesh = msh
 	}
 
-	if m.mesh != nil && m.hasNetworkConfig() {
+	if m.mesh != nil && hasNetCfg {
 		if err := m.startMesh(ctx); err != nil {
 			return fmt.Errorf("start mesh: %w", err)
 		}

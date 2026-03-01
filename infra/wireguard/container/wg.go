@@ -3,18 +3,18 @@ package container
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
 	"ployz"
+	"ployz/infra/docker"
 	"ployz/infra/wireguard"
 
 	"github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
@@ -52,7 +52,11 @@ type WG struct {
 
 // New creates a containerized WireGuard implementation.
 func New(cfg Config, docker client.APIClient) *WG {
-	return &WG{cfg: cfg, docker: docker}
+	return &WG{
+		cfg:        cfg,
+		docker:     docker,
+		peerOwners: make(map[string]wireguard.PeerOwner),
+	}
 }
 
 // Up ensures the Docker network and WireGuard container exist, then
@@ -148,10 +152,7 @@ func (w *WG) AddPeer(ctx context.Context, owner wireguard.PeerOwner, pubKey wgty
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if w.peerOwners == nil {
-		w.peerOwners = make(map[string]wireguard.PeerOwner)
-	}
-	w.peerOwners[pubKey.String()] = owner
+w.peerOwners[pubKey.String()] = owner
 
 	prefix := wireguard.HostPrefix(allowedIP)
 	args := []string{
@@ -177,17 +178,7 @@ func (w *WG) Down(ctx context.Context) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if err := w.docker.ContainerStop(ctx, w.cfg.ContainerName, container.StopOptions{}); err != nil {
-		if !errdefs.IsNotFound(err) {
-			return fmt.Errorf("stop wireguard container: %w", err)
-		}
-	}
-	if err := w.docker.ContainerRemove(ctx, w.cfg.ContainerName, container.RemoveOptions{Force: true}); err != nil {
-		if !errdefs.IsNotFound(err) {
-			return fmt.Errorf("remove wireguard container: %w", err)
-		}
-	}
-	return nil
+	return docker.StopAndRemove(ctx, w.docker, w.cfg.ContainerName)
 }
 
 // ensureContainer inspects, starts, or creates the WireGuard container.
@@ -298,36 +289,7 @@ func (w *WG) createAndStart(ctx context.Context) error {
 		},
 	}
 
-	_, err := w.docker.ContainerCreate(ctx, containerCfg, hostCfg, networkCfg, nil, w.cfg.ContainerName)
-	if err != nil {
-		if !errdefs.IsNotFound(err) {
-			return fmt.Errorf("create container: %w", err)
-		}
-		if err := w.pullImage(ctx); err != nil {
-			return err
-		}
-		if _, err = w.docker.ContainerCreate(ctx, containerCfg, hostCfg, networkCfg, nil, w.cfg.ContainerName); err != nil {
-			return fmt.Errorf("create container after pull: %w", err)
-		}
-	}
-
-	if err := w.docker.ContainerStart(ctx, w.cfg.ContainerName, container.StartOptions{}); err != nil {
-		return fmt.Errorf("start container: %w", err)
-	}
-	return nil
-}
-
-func (w *WG) pullImage(ctx context.Context) error {
-	slog.Info("Pulling WireGuard image.", "image", w.cfg.Image)
-	resp, err := w.docker.ImagePull(ctx, w.cfg.Image, image.PullOptions{})
-	if err != nil {
-		return fmt.Errorf("pull wireguard image: %w", err)
-	}
-	defer resp.Close()
-	if _, err := io.Copy(io.Discard, resp); err != nil {
-		return fmt.Errorf("pull wireguard image: read response: %w", err)
-	}
-	return nil
+	return docker.CreateAndStart(ctx, w.docker, w.cfg.ContainerName, w.cfg.Image, containerCfg, hostCfg, networkCfg)
 }
 
 // configureInterface creates and configures the WireGuard interface
@@ -444,21 +406,9 @@ func (w *WG) syncRoutes(ctx context.Context, peers []ployz.MachineRecord) error 
 	return nil
 }
 
-// splitLines splits output bytes into trimmed non-empty lines.
+// splitLines splits output bytes into lines.
 func splitLines(data []byte) []string {
-	var lines []string
-	start := 0
-	for i, b := range data {
-		if b == '\n' {
-			line := string(data[start:i])
-			lines = append(lines, line)
-			start = i + 1
-		}
-	}
-	if start < len(data) {
-		lines = append(lines, string(data[start:]))
-	}
-	return lines
+	return strings.Split(string(data), "\n")
 }
 
 // Verify WG satisfies the interface at compile time.

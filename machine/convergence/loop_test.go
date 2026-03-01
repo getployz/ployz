@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/netip"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"ployz"
@@ -77,50 +78,53 @@ func TestLoop_HealthUninitializedBeforeProbe(t *testing.T) {
 }
 
 func TestLoop_ProbeClassifiesPeers(t *testing.T) {
-	selfKey := mustKey(t)
-	peerKey := mustKey(t)
+	synctest.Test(t, func(t *testing.T) {
+		selfKey := mustKey(t)
+		peerKey := mustKey(t)
 
-	self := ployz.MachineRecord{ID: "self", PublicKey: selfKey}
-	peer := ployz.MachineRecord{
-		ID:        "peer1",
-		PublicKey: peerKey,
-		Endpoints: []netip.AddrPort{ep("10.0.0.2:51820")},
-	}
+		self := ployz.MachineRecord{ID: "self", PublicKey: selfKey}
+		peer := ployz.MachineRecord{
+			ID:        "peer1",
+			PublicKey: peerKey,
+			Endpoints: []netip.AddrPort{ep("10.0.0.2:51820")},
+		}
 
-	sub := &fakeSubscriber{
-		records: []ployz.MachineRecord{self, peer},
-		events:  make(chan ployz.MachineEvent),
-	}
-	setter := &fakePeerSetter{}
-	prober := &fakeProber{
-		handshakes: map[wgtypes.Key]time.Time{
-			peerKey: time.Now().Add(-30 * time.Second),
-		},
-	}
+		sub := &fakeSubscriber{
+			records: []ployz.MachineRecord{self, peer},
+			events:  make(chan ployz.MachineEvent),
+		}
+		setter := &fakePeerSetter{}
+		prober := &fakeProber{
+			handshakes: map[wgtypes.Key]time.Time{
+				peerKey: time.Now().Add(-30 * time.Second),
+			},
+		}
 
-	l := New(self, MeshPlanner{}, sub, setter, prober)
+		l := New(self, MeshPlanner{}, sub, setter, prober)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	if err := l.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
+		ctx, cancel := context.WithCancel(context.Background())
+		if err := l.Start(ctx); err != nil {
+			t.Fatal(err)
+		}
 
-	// Wait for at least one probe tick + some buffer.
-	time.Sleep(probeInterval + probeTestBuffer)
+		// Wait for at least one probe tick + some buffer in fake time.
+		time.Sleep(probeInterval + probeTestBuffer)
+		synctest.Wait()
 
-	h := l.Health()
-	if !h.Initialized {
-		t.Fatal("health should be initialized after probe")
-	}
-	if h.Alive != 1 {
-		t.Errorf("alive = %d, want 1", h.Alive)
-	}
-	if h.Total != 1 {
-		t.Errorf("total = %d, want 1", h.Total)
-	}
+		h := l.Health()
+		if !h.Initialized {
+			t.Fatal("health should be initialized after probe")
+		}
+		if h.Alive != 1 {
+			t.Errorf("alive = %d, want 1", h.Alive)
+		}
+		if h.Total != 1 {
+			t.Errorf("total = %d, want 1", h.Total)
+		}
 
-	cancel()
-	l.Stop()
+		cancel()
+		l.Stop()
+	})
 }
 
 func TestLoop_ProberErrorDoesNotCrash(t *testing.T) {
@@ -358,30 +362,33 @@ func TestLoop_HandshakeRecoveryResetsToAlive(t *testing.T) {
 }
 
 func TestLoop_NilProberSkipsProbing(t *testing.T) {
-	selfKey := mustKey(t)
-	self := ployz.MachineRecord{ID: "self", PublicKey: selfKey}
+	synctest.Test(t, func(t *testing.T) {
+		selfKey := mustKey(t)
+		self := ployz.MachineRecord{ID: "self", PublicKey: selfKey}
 
-	sub := &fakeSubscriber{
-		records: []ployz.MachineRecord{self},
-		events:  make(chan ployz.MachineEvent),
-	}
-	setter := &fakePeerSetter{}
+		sub := &fakeSubscriber{
+			records: []ployz.MachineRecord{self},
+			events:  make(chan ployz.MachineEvent),
+		}
+		setter := &fakePeerSetter{}
 
-	l := New(self, MeshPlanner{}, sub, setter, nil)
+		l := New(self, MeshPlanner{}, sub, setter, nil)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	if err := l.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
+		ctx, cancel := context.WithCancel(context.Background())
+		if err := l.Start(ctx); err != nil {
+			t.Fatal(err)
+		}
 
-	// Let it run briefly — should not panic.
-	time.Sleep(100 * time.Millisecond)
+		// Let it run briefly in fake time — should not panic.
+		time.Sleep(100 * time.Millisecond)
+		synctest.Wait()
 
-	h := l.Health()
-	if h.Initialized {
-		t.Error("health should not be initialized without prober")
-	}
+		h := l.Health()
+		if h.Initialized {
+			t.Error("health should not be initialized without prober")
+		}
 
-	cancel()
-	l.Stop()
+		cancel()
+		l.Stop()
+	})
 }

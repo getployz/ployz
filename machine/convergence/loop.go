@@ -88,29 +88,16 @@ func (l *Loop) run(ctx context.Context) error {
 		return fmt.Errorf("initial peer sync: %w", err)
 	}
 
-	if l.prober == nil {
-		for {
-			select {
-			case <-ctx.Done():
-				return nil
-			case event, ok := <-changes:
-				if !ok {
-					return fmt.Errorf("registry subscription lost")
-				}
-				records = applyEvent(records, event)
-				if err := l.reconcile(ctx, records); err != nil {
-					slog.Error("peer sync failed", "err", err)
-				}
-			}
-		}
+	// When probing is enabled, run the first probe immediately so the health
+	// summary is initialized without waiting for the ticker. This matters for
+	// the bootstrap gate.
+	var tickerC <-chan time.Time
+	if l.prober != nil {
+		l.probe(ctx, records)
+		ticker := time.NewTicker(probeInterval)
+		defer ticker.Stop()
+		tickerC = ticker.C
 	}
-
-	// Run the first probe immediately so the health summary is initialized
-	// without waiting for the ticker. This matters for the bootstrap gate.
-	l.probe(ctx, records)
-
-	ticker := time.NewTicker(probeInterval)
-	defer ticker.Stop()
 
 	for {
 		select {
@@ -124,7 +111,7 @@ func (l *Loop) run(ctx context.Context) error {
 			if err := l.reconcile(ctx, records); err != nil {
 				slog.Error("peer sync failed", "err", err)
 			}
-		case <-ticker.C:
+		case <-tickerC:
 			l.probe(ctx, records)
 		}
 	}
@@ -145,7 +132,11 @@ func (l *Loop) probe(ctx context.Context, records []ployz.MachineRecord) {
 	planned := l.planner.PlanPeers(l.self, records)
 	currentKeys := make(map[wgtypes.Key]struct{}, len(planned))
 
-	var rotated []wgtypes.Key
+	type rotation struct {
+		key  wgtypes.Key
+		snap rotationSnapshot
+	}
+	var rotations []rotation
 
 	for i := range planned {
 		rec := &planned[i]
@@ -165,6 +156,7 @@ func (l *Loop) probe(ctx context.Context, records []ployz.MachineRecord) {
 		}
 
 		if shouldRotate(st, now) {
+			snap := snapshotRotation(st)
 			oldIdx := st.endpointIndex
 			nextEndpoint(st)
 			slog.Debug("rotating endpoint",
@@ -172,7 +164,7 @@ func (l *Loop) probe(ctx context.Context, records []ployz.MachineRecord) {
 				"from", oldIdx,
 				"to", st.endpointIndex,
 			)
-			rotated = append(rotated, rec.PublicKey)
+			rotations = append(rotations, rotation{key: rec.PublicKey, snap: snap})
 		}
 
 		classifyPeer(st, now)
@@ -203,26 +195,19 @@ func (l *Loop) probe(ctx context.Context, records []ployz.MachineRecord) {
 	l.mu.Unlock()
 
 	// If any endpoints rotated, re-reconcile with rotation applied.
-	if len(rotated) > 0 {
-		if err := l.reconcile(ctx, records); err != nil {
+	if len(rotations) > 0 {
+		if err := l.reconcilePlanned(ctx, planned); err != nil {
 			slog.Error("peer sync after rotation failed", "err", err)
-			// Roll back endpoint indices and endpointSetAt stays unchanged
-			// so timers stay accurate.
-			for _, k := range rotated {
-				if st, ok := l.peerStates[k]; ok {
-					// Roll back: go to previous index
-					if st.endpointCount > 0 {
-						st.endpointIndex = (st.endpointIndex - 1 + st.endpointCount) % st.endpointCount
-					}
-					if st.endpointsAttempted > 0 {
-						st.endpointsAttempted--
-					}
+			// Restore pre-rotation state so timers stay accurate.
+			for _, r := range rotations {
+				if st, ok := l.peerStates[r.key]; ok {
+					restoreRotation(st, r.snap)
 				}
 			}
 		} else {
 			// SetPeers succeeded — record when the new endpoints were configured.
-			for _, k := range rotated {
-				if st, ok := l.peerStates[k]; ok {
+			for _, r := range rotations {
+				if st, ok := l.peerStates[r.key]; ok {
 					st.endpointSetAt = now
 				}
 			}
@@ -234,8 +219,12 @@ func (l *Loop) probe(ctx context.Context, records []ployz.MachineRecord) {
 // adjusted so each peer's active endpoint (per peerState) is at index [0].
 // Never mutates the original store records.
 func (l *Loop) reconcile(ctx context.Context, records []ployz.MachineRecord) error {
-	planned := l.planner.PlanPeers(l.self, records)
+	return l.reconcilePlanned(ctx, l.planner.PlanPeers(l.self, records))
+}
 
+// reconcilePlanned applies a pre-planned peer set via SetPeers, reordering
+// endpoints so each peer's active endpoint is at index [0].
+func (l *Loop) reconcilePlanned(ctx context.Context, planned []ployz.MachineRecord) error {
 	for i := range planned {
 		st, ok := l.peerStates[planned[i].PublicKey]
 		if !ok || st.endpointIndex == 0 || len(planned[i].Endpoints) <= 1 {

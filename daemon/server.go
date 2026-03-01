@@ -47,8 +47,9 @@ func (s *Server) InitNetwork(ctx context.Context, req *pb.InitNetworkRequest) (*
 // ListenAndServe starts the gRPC server on a unix socket and blocks until
 // ctx is cancelled.
 func (s *Server) ListenAndServe(ctx context.Context, socketPath string) error {
-	// Remove stale socket.
+	// Remove stale socket from a previous run (may not exist).
 	_ = os.Remove(socketPath)
+	defer func() { _ = os.Remove(socketPath) }()
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -67,6 +68,5 @@ func (s *Server) ListenAndServe(ctx context.Context, socketPath string) error {
 	if err := srv.Serve(ln); err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}
-	_ = os.Remove(socketPath)
 	return nil
 }

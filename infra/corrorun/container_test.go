@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"slices"
 	"testing"
 
 	"github.com/containerd/errdefs"
@@ -69,7 +70,7 @@ func TestStart_ReusesRunningContainer(t *testing.T) {
 
 	// Should inspect only — no create, no start.
 	want := []string{"Inspect"}
-	if !sliceEqual(docker.calls, want) {
+	if !slices.Equal(docker.calls, want) {
 		t.Errorf("calls = %v, want %v", docker.calls, want)
 	}
 }
@@ -90,7 +91,7 @@ func TestStart_StartsExistingStoppedContainer(t *testing.T) {
 
 	// Should inspect then start — no create.
 	want := []string{"Inspect", "Start"}
-	if !sliceEqual(docker.calls, want) {
+	if !slices.Equal(docker.calls, want) {
 		t.Errorf("calls = %v, want %v", docker.calls, want)
 	}
 }
@@ -107,7 +108,7 @@ func TestStart_CreatesWhenMissing(t *testing.T) {
 
 	// Should inspect (not found) → create → start.
 	want := []string{"Inspect", "Create", "Start"}
-	if !sliceEqual(docker.calls, want) {
+	if !slices.Equal(docker.calls, want) {
 		t.Errorf("calls = %v, want %v", docker.calls, want)
 	}
 }
@@ -129,19 +130,8 @@ func TestStart_WrapsInspectError(t *testing.T) {
 
 	// Should only inspect — no further calls on unexpected error.
 	want := []string{"Inspect"}
-	if !sliceEqual(docker.calls, want) {
+	if !slices.Equal(docker.calls, want) {
 		t.Errorf("calls = %v, want %v", docker.calls, want)
 	}
 }
 
-func sliceEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}

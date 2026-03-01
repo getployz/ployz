@@ -121,9 +121,9 @@ func TestClassifyPeer(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := tt.state
-			got := classifyPeer(&s, now)
-			if got != tt.want {
-				t.Errorf("classifyPeer() = %v, want %v", got, tt.want)
+			classifyPeer(&s, now)
+			if s.health != tt.want {
+				t.Errorf("classifyPeer() health = %v, want %v", s.health, tt.want)
 			}
 			if s.endpointsAttempted != tt.wantAttempted {
 				t.Errorf("endpointsAttempted = %d, want %d", s.endpointsAttempted, tt.wantAttempted)

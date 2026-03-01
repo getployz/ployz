@@ -3,6 +3,7 @@ package container
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/containerd/errdefs"
@@ -36,7 +37,7 @@ func TestEnsureNetwork_ExistsIsNoop(t *testing.T) {
 	}
 
 	want := []string{"Inspect"}
-	if !sliceEqual(docker.calls, want) {
+	if !slices.Equal(docker.calls, want) {
 		t.Errorf("calls = %v, want %v", docker.calls, want)
 	}
 }
@@ -51,7 +52,7 @@ func TestEnsureNetwork_CreatesWhenMissing(t *testing.T) {
 	}
 
 	want := []string{"Inspect", "Create"}
-	if !sliceEqual(docker.calls, want) {
+	if !slices.Equal(docker.calls, want) {
 		t.Errorf("calls = %v, want %v", docker.calls, want)
 	}
 }

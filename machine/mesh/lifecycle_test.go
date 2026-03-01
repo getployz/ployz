@@ -3,6 +3,7 @@ package mesh
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -20,42 +21,40 @@ const (
 
 // --- fakes ---
 
-type call struct{ method string }
-
 type fakeWG struct {
-	calls   []call
+	calls   []string
 	upErr   error
 	downErr error
 }
 
 func (f *fakeWG) Up(context.Context) error {
-	f.calls = append(f.calls, call{"Up"})
+	f.calls = append(f.calls, "Up")
 	return f.upErr
 }
 
 func (f *fakeWG) SetPeers(context.Context, []ployz.MachineRecord) error {
-	f.calls = append(f.calls, call{"SetPeers"})
+	f.calls = append(f.calls, "SetPeers")
 	return nil
 }
 
 func (f *fakeWG) Down(context.Context) error {
-	f.calls = append(f.calls, call{"Down"})
+	f.calls = append(f.calls, "Down")
 	return f.downErr
 }
 
 type fakeStore struct {
-	calls    []call
+	calls    []string
 	startErr error
 	stopErr  error
 }
 
 func (f *fakeStore) Start(context.Context) error {
-	f.calls = append(f.calls, call{"Start"})
+	f.calls = append(f.calls, "Start")
 	return f.startErr
 }
 
 func (f *fakeStore) Stop(context.Context) error {
-	f.calls = append(f.calls, call{"Stop"})
+	f.calls = append(f.calls, "Stop")
 	return f.stopErr
 }
 
@@ -72,7 +71,7 @@ func (f *fakeStore) UpsertMachine(context.Context, ployz.MachineRecord) error { 
 func (f *fakeStore) DeleteMachine(context.Context, string) error { return nil }
 
 type fakeConvergence struct {
-	calls   []call
+	calls   []string
 	stopErr error
 	health  atomic.Pointer[ployz.HealthSummary]
 }
@@ -85,12 +84,12 @@ func newFakeConvergence() *fakeConvergence {
 }
 
 func (f *fakeConvergence) Start(context.Context) error {
-	f.calls = append(f.calls, call{"Start"})
+	f.calls = append(f.calls, "Start")
 	return nil
 }
 
 func (f *fakeConvergence) Stop() error {
-	f.calls = append(f.calls, call{"Stop"})
+	f.calls = append(f.calls, "Stop")
 	return f.stopErr
 }
 
@@ -111,29 +110,7 @@ func (f *fakeStoreHealth) Healthy(context.Context) (bool, error) {
 	return f.healthy.Load(), f.err
 }
 
-// --- helpers ---
-
-func methods(calls []call) []string {
-	out := make([]string, len(calls))
-	for i, c := range calls {
-		out[i] = c.method
-	}
-	return out
-}
-
-func sliceEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// --- existing tests (updated for Health() on fakeConvergence) ---
+// --- tests ---
 
 func TestDetach_OnlyStopsConvergence(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -152,16 +129,16 @@ func TestDetach_OnlyStopsConvergence(t *testing.T) {
 		}
 
 		// Convergence must be stopped.
-		if got := methods(conv.calls); !sliceEqual(got, []string{"Start", "Stop"}) {
-			t.Errorf("convergence calls = %v, want [Start Stop]", got)
+		if !slices.Equal(conv.calls, []string{"Start", "Stop"}) {
+			t.Errorf("convergence calls = %v, want [Start Stop]", conv.calls)
 		}
 
 		// Store and WireGuard must NOT be touched during Detach.
-		if got := methods(store.calls); !sliceEqual(got, []string{"Start"}) {
-			t.Errorf("store calls = %v, want [Start] (no Stop)", got)
+		if !slices.Equal(store.calls, []string{"Start"}) {
+			t.Errorf("store calls = %v, want [Start] (no Stop)", store.calls)
 		}
-		if got := methods(wg.calls); !sliceEqual(got, []string{"Up"}) {
-			t.Errorf("wg calls = %v, want [Up] (no Down)", got)
+		if !slices.Equal(wg.calls, []string{"Up"}) {
+			t.Errorf("wg calls = %v, want [Up] (no Down)", wg.calls)
 		}
 
 		if m.Phase() != PhaseStopped {
@@ -187,14 +164,14 @@ func TestDestroy_TearsDownInReverseOrder(t *testing.T) {
 		}
 
 		// Verify reverse order: convergence stop, store stop, WG down.
-		if got := methods(conv.calls); !sliceEqual(got, []string{"Start", "Stop"}) {
-			t.Errorf("convergence calls = %v, want [Start Stop]", got)
+		if !slices.Equal(conv.calls, []string{"Start", "Stop"}) {
+			t.Errorf("convergence calls = %v, want [Start Stop]", conv.calls)
 		}
-		if got := methods(store.calls); !sliceEqual(got, []string{"Start", "Stop"}) {
-			t.Errorf("store calls = %v, want [Start Stop]", got)
+		if !slices.Equal(store.calls, []string{"Start", "Stop"}) {
+			t.Errorf("store calls = %v, want [Start Stop]", store.calls)
 		}
-		if got := methods(wg.calls); !sliceEqual(got, []string{"Up", "Down"}) {
-			t.Errorf("wg calls = %v, want [Up Down]", got)
+		if !slices.Equal(wg.calls, []string{"Up", "Down"}) {
+			t.Errorf("wg calls = %v, want [Up Down]", wg.calls)
 		}
 
 		if m.Phase() != PhaseStopped {
@@ -229,8 +206,8 @@ func TestDestroy_ReturnsFirstError_ContinuesTeardown(t *testing.T) {
 		}
 
 		// WG.Down must still be called despite store error.
-		if got := methods(wg.calls); !sliceEqual(got, []string{"Up", "Down"}) {
-			t.Errorf("wg calls = %v, want [Up Down] (should continue teardown)", got)
+		if !slices.Equal(wg.calls, []string{"Up", "Down"}) {
+			t.Errorf("wg calls = %v, want [Up Down] (should continue teardown)", wg.calls)
 		}
 
 		if m.Phase() != PhaseStopped {
@@ -252,13 +229,13 @@ func TestUp_ErrorDoesNotRollBack(t *testing.T) {
 	}
 
 	// WireGuard.Up was called but Down must NOT be called on failure.
-	if got := methods(wg.calls); !sliceEqual(got, []string{"Up"}) {
-		t.Errorf("wg calls = %v, want [Up] (no rollback Down)", got)
+	if !slices.Equal(wg.calls, []string{"Up"}) {
+		t.Errorf("wg calls = %v, want [Up] (no rollback Down)", wg.calls)
 	}
 
 	// Store.Stop must NOT be called.
-	if got := methods(store.calls); !sliceEqual(got, []string{"Start"}) {
-		t.Errorf("store calls = %v, want [Start] (no rollback Stop)", got)
+	if !slices.Equal(store.calls, []string{"Start"}) {
+		t.Errorf("store calls = %v, want [Start] (no rollback Stop)", store.calls)
 	}
 
 	if m.Phase() != PhaseStopped {
@@ -286,12 +263,12 @@ func TestDestroy_AfterPartialUp(t *testing.T) {
 		t.Fatalf("Destroy: %v", err)
 	}
 
-	if got := methods(wg.calls); !sliceEqual(got, []string{"Up", "Down"}) {
-		t.Errorf("wg calls = %v, want [Up Down]", got)
+	if !slices.Equal(wg.calls, []string{"Up", "Down"}) {
+		t.Errorf("wg calls = %v, want [Up Down]", wg.calls)
 	}
 
-	if got := methods(store.calls); !sliceEqual(got, []string{"Start", "Stop"}) {
-		t.Errorf("store calls = %v, want [Start Stop]", got)
+	if !slices.Equal(store.calls, []string{"Start", "Stop"}) {
+		t.Errorf("store calls = %v, want [Start Stop]", store.calls)
 	}
 }
 

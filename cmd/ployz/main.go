@@ -66,7 +66,7 @@ func main() {
 	}
 
 	root.AddCommand(devcmd.Cmd())
-	root.AddCommand(networkcmd.Cmd())
+	root.AddCommand(networkcmd.Cmd(&host, &contextName))
 	root.AddCommand(contextcmd.Cmd())
 	root.AddCommand(statuscmd.Cmd(&host, &contextName))
 

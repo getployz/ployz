@@ -3,13 +3,13 @@ package corrorun
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/netip"
 
+	"ployz/infra/docker"
+
 	"github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
 )
@@ -115,17 +115,7 @@ func (c *Container) Start(ctx context.Context) error {
 // Stop stops and removes the container. This is only called from
 // Mesh.Destroy — daemon shutdown leaves the container running.
 func (c *Container) Stop(ctx context.Context) error {
-	if err := c.docker.ContainerStop(ctx, c.name, container.StopOptions{}); err != nil {
-		if !errdefs.IsNotFound(err) {
-			return fmt.Errorf("stop corrosion container: %w", err)
-		}
-	}
-	if err := c.docker.ContainerRemove(ctx, c.name, container.RemoveOptions{Force: true}); err != nil {
-		if !errdefs.IsNotFound(err) {
-			return fmt.Errorf("remove corrosion container: %w", err)
-		}
-	}
-	return nil
+	return docker.StopAndRemove(ctx, c.docker, c.name)
 }
 
 func (c *Container) createAndStart(ctx context.Context) error {
@@ -147,35 +137,5 @@ func (c *Container) createAndStart(ctx context.Context) error {
 		},
 	}
 
-	_, err := c.docker.ContainerCreate(ctx, containerCfg, hostCfg, nil, nil, c.name)
-	if err != nil {
-		if !errdefs.IsNotFound(err) {
-			return fmt.Errorf("create container: %w", err)
-		}
-		if err := c.pullImage(ctx); err != nil {
-			return err
-		}
-		if _, err = c.docker.ContainerCreate(ctx, containerCfg, hostCfg, nil, nil, c.name); err != nil {
-			return fmt.Errorf("create container after pull: %w", err)
-		}
-	}
-
-	if err := c.docker.ContainerStart(ctx, c.name, container.StartOptions{}); err != nil {
-		return fmt.Errorf("start container: %w", err)
-	}
-	return nil
-}
-
-func (c *Container) pullImage(ctx context.Context) error {
-	slog.Info("Pulling Corrosion image.", "image", c.image)
-	resp, err := c.docker.ImagePull(ctx, c.image, image.PullOptions{})
-	if err != nil {
-		return fmt.Errorf("pull corrosion image: %w", err)
-	}
-	defer resp.Close()
-	// Drain the pull output to completion.
-	if _, err := io.Copy(io.Discard, resp); err != nil {
-		return fmt.Errorf("pull corrosion image: read response: %w", err)
-	}
-	return nil
+	return docker.CreateAndStart(ctx, c.docker, c.name, c.image, containerCfg, hostCfg, nil)
 }

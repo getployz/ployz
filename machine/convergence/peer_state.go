@@ -29,16 +29,14 @@ type peerState struct {
 }
 
 // classifyPeer determines the health state of a peer based on handshake
-// freshness and endpoint sweep progress.
-func classifyPeer(s *peerState, now time.Time) ployz.PeerHealth {
-	freshHandshake := !s.lastHandshake.IsZero() && now.Sub(s.lastHandshake) <= aliveFreshness
-
-	if freshHandshake {
+// freshness and endpoint sweep progress, updating s.health in place.
+func classifyPeer(s *peerState, now time.Time) {
+	if hasFreshHandshake(s, now) {
 		// Reset failure tracking but keep endpointIndex — the working
 		// endpoint stays sticky.
 		s.endpointsAttempted = 0
 		s.health = ployz.PeerAlive
-		return ployz.PeerAlive
+		return
 	}
 
 	// Single-endpoint peers never rotate, so we still need to mark the first
@@ -50,11 +48,15 @@ func classifyPeer(s *peerState, now time.Time) ployz.PeerHealth {
 
 	if s.endpointsAttempted < s.endpointCount {
 		s.health = ployz.PeerNew
-		return ployz.PeerNew
+		return
 	}
 
 	s.health = ployz.PeerSuspect
-	return ployz.PeerSuspect
+}
+
+// hasFreshHandshake reports whether the peer has a recent WireGuard handshake.
+func hasFreshHandshake(s *peerState, now time.Time) bool {
+	return !s.lastHandshake.IsZero() && now.Sub(s.lastHandshake) <= aliveFreshness
 }
 
 // shouldRotate reports whether it's time to try the next endpoint.
@@ -65,11 +67,30 @@ func shouldRotate(s *peerState, now time.Time) bool {
 	}
 	// If we have a recent handshake, don't rotate — endpoint is working
 	// or was recently working.
-	if !s.lastHandshake.IsZero() && now.Sub(s.lastHandshake) <= aliveFreshness {
+	if hasFreshHandshake(s, now) {
 		return false
 	}
 	// Current endpoint has had endpointTimeout to establish a handshake.
 	return !s.endpointSetAt.IsZero() && now.Sub(s.endpointSetAt) >= endpointTimeout
+}
+
+// rotationSnapshot captures the fields mutated by nextEndpoint so they
+// can be restored on reconcile failure.
+type rotationSnapshot struct {
+	endpointIndex      int
+	endpointsAttempted int
+}
+
+func snapshotRotation(s *peerState) rotationSnapshot {
+	return rotationSnapshot{
+		endpointIndex:      s.endpointIndex,
+		endpointsAttempted: s.endpointsAttempted,
+	}
+}
+
+func restoreRotation(s *peerState, snap rotationSnapshot) {
+	s.endpointIndex = snap.endpointIndex
+	s.endpointsAttempted = snap.endpointsAttempted
 }
 
 // nextEndpoint advances to the next endpoint index, wrapping around.

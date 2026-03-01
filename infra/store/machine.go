@@ -156,52 +156,12 @@ func (s *Store) DeleteMachine(ctx context.Context, id string) error {
 
 func scanMachineRecord(rows *corrosion.Rows) (ployz.MachineRecord, error) {
 	var (
-		id         string
-		name       string
-		pubKeyStr  string
-		epJSON     string
-		overlayStr string
-		labelsJSON string
-		updatedStr string
+		id, name, pubKeyStr, epJSON, overlayStr, labelsJSON, updatedStr string
 	)
 	if err := rows.Scan(&id, &name, &pubKeyStr, &epJSON, &overlayStr, &labelsJSON, &updatedStr); err != nil {
 		return ployz.MachineRecord{}, fmt.Errorf("scan machine row: %w", err)
 	}
-
-	pubKey, err := wgtypes.ParseKey(pubKeyStr)
-	if err != nil {
-		return ployz.MachineRecord{}, fmt.Errorf("parse public key for %s: %w", id, err)
-	}
-
-	endpoints, err := parseAddrPorts(epJSON)
-	if err != nil {
-		return ployz.MachineRecord{}, fmt.Errorf("parse endpoints for %s: %w", id, err)
-	}
-
-	overlayIP, err := netip.ParseAddr(overlayStr)
-	if err != nil {
-		return ployz.MachineRecord{}, fmt.Errorf("parse overlay IP for %s: %w", id, err)
-	}
-
-	var labels map[string]string
-	if err := json.Unmarshal([]byte(labelsJSON), &labels); err != nil {
-		return ployz.MachineRecord{}, fmt.Errorf("parse labels for %s: %w", id, err)
-	}
-
-	updatedAt, err := time.Parse(time.RFC3339, updatedStr)
-	if err != nil {
-		return ployz.MachineRecord{}, fmt.Errorf("parse updated_at for %s: %w", id, err)
-	}
-
-	return ployz.MachineRecord{
-		ID:        id,
-		Name:      name,
-		PublicKey: pubKey,
-		Endpoints: endpoints,
-		OverlayIP: overlayIP,
-		Labels:    labels,
-		UpdatedAt: updatedAt,
-	}, nil
+	return parseMachineFields(id, name, pubKeyStr, epJSON, overlayStr, labelsJSON, updatedStr)
 }
 
 // changeToMachineEvent parses an insert or update change into a MachineEvent.
@@ -218,47 +178,49 @@ func changeToMachineEvent(change *corrosion.ChangeEvent) (ployz.MachineEvent, er
 	}
 
 	var (
-		id         string
-		name       string
-		pubKeyStr  string
-		epJSON     string
-		overlayStr string
-		labelsJSON string
-		updatedStr string
+		id, name, pubKeyStr, epJSON, overlayStr, labelsJSON, updatedStr string
 	)
 	if err := change.Scan(&id, &name, &pubKeyStr, &epJSON, &overlayStr, &labelsJSON, &updatedStr); err != nil {
 		return ployz.MachineEvent{}, fmt.Errorf("scan change event: %w", err)
 	}
 
+	rec, err := parseMachineFields(id, name, pubKeyStr, epJSON, overlayStr, labelsJSON, updatedStr)
+	if err != nil {
+		return ployz.MachineEvent{}, err
+	}
+	return ployz.MachineEvent{Kind: kind, Record: rec}, nil
+}
+
+// parseMachineFields converts raw column strings into a MachineRecord.
+func parseMachineFields(id, name, pubKeyStr, epJSON, overlayStr, labelsJSON, updatedStr string) (ployz.MachineRecord, error) {
 	pubKey, err := wgtypes.ParseKey(pubKeyStr)
 	if err != nil {
-		return ployz.MachineEvent{}, fmt.Errorf("parse public key in change: %w", err)
+		return ployz.MachineRecord{}, fmt.Errorf("parse public key for %s: %w", id, err)
 	}
 	endpoints, err := parseAddrPorts(epJSON)
 	if err != nil {
-		return ployz.MachineEvent{}, fmt.Errorf("parse endpoints in change: %w", err)
+		return ployz.MachineRecord{}, fmt.Errorf("parse endpoints for %s: %w", id, err)
 	}
 	overlayIP, err := netip.ParseAddr(overlayStr)
 	if err != nil {
-		return ployz.MachineEvent{}, fmt.Errorf("parse overlay IP in change: %w", err)
+		return ployz.MachineRecord{}, fmt.Errorf("parse overlay IP for %s: %w", id, err)
 	}
 	var labels map[string]string
 	if err := json.Unmarshal([]byte(labelsJSON), &labels); err != nil {
-		return ployz.MachineEvent{}, fmt.Errorf("parse labels in change: %w", err)
+		return ployz.MachineRecord{}, fmt.Errorf("parse labels for %s: %w", id, err)
 	}
-	updatedAt, _ := time.Parse(time.RFC3339, updatedStr) // best-effort; change events may have different format
-
-	return ployz.MachineEvent{
-		Kind: kind,
-		Record: ployz.MachineRecord{
-			ID:        id,
-			Name:      name,
-			PublicKey: pubKey,
-			Endpoints: endpoints,
-			OverlayIP: overlayIP,
-			Labels:    labels,
-			UpdatedAt: updatedAt,
-		},
+	updatedAt, err := time.Parse(time.RFC3339, updatedStr)
+	if err != nil {
+		return ployz.MachineRecord{}, fmt.Errorf("parse updated_at for %s: %w", id, err)
+	}
+	return ployz.MachineRecord{
+		ID:        id,
+		Name:      name,
+		PublicKey: pubKey,
+		Endpoints: endpoints,
+		OverlayIP: overlayIP,
+		Labels:    labels,
+		UpdatedAt: updatedAt,
 	}, nil
 }
 

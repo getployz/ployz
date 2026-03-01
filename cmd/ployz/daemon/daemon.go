@@ -1,7 +1,7 @@
 package daemon
 
 import (
-	"ployz/cmd/ployz/cmdutil"
+	"ployz/platform"
 
 	"github.com/spf13/cobra"
 )
@@ -19,8 +19,8 @@ func Cmd() *cobra.Command {
 		Short: "Manage local ployzd lifecycle",
 	}
 
-	cmd.PersistentFlags().StringVar(&opts.socket, "socket", cmdutil.DefaultSocketPath(), "ployzd unix socket path")
-	cmd.PersistentFlags().StringVar(&opts.dataRoot, "data-root", cmdutil.DefaultDataRoot(), "Machine data root")
+	cmd.PersistentFlags().StringVar(&opts.socket, "socket", platform.DaemonSocketPath, "ployzd unix socket path")
+	cmd.PersistentFlags().StringVar(&opts.dataRoot, "data-root", platform.DaemonDataRoot, "Machine data root")
 
 	cmd.AddCommand(runCmd(opts))
 	return cmd

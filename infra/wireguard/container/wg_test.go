@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -217,7 +218,7 @@ func TestDown_StopsAndRemoves(t *testing.T) {
 	}
 
 	want := []string{"Stop", "Remove"}
-	if !sliceEqual(docker.calls, want) {
+	if !slices.Equal(docker.calls, want) {
 		t.Errorf("calls = %v, want %v", docker.calls, want)
 	}
 }
@@ -259,14 +260,3 @@ func contains(haystack []string, needle string) bool {
 	return false
 }
 
-func sliceEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
