@@ -1,4 +1,4 @@
-use crate::domain::model::{management_ip_from_key, NetworkName, OverlayIp, PublicKey};
+use crate::domain::model::{NetworkId, NetworkName, OverlayIp, PublicKey, management_ip_from_key};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -32,8 +32,9 @@ pub enum NetworkConfigError {
 }
 
 /// Persistent network membership: which mesh this machine belongs to.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkConfig {
+    pub id: NetworkId,
     pub name: NetworkName,
     pub overlay_ip: OverlayIp,
 }
@@ -41,7 +42,11 @@ pub struct NetworkConfig {
 impl NetworkConfig {
     pub fn new(name: NetworkName, public_key: &PublicKey) -> Self {
         let overlay_ip = management_ip_from_key(public_key);
-        Self { name, overlay_ip }
+        Self {
+            id: NetworkId::random(),
+            name,
+            overlay_ip,
+        }
     }
 
     /// Path to network config dir: `<data_dir>/networks/<name>/`
@@ -85,20 +90,27 @@ impl NetworkConfig {
         }
         Ok(())
     }
+}
 
-    /// Scan for an existing network config in the data dir.
-    /// Returns the first one found (one-at-a-time model).
-    pub fn scan(data_dir: &Path) -> Option<Self> {
-        let networks_dir = data_dir.join("networks");
-        let entries = std::fs::read_dir(&networks_dir).ok()?;
-        for entry in entries.flatten() {
-            if entry.path().is_dir() {
-                let config_path = entry.path().join("network.json");
-                if let Ok(config) = Self::load(&config_path) {
-                    return Some(config);
-                }
-            }
-        }
-        None
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::model::PublicKey;
+
+    #[test]
+    fn roundtrip_persists_network_id() {
+        let root =
+            std::env::temp_dir().join(format!("ployz-network-roundtrip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let cfg = NetworkConfig::new(NetworkName("alpha".into()), &PublicKey([7; 32]));
+        let path = NetworkConfig::path(&root, "alpha");
+        cfg.save(&path).expect("save config");
+
+        let loaded = NetworkConfig::load(&path).expect("load config");
+        assert_eq!(loaded.id, cfg.id);
+        assert_eq!(loaded.name, cfg.name);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

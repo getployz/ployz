@@ -67,7 +67,10 @@ async fn handle_connection(
     };
 
     tx.send(cmd).await.map_err(|_| {
-        std::io::Error::new(std::io::ErrorKind::BrokenPipe, "daemon command channel closed")
+        std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "daemon command channel closed",
+        )
     })?;
 
     let response = reply_rx.await.map_err(|_| {

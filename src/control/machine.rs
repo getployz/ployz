@@ -1,5 +1,7 @@
 use super::reconcile::{Mesh, MeshError};
-use crate::dataplane::traits::{MembershipStore, MeshNetwork, PeerProbe, ServiceControl, SyncProbe};
+use crate::dataplane::traits::{
+    MachineStore, MeshNetwork, PeerProbe, ServiceControl, SyncProbe,
+};
 use crate::domain::identity::Identity;
 use crate::domain::network::NetworkConfig;
 use crate::domain::phase::Phase;
@@ -16,7 +18,11 @@ pub struct Machine<N, S, Store, Probe, Sync> {
 }
 
 impl<N, S, Store, Probe, Sync> Machine<N, S, Store, Probe, Sync> {
-    pub fn new(identity: Identity, network: NetworkConfig, mesh: Mesh<N, S, Store, Probe, Sync>) -> Self {
+    pub fn new(
+        identity: Identity,
+        network: NetworkConfig,
+        mesh: Mesh<N, S, Store, Probe, Sync>,
+    ) -> Self {
         Self {
             identity,
             network,
@@ -42,7 +48,7 @@ impl<N, S, Store, Probe, Sy> Machine<N, S, Store, Probe, Sy>
 where
     N: MeshNetwork + 'static,
     S: ServiceControl + 'static,
-    Store: MembershipStore + 'static,
+    Store: MachineStore + 'static,
     Probe: PeerProbe + 'static,
     Sy: SyncProbe + 'static,
 {

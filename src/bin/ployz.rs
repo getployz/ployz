@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use ployz::transport::{DaemonRequest, Transport, UnixSocketTransport};
-use ployz::{Affordances, default_socket_path};
+use ployz::{Affordances, load_client_config};
 use std::process;
 
 #[derive(Parser)]
@@ -24,10 +24,24 @@ enum Command {
         #[command(subcommand)]
         action: MeshAction,
     },
+    /// Machine lifecycle and onboarding.
+    Machine {
+        #[command(subcommand)]
+        action: MachineAction,
+    },
 }
 
 #[derive(Subcommand)]
 enum MeshAction {
+    /// List known mesh networks and their local state.
+    List,
+    /// Show local state for one mesh network.
+    Status { network: String },
+    /// Join an existing mesh network using an invite token.
+    Join {
+        #[arg(long)]
+        token: String,
+    },
     /// Create a mesh network config only.
     Create { network: String },
     /// Create and start a new mesh network.
@@ -40,17 +54,61 @@ enum MeshAction {
     Destroy { network: String },
 }
 
+#[derive(Subcommand)]
+enum MachineAction {
+    /// Bootstrap a remote founder and create/start a network.
+    Init {
+        target: String,
+        #[arg(long)]
+        network: String,
+    },
+    /// Add a remote machine to the currently running network.
+    Add { target: String },
+    /// Invite token operations.
+    Invite {
+        #[command(subcommand)]
+        action: MachineInviteAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum MachineInviteAction {
+    /// Create an invite token for joining this running network.
+    Create {
+        /// Invite TTL in seconds.
+        #[arg(long, default_value_t = 600)]
+        ttl_secs: u64,
+    },
+    /// Import an invite token into local invite state.
+    Import {
+        #[arg(long)]
+        token: String,
+    },
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    let socket = cli
-        .socket
-        .unwrap_or_else(|| default_socket_path(&Affordances::detect()));
+    let resolved = match load_client_config(cli.socket, &Affordances::detect()) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(2);
+        }
+    };
+    let socket = resolved.socket;
     let transport = UnixSocketTransport::new(socket.clone());
 
     let request = match &cli.command {
         Command::Status => DaemonRequest::Status,
         Command::Mesh { action } => match action {
+            MeshAction::List => DaemonRequest::MeshList,
+            MeshAction::Status { network } => DaemonRequest::MeshStatus {
+                network: network.clone(),
+            },
+            MeshAction::Join { token } => DaemonRequest::MeshJoin {
+                token: token.clone(),
+            },
             MeshAction::Create { network } => DaemonRequest::MeshCreate {
                 network: network.clone(),
             },
@@ -63,6 +121,23 @@ async fn main() {
             MeshAction::Down => DaemonRequest::MeshDown,
             MeshAction::Destroy { network } => DaemonRequest::MeshDestroy {
                 network: network.clone(),
+            },
+        },
+        Command::Machine { action } => match action {
+            MachineAction::Init { target, network } => DaemonRequest::MachineInit {
+                target: target.clone(),
+                network: network.clone(),
+            },
+            MachineAction::Add { target } => DaemonRequest::MachineAdd {
+                target: target.clone(),
+            },
+            MachineAction::Invite { action } => match action {
+                MachineInviteAction::Create { ttl_secs } => DaemonRequest::MachineInviteCreate {
+                    ttl_secs: *ttl_secs,
+                },
+                MachineInviteAction::Import { token } => DaemonRequest::MachineInviteImport {
+                    token: token.clone(),
+                },
             },
         },
     };

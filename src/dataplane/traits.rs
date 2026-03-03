@@ -1,4 +1,6 @@
-use crate::domain::model::{MachineEvent, MachineId, MachineRecord, PublicKey};
+use crate::domain::model::{
+    InviteRecord, MachineEvent, MachineId, MachineRecord, NetworkId, PublicKey,
+};
 use std::collections::HashMap;
 use std::future::Future;
 use thiserror::Error;
@@ -41,19 +43,39 @@ pub trait PeerProbe: Send + Sync {
     ) -> impl Future<Output = PortResult<HashMap<PublicKey, Option<Instant>>>> + Send + '_;
 }
 
-pub trait MembershipStore: Send + Sync {
-    fn list_machines(&self) -> impl Future<Output = PortResult<Vec<MachineRecord>>> + Send + '_;
+pub trait MachineStore: Send + Sync {
+    fn list_machines<'a>(
+        &'a self,
+        network_id: &'a NetworkId,
+    ) -> impl Future<Output = PortResult<Vec<MachineRecord>>> + Send + 'a;
     fn upsert_machine<'a>(
         &'a self,
+        network_id: &'a NetworkId,
         record: &'a MachineRecord,
     ) -> impl Future<Output = PortResult<()>> + Send + 'a;
     fn delete_machine<'a>(
         &'a self,
+        network_id: &'a NetworkId,
         id: &'a MachineId,
     ) -> impl Future<Output = PortResult<()>> + Send + 'a;
-    fn subscribe_machines(
-        &self,
-    ) -> impl Future<Output = PortResult<(Vec<MachineRecord>, mpsc::Receiver<MachineEvent>)>> + Send + '_;
+    fn subscribe_machines<'a>(
+        &'a self,
+        network_id: &'a NetworkId,
+    ) -> impl Future<Output = PortResult<(Vec<MachineRecord>, mpsc::Receiver<MachineEvent>)>> + Send + 'a;
+}
+
+pub trait InviteStore: Send + Sync {
+    fn create_invite<'a>(
+        &'a self,
+        network_id: &'a NetworkId,
+        invite: &'a InviteRecord,
+    ) -> impl Future<Output = PortResult<()>> + Send + 'a;
+    fn consume_invite<'a>(
+        &'a self,
+        network_id: &'a NetworkId,
+        invite_id: &'a str,
+        now_unix_secs: u64,
+    ) -> impl Future<Output = PortResult<InviteRecord>> + Send + 'a;
 }
 
 pub trait SyncProbe: Send + Sync {

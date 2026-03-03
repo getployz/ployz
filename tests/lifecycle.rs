@@ -1,14 +1,19 @@
-use ployz::{ConvergenceConfig, MembershipStore, Mesh, Phase};
-use ployz::{MachineId, MachineRecord, NetworkName, OverlayIp, PublicKey};
+use ployz::{ConvergenceConfig, MachineStore, Mesh, Phase};
+use ployz::{MachineId, MachineRecord, NetworkId, NetworkName, OverlayIp, PublicKey};
 use ployz::{MemoryService, MemoryStore, MemorySyncProbe, MemoryWireGuard};
 use std::net::Ipv6Addr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::Instant;
 
+fn test_network_id() -> NetworkId {
+    NetworkId("test-net".into())
+}
+
 fn test_record(id: &str, key_byte: u8) -> MachineRecord {
     MachineRecord {
         id: MachineId(id.into()),
+        network_id: test_network_id(),
         network: NetworkName("test".into()),
         public_key: PublicKey([key_byte; 32]),
         overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
@@ -21,7 +26,7 @@ fn make_mesh(
     svc: Arc<MemoryService>,
     store: Arc<MemoryStore>,
 ) -> Mesh<MemoryWireGuard, MemoryService, MemoryStore, MemoryWireGuard, MemorySyncProbe> {
-    Mesh::new(wg.clone(), svc, store, Some(wg), None)
+    Mesh::new(test_network_id(), wg.clone(), svc, store, Some(wg), None)
         .with_convergence_config(ConvergenceConfig {
             probe_interval: Duration::from_millis(50),
             handshake_timeout: Duration::from_millis(200),
@@ -38,7 +43,10 @@ async fn startup_reaches_running_with_healthy_service() {
     let svc = Arc::new(MemoryService::new());
     let store = Arc::new(MemoryStore::new());
 
-    store.upsert_machine(&test_record("m1", 1)).await.unwrap();
+    store
+        .upsert_machine(&test_network_id(), &test_record("m1", 1))
+        .await
+        .unwrap();
 
     let mut mesh = make_mesh(wg.clone(), svc.clone(), store);
     mesh.up().await.unwrap();
@@ -117,12 +125,17 @@ async fn bootstrap_timeout_returns_typed_error() {
     // Peer key exists in handshake map but with no handshake — network gate blocks.
     wg.set_handshake(PublicKey([1; 32]), None);
 
-    let mut mesh: Mesh<MemoryWireGuard, MemoryService, MemoryStore, MemoryWireGuard, MemorySyncProbe> =
-        Mesh::new(wg.clone(), svc, store, Some(wg), None).with_bootstrap_timing(
-            Duration::from_millis(10),
-            Duration::from_millis(100),
-            2,
-        );
+    let mut mesh: Mesh<
+        MemoryWireGuard,
+        MemoryService,
+        MemoryStore,
+        MemoryWireGuard,
+        MemorySyncProbe,
+    > = Mesh::new(test_network_id(), wg.clone(), svc, store, Some(wg), None).with_bootstrap_timing(
+        Duration::from_millis(10),
+        Duration::from_millis(100),
+        2,
+    );
 
     let err = mesh.up().await.unwrap_err();
     assert!(err.to_string().contains("bootstrap timeout"));
@@ -168,9 +181,17 @@ async fn two_stage_bootstrap_with_sync_probe() {
         sync_clone.set_synced(true);
     });
 
-    let mut mesh: Mesh<MemoryWireGuard, MemoryService, MemoryStore, MemoryWireGuard, MemorySyncProbe> =
-        Mesh::new(wg, svc, store, None, Some(sync_probe))
-        .with_bootstrap_timing(Duration::from_millis(10), Duration::from_secs(5), 2);
+    let mut mesh: Mesh<
+        MemoryWireGuard,
+        MemoryService,
+        MemoryStore,
+        MemoryWireGuard,
+        MemorySyncProbe,
+    > = Mesh::new(test_network_id(), wg, svc, store, None, Some(sync_probe)).with_bootstrap_timing(
+        Duration::from_millis(10),
+        Duration::from_secs(5),
+        2,
+    );
 
     mesh.up().await.unwrap();
     assert_eq!(mesh.phase(), Phase::Running);
@@ -186,9 +207,17 @@ async fn sync_gate_timeout() {
     // Sync never completes.
     sync_probe.set_synced(false);
 
-    let mut mesh: Mesh<MemoryWireGuard, MemoryService, MemoryStore, MemoryWireGuard, MemorySyncProbe> =
-        Mesh::new(wg, svc, store, None, Some(sync_probe))
-        .with_bootstrap_timing(Duration::from_millis(10), Duration::from_millis(100), 2);
+    let mut mesh: Mesh<
+        MemoryWireGuard,
+        MemoryService,
+        MemoryStore,
+        MemoryWireGuard,
+        MemorySyncProbe,
+    > = Mesh::new(test_network_id(), wg, svc, store, None, Some(sync_probe)).with_bootstrap_timing(
+        Duration::from_millis(10),
+        Duration::from_millis(100),
+        2,
+    );
 
     let err = mesh.up().await.unwrap_err();
     assert!(err.to_string().contains("bootstrap timeout"));
@@ -202,9 +231,17 @@ async fn single_node_network_gate_passes() {
     let store = Arc::new(MemoryStore::new());
 
     // No peers, no sync prober — both gates skip.
-    let mut mesh: Mesh<MemoryWireGuard, MemoryService, MemoryStore, MemoryWireGuard, MemorySyncProbe> =
-        Mesh::new(wg.clone(), svc, store, Some(wg), None)
-            .with_bootstrap_timing(Duration::from_millis(10), Duration::from_secs(5), 2);
+    let mut mesh: Mesh<
+        MemoryWireGuard,
+        MemoryService,
+        MemoryStore,
+        MemoryWireGuard,
+        MemorySyncProbe,
+    > = Mesh::new(test_network_id(), wg.clone(), svc, store, Some(wg), None).with_bootstrap_timing(
+        Duration::from_millis(10),
+        Duration::from_secs(5),
+        2,
+    );
 
     mesh.up().await.unwrap();
     assert_eq!(mesh.phase(), Phase::Running);
@@ -224,7 +261,10 @@ async fn store_event_triggers_reconcile() {
     let initial_count = wg.set_peers_count();
 
     // Add a peer via the store — should trigger event → reconcile.
-    store.upsert_machine(&test_record("m2", 2)).await.unwrap();
+    store
+        .upsert_machine(&test_network_id(), &test_record("m2", 2))
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     assert!(
@@ -244,12 +284,16 @@ async fn endpoint_rotation_on_stale_handshake() {
     let key = PublicKey([0xAA; 32]);
     let record = MachineRecord {
         id: MachineId("m-multi".into()),
+        network_id: test_network_id(),
         network: NetworkName("test".into()),
         public_key: key.clone(),
         overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
         endpoints: vec!["a:1".into(), "b:2".into()],
     };
-    store.upsert_machine(&record).await.unwrap();
+    store
+        .upsert_machine(&test_network_id(), &record)
+        .await
+        .unwrap();
 
     // Give a stale handshake so rotation fires.
     let stale = Instant::now() - Duration::from_secs(60);
@@ -279,12 +323,16 @@ async fn fresh_handshake_keeps_endpoint_sticky() {
     let key = PublicKey([0xBB; 32]);
     let record = MachineRecord {
         id: MachineId("m-sticky".into()),
+        network_id: test_network_id(),
         network: NetworkName("test".into()),
         public_key: key.clone(),
         overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
         endpoints: vec!["a:1".into(), "b:2".into()],
     };
-    store.upsert_machine(&record).await.unwrap();
+    store
+        .upsert_machine(&test_network_id(), &record)
+        .await
+        .unwrap();
 
     // Fresh handshake — should NOT rotate.
     wg.set_handshake(key.clone(), Some(Instant::now()));

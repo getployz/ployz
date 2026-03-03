@@ -1,9 +1,9 @@
 use super::convergence::{ConvergenceError, ConvergenceLoop};
 use crate::dataplane::traits::{
-    MembershipStore, MeshNetwork, PeerProbe, PortError, ServiceControl, SyncProbe,
+    MachineStore, MeshNetwork, PeerProbe, PortError, ServiceControl, SyncProbe,
 };
-use crate::domain::model::MachineId;
-use crate::domain::phase::{transition, Phase, PhaseEvent, TransitionError};
+use crate::domain::model::{MachineId, NetworkId};
+use crate::domain::phase::{Phase, PhaseEvent, TransitionError, transition};
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -101,6 +101,7 @@ impl From<ConvergenceError> for MeshError {
 
 pub struct Mesh<N, S, Store, Probe, Sync> {
     phase: Phase,
+    network_id: NetworkId,
     network: Arc<N>,
     service: Arc<S>,
     membership: Arc<Store>,
@@ -115,6 +116,7 @@ pub struct Mesh<N, S, Store, Probe, Sync> {
 
 impl<N, S, Store, Probe, Sync> Mesh<N, S, Store, Probe, Sync> {
     pub fn new(
+        network_id: NetworkId,
         network: Arc<N>,
         service: Arc<S>,
         membership: Arc<Store>,
@@ -123,6 +125,7 @@ impl<N, S, Store, Probe, Sync> Mesh<N, S, Store, Probe, Sync> {
     ) -> Self {
         Self {
             phase: Phase::Stopped,
+            network_id,
             network,
             service,
             membership,
@@ -176,7 +179,7 @@ impl<N, S, Store, Probe, Sy> Mesh<N, S, Store, Probe, Sy>
 where
     N: MeshNetwork + 'static,
     S: ServiceControl + 'static,
-    Store: MembershipStore + 'static,
+    Store: MachineStore + 'static,
     Probe: PeerProbe + 'static,
     Sy: SyncProbe + 'static,
 {
@@ -207,6 +210,7 @@ where
         }
 
         let mut conv = ConvergenceLoop::new(
+            self.network_id.clone(),
             self.membership.clone(),
             self.network.clone(),
             self.prober.clone(),
@@ -286,8 +290,8 @@ where
             loop {
                 match prober.peer_handshakes().await {
                     Ok(handshakes) => {
-                        let connected = handshakes.is_empty()
-                            || handshakes.values().any(|hs| hs.is_some());
+                        let connected =
+                            handshakes.is_empty() || handshakes.values().any(|hs| hs.is_some());
                         if connected {
                             consecutive += 1;
                             if consecutive >= required {

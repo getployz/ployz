@@ -1,4 +1,5 @@
 use derive_more::Display;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::net::Ipv6Addr;
@@ -8,6 +9,22 @@ pub struct MachineId(pub String);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
 pub struct NetworkName(pub String);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
+pub struct NetworkId(pub String);
+
+impl NetworkId {
+    pub fn random() -> Self {
+        let mut bytes = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        let mut value = String::with_capacity(32);
+        for b in &bytes {
+            use std::fmt::Write as _;
+            let _ = write!(&mut value, "{b:02x}");
+        }
+        Self(value)
+    }
+}
 
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PublicKey(pub [u8; 32]);
@@ -35,13 +52,27 @@ impl fmt::Debug for PrivateKey {
 #[display("{_0}")]
 pub struct OverlayIp(pub Ipv6Addr);
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MachineRecord {
     pub id: MachineId,
+    pub network_id: NetworkId,
     pub network: NetworkName,
     pub public_key: PublicKey,
     pub overlay_ip: OverlayIp,
     pub endpoints: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InviteRecord {
+    pub id: String,
+    pub network_id: NetworkId,
+    pub network_name: NetworkName,
+    pub issued_by: MachineId,
+    pub expires_at: u64,
+    pub nonce: String,
+    pub max_uses: u32,
+    pub used: u32,
+    pub revoked: bool,
 }
 
 #[derive(Debug, Clone)]

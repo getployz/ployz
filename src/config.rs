@@ -1,3 +1,10 @@
+use directories::{BaseDirs, ProjectDirs};
+use figment::Figment;
+use figment::providers::{Env, Format, Serialized, Toml};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use thiserror::Error;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Os {
     Linux,
@@ -62,21 +69,55 @@ impl Affordances {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum ConfigLoadError {
+    #[error("failed to load configuration: {0}")]
+    Load(#[from] figment::Error),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClientConfig {
+    pub socket: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DaemonConfig {
+    pub data_dir: PathBuf,
+    pub socket: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RuntimeDefaults {
+    data_dir: PathBuf,
+    socket: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ClientOverrides {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    socket: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DaemonOverrides {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data_dir: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    socket: Option<String>,
+}
+
 /// Returns the platform-appropriate default data directory.
 ///
 /// - Linux (root):  `/var/lib/ployz`
 /// - Linux (user):  `$XDG_DATA_HOME/ployz` or `~/.local/share/ployz`
 /// - macOS:         `~/Library/Application Support/ployz`
-/// - Other:         `~/.ployz`
-pub fn default_data_dir(aff: &Affordances) -> std::path::PathBuf {
+/// - Other:         project data dir (`~/.ployz` fallback)
+pub fn default_data_dir(aff: &Affordances) -> PathBuf {
     match aff.os {
         Os::Linux if aff.is_root => "/var/lib/ployz".into(),
-        Os::Linux => match std::env::var("XDG_DATA_HOME") {
-            Ok(dir) => std::path::PathBuf::from(dir).join("ployz"),
-            Err(_) => home_dir().join(".local/share/ployz"),
-        },
-        Os::Darwin => home_dir().join("Library/Application Support/ployz"),
-        Os::Other => home_dir().join(".ployz"),
+        Os::Linux | Os::Darwin | Os::Other => project_dirs()
+            .map(|dirs| dirs.data_local_dir().to_path_buf())
+            .unwrap_or_else(|| home_dir().join(".ployz")),
     }
 }
 
@@ -90,24 +131,92 @@ pub fn default_data_dir(aff: &Affordances) -> std::path::PathBuf {
 /// - macOS:         `$TMPDIR/ployz/ployzd.sock` (per-user, per-boot)
 /// - Other:         `/tmp/ployz/ployzd.sock`
 pub fn default_socket_path(aff: &Affordances) -> String {
-    match aff.os {
-        Os::Linux if aff.is_root => "/run/ployz/ployzd.sock".into(),
-        Os::Linux => match std::env::var("XDG_RUNTIME_DIR") {
-            Ok(dir) => format!("{dir}/ployz/ployzd.sock"),
-            Err(_) => "/tmp/ployz/ployzd.sock".into(),
-        },
-        Os::Darwin => {
-            let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into());
-            format!("{tmpdir}ployz/ployzd.sock")
-        }
-        Os::Other => "/tmp/ployz/ployzd.sock".into(),
-    }
+    let path = match aff.os {
+        Os::Linux if aff.is_root => PathBuf::from("/run/ployz/ployzd.sock"),
+        Os::Linux => base_dirs()
+            .and_then(|dirs| {
+                dirs.runtime_dir()
+                    .map(|runtime| runtime.join("ployz/ployzd.sock"))
+            })
+            .unwrap_or_else(|| PathBuf::from("/tmp/ployz/ployzd.sock")),
+        Os::Darwin => std::env::temp_dir().join("ployz/ployzd.sock"),
+        Os::Other => PathBuf::from("/tmp/ployz/ployzd.sock"),
+    };
+    path.to_string_lossy().into_owned()
 }
 
-fn home_dir() -> std::path::PathBuf {
-    std::env::var("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"))
+/// Returns the default config file path.
+///
+/// Can be overridden via `PLOYZ_CONFIG`.
+pub fn default_config_path() -> PathBuf {
+    project_dirs()
+        .map(|dirs| dirs.config_dir().join("config.toml"))
+        .unwrap_or_else(|| home_dir().join(".config/ployz/config.toml"))
+}
+
+/// Returns the effective config file path, honoring `PLOYZ_CONFIG`.
+pub fn resolve_config_path() -> PathBuf {
+    std::env::var_os("PLOYZ_CONFIG")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_config_path)
+}
+
+pub fn load_client_config(
+    cli_socket: Option<String>,
+    aff: &Affordances,
+) -> std::result::Result<ClientConfig, ConfigLoadError> {
+    let overrides = ClientOverrides { socket: cli_socket };
+
+    build_figment(aff)
+        .merge(Serialized::defaults(overrides))
+        .extract()
+        .map_err(ConfigLoadError::from)
+}
+
+pub fn load_daemon_config(
+    cli_data_dir: Option<PathBuf>,
+    cli_socket: Option<String>,
+    aff: &Affordances,
+) -> std::result::Result<DaemonConfig, ConfigLoadError> {
+    let overrides = DaemonOverrides {
+        data_dir: cli_data_dir,
+        socket: cli_socket,
+    };
+
+    build_figment(aff)
+        .merge(Serialized::defaults(overrides))
+        .extract()
+        .map_err(ConfigLoadError::from)
+}
+
+fn build_figment(aff: &Affordances) -> Figment {
+    let defaults = RuntimeDefaults {
+        data_dir: default_data_dir(aff),
+        socket: default_socket_path(aff),
+    };
+
+    let mut figment = Figment::new().merge(Serialized::defaults(defaults));
+    let config_path = resolve_config_path();
+    if config_path.exists() {
+        figment = figment.merge(Toml::file(config_path));
+    }
+
+    figment.merge(Env::prefixed("PLOYZ_"))
+}
+
+fn base_dirs() -> Option<BaseDirs> {
+    BaseDirs::new()
+}
+
+fn project_dirs() -> Option<ProjectDirs> {
+    ProjectDirs::from("", "", "ployz")
+}
+
+fn home_dir() -> PathBuf {
+    base_dirs()
+        .map(|dirs| dirs.home_dir().to_path_buf())
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
 }
 
 #[derive(Debug, Clone)]
