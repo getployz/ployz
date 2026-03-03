@@ -55,11 +55,10 @@ impl NetworkConfig {
     }
 
     pub fn load(path: &Path) -> Result<Self> {
-        let data =
-            std::fs::read_to_string(path).map_err(|source| NetworkConfigError::Read {
-                path: path.to_path_buf(),
-                source,
-            })?;
+        let data = std::fs::read_to_string(path).map_err(|source| NetworkConfigError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
         serde_json::from_str(&data).map_err(NetworkConfigError::Parse)
     }
 

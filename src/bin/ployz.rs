@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use ployz::transport::{DaemonRequest, Transport, UnixSocketTransport};
-use ployz::{default_socket_path, Affordances};
+use ployz::{Affordances, default_socket_path};
 use std::process;
 
 #[derive(Parser)]
@@ -28,13 +28,16 @@ enum Command {
 
 #[derive(Subcommand)]
 enum MeshAction {
-    /// Initialize and join a mesh network.
-    #[command(alias = "create")]
+    /// Create a mesh network config only.
+    Create { network: String },
+    /// Create and start a new mesh network.
     Init { network: String },
-    /// Stop mesh infra but keep network config (auto-resumes on reboot).
+    /// Start an existing mesh network.
+    Up { network: String },
+    /// Stop mesh infra but keep network config and data.
     Down,
     /// Tear down all mesh resources and leave the network permanently.
-    Destroy,
+    Destroy { network: String },
 }
 
 #[tokio::main]
@@ -48,11 +51,19 @@ async fn main() {
     let request = match &cli.command {
         Command::Status => DaemonRequest::Status,
         Command::Mesh { action } => match action {
+            MeshAction::Create { network } => DaemonRequest::MeshCreate {
+                network: network.clone(),
+            },
             MeshAction::Init { network } => DaemonRequest::MeshInit {
                 network: network.clone(),
             },
+            MeshAction::Up { network } => DaemonRequest::MeshUp {
+                network: network.clone(),
+            },
             MeshAction::Down => DaemonRequest::MeshDown,
-            MeshAction::Destroy => DaemonRequest::MeshDestroy,
+            MeshAction::Destroy { network } => DaemonRequest::MeshDestroy {
+                network: network.clone(),
+            },
         },
     };
 

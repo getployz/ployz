@@ -1,10 +1,10 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use ployz::transport::listener::{serve, IncomingCommand};
+use ployz::transport::listener::{IncomingCommand, serve};
 use ployz::transport::{DaemonRequest, DaemonResponse};
 use ployz::{
-    default_data_dir, default_socket_path, resolve_profile, Affordances, Identity, Machine,
-    MachineRecord, MembershipStore, MemoryService, MemoryStore, MemorySyncProbe, MemoryWireGuard,
-    Mesh, Mode, NetworkConfig, NetworkName,
+    Affordances, Identity, Machine, MachineRecord, MembershipStore, MemoryService, MemoryStore,
+    MemorySyncProbe, MemoryWireGuard, Mesh, Mode, NetworkConfig, NetworkName, default_data_dir,
+    default_socket_path, resolve_profile,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -121,12 +121,6 @@ async fn cmd_run(data_dir: &Path, mode: Mode, socket_path: &str) -> Result<()> {
 
     let mut state = DaemonState::new(data_dir, identity);
 
-    // Auto-resume: if a network config exists on disk, start the mesh.
-    if let Some(net_config) = NetworkConfig::scan(data_dir) {
-        println!("resuming network: {}", net_config.name);
-        state.start_mesh(net_config).await;
-    }
-
     println!("ployzd running (socket: {socket_path})");
 
     loop {
@@ -152,7 +146,9 @@ async fn cmd_run(data_dir: &Path, mode: Mode, socket_path: &str) -> Result<()> {
 struct DaemonState {
     data_dir: PathBuf,
     identity: Identity,
-    machine: Option<Machine<MemoryWireGuard, MemoryService, MemoryStore, MemoryWireGuard, MemorySyncProbe>>,
+    machine: Option<
+        Machine<MemoryWireGuard, MemoryService, MemoryStore, MemoryWireGuard, MemorySyncProbe>,
+    >,
     store: Arc<MemoryStore>,
 }
 
@@ -169,9 +165,11 @@ impl DaemonState {
     async fn handle(&mut self, req: DaemonRequest) -> DaemonResponse {
         match req {
             DaemonRequest::Status => self.handle_status(),
+            DaemonRequest::MeshCreate { network } => self.handle_mesh_create(&network),
             DaemonRequest::MeshInit { network } => self.handle_mesh_init(&network).await,
+            DaemonRequest::MeshUp { network } => self.handle_mesh_up(&network).await,
             DaemonRequest::MeshDown => self.handle_mesh_down().await,
-            DaemonRequest::MeshDestroy => self.handle_mesh_destroy().await,
+            DaemonRequest::MeshDestroy { network } => self.handle_mesh_destroy(&network).await,
         }
     }
 
@@ -184,7 +182,10 @@ impl DaemonState {
                     ok: true,
                     message: format!(
                         "machine:  {}\nnetwork:  {}\noverlay:  {}\nphase:    {:?}",
-                        id.machine_id, net.name, net.overlay_ip, machine.phase(),
+                        id.machine_id,
+                        net.name,
+                        net.overlay_ip,
+                        machine.phase(),
                     ),
                 }
             }
@@ -198,38 +199,127 @@ impl DaemonState {
         }
     }
 
-    async fn handle_mesh_init(&mut self, network: &str) -> DaemonResponse {
-        if self.machine.is_some() {
-            return DaemonResponse {
-                ok: false,
-                message: "a mesh is already running -- destroy it first".into(),
-            };
-        }
-
-        let net_config = NetworkConfig::new(
-            NetworkName(network.into()),
-            &self.identity.public_key,
-        );
-
-        // Save network config to disk.
-        let config_path = NetworkConfig::path(&self.data_dir, network);
-        if let Err(e) = net_config.save(&config_path) {
-            return DaemonResponse {
-                ok: false,
-                message: format!("failed to save network config: {e}"),
-            };
-        }
-
-        let msg = format!(
-            "initialized network '{}'\n  overlay: {}",
-            net_config.name, net_config.overlay_ip,
-        );
-
-        self.start_mesh(net_config).await;
+    fn handle_mesh_create(&self, network: &str) -> DaemonResponse {
+        let net_config = match self.create_network_config(network) {
+            Ok(config) => config,
+            Err(message) => {
+                return DaemonResponse {
+                    ok: false,
+                    message,
+                };
+            }
+        };
 
         DaemonResponse {
             ok: true,
-            message: msg,
+            message: format!(
+                "created network '{}'\n  overlay: {}\n  state:   created",
+                net_config.name, net_config.overlay_ip,
+            ),
+        }
+    }
+
+    async fn handle_mesh_init(&mut self, network: &str) -> DaemonResponse {
+        if let Some(machine) = &self.machine {
+            return DaemonResponse {
+                ok: false,
+                message: format!(
+                    "network '{}' is already running -- run `mesh down` first",
+                    machine.network.name,
+                ),
+            };
+        }
+
+        let net_config = match self.create_network_config(network) {
+            Ok(config) => config,
+            Err(message) => {
+                return DaemonResponse {
+                    ok: false,
+                    message,
+                };
+            }
+        };
+
+        let network_name = net_config.name.clone();
+        let overlay_ip = net_config.overlay_ip;
+        if let Err(e) = self.start_mesh(net_config).await {
+            return DaemonResponse {
+                ok: false,
+                message: format!(
+                    "initialized network '{}' but failed to start: {e}\n  state:   created",
+                    network_name,
+                ),
+            };
+        }
+
+        DaemonResponse {
+            ok: true,
+            message: format!(
+                "initialized and started network '{}'\n  overlay: {}\n  state:   running",
+                network_name, overlay_ip,
+            ),
+        }
+    }
+
+    fn create_network_config(&self, network: &str) -> std::result::Result<NetworkConfig, String> {
+        let config_path = NetworkConfig::path(&self.data_dir, network);
+        if config_path.exists() {
+            return Err(format!(
+                "network '{network}' already exists -- use `mesh up {network}` or `mesh destroy {network}`"
+            ));
+        }
+
+        let net_config = NetworkConfig::new(NetworkName(network.into()), &self.identity.public_key);
+
+        if let Err(e) = net_config.save(&config_path) {
+            return Err(format!("failed to save network config: {e}"));
+        }
+
+        Ok(net_config)
+    }
+
+    async fn handle_mesh_up(&mut self, network: &str) -> DaemonResponse {
+        if let Some(machine) = &self.machine {
+            return DaemonResponse {
+                ok: false,
+                message: format!(
+                    "network '{}' is already running -- run `mesh down` first",
+                    machine.network.name,
+                ),
+            };
+        }
+
+        let config_path = NetworkConfig::path(&self.data_dir, network);
+        if !config_path.exists() {
+            return DaemonResponse {
+                ok: false,
+                message: format!(
+                    "network '{network}' does not exist -- run `mesh create {network}` or `mesh init {network}`"
+                ),
+            };
+        }
+
+        let net_config = match NetworkConfig::load(&config_path) {
+            Ok(config) => config,
+            Err(e) => {
+                return DaemonResponse {
+                    ok: false,
+                    message: format!("failed to load network config: {e}"),
+                };
+            }
+        };
+
+        let network_name = net_config.name.clone();
+        if let Err(e) = self.start_mesh(net_config).await {
+            return DaemonResponse {
+                ok: false,
+                message: e,
+            };
+        }
+
+        DaemonResponse {
+            ok: true,
+            message: format!("mesh '{}' started", network_name),
         }
     }
 
@@ -240,7 +330,7 @@ impl DaemonState {
                     self.machine = None;
                     DaemonResponse {
                         ok: true,
-                        message: "mesh stopped (config kept, will auto-resume on reboot)".into(),
+                        message: "mesh stopped (config kept)".into(),
                     }
                 }
                 Err(e) => DaemonResponse {
@@ -255,43 +345,47 @@ impl DaemonState {
         }
     }
 
-    async fn handle_mesh_destroy(&mut self) -> DaemonResponse {
-        let network_name = match &mut self.machine {
-            Some(machine) => {
-                let name = machine.network.name.0.clone();
+    async fn handle_mesh_destroy(&mut self, network: &str) -> DaemonResponse {
+        let running_target = self
+            .machine
+            .as_ref()
+            .map(|machine| machine.network.name.0 == network)
+            .unwrap_or(false);
+
+        let config_path = NetworkConfig::path(&self.data_dir, network);
+        if !running_target && !config_path.exists() {
+            return DaemonResponse {
+                ok: false,
+                message: format!("network '{network}' does not exist"),
+            };
+        }
+
+        if running_target {
+            if let Some(machine) = &mut self.machine {
                 if let Err(e) = machine.mesh.destroy().await {
                     return DaemonResponse {
                         ok: false,
                         message: format!("destroy failed: {e}"),
                     };
                 }
-                self.machine = None;
-                Some(name)
             }
-            None => None,
-        };
+            self.machine = None;
+        }
 
-        // Clean up network config on disk. If no machine was running,
-        // scan for a stale config to clean up.
-        let name = network_name.or_else(|| {
-            NetworkConfig::scan(&self.data_dir).map(|c| c.name.0)
-        });
+        if let Err(e) = NetworkConfig::delete(&self.data_dir, network) {
+            return DaemonResponse {
+                ok: false,
+                message: format!("failed to delete network config: {e}"),
+            };
+        }
 
-        if let Some(name) = name {
-            let _ = NetworkConfig::delete(&self.data_dir, &name);
-            DaemonResponse {
-                ok: true,
-                message: format!("mesh '{name}' destroyed"),
-            }
-        } else {
-            DaemonResponse {
-                ok: true,
-                message: "nothing to destroy".into(),
-            }
+        DaemonResponse {
+            ok: true,
+            message: format!("mesh '{network}' destroyed"),
         }
     }
 
-    async fn start_mesh(&mut self, net_config: NetworkConfig) {
+    async fn start_mesh(&mut self, net_config: NetworkConfig) -> std::result::Result<(), String> {
         // Seed the membership store with self.
         let self_record = MachineRecord {
             id: self.identity.machine_id.clone(),
@@ -300,24 +394,26 @@ impl DaemonState {
             overlay_ip: net_config.overlay_ip,
             endpoints: vec!["127.0.0.1:51820".into()],
         };
-        if let Err(e) = self.store.upsert_machine(&self_record).await {
-            tracing::error!(?e, "failed to seed store");
-            return;
-        }
+        self.store
+            .upsert_machine(&self_record)
+            .await
+            .map_err(|e| format!("failed to seed store: {e}"))?;
 
         let mut machine = self.new_machine(net_config);
-        if let Err(e) = machine.init_network().await {
-            tracing::error!(?e, "failed to start network");
-            return;
-        }
+        machine
+            .init_network()
+            .await
+            .map_err(|e| format!("failed to start network: {e}"))?;
 
         self.machine = Some(machine);
+        Ok(())
     }
 
     fn new_machine(
         &self,
         net_config: NetworkConfig,
-    ) -> Machine<MemoryWireGuard, MemoryService, MemoryStore, MemoryWireGuard, MemorySyncProbe> {
+    ) -> Machine<MemoryWireGuard, MemoryService, MemoryStore, MemoryWireGuard, MemorySyncProbe>
+    {
         let wg = Arc::new(MemoryWireGuard::new());
         let service = Arc::new(MemoryService::new());
         let mesh = Mesh::new(wg.clone(), service, self.store.clone(), Some(wg), None);

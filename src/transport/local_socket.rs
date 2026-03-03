@@ -2,13 +2,14 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonRequest {
     Status,
+    MeshCreate { network: String },
     MeshInit { network: String },
+    MeshUp { network: String },
     MeshDown,
-    MeshDestroy,
+    MeshDestroy { network: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

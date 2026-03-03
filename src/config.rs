@@ -97,8 +97,7 @@ pub fn default_socket_path(aff: &Affordances) -> String {
             Err(_) => "/tmp/ployz/ployzd.sock".into(),
         },
         Os::Darwin => {
-            let tmpdir = std::env::var("TMPDIR")
-                .unwrap_or_else(|_| "/tmp".into());
+            let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into());
             format!("{tmpdir}ployz/ployzd.sock")
         }
         Os::Other => "/tmp/ployz/ployzd.sock".into(),

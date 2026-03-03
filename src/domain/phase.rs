@@ -87,8 +87,7 @@ mod tests {
         let p = transition(p, PhaseEvent::NetworkConnected)
             .expect("bootstrapping:network -> bootstrapping:sync");
         assert_eq!(p, Phase::BootstrappingSync);
-        let p =
-            transition(p, PhaseEvent::SyncComplete).expect("bootstrapping:sync -> running");
+        let p = transition(p, PhaseEvent::SyncComplete).expect("bootstrapping:sync -> running");
         assert_eq!(p, Phase::Running);
     }
 
