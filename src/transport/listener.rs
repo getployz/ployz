@@ -1,4 +1,4 @@
-use super::local_socket::{DaemonRequest, DaemonResponse};
+use super::protocol::{DaemonRequest, DaemonResponse};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::{mpsc, oneshot};

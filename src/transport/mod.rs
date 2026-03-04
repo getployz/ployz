@@ -1,7 +1,9 @@
 pub mod listener;
 pub mod local_socket;
+pub mod protocol;
 
-pub use local_socket::{DaemonRequest, DaemonResponse, UnixSocketTransport};
+pub use protocol::{DaemonRequest, DaemonResponse};
+pub use local_socket::UnixSocketTransport;
 
 use std::future::Future;
 
