@@ -10,7 +10,7 @@ mod tasks;
 pub mod transport;
 
 // Re-export public API
-pub use error::{PortError, PortResult};
+pub use error::{Error, Result};
 pub use config::{
     Affordances, ClientConfig, ConfigLoadError, DaemonConfig, Mode, Os, default_config_path,
     default_data_dir, default_socket_path, load_client_config, load_daemon_config,

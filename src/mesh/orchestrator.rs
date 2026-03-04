@@ -1,6 +1,6 @@
 use crate::backends::{WireguardDriver, StoreDriver};
 use crate::tasks::{TaskSet, TaskSetError, run_peer_sync_task};
-use crate::error::PortError;
+use crate::error::Error;
 use crate::mesh::MeshNetwork;
 use crate::mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
 use crate::store::{MachineStore, ServiceControl, SyncProbe, SyncStatus};
@@ -15,7 +15,7 @@ pub enum MeshError {
     #[error(transparent)]
     Transition(#[from] TransitionError),
     #[error(transparent)]
-    Port(#[from] PortError),
+    Port(#[from] Error),
     #[error(transparent)]
     Task(#[from] TaskSetError),
 }
@@ -196,7 +196,7 @@ impl Mesh {
         })
         .await
         .map_err(|_| {
-            MeshError::Port(PortError::operation(
+            MeshError::Port(Error::operation(
                 "service ready",
                 format!("service did not become ready within {timeout:?}"),
             ))
@@ -238,7 +238,7 @@ impl Mesh {
 
         match result {
             Ok(inner) => inner.map_err(MeshError::Port),
-            Err(_) => Err(MeshError::Port(PortError::operation(
+            Err(_) => Err(MeshError::Port(Error::operation(
                 "store init",
                 format!("store did not become ready within {timeout:?}"),
             ))),

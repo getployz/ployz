@@ -9,7 +9,7 @@ use futures_util::StreamExt;
 use std::path::Path;
 use tracing::{info, warn};
 
-use crate::error::{PortError, PortResult};
+use crate::error::{Error, Result};
 use crate::mesh::MeshNetwork;
 use crate::store::model::{MachineRecord, OverlayIp, PrivateKey};
 
@@ -50,14 +50,14 @@ impl DockerWireGuardBuilder {
         self
     }
 
-    pub async fn build(self) -> PortResult<DockerWireGuard> {
+    pub async fn build(self) -> Result<DockerWireGuard> {
         let docker = Docker::connect_with_socket_defaults()
-            .map_err(|e| PortError::operation("docker connect", e.to_string()))?;
+            .map_err(|e| Error::operation("docker connect", e.to_string()))?;
 
         docker
             .ping()
             .await
-            .map_err(|e| PortError::operation("docker ping", e.to_string()))?;
+            .map_err(|e| Error::operation("docker ping", e.to_string()))?;
 
         let paths = WgPaths::new(&self.data_dir);
 
@@ -90,7 +90,7 @@ impl DockerWireGuard {
         }
     }
 
-    async fn pull_image(&self) -> PortResult<()> {
+    async fn pull_image(&self) -> Result<()> {
         let (repo, tag) = match self.image.split_once(':') {
             Some((r, t)) => (r, t),
             None => (self.image.as_str(), "latest"),
@@ -110,7 +110,7 @@ impl DockerWireGuard {
                     }
                 }
                 Err(e) => {
-                    return Err(PortError::operation("docker pull", e.to_string()));
+                    return Err(Error::operation("docker pull", e.to_string()));
                 }
             }
         }
@@ -139,7 +139,7 @@ impl DockerWireGuard {
         }
     }
 
-    async fn exec_in_container(&self, cmd: &[&str]) -> PortResult<()> {
+    async fn exec_in_container(&self, cmd: &[&str]) -> Result<()> {
         let exec = self
             .docker
             .create_exec(
@@ -152,7 +152,7 @@ impl DockerWireGuard {
                 },
             )
             .await
-            .map_err(|e| PortError::operation("docker exec create", e.to_string()))?;
+            .map_err(|e| Error::operation("docker exec create", e.to_string()))?;
 
         let exec_id = exec.id.clone();
 
@@ -160,7 +160,7 @@ impl DockerWireGuard {
             .docker
             .start_exec(&exec.id, None)
             .await
-            .map_err(|e| PortError::operation("docker exec start", e.to_string()))?
+            .map_err(|e| Error::operation("docker exec start", e.to_string()))?
         {
             StartExecResults::Attached { mut output, .. } => {
                 let mut stderr_buf = String::new();
@@ -171,7 +171,7 @@ impl DockerWireGuard {
                                 .push_str(&String::from_utf8_lossy(&message));
                         }
                         Err(e) => {
-                            return Err(PortError::operation("docker exec", e.to_string()));
+                            return Err(Error::operation("docker exec", e.to_string()));
                         }
                         _ => {}
                     }
@@ -181,7 +181,7 @@ impl DockerWireGuard {
                     .docker
                     .inspect_exec(&exec_id)
                     .await
-                    .map_err(|e| PortError::operation("docker exec inspect", e.to_string()))?;
+                    .map_err(|e| Error::operation("docker exec inspect", e.to_string()))?;
 
                 if let Some(code) = inspect.exit_code {
                     if code != 0 {
@@ -190,7 +190,7 @@ impl DockerWireGuard {
                         } else {
                             format!("exit code {code}: {}", stderr_buf.trim())
                         };
-                        return Err(PortError::operation("docker exec", detail));
+                        return Err(Error::operation("docker exec", detail));
                     }
                 }
             }
@@ -200,7 +200,7 @@ impl DockerWireGuard {
         Ok(())
     }
 
-    async fn setup_interface(&self) -> PortResult<()> {
+    async fn setup_interface(&self) -> Result<()> {
         let key_path = self.paths.private_key_file.to_string_lossy().into_owned();
         let overlay = format!("{}/128", self.overlay_ip.0);
         let port = self.listen_port.to_string();
@@ -234,9 +234,9 @@ impl DockerWireGuard {
 }
 
 impl MeshNetwork for DockerWireGuard {
-    async fn up(&self) -> PortResult<()> {
+    async fn up(&self) -> Result<()> {
         write_private_key(&self.paths, &self.private_key)
-            .map_err(|e| PortError::operation("write private key", e.to_string()))?;
+            .map_err(|e| Error::operation("write private key", e.to_string()))?;
 
         if let Err(e) = self.pull_image().await {
             warn!(?e, image = %self.image, "pull failed, trying cached image");
@@ -278,12 +278,12 @@ impl MeshNetwork for DockerWireGuard {
         self.docker
             .create_container(Some(options), config)
             .await
-            .map_err(|e| PortError::operation("docker create", e.to_string()))?;
+            .map_err(|e| Error::operation("docker create", e.to_string()))?;
 
         self.docker
             .start_container(&self.container_name, None)
             .await
-            .map_err(|e| PortError::operation("docker start", e.to_string()))?;
+            .map_err(|e| Error::operation("docker start", e.to_string()))?;
 
         self.setup_interface().await?;
 
@@ -291,28 +291,28 @@ impl MeshNetwork for DockerWireGuard {
         Ok(())
     }
 
-    async fn down(&self) -> PortResult<()> {
+    async fn down(&self) -> Result<()> {
         let stop_opts = StopContainerOptionsBuilder::default().t(10).build();
 
         self.docker
             .stop_container(&self.container_name, Some(stop_opts))
             .await
-            .map_err(|e| PortError::operation("docker stop", e.to_string()))?;
+            .map_err(|e| Error::operation("docker stop", e.to_string()))?;
 
         let remove_opts = RemoveContainerOptionsBuilder::default().build();
 
         self.docker
             .remove_container(&self.container_name, Some(remove_opts))
             .await
-            .map_err(|e| PortError::operation("docker remove", e.to_string()))?;
+            .map_err(|e| Error::operation("docker remove", e.to_string()))?;
 
         info!(name = %self.container_name, "wireguard container stopped");
         Ok(())
     }
 
-    async fn set_peers(&self, peers: &[MachineRecord]) -> PortResult<()> {
+    async fn set_peers(&self, peers: &[MachineRecord]) -> Result<()> {
         write_sync_config(&self.paths, &self.private_key, self.listen_port, peers)
-            .map_err(|e| PortError::operation("write sync config", e.to_string()))?;
+            .map_err(|e| Error::operation("write sync config", e.to_string()))?;
 
         let sync_path = self.paths.sync_config.to_string_lossy().into_owned();
         self.exec_in_container(&["wg", "syncconf", INTERFACE_NAME, &sync_path])

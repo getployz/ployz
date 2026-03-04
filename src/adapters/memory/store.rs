@@ -1,4 +1,4 @@
-use crate::error::{PortError, PortResult};
+use crate::error::{Error, Result};
 use crate::store::{InviteStore, MachineStore, SyncProbe, SyncStatus};
 use crate::store::model::{InviteRecord, MachineEvent, MachineId, MachineRecord};
 use std::collections::HashMap;
@@ -60,18 +60,18 @@ impl MemoryStore {
 }
 
 impl SyncProbe for MemoryStore {
-    async fn sync_status(&self) -> PortResult<SyncStatus> {
+    async fn sync_status(&self) -> Result<SyncStatus> {
         Ok(self.lock_inner().sync_status)
     }
 }
 
 impl MachineStore for MemoryStore {
-    async fn list_machines(&self) -> PortResult<Vec<MachineRecord>> {
+    async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
         let inner = self.lock_inner();
         Ok(inner.machines.values().cloned().collect())
     }
 
-    async fn upsert_machine(&self, record: &MachineRecord) -> PortResult<()> {
+    async fn upsert_machine(&self, record: &MachineRecord) -> Result<()> {
         let mut inner = self.lock_inner();
         let is_update = inner.machines.contains_key(&record.id);
         inner.machines.insert(record.id.clone(), record.clone());
@@ -84,7 +84,7 @@ impl MachineStore for MemoryStore {
         Ok(())
     }
 
-    async fn delete_machine(&self, id: &MachineId) -> PortResult<()> {
+    async fn delete_machine(&self, id: &MachineId) -> Result<()> {
         let mut inner = self.lock_inner();
         inner.machines.remove(id);
         Self::broadcast(&mut inner, MachineEvent::Removed { id: id.clone() });
@@ -93,7 +93,7 @@ impl MachineStore for MemoryStore {
 
     async fn subscribe_machines(
         &self,
-    ) -> PortResult<(Vec<MachineRecord>, mpsc::Receiver<MachineEvent>)> {
+    ) -> Result<(Vec<MachineRecord>, mpsc::Receiver<MachineEvent>)> {
         let mut inner = self.lock_inner();
         let snapshot: Vec<MachineRecord> = inner.machines.values().cloned().collect();
         let (tx, rx) = mpsc::channel(64);
@@ -103,10 +103,10 @@ impl MachineStore for MemoryStore {
 }
 
 impl InviteStore for MemoryStore {
-    async fn create_invite(&self, invite: &InviteRecord) -> PortResult<()> {
+    async fn create_invite(&self, invite: &InviteRecord) -> Result<()> {
         let mut inner = self.lock_inner();
         if inner.invites.contains_key(&invite.id) {
-            return Err(PortError::operation(
+            return Err(Error::operation(
                 "invite_exists",
                 format!("invite '{}' already exists", invite.id),
             ));
@@ -115,17 +115,17 @@ impl InviteStore for MemoryStore {
         Ok(())
     }
 
-    async fn consume_invite(&self, invite_id: &str, now_unix_secs: u64) -> PortResult<()> {
+    async fn consume_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<()> {
         let mut inner = self.lock_inner();
         let invite = inner.invites.get(invite_id).ok_or_else(|| {
-            PortError::operation(
+            Error::operation(
                 "invite_not_found",
                 format!("invite '{invite_id}' not found"),
             )
         })?;
 
         if now_unix_secs > invite.expires_at {
-            return Err(PortError::operation(
+            return Err(Error::operation(
                 "invite_expired",
                 format!("invite '{invite_id}' is expired"),
             ));
@@ -157,7 +157,7 @@ mod tests {
         let second = store.consume_invite("inv-1", 101).await;
         assert!(matches!(
             second,
-            Err(PortError::Operation {
+            Err(Error::Operation {
                 operation: "invite_not_found",
                 ..
             })
@@ -177,7 +177,7 @@ mod tests {
         let expired = store.consume_invite("inv-2", 51).await;
         assert!(matches!(
             expired,
-            Err(PortError::Operation {
+            Err(Error::Operation {
                 operation: "invite_expired",
                 ..
             })

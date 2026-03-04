@@ -1,4 +1,4 @@
-use crate::error::{PortError, PortResult};
+use crate::error::{Error, Result};
 use crate::store::ServiceControl;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -43,17 +43,17 @@ impl MemoryService {
 }
 
 impl ServiceControl for MemoryService {
-    async fn start(&self) -> PortResult<()> {
+    async fn start(&self) -> Result<()> {
         if self.fail_start.load(Ordering::SeqCst) {
-            return Err(PortError::operation("service start", "injected failure"));
+            return Err(Error::operation("service start", "injected failure"));
         }
         self.started.store(true, Ordering::SeqCst);
         Ok(())
     }
 
-    async fn stop(&self) -> PortResult<()> {
+    async fn stop(&self) -> Result<()> {
         if self.fail_stop.load(Ordering::SeqCst) {
-            return Err(PortError::operation("service stop", "injected failure"));
+            return Err(Error::operation("service stop", "injected failure"));
         }
         self.started.store(false, Ordering::SeqCst);
         Ok(())

@@ -1,4 +1,4 @@
-use crate::error::{PortError, PortResult};
+use crate::error::{Error, Result};
 use crate::store::ServiceControl;
 use bollard::Docker;
 use bollard::models::{ContainerCreateBody, HostConfig};
@@ -49,15 +49,15 @@ impl DockerCorrosionBuilder {
         self
     }
 
-    pub async fn build(self) -> PortResult<DockerCorrosion> {
+    pub async fn build(self) -> Result<DockerCorrosion> {
         let docker = Docker::connect_with_socket_defaults()
-            .map_err(|e| PortError::operation("docker connect", e.to_string()))?;
+            .map_err(|e| Error::operation("docker connect", e.to_string()))?;
 
         // Verify the daemon is reachable.
         docker
             .ping()
             .await
-            .map_err(|e| PortError::operation("docker ping", e.to_string()))?;
+            .map_err(|e| Error::operation("docker ping", e.to_string()))?;
 
         Ok(DockerCorrosion {
             docker,
@@ -83,7 +83,7 @@ impl DockerCorrosion {
         }
     }
 
-    async fn pull_image(&self) -> PortResult<()> {
+    async fn pull_image(&self) -> Result<()> {
         let (repo, tag) = match self.image.split_once(':') {
             Some((r, t)) => (r, t),
             None => (self.image.as_str(), "latest"),
@@ -103,7 +103,7 @@ impl DockerCorrosion {
                     }
                 }
                 Err(e) => {
-                    return Err(PortError::operation("docker pull", e.to_string()));
+                    return Err(Error::operation("docker pull", e.to_string()));
                 }
             }
         }
@@ -133,7 +133,7 @@ impl DockerCorrosion {
 }
 
 impl ServiceControl for DockerCorrosion {
-    async fn start(&self) -> PortResult<()> {
+    async fn start(&self) -> Result<()> {
         // Already running — nothing to do.
         if self.healthy().await {
             info!(name = %self.container_name, "container already running");
@@ -176,31 +176,31 @@ impl ServiceControl for DockerCorrosion {
         self.docker
             .create_container(Some(options), config)
             .await
-            .map_err(|e| PortError::operation("docker create", e.to_string()))?;
+            .map_err(|e| Error::operation("docker create", e.to_string()))?;
 
         self.docker
             .start_container(&self.container_name, None)
             .await
-            .map_err(|e| PortError::operation("docker start", e.to_string()))?;
+            .map_err(|e| Error::operation("docker start", e.to_string()))?;
 
         info!(name = %self.container_name, image = %self.image, "container started");
         Ok(())
     }
 
-    async fn stop(&self) -> PortResult<()> {
+    async fn stop(&self) -> Result<()> {
         let stop_opts = StopContainerOptionsBuilder::default().t(10).build();
 
         self.docker
             .stop_container(&self.container_name, Some(stop_opts))
             .await
-            .map_err(|e| PortError::operation("docker stop", e.to_string()))?;
+            .map_err(|e| Error::operation("docker stop", e.to_string()))?;
 
         let remove_opts = RemoveContainerOptionsBuilder::default().build();
 
         self.docker
             .remove_container(&self.container_name, Some(remove_opts))
             .await
-            .map_err(|e| PortError::operation("docker remove", e.to_string()))?;
+            .map_err(|e| Error::operation("docker remove", e.to_string()))?;
 
         info!(name = %self.container_name, "container stopped and removed");
         Ok(())

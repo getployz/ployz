@@ -501,7 +501,7 @@ impl DaemonState {
                 "invite imported\n  network: {}\n  invite:  {}",
                 invite.network_name, record.id
             )),
-            Err(crate::PortError::Operation { operation, .. }) if operation == "invite_exists" => {
+            Err(crate::Error::Operation { operation, .. }) if operation == "invite_exists" => {
                 self.ok(format!(
                     "invite already present\n  network: {}\n  invite:  {}",
                     invite.network_name, record.id

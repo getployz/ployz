@@ -2,7 +2,7 @@ mod peer_sync;
 
 pub(crate) use peer_sync::run_peer_sync_task;
 
-use crate::error::PortError;
+use crate::error::Error;
 use thiserror::Error;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -11,7 +11,7 @@ use tracing::warn;
 #[derive(Debug, Error)]
 pub enum TaskSetError {
     #[error("task subscribe failed: {0}")]
-    Subscribe(PortError),
+    Subscribe(Error),
     #[error("task panicked: {0}")]
     Join(#[from] tokio::task::JoinError),
 }

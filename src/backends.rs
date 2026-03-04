@@ -2,7 +2,7 @@ use crate::adapters::corrosion::CorrosionStore;
 use crate::adapters::corrosion::docker::DockerCorrosion;
 use crate::adapters::memory::{MemoryService, MemoryStore, MemoryWireGuard};
 use crate::adapters::wireguard::{DockerWireGuard, HostWireGuard};
-use crate::error::PortResult;
+use crate::error::Result;
 use crate::mesh::MeshNetwork;
 use crate::store::{InviteStore, MachineStore, ServiceControl, SyncProbe, SyncStatus};
 use crate::store::model::{InviteRecord, MachineEvent, MachineId, MachineRecord};
@@ -21,7 +21,7 @@ pub enum WireguardDriver {
 }
 
 impl MeshNetwork for WireguardDriver {
-    async fn up(&self) -> PortResult<()> {
+    async fn up(&self) -> Result<()> {
         match self {
             Self::Memory(n) => n.up().await,
             Self::Docker(n) => n.up().await,
@@ -29,7 +29,7 @@ impl MeshNetwork for WireguardDriver {
         }
     }
 
-    async fn down(&self) -> PortResult<()> {
+    async fn down(&self) -> Result<()> {
         match self {
             Self::Memory(n) => n.down().await,
             Self::Docker(n) => n.down().await,
@@ -37,7 +37,7 @@ impl MeshNetwork for WireguardDriver {
         }
     }
 
-    async fn set_peers<'a>(&'a self, peers: &'a [MachineRecord]) -> PortResult<()> {
+    async fn set_peers<'a>(&'a self, peers: &'a [MachineRecord]) -> Result<()> {
         match self {
             Self::Memory(n) => n.set_peers(peers).await,
             Self::Docker(n) => n.set_peers(peers).await,
@@ -63,14 +63,14 @@ pub enum StoreDriver {
 }
 
 impl ServiceControl for StoreDriver {
-    async fn start(&self) -> PortResult<()> {
+    async fn start(&self) -> Result<()> {
         match self {
             Self::Memory { service, .. } => service.start().await,
             Self::Corrosion { service, .. } => service.start().await,
         }
     }
 
-    async fn stop(&self) -> PortResult<()> {
+    async fn stop(&self) -> Result<()> {
         match self {
             Self::Memory { service, .. } => service.stop().await,
             Self::Corrosion { service, .. } => service.stop().await,
@@ -86,28 +86,28 @@ impl ServiceControl for StoreDriver {
 }
 
 impl MachineStore for StoreDriver {
-    async fn init(&self) -> PortResult<()> {
+    async fn init(&self) -> Result<()> {
         match self {
             Self::Memory { store, .. } => store.init().await,
             Self::Corrosion { store, .. } => store.init().await,
         }
     }
 
-    async fn list_machines(&self) -> PortResult<Vec<MachineRecord>> {
+    async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
         match self {
             Self::Memory { store, .. } => store.list_machines().await,
             Self::Corrosion { store, .. } => store.list_machines().await,
         }
     }
 
-    async fn upsert_machine<'a>(&'a self, record: &'a MachineRecord) -> PortResult<()> {
+    async fn upsert_machine<'a>(&'a self, record: &'a MachineRecord) -> Result<()> {
         match self {
             Self::Memory { store, .. } => store.upsert_machine(record).await,
             Self::Corrosion { store, .. } => store.upsert_machine(record).await,
         }
     }
 
-    async fn delete_machine<'a>(&'a self, id: &'a MachineId) -> PortResult<()> {
+    async fn delete_machine<'a>(&'a self, id: &'a MachineId) -> Result<()> {
         match self {
             Self::Memory { store, .. } => store.delete_machine(id).await,
             Self::Corrosion { store, .. } => store.delete_machine(id).await,
@@ -116,7 +116,7 @@ impl MachineStore for StoreDriver {
 
     async fn subscribe_machines(
         &self,
-    ) -> PortResult<(Vec<MachineRecord>, mpsc::Receiver<MachineEvent>)> {
+    ) -> Result<(Vec<MachineRecord>, mpsc::Receiver<MachineEvent>)> {
         match self {
             Self::Memory { store, .. } => store.subscribe_machines().await,
             Self::Corrosion { store, .. } => store.subscribe_machines().await,
@@ -125,7 +125,7 @@ impl MachineStore for StoreDriver {
 }
 
 impl InviteStore for StoreDriver {
-    async fn create_invite<'a>(&'a self, invite: &'a InviteRecord) -> PortResult<()> {
+    async fn create_invite<'a>(&'a self, invite: &'a InviteRecord) -> Result<()> {
         match self {
             Self::Memory { store, .. } => store.create_invite(invite).await,
             Self::Corrosion { store, .. } => store.create_invite(invite).await,
@@ -136,7 +136,7 @@ impl InviteStore for StoreDriver {
         &'a self,
         invite_id: &'a str,
         now_unix_secs: u64,
-    ) -> PortResult<()> {
+    ) -> Result<()> {
         match self {
             Self::Memory { store, .. } => store.consume_invite(invite_id, now_unix_secs).await,
             Self::Corrosion { store, .. } => store.consume_invite(invite_id, now_unix_secs).await,
@@ -145,7 +145,7 @@ impl InviteStore for StoreDriver {
 }
 
 impl SyncProbe for StoreDriver {
-    async fn sync_status(&self) -> PortResult<SyncStatus> {
+    async fn sync_status(&self) -> Result<SyncStatus> {
         match self {
             Self::Memory { store, .. } => store.sync_status().await,
             Self::Corrosion { store, .. } => store.sync_status().await,

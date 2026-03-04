@@ -7,7 +7,7 @@ use defguard_wireguard_rs::net::IpAddrMask;
 use defguard_wireguard_rs::peer::Peer;
 use defguard_wireguard_rs::{InterfaceConfiguration, WGApi, WireguardInterfaceApi};
 
-use crate::error::{PortError, PortResult};
+use crate::error::{Error, Result};
 use crate::mesh::MeshNetwork;
 use crate::store::model::{MachineRecord, OverlayIp, PrivateKey};
 
@@ -35,9 +35,9 @@ impl HostWireGuard {
         ifname: &str,
         private_key: PrivateKey,
         overlay_ip: OverlayIp,
-    ) -> PortResult<Self> {
+    ) -> Result<Self> {
         let api = WGApi::new(ifname.to_string())
-            .map_err(|e| PortError::operation("kernel wg init", e.to_string()))?;
+            .map_err(|e| Error::operation("kernel wg init", e.to_string()))?;
         Ok(Self {
             backend: Mutex::new(WgBackend::Kernel(api)),
             ifname: ifname.to_string(),
@@ -51,9 +51,9 @@ impl HostWireGuard {
         ifname: &str,
         private_key: PrivateKey,
         overlay_ip: OverlayIp,
-    ) -> PortResult<Self> {
+    ) -> Result<Self> {
         let api = WGApi::new(ifname.to_string())
-            .map_err(|e| PortError::operation("userspace wg init", e.to_string()))?;
+            .map_err(|e| Error::operation("userspace wg init", e.to_string()))?;
         Ok(Self {
             backend: Mutex::new(WgBackend::Userspace(api)),
             ifname: ifname.to_string(),
@@ -74,21 +74,21 @@ impl HostWireGuard {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn with_api<F, R>(&self, f: F) -> PortResult<R>
+    fn with_api<F, R>(&self, f: F) -> Result<R>
     where
-        F: FnOnce(&mut WgBackend) -> PortResult<R>,
+        F: FnOnce(&mut WgBackend) -> Result<R>,
     {
         let mut guard = self.lock_backend();
         f(&mut guard)
     }
 }
 
-fn machine_to_peer(record: &MachineRecord) -> PortResult<Peer> {
+fn machine_to_peer(record: &MachineRecord) -> Result<Peer> {
     let key = Key::new(record.public_key.0);
 
     let allowed_ip: IpAddrMask = format!("{}/128", record.overlay_ip.0)
         .parse()
-        .map_err(|e| PortError::operation("parse allowed ip", format!("{e}")))?;
+        .map_err(|e| Error::operation("parse allowed ip", format!("{e}")))?;
 
     let endpoint: Option<SocketAddr> = record.endpoints.first().and_then(|ep| ep.parse().ok());
 
@@ -99,90 +99,90 @@ fn machine_to_peer(record: &MachineRecord) -> PortResult<Peer> {
     Ok(peer)
 }
 
-fn wg_create_interface(backend: &mut WgBackend) -> PortResult<()> {
+fn wg_create_interface(backend: &mut WgBackend) -> Result<()> {
     match backend {
         #[cfg(target_os = "linux")]
         WgBackend::Kernel(api) => api
             .create_interface()
-            .map_err(|e| PortError::operation("create interface", e.to_string())),
+            .map_err(|e| Error::operation("create interface", e.to_string())),
         WgBackend::Userspace(api) => api
             .create_interface()
-            .map_err(|e| PortError::operation("create interface", e.to_string())),
+            .map_err(|e| Error::operation("create interface", e.to_string())),
     }
 }
 
-fn wg_remove_interface(backend: &WgBackend) -> PortResult<()> {
+fn wg_remove_interface(backend: &WgBackend) -> Result<()> {
     match backend {
         #[cfg(target_os = "linux")]
         WgBackend::Kernel(api) => api
             .remove_interface()
-            .map_err(|e| PortError::operation("remove interface", e.to_string())),
+            .map_err(|e| Error::operation("remove interface", e.to_string())),
         WgBackend::Userspace(api) => api
             .remove_interface()
-            .map_err(|e| PortError::operation("remove interface", e.to_string())),
+            .map_err(|e| Error::operation("remove interface", e.to_string())),
     }
 }
 
 fn wg_configure_interface(
     backend: &WgBackend,
     config: &InterfaceConfiguration,
-) -> PortResult<()> {
+) -> Result<()> {
     match backend {
         #[cfg(target_os = "linux")]
         WgBackend::Kernel(api) => api
             .configure_interface(config)
-            .map_err(|e| PortError::operation("configure interface", e.to_string())),
+            .map_err(|e| Error::operation("configure interface", e.to_string())),
         WgBackend::Userspace(api) => api
             .configure_interface(config)
-            .map_err(|e| PortError::operation("configure interface", e.to_string())),
+            .map_err(|e| Error::operation("configure interface", e.to_string())),
     }
 }
 
-fn wg_read_peers(backend: &WgBackend) -> PortResult<Vec<Peer>> {
+fn wg_read_peers(backend: &WgBackend) -> Result<Vec<Peer>> {
     let host = match backend {
         #[cfg(target_os = "linux")]
         WgBackend::Kernel(api) => api
             .read_interface_data()
-            .map_err(|e| PortError::operation("read interface", e.to_string()))?,
+            .map_err(|e| Error::operation("read interface", e.to_string()))?,
         WgBackend::Userspace(api) => api
             .read_interface_data()
-            .map_err(|e| PortError::operation("read interface", e.to_string()))?,
+            .map_err(|e| Error::operation("read interface", e.to_string()))?,
     };
     Ok(host.peers.into_values().collect())
 }
 
-fn wg_configure_peer(backend: &WgBackend, peer: &Peer) -> PortResult<()> {
+fn wg_configure_peer(backend: &WgBackend, peer: &Peer) -> Result<()> {
     match backend {
         #[cfg(target_os = "linux")]
         WgBackend::Kernel(api) => api
             .configure_peer(peer)
-            .map_err(|e| PortError::operation("configure peer", e.to_string())),
+            .map_err(|e| Error::operation("configure peer", e.to_string())),
         WgBackend::Userspace(api) => api
             .configure_peer(peer)
-            .map_err(|e| PortError::operation("configure peer", e.to_string())),
+            .map_err(|e| Error::operation("configure peer", e.to_string())),
     }
 }
 
-fn wg_remove_peer(backend: &WgBackend, key: &Key) -> PortResult<()> {
+fn wg_remove_peer(backend: &WgBackend, key: &Key) -> Result<()> {
     match backend {
         #[cfg(target_os = "linux")]
         WgBackend::Kernel(api) => api
             .remove_peer(key)
-            .map_err(|e| PortError::operation("remove peer", e.to_string())),
+            .map_err(|e| Error::operation("remove peer", e.to_string())),
         WgBackend::Userspace(api) => api
             .remove_peer(key)
-            .map_err(|e| PortError::operation("remove peer", e.to_string())),
+            .map_err(|e| Error::operation("remove peer", e.to_string())),
     }
 }
 
 impl MeshNetwork for HostWireGuard {
-    async fn up(&self) -> PortResult<()> {
+    async fn up(&self) -> Result<()> {
         self.with_api(|backend| {
             wg_create_interface(backend)?;
 
             let addr: IpAddrMask = format!("{}/128", self.overlay_ip.0)
                 .parse()
-                .map_err(|e| PortError::operation("parse overlay addr", format!("{e}")))?;
+                .map_err(|e| Error::operation("parse overlay addr", format!("{e}")))?;
 
             let config = InterfaceConfiguration {
                 name: self.ifname.clone(),
@@ -200,18 +200,18 @@ impl MeshNetwork for HostWireGuard {
         Ok(())
     }
 
-    async fn down(&self) -> PortResult<()> {
+    async fn down(&self) -> Result<()> {
         let backend = self.lock_backend();
         wg_remove_interface(&backend)?;
         info!(ifname = %self.ifname, "wireguard interface down");
         Ok(())
     }
 
-    async fn set_peers(&self, peers: &[MachineRecord]) -> PortResult<()> {
+    async fn set_peers(&self, peers: &[MachineRecord]) -> Result<()> {
         let desired: Vec<Peer> = peers
             .iter()
             .map(machine_to_peer)
-            .collect::<PortResult<Vec<_>>>()?;
+            .collect::<Result<Vec<_>>>()?;
 
         let backend = self.lock_backend();
 

@@ -1,9 +1,9 @@
 use thiserror::Error;
 
-pub type PortResult<T> = std::result::Result<T, PortError>;
+pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum PortError {
+pub enum Error {
     #[error("{operation}: {message}")]
     Operation {
         operation: &'static str,
@@ -11,7 +11,7 @@ pub enum PortError {
     },
 }
 
-impl PortError {
+impl Error {
     #[must_use]
     pub fn operation(operation: &'static str, message: impl Into<String>) -> Self {
         Self::Operation {

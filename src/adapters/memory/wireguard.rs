@@ -1,4 +1,4 @@
-use crate::error::{PortError, PortResult};
+use crate::error::{Error, Result};
 use crate::mesh::MeshNetwork;
 use crate::store::model::MachineRecord;
 use std::sync::{Mutex, MutexGuard};
@@ -62,25 +62,25 @@ impl MemoryWireGuard {
 }
 
 impl MeshNetwork for MemoryWireGuard {
-    async fn up(&self) -> PortResult<()> {
+    async fn up(&self) -> Result<()> {
         let mut inner = self.lock_inner();
         if inner.fail_up {
-            return Err(PortError::operation("wireguard up", "injected failure"));
+            return Err(Error::operation("wireguard up", "injected failure"));
         }
         inner.is_up = true;
         Ok(())
     }
 
-    async fn down(&self) -> PortResult<()> {
+    async fn down(&self) -> Result<()> {
         let mut inner = self.lock_inner();
         if inner.fail_down {
-            return Err(PortError::operation("wireguard down", "injected failure"));
+            return Err(Error::operation("wireguard down", "injected failure"));
         }
         inner.is_up = false;
         Ok(())
     }
 
-    async fn set_peers(&self, peers: &[MachineRecord]) -> PortResult<()> {
+    async fn set_peers(&self, peers: &[MachineRecord]) -> Result<()> {
         let mut inner = self.lock_inner();
         inner.peers = peers.to_vec();
         inner.set_peers_count += 1;
