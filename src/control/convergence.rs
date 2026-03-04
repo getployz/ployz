@@ -1,7 +1,7 @@
 use super::peer_state::{PeerStateMap, plan_mesh_peers};
 use super::reconcile::{ConvergenceConfig, HealthSummary};
 use crate::dataplane::traits::{MachineStore, MeshNetwork, PeerProbe, PortError};
-use crate::domain::model::{MachineEvent, MachineRecord, NetworkId};
+use crate::domain::model::{MachineEvent, MachineRecord};
 use std::sync::{Arc, Mutex, MutexGuard};
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -20,7 +20,6 @@ pub(crate) enum ConvergenceError {
 }
 
 pub(crate) struct ConvergenceLoop<N, Store, Probe> {
-    network_id: NetworkId,
     membership: Arc<Store>,
     network: Arc<N>,
     prober: Option<Arc<Probe>>,
@@ -32,14 +31,12 @@ pub(crate) struct ConvergenceLoop<N, Store, Probe> {
 
 impl<N, Store, Probe> ConvergenceLoop<N, Store, Probe> {
     pub(crate) fn new(
-        network_id: NetworkId,
         membership: Arc<Store>,
         network: Arc<N>,
         prober: Option<Arc<Probe>>,
         config: ConvergenceConfig,
     ) -> Self {
         Self {
-            network_id,
             membership,
             network,
             prober,
@@ -72,11 +69,10 @@ where
     pub(crate) async fn start(&mut self) -> Result<()> {
         let (snapshot, events) = self
             .membership
-            .subscribe_machines(&self.network_id)
+            .subscribe_machines()
             .await
             .map_err(ConvergenceError::Subscribe)?;
         let cancel = self.cancel.clone();
-        let network_id = self.network_id.clone();
         let network = self.network.clone();
         let prober = self.prober.clone();
         let config = self.config.clone();
@@ -84,7 +80,7 @@ where
 
         self.handle = Some(tokio::spawn(async move {
             run_loop(
-                network_id, snapshot, events, cancel, network, prober, config, health,
+                snapshot, events, cancel, network, prober, config, health,
             )
             .await;
         }));
@@ -93,7 +89,6 @@ where
 }
 
 async fn run_loop<N: MeshNetwork, Probe: PeerProbe>(
-    network_id: NetworkId,
     snapshot: Vec<MachineRecord>,
     mut events: mpsc::Receiver<MachineEvent>,
     cancel: CancellationToken,
@@ -104,7 +99,7 @@ async fn run_loop<N: MeshNetwork, Probe: PeerProbe>(
 ) {
     let mut state = PeerStateMap::new();
     state.init_from_snapshot(&snapshot);
-    reconcile(&state, &network_id, &*network).await;
+    reconcile(&state, &*network).await;
     update_health(&state, &health);
 
     let mut probe_interval = tokio::time::interval(config.probe_interval);
@@ -123,12 +118,12 @@ async fn run_loop<N: MeshNetwork, Probe: PeerProbe>(
                     MachineEvent::Added(r) | MachineEvent::Updated(r) => state.upsert(&r),
                     MachineEvent::Removed { id } => state.remove(&id),
                 }
-                reconcile(&state, &network_id, &*network).await;
+                reconcile(&state, &*network).await;
                 update_health(&state, &health);
             }
             _ = probe_interval.tick(), if prober.is_some() => {
                 if let Some(prober) = prober.as_ref() {
-                    probe_and_rotate(&mut state, &network_id, &**prober, &*network, &config).await;
+                    probe_and_rotate(&mut state, &**prober, &*network, &config).await;
                     update_health(&state, &health);
                 }
             }
@@ -136,8 +131,8 @@ async fn run_loop<N: MeshNetwork, Probe: PeerProbe>(
     }
 }
 
-async fn reconcile<N: MeshNetwork>(state: &PeerStateMap, network_id: &NetworkId, network: &N) {
-    let planned = plan_mesh_peers(state, network_id);
+async fn reconcile<N: MeshNetwork>(state: &PeerStateMap, network: &N) {
+    let planned = plan_mesh_peers(state);
     if let Err(e) = network.set_peers(&planned).await {
         warn!(?e, "set_peers failed");
     }
@@ -145,7 +140,6 @@ async fn reconcile<N: MeshNetwork>(state: &PeerStateMap, network_id: &NetworkId,
 
 async fn probe_and_rotate<N: MeshNetwork, Probe: PeerProbe>(
     state: &mut PeerStateMap,
-    network_id: &NetworkId,
     prober: &Probe,
     network: &N,
     config: &ConvergenceConfig,
@@ -172,7 +166,7 @@ async fn probe_and_rotate<N: MeshNetwork, Probe: PeerProbe>(
     }
 
     if rotated {
-        reconcile(state, network_id, network).await;
+        reconcile(state, network).await;
     }
 }
 

@@ -1,7 +1,5 @@
 use super::reconcile::PeerHealth;
-use crate::domain::model::{
-    MachineId, MachineRecord, NetworkId, NetworkName, OverlayIp, PublicKey,
-};
+use crate::domain::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::Instant;
@@ -9,8 +7,6 @@ use tokio::time::Instant;
 #[derive(Debug, Clone)]
 pub(crate) struct PeerState {
     pub(crate) id: MachineId,
-    pub(crate) network_id: NetworkId,
-    pub(crate) network: NetworkName,
     pub(crate) public_key: PublicKey,
     pub(crate) overlay_ip: OverlayIp,
     pub(crate) endpoints: Vec<String>,
@@ -24,8 +20,6 @@ impl PeerState {
     pub(crate) fn from_record(record: &MachineRecord) -> Self {
         Self {
             id: record.id.clone(),
-            network_id: record.network_id.clone(),
-            network: record.network.clone(),
             public_key: record.public_key.clone(),
             overlay_ip: record.overlay_ip,
             endpoints: record.endpoints.clone(),
@@ -37,8 +31,6 @@ impl PeerState {
     }
 
     pub(crate) fn update_from_record(&mut self, record: &MachineRecord) {
-        self.network_id = record.network_id.clone();
-        self.network = record.network.clone();
         self.public_key = record.public_key.clone();
         self.overlay_ip = record.overlay_ip;
         self.endpoints = record.endpoints.clone();
@@ -120,17 +112,15 @@ impl PeerStateMap {
     }
 }
 
-pub(crate) fn plan_mesh_peers(state: &PeerStateMap, network_id: &NetworkId) -> Vec<MachineRecord> {
+pub(crate) fn plan_mesh_peers(state: &PeerStateMap) -> Vec<MachineRecord> {
     state
         .peers
         .values()
-        .filter(|ps| ps.network_id == *network_id && !ps.endpoints.is_empty())
+        .filter(|ps| !ps.endpoints.is_empty())
         .map(|ps| {
             let active_ep = ps.current_endpoint().unwrap_or_default().to_string();
             MachineRecord {
                 id: ps.id.clone(),
-                network_id: ps.network_id.clone(),
-                network: ps.network.clone(),
                 public_key: ps.public_key.clone(),
                 overlay_ip: ps.overlay_ip,
                 endpoints: vec![active_ep],
@@ -147,8 +137,6 @@ mod tests {
     fn test_record(id: &str, endpoints: Vec<&str>) -> MachineRecord {
         MachineRecord {
             id: MachineId(id.into()),
-            network_id: NetworkId("test-net".into()),
-            network: NetworkName("test".into()),
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             endpoints: endpoints.into_iter().map(String::from).collect(),
@@ -199,8 +187,6 @@ mod tests {
         let mut map = PeerStateMap::new();
         let r = MachineRecord {
             id: MachineId("m1".into()),
-            network_id: NetworkId("test-net".into()),
-            network: NetworkName("test".into()),
             public_key: PublicKey([1; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             endpoints: vec!["a:1".into(), "b:2".into(), "c:3".into()],
@@ -209,7 +195,7 @@ mod tests {
         ps.next_endpoint();
         map.peers.insert(r.id.clone(), ps);
 
-        let planned = plan_mesh_peers(&map, &NetworkId("test-net".into()));
+        let planned = plan_mesh_peers(&map);
         assert_eq!(planned.len(), 1);
         assert_eq!(planned[0].endpoints, vec!["b:2".to_string()]);
     }
@@ -219,22 +205,6 @@ mod tests {
         let mut map = PeerStateMap::new();
         let r = test_record("m1", vec![]);
         map.peers.insert(r.id.clone(), PeerState::from_record(&r));
-        assert!(plan_mesh_peers(&map, &NetworkId("test-net".into())).is_empty());
-    }
-
-    #[test]
-    fn plan_filters_other_networks() {
-        let mut map = PeerStateMap::new();
-        let mut a = test_record("m1", vec!["a:1"]);
-        a.network_id = NetworkId("net-a".into());
-        map.peers.insert(a.id.clone(), PeerState::from_record(&a));
-
-        let mut b = test_record("m2", vec!["b:2"]);
-        b.network_id = NetworkId("net-b".into());
-        map.peers.insert(b.id.clone(), PeerState::from_record(&b));
-
-        let planned = plan_mesh_peers(&map, &NetworkId("net-a".into()));
-        assert_eq!(planned.len(), 1);
-        assert_eq!(planned[0].id.0, "m1");
+        assert!(plan_mesh_peers(&map).is_empty());
     }
 }

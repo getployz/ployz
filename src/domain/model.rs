@@ -55,8 +55,6 @@ pub struct OverlayIp(pub Ipv6Addr);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MachineRecord {
     pub id: MachineId,
-    pub network_id: NetworkId,
-    pub network: NetworkName,
     pub public_key: PublicKey,
     pub overlay_ip: OverlayIp,
     pub endpoints: Vec<String>,
@@ -65,14 +63,7 @@ pub struct MachineRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InviteRecord {
     pub id: String,
-    pub network_id: NetworkId,
-    pub network_name: NetworkName,
-    pub issued_by: MachineId,
     pub expires_at: u64,
-    pub nonce: String,
-    pub max_uses: u32,
-    pub used: u32,
-    pub revoked: bool,
 }
 
 #[derive(Debug, Clone)]

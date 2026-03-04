@@ -1,20 +1,14 @@
 use ployz::{ConvergenceConfig, MachineStore, Mesh, Phase};
-use ployz::{MachineId, MachineRecord, NetworkId, NetworkName, OverlayIp, PublicKey};
+use ployz::{MachineId, MachineRecord, OverlayIp, PublicKey};
 use ployz::{MemoryService, MemoryStore, MemorySyncProbe, MemoryWireGuard};
 use std::net::Ipv6Addr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::Instant;
 
-fn test_network_id() -> NetworkId {
-    NetworkId("test-net".into())
-}
-
 fn test_record(id: &str, key_byte: u8) -> MachineRecord {
     MachineRecord {
         id: MachineId(id.into()),
-        network_id: test_network_id(),
-        network: NetworkName("test".into()),
         public_key: PublicKey([key_byte; 32]),
         overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
         endpoints: vec![format!("10.0.0.{key_byte}:51820")],
@@ -26,7 +20,7 @@ fn make_mesh(
     svc: Arc<MemoryService>,
     store: Arc<MemoryStore>,
 ) -> Mesh<MemoryWireGuard, MemoryService, MemoryStore, MemoryWireGuard, MemorySyncProbe> {
-    Mesh::new(test_network_id(), wg.clone(), svc, store, Some(wg), None)
+    Mesh::new(wg.clone(), svc, store, Some(wg), None)
         .with_convergence_config(ConvergenceConfig {
             probe_interval: Duration::from_millis(50),
             handshake_timeout: Duration::from_millis(200),
@@ -44,7 +38,7 @@ async fn startup_reaches_running_with_healthy_service() {
     let store = Arc::new(MemoryStore::new());
 
     store
-        .upsert_machine(&test_network_id(), &test_record("m1", 1))
+        .upsert_machine(&test_record("m1", 1))
         .await
         .unwrap();
 
@@ -131,7 +125,7 @@ async fn bootstrap_timeout_returns_typed_error() {
         MemoryStore,
         MemoryWireGuard,
         MemorySyncProbe,
-    > = Mesh::new(test_network_id(), wg.clone(), svc, store, Some(wg), None).with_bootstrap_timing(
+    > = Mesh::new(wg.clone(), svc, store, Some(wg), None).with_bootstrap_timing(
         Duration::from_millis(10),
         Duration::from_millis(100),
         2,
@@ -187,7 +181,7 @@ async fn two_stage_bootstrap_with_sync_probe() {
         MemoryStore,
         MemoryWireGuard,
         MemorySyncProbe,
-    > = Mesh::new(test_network_id(), wg, svc, store, None, Some(sync_probe)).with_bootstrap_timing(
+    > = Mesh::new(wg, svc, store, None, Some(sync_probe)).with_bootstrap_timing(
         Duration::from_millis(10),
         Duration::from_secs(5),
         2,
@@ -213,7 +207,7 @@ async fn sync_gate_timeout() {
         MemoryStore,
         MemoryWireGuard,
         MemorySyncProbe,
-    > = Mesh::new(test_network_id(), wg, svc, store, None, Some(sync_probe)).with_bootstrap_timing(
+    > = Mesh::new(wg, svc, store, None, Some(sync_probe)).with_bootstrap_timing(
         Duration::from_millis(10),
         Duration::from_millis(100),
         2,
@@ -237,7 +231,7 @@ async fn single_node_network_gate_passes() {
         MemoryStore,
         MemoryWireGuard,
         MemorySyncProbe,
-    > = Mesh::new(test_network_id(), wg.clone(), svc, store, Some(wg), None).with_bootstrap_timing(
+    > = Mesh::new(wg.clone(), svc, store, Some(wg), None).with_bootstrap_timing(
         Duration::from_millis(10),
         Duration::from_secs(5),
         2,
@@ -262,7 +256,7 @@ async fn store_event_triggers_reconcile() {
 
     // Add a peer via the store — should trigger event → reconcile.
     store
-        .upsert_machine(&test_network_id(), &test_record("m2", 2))
+        .upsert_machine(&test_record("m2", 2))
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -284,14 +278,12 @@ async fn endpoint_rotation_on_stale_handshake() {
     let key = PublicKey([0xAA; 32]);
     let record = MachineRecord {
         id: MachineId("m-multi".into()),
-        network_id: test_network_id(),
-        network: NetworkName("test".into()),
         public_key: key.clone(),
         overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
         endpoints: vec!["a:1".into(), "b:2".into()],
     };
     store
-        .upsert_machine(&test_network_id(), &record)
+        .upsert_machine(&record)
         .await
         .unwrap();
 
@@ -323,14 +315,12 @@ async fn fresh_handshake_keeps_endpoint_sticky() {
     let key = PublicKey([0xBB; 32]);
     let record = MachineRecord {
         id: MachineId("m-sticky".into()),
-        network_id: test_network_id(),
-        network: NetworkName("test".into()),
         public_key: key.clone(),
         overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
         endpoints: vec!["a:1".into(), "b:2".into()],
     };
     store
-        .upsert_machine(&test_network_id(), &record)
+        .upsert_machine(&record)
         .await
         .unwrap();
 

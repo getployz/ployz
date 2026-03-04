@@ -1,7 +1,6 @@
 use crate::dataplane::traits::{InviteStore, MachineStore, PortError, PortResult};
 use crate::domain::model::{
-    InviteRecord, MachineEvent, MachineId, MachineRecord, NetworkId, NetworkName, OverlayIp,
-    PublicKey,
+    InviteRecord, MachineEvent, MachineId, MachineRecord, OverlayIp, PublicKey,
 };
 use corro_api_types::{QueryEvent, RqliteResult, SqliteValue, Statement, sqlite::ChangeType};
 use futures_util::{StreamExt, stream::BoxStream};
@@ -56,8 +55,8 @@ impl CorrosionStore {
         Ok(response.results)
     }
 
-    async fn list_machines_inner(&self, network_id: &NetworkId) -> PortResult<Vec<MachineRecord>> {
-        let statement = Self::machines_watch_statement(network_id);
+    async fn list_machines_inner(&self) -> PortResult<Vec<MachineRecord>> {
+        let statement = Self::machines_watch_statement();
         let results = self.execute(&[statement], "list_machines").await?;
         let rows = query_rows(
             results
@@ -71,18 +70,16 @@ impl CorrosionStore {
             .collect()
     }
 
-    fn machines_watch_statement(network_id: &NetworkId) -> Statement {
-        Statement::WithParams(
-            "SELECT id, network_id, network_name, public_key, overlay_ip, endpoints FROM machines WHERE network_id = ? ORDER BY id".to_string(),
-            vec![network_id.0.clone().into()],
+    fn machines_watch_statement() -> Statement {
+        Statement::Simple(
+            "SELECT id, public_key, overlay_ip, endpoints FROM machines ORDER BY id".to_string(),
         )
     }
 
     async fn open_machine_watch(
         &self,
-        network_id: &NetworkId,
     ) -> PortResult<(Uuid, BoxStream<'static, io::Result<QueryEvent>>)> {
-        let statement = Self::machines_watch_statement(network_id);
+        let statement = Self::machines_watch_statement();
         let (watch_id, stream) = self
             .client
             .watch(&statement)
@@ -160,12 +157,11 @@ impl CorrosionStore {
 
     async fn fetch_invite(
         &self,
-        network_id: &NetworkId,
         invite_id: &str,
     ) -> PortResult<Option<InviteRecord>> {
         let statement = Statement::WithParams(
-            "SELECT id, network_id, network_name, issued_by, expires_at, nonce, max_uses, used, revoked FROM invites WHERE network_id = ? AND id = ? LIMIT 1".to_string(),
-            vec![network_id.0.clone().into(), invite_id.to_string().into()],
+            "SELECT id, expires_at FROM invites WHERE id = ? LIMIT 1".to_string(),
+            vec![invite_id.to_string().into()],
         );
         let results = self.execute(&[statement], "fetch_invite").await?;
         let rows = query_rows(
@@ -183,24 +179,21 @@ impl CorrosionStore {
 }
 
 impl MachineStore for CorrosionStore {
-    async fn list_machines(&self, network_id: &NetworkId) -> PortResult<Vec<MachineRecord>> {
-        self.list_machines_inner(network_id).await
+    async fn list_machines(&self) -> PortResult<Vec<MachineRecord>> {
+        self.list_machines_inner().await
     }
 
     async fn upsert_machine(
         &self,
-        network_id: &NetworkId,
         record: &MachineRecord,
     ) -> PortResult<()> {
         let endpoints = serde_json::to_string(&record.endpoints).map_err(|e| {
             PortError::operation("upsert_machine", format!("serialize endpoints: {e}"))
         })?;
         let statement = Statement::WithParams(
-            "INSERT INTO machines (id, network_id, network_name, public_key, overlay_ip, endpoints) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(network_id, id) DO UPDATE SET network_name = excluded.network_name, public_key = excluded.public_key, overlay_ip = excluded.overlay_ip, endpoints = excluded.endpoints".to_string(),
+            "INSERT INTO machines (id, public_key, overlay_ip, endpoints) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET public_key = excluded.public_key, overlay_ip = excluded.overlay_ip, endpoints = excluded.endpoints".to_string(),
             vec![
                 record.id.0.clone().into(),
-                network_id.0.clone().into(),
-                record.network.0.clone().into(),
                 record.public_key.0.to_vec().into(),
                 record.overlay_ip.0.to_string().into(),
                 endpoints.into(),
@@ -211,10 +204,10 @@ impl MachineStore for CorrosionStore {
         expect_execute(&results, "upsert_machine")
     }
 
-    async fn delete_machine(&self, network_id: &NetworkId, id: &MachineId) -> PortResult<()> {
+    async fn delete_machine(&self, id: &MachineId) -> PortResult<()> {
         let statement = Statement::WithParams(
-            "DELETE FROM machines WHERE network_id = ? AND id = ?".to_string(),
-            vec![network_id.0.clone().into(), id.0.clone().into()],
+            "DELETE FROM machines WHERE id = ?".to_string(),
+            vec![id.0.clone().into()],
         );
 
         let results = self.execute(&[statement], "delete_machine").await?;
@@ -223,9 +216,8 @@ impl MachineStore for CorrosionStore {
 
     async fn subscribe_machines(
         &self,
-        network_id: &NetworkId,
     ) -> PortResult<(Vec<MachineRecord>, mpsc::Receiver<MachineEvent>)> {
-        let (watch_id, mut stream) = self.open_machine_watch(network_id).await?;
+        let (watch_id, mut stream) = self.open_machine_watch().await?;
         let (snapshot, mut row_index) = self.collect_initial_snapshot(&mut stream).await?;
         let (tx, rx) = mpsc::channel(64);
 
@@ -295,19 +287,12 @@ impl MachineStore for CorrosionStore {
 }
 
 impl InviteStore for CorrosionStore {
-    async fn create_invite(&self, network_id: &NetworkId, invite: &InviteRecord) -> PortResult<()> {
+    async fn create_invite(&self, invite: &InviteRecord) -> PortResult<()> {
         let statement = Statement::WithParams(
-            "INSERT INTO invites (id, network_id, network_name, issued_by, expires_at, nonce, max_uses, used, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)".to_string(),
+            "INSERT INTO invites (id, expires_at) VALUES (?, ?)".to_string(),
             vec![
                 invite.id.clone().into(),
-                network_id.0.clone().into(),
-                invite.network_name.0.clone().into(),
-                invite.issued_by.0.clone().into(),
                 (invite.expires_at as i64).into(),
-                invite.nonce.clone().into(),
-                (invite.max_uses as i64).into(),
-                (invite.used as i64).into(),
-                if invite.revoked { 1_i64 } else { 0_i64 }.into(),
             ],
         );
 
@@ -326,19 +311,17 @@ impl InviteStore for CorrosionStore {
 
     async fn consume_invite(
         &self,
-        network_id: &NetworkId,
         invite_id: &str,
         now_unix_secs: u64,
-    ) -> PortResult<InviteRecord> {
-        let update = Statement::WithParams(
-            "UPDATE invites SET used = used + 1 WHERE network_id = ? AND id = ? AND revoked = 0 AND used < max_uses AND expires_at >= ?".to_string(),
+    ) -> PortResult<()> {
+        let delete = Statement::WithParams(
+            "DELETE FROM invites WHERE id = ? AND expires_at >= ?".to_string(),
             vec![
-                network_id.0.clone().into(),
                 invite_id.to_string().into(),
                 (now_unix_secs as i64).into(),
             ],
         );
-        let results = self.execute(&[update], "consume_invite").await?;
+        let results = self.execute(&[delete], "consume_invite").await?;
 
         let affected = rows_affected(
             results
@@ -348,38 +331,19 @@ impl InviteStore for CorrosionStore {
         )?;
 
         if affected == 1 {
-            return self
-                .fetch_invite(network_id, invite_id)
-                .await?
-                .ok_or_else(|| {
-                    PortError::operation(
-                        "consume_invite",
-                        "invite updated but not found after update",
-                    )
-                });
+            return Ok(());
         }
 
-        let invite = self.fetch_invite(network_id, invite_id).await?;
+        // No row deleted — figure out why.
+        let invite = self.fetch_invite(invite_id).await?;
         match invite {
             None => Err(PortError::operation(
                 "invite_not_found",
                 format!("invite '{invite_id}' not found"),
             )),
-            Some(invite) if invite.revoked => Err(PortError::operation(
-                "invite_revoked",
-                format!("invite '{invite_id}' is revoked"),
-            )),
-            Some(invite) if now_unix_secs > invite.expires_at => Err(PortError::operation(
+            Some(_) => Err(PortError::operation(
                 "invite_expired",
                 format!("invite '{invite_id}' is expired"),
-            )),
-            Some(invite) if invite.used >= invite.max_uses => Err(PortError::operation(
-                "invite_consumed",
-                format!("invite '{invite_id}' has no remaining uses"),
-            )),
-            Some(_) => Err(PortError::operation(
-                "consume_invite",
-                "invite not consumed due to update guard",
             )),
         }
     }
@@ -460,19 +424,17 @@ fn as_u64_rowid(rowid: i64) -> PortResult<u64> {
 }
 
 fn parse_machine_row(values: &[SqliteValue]) -> PortResult<MachineRecord> {
-    if values.len() != 6 {
+    if values.len() != 4 {
         return Err(PortError::operation(
             "parse_machine_row",
-            format!("expected 6 columns, got {}", values.len()),
+            format!("expected 4 columns, got {}", values.len()),
         ));
     }
 
     let id = expect_text(values, 0, "id")?;
-    let network_id = expect_text(values, 1, "network_id")?;
-    let network_name = expect_text(values, 2, "network_name")?;
-    let key_blob = expect_blob(values, 3, "public_key")?;
-    let overlay = expect_text(values, 4, "overlay_ip")?;
-    let endpoints_json = expect_text(values, 5, "endpoints")?;
+    let key_blob = expect_blob(values, 1, "public_key")?;
+    let overlay = expect_text(values, 2, "overlay_ip")?;
+    let endpoints_json = expect_text(values, 3, "endpoints")?;
 
     let public_key: [u8; 32] = key_blob.as_slice().try_into().map_err(|_| {
         PortError::operation(
@@ -489,8 +451,6 @@ fn parse_machine_row(values: &[SqliteValue]) -> PortResult<MachineRecord> {
 
     Ok(MachineRecord {
         id: MachineId(id),
-        network_id: NetworkId(network_id),
-        network: NetworkName(network_name),
         public_key: PublicKey(public_key),
         overlay_ip: OverlayIp(overlay_ip),
         endpoints,
@@ -498,33 +458,19 @@ fn parse_machine_row(values: &[SqliteValue]) -> PortResult<MachineRecord> {
 }
 
 fn parse_invite_row(values: &[SqliteValue]) -> PortResult<InviteRecord> {
-    if values.len() != 9 {
+    if values.len() != 2 {
         return Err(PortError::operation(
             "parse_invite_row",
-            format!("expected 9 columns, got {}", values.len()),
+            format!("expected 2 columns, got {}", values.len()),
         ));
     }
 
     let id = expect_text(values, 0, "id")?;
-    let network_id = expect_text(values, 1, "network_id")?;
-    let network_name = expect_text(values, 2, "network_name")?;
-    let issued_by = expect_text(values, 3, "issued_by")?;
-    let expires_at = expect_i64(values, 4, "expires_at")?;
-    let nonce = expect_text(values, 5, "nonce")?;
-    let max_uses = expect_i64(values, 6, "max_uses")?;
-    let used = expect_i64(values, 7, "used")?;
-    let revoked = expect_i64(values, 8, "revoked")?;
+    let expires_at = expect_i64(values, 1, "expires_at")?;
 
     Ok(InviteRecord {
         id,
-        network_id: NetworkId(network_id),
-        network_name: NetworkName(network_name),
-        issued_by: MachineId(issued_by),
         expires_at: to_u64(expires_at, "expires_at")?,
-        nonce,
-        max_uses: to_u32(max_uses, "max_uses")?,
-        used: to_u32(used, "used")?,
-        revoked: revoked != 0,
     })
 }
 
@@ -569,14 +515,4 @@ fn to_u64(value: i64, field: &'static str) -> PortResult<u64> {
         ));
     }
     Ok(value as u64)
-}
-
-fn to_u32(value: i64, field: &'static str) -> PortResult<u32> {
-    if value < 0 || value > u32::MAX as i64 {
-        return Err(PortError::operation(
-            "corrosion_decode",
-            format!("out of range value for '{field}': {value}"),
-        ));
-    }
-    Ok(value as u32)
 }

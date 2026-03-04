@@ -5,10 +5,9 @@ use ployz::adapters::corrosion::CorrosionStore;
 use ployz::transport::listener::{IncomingCommand, serve};
 use ployz::transport::{DaemonRequest, DaemonResponse};
 use ployz::{
-    Affordances, Identity, InviteStore, InviteRecord, Machine, MachineRecord, MachineStore,
-    MemoryService,
-    MemorySyncProbe, MemoryWireGuard, Mesh, Mode, NetworkConfig, NetworkId, NetworkName,
-    load_daemon_config, resolve_profile,
+    Affordances, Identity, InviteRecord, InviteStore, Machine, MachineRecord, MachineStore,
+    MemoryService, MemorySyncProbe, MemoryWireGuard, Mesh, Mode, NetworkConfig, NetworkId,
+    NetworkName, load_daemon_config, resolve_profile,
 };
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -346,7 +345,7 @@ impl DaemonState {
 
         if let Err(err) = self
             .store
-            .consume_invite(&invite.network_id, &invite.invite_id, now)
+            .consume_invite(&invite.invite_id, now)
             .await
         {
             return self.map_invite_consume_error(err);
@@ -501,7 +500,7 @@ impl DaemonState {
                 Ok(()) => {
                     if let Err(e) = self
                         .store
-                        .delete_machine(&machine.network.id, &self.identity.machine_id)
+                        .delete_machine(&self.identity.machine_id)
                         .await
                     {
                         tracing::warn!(?e, "failed to remove local machine from membership");
@@ -541,7 +540,7 @@ impl DaemonState {
                 }
                 if let Err(e) = self
                     .store
-                    .delete_machine(&machine.network.id, &self.identity.machine_id)
+                    .delete_machine(&self.identity.machine_id)
                     .await
                 {
                     tracing::warn!(?e, "failed to remove local machine from membership");
@@ -663,28 +662,20 @@ impl DaemonState {
             return self.err("INVITE_EXPIRED", "invite token has expired");
         }
 
-        let network_name = NetworkName(invite.network_name.clone());
         let record = InviteRecord {
             id: invite.invite_id.clone(),
-            network_id: invite.network_id.clone(),
-            network_name,
-            issued_by: ployz::MachineId(invite.issued_by.clone()),
             expires_at: invite.expires_at,
-            nonce: invite.nonce,
-            max_uses: 1,
-            used: 0,
-            revoked: false,
         };
 
-        match self.store.create_invite(&record.network_id, &record).await {
+        match self.store.create_invite(&record).await {
             Ok(()) => self.ok(format!(
                 "invite imported\n  network: {}\n  invite:  {}",
-                record.network_name, record.id
+                invite.network_name, record.id
             )),
             Err(ployz::PortError::Operation { operation, .. }) if operation == "invite_exists" => {
                 self.ok(format!(
                     "invite already present\n  network: {}\n  invite:  {}",
-                    record.network_name, record.id
+                    invite.network_name, record.id
                 ))
             }
             Err(err) => self.err(
@@ -734,18 +725,11 @@ impl DaemonState {
 
         let record = InviteRecord {
             id: invite_id,
-            network_id: network.id.clone(),
-            network_name: network.name.clone(),
-            issued_by: self.identity.machine_id.clone(),
             expires_at,
-            nonce,
-            max_uses: 1,
-            used: 0,
-            revoked: false,
         };
 
         self.store
-            .create_invite(&network.id, &record)
+            .create_invite(&record)
             .await
             .map_err(|e| format!("store invite: {e}"))?;
 
@@ -802,8 +786,6 @@ impl DaemonState {
             ployz::PortError::Operation { operation, message } => match operation {
                 "invite_not_found" => self.err("INVITE_NOT_FOUND", message),
                 "invite_expired" => self.err("INVITE_EXPIRED", message),
-                "invite_consumed" => self.err("INVITE_CONSUMED", message),
-                "invite_revoked" => self.err("INVITE_REVOKED", message),
                 _ => self.err("INVITE_REDEEM_FAILED", message),
             },
         }
@@ -843,14 +825,12 @@ impl DaemonState {
         // Seed the membership store with self.
         let self_record = MachineRecord {
             id: self.identity.machine_id.clone(),
-            network_id: net_config.id.clone(),
-            network: net_config.name.clone(),
             public_key: self.identity.public_key.clone(),
             overlay_ip: net_config.overlay_ip,
             endpoints: vec!["127.0.0.1:51820".into()],
         };
         self.store
-            .upsert_machine(&net_config.id, &self_record)
+            .upsert_machine(&self_record)
             .await
             .map_err(|e| format!("failed to seed store: {e}"))?;
 
@@ -872,7 +852,6 @@ impl DaemonState {
         let wg = Arc::new(MemoryWireGuard::new());
         let service = Arc::new(MemoryService::new());
         let mesh = Mesh::new(
-            net_config.id.clone(),
             wg.clone(),
             service,
             self.store.clone(),
