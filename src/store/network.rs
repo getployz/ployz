@@ -1,4 +1,4 @@
-use crate::domain::model::{NetworkId, NetworkName, OverlayIp, PublicKey, management_ip_from_key};
+use crate::store::model::{NetworkId, NetworkName, OverlayIp, PublicKey, management_ip_from_key};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -95,7 +95,7 @@ impl NetworkConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::model::PublicKey;
+    use crate::store::model::PublicKey;
 
     #[test]
     fn roundtrip_persists_network_id() {

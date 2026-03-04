@@ -1,7 +1,6 @@
-use crate::dataplane::traits::{
-    InviteStore, MachineStore, PortError, PortResult, SyncProbe, SyncStatus,
-};
-use crate::domain::model::{
+use crate::error::{PortError, PortResult};
+use crate::store::{InviteStore, MachineStore, SyncProbe, SyncStatus};
+use crate::store::model::{
     InviteRecord, MachineEvent, MachineId, MachineRecord, OverlayIp, PublicKey,
 };
 use corro_api_types::{ExecResult, SqliteValue, Statement, TypedQueryEvent, sqlite::ChangeType};

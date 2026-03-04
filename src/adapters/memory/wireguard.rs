@@ -1,5 +1,6 @@
-use crate::dataplane::traits::{MeshNetwork, PortError, PortResult};
-use crate::domain::model::MachineRecord;
+use crate::error::{PortError, PortResult};
+use crate::mesh::MeshNetwork;
+use crate::store::model::MachineRecord;
 use std::sync::{Mutex, MutexGuard};
 
 pub struct MemoryWireGuard {

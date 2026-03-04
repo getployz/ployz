@@ -14,31 +14,10 @@ pub enum Os {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    Dev,
-    Agent,
-    Prod,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WireGuardBackend {
-    Kernel,
-    Userspace,
-    Docker,
     Memory,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ServiceBackend {
-    System,
     Docker,
-    Memory,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BridgeBackend {
-    None,
-    UserspaceProxy,
-    HostRoutingHelper,
+    HostExec,
+    HostService,
 }
 
 #[derive(Debug, Clone)]
@@ -219,65 +198,21 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/tmp"))
 }
 
-#[derive(Debug, Clone)]
-pub struct Profile {
-    pub mode: Mode,
-    pub wireguard: WireGuardBackend,
-    pub services: ServiceBackend,
-    pub bridge: BridgeBackend,
-}
-
-pub fn resolve_profile(aff: &Affordances, mode: Mode) -> Profile {
-    match (aff.os, mode) {
-        (Os::Linux, Mode::Prod) => {
-            let wireguard = if aff.has_kernel_wireguard && aff.is_root {
-                WireGuardBackend::Kernel
-            } else {
-                WireGuardBackend::Userspace
-            };
-            Profile {
-                mode,
-                wireguard,
-                services: ServiceBackend::System,
-                bridge: BridgeBackend::None,
+pub fn validate_mode(mode: Mode, aff: &Affordances) -> std::result::Result<(), String> {
+    match mode {
+        Mode::Memory => Ok(()),
+        Mode::Docker => {
+            if !aff.has_docker {
+                return Err("Docker mode requires a running Docker daemon".into());
             }
+            Ok(())
         }
-        (Os::Linux, Mode::Dev | Mode::Agent) => Profile {
-            mode,
-            wireguard: WireGuardBackend::Userspace,
-            services: ServiceBackend::System,
-            bridge: BridgeBackend::None,
-        },
-        (Os::Darwin, Mode::Dev) => Profile {
-            mode,
-            wireguard: if aff.has_docker {
-                WireGuardBackend::Docker
-            } else {
-                WireGuardBackend::Userspace
-            },
-            services: if aff.has_docker {
-                ServiceBackend::Docker
-            } else {
-                ServiceBackend::Memory
-            },
-            bridge: BridgeBackend::UserspaceProxy,
-        },
-        (Os::Darwin, Mode::Agent | Mode::Prod) => Profile {
-            mode,
-            wireguard: WireGuardBackend::Userspace,
-            services: ServiceBackend::System,
-            bridge: if aff.has_wg_helper {
-                BridgeBackend::HostRoutingHelper
-            } else {
-                BridgeBackend::UserspaceProxy
-            },
-        },
-        (Os::Other, _) => Profile {
-            mode,
-            wireguard: WireGuardBackend::Memory,
-            services: ServiceBackend::Memory,
-            bridge: BridgeBackend::None,
-        },
+        Mode::HostExec | Mode::HostService => {
+            if aff.os == Os::Other {
+                return Err(format!("{mode:?} is not supported on this platform"));
+            }
+            Ok(())
+        }
     }
 }
 
@@ -285,34 +220,30 @@ pub fn resolve_profile(aff: &Affordances, mode: Mode) -> Profile {
 mod tests {
     use super::*;
 
-    fn aff(os: Os, kernel_wg: bool, root: bool, docker: bool, wg_helper: bool) -> Affordances {
+    fn aff(os: Os, docker: bool) -> Affordances {
         Affordances {
             os,
-            has_kernel_wireguard: kernel_wg,
+            has_kernel_wireguard: false,
             has_docker: docker,
-            is_root: root,
-            has_wg_helper: wg_helper,
+            is_root: false,
+            has_wg_helper: false,
         }
     }
 
     #[test]
-    fn linux_prod_prefers_kernel_when_available() {
-        let p = resolve_profile(&aff(Os::Linux, true, true, false, false), Mode::Prod);
-        assert_eq!(p.wireguard, WireGuardBackend::Kernel);
-        assert_eq!(p.services, ServiceBackend::System);
+    fn memory_mode_always_valid() {
+        assert!(validate_mode(Mode::Memory, &aff(Os::Other, false)).is_ok());
     }
 
     #[test]
-    fn macos_dev_prefers_docker_backends() {
-        let p = resolve_profile(&aff(Os::Darwin, false, false, true, false), Mode::Dev);
-        assert_eq!(p.wireguard, WireGuardBackend::Docker);
-        assert_eq!(p.services, ServiceBackend::Docker);
+    fn docker_mode_requires_docker() {
+        assert!(validate_mode(Mode::Docker, &aff(Os::Linux, false)).is_err());
+        assert!(validate_mode(Mode::Docker, &aff(Os::Linux, true)).is_ok());
     }
 
     #[test]
-    fn unknown_os_falls_back_to_memory() {
-        let p = resolve_profile(&aff(Os::Other, false, false, false, false), Mode::Agent);
-        assert_eq!(p.wireguard, WireGuardBackend::Memory);
-        assert_eq!(p.services, ServiceBackend::Memory);
+    fn host_modes_reject_unknown_os() {
+        assert!(validate_mode(Mode::HostExec, &aff(Os::Other, false)).is_err());
+        assert!(validate_mode(Mode::HostExec, &aff(Os::Linux, false)).is_ok());
     }
 }

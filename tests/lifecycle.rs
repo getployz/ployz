@@ -1,5 +1,5 @@
 use ployz::{MachineId, MachineRecord, OverlayIp, PublicKey};
-use ployz::{MachineStore, Mesh, Network, Phase, Service, Store, SyncStatus};
+use ployz::{MachineStore, Mesh, WireguardDriver, Phase, StoreDriver, SyncStatus};
 use ployz::{MemoryService, MemoryStore, MemoryWireGuard};
 use std::net::Ipv6Addr;
 use std::sync::Arc;
@@ -16,9 +16,11 @@ fn test_record(id: &str, key_byte: u8) -> MachineRecord {
 
 fn make_mesh(wg: Arc<MemoryWireGuard>, svc: Arc<MemoryService>, store: Arc<MemoryStore>) -> Mesh {
     Mesh::new(
-        Network::Memory(wg),
-        Service::Memory(svc),
-        Store::Memory(store),
+        WireguardDriver::Memory(wg),
+        StoreDriver::Memory {
+            store,
+            service: svc,
+        },
     )
     .with_bootstrap_timing(Duration::from_millis(10), Duration::from_secs(5))
 }
@@ -135,9 +137,11 @@ async fn bootstrap_connection_timeout() {
     store.set_sync_status(SyncStatus::Disconnected);
 
     let mut mesh = Mesh::new(
-        Network::Memory(wg),
-        Service::Memory(svc),
-        Store::Memory(store),
+        WireguardDriver::Memory(wg),
+        StoreDriver::Memory {
+            store,
+            service: svc,
+        },
     )
     .with_bootstrap_timing(Duration::from_millis(10), Duration::from_millis(100));
 
@@ -165,9 +169,11 @@ async fn bootstrap_sync_completes() {
     });
 
     let mut mesh = Mesh::new(
-        Network::Memory(wg),
-        Service::Memory(svc),
-        Store::Memory(store),
+        WireguardDriver::Memory(wg),
+        StoreDriver::Memory {
+            store,
+            service: svc,
+        },
     )
     .with_bootstrap_timing(Duration::from_millis(10), Duration::from_secs(5));
 
@@ -195,9 +201,11 @@ async fn bootstrap_sync_waits_indefinitely() {
     // connection_timeout is very short (50ms), but store starts at Syncing
     // so connection phase passes immediately. Sync phase has no timeout.
     let mut mesh = Mesh::new(
-        Network::Memory(wg),
-        Service::Memory(svc),
-        Store::Memory(store),
+        WireguardDriver::Memory(wg),
+        StoreDriver::Memory {
+            store,
+            service: svc,
+        },
     )
     .with_bootstrap_timing(Duration::from_millis(10), Duration::from_millis(50));
 

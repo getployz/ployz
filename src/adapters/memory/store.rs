@@ -1,7 +1,6 @@
-use crate::dataplane::traits::{
-    InviteStore, MachineStore, PortError, PortResult, SyncProbe, SyncStatus,
-};
-use crate::domain::model::{InviteRecord, MachineEvent, MachineId, MachineRecord};
+use crate::error::{PortError, PortResult};
+use crate::store::{InviteStore, MachineStore, SyncProbe, SyncStatus};
+use crate::store::model::{InviteRecord, MachineEvent, MachineId, MachineRecord};
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 use tokio::sync::mpsc;

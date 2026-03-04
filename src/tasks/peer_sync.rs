@@ -1,6 +1,6 @@
-use crate::control::backends::Network;
-use crate::control::peer_state::{PeerStateMap, sync_peers};
-use crate::domain::model::{MachineEvent, MachineRecord};
+use crate::backends::WireguardDriver;
+use crate::mesh::peer_state::{PeerStateMap, sync_peers};
+use crate::store::model::{MachineEvent, MachineRecord};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
@@ -8,7 +8,7 @@ use tracing::{debug, info};
 pub(crate) async fn run_peer_sync_task(
     snapshot: Vec<MachineRecord>,
     mut events: mpsc::Receiver<MachineEvent>,
-    network: Network,
+    network: WireguardDriver,
     cancel: CancellationToken,
 ) {
     let mut state = PeerStateMap::new();

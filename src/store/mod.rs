@@ -1,38 +1,10 @@
-use crate::domain::model::{InviteRecord, MachineEvent, MachineId, MachineRecord, PublicKey};
+pub mod model;
+pub mod network;
+
+use crate::error::PortResult;
+use crate::store::model::{InviteRecord, MachineEvent, MachineId, MachineRecord};
 use std::future::Future;
-use thiserror::Error;
 use tokio::sync::mpsc;
-use tokio::time::Instant;
-
-pub type PortResult<T> = std::result::Result<T, PortError>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum PortError {
-    #[error("{operation}: {message}")]
-    Operation {
-        operation: &'static str,
-        message: String,
-    },
-}
-
-impl PortError {
-    #[must_use]
-    pub fn operation(operation: &'static str, message: impl Into<String>) -> Self {
-        Self::Operation {
-            operation,
-            message: message.into(),
-        }
-    }
-}
-
-pub trait MeshNetwork: Send + Sync {
-    fn up(&self) -> impl Future<Output = PortResult<()>> + Send + '_;
-    fn down(&self) -> impl Future<Output = PortResult<()>> + Send + '_;
-    fn set_peers<'a>(
-        &'a self,
-        peers: &'a [MachineRecord],
-    ) -> impl Future<Output = PortResult<()>> + Send + 'a;
-}
 
 pub trait MachineStore: Send + Sync {
     fn init(&self) -> impl Future<Output = PortResult<()>> + Send + '_ {
@@ -81,21 +53,4 @@ pub trait ServiceControl: Send + Sync {
     fn start(&self) -> impl Future<Output = PortResult<()>> + Send + '_;
     fn stop(&self) -> impl Future<Output = PortResult<()>> + Send + '_;
     fn healthy(&self) -> impl Future<Output = bool> + Send + '_;
-}
-
-// --- WireGuard device abstraction ---
-
-pub struct DevicePeer {
-    pub public_key: PublicKey,
-    pub endpoint: Option<String>,
-    pub last_handshake: Option<Instant>,
-}
-
-pub trait WireGuardDevice: Send + Sync {
-    fn read_peers(&self) -> impl Future<Output = PortResult<Vec<DevicePeer>>> + Send + '_;
-    fn set_peer_endpoint<'a>(
-        &'a self,
-        key: &'a PublicKey,
-        endpoint: &'a str,
-    ) -> impl Future<Output = PortResult<()>> + Send + 'a;
 }

@@ -2,7 +2,7 @@ mod peer_sync;
 
 pub(crate) use peer_sync::run_peer_sync_task;
 
-use crate::dataplane::traits::PortError;
+use crate::error::PortError;
 use thiserror::Error;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;

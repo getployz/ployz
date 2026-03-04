@@ -1,4 +1,5 @@
-use crate::dataplane::traits::{PortError, PortResult, ServiceControl};
+use crate::error::{PortError, PortResult};
+use crate::store::ServiceControl;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct MemoryService {

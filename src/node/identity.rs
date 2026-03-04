@@ -1,4 +1,4 @@
-use crate::domain::model::{MachineId, PrivateKey, PublicKey};
+use crate::store::model::{MachineId, PrivateKey, PublicKey};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;

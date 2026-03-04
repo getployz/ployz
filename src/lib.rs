@@ -1,30 +1,33 @@
 pub mod adapters;
+pub mod backends;
 pub mod config;
-pub mod control;
-pub mod dataplane;
-pub mod domain;
+pub mod daemon;
 pub mod error;
+pub mod mesh;
+pub mod node;
+pub mod store;
+mod tasks;
 pub mod transport;
 
-pub use adapters::corrosion::CorrosionStore;
-pub use adapters::corrosion::SCHEMA_SQL;
-pub use adapters::corrosion::config as corrosion_config;
-pub use adapters::corrosion::docker::DockerCorrosion;
-pub use adapters::memory::{MemoryService, MemoryStore, MemoryWireGuard};
+// Re-export public API
+pub use error::{PortError, PortResult};
 pub use config::{
-    Affordances, BridgeBackend, ClientConfig, ConfigLoadError, DaemonConfig, Mode, Os, Profile,
-    ServiceBackend, WireGuardBackend, default_config_path, default_data_dir, default_socket_path,
-    load_client_config, load_daemon_config, resolve_config_path, resolve_profile,
+    Affordances, ClientConfig, ConfigLoadError, DaemonConfig, Mode, Os, default_config_path,
+    default_data_dir, default_socket_path, load_client_config, load_daemon_config,
+    resolve_config_path, validate_mode,
 };
-pub use control::backends::{Network, Service, Store};
-pub use control::machine::Machine;
-pub use control::runtime::{Mesh, MeshError};
-pub use dataplane::traits::{
-    DevicePeer, InviteStore, MachineStore, MeshNetwork, PortError, PortResult, ServiceControl,
-    SyncProbe, SyncStatus, WireGuardDevice,
-};
-pub use dataplane::wireguard::{PeerStatus, WireGuardPeer};
-pub use domain::identity::{Identity, IdentityError};
-pub use domain::model::*;
-pub use domain::network::{NetworkConfig, NetworkConfigError};
-pub use domain::phase::{Phase, PhaseEvent, TransitionError, transition};
+pub use node::identity::{Identity, IdentityError};
+pub use node::invite::InviteClaims;
+pub use store::model::*;
+pub use store::network::{NetworkConfig, NetworkConfigError};
+pub use store::{MachineStore, InviteStore, SyncProbe, SyncStatus, ServiceControl};
+pub use mesh::{MeshNetwork, WireGuardDevice, DevicePeer};
+pub use mesh::orchestrator::{Mesh, MeshError};
+pub use mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
+pub use mesh::peer::{PeerStatus, WireGuardPeer};
+pub use backends::{WireguardDriver, StoreDriver};
+pub use adapters::memory::{MemoryService, MemoryStore, MemoryWireGuard};
+pub use adapters::corrosion::{CorrosionStore, SCHEMA_SQL, config as corrosion_config};
+pub use adapters::corrosion::docker::DockerCorrosion;
+pub use adapters::wireguard::{DockerWireGuard, HostWireGuard};
+pub use adapters::wireguard::config as wireguard_config;

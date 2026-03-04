@@ -1,5 +1,5 @@
-use crate::dataplane::traits::MeshNetwork;
-use crate::domain::model::{MachineEvent, MachineId, MachineRecord, OverlayIp, PublicKey};
+use crate::mesh::MeshNetwork;
+use crate::store::model::{MachineEvent, MachineId, MachineRecord, OverlayIp, PublicKey};
 use std::collections::HashMap;
 use tracing::warn;
 

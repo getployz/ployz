@@ -1,9 +1,9 @@
-use super::backends::{Network, Service, Store};
-use super::tasks::{TaskSet, TaskSetError, run_peer_sync_task};
-use crate::dataplane::traits::{
-    MachineStore, MeshNetwork, PortError, ServiceControl, SyncProbe, SyncStatus,
-};
-use crate::domain::phase::{Phase, PhaseEvent, TransitionError, transition};
+use crate::backends::{WireguardDriver, StoreDriver};
+use crate::tasks::{TaskSet, TaskSetError, run_peer_sync_task};
+use crate::error::PortError;
+use crate::mesh::MeshNetwork;
+use crate::mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
+use crate::store::{MachineStore, ServiceControl, SyncProbe, SyncStatus};
 use std::time::Duration;
 use thiserror::Error;
 use tracing::{info, warn};
@@ -22,9 +22,8 @@ pub enum MeshError {
 
 pub struct Mesh {
     phase: Phase,
-    network: Network,
-    service: Service,
-    membership: Store,
+    network: WireguardDriver,
+    store: StoreDriver,
     tasks: Option<TaskSet>,
     bootstrap_interval: Duration,
     connection_timeout: Duration,
@@ -32,12 +31,11 @@ pub struct Mesh {
 }
 
 impl Mesh {
-    pub fn new(network: Network, service: Service, membership: Store) -> Self {
+    pub fn new(network: WireguardDriver, store: StoreDriver) -> Self {
         Self {
             phase: Phase::Stopped,
             network,
-            service,
-            membership,
+            store,
             tasks: None,
             bootstrap_interval: Duration::from_millis(500),
             connection_timeout: Duration::from_secs(30),
@@ -59,8 +57,8 @@ impl Mesh {
         self.phase
     }
 
-    pub fn store(&self) -> Store {
-        self.membership.clone()
+    pub fn store(&self) -> StoreDriver {
+        self.store.clone()
     }
 
     fn apply(&mut self, event: PhaseEvent) -> Result<()> {
@@ -81,7 +79,7 @@ impl Mesh {
 
         self.apply(PhaseEvent::NetworkReady)?;
 
-        if let Err(e) = self.service.start().await {
+        if let Err(e) = self.store.start().await {
             warn!(?e, "service start failed");
             let _ = self.network.down().await;
             self.apply(PhaseEvent::ComponentFailed)?;
@@ -90,7 +88,7 @@ impl Mesh {
 
         if let Err(e) = self.wait_service_ready().await {
             warn!(?e, "service readiness check failed");
-            let _ = self.service.stop().await;
+            let _ = self.store.stop().await;
             let _ = self.network.down().await;
             self.apply(PhaseEvent::ComponentFailed)?;
             return Err(e);
@@ -98,7 +96,7 @@ impl Mesh {
 
         if let Err(e) = self.wait_store_init().await {
             warn!(?e, "store init failed");
-            let _ = self.service.stop().await;
+            let _ = self.store.stop().await;
             let _ = self.network.down().await;
             self.apply(PhaseEvent::ComponentFailed)?;
             return Err(e.into());
@@ -108,7 +106,7 @@ impl Mesh {
 
         if let Err(e) = self.bootstrap_gate().await {
             warn!(?e, "bootstrap failed");
-            let _ = self.service.stop().await;
+            let _ = self.store.stop().await;
             let _ = self.network.down().await;
             self.apply(PhaseEvent::ComponentFailed)?;
             return Err(e);
@@ -117,7 +115,7 @@ impl Mesh {
         let (mut task_set, cancel) = TaskSet::new();
 
         let (snapshot, events) = self
-            .membership
+            .store
             .subscribe_machines()
             .await
             .map_err(TaskSetError::Subscribe)?;
@@ -157,7 +155,7 @@ impl Mesh {
             first_err.get_or_insert(e.into());
         }
 
-        if let Err(e) = self.service.stop().await {
+        if let Err(e) = self.store.stop().await {
             warn!(?e, "service stop failed during destroy");
             first_err.get_or_insert(e.into());
         }
@@ -179,7 +177,7 @@ impl Mesh {
     /// Wait for the service to report healthy after starting.
     /// Uses exponential backoff: 50ms → 1s, with a configurable timeout (default 15s).
     async fn wait_service_ready(&self) -> Result<()> {
-        if self.service.healthy().await {
+        if self.store.healthy().await {
             return Ok(());
         }
 
@@ -189,7 +187,7 @@ impl Mesh {
 
         tokio::time::timeout(timeout, async {
             loop {
-                if self.service.healthy().await {
+                if self.store.healthy().await {
                     return;
                 }
                 tokio::time::sleep(interval).await;
@@ -205,10 +203,7 @@ impl Mesh {
         })
     }
 
-    /// Wait for the membership store to accept its schema and serve queries.
-    /// The backing service (e.g. Corrosion) may need time after the container
-    /// reports healthy before its API is actually accepting connections, and
-    /// further time after schema application before queries succeed.
+    /// Wait for the store to accept its schema and serve queries.
     /// Uses exponential backoff: 100ms → 2s, 30s timeout.
     async fn wait_store_init(&self) -> Result<()> {
         let timeout = Duration::from_secs(30);
@@ -218,7 +213,7 @@ impl Mesh {
         let result = tokio::time::timeout(timeout, async {
             // Phase 1: apply schema.
             loop {
-                match self.membership.init().await {
+                match self.store.init().await {
                     Ok(()) => break,
                     Err(e) => {
                         info!(?e, "store not ready, retrying");
@@ -229,7 +224,7 @@ impl Mesh {
             }
             // Phase 2: verify queries work.
             loop {
-                match self.membership.list_machines().await {
+                match self.store.list_machines().await {
                     Ok(_) => return Ok(()),
                     Err(e) => {
                         info!(?e, "store not queryable yet, retrying");
@@ -251,7 +246,7 @@ impl Mesh {
     }
 
     async fn bootstrap_gate(&mut self) -> Result<()> {
-        let machines = self.membership.list_machines().await?;
+        let machines = self.store.list_machines().await?;
         if machines.is_empty() {
             self.apply(PhaseEvent::SyncComplete)?;
             return Ok(());
@@ -259,12 +254,12 @@ impl Mesh {
 
         let interval = self.bootstrap_interval;
         let connection_timeout = self.connection_timeout;
-        let membership = self.membership.clone();
+        let store = self.store.clone();
 
         // Connection phase: wait for corrosion to see any peer (short timeout).
         tokio::time::timeout(connection_timeout, async {
             loop {
-                match membership.sync_status().await {
+                match store.sync_status().await {
                     Ok(SyncStatus::Disconnected) => {}
                     Ok(_) => return,
                     Err(e) => {
@@ -279,7 +274,7 @@ impl Mesh {
 
         // Sync phase: wait for gaps to reach 0 (no timeout).
         loop {
-            match self.membership.sync_status().await {
+            match self.store.sync_status().await {
                 Ok(SyncStatus::Synced) => break,
                 Ok(SyncStatus::Syncing { gaps }) => {
                     info!(gaps, "syncing: {gaps} gaps remaining");

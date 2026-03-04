@@ -26,6 +26,7 @@ corro-client = { git = "https://github.com/getployz/corrosion.git", branch = "ma
 corro-api-types = { git = "https://github.com/getployz/corrosion.git", branch = "main" }
 futures-util = "0.3"
 bollard = "0.20.1"
+defguard_wireguard_rs = "0.9.3"
 reqwest = { version = "0.12", features = ["json"] }
 
 [dev-dependencies]
