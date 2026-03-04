@@ -1,13 +1,12 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use clap::{Parser, Subcommand, ValueEnum};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use ployz::adapters::corrosion::CorrosionStore;
 use ployz::transport::listener::{IncomingCommand, serve};
 use ployz::transport::{DaemonRequest, DaemonResponse};
 use ployz::{
-    Affordances, Identity, InviteRecord, InviteStore, Machine, MachineRecord, MachineStore,
-    MemoryService, MemorySyncProbe, MemoryWireGuard, Mesh, Mode, NetworkConfig, NetworkId,
-    NetworkName, load_daemon_config, resolve_profile,
+    Affordances, CorrosionStore, DockerCorrosion, Identity, InviteRecord, InviteStore,
+    MachineRecord, MachineStore, MemoryWireGuard, Mesh, Mode, Network, NetworkConfig, NetworkId,
+    NetworkName, SCHEMA_SQL, Service, Store, corrosion_config, load_daemon_config, resolve_profile,
 };
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -74,8 +73,6 @@ enum CliError {
     Identity(#[from] ployz::IdentityError),
     #[error(transparent)]
     Config(#[from] ployz::ConfigLoadError),
-    #[error("{0}")]
-    Store(String),
 }
 
 #[tokio::main]
@@ -109,8 +106,6 @@ async fn cmd_run(data_dir: &Path, mode: Mode, socket_path: &str) -> Result<()> {
     let identity = Identity::load_or_generate(&id_path)?;
     println!("machine: {}", identity.machine_id);
 
-    let store = build_store().await?;
-
     let cancel = CancellationToken::new();
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<IncomingCommand>(32);
 
@@ -123,15 +118,18 @@ async fn cmd_run(data_dir: &Path, mode: Mode, socket_path: &str) -> Result<()> {
         }
     });
 
-    // Spawn ctrl-c handler.
+    // Spawn ctrl-c handler. Second ctrl-c force-exits.
     let ctrl_cancel = cancel.clone();
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
         println!("\nreceived ctrl-c, shutting down...");
         ctrl_cancel.cancel();
+        tokio::signal::ctrl_c().await.ok();
+        eprintln!("received second ctrl-c, forcing exit");
+        std::process::exit(1);
     });
 
-    let mut state = DaemonState::new(data_dir, identity, store);
+    let mut state = DaemonState::new(data_dir, identity);
 
     println!("ployzd running (socket: {socket_path})");
 
@@ -139,15 +137,26 @@ async fn cmd_run(data_dir: &Path, mode: Mode, socket_path: &str) -> Result<()> {
         tokio::select! {
             _ = cancel.cancelled() => break,
             Some(cmd) = cmd_rx.recv() => {
-                let response = state.handle(cmd.request).await;
-                let _ = cmd.reply.send(response);
+                tokio::select! {
+                    response = state.handle(cmd.request) => {
+                        let _ = cmd.reply.send(response);
+                    }
+                    _ = cancel.cancelled() => {
+                        let _ = cmd.reply.send(DaemonResponse {
+                            ok: false,
+                            code: "SHUTDOWN".into(),
+                            message: "daemon shutting down".into(),
+                        });
+                        break;
+                    }
+                }
             }
         }
     }
 
     // Graceful shutdown: detach mesh if running.
-    if let Some(ref mut machine) = state.machine {
-        let _ = machine.mesh.detach().await;
+    if let Some(ref mut active) = state.active {
+        let _ = active.mesh.detach().await;
     }
 
     listener_handle.await.ok();
@@ -155,23 +164,15 @@ async fn cmd_run(data_dir: &Path, mode: Mode, socket_path: &str) -> Result<()> {
     Ok(())
 }
 
-async fn build_store() -> Result<Arc<CorrosionStore>> {
-    let endpoint =
-        std::env::var("PLOYZ_CORROSION_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
-    let store = CorrosionStore::connect(&endpoint)
-        .await
-        .map_err(CliError::Store)?;
-    println!("membership backend: corrosion ({endpoint})");
-    Ok(Arc::new(store))
+struct ActiveMesh {
+    config: NetworkConfig,
+    mesh: Mesh,
 }
 
 struct DaemonState {
     data_dir: PathBuf,
     identity: Identity,
-    machine: Option<
-        Machine<MemoryWireGuard, MemoryService, CorrosionStore, MemoryWireGuard, MemorySyncProbe>,
-    >,
-    store: Arc<CorrosionStore>,
+    active: Option<ActiveMesh>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,12 +187,11 @@ struct InviteClaims {
 }
 
 impl DaemonState {
-    fn new(data_dir: &Path, identity: Identity, store: Arc<CorrosionStore>) -> Self {
+    fn new(data_dir: &Path, identity: Identity) -> Self {
         Self {
             data_dir: data_dir.to_path_buf(),
             identity,
-            machine: None,
-            store,
+            active: None,
         }
     }
 
@@ -237,15 +237,15 @@ impl DaemonState {
 
     fn handle_status(&self) -> DaemonResponse {
         let id = &self.identity;
-        match &self.machine {
-            Some(machine) => {
-                let net = &machine.network;
+        match &self.active {
+            Some(active) => {
+                let net = &active.config;
                 self.ok(format!(
                     "machine:  {}\nnetwork:  {}\noverlay:  {}\nphase:    {:?}",
                     id.machine_id,
                     net.name,
                     net.overlay_ip,
-                    machine.phase(),
+                    active.mesh.phase(),
                 ))
             }
             None => self.ok(format!(
@@ -278,7 +278,7 @@ impl DaemonState {
             return self.ok("no networks found");
         }
 
-        let running = self.machine.as_ref().map(|m| m.network.name.0.as_str());
+        let running = self.active.as_ref().map(|a| a.config.name.0.as_str());
         let lines: Vec<String> = names
             .iter()
             .map(|name| {
@@ -311,9 +311,9 @@ impl DaemonState {
         };
 
         let running = self
-            .machine
+            .active
             .as_ref()
-            .map(|m| m.network.name.0 == network)
+            .map(|a| a.config.name.0 == network)
             .unwrap_or(false);
         let state = if running { "running" } else { "created" };
         self.ok(format!(
@@ -323,12 +323,12 @@ impl DaemonState {
     }
 
     async fn handle_mesh_join(&mut self, token: &str) -> DaemonResponse {
-        if let Some(machine) = &self.machine {
+        if let Some(active) = &self.active {
             return self.err(
                 "NETWORK_ALREADY_RUNNING",
                 format!(
                     "network '{}' is already running -- run `mesh down` first",
-                    machine.network.name
+                    active.config.name
                 ),
             );
         }
@@ -341,14 +341,6 @@ impl DaemonState {
         let now = now_unix_secs();
         if now > invite.expires_at {
             return self.err("INVITE_EXPIRED", "invite token has expired");
-        }
-
-        if let Err(err) = self
-            .store
-            .consume_invite(&invite.invite_id, now)
-            .await
-        {
-            return self.map_invite_consume_error(err);
         }
 
         let network = invite.network_name.trim();
@@ -379,6 +371,18 @@ impl DaemonState {
             );
         }
 
+        if let Err(e) = self
+            .active
+            .as_ref()
+            .unwrap()
+            .mesh
+            .store()
+            .consume_invite(&invite.invite_id, now_unix_secs())
+            .await
+        {
+            tracing::warn!(?e, "failed to consume invite (mesh already joined)");
+        }
+
         self.ok(format!("joined and started network '{network}'"))
     }
 
@@ -397,12 +401,12 @@ impl DaemonState {
     }
 
     async fn handle_mesh_init(&mut self, network: &str) -> DaemonResponse {
-        if let Some(machine) = &self.machine {
+        if let Some(active) = &self.active {
             return self.err(
                 "NETWORK_ALREADY_RUNNING",
                 format!(
                     "network '{}' is already running -- run `mesh down` first",
-                    machine.network.name,
+                    active.config.name,
                 ),
             );
         }
@@ -451,12 +455,12 @@ impl DaemonState {
     }
 
     async fn handle_mesh_up(&mut self, network: &str) -> DaemonResponse {
-        if let Some(machine) = &self.machine {
+        if let Some(active) = &self.active {
             return self.err(
                 "NETWORK_ALREADY_RUNNING",
                 format!(
                     "network '{}' is already running -- run `mesh down` first",
-                    machine.network.name,
+                    active.config.name,
                 ),
             );
         }
@@ -495,30 +499,27 @@ impl DaemonState {
     }
 
     async fn handle_mesh_down(&mut self) -> DaemonResponse {
-        match &mut self.machine {
-            Some(machine) => match machine.mesh.destroy().await {
-                Ok(()) => {
-                    if let Err(e) = self
-                        .store
-                        .delete_machine(&self.identity.machine_id)
-                        .await
-                    {
-                        tracing::warn!(?e, "failed to remove local machine from membership");
-                    }
-                    self.machine = None;
-                    self.ok("mesh stopped (config kept)")
-                }
-                Err(e) => self.err("NETWORK_STOP_FAILED", format!("mesh down failed: {e}")),
-            },
-            None => self.err("NO_RUNNING_NETWORK", "no mesh running"),
+        let Some(mut active) = self.active.take() else {
+            return self.err("NO_RUNNING_NETWORK", "no mesh running");
+        };
+
+        let store = active.mesh.store();
+        if let Err(e) = active.mesh.destroy().await {
+            self.active = Some(active);
+            return self.err("NETWORK_STOP_FAILED", format!("mesh down failed: {e}"));
         }
+
+        if let Err(e) = store.delete_machine(&self.identity.machine_id).await {
+            tracing::warn!(?e, "failed to remove local machine from membership");
+        }
+        self.ok("mesh stopped (config kept)")
     }
 
     async fn handle_mesh_destroy(&mut self, network: &str) -> DaemonResponse {
         let running_target = self
-            .machine
+            .active
             .as_ref()
-            .map(|machine| machine.network.name.0 == network)
+            .map(|a| a.config.name.0 == network)
             .unwrap_or(false);
 
         let config_path = NetworkConfig::path(&self.data_dir, network);
@@ -530,23 +531,19 @@ impl DaemonState {
         }
 
         if running_target {
-            if let Some(machine) = &mut self.machine {
-                if let Err(e) = machine.mesh.destroy().await {
-                    return DaemonResponse {
-                        ok: false,
-                        code: "NETWORK_DESTROY_FAILED".into(),
-                        message: format!("destroy failed: {e}"),
-                    };
-                }
-                if let Err(e) = self
-                    .store
-                    .delete_machine(&self.identity.machine_id)
-                    .await
-                {
-                    tracing::warn!(?e, "failed to remove local machine from membership");
-                }
+            let mut active = self.active.take().unwrap();
+            let store = active.mesh.store();
+            if let Err(e) = active.mesh.destroy().await {
+                self.active = Some(active);
+                return DaemonResponse {
+                    ok: false,
+                    code: "NETWORK_DESTROY_FAILED".into(),
+                    message: format!("destroy failed: {e}"),
+                };
             }
-            self.machine = None;
+            if let Err(e) = store.delete_machine(&self.identity.machine_id).await {
+                tracing::warn!(?e, "failed to remove local machine from membership");
+            }
         }
 
         if let Err(e) = NetworkConfig::delete(&self.data_dir, network) {
@@ -561,7 +558,7 @@ impl DaemonState {
     }
 
     async fn handle_machine_init(&mut self, target: &str, network: &str) -> DaemonResponse {
-        if self.machine.is_some() {
+        if self.active.is_some() {
             return self.err(
                 "NETWORK_ALREADY_RUNNING",
                 "machine init requires no local running network; switch context or run `mesh down` first",
@@ -584,8 +581,8 @@ impl DaemonState {
     }
 
     async fn handle_machine_add(&mut self, target: &str) -> DaemonResponse {
-        let running = match self.machine.as_ref() {
-            Some(machine) => machine.network.clone(),
+        let running = match self.active.as_ref() {
+            Some(active) => active.config.clone(),
             None => {
                 return self.err(
                     "NO_RUNNING_NETWORK",
@@ -627,8 +624,8 @@ impl DaemonState {
     }
 
     async fn handle_machine_invite_create(&self, ttl_secs: u64) -> DaemonResponse {
-        let machine = match self.machine.as_ref() {
-            Some(machine) => machine,
+        let active = match self.active.as_ref() {
+            Some(active) => active,
             None => {
                 return self.err(
                     "NO_RUNNING_NETWORK",
@@ -641,18 +638,28 @@ impl DaemonState {
             return self.err("INVALID_ARGUMENT", "ttl_secs must be greater than zero");
         }
 
-        let token = match self.issue_invite_token(&machine.network, ttl_secs).await {
+        let token = match self.issue_invite_token(&active.config, ttl_secs).await {
             Ok(token) => token,
             Err(err) => return self.err("INVITE_CREATE_FAILED", err),
         };
 
         self.ok(format!(
             "invite token created\n  network: {}\n  ttl:     {}s\n  token:   {}",
-            machine.network.name, ttl_secs, token
+            active.config.name, ttl_secs, token
         ))
     }
 
     async fn handle_machine_invite_import(&self, token: &str) -> DaemonResponse {
+        let store = match self.active.as_ref() {
+            Some(a) => a.mesh.store(),
+            None => {
+                return self.err(
+                    "NO_RUNNING_NETWORK",
+                    "invite import requires a running network",
+                );
+            }
+        };
+
         let invite = match self.parse_and_verify_invite_token(token) {
             Ok(invite) => invite,
             Err(err) => return self.err("INVALID_INVITE_TOKEN", err),
@@ -667,7 +674,7 @@ impl DaemonState {
             expires_at: invite.expires_at,
         };
 
-        match self.store.create_invite(&record).await {
+        match store.create_invite(&record).await {
             Ok(()) => self.ok(format!(
                 "invite imported\n  network: {}\n  invite:  {}",
                 invite.network_name, record.id
@@ -690,6 +697,12 @@ impl DaemonState {
         network: &NetworkConfig,
         ttl_secs: u64,
     ) -> std::result::Result<String, String> {
+        let store = self
+            .active
+            .as_ref()
+            .map(|a| a.mesh.store())
+            .ok_or_else(|| "no running network".to_string())?;
+
         let expires_at = now_unix_secs()
             .checked_add(ttl_secs)
             .ok_or_else(|| "ttl overflow".to_string())?;
@@ -728,7 +741,7 @@ impl DaemonState {
             expires_at,
         };
 
-        self.store
+        store
             .create_invite(&record)
             .await
             .map_err(|e| format!("store invite: {e}"))?;
@@ -781,16 +794,6 @@ impl DaemonState {
         Ok(claims)
     }
 
-    fn map_invite_consume_error(&self, err: ployz::PortError) -> DaemonResponse {
-        match err {
-            ployz::PortError::Operation { operation, message } => match operation {
-                "invite_not_found" => self.err("INVITE_NOT_FOUND", message),
-                "invite_expired" => self.err("INVITE_EXPIRED", message),
-                _ => self.err("INVITE_REDEEM_FAILED", message),
-            },
-        }
-    }
-
     async fn run_ssh(&self, target: &str, remote_script: &str) -> std::result::Result<(), String> {
         let output = TokioCommand::new("ssh")
             .arg(target)
@@ -822,50 +825,57 @@ impl DaemonState {
     }
 
     async fn start_mesh(&mut self, net_config: NetworkConfig) -> std::result::Result<(), String> {
-        // Seed the membership store with self.
+        let paths = corrosion_config::Paths::new(&self.data_dir);
+        let gossip_addr = corrosion_config::default_gossip_addr();
+        let api_addr = corrosion_config::default_api_addr();
+
+        corrosion_config::write_config(&paths, SCHEMA_SQL, gossip_addr, api_addr, &[])
+            .map_err(|e| format!("write corrosion config: {e}"))?;
+
+        let config_path = paths.config.to_string_lossy().into_owned();
+        let dir_mount = paths.dir.to_string_lossy().into_owned();
+
+        let service = DockerCorrosion::new("ployz-corrosion", "ghcr.io/getployz/corrosion")
+            .cmd(vec!["agent".into(), "-c".into(), config_path])
+            .volume(&dir_mount, &dir_mount)
+            .network_mode("host")
+            .build()
+            .await
+            .map_err(|e| format!("docker service: {e}"))?;
+        let service = Service::Docker(Arc::new(service));
+
+        let endpoint = api_addr.to_string();
+        let corrosion = CorrosionStore::new(&endpoint, &paths.db)
+            .map_err(|e| format!("corrosion store: {e}"))?;
+        let store = Store::Corrosion(corrosion);
+        println!("membership backend: corrosion ({endpoint})");
+
+        let overlay_ip = net_config.overlay_ip;
+
+        let network = Network::Memory(Arc::new(MemoryWireGuard::new()));
+        let mut mesh = Mesh::new(network, service, store);
+
+        mesh.up()
+            .await
+            .map_err(|e| format!("failed to start network: {e}"))?;
+
+        // Seed the membership store with self (schema is now applied).
         let self_record = MachineRecord {
             id: self.identity.machine_id.clone(),
             public_key: self.identity.public_key.clone(),
-            overlay_ip: net_config.overlay_ip,
+            overlay_ip,
             endpoints: vec!["127.0.0.1:51820".into()],
         };
-        self.store
+        mesh.store()
             .upsert_machine(&self_record)
             .await
             .map_err(|e| format!("failed to seed store: {e}"))?;
 
-        let mut machine = self.new_machine(net_config);
-        machine
-            .init_network()
-            .await
-            .map_err(|e| format!("failed to start network: {e}"))?;
-
-        self.machine = Some(machine);
+        self.active = Some(ActiveMesh {
+            config: net_config,
+            mesh,
+        });
         Ok(())
-    }
-
-    fn new_machine(
-        &self,
-        net_config: NetworkConfig,
-    ) -> Machine<MemoryWireGuard, MemoryService, CorrosionStore, MemoryWireGuard, MemorySyncProbe>
-    {
-        let wg = Arc::new(MemoryWireGuard::new());
-        let service = Arc::new(MemoryService::new());
-        let mesh = Mesh::new(
-            wg.clone(),
-            service,
-            self.store.clone(),
-            Some(wg),
-            None,
-        );
-
-        // Clone identity fields for Machine (Machine doesn't need to own persistence).
-        let identity = Identity::generate(
-            self.identity.machine_id.clone(),
-            self.identity.private_key.0,
-        );
-
-        Machine::new(identity, net_config, mesh)
     }
 }
 

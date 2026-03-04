@@ -1,8 +1,6 @@
-use crate::dataplane::traits::{MeshNetwork, PeerProbe, PortError, PortResult};
-use crate::domain::model::{MachineRecord, PublicKey};
-use std::collections::HashMap;
+use crate::dataplane::traits::{MeshNetwork, PortError, PortResult};
+use crate::domain::model::MachineRecord;
 use std::sync::{Mutex, MutexGuard};
-use tokio::time::Instant;
 
 pub struct MemoryWireGuard {
     inner: Mutex<WgInner>,
@@ -12,7 +10,6 @@ struct WgInner {
     is_up: bool,
     peers: Vec<MachineRecord>,
     set_peers_count: usize,
-    handshakes: HashMap<PublicKey, Option<Instant>>,
     fail_up: bool,
     fail_down: bool,
 }
@@ -30,7 +27,6 @@ impl MemoryWireGuard {
                 is_up: false,
                 peers: Vec::new(),
                 set_peers_count: 0,
-                handshakes: HashMap::new(),
                 fail_up: false,
                 fail_down: false,
             }),
@@ -49,10 +45,6 @@ impl MemoryWireGuard {
 
     pub fn set_fail_down(&self, fail: bool) {
         self.lock_inner().fail_down = fail;
-    }
-
-    pub fn set_handshake(&self, key: PublicKey, time: Option<Instant>) {
-        self.lock_inner().handshakes.insert(key, time);
     }
 
     pub fn is_up(&self) -> bool {
@@ -92,12 +84,5 @@ impl MeshNetwork for MemoryWireGuard {
         inner.peers = peers.to_vec();
         inner.set_peers_count += 1;
         Ok(())
-    }
-}
-
-impl PeerProbe for MemoryWireGuard {
-    async fn peer_handshakes(&self) -> PortResult<HashMap<PublicKey, Option<Instant>>> {
-        let inner = self.lock_inner();
-        Ok(inner.handshakes.clone())
     }
 }

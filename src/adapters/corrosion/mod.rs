@@ -1,45 +1,49 @@
-use crate::dataplane::traits::{InviteStore, MachineStore, PortError, PortResult};
+use crate::dataplane::traits::{
+    InviteStore, MachineStore, PortError, PortResult, SyncProbe, SyncStatus,
+};
 use crate::domain::model::{
     InviteRecord, MachineEvent, MachineId, MachineRecord, OverlayIp, PublicKey,
 };
 use corro_api_types::{QueryEvent, RqliteResult, SqliteValue, Statement, sqlite::ChangeType};
 use futures_util::{StreamExt, stream::BoxStream};
+use rusqlite::params;
 use std::collections::HashMap;
 use std::io;
 use std::net::Ipv6Addr;
-use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time;
 use tracing::warn;
 use uuid::Uuid;
 
+mod client;
+pub mod config;
+pub mod docker;
+
+use self::client::Client;
+
 const WATCH_RETRY_BASE: Duration = Duration::from_millis(500);
 const WATCH_RETRY_MAX: Duration = Duration::from_secs(5);
-const SCHEMA_SQL: &str = include_str!("corrosion_schema.sql");
+
+pub const SCHEMA_SQL: &str = include_str!("schema.sql");
 
 #[derive(Clone)]
 pub struct CorrosionStore {
-    client: corro_client::CorrosionApiClient,
+    client: Client,
 }
 
 impl CorrosionStore {
-    pub async fn connect(endpoint: &str) -> Result<Self, String> {
-        let addr: SocketAddr = endpoint
-            .parse()
-            .map_err(|e| format!("invalid corrosion endpoint '{endpoint}': {e}"))?;
-        let client = corro_client::CorrosionApiClient::new(addr);
-
-        let schema_stmt = Statement::Simple(SCHEMA_SQL.to_string());
-        let schema_res = client
-            .schema(&[schema_stmt])
-            .await
-            .map_err(|e| format!("apply corrosion schema: {e}"))?;
-        if let Some(RqliteResult::Error { error }) = schema_res.results.first() {
-            return Err(format!("apply corrosion schema: {error}"));
-        }
-
+    /// Create a store pointing at the given endpoint and local DB path.
+    /// Writes go through the HTTP API; reads go directly to local SQLite.
+    pub fn new(endpoint: &str, db_path: &std::path::Path) -> Result<Self, String> {
+        let client = Client::new(endpoint, db_path)?;
         Ok(Self { client })
+    }
+
+    /// Apply the schema. Requires a live Corrosion instance.
+    async fn apply_schema(&self) -> PortResult<()> {
+        let schema_stmt = Statement::Simple(SCHEMA_SQL.to_string());
+        self.client.schema(&[schema_stmt]).await
     }
 
     async fn execute(
@@ -47,27 +51,26 @@ impl CorrosionStore {
         statements: &[Statement],
         op: &'static str,
     ) -> PortResult<Vec<RqliteResult>> {
-        let response = self
-            .client
-            .execute(statements)
-            .await
-            .map_err(|e| PortError::operation(op, e.to_string()))?;
-        Ok(response.results)
+        self.client.execute(statements, op).await
     }
 
     async fn list_machines_inner(&self) -> PortResult<Vec<MachineRecord>> {
-        let statement = Self::machines_watch_statement();
-        let results = self.execute(&[statement], "list_machines").await?;
-        let rows = query_rows(
-            results
-                .first()
-                .ok_or_else(|| PortError::operation("list_machines", "missing query result"))?,
-            "list_machines",
-        )?;
-
-        rows.into_iter()
-            .map(|row| parse_machine_row(&row))
-            .collect()
+        let conn = self.client.read_conn().await?;
+        tokio::task::spawn_blocking(move || {
+            let mut stmt = conn
+                .prepare("SELECT id, public_key, overlay_ip, endpoints FROM machines ORDER BY id")
+                .map_err(|e| PortError::operation("list_machines", format!("prepare: {e}")))?;
+            let rows = stmt
+                .query_map([], |row| row_to_values(row, 4))
+                .map_err(|e| PortError::operation("list_machines", format!("query: {e}")))?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| PortError::operation("list_machines", format!("read row: {e}")))?;
+            rows.into_iter()
+                .map(|values| parse_machine_row(&values))
+                .collect()
+        })
+        .await
+        .map_err(|e| PortError::operation("list_machines", format!("spawn: {e}")))?
     }
 
     fn machines_watch_statement() -> Statement {
@@ -80,24 +83,14 @@ impl CorrosionStore {
         &self,
     ) -> PortResult<(Uuid, BoxStream<'static, io::Result<QueryEvent>>)> {
         let statement = Self::machines_watch_statement();
-        let (watch_id, stream) = self
-            .client
-            .watch(&statement)
-            .await
-            .map_err(|e| PortError::operation("watch_machines", e.to_string()))?;
-        Ok((watch_id, Box::pin(stream)))
+        self.client.watch(&statement).await
     }
 
     async fn resume_machine_watch(
         &self,
         watch_id: Uuid,
     ) -> PortResult<BoxStream<'static, io::Result<QueryEvent>>> {
-        let stream = self
-            .client
-            .watched_query(watch_id)
-            .await
-            .map_err(|e| PortError::operation("watch_machines", e.to_string()))?;
-        Ok(Box::pin(stream))
+        self.client.resume_watch(watch_id).await
     }
 
     async fn collect_initial_snapshot(
@@ -155,38 +148,62 @@ impl CorrosionStore {
         Ok((snapshot, row_index))
     }
 
-    async fn fetch_invite(
-        &self,
-        invite_id: &str,
-    ) -> PortResult<Option<InviteRecord>> {
-        let statement = Statement::WithParams(
-            "SELECT id, expires_at FROM invites WHERE id = ? LIMIT 1".to_string(),
-            vec![invite_id.to_string().into()],
-        );
-        let results = self.execute(&[statement], "fetch_invite").await?;
-        let rows = query_rows(
-            results
-                .first()
-                .ok_or_else(|| PortError::operation("fetch_invite", "missing query result"))?,
-            "fetch_invite",
-        )?;
-        if rows.is_empty() {
-            return Ok(None);
+    async fn fetch_invite(&self, invite_id: &str) -> PortResult<Option<InviteRecord>> {
+        let conn = self.client.read_conn().await?;
+        let invite_id = invite_id.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let mut stmt = conn
+                .prepare("SELECT id, expires_at FROM invites WHERE id = ? LIMIT 1")
+                .map_err(|e| PortError::operation("fetch_invite", format!("prepare: {e}")))?;
+            let rows = stmt
+                .query_map(params![invite_id], |row| row_to_values(row, 2))
+                .map_err(|e| PortError::operation("fetch_invite", format!("query: {e}")))?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| PortError::operation("fetch_invite", format!("read row: {e}")))?;
+
+            if rows.is_empty() {
+                return Ok(None);
+            }
+
+            parse_invite_row(&rows[0]).map(Some)
+        })
+        .await
+        .map_err(|e| PortError::operation("fetch_invite", format!("spawn: {e}")))?
+    }
+}
+
+impl SyncProbe for CorrosionStore {
+    async fn sync_status(&self) -> PortResult<SyncStatus> {
+        let health = self.client.health().await?;
+
+        // 200 = thresholds met (synced), 503 = not yet
+        if health.status == hyper::StatusCode::OK {
+            return Ok(SyncStatus::Synced);
         }
 
-        parse_invite_row(&rows[0]).map(Some)
+        if health.members <= 1 {
+            Ok(SyncStatus::Disconnected)
+        } else if health.gaps > 0 {
+            Ok(SyncStatus::Syncing {
+                gaps: health.gaps as u64,
+            })
+        } else {
+            Ok(SyncStatus::Synced)
+        }
     }
 }
 
 impl MachineStore for CorrosionStore {
+    async fn init(&self) -> PortResult<()> {
+        self.apply_schema().await
+    }
+
     async fn list_machines(&self) -> PortResult<Vec<MachineRecord>> {
         self.list_machines_inner().await
     }
 
-    async fn upsert_machine(
-        &self,
-        record: &MachineRecord,
-    ) -> PortResult<()> {
+    async fn upsert_machine(&self, record: &MachineRecord) -> PortResult<()> {
         let endpoints = serde_json::to_string(&record.endpoints).map_err(|e| {
             PortError::operation("upsert_machine", format!("serialize endpoints: {e}"))
         })?;
@@ -290,10 +307,7 @@ impl InviteStore for CorrosionStore {
     async fn create_invite(&self, invite: &InviteRecord) -> PortResult<()> {
         let statement = Statement::WithParams(
             "INSERT INTO invites (id, expires_at) VALUES (?, ?)".to_string(),
-            vec![
-                invite.id.clone().into(),
-                (invite.expires_at as i64).into(),
-            ],
+            vec![invite.id.clone().into(), (invite.expires_at as i64).into()],
         );
 
         let results = self.execute(&[statement], "create_invite").await?;
@@ -309,17 +323,10 @@ impl InviteStore for CorrosionStore {
         }
     }
 
-    async fn consume_invite(
-        &self,
-        invite_id: &str,
-        now_unix_secs: u64,
-    ) -> PortResult<()> {
+    async fn consume_invite(&self, invite_id: &str, now_unix_secs: u64) -> PortResult<()> {
         let delete = Statement::WithParams(
             "DELETE FROM invites WHERE id = ? AND expires_at >= ?".to_string(),
-            vec![
-                invite_id.to_string().into(),
-                (now_unix_secs as i64).into(),
-            ],
+            vec![invite_id.to_string().into(), (now_unix_secs as i64).into()],
         );
         let results = self.execute(&[delete], "consume_invite").await?;
 
@@ -346,14 +353,6 @@ impl InviteStore for CorrosionStore {
                 format!("invite '{invite_id}' is expired"),
             )),
         }
-    }
-}
-
-fn query_rows(result: &RqliteResult, op: &'static str) -> PortResult<Vec<Vec<SqliteValue>>> {
-    match result {
-        RqliteResult::Query { values, .. } => Ok(values.clone()),
-        RqliteResult::Error { error } => Err(PortError::operation(op, error.clone())),
-        _ => Err(PortError::operation(op, "expected query result")),
     }
 }
 
@@ -421,6 +420,12 @@ fn machine_event_from_watch(
 fn as_u64_rowid(rowid: i64) -> PortResult<u64> {
     u64::try_from(rowid)
         .map_err(|_| PortError::operation("watch_machines", format!("negative rowid: {rowid}")))
+}
+
+fn row_to_values(row: &rusqlite::Row<'_>, count: usize) -> rusqlite::Result<Vec<SqliteValue>> {
+    (0..count)
+        .map(|idx| row.get::<_, SqliteValue>(idx))
+        .collect()
 }
 
 fn parse_machine_row(values: &[SqliteValue]) -> PortResult<MachineRecord> {

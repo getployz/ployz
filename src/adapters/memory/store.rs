@@ -1,4 +1,6 @@
-use crate::dataplane::traits::{InviteStore, MachineStore, PortError, PortResult};
+use crate::dataplane::traits::{
+    InviteStore, MachineStore, PortError, PortResult, SyncProbe, SyncStatus,
+};
 use crate::domain::model::{InviteRecord, MachineEvent, MachineId, MachineRecord};
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
@@ -13,6 +15,7 @@ struct StoreInner {
     machines: HashMap<MachineId, MachineRecord>,
     subscribers: Vec<mpsc::Sender<MachineEvent>>,
     invites: HashMap<String, InviteRecord>,
+    sync_status: SyncStatus,
 }
 
 impl Default for MemoryStore {
@@ -28,8 +31,13 @@ impl MemoryStore {
                 machines: HashMap::new(),
                 subscribers: Vec::new(),
                 invites: HashMap::new(),
+                sync_status: SyncStatus::Synced,
             }),
         }
+    }
+
+    pub fn set_sync_status(&self, status: SyncStatus) {
+        self.lock_inner().sync_status = status;
     }
 
     fn lock_inner(&self) -> MutexGuard<'_, StoreInner> {
@@ -39,14 +47,22 @@ impl MemoryStore {
     }
 
     fn broadcast(inner: &mut StoreInner, event: MachineEvent) {
-        inner.subscribers.retain(|tx| match tx.try_send(event.clone()) {
-            Ok(()) => true,
-            Err(mpsc::error::TrySendError::Closed(_)) => false,
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                warn!("subscriber channel full, event dropped");
-                true
-            }
-        });
+        inner
+            .subscribers
+            .retain(|tx| match tx.try_send(event.clone()) {
+                Ok(()) => true,
+                Err(mpsc::error::TrySendError::Closed(_)) => false,
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    warn!("subscriber channel full, event dropped");
+                    true
+                }
+            });
+    }
+}
+
+impl SyncProbe for MemoryStore {
+    async fn sync_status(&self) -> PortResult<SyncStatus> {
+        Ok(self.lock_inner().sync_status)
     }
 }
 
@@ -72,10 +88,7 @@ impl MachineStore for MemoryStore {
     async fn delete_machine(&self, id: &MachineId) -> PortResult<()> {
         let mut inner = self.lock_inner();
         inner.machines.remove(id);
-        Self::broadcast(
-            &mut inner,
-            MachineEvent::Removed { id: id.clone() },
-        );
+        Self::broadcast(&mut inner, MachineEvent::Removed { id: id.clone() });
         Ok(())
     }
 
@@ -103,11 +116,7 @@ impl InviteStore for MemoryStore {
         Ok(())
     }
 
-    async fn consume_invite(
-        &self,
-        invite_id: &str,
-        now_unix_secs: u64,
-    ) -> PortResult<()> {
+    async fn consume_invite(&self, invite_id: &str, now_unix_secs: u64) -> PortResult<()> {
         let mut inner = self.lock_inner();
         let invite = inner.invites.get(invite_id).ok_or_else(|| {
             PortError::operation(
@@ -141,7 +150,10 @@ mod tests {
         };
 
         store.create_invite(&invite).await.expect("create invite");
-        store.consume_invite("inv-1", 100).await.expect("consume invite once");
+        store
+            .consume_invite("inv-1", 100)
+            .await
+            .expect("consume invite once");
 
         let second = store.consume_invite("inv-1", 101).await;
         assert!(matches!(

@@ -1,7 +1,4 @@
-use crate::domain::model::{
-    InviteRecord, MachineEvent, MachineId, MachineRecord, PublicKey,
-};
-use std::collections::HashMap;
+use crate::domain::model::{InviteRecord, MachineEvent, MachineId, MachineRecord, PublicKey};
 use std::future::Future;
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -37,16 +34,11 @@ pub trait MeshNetwork: Send + Sync {
     ) -> impl Future<Output = PortResult<()>> + Send + 'a;
 }
 
-pub trait PeerProbe: Send + Sync {
-    fn peer_handshakes(
-        &self,
-    ) -> impl Future<Output = PortResult<HashMap<PublicKey, Option<Instant>>>> + Send + '_;
-}
-
 pub trait MachineStore: Send + Sync {
-    fn list_machines(
-        &self,
-    ) -> impl Future<Output = PortResult<Vec<MachineRecord>>> + Send + '_;
+    fn init(&self) -> impl Future<Output = PortResult<()>> + Send + '_ {
+        async { Ok(()) }
+    }
+    fn list_machines(&self) -> impl Future<Output = PortResult<Vec<MachineRecord>>> + Send + '_;
     fn upsert_machine<'a>(
         &'a self,
         record: &'a MachineRecord,
@@ -72,12 +64,38 @@ pub trait InviteStore: Send + Sync {
     ) -> impl Future<Output = PortResult<()>> + Send + 'a;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncStatus {
+    Disconnected,
+    Syncing { gaps: u64 },
+    Synced,
+}
+
 pub trait SyncProbe: Send + Sync {
-    fn sync_complete(&self) -> impl Future<Output = PortResult<bool>> + Send + '_;
+    fn sync_status(&self) -> impl Future<Output = PortResult<SyncStatus>> + Send + '_ {
+        async { Ok(SyncStatus::Synced) }
+    }
 }
 
 pub trait ServiceControl: Send + Sync {
     fn start(&self) -> impl Future<Output = PortResult<()>> + Send + '_;
     fn stop(&self) -> impl Future<Output = PortResult<()>> + Send + '_;
     fn healthy(&self) -> impl Future<Output = bool> + Send + '_;
+}
+
+// --- WireGuard device abstraction ---
+
+pub struct DevicePeer {
+    pub public_key: PublicKey,
+    pub endpoint: Option<String>,
+    pub last_handshake: Option<Instant>,
+}
+
+pub trait WireGuardDevice: Send + Sync {
+    fn read_peers(&self) -> impl Future<Output = PortResult<Vec<DevicePeer>>> + Send + '_;
+    fn set_peer_endpoint<'a>(
+        &'a self,
+        key: &'a PublicKey,
+        endpoint: &'a str,
+    ) -> impl Future<Output = PortResult<()>> + Send + 'a;
 }

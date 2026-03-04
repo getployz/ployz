@@ -1,3 +1,7 @@
+-- Non-nullable columns need defaults because Corrosion applies entire changes
+-- at once across nodes, but when table schemas are modified after creation,
+-- existing rows won't have values for new columns.
+
 CREATE TABLE IF NOT EXISTS machines (
     id TEXT NOT NULL PRIMARY KEY,
     public_key BLOB NOT NULL DEFAULT X'',

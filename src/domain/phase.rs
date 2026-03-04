@@ -4,8 +4,8 @@ use thiserror::Error;
 pub enum Phase {
     Stopped,
     Starting,
-    BootstrappingNetwork,
-    BootstrappingSync,
+    Provisioning,
+    Bootstrapping,
     Running,
     Stopping,
 }
@@ -15,8 +15,8 @@ impl std::fmt::Display for Phase {
         let s = match self {
             Self::Stopped => "stopped",
             Self::Starting => "starting",
-            Self::BootstrappingNetwork => "bootstrapping:network",
-            Self::BootstrappingSync => "bootstrapping:sync",
+            Self::Provisioning => "provisioning",
+            Self::Bootstrapping => "bootstrapping",
             Self::Running => "running",
             Self::Stopping => "stopping",
         };
@@ -27,9 +27,9 @@ impl std::fmt::Display for Phase {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhaseEvent {
     UpRequested,
+    NetworkReady,
     ComponentsStarted,
     ComponentFailed,
-    NetworkConnected,
     SyncComplete,
     BootstrapTimeout,
     DetachRequested,
@@ -54,17 +54,13 @@ pub fn transition(
 
     match (current, event) {
         (Stopped, UpRequested) => Ok(Starting),
-        (Starting, ComponentsStarted) => Ok(BootstrappingNetwork),
-        (Starting | BootstrappingNetwork | BootstrappingSync, ComponentFailed) => Ok(Stopped),
-        (BootstrappingNetwork, NetworkConnected) => Ok(BootstrappingSync),
-        (BootstrappingSync, SyncComplete) => Ok(Running),
-        (BootstrappingNetwork | BootstrappingSync, BootstrapTimeout) => {
-            Err(TransitionError::BootstrapTimeout)
-        }
+        (Starting, NetworkReady) => Ok(Provisioning),
+        (Provisioning, ComponentsStarted) => Ok(Bootstrapping),
+        (Starting | Provisioning | Bootstrapping, ComponentFailed) => Ok(Stopped),
+        (Bootstrapping, SyncComplete) => Ok(Running),
+        (Bootstrapping, BootstrapTimeout) => Err(TransitionError::BootstrapTimeout),
         (Running, DetachRequested) => Ok(Stopped),
-        (Stopped | Running | BootstrappingNetwork | BootstrappingSync, DestroyRequested) => {
-            Ok(Stopping)
-        }
+        (Stopped | Running | Provisioning | Bootstrapping, DestroyRequested) => Ok(Stopping),
         (Stopping, TeardownComplete) => Ok(Stopped),
         _ => Err(TransitionError::Invalid {
             from: current,
@@ -81,18 +77,17 @@ mod tests {
     fn happy_path_startup() {
         let p = transition(Phase::Stopped, PhaseEvent::UpRequested).expect("stopped -> starting");
         assert_eq!(p, Phase::Starting);
-        let p = transition(p, PhaseEvent::ComponentsStarted)
-            .expect("starting -> bootstrapping:network");
-        assert_eq!(p, Phase::BootstrappingNetwork);
-        let p = transition(p, PhaseEvent::NetworkConnected)
-            .expect("bootstrapping:network -> bootstrapping:sync");
-        assert_eq!(p, Phase::BootstrappingSync);
-        let p = transition(p, PhaseEvent::SyncComplete).expect("bootstrapping:sync -> running");
+        let p = transition(p, PhaseEvent::NetworkReady).expect("starting -> provisioning");
+        assert_eq!(p, Phase::Provisioning);
+        let p =
+            transition(p, PhaseEvent::ComponentsStarted).expect("provisioning -> bootstrapping");
+        assert_eq!(p, Phase::Bootstrapping);
+        let p = transition(p, PhaseEvent::SyncComplete).expect("bootstrapping -> running");
         assert_eq!(p, Phase::Running);
     }
 
     #[test]
-    fn component_failure_returns_to_stopped() {
+    fn component_failure_from_starting() {
         let p = transition(Phase::Stopped, PhaseEvent::UpRequested).expect("stopped -> starting");
         assert_eq!(
             transition(p, PhaseEvent::ComponentFailed).expect("starting -> stopped on fail"),
@@ -101,33 +96,26 @@ mod tests {
     }
 
     #[test]
-    fn component_failure_from_bootstrap_network() {
+    fn component_failure_from_provisioning() {
         assert_eq!(
-            transition(Phase::BootstrappingNetwork, PhaseEvent::ComponentFailed)
-                .expect("bootstrapping:network -> stopped"),
+            transition(Phase::Provisioning, PhaseEvent::ComponentFailed)
+                .expect("provisioning -> stopped"),
             Phase::Stopped
         );
     }
 
     #[test]
-    fn component_failure_from_bootstrap_sync() {
+    fn component_failure_from_bootstrapping() {
         assert_eq!(
-            transition(Phase::BootstrappingSync, PhaseEvent::ComponentFailed)
-                .expect("bootstrapping:sync -> stopped"),
+            transition(Phase::Bootstrapping, PhaseEvent::ComponentFailed)
+                .expect("bootstrapping -> stopped"),
             Phase::Stopped
         );
     }
 
     #[test]
-    fn bootstrap_timeout_from_network_phase() {
-        let err = transition(Phase::BootstrappingNetwork, PhaseEvent::BootstrapTimeout)
-            .expect_err("bootstrap timeout error");
-        assert!(matches!(err, TransitionError::BootstrapTimeout));
-    }
-
-    #[test]
-    fn bootstrap_timeout_from_sync_phase() {
-        let err = transition(Phase::BootstrappingSync, PhaseEvent::BootstrapTimeout)
+    fn bootstrap_timeout() {
+        let err = transition(Phase::Bootstrapping, PhaseEvent::BootstrapTimeout)
             .expect_err("bootstrap timeout error");
         assert!(matches!(err, TransitionError::BootstrapTimeout));
     }
@@ -153,15 +141,19 @@ mod tests {
     }
 
     #[test]
-    fn destroy_from_bootstrap_phases() {
+    fn destroy_from_provisioning() {
         assert_eq!(
-            transition(Phase::BootstrappingNetwork, PhaseEvent::DestroyRequested)
-                .expect("bootstrapping:network -> stopping"),
+            transition(Phase::Provisioning, PhaseEvent::DestroyRequested)
+                .expect("provisioning -> stopping"),
             Phase::Stopping
         );
+    }
+
+    #[test]
+    fn destroy_from_bootstrapping() {
         assert_eq!(
-            transition(Phase::BootstrappingSync, PhaseEvent::DestroyRequested)
-                .expect("bootstrapping:sync -> stopping"),
+            transition(Phase::Bootstrapping, PhaseEvent::DestroyRequested)
+                .expect("bootstrapping -> stopping"),
             Phase::Stopping
         );
     }
