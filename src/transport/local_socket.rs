@@ -13,6 +13,7 @@ pub enum DaemonRequest {
     MeshUp { network: String },
     MeshDown,
     MeshDestroy { network: String },
+    MachineList,
     MachineInit { target: String, network: String },
     MachineAdd { target: String },
     MachineInviteCreate { ttl_secs: u64 },

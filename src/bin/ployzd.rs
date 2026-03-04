@@ -92,8 +92,8 @@ async fn main() -> Result<()> {
 
 fn cmd_configure(mode: Mode) -> Result<()> {
     let profile = resolve_profile(&Affordances::detect(), mode);
-    println!("configure profile: {profile:?}");
-    println!("configure is install-time only; runtime daemon stays rootless");
+    tracing::info!(?profile, "configure profile");
+    tracing::info!("configure is install-time only; runtime daemon stays rootless");
     Ok(())
 }
 
@@ -104,7 +104,7 @@ async fn cmd_run(data_dir: &Path, mode: Mode, socket_path: &str) -> Result<()> {
     // Auto-generate identity if not present.
     let id_path = data_dir.join("identity.json");
     let identity = Identity::load_or_generate(&id_path)?;
-    println!("machine: {}", identity.machine_id);
+    tracing::info!(machine_id = %identity.machine_id, "loaded identity");
 
     let cancel = CancellationToken::new();
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<IncomingCommand>(32);
@@ -122,16 +122,28 @@ async fn cmd_run(data_dir: &Path, mode: Mode, socket_path: &str) -> Result<()> {
     let ctrl_cancel = cancel.clone();
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
-        println!("\nreceived ctrl-c, shutting down...");
+        tracing::info!("received ctrl-c, shutting down");
         ctrl_cancel.cancel();
         tokio::signal::ctrl_c().await.ok();
-        eprintln!("received second ctrl-c, forcing exit");
+        tracing::warn!("received second ctrl-c, forcing exit");
         std::process::exit(1);
     });
 
     let mut state = DaemonState::new(data_dir, identity);
 
-    println!("ployzd running (socket: {socket_path})");
+    // Auto-resume previously active network.
+    if let Some(network) = state.read_active_marker() {
+        tracing::info!(%network, "resuming network");
+        match state.start_mesh_by_name(&network).await {
+            Ok(()) => tracing::info!(%network, "resumed network"),
+            Err(e) => {
+                tracing::warn!(%e, %network, "failed to resume network");
+                state.clear_active_marker();
+            }
+        }
+    }
+
+    tracing::info!(socket = socket_path, "daemon running");
 
     loop {
         tokio::select! {
@@ -160,7 +172,7 @@ async fn cmd_run(data_dir: &Path, mode: Mode, socket_path: &str) -> Result<()> {
     }
 
     listener_handle.await.ok();
-    println!("ployzd stopped");
+    tracing::info!("daemon stopped");
     Ok(())
 }
 
@@ -195,6 +207,32 @@ impl DaemonState {
         }
     }
 
+    fn active_marker_path(&self) -> PathBuf {
+        self.data_dir.join("active_network")
+    }
+
+    fn read_active_marker(&self) -> Option<String> {
+        std::fs::read_to_string(self.active_marker_path())
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    fn write_active_marker(&self, network: &str) {
+        let _ = std::fs::write(self.active_marker_path(), network);
+    }
+
+    fn clear_active_marker(&self) {
+        let _ = std::fs::remove_file(self.active_marker_path());
+    }
+
+    async fn start_mesh_by_name(&mut self, network: &str) -> std::result::Result<(), String> {
+        let config_path = NetworkConfig::path(&self.data_dir, network);
+        let net_config = NetworkConfig::load(&config_path)
+            .map_err(|e| format!("load network config: {e}"))?;
+        self.start_mesh(net_config).await
+    }
+
     async fn handle(&mut self, req: DaemonRequest) -> DaemonResponse {
         match req {
             DaemonRequest::Status => self.handle_status(),
@@ -206,6 +244,7 @@ impl DaemonState {
             DaemonRequest::MeshUp { network } => self.handle_mesh_up(&network).await,
             DaemonRequest::MeshDown => self.handle_mesh_down().await,
             DaemonRequest::MeshDestroy { network } => self.handle_mesh_destroy(&network).await,
+            DaemonRequest::MachineList => self.handle_machine_list().await,
             DaemonRequest::MachineInit { target, network } => {
                 self.handle_machine_init(&target, &network).await
             }
@@ -512,6 +551,7 @@ impl DaemonState {
         if let Err(e) = store.delete_machine(&self.identity.machine_id).await {
             tracing::warn!(?e, "failed to remove local machine from membership");
         }
+        self.clear_active_marker();
         self.ok("mesh stopped (config kept)")
     }
 
@@ -554,7 +594,30 @@ impl DaemonState {
             };
         }
 
+        self.clear_active_marker();
         self.ok(format!("mesh '{network}' destroyed"))
+    }
+
+    async fn handle_machine_list(&self) -> DaemonResponse {
+        let active = match self.active.as_ref() {
+            Some(a) => a,
+            None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
+        };
+
+        let machines = match active.mesh.store().list_machines().await {
+            Ok(m) => m,
+            Err(e) => return self.err("LIST_FAILED", format!("failed to list machines: {e}")),
+        };
+
+        if machines.is_empty() {
+            return self.ok("no machines");
+        }
+
+        let lines: Vec<String> = machines
+            .iter()
+            .map(|m| format!("{}  {}  {}", m.id, m.overlay_ip, m.endpoints.join(",")))
+            .collect();
+        self.ok(lines.join("\n"))
     }
 
     async fn handle_machine_init(&mut self, target: &str, network: &str) -> DaemonResponse {
@@ -848,7 +911,7 @@ impl DaemonState {
         let corrosion = CorrosionStore::new(&endpoint, &paths.db)
             .map_err(|e| format!("corrosion store: {e}"))?;
         let store = Store::Corrosion(corrosion);
-        println!("membership backend: corrosion ({endpoint})");
+        tracing::info!(%endpoint, "membership backend: corrosion");
 
         let overlay_ip = net_config.overlay_ip;
 
@@ -871,10 +934,12 @@ impl DaemonState {
             .await
             .map_err(|e| format!("failed to seed store: {e}"))?;
 
+        let network_name = net_config.name.0.clone();
         self.active = Some(ActiveMesh {
             config: net_config,
             mesh,
         });
+        self.write_active_marker(&network_name);
         Ok(())
     }
 }

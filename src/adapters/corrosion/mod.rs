@@ -4,183 +4,66 @@ use crate::dataplane::traits::{
 use crate::domain::model::{
     InviteRecord, MachineEvent, MachineId, MachineRecord, OverlayIp, PublicKey,
 };
-use corro_api_types::{QueryEvent, RqliteResult, SqliteValue, Statement, sqlite::ChangeType};
-use futures_util::{StreamExt, stream::BoxStream};
-use rusqlite::params;
+use corro_api_types::{ExecResult, SqliteValue, Statement, TypedQueryEvent, sqlite::ChangeType};
+use corro_client::CorrosionClient;
+use futures_util::StreamExt;
 use std::collections::HashMap;
-use std::io;
-use std::net::Ipv6Addr;
-use std::time::Duration;
+use std::net::{Ipv6Addr, SocketAddr};
 use tokio::sync::mpsc;
-use tokio::time;
 use tracing::warn;
-use uuid::Uuid;
 
-mod client;
 pub mod config;
 pub mod docker;
-
-use self::client::Client;
-
-const WATCH_RETRY_BASE: Duration = Duration::from_millis(500);
-const WATCH_RETRY_MAX: Duration = Duration::from_secs(5);
 
 pub const SCHEMA_SQL: &str = include_str!("schema.sql");
 
 #[derive(Clone)]
 pub struct CorrosionStore {
-    client: Client,
+    client: CorrosionClient,
+    addr: SocketAddr,
+    http: reqwest::Client,
 }
 
 impl CorrosionStore {
-    /// Create a store pointing at the given endpoint and local DB path.
-    /// Writes go through the HTTP API; reads go directly to local SQLite.
     pub fn new(endpoint: &str, db_path: &std::path::Path) -> Result<Self, String> {
-        let client = Client::new(endpoint, db_path)?;
-        Ok(Self { client })
-    }
-
-    /// Apply the schema. Requires a live Corrosion instance.
-    async fn apply_schema(&self) -> PortResult<()> {
-        let schema_stmt = Statement::Simple(SCHEMA_SQL.to_string());
-        self.client.schema(&[schema_stmt]).await
-    }
-
-    async fn execute(
-        &self,
-        statements: &[Statement],
-        op: &'static str,
-    ) -> PortResult<Vec<RqliteResult>> {
-        self.client.execute(statements, op).await
-    }
-
-    async fn list_machines_inner(&self) -> PortResult<Vec<MachineRecord>> {
-        let conn = self.client.read_conn().await?;
-        tokio::task::spawn_blocking(move || {
-            let mut stmt = conn
-                .prepare("SELECT id, public_key, overlay_ip, endpoints FROM machines ORDER BY id")
-                .map_err(|e| PortError::operation("list_machines", format!("prepare: {e}")))?;
-            let rows = stmt
-                .query_map([], |row| row_to_values(row, 4))
-                .map_err(|e| PortError::operation("list_machines", format!("query: {e}")))?
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| PortError::operation("list_machines", format!("read row: {e}")))?;
-            rows.into_iter()
-                .map(|values| parse_machine_row(&values))
-                .collect()
-        })
-        .await
-        .map_err(|e| PortError::operation("list_machines", format!("spawn: {e}")))?
-    }
-
-    fn machines_watch_statement() -> Statement {
-        Statement::Simple(
-            "SELECT id, public_key, overlay_ip, endpoints FROM machines ORDER BY id".to_string(),
-        )
-    }
-
-    async fn open_machine_watch(
-        &self,
-    ) -> PortResult<(Uuid, BoxStream<'static, io::Result<QueryEvent>>)> {
-        let statement = Self::machines_watch_statement();
-        self.client.watch(&statement).await
-    }
-
-    async fn resume_machine_watch(
-        &self,
-        watch_id: Uuid,
-    ) -> PortResult<BoxStream<'static, io::Result<QueryEvent>>> {
-        self.client.resume_watch(watch_id).await
-    }
-
-    async fn collect_initial_snapshot(
-        &self,
-        stream: &mut BoxStream<'static, io::Result<QueryEvent>>,
-    ) -> PortResult<(Vec<MachineRecord>, HashMap<u64, MachineId>)> {
-        let mut machines_by_id: HashMap<MachineId, MachineRecord> = HashMap::new();
-        let mut row_index: HashMap<u64, MachineId> = HashMap::new();
-
-        loop {
-            let event = stream.next().await.ok_or_else(|| {
-                PortError::operation(
-                    "watch_machines",
-                    "watch stream ended before initial snapshot completed",
-                )
-            })?;
-
-            let event = event.map_err(|e| {
-                PortError::operation("watch_machines", format!("watch io error: {e}"))
-            })?;
-
-            match event {
-                QueryEvent::Columns(_) => {}
-                QueryEvent::EndOfQuery => break,
-                QueryEvent::Error(err) => {
-                    return Err(PortError::operation(
-                        "watch_machines",
-                        format!("watch query error: {err}"),
-                    ));
-                }
-                QueryEvent::Row {
-                    rowid,
-                    change_type,
-                    cells,
-                } => {
-                    let rowid = as_u64_rowid(rowid)?;
-                    match change_type {
-                        ChangeType::Upsert => {
-                            let record = parse_machine_row(&cells)?;
-                            row_index.insert(rowid, record.id.clone());
-                            machines_by_id.insert(record.id.clone(), record);
-                        }
-                        ChangeType::Delete => {
-                            if let Some(id) = row_index.remove(&rowid) {
-                                machines_by_id.remove(&id);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let mut snapshot: Vec<MachineRecord> = machines_by_id.into_values().collect();
-        snapshot.sort_by(|a, b| a.id.0.cmp(&b.id.0));
-        Ok((snapshot, row_index))
-    }
-
-    async fn fetch_invite(&self, invite_id: &str) -> PortResult<Option<InviteRecord>> {
-        let conn = self.client.read_conn().await?;
-        let invite_id = invite_id.to_string();
-
-        tokio::task::spawn_blocking(move || {
-            let mut stmt = conn
-                .prepare("SELECT id, expires_at FROM invites WHERE id = ? LIMIT 1")
-                .map_err(|e| PortError::operation("fetch_invite", format!("prepare: {e}")))?;
-            let rows = stmt
-                .query_map(params![invite_id], |row| row_to_values(row, 2))
-                .map_err(|e| PortError::operation("fetch_invite", format!("query: {e}")))?
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| PortError::operation("fetch_invite", format!("read row: {e}")))?;
-
-            if rows.is_empty() {
-                return Ok(None);
-            }
-
-            parse_invite_row(&rows[0]).map(Some)
-        })
-        .await
-        .map_err(|e| PortError::operation("fetch_invite", format!("spawn: {e}")))?
+        let addr: SocketAddr = endpoint
+            .parse()
+            .map_err(|e| format!("invalid corrosion endpoint '{endpoint}': {e}"))?;
+        let client = CorrosionClient::new(addr, db_path)
+            .map_err(|e| format!("corrosion client: {e}"))?;
+        let http = reqwest::Client::new();
+        Ok(Self { client, addr, http })
     }
 }
 
 impl SyncProbe for CorrosionStore {
     async fn sync_status(&self) -> PortResult<SyncStatus> {
-        let health = self.client.health().await?;
+        let resp = self
+            .http
+            .get(format!("http://{}/v1/health?gaps=0", self.addr))
+            .send()
+            .await
+            .map_err(|e| PortError::operation("sync_status", format!("health request: {e}")))?;
 
-        // 200 = thresholds met (synced), 503 = not yet
-        if health.status == hyper::StatusCode::OK {
+        if resp.status() == reqwest::StatusCode::OK {
             return Ok(SyncStatus::Synced);
         }
+
+        #[derive(serde::Deserialize)]
+        struct Envelope {
+            response: Health,
+        }
+        #[derive(serde::Deserialize)]
+        struct Health {
+            gaps: i64,
+            members: i64,
+        }
+
+        let health = resp
+            .json::<Envelope>()
+            .await
+            .map_err(|e| PortError::operation("sync_status", format!("decode: {e}")))?
+            .response;
 
         if health.members <= 1 {
             Ok(SyncStatus::Disconnected)
@@ -196,19 +79,36 @@ impl SyncProbe for CorrosionStore {
 
 impl MachineStore for CorrosionStore {
     async fn init(&self) -> PortResult<()> {
-        self.apply_schema().await
+        let res = self
+            .client
+            .schema(&[Statement::Simple(SCHEMA_SQL.to_string())])
+            .await
+            .map_err(|e| PortError::operation("schema", e.to_string()))?;
+        if let Some(ExecResult::Error { error }) = res.results.first() {
+            return Err(PortError::operation("schema", error.clone()));
+        }
+        Ok(())
     }
 
     async fn list_machines(&self) -> PortResult<Vec<MachineRecord>> {
-        self.list_machines_inner().await
+        let stmt = Statement::Simple(
+            "SELECT id, public_key, overlay_ip, endpoints FROM machines ORDER BY id".to_string(),
+        );
+        query_rows(&self.client, &stmt, "list_machines")
+            .await?
+            .iter()
+            .map(|row| parse_machine(row))
+            .collect()
     }
 
     async fn upsert_machine(&self, record: &MachineRecord) -> PortResult<()> {
-        let endpoints = serde_json::to_string(&record.endpoints).map_err(|e| {
-            PortError::operation("upsert_machine", format!("serialize endpoints: {e}"))
-        })?;
-        let statement = Statement::WithParams(
-            "INSERT INTO machines (id, public_key, overlay_ip, endpoints) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET public_key = excluded.public_key, overlay_ip = excluded.overlay_ip, endpoints = excluded.endpoints".to_string(),
+        let endpoints = serde_json::to_string(&record.endpoints)
+            .map_err(|e| PortError::operation("upsert_machine", format!("serialize: {e}")))?;
+        let stmt = Statement::WithParams(
+            "INSERT INTO machines (id, public_key, overlay_ip, endpoints) VALUES (?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET public_key=excluded.public_key, \
+             overlay_ip=excluded.overlay_ip, endpoints=excluded.endpoints"
+                .to_string(),
             vec![
                 record.id.0.clone().into(),
                 record.public_key.0.to_vec().into(),
@@ -216,87 +116,83 @@ impl MachineStore for CorrosionStore {
                 endpoints.into(),
             ],
         );
-
-        let results = self.execute(&[statement], "upsert_machine").await?;
-        expect_execute(&results, "upsert_machine")
+        exec_one(&self.client, &[stmt], "upsert_machine").await
     }
 
     async fn delete_machine(&self, id: &MachineId) -> PortResult<()> {
-        let statement = Statement::WithParams(
+        let stmt = Statement::WithParams(
             "DELETE FROM machines WHERE id = ?".to_string(),
             vec![id.0.clone().into()],
         );
-
-        let results = self.execute(&[statement], "delete_machine").await?;
-        expect_execute(&results, "delete_machine")
+        exec_one(&self.client, &[stmt], "delete_machine").await
     }
 
     async fn subscribe_machines(
         &self,
     ) -> PortResult<(Vec<MachineRecord>, mpsc::Receiver<MachineEvent>)> {
-        let (watch_id, mut stream) = self.open_machine_watch().await?;
-        let (snapshot, mut row_index) = self.collect_initial_snapshot(&mut stream).await?;
+        let stmt = Statement::Simple(
+            "SELECT id, public_key, overlay_ip, endpoints FROM machines ORDER BY id".to_string(),
+        );
+        let mut stream = self
+            .client
+            .subscribe(&stmt, false, None)
+            .await
+            .map_err(|e| PortError::operation("subscribe_machines", e.to_string()))?;
+
+        // Collect initial snapshot from Row events until EndOfQuery
+        let mut machines: HashMap<MachineId, MachineRecord> = HashMap::new();
+        let mut row_index: HashMap<u64, MachineId> = HashMap::new();
+
+        loop {
+            let event = stream
+                .next()
+                .await
+                .ok_or_else(|| {
+                    PortError::operation("subscribe_machines", "stream ended during snapshot")
+                })?
+                .map_err(|e| PortError::operation("subscribe_machines", e.to_string()))?;
+
+            match event {
+                TypedQueryEvent::Columns(_) => {}
+                TypedQueryEvent::EndOfQuery { .. } => break,
+                TypedQueryEvent::Error(e) => {
+                    return Err(PortError::operation("subscribe_machines", e.to_string()));
+                }
+                TypedQueryEvent::Row(rowid, cells) => {
+                    let record = parse_machine(&cells)?;
+                    row_index.insert(rowid.0, record.id.clone());
+                    machines.insert(record.id.clone(), record);
+                }
+                TypedQueryEvent::Change(ct, rowid, cells, _) => {
+                    apply_change(ct, rowid.0, &cells, &mut machines, &mut row_index)?;
+                }
+            }
+        }
+
+        let mut snapshot: Vec<MachineRecord> = machines.values().cloned().collect();
+        snapshot.sort_by(|a, b| a.id.0.cmp(&b.id.0));
+
         let (tx, rx) = mpsc::channel(64);
 
-        let store = self.clone();
-        let mut known: HashMap<MachineId, MachineRecord> = snapshot
-            .iter()
-            .cloned()
-            .map(|machine| (machine.id.clone(), machine))
-            .collect();
-
+        // SubscriptionStream handles reconnection with backoff internally
         tokio::spawn(async move {
-            let current_watch_id = watch_id;
-            let mut current_stream = stream;
-            let mut backoff = WATCH_RETRY_BASE;
-
-            loop {
-                match current_stream.next().await {
-                    Some(Ok(event)) => {
-                        backoff = WATCH_RETRY_BASE;
-
-                        match machine_event_from_watch(event, &mut known, &mut row_index) {
-                            Ok(Some(machine_event)) => {
-                                if tx.send(machine_event).await.is_err() {
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(event) => {
+                        match into_machine_event(event, &mut machines, &mut row_index) {
+                            Ok(Some(ev)) => {
+                                if tx.send(ev).await.is_err() {
                                     return;
                                 }
                             }
                             Ok(None) => {}
-                            Err(err) => {
-                                warn!(?err, "failed to parse watch event");
-                            }
+                            Err(e) => warn!(?e, "bad subscription event"),
                         }
                     }
-                    Some(Err(err)) => {
-                        warn!(?err, "machine watch io error; reconnecting");
-                        match store.resume_machine_watch(current_watch_id).await {
-                            Ok(stream) => {
-                                current_stream = stream;
-                                backoff = WATCH_RETRY_BASE;
-                            }
-                            Err(reconnect_err) => {
-                                warn!(?reconnect_err, "machine watch reconnect failed");
-                                time::sleep(backoff).await;
-                                backoff = std::cmp::min(backoff + backoff, WATCH_RETRY_MAX);
-                            }
-                        }
-                    }
-                    None => {
-                        warn!("machine watch stream ended; reconnecting");
-                        match store.resume_machine_watch(current_watch_id).await {
-                            Ok(stream) => {
-                                current_stream = stream;
-                                backoff = WATCH_RETRY_BASE;
-                            }
-                            Err(reconnect_err) => {
-                                warn!(?reconnect_err, "machine watch reconnect failed");
-                                time::sleep(backoff).await;
-                                backoff = std::cmp::min(backoff + backoff, WATCH_RETRY_MAX);
-                            }
-                        }
-                    }
+                    Err(e) => warn!(%e, "subscription error"),
                 }
             }
+            warn!("machine subscription ended");
         });
 
         Ok((snapshot, rx))
@@ -305,153 +201,203 @@ impl MachineStore for CorrosionStore {
 
 impl InviteStore for CorrosionStore {
     async fn create_invite(&self, invite: &InviteRecord) -> PortResult<()> {
-        let statement = Statement::WithParams(
+        let stmt = Statement::WithParams(
             "INSERT INTO invites (id, expires_at) VALUES (?, ?)".to_string(),
             vec![invite.id.clone().into(), (invite.expires_at as i64).into()],
         );
-
-        let results = self.execute(&[statement], "create_invite").await?;
-        match results.first() {
-            Some(RqliteResult::Error { error }) => {
-                if error.contains("UNIQUE") {
-                    Err(PortError::operation("invite_exists", error.clone()))
-                } else {
-                    Err(PortError::operation("create_invite", error.clone()))
-                }
+        let res = self
+            .client
+            .execute(&[stmt], None)
+            .await
+            .map_err(|e| PortError::operation("create_invite", e.to_string()))?;
+        match res.results.first() {
+            Some(ExecResult::Error { error }) if error.contains("UNIQUE") => {
+                Err(PortError::operation("invite_exists", error.clone()))
             }
-            _ => expect_execute(&results, "create_invite"),
+            Some(ExecResult::Error { error }) => {
+                Err(PortError::operation("create_invite", error.clone()))
+            }
+            Some(ExecResult::Execute { .. }) => Ok(()),
+            None => Err(PortError::operation("create_invite", "no result")),
         }
     }
 
     async fn consume_invite(&self, invite_id: &str, now_unix_secs: u64) -> PortResult<()> {
-        let delete = Statement::WithParams(
+        let stmt = Statement::WithParams(
             "DELETE FROM invites WHERE id = ? AND expires_at >= ?".to_string(),
             vec![invite_id.to_string().into(), (now_unix_secs as i64).into()],
         );
-        let results = self.execute(&[delete], "consume_invite").await?;
+        let res = self
+            .client
+            .execute(&[stmt], None)
+            .await
+            .map_err(|e| PortError::operation("consume_invite", e.to_string()))?;
 
-        let affected = rows_affected(
-            results
-                .first()
-                .ok_or_else(|| PortError::operation("consume_invite", "missing execute result"))?,
-            "consume_invite",
-        )?;
-
-        if affected == 1 {
-            return Ok(());
-        }
-
-        // No row deleted — figure out why.
-        let invite = self.fetch_invite(invite_id).await?;
-        match invite {
-            None => Err(PortError::operation(
-                "invite_not_found",
-                format!("invite '{invite_id}' not found"),
-            )),
-            Some(_) => Err(PortError::operation(
-                "invite_expired",
-                format!("invite '{invite_id}' is expired"),
-            )),
-        }
-    }
-}
-
-fn expect_execute(results: &[RqliteResult], op: &'static str) -> PortResult<()> {
-    match results.first() {
-        Some(RqliteResult::Execute { .. }) => Ok(()),
-        Some(RqliteResult::Error { error }) => Err(PortError::operation(op, error.clone())),
-        Some(_) => Err(PortError::operation(op, "unexpected response kind")),
-        None => Err(PortError::operation(op, "missing execute result")),
-    }
-}
-
-fn rows_affected(result: &RqliteResult, op: &'static str) -> PortResult<usize> {
-    match result {
-        RqliteResult::Execute { rows_affected, .. } => Ok(*rows_affected),
-        RqliteResult::Error { error } => Err(PortError::operation(op, error.clone())),
-        _ => Err(PortError::operation(op, "expected execute result")),
-    }
-}
-
-fn machine_event_from_watch(
-    event: QueryEvent,
-    known: &mut HashMap<MachineId, MachineRecord>,
-    row_index: &mut HashMap<u64, MachineId>,
-) -> PortResult<Option<MachineEvent>> {
-    match event {
-        QueryEvent::Columns(_) | QueryEvent::EndOfQuery => Ok(None),
-        QueryEvent::Error(err) => Err(PortError::operation(
-            "watch_machines",
-            format!("watch query error: {err}"),
-        )),
-        QueryEvent::Row {
-            rowid,
-            change_type,
-            cells,
-        } => {
-            let rowid = as_u64_rowid(rowid)?;
-
-            match change_type {
-                ChangeType::Upsert => {
-                    let record = parse_machine_row(&cells)?;
-                    let is_update = known.contains_key(&record.id);
-                    row_index.insert(rowid, record.id.clone());
-                    known.insert(record.id.clone(), record.clone());
-                    let event = if is_update {
-                        MachineEvent::Updated(record)
-                    } else {
-                        MachineEvent::Added(record)
-                    };
-                    Ok(Some(event))
-                }
-                ChangeType::Delete => {
-                    if let Some(id) = row_index.remove(&rowid) {
-                        known.remove(&id);
-                        Ok(Some(MachineEvent::Removed { id }))
-                    } else {
-                        Ok(None)
-                    }
+        match res.results.first() {
+            Some(ExecResult::Execute { rows_affected, .. }) if *rows_affected == 1 => Ok(()),
+            Some(ExecResult::Error { error }) => {
+                Err(PortError::operation("consume_invite", error.clone()))
+            }
+            _ => {
+                // Distinguish not-found from expired
+                let lookup = Statement::WithParams(
+                    "SELECT id, expires_at FROM invites WHERE id = ? LIMIT 1".to_string(),
+                    vec![invite_id.to_string().into()],
+                );
+                if query_rows(&self.client, &lookup, "consume_invite")
+                    .await?
+                    .is_empty()
+                {
+                    Err(PortError::operation(
+                        "invite_not_found",
+                        format!("invite '{invite_id}' not found"),
+                    ))
+                } else {
+                    Err(PortError::operation(
+                        "invite_expired",
+                        format!("invite '{invite_id}' is expired"),
+                    ))
                 }
             }
         }
     }
 }
 
-fn as_u64_rowid(rowid: i64) -> PortResult<u64> {
-    u64::try_from(rowid)
-        .map_err(|_| PortError::operation("watch_machines", format!("negative rowid: {rowid}")))
+// --- query/exec helpers ---
+
+async fn query_rows(
+    client: &CorrosionClient,
+    stmt: &Statement,
+    op: &'static str,
+) -> PortResult<Vec<Vec<SqliteValue>>> {
+    let mut stream = client
+        .query(stmt, None)
+        .await
+        .map_err(|e| PortError::operation(op, e.to_string()))?;
+    let mut rows = Vec::new();
+    while let Some(event) = stream.next().await {
+        match event.map_err(|e| PortError::operation(op, e.to_string()))? {
+            TypedQueryEvent::Row(_, cells) => rows.push(cells),
+            TypedQueryEvent::EndOfQuery { .. } => break,
+            TypedQueryEvent::Error(e) => return Err(PortError::operation(op, e.to_string())),
+            _ => {}
+        }
+    }
+    Ok(rows)
 }
 
-fn row_to_values(row: &rusqlite::Row<'_>, count: usize) -> rusqlite::Result<Vec<SqliteValue>> {
-    (0..count)
-        .map(|idx| row.get::<_, SqliteValue>(idx))
-        .collect()
+async fn exec_one(
+    client: &CorrosionClient,
+    stmts: &[Statement],
+    op: &'static str,
+) -> PortResult<()> {
+    let res = client
+        .execute(stmts, None)
+        .await
+        .map_err(|e| PortError::operation(op, e.to_string()))?;
+    match res.results.first() {
+        Some(ExecResult::Execute { .. }) => Ok(()),
+        Some(ExecResult::Error { error }) => Err(PortError::operation(op, error.clone())),
+        None => Err(PortError::operation(op, "no result")),
+    }
 }
 
-fn parse_machine_row(values: &[SqliteValue]) -> PortResult<MachineRecord> {
-    if values.len() != 4 {
+// --- subscription helpers ---
+
+fn apply_change(
+    ct: ChangeType,
+    rowid: u64,
+    cells: &[SqliteValue],
+    machines: &mut HashMap<MachineId, MachineRecord>,
+    row_index: &mut HashMap<u64, MachineId>,
+) -> PortResult<()> {
+    match ct {
+        ChangeType::Insert | ChangeType::Update => {
+            let record = parse_machine(cells)?;
+            row_index.insert(rowid, record.id.clone());
+            machines.insert(record.id.clone(), record);
+        }
+        ChangeType::Delete => {
+            if let Some(id) = row_index.remove(&rowid) {
+                machines.remove(&id);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn upsert_event(
+    rowid: u64,
+    cells: &[SqliteValue],
+    known: &mut HashMap<MachineId, MachineRecord>,
+    row_index: &mut HashMap<u64, MachineId>,
+) -> PortResult<Option<MachineEvent>> {
+    let record = parse_machine(cells)?;
+    let is_update = known.contains_key(&record.id);
+    row_index.insert(rowid, record.id.clone());
+    known.insert(record.id.clone(), record.clone());
+    Ok(Some(if is_update {
+        MachineEvent::Updated(record)
+    } else {
+        MachineEvent::Added(record)
+    }))
+}
+
+fn into_machine_event(
+    event: TypedQueryEvent<Vec<SqliteValue>>,
+    known: &mut HashMap<MachineId, MachineRecord>,
+    row_index: &mut HashMap<u64, MachineId>,
+) -> PortResult<Option<MachineEvent>> {
+    match event {
+        TypedQueryEvent::Columns(_) | TypedQueryEvent::EndOfQuery { .. } => Ok(None),
+        TypedQueryEvent::Error(e) => {
+            Err(PortError::operation("subscribe_machines", e.to_string()))
+        }
+        TypedQueryEvent::Row(rowid, cells) => {
+            upsert_event(rowid.0, &cells, known, row_index)
+        }
+        TypedQueryEvent::Change(ct, rowid, cells, _) => match ct {
+            ChangeType::Insert | ChangeType::Update => {
+                upsert_event(rowid.0, &cells, known, row_index)
+            }
+            ChangeType::Delete => {
+                if let Some(id) = row_index.remove(&rowid.0) {
+                    known.remove(&id);
+                    Ok(Some(MachineEvent::Removed { id }))
+                } else {
+                    Ok(None)
+                }
+            }
+        },
+    }
+}
+
+// --- row parsing ---
+
+fn parse_machine(row: &[SqliteValue]) -> PortResult<MachineRecord> {
+    if row.len() != 4 {
         return Err(PortError::operation(
-            "parse_machine_row",
-            format!("expected 4 columns, got {}", values.len()),
+            "parse_machine",
+            format!("expected 4 columns, got {}", row.len()),
         ));
     }
 
-    let id = expect_text(values, 0, "id")?;
-    let key_blob = expect_blob(values, 1, "public_key")?;
-    let overlay = expect_text(values, 2, "overlay_ip")?;
-    let endpoints_json = expect_text(values, 3, "endpoints")?;
+    let id = text(&row[0], "id")?;
+    let key_blob = blob(&row[1], "public_key")?;
+    let overlay = text(&row[2], "overlay_ip")?;
+    let endpoints_json = text(&row[3], "endpoints")?;
 
     let public_key: [u8; 32] = key_blob.as_slice().try_into().map_err(|_| {
         PortError::operation(
-            "parse_machine_row",
-            format!("public key length must be 32, got {}", key_blob.len()),
+            "parse_machine",
+            format!("public key must be 32 bytes, got {}", key_blob.len()),
         )
     })?;
     let overlay_ip: Ipv6Addr = overlay.parse().map_err(|e| {
-        PortError::operation("parse_machine_row", format!("invalid overlay ip: {e}"))
+        PortError::operation("parse_machine", format!("invalid overlay ip: {e}"))
     })?;
     let endpoints: Vec<String> = serde_json::from_str(&endpoints_json).map_err(|e| {
-        PortError::operation("parse_machine_row", format!("invalid endpoints json: {e}"))
+        PortError::operation("parse_machine", format!("invalid endpoints json: {e}"))
     })?;
 
     Ok(MachineRecord {
@@ -462,62 +408,15 @@ fn parse_machine_row(values: &[SqliteValue]) -> PortResult<MachineRecord> {
     })
 }
 
-fn parse_invite_row(values: &[SqliteValue]) -> PortResult<InviteRecord> {
-    if values.len() != 2 {
-        return Err(PortError::operation(
-            "parse_invite_row",
-            format!("expected 2 columns, got {}", values.len()),
-        ));
-    }
-
-    let id = expect_text(values, 0, "id")?;
-    let expires_at = expect_i64(values, 1, "expires_at")?;
-
-    Ok(InviteRecord {
-        id,
-        expires_at: to_u64(expires_at, "expires_at")?,
-    })
-}
-
-fn expect_text(values: &[SqliteValue], idx: usize, field: &'static str) -> PortResult<String> {
-    values
-        .get(idx)
-        .and_then(SqliteValue::as_text)
+fn text(val: &SqliteValue, field: &'static str) -> PortResult<String> {
+    val.as_text()
         .map(ToOwned::to_owned)
-        .ok_or_else(|| {
-            PortError::operation("corrosion_decode", format!("missing text field '{field}'"))
-        })
+        .ok_or_else(|| PortError::operation("decode", format!("expected text for '{field}'")))
 }
 
-fn expect_blob(values: &[SqliteValue], idx: usize, field: &'static str) -> PortResult<Vec<u8>> {
-    values
-        .get(idx)
-        .and_then(SqliteValue::as_blob)
+fn blob(val: &SqliteValue, field: &'static str) -> PortResult<Vec<u8>> {
+    val.as_blob()
         .map(ToOwned::to_owned)
-        .ok_or_else(|| {
-            PortError::operation("corrosion_decode", format!("missing blob field '{field}'"))
-        })
+        .ok_or_else(|| PortError::operation("decode", format!("expected blob for '{field}'")))
 }
 
-fn expect_i64(values: &[SqliteValue], idx: usize, field: &'static str) -> PortResult<i64> {
-    values
-        .get(idx)
-        .and_then(SqliteValue::as_integer)
-        .copied()
-        .ok_or_else(|| {
-            PortError::operation(
-                "corrosion_decode",
-                format!("missing integer field '{field}'"),
-            )
-        })
-}
-
-fn to_u64(value: i64, field: &'static str) -> PortResult<u64> {
-    if value < 0 {
-        return Err(PortError::operation(
-            "corrosion_decode",
-            format!("negative value for '{field}': {value}"),
-        ));
-    }
-    Ok(value as u64)
-}

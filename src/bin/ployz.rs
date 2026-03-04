@@ -56,6 +56,9 @@ enum MeshAction {
 
 #[derive(Subcommand)]
 enum MachineAction {
+    /// List machines in the running network.
+    #[command(alias = "list")]
+    Ls,
     /// Bootstrap a remote founder and create/start a network.
     Init {
         target: String,
@@ -124,6 +127,7 @@ async fn main() {
             },
         },
         Command::Machine { action } => match action {
+            MachineAction::Ls => DaemonRequest::MachineList,
             MachineAction::Init { target, network } => DaemonRequest::MachineInit {
                 target: target.clone(),
                 network: network.clone(),
