@@ -5,7 +5,7 @@ use crate::adapters::wireguard::{DockerWireGuard, HostWireGuard};
 use crate::error::Result;
 use crate::mesh::MeshNetwork;
 use crate::store::{InviteStore, MachineStore, ServiceControl, SyncProbe, SyncStatus};
-use crate::store::model::{InviteRecord, MachineEvent, MachineId, MachineRecord};
+use crate::model::{InviteRecord, MachineEvent, MachineId, MachineRecord};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 

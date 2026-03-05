@@ -4,7 +4,7 @@ pub(crate) mod peer_state;
 pub mod phase;
 
 use crate::error::Result;
-use crate::store::model::{MachineRecord, PublicKey};
+use crate::model::{MachineRecord, PublicKey};
 use std::future::Future;
 use tokio::time::Instant;
 

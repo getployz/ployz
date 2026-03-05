@@ -1,6 +1,6 @@
 use crate::node::invite::{issue_invite_token, parse_and_verify_invite_token};
 use crate::store::{InviteStore, MachineStore};
-use crate::store::model::{InviteRecord, NetworkName};
+use crate::model::{InviteRecord, NetworkName};
 use crate::store::network::NetworkConfig;
 use crate::transport::{DaemonRequest, DaemonResponse};
 

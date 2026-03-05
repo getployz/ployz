@@ -4,6 +4,7 @@ pub mod config;
 pub mod daemon;
 pub mod error;
 pub mod mesh;
+pub mod model;
 pub mod node;
 pub mod store;
 mod tasks;
@@ -18,7 +19,7 @@ pub use config::{
 };
 pub use node::identity::{Identity, IdentityError};
 pub use node::invite::InviteClaims;
-pub use store::model::*;
+pub use model::*;
 pub use store::network::{NetworkConfig, NetworkConfigError};
 pub use store::{MachineStore, InviteStore, SyncProbe, SyncStatus, ServiceControl};
 pub use mesh::{MeshNetwork, WireGuardDevice, DevicePeer};

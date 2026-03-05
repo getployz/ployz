@@ -9,7 +9,7 @@ use defguard_wireguard_rs::{InterfaceConfiguration, WGApi, WireguardInterfaceApi
 
 use crate::error::{Error, Result};
 use crate::mesh::MeshNetwork;
-use crate::store::model::{MachineRecord, OverlayIp, PrivateKey};
+use crate::model::{MachineRecord, OverlayIp, PrivateKey};
 
 use super::config::encode_key;
 

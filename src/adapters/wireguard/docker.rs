@@ -11,7 +11,7 @@ use tracing::{info, warn};
 
 use crate::error::{Error, Result};
 use crate::mesh::MeshNetwork;
-use crate::store::model::{MachineRecord, OverlayIp, PrivateKey};
+use crate::model::{MachineRecord, OverlayIp, PrivateKey};
 
 use super::config::{WgPaths, write_private_key, write_sync_config};
 

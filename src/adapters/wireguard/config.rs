@@ -3,7 +3,7 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
-use crate::store::model::{MachineRecord, OverlayIp, PrivateKey};
+use crate::model::{MachineRecord, OverlayIp, PrivateKey};
 
 /// Filesystem paths for a WireGuard data directory.
 #[derive(Debug, Clone)]
@@ -125,7 +125,7 @@ pub fn decode_key(b64: &str) -> Result<[u8; 32], String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::model::PublicKey;
+    use crate::model::PublicKey;
     use std::net::Ipv6Addr;
 
     #[test]
@@ -157,7 +157,7 @@ mod tests {
     fn peer_section_rendered() {
         let privkey = PrivateKey([1; 32]);
         let peer = MachineRecord {
-            id: crate::store::model::MachineId("m1".into()),
+            id: crate::model::MachineId("m1".into()),
             public_key: PublicKey([2; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2)),
             endpoints: vec!["10.0.0.1:51820".into()],

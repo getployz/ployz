@@ -1,6 +1,6 @@
 use crate::backends::WireguardDriver;
 use crate::mesh::peer_state::{PeerStateMap, sync_peers};
-use crate::store::model::{MachineEvent, MachineRecord};
+use crate::model::{MachineEvent, MachineRecord};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};

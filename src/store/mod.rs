@@ -1,8 +1,7 @@
-pub mod model;
 pub mod network;
 
 use crate::error::Result;
-use crate::store::model::{InviteRecord, MachineEvent, MachineId, MachineRecord};
+use crate::model::{InviteRecord, MachineEvent, MachineId, MachineRecord};
 use std::future::Future;
 use tokio::sync::mpsc;
 

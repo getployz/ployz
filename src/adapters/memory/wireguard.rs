@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::mesh::MeshNetwork;
-use crate::store::model::MachineRecord;
+use crate::model::MachineRecord;
 use std::sync::{Mutex, MutexGuard};
 
 pub struct MemoryWireGuard {

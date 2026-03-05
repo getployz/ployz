@@ -4,7 +4,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
 use crate::node::identity::Identity;
-use crate::store::model::NetworkId;
+use crate::model::NetworkId;
 use crate::store::network::NetworkConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

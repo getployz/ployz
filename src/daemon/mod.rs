@@ -9,7 +9,7 @@ use crate::config::Mode;
 use crate::mesh::orchestrator::Mesh;
 use crate::node::identity::Identity;
 use crate::store::MachineStore;
-use crate::store::model::MachineRecord;
+use crate::model::MachineRecord;
 use crate::store::network::NetworkConfig;
 use crate::transport::DaemonResponse;
 use crate::{

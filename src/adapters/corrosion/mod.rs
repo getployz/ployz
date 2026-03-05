@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::store::{InviteStore, MachineStore, SyncProbe, SyncStatus};
-use crate::store::model::{
+use crate::model::{
     InviteRecord, MachineEvent, MachineId, MachineRecord, OverlayIp, PublicKey,
 };
 use corro_api_types::{ExecResult, SqliteValue, Statement, TypedQueryEvent, sqlite::ChangeType};
