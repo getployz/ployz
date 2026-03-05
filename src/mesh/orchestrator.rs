@@ -1,5 +1,6 @@
+use crate::adapters::docker_network::DockerBridgeNetwork;
 use crate::drivers::{StoreDriver, WireguardDriver};
-use crate::error::Error;
+use crate::error::Error as PortError;
 use crate::mesh::MeshNetwork;
 use crate::mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
 use crate::store::{MachineStore, ServiceControl, SyncProbe, SyncStatus};
@@ -15,7 +16,7 @@ pub enum MeshError {
     #[error(transparent)]
     Transition(#[from] TransitionError),
     #[error(transparent)]
-    Port(#[from] Error),
+    Port(#[from] PortError),
     #[error(transparent)]
     Task(#[from] TaskSetError),
 }
@@ -24,6 +25,7 @@ pub struct Mesh {
     phase: Phase,
     network: WireguardDriver,
     store: StoreDriver,
+    container_network: Option<DockerBridgeNetwork>,
     tasks: Option<TaskSet>,
     bootstrap_interval: Duration,
     connection_timeout: Duration,
@@ -31,11 +33,16 @@ pub struct Mesh {
 }
 
 impl Mesh {
-    pub fn new(network: WireguardDriver, store: StoreDriver) -> Self {
+    pub fn new(
+        network: WireguardDriver,
+        store: StoreDriver,
+        container_network: Option<DockerBridgeNetwork>,
+    ) -> Self {
         Self {
             phase: Phase::Stopped,
             network,
             store,
+            container_network,
             tasks: None,
             bootstrap_interval: Duration::from_millis(500),
             connection_timeout: Duration::from_secs(30),
@@ -78,6 +85,23 @@ impl Mesh {
         }
 
         self.apply(PhaseEvent::NetworkReady)?;
+
+        // Create dual-stack Docker bridge network and connect the WG container
+        if let Some(cn) = &self.container_network {
+            if let Err(e) = cn.ensure().await {
+                warn!(?e, "container network ensure failed");
+                let _ = self.network.down().await;
+                self.apply(PhaseEvent::ComponentFailed)?;
+                return Err(e.into());
+            }
+            if let Err(e) = cn.connect("ployz-wireguard", Some(cn.container_v4())).await {
+                warn!(?e, "connect WG container to bridge failed");
+                let _ = cn.remove().await;
+                let _ = self.network.down().await;
+                self.apply(PhaseEvent::ComponentFailed)?;
+                return Err(e.into());
+            }
+        }
 
         if let Err(e) = self.store.start().await {
             warn!(?e, "service start failed");
@@ -160,6 +184,13 @@ impl Mesh {
             first_err.get_or_insert(e.into());
         }
 
+        if let Some(cn) = &self.container_network {
+            if let Err(e) = cn.remove().await {
+                warn!(?e, "container network remove failed during destroy");
+                first_err.get_or_insert(e.into());
+            }
+        }
+
         if let Err(e) = self.network.down().await {
             warn!(?e, "network down failed during destroy");
             first_err.get_or_insert(e.into());
@@ -196,7 +227,7 @@ impl Mesh {
         })
         .await
         .map_err(|_| {
-            MeshError::Port(Error::operation(
+            MeshError::Port(PortError::operation(
                 "service ready",
                 format!("service did not become ready within {timeout:?}"),
             ))
@@ -238,7 +269,7 @@ impl Mesh {
 
         match result {
             Ok(inner) => inner.map_err(MeshError::Port),
-            Err(_) => Err(MeshError::Port(Error::operation(
+            Err(_) => Err(MeshError::Port(PortError::operation(
                 "store init",
                 format!("store did not become ready within {timeout:?}"),
             ))),

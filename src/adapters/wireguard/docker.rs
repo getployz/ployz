@@ -337,6 +337,7 @@ impl DockerWireGuard {
 
         Ok(())
     }
+
 }
 
 impl MeshNetwork for DockerWireGuard {

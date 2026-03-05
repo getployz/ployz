@@ -77,8 +77,20 @@ impl DaemonState {
 
         tracing::info!(mode = ?self.mode, "starting mesh");
 
+        let container_network = match self.mode {
+            Mode::Memory => None,
+            _ => Some(
+                crate::adapters::docker_network::DockerBridgeNetwork::new(
+                    &net_config.name.0,
+                    net_config.subnet,
+                )
+                .await
+                .map_err(|e| format!("docker bridge network: {e}"))?,
+            ),
+        };
+
         let overlay_ip = net_config.overlay_ip;
-        let mut mesh = Mesh::new(network, store);
+        let mut mesh = Mesh::new(network, store, container_network);
 
         mesh.up()
             .await

@@ -65,10 +65,16 @@ pub struct DaemonConfig {
     pub socket: String,
     #[serde(default = "default_cluster_cidr")]
     pub cluster_cidr: String,
+    #[serde(default = "default_subnet_prefix_len")]
+    pub subnet_prefix_len: u8,
 }
 
 fn default_cluster_cidr() -> String {
     "10.210.0.0/16".to_string()
+}
+
+fn default_subnet_prefix_len() -> u8 {
+    24
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -76,6 +82,7 @@ struct RuntimeDefaults {
     data_dir: PathBuf,
     socket: String,
     cluster_cidr: String,
+    subnet_prefix_len: u8,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -92,6 +99,8 @@ struct DaemonOverrides {
     socket: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cluster_cidr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subnet_prefix_len: Option<u8>,
 }
 
 /// Returns the platform-appropriate default data directory.
@@ -170,6 +179,7 @@ pub fn load_daemon_config(
         data_dir: cli_data_dir,
         socket: cli_socket,
         cluster_cidr: None,
+        subnet_prefix_len: None,
     };
 
     build_figment(aff)
@@ -183,6 +193,7 @@ fn build_figment(aff: &Affordances) -> Figment {
         data_dir: default_data_dir(aff),
         socket: default_socket_path(aff),
         cluster_cidr: default_cluster_cidr(),
+        subnet_prefix_len: default_subnet_prefix_len(),
     };
 
     let mut figment = Figment::new().merge(Serialized::defaults(defaults));
@@ -257,4 +268,5 @@ mod tests {
         assert!(validate_mode(Mode::HostExec, &aff(Os::Other, false)).is_err());
         assert!(validate_mode(Mode::HostExec, &aff(Os::Linux, false)).is_ok());
     }
+
 }

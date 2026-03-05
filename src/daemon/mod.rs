@@ -20,16 +20,24 @@ pub struct DaemonState {
     pub identity: Identity,
     pub mode: Mode,
     pub cluster_cidr: String,
+    pub subnet_prefix_len: u8,
     pub active: Option<ActiveMesh>,
 }
 
 impl DaemonState {
-    pub fn new(data_dir: &Path, identity: Identity, mode: Mode, cluster_cidr: String) -> Self {
+    pub fn new(
+        data_dir: &Path,
+        identity: Identity,
+        mode: Mode,
+        cluster_cidr: String,
+        subnet_prefix_len: u8,
+    ) -> Self {
         Self {
             data_dir: data_dir.to_path_buf(),
             identity,
             mode,
             cluster_cidr,
+            subnet_prefix_len,
             active: None,
         }
     }

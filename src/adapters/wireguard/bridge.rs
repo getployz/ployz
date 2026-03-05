@@ -346,18 +346,14 @@ async fn bridge_event_loop(
 
                 // Send any outbound IP packets through WG tunnel
                 while let Some(ip_packet) = device.pop_tx() {
-                    debug!(len = ip_packet.len(), "TX: sending IP packet through WG");
                     match tunn.encapsulate(&ip_packet, &mut wg_scratch) {
                         TunnResult::WriteToNetwork(data) => {
-                            debug!(len = data.len(), "TX: WG encrypted, sending UDP");
                             let _ = udp.send(data).await;
                         }
                         TunnResult::Err(e) => {
                             debug!(?e, "WG encapsulate error");
                         }
-                        other => {
-                            debug!(?other, "WG encapsulate: unexpected result");
-                        }
+                        _ => {}
                     }
                 }
             }
@@ -378,8 +374,6 @@ async fn bridge_event_loop(
                 let mut decode_buf = vec![0u8; MAX_WG_PACKET];
                 match tunn.decapsulate(None, packet, &mut decode_buf) {
                     TunnResult::WriteToNetwork(data) => {
-                        // Handshake response — send it back
-                        debug!(len = data.len(), "WG handshake: sending response");
                         let _ = udp.send(data).await;
 
                         // Check if there's more to process after handshake
@@ -397,15 +391,12 @@ async fn bridge_event_loop(
                         }
                     }
                     TunnResult::WriteToTunnelV6(data, _) => {
-                        debug!(len = data.len(), "WG tunnel: received IP packet");
                         device.push_rx(data.to_vec());
                     }
                     TunnResult::Err(e) => {
                         debug!(?e, "WG decapsulate error");
                     }
-                    _ => {
-                        debug!("WG decapsulate: no action");
-                    }
+                    _ => {}
                 }
 
                 // Poll smoltcp to process the received packet
@@ -447,8 +438,6 @@ async fn bridge_event_loop(
                         warn!(?e, dest = %overlay_dest, "smoltcp connect failed");
                         continue;
                     }
-                    debug!(dest = %overlay_dest, %local_port, "smoltcp TCP connecting");
-
                     let handle = sockets.add(tcp);
                     relays.push(OutboundRelay {
                         stream,
@@ -460,10 +449,8 @@ async fn bridge_event_loop(
                     // Immediately poll to generate the SYN packet
                     iface.poll(SmoltcpInstant::now(), &mut device, &mut sockets);
                     while let Some(ip_packet) = device.pop_tx() {
-                        debug!(len = ip_packet.len(), "TX: sending IP packet through WG (post-accept)");
                         match tunn.encapsulate(&ip_packet, &mut wg_scratch) {
                             TunnResult::WriteToNetwork(data) => {
-                                debug!(len = data.len(), "TX: WG encrypted, sending UDP (post-accept)");
                                 let _ = udp.send(data).await;
                             }
                             TunnResult::Err(e) => {

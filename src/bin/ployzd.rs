@@ -77,7 +77,14 @@ async fn main() -> Result<()> {
         Command::Configure { mode } => cmd_configure(mode.into()),
         Command::Run { mode, socket } => {
             let cfg = load_daemon_config(data_dir, socket, &aff)?;
-            cmd_run(&cfg.data_dir, mode.into(), &cfg.socket, cfg.cluster_cidr).await
+            cmd_run(
+                &cfg.data_dir,
+                mode.into(),
+                &cfg.socket,
+                cfg.cluster_cidr,
+                cfg.subnet_prefix_len,
+            )
+            .await
         }
     }
 }
@@ -88,7 +95,13 @@ fn cmd_configure(mode: Mode) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_run(data_dir: &Path, mode: Mode, socket_path: &str, cluster_cidr: String) -> Result<()> {
+async fn cmd_run(
+    data_dir: &Path,
+    mode: Mode,
+    socket_path: &str,
+    cluster_cidr: String,
+    subnet_prefix_len: u8,
+) -> Result<()> {
     tracing::info!(?mode, "starting daemon");
 
     let id_path = data_dir.join("identity.json");
@@ -116,7 +129,7 @@ async fn cmd_run(data_dir: &Path, mode: Mode, socket_path: &str, cluster_cidr: S
         std::process::exit(1);
     });
 
-    let mut state = DaemonState::new(data_dir, identity, mode, cluster_cidr);
+    let mut state = DaemonState::new(data_dir, identity, mode, cluster_cidr, subnet_prefix_len);
 
     if let Some(network) = state.read_active_marker() {
         tracing::info!(%network, "resuming network");

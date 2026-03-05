@@ -106,6 +106,7 @@ mod tests {
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             subnet: None,
+
             bridge_ip: None,
             endpoints: endpoints.into_iter().map(String::from).collect(),
         }
@@ -119,6 +120,7 @@ mod tests {
             public_key: PublicKey([1; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             subnet: None,
+
             bridge_ip: None,
             endpoints: vec!["a:1".into(), "b:2".into(), "c:3".into()],
         };
