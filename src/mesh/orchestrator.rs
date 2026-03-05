@@ -3,8 +3,9 @@ use crate::drivers::{StoreDriver, WireguardDriver};
 use crate::error::Error as PortError;
 use crate::mesh::MeshNetwork;
 use crate::mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
+use crate::model::MachineId;
 use crate::store::{MachineStore, ServiceControl, SyncProbe, SyncStatus};
-use crate::tasks::{TaskSet, TaskSetError, run_peer_sync_task};
+use crate::tasks::{TaskSet, TaskSetError, run_endpoint_refresh_task, run_peer_sync_task};
 use std::time::Duration;
 use thiserror::Error;
 use tracing::{info, warn};
@@ -30,6 +31,8 @@ pub struct Mesh {
     bootstrap_interval: Duration,
     connection_timeout: Duration,
     service_ready_timeout: Duration,
+    machine_id: MachineId,
+    listen_port: u16,
 }
 
 impl Mesh {
@@ -37,6 +40,8 @@ impl Mesh {
         network: WireguardDriver,
         store: StoreDriver,
         container_network: Option<DockerBridgeNetwork>,
+        machine_id: MachineId,
+        listen_port: u16,
     ) -> Self {
         Self {
             phase: Phase::Stopped,
@@ -47,6 +52,8 @@ impl Mesh {
             bootstrap_interval: Duration::from_millis(500),
             connection_timeout: Duration::from_secs(30),
             service_ready_timeout: Duration::from_secs(15),
+            machine_id,
+            listen_port,
         }
     }
 
@@ -144,11 +151,19 @@ impl Mesh {
             .await
             .map_err(TaskSetError::Subscribe)?;
 
+        let cancel2 = cancel.clone();
         task_set.spawn(run_peer_sync_task(
             snapshot,
             events,
             self.network.clone(),
             cancel,
+        ));
+
+        task_set.spawn(run_endpoint_refresh_task(
+            self.machine_id.clone(),
+            self.listen_port,
+            self.store.clone(),
+            cancel2,
         ));
 
         self.tasks = Some(task_set);

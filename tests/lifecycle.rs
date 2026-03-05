@@ -24,6 +24,8 @@ fn make_mesh(wg: Arc<MemoryWireGuard>, svc: Arc<MemoryService>, store: Arc<Memor
             service: svc,
         },
         None,
+        MachineId("test-machine".into()),
+        51820,
     )
     .with_bootstrap_timing(Duration::from_millis(10), Duration::from_secs(5))
 }
@@ -146,6 +148,8 @@ async fn bootstrap_connection_timeout() {
             service: svc,
         },
         None,
+        MachineId("test-machine".into()),
+        51820,
     )
     .with_bootstrap_timing(Duration::from_millis(10), Duration::from_millis(100));
 
@@ -179,6 +183,8 @@ async fn bootstrap_sync_completes() {
             service: svc,
         },
         None,
+        MachineId("test-machine".into()),
+        51820,
     )
     .with_bootstrap_timing(Duration::from_millis(10), Duration::from_secs(5));
 
@@ -212,6 +218,8 @@ async fn bootstrap_sync_waits_indefinitely() {
             service: svc,
         },
         None,
+        MachineId("test-machine".into()),
+        51820,
     )
     .with_bootstrap_timing(Duration::from_millis(10), Duration::from_millis(50));
 

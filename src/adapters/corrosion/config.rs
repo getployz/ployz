@@ -60,6 +60,8 @@ struct GossipConfig {
     addr: String,
     bootstrap: Vec<String>,
     plaintext: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    member_id: Option<u16>,
 }
 
 #[derive(Debug, Serialize)]
@@ -73,12 +75,24 @@ struct AdminConfig {
 }
 
 /// Write `config.toml` and `schema.sql` to disk.
+/// Derive a deterministic u16 member_id from a network ID string.
+/// Uses FNV-style hashing to map to u16 space.
+fn network_id_to_member_id(network_id: &str) -> u16 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in network_id.as_bytes() {
+        hash ^= *byte as u32;
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    (hash & 0xFFFF) as u16
+}
+
 pub fn write_config(
     paths: &Paths,
     schema: &str,
     gossip_addr: SocketAddr,
     api_addr: SocketAddr,
     bootstrap: &[String],
+    network_id: Option<&str>,
 ) -> io::Result<()> {
     fs::create_dir_all(&paths.dir)?;
 
@@ -91,6 +105,7 @@ pub fn write_config(
             addr: gossip_addr.to_string(),
             bootstrap: bootstrap.to_vec(),
             plaintext: true,
+            member_id: network_id.map(network_id_to_member_id),
         },
         api: ApiConfig {
             addr: api_addr.to_string(),

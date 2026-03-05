@@ -15,6 +15,12 @@ pub struct InviteClaims {
     pub issuer_verify_key: String,
     pub expires_at: u64,
     pub nonce: String,
+    #[serde(default)]
+    pub issuer_endpoints: Vec<String>,
+    #[serde(default)]
+    pub issuer_overlay_ip: Option<String>,
+    #[serde(default)]
+    pub issuer_wg_public_key: Option<String>,
 }
 
 pub fn issue_invite_token(
@@ -22,6 +28,9 @@ pub fn issue_invite_token(
     network: &NetworkConfig,
     ttl_secs: u64,
     now_unix_secs: u64,
+    issuer_endpoints: Vec<String>,
+    issuer_overlay_ip: Option<String>,
+    issuer_wg_public_key: Option<String>,
 ) -> Result<(String, InviteClaims), String> {
     let expires_at = now_unix_secs
         .checked_add(ttl_secs)
@@ -54,6 +63,9 @@ pub fn issue_invite_token(
         issuer_verify_key,
         expires_at,
         nonce,
+        issuer_endpoints,
+        issuer_overlay_ip,
+        issuer_wg_public_key,
     };
 
     let claims_json = serde_json::to_vec(&claims).map_err(|e| format!("encode invite: {e}"))?;

@@ -1,4 +1,8 @@
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use x25519_dalek::StaticSecret;
+
 use crate::model::InviteRecord;
+use crate::network::endpoints::detect_endpoints;
 use crate::node::invite::{issue_invite_token, parse_and_verify_invite_token};
 use crate::store::InviteStore;
 use crate::store::network::NetworkConfig;
@@ -87,8 +91,22 @@ impl DaemonState {
             .map(|a| a.mesh.store())
             .ok_or_else(|| "no running network".to_string())?;
 
-        let (token, claims) =
-            issue_invite_token(&self.identity, network, ttl_secs, now_unix_secs())?;
+        let endpoints = detect_endpoints(51820).await;
+        let overlay_ip = Some(network.overlay_ip.0.to_string());
+
+        let wg_secret = StaticSecret::from(self.identity.private_key.0);
+        let wg_public = x25519_dalek::PublicKey::from(&wg_secret);
+        let wg_public_key = Some(URL_SAFE_NO_PAD.encode(wg_public.as_bytes()));
+
+        let (token, claims) = issue_invite_token(
+            &self.identity,
+            network,
+            ttl_secs,
+            now_unix_secs(),
+            endpoints,
+            overlay_ip,
+            wg_public_key,
+        )?;
 
         let record = InviteRecord {
             id: claims.invite_id,

@@ -1,10 +1,11 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
 use crate::config::Mode;
 use crate::drivers::{StoreDriver, WireguardDriver};
 use crate::mesh::orchestrator::Mesh;
-use crate::model::MachineRecord;
+use crate::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
+use crate::network::endpoints::detect_endpoints;
 use crate::store::MachineStore;
 use crate::store::network::NetworkConfig;
 use crate::{
@@ -14,15 +15,33 @@ use crate::{
 
 use super::{ActiveMesh, DaemonState};
 
+pub struct BootstrapInfo {
+    pub peer_id: String,
+    pub peer_wg_public_key: [u8; 32],
+    pub peer_overlay_ip: Ipv6Addr,
+    pub peer_endpoints: Vec<String>,
+}
+
 impl DaemonState {
     pub async fn start_mesh_by_name(&mut self, network: &str) -> Result<(), String> {
         let config_path = NetworkConfig::path(&self.data_dir, network);
         let net_config = NetworkConfig::load(&config_path)
             .map_err(|e| format!("load network config: {e}"))?;
-        self.start_mesh(net_config).await
+        self.start_mesh(net_config, None).await
     }
 
-    pub async fn start_mesh(&mut self, net_config: NetworkConfig) -> Result<(), String> {
+    pub async fn start_mesh(
+        &mut self,
+        net_config: NetworkConfig,
+        bootstrap: Option<BootstrapInfo>,
+    ) -> Result<(), String> {
+        let corrosion_bootstrap: Vec<String> = bootstrap
+            .as_ref()
+            .and_then(|bs| {
+                Some(vec![format!("[{}]:{}", bs.peer_overlay_ip, corrosion_config::DEFAULT_GOSSIP_PORT)])
+            })
+            .unwrap_or_default();
+
         let (network, store) = match self.mode {
             Mode::Memory => {
                 let network = WireguardDriver::Memory(Arc::new(MemoryWireGuard::new()));
@@ -58,7 +77,7 @@ impl DaemonState {
                 .map_err(|e| format!("docker wireguard: {e}"))?;
                 let network = WireguardDriver::Docker(Arc::new(wg));
                 let store = self
-                    .build_corrosion_store_bridged(net_config.overlay_ip, local_api)
+                    .build_corrosion_store_bridged(net_config.overlay_ip, local_api, &corrosion_bootstrap, &net_config.id.0)
                     .await?;
                 (network, store)
             }
@@ -70,7 +89,7 @@ impl DaemonState {
                 )
                 .map_err(|e| format!("host wireguard: {e}"))?;
                 let network = WireguardDriver::Host(Arc::new(wg));
-                let store = self.build_corrosion_store_direct(net_config.overlay_ip).await?;
+                let store = self.build_corrosion_store_direct(net_config.overlay_ip, &corrosion_bootstrap, &net_config.id.0).await?;
                 (network, store)
             }
         };
@@ -90,19 +109,42 @@ impl DaemonState {
         };
 
         let overlay_ip = net_config.overlay_ip;
-        let mut mesh = Mesh::new(network, store, container_network);
+        let mut mesh = Mesh::new(
+            network,
+            store,
+            container_network,
+            self.identity.machine_id.clone(),
+            51820,
+        );
 
         mesh.up()
             .await
             .map_err(|e| format!("failed to start network: {e}"))?;
 
+        // Inject bootstrap peer into WG before Corrosion gossip starts syncing
+        if let Some(ref bs) = bootstrap {
+            let bootstrap_record = MachineRecord {
+                id: MachineId(bs.peer_id.clone()),
+                public_key: PublicKey(bs.peer_wg_public_key),
+                overlay_ip: OverlayIp(bs.peer_overlay_ip),
+                subnet: None,
+                bridge_ip: None,
+                endpoints: bs.peer_endpoints.clone(),
+            };
+            mesh.store()
+                .upsert_machine(&bootstrap_record)
+                .await
+                .map_err(|e| format!("failed to seed bootstrap peer: {e}"))?;
+        }
+
+        let endpoints = detect_endpoints(51820).await;
         let self_record = MachineRecord {
             id: self.identity.machine_id.clone(),
             public_key: self.identity.public_key.clone(),
             overlay_ip,
             subnet: Some(net_config.subnet),
             bridge_ip: None,
-            endpoints: vec!["127.0.0.1:51820".into()],
+            endpoints,
         };
         mesh.store()
             .upsert_machine(&self_record)
@@ -124,13 +166,15 @@ impl DaemonState {
         &self,
         overlay_ip: crate::model::OverlayIp,
         local_endpoint: SocketAddr,
+        bootstrap: &[String],
+        network_id: &str,
     ) -> Result<StoreDriver, String> {
         let paths = corrosion_config::Paths::new(&self.data_dir);
         let gossip_addr = corrosion_config::default_gossip_addr();
         // Corrosion API binds to overlay IP inside the container namespace
         let api_addr = SocketAddr::new(IpAddr::V6(overlay_ip.0), corrosion_config::DEFAULT_API_PORT);
 
-        corrosion_config::write_config(&paths, SCHEMA_SQL, gossip_addr, api_addr, &[])
+        corrosion_config::write_config(&paths, SCHEMA_SQL, gossip_addr, api_addr, bootstrap, Some(network_id))
             .map_err(|e| format!("write corrosion config: {e}"))?;
 
         let config_path = paths.config.to_string_lossy().into_owned();
@@ -161,12 +205,14 @@ impl DaemonState {
     async fn build_corrosion_store_direct(
         &self,
         overlay_ip: crate::model::OverlayIp,
+        bootstrap: &[String],
+        network_id: &str,
     ) -> Result<StoreDriver, String> {
         let paths = corrosion_config::Paths::new(&self.data_dir);
         let gossip_addr = corrosion_config::default_gossip_addr();
         let api_addr = SocketAddr::new(IpAddr::V6(overlay_ip.0), corrosion_config::DEFAULT_API_PORT);
 
-        corrosion_config::write_config(&paths, SCHEMA_SQL, gossip_addr, api_addr, &[])
+        corrosion_config::write_config(&paths, SCHEMA_SQL, gossip_addr, api_addr, bootstrap, Some(network_id))
             .map_err(|e| format!("write corrosion config: {e}"))?;
 
         let config_path = paths.config.to_string_lossy().into_owned();

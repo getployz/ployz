@@ -1,3 +1,6 @@
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+
+use crate::daemon::setup::BootstrapInfo;
 use crate::model::NetworkName;
 use crate::network::ipam::Ipam;
 use crate::node::invite::parse_and_verify_invite_token;
@@ -132,7 +135,9 @@ impl DaemonState {
             return self.err("IO_ERROR", format!("failed to save network config: {e}"));
         }
 
-        if let Err(e) = self.start_mesh(net_config).await {
+        let bootstrap = Self::extract_bootstrap(&invite);
+
+        if let Err(e) = self.start_mesh(net_config, bootstrap).await {
             return self.err(
                 "NETWORK_START_FAILED",
                 format!("join failed to start mesh: {e}"),
@@ -188,7 +193,7 @@ impl DaemonState {
 
         let network_name = net_config.name.clone();
         let overlay_ip = net_config.overlay_ip;
-        if let Err(e) = self.start_mesh(net_config).await {
+        if let Err(e) = self.start_mesh(net_config, None).await {
             return DaemonResponse {
                 ok: false,
                 code: "NETWORK_START_FAILED".into(),
@@ -266,7 +271,7 @@ impl DaemonState {
         };
 
         let network_name = net_config.name.clone();
-        if let Err(e) = self.start_mesh(net_config).await {
+        if let Err(e) = self.start_mesh(net_config, None).await {
             return DaemonResponse {
                 ok: false,
                 code: "NETWORK_START_FAILED".into(),
@@ -332,5 +337,25 @@ impl DaemonState {
 
         self.clear_active_marker();
         self.ok(format!("mesh '{network}' destroyed"))
+    }
+
+    fn extract_bootstrap(invite: &crate::node::invite::InviteClaims) -> Option<BootstrapInfo> {
+        let wg_key_b64 = invite.issuer_wg_public_key.as_deref()?;
+        let overlay_str = invite.issuer_overlay_ip.as_deref()?;
+
+        let key_bytes = URL_SAFE_NO_PAD.decode(wg_key_b64).ok()?;
+        let peer_wg_public_key: [u8; 32] = key_bytes.as_slice().try_into().ok()?;
+        let peer_overlay_ip: std::net::Ipv6Addr = overlay_str.parse().ok()?;
+
+        if invite.issuer_endpoints.is_empty() {
+            return None;
+        }
+
+        Some(BootstrapInfo {
+            peer_id: invite.issued_by.clone(),
+            peer_wg_public_key,
+            peer_overlay_ip,
+            peer_endpoints: invite.issuer_endpoints.clone(),
+        })
     }
 }
