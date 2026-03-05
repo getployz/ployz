@@ -4,7 +4,7 @@ pub mod ssh;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::backends::{StoreDriver, WireguardDriver};
+use crate::drivers::{StoreDriver, WireguardDriver};
 use crate::config::Mode;
 use crate::mesh::orchestrator::Mesh;
 use crate::node::identity::Identity;

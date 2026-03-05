@@ -1,4 +1,4 @@
-use crate::backends::{WireguardDriver, StoreDriver};
+use crate::drivers::{WireguardDriver, StoreDriver};
 use crate::tasks::{TaskSet, TaskSetError, run_peer_sync_task};
 use crate::error::Error;
 use crate::mesh::MeshNetwork;

@@ -1,5 +1,5 @@
 pub mod adapters;
-pub mod backends;
+pub mod drivers;
 pub mod config;
 pub mod daemon;
 pub mod error;
@@ -26,7 +26,7 @@ pub use mesh::{MeshNetwork, WireGuardDevice, DevicePeer};
 pub use mesh::orchestrator::{Mesh, MeshError};
 pub use mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
 pub use mesh::peer::{PeerStatus, WireGuardPeer};
-pub use backends::{WireguardDriver, StoreDriver};
+pub use drivers::{WireguardDriver, StoreDriver};
 pub use adapters::memory::{MemoryService, MemoryStore, MemoryWireGuard};
 pub use adapters::corrosion::{CorrosionStore, SCHEMA_SQL, config as corrosion_config};
 pub use adapters::corrosion::docker::DockerCorrosion;
