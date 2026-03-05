@@ -63,12 +63,19 @@ pub struct ClientConfig {
 pub struct DaemonConfig {
     pub data_dir: PathBuf,
     pub socket: String,
+    #[serde(default = "default_cluster_cidr")]
+    pub cluster_cidr: String,
+}
+
+fn default_cluster_cidr() -> String {
+    "10.210.0.0/16".to_string()
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct RuntimeDefaults {
     data_dir: PathBuf,
     socket: String,
+    cluster_cidr: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -83,6 +90,8 @@ struct DaemonOverrides {
     data_dir: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     socket: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cluster_cidr: Option<String>,
 }
 
 /// Returns the platform-appropriate default data directory.
@@ -160,6 +169,7 @@ pub fn load_daemon_config(
     let overrides = DaemonOverrides {
         data_dir: cli_data_dir,
         socket: cli_socket,
+        cluster_cidr: None,
     };
 
     build_figment(aff)
@@ -172,6 +182,7 @@ fn build_figment(aff: &Affordances) -> Figment {
     let defaults = RuntimeDefaults {
         data_dir: default_data_dir(aff),
         socket: default_socket_path(aff),
+        cluster_cidr: default_cluster_cidr(),
     };
 
     let mut figment = Figment::new().merge(Serialized::defaults(defaults));

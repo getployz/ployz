@@ -27,7 +27,11 @@ impl DaemonState {
         self.ok(lines.join("\n"))
     }
 
-    pub(crate) async fn handle_machine_init(&mut self, target: &str, network: &str) -> DaemonResponse {
+    pub(crate) async fn handle_machine_init(
+        &mut self,
+        target: &str,
+        network: &str,
+    ) -> DaemonResponse {
         if self.active.is_some() {
             return self.err(
                 "NETWORK_ALREADY_RUNNING",

@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
-use crate::store::{InviteStore, MachineStore, SyncProbe, SyncStatus};
 use crate::model::{InviteRecord, MachineEvent, MachineId, MachineRecord};
+use crate::store::{InviteStore, MachineStore, SyncProbe, SyncStatus};
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 use tokio::sync::mpsc;

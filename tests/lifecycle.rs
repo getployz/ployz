@@ -1,5 +1,5 @@
 use ployz::{MachineId, MachineRecord, OverlayIp, PublicKey};
-use ployz::{MachineStore, Mesh, WireguardDriver, Phase, StoreDriver, SyncStatus};
+use ployz::{MachineStore, Mesh, Phase, StoreDriver, SyncStatus, WireguardDriver};
 use ployz::{MemoryService, MemoryStore, MemoryWireGuard};
 use std::net::Ipv6Addr;
 use std::sync::Arc;
@@ -10,6 +10,8 @@ fn test_record(id: &str, key_byte: u8) -> MachineRecord {
         id: MachineId(id.into()),
         public_key: PublicKey([key_byte; 32]),
         overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+        subnet: None,
+        bridge_ip: None,
         endpoints: vec![format!("10.0.0.{key_byte}:51820")],
     }
 }

@@ -99,14 +99,63 @@ fn render_sync_config(
     buf
 }
 
+/// Extra peer entry for the bridge (not a mesh peer).
+pub struct BridgePeerInfo {
+    pub public_key: [u8; 32],
+    pub allowed_ips: Vec<String>,
+}
+
 fn render_peer(buf: &mut String, peer: &MachineRecord) {
     let _ = writeln!(buf, "[Peer]");
     let _ = writeln!(buf, "PublicKey = {}", encode_key(&peer.public_key.0));
-    let _ = writeln!(buf, "AllowedIPs = {}/128", peer.overlay_ip.0);
+
+    let mut allowed = vec![format!("{}/128", peer.overlay_ip.0)];
+    if let Some(subnet) = &peer.subnet {
+        allowed.push(subnet.to_string());
+    }
+    if let Some(bridge_ip) = &peer.bridge_ip {
+        allowed.push(format!("{}/128", bridge_ip.0));
+    }
+    let _ = writeln!(buf, "AllowedIPs = {}", allowed.join(", "));
+
     if let Some(endpoint) = peer.endpoints.first() {
         let _ = writeln!(buf, "Endpoint = {endpoint}");
     }
     let _ = writeln!(buf, "PersistentKeepalive = 25");
+}
+
+fn render_bridge_peer(buf: &mut String, bridge: &BridgePeerInfo) {
+    let _ = writeln!(buf, "[Peer]");
+    let _ = writeln!(buf, "PublicKey = {}", encode_key(&bridge.public_key));
+    let _ = writeln!(buf, "AllowedIPs = {}", bridge.allowed_ips.join(", "));
+    let _ = writeln!(buf, "PersistentKeepalive = 25");
+}
+
+/// Write a sync config that includes an optional bridge peer (protected from syncconf removal).
+pub fn write_sync_config_with_bridge(
+    paths: &WgPaths,
+    private_key: &PrivateKey,
+    listen_port: u16,
+    peers: &[MachineRecord],
+    bridge_peer: Option<&BridgePeerInfo>,
+) -> io::Result<()> {
+    paths.ensure_dir()?;
+    let mut buf = String::with_capacity(512);
+    let _ = writeln!(buf, "[Interface]");
+    let _ = writeln!(buf, "PrivateKey = {}", encode_key(&private_key.0));
+    let _ = writeln!(buf, "ListenPort = {listen_port}");
+
+    if let Some(bridge) = bridge_peer {
+        let _ = writeln!(buf);
+        render_bridge_peer(&mut buf, bridge);
+    }
+
+    for peer in peers {
+        let _ = writeln!(buf);
+        render_peer(&mut buf, peer);
+    }
+
+    fs::write(&paths.sync_config, buf)
 }
 
 pub fn encode_key(key: &[u8; 32]) -> String {
@@ -160,12 +209,14 @@ mod tests {
             id: crate::model::MachineId("m1".into()),
             public_key: PublicKey([2; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2)),
+            subnet: None,
+            bridge_ip: None,
             endpoints: vec!["10.0.0.1:51820".into()],
         };
         let config = render_full_config(&privkey, OverlayIp(Ipv6Addr::LOCALHOST), 51820, &[peer]);
         assert!(config.contains("[Peer]"));
         assert!(config.contains("Endpoint = 10.0.0.1:51820"));
-        assert!(config.contains("AllowedIPs = fd00::2/128"));
+        assert!(config.contains("AllowedIPs = fd00::2/128\n") || config.contains("AllowedIPs = fd00::2/128,"));
         assert!(config.contains("PersistentKeepalive = 25"));
     }
 }

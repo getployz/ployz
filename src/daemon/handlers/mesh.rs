@@ -1,7 +1,8 @@
 use crate::model::NetworkName;
+use crate::network::ipam::Ipam;
 use crate::node::invite::parse_and_verify_invite_token;
-use crate::store::{InviteStore, MachineStore};
 use crate::store::network::NetworkConfig;
+use crate::store::{InviteStore, MachineStore};
 use crate::transport::DaemonResponse;
 
 use super::super::DaemonState;
@@ -109,8 +110,22 @@ impl DaemonState {
             );
         }
 
-        let mut net_config =
-            NetworkConfig::new(NetworkName(network.to_string()), &self.identity.public_key);
+        let cluster: ipnet::Ipv4Net = match self.cluster_cidr.parse() {
+            Ok(c) => c,
+            Err(e) => return self.err("CONFIG_ERROR", format!("invalid cluster CIDR: {e}")),
+        };
+        let mut ipam = Ipam::new(cluster);
+        let subnet = match ipam.allocate() {
+            Some(s) => s,
+            None => return self.err("SUBNET_EXHAUSTION", "no available subnets"),
+        };
+
+        let mut net_config = NetworkConfig::new(
+            NetworkName(network.to_string()),
+            &self.identity.public_key,
+            &self.cluster_cidr,
+            subnet,
+        );
         net_config.id = invite.network_id.clone();
 
         if let Err(e) = net_config.save(&config_path) {
@@ -198,7 +213,18 @@ impl DaemonState {
             ));
         }
 
-        let net_config = NetworkConfig::new(NetworkName(network.into()), &self.identity.public_key);
+        let cluster: ipnet::Ipv4Net = self.cluster_cidr.parse()
+            .map_err(|e| format!("invalid cluster CIDR '{}': {e}", self.cluster_cidr))?;
+        let mut ipam = Ipam::new(cluster);
+        let subnet = ipam.allocate()
+            .ok_or_else(|| "no available subnets in cluster CIDR".to_string())?;
+
+        let net_config = NetworkConfig::new(
+            NetworkName(network.into()),
+            &self.identity.public_key,
+            &self.cluster_cidr,
+            subnet,
+        );
 
         if let Err(e) = net_config.save(&config_path) {
             return Err(format!("failed to save network config: {e}"));
@@ -256,15 +282,11 @@ impl DaemonState {
             return self.err("NO_RUNNING_NETWORK", "no mesh running");
         };
 
-        let store = active.mesh.store();
         if let Err(e) = active.mesh.destroy().await {
             self.active = Some(active);
             return self.err("NETWORK_STOP_FAILED", format!("mesh down failed: {e}"));
         }
 
-        if let Err(e) = store.delete_machine(&self.identity.machine_id).await {
-            tracing::warn!(?e, "failed to remove local machine from membership");
-        }
         self.clear_active_marker();
         self.ok("mesh stopped (config kept)")
     }

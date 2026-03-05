@@ -1,5 +1,6 @@
 use crate::mesh::MeshNetwork;
 use crate::model::{MachineEvent, MachineId, MachineRecord, OverlayIp, PublicKey};
+use ipnet::Ipv4Net;
 use std::collections::HashMap;
 use tracing::warn;
 
@@ -8,6 +9,8 @@ pub(crate) struct PeerState {
     pub(crate) id: MachineId,
     pub(crate) public_key: PublicKey,
     pub(crate) overlay_ip: OverlayIp,
+    pub(crate) subnet: Option<Ipv4Net>,
+    pub(crate) bridge_ip: Option<OverlayIp>,
     pub(crate) endpoints: Vec<String>,
 }
 
@@ -17,6 +20,8 @@ impl PeerState {
             id: record.id.clone(),
             public_key: record.public_key.clone(),
             overlay_ip: record.overlay_ip,
+            subnet: record.subnet,
+            bridge_ip: record.bridge_ip,
             endpoints: record.endpoints.clone(),
         }
     }
@@ -24,6 +29,8 @@ impl PeerState {
     pub(crate) fn update_from_record(&mut self, record: &MachineRecord) {
         self.public_key = record.public_key.clone();
         self.overlay_ip = record.overlay_ip;
+        self.subnet = record.subnet;
+        self.bridge_ip = record.bridge_ip;
         self.endpoints = record.endpoints.clone();
     }
 }
@@ -81,6 +88,8 @@ fn plan_mesh_peers(state: &PeerStateMap) -> Vec<MachineRecord> {
             id: ps.id.clone(),
             public_key: ps.public_key.clone(),
             overlay_ip: ps.overlay_ip,
+            subnet: ps.subnet,
+            bridge_ip: ps.bridge_ip,
             endpoints: ps.endpoints.clone(),
         })
         .collect()
@@ -96,6 +105,8 @@ mod tests {
             id: MachineId(id.into()),
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+            subnet: None,
+            bridge_ip: None,
             endpoints: endpoints.into_iter().map(String::from).collect(),
         }
     }
@@ -107,6 +118,8 @@ mod tests {
             id: MachineId("m1".into()),
             public_key: PublicKey([1; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+            subnet: None,
+            bridge_ip: None,
             endpoints: vec!["a:1".into(), "b:2".into(), "c:3".into()],
         };
         map.upsert(&r);

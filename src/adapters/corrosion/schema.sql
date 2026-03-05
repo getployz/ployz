@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS machines (
     id TEXT NOT NULL PRIMARY KEY,
     public_key BLOB NOT NULL DEFAULT X'',
     overlay_ip TEXT NOT NULL DEFAULT '',
+    subnet TEXT NOT NULL DEFAULT '',
+    bridge_ip TEXT NOT NULL DEFAULT '',
     endpoints TEXT NOT NULL DEFAULT '[]'
 );
 

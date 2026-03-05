@@ -31,11 +31,7 @@ pub struct HostWireGuard {
 
 impl HostWireGuard {
     #[cfg(target_os = "linux")]
-    pub fn kernel(
-        ifname: &str,
-        private_key: PrivateKey,
-        overlay_ip: OverlayIp,
-    ) -> Result<Self> {
+    pub fn kernel(ifname: &str, private_key: PrivateKey, overlay_ip: OverlayIp) -> Result<Self> {
         let api = WGApi::new(ifname.to_string())
             .map_err(|e| Error::operation("kernel wg init", e.to_string()))?;
         Ok(Self {
@@ -47,11 +43,7 @@ impl HostWireGuard {
         })
     }
 
-    pub fn userspace(
-        ifname: &str,
-        private_key: PrivateKey,
-        overlay_ip: OverlayIp,
-    ) -> Result<Self> {
+    pub fn userspace(ifname: &str, private_key: PrivateKey, overlay_ip: OverlayIp) -> Result<Self> {
         let api = WGApi::new(ifname.to_string())
             .map_err(|e| Error::operation("userspace wg init", e.to_string()))?;
         Ok(Self {
@@ -123,10 +115,7 @@ fn wg_remove_interface(backend: &WgBackend) -> Result<()> {
     }
 }
 
-fn wg_configure_interface(
-    backend: &WgBackend,
-    config: &InterfaceConfiguration,
-) -> Result<()> {
+fn wg_configure_interface(backend: &WgBackend, config: &InterfaceConfiguration) -> Result<()> {
     match backend {
         #[cfg(target_os = "linux")]
         WgBackend::Kernel(api) => api

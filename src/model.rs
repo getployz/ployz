@@ -1,5 +1,5 @@
 use derive_more::Display;
-use rand::RngCore;
+use ipnet::Ipv4Net;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::net::Ipv6Addr;
@@ -16,7 +16,7 @@ pub struct NetworkId(pub String);
 impl NetworkId {
     pub fn random() -> Self {
         let mut bytes = [0u8; 16];
-        rand::thread_rng().fill_bytes(&mut bytes);
+        rand::fill(&mut bytes);
         let mut value = String::with_capacity(32);
         for b in &bytes {
             use std::fmt::Write as _;
@@ -57,6 +57,8 @@ pub struct MachineRecord {
     pub id: MachineId,
     pub public_key: PublicKey,
     pub overlay_ip: OverlayIp,
+    pub subnet: Option<Ipv4Net>,
+    pub bridge_ip: Option<OverlayIp>,
     pub endpoints: Vec<String>,
 }
 

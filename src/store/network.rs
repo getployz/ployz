@@ -1,4 +1,5 @@
 use crate::model::{NetworkId, NetworkName, OverlayIp, PublicKey, management_ip_from_key};
+use ipnet::Ipv4Net;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -31,21 +32,28 @@ pub enum NetworkConfigError {
     },
 }
 
+/// Default cluster network for subnet allocation.
+pub const DEFAULT_CLUSTER_CIDR: &str = "10.210.0.0/16";
+
 /// Persistent network membership: which mesh this machine belongs to.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkConfig {
     pub id: NetworkId,
     pub name: NetworkName,
     pub overlay_ip: OverlayIp,
+    pub cluster_cidr: String,
+    pub subnet: Ipv4Net,
 }
 
 impl NetworkConfig {
-    pub fn new(name: NetworkName, public_key: &PublicKey) -> Self {
+    pub fn new(name: NetworkName, public_key: &PublicKey, cluster_cidr: &str, subnet: Ipv4Net) -> Self {
         let overlay_ip = management_ip_from_key(public_key);
         Self {
             id: NetworkId::random(),
             name,
             overlay_ip,
+            cluster_cidr: cluster_cidr.to_string(),
+            subnet,
         }
     }
 
@@ -103,7 +111,8 @@ mod tests {
             std::env::temp_dir().join(format!("ployz-network-roundtrip-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
 
-        let cfg = NetworkConfig::new(NetworkName("alpha".into()), &PublicKey([7; 32]));
+        let subnet: Ipv4Net = "10.210.1.0/24".parse().unwrap();
+        let cfg = NetworkConfig::new(NetworkName("alpha".into()), &PublicKey([7; 32]), DEFAULT_CLUSTER_CIDR, subnet);
         let path = NetworkConfig::path(&root, "alpha");
         cfg.save(&path).expect("save config");
 

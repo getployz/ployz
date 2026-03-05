@@ -1,10 +1,9 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
-use crate::node::identity::Identity;
 use crate::model::NetworkId;
+use crate::node::identity::Identity;
 use crate::store::network::NetworkConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,7 +28,7 @@ pub fn issue_invite_token(
         .ok_or_else(|| "ttl overflow".to_string())?;
 
     let mut nonce_bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    rand::fill(&mut nonce_bytes);
     let mut nonce = String::with_capacity(32);
     for b in nonce_bytes {
         use std::fmt::Write as _;
@@ -37,7 +36,7 @@ pub fn issue_invite_token(
     }
 
     let mut invite_id_bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut invite_id_bytes);
+    rand::fill(&mut invite_id_bytes);
     let mut invite_id = String::with_capacity(32);
     for b in invite_id_bytes {
         use std::fmt::Write as _;
@@ -74,8 +73,8 @@ pub fn parse_and_verify_invite_token(encoded: &str) -> Result<InviteClaims, Stri
     let claims_json = URL_SAFE_NO_PAD
         .decode(claims_b64)
         .map_err(|e| format!("decode invite claims: {e}"))?;
-    let claims: InviteClaims = serde_json::from_slice(&claims_json)
-        .map_err(|e| format!("parse invite claims: {e}"))?;
+    let claims: InviteClaims =
+        serde_json::from_slice(&claims_json).map_err(|e| format!("parse invite claims: {e}"))?;
 
     let sig_bytes = URL_SAFE_NO_PAD
         .decode(sig_b64)
@@ -93,8 +92,8 @@ pub fn parse_and_verify_invite_token(encoded: &str) -> Result<InviteClaims, Stri
         .as_slice()
         .try_into()
         .map_err(|_| "invalid issuer verify key length".to_string())?;
-    let verify_key = VerifyingKey::from_bytes(&key_arr)
-        .map_err(|e| format!("parse issuer verify key: {e}"))?;
+    let verify_key =
+        VerifyingKey::from_bytes(&key_arr).map_err(|e| format!("parse issuer verify key: {e}"))?;
 
     verify_key
         .verify(&claims_json, &signature)

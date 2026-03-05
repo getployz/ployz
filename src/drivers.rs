@@ -1,11 +1,12 @@
 use crate::adapters::corrosion::CorrosionStore;
 use crate::adapters::corrosion::docker::DockerCorrosion;
+use crate::adapters::corrosion::host::HostCorrosion;
 use crate::adapters::memory::{MemoryService, MemoryStore, MemoryWireGuard};
 use crate::adapters::wireguard::{DockerWireGuard, HostWireGuard};
 use crate::error::Result;
 use crate::mesh::MeshNetwork;
-use crate::store::{InviteStore, MachineStore, ServiceControl, SyncProbe, SyncStatus};
 use crate::model::{InviteRecord, MachineEvent, MachineId, MachineRecord};
+use crate::store::{InviteStore, MachineStore, ServiceControl, SyncProbe, SyncStatus};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -60,6 +61,10 @@ pub enum StoreDriver {
         store: CorrosionStore,
         service: Arc<DockerCorrosion>,
     },
+    CorrosionHost {
+        store: CorrosionStore,
+        service: Arc<HostCorrosion>,
+    },
 }
 
 impl ServiceControl for StoreDriver {
@@ -67,6 +72,7 @@ impl ServiceControl for StoreDriver {
         match self {
             Self::Memory { service, .. } => service.start().await,
             Self::Corrosion { service, .. } => service.start().await,
+            Self::CorrosionHost { service, .. } => service.start().await,
         }
     }
 
@@ -74,6 +80,7 @@ impl ServiceControl for StoreDriver {
         match self {
             Self::Memory { service, .. } => service.stop().await,
             Self::Corrosion { service, .. } => service.stop().await,
+            Self::CorrosionHost { service, .. } => service.stop().await,
         }
     }
 
@@ -81,6 +88,7 @@ impl ServiceControl for StoreDriver {
         match self {
             Self::Memory { service, .. } => service.healthy().await,
             Self::Corrosion { service, .. } => service.healthy().await,
+            Self::CorrosionHost { service, .. } => service.healthy().await,
         }
     }
 }
@@ -89,28 +97,34 @@ impl MachineStore for StoreDriver {
     async fn init(&self) -> Result<()> {
         match self {
             Self::Memory { store, .. } => store.init().await,
-            Self::Corrosion { store, .. } => store.init().await,
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => store.init().await,
         }
     }
 
     async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
         match self {
             Self::Memory { store, .. } => store.list_machines().await,
-            Self::Corrosion { store, .. } => store.list_machines().await,
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store.list_machines().await
+            }
         }
     }
 
     async fn upsert_machine<'a>(&'a self, record: &'a MachineRecord) -> Result<()> {
         match self {
             Self::Memory { store, .. } => store.upsert_machine(record).await,
-            Self::Corrosion { store, .. } => store.upsert_machine(record).await,
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store.upsert_machine(record).await
+            }
         }
     }
 
     async fn delete_machine<'a>(&'a self, id: &'a MachineId) -> Result<()> {
         match self {
             Self::Memory { store, .. } => store.delete_machine(id).await,
-            Self::Corrosion { store, .. } => store.delete_machine(id).await,
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store.delete_machine(id).await
+            }
         }
     }
 
@@ -119,7 +133,9 @@ impl MachineStore for StoreDriver {
     ) -> Result<(Vec<MachineRecord>, mpsc::Receiver<MachineEvent>)> {
         match self {
             Self::Memory { store, .. } => store.subscribe_machines().await,
-            Self::Corrosion { store, .. } => store.subscribe_machines().await,
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store.subscribe_machines().await
+            }
         }
     }
 }
@@ -128,18 +144,18 @@ impl InviteStore for StoreDriver {
     async fn create_invite<'a>(&'a self, invite: &'a InviteRecord) -> Result<()> {
         match self {
             Self::Memory { store, .. } => store.create_invite(invite).await,
-            Self::Corrosion { store, .. } => store.create_invite(invite).await,
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store.create_invite(invite).await
+            }
         }
     }
 
-    async fn consume_invite<'a>(
-        &'a self,
-        invite_id: &'a str,
-        now_unix_secs: u64,
-    ) -> Result<()> {
+    async fn consume_invite<'a>(&'a self, invite_id: &'a str, now_unix_secs: u64) -> Result<()> {
         match self {
             Self::Memory { store, .. } => store.consume_invite(invite_id, now_unix_secs).await,
-            Self::Corrosion { store, .. } => store.consume_invite(invite_id, now_unix_secs).await,
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store.consume_invite(invite_id, now_unix_secs).await
+            }
         }
     }
 }
@@ -148,7 +164,9 @@ impl SyncProbe for StoreDriver {
     async fn sync_status(&self) -> Result<SyncStatus> {
         match self {
             Self::Memory { store, .. } => store.sync_status().await,
-            Self::Corrosion { store, .. } => store.sync_status().await,
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store.sync_status().await
+            }
         }
     }
 }

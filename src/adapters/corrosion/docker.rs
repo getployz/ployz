@@ -134,8 +134,14 @@ impl DockerCorrosion {
 
 impl ServiceControl for DockerCorrosion {
     async fn start(&self) -> Result<()> {
-        // Already running — nothing to do.
-        if self.healthy().await {
+        // When using another container's network namespace, always recreate
+        // to pick up the fresh namespace (the parent may have been recreated).
+        let shares_namespace = self
+            .network_mode
+            .as_ref()
+            .is_some_and(|m| m.starts_with("container:"));
+
+        if !shares_namespace && self.healthy().await {
             info!(name = %self.container_name, "container already running");
             return Ok(());
         }

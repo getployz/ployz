@@ -19,15 +19,17 @@ pub struct DaemonState {
     pub data_dir: PathBuf,
     pub identity: Identity,
     pub mode: Mode,
+    pub cluster_cidr: String,
     pub active: Option<ActiveMesh>,
 }
 
 impl DaemonState {
-    pub fn new(data_dir: &Path, identity: Identity, mode: Mode) -> Self {
+    pub fn new(data_dir: &Path, identity: Identity, mode: Mode, cluster_cidr: String) -> Self {
         Self {
             data_dir: data_dir.to_path_buf(),
             identity,
             mode,
+            cluster_cidr,
             active: None,
         }
     }

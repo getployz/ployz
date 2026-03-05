@@ -90,7 +90,7 @@ impl Identity {
         let machine_id = MachineId(hostname);
 
         let mut key_bytes = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut key_bytes);
+        rand::fill(&mut key_bytes);
 
         let identity = Self::generate(machine_id, key_bytes);
         identity.save(path)?;

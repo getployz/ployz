@@ -1,8 +1,7 @@
 use crate::error::{Error, Result};
+use crate::model::{InviteRecord, MachineEvent, MachineId, MachineRecord, OverlayIp, PublicKey};
+use ipnet::Ipv4Net;
 use crate::store::{InviteStore, MachineStore, SyncProbe, SyncStatus};
-use crate::model::{
-    InviteRecord, MachineEvent, MachineId, MachineRecord, OverlayIp, PublicKey,
-};
 use corro_api_types::{ExecResult, SqliteValue, Statement, TypedQueryEvent, sqlite::ChangeType};
 use corro_client::CorrosionClient;
 use futures_util::StreamExt;
@@ -13,6 +12,7 @@ use tracing::warn;
 
 pub mod config;
 pub mod docker;
+pub mod host;
 
 pub const SCHEMA_SQL: &str = include_str!("schema.sql");
 
@@ -28,8 +28,8 @@ impl CorrosionStore {
         let addr: SocketAddr = endpoint
             .parse()
             .map_err(|e| format!("invalid corrosion endpoint '{endpoint}': {e}"))?;
-        let client = CorrosionClient::new(addr, db_path)
-            .map_err(|e| format!("corrosion client: {e}"))?;
+        let client =
+            CorrosionClient::new(addr, db_path).map_err(|e| format!("corrosion client: {e}"))?;
         let http = reqwest::Client::new();
         Ok(Self { client, addr, http })
     }
@@ -91,7 +91,7 @@ impl MachineStore for CorrosionStore {
 
     async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
         let stmt = Statement::Simple(
-            "SELECT id, public_key, overlay_ip, endpoints FROM machines ORDER BY id".to_string(),
+            "SELECT id, public_key, overlay_ip, subnet, bridge_ip, endpoints FROM machines ORDER BY id".to_string(),
         );
         query_rows(&self.client, &stmt, "list_machines")
             .await?
@@ -103,15 +103,21 @@ impl MachineStore for CorrosionStore {
     async fn upsert_machine(&self, record: &MachineRecord) -> Result<()> {
         let endpoints = serde_json::to_string(&record.endpoints)
             .map_err(|e| Error::operation("upsert_machine", format!("serialize: {e}")))?;
+        let subnet_str = record.subnet.map(|s| s.to_string()).unwrap_or_default();
+        let bridge_str = record.bridge_ip.map(|b| b.0.to_string()).unwrap_or_default();
         let stmt = Statement::WithParams(
-            "INSERT INTO machines (id, public_key, overlay_ip, endpoints) VALUES (?, ?, ?, ?) \
+            "INSERT INTO machines (id, public_key, overlay_ip, subnet, bridge_ip, endpoints) \
+             VALUES (?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET public_key=excluded.public_key, \
-             overlay_ip=excluded.overlay_ip, endpoints=excluded.endpoints"
+             overlay_ip=excluded.overlay_ip, subnet=excluded.subnet, \
+             bridge_ip=excluded.bridge_ip, endpoints=excluded.endpoints"
                 .to_string(),
             vec![
                 record.id.0.clone().into(),
                 record.public_key.0.to_vec().into(),
                 record.overlay_ip.0.to_string().into(),
+                subnet_str.into(),
+                bridge_str.into(),
                 endpoints.into(),
             ],
         );
@@ -130,7 +136,7 @@ impl MachineStore for CorrosionStore {
         &self,
     ) -> Result<(Vec<MachineRecord>, mpsc::Receiver<MachineEvent>)> {
         let stmt = Statement::Simple(
-            "SELECT id, public_key, overlay_ip, endpoints FROM machines ORDER BY id".to_string(),
+            "SELECT id, public_key, overlay_ip, subnet, bridge_ip, endpoints FROM machines ORDER BY id".to_string(),
         );
         let mut stream = self
             .client
@@ -173,22 +179,27 @@ impl MachineStore for CorrosionStore {
 
         let (tx, rx) = mpsc::channel(64);
 
-        // SubscriptionStream handles reconnection with backoff internally
+        // SubscriptionStream handles reconnection with backoff internally.
+        // We keep looping on stream errors (transient), but stop when the
+        // receiver is dropped (mesh shutting down).
         tokio::spawn(async move {
             while let Some(result) = stream.next().await {
+                if tx.is_closed() {
+                    return;
+                }
                 match result {
-                    Ok(event) => {
-                        match into_machine_event(event, &mut machines, &mut row_index) {
-                            Ok(Some(ev)) => {
-                                if tx.send(ev).await.is_err() {
-                                    return;
-                                }
+                    Ok(event) => match into_machine_event(event, &mut machines, &mut row_index) {
+                        Ok(Some(ev)) => {
+                            if tx.send(ev).await.is_err() {
+                                return;
                             }
-                            Ok(None) => {}
-                            Err(e) => warn!(?e, "bad subscription event"),
                         }
+                        Ok(None) => {}
+                        Err(e) => warn!(?e, "bad subscription event"),
+                    },
+                    Err(e) => {
+                        warn!(%e, "subscription error");
                     }
-                    Err(e) => warn!(%e, "subscription error"),
                 }
             }
             warn!("machine subscription ended");
@@ -285,11 +296,7 @@ async fn query_rows(
     Ok(rows)
 }
 
-async fn exec_one(
-    client: &CorrosionClient,
-    stmts: &[Statement],
-    op: &'static str,
-) -> Result<()> {
+async fn exec_one(client: &CorrosionClient, stmts: &[Statement], op: &'static str) -> Result<()> {
     let res = client
         .execute(stmts, None)
         .await
@@ -349,12 +356,8 @@ fn into_machine_event(
 ) -> Result<Option<MachineEvent>> {
     match event {
         TypedQueryEvent::Columns(_) | TypedQueryEvent::EndOfQuery { .. } => Ok(None),
-        TypedQueryEvent::Error(e) => {
-            Err(Error::operation("subscribe_machines", e.to_string()))
-        }
-        TypedQueryEvent::Row(rowid, cells) => {
-            upsert_event(rowid.0, &cells, known, row_index)
-        }
+        TypedQueryEvent::Error(e) => Err(Error::operation("subscribe_machines", e.to_string())),
+        TypedQueryEvent::Row(rowid, cells) => upsert_event(rowid.0, &cells, known, row_index),
         TypedQueryEvent::Change(ct, rowid, cells, _) => match ct {
             ChangeType::Insert | ChangeType::Update => {
                 upsert_event(rowid.0, &cells, known, row_index)
@@ -374,17 +377,19 @@ fn into_machine_event(
 // --- row parsing ---
 
 fn parse_machine(row: &[SqliteValue]) -> Result<MachineRecord> {
-    if row.len() != 4 {
+    if row.len() != 6 {
         return Err(Error::operation(
             "parse_machine",
-            format!("expected 4 columns, got {}", row.len()),
+            format!("expected 6 columns, got {}", row.len()),
         ));
     }
 
     let id = text(&row[0], "id")?;
     let key_blob = blob(&row[1], "public_key")?;
     let overlay = text(&row[2], "overlay_ip")?;
-    let endpoints_json = text(&row[3], "endpoints")?;
+    let subnet_str = text(&row[3], "subnet")?;
+    let bridge_str = text(&row[4], "bridge_ip")?;
+    let endpoints_json = text(&row[5], "endpoints")?;
 
     let public_key: [u8; 32] = key_blob.as_slice().try_into().map_err(|_| {
         Error::operation(
@@ -392,17 +397,36 @@ fn parse_machine(row: &[SqliteValue]) -> Result<MachineRecord> {
             format!("public key must be 32 bytes, got {}", key_blob.len()),
         )
     })?;
-    let overlay_ip: Ipv6Addr = overlay.parse().map_err(|e| {
-        Error::operation("parse_machine", format!("invalid overlay ip: {e}"))
-    })?;
-    let endpoints: Vec<String> = serde_json::from_str(&endpoints_json).map_err(|e| {
-        Error::operation("parse_machine", format!("invalid endpoints json: {e}"))
-    })?;
+    let overlay_ip: Ipv6Addr = overlay
+        .parse()
+        .map_err(|e| Error::operation("parse_machine", format!("invalid overlay ip: {e}")))?;
+
+    let subnet: Option<Ipv4Net> = if subnet_str.is_empty() {
+        None
+    } else {
+        Some(subnet_str.parse().map_err(|e| {
+            Error::operation("parse_machine", format!("invalid subnet: {e}"))
+        })?)
+    };
+
+    let bridge_ip: Option<OverlayIp> = if bridge_str.is_empty() {
+        None
+    } else {
+        let addr: Ipv6Addr = bridge_str.parse().map_err(|e| {
+            Error::operation("parse_machine", format!("invalid bridge ip: {e}"))
+        })?;
+        Some(OverlayIp(addr))
+    };
+
+    let endpoints: Vec<String> = serde_json::from_str(&endpoints_json)
+        .map_err(|e| Error::operation("parse_machine", format!("invalid endpoints json: {e}")))?;
 
     Ok(MachineRecord {
         id: MachineId(id),
         public_key: PublicKey(public_key),
         overlay_ip: OverlayIp(overlay_ip),
+        subnet,
+        bridge_ip,
         endpoints,
     })
 }
@@ -418,4 +442,3 @@ fn blob(val: &SqliteValue, field: &'static str) -> Result<Vec<u8>> {
         .map(ToOwned::to_owned)
         .ok_or_else(|| Error::operation("decode", format!("expected blob for '{field}'")))
 }
-

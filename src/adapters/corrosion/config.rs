@@ -3,8 +3,8 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
-const DEFAULT_GOSSIP_PORT: u16 = 51001;
-const DEFAULT_API_PORT: u16 = 51002;
+pub const DEFAULT_GOSSIP_PORT: u16 = 51001;
+pub const DEFAULT_API_PORT: u16 = 51002;
 
 /// Filesystem paths for a Corrosion data directory.
 #[derive(Debug, Clone)]

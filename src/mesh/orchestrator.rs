@@ -1,9 +1,9 @@
-use crate::drivers::{WireguardDriver, StoreDriver};
-use crate::tasks::{TaskSet, TaskSetError, run_peer_sync_task};
+use crate::drivers::{StoreDriver, WireguardDriver};
 use crate::error::Error;
 use crate::mesh::MeshNetwork;
 use crate::mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
 use crate::store::{MachineStore, ServiceControl, SyncProbe, SyncStatus};
+use crate::tasks::{TaskSet, TaskSetError, run_peer_sync_task};
 use std::time::Duration;
 use thiserror::Error;
 use tracing::{info, warn};
