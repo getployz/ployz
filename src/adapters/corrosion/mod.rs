@@ -79,6 +79,9 @@ impl MachineStore for CorrosionStore {
             .collect()
     }
 
+    /// Upsert a full machine record. Callers should only upsert their own row —
+    /// each machine owns its record. The one exception is initial onboarding,
+    /// where the founder seeds a joiner's record.
     async fn upsert_machine(&self, record: &MachineRecord) -> Result<()> {
         let endpoints = serde_json::to_string(&record.endpoints)
             .map_err(|e| Error::operation("upsert_machine", format!("serialize: {e}")))?;
@@ -95,7 +98,7 @@ impl MachineStore for CorrosionStore {
              bridge_ip=excluded.bridge_ip, endpoints=excluded.endpoints, \
              status=excluded.status, scheduling=excluded.scheduling, \
              last_heartbeat=excluded.last_heartbeat, \
-             created_at=CASE WHEN excluded.created_at > 0 THEN excluded.created_at ELSE machines.created_at END, \
+             created_at=CASE WHEN machines.created_at > 0 THEN machines.created_at ELSE excluded.created_at END, \
              updated_at=excluded.updated_at"
                 .to_string(),
             vec![
@@ -113,25 +116,6 @@ impl MachineStore for CorrosionStore {
             ],
         );
         exec_one(&self.client, &[stmt], "upsert_machine").await
-    }
-
-    async fn update_heartbeat(
-        &self,
-        id: &MachineId,
-        status: MachineStatus,
-        timestamp: u64,
-    ) -> Result<()> {
-        let stmt = Statement::WithParams(
-            "UPDATE machines SET status = ?, last_heartbeat = ?, updated_at = ? WHERE id = ?"
-                .to_string(),
-            vec![
-                status.to_string().into(),
-                (timestamp as i64).into(),
-                (timestamp as i64).into(),
-                id.0.clone().into(),
-            ],
-        );
-        exec_one(&self.client, &[stmt], "update_heartbeat").await
     }
 
     async fn delete_machine(&self, id: &MachineId) -> Result<()> {
@@ -468,9 +452,19 @@ fn parse_machine(row: &[SqliteValue]) -> Result<MachineRecord> {
 }
 
 fn integer(val: &SqliteValue, field: &'static str) -> Result<i64> {
-    val.as_integer()
-        .copied()
-        .ok_or_else(|| Error::operation("decode", format!("expected integer for '{field}'")))
+    if let Some(&v) = val.as_integer() {
+        return Ok(v);
+    }
+    // Corrosion may deliver integers as text after schema migrations
+    if let Some(s) = val.as_text() {
+        if s.is_empty() {
+            return Ok(0);
+        }
+        return s
+            .parse::<i64>()
+            .map_err(|e| Error::operation("decode", format!("invalid integer for '{field}': {e}")));
+    }
+    Err(Error::operation("decode", format!("expected integer for '{field}', got {:?}", val)))
 }
 
 fn text(val: &SqliteValue, field: &'static str) -> Result<String> {

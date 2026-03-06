@@ -13,10 +13,10 @@ use crate::workload::manager::DockerWorkloadManager;
 
 use super::{ActiveMesh, DaemonState};
 
-/// Read machine records directly from corrosion's sqlite DB (bypassing the API).
-/// Used to pre-configure WG peers before corrosion starts, so the tunnel is ready
-/// when corrosion's gossip immediately tries to reach bootstrap peers.
-fn machines_from_db(network_dir: &Path) -> Result<Vec<MachineRecord>, String> {
+/// Read peer config from corrosion's sqlite DB (bypassing the API).
+/// Only fetches the columns needed for WG peer setup — avoids breaking on
+/// schema migrations (new columns won't exist until corrosion starts).
+fn peer_records_from_db(network_dir: &Path) -> Result<Vec<MachineRecord>, String> {
     let db_path = corrosion_config::Paths::new(network_dir).db;
     if !db_path.exists() {
         return Ok(Vec::new());
@@ -25,7 +25,7 @@ fn machines_from_db(network_dir: &Path) -> Result<Vec<MachineRecord>, String> {
     let conn = rusqlite::Connection::open(&db_path)
         .map_err(|e| format!("open corrosion db '{}': {e}", db_path.display()))?;
     let mut stmt = match conn.prepare(
-        "SELECT id, public_key, overlay_ip, subnet, bridge_ip, endpoints, status, scheduling, last_heartbeat, created_at, updated_at FROM machines ORDER BY id",
+        "SELECT id, public_key, overlay_ip, subnet, bridge_ip, endpoints FROM machines ORDER BY id",
     ) {
         Ok(stmt) => stmt,
         Err(rusqlite::Error::SqliteFailure(_, Some(message)))
@@ -35,7 +35,7 @@ fn machines_from_db(network_dir: &Path) -> Result<Vec<MachineRecord>, String> {
         }
         Err(e) => {
             return Err(format!(
-                "prepare machines_from_db query '{}': {e}",
+                "prepare peer_records_from_db query '{}': {e}",
                 db_path.display()
             ));
         }
@@ -49,18 +49,13 @@ fn machines_from_db(network_dir: &Path) -> Result<Vec<MachineRecord>, String> {
             let subnet: String = row.get("subnet")?;
             let bridge_ip: String = row.get("bridge_ip")?;
             let endpoints: String = row.get("endpoints")?;
-            let status: String = row.get("status")?;
-            let scheduling: String = row.get("scheduling")?;
-            let last_heartbeat: i64 = row.get("last_heartbeat")?;
-            let created_at: i64 = row.get("created_at")?;
-            let updated_at: i64 = row.get("updated_at")?;
-            Ok((id, public_key, overlay_ip, subnet, bridge_ip, endpoints, status, scheduling, last_heartbeat, created_at, updated_at))
+            Ok((id, public_key, overlay_ip, subnet, bridge_ip, endpoints))
         })
-        .map_err(|e| format!("query machines_from_db '{}': {e}", db_path.display()))?;
+        .map_err(|e| format!("query peer_records_from_db '{}': {e}", db_path.display()))?;
 
     let mut records = Vec::new();
     for row in rows {
-        let (id, public_key, overlay_ip, subnet, bridge_ip, endpoints, status, scheduling, last_heartbeat, created_at, updated_at) = row
+        let (id, public_key, overlay_ip, subnet, bridge_ip, endpoints) = row
             .map_err(|e| format!("read machine row from '{}': {e}", db_path.display()))?;
 
         if overlay_ip.is_empty() {
@@ -92,11 +87,11 @@ fn machines_from_db(network_dir: &Path) -> Result<Vec<MachineRecord>, String> {
             subnet: subnet_parsed,
             bridge_ip: bridge_parsed,
             endpoints: endpoints_parsed,
-            status: status.parse().unwrap_or(MachineStatus::Unknown),
-            scheduling: scheduling.parse().unwrap_or(Scheduling::Disabled),
-            last_heartbeat: last_heartbeat as u64,
-            created_at: created_at as u64,
-            updated_at: updated_at as u64,
+            status: MachineStatus::Unknown,
+            scheduling: Scheduling::Disabled,
+            last_heartbeat: 0,
+            created_at: 0,
+            updated_at: 0,
         });
     }
 
@@ -107,7 +102,7 @@ fn corrosion_bootstrap_from_db(
     network_dir: &Path,
     local_machine_id: &MachineId,
 ) -> Result<Vec<String>, String> {
-    let records = machines_from_db(network_dir)?;
+    let records = peer_records_from_db(network_dir)?;
     Ok(records
         .into_iter()
         .filter(|m| m.id.0 != local_machine_id.0)
@@ -254,7 +249,7 @@ async fn build_seed_records(
     bootstrap: Option<&BootstrapInfo>,
     listen_port: u16,
 ) -> Vec<MachineRecord> {
-    let mut seed_records = machines_from_db(network_dir).unwrap_or_else(|e| {
+    let mut seed_records = peer_records_from_db(network_dir).unwrap_or_else(|e| {
         tracing::warn!(?e, "failed to pre-load machines from db, starting fresh");
         Vec::new()
     });

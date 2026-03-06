@@ -6,9 +6,9 @@ use crate::mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
 use crate::model::{MachineId, MachineRecord, MachineStatus};
 use crate::store::{MachineStore, ServiceControl, SyncProbe, SyncStatus};
 use crate::tasks::{TaskSet, TaskSetError, run_endpoint_refresh_task, run_heartbeat_task, run_peer_sync_task};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use thiserror::Error;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 pub type Result<T> = std::result::Result<T, MeshError>;
 
@@ -141,18 +141,7 @@ impl Mesh {
         self.wait_service_ready().await?;
         self.wait_store_init().await?;
 
-        // 5. Patch bridge IP and seed records
-        if let Some(bridge_ip) = self.network.bridge_ip().await {
-            if let Some(rec) = self.seed_records.iter_mut().find(|m| m.id == self.machine_id) {
-                debug!(%bridge_ip, "persisting bridge_ip to self record");
-                rec.bridge_ip = Some(bridge_ip);
-            }
-        }
-        for record in &self.seed_records {
-            self.store.upsert_machine(record).await?;
-        }
-
-        // 6. Initial peer sync from store
+        // 5. Initial peer sync from store
         let peers: Vec<_> = self
             .store
             .list_machines()
@@ -205,6 +194,7 @@ impl Mesh {
         task_set.spawn(run_heartbeat_task(
             self.machine_id.clone(),
             self.store.clone(),
+            self.network.clone(),
             cancel3,
         ));
 
@@ -245,16 +235,17 @@ impl Mesh {
     pub async fn destroy(&mut self) -> Result<()> {
         self.apply(PhaseEvent::DestroyRequested)?;
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        if let Err(e) = self
-            .store
-            .update_heartbeat(&self.machine_id, MachineStatus::Down, now)
-            .await
-        {
-            warn!(?e, "failed to set status=down on destroy");
+        // Mark self as down before tearing down infra
+        if let Ok(machines) = self.store.list_machines().await {
+            if let Some(mut record) = machines.into_iter().find(|m| m.id == self.machine_id) {
+                let now = chrono::Utc::now().timestamp() as u64;
+                record.status = MachineStatus::Down;
+                record.last_heartbeat = now;
+                record.updated_at = now;
+                if let Err(e) = self.store.upsert_machine(&record).await {
+                    warn!(?e, "failed to set status=down on destroy");
+                }
+            }
         }
 
         let mut first_err: Option<MeshError> = None;

@@ -7,7 +7,7 @@ use crate::adapters::wireguard::{DockerWireGuard, HostWireGuard};
 use crate::config::Mode;
 use crate::error::Result;
 use crate::mesh::MeshNetwork;
-use crate::model::{InviteRecord, MachineEvent, MachineId, MachineRecord, MachineStatus, OverlayIp};
+use crate::model::{InviteRecord, MachineEvent, MachineId, MachineRecord, OverlayIp};
 use crate::node::identity::Identity;
 use crate::store::{InviteStore, MachineStore, ServiceControl, SyncProbe, SyncStatus};
 use crate::{SCHEMA_SQL, corrosion_config};
@@ -304,19 +304,6 @@ impl MachineStore for StoreDriver {
         }
     }
 
-    async fn update_heartbeat<'a>(
-        &'a self,
-        id: &'a MachineId,
-        status: MachineStatus,
-        timestamp: u64,
-    ) -> Result<()> {
-        match self {
-            Self::Memory { store, .. } => store.update_heartbeat(id, status, timestamp).await,
-            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
-                store.update_heartbeat(id, status, timestamp).await
-            }
-        }
-    }
 }
 
 impl InviteStore for StoreDriver {

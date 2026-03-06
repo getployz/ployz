@@ -1,6 +1,7 @@
-use crate::model::{JOIN_RESPONSE_PREFIX, JoinResponse};
+use crate::model::{JOIN_RESPONSE_PREFIX, JoinResponse, MachineRecord, MachineStatus};
 use crate::store::MachineStore;
 use crate::transport::DaemonResponse;
+use chrono::DateTime;
 
 use super::super::DaemonState;
 use super::super::ssh::{run_ssh, shell_escape};
@@ -21,10 +22,47 @@ impl DaemonState {
             return self.ok("no machines");
         }
 
-        let lines: Vec<String> = machines
+        let now = chrono::Utc::now().timestamp() as u64;
+
+        struct Row {
+            id: String,
+            status: &'static str,
+            sched: &'static str,
+            overlay: String,
+            subnet: String,
+            heartbeat: String,
+            created: String,
+        }
+
+        let rows: Vec<Row> = machines
             .iter()
-            .map(|m| format!("{}  {}  {}", m.id, m.overlay_ip, m.endpoints.join(",")))
+            .map(|m| Row {
+                id: m.id.0.clone(),
+                status: format_status(m),
+                sched: format_scheduling(m),
+                overlay: m.overlay_ip.0.to_string(),
+                subnet: m.subnet.map(|s| s.to_string()).unwrap_or_else(|| "—".into()),
+                heartbeat: format_heartbeat(m.last_heartbeat, now),
+                created: format_timestamp(m.created_at),
+            })
             .collect();
+
+        let w_id = rows.iter().map(|r| r.id.len()).max().unwrap_or(0).max(2);
+        let w_ov = rows.iter().map(|r| r.overlay.len()).max().unwrap_or(0).max(10);
+        let w_sub = rows.iter().map(|r| r.subnet.len()).max().unwrap_or(0).max(6);
+        let w_hb = rows.iter().map(|r| r.heartbeat.len()).max().unwrap_or(0).max(9);
+
+        let mut lines = Vec::with_capacity(rows.len() + 1);
+        lines.push(format!(
+            "{:<w_id$}  {:<6}  {:<8}  {:<w_ov$}  {:<w_sub$}  {:<w_hb$}  {}",
+            "ID", "STATUS", "SCHED", "OVERLAY IP", "SUBNET", "HEARTBEAT", "CREATED",
+        ));
+        for r in &rows {
+            lines.push(format!(
+                "{:<w_id$}  {:<6}  {:<8}  {:<w_ov$}  {:<w_sub$}  {:<w_hb$}  {}",
+                r.id, r.status, r.sched, r.overlay, r.subnet, r.heartbeat, r.created,
+            ));
+        }
         self.ok(lines.join("\n"))
     }
 
@@ -141,4 +179,45 @@ impl DaemonState {
             running.name,
         ))
     }
+}
+
+fn format_status(m: &MachineRecord) -> &'static str {
+    match m.status {
+        MachineStatus::Up => "up",
+        MachineStatus::Down => "down",
+        MachineStatus::Unknown => "—",
+    }
+}
+
+fn format_scheduling(m: &MachineRecord) -> &'static str {
+    match m.scheduling {
+        crate::model::Scheduling::Enabled => "enabled",
+        crate::model::Scheduling::Draining => "draining",
+        crate::model::Scheduling::Disabled => "—",
+    }
+}
+
+fn format_heartbeat(ts: u64, now: u64) -> String {
+    if ts == 0 {
+        return "never".into();
+    }
+    let ago = now.saturating_sub(ts);
+    if ago < 60 {
+        format!("{ago}s ago")
+    } else if ago < 3600 {
+        format!("{}m ago", ago / 60)
+    } else if ago < 86400 {
+        format!("{}h ago", ago / 3600)
+    } else {
+        format!("{}d ago", ago / 86400)
+    }
+}
+
+fn format_timestamp(ts: u64) -> String {
+    if ts == 0 {
+        return "—".into();
+    }
+    DateTime::from_timestamp(ts as i64, 0)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|| "—".into())
 }
