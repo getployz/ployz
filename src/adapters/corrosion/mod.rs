@@ -159,13 +159,21 @@ impl MachineStore for CorrosionStore {
         let (tx, rx) = mpsc::channel(64);
 
         // SubscriptionStream handles reconnection with backoff internally.
-        // We keep looping on stream errors (transient), but stop when the
-        // receiver is dropped (mesh shutting down).
+        // We race stream.next() against tx.closed() so that when the peer
+        // sync task drops the receiver we stop immediately instead of
+        // waiting through the full reconnect backoff cycle.
         tokio::spawn(async move {
-            while let Some(result) = stream.next().await {
-                if tx.is_closed() {
-                    return;
-                }
+            loop {
+                let result = tokio::select! {
+                    r = stream.next() => match r {
+                        Some(r) => r,
+                        None => {
+                            warn!("machine subscription ended");
+                            return;
+                        }
+                    },
+                    _ = tx.closed() => return,
+                };
                 match result {
                     Ok(event) => match into_machine_event(event, &mut machines, &mut row_index) {
                         Ok(Some(ev)) => {
@@ -181,7 +189,6 @@ impl MachineStore for CorrosionStore {
                     }
                 }
             }
-            warn!("machine subscription ended");
         });
 
         Ok((snapshot, rx))

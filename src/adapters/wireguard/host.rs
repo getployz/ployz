@@ -15,7 +15,7 @@ use crate::model::{MachineRecord, OverlayIp, PrivateKey};
 
 use super::config::encode_key;
 
-const DEFAULT_LISTEN_PORT: u16 = 51820;
+use super::DEFAULT_LISTEN_PORT;
 
 enum WgBackend {
     #[cfg(target_os = "linux")]
@@ -80,14 +80,19 @@ impl HostWireGuard {
 fn machine_to_peer(record: &MachineRecord) -> Result<Peer> {
     let key = Key::new(record.public_key.0);
 
-    let allowed_ip: IpAddrMask = format!("{}/128", record.overlay_ip.0)
-        .parse()
-        .map_err(|e| Error::operation("parse allowed ip", format!("{e}")))?;
+    let allowed_ips: Vec<IpAddrMask> = record
+        .allowed_cidrs()
+        .iter()
+        .map(|cidr| {
+            cidr.parse()
+                .map_err(|e| Error::operation("parse allowed ip", format!("{e}")))
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     let endpoint: Option<SocketAddr> = record.endpoints.first().and_then(|ep| ep.parse().ok());
 
     let mut peer = Peer::new(key);
-    peer.allowed_ips = vec![allowed_ip];
+    peer.allowed_ips = allowed_ips;
     peer.endpoint = endpoint;
     peer.persistent_keepalive_interval = Some(25);
     Ok(peer)
@@ -183,6 +188,7 @@ fn configure_overlay_route(ifname: &str) -> Result<()> {
 
 #[cfg(not(target_os = "linux"))]
 fn configure_overlay_route(_ifname: &str) -> Result<()> {
+    warn!("overlay route configuration not implemented on this platform — routing may not work");
     Ok(())
 }
 
@@ -209,6 +215,7 @@ fn remove_overlay_route(ifname: &str) -> Result<()> {
 
 #[cfg(not(target_os = "linux"))]
 fn remove_overlay_route(_ifname: &str) -> Result<()> {
+    warn!("overlay route removal not implemented on this platform");
     Ok(())
 }
 

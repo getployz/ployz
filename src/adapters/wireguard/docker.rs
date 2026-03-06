@@ -25,7 +25,7 @@ use super::config::{
 };
 
 const DEFAULT_IMAGE: &str = "procustodibus/wireguard:latest";
-const DEFAULT_LISTEN_PORT: u16 = 51820;
+use super::DEFAULT_LISTEN_PORT;
 const DEFAULT_MTU: u16 = 1420;
 const INTERFACE_NAME: &str = "wg0";
 const BRIDGE_HOST_LOOPBACK: &str = "127.0.0.1";

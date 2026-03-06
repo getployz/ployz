@@ -108,15 +108,7 @@ pub struct BridgePeerInfo {
 fn render_peer(buf: &mut String, peer: &MachineRecord) {
     let _ = writeln!(buf, "[Peer]");
     let _ = writeln!(buf, "PublicKey = {}", encode_key(&peer.public_key.0));
-
-    let mut allowed = vec![format!("{}/128", peer.overlay_ip.0)];
-    if let Some(subnet) = &peer.subnet {
-        allowed.push(subnet.to_string());
-    }
-    if let Some(bridge_ip) = &peer.bridge_ip {
-        allowed.push(format!("{}/128", bridge_ip.0));
-    }
-    let _ = writeln!(buf, "AllowedIPs = {}", allowed.join(", "));
+    let _ = writeln!(buf, "AllowedIPs = {}", peer.allowed_cidrs().join(", "));
 
     if let Some(endpoint) = peer.endpoints.first() {
         let _ = writeln!(buf, "Endpoint = {endpoint}");

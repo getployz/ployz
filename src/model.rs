@@ -63,6 +63,20 @@ pub struct MachineRecord {
     pub endpoints: Vec<String>,
 }
 
+impl MachineRecord {
+    /// All CIDRs this peer should route, used by both host and docker WireGuard adapters.
+    pub fn allowed_cidrs(&self) -> Vec<String> {
+        let mut cidrs = vec![format!("{}/128", self.overlay_ip.0)];
+        if let Some(subnet) = &self.subnet {
+            cidrs.push(subnet.to_string());
+        }
+        if let Some(bridge_ip) = &self.bridge_ip {
+            cidrs.push(format!("{}/128", bridge_ip.0));
+        }
+        cidrs
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InviteRecord {
     pub id: String,

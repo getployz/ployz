@@ -58,12 +58,12 @@ fn machines_from_db(network_dir: &Path) -> Result<Vec<MachineRecord>, String> {
 
     let rows = stmt
         .query_map([], |row| {
-            let id: String = row.get(0)?;
-            let public_key: Vec<u8> = row.get(1)?;
-            let overlay_ip: String = row.get(2)?;
-            let subnet: String = row.get(3)?;
-            let bridge_ip: String = row.get(4)?;
-            let endpoints: String = row.get(5)?;
+            let id: String = row.get("id")?;
+            let public_key: Vec<u8> = row.get("public_key")?;
+            let overlay_ip: String = row.get("overlay_ip")?;
+            let subnet: String = row.get("subnet")?;
+            let bridge_ip: String = row.get("bridge_ip")?;
+            let endpoints: String = row.get("endpoints")?;
             Ok((id, public_key, overlay_ip, subnet, bridge_ip, endpoints))
         })
         .map_err(|e| format!("query machines_from_db '{}': {e}", db_path.display()))?;
@@ -270,22 +270,31 @@ impl DaemonState {
             });
         }
 
-        let endpoints = detect_endpoints(51820).await;
-        seed_records.push(MachineRecord {
+        let listen_port = crate::adapters::wireguard::DEFAULT_LISTEN_PORT;
+        let endpoints = detect_endpoints(listen_port).await;
+        let self_record = MachineRecord {
             id: self.identity.machine_id.clone(),
             public_key: self.identity.public_key.clone(),
             overlay_ip: net_config.overlay_ip,
             subnet: Some(net_config.subnet),
             bridge_ip: None,
             endpoints,
-        });
+        };
+        if let Some(existing) = seed_records
+            .iter_mut()
+            .find(|m| m.id == self_record.id)
+        {
+            *existing = self_record;
+        } else {
+            seed_records.push(self_record);
+        }
 
         let mut mesh = Mesh::new(
             network,
             store,
             container_network,
             self.identity.machine_id.clone(),
-            51820,
+            listen_port,
         )
         .with_seed_records(seed_records)
         .with_disconnected_bootstrap_allowed(options.allow_disconnected_bootstrap);

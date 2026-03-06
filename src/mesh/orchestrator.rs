@@ -8,7 +8,7 @@ use crate::store::{InviteStore, MachineStore, ServiceControl, SyncProbe, SyncSta
 use crate::tasks::{TaskSet, TaskSetError, run_endpoint_refresh_task, run_peer_sync_task};
 use std::time::Duration;
 use thiserror::Error;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 pub type Result<T> = std::result::Result<T, MeshError>;
 
@@ -195,6 +195,7 @@ impl Mesh {
                 .iter_mut()
                 .find(|m| m.id == self.machine_id)
             {
+                debug!(%bridge_ip, "persisting bridge_ip to self record");
                 self_record.bridge_ip = Some(bridge_ip);
             }
         }
@@ -309,100 +310,92 @@ impl Mesh {
     }
 
     /// Wait for at least one WG peer to complete a handshake.
-    /// Uses fast polling (200ms) with a 10s timeout — handshakes typically
-    /// complete in 1-3s, so this shouldn't add meaningful startup latency
-    /// in the happy path, but prevents the 503 storm when the tunnel is slow.
+    /// Handshakes typically complete in 1-3s; prevents 503 storm when the tunnel is slow.
     async fn wait_for_handshake(&self) -> Result<()> {
-        let timeout = Duration::from_secs(10);
-        let interval = Duration::from_millis(200);
-
-        tokio::time::timeout(timeout, async {
-            loop {
-                if self.network.has_remote_handshake().await {
-                    info!("WG remote handshake confirmed, proceeding with store start");
-                    return;
-                }
-                tokio::time::sleep(interval).await;
-            }
-        })
+        poll_until(
+            Duration::from_secs(10),
+            Duration::from_millis(200),
+            Duration::from_millis(200),
+            || async { self.network.has_remote_handshake().await },
+        )
         .await
-        .map_err(|_| {
+        .then_some(())
+        .ok_or_else(|| {
             MeshError::Port(PortError::operation(
                 "handshake wait",
-                format!("no WG handshake within {timeout:?}"),
+                "no WG handshake within 10s".to_string(),
             ))
-        })
+        })?;
+        info!("WG remote handshake confirmed, proceeding with store start");
+        Ok(())
     }
 
     /// Wait for the service to report healthy after starting.
-    /// Uses exponential backoff: 50ms → 1s, with a configurable timeout (default 15s).
     async fn wait_service_ready(&self) -> Result<()> {
-        if self.store.healthy().await {
-            return Ok(());
-        }
-
         let timeout = self.service_ready_timeout;
-        let mut interval = Duration::from_millis(50);
-        let max_interval = Duration::from_secs(1);
-
-        tokio::time::timeout(timeout, async {
-            loop {
-                if self.store.healthy().await {
-                    return;
-                }
-                tokio::time::sleep(interval).await;
-                interval = (interval * 2).min(max_interval);
-            }
-        })
-        .await
-        .map_err(|_| {
-            MeshError::Port(PortError::operation(
+        let ok = poll_until(
+            timeout,
+            Duration::from_millis(50),
+            Duration::from_secs(1),
+            || async { self.store.healthy().await },
+        )
+        .await;
+        if !ok {
+            return Err(MeshError::Port(PortError::operation(
                 "service ready",
                 format!("service did not become ready within {timeout:?}"),
-            ))
-        })
+            )));
+        }
+        Ok(())
     }
 
     /// Wait for the store to accept its schema and serve queries.
-    /// Uses exponential backoff: 100ms → 2s, 30s timeout.
     async fn wait_store_init(&self) -> Result<()> {
         let timeout = Duration::from_secs(30);
-        let mut interval = Duration::from_millis(100);
-        let max_interval = Duration::from_secs(2);
-
-        let result = tokio::time::timeout(timeout, async {
-            // Phase 1: apply schema.
-            loop {
+        let init_ok = poll_until(
+            timeout,
+            Duration::from_millis(100),
+            Duration::from_secs(2),
+            || async {
                 match self.store.init().await {
-                    Ok(()) => break,
+                    Ok(()) => true,
                     Err(e) => {
                         info!(?e, "store not ready, retrying");
-                        tokio::time::sleep(interval).await;
-                        interval = (interval * 2).min(max_interval);
+                        false
                     }
                 }
-            }
-            // Phase 2: verify queries work.
-            loop {
-                match self.store.list_machines().await {
-                    Ok(_) => return Ok(()),
-                    Err(e) => {
-                        info!(?e, "store not queryable yet, retrying");
-                        tokio::time::sleep(interval).await;
-                        interval = (interval * 2).min(max_interval);
-                    }
-                }
-            }
-        })
+            },
+        )
         .await;
-
-        match result {
-            Ok(inner) => inner.map_err(MeshError::Port),
-            Err(_) => Err(MeshError::Port(PortError::operation(
+        if !init_ok {
+            return Err(MeshError::Port(PortError::operation(
                 "store init",
                 format!("store did not become ready within {timeout:?}"),
-            ))),
+            )));
         }
+
+        let query_ok = poll_until(
+            timeout,
+            Duration::from_millis(100),
+            Duration::from_secs(2),
+            || async {
+                match self.store.list_machines().await {
+                    Ok(_) => true,
+                    Err(e) => {
+                        info!(?e, "store not queryable yet, retrying");
+                        false
+                    }
+                }
+            },
+        )
+        .await;
+        if !query_ok {
+            return Err(MeshError::Port(PortError::operation(
+                "store init",
+                format!("store queries did not succeed within {timeout:?}"),
+            )));
+        }
+        Ok(())
     }
 
     /// Bootstrap gate: wait for gossip membership, then proceed.
@@ -493,4 +486,29 @@ impl Mesh {
         self.apply(PhaseEvent::SyncComplete)?;
         Ok(())
     }
+}
+
+/// Poll `check` with exponential backoff until it returns `true` or `timeout` expires.
+async fn poll_until<F, Fut>(
+    timeout: Duration,
+    initial_interval: Duration,
+    max_interval: Duration,
+    mut check: F,
+) -> bool
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    tokio::time::timeout(timeout, async {
+        let mut interval = initial_interval;
+        loop {
+            if check().await {
+                return;
+            }
+            tokio::time::sleep(interval).await;
+            interval = (interval * 2).min(max_interval);
+        }
+    })
+    .await
+    .is_ok()
 }
