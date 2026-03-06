@@ -1,5 +1,4 @@
 use crate::model::{JOIN_RESPONSE_PREFIX, JoinResponse};
-use crate::store::MachineStore;
 use crate::transport::DaemonResponse;
 
 use super::super::DaemonState;
@@ -12,7 +11,7 @@ impl DaemonState {
             None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
         };
 
-        let machines = match active.mesh.store().list_machines().await {
+        let machines = match active.mesh.list_machines().await {
             Ok(m) => m,
             Err(e) => return self.err("LIST_FAILED", format!("failed to list machines: {e}")),
         };
@@ -129,7 +128,7 @@ impl DaemonState {
         let record = join_resp.into_machine_record();
         let joiner_id = record.id.clone();
         let active = self.active.as_ref().unwrap();
-        if let Err(e) = active.mesh.store().upsert_machine(&record).await {
+        if let Err(e) = active.mesh.upsert_machine(&record).await {
             return self.err(
                 "UPSERT_FAILED",
                 format!("failed to seed joiner record: {e}"),

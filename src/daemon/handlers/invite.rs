@@ -4,7 +4,6 @@ use x25519_dalek::StaticSecret;
 use crate::model::InviteRecord;
 use crate::network::endpoints::detect_endpoints;
 use crate::node::invite::{issue_invite_token, parse_and_verify_invite_token};
-use crate::store::InviteStore;
 use crate::store::network::NetworkConfig;
 use crate::transport::DaemonResponse;
 
@@ -39,8 +38,8 @@ impl DaemonState {
     }
 
     pub(crate) async fn handle_machine_invite_import(&self, token: &str) -> DaemonResponse {
-        let store = match self.active.as_ref() {
-            Some(a) => a.mesh.store(),
+        let mesh = match self.active.as_ref() {
+            Some(a) => &a.mesh,
             None => {
                 return self.err(
                     "NO_RUNNING_NETWORK",
@@ -63,16 +62,18 @@ impl DaemonState {
             expires_at: invite.expires_at,
         };
 
-        match store.create_invite(&record).await {
+        match mesh.create_invite(&record).await {
             Ok(()) => self.ok(format!(
                 "invite imported\n  network: {}\n  invite:  {}",
                 invite.network_name, record.id
             )),
-            Err(crate::Error::Operation { operation, .. }) if operation == "invite_exists" => self
-                .ok(format!(
-                    "invite already present\n  network: {}\n  invite:  {}",
-                    invite.network_name, record.id
-                )),
+            Err(crate::mesh::orchestrator::MeshError::Port(crate::Error::Operation {
+                operation,
+                ..
+            })) if operation == "invite_exists" => self.ok(format!(
+                "invite already present\n  network: {}\n  invite:  {}",
+                invite.network_name, record.id
+            )),
             Err(err) => self.err(
                 "INVITE_IMPORT_FAILED",
                 format!("failed to import invite: {err}"),
@@ -85,10 +86,10 @@ impl DaemonState {
         network: &NetworkConfig,
         ttl_secs: u64,
     ) -> Result<String, String> {
-        let store = self
+        let mesh = self
             .active
             .as_ref()
-            .map(|a| a.mesh.store())
+            .map(|a| &a.mesh)
             .ok_or_else(|| "no running network".to_string())?;
 
         let endpoints = detect_endpoints(51820).await;
@@ -113,7 +114,7 @@ impl DaemonState {
             expires_at: claims.expires_at,
         };
 
-        store
+        mesh
             .create_invite(&record)
             .await
             .map_err(|e| format!("store invite: {e}"))?;

@@ -6,7 +6,6 @@ use crate::network::endpoints::detect_endpoints;
 use crate::network::ipam::Ipam;
 use crate::node::invite::parse_and_verify_invite_token;
 use crate::store::network::NetworkConfig;
-use crate::store::{InviteStore, MachineStore};
 use crate::transport::DaemonResponse;
 
 use super::super::DaemonState;
@@ -153,7 +152,6 @@ impl DaemonState {
             .as_ref()
             .unwrap()
             .mesh
-            .store()
             .consume_invite(&invite.invite_id, now_unix_secs())
             .await
         {
@@ -389,7 +387,7 @@ impl DaemonState {
 
         let record = join_resp.into_machine_record();
         let machine_id = record.id.clone();
-        match active.mesh.store().upsert_machine(&record).await {
+        match active.mesh.upsert_machine(&record).await {
             Ok(()) => self.ok(format!("accepted machine '{}'", machine_id)),
             Err(e) => self.err("UPSERT_FAILED", format!("failed to upsert machine: {e}")),
         }

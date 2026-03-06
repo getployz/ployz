@@ -4,7 +4,7 @@ use crate::error::Error as PortError;
 use crate::mesh::MeshNetwork;
 use crate::mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
 use crate::model::{MachineId, MachineRecord};
-use crate::store::{MachineStore, ServiceControl, SyncProbe, SyncStatus};
+use crate::store::{InviteStore, MachineStore, ServiceControl, SyncProbe, SyncStatus};
 use crate::tasks::{TaskSet, TaskSetError, run_endpoint_refresh_task, run_peer_sync_task};
 use std::time::Duration;
 use thiserror::Error;
@@ -88,8 +88,23 @@ impl Mesh {
         self.phase
     }
 
-    pub fn store(&self) -> StoreDriver {
-        self.store.clone()
+    pub async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
+        self.store.list_machines().await.map_err(MeshError::from)
+    }
+
+    pub async fn upsert_machine(&self, record: &MachineRecord) -> Result<()> {
+        self.store.upsert_machine(record).await.map_err(MeshError::from)
+    }
+
+    pub async fn create_invite(&self, invite: &crate::model::InviteRecord) -> Result<()> {
+        self.store.create_invite(invite).await.map_err(MeshError::from)
+    }
+
+    pub async fn consume_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<()> {
+        self.store
+            .consume_invite(invite_id, now_unix_secs)
+            .await
+            .map_err(MeshError::from)
     }
 
     fn apply(&mut self, event: PhaseEvent) -> Result<()> {
