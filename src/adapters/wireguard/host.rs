@@ -1,6 +1,8 @@
+#[cfg(target_os = "linux")]
+use std::process::Command;
 use std::net::SocketAddr;
 use std::sync::Mutex;
-use tracing::info;
+use tracing::{info, warn};
 
 use defguard_wireguard_rs::key::Key;
 use defguard_wireguard_rs::net::IpAddrMask;
@@ -164,6 +166,52 @@ fn wg_remove_peer(backend: &WgBackend, key: &Key) -> Result<()> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn configure_overlay_route(ifname: &str) -> Result<()> {
+    let output = Command::new("ip")
+        .args(["-6", "route", "replace", "fd00::/8", "dev", ifname])
+        .output()
+        .map_err(|e| Error::operation("configure overlay route", e.to_string()))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(Error::operation(
+        "configure overlay route",
+        String::from_utf8_lossy(&output.stderr).trim().to_string(),
+    ))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn configure_overlay_route(_ifname: &str) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn remove_overlay_route(ifname: &str) -> Result<()> {
+    let output = Command::new("ip")
+        .args(["-6", "route", "del", "fd00::/8", "dev", ifname])
+        .output()
+        .map_err(|e| Error::operation("remove overlay route", e.to_string()))?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("No such process") {
+        return Ok(());
+    }
+
+    Err(Error::operation(
+        "remove overlay route",
+        stderr.trim().to_string(),
+    ))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn remove_overlay_route(_ifname: &str) -> Result<()> {
+    Ok(())
+}
+
 impl MeshNetwork for HostWireGuard {
     async fn up(&self) -> Result<()> {
         self.with_api(|backend| {
@@ -185,11 +233,16 @@ impl MeshNetwork for HostWireGuard {
             wg_configure_interface(backend, &config)
         })?;
 
+        configure_overlay_route(&self.ifname)?;
+
         info!(ifname = %self.ifname, "wireguard interface up");
         Ok(())
     }
 
     async fn down(&self) -> Result<()> {
+        if let Err(e) = remove_overlay_route(&self.ifname) {
+            warn!(?e, ifname = %self.ifname, "failed to remove overlay route");
+        }
         let backend = self.lock_backend();
         wg_remove_interface(&backend)?;
         info!(ifname = %self.ifname, "wireguard interface down");

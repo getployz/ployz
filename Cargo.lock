@@ -2118,6 +2118,7 @@ dependencies = [
  "libc",
  "rand 0.10.0",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "smoltcp",

@@ -196,17 +196,33 @@ impl ServiceControl for DockerCorrosion {
     async fn stop(&self) -> Result<()> {
         let stop_opts = StopContainerOptionsBuilder::default().t(10).build();
 
-        self.docker
+        match self
+            .docker
             .stop_container(&self.container_name, Some(stop_opts))
             .await
-            .map_err(|e| Error::operation("docker stop", e.to_string()))?;
+        {
+            Ok(()) => {}
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 304 | 404,
+                ..
+            }) => {}
+            Err(e) => return Err(Error::operation("docker stop", e.to_string())),
+        }
 
         let remove_opts = RemoveContainerOptionsBuilder::default().build();
 
-        self.docker
+        match self
+            .docker
             .remove_container(&self.container_name, Some(remove_opts))
             .await
-            .map_err(|e| Error::operation("docker remove", e.to_string()))?;
+        {
+            Ok(()) => {}
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404,
+                ..
+            }) => {}
+            Err(e) => return Err(Error::operation("docker remove", e.to_string())),
+        }
 
         info!(name = %self.container_name, "container stopped and removed");
         Ok(())

@@ -8,7 +8,10 @@ pub enum DaemonRequest {
     MeshJoin { token: String },
     MeshCreate { network: String },
     MeshInit { network: String },
-    MeshUp { network: String },
+    MeshUp {
+        network: String,
+        skip_bootstrap_wait: bool,
+    },
     MeshDown,
     MeshDestroy { network: String },
     MachineList,

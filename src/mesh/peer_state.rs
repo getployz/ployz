@@ -72,17 +72,22 @@ impl PeerStateMap {
     }
 }
 
-pub(crate) async fn sync_peers<N: MeshNetwork>(state: &PeerStateMap, network: &N) {
-    let planned = plan_mesh_peers(state);
+pub(crate) async fn sync_peers<N: MeshNetwork>(
+    state: &PeerStateMap,
+    network: &N,
+    local_machine_id: &MachineId,
+) {
+    let planned = plan_mesh_peers(state, local_machine_id);
     if let Err(e) = network.set_peers(&planned).await {
         warn!(?e, "set_peers failed");
     }
 }
 
-fn plan_mesh_peers(state: &PeerStateMap) -> Vec<MachineRecord> {
+fn plan_mesh_peers(state: &PeerStateMap, local_machine_id: &MachineId) -> Vec<MachineRecord> {
     state
         .peers
         .values()
+        .filter(|ps| ps.id != *local_machine_id)
         .filter(|ps| !ps.endpoints.is_empty())
         .map(|ps| MachineRecord {
             id: ps.id.clone(),
@@ -126,7 +131,7 @@ mod tests {
         };
         map.upsert(&r);
 
-        let planned = plan_mesh_peers(&map);
+        let planned = plan_mesh_peers(&map, &MachineId("local".into()));
         assert_eq!(planned.len(), 1);
         assert_eq!(
             planned[0].endpoints,
@@ -139,7 +144,18 @@ mod tests {
         let mut map = PeerStateMap::new();
         let r = test_record("m1", vec![]);
         map.upsert(&r);
-        assert!(plan_mesh_peers(&map).is_empty());
+        assert!(plan_mesh_peers(&map, &MachineId("local".into())).is_empty());
+    }
+
+    #[test]
+    fn plan_skips_local_machine() {
+        let mut map = PeerStateMap::new();
+        map.upsert(&test_record("local", vec!["a:1"]));
+        map.upsert(&test_record("remote", vec!["b:2"]));
+
+        let planned = plan_mesh_peers(&map, &MachineId("local".into()));
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].id.0, "remote");
     }
 
     #[test]

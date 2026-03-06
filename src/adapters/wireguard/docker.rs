@@ -26,6 +26,7 @@ const DEFAULT_IMAGE: &str = "procustodibus/wireguard:latest";
 const DEFAULT_LISTEN_PORT: u16 = 51820;
 const DEFAULT_MTU: u16 = 1420;
 const INTERFACE_NAME: &str = "wg0";
+const BRIDGE_HOST_LOOPBACK: &str = "127.0.0.1";
 
 pub struct DockerWireGuard {
     docker: Docker,
@@ -154,6 +155,25 @@ impl DockerWireGuard {
         Ok(())
     }
 
+    fn bridge_peer_endpoint(&self) -> SocketAddr {
+        format!("{BRIDGE_HOST_LOOPBACK}:{}", self.listen_port)
+            .parse()
+            .expect("loopback bridge endpoint must parse")
+    }
+
+    fn udp_port_bindings(&self) -> PortMap {
+        let mut port_bindings: PortMap = PortMap::new();
+        let port_key = format!("{}/udp", self.listen_port);
+        port_bindings.insert(
+            port_key,
+            Some(vec![PortBinding {
+                host_ip: Some(BRIDGE_HOST_LOOPBACK.to_string()),
+                host_port: Some(self.listen_port.to_string()),
+            }]),
+        );
+        port_bindings
+    }
+
     async fn container_running(&self) -> bool {
         match self
             .docker
@@ -166,9 +186,7 @@ impl DockerWireGuard {
     }
 
     async fn remove_existing(&self) {
-        let options = RemoveContainerOptionsBuilder::default()
-            .force(true)
-            .build();
+        let options = RemoveContainerOptionsBuilder::default().force(true).build();
 
         if let Err(e) = self
             .docker
@@ -215,8 +233,7 @@ impl DockerWireGuard {
                 while let Some(result) = output.next().await {
                     match result {
                         Ok(bollard::container::LogOutput::StdErr { message }) => {
-                            stderr_buf
-                                .push_str(&String::from_utf8_lossy(&message));
+                            stderr_buf.push_str(&String::from_utf8_lossy(&message));
                         }
                         Err(e) => {
                             return Err(Error::operation("docker exec", e.to_string()));
@@ -379,7 +396,13 @@ impl DockerWireGuard {
         // All overlay IPs are derived from fd00::/8 by management_ip_from_key(),
         // so a single route covers all peers — no per-peer route management needed.
         self.exec_in_container(&[
-            "ip", "-6", "route", "add", "fd00::/8", "dev", INTERFACE_NAME,
+            "ip",
+            "-6",
+            "route",
+            "add",
+            "fd00::/8",
+            "dev",
+            INTERFACE_NAME,
         ])
         .await?;
 
@@ -398,9 +421,8 @@ impl DockerWireGuard {
             return Ok(());
         }
 
-        let container_pubkey = x25519_dalek::PublicKey::from(
-            &x25519_dalek::StaticSecret::from(self.private_key.0),
-        );
+        let container_pubkey =
+            x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(self.private_key.0));
         let container_pubkey_bytes = container_pubkey.to_bytes();
 
         // Generate bridge keypair BEFORE starting, so we can register the peer first.
@@ -428,13 +450,12 @@ impl DockerWireGuard {
         info!(bridge_ip = %bridge_overlay_ip, "registered bridge as WG peer");
 
         // Now start the bridge — handshake will find the peer already registered
-        let peer_endpoint: SocketAddr = format!("127.0.0.1:{}", self.listen_port)
-            .parse()
-            .unwrap();
+        let peer_endpoint = self.bridge_peer_endpoint();
 
         let bridge = OverlayBridge::start(
             bridge_secret,
             &container_pubkey_bytes,
+            self.overlay_ip,
             peer_endpoint,
             self.outbound_forwards.clone(),
             self.inbound_forwards.clone(),
@@ -452,7 +473,6 @@ impl DockerWireGuard {
 
         Ok(())
     }
-
 }
 
 impl MeshNetwork for DockerWireGuard {
@@ -480,16 +500,6 @@ impl MeshNetwork for DockerWireGuard {
         let wg_dir = self.paths.dir.to_string_lossy().into_owned();
 
         // Port bindings: publish WG UDP port for bridge access
-        let mut port_bindings: PortMap = PortMap::new();
-        let port_key = format!("{}/udp", self.listen_port);
-        port_bindings.insert(
-            port_key,
-            Some(vec![PortBinding {
-                host_ip: Some("0.0.0.0".to_string()),
-                host_port: Some(self.listen_port.to_string()),
-            }]),
-        );
-
         let host_config = HostConfig {
             binds: Some(vec![
                 format!("{wg_dir}:{wg_dir}"),
@@ -497,15 +507,18 @@ impl MeshNetwork for DockerWireGuard {
             ]),
             cap_add: Some(vec!["NET_ADMIN".to_string()]),
             sysctls: Some(
-                [("net.ipv4.conf.all.src_valid_mark".to_string(), "1".to_string())]
-                    .into_iter()
-                    .collect(),
+                [(
+                    "net.ipv4.conf.all.src_valid_mark".to_string(),
+                    "1".to_string(),
+                )]
+                .into_iter()
+                .collect(),
             ),
             restart_policy: Some(RestartPolicy {
                 name: Some(RestartPolicyNameEnum::ALWAYS),
                 maximum_retry_count: None,
             }),
-            port_bindings: Some(port_bindings),
+            port_bindings: Some(self.udp_port_bindings()),
             ..Default::default()
         };
 
@@ -532,7 +545,8 @@ impl MeshNetwork for DockerWireGuard {
             .map_err(|e| Error::operation("docker start", e.to_string()))?;
 
         self.setup_interface().await?;
-        self.log_interface_diagnostics("after_setup_interface").await;
+        self.log_interface_diagnostics("after_setup_interface")
+            .await;
 
         // Start overlay bridge after WG interface is up
         self.start_bridge().await?;
@@ -551,17 +565,33 @@ impl MeshNetwork for DockerWireGuard {
 
         let stop_opts = StopContainerOptionsBuilder::default().t(10).build();
 
-        self.docker
+        match self
+            .docker
             .stop_container(&self.container_name, Some(stop_opts))
             .await
-            .map_err(|e| Error::operation("docker stop", e.to_string()))?;
+        {
+            Ok(()) => {}
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 304 | 404,
+                ..
+            }) => {}
+            Err(e) => return Err(Error::operation("docker stop", e.to_string())),
+        }
 
         let remove_opts = RemoveContainerOptionsBuilder::default().build();
 
-        self.docker
+        match self
+            .docker
             .remove_container(&self.container_name, Some(remove_opts))
             .await
-            .map_err(|e| Error::operation("docker remove", e.to_string()))?;
+        {
+            Ok(()) => {}
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404,
+                ..
+            }) => {}
+            Err(e) => return Err(Error::operation("docker remove", e.to_string())),
+        }
 
         info!(name = %self.container_name, "wireguard container stopped");
         Ok(())
@@ -585,5 +615,56 @@ impl MeshNetwork for DockerWireGuard {
 
         info!(peer_count = peers.len(), "synced wireguard peers");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv6Addr;
+
+    fn sample_wireguard() -> DockerWireGuard {
+        DockerWireGuard {
+            docker: Docker::connect_with_socket_defaults().expect("docker client"),
+            container_name: "test-wireguard".to_string(),
+            image: DEFAULT_IMAGE.to_string(),
+            paths: WgPaths::new(Path::new("/tmp/ployz-test")),
+            private_key: PrivateKey([7; 32]),
+            overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+            listen_port: DEFAULT_LISTEN_PORT,
+            outbound_forwards: Vec::new(),
+            inbound_forwards: Vec::new(),
+            bridge: Mutex::new(None),
+            bridge_peer: Mutex::new(None),
+        }
+    }
+
+    #[test]
+    fn bridge_peer_endpoint_uses_loopback() {
+        let wireguard = sample_wireguard();
+        assert_eq!(
+            wireguard.bridge_peer_endpoint(),
+            format!("{BRIDGE_HOST_LOOPBACK}:{DEFAULT_LISTEN_PORT}")
+                .parse()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn udp_port_binding_uses_loopback() {
+        let wireguard = sample_wireguard();
+        let bindings = wireguard.udp_port_bindings();
+        let port = format!("{DEFAULT_LISTEN_PORT}/udp");
+        let binding = bindings
+            .get(&port)
+            .and_then(|entry| entry.as_ref())
+            .unwrap();
+        let expected_port = DEFAULT_LISTEN_PORT.to_string();
+        assert_eq!(binding.len(), 1);
+        assert_eq!(binding[0].host_ip.as_deref(), Some(BRIDGE_HOST_LOOPBACK));
+        assert_eq!(
+            binding[0].host_port.as_deref(),
+            Some(expected_port.as_str())
+        );
     }
 }

@@ -46,7 +46,12 @@ pub struct NetworkConfig {
 }
 
 impl NetworkConfig {
-    pub fn new(name: NetworkName, public_key: &PublicKey, cluster_cidr: &str, subnet: Ipv4Net) -> Self {
+    pub fn new(
+        name: NetworkName,
+        public_key: &PublicKey,
+        cluster_cidr: &str,
+        subnet: Ipv4Net,
+    ) -> Self {
         let overlay_ip = management_ip_from_key(public_key);
         Self {
             id: NetworkId::random(),
@@ -112,7 +117,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
 
         let subnet: Ipv4Net = "10.210.1.0/24".parse().unwrap();
-        let cfg = NetworkConfig::new(NetworkName("alpha".into()), &PublicKey([7; 32]), DEFAULT_CLUSTER_CIDR, subnet);
+        let cfg = NetworkConfig::new(
+            NetworkName("alpha".into()),
+            &PublicKey([7; 32]),
+            DEFAULT_CLUSTER_CIDR,
+            subnet,
+        );
         let path = NetworkConfig::path(&root, "alpha");
         cfg.save(&path).expect("save config");
 

@@ -123,12 +123,14 @@ impl OverlayBridge {
     ///
     /// - `bridge_secret`: The bridge's x25519 private key (from `generate_keypair()`).
     /// - `container_pubkey_bytes`: The WireGuard public key of the container peer.
+    /// - `container_overlay_ip`: The overlay IPv6 assigned to the container interface.
     /// - `peer_endpoint`: UDP endpoint of the container WireGuard (e.g. `127.0.0.1:51820`).
     /// - `outbound`: Forward rules for host→overlay TCP connections.
     /// - `inbound`: Forward rules for overlay→host TCP connections.
     pub async fn start(
         bridge_secret: StaticSecret,
         container_pubkey_bytes: &[u8; 32],
+        container_overlay_ip: OverlayIp,
         peer_endpoint: SocketAddr,
         outbound: Vec<OutboundForward>,
         inbound: Vec<InboundForward>,
@@ -149,7 +151,6 @@ impl OverlayBridge {
 
         // Bind UDP socket for WireGuard tunnel
         let udp = UdpSocket::bind("0.0.0.0:0").await?;
-        udp.connect(peer_endpoint).await?;
         let udp_local = udp.local_addr().ok();
         info!(%peer_endpoint, ?udp_local, bridge_ip = %overlay_ip, "bridge tunnel started");
 
@@ -160,7 +161,9 @@ impl OverlayBridge {
             if let Err(e) = bridge_event_loop(
                 bridge_secret,
                 container_pubkey,
+                container_overlay_ip.0,
                 bridge_ip_v6,
+                peer_endpoint,
                 udp,
                 listeners,
                 inbound_rules,
@@ -251,10 +254,7 @@ impl Device for VirtualDevice {
         _timestamp: SmoltcpInstant,
     ) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         let packet = self.rx_queue.pop_front()?;
-        Some((
-            VirtualRxToken(packet),
-            VirtualTxToken(&mut self.tx_queue),
-        ))
+        Some((VirtualRxToken(packet), VirtualTxToken(&mut self.tx_queue)))
     }
 
     fn transmit(&mut self, _timestamp: SmoltcpInstant) -> Option<Self::TxToken<'_>> {
@@ -282,7 +282,9 @@ struct OutboundRelay {
 async fn bridge_event_loop(
     bridge_secret: StaticSecret,
     container_pubkey: X25519Public,
+    container_overlay_ip: Ipv6Addr,
     bridge_ip: Ipv6Addr,
+    peer_endpoint: SocketAddr,
     udp: UdpSocket,
     listeners: Vec<(TcpListener, SocketAddr)>,
     _inbound_rules: Vec<InboundForward>,
@@ -299,23 +301,23 @@ async fn bridge_event_loop(
 
     let bridge_smoltcp_addr = ipv6_to_smoltcp(bridge_ip);
     iface.update_ip_addrs(|addrs| {
-        addrs
-            .push(IpCidr::new(bridge_smoltcp_addr, 128))
-            .unwrap();
+        addrs.push(IpCidr::new(bridge_smoltcp_addr, 128)).unwrap();
     });
 
     // Default IPv6 route — required for smoltcp to send to non-local overlay IPs.
     // Gateway is the container's overlay IP (all traffic goes through the WG tunnel).
-    let container_overlay_ip = management_ip_from_key(&PublicKey(container_pubkey.to_bytes()));
-    let container_segs = container_overlay_ip.0.segments();
+    let container_segs = container_overlay_ip.segments();
     let gateway = smoltcp::wire::Ipv6Address::new(
-        container_segs[0], container_segs[1], container_segs[2], container_segs[3],
-        container_segs[4], container_segs[5], container_segs[6], container_segs[7],
+        container_segs[0],
+        container_segs[1],
+        container_segs[2],
+        container_segs[3],
+        container_segs[4],
+        container_segs[5],
+        container_segs[6],
+        container_segs[7],
     );
-    iface
-        .routes_mut()
-        .add_default_ipv6_route(gateway)
-        .unwrap();
+    iface.routes_mut().add_default_ipv6_route(gateway).unwrap();
     debug!(bridge = %bridge_ip, %gateway, "smoltcp interface configured");
 
     let mut sockets = SocketSet::new(Vec::new());
@@ -331,7 +333,7 @@ async fn bridge_event_loop(
     match tunn.format_handshake_initiation(&mut handshake_buf, false) {
         TunnResult::WriteToNetwork(data) => {
             diag.mark_handshake_send();
-            match udp.send(data).await {
+            match udp.send_to(data, peer_endpoint).await {
                 Ok(_) => debug!("sent WG handshake initiation"),
                 Err(e) => debug!(?e, "handshake send failed, will retry via timers"),
             }
@@ -350,7 +352,7 @@ async fn bridge_event_loop(
                 match tunn.update_timers(&mut timer_buf) {
                     TunnResult::WriteToNetwork(data) => {
                         diag.mark_timer_send();
-                        let _ = udp.send(data).await;
+                        let _ = udp.send_to(data, peer_endpoint).await;
                     }
                     TunnResult::Err(e) => {
                         debug!(?e, "WG timer error");
@@ -420,7 +422,7 @@ async fn bridge_event_loop(
                     match tunn.encapsulate(&ip_packet, &mut wg_scratch) {
                         TunnResult::WriteToNetwork(data) => {
                             diag.mark_data_send();
-                            let _ = udp.send(data).await;
+                            let _ = udp.send_to(data, peer_endpoint).await;
                         }
                         TunnResult::Err(e) => {
                             debug!(?e, "WG encapsulate error");
@@ -431,12 +433,11 @@ async fn bridge_event_loop(
             }
 
             // UDP recv: WG encrypted packets from container
-            result = udp.recv(&mut udp_recv_buf) => {
-                let n = match result {
-                    Ok(n) => n,
+            result = udp.recv_from(&mut udp_recv_buf) => {
+                let (n, src) = match result {
+                    Ok(v) => v,
                     Err(e) => {
-                        // Connection refused can happen on connected UDP sockets
-                        // when previous send got ICMP port unreachable. Non-fatal.
+                        // On some platforms, transient ICMP unreachable can surface as UDP recv errors.
                         let refused_count = diag.mark_refused();
                         if refused_count <= 5 || refused_count % 5 == 0 {
                             let (h, t, d, r, c, tp) = diag.snapshot();
@@ -456,6 +457,12 @@ async fn bridge_event_loop(
                         continue;
                     }
                 };
+
+                if src != peer_endpoint {
+                    debug!(%src, expected = %peer_endpoint, "ignoring UDP packet from unexpected source");
+                    continue;
+                }
+
                 diag.mark_recv_packet();
                 let packet = &udp_recv_buf[..n];
 
@@ -463,7 +470,7 @@ async fn bridge_event_loop(
                 match tunn.decapsulate(None, packet, &mut decode_buf) {
                     TunnResult::WriteToNetwork(data) => {
                         diag.mark_data_send();
-                        let _ = udp.send(data).await;
+                        let _ = udp.send_to(data, peer_endpoint).await;
 
                         // Check if there's more to process after handshake
                         let mut extra_buf = vec![0u8; MAX_WG_PACKET];
@@ -471,7 +478,7 @@ async fn bridge_event_loop(
                             match tunn.decapsulate(None, &[], &mut extra_buf) {
                                 TunnResult::WriteToNetwork(data) => {
                                     diag.mark_data_send();
-                                    let _ = udp.send(data).await;
+                                    let _ = udp.send_to(data, peer_endpoint).await;
                                 }
                                 TunnResult::WriteToTunnelV6(data, _) => {
                                     let tunnel_count = diag.mark_tunnel_packet();
@@ -525,7 +532,7 @@ async fn bridge_event_loop(
                     match tunn.encapsulate(&ip_packet, &mut wg_scratch) {
                         TunnResult::WriteToNetwork(data) => {
                             diag.mark_data_send();
-                            let _ = udp.send(data).await;
+                            let _ = udp.send_to(data, peer_endpoint).await;
                         }
                         _ => {}
                     }
@@ -571,7 +578,7 @@ async fn bridge_event_loop(
                         match tunn.encapsulate(&ip_packet, &mut wg_scratch) {
                             TunnResult::WriteToNetwork(data) => {
                                 diag.mark_data_send();
-                                let _ = udp.send(data).await;
+                                let _ = udp.send_to(data, peer_endpoint).await;
                             }
                             TunnResult::Err(e) => {
                                 debug!(?e, "WG encapsulate error");

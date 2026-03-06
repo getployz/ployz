@@ -90,7 +90,11 @@ pub const JOIN_RESPONSE_PREFIX: &str = "PLOYZ_JOIN_RESPONSE:";
 impl JoinResponse {
     pub fn encode(&self) -> Result<String, String> {
         let json = serde_json::to_string(self).map_err(|e| format!("serialize: {e}"))?;
-        Ok(format!("{}{}", JOIN_RESPONSE_PREFIX, URL_SAFE_NO_PAD.encode(json.as_bytes())))
+        Ok(format!(
+            "{}{}",
+            JOIN_RESPONSE_PREFIX,
+            URL_SAFE_NO_PAD.encode(json.as_bytes())
+        ))
     }
 
     pub fn decode(s: &str) -> Result<Self, String> {

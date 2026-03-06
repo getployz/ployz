@@ -20,7 +20,11 @@ impl Ipam {
     }
 
     /// Create an IPAM pre-loaded with existing subnet allocations.
-    pub fn with_allocated(cluster: Ipv4Net, prefix_len: u8, allocated: impl IntoIterator<Item = Ipv4Net>) -> Self {
+    pub fn with_allocated(
+        cluster: Ipv4Net,
+        prefix_len: u8,
+        allocated: impl IntoIterator<Item = Ipv4Net>,
+    ) -> Self {
         Self {
             cluster,
             prefix_len,

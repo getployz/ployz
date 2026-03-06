@@ -85,9 +85,7 @@ impl DockerBridgeNetwork {
     pub async fn connect(&self, container: &str, ipv4: Option<Ipv4Addr>) -> Result<()> {
         match self.docker.inspect_container(container, None).await {
             Ok(details) => {
-                if let Some(networks) = details
-                    .network_settings
-                    .and_then(|ns| ns.networks)
+                if let Some(networks) = details.network_settings.and_then(|ns| ns.networks)
                     && let Some(endpoint) = networks.get(&self.name)
                 {
                     let connected_ip = endpoint
@@ -116,7 +114,9 @@ impl DockerBridgeNetwork {
                     return Ok(());
                 }
             }
-            Err(bollard::errors::Error::DockerResponseServerError { status_code: 404, .. }) => {}
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => {}
             Err(e) => {
                 return Err(Error::operation("inspect container", e.to_string()));
             }
@@ -145,9 +145,10 @@ impl DockerBridgeNetwork {
                 );
                 Ok(())
             }
-            Err(bollard::errors::Error::DockerResponseServerError { status_code: 403, message })
-                if message.contains("already exists in network") =>
-            {
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 403,
+                message,
+            }) if message.contains("already exists in network") => {
                 info!(
                     network = %self.name,
                     container,

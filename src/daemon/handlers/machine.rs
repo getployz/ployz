@@ -1,4 +1,4 @@
-use crate::model::{JoinResponse, JOIN_RESPONSE_PREFIX};
+use crate::model::{JOIN_RESPONSE_PREFIX, JoinResponse};
 use crate::store::MachineStore;
 use crate::transport::DaemonResponse;
 
@@ -50,7 +50,6 @@ impl DaemonState {
             return self.err("REMOTE_INIT_FAILED", err);
         }
 
-
         self.ok(format!(
             "remote founder initialized\n  target:  {target}\n  network: {network}"
         ))
@@ -84,10 +83,7 @@ impl DaemonState {
         );
         match run_ssh(target, &join_cmd).await {
             Ok(_) => {}
-            Err(err)
-                if err.contains("already exists")
-                    || err.contains("already running") =>
-            {
+            Err(err) if err.contains("already exists") || err.contains("already running") => {
                 tracing::info!(target, "remote already joined — continuing to self-record");
             }
             Err(err) => return self.err("REMOTE_JOIN_FAILED", err),
@@ -106,7 +102,10 @@ impl DaemonState {
         };
 
         // Parse the PLOYZ_JOIN_RESPONSE line from stdout
-        let response_line = match sr_output.lines().find(|l| l.starts_with(JOIN_RESPONSE_PREFIX)) {
+        let response_line = match sr_output
+            .lines()
+            .find(|l| l.starts_with(JOIN_RESPONSE_PREFIX))
+        {
             Some(line) => line,
             None => {
                 return self.err(

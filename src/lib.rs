@@ -15,9 +15,9 @@ pub mod transport;
 pub use adapters::corrosion::docker::DockerCorrosion;
 pub use adapters::corrosion::host::HostCorrosion;
 pub use adapters::corrosion::{CorrosionStore, SCHEMA_SQL, config as corrosion_config};
+pub use adapters::docker_network::DockerBridgeNetwork;
 pub use adapters::memory::{MemoryService, MemoryStore, MemoryWireGuard};
 pub use adapters::wireguard::config as wireguard_config;
-pub use adapters::docker_network::DockerBridgeNetwork;
 pub use adapters::wireguard::{DockerWireGuard, HostWireGuard};
 pub use config::{
     Affordances, ClientConfig, ConfigLoadError, DaemonConfig, Mode, Os, default_config_path,

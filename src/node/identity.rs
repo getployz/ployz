@@ -2,6 +2,7 @@ use crate::model::{MachineId, PrivateKey, PublicKey};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 
 pub type Result<T> = std::result::Result<T, IdentityError>;
 
@@ -40,14 +41,15 @@ pub struct Identity {
 }
 
 impl Identity {
+    fn derive_public_key(private_key: &PrivateKey) -> PublicKey {
+        let secret = StaticSecret::from(private_key.0);
+        let public = X25519PublicKey::from(&secret);
+        PublicKey(public.to_bytes())
+    }
+
     pub fn generate(machine_id: MachineId, key_bytes: [u8; 32]) -> Self {
         let private_key = PrivateKey(key_bytes);
-        // Prototype key derivation (real impl uses x25519).
-        let mut pub_bytes = [0u8; 32];
-        for (i, &b) in key_bytes.iter().enumerate() {
-            pub_bytes[31 - i] = b ^ (i as u8);
-        }
-        let public_key = PublicKey(pub_bytes);
+        let public_key = Self::derive_public_key(&private_key);
         Self {
             machine_id,
             private_key,

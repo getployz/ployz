@@ -47,7 +47,11 @@ enum MeshAction {
     /// Create and start a new mesh network.
     Init { network: String },
     /// Start an existing mesh network.
-    Up { network: String },
+    Up {
+        network: String,
+        #[arg(long)]
+        skip_bootstrap_wait: bool,
+    },
     /// Stop mesh infra but keep network config and data.
     Down,
     /// Tear down all mesh resources and leave the network permanently.
@@ -122,8 +126,12 @@ async fn main() {
             MeshAction::Init { network } => DaemonRequest::MeshInit {
                 network: network.clone(),
             },
-            MeshAction::Up { network } => DaemonRequest::MeshUp {
+            MeshAction::Up {
+                network,
+                skip_bootstrap_wait,
+            } => DaemonRequest::MeshUp {
                 network: network.clone(),
+                skip_bootstrap_wait: *skip_bootstrap_wait,
             },
             MeshAction::Down => DaemonRequest::MeshDown,
             MeshAction::Destroy { network } => DaemonRequest::MeshDestroy {

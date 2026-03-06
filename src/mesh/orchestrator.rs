@@ -3,7 +3,7 @@ use crate::drivers::{StoreDriver, WireguardDriver};
 use crate::error::Error as PortError;
 use crate::mesh::MeshNetwork;
 use crate::mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
-use crate::model::MachineId;
+use crate::model::{MachineId, MachineRecord};
 use crate::store::{MachineStore, ServiceControl, SyncProbe, SyncStatus};
 use crate::tasks::{TaskSet, TaskSetError, run_endpoint_refresh_task, run_peer_sync_task};
 use std::time::Duration;
@@ -33,6 +33,8 @@ pub struct Mesh {
     service_ready_timeout: Duration,
     machine_id: MachineId,
     listen_port: u16,
+    seed_records: Vec<MachineRecord>,
+    allow_disconnected_bootstrap: bool,
 }
 
 impl Mesh {
@@ -54,6 +56,8 @@ impl Mesh {
             service_ready_timeout: Duration::from_secs(15),
             machine_id,
             listen_port,
+            seed_records: Vec::new(),
+            allow_disconnected_bootstrap: false,
         }
     }
 
@@ -64,6 +68,19 @@ impl Mesh {
     ) -> Self {
         self.bootstrap_interval = interval;
         self.connection_timeout = connection_timeout;
+        self
+    }
+
+    pub fn with_seed_records(mut self, seed_records: Vec<MachineRecord>) -> Self {
+        self.seed_records = seed_records;
+        self
+    }
+
+    pub fn with_disconnected_bootstrap_allowed(
+        mut self,
+        allow_disconnected_bootstrap: bool,
+    ) -> Self {
+        self.allow_disconnected_bootstrap = allow_disconnected_bootstrap;
         self
     }
 
@@ -133,6 +150,27 @@ impl Mesh {
             return Err(e.into());
         }
 
+        for record in &self.seed_records {
+            if let Err(e) = self.store.upsert_machine(record).await {
+                warn!(?e, id = %record.id, "failed to seed machine record");
+                let _ = self.store.stop().await;
+                let _ = self.network.down().await;
+                self.apply(PhaseEvent::ComponentFailed)?;
+                return Err(e.into());
+            }
+        }
+
+        let pre_bootstrap: Vec<_> = self
+            .store
+            .list_machines()
+            .await?
+            .into_iter()
+            .filter(|m| m.id != self.machine_id)
+            .collect();
+        if let Err(e) = self.network.set_peers(&pre_bootstrap).await {
+            warn!(?e, "initial peer sync failed before bootstrap");
+        }
+
         self.apply(PhaseEvent::ComponentsStarted)?;
 
         if let Err(e) = self.bootstrap_gate().await {
@@ -156,6 +194,7 @@ impl Mesh {
             snapshot,
             events,
             self.network.clone(),
+            self.machine_id.clone(),
             cancel,
         ));
 
@@ -199,16 +238,16 @@ impl Mesh {
             first_err.get_or_insert(e.into());
         }
 
+        if let Err(e) = self.network.down().await {
+            warn!(?e, "network down failed during destroy");
+            first_err.get_or_insert(e.into());
+        }
+
         if let Some(cn) = &self.container_network {
             if let Err(e) = cn.remove().await {
                 warn!(?e, "container network remove failed during destroy");
                 first_err.get_or_insert(e.into());
             }
-        }
-
-        if let Err(e) = self.network.down().await {
-            warn!(?e, "network down failed during destroy");
-            first_err.get_or_insert(e.into());
         }
 
         self.apply(PhaseEvent::TeardownComplete)?;
@@ -293,7 +332,14 @@ impl Mesh {
 
     async fn bootstrap_gate(&mut self) -> Result<()> {
         let machines = self.store.list_machines().await?;
-        if machines.is_empty() {
+        let has_remote_peer = machines.iter().any(|m| m.id != self.machine_id);
+        if !has_remote_peer {
+            self.apply(PhaseEvent::SyncComplete)?;
+            return Ok(());
+        }
+
+        if self.allow_disconnected_bootstrap {
+            info!("skipping bootstrap wait because disconnected bootstrap is allowed");
             self.apply(PhaseEvent::SyncComplete)?;
             return Ok(());
         }
@@ -303,11 +349,11 @@ impl Mesh {
         let store = self.store.clone();
 
         // Connection phase: wait for corrosion to see any peer (short timeout).
-        tokio::time::timeout(connection_timeout, async {
+        let connected = tokio::time::timeout(connection_timeout, async {
             loop {
                 match store.sync_status().await {
                     Ok(SyncStatus::Disconnected) => {}
-                    Ok(_) => return,
+                    Ok(_) => return true,
                     Err(e) => {
                         warn!(?e, "sync probe failed during connection phase");
                     }
@@ -316,7 +362,11 @@ impl Mesh {
             }
         })
         .await
-        .map_err(|_| TransitionError::BootstrapTimeout)?;
+        .unwrap_or(false);
+
+        if !connected {
+            return Err(TransitionError::BootstrapTimeout.into());
+        }
 
         // Sync phase: wait for gaps to reach 0 (no timeout).
         loop {

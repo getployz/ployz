@@ -16,7 +16,10 @@ impl DaemonState {
             DaemonRequest::MeshJoin { token } => self.handle_mesh_join(&token).await,
             DaemonRequest::MeshCreate { network } => self.handle_mesh_create(&network),
             DaemonRequest::MeshInit { network } => self.handle_mesh_init(&network).await,
-            DaemonRequest::MeshUp { network } => self.handle_mesh_up(&network).await,
+            DaemonRequest::MeshUp {
+                network,
+                skip_bootstrap_wait,
+            } => self.handle_mesh_up(&network, skip_bootstrap_wait).await,
             DaemonRequest::MeshDown => self.handle_mesh_down().await,
             DaemonRequest::MeshDestroy { network } => self.handle_mesh_destroy(&network).await,
             DaemonRequest::MachineList => self.handle_machine_list().await,

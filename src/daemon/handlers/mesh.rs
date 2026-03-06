@@ -1,6 +1,6 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
-use crate::daemon::setup::BootstrapInfo;
+use crate::daemon::setup::{BootstrapInfo, MeshStartOptions};
 use crate::model::{JoinResponse, NetworkName};
 use crate::network::endpoints::detect_endpoints;
 use crate::network::ipam::Ipam;
@@ -138,7 +138,10 @@ impl DaemonState {
 
         let bootstrap = Self::extract_bootstrap(&invite);
 
-        if let Err(e) = self.start_mesh(net_config, bootstrap).await {
+        let options = MeshStartOptions {
+            allow_disconnected_bootstrap: bootstrap.is_some(),
+        };
+        if let Err(e) = self.start_mesh(net_config, bootstrap, options).await {
             return self.err(
                 "NETWORK_START_FAILED",
                 format!("join failed to start mesh: {e}"),
@@ -194,7 +197,10 @@ impl DaemonState {
 
         let network_name = net_config.name.clone();
         let overlay_ip = net_config.overlay_ip;
-        if let Err(e) = self.start_mesh(net_config, None).await {
+        if let Err(e) = self
+            .start_mesh(net_config, None, MeshStartOptions::default())
+            .await
+        {
             return DaemonResponse {
                 ok: false,
                 code: "NETWORK_START_FAILED".into(),
@@ -219,10 +225,13 @@ impl DaemonState {
             ));
         }
 
-        let cluster: ipnet::Ipv4Net = self.cluster_cidr.parse()
+        let cluster: ipnet::Ipv4Net = self
+            .cluster_cidr
+            .parse()
             .map_err(|e| format!("invalid cluster CIDR '{}': {e}", self.cluster_cidr))?;
         let mut ipam = Ipam::new(cluster, self.subnet_prefix_len);
-        let subnet = ipam.allocate()
+        let subnet = ipam
+            .allocate()
             .ok_or_else(|| "no available subnets in cluster CIDR".to_string())?;
 
         let net_config = NetworkConfig::new(
@@ -239,7 +248,11 @@ impl DaemonState {
         Ok(net_config)
     }
 
-    pub(crate) async fn handle_mesh_up(&mut self, network: &str) -> DaemonResponse {
+    pub(crate) async fn handle_mesh_up(
+        &mut self,
+        network: &str,
+        skip_bootstrap_wait: bool,
+    ) -> DaemonResponse {
         if let Some(active) = &self.active {
             return self.err(
                 "NETWORK_ALREADY_RUNNING",
@@ -272,7 +285,10 @@ impl DaemonState {
         };
 
         let network_name = net_config.name.clone();
-        if let Err(e) = self.start_mesh(net_config, None).await {
+        let options = MeshStartOptions {
+            allow_disconnected_bootstrap: skip_bootstrap_wait,
+        };
+        if let Err(e) = self.start_mesh(net_config, None, options).await {
             return DaemonResponse {
                 ok: false,
                 code: "NETWORK_START_FAILED".into(),
@@ -314,7 +330,6 @@ impl DaemonState {
 
         if running_target {
             let mut active = self.active.take().unwrap();
-            let store = active.mesh.store();
             if let Err(e) = active.mesh.destroy().await {
                 self.active = Some(active);
                 return DaemonResponse {
@@ -322,9 +337,6 @@ impl DaemonState {
                     code: "NETWORK_DESTROY_FAILED".into(),
                     message: format!("destroy failed: {e}"),
                 };
-            }
-            if let Err(e) = store.delete_machine(&self.identity.machine_id).await {
-                tracing::warn!(?e, "failed to remove local machine from membership");
             }
         }
 
@@ -357,7 +369,10 @@ impl DaemonState {
 
         match resp.encode() {
             Ok(encoded) => self.ok(encoded),
-            Err(e) => self.err("ENCODE_FAILED", format!("failed to encode self-record: {e}")),
+            Err(e) => self.err(
+                "ENCODE_FAILED",
+                format!("failed to encode self-record: {e}"),
+            ),
         }
     }
 

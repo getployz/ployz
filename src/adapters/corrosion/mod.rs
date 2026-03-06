@@ -1,10 +1,10 @@
 use crate::error::{Error, Result};
 use crate::model::{InviteRecord, MachineEvent, MachineId, MachineRecord, OverlayIp, PublicKey};
-use ipnet::Ipv4Net;
 use crate::store::{InviteStore, MachineStore, SyncProbe, SyncStatus};
 use corro_api_types::{ExecResult, SqliteValue, Statement, TypedQueryEvent, sqlite::ChangeType};
 use corro_client::CorrosionClient;
 use futures_util::StreamExt;
+use ipnet::Ipv4Net;
 use std::collections::HashMap;
 use std::net::{Ipv6Addr, SocketAddr};
 use tokio::sync::mpsc;
@@ -20,7 +20,7 @@ pub const SCHEMA_SQL: &str = include_str!("schema.sql");
 pub struct CorrosionStore {
     client: CorrosionClient,
     addr: SocketAddr,
-    http: reqwest::Client,
+    health_http: reqwest::Client,
 }
 
 impl CorrosionStore {
@@ -30,23 +30,29 @@ impl CorrosionStore {
             .map_err(|e| format!("invalid corrosion endpoint '{endpoint}': {e}"))?;
         let client =
             CorrosionClient::new(addr, db_path).map_err(|e| format!("corrosion client: {e}"))?;
-        let http = reqwest::Client::new();
-        Ok(Self { client, addr, http })
+        let health_http = reqwest::Client::builder()
+            .http2_prior_knowledge()
+            .build()
+            .map_err(|e| format!("health client: {e}"))?;
+        Ok(Self {
+            client,
+            addr,
+            health_http,
+        })
     }
 }
 
 impl SyncProbe for CorrosionStore {
     async fn sync_status(&self) -> Result<SyncStatus> {
         let resp = self
-            .http
+            .health_http
             .get(format!("http://{}/v1/health?gaps=0", self.addr))
+            .header(reqwest::header::ACCEPT, "application/json")
             .send()
             .await
             .map_err(|e| Error::operation("sync_status", format!("health request: {e}")))?;
 
-        if resp.status() == reqwest::StatusCode::OK {
-            return Ok(SyncStatus::Synced);
-        }
+        let status = resp.status();
 
         #[derive(serde::Deserialize)]
         struct Envelope {
@@ -58,11 +64,20 @@ impl SyncProbe for CorrosionStore {
             members: i64,
         }
 
-        let health = resp
-            .json::<Envelope>()
+        let body = resp
+            .bytes()
             .await
+            .map_err(|e| Error::operation("sync_status", format!("read body: {e}")))?;
+        let health = serde_json::from_slice::<Envelope>(&body)
             .map_err(|e| Error::operation("sync_status", format!("decode: {e}")))?
             .response;
+
+        if !status.is_success() {
+            return Err(Error::operation(
+                "sync_status",
+                format!("health endpoint returned status {status}"),
+            ));
+        }
 
         if health.members <= 1 {
             Ok(SyncStatus::Disconnected)
@@ -104,7 +119,10 @@ impl MachineStore for CorrosionStore {
         let endpoints = serde_json::to_string(&record.endpoints)
             .map_err(|e| Error::operation("upsert_machine", format!("serialize: {e}")))?;
         let subnet_str = record.subnet.map(|s| s.to_string()).unwrap_or_default();
-        let bridge_str = record.bridge_ip.map(|b| b.0.to_string()).unwrap_or_default();
+        let bridge_str = record
+            .bridge_ip
+            .map(|b| b.0.to_string())
+            .unwrap_or_default();
         let stmt = Statement::WithParams(
             "INSERT INTO machines (id, public_key, overlay_ip, subnet, bridge_ip, endpoints) \
              VALUES (?, ?, ?, ?, ?, ?) \
@@ -404,17 +422,19 @@ fn parse_machine(row: &[SqliteValue]) -> Result<MachineRecord> {
     let subnet: Option<Ipv4Net> = if subnet_str.is_empty() {
         None
     } else {
-        Some(subnet_str.parse().map_err(|e| {
-            Error::operation("parse_machine", format!("invalid subnet: {e}"))
-        })?)
+        Some(
+            subnet_str
+                .parse()
+                .map_err(|e| Error::operation("parse_machine", format!("invalid subnet: {e}")))?,
+        )
     };
 
     let bridge_ip: Option<OverlayIp> = if bridge_str.is_empty() {
         None
     } else {
-        let addr: Ipv6Addr = bridge_str.parse().map_err(|e| {
-            Error::operation("parse_machine", format!("invalid bridge ip: {e}"))
-        })?;
+        let addr: Ipv6Addr = bridge_str
+            .parse()
+            .map_err(|e| Error::operation("parse_machine", format!("invalid bridge ip: {e}")))?;
         Some(OverlayIp(addr))
     };
 

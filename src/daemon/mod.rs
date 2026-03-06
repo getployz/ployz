@@ -46,6 +46,10 @@ impl DaemonState {
         self.data_dir.join("active_network")
     }
 
+    pub fn network_dir(&self, network: &str) -> PathBuf {
+        NetworkConfig::dir(&self.data_dir, network)
+    }
+
     pub fn read_active_marker(&self) -> Option<String> {
         std::fs::read_to_string(self.active_marker_path())
             .ok()

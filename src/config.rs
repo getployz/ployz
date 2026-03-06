@@ -269,5 +269,4 @@ mod tests {
         assert!(validate_mode(Mode::HostExec, &aff(Os::Other, false)).is_err());
         assert!(validate_mode(Mode::HostExec, &aff(Os::Linux, false)).is_ok());
     }
-
 }

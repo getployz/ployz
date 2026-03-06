@@ -216,7 +216,10 @@ mod tests {
         let config = render_full_config(&privkey, OverlayIp(Ipv6Addr::LOCALHOST), 51820, &[peer]);
         assert!(config.contains("[Peer]"));
         assert!(config.contains("Endpoint = 10.0.0.1:51820"));
-        assert!(config.contains("AllowedIPs = fd00::2/128\n") || config.contains("AllowedIPs = fd00::2/128,"));
+        assert!(
+            config.contains("AllowedIPs = fd00::2/128\n")
+                || config.contains("AllowedIPs = fd00::2/128,")
+        );
         assert!(config.contains("PersistentKeepalive = 25"));
     }
 }
