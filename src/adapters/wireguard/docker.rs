@@ -11,7 +11,7 @@ use futures_util::StreamExt;
 use std::net::SocketAddr;
 use std::path::Path;
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use std::net::Ipv4Addr;
 
@@ -380,12 +380,15 @@ impl DockerWireGuard {
         let port = self.listen_port.to_string();
         let mtu = DEFAULT_MTU.to_string();
 
+        debug!(container = %self.container_name, "setup_interface: creating wireguard link");
         self.exec_in_container(&["ip", "link", "add", INTERFACE_NAME, "type", "wireguard"])
             .await?;
 
+        debug!(container = %self.container_name, "setup_interface: setting mtu");
         self.exec_in_container(&["ip", "link", "set", INTERFACE_NAME, "mtu", &mtu])
             .await?;
 
+        debug!(container = %self.container_name, "setup_interface: wg set private-key + listen-port");
         self.exec_in_container(&[
             "wg",
             "set",
@@ -397,15 +400,15 @@ impl DockerWireGuard {
         ])
         .await?;
 
+        debug!(container = %self.container_name, "setup_interface: adding overlay address {overlay}");
         self.exec_in_container(&["ip", "addr", "add", &overlay, "dev", INTERFACE_NAME])
             .await?;
 
+        debug!(container = %self.container_name, "setup_interface: bringing link up");
         self.exec_in_container(&["ip", "link", "set", INTERFACE_NAME, "up"])
             .await?;
 
-        // Route the entire overlay prefix (fd00::/8 ULA) through the WG interface.
-        // All overlay IPs are derived from fd00::/8 by management_ip_from_key(),
-        // so a single route covers all peers — no per-peer route management needed.
+        debug!(container = %self.container_name, "setup_interface: adding fd00::/8 route");
         self.exec_in_container(&[
             "ip",
             "-6",
@@ -435,7 +438,7 @@ impl DockerWireGuard {
         let check = self
             .exec_in_container_capture(&[
                 "iptables", "-t", "nat", "-C", "POSTROUTING",
-                "-i", INTERFACE_NAME, "-o", "eth1", "-j", "MASQUERADE",
+                "-o", "eth1", "-j", "MASQUERADE",
             ])
             .await;
         if check.is_ok() {
@@ -444,7 +447,29 @@ impl DockerWireGuard {
         let _ = self
             .exec_in_container(&[
                 "iptables", "-t", "nat", "-A", "POSTROUTING",
-                "-i", INTERFACE_NAME, "-o", "eth1", "-j", "MASQUERADE",
+                "-o", "eth1", "-j", "MASQUERADE",
+            ])
+            .await;
+    }
+
+    /// Inject a route into the Docker VM's network namespace so the bridge gateway
+    /// forwards remote overlay subnets through this WG container.
+    /// Requires --privileged and --pid=host on the container.
+    async fn inject_vm_route(&self, subnet: &str, via: &str) {
+        let _ = self
+            .exec_in_container(&[
+                "nsenter", "--net=/proc/1/ns/net",
+                "ip", "route", "replace", subnet, "via", via,
+            ])
+            .await;
+    }
+
+    /// Remove a route from the Docker VM's network namespace.
+    async fn remove_vm_route(&self, subnet: &str) {
+        let _ = self
+            .exec_in_container(&[
+                "nsenter", "--net=/proc/1/ns/net",
+                "ip", "route", "del", subnet,
             ])
             .await;
     }
@@ -612,12 +637,19 @@ impl MeshNetwork for DockerWireGuard {
                 format!("{wg_dir}:{wg_dir}"),
                 "/dev/net/tun:/dev/net/tun".to_string(),
             ]),
-            cap_add: Some(vec!["NET_ADMIN".to_string()]),
+            privileged: Some(true),
+            pid_mode: Some("host".to_string()),
             sysctls: Some(
-                [(
-                    "net.ipv4.conf.all.src_valid_mark".to_string(),
-                    "1".to_string(),
-                )]
+                [
+                    (
+                        "net.ipv4.conf.all.src_valid_mark".to_string(),
+                        "1".to_string(),
+                    ),
+                    (
+                        "net.ipv6.conf.all.disable_ipv6".to_string(),
+                        "0".to_string(),
+                    ),
+                ]
                 .into_iter()
                 .collect(),
             ),
@@ -772,6 +804,17 @@ impl MeshNetwork for DockerWireGuard {
             let _ = self
                 .exec_in_container(&["ip", "route", "del", subnet, "dev", INTERFACE_NAME])
                 .await;
+        }
+
+        // Inject routes into the Docker VM so the bridge gateway forwards
+        // remote overlay subnets through this WG container.
+        if let Some(ref via) = src_ip {
+            for subnet in &desired {
+                self.inject_vm_route(subnet, via).await;
+            }
+            for subnet in current.difference(&desired) {
+                self.remove_vm_route(subnet).await;
+            }
         }
 
         info!(peer_count = peers.len(), "synced wireguard peers");

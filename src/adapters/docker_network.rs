@@ -217,6 +217,9 @@ impl DockerBridgeNetwork {
             let _ = Command::new("iptables")
                 .args(["-D", "DOCKER-USER", "-i", &bridge_ifname, "-o", wg_ifname, "-j", "ACCEPT"])
                 .output();
+            let _ = Command::new("iptables")
+                .args(["-t", "nat", "-D", "POSTROUTING", "-s", &subnet, "-o", wg_ifname, "-j", "RETURN"])
+                .output();
             info!(wg = wg_ifname, bridge = %bridge_ifname, "removed iptables forwarding rules");
         }
     }
@@ -261,6 +264,14 @@ impl DockerBridgeNetwork {
         iptables_idempotent(&[
             "-I", "DOCKER-USER",
             "-i", &bridge_ifname, "-o", wg_ifname, "-j", "ACCEPT",
+        ]);
+
+        // NAT: skip Docker's MASQUERADE for bridge→WG traffic so containers keep
+        // their bridge source IP when reaching remote overlay subnets.
+        // Must be inserted before Docker's "-s <subnet> ! -o <bridge> -j MASQUERADE".
+        iptables_idempotent(&[
+            "-t", "nat", "-I", "POSTROUTING",
+            "-s", &subnet, "-o", wg_ifname, "-j", "RETURN",
         ]);
 
         info!(
