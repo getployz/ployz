@@ -80,10 +80,16 @@ impl DockerBridgeNetwork {
             options: None,
         };
 
+        let options: std::collections::HashMap<String, String> =
+            [("com.docker.network.driver.mtu".into(), "1420".into())]
+                .into_iter()
+                .collect();
+
         let config = NetworkCreateRequest {
             name: self.name.clone(),
             driver: Some("bridge".to_string()),
             ipam: Some(ipam),
+            options: Some(options),
             ..Default::default()
         };
 
