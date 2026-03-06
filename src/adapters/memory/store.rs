@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::model::{InviteRecord, MachineEvent, MachineId, MachineRecord};
+use crate::model::{InviteRecord, MachineEvent, MachineId, MachineRecord, MachineStatus};
 use crate::store::{InviteStore, MachineStore, SyncProbe, SyncStatus};
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
@@ -99,6 +99,21 @@ impl MachineStore for MemoryStore {
         let (tx, rx) = mpsc::channel(64);
         inner.subscribers.push(tx);
         Ok((snapshot, rx))
+    }
+
+    async fn update_heartbeat(
+        &self,
+        id: &MachineId,
+        status: MachineStatus,
+        timestamp: u64,
+    ) -> Result<()> {
+        let mut inner = self.lock_inner();
+        if let Some(record) = inner.machines.get_mut(id) {
+            record.status = status;
+            record.last_heartbeat = timestamp;
+            record.updated_at = timestamp;
+        }
+        Ok(())
     }
 }
 

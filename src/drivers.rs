@@ -1,12 +1,18 @@
 use crate::adapters::corrosion::CorrosionStore;
+use crate::adapters::corrosion::client::Transport;
 use crate::adapters::corrosion::docker::DockerCorrosion;
 use crate::adapters::corrosion::host::HostCorrosion;
 use crate::adapters::memory::{MemoryService, MemoryStore, MemoryWireGuard};
 use crate::adapters::wireguard::{DockerWireGuard, HostWireGuard};
+use crate::config::Mode;
 use crate::error::Result;
 use crate::mesh::MeshNetwork;
-use crate::model::{InviteRecord, MachineEvent, MachineId, MachineRecord, OverlayIp};
+use crate::model::{InviteRecord, MachineEvent, MachineId, MachineRecord, MachineStatus, OverlayIp};
+use crate::node::identity::Identity;
 use crate::store::{InviteStore, MachineStore, ServiceControl, SyncProbe, SyncStatus};
+use crate::{SCHEMA_SQL, corrosion_config};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -19,6 +25,55 @@ pub enum WireguardDriver {
     Memory(Arc<MemoryWireGuard>),
     Docker(Arc<DockerWireGuard>),
     Host(Arc<HostWireGuard>),
+}
+
+impl WireguardDriver {
+    pub async fn from_mode(
+        mode: Mode,
+        identity: &Identity,
+        overlay_ip: OverlayIp,
+        network_dir: &Path,
+        network_name: &str,
+    ) -> std::result::Result<Self, String> {
+        match mode {
+            Mode::Memory => Ok(Self::Memory(Arc::new(MemoryWireGuard::new()))),
+            Mode::Docker => {
+                let api_port = corrosion_config::DEFAULT_API_PORT;
+                let overlay_api = SocketAddr::new(IpAddr::V6(overlay_ip.0), api_port);
+                let local_api = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), api_port);
+
+                let wg = DockerWireGuard::new(
+                    "ployz-wireguard",
+                    network_dir,
+                    identity.private_key.clone(),
+                    overlay_ip,
+                )
+                .with_bridge_forward(local_api, overlay_api)
+                .build()
+                .await
+                .map_err(|e| format!("docker wireguard: {e}"))?;
+                Ok(Self::Docker(Arc::new(wg)))
+            }
+            Mode::HostExec | Mode::HostService => {
+                let ifname = format!("plz-{network_name}");
+                #[cfg(target_os = "linux")]
+                let wg = HostWireGuard::kernel(
+                    &ifname,
+                    identity.private_key.clone(),
+                    overlay_ip,
+                )
+                .map_err(|e| format!("host wireguard: {e}"))?;
+                #[cfg(not(target_os = "linux"))]
+                let wg = HostWireGuard::userspace(
+                    &ifname,
+                    identity.private_key.clone(),
+                    overlay_ip,
+                )
+                .map_err(|e| format!("host wireguard: {e}"))?;
+                Ok(Self::Host(Arc::new(wg)))
+            }
+        }
+    }
 }
 
 impl MeshNetwork for WireguardDriver {
@@ -81,6 +136,100 @@ pub enum StoreDriver {
         store: CorrosionStore,
         service: Arc<HostCorrosion>,
     },
+}
+
+fn which_corrosion() -> std::result::Result<PathBuf, String> {
+    let candidates = ["/usr/local/bin/corrosion", "/usr/bin/corrosion"];
+    for path in &candidates {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+    Err("corrosion binary not found (expected at /usr/local/bin/corrosion)".into())
+}
+
+impl StoreDriver {
+    pub async fn from_mode(
+        mode: Mode,
+        overlay_ip: OverlayIp,
+        network_dir: &Path,
+        bootstrap: &[String],
+        network_id: &str,
+    ) -> std::result::Result<Self, String> {
+        match mode {
+            Mode::Memory => Ok(Self::Memory {
+                store: Arc::new(MemoryStore::new()),
+                service: Arc::new(MemoryService::new()),
+            }),
+            Mode::Docker | Mode::HostExec | Mode::HostService => {
+                let paths = corrosion_config::Paths::new(network_dir);
+                let gossip_addr = SocketAddr::new(
+                    IpAddr::V6(overlay_ip.0),
+                    corrosion_config::DEFAULT_GOSSIP_PORT,
+                );
+                let api_addr = SocketAddr::new(
+                    IpAddr::V6(overlay_ip.0),
+                    corrosion_config::DEFAULT_API_PORT,
+                );
+
+                corrosion_config::write_config(
+                    &paths,
+                    SCHEMA_SQL,
+                    gossip_addr,
+                    api_addr,
+                    bootstrap,
+                    Some(network_id),
+                )
+                .map_err(|e| format!("write corrosion config: {e}"))?;
+
+                let corrosion = CorrosionStore::new(api_addr, match mode {
+                    Mode::Docker => {
+                        let local_api = SocketAddr::new(
+                            IpAddr::V4(Ipv4Addr::LOCALHOST),
+                            corrosion_config::DEFAULT_API_PORT,
+                        );
+                        Transport::Bridge { local_addr: local_api }
+                    }
+                    _ => Transport::Direct,
+                });
+
+                match mode {
+                    Mode::Docker => {
+                        let config_path = paths.config.to_string_lossy().into_owned();
+                        let dir_mount = paths.dir.to_string_lossy().into_owned();
+
+                        let service = DockerCorrosion::new(
+                            "ployz-corrosion",
+                            "ghcr.io/getployz/corrosion",
+                        )
+                        .cmd(vec!["agent".into(), "-c".into(), config_path])
+                        .volume(&dir_mount, &dir_mount)
+                        .network_mode("container:ployz-wireguard")
+                        .build()
+                        .await
+                        .map_err(|e| format!("docker service: {e}"))?;
+
+                        tracing::info!(endpoint = %api_addr, "store backend: corrosion (docker)");
+                        Ok(Self::Corrosion {
+                            store: corrosion,
+                            service: Arc::new(service),
+                        })
+                    }
+                    _ => {
+                        let binary = which_corrosion()?;
+                        let service = HostCorrosion::new(binary, &paths.config);
+
+                        tracing::info!(endpoint = %api_addr, "store backend: corrosion (host)");
+                        Ok(Self::CorrosionHost {
+                            store: corrosion,
+                            service: Arc::new(service),
+                        })
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl ServiceControl for StoreDriver {
@@ -151,6 +300,20 @@ impl MachineStore for StoreDriver {
             Self::Memory { store, .. } => store.subscribe_machines().await,
             Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
                 store.subscribe_machines().await
+            }
+        }
+    }
+
+    async fn update_heartbeat<'a>(
+        &'a self,
+        id: &'a MachineId,
+        status: MachineStatus,
+        timestamp: u64,
+    ) -> Result<()> {
+        match self {
+            Self::Memory { store, .. } => store.update_heartbeat(id, status, timestamp).await,
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store.update_heartbeat(id, status, timestamp).await
             }
         }
     }

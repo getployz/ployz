@@ -4,6 +4,7 @@ use ipnet::Ipv4Net;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
 pub struct MachineId(pub String);
@@ -53,6 +54,76 @@ impl fmt::Debug for PrivateKey {
 #[display("{_0}")]
 pub struct OverlayIp(pub Ipv6Addr);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MachineStatus {
+    Unknown,
+    Up,
+    Down,
+}
+
+impl Default for MachineStatus {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+impl fmt::Display for MachineStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unknown => f.write_str(""),
+            Self::Up => f.write_str("up"),
+            Self::Down => f.write_str("down"),
+        }
+    }
+}
+
+impl FromStr for MachineStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "" => Ok(Self::Unknown),
+            "up" => Ok(Self::Up),
+            "down" => Ok(Self::Down),
+            other => Err(format!("unknown machine status: {other:?}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Scheduling {
+    Disabled,
+    Enabled,
+    Draining,
+}
+
+impl Default for Scheduling {
+    fn default() -> Self {
+        Self::Disabled
+    }
+}
+
+impl fmt::Display for Scheduling {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Disabled => f.write_str(""),
+            Self::Enabled => f.write_str("enabled"),
+            Self::Draining => f.write_str("draining"),
+        }
+    }
+}
+
+impl FromStr for Scheduling {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "" => Ok(Self::Disabled),
+            "enabled" => Ok(Self::Enabled),
+            "draining" => Ok(Self::Draining),
+            other => Err(format!("unknown scheduling: {other:?}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MachineRecord {
     pub id: MachineId,
@@ -61,6 +132,11 @@ pub struct MachineRecord {
     pub subnet: Option<Ipv4Net>,
     pub bridge_ip: Option<OverlayIp>,
     pub endpoints: Vec<String>,
+    pub status: MachineStatus,
+    pub scheduling: Scheduling,
+    pub last_heartbeat: u64,
+    pub created_at: u64,
+    pub updated_at: u64,
 }
 
 impl MachineRecord {
@@ -141,6 +217,11 @@ impl JoinResponse {
             subnet: self.subnet,
             bridge_ip: None,
             endpoints: self.endpoints,
+            status: MachineStatus::Unknown,
+            scheduling: Scheduling::Disabled,
+            last_heartbeat: 0,
+            created_at: 0,
+            updated_at: 0,
         }
     }
 }

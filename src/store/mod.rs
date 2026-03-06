@@ -1,7 +1,7 @@
 pub mod network;
 
 use crate::error::Result;
-use crate::model::{InviteRecord, MachineEvent, MachineId, MachineRecord};
+use crate::model::{InviteRecord, MachineEvent, MachineId, MachineRecord, MachineStatus};
 use std::future::Future;
 use tokio::sync::mpsc;
 
@@ -21,6 +21,12 @@ pub trait MachineStore: Send + Sync {
     fn subscribe_machines(
         &self,
     ) -> impl Future<Output = Result<(Vec<MachineRecord>, mpsc::Receiver<MachineEvent>)>> + Send + '_;
+    fn update_heartbeat<'a>(
+        &'a self,
+        id: &'a MachineId,
+        status: MachineStatus,
+        timestamp: u64,
+    ) -> impl Future<Output = Result<()>> + Send + 'a;
 }
 
 pub trait InviteStore: Send + Sync {

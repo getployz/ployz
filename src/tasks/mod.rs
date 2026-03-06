@@ -1,7 +1,9 @@
 mod endpoint_refresh;
+mod heartbeat;
 mod peer_sync;
 
 pub(crate) use endpoint_refresh::run_endpoint_refresh_task;
+pub(crate) use heartbeat::run_heartbeat_task;
 pub(crate) use peer_sync::run_peer_sync_task;
 
 use crate::error::Error;

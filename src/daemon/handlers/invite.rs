@@ -4,6 +4,7 @@ use x25519_dalek::StaticSecret;
 use crate::model::InviteRecord;
 use crate::network::endpoints::detect_endpoints;
 use crate::node::invite::{issue_invite_token, parse_and_verify_invite_token};
+use crate::store::InviteStore;
 use crate::store::network::NetworkConfig;
 use crate::transport::DaemonResponse;
 
@@ -62,15 +63,15 @@ impl DaemonState {
             expires_at: invite.expires_at,
         };
 
-        match mesh.create_invite(&record).await {
+        match mesh.store.create_invite(&record).await {
             Ok(()) => self.ok(format!(
                 "invite imported\n  network: {}\n  invite:  {}",
                 invite.network_name, record.id
             )),
-            Err(crate::mesh::orchestrator::MeshError::Port(crate::Error::Operation {
+            Err(crate::Error::Operation {
                 operation,
                 ..
-            })) if operation == "invite_exists" => self.ok(format!(
+            }) if operation == "invite_exists" => self.ok(format!(
                 "invite already present\n  network: {}\n  invite:  {}",
                 invite.network_name, record.id
             )),
@@ -114,7 +115,7 @@ impl DaemonState {
             expires_at: claims.expires_at,
         };
 
-        mesh
+        mesh.store
             .create_invite(&record)
             .await
             .map_err(|e| format!("store invite: {e}"))?;

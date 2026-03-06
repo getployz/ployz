@@ -1,5 +1,8 @@
 use crate::error::{Error, Result};
-use crate::model::{InviteRecord, MachineEvent, MachineId, MachineRecord, OverlayIp, PublicKey};
+use crate::model::{
+    InviteRecord, MachineEvent, MachineId, MachineRecord, MachineStatus, OverlayIp, PublicKey,
+    Scheduling,
+};
 use crate::store::{InviteStore, MachineStore, SyncProbe, SyncStatus};
 use corro_api_types::{ExecResult, SqliteValue, Statement, TypedQueryEvent, sqlite::ChangeType};
 use futures_util::StreamExt;
@@ -67,7 +70,7 @@ impl MachineStore for CorrosionStore {
 
     async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
         let stmt = Statement::Simple(
-            "SELECT id, public_key, overlay_ip, subnet, bridge_ip, endpoints FROM machines ORDER BY id".to_string(),
+            "SELECT id, public_key, overlay_ip, subnet, bridge_ip, endpoints, status, scheduling, last_heartbeat, created_at, updated_at FROM machines ORDER BY id".to_string(),
         );
         query_rows(&self.client, &stmt, "list_machines")
             .await?
@@ -85,11 +88,15 @@ impl MachineStore for CorrosionStore {
             .map(|b| b.0.to_string())
             .unwrap_or_default();
         let stmt = Statement::WithParams(
-            "INSERT INTO machines (id, public_key, overlay_ip, subnet, bridge_ip, endpoints) \
-             VALUES (?, ?, ?, ?, ?, ?) \
+            "INSERT INTO machines (id, public_key, overlay_ip, subnet, bridge_ip, endpoints, status, scheduling, last_heartbeat, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET public_key=excluded.public_key, \
              overlay_ip=excluded.overlay_ip, subnet=excluded.subnet, \
-             bridge_ip=excluded.bridge_ip, endpoints=excluded.endpoints"
+             bridge_ip=excluded.bridge_ip, endpoints=excluded.endpoints, \
+             status=excluded.status, scheduling=excluded.scheduling, \
+             last_heartbeat=excluded.last_heartbeat, \
+             created_at=CASE WHEN excluded.created_at > 0 THEN excluded.created_at ELSE machines.created_at END, \
+             updated_at=excluded.updated_at"
                 .to_string(),
             vec![
                 record.id.0.clone().into(),
@@ -98,9 +105,33 @@ impl MachineStore for CorrosionStore {
                 subnet_str.into(),
                 bridge_str.into(),
                 endpoints.into(),
+                record.status.to_string().into(),
+                record.scheduling.to_string().into(),
+                (record.last_heartbeat as i64).into(),
+                (record.created_at as i64).into(),
+                (record.updated_at as i64).into(),
             ],
         );
         exec_one(&self.client, &[stmt], "upsert_machine").await
+    }
+
+    async fn update_heartbeat(
+        &self,
+        id: &MachineId,
+        status: MachineStatus,
+        timestamp: u64,
+    ) -> Result<()> {
+        let stmt = Statement::WithParams(
+            "UPDATE machines SET status = ?, last_heartbeat = ?, updated_at = ? WHERE id = ?"
+                .to_string(),
+            vec![
+                status.to_string().into(),
+                (timestamp as i64).into(),
+                (timestamp as i64).into(),
+                id.0.clone().into(),
+            ],
+        );
+        exec_one(&self.client, &[stmt], "update_heartbeat").await
     }
 
     async fn delete_machine(&self, id: &MachineId) -> Result<()> {
@@ -115,7 +146,7 @@ impl MachineStore for CorrosionStore {
         &self,
     ) -> Result<(Vec<MachineRecord>, mpsc::Receiver<MachineEvent>)> {
         let stmt = Statement::Simple(
-            "SELECT id, public_key, overlay_ip, subnet, bridge_ip, endpoints FROM machines ORDER BY id".to_string(),
+            "SELECT id, public_key, overlay_ip, subnet, bridge_ip, endpoints, status, scheduling, last_heartbeat, created_at, updated_at FROM machines ORDER BY id".to_string(),
         );
         let mut stream = self
             .client
@@ -363,10 +394,10 @@ fn into_machine_event(
 // --- row parsing ---
 
 fn parse_machine(row: &[SqliteValue]) -> Result<MachineRecord> {
-    if row.len() != 6 {
+    if row.len() != 11 {
         return Err(Error::operation(
             "parse_machine",
-            format!("expected 6 columns, got {}", row.len()),
+            format!("expected 11 columns, got {}", row.len()),
         ));
     }
 
@@ -376,6 +407,11 @@ fn parse_machine(row: &[SqliteValue]) -> Result<MachineRecord> {
     let subnet_str = text(&row[3], "subnet")?;
     let bridge_str = text(&row[4], "bridge_ip")?;
     let endpoints_json = text(&row[5], "endpoints")?;
+    let status_str = text(&row[6], "status")?;
+    let scheduling_str = text(&row[7], "scheduling")?;
+    let last_heartbeat = integer(&row[8], "last_heartbeat")? as u64;
+    let created_at = integer(&row[9], "created_at")? as u64;
+    let updated_at = integer(&row[10], "updated_at")? as u64;
 
     let public_key: [u8; 32] = key_blob.as_slice().try_into().map_err(|_| {
         Error::operation(
@@ -409,6 +445,13 @@ fn parse_machine(row: &[SqliteValue]) -> Result<MachineRecord> {
     let endpoints: Vec<String> = serde_json::from_str(&endpoints_json)
         .map_err(|e| Error::operation("parse_machine", format!("invalid endpoints json: {e}")))?;
 
+    let status: MachineStatus = status_str
+        .parse()
+        .map_err(|e| Error::operation("parse_machine", format!("invalid status: {e}")))?;
+    let scheduling: Scheduling = scheduling_str
+        .parse()
+        .map_err(|e| Error::operation("parse_machine", format!("invalid scheduling: {e}")))?;
+
     Ok(MachineRecord {
         id: MachineId(id),
         public_key: PublicKey(public_key),
@@ -416,7 +459,18 @@ fn parse_machine(row: &[SqliteValue]) -> Result<MachineRecord> {
         subnet,
         bridge_ip,
         endpoints,
+        status,
+        scheduling,
+        last_heartbeat,
+        created_at,
+        updated_at,
     })
+}
+
+fn integer(val: &SqliteValue, field: &'static str) -> Result<i64> {
+    val.as_integer()
+        .copied()
+        .ok_or_else(|| Error::operation("decode", format!("expected integer for '{field}'")))
 }
 
 fn text(val: &SqliteValue, field: &'static str) -> Result<String> {

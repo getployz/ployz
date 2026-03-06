@@ -3,10 +3,10 @@ use crate::drivers::{StoreDriver, WireguardDriver};
 use crate::error::Error as PortError;
 use crate::mesh::MeshNetwork;
 use crate::mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
-use crate::model::{MachineId, MachineRecord};
-use crate::store::{InviteStore, MachineStore, ServiceControl, SyncProbe, SyncStatus};
-use crate::tasks::{TaskSet, TaskSetError, run_endpoint_refresh_task, run_peer_sync_task};
-use std::time::Duration;
+use crate::model::{MachineId, MachineRecord, MachineStatus};
+use crate::store::{MachineStore, ServiceControl, SyncProbe, SyncStatus};
+use crate::tasks::{TaskSet, TaskSetError, run_endpoint_refresh_task, run_heartbeat_task, run_peer_sync_task};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
@@ -24,8 +24,8 @@ pub enum MeshError {
 
 pub struct Mesh {
     phase: Phase,
-    network: WireguardDriver,
-    store: StoreDriver,
+    pub network: WireguardDriver,
+    pub store: StoreDriver,
     container_network: Option<DockerBridgeNetwork>,
     tasks: Option<TaskSet>,
     bootstrap_interval: Duration,
@@ -88,25 +88,6 @@ impl Mesh {
         self.phase
     }
 
-    pub async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
-        self.store.list_machines().await.map_err(MeshError::from)
-    }
-
-    pub async fn upsert_machine(&self, record: &MachineRecord) -> Result<()> {
-        self.store.upsert_machine(record).await.map_err(MeshError::from)
-    }
-
-    pub async fn create_invite(&self, invite: &crate::model::InviteRecord) -> Result<()> {
-        self.store.create_invite(invite).await.map_err(MeshError::from)
-    }
-
-    pub async fn consume_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<()> {
-        self.store
-            .consume_invite(invite_id, now_unix_secs)
-            .await
-            .map_err(MeshError::from)
-    }
-
     fn apply(&mut self, event: PhaseEvent) -> Result<()> {
         let next = transition(self.phase, event)?;
         info!(from = %self.phase, to = %next, ?event, "phase transition");
@@ -117,34 +98,29 @@ impl Mesh {
     pub async fn up(&mut self) -> Result<()> {
         self.apply(PhaseEvent::UpRequested)?;
 
-        if let Err(e) = self.network.up().await {
-            warn!(?e, "network up failed");
-            self.apply(PhaseEvent::ComponentFailed)?;
-            return Err(e.into());
+        match self.bring_up().await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                warn!(?e, "startup failed, tearing down");
+                self.teardown().await;
+                self.apply(PhaseEvent::ComponentFailed)?;
+                Err(e)
+            }
         }
+    }
 
+    async fn bring_up(&mut self) -> Result<()> {
+        // 1. Network
+        self.network.up().await?;
         self.apply(PhaseEvent::NetworkReady)?;
 
-        // Create dual-stack Docker bridge network and connect the WG container
+        // 2. Container network (Docker only)
         if let Some(cn) = &self.container_network {
-            if let Err(e) = cn.ensure().await {
-                warn!(?e, "container network ensure failed");
-                let _ = self.network.down().await;
-                self.apply(PhaseEvent::ComponentFailed)?;
-                return Err(e.into());
-            }
-            if let Err(e) = cn.connect("ployz-wireguard", Some(cn.container_v4())).await {
-                warn!(?e, "connect WG container to bridge failed");
-                let _ = cn.remove().await;
-                let _ = self.network.down().await;
-                self.apply(PhaseEvent::ComponentFailed)?;
-                return Err(e.into());
-            }
+            cn.ensure().await?;
+            cn.connect("ployz-wireguard", Some(cn.container_v4())).await?;
         }
 
-        // Configure WG peers from seed records BEFORE starting corrosion.
-        // Corrosion's gossip immediately tries to reach bootstrap peers over
-        // overlay IPs, so the WG tunnel must already have those peers configured.
+        // 3. Pre-configure WG peers from seed records
         let pre_start_peers: Vec<_> = self
             .seed_records
             .iter()
@@ -155,82 +131,52 @@ impl Mesh {
             if let Err(e) = self.network.set_peers(&pre_start_peers).await {
                 warn!(?e, "pre-start peer sync failed");
             }
-
-            // Wait for at least one WG handshake before starting corrosion.
-            // Corrosion's gossip immediately tries to reach bootstrap peers over
-            // overlay IPs — if the tunnel isn't up yet, corrosion churns on 503s
-            // until the handshake completes (or times out).
-            if let Err(_) = self.wait_for_handshake().await {
-                warn!("no WG handshake within timeout, starting corrosion anyway");
+            if self.wait_for_handshake().await.is_err() {
+                warn!("no WG handshake within timeout, continuing anyway");
             }
         }
 
-        if let Err(e) = self.store.start().await {
-            warn!(?e, "service start failed");
-            let _ = self.network.down().await;
-            self.apply(PhaseEvent::ComponentFailed)?;
-            return Err(e.into());
-        }
+        // 4. Start store service
+        self.store.start().await?;
+        self.wait_service_ready().await?;
+        self.wait_store_init().await?;
 
-        if let Err(e) = self.wait_service_ready().await {
-            warn!(?e, "service readiness check failed");
-            let _ = self.store.stop().await;
-            let _ = self.network.down().await;
-            self.apply(PhaseEvent::ComponentFailed)?;
-            return Err(e);
-        }
-
-        if let Err(e) = self.wait_store_init().await {
-            warn!(?e, "store init failed");
-            let _ = self.store.stop().await;
-            let _ = self.network.down().await;
-            self.apply(PhaseEvent::ComponentFailed)?;
-            return Err(e.into());
-        }
-
-        // Patch the self record with the bridge overlay IP (if a bridge was started)
+        // 5. Patch bridge IP and seed records
         if let Some(bridge_ip) = self.network.bridge_ip().await {
-            if let Some(self_record) = self
-                .seed_records
-                .iter_mut()
-                .find(|m| m.id == self.machine_id)
-            {
+            if let Some(rec) = self.seed_records.iter_mut().find(|m| m.id == self.machine_id) {
                 debug!(%bridge_ip, "persisting bridge_ip to self record");
-                self_record.bridge_ip = Some(bridge_ip);
+                rec.bridge_ip = Some(bridge_ip);
             }
         }
-
         for record in &self.seed_records {
-            if let Err(e) = self.store.upsert_machine(record).await {
-                warn!(?e, id = %record.id, "failed to seed machine record");
-                let _ = self.store.stop().await;
-                let _ = self.network.down().await;
-                self.apply(PhaseEvent::ComponentFailed)?;
-                return Err(e.into());
-            }
+            self.store.upsert_machine(record).await?;
         }
 
-        let pre_bootstrap: Vec<_> = self
+        // 6. Initial peer sync from store
+        let peers: Vec<_> = self
             .store
             .list_machines()
             .await?
             .into_iter()
             .filter(|m| m.id != self.machine_id)
             .collect();
-        if let Err(e) = self.network.set_peers(&pre_bootstrap).await {
-            warn!(?e, "initial peer sync failed before bootstrap");
+        if let Err(e) = self.network.set_peers(&peers).await {
+            warn!(?e, "initial peer sync failed");
         }
 
         self.apply(PhaseEvent::ComponentsStarted)?;
 
-        if let Err(e) = self.bootstrap_gate().await {
-            warn!(?e, "bootstrap failed");
-            let _ = self.store.stop().await;
-            let _ = self.network.down().await;
-            self.apply(PhaseEvent::ComponentFailed)?;
-            return Err(e);
-        }
+        // 7. Bootstrap gate
+        self.bootstrap_gate().await?;
 
+        // 8. Spawn background tasks
+        self.spawn_background_tasks().await?;
+
+        info!(phase = %self.phase, "mesh up");
+        Ok(())
+    }
+
+    async fn spawn_background_tasks(&mut self) -> Result<()> {
         let (mut task_set, cancel) = TaskSet::new();
 
         let (snapshot, events) = self
@@ -248,6 +194,7 @@ impl Mesh {
             cancel,
         ));
 
+        let cancel3 = cancel2.clone();
         task_set.spawn(run_endpoint_refresh_task(
             self.machine_id.clone(),
             self.listen_port,
@@ -255,10 +202,35 @@ impl Mesh {
             cancel2,
         ));
 
-        self.tasks = Some(task_set);
+        task_set.spawn(run_heartbeat_task(
+            self.machine_id.clone(),
+            self.store.clone(),
+            cancel3,
+        ));
 
-        info!(phase = %self.phase, "mesh up");
+        self.tasks = Some(task_set);
         Ok(())
+    }
+
+    /// Idempotent teardown — stops whatever was started, ignores errors on
+    /// things not yet started.
+    async fn teardown(&mut self) {
+        if let Some(mut tasks) = self.tasks.take() {
+            if let Err(e) = tasks.stop().await {
+                warn!(?e, "task stop failed during teardown");
+            }
+        }
+        if let Err(e) = self.store.stop().await {
+            warn!(?e, "service stop failed during teardown");
+        }
+        if let Err(e) = self.network.down().await {
+            warn!(?e, "network down failed during teardown");
+        }
+        if let Some(cn) = &self.container_network {
+            if let Err(e) = cn.remove().await {
+                warn!(?e, "container network remove failed during teardown");
+            }
+        }
     }
 
     pub async fn detach(&mut self) -> Result<()> {
@@ -270,17 +242,28 @@ impl Mesh {
         Ok(())
     }
 
-    /// Full reverse teardown. Continues on errors, returns first.
     pub async fn destroy(&mut self) -> Result<()> {
         self.apply(PhaseEvent::DestroyRequested)?;
 
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if let Err(e) = self
+            .store
+            .update_heartbeat(&self.machine_id, MachineStatus::Down, now)
+            .await
+        {
+            warn!(?e, "failed to set status=down on destroy");
+        }
+
         let mut first_err: Option<MeshError> = None;
 
-        if let Some(mut tasks) = self.tasks.take()
-            && let Err(e) = tasks.stop().await
-        {
-            warn!(?e, "task stop failed during destroy");
-            first_err.get_or_insert(e.into());
+        if let Some(mut tasks) = self.tasks.take() {
+            if let Err(e) = tasks.stop().await {
+                warn!(?e, "task stop failed during destroy");
+                first_err.get_or_insert(e.into());
+            }
         }
 
         if let Err(e) = self.store.stop().await {

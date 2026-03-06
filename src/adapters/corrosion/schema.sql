@@ -8,7 +8,12 @@ CREATE TABLE IF NOT EXISTS machines (
     overlay_ip TEXT NOT NULL DEFAULT '',
     subnet TEXT NOT NULL DEFAULT '',
     bridge_ip TEXT NOT NULL DEFAULT '',
-    endpoints TEXT NOT NULL DEFAULT '[]'
+    endpoints TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT '',
+    scheduling TEXT NOT NULL DEFAULT '',
+    last_heartbeat INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS invites (

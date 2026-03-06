@@ -216,6 +216,11 @@ mod tests {
             subnet: None,
             bridge_ip: None,
             endpoints: vec!["10.0.0.1:51820".into()],
+            status: Default::default(),
+            scheduling: Default::default(),
+            last_heartbeat: 0,
+            created_at: 0,
+            updated_at: 0,
         };
         let config = render_full_config(&privkey, OverlayIp(Ipv6Addr::LOCALHOST), 51820, &[peer]);
         assert!(config.contains("[Peer]"));

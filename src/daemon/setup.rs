@@ -1,32 +1,17 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::path::{Path, PathBuf};
+use std::net::Ipv6Addr;
+use std::path::Path;
 use std::sync::Arc;
 
-use crate::adapters::corrosion::client::Transport;
 use crate::config::Mode;
+use crate::corrosion_config;
 use crate::drivers::{StoreDriver, WireguardDriver};
 use crate::mesh::orchestrator::Mesh;
-use crate::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
+use crate::model::{MachineId, MachineRecord, MachineStatus, OverlayIp, PublicKey, Scheduling};
 use crate::network::endpoints::detect_endpoints;
 use crate::store::network::NetworkConfig;
 use crate::workload::manager::DockerWorkloadManager;
-use crate::{
-    CorrosionStore, DockerCorrosion, DockerWireGuard, HostCorrosion, HostWireGuard, MemoryService,
-    MemoryStore, MemoryWireGuard, SCHEMA_SQL, corrosion_config,
-};
 
 use super::{ActiveMesh, DaemonState};
-
-fn which_corrosion() -> Result<PathBuf, String> {
-    let candidates = ["/usr/local/bin/corrosion", "/usr/bin/corrosion"];
-    for path in &candidates {
-        let p = PathBuf::from(path);
-        if p.exists() {
-            return Ok(p);
-        }
-    }
-    Err("corrosion binary not found (expected at /usr/local/bin/corrosion)".into())
-}
 
 /// Read machine records directly from corrosion's sqlite DB (bypassing the API).
 /// Used to pre-configure WG peers before corrosion starts, so the tunnel is ready
@@ -40,7 +25,7 @@ fn machines_from_db(network_dir: &Path) -> Result<Vec<MachineRecord>, String> {
     let conn = rusqlite::Connection::open(&db_path)
         .map_err(|e| format!("open corrosion db '{}': {e}", db_path.display()))?;
     let mut stmt = match conn.prepare(
-        "SELECT id, public_key, overlay_ip, subnet, bridge_ip, endpoints FROM machines ORDER BY id",
+        "SELECT id, public_key, overlay_ip, subnet, bridge_ip, endpoints, status, scheduling, last_heartbeat, created_at, updated_at FROM machines ORDER BY id",
     ) {
         Ok(stmt) => stmt,
         Err(rusqlite::Error::SqliteFailure(_, Some(message)))
@@ -64,13 +49,18 @@ fn machines_from_db(network_dir: &Path) -> Result<Vec<MachineRecord>, String> {
             let subnet: String = row.get("subnet")?;
             let bridge_ip: String = row.get("bridge_ip")?;
             let endpoints: String = row.get("endpoints")?;
-            Ok((id, public_key, overlay_ip, subnet, bridge_ip, endpoints))
+            let status: String = row.get("status")?;
+            let scheduling: String = row.get("scheduling")?;
+            let last_heartbeat: i64 = row.get("last_heartbeat")?;
+            let created_at: i64 = row.get("created_at")?;
+            let updated_at: i64 = row.get("updated_at")?;
+            Ok((id, public_key, overlay_ip, subnet, bridge_ip, endpoints, status, scheduling, last_heartbeat, created_at, updated_at))
         })
         .map_err(|e| format!("query machines_from_db '{}': {e}", db_path.display()))?;
 
     let mut records = Vec::new();
     for row in rows {
-        let (id, public_key, overlay_ip, subnet, bridge_ip, endpoints) = row
+        let (id, public_key, overlay_ip, subnet, bridge_ip, endpoints, status, scheduling, last_heartbeat, created_at, updated_at) = row
             .map_err(|e| format!("read machine row from '{}': {e}", db_path.display()))?;
 
         if overlay_ip.is_empty() {
@@ -102,6 +92,11 @@ fn machines_from_db(network_dir: &Path) -> Result<Vec<MachineRecord>, String> {
             subnet: subnet_parsed,
             bridge_ip: bridge_parsed,
             endpoints: endpoints_parsed,
+            status: status.parse().unwrap_or(MachineStatus::Unknown),
+            scheduling: scheduling.parse().unwrap_or(Scheduling::Disabled),
+            last_heartbeat: last_heartbeat as u64,
+            created_at: created_at as u64,
+            updated_at: updated_at as u64,
         });
     }
 
@@ -148,87 +143,29 @@ impl DaemonState {
         options: MeshStartOptions,
     ) -> Result<(), String> {
         let network_dir = self.network_dir(&net_config.name.0);
-        let corrosion_bootstrap: Vec<String> = bootstrap
-            .as_ref()
-            .and_then(|bs| {
-                Some(vec![format!(
-                    "[{}]:{}",
-                    bs.peer_overlay_ip,
-                    corrosion_config::DEFAULT_GOSSIP_PORT
-                )])
-            })
-            .unwrap_or(corrosion_bootstrap_from_db(
-                &network_dir,
-                &self.identity.machine_id,
-            )?);
+        let bootstrap_addrs = resolve_bootstrap_addrs(
+            &network_dir,
+            &self.identity.machine_id,
+            &bootstrap,
+        )?;
 
-        let (network, store) = match self.mode {
-            Mode::Memory => {
-                let network = WireguardDriver::Memory(Arc::new(MemoryWireGuard::new()));
-                let store = StoreDriver::Memory {
-                    store: Arc::new(MemoryStore::new()),
-                    service: Arc::new(MemoryService::new()),
-                };
-                (network, store)
-            }
-            Mode::Docker => {
-                let api_port = corrosion_config::DEFAULT_API_PORT;
-                let overlay_api = SocketAddr::new(IpAddr::V6(net_config.overlay_ip.0), api_port);
-                let local_api = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), api_port);
+        let network = WireguardDriver::from_mode(
+            self.mode,
+            &self.identity,
+            net_config.overlay_ip,
+            &network_dir,
+            &net_config.name.0,
+        )
+        .await?;
 
-                let wg = DockerWireGuard::new(
-                    "ployz-wireguard",
-                    &network_dir,
-                    self.identity.private_key.clone(),
-                    net_config.overlay_ip,
-                )
-                .with_bridge_forward(local_api, overlay_api)
-                .build()
-                .await
-                .map_err(|e| format!("docker wireguard: {e}"))?;
-                let network = WireguardDriver::Docker(Arc::new(wg));
-
-                let transport = Transport::Bridge { local_addr: local_api };
-                let store = self
-                    .build_corrosion_store_docker(
-                        &network_dir,
-                        net_config.overlay_ip,
-                        transport,
-                        &corrosion_bootstrap,
-                        &net_config.id.0,
-                    )
-                    .await?;
-                (network, store)
-            }
-            Mode::HostExec | Mode::HostService => {
-                let ifname = format!("plz-{}", net_config.name.0);
-                #[cfg(target_os = "linux")]
-                let wg = HostWireGuard::kernel(
-                    &ifname,
-                    self.identity.private_key.clone(),
-                    net_config.overlay_ip,
-                )
-                .map_err(|e| format!("host wireguard: {e}"))?;
-                #[cfg(not(target_os = "linux"))]
-                let wg = HostWireGuard::userspace(
-                    &ifname,
-                    self.identity.private_key.clone(),
-                    net_config.overlay_ip,
-                )
-                .map_err(|e| format!("host wireguard: {e}"))?;
-                let network = WireguardDriver::Host(Arc::new(wg));
-
-                let transport = Transport::Direct;
-                let store = self.build_corrosion_store_host(
-                    &network_dir,
-                    net_config.overlay_ip,
-                    transport,
-                    &corrosion_bootstrap,
-                    &net_config.id.0,
-                )?;
-                (network, store)
-            }
-        };
+        let store = StoreDriver::from_mode(
+            self.mode,
+            net_config.overlay_ip,
+            &network_dir,
+            &bootstrap_addrs,
+            &net_config.id.0,
+        )
+        .await?;
 
         // Save backbone reference for workload manager before mesh takes ownership
         let backbone_ref = match &network {
@@ -250,44 +187,15 @@ impl DaemonState {
             _ => None,
         };
 
-        // Pre-load machine records from corrosion's sqlite DB so WG peers are
-        // configured before corrosion starts. Without this, corrosion's gossip
-        // tries to reach bootstrap peers over overlay IPs that WG doesn't know
-        // about yet, causing a 503 storm until set_peers runs post-store-init.
-        let mut seed_records = machines_from_db(&network_dir).unwrap_or_else(|e| {
-            tracing::warn!(?e, "failed to pre-load machines from db, starting fresh");
-            Vec::new()
-        });
-
-        if let Some(ref bs) = bootstrap {
-            seed_records.push(MachineRecord {
-                id: MachineId(bs.peer_id.clone()),
-                public_key: PublicKey(bs.peer_wg_public_key),
-                overlay_ip: OverlayIp(bs.peer_overlay_ip),
-                subnet: None,
-                bridge_ip: None,
-                endpoints: bs.peer_endpoints.clone(),
-            });
-        }
-
         let listen_port = crate::adapters::wireguard::DEFAULT_LISTEN_PORT;
-        let endpoints = detect_endpoints(listen_port).await;
-        let self_record = MachineRecord {
-            id: self.identity.machine_id.clone(),
-            public_key: self.identity.public_key.clone(),
-            overlay_ip: net_config.overlay_ip,
-            subnet: Some(net_config.subnet),
-            bridge_ip: None,
-            endpoints,
-        };
-        if let Some(existing) = seed_records
-            .iter_mut()
-            .find(|m| m.id == self_record.id)
-        {
-            *existing = self_record;
-        } else {
-            seed_records.push(self_record);
-        }
+        let seed_records = build_seed_records(
+            &network_dir,
+            &self.identity,
+            &net_config,
+            bootstrap.as_ref(),
+            listen_port,
+        )
+        .await;
 
         let mut mesh = Mesh::new(
             network,
@@ -303,30 +211,13 @@ impl DaemonState {
             .await
             .map_err(|e| format!("failed to start network: {e}"))?;
 
-        // Build workload manager for Docker mode (after mesh is up so bridge + backbone are ready)
-        let workload_manager = match backbone_ref {
-            Some(backbone) => {
-                let bridge = Arc::new(
-                    crate::adapters::docker_network::DockerBridgeNetwork::new(
-                        &net_config.name.0,
-                        net_config.subnet,
-                    )
-                    .await
-                    .map_err(|e| format!("workload bridge: {e}"))?,
-                );
-                Some(
-                    DockerWorkloadManager::new(
-                        self.identity.machine_id.clone(),
-                        net_config.subnet,
-                        self.cluster_cidr.clone(),
-                        backbone,
-                        bridge,
-                    )
-                    .map_err(|e| format!("workload manager: {e}"))?,
-                )
-            }
-            None => None,
-        };
+        let workload_manager = build_workload_manager(
+            backbone_ref,
+            &self.identity,
+            &net_config,
+            &self.cluster_cidr,
+        )
+        .await?;
 
         let network_name = net_config.name.0.clone();
         self.active = Some(ActiveMesh {
@@ -337,89 +228,103 @@ impl DaemonState {
         self.write_active_marker(&network_name);
         Ok(())
     }
+}
 
-    /// Build Corrosion store for Docker mode.
-    /// Corrosion config uses overlay_ip (container-side), client uses transport for actual connection.
-    async fn build_corrosion_store_docker(
-        &self,
-        network_dir: &std::path::Path,
-        overlay_ip: crate::model::OverlayIp,
-        transport: Transport,
-        bootstrap: &[String],
-        network_id: &str,
-    ) -> Result<StoreDriver, String> {
-        let paths = corrosion_config::Paths::new(network_dir);
-        let gossip_addr =
-            SocketAddr::new(IpAddr::V6(overlay_ip.0), corrosion_config::DEFAULT_GOSSIP_PORT);
-        let api_addr =
-            SocketAddr::new(IpAddr::V6(overlay_ip.0), corrosion_config::DEFAULT_API_PORT);
-
-        corrosion_config::write_config(
-            &paths,
-            SCHEMA_SQL,
-            gossip_addr,
-            api_addr,
-            bootstrap,
-            Some(network_id),
-        )
-        .map_err(|e| format!("write corrosion config: {e}"))?;
-
-        let config_path = paths.config.to_string_lossy().into_owned();
-        let dir_mount = paths.dir.to_string_lossy().into_owned();
-
-        let service = DockerCorrosion::new("ployz-corrosion", "ghcr.io/getployz/corrosion")
-            .cmd(vec!["agent".into(), "-c".into(), config_path])
-            .volume(&dir_mount, &dir_mount)
-            .network_mode("container:ployz-wireguard")
-            .build()
-            .await
-            .map_err(|e| format!("docker service: {e}"))?;
-
-        let corrosion = CorrosionStore::new(api_addr, transport.clone());
-
-        tracing::info!(endpoint = %api_addr, ?transport, "store backend: corrosion (docker)");
-
-        Ok(StoreDriver::Corrosion {
-            store: corrosion,
-            service: Arc::new(service),
+fn resolve_bootstrap_addrs(
+    network_dir: &Path,
+    machine_id: &MachineId,
+    bootstrap: &Option<BootstrapInfo>,
+) -> Result<Vec<String>, String> {
+    Ok(bootstrap
+        .as_ref()
+        .map(|bs| {
+            vec![format!(
+                "[{}]:{}",
+                bs.peer_overlay_ip,
+                corrosion_config::DEFAULT_GOSSIP_PORT
+            )]
         })
+        .unwrap_or(corrosion_bootstrap_from_db(network_dir, machine_id)?))
+}
+
+async fn build_seed_records(
+    network_dir: &Path,
+    identity: &crate::node::identity::Identity,
+    net_config: &NetworkConfig,
+    bootstrap: Option<&BootstrapInfo>,
+    listen_port: u16,
+) -> Vec<MachineRecord> {
+    let mut seed_records = machines_from_db(network_dir).unwrap_or_else(|e| {
+        tracing::warn!(?e, "failed to pre-load machines from db, starting fresh");
+        Vec::new()
+    });
+
+    if let Some(bs) = bootstrap {
+        seed_records.push(MachineRecord {
+            id: MachineId(bs.peer_id.clone()),
+            public_key: PublicKey(bs.peer_wg_public_key),
+            overlay_ip: OverlayIp(bs.peer_overlay_ip),
+            subnet: None,
+            bridge_ip: None,
+            endpoints: bs.peer_endpoints.clone(),
+            status: MachineStatus::Unknown,
+            scheduling: Scheduling::Disabled,
+            last_heartbeat: 0,
+            created_at: 0,
+            updated_at: 0,
+        });
     }
 
-    /// Build Corrosion store for Host modes using the native corrosion binary.
-    fn build_corrosion_store_host(
-        &self,
-        network_dir: &std::path::Path,
-        overlay_ip: crate::model::OverlayIp,
-        transport: Transport,
-        bootstrap: &[String],
-        network_id: &str,
-    ) -> Result<StoreDriver, String> {
-        let paths = corrosion_config::Paths::new(network_dir);
-        let gossip_addr =
-            SocketAddr::new(IpAddr::V6(overlay_ip.0), corrosion_config::DEFAULT_GOSSIP_PORT);
-        let api_addr =
-            SocketAddr::new(IpAddr::V6(overlay_ip.0), corrosion_config::DEFAULT_API_PORT);
+    let endpoints = detect_endpoints(listen_port).await;
+    let self_record = MachineRecord {
+        id: identity.machine_id.clone(),
+        public_key: identity.public_key.clone(),
+        overlay_ip: net_config.overlay_ip,
+        subnet: Some(net_config.subnet),
+        bridge_ip: None,
+        endpoints,
+        status: MachineStatus::Unknown,
+        scheduling: Scheduling::Disabled,
+        last_heartbeat: 0,
+        created_at: 0,
+        updated_at: 0,
+    };
+    if let Some(existing) = seed_records.iter_mut().find(|m| m.id == self_record.id) {
+        *existing = self_record;
+    } else {
+        seed_records.push(self_record);
+    }
 
-        corrosion_config::write_config(
-            &paths,
-            SCHEMA_SQL,
-            gossip_addr,
-            api_addr,
-            bootstrap,
-            Some(network_id),
-        )
-        .map_err(|e| format!("write corrosion config: {e}"))?;
+    seed_records
+}
 
-        let binary = which_corrosion().map_err(|e| format!("corrosion binary: {e}"))?;
-        let service = HostCorrosion::new(binary, &paths.config);
-
-        let corrosion = CorrosionStore::new(api_addr, transport.clone());
-
-        tracing::info!(endpoint = %api_addr, ?transport, "store backend: corrosion (host)");
-
-        Ok(StoreDriver::CorrosionHost {
-            store: corrosion,
-            service: Arc::new(service),
-        })
+async fn build_workload_manager(
+    backbone_ref: Option<Arc<crate::adapters::wireguard::DockerWireGuard>>,
+    identity: &crate::node::identity::Identity,
+    net_config: &NetworkConfig,
+    cluster_cidr: &str,
+) -> Result<Option<DockerWorkloadManager>, String> {
+    match backbone_ref {
+        Some(backbone) => {
+            let bridge = Arc::new(
+                crate::adapters::docker_network::DockerBridgeNetwork::new(
+                    &net_config.name.0,
+                    net_config.subnet,
+                )
+                .await
+                .map_err(|e| format!("workload bridge: {e}"))?,
+            );
+            Ok(Some(
+                DockerWorkloadManager::new(
+                    identity.machine_id.clone(),
+                    net_config.subnet,
+                    cluster_cidr.to_string(),
+                    backbone,
+                    bridge,
+                )
+                .map_err(|e| format!("workload manager: {e}"))?,
+            ))
+        }
+        None => Ok(None),
     }
 }
