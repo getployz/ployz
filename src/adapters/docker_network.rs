@@ -5,7 +5,7 @@ use bollard::models::{
 };
 use ipnet::Ipv4Net;
 use std::net::Ipv4Addr;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::error::{Error, Result};
 use crate::network::ipam::{container_ip, machine_ip};
@@ -83,6 +83,45 @@ impl DockerBridgeNetwork {
 
     /// Connect a container to this network at a specific IPv4 address.
     pub async fn connect(&self, container: &str, ipv4: Option<Ipv4Addr>) -> Result<()> {
+        match self.docker.inspect_container(container, None).await {
+            Ok(details) => {
+                if let Some(networks) = details
+                    .network_settings
+                    .and_then(|ns| ns.networks)
+                    && let Some(endpoint) = networks.get(&self.name)
+                {
+                    let connected_ip = endpoint
+                        .ip_address
+                        .as_deref()
+                        .and_then(|s| s.parse::<Ipv4Addr>().ok());
+
+                    if ipv4.is_none() || connected_ip == ipv4 {
+                        info!(
+                            network = %self.name,
+                            container,
+                            connected_ipv4 = ?connected_ip,
+                            requested_ipv4 = ?ipv4,
+                            "container already connected to network"
+                        );
+                        return Ok(());
+                    }
+
+                    warn!(
+                        network = %self.name,
+                        container,
+                        connected_ipv4 = ?connected_ip,
+                        requested_ipv4 = ?ipv4,
+                        "container already connected with different IPv4"
+                    );
+                    return Ok(());
+                }
+            }
+            Err(bollard::errors::Error::DockerResponseServerError { status_code: 404, .. }) => {}
+            Err(e) => {
+                return Err(Error::operation("inspect container", e.to_string()));
+            }
+        }
+
         let endpoint_config = EndpointSettings {
             ipam_config: ipv4.map(|ip| EndpointIpamConfig {
                 ipv4_address: Some(ip.to_string()),
@@ -96,18 +135,30 @@ impl DockerBridgeNetwork {
             endpoint_config: Some(endpoint_config),
         };
 
-        self.docker
-            .connect_network(&self.name, config)
-            .await
-            .map_err(|e| Error::operation("connect network", e.to_string()))?;
-
-        info!(
-            network = %self.name,
-            container,
-            ipv4 = ?ipv4,
-            "connected container to network"
-        );
-        Ok(())
+        match self.docker.connect_network(&self.name, config).await {
+            Ok(()) => {
+                info!(
+                    network = %self.name,
+                    container,
+                    ipv4 = ?ipv4,
+                    "connected container to network"
+                );
+                Ok(())
+            }
+            Err(bollard::errors::Error::DockerResponseServerError { status_code: 403, message })
+                if message.contains("already exists in network") =>
+            {
+                info!(
+                    network = %self.name,
+                    container,
+                    ipv4 = ?ipv4,
+                    %message,
+                    "container already connected to network"
+                );
+                Ok(())
+            }
+            Err(e) => Err(Error::operation("connect network", e.to_string())),
+        }
     }
 
     /// Remove the network, ignoring 404 (already removed).

@@ -16,6 +16,8 @@ pub enum DaemonRequest {
     MachineAdd { target: String },
     MachineInviteCreate { ttl_secs: u64 },
     MachineInviteImport { token: String },
+    MeshSelfRecord,
+    MeshAccept { response: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

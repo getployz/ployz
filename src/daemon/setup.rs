@@ -1,4 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::config::Mode;
@@ -9,11 +10,22 @@ use crate::network::endpoints::detect_endpoints;
 use crate::store::MachineStore;
 use crate::store::network::NetworkConfig;
 use crate::{
-    CorrosionStore, DockerCorrosion, DockerWireGuard, HostWireGuard, MemoryService, MemoryStore,
-    MemoryWireGuard, SCHEMA_SQL, corrosion_config,
+    CorrosionStore, DockerCorrosion, DockerWireGuard, HostCorrosion, HostWireGuard, MemoryService,
+    MemoryStore, MemoryWireGuard, SCHEMA_SQL, corrosion_config,
 };
 
 use super::{ActiveMesh, DaemonState};
+
+fn which_corrosion() -> Result<PathBuf, String> {
+    let candidates = ["/usr/local/bin/corrosion", "/usr/bin/corrosion"];
+    for path in &candidates {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+    Err("corrosion binary not found (expected at /usr/local/bin/corrosion)".into())
+}
 
 pub struct BootstrapInfo {
     pub peer_id: String,
@@ -82,14 +94,23 @@ impl DaemonState {
                 (network, store)
             }
             Mode::HostExec | Mode::HostService => {
+                let ifname = format!("plz-{}", net_config.name.0);
+                #[cfg(target_os = "linux")]
+                let wg = HostWireGuard::kernel(
+                    &ifname,
+                    self.identity.private_key.clone(),
+                    net_config.overlay_ip,
+                )
+                .map_err(|e| format!("host wireguard: {e}"))?;
+                #[cfg(not(target_os = "linux"))]
                 let wg = HostWireGuard::userspace(
-                    "utun8",
+                    &ifname,
                     self.identity.private_key.clone(),
                     net_config.overlay_ip,
                 )
                 .map_err(|e| format!("host wireguard: {e}"))?;
                 let network = WireguardDriver::Host(Arc::new(wg));
-                let store = self.build_corrosion_store_direct(net_config.overlay_ip, &corrosion_bootstrap, &net_config.id.0).await?;
+                let store = self.build_corrosion_store_host(net_config.overlay_ip, &corrosion_bootstrap, &net_config.id.0)?;
                 (network, store)
             }
         };
@@ -97,8 +118,7 @@ impl DaemonState {
         tracing::info!(mode = ?self.mode, "starting mesh");
 
         let container_network = match self.mode {
-            Mode::Memory => None,
-            _ => Some(
+            Mode::Docker => Some(
                 crate::adapters::docker_network::DockerBridgeNetwork::new(
                     &net_config.name.0,
                     net_config.subnet,
@@ -106,6 +126,7 @@ impl DaemonState {
                 .await
                 .map_err(|e| format!("docker bridge network: {e}"))?,
             ),
+            _ => None,
         };
 
         let overlay_ip = net_config.overlay_ip;
@@ -201,8 +222,8 @@ impl DaemonState {
         })
     }
 
-    /// Build Corrosion store for Host modes with direct overlay access.
-    async fn build_corrosion_store_direct(
+    /// Build Corrosion store for Host modes using the native corrosion binary.
+    fn build_corrosion_store_host(
         &self,
         overlay_ip: crate::model::OverlayIp,
         bootstrap: &[String],
@@ -215,25 +236,16 @@ impl DaemonState {
         corrosion_config::write_config(&paths, SCHEMA_SQL, gossip_addr, api_addr, bootstrap, Some(network_id))
             .map_err(|e| format!("write corrosion config: {e}"))?;
 
-        let config_path = paths.config.to_string_lossy().into_owned();
-        let dir_mount = paths.dir.to_string_lossy().into_owned();
+        let binary = which_corrosion().map_err(|e| format!("corrosion binary: {e}"))?;
+        let service = HostCorrosion::new(binary, &paths.config);
 
-        let service = DockerCorrosion::new("ployz-corrosion", "ghcr.io/getployz/corrosion")
-            .cmd(vec!["agent".into(), "-c".into(), config_path])
-            .volume(&dir_mount, &dir_mount)
-            .network_mode("container:ployz-wireguard")
-            .build()
-            .await
-            .map_err(|e| format!("docker service: {e}"))?;
-
-        // Host connects directly to overlay IP
         let endpoint = api_addr.to_string();
         let corrosion = CorrosionStore::new(&endpoint, &paths.db)
             .map_err(|e| format!("corrosion store: {e}"))?;
 
-        tracing::info!(%endpoint, "store backend: corrosion (direct)");
+        tracing::info!(%endpoint, "store backend: corrosion (host)");
 
-        Ok(StoreDriver::Corrosion {
+        Ok(StoreDriver::CorrosionHost {
             store: corrosion,
             service: Arc::new(service),
         })

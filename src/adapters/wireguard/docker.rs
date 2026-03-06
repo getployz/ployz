@@ -154,6 +154,17 @@ impl DockerWireGuard {
         Ok(())
     }
 
+    async fn container_running(&self) -> bool {
+        match self
+            .docker
+            .inspect_container(&self.container_name, None)
+            .await
+        {
+            Ok(info) => info.state.and_then(|s| s.running).unwrap_or(false),
+            Err(_) => false,
+        }
+    }
+
     async fn remove_existing(&self) {
         let options = RemoveContainerOptionsBuilder::default()
             .force(true)
@@ -237,6 +248,104 @@ impl DockerWireGuard {
         Ok(())
     }
 
+    async fn exec_in_container_capture(&self, cmd: &[&str]) -> Result<String> {
+        let exec = self
+            .docker
+            .create_exec(
+                &self.container_name,
+                CreateExecOptions::<String> {
+                    attach_stdout: Some(true),
+                    attach_stderr: Some(true),
+                    cmd: Some(cmd.iter().map(|s| s.to_string()).collect()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| Error::operation("docker exec create", e.to_string()))?;
+
+        let exec_id = exec.id.clone();
+
+        let mut stdout_buf = String::new();
+        let mut stderr_buf = String::new();
+
+        match self
+            .docker
+            .start_exec(&exec.id, None)
+            .await
+            .map_err(|e| Error::operation("docker exec start", e.to_string()))?
+        {
+            StartExecResults::Attached { mut output, .. } => {
+                while let Some(result) = output.next().await {
+                    match result {
+                        Ok(bollard::container::LogOutput::StdOut { message }) => {
+                            stdout_buf.push_str(&String::from_utf8_lossy(&message));
+                        }
+                        Ok(bollard::container::LogOutput::StdErr { message }) => {
+                            stderr_buf.push_str(&String::from_utf8_lossy(&message));
+                        }
+                        Err(e) => {
+                            return Err(Error::operation("docker exec", e.to_string()));
+                        }
+                        _ => {}
+                    }
+                }
+
+                let inspect = self
+                    .docker
+                    .inspect_exec(&exec_id)
+                    .await
+                    .map_err(|e| Error::operation("docker exec inspect", e.to_string()))?;
+
+                if let Some(code) = inspect.exit_code
+                    && code != 0
+                {
+                    let detail = if stderr_buf.is_empty() {
+                        format!("exit code {code}")
+                    } else {
+                        format!("exit code {code}: {}", stderr_buf.trim())
+                    };
+                    return Err(Error::operation("docker exec", detail));
+                }
+            }
+            StartExecResults::Detached => {}
+        }
+
+        Ok(stdout_buf)
+    }
+
+    async fn log_interface_diagnostics(&self, stage: &str) {
+        let listen_port = self
+            .exec_in_container_capture(&["wg", "show", INTERFACE_NAME, "listen-port"])
+            .await;
+        let peers = self
+            .exec_in_container_capture(&["wg", "show", INTERFACE_NAME, "peers"])
+            .await;
+        let latest_handshakes = self
+            .exec_in_container_capture(&["wg", "show", INTERFACE_NAME, "latest-handshakes"])
+            .await;
+
+        match (listen_port, peers, latest_handshakes) {
+            (Ok(lp), Ok(ps), Ok(hs)) => {
+                info!(
+                    stage,
+                    listen_port = lp.trim(),
+                    peers = ps.trim(),
+                    latest_handshakes = hs.trim(),
+                    "wireguard diagnostics"
+                );
+            }
+            (lp, ps, hs) => {
+                warn!(
+                    stage,
+                    listen_port = ?lp.as_ref().map(|s| s.trim()),
+                    peers = ?ps.as_ref().map(|s| s.trim()),
+                    latest_handshakes = ?hs.as_ref().map(|s| s.trim()),
+                    "wireguard diagnostics unavailable"
+                );
+            }
+        }
+    }
+
     async fn setup_interface(&self) -> Result<()> {
         let key_path = self.paths.private_key_file.to_string_lossy().into_owned();
         let overlay = format!("{}/128", self.overlay_ip.0);
@@ -275,6 +384,12 @@ impl DockerWireGuard {
         .await?;
 
         Ok(())
+    }
+
+    async fn interface_ready(&self) -> bool {
+        self.exec_in_container_capture(&["wg", "show", INTERFACE_NAME, "listen-port"])
+            .await
+            .is_ok()
     }
 
     /// Start the overlay bridge and register it as a WG peer on the container.
@@ -345,6 +460,17 @@ impl MeshNetwork for DockerWireGuard {
         write_private_key(&self.paths, &self.private_key)
             .map_err(|e| Error::operation("write private key", e.to_string()))?;
 
+        if self.container_running().await && self.interface_ready().await {
+            info!(name = %self.container_name, "adopting existing wireguard container");
+            self.log_interface_diagnostics("adopt_existing_before_start_bridge")
+                .await;
+            self.start_bridge().await?;
+            self.log_interface_diagnostics("adopt_existing_after_start_bridge")
+                .await;
+            info!(name = %self.container_name, "wireguard container adopted");
+            return Ok(());
+        }
+
         if let Err(e) = self.pull_image().await {
             warn!(?e, image = %self.image, "pull failed, trying cached image");
         }
@@ -406,9 +532,11 @@ impl MeshNetwork for DockerWireGuard {
             .map_err(|e| Error::operation("docker start", e.to_string()))?;
 
         self.setup_interface().await?;
+        self.log_interface_diagnostics("after_setup_interface").await;
 
         // Start overlay bridge after WG interface is up
         self.start_bridge().await?;
+        self.log_interface_diagnostics("after_start_bridge").await;
 
         info!(name = %self.container_name, "wireguard container started");
         Ok(())

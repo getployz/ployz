@@ -30,6 +30,8 @@ impl DaemonState {
             DaemonRequest::MachineInviteImport { token } => {
                 self.handle_machine_invite_import(&token).await
             }
+            DaemonRequest::MeshSelfRecord => self.handle_mesh_self_record().await,
+            DaemonRequest::MeshAccept { response } => self.handle_mesh_accept(&response).await,
         }
     }
 }

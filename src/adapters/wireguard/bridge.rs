@@ -1,6 +1,9 @@
 use crate::model::{OverlayIp, PublicKey, management_ip_from_key};
 use std::collections::VecDeque;
 use std::net::{Ipv6Addr, SocketAddr};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
@@ -17,6 +20,69 @@ const WG_MTU: usize = 1420;
 const TCP_BUF_SIZE: usize = 65535;
 const POLL_INTERVAL_MS: u64 = 50;
 const MAX_WG_PACKET: usize = 2048;
+
+struct BridgeDiag {
+    started_at: Instant,
+    timer_writes: AtomicU64,
+    handshake_writes: AtomicU64,
+    data_writes: AtomicU64,
+    recv_packets: AtomicU64,
+    recv_refused: AtomicU64,
+    tunnel_packets: AtomicU64,
+}
+
+impl BridgeDiag {
+    fn new() -> Self {
+        Self {
+            started_at: Instant::now(),
+            timer_writes: AtomicU64::new(0),
+            handshake_writes: AtomicU64::new(0),
+            data_writes: AtomicU64::new(0),
+            recv_packets: AtomicU64::new(0),
+            recv_refused: AtomicU64::new(0),
+            tunnel_packets: AtomicU64::new(0),
+        }
+    }
+
+    fn uptime_ms(&self) -> u128 {
+        self.started_at.elapsed().as_millis()
+    }
+
+    fn mark_handshake_send(&self) {
+        self.handshake_writes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn mark_timer_send(&self) {
+        self.timer_writes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn mark_data_send(&self) {
+        self.data_writes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn mark_recv_packet(&self) {
+        self.recv_packets.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn mark_refused(&self) -> u64 {
+        self.recv_refused.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    fn mark_tunnel_packet(&self) -> u64 {
+        self.tunnel_packets.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    fn snapshot(&self) -> (u64, u64, u64, u64, u64, u64) {
+        (
+            self.handshake_writes.load(Ordering::Relaxed),
+            self.timer_writes.load(Ordering::Relaxed),
+            self.data_writes.load(Ordering::Relaxed),
+            self.recv_packets.load(Ordering::Relaxed),
+            self.recv_refused.load(Ordering::Relaxed),
+            self.tunnel_packets.load(Ordering::Relaxed),
+        )
+    }
+}
 
 /// Bidirectional overlay bridge using boringtun (WireGuard) + smoltcp (userspace TCP/IP).
 pub struct OverlayBridge {
@@ -84,7 +150,8 @@ impl OverlayBridge {
         // Bind UDP socket for WireGuard tunnel
         let udp = UdpSocket::bind("0.0.0.0:0").await?;
         udp.connect(peer_endpoint).await?;
-        info!(%peer_endpoint, bridge_ip = %overlay_ip, "bridge tunnel started");
+        let udp_local = udp.local_addr().ok();
+        info!(%peer_endpoint, ?udp_local, bridge_ip = %overlay_ip, "bridge tunnel started");
 
         let bridge_ip_v6 = overlay_ip.0;
         let inbound_rules = inbound.clone();
@@ -220,6 +287,8 @@ async fn bridge_event_loop(
     listeners: Vec<(TcpListener, SocketAddr)>,
     _inbound_rules: Vec<InboundForward>,
 ) -> std::io::Result<()> {
+    let diag = Arc::new(BridgeDiag::new());
+
     // Create boringtun tunnel
     let mut tunn = Tunn::new(bridge_secret, container_pubkey, None, None, 0, None);
 
@@ -261,6 +330,7 @@ async fn bridge_event_loop(
     let mut handshake_buf = vec![0u8; MAX_WG_PACKET];
     match tunn.format_handshake_initiation(&mut handshake_buf, false) {
         TunnResult::WriteToNetwork(data) => {
+            diag.mark_handshake_send();
             match udp.send(data).await {
                 Ok(_) => debug!("sent WG handshake initiation"),
                 Err(e) => debug!(?e, "handshake send failed, will retry via timers"),
@@ -279,6 +349,7 @@ async fn bridge_event_loop(
                 let mut timer_buf = vec![0u8; MAX_WG_PACKET];
                 match tunn.update_timers(&mut timer_buf) {
                     TunnResult::WriteToNetwork(data) => {
+                        diag.mark_timer_send();
                         let _ = udp.send(data).await;
                     }
                     TunnResult::Err(e) => {
@@ -348,6 +419,7 @@ async fn bridge_event_loop(
                 while let Some(ip_packet) = device.pop_tx() {
                     match tunn.encapsulate(&ip_packet, &mut wg_scratch) {
                         TunnResult::WriteToNetwork(data) => {
+                            diag.mark_data_send();
                             let _ = udp.send(data).await;
                         }
                         TunnResult::Err(e) => {
@@ -365,15 +437,32 @@ async fn bridge_event_loop(
                     Err(e) => {
                         // Connection refused can happen on connected UDP sockets
                         // when previous send got ICMP port unreachable. Non-fatal.
-                        debug!(?e, "UDP recv error");
+                        let refused_count = diag.mark_refused();
+                        if refused_count <= 5 || refused_count % 5 == 0 {
+                            let (h, t, d, r, c, tp) = diag.snapshot();
+                            debug!(
+                                ?e,
+                                refused_count,
+                                uptime_ms = diag.uptime_ms(),
+                                handshake_sends = h,
+                                timer_sends = t,
+                                data_sends = d,
+                                recv_packets = r,
+                                refused_packets = c,
+                                tunnel_packets = tp,
+                                "UDP recv error"
+                            );
+                        }
                         continue;
                     }
                 };
+                diag.mark_recv_packet();
                 let packet = &udp_recv_buf[..n];
 
                 let mut decode_buf = vec![0u8; MAX_WG_PACKET];
                 match tunn.decapsulate(None, packet, &mut decode_buf) {
                     TunnResult::WriteToNetwork(data) => {
+                        diag.mark_data_send();
                         let _ = udp.send(data).await;
 
                         // Check if there's more to process after handshake
@@ -381,9 +470,24 @@ async fn bridge_event_loop(
                         loop {
                             match tunn.decapsulate(None, &[], &mut extra_buf) {
                                 TunnResult::WriteToNetwork(data) => {
+                                    diag.mark_data_send();
                                     let _ = udp.send(data).await;
                                 }
                                 TunnResult::WriteToTunnelV6(data, _) => {
+                                    let tunnel_count = diag.mark_tunnel_packet();
+                                    if tunnel_count == 1 {
+                                        let (h, t, d, r, c, tp) = diag.snapshot();
+                                        info!(
+                                            uptime_ms = diag.uptime_ms(),
+                                            handshake_sends = h,
+                                            timer_sends = t,
+                                            data_sends = d,
+                                            recv_packets = r,
+                                            refused_packets = c,
+                                            tunnel_packets = tp,
+                                            "bridge received first tunnel packet"
+                                        );
+                                    }
                                     device.push_rx(data.to_vec());
                                 }
                                 _ => break,
@@ -391,6 +495,20 @@ async fn bridge_event_loop(
                         }
                     }
                     TunnResult::WriteToTunnelV6(data, _) => {
+                        let tunnel_count = diag.mark_tunnel_packet();
+                        if tunnel_count == 1 {
+                            let (h, t, d, r, c, tp) = diag.snapshot();
+                            info!(
+                                uptime_ms = diag.uptime_ms(),
+                                handshake_sends = h,
+                                timer_sends = t,
+                                data_sends = d,
+                                recv_packets = r,
+                                refused_packets = c,
+                                tunnel_packets = tp,
+                                "bridge received first tunnel packet"
+                            );
+                        }
                         device.push_rx(data.to_vec());
                     }
                     TunnResult::Err(e) => {
@@ -406,6 +524,7 @@ async fn bridge_event_loop(
                 while let Some(ip_packet) = device.pop_tx() {
                     match tunn.encapsulate(&ip_packet, &mut wg_scratch) {
                         TunnResult::WriteToNetwork(data) => {
+                            diag.mark_data_send();
                             let _ = udp.send(data).await;
                         }
                         _ => {}
@@ -451,6 +570,7 @@ async fn bridge_event_loop(
                     while let Some(ip_packet) = device.pop_tx() {
                         match tunn.encapsulate(&ip_packet, &mut wg_scratch) {
                             TunnResult::WriteToNetwork(data) => {
+                                diag.mark_data_send();
                                 let _ = udp.send(data).await;
                             }
                             TunnResult::Err(e) => {

@@ -1,4 +1,4 @@
-use ployz::{MachineId, MachineRecord, OverlayIp, PublicKey};
+use ployz::{JoinResponse, MachineId, MachineRecord, OverlayIp, PublicKey};
 use ployz::{MachineStore, Mesh, Phase, StoreDriver, SyncStatus, WireguardDriver};
 use ployz::{MemoryService, MemoryStore, MemoryWireGuard};
 use std::net::Ipv6Addr;
@@ -225,6 +225,58 @@ async fn bootstrap_sync_waits_indefinitely() {
 
     mesh.up().await.unwrap();
     assert_eq!(mesh.phase(), Phase::Running);
+}
+
+// --- Two-node join ---
+
+/// After a joiner joins the mesh, the founder's store must contain the joiner's
+/// machine record so peer_sync can configure WireGuard. Without this, Corrosion
+/// gossip can't flow (it runs over the overlay) and we have a chicken-and-egg.
+#[tokio::test]
+async fn founder_has_joiner_record_after_add() {
+    // Founder node
+    let founder_wg = Arc::new(MemoryWireGuard::new());
+    let founder_svc = Arc::new(MemoryService::new());
+    let founder_store = Arc::new(MemoryStore::new());
+
+    let founder_record = test_record("founder", 1);
+    founder_store.upsert_machine(&founder_record).await.unwrap();
+
+    let mut founder_mesh = make_mesh(founder_wg.clone(), founder_svc, founder_store.clone());
+    founder_mesh.up().await.unwrap();
+    assert_eq!(founder_mesh.phase(), Phase::Running);
+
+    // Simulate the JoinResponse flow: joiner builds a JoinResponse from its identity,
+    // encodes it, founder decodes and upserts the record.
+    let joiner_record = test_record("joiner", 2);
+    let join_resp = JoinResponse {
+        machine_id: joiner_record.id.clone(),
+        public_key: joiner_record.public_key.clone(),
+        overlay_ip: joiner_record.overlay_ip,
+        subnet: joiner_record.subnet,
+        endpoints: joiner_record.endpoints.clone(),
+    };
+
+    // Encode → decode roundtrip (simulates SSH transport)
+    let encoded = join_resp.encode().unwrap();
+    let decoded = JoinResponse::decode(&encoded).unwrap();
+    let record = decoded.into_machine_record();
+
+    // Founder seeds the joiner's record into its store (what machine add does)
+    founder_store.upsert_machine(&record).await.unwrap();
+
+    // Give peer_sync time to pick up the record.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // The founder's store must contain the joiner's record for the overlay to form.
+    let machines = founder_store.list_machines().await.unwrap();
+    let has_joiner = machines.iter().any(|m| m.id.0 == "joiner");
+    assert!(
+        has_joiner,
+        "founder's store must contain the joiner's record after machine add"
+    );
+
+    founder_mesh.destroy().await.unwrap();
 }
 
 // --- Store events ---

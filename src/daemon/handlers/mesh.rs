@@ -1,7 +1,8 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
 use crate::daemon::setup::BootstrapInfo;
-use crate::model::NetworkName;
+use crate::model::{JoinResponse, NetworkName};
+use crate::network::endpoints::detect_endpoints;
 use crate::network::ipam::Ipam;
 use crate::node::invite::parse_and_verify_invite_token;
 use crate::store::network::NetworkConfig;
@@ -337,6 +338,46 @@ impl DaemonState {
 
         self.clear_active_marker();
         self.ok(format!("mesh '{network}' destroyed"))
+    }
+
+    pub(crate) async fn handle_mesh_self_record(&self) -> DaemonResponse {
+        let active = match self.active.as_ref() {
+            Some(a) => a,
+            None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
+        };
+
+        let endpoints = detect_endpoints(51820).await;
+        let resp = JoinResponse {
+            machine_id: self.identity.machine_id.clone(),
+            public_key: self.identity.public_key.clone(),
+            overlay_ip: active.config.overlay_ip,
+            subnet: Some(active.config.subnet),
+            endpoints,
+        };
+
+        match resp.encode() {
+            Ok(encoded) => self.ok(encoded),
+            Err(e) => self.err("ENCODE_FAILED", format!("failed to encode self-record: {e}")),
+        }
+    }
+
+    pub(crate) async fn handle_mesh_accept(&self, response: &str) -> DaemonResponse {
+        let active = match self.active.as_ref() {
+            Some(a) => a,
+            None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
+        };
+
+        let join_resp = match JoinResponse::decode(response) {
+            Ok(r) => r,
+            Err(e) => return self.err("INVALID_JOIN_RESPONSE", format!("decode failed: {e}")),
+        };
+
+        let record = join_resp.into_machine_record();
+        let machine_id = record.id.clone();
+        match active.mesh.store().upsert_machine(&record).await {
+            Ok(()) => self.ok(format!("accepted machine '{}'", machine_id)),
+            Err(e) => self.err("UPSERT_FAILED", format!("failed to upsert machine: {e}")),
+        }
     }
 
     fn extract_bootstrap(invite: &crate::node::invite::InviteClaims) -> Option<BootstrapInfo> {

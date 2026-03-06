@@ -52,6 +52,10 @@ enum MeshAction {
     Down,
     /// Tear down all mesh resources and leave the network permanently.
     Destroy { network: String },
+    /// Print this machine's identity as an encoded JoinResponse (requires running network).
+    SelfRecord,
+    /// Accept a JoinResponse and seed the joiner's record into the local store.
+    Accept { response: String },
 }
 
 #[derive(Subcommand)]
@@ -124,6 +128,10 @@ async fn main() {
             MeshAction::Down => DaemonRequest::MeshDown,
             MeshAction::Destroy { network } => DaemonRequest::MeshDestroy {
                 network: network.clone(),
+            },
+            MeshAction::SelfRecord => DaemonRequest::MeshSelfRecord,
+            MeshAction::Accept { response } => DaemonRequest::MeshAccept {
+                response: response.clone(),
             },
         },
         Command::Machine { action } => match action {

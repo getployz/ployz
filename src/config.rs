@@ -38,11 +38,12 @@ impl Affordances {
         } else {
             Os::Other
         };
+        let is_root = cfg!(unix) && unsafe { libc::geteuid() } == 0;
         Self {
             os,
             has_kernel_wireguard: false,
             has_docker: false,
-            is_root: false,
+            is_root,
             has_wg_helper: false,
         }
     }
