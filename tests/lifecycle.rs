@@ -158,8 +158,10 @@ async fn bootstrap_connection_timeout() {
     assert_eq!(mesh.phase(), Phase::Stopped);
 }
 
+/// Bootstrap gate proceeds once gossip sees a peer (any non-Disconnected status).
+/// We do NOT wait for gaps == 0 — see bootstrap_gate doc comment.
 #[tokio::test]
-async fn bootstrap_sync_completes() {
+async fn bootstrap_proceeds_on_membership() {
     let wg = Arc::new(MemoryWireGuard::new());
     let svc = Arc::new(MemoryService::new());
     let store = Arc::new(MemoryStore::new());
@@ -171,9 +173,8 @@ async fn bootstrap_sync_completes() {
     let s = store.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(30)).await;
+        // Syncing (with gaps) is enough — gate doesn't wait for Synced.
         s.set_sync_status(SyncStatus::Syncing { gaps: 100 });
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        s.set_sync_status(SyncStatus::Synced);
     });
 
     let mut mesh = Mesh::new(
@@ -187,41 +188,6 @@ async fn bootstrap_sync_completes() {
         51820,
     )
     .with_bootstrap_timing(Duration::from_millis(10), Duration::from_secs(5));
-
-    mesh.up().await.unwrap();
-    assert_eq!(mesh.phase(), Phase::Running);
-}
-
-#[tokio::test]
-async fn bootstrap_sync_waits_indefinitely() {
-    let wg = Arc::new(MemoryWireGuard::new());
-    let svc = Arc::new(MemoryService::new());
-    let store = Arc::new(MemoryStore::new());
-
-    store.upsert_machine(&test_record("m1", 1)).await.unwrap();
-
-    // Start at Syncing (not Disconnected) — connection phase passes immediately.
-    store.set_sync_status(SyncStatus::Syncing { gaps: 50 });
-
-    let s = store.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        s.set_sync_status(SyncStatus::Synced);
-    });
-
-    // connection_timeout is very short (50ms), but store starts at Syncing
-    // so connection phase passes immediately. Sync phase has no timeout.
-    let mut mesh = Mesh::new(
-        WireguardDriver::Memory(wg),
-        StoreDriver::Memory {
-            store,
-            service: svc,
-        },
-        None,
-        MachineId("test-machine".into()),
-        51820,
-    )
-    .with_bootstrap_timing(Duration::from_millis(10), Duration::from_millis(50));
 
     mesh.up().await.unwrap();
     assert_eq!(mesh.phase(), Phase::Running);

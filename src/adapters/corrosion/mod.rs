@@ -7,7 +7,7 @@ use ipnet::Ipv4Net;
 use std::collections::HashMap;
 use std::net::{Ipv6Addr, SocketAddr};
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::warn;
 
 pub mod client;
 pub mod config;
@@ -27,10 +27,6 @@ impl CorrosionStore {
     pub fn new(api_addr: SocketAddr, transport: Transport) -> Self {
         let client = CorrClient::new(api_addr, transport);
         Self { client }
-    }
-
-    pub fn client(&self) -> &CorrClient {
-        &self.client
     }
 }
 
@@ -52,7 +48,6 @@ impl SyncProbe for CorrosionStore {
             SyncStatus::Synced
         };
 
-        debug!(members = health.members, gaps = health.gaps, ?status, "sync_status");
         Ok(status)
     }
 }
