@@ -163,6 +163,13 @@ impl ServiceControl for DockerCorrosion {
             ..Default::default()
         };
 
+        let labels: std::collections::HashMap<String, String> = [
+            ("com.docker.compose.project".into(), "ployz-system".into()),
+            ("com.docker.compose.service".into(), "corrosion".into()),
+        ]
+        .into_iter()
+        .collect();
+
         let config = ContainerCreateBody {
             image: Some(self.image.clone()),
             cmd: self.cmd.clone(),
@@ -171,6 +178,7 @@ impl ServiceControl for DockerCorrosion {
             } else {
                 Some(self.env.clone())
             },
+            labels: Some(labels),
             host_config: Some(host_config),
             ..Default::default()
         };

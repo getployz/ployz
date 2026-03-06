@@ -53,9 +53,20 @@ impl WgSidecar {
             ..Default::default()
         };
 
+        let labels: std::collections::HashMap<String, String> = [
+            ("com.docker.compose.project".into(), "ployz-system".into()),
+            (
+                "com.docker.compose.service".into(),
+                format!("sidecar-{}", self.config.container_name.trim_start_matches("ployz-sidecar-")),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
         let config = ContainerCreateBody {
             image: Some(self.config.image.clone()),
             cmd: Some(vec!["sleep".into(), "infinity".into()]),
+            labels: Some(labels),
             host_config: Some(host_config),
             ..Default::default()
         };

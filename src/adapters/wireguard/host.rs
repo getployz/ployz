@@ -29,11 +29,12 @@ pub struct HostWireGuard {
     private_key: PrivateKey,
     overlay_ip: OverlayIp,
     listen_port: u16,
+    subnet: ipnet::Ipv4Net,
 }
 
 impl HostWireGuard {
     #[cfg(target_os = "linux")]
-    pub fn kernel(ifname: &str, private_key: PrivateKey, overlay_ip: OverlayIp) -> Result<Self> {
+    pub fn kernel(ifname: &str, private_key: PrivateKey, overlay_ip: OverlayIp, subnet: ipnet::Ipv4Net) -> Result<Self> {
         let api = WGApi::new(ifname.to_string())
             .map_err(|e| Error::operation("kernel wg init", e.to_string()))?;
         Ok(Self {
@@ -42,10 +43,11 @@ impl HostWireGuard {
             private_key,
             overlay_ip,
             listen_port: DEFAULT_LISTEN_PORT,
+            subnet,
         })
     }
 
-    pub fn userspace(ifname: &str, private_key: PrivateKey, overlay_ip: OverlayIp) -> Result<Self> {
+    pub fn userspace(ifname: &str, private_key: PrivateKey, overlay_ip: OverlayIp, subnet: ipnet::Ipv4Net) -> Result<Self> {
         let api = WGApi::new(ifname.to_string())
             .map_err(|e| Error::operation("userspace wg init", e.to_string()))?;
         Ok(Self {
@@ -54,7 +56,12 @@ impl HostWireGuard {
             private_key,
             overlay_ip,
             listen_port: DEFAULT_LISTEN_PORT,
+            subnet,
         })
+    }
+
+    pub fn ifname(&self) -> &str {
+        &self.ifname
     }
 
     pub fn with_listen_port(mut self, port: u16) -> Self {
@@ -172,66 +179,67 @@ fn wg_remove_peer(backend: &WgBackend, key: &Key) -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn configure_overlay_route(ifname: &str) -> Result<()> {
+fn add_route(ifname: &str, cidr: &str) -> Result<()> {
+    let is_v6 = cidr.contains(':');
+    let mut args = Vec::new();
+    if is_v6 {
+        args.push("-6");
+    }
+    args.extend(["route", "replace", cidr, "dev", ifname]);
+
     let output = Command::new("ip")
-        .args(["-6", "route", "replace", "fd00::/8", "dev", ifname])
+        .args(&args)
         .output()
-        .map_err(|e| Error::operation("configure overlay route", e.to_string()))?;
+        .map_err(|e| Error::operation("add route", e.to_string()))?;
     if output.status.success() {
+        info!(ifname, cidr, "overlay route added");
         return Ok(());
     }
     Err(Error::operation(
-        "configure overlay route",
+        "add route",
         String::from_utf8_lossy(&output.stderr).trim().to_string(),
     ))
 }
 
-#[cfg(not(target_os = "linux"))]
-fn configure_overlay_route(_ifname: &str) -> Result<()> {
-    warn!("overlay route configuration not implemented on this platform — routing may not work");
-    Ok(())
-}
-
 #[cfg(target_os = "linux")]
-fn remove_overlay_route(ifname: &str) -> Result<()> {
+fn del_route(cidr: &str, ifname: &str) -> Result<()> {
+    let is_v6 = cidr.contains(':');
+    let mut args = Vec::new();
+    if is_v6 {
+        args.push("-6");
+    }
+    args.extend(["route", "del", cidr, "dev", ifname]);
+
     let output = Command::new("ip")
-        .args(["-6", "route", "del", "fd00::/8", "dev", ifname])
+        .args(&args)
         .output()
-        .map_err(|e| Error::operation("remove overlay route", e.to_string()))?;
-    if output.status.success() {
+        .map_err(|e| Error::operation("del route", e.to_string()))?;
+    if output.status.success() || String::from_utf8_lossy(&output.stderr).contains("No such process") {
         return Ok(());
     }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if stderr.contains("No such process") {
-        return Ok(());
-    }
-
     Err(Error::operation(
-        "remove overlay route",
-        stderr.trim().to_string(),
+        "del route",
+        String::from_utf8_lossy(&output.stderr).trim().to_string(),
     ))
 }
 
-#[cfg(not(target_os = "linux"))]
-fn remove_overlay_route(_ifname: &str) -> Result<()> {
-    warn!("overlay route removal not implemented on this platform");
-    Ok(())
-}
 
 impl MeshNetwork for HostWireGuard {
     async fn up(&self) -> Result<()> {
         self.with_api(|backend| {
             wg_create_interface(backend)?;
 
-            let addr: IpAddrMask = format!("{}/128", self.overlay_ip.0)
+            let overlay_addr: IpAddrMask = format!("{}/128", self.overlay_ip.0)
                 .parse()
                 .map_err(|e| Error::operation("parse overlay addr", format!("{e}")))?;
 
+            // Only the IPv6 management address goes on the WG interface.
+            // IPv4 subnet is owned by the Docker bridge — per-peer routes
+            // with src= handle IPv4 routing (same approach as uncloud).
             let config = InterfaceConfiguration {
                 name: self.ifname.clone(),
                 prvkey: encode_key(&self.private_key.0),
-                addresses: vec![addr],
+                addresses: vec![overlay_addr],
                 port: self.listen_port,
                 peers: Vec::new(),
                 mtu: None,
@@ -240,16 +248,23 @@ impl MeshNetwork for HostWireGuard {
             wg_configure_interface(backend, &config)
         })?;
 
-        configure_overlay_route(&self.ifname)?;
+        // Only the IPv6 overlay route goes on at startup. IPv4 per-peer
+        // subnet routes are managed in set_peers() so the Docker bridge
+        // owns the local subnet without conflicts.
+        #[cfg(target_os = "linux")]
+        add_route(&self.ifname, "fd00::/8")?;
+        #[cfg(not(target_os = "linux"))]
+        warn!("overlay route configuration not implemented on this platform");
 
         info!(ifname = %self.ifname, "wireguard interface up");
         Ok(())
     }
 
     async fn down(&self) -> Result<()> {
-        if let Err(e) = remove_overlay_route(&self.ifname) {
-            warn!(?e, ifname = %self.ifname, "failed to remove overlay route");
-        }
+        #[cfg(target_os = "linux")]
+        { let _ = del_route("fd00::/8", &self.ifname); }
+        #[cfg(not(target_os = "linux"))]
+        warn!("overlay route removal not implemented on this platform");
         let backend = self.lock_backend();
         wg_remove_interface(&backend)?;
         info!(ifname = %self.ifname, "wireguard interface down");
@@ -277,6 +292,43 @@ impl MeshNetwork for HostWireGuard {
 
         for peer in &desired {
             wg_configure_peer(&backend, peer)?;
+        }
+
+        // Sync per-peer IPv4 subnet routes. Use machine's first subnet IP as
+        // src so outbound overlay traffic has a routable return address.
+        #[cfg(target_os = "linux")]
+        {
+            let src_ip = self.subnet.hosts().next()
+                .map(|ip| ip.to_string());
+            let desired_subnets: std::collections::HashSet<String> = peers
+                .iter()
+                .filter_map(|p| p.subnet.map(|s| s.to_string()))
+                .collect();
+
+            // Read current wg0 IPv4 routes
+            let output = Command::new("ip")
+                .args(["route", "show", "dev", &self.ifname])
+                .output()
+                .map_err(|e| Error::operation("list routes", e.to_string()))?;
+            let current_routes: std::collections::HashSet<String> = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(|line| line.split_whitespace().next())
+                .filter(|dest| dest.contains('/') && !dest.contains(':'))
+                .map(|s| s.to_string())
+                .collect();
+
+            for subnet in desired_subnets.difference(&current_routes) {
+                let mut args = vec!["route", "replace", subnet.as_str(), "dev", &self.ifname];
+                if let Some(ref src) = src_ip {
+                    args.extend(["src", src.as_str()]);
+                }
+                let _ = Command::new("ip").args(&args).output();
+            }
+            for subnet in current_routes.difference(&desired_subnets) {
+                let _ = Command::new("ip")
+                    .args(["route", "del", subnet.as_str(), "dev", &self.ifname])
+                    .output();
+            }
         }
 
         info!(peer_count = desired.len(), "synced wireguard peers");

@@ -174,6 +174,18 @@ pub struct Resources {
     pub memory_bytes: Option<u64>,
 }
 
+pub trait ResourcesExt {
+    fn cpu_nano(&self) -> Option<i64>;
+}
+
+impl ResourcesExt for Resources {
+    /// Convert millicores to Docker's nano-CPU format (1 CPU = 1e9 nano-CPUs).
+    fn cpu_nano(&self) -> Option<i64> {
+        self.cpu_millicores
+            .map(|m| i64::from(m) * 1_000_000)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

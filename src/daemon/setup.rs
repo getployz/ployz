@@ -150,6 +150,7 @@ impl DaemonState {
             net_config.overlay_ip,
             &network_dir,
             &net_config.name.0,
+            net_config.subnet,
         )
         .await?;
 
@@ -171,7 +172,8 @@ impl DaemonState {
         tracing::info!(mode = ?self.mode, "starting mesh");
 
         let container_network = match self.mode {
-            Mode::Docker => Some(
+            Mode::Memory => None,
+            Mode::Docker | Mode::HostExec | Mode::HostService => Some(
                 crate::adapters::docker_network::DockerBridgeNetwork::new(
                     &net_config.name.0,
                     net_config.subnet,
@@ -179,7 +181,6 @@ impl DaemonState {
                 .await
                 .map_err(|e| format!("docker bridge network: {e}"))?,
             ),
-            _ => None,
         };
 
         let listen_port = crate::adapters::wireguard::DEFAULT_LISTEN_PORT;

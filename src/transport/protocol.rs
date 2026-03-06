@@ -24,6 +24,9 @@ pub enum DaemonRequest {
     WorkloadCreate { name: String },
     WorkloadDestroy { name: String },
     WorkloadList,
+    ServiceRun { spec_json: String },
+    ServiceList,
+    ServiceRemove { name: String, namespace: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

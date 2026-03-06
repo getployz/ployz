@@ -61,6 +61,13 @@ impl Mesh {
         }
     }
 
+    fn wg_ifname(&self) -> Option<&str> {
+        match &self.network {
+            WireguardDriver::Host(wg) => Some(wg.ifname()),
+            _ => None,
+        }
+    }
+
     pub fn with_bootstrap_timing(
         mut self,
         interval: Duration,
@@ -114,10 +121,18 @@ impl Mesh {
         self.network.up().await?;
         self.apply(PhaseEvent::NetworkReady)?;
 
-        // 2. Container network (Docker only)
+        // 2. Container network — create bridge for all modes that use Docker.
         if let Some(cn) = &self.container_network {
             cn.ensure().await?;
-            cn.connect("ployz-wireguard", Some(cn.container_v4())).await?;
+            match &self.network {
+                WireguardDriver::Docker(_) => {
+                    cn.connect("ployz-wireguard", Some(cn.container_v4())).await?;
+                }
+                WireguardDriver::Host(wg) => {
+                    cn.allow_forwarding_from(&wg.ifname()).await?;
+                }
+                _ => {}
+            }
         }
 
         // 3. Pre-configure WG peers from seed records
@@ -217,7 +232,7 @@ impl Mesh {
             warn!(?e, "network down failed during teardown");
         }
         if let Some(cn) = &self.container_network {
-            if let Err(e) = cn.remove().await {
+            if let Err(e) = cn.remove(self.wg_ifname()).await {
                 warn!(?e, "container network remove failed during teardown");
             }
         }
@@ -268,7 +283,7 @@ impl Mesh {
         }
 
         if let Some(cn) = &self.container_network {
-            if let Err(e) = cn.remove().await {
+            if let Err(e) = cn.remove(self.wg_ifname()).await {
                 warn!(?e, "container network remove failed during destroy");
                 first_err.get_or_insert(e.into());
             }

@@ -100,6 +100,8 @@ impl DaemonState {
         let wg_public = x25519_dalek::PublicKey::from(&wg_secret);
         let wg_public_key = Some(URL_SAFE_NO_PAD.encode(wg_public.as_bytes()));
 
+        let issuer_subnet = Some(network.subnet.to_string());
+
         let (token, claims) = issue_invite_token(
             &self.identity,
             network,
@@ -108,6 +110,7 @@ impl DaemonState {
             endpoints,
             overlay_ip,
             wg_public_key,
+            issuer_subnet,
         )?;
 
         let record = InviteRecord {

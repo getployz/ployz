@@ -20,3 +20,25 @@ CREATE TABLE IF NOT EXISTS invites (
     id TEXT NOT NULL PRIMARY KEY,
     expires_at INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS services (
+    namespace TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL DEFAULT '',
+    spec_json TEXT NOT NULL DEFAULT '{}',
+    version INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (namespace, name)
+);
+
+CREATE TABLE IF NOT EXISTS workloads (
+    container_id TEXT NOT NULL PRIMARY KEY,
+    namespace TEXT NOT NULL DEFAULT '',
+    service_name TEXT NOT NULL DEFAULT '',
+    workload_id TEXT NOT NULL DEFAULT '',
+    machine_id TEXT NOT NULL DEFAULT '',
+    overlay_ip TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT '',
+    image TEXT NOT NULL DEFAULT '',
+    started_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);

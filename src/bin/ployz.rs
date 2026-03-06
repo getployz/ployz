@@ -34,6 +34,11 @@ enum Command {
         #[command(subcommand)]
         action: WorkloadAction,
     },
+    /// Service management (run containers from specs).
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -96,6 +101,54 @@ enum WorkloadAction {
     /// List active workloads.
     #[command(alias = "list")]
     Ls,
+}
+
+#[derive(Subcommand)]
+enum ServiceAction {
+    /// Run a service (like docker run).
+    Run {
+        /// Container image to run.
+        image: String,
+        /// Service name. Defaults to image name (without tag/registry).
+        #[arg(long)]
+        name: Option<String>,
+        /// Namespace.
+        #[arg(long, default_value = "default")]
+        namespace: String,
+        /// Port mappings (host:container, e.g. 8080:80).
+        #[arg(short, long, value_name = "HOST:CONTAINER")]
+        publish: Vec<String>,
+        /// Environment variables (KEY=VALUE).
+        #[arg(short, long, value_name = "KEY=VALUE")]
+        env: Vec<String>,
+        /// Volume mounts (host_path:container_path or name:container_path).
+        #[arg(short, long, value_name = "SRC:DST")]
+        volume: Vec<String>,
+        /// Network mode (overlay, host, none).
+        #[arg(long, default_value = "overlay")]
+        network: String,
+        /// Always pull image before running.
+        #[arg(long)]
+        pull: bool,
+        /// Restart policy (unless-stopped, always, on-failure, no).
+        #[arg(long, default_value = "unless-stopped")]
+        restart: String,
+        /// Command to run (overrides image CMD).
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
+    /// List running services.
+    #[command(alias = "list")]
+    Ls,
+    /// Remove a service.
+    #[command(alias = "remove")]
+    Rm {
+        /// Service name.
+        name: String,
+        /// Namespace.
+        #[arg(long, default_value = "default")]
+        namespace: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -185,6 +238,31 @@ async fn main() {
             },
             WorkloadAction::Ls => DaemonRequest::WorkloadList,
         },
+        Command::Service { action } => match action {
+            ServiceAction::Run {
+                image,
+                name,
+                namespace,
+                publish,
+                env,
+                volume,
+                network,
+                pull,
+                restart,
+                command,
+            } => {
+                let spec = build_service_spec(
+                    image, name, namespace, publish, env, volume, network, pull, restart, command,
+                );
+                let spec_json = serde_json::to_string(&spec).unwrap();
+                DaemonRequest::ServiceRun { spec_json }
+            }
+            ServiceAction::Ls => DaemonRequest::ServiceList,
+            ServiceAction::Rm { name, namespace } => DaemonRequest::ServiceRemove {
+                name: name.clone(),
+                namespace: namespace.clone(),
+            },
+        },
     };
 
     match transport.request(request).await {
@@ -199,5 +277,116 @@ async fn main() {
             eprintln!("is ployzd running? (socket: {socket})");
             process::exit(1);
         }
+    }
+}
+
+fn build_service_spec(
+    image: &str,
+    name: &Option<String>,
+    namespace: &str,
+    publish: &[String],
+    env: &[String],
+    volume: &[String],
+    network: &str,
+    pull: &bool,
+    restart: &str,
+    command: &[String],
+) -> ployz::workload::spec::ServiceSpec {
+    use ployz::workload::spec::*;
+    use std::collections::BTreeMap;
+
+    let service_name = name.clone().unwrap_or_else(|| {
+        // Derive name from image: "registry/repo:tag" -> "repo"
+        let s = image.split('/').last().unwrap_or(image);
+        s.split(':').next().unwrap_or(s).to_string()
+    });
+
+    let ports: Vec<PortBinding> = publish
+        .iter()
+        .filter_map(|p| {
+            let parts: Vec<&str> = p.split(':').collect();
+            if parts.len() == 2 {
+                Some(PortBinding {
+                    host_port: parts[0].parse().ok()?,
+                    container_port: parts[1].parse().ok()?,
+                    protocol: PortProtocol::Tcp,
+                    host_ip: None,
+                })
+            } else {
+                eprintln!("warning: ignoring invalid port mapping: {p}");
+                None
+            }
+        })
+        .collect();
+
+    let env_map: BTreeMap<String, String> = env
+        .iter()
+        .filter_map(|e| {
+            let (k, v) = e.split_once('=')?;
+            Some((k.to_string(), v.to_string()))
+        })
+        .collect();
+
+    let volumes: Vec<VolumeMount> = volume
+        .iter()
+        .filter_map(|v| {
+            let parts: Vec<&str> = v.splitn(3, ':').collect();
+            if parts.len() >= 2 {
+                let readonly = parts.get(2).is_some_and(|&o| o == "ro");
+                Some(VolumeMount {
+                    source: VolumeSource::Bind(parts[0].to_string()),
+                    target: parts[1].to_string(),
+                    readonly,
+                })
+            } else {
+                eprintln!("warning: ignoring invalid volume: {v}");
+                None
+            }
+        })
+        .collect();
+
+    let network_mode = match network {
+        "host" => NetworkMode::Host,
+        "none" => NetworkMode::None,
+        "overlay" => NetworkMode::Overlay,
+        other => NetworkMode::Service(other.to_string()),
+    };
+
+    ServiceSpec {
+        name: service_name,
+        namespace: Namespace(namespace.to_string()),
+        schedule: Schedule::Imperative,
+        container: ContainerSpec {
+            image: image.to_string(),
+            command: if command.is_empty() {
+                None
+            } else {
+                Some(command.to_vec())
+            },
+            entrypoint: None,
+            env: env_map,
+            volumes,
+            cap_add: vec![],
+            cap_drop: vec![],
+            privileged: false,
+            user: None,
+            pull_policy: if *pull {
+                PullPolicy::Always
+            } else {
+                PullPolicy::IfNotPresent
+            },
+            resources: Resources::default(),
+            sysctls: BTreeMap::new(),
+        },
+        network: network_mode,
+        ports,
+        labels: BTreeMap::new(),
+        stop_grace_period: None,
+        restart: match restart {
+            "always" => RestartPolicy::Always,
+            "on-failure" => RestartPolicy::OnFailure,
+            "no" => RestartPolicy::No,
+            _ => RestartPolicy::UnlessStopped,
+        },
     }
 }

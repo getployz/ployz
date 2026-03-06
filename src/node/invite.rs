@@ -21,6 +21,9 @@ pub struct InviteClaims {
     pub issuer_overlay_ip: Option<String>,
     #[serde(default)]
     pub issuer_wg_public_key: Option<String>,
+    /// The issuer's IPv4 subnet so the joiner can avoid allocating it.
+    #[serde(default)]
+    pub issuer_subnet: Option<String>,
 }
 
 pub fn issue_invite_token(
@@ -31,6 +34,7 @@ pub fn issue_invite_token(
     issuer_endpoints: Vec<String>,
     issuer_overlay_ip: Option<String>,
     issuer_wg_public_key: Option<String>,
+    issuer_subnet: Option<String>,
 ) -> Result<(String, InviteClaims), String> {
     let expires_at = now_unix_secs
         .checked_add(ttl_secs)
@@ -66,6 +70,7 @@ pub fn issue_invite_token(
         issuer_endpoints,
         issuer_overlay_ip,
         issuer_wg_public_key,
+        issuer_subnet,
     };
 
     let claims_json = serde_json::to_vec(&claims).map_err(|e| format!("encode invite: {e}"))?;

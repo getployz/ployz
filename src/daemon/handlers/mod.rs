@@ -1,6 +1,7 @@
 mod invite;
 mod machine;
 mod mesh;
+mod service;
 mod status;
 mod workload;
 
@@ -39,6 +40,13 @@ impl DaemonState {
             DaemonRequest::WorkloadCreate { name } => self.handle_workload_create(&name).await,
             DaemonRequest::WorkloadDestroy { name } => self.handle_workload_destroy(&name).await,
             DaemonRequest::WorkloadList => self.handle_workload_list().await,
+            DaemonRequest::ServiceRun { spec_json } => {
+                self.handle_service_run(&spec_json).await
+            }
+            DaemonRequest::ServiceList => self.handle_service_list().await,
+            DaemonRequest::ServiceRemove { name, namespace } => {
+                self.handle_service_remove(&name, &namespace).await
+            }
         }
     }
 }

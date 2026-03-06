@@ -417,7 +417,36 @@ impl DockerWireGuard {
         ])
         .await?;
 
+        // Note: IPv4 cluster CIDR route is NOT added here. In Docker mode, the bridge
+        // network owns the local subnet (e.g. 10.210.0.0/24). A broad /16 route on the
+        // WG interface conflicts with Docker's bridge assignment. Remote subnets are
+        // reached via per-peer allowed-ips on the WG interface. The host-mode WG adds
+        // the broad route since there's no Docker bridge conflict.
+
+        // MASQUERADE traffic forwarded from WG to the bridge so replies route back
+        // through the WG container rather than the Docker default gateway.
+        self.ensure_masquerade().await;
+
         Ok(())
+    }
+
+    async fn ensure_masquerade(&self) {
+        // Check if rule already exists (idempotent on restart/adopt)
+        let check = self
+            .exec_in_container_capture(&[
+                "iptables", "-t", "nat", "-C", "POSTROUTING",
+                "-i", INTERFACE_NAME, "-o", "eth1", "-j", "MASQUERADE",
+            ])
+            .await;
+        if check.is_ok() {
+            return;
+        }
+        let _ = self
+            .exec_in_container(&[
+                "iptables", "-t", "nat", "-A", "POSTROUTING",
+                "-i", INTERFACE_NAME, "-o", "eth1", "-j", "MASQUERADE",
+            ])
+            .await;
     }
 
     async fn interface_ready(&self) -> bool {
@@ -561,6 +590,7 @@ impl MeshNetwork for DockerWireGuard {
             info!(name = %self.container_name, "adopting existing wireguard container");
             self.log_interface_diagnostics("adopt_existing_before_start_bridge")
                 .await;
+            self.ensure_masquerade().await;
             self.start_bridge().await?;
             self.log_interface_diagnostics("adopt_existing_after_start_bridge")
                 .await;
@@ -599,9 +629,17 @@ impl MeshNetwork for DockerWireGuard {
             ..Default::default()
         };
 
+        let labels: std::collections::HashMap<String, String> = [
+            ("com.docker.compose.project".into(), "ployz-system".into()),
+            ("com.docker.compose.service".into(), "wireguard".into()),
+        ]
+        .into_iter()
+        .collect();
+
         let config = ContainerCreateBody {
             image: Some(self.image.clone()),
             cmd: Some(vec!["sleep".into(), "infinity".into()]),
+            labels: Some(labels),
             host_config: Some(host_config),
             exposed_ports: Some(vec![format!("{}/udp", self.listen_port)]),
             ..Default::default()
@@ -695,6 +733,46 @@ impl MeshNetwork for DockerWireGuard {
         let sync_path = self.paths.sync_config.to_string_lossy().into_owned();
         self.exec_in_container(&["wg", "syncconf", INTERFACE_NAME, &sync_path])
             .await?;
+
+        // Sync per-peer subnet routes with src= set to our bridge IP (eth1)
+        // so outbound IPv4 has a routable source address in the overlay.
+        let desired: std::collections::HashSet<String> = peers
+            .iter()
+            .filter_map(|p| p.subnet.map(|s| s.to_string()))
+            .collect();
+
+        let current_output = self
+            .exec_in_container_capture(&["ip", "route", "show", "dev", INTERFACE_NAME])
+            .await
+            .unwrap_or_default();
+        let current: std::collections::HashSet<String> = current_output
+            .lines()
+            .filter_map(|line| line.split_whitespace().next())
+            .filter(|dest| dest.contains('/') && !dest.contains(':'))
+            .map(|s| s.to_string())
+            .collect();
+
+        // Get our bridge IP (eth1) for use as route src
+        let src_ip = self
+            .exec_in_container_capture(&["sh", "-c", "ip -4 addr show eth1 | awk '/inet /{split($2,a,\"/\");print a[1]}'"])
+            .await
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        // Always replace desired routes (idempotent) to ensure src is set
+        for subnet in &desired {
+            let mut args = vec!["ip", "route", "replace", subnet.as_str(), "dev", INTERFACE_NAME];
+            if let Some(ref src) = src_ip {
+                args.extend(["src", src.as_str()]);
+            }
+            let _ = self.exec_in_container(&args).await;
+        }
+        for subnet in current.difference(&desired) {
+            let _ = self
+                .exec_in_container(&["ip", "route", "del", subnet, "dev", INTERFACE_NAME])
+                .await;
+        }
 
         info!(peer_count = peers.len(), "synced wireguard peers");
         Ok(())

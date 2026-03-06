@@ -118,7 +118,13 @@ impl DaemonState {
             Ok(c) => c,
             Err(e) => return self.err("CONFIG_ERROR", format!("invalid cluster CIDR: {e}")),
         };
-        let mut ipam = Ipam::new(cluster, self.subnet_prefix_len);
+        let existing: Vec<ipnet::Ipv4Net> = invite
+            .issuer_subnet
+            .as_deref()
+            .and_then(|s| s.parse().ok())
+            .into_iter()
+            .collect();
+        let mut ipam = Ipam::with_allocated(cluster, self.subnet_prefix_len, existing);
         let subnet = match ipam.allocate() {
             Some(s) => s,
             None => return self.err("SUBNET_EXHAUSTION", "no available subnets"),
