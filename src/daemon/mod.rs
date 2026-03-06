@@ -9,10 +9,12 @@ use crate::mesh::orchestrator::Mesh;
 use crate::node::identity::Identity;
 use crate::store::network::NetworkConfig;
 use crate::transport::DaemonResponse;
+use crate::workload::manager::DockerWorkloadManager;
 
 pub struct ActiveMesh {
     pub config: NetworkConfig,
     pub mesh: Mesh,
+    pub workload_manager: Option<DockerWorkloadManager>,
 }
 
 pub struct DaemonState {

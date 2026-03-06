@@ -10,6 +10,7 @@ pub mod node;
 pub mod store;
 mod tasks;
 pub mod transport;
+pub mod workload;
 
 // Re-export public API
 pub use adapters::corrosion::docker::DockerCorrosion;
@@ -19,7 +20,7 @@ pub use adapters::corrosion::{CorrosionStore, SCHEMA_SQL, config as corrosion_co
 pub use adapters::docker_network::DockerBridgeNetwork;
 pub use adapters::memory::{MemoryService, MemoryStore, MemoryWireGuard};
 pub use adapters::wireguard::config as wireguard_config;
-pub use adapters::wireguard::{DockerWireGuard, HostWireGuard};
+pub use adapters::wireguard::{DockerWireGuard, HostWireGuard, WgSidecar};
 pub use config::{
     Affordances, ClientConfig, ConfigLoadError, DaemonConfig, Mode, Os, default_config_path,
     default_data_dir, default_socket_path, load_client_config, load_daemon_config,

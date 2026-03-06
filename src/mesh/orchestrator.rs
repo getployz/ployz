@@ -155,6 +155,14 @@ impl Mesh {
             if let Err(e) = self.network.set_peers(&pre_start_peers).await {
                 warn!(?e, "pre-start peer sync failed");
             }
+
+            // Wait for at least one WG handshake before starting corrosion.
+            // Corrosion's gossip immediately tries to reach bootstrap peers over
+            // overlay IPs — if the tunnel isn't up yet, corrosion churns on 503s
+            // until the handshake completes (or times out).
+            if let Err(_) = self.wait_for_handshake().await {
+                warn!("no WG handshake within timeout, starting corrosion anyway");
+            }
         }
 
         if let Err(e) = self.store.start().await {
@@ -178,6 +186,17 @@ impl Mesh {
             let _ = self.network.down().await;
             self.apply(PhaseEvent::ComponentFailed)?;
             return Err(e.into());
+        }
+
+        // Patch the self record with the bridge overlay IP (if a bridge was started)
+        if let Some(bridge_ip) = self.network.bridge_ip().await {
+            if let Some(self_record) = self
+                .seed_records
+                .iter_mut()
+                .find(|m| m.id == self.machine_id)
+            {
+                self_record.bridge_ip = Some(bridge_ip);
+            }
         }
 
         for record in &self.seed_records {
@@ -289,6 +308,32 @@ impl Mesh {
         }
     }
 
+    /// Wait for at least one WG peer to complete a handshake.
+    /// Uses fast polling (200ms) with a 10s timeout — handshakes typically
+    /// complete in 1-3s, so this shouldn't add meaningful startup latency
+    /// in the happy path, but prevents the 503 storm when the tunnel is slow.
+    async fn wait_for_handshake(&self) -> Result<()> {
+        let timeout = Duration::from_secs(10);
+        let interval = Duration::from_millis(200);
+
+        tokio::time::timeout(timeout, async {
+            loop {
+                if self.network.has_remote_handshake().await {
+                    info!("WG remote handshake confirmed, proceeding with store start");
+                    return;
+                }
+                tokio::time::sleep(interval).await;
+            }
+        })
+        .await
+        .map_err(|_| {
+            MeshError::Port(PortError::operation(
+                "handshake wait",
+                format!("no WG handshake within {timeout:?}"),
+            ))
+        })
+    }
+
     /// Wait for the service to report healthy after starting.
     /// Uses exponential backoff: 50ms → 1s, with a configurable timeout (default 15s).
     async fn wait_service_ready(&self) -> Result<()> {
@@ -395,23 +440,54 @@ impl Mesh {
         let store = self.store.clone();
 
         // Wait for corrosion gossip to see at least one remote peer.
-        let connected = tokio::time::timeout(connection_timeout, async {
-            loop {
-                match store.sync_status().await {
-                    Ok(SyncStatus::Disconnected) => {}
-                    Ok(_) => return true,
-                    Err(e) => {
-                        warn!(?e, "sync probe failed during bootstrap");
+        // Track whether we ever got a healthy-but-disconnected response vs
+        // only errors (503 / transport failure), so we can give the user
+        // an actionable message on timeout.
+        let result: std::result::Result<bool, String> =
+            tokio::time::timeout(connection_timeout, async {
+                let mut consecutive_errors = 0u32;
+                loop {
+                    match store.sync_status().await {
+                        Ok(SyncStatus::Disconnected) => {
+                            consecutive_errors = 0;
+                        }
+                        Ok(_) => return Ok(true),
+                        Err(e) => {
+                            consecutive_errors += 1;
+                            if consecutive_errors <= 3 {
+                                warn!(?e, "sync probe failed during bootstrap");
+                            } else if consecutive_errors == 4 {
+                                warn!(
+                                    ?e,
+                                    consecutive_errors,
+                                    "sync probe keeps failing — corrosion transport may be stuck"
+                                );
+                            }
+                        }
                     }
+                    tokio::time::sleep(interval).await;
                 }
-                tokio::time::sleep(interval).await;
-            }
-        })
-        .await
-        .unwrap_or(false);
+            })
+            .await
+            .unwrap_or_else(|_| Ok(false));
+
+        let connected = matches!(result, Ok(true));
 
         if !connected {
-            return Err(TransitionError::BootstrapTimeout.into());
+            let reason = match result {
+                Ok(_) => {
+                    "corrosion gossip could not reach any remote peer within the timeout. \
+                     The gossip transport (QUIC) may be stuck — try restarting the mesh on both nodes"
+                        .to_string()
+                }
+                Err(e) => {
+                    format!(
+                        "corrosion API never became healthy: {e}. \
+                         The gossip transport (QUIC) may be stuck — try restarting the mesh on both nodes"
+                    )
+                }
+            };
+            return Err(TransitionError::BootstrapTimeout { reason }.into());
         }
 
         self.apply(PhaseEvent::SyncComplete)?;

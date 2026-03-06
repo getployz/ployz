@@ -139,15 +139,27 @@ pub fn write_sync_config_with_bridge(
     peers: &[MachineRecord],
     bridge_peer: Option<&BridgePeerInfo>,
 ) -> io::Result<()> {
+    let extra: Vec<&BridgePeerInfo> = bridge_peer.into_iter().collect();
+    write_sync_config_with_extra_peers(paths, private_key, listen_port, peers, &extra)
+}
+
+/// Write a sync config that includes extra peers (bridge + sidecars), protected from syncconf removal.
+pub fn write_sync_config_with_extra_peers(
+    paths: &WgPaths,
+    private_key: &PrivateKey,
+    listen_port: u16,
+    peers: &[MachineRecord],
+    extra_peers: &[&BridgePeerInfo],
+) -> io::Result<()> {
     paths.ensure_dir()?;
     let mut buf = String::with_capacity(512);
     let _ = writeln!(buf, "[Interface]");
     let _ = writeln!(buf, "PrivateKey = {}", encode_key(&private_key.0));
     let _ = writeln!(buf, "ListenPort = {listen_port}");
 
-    if let Some(bridge) = bridge_peer {
+    for extra in extra_peers {
         let _ = writeln!(buf);
-        render_bridge_peer(&mut buf, bridge);
+        render_bridge_peer(&mut buf, extra);
     }
 
     for peer in peers {
@@ -221,5 +233,40 @@ mod tests {
                 || config.contains("AllowedIPs = fd00::2/128,")
         );
         assert!(config.contains("PersistentKeepalive = 25"));
+    }
+
+    #[test]
+    fn sync_config_with_extra_peers() {
+        let privkey = PrivateKey([1; 32]);
+        let paths = WgPaths::new(std::path::Path::new("/tmp/ployz-test-extra-peers"));
+
+        let sidecar1 = BridgePeerInfo {
+            public_key: [0xaa; 32],
+            allowed_ips: vec!["10.210.0.3/32".to_string()],
+        };
+        let sidecar2 = BridgePeerInfo {
+            public_key: [0xbb; 32],
+            allowed_ips: vec!["10.210.0.4/32".to_string()],
+        };
+
+        let _ = std::fs::create_dir_all(&paths.dir);
+        write_sync_config_with_extra_peers(
+            &paths,
+            &privkey,
+            51820,
+            &[],
+            &[&sidecar1, &sidecar2],
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(&paths.sync_config).unwrap();
+        assert!(content.contains(&encode_key(&sidecar1.public_key)));
+        assert!(content.contains(&encode_key(&sidecar2.public_key)));
+        assert!(content.contains("10.210.0.3/32"));
+        assert!(content.contains("10.210.0.4/32"));
+        let peer_count = content.matches("[Peer]").count();
+        assert_eq!(peer_count, 2);
+
+        let _ = std::fs::remove_dir_all(&paths.dir);
     }
 }

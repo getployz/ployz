@@ -2,6 +2,7 @@ mod invite;
 mod machine;
 mod mesh;
 mod status;
+mod workload;
 
 use crate::transport::{DaemonRequest, DaemonResponse};
 
@@ -35,6 +36,9 @@ impl DaemonState {
             }
             DaemonRequest::MeshSelfRecord => self.handle_mesh_self_record().await,
             DaemonRequest::MeshAccept { response } => self.handle_mesh_accept(&response).await,
+            DaemonRequest::WorkloadCreate { name } => self.handle_workload_create(&name).await,
+            DaemonRequest::WorkloadDestroy { name } => self.handle_workload_destroy(&name).await,
+            DaemonRequest::WorkloadList => self.handle_workload_list().await,
         }
     }
 }

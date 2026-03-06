@@ -9,6 +9,7 @@ use crate::mesh::orchestrator::Mesh;
 use crate::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
 use crate::network::endpoints::detect_endpoints;
 use crate::store::network::NetworkConfig;
+use crate::workload::manager::DockerWorkloadManager;
 use crate::{
     CorrosionStore, DockerCorrosion, DockerWireGuard, HostCorrosion, HostWireGuard, MemoryService,
     MemoryStore, MemoryWireGuard, SCHEMA_SQL, corrosion_config,
@@ -27,10 +28,10 @@ fn which_corrosion() -> Result<PathBuf, String> {
     Err("corrosion binary not found (expected at /usr/local/bin/corrosion)".into())
 }
 
-fn corrosion_bootstrap_from_db(
-    network_dir: &Path,
-    local_machine_id: &MachineId,
-) -> Result<Vec<String>, String> {
+/// Read machine records directly from corrosion's sqlite DB (bypassing the API).
+/// Used to pre-configure WG peers before corrosion starts, so the tunnel is ready
+/// when corrosion's gossip immediately tries to reach bootstrap peers.
+fn machines_from_db(network_dir: &Path) -> Result<Vec<MachineRecord>, String> {
     let db_path = corrosion_config::Paths::new(network_dir).db;
     if !db_path.exists() {
         return Ok(Vec::new());
@@ -38,7 +39,9 @@ fn corrosion_bootstrap_from_db(
 
     let conn = rusqlite::Connection::open(&db_path)
         .map_err(|e| format!("open corrosion db '{}': {e}", db_path.display()))?;
-    let mut stmt = match conn.prepare("SELECT id, overlay_ip FROM machines ORDER BY id") {
+    let mut stmt = match conn.prepare(
+        "SELECT id, public_key, overlay_ip, subnet, bridge_ip, endpoints FROM machines ORDER BY id",
+    ) {
         Ok(stmt) => stmt,
         Err(rusqlite::Error::SqliteFailure(_, Some(message)))
             if message.contains("no such table: machines") =>
@@ -47,7 +50,7 @@ fn corrosion_bootstrap_from_db(
         }
         Err(e) => {
             return Err(format!(
-                "prepare corrosion bootstrap query '{}': {e}",
+                "prepare machines_from_db query '{}': {e}",
                 db_path.display()
             ));
         }
@@ -56,26 +59,65 @@ fn corrosion_bootstrap_from_db(
     let rows = stmt
         .query_map([], |row| {
             let id: String = row.get(0)?;
-            let overlay_ip: String = row.get(1)?;
-            Ok((id, overlay_ip))
+            let public_key: Vec<u8> = row.get(1)?;
+            let overlay_ip: String = row.get(2)?;
+            let subnet: String = row.get(3)?;
+            let bridge_ip: String = row.get(4)?;
+            let endpoints: String = row.get(5)?;
+            Ok((id, public_key, overlay_ip, subnet, bridge_ip, endpoints))
         })
-        .map_err(|e| format!("query corrosion bootstrap peers '{}': {e}", db_path.display()))?;
+        .map_err(|e| format!("query machines_from_db '{}': {e}", db_path.display()))?;
 
-    let mut bootstrap = Vec::new();
+    let mut records = Vec::new();
     for row in rows {
-        let (id, overlay_ip) = row.map_err(|e| {
-            format!(
-                "read corrosion bootstrap peer row from '{}': {e}",
-                db_path.display()
-            )
-        })?;
-        if id == local_machine_id.0 || overlay_ip.is_empty() {
+        let (id, public_key, overlay_ip, subnet, bridge_ip, endpoints) = row
+            .map_err(|e| format!("read machine row from '{}': {e}", db_path.display()))?;
+
+        if overlay_ip.is_empty() {
             continue;
         }
-        bootstrap.push(format!("[{overlay_ip}]:{}", corrosion_config::DEFAULT_GOSSIP_PORT));
+
+        let key: [u8; 32] = match public_key.try_into() {
+            Ok(k) => k,
+            Err(_) => continue,
+        };
+        let overlay: std::net::Ipv6Addr = match overlay_ip.parse() {
+            Ok(ip) => ip,
+            Err(_) => continue,
+        };
+        let subnet_parsed: Option<ipnet::Ipv4Net> =
+            if subnet.is_empty() { None } else { subnet.parse().ok() };
+        let bridge_parsed: Option<OverlayIp> = if bridge_ip.is_empty() {
+            None
+        } else {
+            bridge_ip.parse::<std::net::Ipv6Addr>().ok().map(OverlayIp)
+        };
+        let endpoints_parsed: Vec<String> =
+            serde_json::from_str(&endpoints).unwrap_or_default();
+
+        records.push(MachineRecord {
+            id: MachineId(id),
+            public_key: PublicKey(key),
+            overlay_ip: OverlayIp(overlay),
+            subnet: subnet_parsed,
+            bridge_ip: bridge_parsed,
+            endpoints: endpoints_parsed,
+        });
     }
 
-    Ok(bootstrap)
+    Ok(records)
+}
+
+fn corrosion_bootstrap_from_db(
+    network_dir: &Path,
+    local_machine_id: &MachineId,
+) -> Result<Vec<String>, String> {
+    let records = machines_from_db(network_dir)?;
+    Ok(records
+        .into_iter()
+        .filter(|m| m.id.0 != local_machine_id.0)
+        .map(|m| format!("[{}]:{}", m.overlay_ip.0, corrosion_config::DEFAULT_GOSSIP_PORT))
+        .collect())
 }
 
 pub struct BootstrapInfo {
@@ -188,6 +230,12 @@ impl DaemonState {
             }
         };
 
+        // Save backbone reference for workload manager before mesh takes ownership
+        let backbone_ref = match &network {
+            WireguardDriver::Docker(backbone) => Some(backbone.clone()),
+            _ => None,
+        };
+
         tracing::info!(mode = ?self.mode, "starting mesh");
 
         let container_network = match self.mode {
@@ -202,7 +250,14 @@ impl DaemonState {
             _ => None,
         };
 
-        let mut seed_records = Vec::new();
+        // Pre-load machine records from corrosion's sqlite DB so WG peers are
+        // configured before corrosion starts. Without this, corrosion's gossip
+        // tries to reach bootstrap peers over overlay IPs that WG doesn't know
+        // about yet, causing a 503 storm until set_peers runs post-store-init.
+        let mut seed_records = machines_from_db(&network_dir).unwrap_or_else(|e| {
+            tracing::warn!(?e, "failed to pre-load machines from db, starting fresh");
+            Vec::new()
+        });
 
         if let Some(ref bs) = bootstrap {
             seed_records.push(MachineRecord {
@@ -239,10 +294,36 @@ impl DaemonState {
             .await
             .map_err(|e| format!("failed to start network: {e}"))?;
 
+        // Build workload manager for Docker mode (after mesh is up so bridge + backbone are ready)
+        let workload_manager = match backbone_ref {
+            Some(backbone) => {
+                let bridge = Arc::new(
+                    crate::adapters::docker_network::DockerBridgeNetwork::new(
+                        &net_config.name.0,
+                        net_config.subnet,
+                    )
+                    .await
+                    .map_err(|e| format!("workload bridge: {e}"))?,
+                );
+                Some(
+                    DockerWorkloadManager::new(
+                        self.identity.machine_id.clone(),
+                        net_config.subnet,
+                        self.cluster_cidr.clone(),
+                        backbone,
+                        bridge,
+                    )
+                    .map_err(|e| format!("workload manager: {e}"))?,
+                )
+            }
+            None => None,
+        };
+
         let network_name = net_config.name.0.clone();
         self.active = Some(ActiveMesh {
             config: net_config,
             mesh,
+            workload_manager,
         });
         self.write_active_marker(&network_name);
         Ok(())

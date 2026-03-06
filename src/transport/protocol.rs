@@ -21,6 +21,9 @@ pub enum DaemonRequest {
     MachineInviteImport { token: String },
     MeshSelfRecord,
     MeshAccept { response: String },
+    WorkloadCreate { name: String },
+    WorkloadDestroy { name: String },
+    WorkloadList,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

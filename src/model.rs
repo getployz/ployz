@@ -3,7 +3,7 @@ use derive_more::Display;
 use ipnet::Ipv4Net;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::net::Ipv6Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
 pub struct MachineId(pub String);
@@ -83,6 +83,18 @@ pub struct JoinResponse {
     pub overlay_ip: OverlayIp,
     pub subnet: Option<Ipv4Net>,
     pub endpoints: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
+pub struct WorkloadId(pub String);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkloadRecord {
+    pub id: WorkloadId,
+    pub machine_id: MachineId,
+    pub overlay_ip: Ipv4Addr,
+    pub public_key: PublicKey,
+    pub sidecar_container: String,
 }
 
 pub const JOIN_RESPONSE_PREFIX: &str = "PLOYZ_JOIN_RESPONSE:";

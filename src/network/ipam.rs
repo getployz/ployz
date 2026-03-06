@@ -67,6 +67,46 @@ pub fn container_ip(subnet: &Ipv4Net) -> Ipv4Addr {
     Ipv4Addr::from(start + 2)
 }
 
+/// Allocates individual IPs within a machine's /24 subnet.
+/// Reserves .0 (network), .1 (docker gw), .2 (backbone WG). Workloads get .3–.254.
+pub struct SubnetIpam {
+    subnet: Ipv4Net,
+    allocated: HashSet<Ipv4Addr>,
+}
+
+impl SubnetIpam {
+    pub fn new(subnet: Ipv4Net) -> Self {
+        Self {
+            subnet,
+            allocated: HashSet::new(),
+        }
+    }
+
+    pub fn with_allocated(subnet: Ipv4Net, existing: impl IntoIterator<Item = Ipv4Addr>) -> Self {
+        Self {
+            subnet,
+            allocated: existing.into_iter().collect(),
+        }
+    }
+
+    /// Allocate the next available IP starting at .3 (skipping .0 network, .1 gateway, .2 backbone).
+    pub fn allocate(&mut self) -> Option<Ipv4Addr> {
+        let base = u32::from(self.subnet.network());
+        for offset in 3..255u32 {
+            let ip = Ipv4Addr::from(base + offset);
+            if !self.allocated.contains(&ip) {
+                self.allocated.insert(ip);
+                return Some(ip);
+            }
+        }
+        None
+    }
+
+    pub fn release(&mut self, ip: &Ipv4Addr) {
+        self.allocated.remove(ip);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,6 +161,54 @@ mod tests {
         assert!(s1.is_some());
         let s2 = ipam.allocate();
         assert!(s2.is_none());
+    }
+
+    #[test]
+    fn subnet_ipam_starts_at_dot_three() {
+        let subnet: Ipv4Net = "10.210.0.0/24".parse().unwrap();
+        let mut ipam = SubnetIpam::new(subnet);
+        let ip = ipam.allocate().unwrap();
+        assert_eq!(ip, Ipv4Addr::new(10, 210, 0, 3));
+    }
+
+    #[test]
+    fn subnet_ipam_sequential() {
+        let subnet: Ipv4Net = "10.210.0.0/24".parse().unwrap();
+        let mut ipam = SubnetIpam::new(subnet);
+        assert_eq!(ipam.allocate().unwrap(), Ipv4Addr::new(10, 210, 0, 3));
+        assert_eq!(ipam.allocate().unwrap(), Ipv4Addr::new(10, 210, 0, 4));
+        assert_eq!(ipam.allocate().unwrap(), Ipv4Addr::new(10, 210, 0, 5));
+    }
+
+    #[test]
+    fn subnet_ipam_skips_preallocated() {
+        let subnet: Ipv4Net = "10.210.0.0/24".parse().unwrap();
+        let mut ipam =
+            SubnetIpam::with_allocated(subnet, [Ipv4Addr::new(10, 210, 0, 3)]);
+        let ip = ipam.allocate().unwrap();
+        assert_eq!(ip, Ipv4Addr::new(10, 210, 0, 4));
+    }
+
+    #[test]
+    fn subnet_ipam_release_and_reuse() {
+        let subnet: Ipv4Net = "10.210.0.0/24".parse().unwrap();
+        let mut ipam = SubnetIpam::new(subnet);
+        let ip = ipam.allocate().unwrap();
+        assert_eq!(ip, Ipv4Addr::new(10, 210, 0, 3));
+        ipam.release(&ip);
+        let ip2 = ipam.allocate().unwrap();
+        assert_eq!(ip2, Ipv4Addr::new(10, 210, 0, 3));
+    }
+
+    #[test]
+    fn subnet_ipam_exhaustion() {
+        let subnet: Ipv4Net = "10.210.0.0/24".parse().unwrap();
+        let mut ipam = SubnetIpam::new(subnet);
+        // .3 through .254 = 252 addresses
+        for _ in 0..252 {
+            assert!(ipam.allocate().is_some());
+        }
+        assert!(ipam.allocate().is_none());
     }
 
     #[test]

@@ -5,7 +5,7 @@ use crate::adapters::memory::{MemoryService, MemoryStore, MemoryWireGuard};
 use crate::adapters::wireguard::{DockerWireGuard, HostWireGuard};
 use crate::error::Result;
 use crate::mesh::MeshNetwork;
-use crate::model::{InviteRecord, MachineEvent, MachineId, MachineRecord};
+use crate::model::{InviteRecord, MachineEvent, MachineId, MachineRecord, OverlayIp};
 use crate::store::{InviteStore, MachineStore, ServiceControl, SyncProbe, SyncStatus};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -43,6 +43,22 @@ impl MeshNetwork for WireguardDriver {
             Self::Memory(n) => n.set_peers(peers).await,
             Self::Docker(n) => n.set_peers(peers).await,
             Self::Host(n) => n.set_peers(peers).await,
+        }
+    }
+
+    async fn has_remote_handshake(&self) -> bool {
+        match self {
+            Self::Memory(n) => n.has_remote_handshake().await,
+            Self::Docker(n) => n.has_remote_handshake().await,
+            Self::Host(n) => n.has_remote_handshake().await,
+        }
+    }
+
+    async fn bridge_ip(&self) -> Option<OverlayIp> {
+        match self {
+            Self::Memory(n) => n.bridge_ip().await,
+            Self::Docker(n) => n.bridge_ip().await,
+            Self::Host(n) => n.bridge_ip().await,
         }
     }
 }

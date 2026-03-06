@@ -13,13 +13,15 @@ use std::path::Path;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
+use std::net::Ipv4Addr;
+
 use crate::error::{Error, Result};
 use crate::mesh::MeshNetwork;
 use crate::model::{MachineRecord, OverlayIp, PrivateKey};
 
 use super::bridge::{InboundForward, OutboundForward, OverlayBridge};
 use super::config::{
-    BridgePeerInfo, WgPaths, encode_key, write_private_key, write_sync_config_with_bridge,
+    BridgePeerInfo, WgPaths, encode_key, write_private_key, write_sync_config_with_extra_peers,
 };
 
 const DEFAULT_IMAGE: &str = "procustodibus/wireguard:latest";
@@ -34,12 +36,14 @@ pub struct DockerWireGuard {
     image: String,
     paths: WgPaths,
     private_key: PrivateKey,
+    public_key_bytes: [u8; 32],
     overlay_ip: OverlayIp,
     listen_port: u16,
     outbound_forwards: Vec<OutboundForward>,
     inbound_forwards: Vec<InboundForward>,
     bridge: Mutex<Option<OverlayBridge>>,
-    bridge_peer: Mutex<Option<BridgePeerInfo>>,
+    bridge_overlay_ip: Mutex<Option<OverlayIp>>,
+    extra_peers: Mutex<Vec<BridgePeerInfo>>,
 }
 
 pub struct DockerWireGuardBuilder {
@@ -93,18 +97,25 @@ impl DockerWireGuardBuilder {
 
         let paths = WgPaths::new(&self.data_dir);
 
+        let public_key_bytes = x25519_dalek::PublicKey::from(
+            &x25519_dalek::StaticSecret::from(self.private_key.0),
+        )
+        .to_bytes();
+
         Ok(DockerWireGuard {
             docker,
             container_name: self.container_name,
             image: self.image,
             paths,
             private_key: self.private_key,
+            public_key_bytes,
             overlay_ip: self.overlay_ip,
             listen_port: self.listen_port,
             outbound_forwards: self.outbound_forwards,
             inbound_forwards: self.inbound_forwards,
             bridge: Mutex::new(None),
-            bridge_peer: Mutex::new(None),
+            bridge_overlay_ip: Mutex::new(None),
+            extra_peers: Mutex::new(Vec::new()),
         })
     }
 }
@@ -415,15 +426,80 @@ impl DockerWireGuard {
             .is_ok()
     }
 
+    pub fn public_key_bytes(&self) -> &[u8; 32] {
+        &self.public_key_bytes
+    }
+
+    pub fn container_name(&self) -> &str {
+        &self.container_name
+    }
+
+    pub fn image(&self) -> &str {
+        &self.image
+    }
+
+    /// Add a sidecar as a WG peer on the backbone and register in extra_peers for syncconf protection.
+    pub async fn add_sidecar_peer(&self, pubkey: [u8; 32], overlay_ip: Ipv4Addr) -> Result<()> {
+        let pubkey_b64 = encode_key(&pubkey);
+        let allowed = format!("{overlay_ip}/32");
+
+        self.exec_in_container(&[
+            "wg",
+            "set",
+            INTERFACE_NAME,
+            "peer",
+            &pubkey_b64,
+            "allowed-ips",
+            &allowed,
+            "persistent-keepalive",
+            "25",
+        ])
+        .await?;
+
+        self.extra_peers.lock().await.push(BridgePeerInfo {
+            public_key: pubkey,
+            allowed_ips: vec![allowed],
+        });
+
+        info!(%overlay_ip, "added sidecar peer to backbone");
+        Ok(())
+    }
+
+    /// Remove a sidecar peer from the backbone WG interface and extra_peers list.
+    pub async fn remove_sidecar_peer(&self, pubkey: &[u8; 32]) -> Result<()> {
+        let pubkey_b64 = encode_key(pubkey);
+
+        self.exec_in_container(&[
+            "wg",
+            "set",
+            INTERFACE_NAME,
+            "peer",
+            &pubkey_b64,
+            "remove",
+        ])
+        .await?;
+
+        self.extra_peers
+            .lock()
+            .await
+            .retain(|p| &p.public_key != pubkey);
+
+        info!("removed sidecar peer from backbone");
+        Ok(())
+    }
+
     /// Start the overlay bridge and register it as a WG peer on the container.
     async fn start_bridge(&self) -> Result<()> {
         if self.outbound_forwards.is_empty() && self.inbound_forwards.is_empty() {
             return Ok(());
         }
 
-        let container_pubkey =
-            x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(self.private_key.0));
-        let container_pubkey_bytes = container_pubkey.to_bytes();
+        if self.bridge.lock().await.is_some() {
+            info!(name = %self.container_name, "bridge already running");
+            return Ok(());
+        }
+
+        let container_pubkey_bytes = self.public_key_bytes;
 
         // Generate bridge keypair BEFORE starting, so we can register the peer first.
         // The container must know the bridge peer before the handshake arrives.
@@ -468,7 +544,8 @@ impl DockerWireGuard {
             allowed_ips: vec![bridge_allowed],
         };
 
-        *self.bridge_peer.lock().await = Some(peer_info);
+        self.extra_peers.lock().await.push(peer_info);
+        *self.bridge_overlay_ip.lock().await = Some(bridge_overlay_ip);
         *self.bridge.lock().await = Some(bridge);
 
         Ok(())
@@ -556,12 +633,17 @@ impl MeshNetwork for DockerWireGuard {
         Ok(())
     }
 
+    async fn bridge_ip(&self) -> Option<OverlayIp> {
+        *self.bridge_overlay_ip.lock().await
+    }
+
     async fn down(&self) -> Result<()> {
         // Stop bridge first
         if let Some(bridge) = self.bridge.lock().await.take() {
             bridge.stop().await;
         }
-        *self.bridge_peer.lock().await = None;
+        *self.bridge_overlay_ip.lock().await = None;
+        self.extra_peers.lock().await.clear();
 
         let stop_opts = StopContainerOptionsBuilder::default().t(10).build();
 
@@ -598,14 +680,15 @@ impl MeshNetwork for DockerWireGuard {
     }
 
     async fn set_peers(&self, peers: &[MachineRecord]) -> Result<()> {
-        // Include bridge peer in sync config to protect it from being removed by syncconf
-        let bridge_peer = self.bridge_peer.lock().await;
-        write_sync_config_with_bridge(
+        // Include extra peers (bridge + sidecars) in sync config to protect them from syncconf removal
+        let extra = self.extra_peers.lock().await;
+        let extra_refs: Vec<&BridgePeerInfo> = extra.iter().collect();
+        write_sync_config_with_extra_peers(
             &self.paths,
             &self.private_key,
             self.listen_port,
             peers,
-            bridge_peer.as_ref(),
+            &extra_refs,
         )
         .map_err(|e| Error::operation("write sync config", e.to_string()))?;
 
@@ -616,6 +699,44 @@ impl MeshNetwork for DockerWireGuard {
         info!(peer_count = peers.len(), "synced wireguard peers");
         Ok(())
     }
+
+    async fn has_remote_handshake(&self) -> bool {
+        let output = match self
+            .exec_in_container_capture(&["wg", "show", INTERFACE_NAME, "latest-handshakes"])
+            .await
+        {
+            Ok(o) => o,
+            Err(_) => return false,
+        };
+
+        // Collect extra_peers pubkeys (bridge + sidecars) — these handshake locally
+        // and must be excluded from the remote handshake check.
+        let extra = self.extra_peers.lock().await;
+        let local_keys: std::collections::HashSet<String> =
+            extra.iter().map(|p| encode_key(&p.public_key)).collect();
+
+        // Output format: "<pubkey>\t<unix_timestamp>\n" per peer. Timestamp 0 = no handshake.
+        for line in output.lines() {
+            let mut parts = line.split('\t');
+            let pubkey = parts.next().unwrap_or("").trim();
+            let ts = parts
+                .next()
+                .and_then(|ts| ts.trim().parse::<u64>().ok())
+                .unwrap_or(0);
+            let is_local = local_keys.contains(pubkey);
+            let short_key = &pubkey[..pubkey.len().min(8)];
+
+            if is_local {
+                tracing::trace!(key = short_key, ts, "skipping local peer");
+            } else if ts > 0 {
+                info!(key = short_key, ts, "remote peer handshake confirmed");
+                return true;
+            } else {
+                tracing::debug!(key = short_key, "remote peer awaiting handshake");
+            }
+        }
+        false
+    }
 }
 
 #[cfg(test)]
@@ -624,18 +745,25 @@ mod tests {
     use std::net::Ipv6Addr;
 
     fn sample_wireguard() -> DockerWireGuard {
+        let private_key = PrivateKey([7; 32]);
+        let public_key_bytes = x25519_dalek::PublicKey::from(
+            &x25519_dalek::StaticSecret::from(private_key.0),
+        )
+        .to_bytes();
         DockerWireGuard {
             docker: Docker::connect_with_socket_defaults().expect("docker client"),
             container_name: "test-wireguard".to_string(),
             image: DEFAULT_IMAGE.to_string(),
             paths: WgPaths::new(Path::new("/tmp/ployz-test")),
-            private_key: PrivateKey([7; 32]),
+            private_key,
+            public_key_bytes,
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             listen_port: DEFAULT_LISTEN_PORT,
             outbound_forwards: Vec::new(),
             inbound_forwards: Vec::new(),
             bridge: Mutex::new(None),
-            bridge_peer: Mutex::new(None),
+            bridge_overlay_ip: Mutex::new(None),
+            extra_peers: Mutex::new(Vec::new()),
         }
     }
 

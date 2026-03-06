@@ -29,6 +29,11 @@ enum Command {
         #[command(subcommand)]
         action: MachineAction,
     },
+    /// Workload sidecar management.
+    Workload {
+        #[command(subcommand)]
+        action: WorkloadAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -80,6 +85,17 @@ enum MachineAction {
         #[command(subcommand)]
         action: MachineInviteAction,
     },
+}
+
+#[derive(Subcommand)]
+enum WorkloadAction {
+    /// Create a new workload sidecar.
+    Create { name: String },
+    /// Destroy a workload sidecar.
+    Destroy { name: String },
+    /// List active workloads.
+    #[command(alias = "list")]
+    Ls,
 }
 
 #[derive(Subcommand)]
@@ -159,6 +175,15 @@ async fn main() {
                     token: token.clone(),
                 },
             },
+        },
+        Command::Workload { action } => match action {
+            WorkloadAction::Create { name } => DaemonRequest::WorkloadCreate {
+                name: name.clone(),
+            },
+            WorkloadAction::Destroy { name } => DaemonRequest::WorkloadDestroy {
+                name: name.clone(),
+            },
+            WorkloadAction::Ls => DaemonRequest::WorkloadList,
         },
     };
 

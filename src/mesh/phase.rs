@@ -41,8 +41,8 @@ pub enum PhaseEvent {
 pub enum TransitionError {
     #[error("invalid transition: {from} + {event:?}")]
     Invalid { from: Phase, event: PhaseEvent },
-    #[error("bootstrap timeout")]
-    BootstrapTimeout,
+    #[error("bootstrap timeout: {reason}")]
+    BootstrapTimeout { reason: String },
 }
 
 pub fn transition(
@@ -58,7 +58,9 @@ pub fn transition(
         (Provisioning, ComponentsStarted) => Ok(Bootstrapping),
         (Starting | Provisioning | Bootstrapping, ComponentFailed) => Ok(Stopped),
         (Bootstrapping, SyncComplete) => Ok(Running),
-        (Bootstrapping, BootstrapTimeout) => Err(TransitionError::BootstrapTimeout),
+        (Bootstrapping, BootstrapTimeout) => Err(TransitionError::BootstrapTimeout {
+            reason: "unknown".into(),
+        }),
         (Running, DetachRequested) => Ok(Stopped),
         (Stopped | Running | Provisioning | Bootstrapping, DestroyRequested) => Ok(Stopping),
         (Stopping, TeardownComplete) => Ok(Stopped),
@@ -117,7 +119,7 @@ mod tests {
     fn bootstrap_timeout() {
         let err = transition(Phase::Bootstrapping, PhaseEvent::BootstrapTimeout)
             .expect_err("bootstrap timeout error");
-        assert!(matches!(err, TransitionError::BootstrapTimeout));
+        assert!(matches!(err, TransitionError::BootstrapTimeout { .. }));
     }
 
     #[test]
