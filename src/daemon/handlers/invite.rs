@@ -1,6 +1,8 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use corro_api_types::Statement;
 use x25519_dalek::StaticSecret;
 
+use crate::drivers::StoreDriver;
 use crate::model::InviteRecord;
 use crate::network::endpoints::detect_endpoints;
 use crate::node::invite::{issue_invite_token, parse_and_verify_invite_token};
@@ -119,5 +121,56 @@ impl DaemonState {
             .map_err(|e| format!("store invite: {e}"))?;
 
         Ok(token)
+    }
+
+    pub(crate) async fn handle_debug_seed_invites(&self, count: u64) -> DaemonResponse {
+        let store = match self.active.as_ref() {
+            Some(a) => a.mesh.store(),
+            None => {
+                return self.err(
+                    "NO_RUNNING_NETWORK",
+                    "debug seed invites requires a running network",
+                );
+            }
+        };
+
+        let client = match &store {
+            StoreDriver::Corrosion { store, .. }
+            | StoreDriver::CorrosionHost { store, .. } => store.client(),
+            StoreDriver::Memory { .. } => {
+                return self.err("UNSUPPORTED", "debug seed invites only works with corrosion");
+            }
+        };
+
+        let now = now_unix_secs();
+        let expires_at = now + 86400;
+
+        // Batch into transactions of 500
+        let batch_size = 500u64;
+        let mut inserted = 0u64;
+        while inserted < count {
+            let n = std::cmp::min(batch_size, count - inserted);
+            let stmts: Vec<Statement> = (0..n)
+                .map(|i| {
+                    let id = format!("debug-{}-{}", now, inserted + i);
+                    Statement::WithParams(
+                        "INSERT INTO invites (id, expires_at) VALUES (?, ?)".to_string(),
+                        vec![id.into(), (expires_at as i64).into()],
+                    )
+                })
+                .collect();
+
+            match client.execute(&stmts, None).await {
+                Ok(_) => inserted += n,
+                Err(e) => {
+                    return self.err(
+                        "SEED_FAILED",
+                        format!("failed after {inserted} rows: {e}"),
+                    );
+                }
+            }
+        }
+
+        self.ok(format!("seeded {inserted} invite rows"))
     }
 }

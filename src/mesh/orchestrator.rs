@@ -127,6 +127,21 @@ impl Mesh {
             }
         }
 
+        // Configure WG peers from seed records BEFORE starting corrosion.
+        // Corrosion's gossip immediately tries to reach bootstrap peers over
+        // overlay IPs, so the WG tunnel must already have those peers configured.
+        let pre_start_peers: Vec<_> = self
+            .seed_records
+            .iter()
+            .filter(|m| m.id != self.machine_id)
+            .cloned()
+            .collect();
+        if !pre_start_peers.is_empty() {
+            if let Err(e) = self.network.set_peers(&pre_start_peers).await {
+                warn!(?e, "pre-start peer sync failed");
+            }
+        }
+
         if let Err(e) = self.store.start().await {
             warn!(?e, "service start failed");
             let _ = self.network.down().await;
@@ -330,6 +345,22 @@ impl Mesh {
         }
     }
 
+    /// Bootstrap gate: wait for gossip membership, then proceed.
+    ///
+    /// Corrosion is an eventually-consistent system. The /v1/health endpoint
+    /// reports gossip membership and bookkeeping gaps, but gaps == 0 before
+    /// the first sync handshake is vacuously true — it means "no known missing
+    /// versions," not "we've compared state with a peer and converged."
+    ///
+    /// We gate only on membership (members >= 1 = gossip can see a remote peer).
+    /// After that, data convergence happens in the background. The subscription
+    /// snapshot taken after this gate may be stale; the subscribe loop will
+    /// deliver corrections as sync completes.
+    ///
+    /// If workload scheduling data is ever stored in corrosion, this gate is
+    /// NOT sufficient — a stronger readiness primitive (e.g. verifying a remote
+    /// actor_id exists in __corro_bookkeeping) would be needed to ensure the
+    /// snapshot reflects post-sync state.
     async fn bootstrap_gate(&mut self) -> Result<()> {
         let machines = self.store.list_machines().await?;
         let has_remote_peer = machines.iter().any(|m| m.id != self.machine_id);
@@ -348,14 +379,14 @@ impl Mesh {
         let connection_timeout = self.connection_timeout;
         let store = self.store.clone();
 
-        // Connection phase: wait for corrosion to see any peer (short timeout).
+        // Wait for corrosion gossip to see at least one remote peer.
         let connected = tokio::time::timeout(connection_timeout, async {
             loop {
                 match store.sync_status().await {
                     Ok(SyncStatus::Disconnected) => {}
                     Ok(_) => return true,
                     Err(e) => {
-                        warn!(?e, "sync probe failed during connection phase");
+                        warn!(?e, "sync probe failed during bootstrap");
                     }
                 }
                 tokio::time::sleep(interval).await;
@@ -366,23 +397,6 @@ impl Mesh {
 
         if !connected {
             return Err(TransitionError::BootstrapTimeout.into());
-        }
-
-        // Sync phase: wait for gaps to reach 0 (no timeout).
-        loop {
-            match self.store.sync_status().await {
-                Ok(SyncStatus::Synced) => break,
-                Ok(SyncStatus::Syncing { gaps }) => {
-                    info!(gaps, "syncing: {gaps} gaps remaining");
-                }
-                Ok(SyncStatus::Disconnected) => {
-                    warn!("corrosion disconnected during sync phase");
-                }
-                Err(e) => {
-                    warn!(?e, "sync probe failed during sync phase");
-                }
-            }
-            tokio::time::sleep(interval).await;
         }
 
         self.apply(PhaseEvent::SyncComplete)?;

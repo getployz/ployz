@@ -2,6 +2,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::adapters::corrosion::client::Transport;
 use crate::config::Mode;
 use crate::drivers::{StoreDriver, WireguardDriver};
 use crate::mesh::orchestrator::Mesh;
@@ -129,9 +130,6 @@ impl DaemonState {
                 (network, store)
             }
             Mode::Docker => {
-                // In Docker mode, the bridge forwards localhost → overlay for host access.
-                // Corrosion binds to overlay_ip inside the container namespace,
-                // but the host connects to localhost via the bridge.
                 let api_port = corrosion_config::DEFAULT_API_PORT;
                 let overlay_api = SocketAddr::new(IpAddr::V6(net_config.overlay_ip.0), api_port);
                 let local_api = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), api_port);
@@ -147,11 +145,13 @@ impl DaemonState {
                 .await
                 .map_err(|e| format!("docker wireguard: {e}"))?;
                 let network = WireguardDriver::Docker(Arc::new(wg));
+
+                let transport = Transport::Bridge { local_addr: local_api };
                 let store = self
-                    .build_corrosion_store_bridged(
+                    .build_corrosion_store_docker(
                         &network_dir,
                         net_config.overlay_ip,
-                        local_api,
+                        transport,
                         &corrosion_bootstrap,
                         &net_config.id.0,
                     )
@@ -175,9 +175,12 @@ impl DaemonState {
                 )
                 .map_err(|e| format!("host wireguard: {e}"))?;
                 let network = WireguardDriver::Host(Arc::new(wg));
+
+                let transport = Transport::Direct;
                 let store = self.build_corrosion_store_host(
                     &network_dir,
                     net_config.overlay_ip,
+                    transport,
                     &corrosion_bootstrap,
                     &net_config.id.0,
                 )?;
@@ -245,20 +248,19 @@ impl DaemonState {
         Ok(())
     }
 
-    /// Build Corrosion store for Docker mode with bridge forwarding.
-    /// Corrosion config uses overlay_ip (container-side), client uses local_endpoint (host-side via bridge).
-    async fn build_corrosion_store_bridged(
+    /// Build Corrosion store for Docker mode.
+    /// Corrosion config uses overlay_ip (container-side), client uses transport for actual connection.
+    async fn build_corrosion_store_docker(
         &self,
         network_dir: &std::path::Path,
         overlay_ip: crate::model::OverlayIp,
-        local_endpoint: SocketAddr,
+        transport: Transport,
         bootstrap: &[String],
         network_id: &str,
     ) -> Result<StoreDriver, String> {
         let paths = corrosion_config::Paths::new(network_dir);
         let gossip_addr =
             SocketAddr::new(IpAddr::V6(overlay_ip.0), corrosion_config::DEFAULT_GOSSIP_PORT);
-        // Corrosion API binds to overlay IP inside the container namespace
         let api_addr =
             SocketAddr::new(IpAddr::V6(overlay_ip.0), corrosion_config::DEFAULT_API_PORT);
 
@@ -283,12 +285,9 @@ impl DaemonState {
             .await
             .map_err(|e| format!("docker service: {e}"))?;
 
-        // Host connects to localhost via bridge
-        let endpoint = local_endpoint.to_string();
-        let corrosion = CorrosionStore::new(&endpoint, &paths.db)
-            .map_err(|e| format!("corrosion store: {e}"))?;
+        let corrosion = CorrosionStore::new(api_addr, transport.clone());
 
-        tracing::info!(%endpoint, "store backend: corrosion (bridged)");
+        tracing::info!(endpoint = %api_addr, ?transport, "store backend: corrosion (docker)");
 
         Ok(StoreDriver::Corrosion {
             store: corrosion,
@@ -301,6 +300,7 @@ impl DaemonState {
         &self,
         network_dir: &std::path::Path,
         overlay_ip: crate::model::OverlayIp,
+        transport: Transport,
         bootstrap: &[String],
         network_id: &str,
     ) -> Result<StoreDriver, String> {
@@ -323,11 +323,9 @@ impl DaemonState {
         let binary = which_corrosion().map_err(|e| format!("corrosion binary: {e}"))?;
         let service = HostCorrosion::new(binary, &paths.config);
 
-        let endpoint = api_addr.to_string();
-        let corrosion = CorrosionStore::new(&endpoint, &paths.db)
-            .map_err(|e| format!("corrosion store: {e}"))?;
+        let corrosion = CorrosionStore::new(api_addr, transport.clone());
 
-        tracing::info!(%endpoint, "store backend: corrosion (host)");
+        tracing::info!(endpoint = %api_addr, ?transport, "store backend: corrosion (host)");
 
         Ok(StoreDriver::CorrosionHost {
             store: corrosion,

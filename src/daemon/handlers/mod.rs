@@ -35,6 +35,9 @@ impl DaemonState {
             }
             DaemonRequest::MeshSelfRecord => self.handle_mesh_self_record().await,
             DaemonRequest::MeshAccept { response } => self.handle_mesh_accept(&response).await,
+            DaemonRequest::DebugSeedInvites { count } => {
+                self.handle_debug_seed_invites(count).await
+            }
         }
     }
 }

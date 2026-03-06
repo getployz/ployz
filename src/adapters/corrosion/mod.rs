@@ -2,92 +2,58 @@ use crate::error::{Error, Result};
 use crate::model::{InviteRecord, MachineEvent, MachineId, MachineRecord, OverlayIp, PublicKey};
 use crate::store::{InviteStore, MachineStore, SyncProbe, SyncStatus};
 use corro_api_types::{ExecResult, SqliteValue, Statement, TypedQueryEvent, sqlite::ChangeType};
-use corro_client::CorrosionClient;
 use futures_util::StreamExt;
 use ipnet::Ipv4Net;
 use std::collections::HashMap;
 use std::net::{Ipv6Addr, SocketAddr};
 use tokio::sync::mpsc;
-use tracing::warn;
+use tracing::{debug, warn};
 
+pub mod client;
 pub mod config;
 pub mod docker;
 pub mod host;
+
+pub use client::{CorrClient, Transport};
 
 pub const SCHEMA_SQL: &str = include_str!("schema.sql");
 
 #[derive(Clone)]
 pub struct CorrosionStore {
-    client: CorrosionClient,
-    addr: SocketAddr,
-    health_http: reqwest::Client,
+    client: CorrClient,
 }
 
 impl CorrosionStore {
-    pub fn new(endpoint: &str, db_path: &std::path::Path) -> std::result::Result<Self, String> {
-        let addr: SocketAddr = endpoint
-            .parse()
-            .map_err(|e| format!("invalid corrosion endpoint '{endpoint}': {e}"))?;
-        let client =
-            CorrosionClient::new(addr, db_path).map_err(|e| format!("corrosion client: {e}"))?;
-        let health_http = reqwest::Client::builder()
-            .http2_prior_knowledge()
-            .build()
-            .map_err(|e| format!("health client: {e}"))?;
-        Ok(Self {
-            client,
-            addr,
-            health_http,
-        })
+    pub fn new(api_addr: SocketAddr, transport: Transport) -> Self {
+        let client = CorrClient::new(api_addr, transport);
+        Self { client }
+    }
+
+    pub fn client(&self) -> &CorrClient {
+        &self.client
     }
 }
 
 impl SyncProbe for CorrosionStore {
     async fn sync_status(&self) -> Result<SyncStatus> {
-        let resp = self
-            .health_http
-            .get(format!("http://{}/v1/health?gaps=0", self.addr))
-            .header(reqwest::header::ACCEPT, "application/json")
-            .send()
+        let health = self
+            .client
+            .health()
             .await
             .map_err(|e| Error::operation("sync_status", format!("health request: {e}")))?;
 
-        let status = resp.status();
-
-        #[derive(serde::Deserialize)]
-        struct Envelope {
-            response: Health,
-        }
-        #[derive(serde::Deserialize)]
-        struct Health {
-            gaps: i64,
-            members: i64,
-        }
-
-        let body = resp
-            .bytes()
-            .await
-            .map_err(|e| Error::operation("sync_status", format!("read body: {e}")))?;
-        let health = serde_json::from_slice::<Envelope>(&body)
-            .map_err(|e| Error::operation("sync_status", format!("decode: {e}")))?
-            .response;
-
-        if !status.is_success() {
-            return Err(Error::operation(
-                "sync_status",
-                format!("health endpoint returned status {status}"),
-            ));
-        }
-
-        if health.members <= 1 {
-            Ok(SyncStatus::Disconnected)
+        let status = if health.members < 1 {
+            SyncStatus::Disconnected
         } else if health.gaps > 0 {
-            Ok(SyncStatus::Syncing {
+            SyncStatus::Syncing {
                 gaps: health.gaps as u64,
-            })
+            }
         } else {
-            Ok(SyncStatus::Synced)
-        }
+            SyncStatus::Synced
+        };
+
+        debug!(members = health.members, gaps = health.gaps, ?status, "sync_status");
+        Ok(status)
     }
 }
 
@@ -294,7 +260,7 @@ impl InviteStore for CorrosionStore {
 // --- query/exec helpers ---
 
 async fn query_rows(
-    client: &CorrosionClient,
+    client: &CorrClient,
     stmt: &Statement,
     op: &'static str,
 ) -> Result<Vec<Vec<SqliteValue>>> {
@@ -314,7 +280,7 @@ async fn query_rows(
     Ok(rows)
 }
 
-async fn exec_one(client: &CorrosionClient, stmts: &[Statement], op: &'static str) -> Result<()> {
+async fn exec_one(client: &CorrClient, stmts: &[Statement], op: &'static str) -> Result<()> {
     let res = client
         .execute(stmts, None)
         .await

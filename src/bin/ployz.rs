@@ -29,6 +29,11 @@ enum Command {
         #[command(subcommand)]
         action: MachineAction,
     },
+    /// Seed the invites table with random test rows.
+    DebugSeedInvites {
+        #[arg(default_value_t = 10000)]
+        count: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -142,6 +147,7 @@ async fn main() {
                 response: response.clone(),
             },
         },
+        Command::DebugSeedInvites { count } => DaemonRequest::DebugSeedInvites { count: *count },
         Command::Machine { action } => match action {
             MachineAction::Ls => DaemonRequest::MachineList,
             MachineAction::Init { target, network } => DaemonRequest::MachineInit {

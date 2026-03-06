@@ -14,6 +14,7 @@ pub mod transport;
 // Re-export public API
 pub use adapters::corrosion::docker::DockerCorrosion;
 pub use adapters::corrosion::host::HostCorrosion;
+pub use adapters::corrosion::client::{CorrClient, Transport};
 pub use adapters::corrosion::{CorrosionStore, SCHEMA_SQL, config as corrosion_config};
 pub use adapters::docker_network::DockerBridgeNetwork;
 pub use adapters::memory::{MemoryService, MemoryStore, MemoryWireGuard};

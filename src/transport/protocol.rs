@@ -21,6 +21,7 @@ pub enum DaemonRequest {
     MachineInviteImport { token: String },
     MeshSelfRecord,
     MeshAccept { response: String },
+    DebugSeedInvites { count: u64 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
