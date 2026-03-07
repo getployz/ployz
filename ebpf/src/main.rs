@@ -33,7 +33,7 @@ pub fn ployz_egress(ctx: TcContext) -> i32 {
 /// Matches source IP against known overlay subnets and accepts
 /// (packets arriving from WG into the bridge).
 #[classifier]
-pub fn ployz_ingress(ctx: TcContext) -> i32 {
+pub fn ployz_ingress(_ctx: TcContext) -> i32 {
     // Ingress on the bridge: packets from WG destined to containers.
     // We just need to accept them (TC_ACT_OK). The kernel will deliver
     // to the correct veth. No redirect needed on ingress.
@@ -42,13 +42,15 @@ pub fn ployz_ingress(ctx: TcContext) -> i32 {
 
 fn try_classify(ctx: &TcContext) -> Option<u32> {
     let ethhdr: EthHdr = ctx.load(0).ok()?;
-    // Only handle IPv4
-    if ethhdr.ether_type != network_types::eth::EtherType::Ipv4 {
+    // Copy packed fields to avoid unaligned references
+    let ether_type = { ethhdr.ether_type };
+    if ether_type != network_types::eth::EtherType::Ipv4 {
         return None;
     }
 
     let iphdr: Ipv4Hdr = ctx.load(EthHdr::LEN).ok()?;
-    let dest_ip = u32::from_be(iphdr.dst_addr);
+    let dst_addr = iphdr.dst_addr;
+    let dest_ip = u32::from_be(dst_addr);
 
     // Try progressively shorter prefixes: /32, /24, /16, /8
     for prefix_len in [32u32, 24, 16, 8] {

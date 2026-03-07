@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [[bin]]
-name = "ployz-ebpf"
+name = "ployz-ebpf-tc"
 path = "src/main.rs"
 
 [dependencies]

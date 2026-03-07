@@ -20,7 +20,7 @@ pub struct NativeDataplane {
 
 impl NativeDataplane {
     pub fn attach(bridge_ifname: &str, wg_ifindex: u32) -> Result<Self> {
-        let bytecode = include_bytes_aligned!(concat!(env!("OUT_DIR"), "/ployz-ebpf"));
+        let bytecode = include_bytes_aligned!(concat!(env!("OUT_DIR"), "/ployz-ebpf-tc"));
         let mut bpf = Ebpf::load(bytecode)
             .map_err(|e| Error::operation("ebpf load", e.to_string()))?;
 
