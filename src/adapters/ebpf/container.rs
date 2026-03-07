@@ -71,6 +71,16 @@ impl ContainerDataplane {
     }
 
     async fn exec(&self, cmd: &[&str]) -> Result<()> {
+        // The WG container has its own network namespace (for wg0), but eBPF TC
+        // classifiers must attach to the bridge in the host netns. Since the
+        // container runs with pid_mode=host, nsenter into PID 1's netns.
+        let mut full_cmd = vec![
+            "nsenter".to_string(),
+            "--net=/proc/1/ns/net".to_string(),
+            "--".to_string(),
+        ];
+        full_cmd.extend(cmd.iter().map(|s| s.to_string()));
+
         let exec = self
             .docker
             .create_exec(
@@ -78,7 +88,8 @@ impl ContainerDataplane {
                 CreateExecOptions::<String> {
                     attach_stdout: Some(true),
                     attach_stderr: Some(true),
-                    cmd: Some(cmd.iter().map(|s| s.to_string()).collect()),
+                    privileged: Some(true),
+                    cmd: Some(full_cmd),
                     ..Default::default()
                 },
             )

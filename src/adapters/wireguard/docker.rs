@@ -594,6 +594,7 @@ impl MeshNetwork for DockerWireGuard {
             binds: Some(vec![
                 format!("{wg_dir}:{wg_dir}"),
                 "/dev/net/tun:/dev/net/tun".to_string(),
+                "/sys/fs/bpf:/sys/fs/bpf:rw".to_string(),
             ]),
             privileged: Some(true),
             pid_mode: Some("host".to_string()),

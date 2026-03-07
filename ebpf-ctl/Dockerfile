@@ -1,6 +1,5 @@
-FROM rust:1-alpine AS builder
+FROM rust:1-bookworm AS builder
 
-RUN apk add --no-cache musl-dev
 RUN rustup install nightly && \
     rustup component add rust-src --toolchain nightly && \
     cargo +nightly install bpf-linker
