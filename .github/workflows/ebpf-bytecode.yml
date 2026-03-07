@@ -23,7 +23,7 @@ jobs:
 
       - name: Build BPF bytecode
         run: |
-          cd ebpf
+          cd crates/ebpf
           cargo +nightly build \
             -Z build-std=core \
             --release \

@@ -1,16 +1,16 @@
-name: Build eBPF sidecar image
+name: Build dataplane sidecar image
 
 on:
   push:
     branches: [main]
     paths:
-      - "ebpf/**"
-      - "ebpf-common/**"
-      - "ebpf-ctl/**"
+      - "crates/ebpf/**"
+      - "crates/ebpf-common/**"
+      - "crates/ployz-dataplane/**"
   workflow_dispatch:
 
 env:
-  IMAGE: ghcr.io/getployz/ployz-ebpf
+  IMAGE: ghcr.io/getployz/ployz-dataplane
 
 jobs:
   build:
@@ -42,7 +42,7 @@ jobs:
       - uses: useblacksmith/build-push-action@v2
         with:
           context: .
-          file: ebpf-ctl/Dockerfile
+          file: Dockerfile.dataplane
           platforms: ${{ matrix.platform }}
           push: true
           tags: ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.suffix }}
