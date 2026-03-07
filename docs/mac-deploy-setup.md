@@ -4,24 +4,17 @@ Cross-compile ployz for Linux and deploy to remote servers from your Mac.
 
 ## Prerequisites
 
-### 1. Rust (stable + nightly)
+### 1. Rust + Linux cross-compilation target
 
 ```sh
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-rustup install nightly
-rustup component add rust-src --toolchain nightly
-```
-
-### 2. Linux cross-compilation target
-
-```sh
 rustup target add x86_64-unknown-linux-gnu
 ```
 
-Install a cross-linker. Pick one:
+Install a cross-linker (pick one):
 
 ```sh
-# Option A: cargo-zigbuild (recommended, easiest)
+# Option A: cargo-zigbuild (recommended)
 brew install zig
 cargo install cargo-zigbuild
 
@@ -29,20 +22,7 @@ cargo install cargo-zigbuild
 cargo install cross
 ```
 
-### 3. LLVM + bpf-linker (for eBPF native builds)
-
-```sh
-brew install llvm
-
-PATH="/opt/homebrew/opt/llvm/bin:$PATH" \
-LLVM_SYS_200_PREFIX=/opt/homebrew/opt/llvm \
-cargo +nightly install --no-default-features --features llvm-20 bpf-linker
-```
-
-> If Homebrew installs a newer LLVM (e.g. 21), adjust the feature flag
-> (`llvm-21`) and env var (`LLVM_SYS_210_PREFIX`) accordingly.
-
-### 4. Deploy targets
+### 2. Deploy targets
 
 Create `.env.targets` in the repo root:
 
@@ -57,12 +37,40 @@ SSH_PORT=22
 just deploy
 ```
 
-This cross-compiles with `--features ebpf-native`, uploads binaries, and restarts `ployzd` on the remote server(s).
+This downloads pre-built eBPF bytecode from GitHub releases, cross-compiles with `--features ebpf-native`, uploads binaries, and restarts `ployzd`.
 
-## Troubleshooting
+## How eBPF bytecode works
 
-**`unable to find LLVM shared lib`** — bpf-linker was installed with default features (uses rustc's LLVM proxy). Reinstall with `--no-default-features --features llvm-20` as shown above.
+The BPF TC classifier is pre-built in CI and published as a GitHub release (`ebpf-v*` tags). The version is tracked in `.ebpf-version`.
 
-**`package ID specification 'ployz-ebpf' did not match any packages`** — the `ebpf` crate must be in the workspace `members` list in `Cargo.toml`.
+`just deploy` automatically runs `just install-ebpf` which downloads the bytecode to `ebpf/target/bpfel-unknown-none/release/ployz-ebpf-tc`. The `build.rs` picks it up via `include_bytes!` — no nightly toolchain or bpf-linker needed on your Mac.
 
-**`bpf-linker: SIGABRT`** — LLVM version mismatch. Check `brew info llvm` for your version and match the feature flag.
+### Updating eBPF bytecode
+
+1. Make changes to `ebpf/` or `ebpf-common/`
+2. Push a tag: `git tag ebpf-v0.2.0 && git push --tags`
+3. CI builds and releases the new bytecode
+4. Update `.ebpf-version` to `v0.2.0`
+5. `just deploy` picks up the new version
+
+### Building eBPF locally (optional)
+
+If you need to build the BPF bytecode locally (e.g. for iteration), you need nightly + bpf-linker. On Linux this works out of the box. On macOS:
+
+```sh
+rustup install nightly
+rustup component add rust-src --toolchain nightly
+brew install llvm
+PATH="/opt/homebrew/opt/llvm/bin:$PATH" \
+LLVM_SYS_200_PREFIX=/opt/homebrew/opt/llvm \
+cargo +nightly install --no-default-features --features llvm-20 bpf-linker
+```
+
+Then build directly:
+
+```sh
+cd ebpf
+cargo +nightly build -Z build-std=core --release --target bpfel-unknown-none
+```
+
+> Match the `llvm-XX` feature to your Homebrew LLVM version and the `LLVM_SYS_XX0_PREFIX` env var accordingly.
