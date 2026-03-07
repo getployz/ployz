@@ -6,7 +6,7 @@ use tracing::{info, warn};
 
 use crate::error::{Error, Result};
 
-const CTL_BIN: &str = "ployz-ebpf-ctl";
+const CTL_BIN: &str = "/usr/local/bin/ployz-ebpf-ctl";
 
 /// eBPF dataplane that execs `ployz-ebpf-ctl` inside the WireGuard container.
 /// The WG container image includes the eBPF control binary, so no separate
