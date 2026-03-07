@@ -183,7 +183,6 @@ impl ContainerDataplane {
 
         let config = ContainerCreateBody {
             image: Some(image.to_string()),
-            cmd: Some(vec!["sleep".into(), "infinity".into()]),
             labels: Some(labels),
             host_config: Some(host_config),
             ..Default::default()

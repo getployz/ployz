@@ -25,4 +25,4 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /build/target/release/ployz-ebpf-ctl /usr/local/bin/ployz-ebpf-ctl
 
-ENTRYPOINT ["sleep", "infinity"]
+CMD ["sleep", "infinity"]
