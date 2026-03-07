@@ -187,7 +187,7 @@ impl Mesh {
         let cn = self.container_network.as_ref().unwrap();
         let bridge_ifname = cn.resolve_bridge_ifname().await?;
 
-        #[cfg(target_os = "linux")]
+        #[cfg(feature = "ebpf-native")]
         {
             let wg_ifname = match &self.network {
                 WireguardDriver::Host(wg) => wg.ifname().to_string(),
@@ -199,7 +199,7 @@ impl Mesh {
             self.dataplane = Some(Arc::new(dp));
         }
 
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(feature = "ebpf-native"))]
         {
             // Exec ployz-ebpf-ctl inside the WG container (same image).
             let dp = EbpfDataplane::attach_container(
@@ -525,7 +525,7 @@ impl Mesh {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(feature = "ebpf-native")]
 fn resolve_ifindex(ifname: &str) -> std::result::Result<u32, PortError> {
     let c_name = std::ffi::CString::new(ifname)
         .map_err(|e| PortError::operation("if_nametoindex", e.to_string()))?;

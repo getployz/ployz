@@ -1,6 +1,6 @@
 use aya::Ebpf;
 use aya::maps::HashMap;
-use aya::programs::tc::TcOptions;
+use aya::programs::tc::{NlOptions, TcAttachOptions};
 use aya::programs::{SchedClassifier, TcAttachType};
 use ipnet::Ipv4Net;
 use ployz_ebpf_common::{RouteEntry, RouteKey};
@@ -10,8 +10,15 @@ use tracing::{info, warn};
 
 use crate::error::{Error, Result};
 
-unsafe impl aya::Pod for RouteKey {}
-unsafe impl aya::Pod for RouteEntry {}
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PodRouteKey(RouteKey);
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PodRouteEntry(RouteEntry);
+
+unsafe impl aya::Pod for PodRouteKey {}
+unsafe impl aya::Pod for PodRouteEntry {}
 
 pub struct NativeDataplane {
     bpf: Mutex<Ebpf>,
@@ -33,7 +40,7 @@ impl NativeDataplane {
             .map_err(|e: aya::programs::ProgramError| Error::operation("ebpf egress cast", e.to_string()))?;
         egress.load().map_err(|e| Error::operation("ebpf egress load", e.to_string()))?;
         egress
-            .attach_with_options(bridge_ifname, TcAttachType::Egress, TcOptions::default())
+            .attach_with_options(bridge_ifname, TcAttachType::Egress, TcAttachOptions::Netlink(NlOptions::default()))
             .map_err(|e| Error::operation("ebpf egress attach", e.to_string()))?;
 
         let ingress: &mut SchedClassifier = bpf
@@ -43,7 +50,7 @@ impl NativeDataplane {
             .map_err(|e: aya::programs::ProgramError| Error::operation("ebpf ingress cast", e.to_string()))?;
         ingress.load().map_err(|e| Error::operation("ebpf ingress load", e.to_string()))?;
         ingress
-            .attach_with_options(bridge_ifname, TcAttachType::Ingress, TcOptions::default())
+            .attach_with_options(bridge_ifname, TcAttachType::Ingress, TcAttachOptions::Netlink(NlOptions::default()))
             .map_err(|e| Error::operation("ebpf ingress attach", e.to_string()))?;
 
         info!(bridge = bridge_ifname, "eBPF TC classifiers attached (native)");
@@ -55,11 +62,11 @@ impl NativeDataplane {
     }
 
     pub fn upsert_route(&self, subnet: Ipv4Net, ifindex: u32) -> Result<()> {
-        let key = subnet_to_key(subnet);
-        let entry = RouteEntry { ifindex };
+        let key = PodRouteKey(subnet_to_key(subnet));
+        let entry = PodRouteEntry(RouteEntry { ifindex });
         let mut bpf = self.bpf.lock().unwrap();
 
-        let mut routes: HashMap<_, RouteKey, RouteEntry> = HashMap::try_from(
+        let mut routes: HashMap<_, PodRouteKey, PodRouteEntry> = HashMap::try_from(
             bpf.map_mut("ROUTES")
                 .ok_or_else(|| Error::operation("ebpf", "ROUTES map not found"))?,
         )
@@ -74,10 +81,10 @@ impl NativeDataplane {
     }
 
     pub fn remove_route(&self, subnet: Ipv4Net) -> Result<()> {
-        let key = subnet_to_key(subnet);
+        let key = PodRouteKey(subnet_to_key(subnet));
         let mut bpf = self.bpf.lock().unwrap();
 
-        let mut routes: HashMap<_, RouteKey, RouteEntry> = HashMap::try_from(
+        let mut routes: HashMap<_, PodRouteKey, PodRouteEntry> = HashMap::try_from(
             bpf.map_mut("ROUTES")
                 .ok_or_else(|| Error::operation("ebpf", "ROUTES map not found"))?,
         )
@@ -91,7 +98,8 @@ impl NativeDataplane {
     }
 
     pub fn detach(self) {
-        let _ = aya::programs::tc::qdisc_detach_clsact(&self.bridge_ifname);
+        let _ = aya::programs::tc::qdisc_detach_program(&self.bridge_ifname, TcAttachType::Egress, "ployz_egress");
+        let _ = aya::programs::tc::qdisc_detach_program(&self.bridge_ifname, TcAttachType::Ingress, "ployz_ingress");
         info!(bridge = %self.bridge_ifname, "eBPF TC classifiers detached (native)");
     }
 }

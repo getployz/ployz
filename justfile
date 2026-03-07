@@ -136,5 +136,62 @@ install-corrosion prefix="/usr/local" repo="getployz/corrosion":
     fi
     echo "installed corrosion ${install_path} (${version} for ${os}/${arch})"
 
+install-ebpf repo="getployz/ployz":
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    download() {
+      local url="$1" dest="$2"
+      if command -v curl >/dev/null 2>&1; then
+        curl -fsSL -o "${dest}" "${url}"; return
+      fi
+      wget -qO "${dest}" "${url}"
+    }
+
+    checksum_file() {
+      local f="$1"
+      if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$f" | awk '{print $1}'; return
+      fi
+      shasum -a 256 "$f" | awk '{print $1}'
+    }
+
+    version_file=".ebpf-version"
+    if [[ ! -f "$version_file" ]]; then
+      echo "missing $version_file" >&2; exit 1
+    fi
+    version="$(tr -d '[:space:]' < "$version_file")"
+
+    dest_dir="ebpf/target/bpfel-unknown-none/release"
+    dest_file="$dest_dir/ployz-ebpf-tc"
+    stamp="$dest_dir/.ebpf-release-version"
+
+    if [[ -f "$dest_file" && -f "$stamp" ]]; then
+      installed="$(tr -d '[:space:]' < "$stamp")"
+      if [[ "$installed" == "$version" ]]; then
+        echo "eBPF bytecode $version already present; skipping"
+        exit 0
+      fi
+    fi
+
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+
+    base_url="https://github.com/{{repo}}/releases/download/ebpf-${version}"
+    download "$base_url/checksums.txt" "$tmp/checksums.txt"
+    download "$base_url/ployz-ebpf-tc" "$tmp/ployz-ebpf-tc"
+
+    expected="$(awk '$2 == "dist/ployz-ebpf-tc" || $2 == "ployz-ebpf-tc" {print $1; exit}' "$tmp/checksums.txt")"
+    actual="$(checksum_file "$tmp/ployz-ebpf-tc")"
+    if [[ "$expected" != "$actual" ]]; then
+      echo "checksum mismatch: expected $expected, got $actual" >&2; exit 1
+    fi
+
+    mkdir -p "$dest_dir"
+    cp "$tmp/ployz-ebpf-tc" "$dest_file"
+    printf '%s\n' "$version" > "$stamp"
+    echo "installed eBPF bytecode $version"
+
 deploy *targets:
+    just install-ebpf
     ./scripts/deploy-linux-binary.sh {{targets}}
