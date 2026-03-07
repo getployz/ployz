@@ -19,7 +19,7 @@ pub struct NativeDataplane {
 }
 
 impl NativeDataplane {
-    pub fn attach(bridge_ifname: &str, wg_ifindex: u32) -> Result<Self> {
+    pub fn attach(bridge_ifname: &str) -> Result<Self> {
         let bytecode = include_bytes_aligned!(concat!(env!("OUT_DIR"), "/ployz-ebpf-tc"));
         let mut bpf = Ebpf::load(bytecode)
             .map_err(|e| Error::operation("ebpf load", e.to_string()))?;
@@ -46,7 +46,7 @@ impl NativeDataplane {
             .attach_with_options(bridge_ifname, TcAttachType::Ingress, TcOptions::default())
             .map_err(|e| Error::operation("ebpf ingress attach", e.to_string()))?;
 
-        info!(bridge = bridge_ifname, wg_ifindex, "eBPF TC classifiers attached (native)");
+        info!(bridge = bridge_ifname, "eBPF TC classifiers attached (native)");
 
         Ok(Self {
             bpf: Mutex::new(bpf),

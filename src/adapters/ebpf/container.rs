@@ -3,7 +3,6 @@ use bollard::exec::{CreateExecOptions, StartExecResults};
 use bollard::models::{ContainerCreateBody, HostConfig};
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, CreateImageOptionsBuilder, RemoveContainerOptionsBuilder,
-    StopContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
 use ipnet::Ipv4Net;
@@ -100,7 +99,10 @@ impl ContainerDataplane {
                 while let Some(result) = output.next().await {
                     match result {
                         Ok(bollard::container::LogOutput::StdErr { message }) => {
-                            stderr_buf.push_str(&String::from_utf8_lossy(&message));
+                            if stderr_buf.len() < 4096 {
+                                stderr_buf.push_str(&String::from_utf8_lossy(&message));
+                                stderr_buf.truncate(4096);
+                            }
                         }
                         Err(e) => {
                             return Err(Error::operation("ebpf exec", e.to_string()));
@@ -201,6 +203,36 @@ impl ContainerDataplane {
             .await
             .map_err(|e| Error::operation("ebpf container start", e.to_string()))?;
 
+        // Give the container a moment to stabilize, then verify it's running.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let inspect = self
+            .docker
+            .inspect_container(&self.container_name, None)
+            .await
+            .map_err(|e| Error::operation("ebpf container inspect", e.to_string()))?;
+
+        let running = inspect
+            .state
+            .as_ref()
+            .and_then(|s| s.running)
+            .unwrap_or(false);
+
+        if !running {
+            let exit_code = inspect.state.as_ref().and_then(|s| s.exit_code);
+            let error = inspect
+                .state
+                .as_ref()
+                .and_then(|s| s.error.clone())
+                .unwrap_or_default();
+            return Err(Error::operation(
+                "ebpf container start",
+                format!(
+                    "container exited immediately (exit_code={exit_code:?}, error={error:?})"
+                ),
+            ));
+        }
+
         info!(
             name = %self.container_name,
             image,
@@ -210,21 +242,7 @@ impl ContainerDataplane {
     }
 
     async fn stop_sidecar(&self) -> Result<()> {
-        let stop_opts = StopContainerOptionsBuilder::default().t(5).build();
-        match self
-            .docker
-            .stop_container(&self.container_name, Some(stop_opts))
-            .await
-        {
-            Ok(()) => {}
-            Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 304 | 404,
-                ..
-            }) => {}
-            Err(e) => return Err(Error::operation("ebpf container stop", e.to_string())),
-        }
-
-        let rm_opts = RemoveContainerOptionsBuilder::default().build();
+        let rm_opts = RemoveContainerOptionsBuilder::default().force(true).build();
         match self
             .docker
             .remove_container(&self.container_name, Some(rm_opts))

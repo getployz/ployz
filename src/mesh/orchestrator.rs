@@ -195,7 +195,7 @@ impl Mesh {
                 WireguardDriver::Docker(_) | WireguardDriver::Memory(_) => bridge_ifname.clone(),
             };
             let wg_ifindex = resolve_ifindex(&wg_ifname)?;
-            let dp = EbpfDataplane::attach_native(&bridge_ifname, wg_ifindex)?;
+            let dp = EbpfDataplane::attach_native(&bridge_ifname)?;
             self.wg_ifindex = wg_ifindex;
             self.dataplane = Some(Arc::new(dp));
         }

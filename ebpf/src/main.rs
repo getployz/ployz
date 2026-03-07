@@ -54,11 +54,7 @@ fn try_classify(ctx: &TcContext) -> Option<u32> {
 
     // Try progressively shorter prefixes: /32, /24, /16, /8
     for prefix_len in [32u32, 24, 16, 8] {
-        let mask = if prefix_len == 0 {
-            0
-        } else {
-            !0u32 << (32 - prefix_len)
-        };
+        let mask = !0u32 << (32 - prefix_len);
         let network = (dest_ip & mask).to_be();
         let key = RouteKey {
             network,
