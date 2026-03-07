@@ -71,14 +71,17 @@ read -r -a TARGET_LIST <<<"$TARGETS_RAW"
 echo "==> Cross-compiling Linux binaries"
 
 # Prefer cross if available, fall back to cargo with target
+FEATURES="--features ebpf-native"
+
+
 if command -v cross >/dev/null 2>&1; then
-  cross build --release --target x86_64-unknown-linux-gnu
+  cross build --release --target x86_64-unknown-linux-gnu $FEATURES
 elif command -v cargo-zigbuild >/dev/null 2>&1; then
-  cargo zigbuild --release --target x86_64-unknown-linux-gnu
+  cargo zigbuild --release --target x86_64-unknown-linux-gnu $FEATURES
 else
   echo "   No cross-compiler found. Trying cargo build --target directly..."
   echo "   (install 'cross' or 'cargo-zigbuild' for reliable cross-compilation)"
-  cargo build --release --target x86_64-unknown-linux-gnu
+  cargo build --release --target x86_64-unknown-linux-gnu $FEATURES
 fi
 
 TARGET_DIR="$ROOT_DIR/target/x86_64-unknown-linux-gnu/release"

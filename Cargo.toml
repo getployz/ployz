@@ -1,7 +1,6 @@
 [workspace]
-members = ["ebpf-common"]
-# Note: ebpf/ is NOT a workspace member — it targets bpfel-unknown-none
-# and is compiled by aya-build in build.rs (Linux only).
+members = ["ebpf-common", "ebpf"]
+default-members = [".", "ebpf-common"]
 
 [package]
 name = "ployz"
@@ -49,11 +48,16 @@ if-addrs = "0.13"
 rusqlite = "0.38"
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-aya = "0.13"
+[features]
+ebpf-native = ["dep:aya", "dep:aya-build"]
 
-[target.'cfg(target_os = "linux")'.build-dependencies]
-aya-build = "0.1"
+[dependencies.aya]
+version = "0.13"
+optional = true
+
+[build-dependencies.aya-build]
+version = "0.1"
+optional = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
