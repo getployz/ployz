@@ -1,9 +1,5 @@
 use bollard::Docker;
 use bollard::exec::{CreateExecOptions, StartExecResults};
-use bollard::models::{ContainerCreateBody, HostConfig};
-use bollard::query_parameters::{
-    CreateContainerOptionsBuilder, CreateImageOptionsBuilder, RemoveContainerOptionsBuilder,
-};
 use futures_util::StreamExt;
 use ipnet::Ipv4Net;
 use tracing::{info, warn};
@@ -12,6 +8,9 @@ use crate::error::{Error, Result};
 
 const CTL_BIN: &str = "ployz-ebpf-ctl";
 
+/// eBPF dataplane that execs `ployz-ebpf-ctl` inside the WireGuard container.
+/// The WG container image includes the eBPF control binary, so no separate
+/// sidecar is needed — just docker exec.
 pub struct ContainerDataplane {
     docker: Docker,
     container_name: String,
@@ -20,29 +19,27 @@ pub struct ContainerDataplane {
 
 impl ContainerDataplane {
     pub async fn attach(
-        container_name: &str,
-        image: &str,
+        wg_container_name: &str,
         bridge_ifname: &str,
+        wg_ifname: &str,
     ) -> Result<Self> {
         let docker = Docker::connect_with_socket_defaults()
             .map_err(|e| Error::operation("docker connect", e.to_string()))?;
 
         let dp = Self {
             docker,
-            container_name: container_name.to_string(),
+            container_name: wg_container_name.to_string(),
             bridge_ifname: bridge_ifname.to_string(),
         };
 
-        // Start the sidecar container
-        dp.start_sidecar(image).await?;
-
-        // Exec: attach TC classifiers
-        dp.exec(&[CTL_BIN, "attach", bridge_ifname]).await?;
+        // Exec: attach TC classifiers inside the WG container
+        dp.exec(&[CTL_BIN, "attach", bridge_ifname, wg_ifname])
+            .await?;
 
         info!(
             bridge = bridge_ifname,
-            container = container_name,
-            "eBPF TC classifiers attached (container)"
+            container = wg_container_name,
+            "eBPF TC classifiers attached (via WG container)"
         );
         Ok(dp)
     }
@@ -66,9 +63,11 @@ impl ContainerDataplane {
     }
 
     pub async fn detach(self) -> Result<()> {
-        let _ = self.exec(&[CTL_BIN, "detach", &self.bridge_ifname]).await;
+        let _ = self
+            .exec(&[CTL_BIN, "detach", &self.bridge_ifname])
+            .await;
         info!(bridge = %self.bridge_ifname, "eBPF TC classifiers detached (container)");
-        self.stop_sidecar().await
+        Ok(())
     }
 
     async fn exec(&self, cmd: &[&str]) -> Result<()> {
@@ -131,130 +130,6 @@ impl ContainerDataplane {
             StartExecResults::Detached => {}
         }
 
-        Ok(())
-    }
-
-    async fn start_sidecar(&self, image: &str) -> Result<()> {
-        // Pull image (best-effort)
-        let (repo, tag) = match image.split_once(':') {
-            Some((r, t)) => (r, t),
-            None => (image, "latest"),
-        };
-        let opts = CreateImageOptionsBuilder::default()
-            .from_image(repo)
-            .tag(tag)
-            .build();
-        let mut stream = self.docker.create_image(Some(opts), None, None);
-        while let Some(result) = stream.next().await {
-            match result {
-                Ok(info) => {
-                    if let Some(status) = info.status {
-                        info!(image, %status, "pulling ebpf sidecar");
-                    }
-                }
-                Err(e) => {
-                    warn!(?e, image, "ebpf sidecar pull failed, trying cached");
-                    break;
-                }
-            }
-        }
-
-        // Remove existing
-        let rm_opts = RemoveContainerOptionsBuilder::default().force(true).build();
-        let _ = self
-            .docker
-            .remove_container(&self.container_name, Some(rm_opts))
-            .await;
-
-        // Create with privileged + pid:host + WG container's network namespace
-        let host_config = HostConfig {
-            privileged: Some(true),
-            pid_mode: Some("host".to_string()),
-            network_mode: Some("container:ployz-wireguard".to_string()),
-            ..Default::default()
-        };
-
-        let labels: std::collections::HashMap<String, String> = [
-            ("com.docker.compose.project".into(), "ployz-system".into()),
-            ("com.docker.compose.service".into(), "ebpf".into()),
-        ]
-        .into_iter()
-        .collect();
-
-        let config = ContainerCreateBody {
-            image: Some(image.to_string()),
-            labels: Some(labels),
-            host_config: Some(host_config),
-            ..Default::default()
-        };
-
-        let create_opts = CreateContainerOptionsBuilder::default()
-            .name(&self.container_name)
-            .build();
-
-        self.docker
-            .create_container(Some(create_opts), config)
-            .await
-            .map_err(|e| Error::operation("ebpf container create", e.to_string()))?;
-
-        self.docker
-            .start_container(&self.container_name, None)
-            .await
-            .map_err(|e| Error::operation("ebpf container start", e.to_string()))?;
-
-        // Give the container a moment to stabilize, then verify it's running.
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-        let inspect = self
-            .docker
-            .inspect_container(&self.container_name, None)
-            .await
-            .map_err(|e| Error::operation("ebpf container inspect", e.to_string()))?;
-
-        let running = inspect
-            .state
-            .as_ref()
-            .and_then(|s| s.running)
-            .unwrap_or(false);
-
-        if !running {
-            let exit_code = inspect.state.as_ref().and_then(|s| s.exit_code);
-            let error = inspect
-                .state
-                .as_ref()
-                .and_then(|s| s.error.clone())
-                .unwrap_or_default();
-            return Err(Error::operation(
-                "ebpf container start",
-                format!(
-                    "container exited immediately (exit_code={exit_code:?}, error={error:?})"
-                ),
-            ));
-        }
-
-        info!(
-            name = %self.container_name,
-            image,
-            "eBPF sidecar container started"
-        );
-        Ok(())
-    }
-
-    async fn stop_sidecar(&self) -> Result<()> {
-        let rm_opts = RemoveContainerOptionsBuilder::default().force(true).build();
-        match self
-            .docker
-            .remove_container(&self.container_name, Some(rm_opts))
-            .await
-        {
-            Ok(()) => {}
-            Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 404, ..
-            }) => {}
-            Err(e) => return Err(Error::operation("ebpf container remove", e.to_string())),
-        }
-
-        info!(name = %self.container_name, "eBPF sidecar container stopped");
         Ok(())
     }
 }

@@ -12,7 +12,6 @@ use std::time::Duration;
 use thiserror::Error;
 use tracing::{info, warn};
 
-const EBPF_SIDECAR_IMAGE: &str = "ghcr.io/getployz/ployz-ebpf:latest";
 
 pub type Result<T> = std::result::Result<T, MeshError>;
 
@@ -202,14 +201,13 @@ impl Mesh {
 
         #[cfg(not(target_os = "linux"))]
         {
+            // Exec ployz-ebpf-ctl inside the WG container (same image).
             let dp = EbpfDataplane::attach_container(
-                "ployz-ebpf",
-                EBPF_SIDECAR_IMAGE,
+                "ployz-wireguard",
+                &bridge_ifname,
                 &bridge_ifname,
             )
             .await?;
-            // In container mode, ifindex is resolved inside the VM by ployz-ebpf-ctl.
-            // The sync task passes it per-route; 0 signals "use bridge ifindex".
             self.wg_ifindex = 0;
             self.dataplane = Some(Arc::new(dp));
         }
