@@ -53,13 +53,15 @@ fn main() -> ExitCode {
     }
 }
 
-/// attach <bridge-ifname>
-/// Loads BPF bytecode, attaches TC classifiers, pins the ROUTES map.
+/// attach <bridge-ifname> <wg-ifname>
+/// Loads BPF bytecode, attaches TC classifiers, sets WG ifindex, pins maps.
 fn cmd_attach(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    if args.is_empty() {
-        return Err("usage: attach <bridge-ifname>".into());
+    if args.len() < 2 {
+        return Err("usage: attach <bridge-ifname> <wg-ifname>".into());
     }
     let bridge = &args[0];
+    let wg_ifname = &args[1];
+    let wg_ifindex = resolve_ifindex(wg_ifname)?;
 
     let bytecode = include_bytes_aligned!(concat!(env!("OUT_DIR"), "/ployz-ebpf-tc"));
     let mut bpf = Ebpf::load(bytecode)?;
@@ -87,7 +89,14 @@ fn cmd_attach(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     ingress.load()?;
     ingress.attach_with_options(bridge, TcAttachType::Ingress, nl_opts)?;
 
-    // Pin the ROUTES map so other invocations can open it
+    // Set the WG interface index for IPv6 ULA redirect
+    {
+        let wg_map: &mut aya::maps::Map = bpf.map_mut("WG_IFINDEX").ok_or("WG_IFINDEX map not found")?;
+        let mut arr = aya::maps::Array::<_, u32>::try_from(wg_map)?;
+        arr.set(0, wg_ifindex, 0)?;
+    }
+
+    // Pin maps so other invocations can open them
     std::fs::create_dir_all(PIN_PATH)?;
     let map = bpf.map_mut("ROUTES").ok_or("ROUTES map not found")?;
     map.pin(format!("{PIN_PATH}/routes"))?;
@@ -171,6 +180,15 @@ fn cmd_route(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 fn open_routes_map() -> Result<aya::maps::HashMap<aya::maps::MapData, PodRouteKey, PodRouteEntry>, Box<dyn std::error::Error>> {
     let map_data = aya::maps::MapData::from_pin(format!("{PIN_PATH}/routes"))?;
     Ok(aya::maps::HashMap::try_from(aya::maps::Map::HashMap(map_data))?)
+}
+
+fn resolve_ifindex(ifname: &str) -> Result<u32, Box<dyn std::error::Error>> {
+    let c_name = std::ffi::CString::new(ifname)?;
+    let idx = unsafe { libc::if_nametoindex(c_name.as_ptr()) };
+    if idx == 0 {
+        return Err(format!("interface {ifname} not found").into());
+    }
+    Ok(idx)
 }
 
 fn subnet_to_key(subnet: ipnet::Ipv4Net) -> RouteKey {

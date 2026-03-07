@@ -24,7 +24,7 @@ use super::config::{
     BridgePeerInfo, WgPaths, encode_key, write_private_key, write_sync_config_with_extra_peers,
 };
 
-const DEFAULT_IMAGE: &str = "procustodibus/wireguard:latest";
+const DEFAULT_IMAGE: &str = "ghcr.io/getployz/ployz-ebpf:latest";
 use super::DEFAULT_LISTEN_PORT;
 const DEFAULT_MTU: u16 = 1420;
 const INTERFACE_NAME: &str = "wg0";

@@ -25,14 +25,15 @@ impl EbpfDataplane {
         Ok(Self::Native(native::NativeDataplane::attach(bridge_ifname)?))
     }
 
-    /// Attach via a sidecar container running `ployz-ebpf-ctl`.
+    /// Attach by execing `ployz-ebpf-ctl` inside the WG container.
     pub async fn attach_container(
-        container_name: &str,
-        image: &str,
+        wg_container_name: &str,
         bridge_ifname: &str,
+        wg_ifname: &str,
     ) -> Result<Self> {
         Ok(Self::Container(
-            container::ContainerDataplane::attach(container_name, image, bridge_ifname).await?,
+            container::ContainerDataplane::attach(wg_container_name, bridge_ifname, wg_ifname)
+                .await?,
         ))
     }
 
