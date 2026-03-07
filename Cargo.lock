@@ -2024,6 +2024,7 @@ dependencies = [
  "libc",
  "pin-project-lite",
  "ployz-ebpf-common",
+ "ployz-sdk",
  "rand 0.10.0",
  "reqwest",
  "rusqlite",
@@ -2042,6 +2043,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ployz-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "ployz-sdk",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "ployz-ebpf"
 version = "0.1.0"
 dependencies = [
@@ -2053,6 +2064,26 @@ dependencies = [
 [[package]]
 name = "ployz-ebpf-common"
 version = "0.1.0"
+
+[[package]]
+name = "ployz-sdk"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "chrono",
+ "clap",
+ "derive_more",
+ "directories",
+ "figment",
+ "ipnet",
+ "libc",
+ "rand 0.10.0",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+]
 
 [[package]]
 name = "poly1305"

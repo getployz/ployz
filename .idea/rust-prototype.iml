@@ -8,7 +8,15 @@
       <sourceFolder url="file://$MODULE_DIR$/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/tests" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/ebpf-common/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/ebpf-common/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/ebpf/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/ployz-cli/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/ployz-sdk/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/ployz/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/ployz/tests" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/ebpf/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/ployz-sdk/src" isTestSource="false" />
+      <excludeFolder url="file://$MODULE_DIR$/crates/ebpf/target" />
       <excludeFolder url="file://$MODULE_DIR$/ebpf/target" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>

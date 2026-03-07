@@ -3,4 +3,4 @@
 .claude/
 skills-lock.json
 .env.targets
-ebpf/target/
+crates/ebpf/target/

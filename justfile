@@ -11,10 +11,10 @@ test:
     cargo test
 
 ployz *args:
-    cargo run --bin ployz -- {{args}}
+    cargo run -p ployz-cli -- {{args}}
 
 ployzd *args:
-    cargo run --bin ployzd -- {{args}}
+    cargo run -p ployz --bin ployzd -- {{args}}
 
 install prefix="/usr/local":
     just build-release
@@ -162,7 +162,7 @@ install-ebpf repo="getployz/ployz":
     fi
     version="$(tr -d '[:space:]' < "$version_file")"
 
-    dest_dir="ebpf/target/bpfel-unknown-none/release"
+    dest_dir="crates/ebpf/target/bpfel-unknown-none/release"
     dest_file="$dest_dir/ployz-ebpf-tc"
     stamp="$dest_dir/.ebpf-release-version"
 
