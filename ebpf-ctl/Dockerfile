@@ -18,10 +18,9 @@ RUN printf '[workspace]\nresolver = "2"\nmembers = ["ebpf-ctl", "ebpf", "ebpf-co
 WORKDIR /build/ebpf-ctl
 RUN cargo +nightly build --release
 
-FROM procustodibus/wireguard:latest
-
+FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    iproute2 \
+    wireguard-tools iproute2 \
     && rm -rf /var/lib/apt/lists/*
-
 COPY --from=builder /build/target/release/ployz-ebpf-ctl /usr/local/bin/ployz-ebpf-ctl
+CMD ["sleep", "infinity"]
