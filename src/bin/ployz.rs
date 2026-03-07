@@ -254,7 +254,13 @@ async fn main() {
                 let spec = build_service_spec(
                     image, name, namespace, publish, env, volume, network, pull, restart, command,
                 );
-                let spec_json = serde_json::to_string(&spec).unwrap();
+                let spec_json = match serde_json::to_string(&spec) {
+                    Ok(json) => json,
+                    Err(e) => {
+                        eprintln!("error: failed to serialize spec: {e}");
+                        process::exit(1);
+                    }
+                };
                 DaemonRequest::ServiceRun { spec_json }
             }
             ServiceAction::Ls => DaemonRequest::ServiceList,
@@ -305,10 +311,10 @@ fn build_service_spec(
         .iter()
         .filter_map(|p| {
             let parts: Vec<&str> = p.split(':').collect();
-            if parts.len() == 2 {
+            if let [host, container] = parts.as_slice() {
                 Some(PortBinding {
-                    host_port: parts[0].parse().ok()?,
-                    container_port: parts[1].parse().ok()?,
+                    host_port: host.parse().ok()?,
+                    container_port: container.parse().ok()?,
                     protocol: PortProtocol::Tcp,
                     host_ip: None,
                 })
@@ -331,16 +337,21 @@ fn build_service_spec(
         .iter()
         .filter_map(|v| {
             let parts: Vec<&str> = v.splitn(3, ':').collect();
-            if parts.len() >= 2 {
-                let readonly = parts.get(2).is_some_and(|&o| o == "ro");
-                Some(VolumeMount {
-                    source: VolumeSource::Bind(parts[0].to_string()),
-                    target: parts[1].to_string(),
-                    readonly,
-                })
-            } else {
-                eprintln!("warning: ignoring invalid volume: {v}");
-                None
+            match parts.as_slice() {
+                [src, dst] => Some(VolumeMount {
+                    source: VolumeSource::Bind(src.to_string()),
+                    target: dst.to_string(),
+                    readonly: false,
+                }),
+                [src, dst, opts] => Some(VolumeMount {
+                    source: VolumeSource::Bind(src.to_string()),
+                    target: dst.to_string(),
+                    readonly: *opts == "ro",
+                }),
+                _ => {
+                    eprintln!("warning: ignoring invalid volume: {v}");
+                    None
+                }
             }
         })
         .collect();

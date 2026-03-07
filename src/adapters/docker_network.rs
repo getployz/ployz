@@ -5,29 +5,10 @@ use bollard::models::{
 };
 use ipnet::Ipv4Net;
 use std::net::Ipv4Addr;
-#[cfg(target_os = "linux")]
-use std::process::Command;
 use tracing::{info, warn};
 
 use crate::error::{Error, Result};
 use crate::network::ipam::{container_ip, machine_ip};
-
-#[cfg(target_os = "linux")]
-fn iptables_idempotent(args: &[&str]) {
-    // Check if rule exists by replacing -I/-A with -C
-    let mut check_args: Vec<&str> = args.to_vec();
-    for arg in &mut check_args {
-        if *arg == "-I" || *arg == "-A" {
-            *arg = "-C";
-            break;
-        }
-    }
-    let check = Command::new("iptables").args(&check_args).output();
-    if check.map(|o| o.status.success()).unwrap_or(false) {
-        return; // rule already exists
-    }
-    let _ = Command::new("iptables").args(args).output();
-}
 
 /// Manages an IPv4 Docker bridge network for container connectivity.
 pub struct DockerBridgeNetwork {
@@ -187,11 +168,8 @@ impl DockerBridgeNetwork {
         }
     }
 
-    /// Remove the network and clean up iptables rules, ignoring 404 (already removed).
-    pub async fn remove(&self, wg_ifname: Option<&str>) -> Result<()> {
-        if let Some(wg) = wg_ifname {
-            self.remove_forwarding_rules(wg).await;
-        }
+    /// Remove the network, ignoring 404 (already removed).
+    pub async fn remove(&self) -> Result<()> {
         match self.docker.remove_network(&self.name).await {
             Ok(_) => {
                 info!(name = %self.name, "removed docker network");
@@ -203,29 +181,6 @@ impl DockerBridgeNetwork {
             Err(e) => Err(Error::operation("remove network", e.to_string())),
         }
     }
-
-    #[cfg(target_os = "linux")]
-    async fn remove_forwarding_rules(&self, wg_ifname: &str) {
-        let subnet = self.subnet_v4.to_string();
-        if let Ok(bridge_ifname) = self.resolve_bridge_ifname().await {
-            let _ = Command::new("iptables")
-                .args(["-t", "raw", "-D", "PREROUTING", "-i", wg_ifname, "-d", &subnet, "-j", "ACCEPT"])
-                .output();
-            let _ = Command::new("iptables")
-                .args(["-D", "DOCKER-USER", "-i", wg_ifname, "-o", &bridge_ifname, "-j", "ACCEPT"])
-                .output();
-            let _ = Command::new("iptables")
-                .args(["-D", "DOCKER-USER", "-i", &bridge_ifname, "-o", wg_ifname, "-j", "ACCEPT"])
-                .output();
-            let _ = Command::new("iptables")
-                .args(["-t", "nat", "-D", "POSTROUTING", "-s", &subnet, "-o", wg_ifname, "-j", "RETURN"])
-                .output();
-            info!(wg = wg_ifname, bridge = %bridge_ifname, "removed iptables forwarding rules");
-        }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    async fn remove_forwarding_rules(&self, _wg_ifname: &str) {}
 
     pub fn gateway_v4(&self) -> Ipv4Addr {
         self.gateway_v4
@@ -241,54 +196,9 @@ impl DockerBridgeNetwork {
         &self.name
     }
 
-    /// Allow forwarding between a WG interface and this bridge network.
-    /// Docker's default iptables rules block traffic from non-bridge interfaces
-    /// to bridge containers (raw PREROUTING DROP + FORWARD policy DROP).
-    /// This adds the necessary ACCEPT rules for overlay traffic.
-    #[cfg(target_os = "linux")]
-    pub async fn allow_forwarding_from(&self, wg_ifname: &str) -> Result<()> {
-        let bridge_ifname = self.resolve_bridge_ifname().await?;
-        let subnet = self.subnet_v4.to_string();
-
-        // raw PREROUTING: accept WG traffic to bridge subnet before Docker's per-container DROP
-        iptables_idempotent(&[
-            "-t", "raw", "-I", "PREROUTING",
-            "-i", wg_ifname, "-d", &subnet, "-j", "ACCEPT",
-        ]);
-
-        // DOCKER-USER: allow forwarding in both directions
-        iptables_idempotent(&[
-            "-I", "DOCKER-USER",
-            "-i", wg_ifname, "-o", &bridge_ifname, "-j", "ACCEPT",
-        ]);
-        iptables_idempotent(&[
-            "-I", "DOCKER-USER",
-            "-i", &bridge_ifname, "-o", wg_ifname, "-j", "ACCEPT",
-        ]);
-
-        // NAT: skip Docker's MASQUERADE for bridge→WG traffic so containers keep
-        // their bridge source IP when reaching remote overlay subnets.
-        // Must be inserted before Docker's "-s <subnet> ! -o <bridge> -j MASQUERADE".
-        iptables_idempotent(&[
-            "-t", "nat", "-I", "POSTROUTING",
-            "-s", &subnet, "-o", wg_ifname, "-j", "RETURN",
-        ]);
-
-        info!(
-            wg = wg_ifname, bridge = %bridge_ifname,
-            "allowed iptables forwarding between WG and bridge"
-        );
-        Ok(())
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    pub async fn allow_forwarding_from(&self, _wg_ifname: &str) -> Result<()> {
-        Ok(())
-    }
-
     /// Resolve the Linux bridge interface name (br-xxxx) from the Docker network ID.
-    #[cfg(target_os = "linux")]
-    async fn resolve_bridge_ifname(&self) -> Result<String> {
+    /// Used as the TC attachment point for eBPF classifiers.
+    pub async fn resolve_bridge_ifname(&self) -> Result<String> {
         let info = self.docker
             .inspect_network(&self.name, None)
             .await

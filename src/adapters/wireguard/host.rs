@@ -64,6 +64,7 @@ impl HostWireGuard {
         &self.ifname
     }
 
+    #[must_use]
     pub fn with_listen_port(mut self, port: u16) -> Self {
         self.listen_port = port;
         self

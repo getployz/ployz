@@ -154,16 +154,15 @@ impl DaemonState {
             );
         }
 
-        if let Err(e) = self
-            .active
-            .as_ref()
-            .unwrap()
-            .mesh
-            .store
-            .consume_invite(&invite.invite_id, now_unix_secs())
-            .await
-        {
-            tracing::warn!(?e, "failed to consume invite (mesh already joined)");
+        if let Some(active) = self.active.as_ref() {
+            if let Err(e) = active
+                .mesh
+                .store
+                .consume_invite(&invite.invite_id, now_unix_secs())
+                .await
+            {
+                tracing::warn!(?e, "failed to consume invite (mesh already joined)");
+            }
         }
 
         self.ok(format!("joined and started network '{network}'"))
@@ -335,7 +334,9 @@ impl DaemonState {
         }
 
         if running_target {
-            let mut active = self.active.take().unwrap();
+            let Some(mut active) = self.active.take() else {
+                return self.err("NO_RUNNING_NETWORK", "no mesh running");
+            };
             if let Err(e) = active.mesh.destroy().await {
                 self.active = Some(active);
                 return DaemonResponse {

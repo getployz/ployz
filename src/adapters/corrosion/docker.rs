@@ -29,21 +29,25 @@ pub struct DockerCorrosionBuilder {
 }
 
 impl DockerCorrosionBuilder {
+    #[must_use]
     pub fn cmd(mut self, cmd: Vec<String>) -> Self {
         self.cmd = Some(cmd);
         self
     }
 
+    #[must_use]
     pub fn env(mut self, key: &str, value: &str) -> Self {
         self.env.push(format!("{key}={value}"));
         self
     }
 
+    #[must_use]
     pub fn volume(mut self, host: &str, container: &str) -> Self {
         self.volumes.push(format!("{host}:{container}"));
         self
     }
 
+    #[must_use]
     pub fn network_mode(mut self, mode: &str) -> Self {
         self.network_mode = Some(mode.to_string());
         self

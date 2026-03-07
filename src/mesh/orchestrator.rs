@@ -1,14 +1,18 @@
 use crate::adapters::docker_network::DockerBridgeNetwork;
+use crate::adapters::ebpf::EbpfDataplane;
 use crate::drivers::{StoreDriver, WireguardDriver};
 use crate::error::Error as PortError;
 use crate::mesh::MeshNetwork;
 use crate::mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
 use crate::model::{MachineId, MachineRecord, MachineStatus};
 use crate::store::{MachineStore, ServiceControl, SyncProbe, SyncStatus};
-use crate::tasks::{TaskSet, TaskSetError, run_endpoint_refresh_task, run_heartbeat_task, run_peer_sync_task};
+use crate::tasks::{TaskSet, TaskSetError, run_ebpf_sync_task, run_endpoint_refresh_task, run_heartbeat_task, run_peer_sync_task};
+use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tracing::{info, warn};
+
+const EBPF_SIDECAR_IMAGE: &str = "ghcr.io/getployz/ployz-ebpf:latest";
 
 pub type Result<T> = std::result::Result<T, MeshError>;
 
@@ -35,6 +39,8 @@ pub struct Mesh {
     listen_port: u16,
     seed_records: Vec<MachineRecord>,
     allow_disconnected_bootstrap: bool,
+    dataplane: Option<Arc<EbpfDataplane>>,
+    wg_ifindex: u32,
 }
 
 impl Mesh {
@@ -58,16 +64,12 @@ impl Mesh {
             listen_port,
             seed_records: Vec::new(),
             allow_disconnected_bootstrap: false,
+            dataplane: None,
+            wg_ifindex: 0,
         }
     }
 
-    fn wg_ifname(&self) -> Option<&str> {
-        match &self.network {
-            WireguardDriver::Host(wg) => Some(wg.ifname()),
-            _ => None,
-        }
-    }
-
+    #[must_use]
     pub fn with_bootstrap_timing(
         mut self,
         interval: Duration,
@@ -78,6 +80,7 @@ impl Mesh {
         self
     }
 
+    #[must_use]
     pub fn with_seed_records(mut self, seed_records: Vec<MachineRecord>) -> Self {
         self.seed_records = seed_records;
         self
@@ -124,15 +127,12 @@ impl Mesh {
         // 2. Container network — create bridge for all modes that use Docker.
         if let Some(cn) = &self.container_network {
             cn.ensure().await?;
-            match &self.network {
-                WireguardDriver::Docker(_) => {
-                    cn.connect("ployz-wireguard", Some(cn.container_v4())).await?;
-                }
-                WireguardDriver::Host(wg) => {
-                    cn.allow_forwarding_from(&wg.ifname()).await?;
-                }
-                _ => {}
+            if let WireguardDriver::Docker(_) = &self.network {
+                cn.connect("ployz-wireguard", Some(cn.container_v4())).await?;
             }
+
+            // Attach eBPF TC classifiers to the bridge for WG↔Docker forwarding.
+            self.attach_ebpf_dataplane().await?;
         }
 
         // 3. Pre-configure WG peers from seed records
@@ -180,6 +180,43 @@ impl Mesh {
         Ok(())
     }
 
+    /// Attach the eBPF dataplane to the Docker bridge.
+    /// On Linux: loads BPF directly in-process via aya (no container overhead).
+    /// On macOS (Docker Desktop / OrbStack): starts a privileged sidecar container
+    /// that runs `ployz-ebpf-ctl` inside the VM where TC hooks live.
+    async fn attach_ebpf_dataplane(&mut self) -> Result<()> {
+        let cn = self.container_network.as_ref().unwrap();
+        let bridge_ifname = cn.resolve_bridge_ifname().await?;
+
+        #[cfg(target_os = "linux")]
+        {
+            let wg_ifname = match &self.network {
+                WireguardDriver::Host(wg) => wg.ifname().to_string(),
+                WireguardDriver::Docker(_) | WireguardDriver::Memory(_) => bridge_ifname.clone(),
+            };
+            let wg_ifindex = resolve_ifindex(&wg_ifname)?;
+            let dp = EbpfDataplane::attach_native(&bridge_ifname, wg_ifindex)?;
+            self.wg_ifindex = wg_ifindex;
+            self.dataplane = Some(Arc::new(dp));
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            let dp = EbpfDataplane::attach_container(
+                "ployz-ebpf",
+                EBPF_SIDECAR_IMAGE,
+                &bridge_ifname,
+            )
+            .await?;
+            // In container mode, ifindex is resolved inside the VM by ployz-ebpf-ctl.
+            // The sync task passes it per-route; 0 signals "use bridge ifindex".
+            self.wg_ifindex = 0;
+            self.dataplane = Some(Arc::new(dp));
+        }
+
+        Ok(())
+    }
+
     async fn spawn_background_tasks(&mut self) -> Result<()> {
         let (mut task_set, cancel) = TaskSet::new();
 
@@ -206,12 +243,30 @@ impl Mesh {
             cancel2,
         ));
 
+        let cancel4 = cancel3.clone();
         task_set.spawn(run_heartbeat_task(
             self.machine_id.clone(),
             self.store.clone(),
             self.network.clone(),
             cancel3,
         ));
+
+        if let Some(ref dataplane) = self.dataplane {
+            let (ebpf_snapshot, ebpf_events) = self
+                .store
+                .subscribe_machines()
+                .await
+                .map_err(TaskSetError::Subscribe)?;
+
+            task_set.spawn(run_ebpf_sync_task(
+                ebpf_snapshot,
+                ebpf_events,
+                dataplane.clone(),
+                self.wg_ifindex,
+                self.machine_id.clone(),
+                cancel4,
+            ));
+        }
 
         self.tasks = Some(task_set);
         Ok(())
@@ -225,6 +280,13 @@ impl Mesh {
                 warn!(?e, "task stop failed during teardown");
             }
         }
+        if let Some(dp) = self.dataplane.take() {
+            if let Ok(dp) = Arc::try_unwrap(dp) {
+                if let Err(e) = dp.detach().await {
+                    warn!(?e, "ebpf detach failed during teardown");
+                }
+            }
+        }
         if let Err(e) = self.store.stop().await {
             warn!(?e, "service stop failed during teardown");
         }
@@ -232,7 +294,7 @@ impl Mesh {
             warn!(?e, "network down failed during teardown");
         }
         if let Some(cn) = &self.container_network {
-            if let Err(e) = cn.remove(self.wg_ifname()).await {
+            if let Err(e) = cn.remove().await {
                 warn!(?e, "container network remove failed during teardown");
             }
         }
@@ -272,6 +334,14 @@ impl Mesh {
             }
         }
 
+        if let Some(dp) = self.dataplane.take() {
+            if let Ok(dp) = Arc::try_unwrap(dp) {
+                if let Err(e) = dp.detach().await {
+                    warn!(?e, "ebpf detach failed during destroy");
+                }
+            }
+        }
+
         if let Err(e) = self.store.stop().await {
             warn!(?e, "service stop failed during destroy");
             first_err.get_or_insert(e.into());
@@ -283,7 +353,7 @@ impl Mesh {
         }
 
         if let Some(cn) = &self.container_network {
-            if let Err(e) = cn.remove(self.wg_ifname()).await {
+            if let Err(e) = cn.remove().await {
                 warn!(?e, "container network remove failed during destroy");
                 first_err.get_or_insert(e.into());
             }
@@ -299,7 +369,6 @@ impl Mesh {
     }
 
     /// Wait for at least one WG peer to complete a handshake.
-    /// Handshakes typically complete in 1-3s; prevents 503 storm when the tunnel is slow.
     async fn wait_for_handshake(&self) -> Result<()> {
         poll_until(
             Duration::from_secs(10),
@@ -388,21 +457,6 @@ impl Mesh {
     }
 
     /// Bootstrap gate: wait for gossip membership, then proceed.
-    ///
-    /// Corrosion is an eventually-consistent system. The /v1/health endpoint
-    /// reports gossip membership and bookkeeping gaps, but gaps == 0 before
-    /// the first sync handshake is vacuously true — it means "no known missing
-    /// versions," not "we've compared state with a peer and converged."
-    ///
-    /// We gate only on membership (members >= 1 = gossip can see a remote peer).
-    /// After that, data convergence happens in the background. The subscription
-    /// snapshot taken after this gate may be stale; the subscribe loop will
-    /// deliver corrections as sync completes.
-    ///
-    /// If workload scheduling data is ever stored in corrosion, this gate is
-    /// NOT sufficient — a stronger readiness primitive (e.g. verifying a remote
-    /// actor_id exists in __corro_bookkeeping) would be needed to ensure the
-    /// snapshot reflects post-sync state.
     async fn bootstrap_gate(&mut self) -> Result<()> {
         let machines = self.store.list_machines().await?;
         let has_remote_peer = machines.iter().any(|m| m.id != self.machine_id);
@@ -421,10 +475,6 @@ impl Mesh {
         let connection_timeout = self.connection_timeout;
         let store = self.store.clone();
 
-        // Wait for corrosion gossip to see at least one remote peer.
-        // Track whether we ever got a healthy-but-disconnected response vs
-        // only errors (503 / transport failure), so we can give the user
-        // an actionable message on timeout.
         let result: std::result::Result<bool, String> =
             tokio::time::timeout(connection_timeout, async {
                 let mut consecutive_errors = 0u32;
@@ -475,6 +525,20 @@ impl Mesh {
         self.apply(PhaseEvent::SyncComplete)?;
         Ok(())
     }
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_ifindex(ifname: &str) -> std::result::Result<u32, PortError> {
+    let c_name = std::ffi::CString::new(ifname)
+        .map_err(|e| PortError::operation("if_nametoindex", e.to_string()))?;
+    let idx = unsafe { libc::if_nametoindex(c_name.as_ptr()) };
+    if idx == 0 {
+        return Err(PortError::operation(
+            "if_nametoindex",
+            format!("interface {ifname} not found"),
+        ));
+    }
+    Ok(idx)
 }
 
 /// Poll `check` with exponential backoff until it returns `true` or `timeout` expires.

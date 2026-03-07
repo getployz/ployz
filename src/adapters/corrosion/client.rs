@@ -369,7 +369,8 @@ pub enum ClientError {
 
 impl fmt::Display for CorrClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "CorrClient({})", self.api_addr)
+        let Self { transport: _, api_addr, http: _ } = self;
+        write!(f, "CorrClient({})", api_addr)
     }
 }
 

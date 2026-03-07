@@ -166,7 +166,9 @@ impl DaemonState {
         // Step 3: Seed founder's store with joiner's record
         let record = join_resp.into_machine_record();
         let joiner_id = record.id.clone();
-        let active = self.active.as_ref().unwrap();
+        let Some(active) = self.active.as_ref() else {
+            return self.err("NO_RUNNING_NETWORK", "no mesh running");
+        };
         if let Err(e) = active.mesh.store.upsert_machine(&record).await {
             return self.err(
                 "UPSERT_FAILED",

@@ -58,17 +58,20 @@ pub struct DockerWireGuardBuilder {
 }
 
 impl DockerWireGuardBuilder {
+    #[must_use]
     pub fn image(mut self, image: &str) -> Self {
         self.image = image.to_string();
         self
     }
 
+    #[must_use]
     pub fn listen_port(mut self, port: u16) -> Self {
         self.listen_port = port;
         self
     }
 
     /// Add an outbound forward rule (host TCP → overlay TCP via bridge).
+    #[must_use]
     pub fn with_bridge_forward(mut self, local_addr: SocketAddr, overlay_dest: SocketAddr) -> Self {
         self.outbound_forwards.push(OutboundForward {
             local_addr,
@@ -78,6 +81,7 @@ impl DockerWireGuardBuilder {
     }
 
     /// Add an inbound forward rule (overlay TCP → host TCP via bridge).
+    #[must_use]
     pub fn with_inbound_forward(mut self, overlay_port: u16, local_dest: SocketAddr) -> Self {
         self.inbound_forwards.push(InboundForward {
             overlay_port,
@@ -426,52 +430,7 @@ impl DockerWireGuard {
         // reached via per-peer allowed-ips on the WG interface. The host-mode WG adds
         // the broad route since there's no Docker bridge conflict.
 
-        // MASQUERADE traffic forwarded from WG to the bridge so replies route back
-        // through the WG container rather than the Docker default gateway.
-        self.ensure_masquerade().await;
-
         Ok(())
-    }
-
-    async fn ensure_masquerade(&self) {
-        // Check if rule already exists (idempotent on restart/adopt)
-        let check = self
-            .exec_in_container_capture(&[
-                "iptables", "-t", "nat", "-C", "POSTROUTING",
-                "-o", "eth1", "-j", "MASQUERADE",
-            ])
-            .await;
-        if check.is_ok() {
-            return;
-        }
-        let _ = self
-            .exec_in_container(&[
-                "iptables", "-t", "nat", "-A", "POSTROUTING",
-                "-o", "eth1", "-j", "MASQUERADE",
-            ])
-            .await;
-    }
-
-    /// Inject a route into the Docker VM's network namespace so the bridge gateway
-    /// forwards remote overlay subnets through this WG container.
-    /// Requires --privileged and --pid=host on the container.
-    async fn inject_vm_route(&self, subnet: &str, via: &str) {
-        let _ = self
-            .exec_in_container(&[
-                "nsenter", "--net=/proc/1/ns/net",
-                "ip", "route", "replace", subnet, "via", via,
-            ])
-            .await;
-    }
-
-    /// Remove a route from the Docker VM's network namespace.
-    async fn remove_vm_route(&self, subnet: &str) {
-        let _ = self
-            .exec_in_container(&[
-                "nsenter", "--net=/proc/1/ns/net",
-                "ip", "route", "del", subnet,
-            ])
-            .await;
     }
 
     async fn interface_ready(&self) -> bool {
@@ -615,7 +574,6 @@ impl MeshNetwork for DockerWireGuard {
             info!(name = %self.container_name, "adopting existing wireguard container");
             self.log_interface_diagnostics("adopt_existing_before_start_bridge")
                 .await;
-            self.ensure_masquerade().await;
             self.start_bridge().await?;
             self.log_interface_diagnostics("adopt_existing_after_start_bridge")
                 .await;
@@ -804,17 +762,6 @@ impl MeshNetwork for DockerWireGuard {
             let _ = self
                 .exec_in_container(&["ip", "route", "del", subnet, "dev", INTERFACE_NAME])
                 .await;
-        }
-
-        // Inject routes into the Docker VM so the bridge gateway forwards
-        // remote overlay subnets through this WG container.
-        if let Some(ref via) = src_ip {
-            for subnet in &desired {
-                self.inject_vm_route(subnet, via).await;
-            }
-            for subnet in current.difference(&desired) {
-                self.remove_vm_route(subnet).await;
-            }
         }
 
         info!(peer_count = peers.len(), "synced wireguard peers");

@@ -166,7 +166,7 @@ impl DaemonState {
         // Save backbone reference for workload manager before mesh takes ownership
         let backbone_ref = match &network {
             WireguardDriver::Docker(backbone) => Some(backbone.clone()),
-            _ => None,
+            WireguardDriver::Memory(_) | WireguardDriver::Host(_) => None,
         };
 
         tracing::info!(mode = ?self.mode, "starting mesh");

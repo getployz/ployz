@@ -365,8 +365,11 @@ fn into_machine_event(
             }
             ChangeType::Delete => {
                 if let Some(id) = row_index.remove(&rowid.0) {
-                    known.remove(&id);
-                    Ok(Some(MachineEvent::Removed { id }))
+                    if let Some(record) = known.remove(&id) {
+                        Ok(Some(MachineEvent::Removed(record)))
+                    } else {
+                        Ok(None)
+                    }
                 } else {
                     Ok(None)
                 }
@@ -378,24 +381,26 @@ fn into_machine_event(
 // --- row parsing ---
 
 fn parse_machine(row: &[SqliteValue]) -> Result<MachineRecord> {
-    if row.len() != 11 {
+    let [id_val, key_val, overlay_val, subnet_val, bridge_val, endpoints_val, status_val, scheduling_val, heartbeat_val, created_val, updated_val] =
+        row
+    else {
         return Err(Error::operation(
             "parse_machine",
             format!("expected 11 columns, got {}", row.len()),
         ));
-    }
+    };
 
-    let id = text(&row[0], "id")?;
-    let key_blob = blob(&row[1], "public_key")?;
-    let overlay = text(&row[2], "overlay_ip")?;
-    let subnet_str = text(&row[3], "subnet")?;
-    let bridge_str = text(&row[4], "bridge_ip")?;
-    let endpoints_json = text(&row[5], "endpoints")?;
-    let status_str = text(&row[6], "status")?;
-    let scheduling_str = text(&row[7], "scheduling")?;
-    let last_heartbeat = integer(&row[8], "last_heartbeat")? as u64;
-    let created_at = integer(&row[9], "created_at")? as u64;
-    let updated_at = integer(&row[10], "updated_at")? as u64;
+    let id = text(id_val, "id")?;
+    let key_blob = blob(key_val, "public_key")?;
+    let overlay = text(overlay_val, "overlay_ip")?;
+    let subnet_str = text(subnet_val, "subnet")?;
+    let bridge_str = text(bridge_val, "bridge_ip")?;
+    let endpoints_json = text(endpoints_val, "endpoints")?;
+    let status_str = text(status_val, "status")?;
+    let scheduling_str = text(scheduling_val, "scheduling")?;
+    let last_heartbeat = integer(heartbeat_val, "last_heartbeat")? as u64;
+    let created_at = integer(created_val, "created_at")? as u64;
+    let updated_at = integer(updated_val, "updated_at")? as u64;
 
     let public_key: [u8; 32] = key_blob.as_slice().try_into().map_err(|_| {
         Error::operation(

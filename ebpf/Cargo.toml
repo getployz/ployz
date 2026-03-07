@@ -1,0 +1,25 @@
+[package]
+name = "ployz-ebpf"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "ployz-ebpf"
+path = "src/main.rs"
+
+[dependencies]
+aya-ebpf = "0.1"
+network-types = "0.0.7"
+ployz-ebpf-common = { path = "../ebpf-common" }
+
+[profile.dev]
+opt-level = 2
+debug = false
+overflow-checks = false
+lto = true
+panic = "abort"
+
+[profile.release]
+lto = true
+panic = "abort"

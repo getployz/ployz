@@ -335,11 +335,9 @@ impl ServiceRunner {
         use bollard::query_parameters::CreateImageOptionsBuilder;
         use futures_util::StreamExt;
 
-        let parts: Vec<&str> = image.splitn(2, ':').collect();
-        let (from_image, tag) = if parts.len() == 2 {
-            (parts[0], parts[1])
-        } else {
-            (image, "latest")
+        let (from_image, tag) = match image.splitn(2, ':').collect::<Vec<_>>().as_slice() {
+            [img, t] => (*img, *t),
+            _ => (image, "latest"),
         };
 
         let options = CreateImageOptionsBuilder::default()

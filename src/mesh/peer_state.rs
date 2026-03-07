@@ -1,5 +1,5 @@
 use crate::mesh::MeshNetwork;
-use crate::model::{MachineEvent, MachineId, MachineRecord, OverlayIp, PublicKey};
+use crate::model::{MachineEvent, MachineId, MachineRecord, MachineStatus, OverlayIp, PublicKey, Scheduling};
 use ipnet::Ipv4Net;
 use std::collections::HashMap;
 use tracing::warn;
@@ -63,7 +63,7 @@ impl PeerStateMap {
     pub(crate) fn apply_event(&mut self, event: &MachineEvent) {
         match event {
             MachineEvent::Added(r) | MachineEvent::Updated(r) => self.upsert(r),
-            MachineEvent::Removed { id } => self.remove(id),
+            MachineEvent::Removed(r) => self.remove(&r.id),
         }
     }
 
@@ -96,8 +96,8 @@ fn plan_mesh_peers(state: &PeerStateMap, local_machine_id: &MachineId) -> Vec<Ma
             subnet: ps.subnet,
             bridge_ip: ps.bridge_ip,
             endpoints: ps.endpoints.clone(),
-            status: Default::default(),
-            scheduling: Default::default(),
+            status: MachineStatus::Unknown,
+            scheduling: Scheduling::Disabled,
             last_heartbeat: 0,
             created_at: 0,
             updated_at: 0,
@@ -118,8 +118,8 @@ mod tests {
             subnet: None,
             bridge_ip: None,
             endpoints: endpoints.into_iter().map(String::from).collect(),
-            status: Default::default(),
-            scheduling: Default::default(),
+            status: MachineStatus::Unknown,
+            scheduling: Scheduling::Disabled,
             last_heartbeat: 0,
             created_at: 0,
             updated_at: 0,
@@ -136,8 +136,8 @@ mod tests {
             subnet: None,
             bridge_ip: None,
             endpoints: vec!["a:1".into(), "b:2".into(), "c:3".into()],
-            status: Default::default(),
-            scheduling: Default::default(),
+            status: MachineStatus::Unknown,
+            scheduling: Scheduling::Disabled,
             last_heartbeat: 0,
             created_at: 0,
             updated_at: 0,
@@ -178,9 +178,7 @@ mod tests {
         map.apply_event(&MachineEvent::Added(r));
         assert_eq!(map.peers.len(), 1);
 
-        map.apply_event(&MachineEvent::Removed {
-            id: MachineId("m1".into()),
-        });
+        map.apply_event(&MachineEvent::Removed(test_record("m1", vec![])));
         assert_eq!(map.peers.len(), 0);
     }
 }

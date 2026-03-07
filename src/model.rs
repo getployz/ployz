@@ -33,10 +33,11 @@ pub struct PublicKey(pub [u8; 32]);
 
 impl fmt::Debug for PublicKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self(bytes) = self;
         write!(
             f,
             "PublicKey({:02x}{:02x}{:02x}{:02x}..)",
-            self.0[0], self.0[1], self.0[2], self.0[3]
+            bytes[0], bytes[1], bytes[2], bytes[3]
         )
     }
 }
@@ -46,6 +47,7 @@ pub struct PrivateKey(pub [u8; 32]);
 
 impl fmt::Debug for PrivateKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self(_) = self;
         f.write_str("PrivateKey(***)")
     }
 }
@@ -163,7 +165,7 @@ pub struct InviteRecord {
 pub enum MachineEvent {
     Added(MachineRecord),
     Updated(MachineRecord),
-    Removed { id: MachineId },
+    Removed(MachineRecord),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

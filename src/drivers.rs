@@ -194,7 +194,7 @@ impl StoreDriver {
                         );
                         Transport::Bridge { local_addr: local_api }
                     }
-                    _ => Transport::Direct,
+                    Mode::HostExec | Mode::HostService | Mode::Memory => Transport::Direct,
                 });
 
                 match mode {
@@ -219,7 +219,7 @@ impl StoreDriver {
                             service: Arc::new(service),
                         })
                     }
-                    _ => {
+                    Mode::HostExec | Mode::HostService => {
                         let binary = which_corrosion()?;
                         let service = HostCorrosion::new(binary, &paths.config);
 
@@ -229,6 +229,7 @@ impl StoreDriver {
                             service: Arc::new(service),
                         })
                     }
+                    Mode::Memory => unreachable!("Memory mode handled above"),
                 }
             }
         }

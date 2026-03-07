@@ -1,0 +1,17 @@
+[package]
+name = "ployz-ebpf-ctl"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "ployz-ebpf-ctl"
+path = "src/main.rs"
+
+[dependencies]
+aya = "0.13"
+ipnet = "2"
+ployz-ebpf-common = { path = "../ebpf-common" }
+
+[build-dependencies]
+aya-build = "0.1"

@@ -86,8 +86,9 @@ impl MachineStore for MemoryStore {
 
     async fn delete_machine(&self, id: &MachineId) -> Result<()> {
         let mut inner = self.lock_inner();
-        inner.machines.remove(id);
-        Self::broadcast(&mut inner, MachineEvent::Removed { id: id.clone() });
+        if let Some(record) = inner.machines.remove(id) {
+            Self::broadcast(&mut inner, MachineEvent::Removed(record));
+        }
         Ok(())
     }
 
