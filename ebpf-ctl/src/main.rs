@@ -2,6 +2,7 @@ use aya::Ebpf;
 use aya::programs::tc::{NlOptions, TcAttachOptions};
 use aya::programs::{SchedClassifier, TcAttachType};
 use ployz_ebpf_common::{RouteEntry, RouteKey};
+use std::ffi::CString;
 use std::net::Ipv4Addr;
 use std::process::ExitCode;
 
@@ -53,6 +54,23 @@ fn main() -> ExitCode {
     }
 }
 
+/// Ensure bpffs is mounted at /sys/fs/bpf. Idempotent.
+fn ensure_bpffs() {
+    let target = CString::new("/sys/fs/bpf").unwrap();
+    let fstype = CString::new("bpf").unwrap();
+    let source = CString::new("bpf").unwrap();
+    let _ = std::fs::create_dir_all("/sys/fs/bpf");
+    unsafe {
+        libc::mount(
+            source.as_ptr(),
+            target.as_ptr(),
+            fstype.as_ptr(),
+            0,
+            std::ptr::null(),
+        );
+    }
+}
+
 /// attach <bridge-ifname> <wg-ifname>
 /// Loads BPF bytecode, attaches TC classifiers, sets WG ifindex, pins maps.
 fn cmd_attach(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
@@ -62,6 +80,8 @@ fn cmd_attach(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let bridge = &args[0];
     let wg_ifname = &args[1];
     let wg_ifindex = resolve_ifindex(wg_ifname)?;
+
+    ensure_bpffs();
 
     let bytecode = include_bytes_aligned!(concat!(env!("OUT_DIR"), "/ployz-ebpf-tc"));
     let mut bpf = Ebpf::load(bytecode)?;
