@@ -12,7 +12,7 @@ pub(crate) async fn run_heartbeat_task(
     network: WireguardDriver,
     cancel: CancellationToken,
 ) {
-    let mut interval = tokio::time::interval(Duration::from_secs(60));
+    let mut interval = tokio::time::interval(Duration::from_secs(5));
     // First tick fires immediately — report "up" as soon as mesh is running.
 
     loop {
