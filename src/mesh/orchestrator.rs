@@ -127,7 +127,7 @@ impl Mesh {
         if let Some(cn) = &self.container_network {
             cn.ensure().await?;
             if let WireguardDriver::Docker(_) = &self.network {
-                cn.connect("ployz-wireguard", Some(cn.container_v4())).await?;
+                cn.connect("ployz-networking", Some(cn.container_v4())).await?;
             }
 
             // Attach eBPF TC classifiers to the bridge for WG↔Docker forwarding.
@@ -203,7 +203,7 @@ impl Mesh {
         {
             // Exec ployz-ebpf-ctl inside the WG container (same image).
             let dp = EbpfDataplane::attach_container(
-                "ployz-wireguard",
+                "ployz-networking",
                 &bridge_ifname,
                 &bridge_ifname,
             )

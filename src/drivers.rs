@@ -44,7 +44,7 @@ impl WireguardDriver {
                 let local_api = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), api_port);
 
                 let wg = DockerWireGuard::new(
-                    "ployz-wireguard",
+                    "ployz-networking",
                     network_dir,
                     identity.private_key.clone(),
                     overlay_ip,
@@ -208,7 +208,7 @@ impl StoreDriver {
                         )
                         .cmd(vec!["agent".into(), "-c".into(), config_path])
                         .volume(&dir_mount, &dir_mount)
-                        .network_mode("container:ployz-wireguard")
+                        .network_mode("container:ployz-networking")
                         .build()
                         .await
                         .map_err(|e| format!("docker service: {e}"))?;
