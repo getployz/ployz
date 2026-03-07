@@ -145,10 +145,7 @@ fn cmd_route(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             let key = PodRouteKey(subnet_to_key(subnet));
             let entry = PodRouteEntry(RouteEntry { ifindex });
 
-            let map_data = aya::maps::MapData::from_pin(format!("{PIN_PATH}/routes"))?;
-            let mut map = aya::maps::HashMap::<_, PodRouteKey, PodRouteEntry>::try_from(
-                aya::maps::Map::HashMap(map_data),
-            )?;
+            let mut map = open_routes_map()?;
             map.insert(key, entry, 0)?;
 
             eprintln!("added route {subnet} -> ifindex {ifindex}");
@@ -161,10 +158,7 @@ fn cmd_route(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             let subnet: ipnet::Ipv4Net = args[1].parse()?;
             let key = PodRouteKey(subnet_to_key(subnet));
 
-            let map_data = aya::maps::MapData::from_pin(format!("{PIN_PATH}/routes"))?;
-            let mut map = aya::maps::HashMap::<_, PodRouteKey, PodRouteEntry>::try_from(
-                aya::maps::Map::HashMap(map_data),
-            )?;
+            let mut map = open_routes_map()?;
             let _ = map.remove(&key);
 
             eprintln!("removed route {subnet}");
@@ -172,6 +166,11 @@ fn cmd_route(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         }
         other => Err(format!("unknown route subcommand: {other}").into()),
     }
+}
+
+fn open_routes_map() -> Result<aya::maps::HashMap<aya::maps::MapData, PodRouteKey, PodRouteEntry>, Box<dyn std::error::Error>> {
+    let map_data = aya::maps::MapData::from_pin(format!("{PIN_PATH}/routes"))?;
+    Ok(aya::maps::HashMap::try_from(aya::maps::Map::HashMap(map_data))?)
 }
 
 fn subnet_to_key(subnet: ipnet::Ipv4Net) -> RouteKey {

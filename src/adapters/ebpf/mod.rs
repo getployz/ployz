@@ -21,8 +21,8 @@ pub enum EbpfDataplane {
 impl EbpfDataplane {
     /// Attach using the in-process aya loader (Linux native only).
     #[cfg(target_os = "linux")]
-    pub fn attach_native(bridge_ifname: &str, wg_ifindex: u32) -> Result<Self> {
-        Ok(Self::Native(native::NativeDataplane::attach(bridge_ifname, wg_ifindex)?))
+    pub fn attach_native(bridge_ifname: &str) -> Result<Self> {
+        Ok(Self::Native(native::NativeDataplane::attach(bridge_ifname)?))
     }
 
     /// Attach via a sidecar container running `ployz-ebpf-ctl`.
