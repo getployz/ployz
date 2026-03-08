@@ -56,12 +56,10 @@ impl DockerWorkloadManager {
         let container_name = format!("ployz-sidecar-{name}");
 
         // 1. Allocate overlay IP
-        let overlay_ip = self
-            .ipam
-            .lock()
-            .await
-            .allocate()
-            .ok_or_else(|| Error::operation("workload create", "subnet exhausted".to_string()))?;
+        let overlay_ip =
+            self.ipam.lock().await.allocate().ok_or_else(|| {
+                Error::operation("workload create", "subnet exhausted".to_string())
+            })?;
 
         // Track acquired resources for rollback
         let mut rollback = CreateRollback {
@@ -100,15 +98,13 @@ impl DockerWorkloadManager {
                 .to_bytes();
 
         // 3. Register sidecar on backbone FIRST
-        self.backbone.add_sidecar_peer(sidecar_pubkey, overlay_ip).await?;
+        self.backbone
+            .add_sidecar_peer(sidecar_pubkey, overlay_ip)
+            .await?;
         rollback.pubkey = Some(sidecar_pubkey);
 
         // 4. Create and start sidecar container
-        let backbone_endpoint = format!(
-            "{}:{}",
-            self.bridge.container_v4(),
-            DEFAULT_LISTEN_PORT
-        );
+        let backbone_endpoint = format!("{}:{}", self.bridge.container_v4(), DEFAULT_LISTEN_PORT);
 
         let sidecar_config = SidecarConfig {
             container_name: container_name.to_string(),
@@ -125,7 +121,9 @@ impl DockerWorkloadManager {
         rollback.sidecar_started = true;
 
         // 5. Connect to bridge BEFORE setup_interface so the backbone endpoint is reachable
-        self.bridge.connect(container_name, Some(overlay_ip)).await?;
+        self.bridge
+            .connect(container_name, Some(overlay_ip))
+            .await?;
 
         // 6. Configure WG interface inside sidecar (now bridge-connected, can reach backbone)
         sidecar.setup_interface().await?;
@@ -156,12 +154,9 @@ impl DockerWorkloadManager {
     }
 
     pub async fn destroy(&self, id: &WorkloadId) -> Result<()> {
-        let workload = self
-            .workloads
-            .lock()
-            .await
-            .remove(id)
-            .ok_or_else(|| Error::operation("workload destroy", format!("workload '{id}' not found")))?;
+        let workload = self.workloads.lock().await.remove(id).ok_or_else(|| {
+            Error::operation("workload destroy", format!("workload '{id}' not found"))
+        })?;
 
         // 1. Remove from backbone FIRST — stop routing traffic before tearing down sidecar
         if let Err(e) = self

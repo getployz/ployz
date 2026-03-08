@@ -381,8 +381,19 @@ fn into_machine_event(
 // --- row parsing ---
 
 fn parse_machine(row: &[SqliteValue]) -> Result<MachineRecord> {
-    let [id_val, key_val, overlay_val, subnet_val, bridge_val, endpoints_val, status_val, scheduling_val, heartbeat_val, created_val, updated_val] =
-        row
+    let [
+        id_val,
+        key_val,
+        overlay_val,
+        subnet_val,
+        bridge_val,
+        endpoints_val,
+        status_val,
+        scheduling_val,
+        heartbeat_val,
+        created_val,
+        updated_val,
+    ] = row
     else {
         return Err(Error::operation(
             "parse_machine",
@@ -465,11 +476,14 @@ fn integer(val: &SqliteValue, field: &'static str) -> Result<i64> {
         if s.is_empty() {
             return Ok(0);
         }
-        return s
-            .parse::<i64>()
-            .map_err(|e| Error::operation("decode", format!("invalid integer for '{field}': {e}")));
+        return s.parse::<i64>().map_err(|e| {
+            Error::operation("decode", format!("invalid integer for '{field}': {e}"))
+        });
     }
-    Err(Error::operation("decode", format!("expected integer for '{field}', got {:?}", val)))
+    Err(Error::operation(
+        "decode",
+        format!("expected integer for '{field}', got {:?}", val),
+    ))
 }
 
 fn text(val: &SqliteValue, field: &'static str) -> Result<String> {

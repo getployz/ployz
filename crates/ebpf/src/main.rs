@@ -126,7 +126,7 @@ fn try_emit(ctx: &TcContext, direction: u8) {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Ipv6HdrRaw {
-    _vtcfl: [u8; 4],       // version + traffic class + flow label
+    _vtcfl: [u8; 4], // version + traffic class + flow label
     _payload_len: [u8; 2],
     next_hdr: u8,
     _hop_limit: u8,

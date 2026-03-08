@@ -55,8 +55,8 @@ fn peer_records_from_db(network_dir: &Path) -> Result<Vec<MachineRecord>, String
 
     let mut records = Vec::new();
     for row in rows {
-        let (id, public_key, overlay_ip, subnet, bridge_ip, endpoints) = row
-            .map_err(|e| format!("read machine row from '{}': {e}", db_path.display()))?;
+        let (id, public_key, overlay_ip, subnet, bridge_ip, endpoints) =
+            row.map_err(|e| format!("read machine row from '{}': {e}", db_path.display()))?;
 
         if overlay_ip.is_empty() {
             continue;
@@ -70,15 +70,17 @@ fn peer_records_from_db(network_dir: &Path) -> Result<Vec<MachineRecord>, String
             Ok(ip) => ip,
             Err(_) => continue,
         };
-        let subnet_parsed: Option<ipnet::Ipv4Net> =
-            if subnet.is_empty() { None } else { subnet.parse().ok() };
+        let subnet_parsed: Option<ipnet::Ipv4Net> = if subnet.is_empty() {
+            None
+        } else {
+            subnet.parse().ok()
+        };
         let bridge_parsed: Option<OverlayIp> = if bridge_ip.is_empty() {
             None
         } else {
             bridge_ip.parse::<std::net::Ipv6Addr>().ok().map(OverlayIp)
         };
-        let endpoints_parsed: Vec<String> =
-            serde_json::from_str(&endpoints).unwrap_or_default();
+        let endpoints_parsed: Vec<String> = serde_json::from_str(&endpoints).unwrap_or_default();
 
         records.push(MachineRecord {
             id: MachineId(id),
@@ -106,7 +108,13 @@ fn corrosion_bootstrap_from_db(
     Ok(records
         .into_iter()
         .filter(|m| m.id.0 != local_machine_id.0)
-        .map(|m| format!("[{}]:{}", m.overlay_ip.0, corrosion_config::DEFAULT_GOSSIP_PORT))
+        .map(|m| {
+            format!(
+                "[{}]:{}",
+                m.overlay_ip.0,
+                corrosion_config::DEFAULT_GOSSIP_PORT
+            )
+        })
         .collect())
 }
 
@@ -138,11 +146,8 @@ impl DaemonState {
         options: MeshStartOptions,
     ) -> Result<(), String> {
         let network_dir = self.network_dir(&net_config.name.0);
-        let bootstrap_addrs = resolve_bootstrap_addrs(
-            &network_dir,
-            &self.identity.machine_id,
-            &bootstrap,
-        )?;
+        let bootstrap_addrs =
+            resolve_bootstrap_addrs(&network_dir, &self.identity.machine_id, &bootstrap)?;
 
         let network = WireguardDriver::from_mode(
             self.mode,

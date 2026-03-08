@@ -157,8 +157,7 @@ impl ServiceRunner {
         {
             Ok(()) => {}
             Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 404,
-                ..
+                status_code: 404, ..
             }) => {
                 return Err(Error::operation(
                     "service remove",
@@ -179,7 +178,10 @@ impl ServiceRunner {
         labels.insert(LABEL_MANAGED.to_string(), "true".to_string());
         labels.insert(LABEL_NAMESPACE.to_string(), spec.namespace.0.clone());
         labels.insert(LABEL_SERVICE.to_string(), spec.name.clone());
-        labels.insert(LABEL_COMPOSE_PROJECT.to_string(), format!("ployz-{}", spec.namespace));
+        labels.insert(
+            LABEL_COMPOSE_PROJECT.to_string(),
+            format!("ployz-{}", spec.namespace),
+        );
         labels.insert(LABEL_COMPOSE_SERVICE.to_string(), spec.name.clone());
         for (k, v) in &spec.labels {
             labels.insert(k.clone(), v.clone());
@@ -215,9 +217,7 @@ impl ServiceRunner {
             privileged: Some(container.privileged),
             restart_policy: Some(self.build_restart_policy(&spec.restart)),
             memory: container.resources.memory_bytes.map(|b| b as i64),
-            nano_cpus: container
-                .resources
-                .cpu_nano(),
+            nano_cpus: container.resources.cpu_nano(),
             sysctls: if container.sysctls.is_empty() {
                 None
             } else {
@@ -300,27 +300,14 @@ impl ServiceRunner {
         map
     }
 
-    fn build_restart_policy(
-        &self,
-        policy: &RestartPolicy,
-    ) -> bollard::models::RestartPolicy {
+    fn build_restart_policy(&self, policy: &RestartPolicy) -> bollard::models::RestartPolicy {
         let (name, max) = match policy {
-            RestartPolicy::No => (
-                bollard::models::RestartPolicyNameEnum::NO,
-                0,
-            ),
-            RestartPolicy::Always => (
-                bollard::models::RestartPolicyNameEnum::ALWAYS,
-                0,
-            ),
-            RestartPolicy::OnFailure => (
-                bollard::models::RestartPolicyNameEnum::ON_FAILURE,
-                0,
-            ),
-            RestartPolicy::UnlessStopped => (
-                bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED,
-                0,
-            ),
+            RestartPolicy::No => (bollard::models::RestartPolicyNameEnum::NO, 0),
+            RestartPolicy::Always => (bollard::models::RestartPolicyNameEnum::ALWAYS, 0),
+            RestartPolicy::OnFailure => (bollard::models::RestartPolicyNameEnum::ON_FAILURE, 0),
+            RestartPolicy::UnlessStopped => {
+                (bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED, 0)
+            }
         };
         bollard::models::RestartPolicy {
             name: Some(name),
@@ -354,9 +341,7 @@ impl ServiceRunner {
     }
 
     async fn force_remove(&self, container_name: &str) {
-        let options = RemoveContainerOptionsBuilder::default()
-            .force(true)
-            .build();
+        let options = RemoveContainerOptionsBuilder::default().force(true).build();
         let _ = self
             .docker
             .remove_container(container_name, Some(options))

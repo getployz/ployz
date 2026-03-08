@@ -57,7 +57,12 @@ impl WgSidecar {
             ("com.docker.compose.project".into(), "ployz-system".into()),
             (
                 "com.docker.compose.service".into(),
-                format!("sidecar-{}", self.config.container_name.trim_start_matches("ployz-sidecar-")),
+                format!(
+                    "sidecar-{}",
+                    self.config
+                        .container_name
+                        .trim_start_matches("ployz-sidecar-")
+                ),
             ),
         ]
         .into_iter()
@@ -129,10 +134,8 @@ impl WgSidecar {
         self.exec(&["rm", "/tmp/wg-private.key"]).await?;
 
         let overlay_addr = format!("{}/32", self.config.overlay_ip);
-        self.exec(&[
-            "ip", "addr", "add", &overlay_addr, "dev", INTERFACE_NAME,
-        ])
-        .await?;
+        self.exec(&["ip", "addr", "add", &overlay_addr, "dev", INTERFACE_NAME])
+            .await?;
 
         self.exec(&["ip", "link", "set", INTERFACE_NAME, "up"])
             .await?;
@@ -149,7 +152,13 @@ impl WgSidecar {
         .await?;
 
         self.exec(&[
-            "ip", "-6", "route", "add", "fd00::/8", "dev", INTERFACE_NAME,
+            "ip",
+            "-6",
+            "route",
+            "add",
+            "fd00::/8",
+            "dev",
+            INTERFACE_NAME,
         ])
         .await?;
 
@@ -185,8 +194,7 @@ impl WgSidecar {
         {
             Ok(()) => {}
             Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 404,
-                ..
+                status_code: 404, ..
             }) => {}
             Err(e) => return Err(Error::operation("sidecar remove", e.to_string())),
         }

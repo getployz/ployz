@@ -183,8 +183,7 @@ mod tests {
     #[test]
     fn subnet_ipam_skips_preallocated() {
         let subnet: Ipv4Net = "10.210.0.0/24".parse().unwrap();
-        let mut ipam =
-            SubnetIpam::with_allocated(subnet, [Ipv4Addr::new(10, 210, 0, 3)]);
+        let mut ipam = SubnetIpam::with_allocated(subnet, [Ipv4Addr::new(10, 210, 0, 3)]);
         let ip = ipam.allocate().unwrap();
         assert_eq!(ip, Ipv4Addr::new(10, 210, 0, 4));
     }

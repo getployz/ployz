@@ -230,8 +230,7 @@ impl ServiceControl for DockerCorrosion {
         {
             Ok(()) => {}
             Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 404,
-                ..
+                status_code: 404, ..
             }) => {}
             Err(e) => return Err(Error::operation("docker remove", e.to_string())),
         }

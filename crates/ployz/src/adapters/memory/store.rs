@@ -101,7 +101,6 @@ impl MachineStore for MemoryStore {
         inner.subscribers.push(tx);
         Ok((snapshot, rx))
     }
-
 }
 
 impl InviteStore for MemoryStore {

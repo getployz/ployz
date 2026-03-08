@@ -15,13 +15,13 @@ pub use ployz_sdk::model;
 pub use ployz_sdk::spec;
 
 // Re-export public API from SDK
+pub use ployz_sdk::model::*;
 pub use ployz_sdk::{
     Affordances, ClientConfig, ConfigLoadError, DaemonConfig, Mode, Os, default_config_path,
     default_data_dir, default_socket_path, load_client_config, load_daemon_config,
     resolve_config_path, validate_mode,
 };
 pub use ployz_sdk::{Error, Result};
-pub use ployz_sdk::model::*;
 
 // Re-export daemon-internal public API
 pub use adapters::corrosion::client::{CorrClient, Transport as CorrTransport};

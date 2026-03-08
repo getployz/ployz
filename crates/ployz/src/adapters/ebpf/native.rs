@@ -28,8 +28,8 @@ pub struct NativeDataplane {
 impl NativeDataplane {
     pub fn attach(bridge_ifname: &str) -> Result<Self> {
         let bytecode = include_bytes_aligned!(concat!(env!("OUT_DIR"), "/ployz-ebpf-tc"));
-        let mut bpf = Ebpf::load(bytecode)
-            .map_err(|e| Error::operation("ebpf load", e.to_string()))?;
+        let mut bpf =
+            Ebpf::load(bytecode).map_err(|e| Error::operation("ebpf load", e.to_string()))?;
 
         let _ = aya::programs::tc::qdisc_add_clsact(bridge_ifname);
 
@@ -37,23 +37,42 @@ impl NativeDataplane {
             .program_mut("ployz_egress")
             .ok_or_else(|| Error::operation("ebpf", "ployz_egress program not found"))?
             .try_into()
-            .map_err(|e: aya::programs::ProgramError| Error::operation("ebpf egress cast", e.to_string()))?;
-        egress.load().map_err(|e| Error::operation("ebpf egress load", e.to_string()))?;
+            .map_err(|e: aya::programs::ProgramError| {
+                Error::operation("ebpf egress cast", e.to_string())
+            })?;
         egress
-            .attach_with_options(bridge_ifname, TcAttachType::Egress, TcAttachOptions::Netlink(NlOptions::default()))
+            .load()
+            .map_err(|e| Error::operation("ebpf egress load", e.to_string()))?;
+        egress
+            .attach_with_options(
+                bridge_ifname,
+                TcAttachType::Egress,
+                TcAttachOptions::Netlink(NlOptions::default()),
+            )
             .map_err(|e| Error::operation("ebpf egress attach", e.to_string()))?;
 
         let ingress: &mut SchedClassifier = bpf
             .program_mut("ployz_ingress")
             .ok_or_else(|| Error::operation("ebpf", "ployz_ingress program not found"))?
             .try_into()
-            .map_err(|e: aya::programs::ProgramError| Error::operation("ebpf ingress cast", e.to_string()))?;
-        ingress.load().map_err(|e| Error::operation("ebpf ingress load", e.to_string()))?;
+            .map_err(|e: aya::programs::ProgramError| {
+                Error::operation("ebpf ingress cast", e.to_string())
+            })?;
         ingress
-            .attach_with_options(bridge_ifname, TcAttachType::Ingress, TcAttachOptions::Netlink(NlOptions::default()))
+            .load()
+            .map_err(|e| Error::operation("ebpf ingress load", e.to_string()))?;
+        ingress
+            .attach_with_options(
+                bridge_ifname,
+                TcAttachType::Ingress,
+                TcAttachOptions::Netlink(NlOptions::default()),
+            )
             .map_err(|e| Error::operation("ebpf ingress attach", e.to_string()))?;
 
-        info!(bridge = bridge_ifname, "eBPF TC classifiers attached (native)");
+        info!(
+            bridge = bridge_ifname,
+            "eBPF TC classifiers attached (native)"
+        );
 
         Ok(Self {
             bpf: Mutex::new(bpf),
@@ -115,8 +134,16 @@ impl NativeDataplane {
     }
 
     pub fn detach(self) {
-        let _ = aya::programs::tc::qdisc_detach_program(&self.bridge_ifname, TcAttachType::Egress, "ployz_egress");
-        let _ = aya::programs::tc::qdisc_detach_program(&self.bridge_ifname, TcAttachType::Ingress, "ployz_ingress");
+        let _ = aya::programs::tc::qdisc_detach_program(
+            &self.bridge_ifname,
+            TcAttachType::Egress,
+            "ployz_egress",
+        );
+        let _ = aya::programs::tc::qdisc_detach_program(
+            &self.bridge_ifname,
+            TcAttachType::Ingress,
+            "ployz_ingress",
+        );
         info!(bridge = %self.bridge_ifname, "eBPF TC classifiers detached (native)");
     }
 }

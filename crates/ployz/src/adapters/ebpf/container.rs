@@ -70,9 +70,7 @@ impl ContainerDataplane {
     }
 
     pub async fn detach(self) -> Result<()> {
-        let _ = self
-            .exec(&[CTL_BIN, "detach", &self.bridge_ifname])
-            .await;
+        let _ = self.exec(&[CTL_BIN, "detach", &self.bridge_ifname]).await;
         info!(bridge = %self.bridge_ifname, "eBPF TC classifiers detached (container)");
         Ok(())
     }
