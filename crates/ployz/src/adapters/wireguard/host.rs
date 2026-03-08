@@ -17,7 +17,7 @@ use crate::model::{MachineRecord, OverlayIp, PrivateKey, PublicKey};
 
 use super::config::encode_key;
 
-use super::DEFAULT_LISTEN_PORT;
+use super::{DEFAULT_LISTEN_PORT, PERSISTENT_KEEPALIVE_SECS};
 
 enum WgBackend {
     #[cfg(target_os = "linux")]
@@ -115,7 +115,7 @@ fn machine_to_peer(record: &MachineRecord) -> Result<Peer> {
     let mut peer = Peer::new(key);
     peer.allowed_ips = allowed_ips;
     peer.endpoint = endpoint;
-    peer.persistent_keepalive_interval = Some(25);
+    peer.persistent_keepalive_interval = Some(PERSISTENT_KEEPALIVE_SECS);
     Ok(peer)
 }
 

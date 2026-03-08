@@ -2,11 +2,14 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use derive_more::Display;
 use ipnet::Ipv4Net;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
+use crate::spec::Namespace;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display)]
 pub struct MachineId(pub String);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
@@ -178,15 +181,245 @@ pub struct JoinResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
-pub struct WorkloadId(pub String);
+pub struct SidecarId(pub String);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkloadRecord {
-    pub id: WorkloadId,
+pub struct SidecarRecord {
+    pub id: SidecarId,
     pub machine_id: MachineId,
     pub overlay_ip: Ipv4Addr,
     pub public_key: PublicKey,
     pub sidecar_container: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
+pub struct InstanceId(pub String);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
+pub struct DeployId(pub String);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
+pub struct SlotId(pub String);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceRevisionRecord {
+    pub namespace: Namespace,
+    pub service: String,
+    pub revision_hash: String,
+    pub spec_json: String,
+    pub created_by: MachineId,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceHeadRecord {
+    pub namespace: Namespace,
+    pub service: String,
+    pub current_revision_hash: String,
+    pub updated_by_deploy_id: DeployId,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceSlotRecord {
+    pub namespace: Namespace,
+    pub service: String,
+    pub slot_id: SlotId,
+    pub machine_id: MachineId,
+    pub active_instance_id: InstanceId,
+    pub revision_hash: String,
+    pub updated_by_deploy_id: DeployId,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InstancePhase {
+    Pending,
+    Starting,
+    Ready,
+    Failed,
+    Draining,
+    Removed,
+}
+
+impl fmt::Display for InstancePhase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Pending => f.write_str("pending"),
+            Self::Starting => f.write_str("starting"),
+            Self::Ready => f.write_str("ready"),
+            Self::Failed => f.write_str("failed"),
+            Self::Draining => f.write_str("draining"),
+            Self::Removed => f.write_str("removed"),
+        }
+    }
+}
+
+impl FromStr for InstancePhase {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "pending" => Ok(Self::Pending),
+            "starting" => Ok(Self::Starting),
+            "ready" => Ok(Self::Ready),
+            "failed" => Ok(Self::Failed),
+            "draining" => Ok(Self::Draining),
+            "removed" => Ok(Self::Removed),
+            other => Err(format!("unknown instance phase: {other:?}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DrainState {
+    None,
+    Requested,
+    Complete,
+}
+
+impl fmt::Display for DrainState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => f.write_str("none"),
+            Self::Requested => f.write_str("requested"),
+            Self::Complete => f.write_str("complete"),
+        }
+    }
+}
+
+impl FromStr for DrainState {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "none" => Ok(Self::None),
+            "requested" => Ok(Self::Requested),
+            "complete" => Ok(Self::Complete),
+            other => Err(format!("unknown drain state: {other:?}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceStatusRecord {
+    pub instance_id: InstanceId,
+    pub namespace: Namespace,
+    pub service: String,
+    pub slot_id: SlotId,
+    pub machine_id: MachineId,
+    pub revision_hash: String,
+    pub deploy_id: DeployId,
+    pub docker_container_id: String,
+    pub overlay_ip: Option<Ipv4Addr>,
+    pub backend_ports: BTreeMap<String, u16>,
+    pub phase: InstancePhase,
+    pub ready: bool,
+    pub drain_state: DrainState,
+    pub error: Option<String>,
+    pub started_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DeployState {
+    Planning,
+    Applying,
+    Committed,
+    CleanupPending,
+    Failed,
+}
+
+impl fmt::Display for DeployState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Planning => f.write_str("planning"),
+            Self::Applying => f.write_str("applying"),
+            Self::Committed => f.write_str("committed"),
+            Self::CleanupPending => f.write_str("cleanup_pending"),
+            Self::Failed => f.write_str("failed"),
+        }
+    }
+}
+
+impl FromStr for DeployState {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "planning" => Ok(Self::Planning),
+            "applying" => Ok(Self::Applying),
+            "committed" => Ok(Self::Committed),
+            "cleanup_pending" => Ok(Self::CleanupPending),
+            "failed" => Ok(Self::Failed),
+            other => Err(format!("unknown deploy state: {other:?}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployRecord {
+    pub deploy_id: DeployId,
+    pub namespace: Namespace,
+    pub coordinator_machine_id: MachineId,
+    pub manifest_hash: String,
+    pub state: DeployState,
+    pub started_at: u64,
+    pub committed_at: Option<u64>,
+    pub finished_at: Option<u64>,
+    pub summary_json: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeployChangeKind {
+    Create,
+    Replace,
+    Remove,
+    Unchanged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotPlan {
+    pub slot_id: SlotId,
+    pub machine_id: MachineId,
+    pub current_instance_id: Option<InstanceId>,
+    pub next_instance_id: Option<InstanceId>,
+    pub current_revision_hash: Option<String>,
+    pub next_revision_hash: Option<String>,
+    pub action: DeployChangeKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServicePlan {
+    pub service: String,
+    pub current_revision_hash: Option<String>,
+    pub next_revision_hash: Option<String>,
+    pub slots: Vec<SlotPlan>,
+    pub action: DeployChangeKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployPreview {
+    pub namespace: Namespace,
+    pub manifest_hash: String,
+    pub participants: Vec<MachineId>,
+    pub services: Vec<ServicePlan>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployEvent {
+    pub step: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployApplyResult {
+    pub deploy_id: DeployId,
+    pub preview: DeployPreview,
+    pub state: DeployState,
+    pub events: Vec<DeployEvent>,
 }
 
 pub const JOIN_RESPONSE_PREFIX: &str = "PLOYZ_JOIN_RESPONSE:";

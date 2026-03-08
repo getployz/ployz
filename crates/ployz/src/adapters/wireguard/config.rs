@@ -5,6 +5,8 @@ use std::{fs, io};
 
 use crate::model::{MachineRecord, OverlayIp, PrivateKey};
 
+use super::PERSISTENT_KEEPALIVE_SECS;
+
 /// Filesystem paths for a WireGuard data directory.
 #[derive(Debug, Clone)]
 pub struct WgPaths {
@@ -113,14 +115,14 @@ fn render_peer(buf: &mut String, peer: &MachineRecord) {
     if let Some(endpoint) = peer.endpoints.first() {
         let _ = writeln!(buf, "Endpoint = {endpoint}");
     }
-    let _ = writeln!(buf, "PersistentKeepalive = 25");
+    let _ = writeln!(buf, "PersistentKeepalive = {PERSISTENT_KEEPALIVE_SECS}");
 }
 
 fn render_bridge_peer(buf: &mut String, bridge: &BridgePeerInfo) {
     let _ = writeln!(buf, "[Peer]");
     let _ = writeln!(buf, "PublicKey = {}", encode_key(&bridge.public_key));
     let _ = writeln!(buf, "AllowedIPs = {}", bridge.allowed_ips.join(", "));
-    let _ = writeln!(buf, "PersistentKeepalive = 25");
+    let _ = writeln!(buf, "PersistentKeepalive = {PERSISTENT_KEEPALIVE_SECS}");
 }
 
 /// Write a sync config that includes an optional bridge peer (protected from syncconf removal).
@@ -229,7 +231,7 @@ mod tests {
             config.contains("AllowedIPs = fd00::2/128\n")
                 || config.contains("AllowedIPs = fd00::2/128,")
         );
-        assert!(config.contains("PersistentKeepalive = 25"));
+        assert!(config.contains("PersistentKeepalive = 5"));
     }
 
     #[test]

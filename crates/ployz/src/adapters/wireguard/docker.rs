@@ -21,6 +21,7 @@ use crate::error::{Error, Result};
 use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
 use crate::model::{MachineRecord, OverlayIp, PrivateKey, PublicKey};
 
+use super::PERSISTENT_KEEPALIVE_SECS;
 use super::bridge::{InboundForward, OutboundForward, OverlayBridge};
 use super::config::{
     BridgePeerInfo, WgPaths, decode_key, encode_key, write_private_key,
@@ -468,6 +469,7 @@ impl DockerWireGuard {
     pub async fn add_sidecar_peer(&self, pubkey: [u8; 32], overlay_ip: Ipv4Addr) -> Result<()> {
         let pubkey_b64 = encode_key(&pubkey);
         let allowed = format!("{overlay_ip}/32");
+        let keepalive_secs = PERSISTENT_KEEPALIVE_SECS.to_string();
 
         self.exec_in_container(&[
             "wg",
@@ -478,7 +480,7 @@ impl DockerWireGuard {
             "allowed-ips",
             &allowed,
             "persistent-keepalive",
-            "25",
+            &keepalive_secs,
         ])
         .await?;
 
@@ -527,6 +529,7 @@ impl DockerWireGuard {
 
         let bridge_pubkey_b64 = encode_key(&bridge_pub_bytes);
         let bridge_allowed = format!("{}/128", bridge_overlay_ip.0);
+        let keepalive_secs = PERSISTENT_KEEPALIVE_SECS.to_string();
 
         // Register bridge peer on container BEFORE starting bridge event loop
         self.exec_in_container(&[
@@ -538,7 +541,7 @@ impl DockerWireGuard {
             "allowed-ips",
             &bridge_allowed,
             "persistent-keepalive",
-            "25",
+            &keepalive_secs,
         ])
         .await?;
 

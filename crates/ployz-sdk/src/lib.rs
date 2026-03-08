@@ -12,4 +12,7 @@ pub use config::{
 pub use error::{Error, Result};
 pub use model::*;
 pub use spec::*;
-pub use transport::{DaemonRequest, DaemonResponse, Transport, UnixSocketTransport};
+pub use transport::{
+    DaemonRequest, DaemonResponse, DeployManifestFormat, DeployManifestInput, DeployOptions,
+    Transport, UnixSocketTransport,
+};

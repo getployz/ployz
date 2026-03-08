@@ -10,6 +10,7 @@ use tracing::{info, warn};
 
 use crate::error::{Error, Result};
 
+use super::PERSISTENT_KEEPALIVE_SECS;
 use super::config::encode_key;
 
 const INTERFACE_NAME: &str = "wg0";
@@ -113,6 +114,7 @@ impl WgSidecar {
         .await?;
 
         let backbone_pubkey_b64 = encode_key(&self.config.backbone_pubkey);
+        let keepalive_secs = PERSISTENT_KEEPALIVE_SECS.to_string();
         self.exec(&[
             "wg",
             "set",
@@ -126,7 +128,7 @@ impl WgSidecar {
             "allowed-ips",
             &format!("{},fd00::/8", self.config.cluster_cidr),
             "persistent-keepalive",
-            "25",
+            &keepalive_secs,
         ])
         .await?;
 

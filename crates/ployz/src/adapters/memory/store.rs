@@ -1,6 +1,10 @@
 use crate::error::{Error, Result};
-use crate::model::{InviteRecord, MachineEvent, MachineId, MachineRecord};
-use crate::store::{InviteStore, MachineStore, SyncProbe, SyncStatus};
+use crate::model::{
+    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
+    MachineId, MachineRecord, ServiceHeadRecord, ServiceRevisionRecord, ServiceSlotRecord, SlotId,
+};
+use crate::spec::Namespace;
+use crate::store::{DeployStore, InviteStore, MachineStore, SyncProbe, SyncStatus};
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 use tokio::sync::mpsc;
@@ -14,6 +18,11 @@ struct StoreInner {
     machines: HashMap<MachineId, MachineRecord>,
     subscribers: Vec<mpsc::Sender<MachineEvent>>,
     invites: HashMap<String, InviteRecord>,
+    service_revisions: HashMap<(Namespace, String, String), ServiceRevisionRecord>,
+    service_heads: HashMap<(Namespace, String), ServiceHeadRecord>,
+    service_slots: HashMap<(Namespace, String, SlotId), ServiceSlotRecord>,
+    instance_status: HashMap<InstanceId, InstanceStatusRecord>,
+    deploys: HashMap<DeployId, DeployRecord>,
     sync_status: SyncStatus,
 }
 
@@ -30,6 +39,11 @@ impl MemoryStore {
                 machines: HashMap::new(),
                 subscribers: Vec::new(),
                 invites: HashMap::new(),
+                service_revisions: HashMap::new(),
+                service_heads: HashMap::new(),
+                service_slots: HashMap::new(),
+                instance_status: HashMap::new(),
+                deploys: HashMap::new(),
                 sync_status: SyncStatus::Synced,
             }),
         }
@@ -134,6 +148,164 @@ impl InviteStore for MemoryStore {
 
         inner.invites.remove(invite_id);
         Ok(())
+    }
+}
+
+impl DeployStore for MemoryStore {
+    async fn list_service_heads(&self, namespace: &Namespace) -> Result<Vec<ServiceHeadRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner
+            .service_heads
+            .values()
+            .filter(|record| record.namespace == *namespace)
+            .cloned()
+            .collect())
+    }
+
+    async fn list_service_slots(&self, namespace: &Namespace) -> Result<Vec<ServiceSlotRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner
+            .service_slots
+            .values()
+            .filter(|record| record.namespace == *namespace)
+            .cloned()
+            .collect())
+    }
+
+    async fn list_instance_status(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<InstanceStatusRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner
+            .instance_status
+            .values()
+            .filter(|record| record.namespace == *namespace)
+            .cloned()
+            .collect())
+    }
+
+    async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
+        let mut inner = self.lock_inner();
+        let key = (
+            record.namespace.clone(),
+            record.service.clone(),
+            record.revision_hash.clone(),
+        );
+        inner.service_revisions.insert(key, record.clone());
+        Ok(())
+    }
+
+    async fn upsert_service_head(&self, record: &ServiceHeadRecord) -> Result<()> {
+        let mut inner = self.lock_inner();
+        let key = (record.namespace.clone(), record.service.clone());
+        inner.service_heads.insert(key, record.clone());
+        Ok(())
+    }
+
+    async fn delete_service_head(&self, namespace: &Namespace, service: &str) -> Result<()> {
+        let mut inner = self.lock_inner();
+        inner
+            .service_heads
+            .remove(&(namespace.clone(), service.to_string()));
+        Ok(())
+    }
+
+    async fn replace_service_slots(
+        &self,
+        namespace: &Namespace,
+        service: &str,
+        records: &[ServiceSlotRecord],
+    ) -> Result<()> {
+        let mut inner = self.lock_inner();
+        inner
+            .service_slots
+            .retain(|(ns, svc, _), _| !(ns == namespace && svc == service));
+        for record in records {
+            let key = (
+                record.namespace.clone(),
+                record.service.clone(),
+                record.slot_id.clone(),
+            );
+            inner.service_slots.insert(key, record.clone());
+        }
+        Ok(())
+    }
+
+    async fn upsert_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
+        let mut inner = self.lock_inner();
+        inner
+            .instance_status
+            .insert(record.instance_id.clone(), record.clone());
+        Ok(())
+    }
+
+    async fn delete_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
+        let mut inner = self.lock_inner();
+        inner.instance_status.remove(instance_id);
+        Ok(())
+    }
+
+    async fn upsert_deploy(&self, record: &DeployRecord) -> Result<()> {
+        let mut inner = self.lock_inner();
+        inner
+            .deploys
+            .insert(record.deploy_id.clone(), record.clone());
+        Ok(())
+    }
+
+    async fn commit_deploy(
+        &self,
+        namespace: &Namespace,
+        removed_services: &[String],
+        heads: &[ServiceHeadRecord],
+        slots: &[ServiceSlotRecord],
+        deploy: &DeployRecord,
+    ) -> Result<()> {
+        let mut inner = self.lock_inner();
+        let mut touched_services: Vec<String> = removed_services.to_vec();
+        for head in heads {
+            if !touched_services.contains(&head.service) {
+                touched_services.push(head.service.clone());
+            }
+        }
+
+        inner
+            .service_slots
+            .retain(|(ns, service, _), _| !(ns == namespace && touched_services.contains(service)));
+
+        for service in removed_services {
+            inner
+                .service_heads
+                .remove(&(namespace.clone(), service.clone()));
+        }
+
+        for head in heads {
+            inner
+                .service_heads
+                .insert((head.namespace.clone(), head.service.clone()), head.clone());
+        }
+
+        for slot in slots {
+            inner.service_slots.insert(
+                (
+                    slot.namespace.clone(),
+                    slot.service.clone(),
+                    slot.slot_id.clone(),
+                ),
+                slot.clone(),
+            );
+        }
+
+        inner
+            .deploys
+            .insert(deploy.deploy_id.clone(), deploy.clone());
+        Ok(())
+    }
+
+    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner.deploys.get(deploy_id).cloned())
     }
 }
 
