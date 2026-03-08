@@ -933,11 +933,7 @@ mod tests {
             DEFAULT_CLUSTER_CIDR.into(),
             24,
         );
-        state.active = Some(ActiveMesh {
-            config,
-            mesh,
-            workload_manager: None,
-        });
+        state.active = Some(ActiveMesh { config, mesh });
 
         (state, store)
     }

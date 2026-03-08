@@ -30,6 +30,10 @@ impl From<RuntimeMode> for Mode {
 #[derive(Parser)]
 #[command(name = "ployzd", about = "Ployz control plane daemon")]
 struct Cli {
+    /// Config path. Defaults to PLOYZ_CONFIG or an XDG path.
+    #[arg(long)]
+    config: Option<PathBuf>,
+
     /// Data directory. Defaults to a platform-appropriate path.
     #[arg(long)]
     data_dir: Option<PathBuf>,
@@ -70,13 +74,17 @@ enum CliError {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
-    let Cli { data_dir, command } = Cli::parse();
+    let Cli {
+        config,
+        data_dir,
+        command,
+    } = Cli::parse();
     let aff = Affordances::detect();
 
     match command {
         Command::Configure { mode } => cmd_configure(mode.into()),
         Command::Run { mode, socket } => {
-            let cfg = load_daemon_config(data_dir, socket, &aff)?;
+            let cfg = load_daemon_config(config, data_dir, socket, &aff)?;
             cmd_run(
                 &cfg.data_dir,
                 mode.into(),

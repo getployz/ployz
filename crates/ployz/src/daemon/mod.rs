@@ -5,16 +5,15 @@ pub mod ssh;
 use std::path::{Path, PathBuf};
 
 use crate::config::Mode;
+use crate::deploy::NamespaceLockManager;
 use crate::mesh::orchestrator::Mesh;
 use crate::node::identity::Identity;
 use crate::store::network::NetworkConfig;
 use crate::transport::DaemonResponse;
-use crate::workload::manager::DockerWorkloadManager;
 
 pub struct ActiveMesh {
     pub config: NetworkConfig,
     pub mesh: Mesh,
-    pub workload_manager: Option<DockerWorkloadManager>,
 }
 
 pub struct DaemonState {
@@ -24,6 +23,7 @@ pub struct DaemonState {
     pub cluster_cidr: String,
     pub subnet_prefix_len: u8,
     pub active: Option<ActiveMesh>,
+    pub namespace_locks: NamespaceLockManager,
 }
 
 impl DaemonState {
@@ -41,6 +41,7 @@ impl DaemonState {
             cluster_cidr,
             subnet_prefix_len,
             active: None,
+            namespace_locks: NamespaceLockManager::default(),
         }
     }
 

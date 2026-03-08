@@ -1,9 +1,8 @@
+mod deploy;
 mod invite;
 mod machine;
 mod mesh;
-mod service;
 mod status;
-mod workload;
 
 use crate::transport::{DaemonRequest, DaemonResponse};
 
@@ -13,6 +12,22 @@ impl DaemonState {
     pub async fn handle(&mut self, req: DaemonRequest) -> DaemonResponse {
         match req {
             DaemonRequest::Status => self.handle_status(),
+            DaemonRequest::DeployPreview {
+                namespace,
+                manifest_json,
+                options,
+            } => {
+                self.handle_deploy_preview(&namespace, &manifest_json, &options)
+                    .await
+            }
+            DaemonRequest::DeployApply {
+                namespace,
+                manifest_json,
+                options,
+            } => {
+                self.handle_deploy_apply(&namespace, &manifest_json, &options)
+                    .await
+            }
             DaemonRequest::MeshList => self.handle_mesh_list(),
             DaemonRequest::MeshStatus { network } => self.handle_mesh_status(&network),
             DaemonRequest::MeshJoin { token } => self.handle_mesh_join(&token).await,
@@ -42,14 +57,6 @@ impl DaemonState {
             }
             DaemonRequest::MeshSelfRecord => self.handle_mesh_self_record().await,
             DaemonRequest::MeshAccept { response } => self.handle_mesh_accept(&response).await,
-            DaemonRequest::WorkloadCreate { name } => self.handle_workload_create(&name).await,
-            DaemonRequest::WorkloadDestroy { name } => self.handle_workload_destroy(&name).await,
-            DaemonRequest::WorkloadList => self.handle_workload_list().await,
-            DaemonRequest::ServiceRun { spec_json } => self.handle_service_run(&spec_json).await,
-            DaemonRequest::ServiceList => self.handle_service_list().await,
-            DaemonRequest::ServiceRemove { name, namespace } => {
-                self.handle_service_remove(&name, &namespace).await
-            }
         }
     }
 }

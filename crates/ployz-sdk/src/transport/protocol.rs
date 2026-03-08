@@ -1,4 +1,40 @@
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
+use std::fmt;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum DeployManifestFormat {
+    Auto,
+    Compose,
+    Service,
+}
+
+impl fmt::Display for DeployManifestFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Auto => f.write_str("auto"),
+            Self::Compose => f.write_str("compose"),
+            Self::Service => f.write_str("service"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeployManifestInput {
+    pub format: DeployManifestFormat,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DeployOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_files: Vec<String>,
+    #[serde(default)]
+    pub prune: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonRequest {
@@ -52,25 +88,67 @@ pub enum DaemonRequest {
     MeshAccept {
         response: String,
     },
-    WorkloadCreate {
-        name: String,
-    },
-    WorkloadDestroy {
-        name: String,
-    },
-    WorkloadList,
-    ServiceRun {
-        spec_json: String,
-    },
-    ServiceList,
-    ServiceRemove {
-        name: String,
+    DeployPreview {
         namespace: String,
+        manifest_json: String,
+        options: DeployOptions,
+    },
+    DeployApply {
+        namespace: String,
+        manifest_json: String,
+        options: DeployOptions,
     },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonResponse {
+    pub ok: bool,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RemoteDeployRequest {
+    LockAcquire {
+        namespace: String,
+        deploy_id: String,
+        participant_fingerprint: Vec<String>,
+    },
+    LockHeartbeat {
+        namespace: String,
+        deploy_id: String,
+    },
+    InspectNamespace {
+        namespace: String,
+    },
+    StartCandidate {
+        namespace: String,
+        service: String,
+        slot_id: String,
+        instance_id: String,
+        deploy_id: String,
+        spec_json: String,
+    },
+    DrainInstance {
+        namespace: String,
+        instance_id: String,
+    },
+    RemoveInstance {
+        namespace: String,
+        instance_id: String,
+    },
+    ApplyRouteEpoch {
+        namespace: String,
+        deploy_id: String,
+    },
+    Unlock {
+        namespace: String,
+        deploy_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteDeployResponse {
     pub ok: bool,
     pub code: String,
     pub message: String,

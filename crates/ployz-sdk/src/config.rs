@@ -152,26 +152,28 @@ pub fn default_config_path() -> PathBuf {
         .unwrap_or_else(|| home_dir().join(".config/ployz/config.toml"))
 }
 
-/// Returns the effective config file path, honoring `PLOYZ_CONFIG`.
-pub fn resolve_config_path() -> PathBuf {
-    std::env::var_os("PLOYZ_CONFIG")
-        .map(PathBuf::from)
+/// Returns the effective config file path, honoring CLI override and `PLOYZ_CONFIG`.
+pub fn resolve_config_path(cli_config_path: Option<PathBuf>) -> PathBuf {
+    cli_config_path
+        .or_else(|| std::env::var_os("PLOYZ_CONFIG").map(PathBuf::from))
         .unwrap_or_else(default_config_path)
 }
 
 pub fn load_client_config(
+    cli_config_path: Option<PathBuf>,
     cli_socket: Option<String>,
     aff: &Affordances,
 ) -> std::result::Result<ClientConfig, ConfigLoadError> {
     let overrides = ClientOverrides { socket: cli_socket };
 
-    build_figment(aff)
+    build_figment(cli_config_path, aff)
         .merge(Serialized::defaults(overrides))
         .extract()
         .map_err(ConfigLoadError::from)
 }
 
 pub fn load_daemon_config(
+    cli_config_path: Option<PathBuf>,
     cli_data_dir: Option<PathBuf>,
     cli_socket: Option<String>,
     aff: &Affordances,
@@ -183,13 +185,13 @@ pub fn load_daemon_config(
         subnet_prefix_len: None,
     };
 
-    build_figment(aff)
+    build_figment(cli_config_path, aff)
         .merge(Serialized::defaults(overrides))
         .extract()
         .map_err(ConfigLoadError::from)
 }
 
-fn build_figment(aff: &Affordances) -> Figment {
+fn build_figment(cli_config_path: Option<PathBuf>, aff: &Affordances) -> Figment {
     let defaults = RuntimeDefaults {
         data_dir: default_data_dir(aff),
         socket: default_socket_path(aff),
@@ -198,7 +200,7 @@ fn build_figment(aff: &Affordances) -> Figment {
     };
 
     let mut figment = Figment::new().merge(Serialized::defaults(defaults));
-    let config_path = resolve_config_path();
+    let config_path = resolve_config_path(cli_config_path);
     if config_path.exists() {
         figment = figment.merge(Toml::file(config_path));
     }

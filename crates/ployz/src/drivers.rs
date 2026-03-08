@@ -7,9 +7,14 @@ use crate::adapters::wireguard::{DockerWireGuard, HostWireGuard};
 use crate::config::Mode;
 use crate::error::Result;
 use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
-use crate::model::{InviteRecord, MachineEvent, MachineId, MachineRecord, OverlayIp, PublicKey};
+use crate::model::{
+    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
+    MachineId, MachineRecord, OverlayIp, PublicKey, ServiceHeadRecord, ServiceRevisionRecord,
+    ServiceSlotRecord,
+};
 use crate::node::identity::Identity;
-use crate::store::{InviteStore, MachineStore, ServiceControl, SyncProbe, SyncStatus};
+use crate::spec::Namespace;
+use crate::store::{DeployStore, InviteStore, MachineStore, ServiceControl, SyncProbe, SyncStatus};
 use crate::{SCHEMA_SQL, corrosion_config};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -343,6 +348,143 @@ impl InviteStore for StoreDriver {
             Self::Memory { store, .. } => store.consume_invite(invite_id, now_unix_secs).await,
             Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
                 store.consume_invite(invite_id, now_unix_secs).await
+            }
+        }
+    }
+}
+
+impl DeployStore for StoreDriver {
+    async fn list_service_heads(&self, namespace: &Namespace) -> Result<Vec<ServiceHeadRecord>> {
+        match self {
+            Self::Memory { store, .. } => store.list_service_heads(namespace).await,
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store.list_service_heads(namespace).await
+            }
+        }
+    }
+
+    async fn list_service_slots(&self, namespace: &Namespace) -> Result<Vec<ServiceSlotRecord>> {
+        match self {
+            Self::Memory { store, .. } => store.list_service_slots(namespace).await,
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store.list_service_slots(namespace).await
+            }
+        }
+    }
+
+    async fn list_instance_status(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<InstanceStatusRecord>> {
+        match self {
+            Self::Memory { store, .. } => store.list_instance_status(namespace).await,
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store.list_instance_status(namespace).await
+            }
+        }
+    }
+
+    async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
+        match self {
+            Self::Memory { store, .. } => store.upsert_service_revision(record).await,
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store.upsert_service_revision(record).await
+            }
+        }
+    }
+
+    async fn upsert_service_head(&self, record: &ServiceHeadRecord) -> Result<()> {
+        match self {
+            Self::Memory { store, .. } => store.upsert_service_head(record).await,
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store.upsert_service_head(record).await
+            }
+        }
+    }
+
+    async fn delete_service_head(&self, namespace: &Namespace, service: &str) -> Result<()> {
+        match self {
+            Self::Memory { store, .. } => store.delete_service_head(namespace, service).await,
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store.delete_service_head(namespace, service).await
+            }
+        }
+    }
+
+    async fn replace_service_slots(
+        &self,
+        namespace: &Namespace,
+        service: &str,
+        records: &[ServiceSlotRecord],
+    ) -> Result<()> {
+        match self {
+            Self::Memory { store, .. } => {
+                store
+                    .replace_service_slots(namespace, service, records)
+                    .await
+            }
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store
+                    .replace_service_slots(namespace, service, records)
+                    .await
+            }
+        }
+    }
+
+    async fn upsert_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
+        match self {
+            Self::Memory { store, .. } => store.upsert_instance_status(record).await,
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store.upsert_instance_status(record).await
+            }
+        }
+    }
+
+    async fn delete_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
+        match self {
+            Self::Memory { store, .. } => store.delete_instance_status(instance_id).await,
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store.delete_instance_status(instance_id).await
+            }
+        }
+    }
+
+    async fn upsert_deploy(&self, record: &DeployRecord) -> Result<()> {
+        match self {
+            Self::Memory { store, .. } => store.upsert_deploy(record).await,
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store.upsert_deploy(record).await
+            }
+        }
+    }
+
+    async fn commit_deploy(
+        &self,
+        namespace: &Namespace,
+        removed_services: &[String],
+        heads: &[ServiceHeadRecord],
+        slots: &[ServiceSlotRecord],
+        deploy: &DeployRecord,
+    ) -> Result<()> {
+        match self {
+            Self::Memory { store, .. } => {
+                store
+                    .commit_deploy(namespace, removed_services, heads, slots, deploy)
+                    .await
+            }
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store
+                    .commit_deploy(namespace, removed_services, heads, slots, deploy)
+                    .await
+            }
+        }
+    }
+
+    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
+        match self {
+            Self::Memory { store, .. } => store.get_deploy(deploy_id).await,
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store.get_deploy(deploy_id).await
             }
         }
     }

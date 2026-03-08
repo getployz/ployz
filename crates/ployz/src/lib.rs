@@ -1,12 +1,12 @@
 pub mod adapters;
 pub mod daemon;
+pub mod deploy;
 pub mod drivers;
 pub mod mesh;
 pub mod network;
 pub mod node;
 pub mod store;
 pub mod transport;
-pub mod workload;
 
 // Re-export ployz-sdk types so internal `crate::model`, `crate::error`, etc. still resolve.
 pub use ployz_sdk::config;
@@ -40,4 +40,4 @@ pub use mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
 pub use node::identity::{Identity, IdentityError};
 pub use node::invite::InviteClaims;
 pub use store::network::{NetworkConfig, NetworkConfigError};
-pub use store::{InviteStore, MachineStore, ServiceControl, SyncProbe, SyncStatus};
+pub use store::{DeployStore, InviteStore, MachineStore, ServiceControl, SyncProbe, SyncStatus};

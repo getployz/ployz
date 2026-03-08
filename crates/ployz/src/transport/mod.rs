@@ -1,4 +1,7 @@
 pub mod listener;
 
 // Re-export protocol types and client transport from SDK.
-pub use ployz_sdk::transport::{DaemonRequest, DaemonResponse, Transport, UnixSocketTransport};
+pub use ployz_sdk::transport::{
+    DaemonRequest, DaemonResponse, DeployManifestFormat, DeployManifestInput, DeployOptions,
+    Transport, UnixSocketTransport,
+};

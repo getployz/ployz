@@ -1,6 +1,5 @@
 use std::net::Ipv6Addr;
 use std::path::Path;
-use std::sync::Arc;
 
 use crate::config::Mode;
 use crate::corrosion_config;
@@ -9,7 +8,6 @@ use crate::mesh::orchestrator::Mesh;
 use crate::model::{MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey};
 use crate::network::endpoints::detect_endpoints;
 use crate::store::network::NetworkConfig;
-use crate::workload::manager::DockerWorkloadManager;
 
 use super::{ActiveMesh, DaemonState};
 
@@ -168,12 +166,6 @@ impl DaemonState {
         )
         .await?;
 
-        // Save backbone reference for workload manager before mesh takes ownership
-        let backbone_ref = match &network {
-            WireguardDriver::Docker(backbone) => Some(backbone.clone()),
-            WireguardDriver::Memory(_) | WireguardDriver::Host(_) => None,
-        };
-
         tracing::info!(mode = ?self.mode, "starting mesh");
 
         let container_network = match self.mode {
@@ -212,19 +204,10 @@ impl DaemonState {
             .await
             .map_err(|e| format!("failed to start network: {e}"))?;
 
-        let workload_manager = build_workload_manager(
-            backbone_ref,
-            &self.identity,
-            &net_config,
-            &self.cluster_cidr,
-        )
-        .await?;
-
         let network_name = net_config.name.0.clone();
         self.active = Some(ActiveMesh {
             config: net_config,
             mesh,
-            workload_manager,
         });
         self.write_active_marker(&network_name);
         Ok(())
@@ -297,35 +280,4 @@ async fn build_seed_records(
     }
 
     seed_records
-}
-
-async fn build_workload_manager(
-    backbone_ref: Option<Arc<crate::adapters::wireguard::DockerWireGuard>>,
-    identity: &crate::node::identity::Identity,
-    net_config: &NetworkConfig,
-    cluster_cidr: &str,
-) -> Result<Option<DockerWorkloadManager>, String> {
-    match backbone_ref {
-        Some(backbone) => {
-            let bridge = Arc::new(
-                crate::adapters::docker_network::DockerBridgeNetwork::new(
-                    &net_config.name.0,
-                    net_config.subnet,
-                )
-                .await
-                .map_err(|e| format!("workload bridge: {e}"))?,
-            );
-            Ok(Some(
-                DockerWorkloadManager::new(
-                    identity.machine_id.clone(),
-                    net_config.subnet,
-                    cluster_cidr.to_string(),
-                    backbone,
-                    bridge,
-                )
-                .map_err(|e| format!("workload manager: {e}"))?,
-            ))
-        }
-        None => Ok(None),
-    }
 }
