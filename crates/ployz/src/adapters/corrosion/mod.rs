@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::model::{
-    InviteRecord, MachineEvent, MachineId, MachineRecord, MachineStatus, OverlayIp, PublicKey,
-    Scheduling,
+    InviteRecord, MachineEvent, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation,
+    PublicKey,
 };
 use crate::store::{InviteStore, MachineStore, SyncProbe, SyncStatus};
 use corro_api_types::{ExecResult, SqliteValue, Statement, TypedQueryEvent, sqlite::ChangeType};
@@ -70,7 +70,7 @@ impl MachineStore for CorrosionStore {
 
     async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
         let stmt = Statement::Simple(
-            "SELECT id, public_key, overlay_ip, subnet, bridge_ip, endpoints, status, scheduling, last_heartbeat, created_at, updated_at FROM machines ORDER BY id".to_string(),
+            "SELECT id, public_key, overlay_ip, subnet, bridge_ip, endpoints, status, participation, last_heartbeat, created_at, updated_at FROM machines ORDER BY id".to_string(),
         );
         query_rows(&self.client, &stmt, "list_machines")
             .await?
@@ -91,12 +91,12 @@ impl MachineStore for CorrosionStore {
             .map(|b| b.0.to_string())
             .unwrap_or_default();
         let stmt = Statement::WithParams(
-            "INSERT INTO machines (id, public_key, overlay_ip, subnet, bridge_ip, endpoints, status, scheduling, last_heartbeat, created_at, updated_at) \
+            "INSERT INTO machines (id, public_key, overlay_ip, subnet, bridge_ip, endpoints, status, participation, last_heartbeat, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET public_key=excluded.public_key, \
              overlay_ip=excluded.overlay_ip, subnet=excluded.subnet, \
              bridge_ip=excluded.bridge_ip, endpoints=excluded.endpoints, \
-             status=excluded.status, scheduling=excluded.scheduling, \
+             status=excluded.status, participation=excluded.participation, \
              last_heartbeat=excluded.last_heartbeat, \
              created_at=CASE WHEN machines.created_at > 0 THEN machines.created_at ELSE excluded.created_at END, \
              updated_at=excluded.updated_at"
@@ -109,7 +109,7 @@ impl MachineStore for CorrosionStore {
                 bridge_str.into(),
                 endpoints.into(),
                 record.status.to_string().into(),
-                record.scheduling.to_string().into(),
+                record.participation.to_string().into(),
                 (record.last_heartbeat as i64).into(),
                 (record.created_at as i64).into(),
                 (record.updated_at as i64).into(),
@@ -130,7 +130,7 @@ impl MachineStore for CorrosionStore {
         &self,
     ) -> Result<(Vec<MachineRecord>, mpsc::Receiver<MachineEvent>)> {
         let stmt = Statement::Simple(
-            "SELECT id, public_key, overlay_ip, subnet, bridge_ip, endpoints, status, scheduling, last_heartbeat, created_at, updated_at FROM machines ORDER BY id".to_string(),
+            "SELECT id, public_key, overlay_ip, subnet, bridge_ip, endpoints, status, participation, last_heartbeat, created_at, updated_at FROM machines ORDER BY id".to_string(),
         );
         let mut stream = self
             .client
@@ -389,7 +389,7 @@ fn parse_machine(row: &[SqliteValue]) -> Result<MachineRecord> {
         bridge_val,
         endpoints_val,
         status_val,
-        scheduling_val,
+        participation_val,
         heartbeat_val,
         created_val,
         updated_val,
@@ -408,7 +408,7 @@ fn parse_machine(row: &[SqliteValue]) -> Result<MachineRecord> {
     let bridge_str = text(bridge_val, "bridge_ip")?;
     let endpoints_json = text(endpoints_val, "endpoints")?;
     let status_str = text(status_val, "status")?;
-    let scheduling_str = text(scheduling_val, "scheduling")?;
+    let participation_str = text(participation_val, "participation")?;
     let last_heartbeat = integer(heartbeat_val, "last_heartbeat")? as u64;
     let created_at = integer(created_val, "created_at")? as u64;
     let updated_at = integer(updated_val, "updated_at")? as u64;
@@ -448,9 +448,9 @@ fn parse_machine(row: &[SqliteValue]) -> Result<MachineRecord> {
     let status: MachineStatus = status_str
         .parse()
         .map_err(|e| Error::operation("parse_machine", format!("invalid status: {e}")))?;
-    let scheduling: Scheduling = scheduling_str
+    let participation: Participation = participation_str
         .parse()
-        .map_err(|e| Error::operation("parse_machine", format!("invalid scheduling: {e}")))?;
+        .map_err(|e| Error::operation("parse_machine", format!("invalid participation: {e}")))?;
 
     Ok(MachineRecord {
         id: MachineId(id),
@@ -460,7 +460,7 @@ fn parse_machine(row: &[SqliteValue]) -> Result<MachineRecord> {
         bridge_ip,
         endpoints,
         status,
-        scheduling,
+        participation,
         last_heartbeat,
         created_at,
         updated_at,

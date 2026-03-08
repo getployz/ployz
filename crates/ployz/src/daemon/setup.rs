@@ -6,7 +6,7 @@ use crate::config::Mode;
 use crate::corrosion_config;
 use crate::drivers::{StoreDriver, WireguardDriver};
 use crate::mesh::orchestrator::Mesh;
-use crate::model::{MachineId, MachineRecord, MachineStatus, OverlayIp, PublicKey, Scheduling};
+use crate::model::{MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey};
 use crate::network::endpoints::detect_endpoints;
 use crate::store::network::NetworkConfig;
 use crate::workload::manager::DockerWorkloadManager;
@@ -90,7 +90,7 @@ fn peer_records_from_db(network_dir: &Path) -> Result<Vec<MachineRecord>, String
             bridge_ip: bridge_parsed,
             endpoints: endpoints_parsed,
             status: MachineStatus::Unknown,
-            scheduling: Scheduling::Disabled,
+            participation: Participation::Disabled,
             last_heartbeat: 0,
             created_at: 0,
             updated_at: 0,
@@ -269,7 +269,7 @@ async fn build_seed_records(
             bridge_ip: None,
             endpoints: bs.peer_endpoints.clone(),
             status: MachineStatus::Unknown,
-            scheduling: Scheduling::Disabled,
+            participation: Participation::Disabled,
             last_heartbeat: 0,
             created_at: 0,
             updated_at: 0,
@@ -285,7 +285,7 @@ async fn build_seed_records(
         bridge_ip: None,
         endpoints,
         status: MachineStatus::Unknown,
-        scheduling: Scheduling::Disabled,
+        participation: Participation::Disabled,
         last_heartbeat: 0,
         created_at: 0,
         updated_at: 0,

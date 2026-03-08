@@ -1,7 +1,7 @@
 use crate::drivers::StoreDriver;
 use crate::mesh::tasks::PeerSyncCommand;
 use crate::model::{
-    JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineRecord, MachineStatus, Scheduling,
+    JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineRecord, MachineStatus, Participation,
 };
 use crate::network::ipam::Ipam;
 use crate::store::MachineStore;
@@ -100,7 +100,7 @@ impl DaemonState {
         struct Row {
             id: String,
             status: &'static str,
-            sched: &'static str,
+            participation: &'static str,
             overlay: String,
             subnet: String,
             heartbeat: String,
@@ -112,7 +112,7 @@ impl DaemonState {
             .map(|machine| Row {
                 id: machine.id.0.clone(),
                 status: format_status(machine),
-                sched: format_scheduling(machine),
+                participation: format_participation(machine),
                 overlay: machine.overlay_ip.0.to_string(),
                 subnet: machine
                     .subnet
@@ -147,16 +147,28 @@ impl DaemonState {
             .max()
             .unwrap_or(0)
             .max(9);
+        let w_part = rows
+            .iter()
+            .map(|row| row.participation.len())
+            .max()
+            .unwrap_or(0)
+            .max("PARTICIPATION".len());
 
         let mut lines = Vec::with_capacity(rows.len() + 1);
         lines.push(format!(
-            "{:<w_id$}  {:<6}  {:<8}  {:<w_ov$}  {:<w_sub$}  {:<w_hb$}  {}",
-            "ID", "STATUS", "SCHED", "OVERLAY IP", "SUBNET", "HEARTBEAT", "CREATED",
+            "{:<w_id$}  {:<6}  {:<w_part$}  {:<w_ov$}  {:<w_sub$}  {:<w_hb$}  {}",
+            "ID", "STATUS", "PARTICIPATION", "OVERLAY IP", "SUBNET", "HEARTBEAT", "CREATED",
         ));
         for row in &rows {
             lines.push(format!(
-                "{:<w_id$}  {:<6}  {:<8}  {:<w_ov$}  {:<w_sub$}  {:<w_hb$}  {}",
-                row.id, row.status, row.sched, row.overlay, row.subnet, row.heartbeat, row.created,
+                "{:<w_id$}  {:<6}  {:<w_part$}  {:<w_ov$}  {:<w_sub$}  {:<w_hb$}  {}",
+                row.id,
+                row.status,
+                row.participation,
+                row.overlay,
+                row.subnet,
+                row.heartbeat,
+                row.created,
             ));
         }
         self.ok(lines.join("\n"))
@@ -279,14 +291,14 @@ impl DaemonState {
             }
         };
 
-        record.scheduling = Scheduling::Draining;
+        record.participation = Participation::Draining;
         record.updated_at = chrono::Utc::now().timestamp() as u64;
 
         match active.mesh.store.upsert_machine(&record).await {
             Ok(()) => self.ok(format!("machine '{id}' marked draining")),
             Err(err) => self.err(
                 "UPSERT_FAILED",
-                format!("failed to update machine scheduling: {err}"),
+                format!("failed to update machine participation: {err}"),
             ),
         }
     }
@@ -308,12 +320,12 @@ impl DaemonState {
             }
         };
 
-        if !force && record.scheduling != Scheduling::Disabled {
+        if !force && record.participation != Participation::Disabled {
             return self.err(
                 "MACHINE_NOT_DISABLED",
                 format!(
-                    "machine '{id}' must be disabled before removal (current scheduling: {})",
-                    record.scheduling
+                    "machine '{id}' must be disabled before removal (current participation: {})",
+                    record.participation
                 ),
             );
         }
@@ -373,19 +385,19 @@ impl DaemonState {
         Ok(machines
             .into_iter()
             .filter(|machine| machine.id != self.identity.machine_id)
-            .filter(|machine| match machine.scheduling {
-                Scheduling::Disabled => false,
-                Scheduling::Enabled | Scheduling::Draining => true,
+            .filter(|machine| match machine.participation {
+                Participation::Disabled => false,
+                Participation::Enabled | Participation::Draining => true,
             })
             .filter(|machine| {
                 machine.last_heartbeat == 0
                     || now.saturating_sub(machine.last_heartbeat) > STALE_HEARTBEAT_SECS
             })
             .map(|machine| {
-                let role = match machine.scheduling {
-                    Scheduling::Disabled => "disabled",
-                    Scheduling::Enabled => "enabled",
-                    Scheduling::Draining => "draining",
+                let role = match machine.participation {
+                    Participation::Disabled => "disabled",
+                    Participation::Enabled => "enabled",
+                    Participation::Draining => "draining",
                 };
                 let heartbeat = format_heartbeat(machine.last_heartbeat, now);
                 format!(
@@ -653,11 +665,11 @@ fn format_status(machine: &MachineRecord) -> &'static str {
     }
 }
 
-fn format_scheduling(machine: &MachineRecord) -> &'static str {
-    match machine.scheduling {
-        Scheduling::Enabled => "enabled",
-        Scheduling::Draining => "draining",
-        Scheduling::Disabled => "disabled",
+fn format_participation(machine: &MachineRecord) -> &'static str {
+    match machine.participation {
+        Participation::Enabled => "enabled",
+        Participation::Draining => "draining",
+        Participation::Disabled => "disabled",
     }
 }
 
@@ -712,7 +724,7 @@ mod tests {
         let disabled = test_machine_record(
             "peer-disabled",
             "10.210.1.0/24",
-            Scheduling::Disabled,
+            Participation::Disabled,
             0,
             PublicKey([2; 32]),
         );
@@ -734,7 +746,7 @@ mod tests {
             .upsert_machine(&test_machine_record(
                 "peer-1",
                 "10.210.1.0/24",
-                Scheduling::Enabled,
+                Participation::Enabled,
                 0,
                 PublicKey([2; 32]),
             ))
@@ -766,7 +778,7 @@ mod tests {
             .upsert_machine(&test_machine_record(
                 "stale-peer",
                 "10.210.1.0/24",
-                Scheduling::Enabled,
+                Participation::Enabled,
                 0,
                 PublicKey([3; 32]),
             ))
@@ -805,19 +817,19 @@ mod tests {
             .into_iter()
             .find(|machine| machine.id.0 == "joiner-1")
             .expect("joiner published");
-        assert_eq!(joiner.scheduling, Scheduling::Disabled);
+        assert_eq!(joiner.participation, Participation::Disabled);
 
         teardown_state(&mut state).await;
     }
 
     #[tokio::test]
-    async fn machine_drain_updates_scheduling_and_keeps_record() {
+    async fn machine_drain_updates_participation_and_keeps_record() {
         let (state, store) = make_state(false).await;
         store
             .upsert_machine(&test_machine_record(
                 "peer-1",
                 "10.210.1.0/24",
-                Scheduling::Enabled,
+                Participation::Enabled,
                 10,
                 PublicKey([2; 32]),
             ))
@@ -832,7 +844,7 @@ mod tests {
             .into_iter()
             .find(|machine| machine.id.0 == "peer-1")
             .expect("peer present");
-        assert_eq!(peer.scheduling, Scheduling::Draining);
+        assert_eq!(peer.participation, Participation::Draining);
     }
 
     #[tokio::test]
@@ -842,7 +854,7 @@ mod tests {
             .upsert_machine(&test_machine_record(
                 "peer-1",
                 "10.210.1.0/24",
-                Scheduling::Enabled,
+                Participation::Enabled,
                 10,
                 PublicKey([2; 32]),
             ))
@@ -861,7 +873,7 @@ mod tests {
             .upsert_machine(&test_machine_record(
                 "peer-1",
                 "10.210.1.0/24",
-                Scheduling::Disabled,
+                Participation::Disabled,
                 10,
                 PublicKey([2; 32]),
             ))
@@ -891,7 +903,7 @@ mod tests {
         let founder_record = test_machine_record(
             "founder",
             "10.210.0.0/24",
-            Scheduling::Disabled,
+            Participation::Disabled,
             0,
             identity.public_key.clone(),
         );
@@ -940,7 +952,7 @@ mod tests {
     fn test_machine_record(
         id: &str,
         subnet: &str,
-        scheduling: Scheduling,
+        participation: Participation,
         last_heartbeat: u64,
         public_key: PublicKey,
     ) -> MachineRecord {
@@ -955,7 +967,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec!["127.0.0.1:51820".into()],
             status: MachineStatus::Unknown,
-            scheduling,
+            participation,
             last_heartbeat,
             created_at: 0,
             updated_at: 0,

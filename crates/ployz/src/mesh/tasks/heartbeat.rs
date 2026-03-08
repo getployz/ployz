@@ -1,7 +1,7 @@
 use crate::drivers::{StoreDriver, WireguardDriver};
 use crate::mesh::peer::PEER_DOWN_INTERVAL;
 use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
-use crate::model::{MachineId, MachineRecord, MachineStatus, Scheduling};
+use crate::model::{MachineId, MachineRecord, MachineStatus, Participation};
 use crate::store::MachineStore;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -61,9 +61,9 @@ async fn heartbeat_once(
     let required_peers: Vec<MachineRecord> = machines
         .iter()
         .filter(|machine| machine.id != *machine_id)
-        .filter(|machine| match machine.scheduling {
-            Scheduling::Disabled => false,
-            Scheduling::Enabled | Scheduling::Draining => true,
+        .filter(|machine| match machine.participation {
+            Participation::Disabled => false,
+            Participation::Enabled | Participation::Draining => true,
         })
         .cloned()
         .collect();
@@ -95,18 +95,18 @@ async fn heartbeat_once(
     let healthy_required_peers = required_peers_healthy(network, &required_peers).await;
     update_hysteresis(state, healthy_required_peers);
 
-    match record.scheduling {
-        Scheduling::Disabled => {
+    match record.participation {
+        Participation::Disabled => {
             if state.consecutive_good_samples >= SCHEDULING_HYSTERESIS_SAMPLES {
-                record.scheduling = Scheduling::Enabled;
+                record.participation = Participation::Enabled;
             }
         }
-        Scheduling::Enabled => {
+        Participation::Enabled => {
             if state.consecutive_bad_samples >= SCHEDULING_HYSTERESIS_SAMPLES {
-                record.scheduling = Scheduling::Disabled;
+                record.participation = Participation::Disabled;
             }
         }
-        Scheduling::Draining => {}
+        Participation::Draining => {}
     }
 
     if let Err(e) = store.upsert_machine(&record).await {
@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn required_peer_filter_ignores_disabled_peers() {
         let machine_id = MachineId("self".into());
-        let record = |id: &str, scheduling: Scheduling| MachineRecord {
+        let record = |id: &str, participation: Participation| MachineRecord {
             id: MachineId(id.into()),
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
@@ -231,25 +231,25 @@ mod tests {
             bridge_ip: None,
             endpoints: vec![],
             status: MachineStatus::Unknown,
-            scheduling,
+            participation,
             last_heartbeat: 0,
             created_at: 0,
             updated_at: 0,
         };
 
         let machines = [
-            record("self", Scheduling::Disabled),
-            record("disabled", Scheduling::Disabled),
-            record("enabled", Scheduling::Enabled),
-            record("draining", Scheduling::Draining),
+            record("self", Participation::Disabled),
+            record("disabled", Participation::Disabled),
+            record("enabled", Participation::Enabled),
+            record("draining", Participation::Draining),
         ];
 
         let required: Vec<MachineRecord> = machines
             .iter()
             .filter(|machine| machine.id != machine_id)
-            .filter(|machine| match machine.scheduling {
-                Scheduling::Disabled => false,
-                Scheduling::Enabled | Scheduling::Draining => true,
+            .filter(|machine| match machine.participation {
+                Participation::Disabled => false,
+                Participation::Enabled | Participation::Draining => true,
             })
             .cloned()
             .collect();
@@ -266,7 +266,7 @@ mod tests {
     #[tokio::test]
     async fn heartbeat_promotes_disabled_after_three_healthy_samples() {
         let (store, service, network, self_id, peer_key) =
-            test_runtime(Scheduling::Disabled, Scheduling::Enabled).await;
+            test_runtime(Participation::Disabled, Participation::Enabled).await;
         network.set_device_peers(vec![DevicePeer {
             public_key: peer_key,
             endpoint: Some("127.0.0.1:51820".into()),
@@ -289,13 +289,13 @@ mod tests {
             .into_iter()
             .find(|machine| machine.id == self_id)
             .expect("self record");
-        assert_eq!(self_record.scheduling, Scheduling::Enabled);
+        assert_eq!(self_record.participation, Participation::Enabled);
     }
 
     #[tokio::test]
     async fn heartbeat_demotes_enabled_after_three_unhealthy_samples() {
         let (store, service, network, self_id, _peer_key) =
-            test_runtime(Scheduling::Enabled, Scheduling::Enabled).await;
+            test_runtime(Participation::Enabled, Participation::Enabled).await;
 
         let mut state = HeartbeatState::default();
         let store_driver = StoreDriver::Memory {
@@ -313,7 +313,7 @@ mod tests {
             .into_iter()
             .find(|machine| machine.id == self_id)
             .expect("self record");
-        assert_eq!(self_record.scheduling, Scheduling::Disabled);
+        assert_eq!(self_record.participation, Participation::Disabled);
     }
 
     #[tokio::test]
@@ -327,7 +327,7 @@ mod tests {
         store
             .upsert_machine(&test_machine(
                 "self",
-                Scheduling::Enabled,
+                Participation::Enabled,
                 PublicKey([1; 32]),
             ))
             .await
@@ -335,7 +335,7 @@ mod tests {
         store
             .upsert_machine(&test_machine(
                 "enabled",
-                Scheduling::Enabled,
+                Participation::Enabled,
                 enabled_peer_key.clone(),
             ))
             .await
@@ -343,7 +343,7 @@ mod tests {
         store
             .upsert_machine(&test_machine(
                 "disabled",
-                Scheduling::Disabled,
+                Participation::Disabled,
                 PublicKey([3; 32]),
             ))
             .await
@@ -371,13 +371,13 @@ mod tests {
             .into_iter()
             .find(|machine| machine.id == self_id)
             .expect("self record");
-        assert_eq!(self_record.scheduling, Scheduling::Enabled);
+        assert_eq!(self_record.participation, Participation::Enabled);
     }
 
     #[tokio::test]
     async fn heartbeat_never_overwrites_draining() {
         let (store, service, network, self_id, peer_key) =
-            test_runtime(Scheduling::Draining, Scheduling::Enabled).await;
+            test_runtime(Participation::Draining, Participation::Enabled).await;
         network.set_device_peers(vec![DevicePeer {
             public_key: peer_key,
             endpoint: Some("127.0.0.1:51820".into()),
@@ -400,12 +400,12 @@ mod tests {
             .into_iter()
             .find(|machine| machine.id == self_id)
             .expect("self record");
-        assert_eq!(self_record.scheduling, Scheduling::Draining);
+        assert_eq!(self_record.participation, Participation::Draining);
     }
 
     async fn test_runtime(
-        self_scheduling: Scheduling,
-        peer_scheduling: Scheduling,
+        self_participation: Participation,
+        peer_participation: Participation,
     ) -> (
         Arc<MemoryStore>,
         Arc<MemoryService>,
@@ -419,8 +419,8 @@ mod tests {
         let self_id = MachineId("self".into());
         let peer_key = PublicKey([2; 32]);
 
-        let self_record = test_machine("self", self_scheduling, PublicKey([1; 32]));
-        let peer_record = test_machine("peer", peer_scheduling, peer_key.clone());
+        let self_record = test_machine("self", self_participation, PublicKey([1; 32]));
+        let peer_record = test_machine("peer", peer_participation, peer_key.clone());
         store
             .upsert_machine(&self_record)
             .await
@@ -433,7 +433,11 @@ mod tests {
         (store, service, network, self_id, peer_key)
     }
 
-    fn test_machine(id: &str, scheduling: Scheduling, public_key: PublicKey) -> MachineRecord {
+    fn test_machine(
+        id: &str,
+        participation: Participation,
+        public_key: PublicKey,
+    ) -> MachineRecord {
         MachineRecord {
             id: MachineId(id.into()),
             public_key,
@@ -442,7 +446,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec!["127.0.0.1:51820".into()],
             status: MachineStatus::Unknown,
-            scheduling,
+            participation,
             last_heartbeat: 0,
             created_at: 0,
             updated_at: 0,
