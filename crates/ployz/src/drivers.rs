@@ -6,8 +6,8 @@ use crate::adapters::memory::{MemoryService, MemoryStore, MemoryWireGuard};
 use crate::adapters::wireguard::{DockerWireGuard, HostWireGuard};
 use crate::config::Mode;
 use crate::error::Result;
-use crate::mesh::MeshNetwork;
-use crate::model::{InviteRecord, MachineEvent, MachineId, MachineRecord, OverlayIp};
+use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
+use crate::model::{InviteRecord, MachineEvent, MachineId, MachineRecord, OverlayIp, PublicKey};
 use crate::node::identity::Identity;
 use crate::store::{InviteStore, MachineStore, ServiceControl, SyncProbe, SyncStatus};
 use crate::{SCHEMA_SQL, corrosion_config};
@@ -121,6 +121,24 @@ impl MeshNetwork for WireguardDriver {
     }
 }
 
+impl WireGuardDevice for WireguardDriver {
+    async fn read_peers(&self) -> Result<Vec<DevicePeer>> {
+        match self {
+            Self::Memory(n) => n.read_peers().await,
+            Self::Docker(n) => n.read_peers().await,
+            Self::Host(n) => n.read_peers().await,
+        }
+    }
+
+    async fn set_peer_endpoint<'a>(&'a self, key: &'a PublicKey, endpoint: &'a str) -> Result<()> {
+        match self {
+            Self::Memory(n) => n.set_peer_endpoint(key, endpoint).await,
+            Self::Docker(n) => n.set_peer_endpoint(key, endpoint).await,
+            Self::Host(n) => n.set_peer_endpoint(key, endpoint).await,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // DistributedStore — service lifecycle + data layer
 // ---------------------------------------------------------------------------
@@ -171,10 +189,8 @@ impl StoreDriver {
                     IpAddr::V6(overlay_ip.0),
                     corrosion_config::DEFAULT_GOSSIP_PORT,
                 );
-                let api_addr = SocketAddr::new(
-                    IpAddr::V6(overlay_ip.0),
-                    corrosion_config::DEFAULT_API_PORT,
-                );
+                let api_addr =
+                    SocketAddr::new(IpAddr::V6(overlay_ip.0), corrosion_config::DEFAULT_API_PORT);
 
                 corrosion_config::write_config(
                     &paths,
@@ -186,32 +202,35 @@ impl StoreDriver {
                 )
                 .map_err(|e| format!("write corrosion config: {e}"))?;
 
-                let corrosion = CorrosionStore::new(api_addr, match mode {
-                    Mode::Docker => {
-                        let local_api = SocketAddr::new(
-                            IpAddr::V4(Ipv4Addr::LOCALHOST),
-                            corrosion_config::DEFAULT_API_PORT,
-                        );
-                        Transport::Bridge { local_addr: local_api }
-                    }
-                    Mode::HostExec | Mode::HostService | Mode::Memory => Transport::Direct,
-                });
+                let corrosion = CorrosionStore::new(
+                    api_addr,
+                    match mode {
+                        Mode::Docker => {
+                            let local_api = SocketAddr::new(
+                                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                                corrosion_config::DEFAULT_API_PORT,
+                            );
+                            Transport::Bridge {
+                                local_addr: local_api,
+                            }
+                        }
+                        Mode::HostExec | Mode::HostService | Mode::Memory => Transport::Direct,
+                    },
+                );
 
                 match mode {
                     Mode::Docker => {
                         let config_path = paths.config.to_string_lossy().into_owned();
                         let dir_mount = paths.dir.to_string_lossy().into_owned();
 
-                        let service = DockerCorrosion::new(
-                            "ployz-corrosion",
-                            "ghcr.io/getployz/corrosion",
-                        )
-                        .cmd(vec!["agent".into(), "-c".into(), config_path])
-                        .volume(&dir_mount, &dir_mount)
-                        .network_mode("container:ployz-networking")
-                        .build()
-                        .await
-                        .map_err(|e| format!("docker service: {e}"))?;
+                        let service =
+                            DockerCorrosion::new("ployz-corrosion", "ghcr.io/getployz/corrosion")
+                                .cmd(vec!["agent".into(), "-c".into(), config_path])
+                                .volume(&dir_mount, &dir_mount)
+                                .network_mode("container:ployz-networking")
+                                .build()
+                                .await
+                                .map_err(|e| format!("docker service: {e}"))?;
 
                         tracing::info!(endpoint = %api_addr, "store backend: corrosion (docker)");
                         Ok(Self::Corrosion {
@@ -307,7 +326,6 @@ impl MachineStore for StoreDriver {
             }
         }
     }
-
 }
 
 impl InviteStore for StoreDriver {

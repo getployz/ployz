@@ -4,14 +4,18 @@ use crate::drivers::{StoreDriver, WireguardDriver};
 use crate::error::Error as PortError;
 use crate::mesh::MeshNetwork;
 use crate::mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
+use crate::mesh::tasks::{
+    PeerSyncCommand, TaskSet, TaskSetError, run_ebpf_sync_task, run_endpoint_refresh_task,
+    run_heartbeat_task, run_peer_sync_task,
+};
 use crate::model::{MachineId, MachineRecord, MachineStatus};
 use crate::store::{MachineStore, ServiceControl, SyncProbe, SyncStatus};
-use crate::mesh::tasks::{TaskSet, TaskSetError, run_ebpf_sync_task, run_endpoint_refresh_task, run_heartbeat_task, run_peer_sync_task};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use thiserror::Error;
+use tokio::sync::mpsc;
 use tracing::{info, warn};
-
 
 pub type Result<T> = std::result::Result<T, MeshError>;
 
@@ -25,12 +29,22 @@ pub enum MeshError {
     Task(#[from] TaskSetError),
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct MeshReadyStatus {
+    pub ready: bool,
+    pub phase: Phase,
+    pub store_healthy: bool,
+    pub sync_connected: bool,
+    pub heartbeat_started: bool,
+}
+
 pub struct Mesh {
     phase: Phase,
     pub network: WireguardDriver,
     pub store: StoreDriver,
     container_network: Option<DockerBridgeNetwork>,
     tasks: Option<TaskSet>,
+    peer_sync_tx: Option<mpsc::Sender<PeerSyncCommand>>,
     bootstrap_interval: Duration,
     connection_timeout: Duration,
     service_ready_timeout: Duration,
@@ -40,6 +54,7 @@ pub struct Mesh {
     allow_disconnected_bootstrap: bool,
     dataplane: Option<Arc<EbpfDataplane>>,
     wg_ifindex: u32,
+    heartbeat_started: Arc<AtomicBool>,
 }
 
 impl Mesh {
@@ -56,6 +71,7 @@ impl Mesh {
             store,
             container_network,
             tasks: None,
+            peer_sync_tx: None,
             bootstrap_interval: Duration::from_millis(500),
             connection_timeout: Duration::from_secs(30),
             service_ready_timeout: Duration::from_secs(15),
@@ -65,6 +81,7 @@ impl Mesh {
             allow_disconnected_bootstrap: false,
             dataplane: None,
             wg_ifindex: 0,
+            heartbeat_started: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -85,6 +102,7 @@ impl Mesh {
         self
     }
 
+    #[must_use]
     pub fn with_disconnected_bootstrap_allowed(
         mut self,
         allow_disconnected_bootstrap: bool,
@@ -95,6 +113,30 @@ impl Mesh {
 
     pub fn phase(&self) -> Phase {
         self.phase
+    }
+
+    pub(crate) fn peer_sync_sender(&self) -> Option<mpsc::Sender<PeerSyncCommand>> {
+        self.peer_sync_tx.clone()
+    }
+
+    pub async fn ready_status(&self) -> MeshReadyStatus {
+        let phase = self.phase;
+        let store_healthy = self.store.healthy().await;
+        let sync_connected = match self.store.sync_status().await {
+            Ok(SyncStatus::Disconnected) => false,
+            Ok(SyncStatus::Syncing { .. }) | Ok(SyncStatus::Synced) => true,
+            Err(_) => false,
+        };
+        let heartbeat_started = self.heartbeat_started.load(Ordering::SeqCst);
+        let ready = phase == Phase::Running && store_healthy && sync_connected && heartbeat_started;
+
+        MeshReadyStatus {
+            ready,
+            phase,
+            store_healthy,
+            sync_connected,
+            heartbeat_started,
+        }
     }
 
     fn apply(&mut self, event: PhaseEvent) -> Result<()> {
@@ -127,7 +169,8 @@ impl Mesh {
         if let Some(cn) = &self.container_network {
             cn.ensure().await?;
             if let WireguardDriver::Docker(_) = &self.network {
-                cn.connect("ployz-networking", Some(cn.container_v4())).await?;
+                cn.connect("ployz-networking", Some(cn.container_v4()))
+                    .await?;
             }
 
             // Attach eBPF TC classifiers to the bridge for WG↔Docker forwarding.
@@ -202,12 +245,9 @@ impl Mesh {
         #[cfg(not(feature = "ebpf-native"))]
         {
             // Exec ployz-dataplane inside the WG container (same image).
-            let dp = EbpfDataplane::attach_container(
-                "ployz-networking",
-                &bridge_ifname,
-                &bridge_ifname,
-            )
-            .await?;
+            let dp =
+                EbpfDataplane::attach_container("ployz-networking", &bridge_ifname, &bridge_ifname)
+                    .await?;
             self.wg_ifindex = 0;
             self.dataplane = Some(Arc::new(dp));
         }
@@ -223,11 +263,14 @@ impl Mesh {
             .subscribe_machines()
             .await
             .map_err(TaskSetError::Subscribe)?;
+        let (peer_sync_tx, peer_sync_rx) = mpsc::channel(64);
+        self.peer_sync_tx = Some(peer_sync_tx);
 
         let cancel2 = cancel.clone();
         task_set.spawn(run_peer_sync_task(
             snapshot,
             events,
+            peer_sync_rx,
             self.network.clone(),
             self.machine_id.clone(),
             cancel,
@@ -242,10 +285,12 @@ impl Mesh {
         ));
 
         let cancel4 = cancel3.clone();
+        self.heartbeat_started.store(false, Ordering::SeqCst);
         task_set.spawn(run_heartbeat_task(
             self.machine_id.clone(),
             self.store.clone(),
             self.network.clone(),
+            self.heartbeat_started.clone(),
             cancel3,
         ));
 
@@ -273,6 +318,8 @@ impl Mesh {
     /// Idempotent teardown — stops whatever was started, ignores errors on
     /// things not yet started.
     async fn teardown(&mut self) {
+        self.peer_sync_tx = None;
+        self.heartbeat_started.store(false, Ordering::SeqCst);
         if let Some(mut tasks) = self.tasks.take() {
             if let Err(e) = tasks.stop().await {
                 warn!(?e, "task stop failed during teardown");
@@ -300,6 +347,8 @@ impl Mesh {
 
     pub async fn detach(&mut self) -> Result<()> {
         self.apply(PhaseEvent::DetachRequested)?;
+        self.peer_sync_tx = None;
+        self.heartbeat_started.store(false, Ordering::SeqCst);
         if let Some(mut tasks) = self.tasks.take() {
             tasks.stop().await?;
         }

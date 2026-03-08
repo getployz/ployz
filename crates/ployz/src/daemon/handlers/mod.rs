@@ -16,6 +16,7 @@ impl DaemonState {
             DaemonRequest::MeshList => self.handle_mesh_list(),
             DaemonRequest::MeshStatus { network } => self.handle_mesh_status(&network),
             DaemonRequest::MeshJoin { token } => self.handle_mesh_join(&token).await,
+            DaemonRequest::MeshReady { json } => self.handle_mesh_ready(json).await,
             DaemonRequest::MeshCreate { network } => self.handle_mesh_create(&network),
             DaemonRequest::MeshInit { network } => self.handle_mesh_init(&network).await,
             DaemonRequest::MeshUp {
@@ -28,7 +29,11 @@ impl DaemonState {
             DaemonRequest::MachineInit { target, network } => {
                 self.handle_machine_init(&target, &network).await
             }
-            DaemonRequest::MachineAdd { target } => self.handle_machine_add(&target).await,
+            DaemonRequest::MachineAdd { targets } => self.handle_machine_add(&targets).await,
+            DaemonRequest::MachineDrain { id } => self.handle_machine_drain(&id).await,
+            DaemonRequest::MachineRemove { id, force } => {
+                self.handle_machine_remove(&id, force).await
+            }
             DaemonRequest::MachineInviteCreate { ttl_secs } => {
                 self.handle_machine_invite_create(ttl_secs).await
             }
@@ -40,9 +45,7 @@ impl DaemonState {
             DaemonRequest::WorkloadCreate { name } => self.handle_workload_create(&name).await,
             DaemonRequest::WorkloadDestroy { name } => self.handle_workload_destroy(&name).await,
             DaemonRequest::WorkloadList => self.handle_workload_list().await,
-            DaemonRequest::ServiceRun { spec_json } => {
-                self.handle_service_run(&spec_json).await
-            }
+            DaemonRequest::ServiceRun { spec_json } => self.handle_service_run(&spec_json).await,
             DaemonRequest::ServiceList => self.handle_service_list().await,
             DaemonRequest::ServiceRemove { name, namespace } => {
                 self.handle_service_remove(&name, &namespace).await

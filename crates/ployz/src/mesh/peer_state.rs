@@ -1,5 +1,7 @@
 use crate::mesh::MeshNetwork;
-use crate::model::{MachineEvent, MachineId, MachineRecord, MachineStatus, OverlayIp, PublicKey, Scheduling};
+use crate::model::{
+    MachineEvent, MachineId, MachineRecord, MachineStatus, OverlayIp, PublicKey, Scheduling,
+};
 use ipnet::Ipv4Net;
 use std::collections::HashMap;
 use tracing::warn;
@@ -37,7 +39,8 @@ impl PeerState {
 
 #[derive(Debug, Default)]
 pub(crate) struct PeerStateMap {
-    pub(crate) peers: HashMap<MachineId, PeerState>,
+    pub(crate) stored_peers: HashMap<MachineId, PeerState>,
+    pub(crate) transient_peers: HashMap<MachineId, PeerState>,
 }
 
 impl PeerStateMap {
@@ -47,14 +50,26 @@ impl PeerStateMap {
 
     pub(crate) fn init_from_snapshot(&mut self, records: &[MachineRecord]) {
         for r in records {
-            self.peers
+            self.stored_peers
                 .entry(r.id.clone())
                 .or_insert_with(|| PeerState::from_record(r));
         }
     }
 
-    pub(crate) fn upsert(&mut self, record: &MachineRecord) {
-        self.peers
+    pub(crate) fn upsert_stored(&mut self, record: &MachineRecord) {
+        self.stored_peers
+            .entry(record.id.clone())
+            .and_modify(|ps| ps.update_from_record(record))
+            .or_insert_with(|| PeerState::from_record(record));
+        self.transient_peers.remove(&record.id);
+    }
+
+    pub(crate) fn upsert_transient(&mut self, record: &MachineRecord) {
+        if self.stored_peers.contains_key(&record.id) {
+            return;
+        }
+
+        self.transient_peers
             .entry(record.id.clone())
             .and_modify(|ps| ps.update_from_record(record))
             .or_insert_with(|| PeerState::from_record(record));
@@ -62,13 +77,17 @@ impl PeerStateMap {
 
     pub(crate) fn apply_event(&mut self, event: &MachineEvent) {
         match event {
-            MachineEvent::Added(r) | MachineEvent::Updated(r) => self.upsert(r),
-            MachineEvent::Removed(r) => self.remove(&r.id),
+            MachineEvent::Added(r) | MachineEvent::Updated(r) => self.upsert_stored(r),
+            MachineEvent::Removed(r) => self.remove_stored(&r.id),
         }
     }
 
-    pub(crate) fn remove(&mut self, id: &MachineId) {
-        self.peers.remove(id);
+    pub(crate) fn remove_stored(&mut self, id: &MachineId) {
+        self.stored_peers.remove(id);
+    }
+
+    pub(crate) fn remove_transient(&mut self, id: &MachineId) {
+        self.transient_peers.remove(id);
     }
 }
 
@@ -84,8 +103,8 @@ pub(crate) async fn sync_peers<N: MeshNetwork>(
 }
 
 fn plan_mesh_peers(state: &PeerStateMap, local_machine_id: &MachineId) -> Vec<MachineRecord> {
-    state
-        .peers
+    let mut planned: Vec<MachineRecord> = state
+        .stored_peers
         .values()
         .filter(|ps| ps.id != *local_machine_id)
         .filter(|ps| !ps.endpoints.is_empty())
@@ -102,7 +121,31 @@ fn plan_mesh_peers(state: &PeerStateMap, local_machine_id: &MachineId) -> Vec<Ma
             created_at: 0,
             updated_at: 0,
         })
-        .collect()
+        .collect();
+
+    planned.extend(
+        state
+            .transient_peers
+            .values()
+            .filter(|ps| ps.id != *local_machine_id)
+            .filter(|ps| !state.stored_peers.contains_key(&ps.id))
+            .filter(|ps| !ps.endpoints.is_empty())
+            .map(|ps| MachineRecord {
+                id: ps.id.clone(),
+                public_key: ps.public_key.clone(),
+                overlay_ip: ps.overlay_ip,
+                subnet: ps.subnet,
+                bridge_ip: ps.bridge_ip,
+                endpoints: ps.endpoints.clone(),
+                status: MachineStatus::Unknown,
+                scheduling: Scheduling::Disabled,
+                last_heartbeat: 0,
+                created_at: 0,
+                updated_at: 0,
+            }),
+    );
+
+    planned
 }
 
 #[cfg(test)]
@@ -142,7 +185,7 @@ mod tests {
             created_at: 0,
             updated_at: 0,
         };
-        map.upsert(&r);
+        map.upsert_stored(&r);
 
         let planned = plan_mesh_peers(&map, &MachineId("local".into()));
         assert_eq!(planned.len(), 1);
@@ -156,15 +199,15 @@ mod tests {
     fn plan_skips_peers_with_no_endpoints() {
         let mut map = PeerStateMap::new();
         let r = test_record("m1", vec![]);
-        map.upsert(&r);
+        map.upsert_stored(&r);
         assert!(plan_mesh_peers(&map, &MachineId("local".into())).is_empty());
     }
 
     #[test]
     fn plan_skips_local_machine() {
         let mut map = PeerStateMap::new();
-        map.upsert(&test_record("local", vec!["a:1"]));
-        map.upsert(&test_record("remote", vec!["b:2"]));
+        map.upsert_stored(&test_record("local", vec!["a:1"]));
+        map.upsert_stored(&test_record("remote", vec!["b:2"]));
 
         let planned = plan_mesh_peers(&map, &MachineId("local".into()));
         assert_eq!(planned.len(), 1);
@@ -176,9 +219,36 @@ mod tests {
         let mut map = PeerStateMap::new();
         let r = test_record("m1", vec!["a:1"]);
         map.apply_event(&MachineEvent::Added(r));
-        assert_eq!(map.peers.len(), 1);
+        assert_eq!(map.stored_peers.len(), 1);
 
         map.apply_event(&MachineEvent::Removed(test_record("m1", vec![])));
-        assert_eq!(map.peers.len(), 0);
+        assert_eq!(map.stored_peers.len(), 0);
+    }
+
+    #[test]
+    fn transient_peer_is_planned_before_store_publication() {
+        let mut map = PeerStateMap::new();
+        map.upsert_transient(&test_record("joiner", vec!["a:1"]));
+
+        let planned = plan_mesh_peers(&map, &MachineId("local".into()));
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].id.0, "joiner");
+    }
+
+    #[test]
+    fn store_publication_prunes_matching_transient_peer() {
+        let mut map = PeerStateMap::new();
+        let transient = test_record("joiner", vec!["transient:1"]);
+        let stored = test_record("joiner", vec!["stored:1"]);
+        map.upsert_transient(&transient);
+        map.upsert_stored(&stored);
+
+        assert!(
+            !map.transient_peers
+                .contains_key(&MachineId("joiner".into()))
+        );
+        let planned = plan_mesh_peers(&map, &MachineId("local".into()));
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].endpoints, vec!["stored:1".to_string()]);
     }
 }

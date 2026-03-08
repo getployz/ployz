@@ -1,7 +1,9 @@
+use std::net::SocketAddr;
 #[cfg(target_os = "linux")]
 use std::process::Command;
-use std::net::SocketAddr;
 use std::sync::Mutex;
+use std::time::SystemTime;
+use tokio::time::Instant;
 use tracing::{info, warn};
 
 use defguard_wireguard_rs::key::Key;
@@ -10,8 +12,8 @@ use defguard_wireguard_rs::peer::Peer;
 use defguard_wireguard_rs::{InterfaceConfiguration, WGApi, WireguardInterfaceApi};
 
 use crate::error::{Error, Result};
-use crate::mesh::MeshNetwork;
-use crate::model::{MachineRecord, OverlayIp, PrivateKey};
+use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
+use crate::model::{MachineRecord, OverlayIp, PrivateKey, PublicKey};
 
 use super::config::encode_key;
 
@@ -29,12 +31,18 @@ pub struct HostWireGuard {
     private_key: PrivateKey,
     overlay_ip: OverlayIp,
     listen_port: u16,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     subnet: ipnet::Ipv4Net,
 }
 
 impl HostWireGuard {
     #[cfg(target_os = "linux")]
-    pub fn kernel(ifname: &str, private_key: PrivateKey, overlay_ip: OverlayIp, subnet: ipnet::Ipv4Net) -> Result<Self> {
+    pub fn kernel(
+        ifname: &str,
+        private_key: PrivateKey,
+        overlay_ip: OverlayIp,
+        subnet: ipnet::Ipv4Net,
+    ) -> Result<Self> {
         let api = WGApi::new(ifname.to_string())
             .map_err(|e| Error::operation("kernel wg init", e.to_string()))?;
         Ok(Self {
@@ -47,7 +55,12 @@ impl HostWireGuard {
         })
     }
 
-    pub fn userspace(ifname: &str, private_key: PrivateKey, overlay_ip: OverlayIp, subnet: ipnet::Ipv4Net) -> Result<Self> {
+    pub fn userspace(
+        ifname: &str,
+        private_key: PrivateKey,
+        overlay_ip: OverlayIp,
+        subnet: ipnet::Ipv4Net,
+    ) -> Result<Self> {
         let api = WGApi::new(ifname.to_string())
             .map_err(|e| Error::operation("userspace wg init", e.to_string()))?;
         Ok(Self {
@@ -179,6 +192,11 @@ fn wg_remove_peer(backend: &WgBackend, key: &Key) -> Result<()> {
     }
 }
 
+fn system_time_to_instant(value: SystemTime) -> Option<Instant> {
+    let elapsed = SystemTime::now().duration_since(value).ok()?;
+    Instant::now().checked_sub(elapsed)
+}
+
 #[cfg(target_os = "linux")]
 fn add_route(ifname: &str, cidr: &str) -> Result<()> {
     let is_v6 = cidr.contains(':');
@@ -215,7 +233,9 @@ fn del_route(cidr: &str, ifname: &str) -> Result<()> {
         .args(&args)
         .output()
         .map_err(|e| Error::operation("del route", e.to_string()))?;
-    if output.status.success() || String::from_utf8_lossy(&output.stderr).contains("No such process") {
+    if output.status.success()
+        || String::from_utf8_lossy(&output.stderr).contains("No such process")
+    {
         return Ok(());
     }
     Err(Error::operation(
@@ -223,7 +243,6 @@ fn del_route(cidr: &str, ifname: &str) -> Result<()> {
         String::from_utf8_lossy(&output.stderr).trim().to_string(),
     ))
 }
-
 
 impl MeshNetwork for HostWireGuard {
     async fn up(&self) -> Result<()> {
@@ -263,7 +282,9 @@ impl MeshNetwork for HostWireGuard {
 
     async fn down(&self) -> Result<()> {
         #[cfg(target_os = "linux")]
-        { let _ = del_route("fd00::/8", &self.ifname); }
+        {
+            let _ = del_route("fd00::/8", &self.ifname);
+        }
         #[cfg(not(target_os = "linux"))]
         warn!("overlay route removal not implemented on this platform");
         let backend = self.lock_backend();
@@ -299,8 +320,7 @@ impl MeshNetwork for HostWireGuard {
         // src so outbound overlay traffic has a routable return address.
         #[cfg(target_os = "linux")]
         {
-            let src_ip = self.subnet.hosts().next()
-                .map(|ip| ip.to_string());
+            let src_ip = self.subnet.hosts().next().map(|ip| ip.to_string());
             let desired_subnets: std::collections::HashSet<String> = peers
                 .iter()
                 .filter_map(|p| p.subnet.map(|s| s.to_string()))
@@ -311,12 +331,13 @@ impl MeshNetwork for HostWireGuard {
                 .args(["route", "show", "dev", &self.ifname])
                 .output()
                 .map_err(|e| Error::operation("list routes", e.to_string()))?;
-            let current_routes: std::collections::HashSet<String> = String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .filter_map(|line| line.split_whitespace().next())
-                .filter(|dest| dest.contains('/') && !dest.contains(':'))
-                .map(|s| s.to_string())
-                .collect();
+            let current_routes: std::collections::HashSet<String> =
+                String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .filter_map(|line| line.split_whitespace().next())
+                    .filter(|dest| dest.contains('/') && !dest.contains(':'))
+                    .map(|s| s.to_string())
+                    .collect();
 
             for subnet in desired_subnets.difference(&current_routes) {
                 let mut args = vec!["route", "replace", subnet.as_str(), "dev", &self.ifname];
@@ -334,5 +355,38 @@ impl MeshNetwork for HostWireGuard {
 
         info!(peer_count = desired.len(), "synced wireguard peers");
         Ok(())
+    }
+}
+
+impl WireGuardDevice for HostWireGuard {
+    async fn read_peers(&self) -> Result<Vec<DevicePeer>> {
+        let backend = self.lock_backend();
+        let peers = wg_read_peers(&backend)?;
+        let device_peers = peers
+            .into_iter()
+            .map(|peer| DevicePeer {
+                public_key: PublicKey(peer.public_key.as_array()),
+                endpoint: peer.endpoint.map(|endpoint| endpoint.to_string()),
+                last_handshake: peer.last_handshake.and_then(system_time_to_instant),
+            })
+            .collect();
+        Ok(device_peers)
+    }
+
+    async fn set_peer_endpoint<'a>(&'a self, key: &'a PublicKey, endpoint: &'a str) -> Result<()> {
+        let endpoint: SocketAddr = endpoint
+            .parse()
+            .map_err(|e| Error::operation("set peer endpoint", format!("{e}")))?;
+        let backend = self.lock_backend();
+        let mut peers = wg_read_peers(&backend)?;
+        let key = Key::new(key.0);
+        let Some(peer) = peers.iter_mut().find(|peer| peer.public_key == key) else {
+            return Err(Error::operation(
+                "set peer endpoint",
+                "peer not found".to_string(),
+            ));
+        };
+        peer.endpoint = Some(endpoint);
+        wg_configure_peer(&backend, peer)
     }
 }

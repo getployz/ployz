@@ -107,7 +107,7 @@ impl Default for Scheduling {
 impl fmt::Display for Scheduling {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Disabled => f.write_str(""),
+            Self::Disabled => f.write_str("disabled"),
             Self::Enabled => f.write_str("enabled"),
             Self::Draining => f.write_str("draining"),
         }
@@ -118,7 +118,7 @@ impl FromStr for Scheduling {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "" => Ok(Self::Disabled),
+            "disabled" => Ok(Self::Disabled),
             "enabled" => Ok(Self::Enabled),
             "draining" => Ok(Self::Draining),
             other => Err(format!("unknown scheduling: {other:?}")),
@@ -289,5 +289,16 @@ mod tests {
         let record = resp.into_machine_record();
         assert_eq!(record.id.0, "joiner-1");
         assert!(record.bridge_ip.is_none());
+    }
+
+    #[test]
+    fn scheduling_display_is_explicit() {
+        assert_eq!(Scheduling::Disabled.to_string(), "disabled");
+    }
+
+    #[test]
+    fn scheduling_from_str_rejects_legacy_empty_string() {
+        assert!(Scheduling::from_str("").is_err());
+        assert_eq!(Scheduling::from_str("disabled"), Ok(Scheduling::Disabled));
     }
 }

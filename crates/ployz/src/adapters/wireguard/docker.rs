@@ -10,18 +10,21 @@ use bollard::query_parameters::{
 use futures_util::StreamExt;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
+use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
 use std::net::Ipv4Addr;
 
 use crate::error::{Error, Result};
-use crate::mesh::MeshNetwork;
-use crate::model::{MachineRecord, OverlayIp, PrivateKey};
+use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
+use crate::model::{MachineRecord, OverlayIp, PrivateKey, PublicKey};
 
 use super::bridge::{InboundForward, OutboundForward, OverlayBridge};
 use super::config::{
-    BridgePeerInfo, WgPaths, encode_key, write_private_key, write_sync_config_with_extra_peers,
+    BridgePeerInfo, WgPaths, decode_key, encode_key, write_private_key,
+    write_sync_config_with_extra_peers,
 };
 
 const DEFAULT_IMAGE: &str = "ghcr.io/getployz/ployz-dataplane:latest";
@@ -101,10 +104,9 @@ impl DockerWireGuardBuilder {
 
         let paths = WgPaths::new(&self.data_dir);
 
-        let public_key_bytes = x25519_dalek::PublicKey::from(
-            &x25519_dalek::StaticSecret::from(self.private_key.0),
-        )
-        .to_bytes();
+        let public_key_bytes =
+            x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(self.private_key.0))
+                .to_bytes();
 
         Ok(DockerWireGuard {
             docker,
@@ -378,6 +380,17 @@ impl DockerWireGuard {
         }
     }
 
+    async fn read_device_peers(&self) -> Result<Vec<DevicePeer>> {
+        let output = self
+            .exec_in_container_capture(&["wg", "show", INTERFACE_NAME, "latest-handshakes"])
+            .await?;
+
+        output
+            .lines()
+            .map(parse_device_peer_line)
+            .collect::<Result<Vec<_>>>()
+    }
+
     async fn setup_interface(&self) -> Result<()> {
         let key_path = self.paths.private_key_file.to_string_lossy().into_owned();
         let overlay = format!("{}/128", self.overlay_ip.0);
@@ -482,15 +495,8 @@ impl DockerWireGuard {
     pub async fn remove_sidecar_peer(&self, pubkey: &[u8; 32]) -> Result<()> {
         let pubkey_b64 = encode_key(pubkey);
 
-        self.exec_in_container(&[
-            "wg",
-            "set",
-            INTERFACE_NAME,
-            "peer",
-            &pubkey_b64,
-            "remove",
-        ])
-        .await?;
+        self.exec_in_container(&["wg", "set", INTERFACE_NAME, "peer", &pubkey_b64, "remove"])
+            .await?;
 
         self.extra_peers
             .lock()
@@ -563,6 +569,39 @@ impl DockerWireGuard {
 
         Ok(())
     }
+}
+
+fn unix_seconds_to_instant(seconds: u64) -> Option<Instant> {
+    let timestamp = UNIX_EPOCH.checked_add(Duration::from_secs(seconds))?;
+    let elapsed = SystemTime::now().duration_since(timestamp).ok()?;
+    Instant::now().checked_sub(elapsed)
+}
+
+fn parse_device_peer_line(line: &str) -> Result<DevicePeer> {
+    let Some((key_b64, handshake_secs)) = line.split_once('\t') else {
+        return Err(Error::operation(
+            "docker wireguard read_peers",
+            format!("invalid latest-handshakes line: {line:?}"),
+        ));
+    };
+
+    let public_key = PublicKey(
+        decode_key(key_b64).map_err(|e| Error::operation("docker wireguard read_peers", e))?,
+    );
+    let handshake = handshake_secs
+        .trim()
+        .parse::<u64>()
+        .map_err(|e| Error::operation("docker wireguard read_peers", e.to_string()))?;
+
+    Ok(DevicePeer {
+        public_key,
+        endpoint: None,
+        last_handshake: if handshake == 0 {
+            None
+        } else {
+            unix_seconds_to_instant(handshake)
+        },
+    })
 }
 
 impl MeshNetwork for DockerWireGuard {
@@ -698,8 +737,7 @@ impl MeshNetwork for DockerWireGuard {
         {
             Ok(()) => {}
             Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 404,
-                ..
+                status_code: 404, ..
             }) => {}
             Err(e) => return Err(Error::operation("docker remove", e.to_string())),
         }
@@ -745,7 +783,11 @@ impl MeshNetwork for DockerWireGuard {
 
         // Get our bridge IP (eth1) for use as route src
         let src_ip = self
-            .exec_in_container_capture(&["sh", "-c", "ip -4 addr show eth1 | awk '/inet /{split($2,a,\"/\");print a[1]}'"])
+            .exec_in_container_capture(&[
+                "sh",
+                "-c",
+                "ip -4 addr show eth1 | awk '/inet /{split($2,a,\"/\");print a[1]}'",
+            ])
             .await
             .ok()
             .map(|s| s.trim().to_string())
@@ -753,7 +795,14 @@ impl MeshNetwork for DockerWireGuard {
 
         // Always replace desired routes (idempotent) to ensure src is set
         for subnet in &desired {
-            let mut args = vec!["ip", "route", "replace", subnet.as_str(), "dev", INTERFACE_NAME];
+            let mut args = vec![
+                "ip",
+                "route",
+                "replace",
+                subnet.as_str(),
+                "dev",
+                INTERFACE_NAME,
+            ];
             if let Some(ref src) = src_ip {
                 args.extend(["src", src.as_str()]);
             }
@@ -808,6 +857,26 @@ impl MeshNetwork for DockerWireGuard {
     }
 }
 
+impl WireGuardDevice for DockerWireGuard {
+    async fn read_peers(&self) -> Result<Vec<DevicePeer>> {
+        self.read_device_peers().await
+    }
+
+    async fn set_peer_endpoint<'a>(&'a self, key: &'a PublicKey, endpoint: &'a str) -> Result<()> {
+        let key = encode_key(&key.0);
+        self.exec_in_container(&[
+            "wg",
+            "set",
+            INTERFACE_NAME,
+            "peer",
+            &key,
+            "endpoint",
+            endpoint,
+        ])
+        .await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -815,10 +884,9 @@ mod tests {
 
     fn sample_wireguard() -> DockerWireGuard {
         let private_key = PrivateKey([7; 32]);
-        let public_key_bytes = x25519_dalek::PublicKey::from(
-            &x25519_dalek::StaticSecret::from(private_key.0),
-        )
-        .to_bytes();
+        let public_key_bytes =
+            x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(private_key.0))
+                .to_bytes();
         DockerWireGuard {
             docker: Docker::connect_with_socket_defaults().expect("docker client"),
             container_name: "test-wireguard".to_string(),

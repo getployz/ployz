@@ -27,6 +27,7 @@ pub trait MeshNetwork: Send + Sync {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct DevicePeer {
     pub public_key: PublicKey,
     pub endpoint: Option<String>,

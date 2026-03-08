@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use ployz_sdk::transport::{DaemonRequest, Transport, UnixSocketTransport};
 use ployz_sdk::{Affordances, load_client_config};
+use std::io::Read;
 use std::process;
 
 #[derive(Parser)]
@@ -50,12 +51,23 @@ enum MeshAction {
     /// Join an existing mesh network using an invite token.
     Join {
         #[arg(long)]
-        token: String,
+        token: Option<String>,
+        #[arg(long)]
+        token_stdin: bool,
+    },
+    /// Report whether the local mesh is ready.
+    Ready {
+        #[arg(long)]
+        json: bool,
     },
     /// Create a mesh network config only.
     Create { network: String },
     /// Create and start a new mesh network.
-    Init { network: String },
+    Init {
+        network: Option<String>,
+        #[arg(long)]
+        name_stdin: bool,
+    },
     /// Start an existing mesh network.
     Up {
         network: String,
@@ -65,7 +77,11 @@ enum MeshAction {
     /// Stop mesh infra but keep network config and data.
     Down,
     /// Tear down all mesh resources and leave the network permanently.
-    Destroy { network: String },
+    Destroy {
+        network: Option<String>,
+        #[arg(long)]
+        name_stdin: bool,
+    },
     /// Print this machine's identity as an encoded JoinResponse (requires running network).
     SelfRecord,
     /// Accept a JoinResponse and seed the joiner's record into the local store.
@@ -84,7 +100,18 @@ enum MachineAction {
         network: String,
     },
     /// Add a remote machine to the currently running network.
-    Add { target: String },
+    Add {
+        #[arg(required = true, num_args = 1..)]
+        targets: Vec<String>,
+    },
+    /// Mark a machine as draining.
+    Drain { id: String },
+    /// Remove a machine from the mesh.
+    Rm {
+        id: String,
+        #[arg(long)]
+        force: bool,
+    },
     /// Invite token operations.
     Invite {
         #[command(subcommand)]
@@ -186,14 +213,28 @@ async fn main() {
             MeshAction::Status { network } => DaemonRequest::MeshStatus {
                 network: network.clone(),
             },
-            MeshAction::Join { token } => DaemonRequest::MeshJoin {
-                token: token.clone(),
+            MeshAction::Join { token, token_stdin } => DaemonRequest::MeshJoin {
+                token: string_arg_or_stdin(
+                    "mesh join token",
+                    "--token-stdin",
+                    token.clone(),
+                    *token_stdin,
+                ),
             },
+            MeshAction::Ready { json } => DaemonRequest::MeshReady { json: *json },
             MeshAction::Create { network } => DaemonRequest::MeshCreate {
                 network: network.clone(),
             },
-            MeshAction::Init { network } => DaemonRequest::MeshInit {
-                network: network.clone(),
+            MeshAction::Init {
+                network,
+                name_stdin,
+            } => DaemonRequest::MeshInit {
+                network: string_arg_or_stdin(
+                    "mesh init network",
+                    "--name-stdin",
+                    network.clone(),
+                    *name_stdin,
+                ),
             },
             MeshAction::Up {
                 network,
@@ -203,8 +244,16 @@ async fn main() {
                 skip_bootstrap_wait: *skip_bootstrap_wait,
             },
             MeshAction::Down => DaemonRequest::MeshDown,
-            MeshAction::Destroy { network } => DaemonRequest::MeshDestroy {
-                network: network.clone(),
+            MeshAction::Destroy {
+                network,
+                name_stdin,
+            } => DaemonRequest::MeshDestroy {
+                network: string_arg_or_stdin(
+                    "mesh destroy network",
+                    "--name-stdin",
+                    network.clone(),
+                    *name_stdin,
+                ),
             },
             MeshAction::SelfRecord => DaemonRequest::MeshSelfRecord,
             MeshAction::Accept { response } => DaemonRequest::MeshAccept {
@@ -217,8 +266,13 @@ async fn main() {
                 target: target.clone(),
                 network: network.clone(),
             },
-            MachineAction::Add { target } => DaemonRequest::MachineAdd {
-                target: target.clone(),
+            MachineAction::Add { targets } => DaemonRequest::MachineAdd {
+                targets: targets.clone(),
+            },
+            MachineAction::Drain { id } => DaemonRequest::MachineDrain { id: id.clone() },
+            MachineAction::Rm { id, force } => DaemonRequest::MachineRemove {
+                id: id.clone(),
+                force: *force,
             },
             MachineAction::Invite { action } => match action {
                 MachineInviteAction::Create { ttl_secs } => DaemonRequest::MachineInviteCreate {
@@ -230,12 +284,10 @@ async fn main() {
             },
         },
         Command::Workload { action } => match action {
-            WorkloadAction::Create { name } => DaemonRequest::WorkloadCreate {
-                name: name.clone(),
-            },
-            WorkloadAction::Destroy { name } => DaemonRequest::WorkloadDestroy {
-                name: name.clone(),
-            },
+            WorkloadAction::Create { name } => DaemonRequest::WorkloadCreate { name: name.clone() },
+            WorkloadAction::Destroy { name } => {
+                DaemonRequest::WorkloadDestroy { name: name.clone() }
+            }
             WorkloadAction::Ls => DaemonRequest::WorkloadList,
         },
         Command::Service { action } => match action {
@@ -282,6 +334,48 @@ async fn main() {
             eprintln!("error: {e}");
             eprintln!("is ployzd running? (socket: {socket})");
             process::exit(1);
+        }
+    }
+}
+
+fn string_arg_or_stdin(
+    label: &str,
+    stdin_flag: &str,
+    value: Option<String>,
+    read_stdin: bool,
+) -> String {
+    let [has_value, reads_stdin] = [value.is_some(), read_stdin];
+    match [has_value, reads_stdin] {
+        [true, false] => {
+            let Some(text) = value else {
+                unreachable!("presence checked above");
+            };
+            text
+        }
+        [false, true] => read_stdin_string(label),
+        [false, false] => {
+            eprintln!("error: {label} requires either an argument or {stdin_flag}");
+            process::exit(2);
+        }
+        [true, true] => {
+            eprintln!("error: {label} cannot use both an argument and {stdin_flag}");
+            process::exit(2);
+        }
+    }
+}
+
+fn read_stdin_string(label: &str) -> String {
+    let mut bytes = Vec::new();
+    if let Err(err) = std::io::stdin().read_to_end(&mut bytes) {
+        eprintln!("error: failed to read {label} from stdin: {err}");
+        process::exit(2);
+    }
+
+    match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(err) => {
+            eprintln!("error: {label} from stdin was not valid utf-8: {err}");
+            process::exit(2);
         }
     }
 }
