@@ -1,5 +1,4 @@
 use crate::drivers::{StoreDriver, WireguardDriver};
-use crate::mesh::peer::PEER_DOWN_INTERVAL;
 use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
 use crate::model::{MachineId, MachineRecord, MachineStatus, Participation};
 use crate::store::MachineStore;
@@ -12,7 +11,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
-const SCHEDULING_HYSTERESIS_SAMPLES: u8 = 3;
+const PARTICIPATION_FRESHNESS_WINDOW: Duration = Duration::from_secs(30);
+const PARTICIPATION_HYSTERESIS_SAMPLES: u8 = 3;
 
 #[derive(Debug, Default)]
 struct HeartbeatState {
@@ -97,12 +97,12 @@ async fn heartbeat_once(
 
     match record.participation {
         Participation::Disabled => {
-            if state.consecutive_good_samples >= SCHEDULING_HYSTERESIS_SAMPLES {
+            if state.consecutive_good_samples >= PARTICIPATION_HYSTERESIS_SAMPLES {
                 record.participation = Participation::Enabled;
             }
         }
         Participation::Enabled => {
-            if state.consecutive_bad_samples >= SCHEDULING_HYSTERESIS_SAMPLES {
+            if state.consecutive_bad_samples >= PARTICIPATION_HYSTERESIS_SAMPLES {
                 record.participation = Participation::Disabled;
             }
         }
@@ -120,7 +120,7 @@ fn update_hysteresis(state: &mut HeartbeatState, healthy_required_peers: bool) {
         state.consecutive_good_samples = state
             .consecutive_good_samples
             .saturating_add(1)
-            .min(SCHEDULING_HYSTERESIS_SAMPLES);
+            .min(PARTICIPATION_HYSTERESIS_SAMPLES);
         return;
     }
 
@@ -128,7 +128,7 @@ fn update_hysteresis(state: &mut HeartbeatState, healthy_required_peers: bool) {
     state.consecutive_bad_samples = state
         .consecutive_bad_samples
         .saturating_add(1)
-        .min(SCHEDULING_HYSTERESIS_SAMPLES);
+        .min(PARTICIPATION_HYSTERESIS_SAMPLES);
 }
 
 async fn required_peers_healthy(
@@ -163,7 +163,7 @@ fn fresh_handshake_map(device_peers: &[DevicePeer]) -> HashMap<crate::model::Pub
         .map(|peer| {
             let fresh = match peer.last_handshake {
                 Some(last_handshake) => match now.checked_duration_since(last_handshake) {
-                    Some(elapsed) => elapsed < PEER_DOWN_INTERVAL,
+                    Some(elapsed) => elapsed < PARTICIPATION_FRESHNESS_WINDOW,
                     None => true,
                 },
                 None => false,
@@ -218,6 +218,18 @@ mod tests {
 
         let map = fresh_handshake_map(&[peer]);
         assert_eq!(map.get(&PublicKey([8; 32])), Some(&false));
+    }
+
+    #[test]
+    fn fresh_handshake_map_marks_31s_old_handshakes_unhealthy_for_participation() {
+        let peer = DevicePeer {
+            public_key: PublicKey([9; 32]),
+            endpoint: Some("127.0.0.1:51820".into()),
+            last_handshake: Some(Instant::now() - Duration::from_secs(31)),
+        };
+
+        let map = fresh_handshake_map(&[peer]);
+        assert_eq!(map.get(&PublicKey([9; 32])), Some(&false));
     }
 
     #[test]
