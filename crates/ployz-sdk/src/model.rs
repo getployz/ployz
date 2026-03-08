@@ -92,19 +92,19 @@ impl FromStr for MachineStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Scheduling {
+pub enum Participation {
     Disabled,
     Enabled,
     Draining,
 }
 
-impl Default for Scheduling {
+impl Default for Participation {
     fn default() -> Self {
         Self::Disabled
     }
 }
 
-impl fmt::Display for Scheduling {
+impl fmt::Display for Participation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Disabled => f.write_str("disabled"),
@@ -114,14 +114,14 @@ impl fmt::Display for Scheduling {
     }
 }
 
-impl FromStr for Scheduling {
+impl FromStr for Participation {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "disabled" => Ok(Self::Disabled),
             "enabled" => Ok(Self::Enabled),
             "draining" => Ok(Self::Draining),
-            other => Err(format!("unknown scheduling: {other:?}")),
+            other => Err(format!("unknown participation: {other:?}")),
         }
     }
 }
@@ -135,7 +135,7 @@ pub struct MachineRecord {
     pub bridge_ip: Option<OverlayIp>,
     pub endpoints: Vec<String>,
     pub status: MachineStatus,
-    pub scheduling: Scheduling,
+    pub participation: Participation,
     pub last_heartbeat: u64,
     pub created_at: u64,
     pub updated_at: u64,
@@ -220,7 +220,7 @@ impl JoinResponse {
             bridge_ip: None,
             endpoints: self.endpoints,
             status: MachineStatus::Unknown,
-            scheduling: Scheduling::Disabled,
+            participation: Participation::Disabled,
             last_heartbeat: 0,
             created_at: 0,
             updated_at: 0,
@@ -292,13 +292,16 @@ mod tests {
     }
 
     #[test]
-    fn scheduling_display_is_explicit() {
-        assert_eq!(Scheduling::Disabled.to_string(), "disabled");
+    fn participation_display_is_explicit() {
+        assert_eq!(Participation::Disabled.to_string(), "disabled");
     }
 
     #[test]
-    fn scheduling_from_str_rejects_legacy_empty_string() {
-        assert!(Scheduling::from_str("").is_err());
-        assert_eq!(Scheduling::from_str("disabled"), Ok(Scheduling::Disabled));
+    fn participation_from_str_rejects_legacy_empty_string() {
+        assert!(Participation::from_str("").is_err());
+        assert_eq!(
+            Participation::from_str("disabled"),
+            Ok(Participation::Disabled)
+        );
     }
 }

@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS machines (
     bridge_ip TEXT NOT NULL DEFAULT '',
     endpoints TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL DEFAULT '',
-    scheduling TEXT NOT NULL DEFAULT '',
+    participation TEXT NOT NULL DEFAULT 'disabled',
     last_heartbeat INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL DEFAULT 0

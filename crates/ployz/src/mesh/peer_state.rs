@@ -1,6 +1,6 @@
 use crate::mesh::MeshNetwork;
 use crate::model::{
-    MachineEvent, MachineId, MachineRecord, MachineStatus, OverlayIp, PublicKey, Scheduling,
+    MachineEvent, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
 };
 use ipnet::Ipv4Net;
 use std::collections::HashMap;
@@ -116,7 +116,7 @@ fn plan_mesh_peers(state: &PeerStateMap, local_machine_id: &MachineId) -> Vec<Ma
             bridge_ip: ps.bridge_ip,
             endpoints: ps.endpoints.clone(),
             status: MachineStatus::Unknown,
-            scheduling: Scheduling::Disabled,
+            participation: Participation::Disabled,
             last_heartbeat: 0,
             created_at: 0,
             updated_at: 0,
@@ -138,7 +138,7 @@ fn plan_mesh_peers(state: &PeerStateMap, local_machine_id: &MachineId) -> Vec<Ma
                 bridge_ip: ps.bridge_ip,
                 endpoints: ps.endpoints.clone(),
                 status: MachineStatus::Unknown,
-                scheduling: Scheduling::Disabled,
+                participation: Participation::Disabled,
                 last_heartbeat: 0,
                 created_at: 0,
                 updated_at: 0,
@@ -162,7 +162,7 @@ mod tests {
             bridge_ip: None,
             endpoints: endpoints.into_iter().map(String::from).collect(),
             status: MachineStatus::Unknown,
-            scheduling: Scheduling::Disabled,
+            participation: Participation::Disabled,
             last_heartbeat: 0,
             created_at: 0,
             updated_at: 0,
@@ -180,7 +180,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec!["a:1".into(), "b:2".into(), "c:3".into()],
             status: MachineStatus::Unknown,
-            scheduling: Scheduling::Disabled,
+            participation: Participation::Disabled,
             last_heartbeat: 0,
             created_at: 0,
             updated_at: 0,

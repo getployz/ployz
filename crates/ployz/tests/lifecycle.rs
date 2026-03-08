@@ -1,4 +1,5 @@
 use ployz::{JoinResponse, MachineId, MachineRecord, OverlayIp, PublicKey};
+use ployz::{MachineStatus, Participation};
 use ployz::{MachineStore, Mesh, Phase, StoreDriver, SyncStatus, WireguardDriver};
 use ployz::{MemoryService, MemoryStore, MemoryWireGuard};
 use std::net::Ipv6Addr;
@@ -13,8 +14,8 @@ fn test_record(id: &str, key_byte: u8) -> MachineRecord {
         subnet: None,
         bridge_ip: None,
         endpoints: vec![format!("10.0.0.{key_byte}:51820")],
-        status: Default::default(),
-        scheduling: Default::default(),
+        status: MachineStatus::Unknown,
+        participation: Participation::Disabled,
         last_heartbeat: 0,
         created_at: 0,
         updated_at: 0,
