@@ -7,7 +7,9 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use bytes::{Buf, Bytes, BytesMut};
-use corro_api_types::{ChangeId, ExecResponse, ExecResult, QueryEvent, SqliteValue, Statement, TypedQueryEvent};
+use corro_api_types::{
+    ChangeId, ExecResponse, ExecResult, QueryEvent, SqliteValue, Statement, TypedQueryEvent,
+};
 use futures_util::{Stream, ready};
 use http::Uri;
 use http_body_util::BodyExt;
@@ -241,12 +243,7 @@ impl CorrClient {
         from: Option<ChangeId>,
     ) -> Result<SubscriptionStream<Vec<SqliteValue>>, ClientError> {
         let (id, body) = self.subscribe_request(statement, skip_rows, from).await?;
-        Ok(SubscriptionStream::new(
-            id,
-            self.clone(),
-            body,
-            from,
-        ))
+        Ok(SubscriptionStream::new(id, self.clone(), body, from))
     }
 
     async fn subscribe_request(
@@ -255,10 +252,7 @@ impl CorrClient {
         skip_rows: bool,
         from: Option<ChangeId>,
     ) -> Result<(uuid::Uuid, Incoming), ClientError> {
-        let mut url = format!(
-            "{}/v1/subscriptions?skip_rows={skip_rows}",
-            self.base_url()
-        );
+        let mut url = format!("{}/v1/subscriptions?skip_rows={skip_rows}", self.base_url());
         if let Some(change_id) = from {
             use std::fmt::Write;
             write!(&mut url, "&from={change_id}").unwrap();
@@ -369,7 +363,11 @@ pub enum ClientError {
 
 impl fmt::Display for CorrClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Self { transport: _, api_addr, http: _ } = self;
+        let Self {
+            transport: _,
+            api_addr,
+            http: _,
+        } = self;
         write!(f, "CorrClient({})", api_addr)
     }
 }
@@ -610,9 +608,7 @@ impl<T: DeserializeOwned + Unpin> SubscriptionStream<T> {
                 let client = self.client.clone();
                 let id = self.id;
                 let from = self.last_change_id;
-                self.response = Some(Box::pin(async move {
-                    client.resubscribe(id, from).await
-                }));
+                self.response = Some(Box::pin(async move { client.resubscribe(id, from).await }));
                 // loop around
             } else {
                 return Poll::Ready(Err(SubscriptionError::UnfinishedQuery));

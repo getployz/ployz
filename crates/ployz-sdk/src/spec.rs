@@ -182,8 +182,7 @@ pub trait ResourcesExt {
 impl ResourcesExt for Resources {
     /// Convert millicores to Docker's nano-CPU format (1 CPU = 1e9 nano-CPUs).
     fn cpu_nano(&self) -> Option<i64> {
-        self.cpu_millicores
-            .map(|m| i64::from(m) * 1_000_000)
+        self.cpu_millicores.map(|m| i64::from(m) * 1_000_000)
     }
 }
 

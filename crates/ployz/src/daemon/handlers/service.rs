@@ -1,11 +1,13 @@
 use crate::daemon::DaemonState;
+use crate::spec::ServiceSpec;
 use crate::transport::DaemonResponse;
 use crate::workload::runner::ServiceRunner;
-use crate::spec::ServiceSpec;
 
 impl DaemonState {
     fn overlay_network_name(&self) -> Option<String> {
-        self.active.as_ref().map(|a| format!("ployz-{}", a.config.name.0))
+        self.active
+            .as_ref()
+            .map(|a| format!("ployz-{}", a.config.name.0))
     }
 
     fn service_runner(&self) -> Result<ServiceRunner, DaemonResponse> {

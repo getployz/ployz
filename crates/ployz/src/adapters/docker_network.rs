@@ -199,11 +199,13 @@ impl DockerBridgeNetwork {
     /// Resolve the Linux bridge interface name (br-xxxx) from the Docker network ID.
     /// Used as the TC attachment point for eBPF classifiers.
     pub async fn resolve_bridge_ifname(&self) -> Result<String> {
-        let info = self.docker
+        let info = self
+            .docker
             .inspect_network(&self.name, None)
             .await
             .map_err(|e| Error::operation("inspect network", e.to_string()))?;
-        let id = info.id
+        let id = info
+            .id
             .ok_or_else(|| Error::operation("resolve bridge", "network has no ID"))?;
         Ok(format!("br-{}", &id[..12]))
     }

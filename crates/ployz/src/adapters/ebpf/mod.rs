@@ -22,7 +22,9 @@ impl EbpfDataplane {
     /// Attach using the in-process aya loader (Linux native only).
     #[cfg(feature = "ebpf-native")]
     pub fn attach_native(bridge_ifname: &str) -> Result<Self> {
-        Ok(Self::Native(native::NativeDataplane::attach(bridge_ifname)?))
+        Ok(Self::Native(native::NativeDataplane::attach(
+            bridge_ifname,
+        )?))
     }
 
     /// Attach by execing `ployz-dataplane` inside the WG container.
@@ -64,7 +66,10 @@ impl EbpfDataplane {
     pub async fn detach(self) -> Result<()> {
         match self {
             #[cfg(feature = "ebpf-native")]
-            Self::Native(n) => { n.detach(); Ok(()) }
+            Self::Native(n) => {
+                n.detach();
+                Ok(())
+            }
             Self::Container(c) => c.detach().await,
         }
     }

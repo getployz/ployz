@@ -247,14 +247,8 @@ mod tests {
         };
 
         let _ = std::fs::create_dir_all(&paths.dir);
-        write_sync_config_with_extra_peers(
-            &paths,
-            &privkey,
-            51820,
-            &[],
-            &[&sidecar1, &sidecar2],
-        )
-        .unwrap();
+        write_sync_config_with_extra_peers(&paths, &privkey, 51820, &[], &[&sidecar1, &sidecar2])
+            .unwrap();
 
         let content = std::fs::read_to_string(&paths.sync_config).unwrap();
         assert!(content.contains(&encode_key(&sidecar1.public_key)));
