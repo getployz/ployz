@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
-use crate::mesh::MeshNetwork;
-use crate::model::MachineRecord;
+use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
+use crate::model::{MachineRecord, PublicKey};
 use std::sync::{Mutex, MutexGuard};
 
 pub struct MemoryWireGuard {
@@ -10,6 +10,7 @@ pub struct MemoryWireGuard {
 struct WgInner {
     is_up: bool,
     peers: Vec<MachineRecord>,
+    device_peers: Vec<DevicePeer>,
     set_peers_count: usize,
     fail_up: bool,
     fail_down: bool,
@@ -27,6 +28,7 @@ impl MemoryWireGuard {
             inner: Mutex::new(WgInner {
                 is_up: false,
                 peers: Vec::new(),
+                device_peers: Vec::new(),
                 set_peers_count: 0,
                 fail_up: false,
                 fail_down: false,
@@ -59,6 +61,10 @@ impl MemoryWireGuard {
     pub fn current_peers(&self) -> Vec<MachineRecord> {
         self.lock_inner().peers.clone()
     }
+
+    pub fn set_device_peers(&self, peers: Vec<DevicePeer>) {
+        self.lock_inner().device_peers = peers;
+    }
 }
 
 impl MeshNetwork for MemoryWireGuard {
@@ -84,6 +90,22 @@ impl MeshNetwork for MemoryWireGuard {
         let mut inner = self.lock_inner();
         inner.peers = peers.to_vec();
         inner.set_peers_count += 1;
+        Ok(())
+    }
+}
+
+impl WireGuardDevice for MemoryWireGuard {
+    async fn read_peers(&self) -> Result<Vec<DevicePeer>> {
+        Ok(self.lock_inner().device_peers.clone())
+    }
+
+    async fn set_peer_endpoint<'a>(&'a self, key: &'a PublicKey, endpoint: &'a str) -> Result<()> {
+        let mut inner = self.lock_inner();
+        for peer in &mut inner.device_peers {
+            if peer.public_key == *key {
+                peer.endpoint = Some(endpoint.to_string());
+            }
+        }
         Ok(())
     }
 }

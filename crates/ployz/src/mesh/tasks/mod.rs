@@ -6,7 +6,7 @@ mod peer_sync;
 pub(crate) use ebpf_sync::run_ebpf_sync_task;
 pub(crate) use endpoint_refresh::run_endpoint_refresh_task;
 pub(crate) use heartbeat::run_heartbeat_task;
-pub(crate) use peer_sync::run_peer_sync_task;
+pub(crate) use peer_sync::{PeerSyncCommand, run_peer_sync_task};
 
 use crate::error::Error;
 use thiserror::Error;

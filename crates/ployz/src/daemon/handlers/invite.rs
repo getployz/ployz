@@ -13,8 +13,8 @@ use super::super::ssh::now_unix_secs;
 
 impl DaemonState {
     pub(crate) async fn handle_machine_invite_create(&self, ttl_secs: u64) -> DaemonResponse {
-        let active = match self.active.as_ref() {
-            Some(active) => active,
+        let active_config = match self.active.as_ref() {
+            Some(active) => active.config.clone(),
             None => {
                 return self.err(
                     "NO_RUNNING_NETWORK",
@@ -27,14 +27,30 @@ impl DaemonState {
             return self.err("INVALID_ARGUMENT", "ttl_secs must be greater than zero");
         }
 
-        let token = match self.do_issue_invite_token(&active.config, ttl_secs).await {
+        let allocated_subnet = match self.allocate_machine_subnets(1).await {
+            Ok(subnets) => match subnets.as_slice() {
+                [subnet] => *subnet,
+                _ => {
+                    return self.err(
+                        "SUBNET_EXHAUSTION",
+                        "failed to allocate exactly one subnet for invite",
+                    );
+                }
+            },
+            Err(err) => return self.err("SUBNET_EXHAUSTION", err),
+        };
+
+        let token = match self
+            .do_issue_invite_token(&active_config, ttl_secs, allocated_subnet)
+            .await
+        {
             Ok(token) => token,
             Err(err) => return self.err("INVITE_CREATE_FAILED", err),
         };
 
         self.ok(format!(
             "invite token created\n  network: {}\n  ttl:     {}s\n  token:   {}",
-            active.config.name, ttl_secs, token
+            active_config.name, ttl_secs, token
         ))
     }
 
@@ -68,13 +84,11 @@ impl DaemonState {
                 "invite imported\n  network: {}\n  invite:  {}",
                 invite.network_name, record.id
             )),
-            Err(crate::Error::Operation {
-                operation,
-                ..
-            }) if operation == "invite_exists" => self.ok(format!(
-                "invite already present\n  network: {}\n  invite:  {}",
-                invite.network_name, record.id
-            )),
+            Err(crate::Error::Operation { operation, .. }) if operation == "invite_exists" => self
+                .ok(format!(
+                    "invite already present\n  network: {}\n  invite:  {}",
+                    invite.network_name, record.id
+                )),
             Err(err) => self.err(
                 "INVITE_IMPORT_FAILED",
                 format!("failed to import invite: {err}"),
@@ -86,6 +100,7 @@ impl DaemonState {
         &self,
         network: &NetworkConfig,
         ttl_secs: u64,
+        allocated_subnet: ipnet::Ipv4Net,
     ) -> Result<String, String> {
         let mesh = self
             .active
@@ -111,6 +126,7 @@ impl DaemonState {
             overlay_ip,
             wg_public_key,
             issuer_subnet,
+            allocated_subnet.to_string(),
         )?;
 
         let record = InviteRecord {

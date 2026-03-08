@@ -24,6 +24,7 @@ pub struct InviteClaims {
     /// The issuer's IPv4 subnet so the joiner can avoid allocating it.
     #[serde(default)]
     pub issuer_subnet: Option<String>,
+    pub allocated_subnet: String,
 }
 
 pub fn issue_invite_token(
@@ -35,6 +36,7 @@ pub fn issue_invite_token(
     issuer_overlay_ip: Option<String>,
     issuer_wg_public_key: Option<String>,
     issuer_subnet: Option<String>,
+    allocated_subnet: String,
 ) -> Result<(String, InviteClaims), String> {
     let expires_at = now_unix_secs
         .checked_add(ttl_secs)
@@ -71,6 +73,7 @@ pub fn issue_invite_token(
         issuer_overlay_ip,
         issuer_wg_public_key,
         issuer_subnet,
+        allocated_subnet,
     };
 
     let claims_json = serde_json::to_vec(&claims).map_err(|e| format!("encode invite: {e}"))?;
@@ -117,4 +120,40 @@ pub fn parse_and_verify_invite_token(encoded: &str) -> Result<InviteClaims, Stri
         .map_err(|e| format!("verify invite signature: {e}"))?;
 
     Ok(claims)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{MachineId, NetworkName};
+
+    #[test]
+    fn invite_roundtrip_preserves_allocated_subnet() {
+        let identity = Identity::generate(MachineId("founder".into()), [7; 32]);
+        let subnet = "10.210.1.0/24".parse().expect("valid subnet");
+        let network = NetworkConfig::new(
+            NetworkName("alpha".into()),
+            &identity.public_key,
+            "10.210.0.0/16",
+            subnet,
+        );
+
+        let (token, claims) = issue_invite_token(
+            &identity,
+            &network,
+            600,
+            1_700_000_000,
+            vec!["1.2.3.4:51820".into()],
+            Some(network.overlay_ip.0.to_string()),
+            Some("wg-public".into()),
+            Some(network.subnet.to_string()),
+            "10.210.99.0/24".into(),
+        )
+        .expect("issue invite");
+
+        assert_eq!(claims.allocated_subnet, "10.210.99.0/24");
+
+        let parsed = parse_and_verify_invite_token(&token).expect("parse invite");
+        assert_eq!(parsed.allocated_subnet, "10.210.99.0/24");
+    }
 }

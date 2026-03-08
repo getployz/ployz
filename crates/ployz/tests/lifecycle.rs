@@ -274,3 +274,36 @@ async fn store_event_triggers_reconcile() {
 
     mesh.destroy().await.unwrap();
 }
+
+#[tokio::test]
+async fn remove_event_drops_wireguard_peer() {
+    let wg = Arc::new(MemoryWireGuard::new());
+    let svc = Arc::new(MemoryService::new());
+    let store = Arc::new(MemoryStore::new());
+
+    let peer = test_record("m2", 2);
+    store.upsert_machine(&peer).await.unwrap();
+
+    let mut mesh = make_mesh(wg.clone(), svc, store.clone());
+    mesh.up().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert!(
+        wg.current_peers()
+            .iter()
+            .any(|candidate| candidate.id == peer.id),
+        "peer must be configured before removal"
+    );
+
+    store.delete_machine(&peer.id).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert!(
+        !wg.current_peers()
+            .iter()
+            .any(|candidate| candidate.id == peer.id),
+        "peer must be removed from wireguard after store delete"
+    );
+
+    mesh.destroy().await.unwrap();
+}

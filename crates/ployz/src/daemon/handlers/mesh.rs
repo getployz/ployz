@@ -1,12 +1,13 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use serde::Serialize;
 
 use crate::daemon::setup::{BootstrapInfo, MeshStartOptions};
 use crate::model::{JoinResponse, NetworkName};
 use crate::network::endpoints::detect_endpoints;
 use crate::network::ipam::Ipam;
 use crate::node::invite::parse_and_verify_invite_token;
-use crate::store::{InviteStore, MachineStore};
 use crate::store::network::NetworkConfig;
+use crate::store::{InviteStore, MachineStore};
 use crate::transport::DaemonResponse;
 
 use super::super::DaemonState;
@@ -80,6 +81,34 @@ impl DaemonState {
         ))
     }
 
+    pub(crate) async fn handle_mesh_ready(&self, json: bool) -> DaemonResponse {
+        let active = match self.active.as_ref() {
+            Some(active) => active,
+            None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
+        };
+
+        let status = active.mesh.ready_status().await;
+        if json {
+            let payload = MeshReadyPayload::from(status);
+            return match serde_json::to_string(&payload) {
+                Ok(body) => self.ok(body),
+                Err(err) => self.err(
+                    "ENCODE_FAILED",
+                    format!("failed to encode readiness payload: {err}"),
+                ),
+            };
+        }
+
+        self.ok(format!(
+            "ready:            {}\nphase:            {}\nstore healthy:    {}\nsync connected:   {}\nheartbeat ready:  {}",
+            status.ready,
+            status.phase,
+            status.store_healthy,
+            status.sync_connected,
+            status.heartbeat_started,
+        ))
+    }
+
     pub(crate) async fn handle_mesh_join(&mut self, token: &str) -> DaemonResponse {
         if let Some(active) = &self.active {
             return self.err(
@@ -114,20 +143,14 @@ impl DaemonState {
             );
         }
 
-        let cluster: ipnet::Ipv4Net = match self.cluster_cidr.parse() {
-            Ok(c) => c,
-            Err(e) => return self.err("CONFIG_ERROR", format!("invalid cluster CIDR: {e}")),
-        };
-        let existing: Vec<ipnet::Ipv4Net> = invite
-            .issuer_subnet
-            .as_deref()
-            .and_then(|s| s.parse().ok())
-            .into_iter()
-            .collect();
-        let mut ipam = Ipam::with_allocated(cluster, self.subnet_prefix_len, existing);
-        let subnet = match ipam.allocate() {
-            Some(s) => s,
-            None => return self.err("SUBNET_EXHAUSTION", "no available subnets"),
+        let subnet = match invite.allocated_subnet.parse() {
+            Ok(subnet) => subnet,
+            Err(err) => {
+                return self.err(
+                    "INVALID_INVITE_TOKEN",
+                    format!("invite allocated subnet is invalid: {err}"),
+                );
+            }
         };
 
         let mut net_config = NetworkConfig::new(
@@ -420,5 +443,93 @@ impl DaemonState {
             peer_overlay_ip,
             peer_endpoints: invite.issuer_endpoints.clone(),
         })
+    }
+}
+
+#[derive(Serialize)]
+struct MeshReadyPayload {
+    ready: bool,
+    phase: String,
+    store_healthy: bool,
+    sync_connected: bool,
+    heartbeat_started: bool,
+}
+
+impl From<crate::mesh::orchestrator::MeshReadyStatus> for MeshReadyPayload {
+    fn from(value: crate::mesh::orchestrator::MeshReadyStatus) -> Self {
+        Self {
+            ready: value.ready,
+            phase: value.phase.to_string(),
+            store_healthy: value.store_healthy,
+            sync_connected: value.sync_connected,
+            heartbeat_started: value.heartbeat_started,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Mode;
+    use crate::daemon::ssh::now_unix_secs;
+    use crate::node::identity::Identity;
+    use crate::node::invite::issue_invite_token;
+    use crate::store::network::NetworkConfig;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[tokio::test]
+    async fn mesh_join_uses_founder_allocated_subnet_exactly() {
+        let founder_identity =
+            Identity::generate(crate::model::MachineId("founder".into()), [7; 32]);
+        let joiner_identity = Identity::generate(crate::model::MachineId("joiner".into()), [8; 32]);
+        let founder_subnet: ipnet::Ipv4Net = "10.210.0.0/24".parse().expect("valid subnet");
+        let allocated_subnet = "10.210.42.0/24";
+        let network = NetworkConfig::new(
+            crate::model::NetworkName("alpha".into()),
+            &founder_identity.public_key,
+            "10.210.0.0/16",
+            founder_subnet,
+        );
+
+        let (token, _) = issue_invite_token(
+            &founder_identity,
+            &network,
+            600,
+            now_unix_secs(),
+            Vec::new(),
+            Some(network.overlay_ip.0.to_string()),
+            Some("wg-public".into()),
+            Some(network.subnet.to_string()),
+            allocated_subnet.into(),
+        )
+        .expect("issue invite");
+
+        let data_dir = unique_temp_dir("ployz-mesh-join");
+        let mut state = DaemonState::new(
+            &data_dir,
+            joiner_identity,
+            Mode::Memory,
+            "10.210.0.0/16".into(),
+            24,
+        );
+
+        let response = state.handle_mesh_join(&token).await;
+        assert!(response.ok, "{}", response.message);
+
+        let active = state.active.as_ref().expect("mesh active");
+        assert_eq!(active.config.subnet.to_string(), allocated_subnet);
+
+        if let Some(active) = state.active.as_mut() {
+            active.mesh.destroy().await.expect("destroy mesh");
+        }
+    }
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{label}-{}-{nanos}", std::process::id()))
     }
 }

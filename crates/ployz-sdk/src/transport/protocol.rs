@@ -4,29 +4,69 @@ use serde::{Deserialize, Serialize};
 pub enum DaemonRequest {
     Status,
     MeshList,
-    MeshStatus { network: String },
-    MeshJoin { token: String },
-    MeshCreate { network: String },
-    MeshInit { network: String },
+    MeshStatus {
+        network: String,
+    },
+    MeshJoin {
+        token: String,
+    },
+    MeshReady {
+        json: bool,
+    },
+    MeshCreate {
+        network: String,
+    },
+    MeshInit {
+        network: String,
+    },
     MeshUp {
         network: String,
         skip_bootstrap_wait: bool,
     },
     MeshDown,
-    MeshDestroy { network: String },
+    MeshDestroy {
+        network: String,
+    },
     MachineList,
-    MachineInit { target: String, network: String },
-    MachineAdd { target: String },
-    MachineInviteCreate { ttl_secs: u64 },
-    MachineInviteImport { token: String },
+    MachineInit {
+        target: String,
+        network: String,
+    },
+    MachineAdd {
+        targets: Vec<String>,
+    },
+    MachineDrain {
+        id: String,
+    },
+    MachineRemove {
+        id: String,
+        force: bool,
+    },
+    MachineInviteCreate {
+        ttl_secs: u64,
+    },
+    MachineInviteImport {
+        token: String,
+    },
     MeshSelfRecord,
-    MeshAccept { response: String },
-    WorkloadCreate { name: String },
-    WorkloadDestroy { name: String },
+    MeshAccept {
+        response: String,
+    },
+    WorkloadCreate {
+        name: String,
+    },
+    WorkloadDestroy {
+        name: String,
+    },
     WorkloadList,
-    ServiceRun { spec_json: String },
+    ServiceRun {
+        spec_json: String,
+    },
     ServiceList,
-    ServiceRemove { name: String, namespace: String },
+    ServiceRemove {
+        name: String,
+        namespace: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
