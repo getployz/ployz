@@ -45,6 +45,7 @@ pub struct DockerWireGuard {
     listen_port: u16,
     outbound_forwards: Vec<OutboundForward>,
     inbound_forwards: Vec<InboundForward>,
+    exposed_tcp_ports: Vec<u16>,
     bridge: Mutex<Option<OverlayBridge>>,
     bridge_overlay_ip: Mutex<Option<OverlayIp>>,
     extra_peers: Mutex<Vec<BridgePeerInfo>>,
@@ -59,6 +60,7 @@ pub struct DockerWireGuardBuilder {
     listen_port: u16,
     outbound_forwards: Vec<OutboundForward>,
     inbound_forwards: Vec<InboundForward>,
+    exposed_tcp_ports: Vec<u16>,
 }
 
 impl DockerWireGuardBuilder {
@@ -81,6 +83,13 @@ impl DockerWireGuardBuilder {
             local_addr,
             overlay_dest,
         });
+        self
+    }
+
+    /// Expose a TCP port on the container (for sidecar containers sharing this netns).
+    #[must_use]
+    pub fn expose_tcp(mut self, port: u16) -> Self {
+        self.exposed_tcp_ports.push(port);
         self
     }
 
@@ -120,6 +129,7 @@ impl DockerWireGuardBuilder {
             listen_port: self.listen_port,
             outbound_forwards: self.outbound_forwards,
             inbound_forwards: self.inbound_forwards,
+            exposed_tcp_ports: self.exposed_tcp_ports,
             bridge: Mutex::new(None),
             bridge_overlay_ip: Mutex::new(None),
             extra_peers: Mutex::new(Vec::new()),
@@ -145,6 +155,7 @@ impl DockerWireGuard {
             listen_port: DEFAULT_LISTEN_PORT,
             outbound_forwards: Vec::new(),
             inbound_forwards: Vec::new(),
+            exposed_tcp_ports: Vec::new(),
         }
     }
 
@@ -181,7 +192,7 @@ impl DockerWireGuard {
             .expect("loopback bridge endpoint must parse")
     }
 
-    fn udp_port_bindings(&self) -> PortMap {
+    fn port_bindings(&self) -> PortMap {
         let mut port_bindings: PortMap = PortMap::new();
         let port_key = format!("{}/udp", self.listen_port);
         port_bindings.insert(
@@ -191,6 +202,16 @@ impl DockerWireGuard {
                 host_port: Some(self.listen_port.to_string()),
             }]),
         );
+        for &port in &self.exposed_tcp_ports {
+            let key = format!("{port}/tcp");
+            port_bindings.insert(
+                key,
+                Some(vec![PortBinding {
+                    host_ip: None,
+                    host_port: Some(port.to_string()),
+                }]),
+            );
+        }
         port_bindings
     }
 
@@ -657,7 +678,7 @@ impl MeshNetwork for DockerWireGuard {
                 name: Some(RestartPolicyNameEnum::ALWAYS),
                 maximum_retry_count: None,
             }),
-            port_bindings: Some(self.udp_port_bindings()),
+            port_bindings: Some(self.port_bindings()),
             ..Default::default()
         };
 
@@ -673,7 +694,13 @@ impl MeshNetwork for DockerWireGuard {
             cmd: Some(vec!["sleep".into(), "infinity".into()]),
             labels: Some(labels),
             host_config: Some(host_config),
-            exposed_ports: Some(vec![format!("{}/udp", self.listen_port)]),
+            exposed_ports: Some({
+                let mut ports = vec![format!("{}/udp", self.listen_port)];
+                for &port in &self.exposed_tcp_ports {
+                    ports.push(format!("{port}/tcp"));
+                }
+                ports
+            }),
             ..Default::default()
         };
 
@@ -900,6 +927,7 @@ mod tests {
             listen_port: DEFAULT_LISTEN_PORT,
             outbound_forwards: Vec::new(),
             inbound_forwards: Vec::new(),
+            exposed_tcp_ports: Vec::new(),
             bridge: Mutex::new(None),
             bridge_overlay_ip: Mutex::new(None),
             extra_peers: Mutex::new(Vec::new()),
@@ -920,7 +948,7 @@ mod tests {
     #[test]
     fn udp_port_binding_uses_loopback() {
         let wireguard = sample_wireguard();
-        let bindings = wireguard.udp_port_bindings();
+        let bindings = wireguard.port_bindings();
         let port = format!("{DEFAULT_LISTEN_PORT}/udp");
         let binding = bindings
             .get(&port)

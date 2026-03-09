@@ -59,6 +59,16 @@ impl GatewayHandle {
             GatewayHandleInner::Systemd(handle) => handle.shutdown().await,
         }
     }
+
+    /// Detach from a running gateway without stopping it.
+    /// Docker and systemd containers keep running so the daemon can restart.
+    pub async fn detach(&mut self) -> Result<(), GatewayError> {
+        match &mut self.inner {
+            GatewayHandleInner::Noop | GatewayHandleInner::Docker(_) | GatewayHandleInner::Systemd(_) => Ok(()),
+            GatewayHandleInner::Embedded(handle) => handle.shutdown().await,
+            GatewayHandleInner::Child(handle) => handle.shutdown().await,
+        }
+    }
 }
 
 pub async fn start_managed_gateway(
