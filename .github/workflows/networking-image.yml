@@ -1,4 +1,4 @@
-name: Build dataplane sidecar image
+name: Build networking image
 
 on:
   push:
