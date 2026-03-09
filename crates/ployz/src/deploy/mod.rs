@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use crate::StoreDriver;
 use crate::error::{Error, Result};
+use crate::machine_liveness::machine_is_fresh;
 use crate::model::{
     DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployPreview, DeployRecord,
     DeployState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, ServiceHeadRecord,
@@ -481,7 +482,7 @@ pub async fn preview(
     let current_heads = store.list_service_heads(namespace).await?;
     let current_slots = store.list_service_slots(namespace).await?;
     let machines = store.list_machines().await?;
-    let desired_machines = deployable_machines(&machines, local_machine_id);
+    let desired_machines = deployable_machines(&machines, local_machine_id, now_unix_secs());
     let current_head_map: HashMap<String, ServiceHeadRecord> = current_heads
         .into_iter()
         .map(|record| (record.service.clone(), record))
@@ -884,10 +885,12 @@ async fn adopt_instances(
 fn deployable_machines(
     machines: &[crate::model::MachineRecord],
     local_machine_id: &MachineId,
+    now: u64,
 ) -> Vec<MachineId> {
     let mut enabled: Vec<MachineId> = machines
         .iter()
         .filter(|machine| machine.participation == crate::model::Participation::Enabled)
+        .filter(|machine| machine_is_fresh(machine, now))
         .map(|machine| machine.id.clone())
         .collect();
     enabled.sort_by(|left, right| left.0.cmp(&right.0));
@@ -1083,6 +1086,91 @@ fn stable_hash_hex(bytes: &[u8]) -> String {
     }
 
     format!("{hash:016x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey};
+    use std::net::Ipv6Addr;
+
+    #[test]
+    fn deployable_machines_excludes_stale_and_down_peers() {
+        let now = 100;
+        let machines = vec![
+            test_machine(
+                "fresh-enabled",
+                Participation::Enabled,
+                MachineStatus::Up,
+                90,
+            ),
+            test_machine(
+                "stale-enabled",
+                Participation::Enabled,
+                MachineStatus::Up,
+                69,
+            ),
+            test_machine(
+                "down-enabled",
+                Participation::Enabled,
+                MachineStatus::Down,
+                100,
+            ),
+            test_machine(
+                "draining-fresh",
+                Participation::Draining,
+                MachineStatus::Up,
+                100,
+            ),
+        ];
+
+        let deployable = deployable_machines(&machines, &MachineId("local".into()), now);
+
+        assert_eq!(deployable, vec![MachineId("fresh-enabled".into())]);
+    }
+
+    #[test]
+    fn deployable_machines_falls_back_to_local_when_none_are_fresh_enabled() {
+        let machines = vec![
+            test_machine(
+                "stale-enabled",
+                Participation::Enabled,
+                MachineStatus::Up,
+                10,
+            ),
+            test_machine(
+                "down-enabled",
+                Participation::Enabled,
+                MachineStatus::Down,
+                100,
+            ),
+        ];
+
+        let deployable = deployable_machines(&machines, &MachineId("local".into()), 100);
+
+        assert_eq!(deployable, vec![MachineId("local".into())]);
+    }
+
+    fn test_machine(
+        id: &str,
+        participation: Participation,
+        status: MachineStatus,
+        last_heartbeat: u64,
+    ) -> MachineRecord {
+        MachineRecord {
+            id: MachineId(id.into()),
+            public_key: PublicKey([7; 32]),
+            overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+            subnet: None,
+            bridge_ip: None,
+            endpoints: vec!["127.0.0.1:51820".into()],
+            status,
+            participation,
+            last_heartbeat,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
 }
 
 fn now_unix_secs() -> u64 {
