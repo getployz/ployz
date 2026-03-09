@@ -137,6 +137,7 @@ pub struct MachineRecord {
     pub last_heartbeat: u64,
     pub created_at: u64,
     pub updated_at: u64,
+    pub labels: BTreeMap<String, String>,
 }
 
 impl MachineRecord {
@@ -462,6 +463,7 @@ impl JoinResponse {
             last_heartbeat: 0,
             created_at: 0,
             updated_at: 0,
+            labels: BTreeMap::new(),
         }
     }
 }

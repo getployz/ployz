@@ -319,6 +319,65 @@ impl DaemonState {
         }
     }
 
+    pub(crate) async fn handle_machine_label(
+        &self,
+        id: &str,
+        set: &[(String, String)],
+        remove: &[String],
+    ) -> DaemonResponse {
+        let active = match self.active.as_ref() {
+            Some(active) => active,
+            None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
+        };
+
+        let resolved_id = if id == "self" {
+            self.identity.machine_id.clone()
+        } else {
+            MachineId(id.to_string())
+        };
+
+        let mut record = match find_machine_record(&active.mesh.store, &resolved_id).await {
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                return self.err("MACHINE_NOT_FOUND", format!("machine '{id}' not found"));
+            }
+            Err(err) => {
+                return self.err("LIST_FAILED", format!("failed to read machines: {err}"));
+            }
+        };
+
+        for (key, value) in set {
+            record.labels.insert(key.clone(), value.clone());
+        }
+        for key in remove {
+            record.labels.remove(key);
+        }
+        record.updated_at = chrono::Utc::now().timestamp() as u64;
+
+        match active.mesh.store.upsert_machine(&record).await {
+            Ok(()) => {
+                let labels_display: Vec<String> = record
+                    .labels
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect();
+                if labels_display.is_empty() {
+                    self.ok(format!("machine '{}' labels cleared", resolved_id))
+                } else {
+                    self.ok(format!(
+                        "machine '{}' labels: {}",
+                        resolved_id,
+                        labels_display.join(", ")
+                    ))
+                }
+            }
+            Err(err) => self.err(
+                "UPSERT_FAILED",
+                format!("failed to update machine labels: {err}"),
+            ),
+        }
+    }
+
     pub(crate) async fn handle_machine_remove(&self, id: &str, force: bool) -> DaemonResponse {
         let active = match self.active.as_ref() {
             Some(active) => active,
@@ -1019,6 +1078,7 @@ mod tests {
             last_heartbeat,
             created_at: 0,
             updated_at: 0,
+            labels: std::collections::BTreeMap::new(),
         }
     }
 

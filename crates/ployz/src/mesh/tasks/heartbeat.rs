@@ -273,6 +273,7 @@ mod tests {
             last_heartbeat,
             created_at: 0,
             updated_at: 0,
+            labels: std::collections::BTreeMap::new(),
         };
 
         let machines = [
@@ -592,6 +593,7 @@ mod tests {
             status: MachineStatus::Unknown,
             participation,
             last_heartbeat,
+            labels: std::collections::BTreeMap::new(),
             created_at: 0,
             updated_at: 0,
         }

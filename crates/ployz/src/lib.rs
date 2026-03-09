@@ -8,6 +8,7 @@ mod machine_liveness;
 pub mod mesh;
 pub mod network;
 pub mod node;
+pub mod sidecar;
 pub mod store;
 pub mod transport;
 

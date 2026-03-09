@@ -225,6 +225,7 @@ mod tests {
             last_heartbeat: 0,
             created_at: 0,
             updated_at: 0,
+            labels: std::collections::BTreeMap::new(),
         };
         let config = render_full_config(&privkey, OverlayIp(Ipv6Addr::LOCALHOST), 51820, &[peer]);
         assert!(config.contains("[Peer]"));

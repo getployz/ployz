@@ -19,6 +19,7 @@ fn test_record(id: &str, key_byte: u8) -> MachineRecord {
         last_heartbeat: 0,
         created_at: 0,
         updated_at: 0,
+        labels: std::collections::BTreeMap::new(),
     }
 }
 
