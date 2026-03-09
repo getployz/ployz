@@ -2,6 +2,8 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+use crate::model::InstanceStatusRecord;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum DeployManifestFormat {
@@ -112,6 +114,7 @@ pub enum RemoteDeployRequest {
     LockAcquire {
         namespace: String,
         deploy_id: String,
+        coordinator_id: String,
         participant_fingerprint: Vec<String>,
     },
     LockHeartbeat {
@@ -148,8 +151,18 @@ pub enum RemoteDeployRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RemoteDeployResponse {
-    pub ok: bool,
-    pub code: String,
-    pub message: String,
+pub enum RemoteDeployResponse {
+    Ack {
+        message: String,
+    },
+    NamespaceSnapshot {
+        instances: Vec<InstanceStatusRecord>,
+    },
+    CandidateStarted {
+        status: InstanceStatusRecord,
+    },
+    Error {
+        code: String,
+        message: String,
+    },
 }

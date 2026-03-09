@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::Mode;
 use crate::deploy::NamespaceLockManager;
+use crate::deploy::remote::RemoteControlHandle;
 use crate::mesh::orchestrator::Mesh;
 use crate::node::identity::Identity;
 use crate::store::network::NetworkConfig;
@@ -14,6 +15,7 @@ use crate::transport::DaemonResponse;
 pub struct ActiveMesh {
     pub config: NetworkConfig,
     pub mesh: Mesh,
+    pub remote_control: RemoteControlHandle,
 }
 
 pub struct DaemonState {
@@ -22,6 +24,7 @@ pub struct DaemonState {
     pub mode: Mode,
     pub cluster_cidr: String,
     pub subnet_prefix_len: u8,
+    pub remote_control_port: u16,
     pub active: Option<ActiveMesh>,
     pub namespace_locks: NamespaceLockManager,
 }
@@ -33,6 +36,7 @@ impl DaemonState {
         mode: Mode,
         cluster_cidr: String,
         subnet_prefix_len: u8,
+        remote_control_port: u16,
     ) -> Self {
         Self {
             data_dir: data_dir.to_path_buf(),
@@ -40,6 +44,7 @@ impl DaemonState {
             mode,
             cluster_cidr,
             subnet_prefix_len,
+            remote_control_port,
             active: None,
             namespace_locks: NamespaceLockManager::default(),
         }

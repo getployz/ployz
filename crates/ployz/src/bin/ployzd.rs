@@ -56,6 +56,9 @@ enum Command {
         /// Socket path. Defaults to a platform-appropriate path.
         #[arg(long)]
         socket: Option<String>,
+        /// Overlay TCP control port for daemon-to-daemon deploy sessions.
+        #[arg(long)]
+        remote_control_port: Option<u16>,
     },
 }
 
@@ -83,14 +86,19 @@ async fn main() -> Result<()> {
 
     match command {
         Command::Configure { mode } => cmd_configure(mode.into()),
-        Command::Run { mode, socket } => {
-            let cfg = load_daemon_config(config, data_dir, socket, &aff)?;
+        Command::Run {
+            mode,
+            socket,
+            remote_control_port,
+        } => {
+            let cfg = load_daemon_config(config, data_dir, socket, remote_control_port, &aff)?;
             cmd_run(
                 &cfg.data_dir,
                 mode.into(),
                 &cfg.socket,
                 cfg.cluster_cidr,
                 cfg.subnet_prefix_len,
+                cfg.remote_control_port,
             )
             .await
         }
@@ -109,6 +117,7 @@ async fn cmd_run(
     socket_path: &str,
     cluster_cidr: String,
     subnet_prefix_len: u8,
+    remote_control_port: u16,
 ) -> Result<()> {
     tracing::info!(?mode, "starting daemon");
 
@@ -137,7 +146,14 @@ async fn cmd_run(
         std::process::exit(1);
     });
 
-    let mut state = DaemonState::new(data_dir, identity, mode, cluster_cidr, subnet_prefix_len);
+    let mut state = DaemonState::new(
+        data_dir,
+        identity,
+        mode,
+        cluster_cidr,
+        subnet_prefix_len,
+        remote_control_port,
+    );
 
     if let Some(network) = state.read_active_marker() {
         tracing::info!(%network, "resuming network");
@@ -173,8 +189,14 @@ async fn cmd_run(
         }
     }
 
-    if let Some(ref mut active) = state.active {
-        let _ = active.mesh.detach().await;
+    if let Some(active) = state.active.take() {
+        let ployz::daemon::ActiveMesh {
+            config: _config,
+            mut mesh,
+            remote_control,
+        } = active;
+        remote_control.shutdown().await;
+        let _ = mesh.detach().await;
     }
 
     listener_handle.await.ok();

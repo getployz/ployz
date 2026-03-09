@@ -1,3 +1,5 @@
+pub mod remote;
+
 use bollard::Docker;
 use bollard::exec::{CreateExecOptions, StartExecResults};
 use bollard::models::{ContainerCreateBody, HostConfig, PortBinding, PortMap};
@@ -8,7 +10,7 @@ use futures_util::stream::StreamExt;
 use reqwest::StatusCode;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
 use tokio::time::{Instant, sleep};
@@ -19,8 +21,8 @@ use crate::error::{Error, Result};
 use crate::machine_liveness::machine_is_fresh;
 use crate::model::{
     DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployPreview, DeployRecord,
-    DeployState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, ServiceHeadRecord,
-    ServicePlan, ServiceRevisionRecord, ServiceSlotRecord, SlotId, SlotPlan,
+    DeployState, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
+    ServiceHeadRecord, ServicePlan, ServiceRevisionRecord, ServiceSlotRecord, SlotId, SlotPlan,
 };
 use crate::spec::{
     ContainerSpec, DeployManifest, Namespace, NetworkMode, Placement, PortProtocol, PullPolicy,
@@ -37,9 +39,9 @@ const LABEL_INSTANCE: &str = "dev.ployz.instance";
 const LABEL_SLOT: &str = "dev.ployz.slot";
 const LABEL_MACHINE: &str = "dev.ployz.machine";
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct NamespaceLockManager {
-    held: Mutex<HashMap<String, DeployId>>,
+    held: Arc<Mutex<HashMap<String, DeployId>>>,
 }
 
 impl NamespaceLockManager {
@@ -47,7 +49,7 @@ impl NamespaceLockManager {
         &self,
         namespace: &Namespace,
         deploy_id: &DeployId,
-    ) -> Result<NamespaceLock<'_>> {
+    ) -> Result<NamespaceLock> {
         let mut guard = self.lock_inner();
         if let Some(current) = guard.get(&namespace.0) {
             return Err(Error::operation(
@@ -60,7 +62,7 @@ impl NamespaceLockManager {
         }
         guard.insert(namespace.0.clone(), deploy_id.clone());
         Ok(NamespaceLock {
-            manager: self,
+            held: Arc::clone(&self.held),
             namespace: namespace.clone(),
         })
     }
@@ -72,14 +74,18 @@ impl NamespaceLockManager {
     }
 }
 
-pub struct NamespaceLock<'a> {
-    manager: &'a NamespaceLockManager,
+pub struct NamespaceLock {
+    held: Arc<Mutex<HashMap<String, DeployId>>>,
     namespace: Namespace,
 }
 
-impl Drop for NamespaceLock<'_> {
+impl Drop for NamespaceLock {
     fn drop(&mut self) {
-        self.manager.lock_inner().remove(&self.namespace.0);
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        held.remove(&self.namespace.0);
     }
 }
 
@@ -502,6 +508,9 @@ pub async fn preview(
     );
 
     let mut participants = BTreeSet::new();
+    for machine_id in &desired_machines {
+        participants.insert(machine_id.clone());
+    }
     let mut services = Vec::new();
     for spec in &manifest.services {
         let revision_hash = spec
@@ -596,24 +605,12 @@ pub async fn preview(
         });
     }
 
-    let warnings = if participants
-        .iter()
-        .any(|machine| machine != local_machine_id)
-    {
-        vec![
-            "remote participant execution is not implemented yet; apply will reject remote slots"
-                .into(),
-        ]
-    } else {
-        Vec::new()
-    };
-
     Ok(DeployPreview {
         namespace: namespace.clone(),
         manifest_hash,
         participants: participants.into_iter().collect(),
         services,
-        warnings,
+        warnings: Vec::new(),
     })
 }
 
@@ -622,223 +619,358 @@ pub async fn apply(
     runtime: &LocalDeployRuntime,
     locks: &NamespaceLockManager,
     local_machine_id: &MachineId,
+    remote_control_port: u16,
     namespace: &Namespace,
     manifest: &DeployManifest,
 ) -> Result<DeployApplyResult> {
     let deploy_id = DeployId(Uuid::new_v4().to_string());
     let _lock = locks.try_acquire(namespace, &deploy_id)?;
     let started_at = now_unix_secs();
-    let preview = preview(store, local_machine_id, namespace, manifest).await?;
-
-    if preview
-        .participants
+    let initial_preview = preview(store, local_machine_id, namespace, manifest).await?;
+    let machines = store.list_machines().await?;
+    let machine_map: HashMap<MachineId, crate::model::MachineRecord> = machines
         .iter()
-        .any(|machine| machine != local_machine_id)
-    {
-        return Err(Error::operation(
-            "deploy_apply",
-            "remote participant execution is not implemented yet",
-        ));
-    }
-
-    let mut deploy_record = DeployRecord {
-        deploy_id: deploy_id.clone(),
-        namespace: namespace.clone(),
-        coordinator_machine_id: local_machine_id.clone(),
-        manifest_hash: preview.manifest_hash.clone(),
-        state: DeployState::Applying,
-        started_at,
-        committed_at: None,
-        finished_at: None,
-        summary_json: serde_json::to_string(&preview)
-            .map_err(|e| Error::operation("deploy_apply", format!("serialize preview: {e}")))?,
-    };
-    store.upsert_deploy(&deploy_record).await?;
-
-    adopt_instances(store, runtime, namespace).await?;
-
-    let current_slots = store.list_service_slots(namespace).await?;
-    let current_slots_by_service: HashMap<String, Vec<ServiceSlotRecord>> = {
-        let mut grouped = HashMap::new();
-        for slot in current_slots {
-            grouped
-                .entry(slot.service.clone())
-                .or_insert_with(Vec::new)
-                .push(slot);
-        }
-        grouped
-    };
-
+        .map(|machine| (machine.id.clone(), machine.clone()))
+        .collect();
+    let mut remote_sessions = Vec::new();
+    let participant_fingerprint = initial_preview.participants.clone();
     let mut events = vec![DeployEvent {
         step: "lock".into(),
         message: format!("acquired namespace lock for '{}'", namespace),
     }];
-    let mut removed_services = Vec::new();
-    let mut committed_heads = Vec::new();
-    let mut committed_slots = Vec::new();
-    let mut cleanup_targets = Vec::new();
 
-    for spec in &manifest.services {
-        let revision_hash = spec
-            .revision_hash()
-            .map_err(|e| Error::operation("deploy_apply", e))?;
-        let spec_json = spec
-            .canonical_revision_json()
-            .map_err(|e| Error::operation("deploy_apply", e))?;
-        store
-            .upsert_service_revision(&ServiceRevisionRecord {
-                namespace: namespace.clone(),
-                service: spec.name.clone(),
-                revision_hash: revision_hash.clone(),
-                spec_json,
-                created_by: local_machine_id.clone(),
-                created_at: started_at,
-            })
-            .await?;
+    for participant in &initial_preview.participants {
+        if participant == local_machine_id {
+            continue;
+        }
+        let Some(machine) = machine_map.get(participant) else {
+            return Err(Error::operation(
+                "deploy_apply",
+                format!(
+                    "participant '{}' is missing from machine inventory",
+                    participant
+                ),
+            ));
+        };
+        let session = remote::RemoteDeploySession::connect(
+            machine,
+            remote_control_port,
+            namespace,
+            &deploy_id,
+            local_machine_id,
+            &participant_fingerprint,
+        )
+        .await?;
+        events.push(DeployEvent {
+            step: "lock_remote".into(),
+            message: format!("acquired remote lock on '{}'", participant),
+        });
+        remote_sessions.push(session);
+    }
 
-        let desired = desired_slots(
-            spec,
-            &[local_machine_id.clone()],
-            current_slots_by_service.get(&spec.name),
-        )?;
-        let mut next_slots = Vec::new();
-        for desired_slot in desired {
-            let current_slot = current_slots_by_service.get(&spec.name).and_then(|slots| {
-                slots
-                    .iter()
-                    .find(|slot| slot.slot_id == desired_slot.slot_id)
+    let result = async {
+        let remote_session_index: HashMap<String, usize> = remote_sessions
+            .iter()
+            .enumerate()
+            .map(|(index, session)| (session.machine_id().0.clone(), index))
+            .collect();
+
+        adopt_instances(store, runtime, namespace).await?;
+        for session in &remote_sessions {
+            let instances = session.inspect_namespace().await?;
+            events.push(DeployEvent {
+                step: "inspect".into(),
+                message: format!(
+                    "inspected '{}' and found {} local instance records",
+                    session.machine_id(),
+                    instances.len()
+                ),
             });
-            let keep_current = current_slot.is_some_and(|slot| {
-                slot.machine_id == desired_slot.machine_id && slot.revision_hash == revision_hash
-            });
+        }
 
-            let active_instance_id = if keep_current {
-                let Some(slot) = current_slot else {
-                    return Err(Error::operation("deploy_apply", "missing current slot"));
-                };
-                slot.active_instance_id.clone()
-            } else {
-                let instance_id = InstanceId(Uuid::new_v4().to_string());
-                events.push(DeployEvent {
-                    step: "start_candidate".into(),
-                    message: format!(
-                        "starting {} slot {} as instance {}",
-                        spec.name, desired_slot.slot_id, instance_id
-                    ),
+        let final_preview = preview(store, local_machine_id, namespace, manifest).await?;
+        if final_preview.participants != initial_preview.participants {
+            return Err(Error::operation(
+                "deploy_apply",
+                "participant set changed after lock acquisition; retry deploy",
+            ));
+        }
+
+        let mut deploy_record = DeployRecord {
+            deploy_id: deploy_id.clone(),
+            namespace: namespace.clone(),
+            coordinator_machine_id: local_machine_id.clone(),
+            manifest_hash: final_preview.manifest_hash.clone(),
+            state: DeployState::Applying,
+            started_at,
+            committed_at: None,
+            finished_at: None,
+            summary_json: serde_json::to_string(&final_preview)
+                .map_err(|e| Error::operation("deploy_apply", format!("serialize preview: {e}")))?,
+        };
+        store.upsert_deploy(&deploy_record).await?;
+
+        let current_slots_by_service =
+            current_slots_by_service(store.list_service_slots(namespace).await?);
+        let desired_machines = deployable_machines(&machines, local_machine_id, now_unix_secs());
+        let mut removed_services = Vec::new();
+        let mut committed_heads = Vec::new();
+        let mut committed_slots = Vec::new();
+
+        for spec in &manifest.services {
+            let revision_hash = spec
+                .revision_hash()
+                .map_err(|e| Error::operation("deploy_apply", e))?;
+            let spec_json = spec
+                .canonical_revision_json()
+                .map_err(|e| Error::operation("deploy_apply", e))?;
+            store
+                .upsert_service_revision(&ServiceRevisionRecord {
+                    namespace: namespace.clone(),
+                    service: spec.name.clone(),
+                    revision_hash: revision_hash.clone(),
+                    spec_json: spec_json.clone(),
+                    created_by: local_machine_id.clone(),
+                    created_at: started_at,
+                })
+                .await?;
+
+            let desired = desired_slots(
+                spec,
+                &desired_machines,
+                current_slots_by_service.get(&spec.name),
+            )?;
+            let mut next_slots = Vec::new();
+            for desired_slot in desired {
+                let current_slot = current_slots_by_service.get(&spec.name).and_then(|slots| {
+                    slots
+                        .iter()
+                        .find(|slot| slot.slot_id == desired_slot.slot_id)
                 });
-                let instance = runtime
-                    .start_candidate(
-                        spec,
-                        &deploy_id,
-                        &instance_id,
-                        &desired_slot.slot_id,
-                        &desired_slot.machine_id,
-                        &revision_hash,
-                    )
-                    .await?;
-                runtime.wait_ready(spec, &instance).await?;
-                store
-                    .upsert_instance_status(&InstanceStatusRecord {
-                        instance_id: instance.instance_id.clone(),
-                        namespace: namespace.clone(),
-                        service: spec.name.clone(),
-                        slot_id: desired_slot.slot_id.clone(),
-                        machine_id: desired_slot.machine_id.clone(),
-                        revision_hash: revision_hash.clone(),
-                        deploy_id: deploy_id.clone(),
-                        docker_container_id: instance.docker_container_id.clone(),
-                        overlay_ip: instance.ip_address.and_then(|ip| match ip {
-                            IpAddr::V4(v4) => Some(v4),
-                            IpAddr::V6(_) => None,
-                        }),
-                        backend_ports: instance.backend_ports.clone(),
-                        phase: InstancePhase::Ready,
-                        ready: true,
-                        drain_state: crate::model::DrainState::None,
-                        error: None,
-                        started_at: now_unix_secs(),
-                        updated_at: now_unix_secs(),
-                    })
-                    .await?;
-                if let Some(slot) = current_slot {
-                    cleanup_targets.push((slot.active_instance_id.clone(), spec.name.clone()));
-                }
-                instance.instance_id
-            };
+                let keep_current = current_slot.is_some_and(|slot| {
+                    slot.machine_id == desired_slot.machine_id
+                        && slot.revision_hash == revision_hash
+                });
 
-            next_slots.push(ServiceSlotRecord {
+                let active_instance_id = if keep_current {
+                    let Some(slot) = current_slot else {
+                        return Err(Error::operation("deploy_apply", "missing current slot"));
+                    };
+                    slot.active_instance_id.clone()
+                } else {
+                    let instance_id = InstanceId(Uuid::new_v4().to_string());
+                    events.push(DeployEvent {
+                        step: "start_candidate".into(),
+                        message: format!(
+                            "starting {} slot {} as instance {} on {}",
+                            spec.name, desired_slot.slot_id, instance_id, desired_slot.machine_id
+                        ),
+                    });
+                    let status = if desired_slot.machine_id == *local_machine_id {
+                        let instance = runtime
+                            .start_candidate(
+                                spec,
+                                &deploy_id,
+                                &instance_id,
+                                &desired_slot.slot_id,
+                                &desired_slot.machine_id,
+                                &revision_hash,
+                            )
+                            .await?;
+                        runtime.wait_ready(spec, &instance).await?;
+                        build_instance_status_record(
+                            namespace,
+                            &spec.name,
+                            &desired_slot.slot_id,
+                            &desired_slot.machine_id,
+                            &revision_hash,
+                            &deploy_id,
+                            &instance,
+                            InstancePhase::Ready,
+                            true,
+                            DrainState::None,
+                            None,
+                        )
+                    } else {
+                        let Some(index) = remote_session_index.get(&desired_slot.machine_id.0)
+                        else {
+                            return Err(Error::operation(
+                                "deploy_apply",
+                                format!(
+                                    "no remote session was available for machine '{}'",
+                                    desired_slot.machine_id
+                                ),
+                            ));
+                        };
+                        remote_sessions[*index]
+                            .start_candidate(
+                                namespace,
+                                &spec.name,
+                                &desired_slot.slot_id,
+                                &instance_id,
+                                &deploy_id,
+                                &spec_json,
+                            )
+                            .await?
+                    };
+                    store.upsert_instance_status(&status).await?;
+                    status.instance_id
+                };
+
+                next_slots.push(ServiceSlotRecord {
+                    namespace: namespace.clone(),
+                    service: spec.name.clone(),
+                    slot_id: desired_slot.slot_id,
+                    machine_id: desired_slot.machine_id,
+                    active_instance_id,
+                    revision_hash: revision_hash.clone(),
+                    updated_by_deploy_id: deploy_id.clone(),
+                    updated_at: now_unix_secs(),
+                });
+            }
+
+            committed_heads.push(ServiceHeadRecord {
                 namespace: namespace.clone(),
                 service: spec.name.clone(),
-                slot_id: desired_slot.slot_id,
-                machine_id: desired_slot.machine_id,
-                active_instance_id,
-                revision_hash: revision_hash.clone(),
+                current_revision_hash: revision_hash,
                 updated_by_deploy_id: deploy_id.clone(),
                 updated_at: now_unix_secs(),
             });
+            committed_slots.extend(next_slots);
         }
 
-        committed_heads.push(ServiceHeadRecord {
-            namespace: namespace.clone(),
-            service: spec.name.clone(),
-            current_revision_hash: revision_hash,
-            updated_by_deploy_id: deploy_id.clone(),
-            updated_at: now_unix_secs(),
-        });
-        committed_slots.extend(next_slots);
-    }
+        for service in final_preview
+            .services
+            .iter()
+            .filter(|plan| plan.action == DeployChangeKind::Remove)
+            .map(|plan| plan.service.clone())
+        {
+            removed_services.push(service);
+        }
 
-    for service in preview
-        .services
-        .iter()
-        .filter(|plan| plan.action == DeployChangeKind::Remove)
-        .map(|plan| plan.service.clone())
-    {
-        removed_services.push(service.clone());
-        if let Some(slots) = current_slots_by_service.get(&service) {
-            for slot in slots {
-                cleanup_targets.push((slot.active_instance_id.clone(), service.clone()));
+        deploy_record.state = DeployState::Committed;
+        deploy_record.committed_at = Some(now_unix_secs());
+        deploy_record.finished_at = deploy_record.committed_at;
+        deploy_record.summary_json = serde_json::to_string(&final_preview)
+            .map_err(|e| Error::operation("deploy_apply", format!("serialize preview: {e}")))?;
+
+        store
+            .commit_deploy(
+                namespace,
+                &removed_services,
+                &committed_heads,
+                &committed_slots,
+                &deploy_record,
+            )
+            .await?;
+        events.push(DeployEvent {
+            step: "commit".into(),
+            message: format!("committed deploy {} for '{}'", deploy_id, namespace),
+        });
+
+        for session in &remote_sessions {
+            session.apply_route_epoch().await?;
+            events.push(DeployEvent {
+                step: "route_epoch".into(),
+                message: format!("applied route epoch on '{}'", session.machine_id()),
+            });
+        }
+
+        let active_instance_ids: BTreeSet<String> = committed_slots
+            .iter()
+            .map(|slot| slot.active_instance_id.0.clone())
+            .collect();
+        let participant_ids: BTreeSet<String> = final_preview
+            .participants
+            .iter()
+            .map(|machine_id| machine_id.0.clone())
+            .collect();
+        let mut cleanup_errors = Vec::new();
+        for status in store.list_instance_status(namespace).await? {
+            if active_instance_ids.contains(&status.instance_id.0) {
+                continue;
+            }
+            if !participant_ids.contains(&status.machine_id.0) {
+                continue;
+            }
+            if status.machine_id == *local_machine_id {
+                let mut draining = status.clone();
+                draining.phase = InstancePhase::Draining;
+                draining.ready = false;
+                draining.drain_state = DrainState::Requested;
+                draining.updated_at = now_unix_secs();
+                if let Err(err) = store.upsert_instance_status(&draining).await {
+                    cleanup_errors.push(err.to_string());
+                    continue;
+                }
+                match runtime
+                    .remove_instance(&status.instance_id, namespace, &status.service)
+                    .await
+                {
+                    Ok(()) => {
+                        store.delete_instance_status(&status.instance_id).await?;
+                        events.push(DeployEvent {
+                            step: "cleanup".into(),
+                            message: format!("removed old instance {}", status.instance_id),
+                        });
+                    }
+                    Err(err) => cleanup_errors.push(err.to_string()),
+                }
+            } else if let Some(index) = remote_session_index.get(&status.machine_id.0) {
+                if let Err(err) = remote_sessions[*index]
+                    .drain_instance(&status.instance_id)
+                    .await
+                {
+                    cleanup_errors.push(err.to_string());
+                    continue;
+                }
+                match remote_sessions[*index]
+                    .remove_instance(&status.instance_id)
+                    .await
+                {
+                    Ok(()) => {
+                        events.push(DeployEvent {
+                            step: "cleanup".into(),
+                            message: format!(
+                                "removed remote instance {} from {}",
+                                status.instance_id, status.machine_id
+                            ),
+                        });
+                    }
+                    Err(err) => cleanup_errors.push(err.to_string()),
+                }
             }
         }
+
+        let final_state = if cleanup_errors.is_empty() {
+            DeployState::Committed
+        } else {
+            deploy_record.state = DeployState::CleanupPending;
+            deploy_record.finished_at = Some(now_unix_secs());
+            store.upsert_deploy(&deploy_record).await?;
+            for error in cleanup_errors {
+                events.push(DeployEvent {
+                    step: "cleanup_pending".into(),
+                    message: error,
+                });
+            }
+            DeployState::CleanupPending
+        };
+
+        Ok(DeployApplyResult {
+            deploy_id: deploy_id.clone(),
+            preview: final_preview,
+            state: final_state,
+            events,
+        })
+    }
+    .await;
+
+    for session in remote_sessions {
+        session.shutdown().await;
     }
 
-    deploy_record.state = DeployState::Committed;
-    deploy_record.committed_at = Some(now_unix_secs());
-    deploy_record.finished_at = deploy_record.committed_at;
-    deploy_record.summary_json = serde_json::to_string(&preview)
-        .map_err(|e| Error::operation("deploy_apply", format!("serialize preview: {e}")))?;
-
-    store
-        .commit_deploy(
-            namespace,
-            &removed_services,
-            &committed_heads,
-            &committed_slots,
-            &deploy_record,
-        )
-        .await?;
-    events.push(DeployEvent {
-        step: "commit".into(),
-        message: format!("committed deploy {} for '{}'", deploy_id, namespace),
-    });
-
-    for (instance_id, service) in cleanup_targets {
-        runtime
-            .remove_instance(&instance_id, namespace, &service)
-            .await?;
-        store.delete_instance_status(&instance_id).await?;
-        events.push(DeployEvent {
-            step: "cleanup".into(),
-            message: format!("removed old instance {}", instance_id),
-        });
-    }
-
-    Ok(DeployApplyResult {
-        deploy_id,
-        preview,
-        state: DeployState::Committed,
-        events,
-    })
+    result
 }
 
 async fn adopt_instances(
@@ -947,6 +1079,68 @@ fn desired_slots(
         }
     }
     Ok(desired)
+}
+
+fn current_slots_by_service(
+    current_slots: Vec<ServiceSlotRecord>,
+) -> HashMap<String, Vec<ServiceSlotRecord>> {
+    let mut grouped = HashMap::new();
+    for slot in current_slots {
+        grouped
+            .entry(slot.service.clone())
+            .or_insert_with(Vec::new)
+            .push(slot);
+    }
+    grouped
+}
+
+fn build_instance_status_record(
+    namespace: &Namespace,
+    service: &str,
+    slot_id: &SlotId,
+    machine_id: &MachineId,
+    revision_hash: &str,
+    deploy_id: &DeployId,
+    instance: &ManagedInstance,
+    phase: InstancePhase,
+    ready: bool,
+    drain_state: DrainState,
+    error: Option<String>,
+) -> InstanceStatusRecord {
+    InstanceStatusRecord {
+        instance_id: instance.instance_id.clone(),
+        namespace: namespace.clone(),
+        service: service.to_string(),
+        slot_id: slot_id.clone(),
+        machine_id: machine_id.clone(),
+        revision_hash: revision_hash.to_string(),
+        deploy_id: deploy_id.clone(),
+        docker_container_id: instance.docker_container_id.clone(),
+        overlay_ip: instance.ip_address.and_then(|ip| match ip {
+            IpAddr::V4(v4) => Some(v4),
+            IpAddr::V6(_) => None,
+        }),
+        backend_ports: instance.backend_ports.clone(),
+        phase,
+        ready,
+        drain_state,
+        error,
+        started_at: now_unix_secs(),
+        updated_at: now_unix_secs(),
+    }
+}
+
+async fn list_local_instance_status(
+    store: &StoreDriver,
+    namespace: &Namespace,
+    local_machine_id: &MachineId,
+) -> Result<Vec<InstanceStatusRecord>> {
+    Ok(store
+        .list_instance_status(namespace)
+        .await?
+        .into_iter()
+        .filter(|record| &record.machine_id == local_machine_id)
+        .collect())
 }
 
 fn service_port_map(service_ports: &[ServicePort]) -> BTreeMap<String, u16> {

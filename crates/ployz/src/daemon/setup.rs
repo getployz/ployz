@@ -3,6 +3,7 @@ use std::path::Path;
 
 use crate::config::Mode;
 use crate::corrosion_config;
+use crate::deploy::remote::start_remote_control_listener;
 use crate::drivers::{StoreDriver, WireguardDriver};
 use crate::mesh::orchestrator::Mesh;
 use crate::model::{MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey};
@@ -204,10 +205,33 @@ impl DaemonState {
             .await
             .map_err(|e| format!("failed to start network: {e}"))?;
 
+        let remote_control = match self.mode {
+            Mode::Memory => crate::deploy::remote::RemoteControlHandle::noop(),
+            Mode::Docker | Mode::HostExec | Mode::HostService => {
+                match start_remote_control_listener(
+                    net_config.overlay_ip,
+                    self.remote_control_port,
+                    mesh.store.clone(),
+                    self.namespace_locks.clone(),
+                    self.identity.machine_id.clone(),
+                    Some(format!("ployz-{}", net_config.name.0)),
+                )
+                .await
+                {
+                    Ok(handle) => handle,
+                    Err(err) => {
+                        let _ = mesh.destroy().await;
+                        return Err(format!("failed to start remote deploy listener: {err}"));
+                    }
+                }
+            }
+        };
+
         let network_name = net_config.name.0.clone();
         self.active = Some(ActiveMesh {
             config: net_config,
             mesh,
+            remote_control,
         });
         self.write_active_marker(&network_name);
         Ok(())
