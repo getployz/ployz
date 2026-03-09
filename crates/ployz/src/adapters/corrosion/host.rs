@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::store::ServiceControl;
+use crate::store::StoreRuntimeControl;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -25,7 +25,7 @@ impl HostCorrosion {
     }
 }
 
-impl ServiceControl for HostCorrosion {
+impl StoreRuntimeControl for HostCorrosion {
     async fn start(&self) -> Result<()> {
         let mut guard = self.child.lock().await;
 

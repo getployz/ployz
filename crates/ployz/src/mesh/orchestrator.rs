@@ -9,7 +9,7 @@ use crate::mesh::tasks::{
     run_heartbeat_task, run_peer_sync_task,
 };
 use crate::model::{MachineId, MachineRecord, MachineStatus};
-use crate::store::{MachineStore, ServiceControl, SyncProbe, SyncStatus};
+use crate::store::{MachineStore, StoreRuntimeControl, SyncProbe, SyncStatus};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;

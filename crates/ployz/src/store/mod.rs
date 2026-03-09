@@ -129,7 +129,7 @@ pub trait SyncProbe: Send + Sync {
     }
 }
 
-pub trait ServiceControl: Send + Sync {
+pub trait StoreRuntimeControl: Send + Sync {
     fn start(&self) -> impl Future<Output = Result<()>> + Send + '_;
     fn stop(&self) -> impl Future<Output = Result<()>> + Send + '_;
     fn healthy(&self) -> impl Future<Output = bool> + Send + '_;

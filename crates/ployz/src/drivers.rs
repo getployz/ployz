@@ -15,7 +15,8 @@ use crate::model::{
 use crate::node::identity::Identity;
 use crate::spec::Namespace;
 use crate::store::{
-    DeployStore, InviteStore, MachineStore, RoutingStore, ServiceControl, SyncProbe, SyncStatus,
+    DeployStore, InviteStore, MachineStore, RoutingStore, StoreRuntimeControl, SyncProbe,
+    SyncStatus,
 };
 use crate::{SCHEMA_SQL, corrosion_config};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -262,7 +263,7 @@ impl StoreDriver {
     }
 }
 
-impl ServiceControl for StoreDriver {
+impl StoreRuntimeControl for StoreDriver {
     async fn start(&self) -> Result<()> {
         match self {
             Self::Memory { service, .. } => service.start().await,

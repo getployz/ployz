@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::store::ServiceControl;
+use crate::store::StoreRuntimeControl;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct MemoryService {
@@ -42,7 +42,7 @@ impl MemoryService {
     }
 }
 
-impl ServiceControl for MemoryService {
+impl StoreRuntimeControl for MemoryService {
     async fn start(&self) -> Result<()> {
         if self.fail_start.load(Ordering::SeqCst) {
             return Err(Error::operation("service start", "injected failure"));
