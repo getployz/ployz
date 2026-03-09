@@ -726,6 +726,7 @@ mod tests {
     use crate::config::Mode;
     use crate::daemon::ActiveMesh;
     use crate::daemon::ssh::{TEST_SSH_BIN_ENV, test_ssh_env_lock};
+    use crate::deploy::remote::RemoteControlHandle;
     use crate::drivers::WireguardDriver;
     use crate::mesh::orchestrator::Mesh;
     use crate::node::identity::Identity;
@@ -974,8 +975,13 @@ mod tests {
             Mode::Memory,
             DEFAULT_CLUSTER_CIDR.into(),
             24,
+            4317,
         );
-        state.active = Some(ActiveMesh { config, mesh });
+        state.active = Some(ActiveMesh {
+            config,
+            mesh,
+            remote_control: RemoteControlHandle::noop(),
+        });
 
         (state, store)
     }

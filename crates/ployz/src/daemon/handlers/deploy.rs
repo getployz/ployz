@@ -78,6 +78,7 @@ impl DaemonState {
             &runtime,
             &self.namespace_locks,
             &self.identity.machine_id,
+            self.remote_control_port,
             &namespace,
             &deploy_manifest,
         )

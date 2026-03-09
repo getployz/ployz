@@ -68,6 +68,8 @@ pub struct DaemonConfig {
     pub cluster_cidr: String,
     #[serde(default = "default_subnet_prefix_len")]
     pub subnet_prefix_len: u8,
+    #[serde(default = "default_remote_control_port")]
+    pub remote_control_port: u16,
 }
 
 fn default_cluster_cidr() -> String {
@@ -78,12 +80,17 @@ fn default_subnet_prefix_len() -> u8 {
     24
 }
 
+fn default_remote_control_port() -> u16 {
+    4317
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct RuntimeDefaults {
     data_dir: PathBuf,
     socket: String,
     cluster_cidr: String,
     subnet_prefix_len: u8,
+    remote_control_port: u16,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -102,6 +109,8 @@ struct DaemonOverrides {
     cluster_cidr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     subnet_prefix_len: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote_control_port: Option<u16>,
 }
 
 /// Returns the platform-appropriate default data directory.
@@ -176,6 +185,7 @@ pub fn load_daemon_config(
     cli_config_path: Option<PathBuf>,
     cli_data_dir: Option<PathBuf>,
     cli_socket: Option<String>,
+    cli_remote_control_port: Option<u16>,
     aff: &Affordances,
 ) -> std::result::Result<DaemonConfig, ConfigLoadError> {
     let overrides = DaemonOverrides {
@@ -183,6 +193,7 @@ pub fn load_daemon_config(
         socket: cli_socket,
         cluster_cidr: None,
         subnet_prefix_len: None,
+        remote_control_port: cli_remote_control_port,
     };
 
     build_figment(cli_config_path, aff)
@@ -197,6 +208,7 @@ fn build_figment(cli_config_path: Option<PathBuf>, aff: &Affordances) -> Figment
         socket: default_socket_path(aff),
         cluster_cidr: default_cluster_cidr(),
         subnet_prefix_len: default_subnet_prefix_len(),
+        remote_control_port: default_remote_control_port(),
     };
 
     let mut figment = Figment::new().merge(Serialized::defaults(defaults));

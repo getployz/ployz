@@ -3,6 +3,8 @@ members = [
     "crates/ployz",
     "crates/ployz-sdk",
     "crates/ployz-cli",
+    "crates/ployz-routing",
+    "crates/ployz-gateway",
     "crates/ebpf-common",
     "crates/ebpf",
 ]
@@ -10,6 +12,8 @@ default-members = [
     "crates/ployz",
     "crates/ployz-sdk",
     "crates/ployz-cli",
+    "crates/ployz-routing",
+    "crates/ployz-gateway",
     "crates/ebpf-common",
 ]
 resolver = "3"

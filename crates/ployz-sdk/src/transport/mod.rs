@@ -3,6 +3,7 @@ pub mod unix;
 
 pub use protocol::{
     DaemonRequest, DaemonResponse, DeployManifestFormat, DeployManifestInput, DeployOptions,
+    RemoteDeployRequest, RemoteDeployResponse,
 };
 pub use unix::UnixSocketTransport;
 

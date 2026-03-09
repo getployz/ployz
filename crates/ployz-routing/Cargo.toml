@@ -1,0 +1,18 @@
+[package]
+name = "ployz-routing"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ployz-sdk = { path = "../ployz-sdk" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[lints.clippy]
+indexing_slicing = "warn"
+fallible_impl_from = "warn"
+wildcard_enum_match_arm = "warn"
+fn_params_excessive_bools = "warn"
+must_use_candidate = "warn"

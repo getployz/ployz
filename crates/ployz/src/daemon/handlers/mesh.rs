@@ -336,6 +336,7 @@ impl DaemonState {
             self.active = Some(active);
             return self.err("NETWORK_STOP_FAILED", format!("mesh down failed: {e}"));
         }
+        active.remote_control.shutdown().await;
 
         self.clear_active_marker();
         self.ok("mesh stopped (config kept)")
@@ -368,6 +369,7 @@ impl DaemonState {
                     message: format!("destroy failed: {e}"),
                 };
             }
+            active.remote_control.shutdown().await;
         }
 
         if let Err(e) = NetworkConfig::delete(&self.data_dir, network) {
@@ -512,6 +514,7 @@ mod tests {
             Mode::Memory,
             "10.210.0.0/16".into(),
             24,
+            4317,
         );
 
         let response = state.handle_mesh_join(&token).await;

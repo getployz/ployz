@@ -1,0 +1,31 @@
+[package]
+name = "ployz-gateway"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "ployz-gateway"
+path = "src/main.rs"
+
+[dependencies]
+ployz = { path = "../ployz" }
+ployz-routing = { path = "../ployz-routing" }
+ployz-sdk = { path = "../ployz-sdk" }
+async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }
+corro-api-types = { git = "https://github.com/getployz/corrosion.git", branch = "main" }
+futures-util = "0.3"
+pingora = { version = "0.8.0", features = ["lb"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[lints.clippy]
+indexing_slicing = "warn"
+fallible_impl_from = "warn"
+wildcard_enum_match_arm = "warn"
+fn_params_excessive_bools = "warn"
+must_use_candidate = "warn"

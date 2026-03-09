@@ -14,5 +14,5 @@ pub use model::*;
 pub use spec::*;
 pub use transport::{
     DaemonRequest, DaemonResponse, DeployManifestFormat, DeployManifestInput, DeployOptions,
-    Transport, UnixSocketTransport,
+    RemoteDeployRequest, RemoteDeployResponse, Transport, UnixSocketTransport,
 };
