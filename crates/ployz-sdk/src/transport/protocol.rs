@@ -100,6 +100,11 @@ pub enum DaemonRequest {
         manifest_json: String,
         options: DeployOptions,
     },
+    MachineLabel {
+        id: String,
+        set: Vec<(String, String)>,
+        remove: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

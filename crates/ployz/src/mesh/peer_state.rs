@@ -120,6 +120,7 @@ fn plan_mesh_peers(state: &PeerStateMap, local_machine_id: &MachineId) -> Vec<Ma
             last_heartbeat: 0,
             created_at: 0,
             updated_at: 0,
+            labels: std::collections::BTreeMap::new(),
         })
         .collect();
 
@@ -142,6 +143,7 @@ fn plan_mesh_peers(state: &PeerStateMap, local_machine_id: &MachineId) -> Vec<Ma
                 last_heartbeat: 0,
                 created_at: 0,
                 updated_at: 0,
+                labels: std::collections::BTreeMap::new(),
             }),
     );
 
@@ -166,6 +168,7 @@ mod tests {
             last_heartbeat: 0,
             created_at: 0,
             updated_at: 0,
+            labels: std::collections::BTreeMap::new(),
         }
     }
 
@@ -184,6 +187,7 @@ mod tests {
             last_heartbeat: 0,
             created_at: 0,
             updated_at: 0,
+            labels: std::collections::BTreeMap::new(),
         };
         map.upsert_stored(&r);
 

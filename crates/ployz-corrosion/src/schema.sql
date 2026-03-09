@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS machines (
     status TEXT NOT NULL DEFAULT '',            -- Up / Down / Unknown
     participation TEXT NOT NULL DEFAULT 'disabled', -- enabled / disabled / draining
     last_heartbeat INTEGER NOT NULL DEFAULT 0,
+    labels TEXT NOT NULL DEFAULT '{}',
     created_at INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL DEFAULT 0
 );
