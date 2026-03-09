@@ -32,14 +32,17 @@ pub struct WgSidecar {
 }
 
 impl WgSidecar {
+    #[must_use] 
     pub fn new(docker: Docker, config: SidecarConfig) -> Self {
         Self { docker, config }
     }
 
+    #[must_use] 
     pub fn container_name(&self) -> &str {
         &self.config.container_name
     }
 
+    #[must_use] 
     pub fn public_key_bytes(&self) -> [u8; 32] {
         x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(self.config.private_key))
             .to_bytes()
@@ -211,8 +214,7 @@ impl WgSidecar {
             .docker
             .remove_container(&self.config.container_name, Some(options))
             .await
-        {
-            if !matches!(
+            && !matches!(
                 e,
                 bollard::errors::Error::DockerResponseServerError {
                     status_code: 404,
@@ -221,7 +223,6 @@ impl WgSidecar {
             ) {
                 warn!(?e, name = %self.config.container_name, "failed to remove existing sidecar");
             }
-        }
     }
 
     async fn exec(&self, cmd: &[&str]) -> Result<()> {
@@ -267,8 +268,8 @@ impl WgSidecar {
                     .await
                     .map_err(|e| Error::operation("sidecar exec inspect", e.to_string()))?;
 
-                if let Some(code) = inspect.exit_code {
-                    if code != 0 {
+                if let Some(code) = inspect.exit_code
+                    && code != 0 {
                         let detail = if stderr_buf.is_empty() {
                             format!("exit code {code}")
                         } else {
@@ -276,7 +277,6 @@ impl WgSidecar {
                         };
                         return Err(Error::operation("sidecar exec", detail));
                     }
-                }
             }
             StartExecResults::Detached => {}
         }

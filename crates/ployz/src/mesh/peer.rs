@@ -28,6 +28,7 @@ pub struct WireGuardPeer {
 }
 
 impl WireGuardPeer {
+    #[must_use] 
     pub fn new(endpoints: Vec<String>, now: Instant) -> Self {
         Self {
             endpoints,
@@ -38,6 +39,7 @@ impl WireGuardPeer {
         }
     }
 
+    #[must_use] 
     pub fn active_endpoint(&self) -> Option<&str> {
         self.endpoints.get(self.active_endpoint).map(|s| s.as_str())
     }
@@ -69,6 +71,7 @@ impl WireGuardPeer {
     }
 
     /// Returns true if the peer is Down and has multiple endpoints to rotate through.
+    #[must_use] 
     pub fn should_change_endpoint(&self) -> bool {
         self.status == PeerStatus::Down && self.endpoints.len() > 1
     }

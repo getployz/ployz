@@ -19,6 +19,7 @@ pub struct NetworkName(pub String);
 pub struct NetworkId(pub String);
 
 impl NetworkId {
+    #[must_use] 
     pub fn random() -> Self {
         let mut bytes = [0u8; 16];
         rand::fill(&mut bytes);
@@ -60,17 +61,14 @@ impl fmt::Debug for PrivateKey {
 pub struct OverlayIp(pub Ipv6Addr);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum MachineStatus {
+    #[default]
     Unknown,
     Up,
     Down,
 }
 
-impl Default for MachineStatus {
-    fn default() -> Self {
-        Self::Unknown
-    }
-}
 
 impl fmt::Display for MachineStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -95,17 +93,14 @@ impl FromStr for MachineStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum Participation {
+    #[default]
     Disabled,
     Enabled,
     Draining,
 }
 
-impl Default for Participation {
-    fn default() -> Self {
-        Self::Disabled
-    }
-}
 
 impl fmt::Display for Participation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -146,6 +141,7 @@ pub struct MachineRecord {
 
 impl MachineRecord {
     /// All CIDRs this peer should route, used by both host and docker WireGuard adapters.
+    #[must_use] 
     pub fn allowed_cidrs(&self) -> Vec<String> {
         let mut cidrs = vec![format!("{}/128", self.overlay_ip.0)];
         if let Some(subnet) = &self.subnet {
@@ -230,6 +226,14 @@ pub struct ServiceSlotRecord {
     pub revision_hash: String,
     pub updated_by_deploy_id: DeployId,
     pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoutingState {
+    pub revisions: Vec<ServiceRevisionRecord>,
+    pub heads: Vec<ServiceHeadRecord>,
+    pub slots: Vec<ServiceSlotRecord>,
+    pub instances: Vec<InstanceStatusRecord>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -444,6 +448,7 @@ impl JoinResponse {
         serde_json::from_slice(&bytes).map_err(|e| format!("json decode: {e}"))
     }
 
+    #[must_use] 
     pub fn into_machine_record(self) -> MachineRecord {
         MachineRecord {
             id: self.machine_id,
@@ -462,6 +467,7 @@ impl JoinResponse {
 }
 
 /// Derive a deterministic overlay IP from a public key (fd00::/8 ULA + first 15 key bytes).
+#[must_use] 
 pub fn management_ip_from_key(key: &PublicKey) -> OverlayIp {
     let mut octets = [0u8; 16];
     octets[0] = 0xfd;

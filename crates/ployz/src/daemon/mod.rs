@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::config::Mode;
 use crate::deploy::NamespaceLockManager;
 use crate::deploy::remote::RemoteControlHandle;
+use crate::gateway::GatewayHandle;
 use crate::mesh::orchestrator::Mesh;
 use crate::node::identity::Identity;
 use crate::store::network::NetworkConfig;
@@ -16,6 +17,7 @@ pub struct ActiveMesh {
     pub config: NetworkConfig,
     pub mesh: Mesh,
     pub remote_control: RemoteControlHandle,
+    pub gateway: GatewayHandle,
 }
 
 pub struct DaemonState {
@@ -25,11 +27,15 @@ pub struct DaemonState {
     pub cluster_cidr: String,
     pub subnet_prefix_len: u8,
     pub remote_control_port: u16,
+    pub gateway_listen_addr: String,
+    pub gateway_threads: usize,
     pub active: Option<ActiveMesh>,
     pub namespace_locks: NamespaceLockManager,
 }
 
 impl DaemonState {
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         data_dir: &Path,
         identity: Identity,
@@ -37,6 +43,8 @@ impl DaemonState {
         cluster_cidr: String,
         subnet_prefix_len: u8,
         remote_control_port: u16,
+        gateway_listen_addr: String,
+        gateway_threads: usize,
     ) -> Self {
         Self {
             data_dir: data_dir.to_path_buf(),
@@ -45,6 +53,8 @@ impl DaemonState {
             cluster_cidr,
             subnet_prefix_len,
             remote_control_port,
+            gateway_listen_addr,
+            gateway_threads,
             active: None,
             namespace_locks: NamespaceLockManager::default(),
         }

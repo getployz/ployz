@@ -18,11 +18,10 @@ pub(crate) async fn run_ebpf_sync_task(
         if machine.id == local_machine_id {
             continue;
         }
-        if let Some(subnet) = machine.subnet {
-            if let Err(e) = dataplane.upsert_route(subnet, wg_ifindex).await {
+        if let Some(subnet) = machine.subnet
+            && let Err(e) = dataplane.upsert_route(subnet, wg_ifindex).await {
                 warn!(?e, %subnet, "ebpf_sync: failed to seed route");
             }
-        }
     }
 
     loop {
@@ -37,21 +36,19 @@ pub(crate) async fn run_ebpf_sync_task(
                         if m.id == local_machine_id {
                             continue;
                         }
-                        if let Some(subnet) = m.subnet {
-                            if let Err(e) = dataplane.upsert_route(subnet, wg_ifindex).await {
+                        if let Some(subnet) = m.subnet
+                            && let Err(e) = dataplane.upsert_route(subnet, wg_ifindex).await {
                                 warn!(?e, %subnet, "ebpf_sync: upsert failed");
                             }
-                        }
                     }
                     MachineEvent::Removed(m) => {
                         if m.id == local_machine_id {
                             continue;
                         }
-                        if let Some(subnet) = m.subnet {
-                            if let Err(e) = dataplane.remove_route(subnet).await {
+                        if let Some(subnet) = m.subnet
+                            && let Err(e) = dataplane.remove_route(subnet).await {
                                 warn!(?e, %subnet, "ebpf_sync: remove failed");
                             }
-                        }
                     }
                 }
             }

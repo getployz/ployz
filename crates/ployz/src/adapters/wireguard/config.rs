@@ -17,6 +17,7 @@ pub struct WgPaths {
 }
 
 impl WgPaths {
+    #[must_use] 
     pub fn new(data_dir: &Path) -> Self {
         let dir = data_dir.join("wireguard");
         Self {
@@ -164,6 +165,7 @@ pub fn write_sync_config_with_extra_peers(
     fs::write(&paths.sync_config, buf)
 }
 
+#[must_use] 
 pub fn encode_key(key: &[u8; 32]) -> String {
     BASE64.encode(key)
 }

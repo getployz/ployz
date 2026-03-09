@@ -30,6 +30,7 @@ pub struct Affordances {
 }
 
 impl Affordances {
+    #[must_use] 
     pub fn detect() -> Self {
         let os = if cfg!(target_os = "linux") {
             Os::Linux
@@ -70,6 +71,10 @@ pub struct DaemonConfig {
     pub subnet_prefix_len: u8,
     #[serde(default = "default_remote_control_port")]
     pub remote_control_port: u16,
+    #[serde(default = "default_gateway_listen_addr")]
+    pub gateway_listen_addr: String,
+    #[serde(default = "default_gateway_threads")]
+    pub gateway_threads: usize,
 }
 
 fn default_cluster_cidr() -> String {
@@ -84,6 +89,14 @@ fn default_remote_control_port() -> u16 {
     4317
 }
 
+fn default_gateway_listen_addr() -> String {
+    "0.0.0.0:80".to_string()
+}
+
+fn default_gateway_threads() -> usize {
+    2
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct RuntimeDefaults {
     data_dir: PathBuf,
@@ -91,6 +104,8 @@ struct RuntimeDefaults {
     cluster_cidr: String,
     subnet_prefix_len: u8,
     remote_control_port: u16,
+    gateway_listen_addr: String,
+    gateway_threads: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -111,6 +126,10 @@ struct DaemonOverrides {
     subnet_prefix_len: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     remote_control_port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gateway_listen_addr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gateway_threads: Option<usize>,
 }
 
 /// Returns the platform-appropriate default data directory.
@@ -119,6 +138,7 @@ struct DaemonOverrides {
 /// - Linux (user):  `$XDG_DATA_HOME/ployz` or `~/.local/share/ployz`
 /// - macOS:         `~/Library/Application Support/ployz`
 /// - Other:         project data dir (`~/.ployz` fallback)
+#[must_use] 
 pub fn default_data_dir(aff: &Affordances) -> PathBuf {
     match aff.os {
         Os::Linux if aff.is_root => "/var/lib/ployz".into(),
@@ -137,6 +157,7 @@ pub fn default_data_dir(aff: &Affordances) -> PathBuf {
 /// - Linux (user):  `$XDG_RUNTIME_DIR/ployz/ployzd.sock`
 /// - macOS:         `$TMPDIR/ployz/ployzd.sock` (per-user, per-boot)
 /// - Other:         `/tmp/ployz/ployzd.sock`
+#[must_use] 
 pub fn default_socket_path(aff: &Affordances) -> String {
     let path = match aff.os {
         Os::Linux if aff.is_root => PathBuf::from("/run/ployz/ployzd.sock"),
@@ -155,6 +176,7 @@ pub fn default_socket_path(aff: &Affordances) -> String {
 /// Returns the default config file path.
 ///
 /// Can be overridden via `PLOYZ_CONFIG`.
+#[must_use] 
 pub fn default_config_path() -> PathBuf {
     project_dirs()
         .map(|dirs| dirs.config_dir().join("config.toml"))
@@ -168,6 +190,7 @@ pub fn resolve_config_path(cli_config_path: Option<PathBuf>) -> PathBuf {
         .unwrap_or_else(default_config_path)
 }
 
+#[allow(clippy::result_large_err)]
 pub fn load_client_config(
     cli_config_path: Option<PathBuf>,
     cli_socket: Option<String>,
@@ -181,6 +204,7 @@ pub fn load_client_config(
         .map_err(ConfigLoadError::from)
 }
 
+#[allow(clippy::result_large_err)]
 pub fn load_daemon_config(
     cli_config_path: Option<PathBuf>,
     cli_data_dir: Option<PathBuf>,
@@ -194,6 +218,8 @@ pub fn load_daemon_config(
         cluster_cidr: None,
         subnet_prefix_len: None,
         remote_control_port: cli_remote_control_port,
+        gateway_listen_addr: None,
+        gateway_threads: None,
     };
 
     build_figment(cli_config_path, aff)
@@ -209,6 +235,8 @@ fn build_figment(cli_config_path: Option<PathBuf>, aff: &Affordances) -> Figment
         cluster_cidr: default_cluster_cidr(),
         subnet_prefix_len: default_subnet_prefix_len(),
         remote_control_port: default_remote_control_port(),
+        gateway_listen_addr: default_gateway_listen_addr(),
+        gateway_threads: default_gateway_threads(),
     };
 
     let mut figment = Figment::new().merge(Serialized::defaults(defaults));

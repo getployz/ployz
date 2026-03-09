@@ -46,6 +46,7 @@ pub struct NetworkConfig {
 }
 
 impl NetworkConfig {
+    #[must_use] 
     pub fn new(
         name: NetworkName,
         public_key: &PublicKey,
@@ -63,13 +64,15 @@ impl NetworkConfig {
     }
 
     /// Path to network config dir: `<data_dir>/networks/<name>/`
+    #[must_use] 
     pub fn dir(data_dir: &Path, name: &str) -> PathBuf {
-        data_dir.join("networks").join(name)
+        ployz_sdk::paths::network_dir(data_dir, name)
     }
 
     /// Path to network config file: `<data_dir>/networks/<name>/network.json`
+    #[must_use] 
     pub fn path(data_dir: &Path, name: &str) -> PathBuf {
-        Self::dir(data_dir, name).join("network.json")
+        ployz_sdk::paths::network_config_path(data_dir, name)
     }
 
     pub fn load(path: &Path) -> Result<Self> {
@@ -97,11 +100,9 @@ impl NetworkConfig {
     }
 
     /// Read the active network name from `<data_dir>/active_network`.
+    #[must_use] 
     pub fn read_active_network(data_dir: &Path) -> Option<String> {
-        std::fs::read_to_string(data_dir.join("active_network"))
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
+        ployz_sdk::paths::read_active_network(data_dir)
     }
 
     pub fn delete(data_dir: &Path, name: &str) -> std::io::Result<()> {

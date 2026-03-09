@@ -1,7 +1,7 @@
-use crate::adapters::corrosion::CorrosionStore;
-use crate::adapters::corrosion::client::Transport;
 use crate::adapters::corrosion::docker::DockerCorrosion;
 use crate::adapters::corrosion::host::HostCorrosion;
+use ployz_corrosion::client::Transport;
+use ployz_corrosion::CorrosionStore;
 use crate::adapters::memory::{MemoryService, MemoryStore, MemoryWireGuard};
 use crate::adapters::wireguard::{DockerWireGuard, HostWireGuard};
 use crate::config::Mode;
@@ -9,8 +9,8 @@ use crate::error::Result;
 use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
 use crate::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, OverlayIp, PublicKey, ServiceHeadRecord, ServiceRevisionRecord,
-    ServiceSlotRecord,
+    MachineId, MachineRecord, OverlayIp, PublicKey, RoutingState, ServiceHeadRecord,
+    ServiceRevisionRecord, ServiceSlotRecord,
 };
 use crate::node::identity::Identity;
 use crate::spec::Namespace;
@@ -18,7 +18,8 @@ use crate::store::{
     DeployStore, InviteStore, MachineStore, RoutingStore, StoreRuntimeControl, SyncProbe,
     SyncStatus,
 };
-use crate::{SCHEMA_SQL, corrosion_config};
+use ployz_corrosion::config as corrosion_config;
+use ployz_corrosion::SCHEMA_SQL;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -357,7 +358,7 @@ impl InviteStore for StoreDriver {
 }
 
 impl RoutingStore for StoreDriver {
-    async fn load_routing_state(&self) -> Result<ployz_routing::RoutingState> {
+    async fn load_routing_state(&self) -> Result<RoutingState> {
         match self {
             Self::Memory { store, .. } => store.load_routing_state().await,
             Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
@@ -521,5 +522,23 @@ impl SyncProbe for StoreDriver {
                 store.sync_status().await
             }
         }
+    }
+}
+
+impl ployz_gateway::RoutingStore for StoreDriver {
+    async fn load_routing_state(
+        &self,
+    ) -> std::result::Result<RoutingState, ployz_gateway::GatewayError> {
+        RoutingStore::load_routing_state(self)
+            .await
+            .map_err(|err| ployz_gateway::GatewayError::Store(err.to_string()))
+    }
+
+    async fn subscribe_routing_invalidations(
+        &self,
+    ) -> std::result::Result<mpsc::Receiver<()>, ployz_gateway::GatewayError> {
+        RoutingStore::subscribe_routing_invalidations(self)
+            .await
+            .map_err(|err| ployz_gateway::GatewayError::Store(err.to_string()))
     }
 }

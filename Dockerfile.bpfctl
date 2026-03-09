@@ -9,17 +9,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends musl-tools && r
 WORKDIR /build
 COPY crates/ebpf-common/ ebpf-common/
 COPY crates/ebpf/ ebpf/
-COPY crates/ployz-dataplane/ ployz-dataplane/
+COPY crates/ployz-bpfctl/ ployz-bpfctl/
 
-RUN printf '[workspace]\nresolver = "2"\nmembers = ["ployz-dataplane", "ebpf", "ebpf-common"]\n' > Cargo.toml
+RUN printf '[workspace]\nresolver = "2"\nmembers = ["ployz-bpfctl", "ebpf", "ebpf-common"]\n' > Cargo.toml
 
-WORKDIR /build/ployz-dataplane
+WORKDIR /build/ployz-bpfctl
 ARG TARGETARCH
 RUN if [ "$TARGETARCH" = "arm64" ]; then TARGET=aarch64-unknown-linux-musl; else TARGET=x86_64-unknown-linux-musl; fi && \
     cargo +nightly build --release --target "$TARGET" && \
-    cp /build/target/"$TARGET"/release/ployz-dataplane /build/target/release/ployz-dataplane
+    cp /build/target/"$TARGET"/release/ployz-bpfctl /build/target/release/ployz-bpfctl
 
 FROM alpine:3.21
 RUN apk add --no-cache wireguard-tools iproute2
-COPY --from=builder /build/target/release/ployz-dataplane /usr/local/bin/ployz-dataplane
+COPY --from=builder /build/target/release/ployz-bpfctl /usr/local/bin/ployz-bpfctl
 CMD ["sleep", "infinity"]

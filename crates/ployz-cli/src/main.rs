@@ -104,7 +104,7 @@ enum Command {
     /// Show daemon and mesh status.
     Status,
     /// Deploy manifests into an explicit namespace.
-    Deploy(DeployCommand),
+    Deploy(Box<DeployCommand>),
     /// Mesh network management.
     #[command(alias = "network")]
     Mesh {
@@ -350,7 +350,7 @@ async fn run() -> Result<i32> {
 fn build_request(command: Command) -> Result<DaemonRequest> {
     match command {
         Command::Status => Ok(DaemonRequest::Status),
-        Command::Deploy(command) => build_deploy_request(command),
+        Command::Deploy(command) => build_deploy_request(*command),
         Command::Mesh { action } => build_mesh_request(action),
         Command::Machine { action } => build_machine_request(action),
     }
@@ -577,6 +577,7 @@ fn path_to_string(path: PathBuf) -> String {
     path.to_string_lossy().into_owned()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_service_spec(
     image: &str,
     name: Option<&str>,

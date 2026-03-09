@@ -11,6 +11,7 @@ pub struct Ipam {
 
 impl Ipam {
     /// Create an IPAM with configurable subnet prefix length.
+    #[must_use] 
     pub fn new(cluster: Ipv4Net, prefix_len: u8) -> Self {
         Self {
             cluster,
@@ -41,12 +42,11 @@ impl Ipam {
         let mut addr = cluster_start;
         while addr < cluster_end {
             let network = Ipv4Addr::from(addr);
-            if let Ok(subnet) = Ipv4Net::new(network, self.prefix_len) {
-                if !self.allocated.contains(&subnet) {
+            if let Ok(subnet) = Ipv4Net::new(network, self.prefix_len)
+                && !self.allocated.contains(&subnet) {
                     self.allocated.insert(subnet);
                     return Some(subnet);
                 }
-            }
             addr += step;
         }
 
@@ -55,6 +55,7 @@ impl Ipam {
 }
 
 /// First usable address in a subnet (the .1 gateway address).
+#[must_use] 
 pub fn machine_ip(subnet: &Ipv4Net) -> Ipv4Addr {
     let start = u32::from(subnet.network());
     Ipv4Addr::from(start + 1)
@@ -62,6 +63,7 @@ pub fn machine_ip(subnet: &Ipv4Net) -> Ipv4Addr {
 
 /// Second usable address in a subnet (the .2 address).
 /// Used for the WG container on the bridge network (.1 is the Docker gateway).
+#[must_use] 
 pub fn container_ip(subnet: &Ipv4Net) -> Ipv4Addr {
     let start = u32::from(subnet.network());
     Ipv4Addr::from(start + 2)
@@ -75,6 +77,7 @@ pub struct SubnetIpam {
 }
 
 impl SubnetIpam {
+    #[must_use] 
     pub fn new(subnet: Ipv4Net) -> Self {
         Self {
             subnet,

@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::store::StoreRuntimeControl;
+use ployz_sdk::store::StoreRuntimeControl;
 use bollard::Docker;
 use bollard::models::{ContainerCreateBody, HostConfig};
 use bollard::query_parameters::{
@@ -76,6 +76,8 @@ impl DockerCorrosionBuilder {
 }
 
 impl DockerCorrosion {
+    #[must_use]
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(container_name: &str, image: &str) -> DockerCorrosionBuilder {
         DockerCorrosionBuilder {
             container_name: container_name.to_string(),

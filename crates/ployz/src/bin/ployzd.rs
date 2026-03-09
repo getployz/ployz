@@ -75,6 +75,7 @@ enum CliError {
 }
 
 #[tokio::main]
+#[allow(clippy::result_large_err)]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let Cli {
@@ -99,18 +100,22 @@ async fn main() -> Result<()> {
                 cfg.cluster_cidr,
                 cfg.subnet_prefix_len,
                 cfg.remote_control_port,
+                cfg.gateway_listen_addr,
+                cfg.gateway_threads,
             )
             .await
         }
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn cmd_configure(mode: Mode) -> Result<()> {
     tracing::info!(?mode, "configure");
     tracing::info!("configure is install-time only; runtime daemon stays rootless");
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_run(
     data_dir: &Path,
     mode: Mode,
@@ -118,6 +123,8 @@ async fn cmd_run(
     cluster_cidr: String,
     subnet_prefix_len: u8,
     remote_control_port: u16,
+    gateway_listen_addr: String,
+    gateway_threads: usize,
 ) -> Result<()> {
     tracing::info!(?mode, "starting daemon");
 
@@ -153,6 +160,8 @@ async fn cmd_run(
         cluster_cidr,
         subnet_prefix_len,
         remote_control_port,
+        gateway_listen_addr,
+        gateway_threads,
     );
 
     if let Some(network) = state.read_active_marker() {
@@ -194,7 +203,9 @@ async fn cmd_run(
             config: _config,
             mut mesh,
             remote_control,
+            mut gateway,
         } = active;
+        let _ = gateway.shutdown().await;
         remote_control.shutdown().await;
         let _ = mesh.detach().await;
     }

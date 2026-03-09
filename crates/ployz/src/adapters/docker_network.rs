@@ -182,16 +182,19 @@ impl DockerBridgeNetwork {
         }
     }
 
+    #[must_use] 
     pub fn gateway_v4(&self) -> Ipv4Addr {
         self.gateway_v4
     }
 
     /// The IPv4 address for the WG container on this bridge (.2).
     /// Distinct from gateway (.1) which Docker assigns to the bridge interface.
+    #[must_use] 
     pub fn container_v4(&self) -> Ipv4Addr {
         self.container_v4
     }
 
+    #[must_use] 
     pub fn name(&self) -> &str {
         &self.name
     }

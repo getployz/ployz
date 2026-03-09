@@ -1,4 +1,4 @@
 *
 !crates/ebpf/
 !crates/ebpf-common/
-!crates/ployz-dataplane/
+!crates/ployz-bpfctl/

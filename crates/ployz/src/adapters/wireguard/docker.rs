@@ -28,7 +28,7 @@ use super::config::{
     write_sync_config_with_extra_peers,
 };
 
-const DEFAULT_IMAGE: &str = "ghcr.io/getployz/ployz-dataplane:latest";
+const DEFAULT_IMAGE: &str = "ghcr.io/getployz/ployz-bpfctl:latest";
 use super::DEFAULT_LISTEN_PORT;
 const DEFAULT_MTU: u16 = 1420;
 const INTERFACE_NAME: &str = "wg0";
@@ -128,6 +128,8 @@ impl DockerWireGuardBuilder {
 }
 
 impl DockerWireGuard {
+    #[must_use]
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(
         container_name: &str,
         data_dir: &Path,
@@ -210,8 +212,7 @@ impl DockerWireGuard {
             .docker
             .remove_container(&self.container_name, Some(options))
             .await
-        {
-            if !matches!(
+            && !matches!(
                 e,
                 bollard::errors::Error::DockerResponseServerError {
                     status_code: 404,
@@ -220,7 +221,6 @@ impl DockerWireGuard {
             ) {
                 warn!(?e, name = %self.container_name, "failed to remove existing container");
             }
-        }
     }
 
     async fn exec_in_container(&self, cmd: &[&str]) -> Result<()> {
@@ -266,8 +266,8 @@ impl DockerWireGuard {
                     .await
                     .map_err(|e| Error::operation("docker exec inspect", e.to_string()))?;
 
-                if let Some(code) = inspect.exit_code {
-                    if code != 0 {
+                if let Some(code) = inspect.exit_code
+                    && code != 0 {
                         let detail = if stderr_buf.is_empty() {
                             format!("exit code {code}")
                         } else {
@@ -275,7 +275,6 @@ impl DockerWireGuard {
                         };
                         return Err(Error::operation("docker exec", detail));
                     }
-                }
             }
             StartExecResults::Detached => {}
         }

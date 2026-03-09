@@ -1,7 +1,9 @@
 pub mod config;
 pub mod error;
 pub mod model;
+pub mod paths;
 pub mod spec;
+pub mod store;
 pub mod transport;
 
 pub use config::{

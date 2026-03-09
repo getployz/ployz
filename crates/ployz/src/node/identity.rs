@@ -47,6 +47,7 @@ impl Identity {
         PublicKey(public.to_bytes())
     }
 
+    #[must_use] 
     pub fn generate(machine_id: MachineId, key_bytes: [u8; 32]) -> Self {
         let private_key = PrivateKey(key_bytes);
         let public_key = Self::derive_public_key(&private_key);

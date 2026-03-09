@@ -16,6 +16,7 @@ impl Default for MemoryService {
 }
 
 impl MemoryService {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             started: AtomicBool::new(false),
