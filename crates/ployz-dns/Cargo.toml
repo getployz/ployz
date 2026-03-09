@@ -1,31 +1,26 @@
 [package]
-name = "ployz-gateway"
+name = "ployz-dns"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [lib]
-name = "ployz_gateway"
+name = "ployz_dns"
 path = "src/lib.rs"
 
 [[bin]]
-name = "ployz-gateway"
+name = "ployz-dns"
 path = "src/main.rs"
 
 [dependencies]
 ployz-sdk = { path = "../ployz-sdk" }
-ployz-routes = { path = "../ployz-routes" }
 ployz-corrosion = { path = "../ployz-corrosion" }
-pingora = { version = "0.8.0", features = ["lb"] }
+hickory-server = "0.25"
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
-http = "1"
-thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = "0.3"
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
+thiserror = "2"
 
 [lints.clippy]
 indexing_slicing = "warn"

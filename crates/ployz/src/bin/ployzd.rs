@@ -204,7 +204,9 @@ async fn cmd_run(
             mut mesh,
             remote_control,
             mut gateway,
+            mut dns,
         } = active;
+        let _ = dns.shutdown().await;
         let _ = gateway.shutdown().await;
         remote_control.shutdown().await;
         let _ = mesh.detach().await;

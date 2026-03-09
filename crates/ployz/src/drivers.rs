@@ -1,3 +1,10 @@
+//! Concrete driver enums that dispatch to backend-specific adapters.
+//!
+//! These are closed enums rather than `dyn Trait` objects because the set of
+//! backends is fixed at compile time (`Mode` picks once at startup), exhaustive
+//! matching catches unimplemented variants when a new backend is added, and
+//! there is no vtable/`Arc` overhead on the hot dispatch paths.
+
 use crate::adapters::corrosion::docker::DockerCorrosion;
 use crate::adapters::corrosion::host::HostCorrosion;
 use ployz_corrosion::client::Transport;
@@ -540,5 +547,23 @@ impl ployz_gateway::RoutingStore for StoreDriver {
         RoutingStore::subscribe_routing_invalidations(self)
             .await
             .map_err(|err| ployz_gateway::GatewayError::Store(err.to_string()))
+    }
+}
+
+impl ployz_dns::DnsStore for StoreDriver {
+    async fn load_routing_state(
+        &self,
+    ) -> std::result::Result<RoutingState, ployz_dns::DnsError> {
+        RoutingStore::load_routing_state(self)
+            .await
+            .map_err(|err| ployz_dns::DnsError::Store(err.to_string()))
+    }
+
+    async fn subscribe_routing_invalidations(
+        &self,
+    ) -> std::result::Result<mpsc::Receiver<()>, ployz_dns::DnsError> {
+        RoutingStore::subscribe_routing_invalidations(self)
+            .await
+            .map_err(|err| ployz_dns::DnsError::Store(err.to_string()))
     }
 }

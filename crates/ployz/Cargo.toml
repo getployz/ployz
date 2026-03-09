@@ -13,6 +13,7 @@ ployz-sdk = { path = "../ployz-sdk" }
 ployz-routes = { path = "../ployz-routes" }
 ployz-corrosion = { path = "../ployz-corrosion" }
 ployz-gateway = { path = "../ployz-gateway" }
+ployz-dns = { path = "../ployz-dns" }
 ployz-ebpf-common = { path = "../ebpf-common" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

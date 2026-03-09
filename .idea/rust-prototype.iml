@@ -12,6 +12,7 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/ebpf/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/ployz-cli/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/ployz-corrosion/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/ployz-dns/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/ployz-gateway/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/ployz-routes/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/ployz-routing/src" isTestSource="false" />

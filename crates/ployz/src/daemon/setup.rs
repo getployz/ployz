@@ -4,6 +4,7 @@ use std::path::Path;
 use crate::config::Mode;
 use crate::corrosion_config;
 use crate::deploy::remote::start_remote_control_listener;
+use crate::dns::{DnsConfig, start_managed_dns};
 use crate::drivers::{StoreDriver, WireguardDriver};
 use crate::gateway::{GatewayConfig, start_managed_gateway};
 use crate::mesh::orchestrator::Mesh;
@@ -244,12 +245,24 @@ impl DaemonState {
             }
         };
 
+        let dns_config =
+            DnsConfig::for_network(&self.data_dir, &net_config.name.0, net_config.overlay_ip);
+        let dns =
+            match start_managed_dns(self.mode, mesh.store.clone(), dns_config).await {
+                Ok(handle) => handle,
+                Err(err) => {
+                    tracing::warn!(?err, "failed to start dns, continuing without it");
+                    crate::dns::DnsHandle::noop()
+                }
+            };
+
         let network_name = net_config.name.0.clone();
         self.active = Some(ActiveMesh {
             config: net_config,
             mesh,
             remote_control,
             gateway,
+            dns,
         });
         self.write_active_marker(&network_name);
         Ok(())

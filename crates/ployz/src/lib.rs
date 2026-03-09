@@ -1,6 +1,7 @@
 pub mod adapters;
 pub mod daemon;
 pub mod deploy;
+pub mod dns;
 pub mod drivers;
 pub mod gateway;
 mod machine_liveness;
@@ -39,6 +40,8 @@ pub use adapters::memory::{MemoryService, MemoryStore, MemoryWireGuard};
 pub use adapters::wireguard::config as wireguard_config;
 pub use adapters::wireguard::{DEFAULT_LISTEN_PORT, DockerWireGuard, HostWireGuard, WgSidecar};
 pub use drivers::{StoreDriver, WireguardDriver};
+pub use dns::DnsHandle;
+pub use ployz_dns::{DnsConfig, DnsError};
 pub use gateway::GatewayHandle;
 pub use ployz_gateway::{GatewayApp, GatewayConfig, GatewayError, SharedSnapshot};
 pub use mesh::orchestrator::{Mesh, MeshError};

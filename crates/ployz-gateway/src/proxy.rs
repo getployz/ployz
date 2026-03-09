@@ -46,24 +46,22 @@ impl GatewayApp {
         backends: &[BackendView],
         failed_instances: &HashSet<InstanceId>,
     ) -> Option<BackendView> {
-        let eligible = backends
+        let eligible: Vec<_> = backends
             .iter()
-            .filter(|backend| !failed_instances.contains(&backend.instance_id))
-            .cloned()
-            .collect::<Vec<_>>();
-        let len = (!eligible.is_empty()).then_some(eligible.len())?;
+            .filter(|b| !failed_instances.contains(&b.instance_id))
+            .collect();
+        let len = eligible.len();
+        if len == 0 {
+            return None;
+        }
         let mut rr_state = self
             .rr_state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let next = if let Some(value) = rr_state.get_mut(route_id) {
-            value
-        } else {
-            rr_state.entry(route_id.to_string()).or_insert(0)
-        };
-        let backend = eligible.get(*next % len).cloned()?;
+        let next = rr_state.entry(route_id.to_string()).or_insert(0);
+        let idx = *next % len;
         *next = next.wrapping_add(1);
-        Some(backend)
+        Some(eligible[idx].clone())
     }
 }
 
@@ -116,19 +114,12 @@ impl ProxyHttp for GatewayApp {
         ctx: &mut Self::CTX,
     ) -> pingora::Result<Box<HttpPeer>> {
         if ctx.backend.is_none() {
-            let Some(backend) = select_backend_for_ctx(self, ctx) else {
-                return Err(Error::explain(
-                    ErrorType::HTTPStatus(503),
-                    "backend was not selected",
-                ));
-            };
-            ctx.backend = Some(backend);
+            ctx.backend = Some(select_backend_for_ctx(self, ctx).ok_or_else(|| {
+                Error::explain(ErrorType::HTTPStatus(503), "no eligible backend")
+            })?);
         }
         let Some(backend) = ctx.backend.as_ref() else {
-            return Err(Error::explain(
-                ErrorType::HTTPStatus(503),
-                "backend was not selected",
-            ));
+            unreachable!("backend is guaranteed Some by the block above");
         };
 
         let mut peer = HttpPeer::new(backend.address, false, String::new());
