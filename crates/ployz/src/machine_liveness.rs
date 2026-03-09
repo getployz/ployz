@@ -46,6 +46,7 @@ mod tests {
             last_heartbeat,
             created_at: 0,
             updated_at: 0,
+            labels: std::collections::BTreeMap::new(),
         }
     }
 

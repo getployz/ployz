@@ -97,6 +97,7 @@ fn peer_records_from_db(network_dir: &Path) -> Result<Vec<MachineRecord>, String
             last_heartbeat: 0,
             created_at: 0,
             updated_at: 0,
+            labels: std::collections::BTreeMap::new(),
         });
     }
 
@@ -342,6 +343,7 @@ async fn build_seed_records(
             last_heartbeat: 0,
             created_at: 0,
             updated_at: 0,
+            labels: std::collections::BTreeMap::new(),
         });
     }
 
@@ -358,6 +360,7 @@ async fn build_seed_records(
         last_heartbeat: 0,
         created_at: 0,
         updated_at: 0,
+        labels: std::collections::BTreeMap::new(),
     };
     if let Some(existing) = seed_records.iter_mut().find(|m| m.id == self_record.id) {
         *existing = self_record;

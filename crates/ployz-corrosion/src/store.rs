@@ -140,7 +140,7 @@ impl MachineStore for CorrosionStore {
 
     async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
         let stmt = Statement::Simple(
-            "SELECT id, public_key, overlay_ip, subnet, bridge_ip, endpoints, status, participation, last_heartbeat, created_at, updated_at FROM machines ORDER BY id".to_string(),
+            "SELECT id, public_key, overlay_ip, subnet, bridge_ip, endpoints, status, participation, last_heartbeat, labels, created_at, updated_at FROM machines ORDER BY id".to_string(),
         );
         query_rows(&self.client, &stmt, "list_machines")
             .await?
@@ -152,19 +152,21 @@ impl MachineStore for CorrosionStore {
     async fn upsert_machine(&self, record: &MachineRecord) -> Result<()> {
         let endpoints = serde_json::to_string(&record.endpoints)
             .map_err(|e| Error::operation("upsert_machine", format!("serialize: {e}")))?;
+        let labels = serde_json::to_string(&record.labels)
+            .map_err(|e| Error::operation("upsert_machine", format!("serialize labels: {e}")))?;
         let subnet_str = record.subnet.map(|s| s.to_string()).unwrap_or_default();
         let bridge_str = record
             .bridge_ip
             .map(|b| b.0.to_string())
             .unwrap_or_default();
         let stmt = Statement::WithParams(
-            "INSERT INTO machines (id, public_key, overlay_ip, subnet, bridge_ip, endpoints, status, participation, last_heartbeat, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+            "INSERT INTO machines (id, public_key, overlay_ip, subnet, bridge_ip, endpoints, status, participation, last_heartbeat, labels, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET public_key=excluded.public_key, \
              overlay_ip=excluded.overlay_ip, subnet=excluded.subnet, \
              bridge_ip=excluded.bridge_ip, endpoints=excluded.endpoints, \
              status=excluded.status, participation=excluded.participation, \
-             last_heartbeat=excluded.last_heartbeat, \
+             last_heartbeat=excluded.last_heartbeat, labels=excluded.labels, \
              created_at=CASE WHEN machines.created_at > 0 THEN machines.created_at ELSE excluded.created_at END, \
              updated_at=excluded.updated_at"
                 .to_string(),
@@ -178,6 +180,7 @@ impl MachineStore for CorrosionStore {
                 record.status.to_string().into(),
                 record.participation.to_string().into(),
                 (record.last_heartbeat as i64).into(),
+                labels.into(),
                 (record.created_at as i64).into(),
                 (record.updated_at as i64).into(),
             ],
@@ -197,7 +200,7 @@ impl MachineStore for CorrosionStore {
         &self,
     ) -> Result<(Vec<MachineRecord>, mpsc::Receiver<MachineEvent>)> {
         let stmt = Statement::Simple(
-            "SELECT id, public_key, overlay_ip, subnet, bridge_ip, endpoints, status, participation, last_heartbeat, created_at, updated_at FROM machines ORDER BY id".to_string(),
+            "SELECT id, public_key, overlay_ip, subnet, bridge_ip, endpoints, status, participation, last_heartbeat, labels, created_at, updated_at FROM machines ORDER BY id".to_string(),
         );
         let mut stream = self
             .client
@@ -853,13 +856,14 @@ fn parse_machine(row: &[SqliteValue]) -> Result<MachineRecord> {
         status_val,
         participation_val,
         heartbeat_val,
+        labels_val,
         created_val,
         updated_val,
     ] = row
     else {
         return Err(Error::operation(
             "parse_machine",
-            format!("expected 11 columns, got {}", row.len()),
+            format!("expected 12 columns, got {}", row.len()),
         ));
     };
 
@@ -874,6 +878,7 @@ fn parse_machine(row: &[SqliteValue]) -> Result<MachineRecord> {
     let last_heartbeat = integer(heartbeat_val, "last_heartbeat")? as u64;
     let created_at = integer(created_val, "created_at")? as u64;
     let updated_at = integer(updated_val, "updated_at")? as u64;
+    let labels_json = text(labels_val, "labels")?;
 
     let public_key: [u8; 32] = key_blob.as_slice().try_into().map_err(|_| {
         Error::operation(
@@ -914,6 +919,9 @@ fn parse_machine(row: &[SqliteValue]) -> Result<MachineRecord> {
         .parse()
         .map_err(|e| Error::operation("parse_machine", format!("invalid participation: {e}")))?;
 
+    let labels: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(&labels_json).unwrap_or_default();
+
     Ok(MachineRecord {
         id: MachineId(id),
         public_key: PublicKey(public_key),
@@ -926,6 +934,7 @@ fn parse_machine(row: &[SqliteValue]) -> Result<MachineRecord> {
         last_heartbeat,
         created_at,
         updated_at,
+        labels,
     })
 }
 

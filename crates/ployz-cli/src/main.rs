@@ -287,6 +287,17 @@ enum MachineAction {
         #[arg(long)]
         force: bool,
     },
+    /// Set or remove labels on a machine.
+    Label {
+        /// Machine ID (or "self" for the local machine).
+        id: String,
+        /// Labels to set (key=value).
+        #[arg(long, num_args = 1..)]
+        set: Vec<String>,
+        /// Label keys to remove.
+        #[arg(long, num_args = 1..)]
+        rm: Vec<String>,
+    },
     /// Invite token operations.
     Invite {
         #[command(subcommand)]
@@ -481,6 +492,20 @@ fn build_machine_request(action: MachineAction) -> Result<DaemonRequest> {
         MachineAction::Add { targets } => Ok(DaemonRequest::MachineAdd { targets }),
         MachineAction::Drain { id } => Ok(DaemonRequest::MachineDrain { id }),
         MachineAction::Rm { id, force } => Ok(DaemonRequest::MachineRemove { id, force }),
+        MachineAction::Label { id, set, rm } => {
+            let set_pairs: Vec<(String, String)> = set
+                .into_iter()
+                .filter_map(|entry| {
+                    let (key, value) = entry.split_once('=')?;
+                    Some((key.to_string(), value.to_string()))
+                })
+                .collect();
+            Ok(DaemonRequest::MachineLabel {
+                id,
+                set: set_pairs,
+                remove: rm,
+            })
+        }
         MachineAction::Invite { action } => match action {
             MachineInviteAction::Create { ttl_secs } => {
                 Ok(DaemonRequest::MachineInviteCreate { ttl_secs })
