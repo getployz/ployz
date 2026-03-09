@@ -18,7 +18,7 @@ pub struct Paths {
 
 impl Paths {
     /// Derive all paths from a root data directory.
-    #[must_use] 
+    #[must_use]
     pub fn new(data_dir: &Path) -> Self {
         let dir = data_dir.join("corrosion");
         Self {
@@ -32,13 +32,13 @@ impl Paths {
 }
 
 /// Default gossip address (`0.0.0.0:51001`).
-#[must_use] 
+#[must_use]
 pub fn default_gossip_addr() -> SocketAddr {
     SocketAddr::from(([0, 0, 0, 0], DEFAULT_GOSSIP_PORT))
 }
 
 /// Default API address (`0.0.0.0:51002`).
-#[must_use] 
+#[must_use]
 pub fn default_api_addr() -> SocketAddr {
     SocketAddr::from(([0, 0, 0, 0], DEFAULT_API_PORT))
 }

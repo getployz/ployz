@@ -119,7 +119,7 @@ pub struct CorrClient {
 }
 
 impl CorrClient {
-    #[must_use] 
+    #[must_use]
     pub fn new(api_addr: SocketAddr, transport: Transport) -> Self {
         let connector = BridgeConnector {
             transport: transport.clone(),
@@ -134,12 +134,12 @@ impl CorrClient {
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn api_addr(&self) -> SocketAddr {
         self.api_addr
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn transport(&self) -> &Transport {
         &self.transport
     }
@@ -195,9 +195,9 @@ impl CorrClient {
                     .results
                     .into_iter()
                     .find(|r| matches!(r, ExecResult::Error { .. }))
-                {
-                    return Err(ClientError::ResponseError(error));
-                }
+            {
+                return Err(ClientError::ResponseError(error));
+            }
             return Err(ClientError::UnexpectedStatusCode(status));
         }
         Ok(serde_json::from_slice(&body)?)
@@ -227,9 +227,10 @@ impl CorrClient {
         if !status.is_success() {
             let body = resp.into_body().collect().await?.to_bytes();
             if let Ok(res) = serde_json::from_slice::<ExecResult>(&body)
-                && let ExecResult::Error { error } = res {
-                    return Err(ClientError::ResponseError(error));
-                }
+                && let ExecResult::Error { error } = res
+            {
+                return Err(ClientError::ResponseError(error));
+            }
             return Err(ClientError::UnexpectedStatusCode(status));
         }
         Ok(QueryStream::new(resp.into_body()))
@@ -544,9 +545,10 @@ impl<T: DeserializeOwned + Unpin> SubscriptionStream<T> {
                         self.handle_eoq(*change_id);
                     }
                     if let TypedQueryEvent::Change(_, _, _, change_id) = &evt
-                        && let Err(e) = self.handle_change(*change_id) {
-                            return Poll::Ready(Some(Err(e)));
-                        }
+                        && let Err(e) = self.handle_change(*change_id)
+                    {
+                        return Poll::Ready(Some(Err(e)));
+                    }
                     Poll::Ready(Some(Ok(evt)))
                 }
                 Err(deser_err) => {
@@ -579,12 +581,13 @@ impl<T: DeserializeOwned + Unpin> SubscriptionStream<T> {
 
     fn handle_change(&mut self, change_id: ChangeId) -> Result<(), SubscriptionError> {
         if let Some(id) = self.last_change_id
-            && id + 1 != change_id {
-                return Err(SubscriptionError::MissedChange {
-                    expected: id + 1,
-                    got: change_id,
-                });
-            }
+            && id + 1 != change_id
+        {
+            return Err(SubscriptionError::MissedChange {
+                expected: id + 1,
+                got: change_id,
+            });
+        }
         self.last_change_id = Some(change_id);
         Ok(())
     }
