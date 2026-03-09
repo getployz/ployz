@@ -109,54 +109,60 @@ pub struct DaemonResponse {
     pub message: String,
 }
 
+/// Deploy session wire protocol.
+///
+/// One TCP connection carries one session for one namespace.
+/// The first frame must be `Open`; the server responds with `Opened`.
+/// Subsequent frames are commands (client→server) and responses (server→client).
+/// The session ends on `Close` or connection EOF, which releases the namespace lock.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum RemoteDeployRequest {
-    LockAcquire {
+pub enum DeployFrame {
+    // -- client → server --
+    /// First frame: acquire namespace lock and return current instance snapshot.
+    Open {
         namespace: String,
         deploy_id: String,
         coordinator_id: String,
-        participant_fingerprint: Vec<String>,
     },
-    LockHeartbeat {
-        namespace: String,
-        deploy_id: String,
-    },
-    InspectNamespace {
-        namespace: String,
-    },
+    /// Re-inspect live container state on this machine for the locked namespace.
+    InspectNamespace,
+    /// Start a new candidate instance.
     StartCandidate {
-        namespace: String,
         service: String,
         slot_id: String,
         instance_id: String,
         deploy_id: String,
         spec_json: String,
     },
+    /// Mark an instance as draining.
     DrainInstance {
-        namespace: String,
         instance_id: String,
     },
+    /// Remove an instance.
     RemoveInstance {
-        namespace: String,
         instance_id: String,
     },
-    Unlock {
-        namespace: String,
-        deploy_id: String,
-    },
-}
+    /// Graceful session close (lock released).
+    Close,
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum RemoteDeployResponse {
-    Ack {
-        message: String,
+    // -- server → client --
+    /// Response to `Open`: lock acquired, here are the current instances.
+    Opened {
+        instances: Vec<InstanceStatusRecord>,
     },
+    /// Response to `InspectNamespace`.
     NamespaceSnapshot {
         instances: Vec<InstanceStatusRecord>,
     },
+    /// Response to `StartCandidate`.
     CandidateStarted {
         status: Box<InstanceStatusRecord>,
     },
+    /// Generic success acknowledgement.
+    Ack {
+        message: String,
+    },
+    /// Error response.
     Error {
         code: String,
         message: String,

@@ -3,6 +3,8 @@ use std::path::Path;
 
 use crate::config::Mode;
 use crate::corrosion_config;
+use std::net::{IpAddr, SocketAddr};
+
 use crate::deploy::remote::start_remote_control_listener;
 use crate::dns::{DnsConfig, start_managed_dns};
 use crate::drivers::{StoreDriver, WireguardDriver};
@@ -209,10 +211,31 @@ impl DaemonState {
 
         let remote_control = match self.mode {
             Mode::Memory => crate::deploy::remote::RemoteControlHandle::noop(),
-            Mode::Docker | Mode::HostExec | Mode::HostService => {
+            Mode::Docker => {
+                // In Docker mode, the overlay IP lives inside the WG container.
+                // The daemon binds on localhost; the bridge relays overlay traffic.
+                let bind_addr = SocketAddr::from(([127, 0, 0, 1], self.remote_control_port));
                 match start_remote_control_listener(
-                    net_config.overlay_ip,
-                    self.remote_control_port,
+                    bind_addr,
+                    mesh.store.clone(),
+                    self.namespace_locks.clone(),
+                    self.identity.machine_id.clone(),
+                    Some(format!("ployz-{}", net_config.name.0)),
+                )
+                .await
+                {
+                    Ok(handle) => handle,
+                    Err(err) => {
+                        let _ = mesh.destroy().await;
+                        return Err(format!("failed to start remote deploy listener: {err}"));
+                    }
+                }
+            }
+            Mode::HostExec | Mode::HostService => {
+                let bind_addr =
+                    SocketAddr::new(IpAddr::V6(net_config.overlay_ip.0), self.remote_control_port);
+                match start_remote_control_listener(
+                    bind_addr,
                     mesh.store.clone(),
                     self.namespace_locks.clone(),
                     self.identity.machine_id.clone(),

@@ -2,8 +2,8 @@ pub mod protocol;
 pub mod unix;
 
 pub use protocol::{
-    DaemonRequest, DaemonResponse, DeployManifestFormat, DeployManifestInput, DeployOptions,
-    RemoteDeployRequest, RemoteDeployResponse,
+    DaemonRequest, DaemonResponse, DeployFrame, DeployManifestFormat, DeployManifestInput,
+    DeployOptions,
 };
 pub use unix::UnixSocketTransport;
 

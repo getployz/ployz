@@ -1,4 +1,5 @@
 pub mod remote;
+pub mod session;
 
 use bollard::Docker;
 use bollard::exec::{CreateExecOptions, StartExecResults};
@@ -629,15 +630,12 @@ pub async fn preview(
 #[allow(clippy::indexing_slicing)]
 pub async fn apply(
     store: &StoreDriver,
-    runtime: &LocalDeployRuntime,
-    locks: &NamespaceLockManager,
+    session_factory: &dyn session::DeploySessionFactory,
     local_machine_id: &MachineId,
-    remote_control_port: u16,
     namespace: &Namespace,
     manifest: &DeployManifest,
 ) -> Result<DeployApplyResult> {
     let deploy_id = DeployId(Uuid::new_v4().to_string());
-    let _lock = locks.try_acquire(namespace, &deploy_id)?;
     let started_at = now_unix_secs();
     let initial_preview = preview(store, local_machine_id, namespace, manifest).await?;
     let machines = store.list_machines().await?;
@@ -645,17 +643,17 @@ pub async fn apply(
         .iter()
         .map(|machine| (machine.id.clone(), machine.clone()))
         .collect();
-    let mut remote_sessions = Vec::new();
-    let participant_fingerprint = initial_preview.participants.clone();
-    let mut events = vec![DeployEvent {
-        step: "lock".into(),
-        message: format!("acquired namespace lock for '{}'", namespace),
-    }];
 
-    for participant in &initial_preview.participants {
-        if participant == local_machine_id {
-            continue;
-        }
+    let mut events = vec![];
+
+    // Open sessions for ALL participants (including self) in sorted order
+    // to avoid deadlock if two coordinators try to lock the same set.
+    let mut sorted_participants = initial_preview.participants.clone();
+    sorted_participants.sort();
+
+    let mut sessions: BTreeMap<MachineId, Box<dyn session::DeploySession>> = BTreeMap::new();
+
+    for participant in &sorted_participants {
         let Some(machine) = machine_map.get(participant) else {
             return Err(Error::operation(
                 "deploy_apply",
@@ -665,42 +663,21 @@ pub async fn apply(
                 ),
             ));
         };
-        let session = remote::RemoteDeploySession::connect(
-            machine,
-            remote_control_port,
-            namespace,
-            &deploy_id,
-            local_machine_id,
-            &participant_fingerprint,
-        )
-        .await?;
+        let (sess, instances) = session_factory
+            .open(machine, namespace, &deploy_id, local_machine_id)
+            .await?;
         events.push(DeployEvent {
-            step: "lock_remote".into(),
-            message: format!("acquired remote lock on '{}'", participant),
+            step: "lock".into(),
+            message: format!(
+                "acquired lock on '{}' ({} instances)",
+                participant,
+                instances.len()
+            ),
         });
-        remote_sessions.push(session);
+        sessions.insert(participant.clone(), sess);
     }
 
     let result = async {
-        let remote_session_index: HashMap<String, usize> = remote_sessions
-            .iter()
-            .enumerate()
-            .map(|(index, session)| (session.machine_id().0.clone(), index))
-            .collect();
-
-        adopt_instances(store, runtime, namespace).await?;
-        for session in &remote_sessions {
-            let instances = session.inspect_namespace().await?;
-            events.push(DeployEvent {
-                step: "inspect".into(),
-                message: format!(
-                    "inspected '{}' and found {} local instance records",
-                    session.machine_id(),
-                    instances.len()
-                ),
-            });
-        }
-
         let final_preview = preview(store, local_machine_id, namespace, manifest).await?;
         if final_preview.participants != initial_preview.participants {
             return Err(Error::operation(
@@ -779,53 +756,24 @@ pub async fn apply(
                             spec.name, desired_slot.slot_id, instance_id, desired_slot.machine_id
                         ),
                     });
-                    let status = if desired_slot.machine_id == *local_machine_id {
-                        let instance = runtime
-                            .start_candidate(
-                                spec,
-                                &deploy_id,
-                                &instance_id,
-                                &desired_slot.slot_id,
-                                &desired_slot.machine_id,
-                                &revision_hash,
-                            )
-                            .await?;
-                        runtime.wait_ready(spec, &instance).await?;
-                        build_instance_status_record(
-                            namespace,
-                            &spec.name,
-                            &desired_slot.slot_id,
-                            &desired_slot.machine_id,
-                            &revision_hash,
-                            &deploy_id,
-                            &instance,
-                            InstancePhase::Ready,
-                            true,
-                            DrainState::None,
-                            None,
-                        )
-                    } else {
-                        let Some(index) = remote_session_index.get(&desired_slot.machine_id.0)
-                        else {
-                            return Err(Error::operation(
-                                "deploy_apply",
-                                format!(
-                                    "no remote session was available for machine '{}'",
-                                    desired_slot.machine_id
-                                ),
-                            ));
-                        };
-                        remote_sessions[*index]
-                            .start_candidate(
-                                namespace,
-                                &spec.name,
-                                &desired_slot.slot_id,
-                                &instance_id,
-                                &deploy_id,
-                                &spec_json,
-                            )
-                            .await?
+                    let Some(sess) = sessions.get_mut(&desired_slot.machine_id) else {
+                        return Err(Error::operation(
+                            "deploy_apply",
+                            format!(
+                                "no session was available for machine '{}'",
+                                desired_slot.machine_id
+                            ),
+                        ));
                     };
+                    let status = sess
+                        .start_candidate(session::StartCandidateRequest {
+                            service: spec.name.clone(),
+                            slot_id: desired_slot.slot_id.clone(),
+                            instance_id,
+                            deploy_id: deploy_id.clone(),
+                            spec_json: spec_json.clone(),
+                        })
+                        .await?;
                     store.upsert_instance_status(&status).await?;
                     status.instance_id
                 };
@@ -881,6 +829,7 @@ pub async fn apply(
             message: format!("committed deploy {} for '{}'", deploy_id, namespace),
         });
 
+        // Cleanup: drain and remove old instances via uniform sessions.
         let active_instance_ids: BTreeSet<String> = committed_slots
             .iter()
             .map(|slot| slot.active_instance_id.0.clone())
@@ -898,52 +847,27 @@ pub async fn apply(
             if !participant_ids.contains(&status.machine_id.0) {
                 continue;
             }
-            if status.machine_id == *local_machine_id {
-                let mut draining = status.clone();
-                draining.phase = InstancePhase::Draining;
-                draining.ready = false;
-                draining.drain_state = DrainState::Requested;
-                draining.updated_at = now_unix_secs();
-                if let Err(err) = store.upsert_instance_status(&draining).await {
-                    cleanup_errors.push(err.to_string());
-                    continue;
-                }
-                match runtime
-                    .remove_instance(&status.instance_id, namespace, &status.service)
-                    .await
-                {
-                    Ok(()) => {
-                        store.delete_instance_status(&status.instance_id).await?;
-                        events.push(DeployEvent {
-                            step: "cleanup".into(),
-                            message: format!("removed old instance {}", status.instance_id),
-                        });
+            let Some(sess) = sessions.get_mut(&status.machine_id) else {
+                continue;
+            };
+            if let Err(err) = sess.drain_instance(&status.instance_id).await {
+                cleanup_errors.push(err.to_string());
+                continue;
+            }
+            match sess.remove_instance(&status.instance_id).await {
+                Ok(()) => {
+                    if status.machine_id == *local_machine_id {
+                        // Local removal already deleted from store via DeployAgent.
                     }
-                    Err(err) => cleanup_errors.push(err.to_string()),
+                    events.push(DeployEvent {
+                        step: "cleanup".into(),
+                        message: format!(
+                            "removed old instance {} from {}",
+                            status.instance_id, status.machine_id
+                        ),
+                    });
                 }
-            } else if let Some(index) = remote_session_index.get(&status.machine_id.0) {
-                if let Err(err) = remote_sessions[*index]
-                    .drain_instance(&status.instance_id)
-                    .await
-                {
-                    cleanup_errors.push(err.to_string());
-                    continue;
-                }
-                match remote_sessions[*index]
-                    .remove_instance(&status.instance_id)
-                    .await
-                {
-                    Ok(()) => {
-                        events.push(DeployEvent {
-                            step: "cleanup".into(),
-                            message: format!(
-                                "removed remote instance {} from {}",
-                                status.instance_id, status.machine_id
-                            ),
-                        });
-                    }
-                    Err(err) => cleanup_errors.push(err.to_string()),
-                }
+                Err(err) => cleanup_errors.push(err.to_string()),
             }
         }
 
@@ -971,8 +895,9 @@ pub async fn apply(
     }
     .await;
 
-    for session in remote_sessions {
-        session.shutdown().await;
+    // Close all sessions (releases locks).
+    for (_machine_id, sess) in sessions {
+        let _ = sess.close().await;
     }
 
     result
