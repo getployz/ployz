@@ -23,6 +23,7 @@ struct HeartbeatState {
 
 pub(crate) async fn run_heartbeat_task(
     machine_id: MachineId,
+    self_seed: Option<MachineRecord>,
     store: StoreDriver,
     network: WireguardDriver,
     started: Arc<AtomicBool>,
@@ -31,6 +32,7 @@ pub(crate) async fn run_heartbeat_task(
     started.store(true, Ordering::SeqCst);
     let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
     let mut state = HeartbeatState::default();
+    let mut seed = self_seed;
 
     loop {
         tokio::select! {
@@ -39,7 +41,7 @@ pub(crate) async fn run_heartbeat_task(
                 break;
             }
             _ = interval.tick() => {
-                heartbeat_once(&machine_id, &store, &network, &mut state).await;
+                heartbeat_once(&machine_id, &mut seed, &store, &network, &mut state).await;
             }
         }
     }
@@ -47,6 +49,7 @@ pub(crate) async fn run_heartbeat_task(
 
 async fn heartbeat_once(
     machine_id: &MachineId,
+    seed: &mut Option<MachineRecord>,
     store: &StoreDriver,
     network: &WireguardDriver,
     state: &mut HeartbeatState,
@@ -69,12 +72,22 @@ async fn heartbeat_once(
 
     let required_peers = required_peers_for_participation(&machines, machine_id, now);
 
-    let Some(mut record) = machines
-        .into_iter()
-        .find(|machine| machine.id == *machine_id)
-    else {
-        warn!("self record not found in store, skipping heartbeat");
-        return;
+    let mut record = match machines.into_iter().find(|machine| machine.id == *machine_id) {
+        Some(existing) => {
+            // Record exists in store; seed is no longer needed.
+            *seed = None;
+            existing
+        }
+        None => match seed.take() {
+            Some(s) => {
+                info!("bootstrapping self record from seed");
+                s
+            }
+            None => {
+                warn!("self record not found in store, skipping heartbeat");
+                return;
+            }
+        },
     };
 
     record.status = MachineStatus::Up;
@@ -315,7 +328,7 @@ mod tests {
         let network_driver = WireguardDriver::Memory(network.clone());
 
         for _ in 0..3 {
-            heartbeat_once(&self_id, &store_driver, &network_driver, &mut state).await;
+            heartbeat_once(&self_id, &mut None, &store_driver, &network_driver, &mut state).await;
         }
 
         let machines = store.list_machines().await.expect("list machines");
@@ -339,7 +352,7 @@ mod tests {
         let network_driver = WireguardDriver::Memory(network);
 
         for _ in 0..3 {
-            heartbeat_once(&self_id, &store_driver, &network_driver, &mut state).await;
+            heartbeat_once(&self_id, &mut None, &store_driver, &network_driver, &mut state).await;
         }
 
         let machines = store.list_machines().await.expect("list machines");
@@ -404,7 +417,7 @@ mod tests {
         let network_driver = WireguardDriver::Memory(network);
 
         for _ in 0..3 {
-            heartbeat_once(&self_id, &store_driver, &network_driver, &mut state).await;
+            heartbeat_once(&self_id, &mut None, &store_driver, &network_driver, &mut state).await;
         }
 
         let machines = store.list_machines().await.expect("list machines");
@@ -446,7 +459,7 @@ mod tests {
         let network_driver = WireguardDriver::Memory(network);
 
         for _ in 0..3 {
-            heartbeat_once(&self_id, &store_driver, &network_driver, &mut state).await;
+            heartbeat_once(&self_id, &mut None, &store_driver, &network_driver, &mut state).await;
         }
 
         let machines = store.list_machines().await.expect("list machines");
@@ -489,7 +502,7 @@ mod tests {
         let network_driver = WireguardDriver::Memory(network);
 
         for _ in 0..3 {
-            heartbeat_once(&self_id, &store_driver, &network_driver, &mut state).await;
+            heartbeat_once(&self_id, &mut None, &store_driver, &network_driver, &mut state).await;
         }
 
         let machines = store.list_machines().await.expect("list machines");
@@ -518,7 +531,7 @@ mod tests {
         let network_driver = WireguardDriver::Memory(network);
 
         for _ in 0..3 {
-            heartbeat_once(&self_id, &store_driver, &network_driver, &mut state).await;
+            heartbeat_once(&self_id, &mut None, &store_driver, &network_driver, &mut state).await;
         }
 
         let machines = store.list_machines().await.expect("list machines");
