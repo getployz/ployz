@@ -96,6 +96,14 @@ impl NetworkConfig {
         })
     }
 
+    /// Read the active network name from `<data_dir>/active_network`.
+    pub fn read_active_network(data_dir: &Path) -> Option<String> {
+        std::fs::read_to_string(data_dir.join("active_network"))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
     pub fn delete(data_dir: &Path, name: &str) -> std::io::Result<()> {
         let dir = Self::dir(data_dir, name);
         if dir.exists() {

@@ -6,6 +6,7 @@ use crate::model::{
     MachineId, MachineRecord, ServiceHeadRecord, ServiceRevisionRecord, ServiceSlotRecord,
 };
 use crate::spec::Namespace;
+use ployz_routing::RoutingState;
 use std::future::Future;
 use tokio::sync::mpsc;
 
@@ -37,6 +38,13 @@ pub trait InviteStore: Send + Sync {
         invite_id: &'a str,
         now_unix_secs: u64,
     ) -> impl Future<Output = Result<()>> + Send + 'a;
+}
+
+pub trait RoutingStore: Send + Sync {
+    fn load_routing_state(&self) -> impl Future<Output = Result<RoutingState>> + Send + '_;
+    fn subscribe_routing_invalidations(
+        &self,
+    ) -> impl Future<Output = Result<mpsc::Receiver<()>>> + Send + '_;
 }
 
 pub trait DeployStore: Send + Sync {

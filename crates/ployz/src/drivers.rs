@@ -14,7 +14,9 @@ use crate::model::{
 };
 use crate::node::identity::Identity;
 use crate::spec::Namespace;
-use crate::store::{DeployStore, InviteStore, MachineStore, ServiceControl, SyncProbe, SyncStatus};
+use crate::store::{
+    DeployStore, InviteStore, MachineStore, RoutingStore, ServiceControl, SyncProbe, SyncStatus,
+};
 use crate::{SCHEMA_SQL, corrosion_config};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -348,6 +350,26 @@ impl InviteStore for StoreDriver {
             Self::Memory { store, .. } => store.consume_invite(invite_id, now_unix_secs).await,
             Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
                 store.consume_invite(invite_id, now_unix_secs).await
+            }
+        }
+    }
+}
+
+impl RoutingStore for StoreDriver {
+    async fn load_routing_state(&self) -> Result<ployz_routing::RoutingState> {
+        match self {
+            Self::Memory { store, .. } => store.load_routing_state().await,
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store.load_routing_state().await
+            }
+        }
+    }
+
+    async fn subscribe_routing_invalidations(&self) -> Result<mpsc::Receiver<()>> {
+        match self {
+            Self::Memory { store, .. } => store.subscribe_routing_invalidations().await,
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store.subscribe_routing_invalidations().await
             }
         }
     }

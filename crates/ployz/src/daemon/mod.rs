@@ -59,10 +59,7 @@ impl DaemonState {
     }
 
     pub fn read_active_marker(&self) -> Option<String> {
-        std::fs::read_to_string(self.active_marker_path())
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
+        NetworkConfig::read_active_network(&self.data_dir)
     }
 
     pub fn write_active_marker(&self, network: &str) {
