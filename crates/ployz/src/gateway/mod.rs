@@ -412,7 +412,6 @@ async fn start_docker_gateway(config: GatewayConfig) -> Result<DockerGatewayHand
     let container_config = ContainerCreateBody {
         image: Some(GATEWAY_IMAGE.to_string()),
         cmd: Some(vec![
-            "ployz-gateway".into(),
             "-c".into(),
             paths.pingora_config.display().to_string(),
         ]),
