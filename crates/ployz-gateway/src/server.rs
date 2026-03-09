@@ -5,12 +5,12 @@ use pingora::prelude::*;
 #[cfg(unix)]
 use pingora::server::{RunArgs, ShutdownSignal, ShutdownSignalWatch};
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::config::{GatewayConfig, GatewayError};
 use crate::proxy::GatewayApp;
 use crate::snapshot::SharedSnapshot;
-use crate::sync::{load_projected_snapshot_from_store, run_sync_loop};
+use crate::sync::load_projected_snapshot_from_store;
 
 // ---------------------------------------------------------------------------
 // EmbeddedShutdownWatch
@@ -121,37 +121,14 @@ fn spawn_standalone_sync_thread(
     config: GatewayConfig,
     snapshot: SharedSnapshot,
 ) -> Result<(), GatewayError> {
-    std::thread::Builder::new()
-        .name("ployz-gateway-sync".into())
-        .spawn(move || {
-            let runtime = match tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(runtime) => runtime,
-                Err(err) => {
-                    warn!(?err, "failed to create gateway sync runtime");
-                    return;
-                }
-            };
-            runtime.block_on(async move {
-                let store = match ployz_corrosion::CorrosionStore::connect_for_network(
-                    &config.data_dir,
-                    &config.network,
-                )
-                .await
-                {
-                    Ok(store) => store,
-                    Err(err) => {
-                        warn!(?err, "failed to connect gateway routing store");
-                        return;
-                    }
-                };
-                if let Err(err) = run_sync_loop(store, snapshot).await {
-                    warn!(?err, "gateway sync loop exited");
-                }
-            });
-        })
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
         .map_err(|err| GatewayError::Runtime(err.to_string()))?;
-    Ok(())
+    let store = runtime.block_on(async {
+        ployz_corrosion::CorrosionStore::connect_for_network(&config.data_dir, &config.network)
+            .await
+            .map_err(|err| GatewayError::Store(err.to_string()))
+    })?;
+    crate::sync::spawn_sync_thread_with_store(store, snapshot)
 }

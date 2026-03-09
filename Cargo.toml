@@ -6,6 +6,7 @@ members = [
     "crates/ployz-routes",
     "crates/ployz-corrosion",
     "crates/ployz-gateway",
+    "crates/ployz-dns",
     "crates/ebpf-common",
     "crates/ebpf",
 ]
@@ -16,6 +17,7 @@ default-members = [
     "crates/ployz-routes",
     "crates/ployz-corrosion",
     "crates/ployz-gateway",
+    "crates/ployz-dns",
     "crates/ebpf-common",
 ]
 resolver = "3"

@@ -984,6 +984,7 @@ mod tests {
             mesh,
             remote_control: RemoteControlHandle::noop(),
             gateway: crate::gateway::GatewayHandle::noop(),
+            dns: crate::dns::DnsHandle::noop(),
         });
 
         (state, store)

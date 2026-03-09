@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::config::Mode;
 use crate::deploy::NamespaceLockManager;
 use crate::deploy::remote::RemoteControlHandle;
+use crate::dns::DnsHandle;
 use crate::gateway::GatewayHandle;
 use crate::mesh::orchestrator::Mesh;
 use crate::node::identity::Identity;
@@ -18,6 +19,7 @@ pub struct ActiveMesh {
     pub mesh: Mesh,
     pub remote_control: RemoteControlHandle,
     pub gateway: GatewayHandle,
+    pub dns: DnsHandle,
 }
 
 pub struct DaemonState {
