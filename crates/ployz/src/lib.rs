@@ -2,6 +2,7 @@ pub mod adapters;
 pub mod daemon;
 pub mod deploy;
 pub mod drivers;
+mod machine_liveness;
 pub mod mesh;
 pub mod network;
 pub mod node;

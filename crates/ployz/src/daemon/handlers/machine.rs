@@ -1,4 +1,5 @@
 use crate::drivers::StoreDriver;
+use crate::machine_liveness::{MachineLiveness, machine_liveness};
 use crate::mesh::tasks::PeerSyncCommand;
 use crate::model::{
     JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineRecord, MachineStatus, Participation,
@@ -16,7 +17,6 @@ use tokio::time::{Duration, Instant, sleep};
 use super::super::DaemonState;
 use super::super::ssh::{run_ssh, run_ssh_with_stdin};
 
-const STALE_HEARTBEAT_SECS: u64 = 30;
 const INVITE_TTL_SECS: u64 = 600;
 const REMOTE_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -101,6 +101,7 @@ impl DaemonState {
             id: String,
             status: &'static str,
             participation: &'static str,
+            liveness: &'static str,
             overlay: String,
             subnet: String,
             heartbeat: String,
@@ -113,6 +114,7 @@ impl DaemonState {
                 id: machine.id.0.clone(),
                 status: format_status(machine),
                 participation: format_participation(machine),
+                liveness: format_liveness(machine, now),
                 overlay: machine.overlay_ip.0.to_string(),
                 subnet: machine
                     .subnet
@@ -153,18 +155,32 @@ impl DaemonState {
             .max()
             .unwrap_or(0)
             .max("PARTICIPATION".len());
+        let w_live = rows
+            .iter()
+            .map(|row| row.liveness.len())
+            .max()
+            .unwrap_or(0)
+            .max("LIVENESS".len());
 
         let mut lines = Vec::with_capacity(rows.len() + 1);
         lines.push(format!(
-            "{:<w_id$}  {:<6}  {:<w_part$}  {:<w_ov$}  {:<w_sub$}  {:<w_hb$}  {}",
-            "ID", "STATUS", "PARTICIPATION", "OVERLAY IP", "SUBNET", "HEARTBEAT", "CREATED",
+            "{:<w_id$}  {:<6}  {:<w_part$}  {:<w_live$}  {:<w_ov$}  {:<w_sub$}  {:<w_hb$}  {}",
+            "ID",
+            "STATUS",
+            "PARTICIPATION",
+            "LIVENESS",
+            "OVERLAY IP",
+            "SUBNET",
+            "HEARTBEAT",
+            "CREATED",
         ));
         for row in &rows {
             lines.push(format!(
-                "{:<w_id$}  {:<6}  {:<w_part$}  {:<w_ov$}  {:<w_sub$}  {:<w_hb$}  {}",
+                "{:<w_id$}  {:<6}  {:<w_part$}  {:<w_live$}  {:<w_ov$}  {:<w_sub$}  {:<w_hb$}  {}",
                 row.id,
                 row.status,
                 row.participation,
+                row.liveness,
                 row.overlay,
                 row.subnet,
                 row.heartbeat,
@@ -389,10 +405,7 @@ impl DaemonState {
                 Participation::Disabled => false,
                 Participation::Enabled | Participation::Draining => true,
             })
-            .filter(|machine| {
-                machine.last_heartbeat == 0
-                    || now.saturating_sub(machine.last_heartbeat) > STALE_HEARTBEAT_SECS
-            })
+            .filter(|machine| machine_liveness(machine, now) == MachineLiveness::Stale)
             .map(|machine| {
                 let role = match machine.participation {
                     Participation::Disabled => "disabled",
@@ -673,6 +686,14 @@ fn format_participation(machine: &MachineRecord) -> &'static str {
     }
 }
 
+fn format_liveness(machine: &MachineRecord, now: u64) -> &'static str {
+    match machine_liveness(machine, now) {
+        MachineLiveness::Fresh => "fresh",
+        MachineLiveness::Stale => "stale",
+        MachineLiveness::Down => "down",
+    }
+}
+
 fn format_heartbeat(ts: u64, now: u64) -> String {
     if ts == 0 {
         return "never".into();
@@ -735,8 +756,29 @@ mod tests {
 
         let response = state.handle_machine_list().await;
         assert!(response.ok);
+        assert!(response.message.contains("LIVENESS"));
         assert!(response.message.contains("peer-disabled"));
         assert!(response.message.contains("disabled"));
+        assert!(response.message.contains("stale"));
+    }
+
+    #[tokio::test]
+    async fn machine_list_shows_down_liveness() {
+        let (state, store) = make_state(false).await;
+        let mut down = test_machine_record(
+            "peer-down",
+            "10.210.1.0/24",
+            Participation::Enabled,
+            chrono::Utc::now().timestamp() as u64,
+            PublicKey([2; 32]),
+        );
+        down.status = MachineStatus::Down;
+        store.upsert_machine(&down).await.expect("upsert down peer");
+
+        let response = state.handle_machine_list().await;
+        assert!(response.ok);
+        assert!(response.message.contains("peer-down"));
+        assert!(response.message.contains("down"));
     }
 
     #[tokio::test]

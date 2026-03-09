@@ -1,4 +1,5 @@
 use crate::drivers::{StoreDriver, WireguardDriver};
+use crate::machine_liveness::machine_is_fresh;
 use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
 use crate::model::{MachineId, MachineRecord, MachineStatus, Participation};
 use crate::store::MachineStore;
@@ -58,15 +59,15 @@ async fn heartbeat_once(
         }
     };
 
-    let required_peers: Vec<MachineRecord> = machines
-        .iter()
-        .filter(|machine| machine.id != *machine_id)
-        .filter(|machine| match machine.participation {
-            Participation::Disabled => false,
-            Participation::Enabled | Participation::Draining => true,
-        })
-        .cloned()
-        .collect();
+    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs(),
+        Err(err) => {
+            warn!(?err, "system clock before unix epoch, skipping heartbeat");
+            return;
+        }
+    };
+
+    let required_peers = required_peers_for_participation(&machines, machine_id, now);
 
     let Some(mut record) = machines
         .into_iter()
@@ -74,14 +75,6 @@ async fn heartbeat_once(
     else {
         warn!("self record not found in store, skipping heartbeat");
         return;
-    };
-
-    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration.as_secs(),
-        Err(err) => {
-            warn!(?err, "system clock before unix epoch, skipping heartbeat");
-            return;
-        }
     };
 
     record.status = MachineStatus::Up;
@@ -112,6 +105,23 @@ async fn heartbeat_once(
     if let Err(e) = store.upsert_machine(&record).await {
         warn!(?e, "heartbeat upsert failed");
     }
+}
+
+fn required_peers_for_participation(
+    machines: &[MachineRecord],
+    machine_id: &MachineId,
+    now: u64,
+) -> Vec<MachineRecord> {
+    machines
+        .iter()
+        .filter(|machine| machine.id != *machine_id)
+        .filter(|machine| match machine.participation {
+            Participation::Disabled => false,
+            Participation::Enabled | Participation::Draining => true,
+        })
+        .filter(|machine| machine_is_fresh(machine, now))
+        .cloned()
+        .collect()
 }
 
 fn update_hysteresis(state: &mut HeartbeatState, healthy_required_peers: bool) {
@@ -235,36 +245,48 @@ mod tests {
     #[test]
     fn required_peer_filter_ignores_disabled_peers() {
         let machine_id = MachineId("self".into());
-        let record = |id: &str, participation: Participation| MachineRecord {
+        let record = |id: &str,
+                      participation: Participation,
+                      status: MachineStatus,
+                      last_heartbeat: u64| MachineRecord {
             id: MachineId(id.into()),
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             subnet: None,
             bridge_ip: None,
             endpoints: vec![],
-            status: MachineStatus::Unknown,
+            status,
             participation,
-            last_heartbeat: 0,
+            last_heartbeat,
             created_at: 0,
             updated_at: 0,
         };
 
         let machines = [
-            record("self", Participation::Disabled),
-            record("disabled", Participation::Disabled),
-            record("enabled", Participation::Enabled),
-            record("draining", Participation::Draining),
+            record("self", Participation::Disabled, MachineStatus::Unknown, 100),
+            record(
+                "disabled",
+                Participation::Disabled,
+                MachineStatus::Unknown,
+                100,
+            ),
+            record(
+                "enabled",
+                Participation::Enabled,
+                MachineStatus::Unknown,
+                100,
+            ),
+            record(
+                "draining",
+                Participation::Draining,
+                MachineStatus::Unknown,
+                100,
+            ),
+            record("stale", Participation::Enabled, MachineStatus::Unknown, 69),
+            record("down", Participation::Enabled, MachineStatus::Down, 100),
         ];
 
-        let required: Vec<MachineRecord> = machines
-            .iter()
-            .filter(|machine| machine.id != machine_id)
-            .filter(|machine| match machine.participation {
-                Participation::Disabled => false,
-                Participation::Enabled | Participation::Draining => true,
-            })
-            .cloned()
-            .collect();
+        let required = required_peers_for_participation(&machines, &machine_id, 100);
 
         assert_eq!(
             required
@@ -335,12 +357,17 @@ mod tests {
         let network = Arc::new(MemoryWireGuard::new());
         let self_id = MachineId("self".into());
         let enabled_peer_key = PublicKey([2; 32]);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("current time")
+            .as_secs();
 
         store
             .upsert_machine(&test_machine(
                 "self",
                 Participation::Enabled,
                 PublicKey([1; 32]),
+                now,
             ))
             .await
             .expect("upsert self");
@@ -349,6 +376,7 @@ mod tests {
                 "enabled",
                 Participation::Enabled,
                 enabled_peer_key.clone(),
+                now,
             ))
             .await
             .expect("upsert enabled");
@@ -357,6 +385,7 @@ mod tests {
                 "disabled",
                 Participation::Disabled,
                 PublicKey([3; 32]),
+                0,
             ))
             .await
             .expect("upsert disabled");
@@ -366,6 +395,91 @@ mod tests {
             endpoint: Some("127.0.0.1:51820".into()),
             last_handshake: Some(Instant::now()),
         }]);
+
+        let mut state = HeartbeatState::default();
+        let store_driver = StoreDriver::Memory {
+            store: store.clone(),
+            service,
+        };
+        let network_driver = WireguardDriver::Memory(network);
+
+        for _ in 0..3 {
+            heartbeat_once(&self_id, &store_driver, &network_driver, &mut state).await;
+        }
+
+        let machines = store.list_machines().await.expect("list machines");
+        let self_record = machines
+            .into_iter()
+            .find(|machine| machine.id == self_id)
+            .expect("self record");
+        assert_eq!(self_record.participation, Participation::Enabled);
+    }
+
+    #[tokio::test]
+    async fn heartbeat_ignores_stale_enabled_peers_in_required_set() {
+        let (store, service, network, self_id, _peer_key) =
+            test_runtime(Participation::Enabled, Participation::Enabled).await;
+
+        let stale_heartbeat = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("current time")
+            .as_secs()
+            .saturating_sub(31);
+        store
+            .upsert_machine(&MachineRecord {
+                last_heartbeat: stale_heartbeat,
+                ..test_machine(
+                    "peer",
+                    Participation::Enabled,
+                    PublicKey([2; 32]),
+                    stale_heartbeat,
+                )
+            })
+            .await
+            .expect("refresh stale peer");
+
+        let mut state = HeartbeatState::default();
+        let store_driver = StoreDriver::Memory {
+            store: store.clone(),
+            service,
+        };
+        let network_driver = WireguardDriver::Memory(network);
+
+        for _ in 0..3 {
+            heartbeat_once(&self_id, &store_driver, &network_driver, &mut state).await;
+        }
+
+        let machines = store.list_machines().await.expect("list machines");
+        let self_record = machines
+            .into_iter()
+            .find(|machine| machine.id == self_id)
+            .expect("self record");
+        assert_eq!(self_record.participation, Participation::Enabled);
+    }
+
+    #[tokio::test]
+    async fn heartbeat_ignores_down_enabled_peers_in_required_set() {
+        let (store, service, network, self_id, peer_key) =
+            test_runtime(Participation::Enabled, Participation::Enabled).await;
+        store
+            .upsert_machine(&MachineRecord {
+                status: MachineStatus::Down,
+                last_heartbeat: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("current time")
+                    .as_secs(),
+                ..test_machine(
+                    "peer",
+                    Participation::Enabled,
+                    peer_key,
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("current time")
+                        .as_secs(),
+                )
+            })
+            .await
+            .expect("mark peer down");
 
         let mut state = HeartbeatState::default();
         let store_driver = StoreDriver::Memory {
@@ -430,9 +544,13 @@ mod tests {
         let network = Arc::new(MemoryWireGuard::new());
         let self_id = MachineId("self".into());
         let peer_key = PublicKey([2; 32]);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("current time")
+            .as_secs();
 
-        let self_record = test_machine("self", self_participation, PublicKey([1; 32]));
-        let peer_record = test_machine("peer", peer_participation, peer_key.clone());
+        let self_record = test_machine("self", self_participation, PublicKey([1; 32]), now);
+        let peer_record = test_machine("peer", peer_participation, peer_key.clone(), now);
         store
             .upsert_machine(&self_record)
             .await
@@ -449,6 +567,7 @@ mod tests {
         id: &str,
         participation: Participation,
         public_key: PublicKey,
+        last_heartbeat: u64,
     ) -> MachineRecord {
         MachineRecord {
             id: MachineId(id.into()),
@@ -459,7 +578,7 @@ mod tests {
             endpoints: vec!["127.0.0.1:51820".into()],
             status: MachineStatus::Unknown,
             participation,
-            last_heartbeat: 0,
+            last_heartbeat,
             created_at: 0,
             updated_at: 0,
         }
