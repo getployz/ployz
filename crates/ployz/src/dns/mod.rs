@@ -56,6 +56,16 @@ impl DnsHandle {
             DnsHandleInner::Systemd(handle) => handle.shutdown().await,
         }
     }
+
+    /// Detach from a running DNS service without stopping it.
+    /// Docker and systemd services keep running so the daemon can restart.
+    pub async fn detach(&mut self) -> Result<(), DnsError> {
+        match &mut self.inner {
+            DnsHandleInner::Noop | DnsHandleInner::Docker(_) | DnsHandleInner::Systemd(_) => Ok(()),
+            DnsHandleInner::Embedded(handle) => handle.shutdown().await,
+            DnsHandleInner::Child(handle) => handle.shutdown().await,
+        }
+    }
 }
 
 pub async fn start_managed_dns(

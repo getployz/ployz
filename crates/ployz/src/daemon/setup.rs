@@ -152,6 +152,13 @@ impl DaemonState {
         let bootstrap_addrs =
             resolve_bootstrap_addrs(&network_dir, &self.identity.machine_id, &bootstrap)?;
 
+        let gateway_port = self
+            .gateway_listen_addr
+            .rsplit_once(':')
+            .and_then(|(_, port)| port.parse::<u16>().ok())
+            .unwrap_or(80);
+        let exposed_tcp_ports = [gateway_port];
+
         let network = WireguardDriver::from_mode(
             self.mode,
             &self.identity,
@@ -159,6 +166,7 @@ impl DaemonState {
             &network_dir,
             &net_config.name.0,
             net_config.subnet,
+            &exposed_tcp_ports,
         )
         .await?;
 
