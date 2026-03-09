@@ -1,30 +1,28 @@
-use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
-use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufStream};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::StoreDriver;
 use crate::error::{Error, Result};
 use crate::model::{
-    DeployId, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, MachineRecord, OverlayIp,
-    SlotId,
+    DeployId, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, MachineRecord, SlotId,
 };
 use crate::spec::{Namespace, ServiceSpec};
 use crate::store::DeployStore;
-use crate::transport::{RemoteDeployRequest, RemoteDeployResponse};
+use crate::transport::DeployFrame;
 
+use super::session::{DeploySession, StartCandidateRequest};
 use super::{
-    DrainState, LocalDeployRuntime, NamespaceLock, NamespaceLockManager, adopt_instances,
-    build_instance_status_record, list_local_instance_status,
+    DrainState, LocalDeployRuntime, NamespaceLockManager, adopt_instances,
+    build_instance_status_record, list_local_instance_status, NamespaceLock,
 };
 
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+// ---------------------------------------------------------------------------
+// Remote control listener (server side)
+// ---------------------------------------------------------------------------
 
 pub struct RemoteControlHandle {
     cancel: CancellationToken,
@@ -46,217 +44,189 @@ impl RemoteControlHandle {
     }
 }
 
+/// Server-side deploy agent. Shared across connections (cloneable).
+/// Each connection opens one session for one namespace.
 #[derive(Clone)]
-struct RemoteDeployService {
+pub struct DeployAgent {
     store: StoreDriver,
-    namespace_locks: NamespaceLockManager,
+    locks: NamespaceLockManager,
     local_machine_id: MachineId,
     overlay_network_name: Option<String>,
 }
 
-impl RemoteDeployService {
-    fn new(
+/// Per-session state. The namespace lock is held for the session lifetime.
+/// When this struct drops, the lock is released.
+pub struct SessionState {
+    namespace: Namespace,
+    deploy_id: DeployId,
+    _lock: NamespaceLock,
+}
+
+impl DeployAgent {
+    pub fn new(
         store: StoreDriver,
-        namespace_locks: NamespaceLockManager,
+        locks: NamespaceLockManager,
         local_machine_id: MachineId,
         overlay_network_name: Option<String>,
     ) -> Self {
         Self {
             store,
-            namespace_locks,
+            locks,
             local_machine_id,
             overlay_network_name,
         }
     }
 
-    async fn handle_request(
+    /// Open a session: acquire namespace lock, adopt orphaned containers,
+    /// and return a snapshot of current instances.
+    pub async fn open_session(
         &self,
-        request: RemoteDeployRequest,
-        held_locks: &mut HashMap<String, NamespaceLock>,
-    ) -> RemoteDeployResponse {
-        match self.handle_request_inner(request, held_locks).await {
-            Ok(response) => response,
-            Err(err) => RemoteDeployResponse::Error {
-                code: "REMOTE_DEPLOY_FAILED".into(),
-                message: err.to_string(),
-            },
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+    ) -> Result<(SessionState, Vec<InstanceStatusRecord>)> {
+        let lock = self.locks.try_acquire(namespace, deploy_id)?;
+        if let Ok(runtime) = self.new_runtime() {
+            adopt_instances(&self.store, &runtime, namespace).await?;
         }
+        let instances =
+            list_local_instance_status(&self.store, namespace, &self.local_machine_id).await?;
+        let state = SessionState {
+            namespace: namespace.clone(),
+            deploy_id: deploy_id.clone(),
+            _lock: lock,
+        };
+        Ok((state, instances))
     }
 
-    async fn handle_request_inner(
+    pub async fn inspect_namespace(
         &self,
-        request: RemoteDeployRequest,
-        held_locks: &mut HashMap<String, NamespaceLock>,
-    ) -> Result<RemoteDeployResponse> {
-        match request {
-            RemoteDeployRequest::LockAcquire {
-                namespace,
-                deploy_id,
-                coordinator_id,
-                participant_fingerprint: _participant_fingerprint,
-            } => {
-                let namespace = Namespace(namespace);
-                let deploy_id = DeployId(deploy_id);
-                let lock = self.namespace_locks.try_acquire(&namespace, &deploy_id)?;
-                held_locks.insert(namespace.0.clone(), lock);
-                Ok(RemoteDeployResponse::Ack {
-                    message: format!(
-                        "acquired namespace lock for '{}' from coordinator '{}'",
-                        namespace, coordinator_id
-                    ),
-                })
-            }
-            RemoteDeployRequest::LockHeartbeat {
-                namespace,
-                deploy_id,
-            } => Ok(RemoteDeployResponse::Ack {
-                message: format!("heartbeat for namespace '{namespace}' deploy '{deploy_id}'"),
-            }),
-            RemoteDeployRequest::InspectNamespace { namespace } => {
-                let namespace = Namespace(namespace);
-                if let Ok(runtime) = self.new_runtime() {
-                    adopt_instances(&self.store, &runtime, &namespace).await?;
-                }
-                let instances =
-                    list_local_instance_status(&self.store, &namespace, &self.local_machine_id)
-                        .await?;
-                Ok(RemoteDeployResponse::NamespaceSnapshot { instances })
-            }
-            RemoteDeployRequest::StartCandidate {
-                namespace,
-                service,
-                slot_id,
-                instance_id,
-                deploy_id,
-                spec_json,
-            } => {
-                let namespace = Namespace(namespace);
-                let deploy_id = DeployId(deploy_id);
-                let slot_id = SlotId(slot_id);
-                let instance_id = InstanceId(instance_id);
-                let spec: ServiceSpec = serde_json::from_str(&spec_json).map_err(|e| {
-                    Error::operation("remote_start_candidate", format!("decode spec: {e}"))
-                })?;
-                if spec.namespace != namespace {
-                    return Err(Error::operation(
-                        "remote_start_candidate",
-                        format!(
-                            "spec namespace '{}' did not match request namespace '{}'",
-                            spec.namespace, namespace
-                        ),
-                    ));
-                }
-                if spec.name != service {
-                    return Err(Error::operation(
-                        "remote_start_candidate",
-                        format!(
-                            "spec service '{}' did not match request service '{}'",
-                            spec.name, service
-                        ),
-                    ));
-                }
-                let revision_hash = spec
-                    .revision_hash()
-                    .map_err(|e| Error::operation("remote_start_candidate", e))?;
-                let runtime = self.new_runtime()?;
-                let instance = runtime
-                    .start_candidate(
-                        &spec,
-                        &deploy_id,
-                        &instance_id,
-                        &slot_id,
-                        &self.local_machine_id,
-                        &revision_hash,
-                    )
-                    .await?;
-                runtime.wait_ready(&spec, &instance).await?;
-                let status = build_instance_status_record(
-                    &namespace,
-                    &service,
-                    &slot_id,
-                    &self.local_machine_id,
-                    &revision_hash,
-                    &deploy_id,
-                    &instance,
-                    InstancePhase::Ready,
-                    true,
-                    DrainState::None,
-                    None,
-                );
-                self.store.upsert_instance_status(&status).await?;
-                Ok(RemoteDeployResponse::CandidateStarted { status: Box::new(status) })
-            }
-            RemoteDeployRequest::DrainInstance {
-                namespace,
-                instance_id,
-            } => {
-                let namespace = Namespace(namespace);
-                let instance_id = InstanceId(instance_id);
-                let Some(mut status) = self
-                    .find_local_instance_status(&namespace, &instance_id)
-                    .await?
-                else {
-                    return Err(Error::operation(
-                        "remote_drain_instance",
-                        format!("instance '{}' was not found on this machine", instance_id),
-                    ));
-                };
-                status.phase = InstancePhase::Draining;
-                status.ready = false;
-                status.drain_state = DrainState::Requested;
-                status.updated_at = super::now_unix_secs();
-                self.store.upsert_instance_status(&status).await?;
-                Ok(RemoteDeployResponse::Ack {
-                    message: format!("draining instance '{}'", status.instance_id),
-                })
-            }
-            RemoteDeployRequest::RemoveInstance {
-                namespace,
-                instance_id,
-            } => {
-                let namespace = Namespace(namespace);
-                let instance_id = InstanceId(instance_id);
-                let Some(status) = self
-                    .find_local_instance_status(&namespace, &instance_id)
-                    .await?
-                else {
-                    return Err(Error::operation(
-                        "remote_remove_instance",
-                        format!("instance '{}' was not found on this machine", instance_id),
-                    ));
-                };
-                let runtime = self.new_runtime()?;
-                runtime
-                    .remove_instance(&status.instance_id, &namespace, &status.service)
-                    .await?;
-                self.store
-                    .delete_instance_status(&status.instance_id)
-                    .await?;
-                Ok(RemoteDeployResponse::Ack {
-                    message: format!("removed instance '{}'", status.instance_id),
-                })
-            }
-            RemoteDeployRequest::ApplyRouteEpoch {
-                namespace,
-                deploy_id,
-            } => Ok(RemoteDeployResponse::Ack {
-                message: format!(
-                    "applied route epoch for namespace '{}' deploy '{}'",
-                    namespace, deploy_id
-                ),
-            }),
-            RemoteDeployRequest::Unlock {
-                namespace,
-                deploy_id,
-            } => {
-                held_locks.remove(&namespace);
-                Ok(RemoteDeployResponse::Ack {
-                    message: format!(
-                        "released namespace lock for '{namespace}' deploy '{deploy_id}'"
-                    ),
-                })
-            }
+        session: &SessionState,
+    ) -> Result<Vec<InstanceStatusRecord>> {
+        if let Ok(runtime) = self.new_runtime() {
+            adopt_instances(&self.store, &runtime, &session.namespace).await?;
         }
+        list_local_instance_status(&self.store, &session.namespace, &self.local_machine_id).await
+    }
+
+    pub async fn start_candidate(
+        &self,
+        session: &SessionState,
+        service: &str,
+        slot_id: &SlotId,
+        instance_id: &InstanceId,
+        deploy_id: &DeployId,
+        spec_json: &str,
+    ) -> Result<InstanceStatusRecord> {
+        // Idempotent: if instance already exists, return its status.
+        if let Some(existing) = self
+            .find_local_instance_status(&session.namespace, instance_id)
+            .await?
+        {
+            return Ok(existing);
+        }
+
+        let spec: ServiceSpec = serde_json::from_str(spec_json).map_err(|e| {
+            Error::operation("start_candidate", format!("decode spec: {e}"))
+        })?;
+        if spec.namespace != session.namespace {
+            return Err(Error::operation(
+                "start_candidate",
+                format!(
+                    "spec namespace '{}' did not match session namespace '{}'",
+                    spec.namespace, session.namespace
+                ),
+            ));
+        }
+        if spec.name != service {
+            return Err(Error::operation(
+                "start_candidate",
+                format!(
+                    "spec service '{}' did not match request service '{}'",
+                    spec.name, service
+                ),
+            ));
+        }
+        let revision_hash = spec
+            .revision_hash()
+            .map_err(|e| Error::operation("start_candidate", e))?;
+        let runtime = self.new_runtime()?;
+        let instance = runtime
+            .start_candidate(
+                &spec,
+                deploy_id,
+                instance_id,
+                slot_id,
+                &self.local_machine_id,
+                &revision_hash,
+            )
+            .await?;
+        runtime.wait_ready(&spec, &instance).await?;
+        let status = build_instance_status_record(
+            &session.namespace,
+            service,
+            slot_id,
+            &self.local_machine_id,
+            &revision_hash,
+            deploy_id,
+            &instance,
+            InstancePhase::Ready,
+            true,
+            DrainState::None,
+            None,
+        );
+        self.store.upsert_instance_status(&status).await?;
+        Ok(status)
+    }
+
+    pub async fn drain_instance(
+        &self,
+        session: &SessionState,
+        instance_id: &InstanceId,
+    ) -> Result<()> {
+        let Some(mut status) = self
+            .find_local_instance_status(&session.namespace, instance_id)
+            .await?
+        else {
+            // Idempotent: already gone is not an error.
+            return Ok(());
+        };
+        // Idempotent: already draining is not an error.
+        if status.phase == InstancePhase::Draining {
+            return Ok(());
+        }
+        status.phase = InstancePhase::Draining;
+        status.ready = false;
+        status.drain_state = DrainState::Requested;
+        status.updated_at = super::now_unix_secs();
+        self.store.upsert_instance_status(&status).await?;
+        Ok(())
+    }
+
+    pub async fn remove_instance(
+        &self,
+        session: &SessionState,
+        instance_id: &InstanceId,
+    ) -> Result<()> {
+        let Some(status) = self
+            .find_local_instance_status(&session.namespace, instance_id)
+            .await?
+        else {
+            // Idempotent: already gone is not an error.
+            return Ok(());
+        };
+        let runtime = self.new_runtime()?;
+        runtime
+            .remove_instance(&status.instance_id, &session.namespace, &status.service)
+            .await?;
+        self.store
+            .delete_instance_status(&status.instance_id)
+            .await?;
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn local_machine_id(&self) -> &MachineId {
+        &self.local_machine_id
     }
 
     fn new_runtime(&self) -> Result<LocalDeployRuntime> {
@@ -277,24 +247,22 @@ impl RemoteDeployService {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Listener + connection handler
+// ---------------------------------------------------------------------------
+
 pub async fn start_remote_control_listener(
-    bind_ip: OverlayIp,
-    port: u16,
+    bind_addr: SocketAddr,
     store: StoreDriver,
     namespace_locks: NamespaceLockManager,
     local_machine_id: MachineId,
     overlay_network_name: Option<String>,
 ) -> Result<RemoteControlHandle> {
-    let listener = TcpListener::bind(SocketAddr::new(IpAddr::V6(bind_ip.0), port))
+    let listener = TcpListener::bind(bind_addr)
         .await
-        .map_err(|e| Error::operation("remote_control_listener", format!("bind: {e}")))?;
+        .map_err(|e| Error::operation("remote_control_listener", format!("bind {bind_addr}: {e}")))?;
     let cancel = CancellationToken::new();
-    let service = RemoteDeployService::new(
-        store,
-        namespace_locks,
-        local_machine_id,
-        overlay_network_name,
-    );
+    let agent = DeployAgent::new(store, namespace_locks, local_machine_id, overlay_network_name);
     let listener_cancel = cancel.clone();
     let task = tokio::spawn(async move {
         loop {
@@ -308,10 +276,10 @@ pub async fn start_remote_control_listener(
                             continue;
                         }
                     };
-                    let service = service.clone();
+                    let agent = agent.clone();
                     let connection_cancel = listener_cancel.clone();
                     tokio::spawn(async move {
-                        if let Err(err) = handle_connection(stream, service, connection_cancel).await {
+                        if let Err(err) = handle_connection(stream, agent, connection_cancel).await {
                             tracing::warn!(?err, "remote deploy connection failed");
                         }
                     });
@@ -325,292 +293,331 @@ pub async fn start_remote_control_listener(
 
 async fn handle_connection(
     stream: TcpStream,
-    service: RemoteDeployService,
+    agent: DeployAgent,
     cancel: CancellationToken,
 ) -> Result<()> {
     let mut stream = BufStream::new(stream);
-    let mut held_locks = HashMap::new();
+
+    // First frame must be Open.
+    let open_frame = read_frame(&mut stream, &cancel).await?;
+    let Some(open_frame) = open_frame else {
+        return Ok(()); // EOF before Open — nothing to do.
+    };
+
+    let DeployFrame::Open {
+        namespace,
+        deploy_id,
+        coordinator_id,
+    } = open_frame
+    else {
+        let response = DeployFrame::Error {
+            code: "PROTOCOL_ERROR".into(),
+            message: "first frame must be Open".into(),
+        };
+        write_frame(&mut stream, &response).await?;
+        return Ok(());
+    };
+
+    let namespace = Namespace(namespace);
+    let deploy_id = DeployId(deploy_id);
+
+    let (session, instances) = match agent.open_session(&namespace, &deploy_id).await {
+        Ok(result) => result,
+        Err(err) => {
+            let response = DeployFrame::Error {
+                code: "LOCK_FAILED".into(),
+                message: format!(
+                    "failed to acquire lock for '{}' from coordinator '{}': {err}",
+                    namespace, coordinator_id
+                ),
+            };
+            write_frame(&mut stream, &response).await?;
+            return Ok(());
+        }
+    };
+
+    write_frame(&mut stream, &DeployFrame::Opened { instances }).await?;
+
+    // Session loop: process commands until Close or EOF.
+    // When this function returns, `session` drops and the lock is released.
+    let _session = session;
 
     loop {
-        let mut line = String::new();
-        tokio::select! {
-            _ = cancel.cancelled() => break,
-            read = stream.read_line(&mut line) => {
-                let bytes = read.map_err(|e| Error::operation("remote_control_listener", format!("read: {e}")))?;
-                if bytes == 0 {
-                    break;
-                }
-            }
-        }
+        let Some(frame) = read_frame(&mut stream, &cancel).await? else {
+            break; // EOF — lock released on drop.
+        };
 
-        let request: RemoteDeployRequest = serde_json::from_str(&line).map_err(|e| {
-            Error::operation("remote_control_listener", format!("decode request: {e}"))
-        })?;
-        let response = service.handle_request(request, &mut held_locks).await;
-        write_response(&mut stream, &response).await?;
+        let response = handle_session_frame(&agent, &_session, frame).await;
+        write_frame(&mut stream, &response).await?;
+
+        if matches!(response, DeployFrame::Ack { .. })
+            && matches!(
+                &response,
+                DeployFrame::Ack { message } if message.starts_with("session closed")
+            )
+        {
+            break;
+        }
     }
 
     Ok(())
 }
 
-async fn write_response(
+async fn handle_session_frame(
+    agent: &DeployAgent,
+    session: &SessionState,
+    frame: DeployFrame,
+) -> DeployFrame {
+    match handle_session_frame_inner(agent, session, frame).await {
+        Ok(response) => response,
+        Err(err) => DeployFrame::Error {
+            code: "DEPLOY_FAILED".into(),
+            message: err.to_string(),
+        },
+    }
+}
+
+async fn handle_session_frame_inner(
+    agent: &DeployAgent,
+    session: &SessionState,
+    frame: DeployFrame,
+) -> Result<DeployFrame> {
+    match frame {
+        DeployFrame::Open { .. } => Err(Error::operation(
+            "deploy_session",
+            "duplicate Open frame on an already-open session",
+        )),
+        DeployFrame::InspectNamespace => {
+            let instances = agent.inspect_namespace(session).await?;
+            Ok(DeployFrame::NamespaceSnapshot { instances })
+        }
+        DeployFrame::StartCandidate {
+            service,
+            slot_id,
+            instance_id,
+            deploy_id,
+            spec_json,
+        } => {
+            let status = agent
+                .start_candidate(
+                    session,
+                    &service,
+                    &SlotId(slot_id),
+                    &InstanceId(instance_id),
+                    &DeployId(deploy_id),
+                    &spec_json,
+                )
+                .await?;
+            Ok(DeployFrame::CandidateStarted {
+                status: Box::new(status),
+            })
+        }
+        DeployFrame::DrainInstance { instance_id } => {
+            agent
+                .drain_instance(session, &InstanceId(instance_id))
+                .await?;
+            Ok(DeployFrame::Ack {
+                message: "drained".into(),
+            })
+        }
+        DeployFrame::RemoveInstance { instance_id } => {
+            agent
+                .remove_instance(session, &InstanceId(instance_id))
+                .await?;
+            Ok(DeployFrame::Ack {
+                message: "removed".into(),
+            })
+        }
+        DeployFrame::Close => Ok(DeployFrame::Ack {
+            message: "session closed".into(),
+        }),
+        // Server→client frames should never arrive on the server.
+        DeployFrame::Opened { .. }
+        | DeployFrame::NamespaceSnapshot { .. }
+        | DeployFrame::CandidateStarted { .. }
+        | DeployFrame::Ack { .. }
+        | DeployFrame::Error { .. } => Err(Error::operation(
+            "deploy_session",
+            format!("unexpected frame from client: {frame:?}"),
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Wire helpers
+// ---------------------------------------------------------------------------
+
+async fn read_frame(
     stream: &mut BufStream<TcpStream>,
-    response: &RemoteDeployResponse,
+    cancel: &CancellationToken,
+) -> Result<Option<DeployFrame>> {
+    let mut line = String::new();
+    tokio::select! {
+        _ = cancel.cancelled() => Ok(None),
+        read = stream.read_line(&mut line) => {
+            let bytes = read.map_err(|e| Error::operation("deploy_session", format!("read: {e}")))?;
+            if bytes == 0 {
+                return Ok(None);
+            }
+            let frame: DeployFrame = serde_json::from_str(&line)
+                .map_err(|e| Error::operation("deploy_session", format!("decode frame: {e}")))?;
+            Ok(Some(frame))
+        }
+    }
+}
+
+async fn write_frame(
+    stream: &mut BufStream<TcpStream>,
+    frame: &DeployFrame,
 ) -> Result<()> {
-    let mut line = serde_json::to_string(response).map_err(|e| {
-        Error::operation("remote_control_listener", format!("encode response: {e}"))
-    })?;
+    let mut line = serde_json::to_string(frame)
+        .map_err(|e| Error::operation("deploy_session", format!("encode frame: {e}")))?;
     line.push('\n');
     stream
         .write_all(line.as_bytes())
         .await
-        .map_err(|e| Error::operation("remote_control_listener", format!("write: {e}")))?;
+        .map_err(|e| Error::operation("deploy_session", format!("write: {e}")))?;
     stream
         .flush()
         .await
-        .map_err(|e| Error::operation("remote_control_listener", format!("flush: {e}")))?;
+        .map_err(|e| Error::operation("deploy_session", format!("flush: {e}")))?;
     Ok(())
 }
 
-pub struct RemoteDeploySession {
+// ---------------------------------------------------------------------------
+// TcpDeploySession (client side)
+// ---------------------------------------------------------------------------
+
+/// Client-side deploy session over TCP.
+/// One connection = one namespace lock on the remote machine.
+pub struct TcpDeploySession {
     machine_id: MachineId,
-    namespace: Namespace,
-    deploy_id: DeployId,
-    stream: Arc<Mutex<BufStream<TcpStream>>>,
-    heartbeat_cancel: CancellationToken,
-    heartbeat_task: JoinHandle<()>,
+    stream: BufStream<TcpStream>,
 }
 
-impl RemoteDeploySession {
+impl TcpDeploySession {
+    /// Connect to a remote machine and open a deploy session.
+    /// Returns the session and a snapshot of current instances on that machine.
     pub async fn connect(
         machine: &MachineRecord,
         port: u16,
         namespace: &Namespace,
         deploy_id: &DeployId,
         coordinator_id: &MachineId,
-        participant_fingerprint: &[MachineId],
-    ) -> Result<Self> {
+    ) -> Result<(Self, Vec<InstanceStatusRecord>)> {
         let address = SocketAddr::new(IpAddr::V6(machine.overlay_ip.0), port);
-        let stream = TcpStream::connect(address)
+        let tcp = TcpStream::connect(address)
             .await
-            .map_err(|e| Error::operation("remote_deploy_connect", format!("{address}: {e}")))?;
-        let stream = Arc::new(Mutex::new(BufStream::new(stream)));
-        send_request(
-            &stream,
-            &RemoteDeployRequest::LockAcquire {
-                namespace: namespace.0.clone(),
-                deploy_id: deploy_id.0.clone(),
-                coordinator_id: coordinator_id.0.clone(),
-                participant_fingerprint: participant_fingerprint
-                    .iter()
-                    .map(|machine_id| machine_id.0.clone())
-                    .collect(),
+            .map_err(|e| Error::operation("deploy_connect", format!("{address}: {e}")))?;
+        let mut stream = BufStream::new(tcp);
+
+        // Send Open frame.
+        let open = DeployFrame::Open {
+            namespace: namespace.0.clone(),
+            deploy_id: deploy_id.0.clone(),
+            coordinator_id: coordinator_id.0.clone(),
+        };
+        write_frame(&mut stream, &open).await?;
+
+        // Read Opened response.
+        let cancel = CancellationToken::new(); // no cancel during connect
+        let Some(response) = read_frame(&mut stream, &cancel).await? else {
+            return Err(Error::operation("deploy_connect", "connection closed before Opened response"));
+        };
+        let DeployFrame::Opened { instances } = response else {
+            return Err(Error::operation(
+                "deploy_connect",
+                format!("expected Opened response, got: {response:?}"),
+            ));
+        };
+
+        Ok((
+            Self {
+                machine_id: machine.id.clone(),
+                stream,
             },
-        )
-        .await?;
-
-        let heartbeat_cancel = CancellationToken::new();
-        let heartbeat_task = spawn_heartbeat(
-            Arc::clone(&stream),
-            heartbeat_cancel.clone(),
-            namespace.clone(),
-            deploy_id.clone(),
-        );
-
-        Ok(Self {
-            machine_id: machine.id.clone(),
-            namespace: namespace.clone(),
-            deploy_id: deploy_id.clone(),
-            stream,
-            heartbeat_cancel,
-            heartbeat_task,
-        })
+            instances,
+        ))
     }
 
-    #[must_use] 
-    pub fn machine_id(&self) -> &MachineId {
+    async fn send_and_recv(&mut self, frame: &DeployFrame) -> Result<DeployFrame> {
+        let cancel = CancellationToken::new();
+        write_frame(&mut self.stream, frame).await?;
+        let Some(response) = read_frame(&mut self.stream, &cancel).await? else {
+            return Err(Error::operation(
+                "deploy_session",
+                "connection closed while waiting for response",
+            ));
+        };
+        match response {
+            DeployFrame::Error { code, message } => {
+                Err(Error::operation("deploy_session", format!("{code}: {message}")))
+            }
+            other => Ok(other),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DeploySession for TcpDeploySession {
+    fn machine_id(&self) -> &MachineId {
         &self.machine_id
     }
 
-    pub async fn inspect_namespace(&self) -> Result<Vec<InstanceStatusRecord>> {
-        match send_request(
-            &self.stream,
-            &RemoteDeployRequest::InspectNamespace {
-                namespace: self.namespace.0.clone(),
-            },
-        )
-        .await?
-        {
-            RemoteDeployResponse::NamespaceSnapshot { instances } => Ok(instances),
-            other @ (RemoteDeployResponse::Ack { .. }
-            | RemoteDeployResponse::CandidateStarted { .. }
-            | RemoteDeployResponse::Error { .. }) => {
-                Err(unexpected_response("inspect_namespace", &other))
-            }
+    async fn inspect_namespace(&mut self) -> Result<Vec<InstanceStatusRecord>> {
+        match self.send_and_recv(&DeployFrame::InspectNamespace).await? {
+            DeployFrame::NamespaceSnapshot { instances } => Ok(instances),
+            other => Err(unexpected_response("inspect_namespace", &other)),
         }
     }
 
-    pub async fn start_candidate(
-        &self,
-        namespace: &Namespace,
-        service: &str,
-        slot_id: &SlotId,
-        instance_id: &InstanceId,
-        deploy_id: &DeployId,
-        spec_json: &str,
+    async fn start_candidate(
+        &mut self,
+        req: StartCandidateRequest,
     ) -> Result<InstanceStatusRecord> {
-        match send_request(
-            &self.stream,
-            &RemoteDeployRequest::StartCandidate {
-                namespace: namespace.0.clone(),
-                service: service.to_string(),
-                slot_id: slot_id.0.clone(),
-                instance_id: instance_id.0.clone(),
-                deploy_id: deploy_id.0.clone(),
-                spec_json: spec_json.to_string(),
-            },
-        )
-        .await?
-        {
-            RemoteDeployResponse::CandidateStarted { status } => Ok(*status),
-            other @ (RemoteDeployResponse::Ack { .. }
-            | RemoteDeployResponse::NamespaceSnapshot { .. }
-            | RemoteDeployResponse::Error { .. }) => {
-                Err(unexpected_response("start_candidate", &other))
-            }
+        let frame = DeployFrame::StartCandidate {
+            service: req.service,
+            slot_id: req.slot_id.0,
+            instance_id: req.instance_id.0,
+            deploy_id: req.deploy_id.0,
+            spec_json: req.spec_json,
+        };
+        match self.send_and_recv(&frame).await? {
+            DeployFrame::CandidateStarted { status } => Ok(*status),
+            other => Err(unexpected_response("start_candidate", &other)),
         }
     }
 
-    pub async fn drain_instance(&self, instance_id: &InstanceId) -> Result<()> {
-        expect_ack(
-            "drain_instance",
-            send_request(
-                &self.stream,
-                &RemoteDeployRequest::DrainInstance {
-                    namespace: self.namespace.0.clone(),
-                    instance_id: instance_id.0.clone(),
-                },
-            )
-            .await?,
-        )
+    async fn drain_instance(&mut self, instance_id: &InstanceId) -> Result<()> {
+        let frame = DeployFrame::DrainInstance {
+            instance_id: instance_id.0.clone(),
+        };
+        expect_ack("drain_instance", self.send_and_recv(&frame).await?)
     }
 
-    pub async fn remove_instance(&self, instance_id: &InstanceId) -> Result<()> {
-        expect_ack(
-            "remove_instance",
-            send_request(
-                &self.stream,
-                &RemoteDeployRequest::RemoveInstance {
-                    namespace: self.namespace.0.clone(),
-                    instance_id: instance_id.0.clone(),
-                },
-            )
-            .await?,
-        )
+    async fn remove_instance(&mut self, instance_id: &InstanceId) -> Result<()> {
+        let frame = DeployFrame::RemoveInstance {
+            instance_id: instance_id.0.clone(),
+        };
+        expect_ack("remove_instance", self.send_and_recv(&frame).await?)
     }
 
-    pub async fn apply_route_epoch(&self) -> Result<()> {
-        expect_ack(
-            "apply_route_epoch",
-            send_request(
-                &self.stream,
-                &RemoteDeployRequest::ApplyRouteEpoch {
-                    namespace: self.namespace.0.clone(),
-                    deploy_id: self.deploy_id.0.clone(),
-                },
-            )
-            .await?,
-        )
-    }
-
-    pub async fn shutdown(self) {
-        self.heartbeat_cancel.cancel();
-        let _ = self.heartbeat_task.await;
-        let _ = send_request(
-            &self.stream,
-            &RemoteDeployRequest::Unlock {
-                namespace: self.namespace.0.clone(),
-                deploy_id: self.deploy_id.0.clone(),
-            },
-        )
-        .await;
+    async fn close(mut self: Box<Self>) -> Result<()> {
+        let _ = self.send_and_recv(&DeployFrame::Close).await;
+        Ok(())
     }
 }
 
-fn spawn_heartbeat(
-    stream: Arc<Mutex<BufStream<TcpStream>>>,
-    cancel: CancellationToken,
-    namespace: Namespace,
-    deploy_id: DeployId,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = cancel.cancelled() => break,
-                _ = tokio::time::sleep(HEARTBEAT_INTERVAL) => {
-                    let result = send_request(
-                        &stream,
-                        &RemoteDeployRequest::LockHeartbeat {
-                            namespace: namespace.0.clone(),
-                            deploy_id: deploy_id.0.clone(),
-                        },
-                    ).await;
-                    if result.is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-    })
-}
-
-async fn send_request(
-    stream: &Arc<Mutex<BufStream<TcpStream>>>,
-    request: &RemoteDeployRequest,
-) -> Result<RemoteDeployResponse> {
-    let mut stream = stream.lock().await;
-    let mut line = serde_json::to_string(request)
-        .map_err(|e| Error::operation("remote_deploy_request", format!("encode request: {e}")))?;
-    line.push('\n');
-    stream
-        .write_all(line.as_bytes())
-        .await
-        .map_err(|e| Error::operation("remote_deploy_request", format!("write request: {e}")))?;
-    stream
-        .flush()
-        .await
-        .map_err(|e| Error::operation("remote_deploy_request", format!("flush request: {e}")))?;
-
-    let mut response_line = String::new();
-    stream
-        .read_line(&mut response_line)
-        .await
-        .map_err(|e| Error::operation("remote_deploy_request", format!("read response: {e}")))?;
-    let response: RemoteDeployResponse = serde_json::from_str(&response_line)
-        .map_err(|e| Error::operation("remote_deploy_request", format!("decode response: {e}")))?;
+fn expect_ack(operation: &'static str, response: DeployFrame) -> Result<()> {
     match response {
-        RemoteDeployResponse::Error { code, message } => Err(Error::operation(
-            "remote_deploy_request",
-            format!("{code}: {message}"),
-        )),
-        other @ (RemoteDeployResponse::Ack { .. }
-        | RemoteDeployResponse::NamespaceSnapshot { .. }
-        | RemoteDeployResponse::CandidateStarted { .. }) => Ok(other),
+        DeployFrame::Ack { .. } => Ok(()),
+        other => Err(unexpected_response(operation, &other)),
     }
 }
 
-fn expect_ack(operation: &'static str, response: RemoteDeployResponse) -> Result<()> {
-    match response {
-        RemoteDeployResponse::Ack { .. } => Ok(()),
-        other @ (RemoteDeployResponse::NamespaceSnapshot { .. }
-        | RemoteDeployResponse::CandidateStarted { .. }
-        | RemoteDeployResponse::Error { .. }) => Err(unexpected_response(operation, &other)),
-    }
-}
-
-fn unexpected_response(operation: &'static str, response: &RemoteDeployResponse) -> Error {
+fn unexpected_response(operation: &'static str, response: &DeployFrame) -> Error {
     Error::operation(
         operation,
-        format!("unexpected remote response: {response:?}"),
+        format!("unexpected response: {response:?}"),
     )
 }
