@@ -1,4 +1,0 @@
-*
-!crates/ebpf/
-!crates/ebpf-common/
-!crates/ployz-bpfctl/
