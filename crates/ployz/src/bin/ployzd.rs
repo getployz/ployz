@@ -10,7 +10,6 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum RuntimeMode {
-    Memory,
     Docker,
     HostExec,
     HostService,
@@ -19,7 +18,6 @@ enum RuntimeMode {
 impl From<RuntimeMode> for Mode {
     fn from(value: RuntimeMode) -> Self {
         match value {
-            RuntimeMode::Memory => Mode::Memory,
             RuntimeMode::Docker => Mode::Docker,
             RuntimeMode::HostExec => Mode::HostExec,
             RuntimeMode::HostService => Mode::HostService,
