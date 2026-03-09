@@ -1,3 +1,4 @@
+pub mod carrier;
 pub mod orchestrator;
 pub mod peer;
 pub(crate) mod peer_state;
