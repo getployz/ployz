@@ -816,7 +816,7 @@ impl MeshNetwork for DockerWireGuard {
                 .await;
         }
 
-        info!(peer_count = peers.len(), "synced wireguard peers");
+        debug!(peer_count = peers.len(), "synced wireguard peers");
         Ok(())
     }
 
