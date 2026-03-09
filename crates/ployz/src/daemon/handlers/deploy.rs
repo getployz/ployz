@@ -1,5 +1,9 @@
+use std::sync::Arc;
+
 use crate::daemon::DaemonState;
-use crate::deploy::{LocalDeployRuntime, apply, preview};
+use crate::deploy::remote::DeployAgent;
+use crate::deploy::session::DefaultDeploySessionFactory;
+use crate::deploy::{apply, preview};
 use crate::spec::{DeployManifest, Namespace, ServiceSpec};
 use crate::transport::{DaemonResponse, DeployManifestFormat, DeployManifestInput, DeployOptions};
 
@@ -68,17 +72,22 @@ impl DaemonState {
             Err(response) => return response,
         };
 
-        let runtime = match LocalDeployRuntime::new(self.overlay_network_name()) {
-            Ok(runtime) => runtime,
-            Err(err) => return self.err("DOCKER_ERROR", format!("{err}")),
-        };
+        let agent = Arc::new(DeployAgent::new(
+            active.mesh.store.clone(),
+            self.namespace_locks.clone(),
+            self.identity.machine_id.clone(),
+            self.overlay_network_name(),
+        ));
+        let factory = DefaultDeploySessionFactory::new(
+            agent,
+            self.identity.machine_id.clone(),
+            self.remote_control_port,
+        );
 
         match apply(
             &active.mesh.store,
-            &runtime,
-            &self.namespace_locks,
+            &factory,
             &self.identity.machine_id,
-            self.remote_control_port,
             &namespace,
             &deploy_manifest,
         )
