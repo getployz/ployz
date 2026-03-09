@@ -1,0 +1,26 @@
+FROM rust:1-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends musl-tools && rm -rf /var/lib/apt/lists/*
+RUN rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ployz-sdk/ crates/ployz-sdk/
+COPY crates/ployz-corrosion/ crates/ployz-corrosion/
+COPY crates/ployz-dns/ crates/ployz-dns/
+
+# Stub out workspace members we don't need so the workspace Cargo.toml resolves.
+RUN for dir in ployz ployz-cli ployz-routes ployz-gateway ebpf-common ebpf; do \
+      mkdir -p "crates/$dir/src" && \
+      echo '' > "crates/$dir/src/lib.rs" && \
+      printf '[package]\nname = "%s"\nversion = "0.1.0"\nedition = "2024"\n' "$dir" > "crates/$dir/Cargo.toml"; \
+    done
+
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "arm64" ]; then TARGET=aarch64-unknown-linux-musl; else TARGET=x86_64-unknown-linux-musl; fi && \
+    cargo build --release --target "$TARGET" -p ployz-dns && \
+    cp /build/target/"$TARGET"/release/ployz-dns /build/target/release/ployz-dns
+
+FROM alpine:3.21
+COPY --from=builder /build/target/release/ployz-dns /usr/local/bin/ployz-dns
+ENTRYPOINT ["ployz-dns"]

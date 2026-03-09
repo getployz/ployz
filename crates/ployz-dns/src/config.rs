@@ -16,6 +16,8 @@ pub enum DnsError {
     Store(String),
     #[error("dns runtime failed: {0}")]
     Runtime(String),
+    #[error("dns process failed: {0}")]
+    Process(String),
 }
 
 // ---------------------------------------------------------------------------

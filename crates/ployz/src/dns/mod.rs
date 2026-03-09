@@ -1,7 +1,15 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
+use bollard::Docker;
+use bollard::models::{ContainerCreateBody, HostConfig};
+use bollard::query_parameters::{
+    CreateContainerOptionsBuilder, CreateImageOptionsBuilder, RemoveContainerOptionsBuilder,
+    StopContainerOptionsBuilder,
+};
+use futures_util::StreamExt;
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
 use tracing::{info, warn};
@@ -10,6 +18,7 @@ use crate::drivers::StoreDriver;
 use crate::Mode;
 
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
+const DNS_IMAGE: &str = "ghcr.io/getployz/ployz-dns:latest";
 
 // Re-export library types for public API consumers
 pub use ployz_dns::{self as runtime, DnsConfig, DnsError, SharedDnsSnapshot};
@@ -22,6 +31,7 @@ enum DnsHandleInner {
     Noop,
     Embedded(EmbeddedDnsHandle),
     Child(HostDnsHandle),
+    Docker(DockerDnsHandle),
     Systemd(SystemdDnsHandle),
 }
 
@@ -42,6 +52,7 @@ impl DnsHandle {
             DnsHandleInner::Noop => Ok(()),
             DnsHandleInner::Embedded(handle) => handle.shutdown().await,
             DnsHandleInner::Child(handle) => handle.shutdown().await,
+            DnsHandleInner::Docker(handle) => handle.shutdown().await,
             DnsHandleInner::Systemd(handle) => handle.shutdown().await,
         }
     }
@@ -56,7 +67,10 @@ pub async fn start_managed_dns(
         Mode::Memory => start_embedded_dns(store, config).await.map(|handle| DnsHandle {
             inner: DnsHandleInner::Embedded(handle),
         }),
-        Mode::Docker | Mode::HostExec => start_host_dns(config).await.map(|handle| DnsHandle {
+        Mode::Docker => start_docker_dns(config).await.map(|handle| DnsHandle {
+            inner: DnsHandleInner::Docker(handle),
+        }),
+        Mode::HostExec => start_host_dns(config).await.map(|handle| DnsHandle {
             inner: DnsHandleInner::Child(handle),
         }),
         Mode::HostService => start_systemd_dns(config).await.map(|handle| DnsHandle {
@@ -190,6 +204,160 @@ async fn start_host_dns(config: DnsConfig) -> Result<HostDnsHandle, DnsError> {
 
     Ok(HostDnsHandle {
         child: AsyncMutex::new(Some(child)),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Docker mode — runs DNS as a container sharing ployz-networking's netns
+// ---------------------------------------------------------------------------
+
+struct DockerDnsHandle {
+    docker: Docker,
+    container_name: String,
+}
+
+impl DockerDnsHandle {
+    async fn shutdown(&self) -> Result<(), DnsError> {
+        let stop_opts = StopContainerOptionsBuilder::default().t(10).build();
+        match self
+            .docker
+            .stop_container(&self.container_name, Some(stop_opts))
+            .await
+        {
+            Ok(()) => {}
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 304 | 404,
+                ..
+            }) => {}
+            Err(e) => {
+                return Err(DnsError::Process(format!("docker stop dns: {e}")));
+            }
+        }
+
+        let remove_opts = RemoveContainerOptionsBuilder::default().build();
+        match self
+            .docker
+            .remove_container(&self.container_name, Some(remove_opts))
+            .await
+        {
+            Ok(()) => {}
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => {}
+            Err(e) => {
+                return Err(DnsError::Process(format!("docker remove dns: {e}")));
+            }
+        }
+
+        info!(name = %self.container_name, "dns container stopped and removed");
+        Ok(())
+    }
+}
+
+async fn start_docker_dns(config: DnsConfig) -> Result<DockerDnsHandle, DnsError> {
+    let docker = Docker::connect_with_socket_defaults()
+        .map_err(|e| DnsError::Process(format!("docker connect: {e}")))?;
+
+    docker
+        .ping()
+        .await
+        .map_err(|e| DnsError::Process(format!("docker ping: {e}")))?;
+
+    let container_name = "ployz-dns".to_string();
+
+    // Best-effort pull.
+    let (repo, tag) = match DNS_IMAGE.split_once(':') {
+        Some((r, t)) => (r, t),
+        None => (DNS_IMAGE, "latest"),
+    };
+    let pull_opts = CreateImageOptionsBuilder::default()
+        .from_image(repo)
+        .tag(tag)
+        .build();
+    let mut stream = docker.create_image(Some(pull_opts), None, None);
+    while let Some(result) = stream.next().await {
+        match result {
+            Ok(info) => {
+                if let Some(status) = info.status {
+                    info!(image = DNS_IMAGE, %status, "pulling");
+                }
+            }
+            Err(e) => {
+                warn!(?e, image = DNS_IMAGE, "pull failed, trying cached image");
+                break;
+            }
+        }
+    }
+
+    // Remove existing container (always recreate when sharing netns).
+    let remove_opts = RemoveContainerOptionsBuilder::default().force(true).build();
+    if let Err(e) = docker
+        .remove_container(&container_name, Some(remove_opts))
+        .await
+        && !matches!(
+            e,
+            bollard::errors::Error::DockerResponseServerError {
+                status_code: 404,
+                ..
+            }
+        )
+    {
+        warn!(?e, name = %container_name, "failed to remove existing dns container");
+    }
+
+    let data_dir_str = config.data_dir.display().to_string();
+
+    let host_config = HostConfig {
+        binds: Some(vec![format!("{data_dir_str}:{data_dir_str}")]),
+        network_mode: Some("container:ployz-networking".to_string()),
+        ..Default::default()
+    };
+
+    let labels: HashMap<String, String> = [
+        ("com.docker.compose.project".into(), "ployz-system".into()),
+        ("com.docker.compose.service".into(), "dns".into()),
+    ]
+    .into_iter()
+    .collect();
+
+    let container_config = ContainerCreateBody {
+        image: Some(DNS_IMAGE.to_string()),
+        cmd: Some(vec!["ployz-dns".into()]),
+        env: Some(vec![
+            format!("PLOYZ_DNS_DATA_DIR={data_dir_str}"),
+            format!("PLOYZ_DNS_NETWORK={}", config.network),
+            format!("PLOYZ_DNS_LISTEN_ADDR={}", config.listen_addr),
+        ]),
+        labels: Some(labels),
+        host_config: Some(host_config),
+        ..Default::default()
+    };
+
+    let create_opts = CreateContainerOptionsBuilder::default()
+        .name(&container_name)
+        .build();
+
+    docker
+        .create_container(Some(create_opts), container_config)
+        .await
+        .map_err(|e| DnsError::Process(format!("docker create dns: {e}")))?;
+
+    docker
+        .start_container(&container_name, None)
+        .await
+        .map_err(|e| DnsError::Process(format!("docker start dns: {e}")))?;
+
+    info!(
+        name = %container_name,
+        image = DNS_IMAGE,
+        network = %config.network,
+        listen = %config.listen_addr,
+        "dns container started"
+    );
+
+    Ok(DockerDnsHandle {
+        docker,
+        container_name,
     })
 }
 
