@@ -206,8 +206,8 @@ async fn cmd_run(
             mut gateway,
             mut dns,
         } = active;
-        let _ = dns.shutdown().await;
-        let _ = gateway.shutdown().await;
+        let _ = dns.detach().await;
+        let _ = gateway.detach().await;
         remote_control.shutdown().await;
         let _ = mesh.detach().await;
     }

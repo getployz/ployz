@@ -1,5 +1,6 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::Serialize;
+use tracing::warn;
 
 use crate::daemon::setup::{BootstrapInfo, MeshStartOptions};
 use crate::model::{JoinResponse, NetworkName};
@@ -336,6 +337,9 @@ impl DaemonState {
             return self.err("NETWORK_STOP_FAILED", format!("mesh down failed: {e}"));
         }
         active.remote_control.shutdown().await;
+        if let Err(e) = active.dns.shutdown().await {
+            warn!(?e, "dns stop failed during mesh down");
+        }
         if let Err(e) = active.gateway.shutdown().await {
             return self.err("NETWORK_STOP_FAILED", format!("gateway stop failed: {e}"));
         }
@@ -372,6 +376,9 @@ impl DaemonState {
                 };
             }
             active.remote_control.shutdown().await;
+            if let Err(e) = active.dns.shutdown().await {
+                warn!(?e, "dns stop failed during mesh destroy");
+            }
             if let Err(e) = active.gateway.shutdown().await {
                 return self.err("NETWORK_DESTROY_FAILED", format!("gateway stop failed: {e}"));
             }

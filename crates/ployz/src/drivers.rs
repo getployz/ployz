@@ -51,6 +51,7 @@ impl WireguardDriver {
         network_dir: &Path,
         network_name: &str,
         subnet: ipnet::Ipv4Net,
+        exposed_tcp_ports: &[u16],
     ) -> std::result::Result<Self, String> {
         match mode {
             Mode::Memory => Ok(Self::Memory(Arc::new(MemoryWireGuard::new()))),
@@ -59,16 +60,20 @@ impl WireguardDriver {
                 let overlay_api = SocketAddr::new(IpAddr::V6(overlay_ip.0), api_port);
                 let local_api = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), api_port);
 
-                let wg = DockerWireGuard::new(
+                let mut builder = DockerWireGuard::new(
                     "ployz-networking",
                     network_dir,
                     identity.private_key.clone(),
                     overlay_ip,
                 )
-                .with_bridge_forward(local_api, overlay_api)
-                .build()
-                .await
-                .map_err(|e| format!("docker wireguard: {e}"))?;
+                .with_bridge_forward(local_api, overlay_api);
+                for &port in exposed_tcp_ports {
+                    builder = builder.expose_tcp(port);
+                }
+                let wg = builder
+                    .build()
+                    .await
+                    .map_err(|e| format!("docker wireguard: {e}"))?;
                 Ok(Self::Docker(Arc::new(wg)))
             }
             Mode::HostExec | Mode::HostService => {
