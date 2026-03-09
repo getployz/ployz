@@ -1,7 +1,15 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
+use bollard::Docker;
+use bollard::models::{ContainerCreateBody, HostConfig};
+use bollard::query_parameters::{
+    CreateContainerOptionsBuilder, CreateImageOptionsBuilder, RemoveContainerOptionsBuilder,
+    StopContainerOptionsBuilder,
+};
+use futures_util::StreamExt;
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
 use tracing::{info, warn};
@@ -11,6 +19,7 @@ use crate::store::network::NetworkConfig;
 use crate::Mode;
 
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
+const GATEWAY_IMAGE: &str = "ghcr.io/getployz/ployz-gateway:latest";
 
 // Re-export library types for public API consumers
 pub use ployz_gateway::{
@@ -25,6 +34,7 @@ enum GatewayHandleInner {
     Noop,
     Embedded(EmbeddedGatewayHandle),
     Child(HostGatewayHandle),
+    Docker(DockerGatewayHandle),
     Systemd(SystemdGatewayHandle),
 }
 
@@ -45,6 +55,7 @@ impl GatewayHandle {
             GatewayHandleInner::Noop => Ok(()),
             GatewayHandleInner::Embedded(handle) => handle.shutdown().await,
             GatewayHandleInner::Child(handle) => handle.shutdown().await,
+            GatewayHandleInner::Docker(handle) => handle.shutdown().await,
             GatewayHandleInner::Systemd(handle) => handle.shutdown().await,
         }
     }
@@ -61,10 +72,13 @@ pub async fn start_managed_gateway(
             .map(|handle| GatewayHandle {
                 inner: GatewayHandleInner::Embedded(handle),
             }),
-        Mode::Docker | Mode::HostExec => start_host_gateway(config).await.map(|handle| {
-            GatewayHandle {
-                inner: GatewayHandleInner::Child(handle),
-            }
+        Mode::Docker => start_docker_gateway(config)
+            .await
+            .map(|handle| GatewayHandle {
+                inner: GatewayHandleInner::Docker(handle),
+            }),
+        Mode::HostExec => start_host_gateway(config).await.map(|handle| GatewayHandle {
+            inner: GatewayHandleInner::Child(handle),
         }),
         Mode::HostService => start_systemd_gateway(config)
             .await
@@ -268,6 +282,177 @@ async fn start_systemd_gateway(
             "systemd-managed gateway is only supported on Linux".into(),
         ))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Docker mode — runs gateway as a container sharing ployz-networking's netns
+// ---------------------------------------------------------------------------
+
+struct DockerGatewayHandle {
+    docker: Docker,
+    container_name: String,
+}
+
+impl DockerGatewayHandle {
+    async fn shutdown(&self) -> Result<(), GatewayError> {
+        let stop_opts = StopContainerOptionsBuilder::default().t(10).build();
+        match self
+            .docker
+            .stop_container(&self.container_name, Some(stop_opts))
+            .await
+        {
+            Ok(()) => {}
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 304 | 404,
+                ..
+            }) => {}
+            Err(e) => {
+                return Err(GatewayError::Process(format!(
+                    "docker stop gateway: {e}"
+                )));
+            }
+        }
+
+        let remove_opts = RemoveContainerOptionsBuilder::default().build();
+        match self
+            .docker
+            .remove_container(&self.container_name, Some(remove_opts))
+            .await
+        {
+            Ok(()) => {}
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => {}
+            Err(e) => {
+                return Err(GatewayError::Process(format!(
+                    "docker remove gateway: {e}"
+                )));
+            }
+        }
+
+        info!(name = %self.container_name, "gateway container stopped and removed");
+        Ok(())
+    }
+}
+
+async fn start_docker_gateway(config: GatewayConfig) -> Result<DockerGatewayHandle, GatewayError> {
+    let docker = Docker::connect_with_socket_defaults()
+        .map_err(|e| GatewayError::Process(format!("docker connect: {e}")))?;
+
+    docker
+        .ping()
+        .await
+        .map_err(|e| GatewayError::Process(format!("docker ping: {e}")))?;
+
+    let container_name = "ployz-gateway".to_string();
+
+    // Write pingora config on the host — it will be bind-mounted into the container.
+    let paths = GatewayPaths::for_config(&config);
+    write_pingora_config(&paths, config.threads)?;
+
+    // Best-effort pull.
+    let (repo, tag) = match GATEWAY_IMAGE.split_once(':') {
+        Some((r, t)) => (r, t),
+        None => (GATEWAY_IMAGE, "latest"),
+    };
+    let pull_opts = CreateImageOptionsBuilder::default()
+        .from_image(repo)
+        .tag(tag)
+        .build();
+    let mut stream = docker.create_image(Some(pull_opts), None, None);
+    while let Some(result) = stream.next().await {
+        match result {
+            Ok(info) => {
+                if let Some(status) = info.status {
+                    info!(image = GATEWAY_IMAGE, %status, "pulling");
+                }
+            }
+            Err(e) => {
+                warn!(?e, image = GATEWAY_IMAGE, "pull failed, trying cached image");
+                break;
+            }
+        }
+    }
+
+    // Remove existing container (always recreate when sharing netns).
+    let remove_opts = RemoveContainerOptionsBuilder::default().force(true).build();
+    if let Err(e) = docker
+        .remove_container(&container_name, Some(remove_opts))
+        .await
+        && !matches!(
+            e,
+            bollard::errors::Error::DockerResponseServerError {
+                status_code: 404,
+                ..
+            }
+        )
+    {
+        warn!(?e, name = %container_name, "failed to remove existing gateway container");
+    }
+
+    let data_dir_str = config.data_dir.display().to_string();
+    let gateway_dir_str = paths.gateway_dir.display().to_string();
+
+    let host_config = HostConfig {
+        binds: Some(vec![
+            format!("{data_dir_str}:{data_dir_str}"),
+            format!("{gateway_dir_str}:{gateway_dir_str}"),
+        ]),
+        network_mode: Some("container:ployz-networking".to_string()),
+        ..Default::default()
+    };
+
+    let labels: HashMap<String, String> = [
+        ("com.docker.compose.project".into(), "ployz-system".into()),
+        ("com.docker.compose.service".into(), "gateway".into()),
+    ]
+    .into_iter()
+    .collect();
+
+    let container_config = ContainerCreateBody {
+        image: Some(GATEWAY_IMAGE.to_string()),
+        cmd: Some(vec![
+            "ployz-gateway".into(),
+            "-c".into(),
+            paths.pingora_config.display().to_string(),
+        ]),
+        env: Some(vec![
+            format!("PLOYZ_GATEWAY_DATA_DIR={data_dir_str}"),
+            format!("PLOYZ_GATEWAY_NETWORK={}", config.network),
+            format!("PLOYZ_GATEWAY_LISTEN_ADDR={}", config.listen_addr),
+            format!("PLOYZ_GATEWAY_THREADS={}", config.threads),
+        ]),
+        labels: Some(labels),
+        host_config: Some(host_config),
+        ..Default::default()
+    };
+
+    let create_opts = CreateContainerOptionsBuilder::default()
+        .name(&container_name)
+        .build();
+
+    docker
+        .create_container(Some(create_opts), container_config)
+        .await
+        .map_err(|e| GatewayError::Process(format!("docker create gateway: {e}")))?;
+
+    docker
+        .start_container(&container_name, None)
+        .await
+        .map_err(|e| GatewayError::Process(format!("docker start gateway: {e}")))?;
+
+    info!(
+        name = %container_name,
+        image = GATEWAY_IMAGE,
+        network = %config.network,
+        listen = %config.listen_addr,
+        "gateway container started"
+    );
+
+    Ok(DockerGatewayHandle {
+        docker,
+        container_name,
+    })
 }
 
 // ---------------------------------------------------------------------------
