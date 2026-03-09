@@ -42,5 +42,6 @@ pub use node::identity::{Identity, IdentityError};
 pub use node::invite::InviteClaims;
 pub use store::network::{NetworkConfig, NetworkConfigError};
 pub use store::{
-    DeployStore, InviteStore, MachineStore, RoutingStore, ServiceControl, SyncProbe, SyncStatus,
+    DeployStore, InviteStore, MachineStore, RoutingStore, StoreRuntimeControl, SyncProbe,
+    SyncStatus,
 };

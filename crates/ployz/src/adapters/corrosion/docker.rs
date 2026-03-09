@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::store::ServiceControl;
+use crate::store::StoreRuntimeControl;
 use bollard::Docker;
 use bollard::models::{ContainerCreateBody, HostConfig};
 use bollard::query_parameters::{
@@ -136,7 +136,7 @@ impl DockerCorrosion {
     }
 }
 
-impl ServiceControl for DockerCorrosion {
+impl StoreRuntimeControl for DockerCorrosion {
     async fn start(&self) -> Result<()> {
         // When using another container's network namespace, always recreate
         // to pick up the fresh namespace (the parent may have been recreated).
