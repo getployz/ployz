@@ -10,7 +10,7 @@ use crate::error::Result;
 ///
 /// Two backends:
 /// - **Native** (Linux only): loads BPF directly via aya in the daemon process.
-/// - **Container**: execs `ployz-dataplane` in a privileged sidecar container.
+/// - **Container**: execs `ployz-bpfctl` in a privileged sidecar container.
 ///   Works on macOS Docker Desktop / OrbStack where TC hooks live in the VM.
 pub enum EbpfDataplane {
     #[cfg(feature = "ebpf-native")]
@@ -27,7 +27,7 @@ impl EbpfDataplane {
         )?))
     }
 
-    /// Attach by execing `ployz-dataplane` inside the WG container.
+    /// Attach by execing `ployz-bpfctl` inside the WG container.
     pub async fn attach_container(
         wg_container_name: &str,
         bridge_ifname: &str,

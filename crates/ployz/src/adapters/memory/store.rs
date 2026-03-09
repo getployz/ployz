@@ -1,12 +1,11 @@
 use crate::error::{Error, Result};
 use crate::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, ServiceHeadRecord, ServiceRevisionRecord, ServiceSlotRecord,
-    SlotId,
+    MachineId, MachineRecord, RoutingState, ServiceHeadRecord, ServiceRevisionRecord,
+    ServiceSlotRecord, SlotId,
 };
 use crate::spec::Namespace;
 use crate::store::{DeployStore, InviteStore, MachineStore, RoutingStore, SyncProbe, SyncStatus};
-use ployz_routing::RoutingState;
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 use tokio::sync::mpsc;
@@ -36,6 +35,7 @@ impl Default for MemoryStore {
 }
 
 impl MemoryStore {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(StoreInner {

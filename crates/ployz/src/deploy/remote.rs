@@ -184,7 +184,7 @@ impl RemoteDeployService {
                     None,
                 );
                 self.store.upsert_instance_status(&status).await?;
-                Ok(RemoteDeployResponse::CandidateStarted { status })
+                Ok(RemoteDeployResponse::CandidateStarted { status: Box::new(status) })
             }
             RemoteDeployRequest::DrainInstance {
                 namespace,
@@ -427,6 +427,7 @@ impl RemoteDeploySession {
         })
     }
 
+    #[must_use] 
     pub fn machine_id(&self) -> &MachineId {
         &self.machine_id
     }
@@ -441,7 +442,11 @@ impl RemoteDeploySession {
         .await?
         {
             RemoteDeployResponse::NamespaceSnapshot { instances } => Ok(instances),
-            other => Err(unexpected_response("inspect_namespace", &other)),
+            other @ (RemoteDeployResponse::Ack { .. }
+            | RemoteDeployResponse::CandidateStarted { .. }
+            | RemoteDeployResponse::Error { .. }) => {
+                Err(unexpected_response("inspect_namespace", &other))
+            }
         }
     }
 
@@ -467,8 +472,12 @@ impl RemoteDeploySession {
         )
         .await?
         {
-            RemoteDeployResponse::CandidateStarted { status } => Ok(status),
-            other => Err(unexpected_response("start_candidate", &other)),
+            RemoteDeployResponse::CandidateStarted { status } => Ok(*status),
+            other @ (RemoteDeployResponse::Ack { .. }
+            | RemoteDeployResponse::NamespaceSnapshot { .. }
+            | RemoteDeployResponse::Error { .. }) => {
+                Err(unexpected_response("start_candidate", &other))
+            }
         }
     }
 
@@ -584,14 +593,18 @@ async fn send_request(
             "remote_deploy_request",
             format!("{code}: {message}"),
         )),
-        other => Ok(other),
+        other @ (RemoteDeployResponse::Ack { .. }
+        | RemoteDeployResponse::NamespaceSnapshot { .. }
+        | RemoteDeployResponse::CandidateStarted { .. }) => Ok(other),
     }
 }
 
 fn expect_ack(operation: &'static str, response: RemoteDeployResponse) -> Result<()> {
     match response {
         RemoteDeployResponse::Ack { .. } => Ok(()),
-        other => Err(unexpected_response(operation, &other)),
+        other @ (RemoteDeployResponse::NamespaceSnapshot { .. }
+        | RemoteDeployResponse::CandidateStarted { .. }
+        | RemoteDeployResponse::Error { .. }) => Err(unexpected_response(operation, &other)),
     }
 }
 

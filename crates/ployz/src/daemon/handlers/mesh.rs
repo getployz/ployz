@@ -177,8 +177,8 @@ impl DaemonState {
             );
         }
 
-        if let Some(active) = self.active.as_ref() {
-            if let Err(e) = active
+        if let Some(active) = self.active.as_ref()
+            && let Err(e) = active
                 .mesh
                 .store
                 .consume_invite(&invite.invite_id, now_unix_secs())
@@ -186,7 +186,6 @@ impl DaemonState {
             {
                 tracing::warn!(?e, "failed to consume invite (mesh already joined)");
             }
-        }
 
         self.ok(format!("joined and started network '{network}'"))
     }
@@ -337,6 +336,9 @@ impl DaemonState {
             return self.err("NETWORK_STOP_FAILED", format!("mesh down failed: {e}"));
         }
         active.remote_control.shutdown().await;
+        if let Err(e) = active.gateway.shutdown().await {
+            return self.err("NETWORK_STOP_FAILED", format!("gateway stop failed: {e}"));
+        }
 
         self.clear_active_marker();
         self.ok("mesh stopped (config kept)")
@@ -370,6 +372,9 @@ impl DaemonState {
                 };
             }
             active.remote_control.shutdown().await;
+            if let Err(e) = active.gateway.shutdown().await {
+                return self.err("NETWORK_DESTROY_FAILED", format!("gateway stop failed: {e}"));
+            }
         }
 
         if let Err(e) = NetworkConfig::delete(&self.data_dir, network) {
@@ -515,6 +520,8 @@ mod tests {
             "10.210.0.0/16".into(),
             24,
             4317,
+            "127.0.0.1:0".into(),
+            1,
         );
 
         let response = state.handle_mesh_join(&token).await;

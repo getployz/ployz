@@ -2715,14 +2715,13 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 name = "ployz"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "aya",
  "aya-build",
  "base64",
  "bollard",
- "bytes",
  "chrono",
  "clap",
- "corro-api-types",
  "defguard_boringtun",
  "defguard_wireguard_rs",
  "derive_more",
@@ -2731,16 +2730,13 @@ dependencies = [
  "figment",
  "futures-util",
  "hostname",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
  "if-addrs",
  "ipnet",
  "libc",
- "pin-project-lite",
+ "ployz-corrosion",
  "ployz-ebpf-common",
- "ployz-routing",
+ "ployz-gateway",
+ "ployz-routes",
  "ployz-sdk",
  "rand 0.10.0",
  "reqwest",
@@ -2752,7 +2748,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml",
- "tower",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -2767,6 +2762,31 @@ dependencies = [
  "ployz-sdk",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "ployz-corrosion"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "corro-api-types",
+ "futures-util",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "ipnet",
+ "pin-project-lite",
+ "ployz-sdk",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tower",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2787,10 +2807,14 @@ name = "ployz-gateway"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "clap",
+ "http",
+ "libc",
  "pingora",
- "ployz",
- "ployz-routing",
+ "ployz-corrosion",
+ "ployz-routes",
+ "ployz-sdk",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2798,7 +2822,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ployz-routing"
+name = "ployz-routes"
 version = "0.1.0"
 dependencies = [
  "ployz-sdk",

@@ -475,6 +475,7 @@ impl LocalDeployRuntime {
     }
 }
 
+#[allow(clippy::indexing_slicing)]
 pub async fn preview(
     store: &StoreDriver,
     local_machine_id: &MachineId,
@@ -614,6 +615,7 @@ pub async fn preview(
     })
 }
 
+#[allow(clippy::indexing_slicing)]
 pub async fn apply(
     store: &StoreDriver,
     runtime: &LocalDeployRuntime,
@@ -1032,6 +1034,7 @@ fn deployable_machines(
     enabled
 }
 
+#[allow(clippy::indexing_slicing)]
 fn desired_slots(
     spec: &ServiceSpec,
     machines: &[MachineId],
@@ -1094,6 +1097,7 @@ fn current_slots_by_service(
     grouped
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_instance_status_record(
     namespace: &Namespace,
     service: &str,

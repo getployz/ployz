@@ -6,9 +6,9 @@ use tracing::{info, warn};
 
 use crate::error::{Error, Result};
 
-const CTL_BIN: &str = "/usr/local/bin/ployz-dataplane";
+const CTL_BIN: &str = "/usr/local/bin/ployz-bpfctl";
 
-/// eBPF dataplane that execs `ployz-dataplane` inside the WireGuard container.
+/// eBPF dataplane that execs `ployz-bpfctl` inside the WireGuard container.
 /// The WG container image includes the dataplane binary, so no separate
 /// sidecar is needed — just docker exec.
 pub struct ContainerDataplane {
@@ -132,8 +132,8 @@ impl ContainerDataplane {
                     .await
                     .map_err(|e| Error::operation("ebpf exec inspect", e.to_string()))?;
 
-                if let Some(code) = inspect.exit_code {
-                    if code != 0 {
+                if let Some(code) = inspect.exit_code
+                    && code != 0 {
                         let detail = if stderr_buf.is_empty() {
                             format!("exit code {code}")
                         } else {
@@ -141,7 +141,6 @@ impl ContainerDataplane {
                         };
                         return Err(Error::operation("ebpf exec", detail));
                     }
-                }
             }
             StartExecResults::Detached => {}
         }

@@ -4,20 +4,30 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[lib]
+name = "ployz_gateway"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ployz-gateway"
 path = "src/main.rs"
 
 [dependencies]
-ployz = { path = "../ployz" }
-ployz-routing = { path = "../ployz-routing" }
-async-trait = "0.1"
-clap = { version = "4", features = ["derive"] }
+ployz-sdk = { path = "../ployz-sdk" }
+ployz-routes = { path = "../ployz-routes" }
+ployz-corrosion = { path = "../ployz-corrosion" }
 pingora = { version = "0.8.0", features = ["lb"] }
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+http = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [lints.clippy]
 indexing_slicing = "warn"

@@ -23,6 +23,7 @@ impl Default for MemoryWireGuard {
 }
 
 impl MemoryWireGuard {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(WgInner {

@@ -27,6 +27,7 @@ pub struct InviteClaims {
     pub allocated_subnet: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn issue_invite_token(
     identity: &Identity,
     network: &NetworkConfig,

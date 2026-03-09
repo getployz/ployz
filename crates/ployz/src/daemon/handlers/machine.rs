@@ -976,11 +976,14 @@ mod tests {
             DEFAULT_CLUSTER_CIDR.into(),
             24,
             4317,
+            "127.0.0.1:0".into(),
+            1,
         );
         state.active = Some(ActiveMesh {
             config,
             mesh,
             remote_control: RemoteControlHandle::noop(),
+            gateway: crate::gateway::GatewayHandle::noop(),
         });
 
         (state, store)

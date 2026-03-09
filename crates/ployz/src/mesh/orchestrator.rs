@@ -58,6 +58,7 @@ pub struct Mesh {
 }
 
 impl Mesh {
+    #[must_use] 
     pub fn new(
         network: WireguardDriver,
         store: StoreDriver,
@@ -111,6 +112,7 @@ impl Mesh {
         self
     }
 
+    #[must_use] 
     pub fn phase(&self) -> Phase {
         self.phase
     }
@@ -225,7 +227,7 @@ impl Mesh {
     /// Attach the eBPF dataplane to the Docker bridge.
     /// On Linux: loads BPF directly in-process via aya (no container overhead).
     /// On macOS (Docker Desktop / OrbStack): starts a privileged sidecar container
-    /// that runs `ployz-dataplane` inside the VM where TC hooks live.
+    /// that runs `ployz-bpfctl` inside the VM where TC hooks live.
     async fn attach_ebpf_dataplane(&mut self) -> Result<()> {
         let cn = self.container_network.as_ref().unwrap();
         let bridge_ifname = cn.resolve_bridge_ifname().await?;
@@ -244,7 +246,7 @@ impl Mesh {
 
         #[cfg(not(feature = "ebpf-native"))]
         {
-            // Exec ployz-dataplane inside the WG container (same image).
+            // Exec ployz-bpfctl inside the WG container (same image).
             let dp =
                 EbpfDataplane::attach_container("ployz-networking", &bridge_ifname, &bridge_ifname)
                     .await?;
@@ -320,29 +322,25 @@ impl Mesh {
     async fn teardown(&mut self) {
         self.peer_sync_tx = None;
         self.heartbeat_started.store(false, Ordering::SeqCst);
-        if let Some(mut tasks) = self.tasks.take() {
-            if let Err(e) = tasks.stop().await {
+        if let Some(mut tasks) = self.tasks.take()
+            && let Err(e) = tasks.stop().await {
                 warn!(?e, "task stop failed during teardown");
             }
-        }
-        if let Some(dp) = self.dataplane.take() {
-            if let Ok(dp) = Arc::try_unwrap(dp) {
-                if let Err(e) = dp.detach().await {
+        if let Some(dp) = self.dataplane.take()
+            && let Ok(dp) = Arc::try_unwrap(dp)
+                && let Err(e) = dp.detach().await {
                     warn!(?e, "ebpf detach failed during teardown");
                 }
-            }
-        }
         if let Err(e) = self.store.stop().await {
             warn!(?e, "service stop failed during teardown");
         }
         if let Err(e) = self.network.down().await {
             warn!(?e, "network down failed during teardown");
         }
-        if let Some(cn) = &self.container_network {
-            if let Err(e) = cn.remove().await {
+        if let Some(cn) = &self.container_network
+            && let Err(e) = cn.remove().await {
                 warn!(?e, "container network remove failed during teardown");
             }
-        }
     }
 
     pub async fn detach(&mut self) -> Result<()> {
@@ -360,8 +358,8 @@ impl Mesh {
         self.apply(PhaseEvent::DestroyRequested)?;
 
         // Mark self as down before tearing down infra
-        if let Ok(machines) = self.store.list_machines().await {
-            if let Some(mut record) = machines.into_iter().find(|m| m.id == self.machine_id) {
+        if let Ok(machines) = self.store.list_machines().await
+            && let Some(mut record) = machines.into_iter().find(|m| m.id == self.machine_id) {
                 let now = chrono::Utc::now().timestamp() as u64;
                 record.status = MachineStatus::Down;
                 record.last_heartbeat = now;
@@ -370,24 +368,20 @@ impl Mesh {
                     warn!(?e, "failed to set status=down on destroy");
                 }
             }
-        }
 
         let mut first_err: Option<MeshError> = None;
 
-        if let Some(mut tasks) = self.tasks.take() {
-            if let Err(e) = tasks.stop().await {
+        if let Some(mut tasks) = self.tasks.take()
+            && let Err(e) = tasks.stop().await {
                 warn!(?e, "task stop failed during destroy");
                 first_err.get_or_insert(e.into());
             }
-        }
 
-        if let Some(dp) = self.dataplane.take() {
-            if let Ok(dp) = Arc::try_unwrap(dp) {
-                if let Err(e) = dp.detach().await {
+        if let Some(dp) = self.dataplane.take()
+            && let Ok(dp) = Arc::try_unwrap(dp)
+                && let Err(e) = dp.detach().await {
                     warn!(?e, "ebpf detach failed during destroy");
                 }
-            }
-        }
 
         if let Err(e) = self.store.stop().await {
             warn!(?e, "service stop failed during destroy");
@@ -399,12 +393,11 @@ impl Mesh {
             first_err.get_or_insert(e.into());
         }
 
-        if let Some(cn) = &self.container_network {
-            if let Err(e) = cn.remove().await {
+        if let Some(cn) = &self.container_network
+            && let Err(e) = cn.remove().await {
                 warn!(?e, "container network remove failed during destroy");
                 first_err.get_or_insert(e.into());
             }
-        }
 
         self.apply(PhaseEvent::TeardownComplete)?;
         info!("mesh destroyed");
@@ -548,7 +541,7 @@ impl Mesh {
                 }
             })
             .await
-            .unwrap_or_else(|_| Ok(false));
+            .unwrap_or(Ok(false));
 
         let connected = matches!(result, Ok(true));
 

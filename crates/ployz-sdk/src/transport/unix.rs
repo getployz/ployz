@@ -7,6 +7,7 @@ pub struct UnixSocketTransport {
 }
 
 impl UnixSocketTransport {
+    #[must_use] 
     pub fn new(path: String) -> Self {
         Self { path }
     }

@@ -87,10 +87,12 @@ fn ssh_program() -> OsString {
     OsString::from("ssh")
 }
 
+#[must_use] 
 pub fn shell_escape(input: &str) -> String {
     input.replace('"', "\\\"")
 }
 
+#[must_use] 
 pub fn now_unix_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

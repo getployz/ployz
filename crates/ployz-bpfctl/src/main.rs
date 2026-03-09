@@ -31,7 +31,7 @@ macro_rules! include_bytes_aligned {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("usage: ployz-dataplane <attach|detach|route> ...");
+        eprintln!("usage: ployz-bpfctl <attach|detach|route> ...");
         return ExitCode::FAILURE;
     }
 

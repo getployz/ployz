@@ -119,6 +119,7 @@ pub struct CorrClient {
 }
 
 impl CorrClient {
+    #[must_use] 
     pub fn new(api_addr: SocketAddr, transport: Transport) -> Self {
         let connector = BridgeConnector {
             transport: transport.clone(),
@@ -133,10 +134,12 @@ impl CorrClient {
         }
     }
 
+    #[must_use] 
     pub fn api_addr(&self) -> SocketAddr {
         self.api_addr
     }
 
+    #[must_use] 
     pub fn transport(&self) -> &Transport {
         &self.transport
     }
@@ -187,15 +190,14 @@ impl CorrClient {
         let status = resp.status();
         let body = resp.into_body().collect().await?.to_bytes();
         if !status.is_success() {
-            if let Ok(exec_resp) = serde_json::from_slice::<ExecResponse>(&body) {
-                if let Some(ExecResult::Error { error }) = exec_resp
+            if let Ok(exec_resp) = serde_json::from_slice::<ExecResponse>(&body)
+                && let Some(ExecResult::Error { error }) = exec_resp
                     .results
                     .into_iter()
                     .find(|r| matches!(r, ExecResult::Error { .. }))
                 {
                     return Err(ClientError::ResponseError(error));
                 }
-            }
             return Err(ClientError::UnexpectedStatusCode(status));
         }
         Ok(serde_json::from_slice(&body)?)
@@ -224,11 +226,10 @@ impl CorrClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.into_body().collect().await?.to_bytes();
-            if let Ok(res) = serde_json::from_slice::<ExecResult>(&body) {
-                if let ExecResult::Error { error } = res {
+            if let Ok(res) = serde_json::from_slice::<ExecResult>(&body)
+                && let ExecResult::Error { error } = res {
                     return Err(ClientError::ResponseError(error));
                 }
-            }
             return Err(ClientError::UnexpectedStatusCode(status));
         }
         Ok(QueryStream::new(resp.into_body()))
@@ -400,7 +401,7 @@ impl Stream for IncomingBodyStream {
                 }
             }
             Some(Err(e)) => {
-                let io_err = io::Error::new(io::ErrorKind::Other, e.to_string());
+                let io_err = io::Error::other(e.to_string());
                 Poll::Ready(Some(Err(io_err)))
             }
             None => Poll::Ready(None),
@@ -478,6 +479,7 @@ pub struct SubscriptionStream<T> {
     stream: Option<FramedBody>,
     backoff: Option<Pin<Box<Sleep>>>,
     backoff_count: u32,
+    #[allow(clippy::type_complexity)]
     response: Option<Pin<Box<dyn Future<Output = Result<Incoming, ClientError>> + Send>>>,
     _deser: std::marker::PhantomData<T>,
 }
@@ -541,11 +543,10 @@ impl<T: DeserializeOwned + Unpin> SubscriptionStream<T> {
                     if let TypedQueryEvent::EndOfQuery { change_id, .. } = &evt {
                         self.handle_eoq(*change_id);
                     }
-                    if let TypedQueryEvent::Change(_, _, _, change_id) = &evt {
-                        if let Err(e) = self.handle_change(*change_id) {
+                    if let TypedQueryEvent::Change(_, _, _, change_id) = &evt
+                        && let Err(e) = self.handle_change(*change_id) {
                             return Poll::Ready(Some(Err(e)));
                         }
-                    }
                     Poll::Ready(Some(Ok(evt)))
                 }
                 Err(deser_err) => {
@@ -577,14 +578,13 @@ impl<T: DeserializeOwned + Unpin> SubscriptionStream<T> {
     }
 
     fn handle_change(&mut self, change_id: ChangeId) -> Result<(), SubscriptionError> {
-        if let Some(id) = self.last_change_id {
-            if id + 1 != change_id {
+        if let Some(id) = self.last_change_id
+            && id + 1 != change_id {
                 return Err(SubscriptionError::MissedChange {
                     expected: id + 1,
                     got: change_id,
                 });
             }
-        }
         self.last_change_id = Some(change_id);
         Ok(())
     }
@@ -600,7 +600,7 @@ impl<T: DeserializeOwned + Unpin> SubscriptionStream<T> {
                 return match res {
                     Ok(body) => Poll::Ready(Ok(framed_body(body))),
                     Err(e) => {
-                        let io_err = io::Error::new(io::ErrorKind::Other, e.to_string());
+                        let io_err = io::Error::other(e.to_string());
                         Poll::Ready(Err(io_err.into()))
                     }
                 };
@@ -678,6 +678,7 @@ impl Decoder for LinesBytesCodec {
     type Item = BytesMut;
     type Error = LinesCodecError;
 
+    #[allow(clippy::indexing_slicing)]
     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<BytesMut>, LinesCodecError> {
         loop {
             let read_to = std::cmp::min(self.max_length.saturating_add(1), buf.len());

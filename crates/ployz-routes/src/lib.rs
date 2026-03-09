@@ -3,20 +3,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::{SocketAddr, SocketAddrV4};
 
 use ployz_sdk::model::{
-    InstanceId, InstancePhase, InstanceStatusRecord, MachineId, ServiceHeadRecord,
-    ServiceRevisionRecord, ServiceSlotRecord,
+    InstanceId, InstancePhase, InstanceStatusRecord, MachineId, RoutingState, ServiceSlotRecord,
 };
 use ployz_sdk::spec::{Namespace, RouteSpec, ServiceSpec};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RoutingState {
-    pub revisions: Vec<ServiceRevisionRecord>,
-    pub heads: Vec<ServiceHeadRecord>,
-    pub slots: Vec<ServiceSlotRecord>,
-    pub instances: Vec<InstanceStatusRecord>,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GatewaySnapshot {
@@ -272,7 +263,7 @@ fn routable_backends_by_port(
         let Some(instance) = instances.get(&slot.active_instance_id) else {
             continue;
         };
-        if !is_routable_instance(instance, &slot, revision_hash) {
+        if !is_routable_instance(instance, slot, revision_hash) {
             continue;
         }
         let Some(overlay_ip) = instance.overlay_ip else {

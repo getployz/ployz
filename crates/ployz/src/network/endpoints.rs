@@ -60,11 +60,10 @@ pub async fn get_public_ip() -> Option<IpAddr> {
     for url in services {
         match client.get(url).send().await {
             Ok(resp) if resp.status().is_success() => {
-                if let Ok(body) = resp.text().await {
-                    if let Ok(ip) = body.trim().parse::<IpAddr>() {
+                if let Ok(body) = resp.text().await
+                    && let Ok(ip) = body.trim().parse::<IpAddr>() {
                         return Some(ip);
                     }
-                }
             }
             Ok(_) => continue,
             Err(e) => {
@@ -82,11 +81,10 @@ pub async fn get_public_ip() -> Option<IpAddr> {
 pub async fn detect_endpoints(listen_port: u16) -> Vec<String> {
     let mut ips = list_routable_ips();
 
-    if let Some(public_ip) = get_public_ip().await {
-        if !ips.contains(&public_ip) {
+    if let Some(public_ip) = get_public_ip().await
+        && !ips.contains(&public_ip) {
             ips.insert(0, public_ip);
         }
-    }
 
     ips.into_iter()
         .map(|ip| match ip {

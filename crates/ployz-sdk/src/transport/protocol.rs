@@ -159,7 +159,7 @@ pub enum RemoteDeployResponse {
         instances: Vec<InstanceStatusRecord>,
     },
     CandidateStarted {
-        status: InstanceStatusRecord,
+        status: Box<InstanceStatusRecord>,
     },
     Error {
         code: String,
