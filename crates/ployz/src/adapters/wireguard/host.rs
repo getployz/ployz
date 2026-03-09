@@ -4,7 +4,7 @@ use std::process::Command;
 use std::sync::Mutex;
 use std::time::SystemTime;
 use tokio::time::Instant;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use defguard_wireguard_rs::key::Key;
 use defguard_wireguard_rs::net::IpAddrMask;
@@ -353,7 +353,7 @@ impl MeshNetwork for HostWireGuard {
             }
         }
 
-        info!(peer_count = desired.len(), "synced wireguard peers");
+        debug!(peer_count = desired.len(), "synced wireguard peers");
         Ok(())
     }
 }
