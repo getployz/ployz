@@ -5,6 +5,7 @@ use bollard::exec::{CreateExecOptions, StartExecResults};
 use bollard::models::{ContainerCreateBody, HostConfig, PortBinding, PortMap};
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, ListContainersOptionsBuilder, RemoveContainerOptionsBuilder,
+    StopContainerOptionsBuilder,
 };
 use futures_util::stream::StreamExt;
 use reqwest::StatusCode;
@@ -351,9 +352,19 @@ impl LocalDeployRuntime {
         service: &str,
     ) -> Result<()> {
         let container_name = format!("ployz-{namespace}-{service}-{}", instance_id.0);
-        let options = RemoveContainerOptionsBuilder::default().force(true).build();
+        // Graceful stop: sends SIGTERM and waits for the container's stop_timeout
+        // (set from stop_grace_period at creation time) before SIGKILL.
+        let stop_opts = StopContainerOptionsBuilder::default().build();
+        match self.docker.stop_container(&container_name, Some(stop_opts)).await {
+            Ok(()) => {}
+            Err(bollard::errors::Error::DockerResponseServerError { status_code: 304, .. }) => {
+                // Container already stopped
+            }
+            Err(e) => return Err(Error::operation("remove_instance", e.to_string())),
+        }
+        let remove_opts = RemoveContainerOptionsBuilder::default().build();
         self.docker
-            .remove_container(&container_name, Some(options))
+            .remove_container(&container_name, Some(remove_opts))
             .await
             .map_err(|e| Error::operation("remove_instance", e.to_string()))?;
         Ok(())
@@ -869,14 +880,6 @@ pub async fn apply(
             step: "commit".into(),
             message: format!("committed deploy {} for '{}'", deploy_id, namespace),
         });
-
-        for session in &remote_sessions {
-            session.apply_route_epoch().await?;
-            events.push(DeployEvent {
-                step: "route_epoch".into(),
-                message: format!("applied route epoch on '{}'", session.machine_id()),
-            });
-        }
 
         let active_instance_ids: BTreeSet<String> = committed_slots
             .iter()
