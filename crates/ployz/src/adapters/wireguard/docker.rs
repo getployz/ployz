@@ -28,7 +28,7 @@ use super::config::{
     write_sync_config_with_extra_peers,
 };
 
-const DEFAULT_IMAGE: &str = "ghcr.io/getployz/ployz-bpfctl:latest";
+const DEFAULT_IMAGE: &str = "ghcr.io/getployz/ployz-networking:latest";
 use super::DEFAULT_LISTEN_PORT;
 const DEFAULT_MTU: u16 = 1420;
 const INTERFACE_NAME: &str = "wg0";
