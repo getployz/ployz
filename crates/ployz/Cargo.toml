@@ -10,6 +10,7 @@ path = "src/bin/ployzd.rs"
 
 [dependencies]
 ployz-sdk = { path = "../ployz-sdk" }
+ployz-routing = { path = "../ployz-routing" }
 ployz-ebpf-common = { path = "../ebpf-common" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

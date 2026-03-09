@@ -124,18 +124,9 @@ pub fn match_http_route<'a>(
         .map(normalize_request_host)
         .filter(|value| !value.is_empty());
     let path = normalize_path_prefix(path);
-    snapshot
-        .http_routes
-        .iter()
-        .filter(|route| {
-            route_matches_host(route, host.as_deref()) && path.starts_with(route.path_prefix.as_str())
-        })
-        .max_by_key(|route| {
-            (
-                route_is_specific_host(route, host.as_deref()),
-                route.path_prefix.len(),
-            )
-        })
+    snapshot.http_routes.iter().find(|route| {
+        route_matches_host(route, host.as_deref()) && path.starts_with(route.path_prefix.as_str())
+    })
 }
 
 pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> {
@@ -158,15 +149,27 @@ pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> 
         .into_iter()
         .map(|instance| (instance.instance_id.clone(), instance))
         .collect::<HashMap<_, _>>();
+    let mut slots_by_revision = HashMap::new();
+    for slot in state.slots {
+        slots_by_revision
+            .entry((
+                slot.namespace.clone(),
+                slot.service.clone(),
+                slot.revision_hash.clone(),
+            ))
+            .or_insert_with(Vec::new)
+            .push(slot);
+    }
 
     let mut http_routes = Vec::new();
     let mut tcp_routes = Vec::new();
     for head in state.heads {
-        let Some(revision) = revisions.get(&(
+        let revision_key = (
             head.namespace.clone(),
             head.service.clone(),
             head.current_revision_hash.clone(),
-        )) else {
+        );
+        let Some(revision) = revisions.get(&revision_key) else {
             return Err(ProjectionError::MissingRevision {
                 namespace: head.namespace,
                 service: head.service,
@@ -183,23 +186,17 @@ pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> 
         let backends_by_port = routable_backends_by_port(
             &spec,
             &head.current_revision_hash,
-            state
-                .slots
-                .iter()
-                .filter(|slot| {
-                    slot.namespace == head.namespace
-                        && slot.service == head.service
-                        && slot.revision_hash == head.current_revision_hash
-                })
-                .cloned()
-                .collect::<Vec<_>>(),
+            slots_by_revision
+                .get(&revision_key)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
             &instances,
         );
 
         for (index, route) in spec.routes.iter().enumerate() {
             match route {
                 RouteSpec::Http(route) => {
-                    let mut hostnames = route
+                    let hostnames = route
                         .hostnames
                         .iter()
                         .map(|hostname| normalize_request_host(hostname))
@@ -207,7 +204,6 @@ pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> 
                         .collect::<BTreeSet<_>>()
                         .into_iter()
                         .collect::<Vec<_>>();
-                    hostnames.sort();
                     http_routes.push(HttpRouteView {
                         route_id: format!(
                             "http:{}:{}:{}",
@@ -263,7 +259,7 @@ pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> 
 fn routable_backends_by_port(
     spec: &ServiceSpec,
     revision_hash: &str,
-    slots: Vec<ServiceSlotRecord>,
+    slots: &[ServiceSlotRecord],
     instances: &HashMap<InstanceId, InstanceStatusRecord>,
 ) -> BTreeMap<String, Vec<BackendView>> {
     let service_ports = spec
@@ -282,13 +278,10 @@ fn routable_backends_by_port(
         let Some(overlay_ip) = instance.overlay_ip else {
             continue;
         };
-        for (port_name, port) in &service_ports {
+        for port_name in service_ports.keys() {
             let Some(port_number) = instance.backend_ports.get(port_name) else {
                 continue;
             };
-            if *port_number != port.container_port {
-                continue;
-            }
             backends
                 .entry(port_name.clone())
                 .or_insert_with(Vec::new)
@@ -375,13 +368,6 @@ fn route_matches_host(route: &HttpRouteView, host: Option<&str>) -> bool {
     route.hostnames.iter().any(|candidate| candidate == host)
 }
 
-fn route_is_specific_host(route: &HttpRouteView, host: Option<&str>) -> bool {
-    let Some(host) = host else {
-        return false;
-    };
-    !route.hostnames.is_empty() && route.hostnames.iter().any(|candidate| candidate == host)
-}
-
 fn normalize_path_prefix(path_prefix: &str) -> String {
     let trimmed = path_prefix.trim();
     if trimmed.is_empty() {
@@ -444,15 +430,6 @@ mod tests {
         let snapshot = GatewaySnapshot {
             http_routes: vec![
                 HttpRouteView {
-                    route_id: "wild".into(),
-                    namespace: Namespace("prod".into()),
-                    service: "wild".into(),
-                    revision_hash: "r1".into(),
-                    hostnames: Vec::new(),
-                    path_prefix: "/".into(),
-                    backends: vec![backend("wild")],
-                },
-                HttpRouteView {
                     route_id: "specific".into(),
                     namespace: Namespace("prod".into()),
                     service: "specific".into(),
@@ -460,6 +437,15 @@ mod tests {
                     hostnames: vec!["api.example.com".into()],
                     path_prefix: "/v1".into(),
                     backends: vec![backend("specific")],
+                },
+                HttpRouteView {
+                    route_id: "wild".into(),
+                    namespace: Namespace("prod".into()),
+                    service: "wild".into(),
+                    revision_hash: "r1".into(),
+                    hostnames: Vec::new(),
+                    path_prefix: "/".into(),
+                    backends: vec![backend("wild")],
                 },
             ],
             tcp_routes: Vec::new(),

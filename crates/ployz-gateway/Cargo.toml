@@ -11,13 +11,9 @@ path = "src/main.rs"
 [dependencies]
 ployz = { path = "../ployz" }
 ployz-routing = { path = "../ployz-routing" }
-ployz-sdk = { path = "../ployz-sdk" }
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
-corro-api-types = { git = "https://github.com/getployz/corrosion.git", branch = "main" }
-futures-util = "0.3"
 pingora = { version = "0.8.0", features = ["lb"] }
-serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync"] }
 tracing = "0.1"

@@ -1,10 +1,12 @@
 use crate::error::{Error, Result};
 use crate::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, ServiceHeadRecord, ServiceRevisionRecord, ServiceSlotRecord, SlotId,
+    MachineId, MachineRecord, ServiceHeadRecord, ServiceRevisionRecord, ServiceSlotRecord,
+    SlotId,
 };
 use crate::spec::Namespace;
-use crate::store::{DeployStore, InviteStore, MachineStore, SyncProbe, SyncStatus};
+use crate::store::{DeployStore, InviteStore, MachineStore, RoutingStore, SyncProbe, SyncStatus};
+use ployz_routing::RoutingState;
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 use tokio::sync::mpsc;
@@ -16,7 +18,8 @@ pub struct MemoryStore {
 
 struct StoreInner {
     machines: HashMap<MachineId, MachineRecord>,
-    subscribers: Vec<mpsc::Sender<MachineEvent>>,
+    machine_subscribers: Vec<mpsc::Sender<MachineEvent>>,
+    routing_subscribers: Vec<mpsc::Sender<()>>,
     invites: HashMap<String, InviteRecord>,
     service_revisions: HashMap<(Namespace, String, String), ServiceRevisionRecord>,
     service_heads: HashMap<(Namespace, String), ServiceHeadRecord>,
@@ -37,7 +40,8 @@ impl MemoryStore {
         Self {
             inner: Mutex::new(StoreInner {
                 machines: HashMap::new(),
-                subscribers: Vec::new(),
+                machine_subscribers: Vec::new(),
+                routing_subscribers: Vec::new(),
                 invites: HashMap::new(),
                 service_revisions: HashMap::new(),
                 service_heads: HashMap::new(),
@@ -61,7 +65,7 @@ impl MemoryStore {
 
     fn broadcast(inner: &mut StoreInner, event: MachineEvent) {
         inner
-            .subscribers
+            .machine_subscribers
             .retain(|tx| match tx.try_send(event.clone()) {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Closed(_)) => false,
@@ -69,6 +73,16 @@ impl MemoryStore {
                     warn!("subscriber channel full, event dropped");
                     true
                 }
+            });
+    }
+
+    fn broadcast_routing_refresh(inner: &mut StoreInner) {
+        inner
+            .routing_subscribers
+            .retain(|tx| match tx.try_send(()) {
+                Ok(()) => true,
+                Err(mpsc::error::TrySendError::Closed(_)) => false,
+                Err(mpsc::error::TrySendError::Full(_)) => true,
             });
     }
 }
@@ -112,8 +126,27 @@ impl MachineStore for MemoryStore {
         let mut inner = self.lock_inner();
         let snapshot: Vec<MachineRecord> = inner.machines.values().cloned().collect();
         let (tx, rx) = mpsc::channel(64);
-        inner.subscribers.push(tx);
+        inner.machine_subscribers.push(tx);
         Ok((snapshot, rx))
+    }
+}
+
+impl RoutingStore for MemoryStore {
+    async fn load_routing_state(&self) -> Result<RoutingState> {
+        let inner = self.lock_inner();
+        Ok(RoutingState {
+            revisions: inner.service_revisions.values().cloned().collect(),
+            heads: inner.service_heads.values().cloned().collect(),
+            slots: inner.service_slots.values().cloned().collect(),
+            instances: inner.instance_status.values().cloned().collect(),
+        })
+    }
+
+    async fn subscribe_routing_invalidations(&self) -> Result<mpsc::Receiver<()>> {
+        let mut inner = self.lock_inner();
+        let (tx, rx) = mpsc::channel(64);
+        inner.routing_subscribers.push(tx);
+        Ok(rx)
     }
 }
 
@@ -193,6 +226,7 @@ impl DeployStore for MemoryStore {
             record.revision_hash.clone(),
         );
         inner.service_revisions.insert(key, record.clone());
+        Self::broadcast_routing_refresh(&mut inner);
         Ok(())
     }
 
@@ -200,6 +234,7 @@ impl DeployStore for MemoryStore {
         let mut inner = self.lock_inner();
         let key = (record.namespace.clone(), record.service.clone());
         inner.service_heads.insert(key, record.clone());
+        Self::broadcast_routing_refresh(&mut inner);
         Ok(())
     }
 
@@ -208,6 +243,7 @@ impl DeployStore for MemoryStore {
         inner
             .service_heads
             .remove(&(namespace.clone(), service.to_string()));
+        Self::broadcast_routing_refresh(&mut inner);
         Ok(())
     }
 
@@ -229,6 +265,7 @@ impl DeployStore for MemoryStore {
             );
             inner.service_slots.insert(key, record.clone());
         }
+        Self::broadcast_routing_refresh(&mut inner);
         Ok(())
     }
 
@@ -237,12 +274,14 @@ impl DeployStore for MemoryStore {
         inner
             .instance_status
             .insert(record.instance_id.clone(), record.clone());
+        Self::broadcast_routing_refresh(&mut inner);
         Ok(())
     }
 
     async fn delete_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
         let mut inner = self.lock_inner();
         inner.instance_status.remove(instance_id);
+        Self::broadcast_routing_refresh(&mut inner);
         Ok(())
     }
 
@@ -300,6 +339,7 @@ impl DeployStore for MemoryStore {
         inner
             .deploys
             .insert(deploy.deploy_id.clone(), deploy.clone());
+        Self::broadcast_routing_refresh(&mut inner);
         Ok(())
     }
 
@@ -312,6 +352,7 @@ impl DeployStore for MemoryStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::RoutingStore;
 
     #[tokio::test]
     async fn invite_is_single_use() {
@@ -355,5 +396,33 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn routing_subscribers_receive_refresh_events() {
+        let store = MemoryStore::new();
+        let mut refresh_rx = store
+            .subscribe_routing_invalidations()
+            .await
+            .expect("subscribe");
+
+        let namespace = Namespace("prod".into());
+        let record = ServiceHeadRecord {
+            namespace,
+            service: "api".into(),
+            current_revision_hash: "rev-1".into(),
+            updated_by_deploy_id: DeployId("dep-1".into()),
+            updated_at: 1,
+        };
+
+        store
+            .upsert_service_head(&record)
+            .await
+            .expect("upsert service head");
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), refresh_rx.recv())
+            .await
+            .expect("refresh event deadline");
+        assert_eq!(event, Some(()));
     }
 }

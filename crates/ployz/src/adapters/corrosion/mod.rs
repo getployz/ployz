@@ -6,14 +6,18 @@ use crate::model::{
     ServiceSlotRecord, SlotId,
 };
 use crate::spec::Namespace;
-use crate::store::{DeployStore, InviteStore, MachineStore, SyncProbe, SyncStatus};
+use crate::store::network::NetworkConfig;
+use crate::store::{DeployStore, InviteStore, MachineStore, RoutingStore, SyncProbe, SyncStatus};
+use crate::adapters::corrosion::config as corrosion_config;
 use corro_api_types::{ExecResult, SqliteValue, Statement, TypedQueryEvent, sqlite::ChangeType};
 use futures_util::StreamExt;
 use ipnet::Ipv4Net;
+use ployz_routing::RoutingState;
 use std::collections::{BTreeMap, HashMap};
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::path::Path;
 use tokio::sync::mpsc;
-use tracing::warn;
+use tracing::{info, warn};
 
 pub mod client;
 pub mod config;
@@ -24,6 +28,15 @@ pub use client::{CorrClient, Transport};
 
 pub const SCHEMA_SQL: &str = include_str!("schema.sql");
 
+const SQL_ALL_SERVICE_REVISIONS: &str =
+    "SELECT namespace, service, revision_hash, spec_json, created_by, created_at FROM service_revisions ORDER BY namespace, service, revision_hash";
+const SQL_ALL_SERVICE_HEADS: &str =
+    "SELECT namespace, service, current_revision_hash, updated_by_deploy_id, updated_at FROM service_heads ORDER BY namespace, service";
+const SQL_ALL_SERVICE_SLOTS: &str =
+    "SELECT namespace, service, slot_id, machine_id, active_instance_id, revision_hash, updated_by_deploy_id, updated_at FROM service_slots ORDER BY namespace, service, slot_id";
+const SQL_ALL_INSTANCE_STATUS: &str =
+    "SELECT instance_id, namespace, service, slot_id, machine_id, revision_hash, deploy_id, docker_container_id, overlay_ip, backend_ports_json, phase, ready, drain_state, error, started_at, updated_at FROM instance_status ORDER BY namespace, service, slot_id, instance_id";
+
 #[derive(Clone)]
 pub struct CorrosionStore {
     client: CorrClient,
@@ -33,6 +46,37 @@ impl CorrosionStore {
     pub fn new(api_addr: SocketAddr, transport: Transport) -> Self {
         let client = CorrClient::new(api_addr, transport);
         Self { client }
+    }
+
+    pub async fn connect_for_network(data_dir: &Path, network: &str) -> Result<Self> {
+        let network_path = NetworkConfig::path(data_dir, network);
+        let network_config = NetworkConfig::load(&network_path)
+            .map_err(|e| Error::operation("connect_for_network", e.to_string()))?;
+        let api_addr = SocketAddr::new(
+            IpAddr::V6(network_config.overlay_ip.0),
+            corrosion_config::DEFAULT_API_PORT,
+        );
+        let bridge_addr = SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            corrosion_config::DEFAULT_API_PORT,
+        );
+
+        let bridge = Self::new(api_addr, Transport::Bridge { local_addr: bridge_addr });
+        if bridge.client.health().await.is_ok() {
+            info!(%api_addr, %bridge_addr, "using local bridge transport for corrosion");
+            return Ok(bridge);
+        }
+
+        let direct = Self::new(api_addr, Transport::Direct);
+        if direct.client.health().await.is_ok() {
+            info!(%api_addr, "using direct overlay transport for corrosion");
+            return Ok(direct);
+        }
+
+        Err(Error::operation(
+            "connect_for_network",
+            format!("failed to reach corrosion via bridge {bridge_addr} or direct {api_addr}"),
+        ))
     }
 }
 
@@ -274,6 +318,36 @@ impl InviteStore for CorrosionStore {
                 }
             }
         }
+    }
+}
+
+impl RoutingStore for CorrosionStore {
+    async fn load_routing_state(&self) -> Result<RoutingState> {
+        let (revisions, heads, slots, instances) = tokio::join!(
+            load_all_service_revisions(&self.client),
+            load_all_service_heads(&self.client),
+            load_all_service_slots(&self.client),
+            load_all_instance_status(&self.client),
+        );
+        Ok(RoutingState {
+            revisions: revisions?,
+            heads: heads?,
+            slots: slots?,
+            instances: instances?,
+        })
+    }
+
+    async fn subscribe_routing_invalidations(&self) -> Result<mpsc::Receiver<()>> {
+        let (tx, rx) = mpsc::channel(64);
+        for (label, statement) in routing_subscription_statements() {
+            tokio::spawn(run_routing_invalidator(
+                label,
+                self.client.clone(),
+                statement,
+                tx.clone(),
+            ));
+        }
+        Ok(rx)
     }
 }
 
@@ -542,6 +616,63 @@ impl DeployStore for CorrosionStore {
     }
 }
 
+async fn load_all_service_revisions(client: &CorrClient) -> Result<Vec<ServiceRevisionRecord>> {
+    let stmt = Statement::Simple(SQL_ALL_SERVICE_REVISIONS.to_string());
+    query_rows(client, &stmt, "load_routing_state")
+        .await?
+        .iter()
+        .map(|row| parse_service_revision(row))
+        .collect()
+}
+
+async fn load_all_service_heads(client: &CorrClient) -> Result<Vec<ServiceHeadRecord>> {
+    let stmt = Statement::Simple(SQL_ALL_SERVICE_HEADS.to_string());
+    query_rows(client, &stmt, "load_routing_state")
+        .await?
+        .iter()
+        .map(|row| parse_service_head(row))
+        .collect()
+}
+
+async fn load_all_service_slots(client: &CorrClient) -> Result<Vec<ServiceSlotRecord>> {
+    let stmt = Statement::Simple(SQL_ALL_SERVICE_SLOTS.to_string());
+    query_rows(client, &stmt, "load_routing_state")
+        .await?
+        .iter()
+        .map(|row| parse_service_slot(row))
+        .collect()
+}
+
+async fn load_all_instance_status(client: &CorrClient) -> Result<Vec<InstanceStatusRecord>> {
+    let stmt = Statement::Simple(SQL_ALL_INSTANCE_STATUS.to_string());
+    query_rows(client, &stmt, "load_routing_state")
+        .await?
+        .iter()
+        .map(|row| parse_instance_status(row))
+        .collect()
+}
+
+fn routing_subscription_statements() -> [(&'static str, Statement); 4] {
+    [
+        (
+            "service_revisions",
+            Statement::Simple(SQL_ALL_SERVICE_REVISIONS.to_string()),
+        ),
+        (
+            "service_heads",
+            Statement::Simple(SQL_ALL_SERVICE_HEADS.to_string()),
+        ),
+        (
+            "service_slots",
+            Statement::Simple(SQL_ALL_SERVICE_SLOTS.to_string()),
+        ),
+        (
+            "instance_status",
+            Statement::Simple(SQL_ALL_INSTANCE_STATUS.to_string()),
+        ),
+    ]
+}
+
 // --- query/exec helpers ---
 
 async fn query_rows(
@@ -591,6 +722,38 @@ async fn exec_all(client: &CorrClient, stmts: &[Statement], op: &'static str) ->
 }
 
 // --- subscription helpers ---
+
+async fn run_routing_invalidator(
+    label: &'static str,
+    client: CorrClient,
+    statement: Statement,
+    refresh_tx: mpsc::Sender<()>,
+) {
+    let mut stream = match client.subscribe(&statement, false, None).await {
+        Ok(stream) => stream,
+        Err(err) => {
+            warn!(%label, ?err, "failed to subscribe routing invalidator");
+            return;
+        }
+    };
+
+    while let Some(event) = stream.next().await {
+        match event {
+            Ok(TypedQueryEvent::Columns(_) | TypedQueryEvent::EndOfQuery { .. }) => {}
+            Ok(TypedQueryEvent::Row(_, _) | TypedQueryEvent::Change(_, _, _, _)) => {
+                if refresh_tx.send(()).await.is_err() {
+                    return;
+                }
+            }
+            Ok(TypedQueryEvent::Error(err)) => {
+                warn!(%label, ?err, "routing subscription error");
+            }
+            Err(err) => {
+                warn!(%label, ?err, "routing invalidator stream error");
+            }
+        }
+    }
+}
 
 fn apply_change(
     ct: ChangeType,
@@ -745,6 +908,25 @@ fn parse_machine(row: &[SqliteValue]) -> Result<MachineRecord> {
         last_heartbeat,
         created_at,
         updated_at,
+    })
+}
+
+fn parse_service_revision(row: &[SqliteValue]) -> Result<ServiceRevisionRecord> {
+    let [namespace_val, service_val, revision_val, spec_val, created_by_val, created_at_val] = row
+    else {
+        return Err(Error::operation(
+            "parse_service_revision",
+            format!("expected 6 columns, got {}", row.len()),
+        ));
+    };
+
+    Ok(ServiceRevisionRecord {
+        namespace: Namespace(text(namespace_val, "namespace")?),
+        service: text(service_val, "service")?,
+        revision_hash: text(revision_val, "revision_hash")?,
+        spec_json: text(spec_val, "spec_json")?,
+        created_by: MachineId(text(created_by_val, "created_by")?),
+        created_at: integer(created_at_val, "created_at")? as u64,
     })
 }
 

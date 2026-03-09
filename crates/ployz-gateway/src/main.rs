@@ -1,18 +1,14 @@
-mod state;
+use std::path::{Path, PathBuf};
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock};
-
-use async_trait::async_trait;
 use clap::Parser;
 use pingora::prelude::*;
 use ployz::config::{Affordances, default_data_dir};
-use ployz_routing::{BackendView, GatewaySnapshot, match_http_route};
+use ployz::NetworkConfig;
+use ployz_gateway::{
+    GatewayApp, GatewayConfig, SharedSnapshot, load_initial_snapshot, spawn_sync_thread,
+};
 use thiserror::Error;
 use tracing::info;
-
-use crate::state::{GatewayConfig, load_initial_snapshot, spawn_sync_thread};
 
 const HTTP_LISTEN_ADDR: &str = "0.0.0.0:80";
 
@@ -23,109 +19,6 @@ struct Cli {
     data_dir: Option<PathBuf>,
     #[arg(long)]
     network: Option<String>,
-}
-
-#[derive(Clone)]
-struct SharedSnapshot {
-    inner: Arc<RwLock<Arc<GatewaySnapshot>>>,
-}
-
-impl SharedSnapshot {
-    fn new(snapshot: GatewaySnapshot) -> Self {
-        Self {
-            inner: Arc::new(RwLock::new(Arc::new(snapshot))),
-        }
-    }
-
-    fn load(&self) -> Arc<GatewaySnapshot> {
-        self.inner
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-    }
-
-    fn replace(&self, snapshot: GatewaySnapshot) {
-        *self
-            .inner
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Arc::new(snapshot);
-    }
-}
-
-struct GatewayApp {
-    snapshot: SharedSnapshot,
-    rr_state: Arc<Mutex<HashMap<String, usize>>>,
-}
-
-#[derive(Default)]
-struct RequestCtx {
-    backend: Option<BackendView>,
-}
-
-impl GatewayApp {
-    fn new(snapshot: SharedSnapshot) -> Self {
-        Self {
-            snapshot,
-            rr_state: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
-    fn select_backend(&self, route_id: &str, backends: &[BackendView]) -> Option<BackendView> {
-        let Some(len) = (!backends.is_empty()).then_some(backends.len()) else {
-            return None;
-        };
-        let mut rr_state = self
-            .rr_state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let next = rr_state.entry(route_id.to_string()).or_insert(0);
-        let backend = backends[*next % len].clone();
-        *next = next.wrapping_add(1);
-        Some(backend)
-    }
-}
-
-#[async_trait]
-impl ProxyHttp for GatewayApp {
-    type CTX = RequestCtx;
-
-    fn new_ctx(&self) -> Self::CTX {
-        RequestCtx::default()
-    }
-
-    async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool> {
-        let request = session.req_header();
-        let host = request
-            .headers
-            .get("host")
-            .and_then(|value| value.to_str().ok());
-        let path = request.uri.path();
-        let snapshot = self.snapshot.load();
-        let Some(route) = match_http_route(&snapshot, host, path) else {
-            session.respond_error(404).await?;
-            return Ok(true);
-        };
-        let Some(backend) = self.select_backend(&route.route_id, &route.backends) else {
-            session.respond_error(503).await?;
-            return Ok(true);
-        };
-        ctx.backend = Some(backend);
-        Ok(false)
-    }
-
-    async fn upstream_peer(
-        &self,
-        _session: &mut Session,
-        ctx: &mut Self::CTX,
-    ) -> Result<Box<HttpPeer>> {
-        let Some(backend) = ctx.backend.as_ref() else {
-            return Err(Error::explain(
-                ErrorType::HTTPStatus(503),
-                "backend was not selected",
-            ));
-        };
-        Ok(Box::new(HttpPeer::new(backend.address, false, String::new())))
-    }
 }
 
 #[derive(Debug, Error)]
@@ -171,9 +64,6 @@ fn build_gateway_config(cli: &Cli) -> std::result::Result<GatewayConfig, CliErro
     Ok(GatewayConfig { data_dir, network })
 }
 
-fn resolve_active_network(data_dir: &PathBuf) -> Option<String> {
-    std::fs::read_to_string(data_dir.join("active_network"))
-        .ok()
-        .map(|body| body.trim().to_string())
-        .filter(|body| !body.is_empty())
+fn resolve_active_network(data_dir: &Path) -> Option<String> {
+    NetworkConfig::read_active_network(data_dir)
 }
