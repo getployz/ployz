@@ -50,23 +50,15 @@ pub struct SidecarHandle {
 }
 
 enum SidecarInner {
-    Noop,
     Child(ChildHandle),
     Docker(DockerHandle),
     Systemd(SystemdHandle),
 }
 
 impl SidecarHandle {
-    #[must_use]
-    pub fn noop() -> Self {
-        Self {
-            inner: SidecarInner::Noop,
-        }
-    }
-
     pub async fn start(mode: crate::Mode, spec: SidecarSpec) -> Result<Self, SidecarError> {
         match mode {
-            crate::Mode::Memory => Ok(Self::noop()),
+            crate::Mode::Memory => unreachable!("memory mode does not use sidecars"),
             crate::Mode::Docker => start_docker(spec).await.map(|h| Self {
                 inner: SidecarInner::Docker(h),
             }),
@@ -81,7 +73,6 @@ impl SidecarHandle {
 
     pub async fn shutdown(&mut self) -> Result<(), SidecarError> {
         match &mut self.inner {
-            SidecarInner::Noop => Ok(()),
             SidecarInner::Child(h) => h.shutdown().await,
             SidecarInner::Docker(h) => h.shutdown().await,
             SidecarInner::Systemd(h) => h.shutdown().await,
@@ -91,7 +82,7 @@ impl SidecarHandle {
     /// Detach without stopping. Docker/systemd keep running across daemon restarts.
     pub async fn detach(&mut self) -> Result<(), SidecarError> {
         match &mut self.inner {
-            SidecarInner::Noop | SidecarInner::Docker(_) | SidecarInner::Systemd(_) => Ok(()),
+            SidecarInner::Docker(_) | SidecarInner::Systemd(_) => Ok(()),
             SidecarInner::Child(h) => h.shutdown().await,
         }
     }

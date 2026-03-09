@@ -1,6 +1,3 @@
-use tokio::sync::oneshot;
-use tracing::warn;
-
 use crate::drivers::StoreDriver;
 use crate::sidecar::{SidecarHandle, SidecarSpec, SystemdType};
 use crate::Mode;
@@ -16,7 +13,6 @@ pub use ployz_dns::{self as runtime, DnsConfig, DnsError, SharedDnsSnapshot};
 
 enum DnsHandleInner {
     Noop,
-    Embedded(EmbeddedDnsHandle),
     Sidecar(SidecarHandle),
 }
 
@@ -35,7 +31,6 @@ impl DnsHandle {
     pub async fn shutdown(&mut self) -> Result<(), DnsError> {
         match &mut self.inner {
             DnsHandleInner::Noop => Ok(()),
-            DnsHandleInner::Embedded(handle) => handle.shutdown().await,
             DnsHandleInner::Sidecar(handle) => handle
                 .shutdown()
                 .await
@@ -48,7 +43,6 @@ impl DnsHandle {
     pub async fn detach(&mut self) -> Result<(), DnsError> {
         match &mut self.inner {
             DnsHandleInner::Noop => Ok(()),
-            DnsHandleInner::Embedded(handle) => handle.shutdown().await,
             DnsHandleInner::Sidecar(handle) => handle
                 .detach()
                 .await
@@ -59,15 +53,11 @@ impl DnsHandle {
 
 pub async fn start_managed_dns(
     mode: Mode,
-    store: StoreDriver,
+    _store: StoreDriver,
     config: DnsConfig,
 ) -> Result<DnsHandle, DnsError> {
     match mode {
-        Mode::Memory => start_embedded_dns(store, config)
-            .await
-            .map(|handle| DnsHandle {
-                inner: DnsHandleInner::Embedded(handle),
-            }),
+        Mode::Memory => Ok(DnsHandle::noop()),
         Mode::Docker | Mode::HostExec | Mode::HostService => {
             let spec = build_dns_sidecar_spec(&config);
             SidecarHandle::start(mode, spec)
@@ -101,52 +91,3 @@ fn build_dns_sidecar_spec(config: &DnsConfig) -> SidecarSpec {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Embedded mode — runs DNS server in-process via tokio task
-// ---------------------------------------------------------------------------
-
-struct EmbeddedDnsHandle {
-    shutdown_tx: Option<oneshot::Sender<()>>,
-    join: Option<tokio::task::JoinHandle<()>>,
-}
-
-impl EmbeddedDnsHandle {
-    async fn shutdown(&mut self) -> Result<(), DnsError> {
-        if let Some(shutdown_tx) = self.shutdown_tx.take() {
-            let _ = shutdown_tx.send(());
-        }
-        let Some(join) = self.join.take() else {
-            return Ok(());
-        };
-        join.await
-            .map_err(|err| DnsError::Runtime(format!("dns task join failed: {err}")))?;
-        Ok(())
-    }
-}
-
-async fn start_embedded_dns(
-    store: StoreDriver,
-    config: DnsConfig,
-) -> Result<EmbeddedDnsHandle, DnsError> {
-    let state = ployz_dns::DnsStore::load_routing_state(&store).await?;
-    let initial_snapshot = ployz_dns::project_dns(&state);
-    let shared = SharedDnsSnapshot::new(initial_snapshot);
-    ployz_dns::spawn_sync_thread_with_store(store, shared.clone())?;
-
-    let listen_addr: std::net::SocketAddr = config
-        .listen_addr
-        .parse()
-        .map_err(|err| DnsError::Config(format!("invalid listen_addr '{}': {err}", config.listen_addr)))?;
-
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let join = tokio::spawn(async move {
-        if let Err(err) = ployz_dns::run_dns_server(listen_addr, shared, shutdown_rx).await {
-            warn!(?err, "embedded dns server exited");
-        }
-    });
-
-    Ok(EmbeddedDnsHandle {
-        shutdown_tx: Some(shutdown_tx),
-        join: Some(join),
-    })
-}

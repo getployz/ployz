@@ -1,8 +1,5 @@
 use std::path::PathBuf;
 
-use tokio::sync::oneshot;
-use tracing::warn;
-
 use crate::drivers::StoreDriver;
 use crate::sidecar::{SidecarHandle, SidecarSpec, SystemdType};
 use crate::store::network::NetworkConfig;
@@ -21,7 +18,6 @@ pub use ployz_gateway::{
 
 enum GatewayHandleInner {
     Noop,
-    Embedded(EmbeddedGatewayHandle),
     Sidecar(SidecarHandle),
 }
 
@@ -40,7 +36,6 @@ impl GatewayHandle {
     pub async fn shutdown(&mut self) -> Result<(), GatewayError> {
         match &mut self.inner {
             GatewayHandleInner::Noop => Ok(()),
-            GatewayHandleInner::Embedded(handle) => handle.shutdown().await,
             GatewayHandleInner::Sidecar(handle) => handle
                 .shutdown()
                 .await
@@ -53,7 +48,6 @@ impl GatewayHandle {
     pub async fn detach(&mut self) -> Result<(), GatewayError> {
         match &mut self.inner {
             GatewayHandleInner::Noop => Ok(()),
-            GatewayHandleInner::Embedded(handle) => handle.shutdown().await,
             GatewayHandleInner::Sidecar(handle) => handle
                 .detach()
                 .await
@@ -64,15 +58,11 @@ impl GatewayHandle {
 
 pub async fn start_managed_gateway(
     mode: Mode,
-    store: StoreDriver,
+    _store: StoreDriver,
     config: GatewayConfig,
 ) -> Result<GatewayHandle, GatewayError> {
     match mode {
-        Mode::Memory => start_embedded_gateway(store, config)
-            .await
-            .map(|handle| GatewayHandle {
-                inner: GatewayHandleInner::Embedded(handle),
-            }),
+        Mode::Memory => Ok(GatewayHandle::noop()),
         Mode::Docker | Mode::HostExec | Mode::HostService => {
             let paths = GatewayPaths::for_config(&config);
             write_pingora_config(&paths, config.threads)?;
@@ -133,71 +123,6 @@ fn build_gateway_sidecar_spec(config: &GatewayConfig, paths: &GatewayPaths) -> S
         systemd_type: SystemdType::Forking,
         systemd_extra,
     }
-}
-
-// ---------------------------------------------------------------------------
-// Embedded mode — runs the proxy in-process
-// ---------------------------------------------------------------------------
-
-struct EmbeddedGatewayHandle {
-    shutdown_tx: Option<oneshot::Sender<()>>,
-    join: Option<std::thread::JoinHandle<()>>,
-}
-
-impl EmbeddedGatewayHandle {
-    async fn shutdown(&mut self) -> Result<(), GatewayError> {
-        if let Some(shutdown_tx) = self.shutdown_tx.take() {
-            let _ = shutdown_tx.send(());
-        }
-        let Some(join) = self.join.take() else {
-            return Ok(());
-        };
-        tokio::task::spawn_blocking(move || join.join())
-            .await
-            .map_err(|err| GatewayError::Runtime(format!("gateway join failed: {err}")))?
-            .map_err(|_| GatewayError::Runtime("gateway thread panicked".into()))?;
-        Ok(())
-    }
-}
-
-async fn start_embedded_gateway(
-    store: StoreDriver,
-    config: GatewayConfig,
-) -> Result<EmbeddedGatewayHandle, GatewayError> {
-    let initial_snapshot = ployz_gateway::load_projected_snapshot_from_store(&store).await?;
-    let shared_snapshot = SharedSnapshot::new(initial_snapshot);
-    ployz_gateway::spawn_sync_thread_with_store(store, shared_snapshot.clone())?;
-
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let listen_addr = config.listen_addr.clone();
-    let threads = config.threads;
-    let join = std::thread::Builder::new()
-        .name("ployz-gateway".into())
-        .spawn(move || {
-            #[cfg(unix)]
-            let shutdown_signal = Box::new(ployz_gateway::EmbeddedShutdownWatch::new(shutdown_rx));
-            #[cfg(not(unix))]
-            let shutdown_signal = ();
-
-            if let Err(err) = ployz_gateway::run_server(
-                Opt::default(),
-                listen_addr.as_str(),
-                threads,
-                shared_snapshot,
-                #[cfg(unix)]
-                Some(shutdown_signal),
-                #[cfg(not(unix))]
-                None,
-            ) {
-                warn!(?err, "embedded gateway exited");
-            }
-        })
-        .map_err(|err| GatewayError::Runtime(err.to_string()))?;
-
-    Ok(EmbeddedGatewayHandle {
-        shutdown_tx: Some(shutdown_tx),
-        join: Some(join),
-    })
 }
 
 // ---------------------------------------------------------------------------
