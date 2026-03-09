@@ -5,6 +5,7 @@ use crate::config::Mode;
 use crate::corrosion_config;
 use std::net::{IpAddr, SocketAddr};
 
+use crate::adapters::wireguard::bridge::InboundForward;
 use crate::deploy::remote::start_remote_control_listener;
 use crate::dns::{DnsConfig, start_managed_dns};
 use crate::drivers::{StoreDriver, WireguardDriver};
@@ -152,6 +153,16 @@ impl DaemonState {
         let bootstrap_addrs =
             resolve_bootstrap_addrs(&network_dir, &self.identity.machine_id, &bootstrap)?;
 
+        // In Docker mode, register the deploy control port as an inbound forward
+        // so the bridge relays overlay traffic to the daemon's localhost listener.
+        let inbound_forwards = match self.mode {
+            Mode::Docker => vec![InboundForward {
+                overlay_port: self.remote_control_port,
+                local_dest: SocketAddr::from(([127, 0, 0, 1], self.remote_control_port)),
+            }],
+            Mode::Memory | Mode::HostExec | Mode::HostService => Vec::new(),
+        };
+
         let network = WireguardDriver::from_mode(
             self.mode,
             &self.identity,
@@ -159,6 +170,7 @@ impl DaemonState {
             &network_dir,
             &net_config.name.0,
             net_config.subnet,
+            inbound_forwards,
         )
         .await?;
 

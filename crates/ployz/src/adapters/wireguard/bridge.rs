@@ -282,6 +282,21 @@ struct OutboundRelay {
     connected: bool,
 }
 
+/// State for a single inbound TCP relay (smoltcp listen → host TCP).
+struct InboundRelay {
+    stream: TcpStream,
+    smoltcp_handle: smoltcp::iface::SocketHandle,
+    overlay_port: u16,
+    connected: bool,
+}
+
+/// Tracks a smoltcp listen socket for an inbound forward rule.
+struct InboundListener {
+    smoltcp_handle: smoltcp::iface::SocketHandle,
+    overlay_port: u16,
+    local_dest: SocketAddr,
+}
+
 #[allow(clippy::too_many_arguments, clippy::indexing_slicing)]
 async fn bridge_event_loop(
     bridge_secret: StaticSecret,
@@ -326,6 +341,26 @@ async fn bridge_event_loop(
 
     let mut sockets = SocketSet::new(Vec::new());
     let mut relays: Vec<OutboundRelay> = Vec::new();
+    let mut inbound_relays: Vec<InboundRelay> = Vec::new();
+
+    // Create smoltcp listen sockets for inbound forward rules.
+    let mut inbound_listeners: Vec<InboundListener> = Vec::new();
+    for rule in &_inbound_rules {
+        let rx_buf = SocketBuffer::new(vec![0u8; TCP_BUF_SIZE]);
+        let tx_buf = SocketBuffer::new(vec![0u8; TCP_BUF_SIZE]);
+        let mut tcp = TcpSocket::new(rx_buf, tx_buf);
+        if let Err(e) = tcp.listen(rule.overlay_port) {
+            warn!(?e, port = rule.overlay_port, "smoltcp listen failed for inbound rule");
+            continue;
+        }
+        let handle = sockets.add(tcp);
+        info!(overlay_port = rule.overlay_port, local_dest = %rule.local_dest, "bridge inbound listener");
+        inbound_listeners.push(InboundListener {
+            smoltcp_handle: handle,
+            overlay_port: rule.overlay_port,
+            local_dest: rule.local_dest,
+        });
+    }
 
     let mut udp_recv_buf = vec![0u8; MAX_WG_PACKET];
     let mut wg_scratch = vec![0u8; MAX_WG_PACKET];
@@ -413,6 +448,102 @@ async fn bridge_event_loop(
 
                 // Remove closed relays
                 relays.retain(|r| {
+                    let socket = sockets.get::<TcpSocket>(r.smoltcp_handle);
+                    socket.is_open() || socket.may_recv() || socket.may_send()
+                });
+
+                // Check inbound listeners for accepted connections.
+                // When a smoltcp listen socket becomes active, a remote peer has connected.
+                // We open a host TCP connection to local_dest and start relaying.
+                let mut accepted_indices = Vec::new();
+                for (idx, listener) in inbound_listeners.iter().enumerate() {
+                    let socket = sockets.get::<TcpSocket>(listener.smoltcp_handle);
+                    if socket.is_active() {
+                        accepted_indices.push(idx);
+                    }
+                }
+                // Process accepted connections in reverse order so removal indices stay valid.
+                for idx in accepted_indices.into_iter().rev() {
+                    let listener = inbound_listeners.remove(idx);
+                    let port = listener.overlay_port;
+                    let local_dest = listener.local_dest;
+
+                    match TcpStream::connect(local_dest).await {
+                        Ok(stream) => {
+                            debug!(overlay_port = port, %local_dest, "inbound relay connected to host");
+                            inbound_relays.push(InboundRelay {
+                                stream,
+                                smoltcp_handle: listener.smoltcp_handle,
+                                overlay_port: port,
+                                connected: true,
+                            });
+                        }
+                        Err(e) => {
+                            warn!(?e, overlay_port = port, %local_dest, "inbound relay: host connect failed");
+                            let socket = sockets.get_mut::<TcpSocket>(listener.smoltcp_handle);
+                            socket.abort();
+                        }
+                    }
+
+                    // Create a fresh listen socket for the next inbound connection on this port.
+                    let rx_buf = SocketBuffer::new(vec![0u8; TCP_BUF_SIZE]);
+                    let tx_buf = SocketBuffer::new(vec![0u8; TCP_BUF_SIZE]);
+                    let mut tcp = TcpSocket::new(rx_buf, tx_buf);
+                    if let Err(e) = tcp.listen(port) {
+                        warn!(?e, overlay_port = port, "failed to re-listen for inbound rule");
+                    } else {
+                        let handle = sockets.add(tcp);
+                        inbound_listeners.push(InboundListener {
+                            smoltcp_handle: handle,
+                            overlay_port: port,
+                            local_dest,
+                        });
+                    }
+                }
+
+                // Relay data for active inbound relays (overlay ↔ host).
+                for relay in &mut inbound_relays {
+                    let socket = sockets.get_mut::<TcpSocket>(relay.smoltcp_handle);
+
+                    // Overlay → host: read from smoltcp socket, write to host TCP
+                    if socket.can_recv() {
+                        let mut buf = [0u8; 4096];
+                        match socket.recv_slice(&mut buf) {
+                            Ok(n) if n > 0 => {
+                                match relay.stream.try_write(&buf[..n]) {
+                                    Ok(_) => {}
+                                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                                    Err(e) => {
+                                        debug!(?e, port = relay.overlay_port, "inbound relay: host write error");
+                                        socket.abort();
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // Host → overlay: read from host TCP, write to smoltcp socket
+                    if socket.can_send() {
+                        let mut buf = [0u8; 4096];
+                        match relay.stream.try_read(&mut buf) {
+                            Ok(0) => {
+                                socket.close();
+                            }
+                            Ok(n) => {
+                                let _ = socket.send_slice(&buf[..n]);
+                            }
+                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                            Err(e) => {
+                                debug!(?e, port = relay.overlay_port, "inbound relay: host read error");
+                                socket.abort();
+                            }
+                        }
+                    }
+                }
+
+                // Remove closed inbound relays
+                inbound_relays.retain(|r| {
                     let socket = sockets.get::<TcpSocket>(r.smoltcp_handle);
                     socket.is_open() || socket.may_recv() || socket.may_send()
                 });
