@@ -288,8 +288,14 @@ impl Mesh {
 
         let cancel4 = cancel3.clone();
         self.heartbeat_started.store(false, Ordering::SeqCst);
+        let self_seed = self
+            .seed_records
+            .iter()
+            .find(|m| m.id == self.machine_id)
+            .cloned();
         task_set.spawn(run_heartbeat_task(
             self.machine_id.clone(),
+            self_seed,
             self.store.clone(),
             self.network.clone(),
             self.heartbeat_started.clone(),
