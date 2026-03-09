@@ -140,10 +140,6 @@ pub enum RemoteDeployRequest {
         namespace: String,
         instance_id: String,
     },
-    ApplyRouteEpoch {
-        namespace: String,
-        deploy_id: String,
-    },
     Unlock {
         namespace: String,
         deploy_id: String,

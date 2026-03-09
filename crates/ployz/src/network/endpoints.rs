@@ -1,7 +1,12 @@
 use std::net::IpAddr;
 
+/// Minimum MTU required for WireGuard overlay traffic.
+/// Interfaces below this are excluded — they can't carry our tunneled IPv6 packets.
+const MIN_ENDPOINT_MTU: u32 = 1280;
+
 /// Enumerate routable IPs from local network interfaces.
-/// Skips loopback, link-local (fe80::), overlay (fd00::/8), and docker/bridge interfaces.
+/// Skips loopback, link-local (fe80::), overlay (fd00::/8), docker/bridge interfaces,
+/// and any interface with MTU below [`MIN_ENDPOINT_MTU`].
 pub fn list_routable_ips() -> Vec<IpAddr> {
     let ifaces = match if_addrs::get_if_addrs() {
         Ok(ifaces) => ifaces,
@@ -18,6 +23,18 @@ pub fn list_routable_ips() -> Vec<IpAddr> {
             // Skip docker/bridge interfaces
             if name.starts_with("docker") || name.starts_with("br-") || name.starts_with("veth") {
                 return false;
+            }
+            // Skip Tailscale — double-tunneling over ts0 breaks overlay traffic
+            // (also caught by MTU check below since tailscale0 MTU=1280)
+            if name == "tailscale0" || name.starts_with("ts") {
+                return false;
+            }
+            // Skip interfaces with MTU too small for overlay traffic
+            if let Some(mtu) = get_interface_mtu(name) {
+                if mtu < MIN_ENDPOINT_MTU {
+                    tracing::debug!(name, mtu, "skipping interface with low MTU");
+                    return false;
+                }
             }
             let ip = iface.ip();
             // Skip loopback
@@ -42,6 +59,40 @@ pub fn list_routable_ips() -> Vec<IpAddr> {
         })
         .map(|iface| iface.ip())
         .collect()
+}
+
+/// Query the MTU of a network interface via ioctl(SIOCGIFMTU).
+fn get_interface_mtu(name: &str) -> Option<u32> {
+    use std::ffi::CString;
+    use std::os::unix::io::AsRawFd;
+
+    // SIOCGIFMTU isn't in the libc crate on all platforms.
+    #[cfg(target_os = "macos")]
+    const SIOCGIFMTU: libc::c_ulong = 0xc020_6933;
+    #[cfg(target_os = "linux")]
+    const SIOCGIFMTU: libc::c_ulong = 0x8921;
+
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    let c_name = CString::new(name).ok()?;
+    let name_bytes = c_name.as_bytes_with_nul();
+    if name_bytes.len() > libc::IFNAMSIZ {
+        return None;
+    }
+
+    unsafe {
+        let mut ifr: libc::ifreq = std::mem::zeroed();
+        std::ptr::copy_nonoverlapping(
+            name_bytes.as_ptr(),
+            ifr.ifr_name.as_mut_ptr() as *mut u8,
+            name_bytes.len(),
+        );
+        let ret = libc::ioctl(sock.as_raw_fd(), SIOCGIFMTU as _, &mut ifr);
+        if ret == 0 {
+            Some(ifr.ifr_ifru.ifru_mtu as u32)
+        } else {
+            None
+        }
+    }
 }
 
 /// Try to detect public IP via external services.
