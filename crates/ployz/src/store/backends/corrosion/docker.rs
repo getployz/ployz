@@ -138,17 +138,65 @@ impl DockerCorrosion {
     }
 }
 
+impl DockerCorrosion {
+    /// Extract the parent container name from `network_mode` if it uses `container:X`.
+    fn parent_container_name(&self) -> Option<&str> {
+        self.network_mode
+            .as_ref()
+            .and_then(|m| m.strip_prefix("container:"))
+    }
+
+    /// Check if the existing container can be adopted (running + parent unchanged).
+    async fn try_adopt(&self) -> bool {
+        let Ok(info) = self
+            .docker
+            .inspect_container(&self.container_name, None)
+            .await
+        else {
+            return false;
+        };
+
+        let is_running = info.state.as_ref().and_then(|s| s.running).unwrap_or(false);
+        if !is_running {
+            return false;
+        }
+
+        // If sharing a network namespace, verify the parent container is the same instance.
+        if let Some(parent_name) = self.parent_container_name() {
+            let labels = info
+                .config
+                .as_ref()
+                .and_then(|c| c.labels.as_ref());
+            let stored_parent = labels.and_then(|l| l.get(LABEL_PLOYZ_PARENT_ID));
+            let current_parent = self
+                .docker
+                .inspect_container(parent_name, None)
+                .await
+                .ok()
+                .and_then(|i| i.id);
+            match (stored_parent, current_parent.as_deref()) {
+                (Some(stored), Some(current)) if stored == current => {}
+                _ => {
+                    info!(
+                        name = %self.container_name,
+                        parent = %parent_name,
+                        "parent container changed, recreating"
+                    );
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+}
+
+const LABEL_PLOYZ_PARENT_ID: &str = "ployz.parent-container-id";
+
 impl StoreRuntimeControl for DockerCorrosion {
     async fn start(&self) -> Result<()> {
-        // When using another container's network namespace, always recreate
-        // to pick up the fresh namespace (the parent may have been recreated).
-        let shares_namespace = self
-            .network_mode
-            .as_ref()
-            .is_some_and(|m| m.starts_with("container:"));
-
-        if !shares_namespace && self.healthy().await {
-            info!(name = %self.container_name, "container already running");
+        if self.try_adopt().await {
+            info!(name = %self.container_name, "adopted existing container");
             return Ok(());
         }
 
@@ -169,12 +217,24 @@ impl StoreRuntimeControl for DockerCorrosion {
             ..Default::default()
         };
 
-        let labels: std::collections::HashMap<String, String> = [
+        let mut labels: std::collections::HashMap<String, String> = [
             ("com.docker.compose.project".into(), "ployz-system".into()),
             ("com.docker.compose.service".into(), "corrosion".into()),
         ]
         .into_iter()
         .collect();
+
+        // Track parent container ID for future adopt checks.
+        if let Some(parent_name) = self.parent_container_name()
+            && let Some(parent_id) = self
+                .docker
+                .inspect_container(parent_name, None)
+                .await
+                .ok()
+                .and_then(|i| i.id)
+        {
+            labels.insert(LABEL_PLOYZ_PARENT_ID.into(), parent_id);
+        }
 
         let config = ContainerCreateBody {
             image: Some(self.image.clone()),

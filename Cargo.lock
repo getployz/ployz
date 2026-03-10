@@ -2833,6 +2833,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ployz-bpfctl"
+version = "0.1.0"
+dependencies = [
+ "aya",
+ "aya-build",
+ "ipnet",
+ "libc",
+ "ployz-ebpf-common",
+]
+
+[[package]]
 name = "ployz-cli"
 version = "0.1.0"
 dependencies = [

@@ -1,9 +1,10 @@
-pub mod carrier;
+pub mod driver;
 pub mod orchestrator;
 pub mod peer;
 pub(crate) mod peer_state;
 pub mod phase;
 pub(crate) mod tasks;
+pub mod wireguard;
 
 use crate::error::Result;
 use crate::model::{MachineRecord, OverlayIp, PublicKey};

@@ -1,6 +1,7 @@
-use crate::adapters::docker_network::DockerBridgeNetwork;
-use crate::adapters::ebpf::EbpfDataplane;
-use crate::drivers::{StoreDriver, WireguardDriver};
+use crate::network::docker_bridge::DockerBridgeNetwork;
+use crate::network::ebpf::EbpfDataplane;
+use crate::mesh::driver::WireguardDriver;
+use crate::store::driver::StoreDriver;
 use crate::error::Error as PortError;
 use crate::mesh::MeshNetwork;
 use crate::mesh::phase::{Phase, PhaseEvent, TransitionError, transition};

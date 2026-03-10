@@ -1,7 +1,10 @@
-use ployz::{JoinResponse, MachineId, MachineRecord, OverlayIp, PublicKey};
-use ployz::{MachineStatus, Participation};
-use ployz::{MachineStore, Mesh, Phase, StoreDriver, SyncStatus, WireguardDriver};
-use ployz::{MemoryService, MemoryStore, MemoryWireGuard};
+use ployz::model::{
+    JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
+};
+use ployz::store::{MachineStore, SyncStatus};
+use ployz::{Mesh, Phase, StoreDriver, WireguardDriver};
+use ployz::store::backends::memory::{MemoryService, MemoryStore};
+use ployz::mesh::wireguard::MemoryWireGuard;
 use std::net::Ipv6Addr;
 use std::sync::Arc;
 use std::time::Duration;

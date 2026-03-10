@@ -1,4 +1,4 @@
-use crate::drivers::StoreDriver;
+use crate::store::driver::StoreDriver;
 use crate::machine_liveness::{MachineLiveness, machine_liveness};
 use crate::mesh::tasks::PeerSyncCommand;
 use crate::model::{
@@ -781,16 +781,17 @@ fn format_timestamp(ts: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::memory::{MemoryService, MemoryStore, MemoryWireGuard};
+    use crate::store::backends::memory::{MemoryService, MemoryStore};
+    use crate::mesh::wireguard::MemoryWireGuard;
     use crate::config::Mode;
     use crate::daemon::ActiveMesh;
     use crate::daemon::ssh::{TEST_SSH_BIN_ENV, test_ssh_env_lock};
     use crate::deploy::remote::RemoteControlHandle;
-    use crate::drivers::WireguardDriver;
+    use crate::mesh::driver::WireguardDriver;
     use crate::mesh::orchestrator::Mesh;
     use crate::node::identity::Identity;
     use crate::store::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
-    use crate::{OverlayIp, PublicKey};
+    use crate::model::{OverlayIp, PublicKey};
     use std::ffi::OsString;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -1042,8 +1043,8 @@ mod tests {
             config,
             mesh,
             remote_control: RemoteControlHandle::noop(),
-            gateway: crate::gateway::GatewayHandle::noop(),
-            dns: crate::dns::DnsHandle::noop(),
+            gateway: crate::services::gateway::GatewayHandle::noop(),
+            dns: crate::services::dns::DnsHandle::noop(),
         });
 
         (state, store)
