@@ -9,6 +9,7 @@ members = [
     "crates/ployz-dns",
     "crates/ebpf-common",
     "crates/ebpf",
+    "crates/ployz-bpfctl",
 ]
 default-members = [
     "crates/ployz",

@@ -8,17 +8,19 @@ use tokio_util::sync::CancellationToken;
 use crate::StoreDriver;
 use crate::error::{Error, Result};
 use crate::model::{
-    DeployId, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, MachineRecord, SlotId,
+    DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
+    MachineRecord, SlotId,
 };
 use crate::spec::{Namespace, ServiceSpec};
 use crate::store::DeployStore;
 use crate::transport::DeployFrame;
 
-use super::session::{DeploySession, StartCandidateRequest};
-use super::{
-    DrainState, LocalDeployRuntime, NamespaceLockManager, adopt_instances,
-    build_instance_status_record, list_local_instance_status, NamespaceLock,
+use super::local::{
+    LocalDeployRuntime, adopt_instances, build_instance_status_record, list_local_instance_status,
+    now_unix_secs,
 };
+use super::session::{DeploySession, StartCandidateRequest};
+use super::{NamespaceLock, NamespaceLockManager};
 
 // ---------------------------------------------------------------------------
 // Remote control listener (server side)
@@ -197,7 +199,7 @@ impl DeployAgent {
         status.phase = InstancePhase::Draining;
         status.ready = false;
         status.drain_state = DrainState::Requested;
-        status.updated_at = super::now_unix_secs();
+        status.updated_at = now_unix_secs();
         self.store.upsert_instance_status(&status).await?;
         Ok(())
     }

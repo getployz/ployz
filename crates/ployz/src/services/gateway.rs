@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use crate::drivers::StoreDriver;
-use crate::sidecar::{SidecarHandle, SidecarSpec, SystemdType};
+use crate::store::driver::StoreDriver;
+use crate::services::supervisor::{SidecarHandle, SidecarSpec, SystemdType};
 use crate::store::network::NetworkConfig;
 use crate::Mode;
 
@@ -18,7 +18,7 @@ pub use ployz_gateway::{
 
 enum GatewayHandleInner {
     Noop,
-    Sidecar(SidecarHandle),
+    Sidecar(Box<SidecarHandle>),
 }
 
 pub struct GatewayHandle {
@@ -68,10 +68,10 @@ pub async fn start_managed_gateway(
             write_pingora_config(&paths, config.threads)?;
 
             let spec = build_gateway_sidecar_spec(&config, &paths);
-            SidecarHandle::start(mode, spec)
+            SidecarHandle::ensure(mode, spec)
                 .await
                 .map(|handle| GatewayHandle {
-                    inner: GatewayHandleInner::Sidecar(handle),
+                    inner: GatewayHandleInner::Sidecar(Box::new(handle)),
                 })
                 .map_err(|e| GatewayError::Process(e.to_string()))
         }
@@ -84,14 +84,14 @@ fn build_gateway_sidecar_spec(config: &GatewayConfig, paths: &GatewayPaths) -> S
 
     #[cfg(target_os = "linux")]
     let systemd_extra = {
-        let pid_file = crate::sidecar::systemd_quote(&paths.pid_file.display().to_string());
+        let pid_file = crate::services::supervisor::systemd_quote(&paths.pid_file.display().to_string());
         let pingora_config =
-            crate::sidecar::systemd_quote(&paths.pingora_config.display().to_string());
+            crate::services::supervisor::systemd_quote(&paths.pingora_config.display().to_string());
         // Gateway uses forking mode with PIDFile, ExecReload for hot upgrades.
         // The binary path placeholder will be filled with the actual binary by sidecar.
         // We need to use find_binary here for ExecReload lines.
-        let binary = crate::sidecar::find_binary("ployz-gateway")
-            .map(|b| crate::sidecar::systemd_quote(&b.display().to_string()))
+        let binary = crate::services::supervisor::find_binary("ployz-gateway")
+            .map(|b| crate::services::supervisor::systemd_quote(&b.display().to_string()))
             .unwrap_or_default();
         format!(
             "PIDFile={pid_file}\nExecReload=/bin/kill -QUIT $MAINPID\nExecReload={binary} -u -d -c {pingora_config}\nExecStop=/bin/kill -TERM $MAINPID\n"
@@ -119,6 +119,7 @@ fn build_gateway_sidecar_spec(config: &GatewayConfig, paths: &GatewayPaths) -> S
             format!("{data_dir_str}:{data_dir_str}"),
             format!("{gateway_dir_str}:{gateway_dir_str}"),
         ],
+        network_container: Some("ployz-networking".to_string()),
         compose_service: "gateway".to_string(),
         systemd_type: SystemdType::Forking,
         systemd_extra,

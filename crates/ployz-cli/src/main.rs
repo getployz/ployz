@@ -1,4 +1,4 @@
-use clap::{ArgAction, Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use ployz_sdk::spec::{
     ContainerSpec, Namespace, NetworkMode, Placement, PortProtocol, PublishedPort, PullPolicy,
     Resources, RestartPolicy, RolloutStrategy, ServicePort, ServiceSpec, VolumeMount, VolumeSource,
@@ -85,18 +85,6 @@ struct GlobalArgs {
     /// Suppress successful human-readable output.
     #[arg(short = 'q', long, global = true)]
     quiet: bool,
-
-    /// Increase diagnostic verbosity.
-    #[arg(short = 'v', long, global = true, action = ArgAction::Count)]
-    verbose: u8,
-
-    /// Disable prompts and interactive input.
-    #[arg(long, global = true)]
-    no_input: bool,
-
-    /// Disable color output.
-    #[arg(long, global = true)]
-    no_color: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -146,21 +134,9 @@ struct DeployManifestArgs {
     #[arg(short = 'f', long, value_name = "PATH")]
     file: Option<String>,
 
-    /// Manifest format.
-    #[arg(long, value_enum, default_value_t = DeployManifestFormat::Auto)]
+    /// Manifest format (currently only "service" is supported).
+    #[arg(long, value_enum, default_value_t = DeployManifestFormat::Service)]
     format: DeployManifestFormat,
-
-    /// Base directory for resolving relative paths.
-    #[arg(long, value_name = "DIR")]
-    project_dir: Option<PathBuf>,
-
-    /// Additional env file inputs.
-    #[arg(long, value_name = "PATH")]
-    env_file: Vec<PathBuf>,
-
-    /// Remove services absent from the manifest.
-    #[arg(long)]
-    prune: bool,
 
     /// Preview only; do not apply changes.
     #[arg(short = 'n', long)]
@@ -187,10 +163,6 @@ struct DeployServiceArgs {
     /// Environment variables (KEY=VALUE).
     #[arg(short, long, value_name = "KEY=VALUE")]
     env: Vec<String>,
-
-    /// Environment files.
-    #[arg(long, value_name = "PATH")]
-    env_file: Vec<PathBuf>,
 
     /// Volume mounts (host_path:container_path or name:container_path).
     #[arg(short, long, value_name = "SRC:DST")]
@@ -383,11 +355,7 @@ fn build_manifest_request(args: DeployManifestArgs, force_preview: bool) -> Resu
         format: args.format,
         body,
     })?;
-    let options = DeployOptions {
-        project_dir: args.project_dir.map(path_to_string),
-        env_files: args.env_file.into_iter().map(path_to_string).collect(),
-        prune: args.prune,
-    };
+    let options = DeployOptions::default();
 
     if force_preview || args.dry_run {
         Ok(DaemonRequest::DeployPreview {
@@ -423,11 +391,7 @@ fn build_deploy_service_request(args: DeployServiceArgs) -> Result<DaemonRequest
         format: DeployManifestFormat::Service,
         body: spec_json,
     })?;
-    let options = DeployOptions {
-        project_dir: None,
-        env_files: args.env_file.into_iter().map(path_to_string).collect(),
-        prune: false,
-    };
+    let options = DeployOptions::default();
 
     if args.dry_run {
         Ok(DaemonRequest::DeployPreview {
@@ -518,10 +482,6 @@ fn build_machine_request(action: MachineAction) -> Result<DaemonRequest> {
 }
 
 fn render_response(global: &GlobalArgs, response: &DaemonResponse) -> Result<()> {
-    if global.verbose > 0 || global.no_input || global.no_color {
-        let _ = (global.verbose, global.no_input, global.no_color);
-    }
-
     if global.json {
         let body = serde_json::to_string_pretty(response)
             .map_err(|err| CliError::Serialize(format!("failed to encode JSON output: {err}")))?;
@@ -596,10 +556,6 @@ fn read_stdin_string(label: &str) -> Result<String> {
 fn encode_manifest_json(manifest: DeployManifestInput) -> Result<String> {
     serde_json::to_string(&manifest)
         .map_err(|err| CliError::Serialize(format!("failed to serialize deploy manifest: {err}")))
-}
-
-fn path_to_string(path: PathBuf) -> String {
-    path.to_string_lossy().into_owned()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -760,7 +716,7 @@ mod tests {
         assert!(command.action.is_none());
         assert_eq!(command.manifest.namespace.as_deref(), Some("prod"));
         assert_eq!(command.manifest.file.as_deref(), Some("compose.yaml"));
-        assert_eq!(command.manifest.format, DeployManifestFormat::Auto);
+        assert_eq!(command.manifest.format, DeployManifestFormat::Service);
     }
 
     #[test]
@@ -774,7 +730,7 @@ mod tests {
             "--file",
             "-",
             "--format",
-            "compose",
+            "service",
         ])
         .expect("deploy preview args should parse");
 
@@ -786,7 +742,7 @@ mod tests {
         };
         assert_eq!(args.namespace.as_deref(), Some("prod"));
         assert_eq!(args.file.as_deref(), Some("-"));
-        assert_eq!(args.format, DeployManifestFormat::Compose);
+        assert_eq!(args.format, DeployManifestFormat::Service);
     }
 
     #[test]

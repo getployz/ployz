@@ -4,36 +4,26 @@ How services get deployed onto machines and how traffic finds its way to them.
 
 ## Data Model
 
-Six tables in the Corrosion distributed store hold the state that drives both
-systems. They divide into three groups:
+The distributed store (Corrosion) holds all the state that drives both routing and
+deployment. The tables divide into three conceptual groups:
 
-**Mesh infrastructure:**
-- `machines` — machine registry (WireGuard keys, overlay IPs, heartbeats)
-- `invites` — one-time join tokens
+**Mesh infrastructure** — the machine registry and join tokens. Who's in the mesh,
+what their keys and overlay IPs are, when they last heartbeated.
 
-**Service versioning & placement:**
-- `service_revisions` — append-only ledger of service spec versions
-- `service_heads` — mutable pointer: (namespace, service) -> current revision
-- `service_slots` — desired placement: one row per replica, binding a slot to a
-  machine and an active instance
+**Service versioning & placement** — an append-only ledger of service spec versions
+(content-addressed, immutable), a mutable head pointer per service (which version is
+active), and slot records that bind replicas to machines. This is the scheduling layer.
 
-**Runtime state:**
-- `instance_status` — per-container lifecycle (phase, readiness, drain state, ports)
-- `deploys` — deployment lifecycle tracking
+**Runtime state** — per-instance lifecycle records (phase, readiness, drain state, ports)
+and deploy lifecycle tracking. This is what routing reads to decide who's healthy.
 
-### Why so many columns?
+### Design Rationale
 
-Each table serves a different audience and update cadence. Corrosion replicates
-entire rows, so co-locating fields that change together (e.g. instance phase +
-ready + drain_state) avoids unnecessary row splits. The columns break down as:
-
-| Category | Examples | Why |
-|----------|----------|-----|
-| Identity | instance_id, slot_id, machine_id | Join keys across tables |
-| Versioning | revision_hash, manifest_hash | Content-addressed deduplication |
-| Network | overlay_ip, backend_ports_json, endpoints | Routing needs socket addresses |
-| Lifecycle | phase, ready, drain_state, status, participation | Filtering for routability |
-| Audit | deploy_id, created_by, updated_at, started_at | Traceability across deploys |
+Corrosion replicates entire rows, so fields that change together live in the same table.
+Instance phase, readiness, and drain state all change during deploy transitions — they
+belong together. Service head pointers change atomically at commit — they're separate
+from the append-only revision ledger. This isn't normalized for query convenience; it's
+shaped for replication efficiency.
 
 ---
 
@@ -41,26 +31,25 @@ ready + drain_state) avoids unnecessary row splits. The columns break down as:
 
 ### Concepts
 
-A **deploy** applies a `DeployManifest` (a list of `ServiceSpec`s) to a
-namespace. Each spec is content-hashed into a `revision_hash`. The deploy engine
-computes a diff between desired and current state, starts new containers, waits
-for readiness, atomically commits the new routing state, then cleans up old
-containers.
+A **deploy** applies a manifest (a list of service specs) to a namespace. Each spec is
+content-hashed into a revision. The deploy engine diffs desired vs current state, starts
+new containers, waits for readiness, atomically commits the new routing state, then
+cleans up old containers.
 
 ### Slot Model
 
-Each service replica is represented by a **slot** — a stable identifier bound to
-a machine. Placement depends on the service's `placement` strategy:
+Each service replica is represented by a **slot** — a stable identifier bound to a
+machine. Placement depends on the service's strategy:
 
-| Strategy | Slots |
-|----------|-------|
+| Strategy | Behavior |
+|----------|----------|
 | Singleton | One slot, pinned to a single machine (sticky across redeploys) |
-| Replicated(N) | N slots, distributed round-robin across available machines |
-| Global | One slot per machine, using the machine ID as the slot ID |
+| Replicated(N) | N slots, distributed across available machines |
+| Global | One slot per machine in the mesh |
 
-A slot points to an **active instance** (a Docker container). During a deploy,
-new instances are started alongside old ones; the slot pointer is flipped
-atomically at commit time.
+A slot points to an **active instance** (a Docker container). During a deploy, new
+instances run alongside old ones. The slot pointer flips atomically at commit time —
+there is no window where traffic hits a half-deployed state.
 
 ### Deploy Lifecycle
 
@@ -70,176 +59,95 @@ Planning -> Applying -> Committed
                     \-> CleanupPending (committed but old instances failed to remove)
 ```
 
-### Deploy Phases (apply)
+### How Apply Works
 
-**1. Lock acquisition**
+The apply phase is a distributed coordination protocol:
 
-The coordinator acquires a namespace lock locally, then connects to all
-participant machines over TCP and sends `LockAcquire` RPCs. A background
-heartbeat (5s interval) keeps remote locks alive. If any lock fails, the deploy
-aborts.
+**Lock** — The coordinator acquires namespace locks on all participant machines over TCP.
+Locks are tied to the TCP connection lifetime — if the coordinator crashes, locks release
+automatically.
 
-**2. Instance discovery**
+**Discover** — Reconcile live container state with the store on every participant.
+Orphaned containers get re-registered. This recovers from any prior inconsistency.
 
-The coordinator calls `adopt_instances()` locally (reconciles Docker containers
-with the store) and sends `InspectNamespace` RPCs to each remote machine. This
-recovers from any state inconsistency — orphaned containers are re-registered.
+**Revalidate** — Recompute the plan while holding locks. If machines changed between
+preview and apply (e.g. one went down), abort with a retry error rather than deploying
+to a stale plan.
 
-**3. Revalidation**
+**Register** — Upsert immutable, content-addressed revision records. Duplicate publishes
+are no-ops by design.
 
-The preview is recomputed while holding locks. If the participant set changed
-(e.g. a machine went down between preview and apply), the deploy aborts with a
-retry error.
+**Create** — For each slot in the plan: reuse unchanged instances, or start new candidate
+containers and wait for readiness probes (TCP/HTTP/exec). Readiness is non-negotiable —
+nothing enters routing until it passes.
 
-**4. Revision registration**
+**Commit** — A single Corrosion transaction flips all head pointers, slot assignments,
+and deploy state atomically. This is the point of no return. Corrosion replicates the
+transaction to every machine in the mesh.
 
-For each service in the manifest, a `ServiceRevisionRecord` is upserted
-(INSERT OR IGNORE). Revisions are immutable and content-addressed, so
-duplicate publishes are no-ops.
-
-**5. Instance creation**
-
-For each slot in the plan:
-- If the slot is unchanged (same machine, same revision): reuse the existing instance.
-- Otherwise: start a new candidate container (local or remote via `StartCandidate` RPC),
-  then wait for the readiness probe to pass (TCP/HTTP/exec, 15s timeout).
-  Write the `InstanceStatusRecord` to the store.
-
-**6. Atomic commit**
-
-`commit_deploy()` executes a single Corrosion transaction that:
-1. Deletes old `service_heads` and `service_slots` for touched services
-2. Inserts new heads pointing to the new revision
-3. Inserts new slots pointing to the new instances
-4. Inserts/updates the `deploys` record with state=Committed
-
-This is the atomic boundary — all routing tables flip together. Corrosion
-replicates the transaction to every machine in the mesh.
-
-**7. Cleanup**
-
-After commit, the coordinator removes old instances:
-- Mark as draining (phase=Draining, ready=false)
-- Remove the Docker container
-- Delete the `InstanceStatusRecord`
-
-Participants pick up the new routing state through Corrosion's eventual
-consistency — the invalidation subscription triggers a snapshot reload once
-the committed rows replicate.
-
-If any cleanup fails, the deploy enters `CleanupPending` instead of staying
-`Committed`.
+**Cleanup** — Old instances are drained (marked unhealthy so routing drops them) then
+removed. If cleanup fails, the deploy enters CleanupPending — the new version is live
+but old containers linger. This is a recoverable state, not a failure.
 
 ### Remote Deploy Protocol
 
-Coordinator-participant model over line-delimited JSON/TCP:
+The coordinator talks to participant machines over line-delimited JSON/TCP. The protocol
+is request-response: the coordinator sends commands (open session, inspect namespace,
+start candidate, drain/remove instance, close session) and the participant responds.
 
-| RPC | Purpose |
-|-----|---------|
-| LockAcquire | Acquire namespace lock on participant |
-| LockHeartbeat | Keep remote lock alive (5s interval) |
-| InspectNamespace | List local instances for reconciliation |
-| StartCandidate | Create container + wait for readiness |
-| DrainInstance | Mark instance as draining |
-| RemoveInstance | Delete container + store record |
-| Unlock | Release namespace lock |
+The namespace lock is implicit in the session — opening a session acquires it, closing
+(or disconnecting) releases it. No explicit heartbeat needed.
 
 ---
 
 ## Routing
 
-### RoutingState
+### Snapshot-Based Routing
 
-All routing decisions derive from a single snapshot:
+All routing decisions derive from a single snapshot of the distributed store's routing
+tables. There are no incremental updates — when anything changes, the full snapshot
+reloads and the routing projection rebuilds from scratch.
 
-```
-RoutingState {
-    revisions:  Vec<ServiceRevisionRecord>,   // what each version's spec looks like
-    heads:      Vec<ServiceHeadRecord>,        // which version is active per service
-    slots:      Vec<ServiceSlotRecord>,        // where replicas are placed
-    instances:  Vec<InstanceStatusRecord>,     // runtime state of each container
-}
-```
+This is intentionally simple. The snapshot is small (it's metadata, not payloads), and
+full rebuilds are cheap compared to the complexity of incremental consistency.
 
 ### Invalidation Model
 
-When any routing-related table is written to, the store broadcasts an
-invalidation signal (`()`) to all subscribers. Subscribers (gateway, DNS) receive
-the signal, debounce for 100ms, drain any buffered invalidations, then reload
-the full `RoutingState` and rebuild their projection.
+When any routing-related table is written to, the store broadcasts an invalidation signal.
+Subscribers (gateway, DNS) debounce for 100ms, drain buffered signals, then reload.
 
 Properties:
-- Non-blocking: `try_send` on a bounded channel (capacity 64)
-- Lossy on overflow: extra invalidations are dropped (next signal triggers full reload anyway)
-- Debounced: 100ms window batches rapid writes into a single reload
-- Graceful degradation: projection errors log a warning and keep the previous snapshot
+- Non-blocking and lossy — extra signals are dropped because the next one triggers a full reload anyway
+- Debounced — rapid writes during a deploy commit batch into a single reload
+- Gracefully degrading — projection errors log and keep the previous snapshot
 
 ### Gateway (HTTP/TCP Proxy)
 
-The gateway (Pingora-based) projects `RoutingState` into a `GatewaySnapshot`:
+The gateway projects the routing snapshot into a set of HTTP routes (host + path → backends)
+and TCP routes (port → backends).
 
-```
-GatewaySnapshot {
-    http_routes: Vec<HttpRouteView>,   // host + path_prefix -> backends
-    tcp_routes:  Vec<TcpRouteView>,    // listen_port -> backends
-}
-```
+An instance is **routable** when it's ready, not draining, has no errors, has an overlay IP,
+and its slot/machine/revision all match current records. This is a strict filter — any
+ambiguity means the instance is excluded.
 
-**Projection rules:**
+Request handling: match Host header and path (longest prefix wins, explicit hosts before
+wildcards), select a backend via round-robin, proxy over the WireGuard overlay. On upstream
+failure, retry with a different backend.
 
-1. For each `ServiceHeadRecord`, resolve to its `ServiceRevisionRecord` via
-   `current_revision_hash`
-2. Parse the revision's `spec_json` to get route definitions (hostnames, paths, ports)
-3. For each route, collect backends from instances that pass the routability filter
-4. Detect conflicts (duplicate host+path or duplicate listen_port)
-
-**Routability filter** — an instance is routable when ALL of:
-- `phase == Ready` and `ready == true`
-- `drain_state == None`
-- `error` is empty
-- `overlay_ip` is set
-- Instance's slot, machine, and revision all match the current slot record
-
-**Request flow:**
-1. Extract Host header and path from request
-2. Match against `http_routes` (sorted by specificity: longest path first, explicit hosts before wildcards)
-3. Select backend via per-route round-robin
-4. Proxy to `overlay_ip:backend_port`
-5. On upstream failure: mark instance as failed, retry with different backend
-
-The snapshot is shared via a double-Arc pattern (`Arc<RwLock<Arc<GatewaySnapshot>>>`) —
-readers clone the inner Arc and release the lock immediately, so request handling
-never blocks on snapshot updates.
+The snapshot is shared via double-Arc — readers clone an Arc and release immediately, so
+request handling never blocks on snapshot updates.
 
 ### DNS
 
-The DNS server projects `RoutingState` into a `DnsSnapshot`:
+DNS projects the routing snapshot into service name → IP mappings. Only ready, non-draining
+instances with overlay IPs are included.
 
-```
-DnsSnapshot {
-    services:        HashMap<(Namespace, String), Vec<Ipv4Addr>>,  // service -> IPs
-    ip_to_namespace: HashMap<Ipv4Addr, Namespace>,                 // reverse lookup
-    service_names:   HashMap<Namespace, Vec<String>>,              // list services
-}
-```
+Namespace derivation is implicit: a container's source IP is looked up to find which
+namespace it belongs to. This means containers can resolve services in their own namespace
+by short name (`db`) without knowing the namespace. Cross-namespace queries use the full
+form (`db.prod.ployz.internal`).
 
-Only ready, non-draining instances with an overlay IP are included.
-
-**Query resolution:**
-
-| Query | Type | Result |
-|-------|------|--------|
-| `db` | A | Resolve using caller's namespace (derived from source IP) |
-| `db.ployz.internal` | A | Same as above (implicit namespace) |
-| `db.prod.ployz.internal` | A | Explicit namespace lookup |
-| `_services.ployz.internal` | TXT | List all service names in caller's namespace |
-| `_services.prod.ployz.internal` | TXT | List services in explicit namespace |
-
-Namespace derivation: the caller's source IP is looked up in `ip_to_namespace`
-(built from instance overlay IPs). This means containers can resolve services in
-their own namespace by short name, without knowing the namespace explicitly.
-
-TTL is always 0 — clients re-query every time, ensuring they never route to
+TTL is always 0 — clients re-query every time, ensuring they never cache routes to
 drained instances.
 
 ---
@@ -249,35 +157,27 @@ drained instances.
 ```
 1. User runs `ployz deploy manifest.toml`
 
-2. Preview: diff manifest against current heads/slots
+2. Preview: diff manifest against current state
    -> "api" needs 3 new slots on machines A, B, C
 
 3. Apply:
    a. Lock namespace on A, B, C
-   b. Register ServiceRevisionRecord (content-addressed, idempotent)
+   b. Register revision (content-addressed, idempotent)
    c. Start containers on A, B, C, wait for readiness probes
-   d. commit_deploy() — atomic transaction:
-      - service_heads("api") -> new revision_hash
-      - service_slots("api", "slot-0001") -> machine A, instance X
-      - service_slots("api", "slot-0002") -> machine B, instance Y
-      - service_slots("api", "slot-0003") -> machine C, instance Z
-   e. Corrosion replicates committed rows to all machines
-   f. Routing invalidation subscriptions fire on each node
+   d. Atomic commit — single transaction flips all routing pointers
+   e. Corrosion replicates to all machines
 
-4. Gateway sync loop wakes up:
-   - Loads RoutingState
-   - Projects: api's revision -> spec -> routes -> host "api.example.com"
-   - Finds 3 routable instances (X, Y, Z) with overlay IPs
-   - Builds GatewaySnapshot with backends
+4. Gateway reloads:
+   - Loads snapshot, projects routes, finds 3 healthy backends
+   - Builds routing table with backends
 
-5. DNS sync loop wakes up:
-   - Loads RoutingState
-   - Maps "api" -> [10.210.1.5, 10.210.2.5, 10.210.3.5]
+5. DNS reloads:
+   - Maps "api" -> overlay IPs of healthy instances
 
-6. First request arrives at gateway:
-   - Host: api.example.com -> matches api route
-   - Round-robin selects instance X on machine A
-   - Proxies to 10.210.1.5:8080 over the WireGuard overlay
+6. First request arrives:
+   - Host header matches api route
+   - Round-robin selects a backend
+   - Proxies over the WireGuard overlay
 
-7. Old instances (if any) drained and removed
+7. Old instances drained and removed
 ```
