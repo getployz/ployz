@@ -90,6 +90,7 @@ impl StoreDriver {
 
                 corrosion_config::write_config(
                     &config_paths,
+                    &paths,
                     SCHEMA_SQL,
                     gossip_addr,
                     api_addr,

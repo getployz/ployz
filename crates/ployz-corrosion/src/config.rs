@@ -77,7 +77,6 @@ struct AdminConfig {
     path: String,
 }
 
-/// Write `config.toml` and `schema.sql` to disk.
 /// Derive a deterministic u16 member_id from a network ID string.
 /// Uses FNV-style hashing to map to u16 space.
 fn network_id_to_member_id(network_id: &str) -> u16 {
@@ -89,20 +88,26 @@ fn network_id_to_member_id(network_id: &str) -> u16 {
     (hash & 0xFFFF) as u16
 }
 
+/// Write `config.toml` and `schema.sql` to disk.
+///
+/// `content_paths` controls what goes **inside** the generated config (may be
+/// container-internal paths in Docker mode).  `host_paths` is where the files
+/// are actually written on the host filesystem.
 pub fn write_config(
-    paths: &Paths,
+    content_paths: &Paths,
+    host_paths: &Paths,
     schema: &str,
     gossip_addr: SocketAddr,
     api_addr: SocketAddr,
     bootstrap: &[String],
     network_id: Option<&str>,
 ) -> io::Result<()> {
-    fs::create_dir_all(&paths.dir)?;
+    fs::create_dir_all(&host_paths.dir)?;
 
     let cfg = Config {
         db: DbConfig {
-            path: paths.db.to_string_lossy().into_owned(),
-            schema_paths: vec![paths.schema.to_string_lossy().into_owned()],
+            path: content_paths.db.to_string_lossy().into_owned(),
+            schema_paths: vec![content_paths.schema.to_string_lossy().into_owned()],
         },
         gossip: GossipConfig {
             addr: gossip_addr.to_string(),
@@ -114,13 +119,13 @@ pub fn write_config(
             addr: api_addr.to_string(),
         },
         admin: AdminConfig {
-            path: paths.admin.to_string_lossy().into_owned(),
+            path: content_paths.admin.to_string_lossy().into_owned(),
         },
     };
 
     let toml = toml::to_string_pretty(&cfg).map_err(io::Error::other)?;
-    fs::write(&paths.config, toml)?;
-    fs::write(&paths.schema, schema)?;
+    fs::write(&host_paths.config, toml)?;
+    fs::write(&host_paths.schema, schema)?;
 
     Ok(())
 }
