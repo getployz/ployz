@@ -41,9 +41,11 @@ impl DockerCorrosionBuilder {
         self
     }
 
+    /// Add a volume/bind mount specification (e.g. `"/host/path:/container/path:ro"`
+    /// or `"volume-name:/container/path"`).
     #[must_use]
-    pub fn volume(mut self, host: &str, container: &str) -> Self {
-        self.volumes.push(format!("{host}:{container}"));
+    pub fn volume(mut self, spec: &str) -> Self {
+        self.volumes.push(spec.to_string());
         self
     }
 
