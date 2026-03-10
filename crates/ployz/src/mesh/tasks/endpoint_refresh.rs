@@ -1,4 +1,4 @@
-use crate::drivers::StoreDriver;
+use crate::store::driver::StoreDriver;
 use crate::model::MachineId;
 use crate::network::endpoints::detect_endpoints;
 use crate::store::MachineStore;

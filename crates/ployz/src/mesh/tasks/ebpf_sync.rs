@@ -1,4 +1,4 @@
-use crate::adapters::ebpf::EbpfDataplane;
+use crate::network::ebpf::EbpfDataplane;
 use crate::model::{MachineEvent, MachineId, MachineRecord};
 use std::sync::Arc;
 use tokio::sync::mpsc;

@@ -1,4 +1,4 @@
-use crate::drivers::WireguardDriver;
+use crate::mesh::driver::WireguardDriver;
 use crate::mesh::peer_state::{PeerStateMap, sync_peers};
 use crate::model::{MachineEvent, MachineId, MachineRecord};
 use tokio::sync::mpsc;

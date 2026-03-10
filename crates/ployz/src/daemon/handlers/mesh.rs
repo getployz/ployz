@@ -2,7 +2,8 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::Serialize;
 use tracing::warn;
 
-use crate::daemon::setup::{BootstrapInfo, MeshStartOptions};
+use crate::daemon::setup::MeshStartOptions;
+use crate::store::bootstrap::BootstrapInfo;
 use crate::model::{JoinResponse, NetworkName};
 use crate::network::endpoints::detect_endpoints;
 use crate::network::ipam::Ipam;

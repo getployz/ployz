@@ -1,5 +1,5 @@
-use crate::drivers::StoreDriver;
-use crate::sidecar::{SidecarHandle, SidecarSpec, SystemdType};
+use crate::store::driver::StoreDriver;
+use crate::services::supervisor::{SidecarHandle, SidecarSpec, SystemdType};
 use crate::Mode;
 
 const DNS_IMAGE: &str = "ghcr.io/getployz/ployz-dns:latest";
@@ -13,7 +13,7 @@ pub use ployz_dns::{self as runtime, DnsConfig, DnsError, SharedDnsSnapshot};
 
 enum DnsHandleInner {
     Noop,
-    Sidecar(SidecarHandle),
+    Sidecar(Box<SidecarHandle>),
 }
 
 pub struct DnsHandle {
@@ -60,10 +60,10 @@ pub async fn start_managed_dns(
         Mode::Memory => Ok(DnsHandle::noop()),
         Mode::Docker | Mode::HostExec | Mode::HostService => {
             let spec = build_dns_sidecar_spec(&config);
-            SidecarHandle::start(mode, spec)
+            SidecarHandle::ensure(mode, spec)
                 .await
                 .map(|handle| DnsHandle {
-                    inner: DnsHandleInner::Sidecar(handle),
+                    inner: DnsHandleInner::Sidecar(Box::new(handle)),
                 })
                 .map_err(|e| DnsError::Process(e.to_string()))
         }
@@ -85,6 +85,7 @@ fn build_dns_sidecar_spec(config: &DnsConfig) -> SidecarSpec {
             ("PLOYZ_DNS_LISTEN_ADDR".into(), config.listen_addr.clone()),
         ],
         binds: vec![format!("{data_dir_str}:{data_dir_str}")],
+        network_container: Some("ployz-networking".to_string()),
         compose_service: "dns".to_string(),
         systemd_type: SystemdType::Simple,
         systemd_extra: String::new(),

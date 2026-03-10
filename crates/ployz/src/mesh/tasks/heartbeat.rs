@@ -1,4 +1,5 @@
-use crate::drivers::{StoreDriver, WireguardDriver};
+use crate::mesh::driver::WireguardDriver;
+use crate::store::driver::StoreDriver;
 use crate::machine_liveness::machine_is_fresh;
 use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
 use crate::model::{MachineId, MachineRecord, MachineStatus, Participation};
@@ -199,8 +200,10 @@ fn fresh_handshake_map(device_peers: &[DevicePeer]) -> HashMap<crate::model::Pub
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::memory::{MemoryService, MemoryStore, MemoryWireGuard};
-    use crate::drivers::{StoreDriver, WireguardDriver};
+    use crate::store::backends::memory::{MemoryService, MemoryStore};
+    use crate::mesh::wireguard::MemoryWireGuard;
+    use crate::mesh::driver::WireguardDriver;
+use crate::store::driver::StoreDriver;
     use crate::mesh::DevicePeer;
     use crate::model::{MachineId, OverlayIp, PublicKey};
     use std::net::Ipv6Addr;

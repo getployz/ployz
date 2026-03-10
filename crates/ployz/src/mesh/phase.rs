@@ -31,7 +31,6 @@ pub enum PhaseEvent {
     ComponentsStarted,
     ComponentFailed,
     SyncComplete,
-    BootstrapTimeout,
     DetachRequested,
     DestroyRequested,
     TeardownComplete,
@@ -58,9 +57,6 @@ pub fn transition(
         (Provisioning, ComponentsStarted) => Ok(Bootstrapping),
         (Starting | Provisioning | Bootstrapping, ComponentFailed) => Ok(Stopped),
         (Bootstrapping, SyncComplete) => Ok(Running),
-        (Bootstrapping, BootstrapTimeout) => Err(TransitionError::BootstrapTimeout {
-            reason: "unknown".into(),
-        }),
         (Running, DetachRequested) => Ok(Stopped),
         (Stopped | Running | Provisioning | Bootstrapping, DestroyRequested) => Ok(Stopping),
         (Stopping, TeardownComplete) => Ok(Stopped),
@@ -113,13 +109,6 @@ mod tests {
                 .expect("bootstrapping -> stopped"),
             Phase::Stopped
         );
-    }
-
-    #[test]
-    fn bootstrap_timeout() {
-        let err = transition(Phase::Bootstrapping, PhaseEvent::BootstrapTimeout)
-            .expect_err("bootstrap timeout error");
-        assert!(matches!(err, TransitionError::BootstrapTimeout { .. }));
     }
 
     #[test]
