@@ -1,0 +1,5 @@
+{
+  "name": "clean",
+  "interface": "data",
+  "netem": "delay 2ms 1ms distribution normal"
+}

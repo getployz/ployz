@@ -1,0 +1,5 @@
+{
+  "name": "flap",
+  "interface": "data",
+  "netem": "delay 120ms 40ms distribution normal loss 5%"
+}
