@@ -74,8 +74,9 @@ impl DaemonState {
         NetworkConfig::read_active_network(&self.data_dir)
     }
 
-    pub fn write_active_marker(&self, network: &str) {
-        let _ = std::fs::write(self.active_marker_path(), network);
+    pub fn write_active_marker(&self, network: &str) -> std::io::Result<()> {
+        std::fs::create_dir_all(&self.data_dir)?;
+        std::fs::write(self.active_marker_path(), network)
     }
 
     pub fn clear_active_marker(&self) {
