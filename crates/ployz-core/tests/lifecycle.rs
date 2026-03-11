@@ -69,6 +69,20 @@ async fn startup_reaches_running_single_node() {
     let mut mesh = make_mesh(wg, svc, store);
     mesh.up().await.unwrap();
     assert_eq!(mesh.phase(), Phase::Running);
+
+    let ready = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let ready = mesh.ready_status().await;
+            if ready.ready {
+                return ready;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("single-node founder should become ready within the timeout");
+    assert!(ready.ready, "single-node founder should report ready");
+    assert!(ready.sync_connected, "single-node founder should not wait for remote sync");
 }
 
 #[tokio::test]
