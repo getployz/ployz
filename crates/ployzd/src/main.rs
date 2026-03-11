@@ -5,7 +5,8 @@ use ployz_sdk::spec::{
     Resources, RestartPolicy, RolloutStrategy, ServicePort, ServiceSpec, VolumeMount, VolumeSource,
 };
 use ployz_sdk::transport::{
-    DaemonRequest, DaemonResponse, DeployOptions, Transport, UnixSocketTransport,
+    DaemonRequest, DaemonResponse, DeployOptions, MachineAddOptions, Transport,
+    UnixSocketTransport,
 };
 use ployzd::daemon::{ActiveMesh, DaemonState};
 use ployzd::ipc::listener::{IncomingCommand, serve};
@@ -280,6 +281,9 @@ enum MachineAction {
     },
     /// Add a remote machine to the currently running network.
     Add {
+        /// SSH private key to use for this add operation only.
+        #[arg(long, value_name = "PATH")]
+        identity: Option<PathBuf>,
         #[arg(required = true, num_args = 1..)]
         targets: Vec<String>,
     },
@@ -691,7 +695,15 @@ fn build_machine_request(action: MachineAction) -> Result<DaemonRequest> {
         MachineAction::Init { target, network } => {
             Ok(DaemonRequest::MachineInit { target, network })
         }
-        MachineAction::Add { targets } => Ok(DaemonRequest::MachineAdd { targets }),
+        MachineAction::Add { identity, targets } => {
+            let options = MachineAddOptions {
+                ssh_identity_private_key: read_optional_text_file(
+                    "machine add identity",
+                    identity.as_deref(),
+                )?,
+            };
+            Ok(DaemonRequest::MachineAdd { targets, options })
+        }
         MachineAction::Drain { id } => Ok(DaemonRequest::MachineDrain { id }),
         MachineAction::Rm { id, force } => Ok(DaemonRequest::MachineRemove { id, force }),
         MachineAction::Label { id, set, rm } => {
@@ -717,6 +729,22 @@ fn build_machine_request(action: MachineAction) -> Result<DaemonRequest> {
             }
         },
     }
+}
+
+fn read_optional_text_file(label: &str, path: Option<&Path>) -> Result<Option<String>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let contents = std::fs::read_to_string(path).map_err(|err| {
+        CliError::Io(format!("failed to read {label} '{}': {err}", path.display()))
+    })?;
+    if contents.trim().is_empty() {
+        return Err(CliError::Usage(format!(
+            "{label} '{}' is empty",
+            path.display()
+        )));
+    }
+    Ok(Some(contents))
 }
 
 fn render_response(json: bool, plain: bool, quiet: bool, response: &DaemonResponse) -> Result<()> {
@@ -933,6 +961,7 @@ fn build_service_spec(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn parse_deploy_apply_primitives() {
@@ -1039,5 +1068,32 @@ mod tests {
             services,
             vec![("api", "nginx:2"), ("cache", "redis:latest")]
         );
+    }
+
+    #[test]
+    fn build_machine_add_request_reads_identity_file_contents() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("ployz-machine-add-identity-{nanos}.key"));
+        std::fs::write(&path, "test-private-key").expect("write identity");
+
+        let request = build_machine_request(MachineAction::Add {
+            identity: Some(path.clone()),
+            targets: vec!["lab@example".into()],
+        })
+        .expect("machine add request");
+
+        let DaemonRequest::MachineAdd { targets, options } = request else {
+            panic!("expected machine add request");
+        };
+        assert_eq!(targets, vec!["lab@example"]);
+        assert_eq!(
+            options.ssh_identity_private_key.as_deref(),
+            Some("test-private-key")
+        );
+
+        std::fs::remove_file(path).expect("remove identity");
     }
 }
