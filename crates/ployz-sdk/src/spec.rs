@@ -36,23 +36,22 @@ impl std::fmt::Display for Namespace {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployManifest {
+    pub namespace: Namespace,
     pub services: Vec<ServiceSpec>,
 }
 
 impl DeployManifest {
-    pub fn validate(&self, namespace: &Namespace) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.namespace.0.trim().is_empty() {
+            return Err("manifest namespace cannot be empty".into());
+        }
+
         if self.services.is_empty() {
             return Err("manifest must contain at least one service".into());
         }
 
         let mut seen = BTreeSet::new();
         for service in &self.services {
-            if service.namespace != *namespace {
-                return Err(format!(
-                    "service '{}' belongs to namespace '{}' but deploy requested '{}'",
-                    service.name, service.namespace, namespace
-                ));
-            }
             if !seen.insert(service.name.clone()) {
                 return Err(format!(
                     "manifest contains duplicate service '{}'",
@@ -69,7 +68,6 @@ impl DeployManifest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceSpec {
     pub name: String,
-    pub namespace: Namespace,
     pub placement: Placement,
     pub template: ContainerSpec,
     pub network: NetworkMode,
@@ -93,8 +91,8 @@ pub struct ServiceSpec {
 
 impl ServiceSpec {
     #[must_use]
-    pub fn fqn(&self) -> String {
-        format!("{}/{}", self.namespace, self.name)
+    pub fn fqn(&self, namespace: &Namespace) -> String {
+        format!("{namespace}/{}", self.name)
     }
 
     pub fn canonical_revision_json(&self) -> Result<String, String> {
@@ -109,10 +107,6 @@ impl ServiceSpec {
     pub fn validate(&self) -> Result<(), String> {
         if self.name.trim().is_empty() {
             return Err("service name cannot be empty".into());
-        }
-
-        if self.namespace.0.trim().is_empty() {
-            return Err(format!("service '{}' has an empty namespace", self.name));
         }
 
         let mut seen_ports = BTreeSet::new();
@@ -449,7 +443,6 @@ mod tests {
     fn sample_spec() -> ServiceSpec {
         ServiceSpec {
             name: "api".into(),
-            namespace: Namespace::default_ns(),
             placement: Placement::Replicated { count: 2 },
             template: ContainerSpec {
                 image: "myapp:latest".into(),
@@ -539,11 +532,45 @@ mod tests {
     fn manifest_rejects_duplicate_services() {
         let spec = sample_spec();
         let manifest = DeployManifest {
+            namespace: Namespace::default_ns(),
             services: vec![spec.clone(), spec],
         };
-        let error = manifest
-            .validate(&Namespace::default_ns())
-            .expect_err("duplicates should fail");
+        let error = manifest.validate().expect_err("duplicates should fail");
         assert!(error.contains("duplicate service"));
+    }
+
+    #[test]
+    fn manifest_rejects_empty_namespace() {
+        let manifest = DeployManifest {
+            namespace: Namespace(String::new()),
+            services: vec![sample_spec()],
+        };
+        let error = manifest
+            .validate()
+            .expect_err("empty namespace should fail");
+        assert!(error.contains("namespace"));
+    }
+
+    #[test]
+    fn old_spec_json_with_namespace_still_deserializes() {
+        let json = r#"{
+            "name":"api",
+            "namespace":"prod",
+            "placement":{"replicated":{"count":2}},
+            "template":{"image":"myapp:latest","command":["serve"],"env":{"PORT":"8080"},"volumes":[],"cap_add":[],"cap_drop":[],"privileged":false,"pull_policy":"if_not_present","resources":{"cpu_millicores":1000,"memory_bytes":536870912},"sysctls":{}},
+            "network":"overlay",
+            "service_ports":[{"name":"http","container_port":8080,"protocol":"tcp"}],
+            "publish":[],
+            "routes":[{"http":{"service_port":"http","hostnames":["api.example.test"],"path_prefix":"/"}}],
+            "readiness":{"http":{"service_port":"http","path":"/ready"}},
+            "rollout":"blue_green",
+            "labels":{"env":"prod"},
+            "stop_grace_period":"10s",
+            "restart":"unless-stopped"
+        }"#;
+
+        let spec: ServiceSpec = serde_json::from_str(json).expect("deserialize legacy spec");
+        assert_eq!(spec.name, "api");
+        assert_eq!(spec.network, NetworkMode::Overlay);
     }
 }
