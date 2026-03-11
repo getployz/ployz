@@ -56,19 +56,25 @@ pub struct BackendView {
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ProjectionError {
-    #[error("current head for service '{service}' in namespace '{namespace}' referenced missing revision '{revision_hash}'")]
+    #[error(
+        "current head for service '{service}' in namespace '{namespace}' referenced missing revision '{revision_hash}'"
+    )]
     MissingRevision {
         namespace: Namespace,
         service: String,
         revision_hash: String,
     },
-    #[error("current head for service '{service}' in namespace '{namespace}' had invalid spec json: {message}")]
+    #[error(
+        "current head for service '{service}' in namespace '{namespace}' had invalid spec json: {message}"
+    )]
     InvalidRevisionSpec {
         namespace: Namespace,
         service: String,
         message: String,
     },
-    #[error("HTTP route conflict between '{left}' and '{right}' for host '{host}' and path prefix '{path_prefix}'")]
+    #[error(
+        "HTTP route conflict between '{left}' and '{right}' for host '{host}' and path prefix '{path_prefix}'"
+    )]
     HttpRouteConflict {
         left: String,
         right: String,
@@ -167,12 +173,13 @@ pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> 
                 revision_hash: head.current_revision_hash,
             });
         };
-        let spec: ServiceSpec =
-            serde_json::from_str(&revision.spec_json).map_err(|err| ProjectionError::InvalidRevisionSpec {
+        let spec: ServiceSpec = serde_json::from_str(&revision.spec_json).map_err(|err| {
+            ProjectionError::InvalidRevisionSpec {
                 namespace: revision.namespace.clone(),
                 service: revision.service.clone(),
                 message: err.to_string(),
-            })?;
+            }
+        })?;
 
         let backends_by_port = routable_backends_by_port(
             &spec,
@@ -196,10 +203,7 @@ pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> 
                         .into_iter()
                         .collect::<Vec<_>>();
                     http_routes.push(HttpRouteView {
-                        route_id: format!(
-                            "http:{}:{}:{}",
-                            spec.namespace, spec.name, index
-                        ),
+                        route_id: format!("http:{}:{}:{}", spec.namespace, spec.name, index),
                         namespace: spec.namespace.clone(),
                         service: spec.name.clone(),
                         revision_hash: head.current_revision_hash.clone(),
@@ -374,20 +378,35 @@ fn normalize_path_prefix(path_prefix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::Ipv4Addr;
-    use ployz_sdk::model::{DeployId, DrainState, InstanceStatusRecord, ServiceHeadRecord, ServiceRevisionRecord, ServiceSlotRecord, SlotId};
+    use ployz_sdk::model::{
+        DeployId, DrainState, InstanceStatusRecord, ServiceHeadRecord, ServiceRevisionRecord,
+        ServiceSlotRecord, SlotId,
+    };
     use ployz_sdk::spec::{
         ContainerSpec, HttpRoute, NetworkMode, Placement, PortProtocol, PullPolicy, Resources,
         RestartPolicy, RouteSpec, ServicePort, ServiceSpec,
     };
+    use std::net::Ipv4Addr;
 
     #[test]
     fn project_only_routes_current_head_ready_instances() {
         let namespace = Namespace("prod".into());
         let revision_a = "rev-a".to_string();
         let revision_b = "rev-b".to_string();
-        let old = service_spec(&namespace, "api", "v1", revision_a.clone(), vec!["old.example.com".into()]);
-        let current = service_spec(&namespace, "api", "v2", revision_b.clone(), vec!["api.example.com".into()]);
+        let old = service_spec(
+            &namespace,
+            "api",
+            "v1",
+            revision_a.clone(),
+            vec!["old.example.com".into()],
+        );
+        let current = service_spec(
+            &namespace,
+            "api",
+            "v2",
+            revision_b.clone(),
+            vec!["api.example.com".into()],
+        );
 
         let snapshot = project(RoutingState {
             revisions: vec![revision_record(&old), revision_record(&current)],
@@ -403,8 +422,24 @@ mod tests {
                 slot_record(&namespace, "api", "slot-2", "inst-draining", &current),
             ],
             instances: vec![
-                instance_record(&namespace, "api", "slot-1", "inst-ready", true, DrainState::None, &current),
-                instance_record(&namespace, "api", "slot-2", "inst-draining", true, DrainState::Requested, &current),
+                instance_record(
+                    &namespace,
+                    "api",
+                    "slot-1",
+                    "inst-ready",
+                    true,
+                    DrainState::None,
+                    &current,
+                ),
+                instance_record(
+                    &namespace,
+                    "api",
+                    "slot-2",
+                    "inst-draining",
+                    true,
+                    DrainState::Requested,
+                    &current,
+                ),
             ],
         })
         .expect("projection succeeds");
@@ -450,8 +485,20 @@ mod tests {
     #[test]
     fn duplicate_http_host_and_path_is_rejected() {
         let namespace = Namespace("prod".into());
-        let left = service_spec(&namespace, "one", "v1", "rev-1".into(), vec!["api.example.com".into()]);
-        let right = service_spec(&namespace, "two", "v1", "rev-2".into(), vec!["api.example.com".into()]);
+        let left = service_spec(
+            &namespace,
+            "one",
+            "v1",
+            "rev-1".into(),
+            vec!["api.example.com".into()],
+        );
+        let right = service_spec(
+            &namespace,
+            "two",
+            "v1",
+            "rev-2".into(),
+            vec!["api.example.com".into()],
+        );
 
         let error = project(RoutingState {
             revisions: vec![revision_record(&left), revision_record(&right)],
@@ -477,7 +524,9 @@ mod tests {
         .expect_err("conflict expected");
 
         match error {
-            ProjectionError::HttpRouteConflict { host, path_prefix, .. } => {
+            ProjectionError::HttpRouteConflict {
+                host, path_prefix, ..
+            } => {
                 assert_eq!(host, "api.example.com");
                 assert_eq!(path_prefix, "/");
             }
@@ -509,7 +558,15 @@ mod tests {
                 updated_at: 1,
             }],
             slots: vec![slot_record(&namespace, "db", "slot-1", "inst-db", &spec)],
-            instances: vec![instance_record(&namespace, "db", "slot-1", "inst-db", true, DrainState::None, &spec)],
+            instances: vec![instance_record(
+                &namespace,
+                "db",
+                "slot-1",
+                "inst-db",
+                true,
+                DrainState::None,
+                &spec,
+            )],
         })
         .expect("projection succeeds");
 
@@ -614,7 +671,10 @@ mod tests {
             deploy_id: DeployId("dep-1".into()),
             docker_container_id: "container".into(),
             overlay_ip: Some(Ipv4Addr::new(10, 0, 0, 2)),
-            backend_ports: BTreeMap::from([(String::from("http"), 8080), (String::from("sql"), 5432)]),
+            backend_ports: BTreeMap::from([
+                (String::from("http"), 8080),
+                (String::from("sql"), 5432),
+            ]),
             phase: if ready {
                 InstancePhase::Ready
             } else {

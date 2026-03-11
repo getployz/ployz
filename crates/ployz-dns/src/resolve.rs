@@ -126,9 +126,7 @@ pub fn resolve(
             };
             lookup_service_list(snapshot, ns)
         }
-        DnsQuery::ListServicesExplicit { namespace } => {
-            lookup_service_list(snapshot, &namespace)
-        }
+        DnsQuery::ListServicesExplicit { namespace } => lookup_service_list(snapshot, &namespace),
         DnsQuery::Unknown => ResolveResult::NxDomain,
     }
 }

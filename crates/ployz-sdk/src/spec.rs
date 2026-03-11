@@ -11,17 +11,17 @@ impl AsRef<str> for Namespace {
 }
 
 impl Namespace {
-    #[must_use] 
+    #[must_use]
     pub fn system() -> Self {
         Self("system".into())
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn default_ns() -> Self {
         Self("default".into())
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn is_system(&self) -> bool {
         self.0 == "system"
     }
@@ -92,7 +92,7 @@ pub struct ServiceSpec {
 }
 
 impl ServiceSpec {
-    #[must_use] 
+    #[must_use]
     pub fn fqn(&self) -> String {
         format!("{}/{}", self.namespace, self.name)
     }
@@ -346,7 +346,7 @@ pub enum PortProtocol {
 }
 
 impl PortProtocol {
-    #[must_use] 
+    #[must_use]
     pub fn tcp() -> Self {
         Self::Tcp
     }
@@ -361,7 +361,7 @@ pub enum PullPolicy {
 }
 
 impl PullPolicy {
-    #[must_use] 
+    #[must_use]
     pub fn if_not_present() -> Self {
         Self::IfNotPresent
     }
@@ -375,7 +375,7 @@ pub enum RolloutStrategy {
 }
 
 impl RolloutStrategy {
-    #[must_use] 
+    #[must_use]
     pub fn recreate() -> Self {
         Self::Recreate
     }
@@ -391,7 +391,7 @@ pub enum RestartPolicy {
 }
 
 impl RestartPolicy {
-    #[must_use] 
+    #[must_use]
     pub fn unless_stopped() -> Self {
         Self::UnlessStopped
     }
@@ -406,7 +406,7 @@ pub struct Resources {
 }
 
 impl Resources {
-    #[must_use] 
+    #[must_use]
     pub fn empty() -> Self {
         Self {
             cpu_millicores: None,

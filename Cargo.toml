@@ -1,8 +1,8 @@
 [workspace]
 members = [
-    "crates/ployz",
+    "crates/ployz-core",
     "crates/ployz-sdk",
-    "crates/ployz-cli",
+    "crates/ployzd",
     "crates/ployz-routes",
     "crates/ployz-corrosion",
     "crates/ployz-gateway",
@@ -12,9 +12,9 @@ members = [
     "crates/ployz-bpfctl",
 ]
 default-members = [
-    "crates/ployz",
+    "crates/ployz-core",
     "crates/ployz-sdk",
-    "crates/ployz-cli",
+    "crates/ployzd",
     "crates/ployz-routes",
     "crates/ployz-corrosion",
     "crates/ployz-gateway",
