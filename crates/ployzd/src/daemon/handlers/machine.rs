@@ -12,7 +12,7 @@ use ployz_sdk::transport::{DaemonResponse, MachineAddOptions};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
-use tokio::time::{Duration, Instant, sleep};
+use tokio::time::{Duration, Instant, sleep, timeout};
 
 use super::super::DaemonState;
 use super::super::ssh::{EphemeralSshIdentityFile, SshOptions, run_ssh, run_ssh_with_stdin};
@@ -21,14 +21,17 @@ use crate::time::now_unix_secs;
 const INVITE_TTL_SECS: u64 = 600;
 const REMOTE_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
-const MACHINE_INIT_BOOTSTRAP_COMMAND: &str = "set -eu; command -v ployzd >/dev/null 2>&1 || { echo 'ployzd not installed'; exit 12; }; command -v docker >/dev/null 2>&1 || { echo 'docker not installed'; exit 13; };";
-const MACHINE_ADD_BOOTSTRAP_COMMAND: &str = "set -eu; command -v ployzd >/dev/null 2>&1 || { echo 'ployzd not installed'; exit 12; }; ployzd status >/dev/null 2>&1 || { echo 'ployzd not running'; exit 15; };";
-const REMOTE_MESH_INIT_COMMAND: &str = "set -eu; ployzd mesh init --name-stdin";
-const REMOTE_MESH_JOIN_COMMAND: &str = "set -eu; ployzd mesh join --token-stdin";
-const REMOTE_MESH_SELF_RECORD_COMMAND: &str = "set -eu; ployzd mesh self-record";
-const REMOTE_MESH_READY_COMMAND: &str = "set -eu; ployzd mesh ready --json";
-const REMOTE_MESH_DOWN_COMMAND: &str = "set -eu; ployzd mesh down";
-const REMOTE_MESH_DESTROY_COMMAND: &str = "set -eu; ployzd mesh destroy --name-stdin";
+const REMOTE_READY_SSH_TIMEOUT: Duration = Duration::from_secs(10);
+const REMOTE_CLEANUP_SSH_TIMEOUT: Duration = Duration::from_secs(10);
+const MACHINE_INIT_BOOTSTRAP_COMMAND: &str = "set -eu; command -v ployzd >/dev/null 2>&1 || { echo 'ployzd not installed'; exit 12; }; command -v docker >/dev/null 2>&1 || { echo 'docker not installed'; exit 13; }; sudo -n ployzd status >/dev/null 2>&1 || { echo 'ployzd not running under sudo'; exit 15; };";
+const MACHINE_ADD_BOOTSTRAP_COMMAND: &str = "set -eu; command -v ployzd >/dev/null 2>&1 || { echo 'ployzd not installed'; exit 12; }; sudo -n ployzd status >/dev/null 2>&1 || { echo 'ployzd not running under sudo'; exit 15; };";
+const REMOTE_MESH_INIT_COMMAND: &str = "set -eu; sudo -n ployzd mesh init --name-stdin";
+const REMOTE_MESH_JOIN_COMMAND: &str = "set -eu; sudo -n ployzd mesh join --token-stdin";
+const REMOTE_MESH_SELF_RECORD_COMMAND: &str = "set -eu; sudo -n ployzd mesh self-record";
+const REMOTE_MESH_READY_COMMAND: &str =
+    "set -eu; sudo -n ployzd mesh ready --json | jq -r '.message'";
+const REMOTE_MESH_DOWN_COMMAND: &str = "set -eu; sudo -n ployzd mesh down";
+const REMOTE_MESH_DESTROY_COMMAND: &str = "set -eu; sudo -n ployzd mesh destroy --name-stdin";
 
 #[derive(Clone)]
 struct MachineAddContext {
@@ -662,9 +665,30 @@ async fn run_machine_add_target(
 
     tracing::info!(%target, joiner_id = %joiner_id, "machine add target: waiting for remote ready");
     if let Err(err) = wait_for_remote_ready(&target, &context.ssh_options).await {
-        let _ = remove_transient_peer(&context.peer_sync_tx, &joiner_id).await;
-        let _ = best_effort_remote_cleanup(&target, &context.network_name, &context.ssh_options)
-            .await;
+        tracing::warn!(
+            %target,
+            joiner_id = %joiner_id,
+            error = %err,
+            "machine add target: remote ready failed"
+        );
+        if let Err(remove_err) = remove_transient_peer(&context.peer_sync_tx, &joiner_id).await {
+            tracing::warn!(
+                %target,
+                joiner_id = %joiner_id,
+                error = %remove_err,
+                "machine add target: transient peer cleanup failed"
+            );
+        }
+        if let Err(cleanup_err) =
+            best_effort_remote_cleanup(&target, &context.network_name, &context.ssh_options).await
+        {
+            tracing::warn!(
+                %target,
+                joiner_id = %joiner_id,
+                error = %cleanup_err,
+                "machine add target: remote cleanup failed"
+            );
+        }
         return MachineAddOutcome::FailedReady {
             target,
             reason: err,
@@ -709,22 +733,55 @@ async fn remove_transient_peer(
 
 async fn wait_for_remote_ready(target: &str, ssh_options: &SshOptions) -> Result<(), String> {
     let deadline = Instant::now() + REMOTE_READY_TIMEOUT;
+    let mut attempt: u32 = 0;
 
     loop {
-        let last_error = match run_ssh(target, REMOTE_MESH_READY_COMMAND, ssh_options).await {
-            Ok(output) => match serde_json::from_str::<RemoteReadyPayload>(&output) {
+        attempt += 1;
+        let last_error =
+            match timeout(
+                REMOTE_READY_SSH_TIMEOUT,
+                run_ssh(target, REMOTE_MESH_READY_COMMAND, ssh_options),
+            )
+            .await
+            {
+                Ok(Ok(output)) => match serde_json::from_str::<RemoteReadyPayload>(&output) {
                 Ok(payload) => {
                     if payload.ready {
+                        tracing::debug!(%target, attempt, payload = %output, "remote mesh ready confirmed");
                         return Ok(());
                     }
+                    tracing::debug!(
+                        %target,
+                        attempt,
+                        payload = %output,
+                        "remote mesh not ready yet"
+                    );
                     format!("mesh reported not ready yet: {output}")
                 }
                 Err(err) => {
+                    tracing::debug!(
+                        %target,
+                        attempt,
+                        payload = %output,
+                        error = %err,
+                        "remote readiness payload parse failed"
+                    );
                     format!("failed to parse remote readiness payload '{output}': {err}")
                 }
             },
-            Err(err) => err,
-        };
+                Ok(Err(err)) => {
+                    tracing::debug!(%target, attempt, error = %err, "remote readiness ssh failed");
+                    err
+                }
+                Err(_) => {
+                    let err = format!(
+                        "ssh readiness probe exceeded {:?}",
+                        REMOTE_READY_SSH_TIMEOUT
+                    );
+                    tracing::debug!(%target, attempt, error = %err, "remote readiness ssh timed out");
+                    err
+                }
+            };
 
         if Instant::now() >= deadline {
             return Err(format!(
@@ -742,17 +799,51 @@ async fn best_effort_remote_cleanup(
     network_name: &str,
     ssh_options: &SshOptions,
 ) -> Result<(), String> {
-    let down_error = run_ssh(target, REMOTE_MESH_DOWN_COMMAND, ssh_options)
-        .await
-        .err();
-    let destroy_error = run_ssh_with_stdin(
-        target,
-        REMOTE_MESH_DESTROY_COMMAND,
-        network_name.as_bytes(),
-        ssh_options,
+    tracing::debug!(%target, %network_name, "machine add cleanup: mesh down starting");
+    let down_error = match timeout(
+        REMOTE_CLEANUP_SSH_TIMEOUT,
+        run_ssh(target, REMOTE_MESH_DOWN_COMMAND, ssh_options),
     )
-            .await
-            .err();
+    .await
+    {
+        Ok(Ok(_)) => None,
+        Ok(Err(err)) => Some(err),
+        Err(_) => Some(format!(
+            "mesh down ssh exceeded {:?}",
+            REMOTE_CLEANUP_SSH_TIMEOUT
+        )),
+    };
+    tracing::debug!(
+        %target,
+        %network_name,
+        had_error = down_error.is_some(),
+        "machine add cleanup: mesh down complete"
+    );
+    tracing::debug!(%target, %network_name, "machine add cleanup: mesh destroy starting");
+    let destroy_error = match timeout(
+        REMOTE_CLEANUP_SSH_TIMEOUT,
+        run_ssh_with_stdin(
+            target,
+            REMOTE_MESH_DESTROY_COMMAND,
+            network_name.as_bytes(),
+            ssh_options,
+        ),
+    )
+    .await
+    {
+        Ok(Ok(_)) => None,
+        Ok(Err(err)) => Some(err),
+        Err(_) => Some(format!(
+            "mesh destroy ssh exceeded {:?}",
+            REMOTE_CLEANUP_SSH_TIMEOUT
+        )),
+    };
+    tracing::debug!(
+        %target,
+        %network_name,
+        had_error = destroy_error.is_some(),
+        "machine add cleanup: mesh destroy complete"
+    );
 
     let mut errors = Vec::new();
     if let Some(err) = down_error {

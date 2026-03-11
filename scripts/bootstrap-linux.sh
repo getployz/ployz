@@ -325,6 +325,25 @@ EOF
   install -m 0644 "${unit_src}" /etc/systemd/system/ployzd.service
 }
 
+configure_ployzd_environment() {
+  install -d /etc/default
+
+  if [[ -z "${PLOYZ_RUST_LOG:-}" && -z "${RUST_BACKTRACE:-}" ]]; then
+    rm -f /etc/default/ployzd
+    return
+  fi
+
+  log "writing ployzd environment overrides"
+  {
+    if [[ -n "${PLOYZ_RUST_LOG:-}" ]]; then
+      printf 'RUST_LOG=%q\n' "${PLOYZ_RUST_LOG}"
+    fi
+    if [[ -n "${RUST_BACKTRACE:-}" ]]; then
+      printf 'RUST_BACKTRACE=%q\n' "${RUST_BACKTRACE}"
+    fi
+  } >/etc/default/ployzd
+}
+
 write_bootstrap_state() {
   local staged=$1
   local state_file="${STATE_DIR}/bootstrap-state.env"
@@ -371,6 +390,7 @@ main() {
   fi
 
   install_artifacts "${staged}"
+  configure_ployzd_environment
   write_bootstrap_state "${staged}"
   verify_service
 

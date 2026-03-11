@@ -33,6 +33,7 @@ HOST_SUDO_PASSWORD="${PLOYZ_LAB_HOST_SUDO_PASSWORD:-}"
 APT_CACHE_ENABLED="${PLOYZ_LAB_APT_CACHE_ENABLED:-1}"
 APT_CACHE_PORT="${PLOYZ_LAB_APT_CACHE_PORT:-3142}"
 APT_CACHE_IMAGE="${PLOYZ_LAB_APT_CACHE_IMAGE:-sameersbn/apt-cacher-ng:latest}"
+PLOYZD_RUST_LOG="${PLOYZ_LAB_PLOYZD_RUST_LOG:-info,ployzd::daemon::handlers::machine=trace,ployzd::daemon::handlers::mesh=debug,ployz_core::mesh::orchestrator=debug,ployz_core::mesh::tasks::peer_sync=debug}"
 CURRENT_GIT_REV="$(git -C "${ROOT_DIR}" rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
 
 RUN_ID=""
@@ -795,13 +796,15 @@ render_user_data() {
   local node=$1
   local bootstrap_path=$2
   local public_key=$3
-  local pristine_cmd family proxy_arg
+  local pristine_cmd family proxy_arg rust_log_escaped bootstrap_prefix
   family=${NODE_FAMILY["${node}"]}
   proxy_arg=$(apt_proxy_arg_for_family "${family}")
+  printf -v rust_log_escaped '%q' "${PLOYZD_RUST_LOG}"
+  bootstrap_prefix="env PLOYZ_RUST_LOG=${rust_log_escaped} RUST_BACKTRACE=1"
   pristine_cmd="mkdir -p /var/lib/ployz-lab && { command -v docker >/dev/null 2>&1 && echo docker=present || echo docker=absent; command -v ployzd >/dev/null 2>&1 && echo ployzd=present || echo ployzd=absent; systemctl list-unit-files ployzd.service >/dev/null 2>&1 && echo ployzd_unit=present || echo ployzd_unit=absent; [ -d /var/lib/ployz ] && echo data_dir=present || echo data_dir=absent; } >/var/lib/ployz-lab/pristine-state.txt"
   local bootstrap_cmd=""
   if [[ "${bootstrap_path}" == "cloud-init" ]]; then
-    bootstrap_cmd="mkdir -p /var/lib/ployz-lab/bootstrap && curl -fsSL '${BUNDLE_URL}' -o /var/lib/ployz-lab/bootstrap/bundle.tgz && tar -xzf /var/lib/ployz-lab/bootstrap/bundle.tgz -C /var/lib/ployz-lab/bootstrap && bash /var/lib/ployz-lab/bootstrap/bootstrap-linux.sh --artifacts-dir /var/lib/ployz-lab/bootstrap${proxy_arg}"
+    bootstrap_cmd="mkdir -p /var/lib/ployz-lab/bootstrap && curl -fsSL '${BUNDLE_URL}' -o /var/lib/ployz-lab/bootstrap/bundle.tgz && tar -xzf /var/lib/ployz-lab/bootstrap/bundle.tgz -C /var/lib/ployz-lab/bootstrap && ${bootstrap_prefix} bash /var/lib/ployz-lab/bootstrap/bootstrap-linux.sh --artifacts-dir /var/lib/ployz-lab/bootstrap${proxy_arg}"
   fi
   cat <<EOF
 #cloud-config
@@ -1000,18 +1003,21 @@ assert_pristine() {
 
 bootstrap_over_ssh() {
   local node=$1
-  local family proxy_arg
+  local family proxy_arg rust_log_escaped
   family=${NODE_FAMILY["${node}"]}
   proxy_arg=$(apt_proxy_arg_for_family "${family}")
+  printf -v rust_log_escaped '%q' "${PLOYZD_RUST_LOG}"
   assert_pristine "${node}"
   guest_scp_from_remote "${node}" "${BUNDLE_TAR}" "/tmp/ployz-bundle.tgz"
-  guest_exec "${node}" "rm -rf /tmp/ployz-bundle && mkdir -p /tmp/ployz-bundle && tar -xzf /tmp/ployz-bundle.tgz -C /tmp/ployz-bundle && sudo bash /tmp/ployz-bundle/bootstrap-linux.sh --artifacts-dir /tmp/ployz-bundle${proxy_arg}"
+  guest_exec "${node}" "rm -rf /tmp/ployz-bundle && mkdir -p /tmp/ployz-bundle && tar -xzf /tmp/ployz-bundle.tgz -C /tmp/ployz-bundle && sudo env PLOYZ_RUST_LOG=${rust_log_escaped} RUST_BACKTRACE=1 bash /tmp/ployz-bundle/bootstrap-linux.sh --artifacts-dir /tmp/ployz-bundle${proxy_arg}"
 }
 
 refresh_post_install_node() {
   local node=$1
+  local rust_log_escaped
+  printf -v rust_log_escaped '%q' "${PLOYZD_RUST_LOG}"
   guest_scp_from_remote "${node}" "${BUNDLE_TAR}" "/tmp/ployz-bundle.tgz"
-  guest_exec "${node}" "rm -rf /tmp/ployz-bundle && mkdir -p /tmp/ployz-bundle && tar -xzf /tmp/ployz-bundle.tgz -C /tmp/ployz-bundle && sudo bash /tmp/ployz-bundle/bootstrap-linux.sh --artifacts-dir /tmp/ployz-bundle --refresh-only"
+  guest_exec "${node}" "rm -rf /tmp/ployz-bundle && mkdir -p /tmp/ployz-bundle && tar -xzf /tmp/ployz-bundle.tgz -C /tmp/ployz-bundle && sudo env PLOYZ_RUST_LOG=${rust_log_escaped} RUST_BACKTRACE=1 bash /tmp/ployz-bundle/bootstrap-linux.sh --artifacts-dir /tmp/ployz-bundle --refresh-only"
 }
 
 verify_bootstrap() {
@@ -1299,7 +1305,7 @@ scenario_founder_init_after_bootstrap() {
 }
 
 scenario_machine_add_basic() {
-  local joiner_target="lab@${NODE_MGMT_IP[joiner]}"
+  local joiner_target="lab@${NODE_DATA_IP[joiner]}"
   seed_interguest_ssh founder
   seed_interguest_ssh joiner
   guest_exec founder "sudo ployzd mesh init alpha"
@@ -1326,8 +1332,8 @@ scenario_machine_remove_guard() {
 }
 
 scenario_replace_machine() {
-  local joiner_target="lab@${NODE_MGMT_IP[joiner]}"
-  local replacement_target="lab@${NODE_MGMT_IP[replacement]}"
+  local joiner_target="lab@${NODE_DATA_IP[joiner]}"
+  local replacement_target="lab@${NODE_DATA_IP[replacement]}"
   seed_interguest_ssh founder
   seed_interguest_ssh joiner
   seed_interguest_ssh replacement
@@ -1343,13 +1349,13 @@ scenario_replace_machine() {
 }
 
 scenario_rejoin_after_remove() {
-  local replacement_target="lab@${NODE_MGMT_IP[replacement]}"
+  local replacement_target="lab@${NODE_DATA_IP[replacement]}"
   seed_interguest_ssh founder
   seed_interguest_ssh joiner
   seed_interguest_ssh replacement
   guest_exec founder "sudo ployzd mesh init alpha"
   await_json_true founder "sudo ployzd --plain mesh ready --json" ready 120
-  guest_exec founder "sudo ployzd machine add --identity /root/.ssh/id_ed25519 lab@${NODE_MGMT_IP[joiner]}"
+  guest_exec founder "sudo ployzd machine add --identity /root/.ssh/id_ed25519 lab@${NODE_DATA_IP[joiner]}"
   await_contains founder "sudo ployzd machine ls" "joiner" 120
   guest_exec founder "sudo ployzd machine rm joiner --force"
   await_contains founder "sudo ployzd machine ls" "replacement" 1 || true
@@ -1363,7 +1369,7 @@ scenario_join_under_latency() {
   guest_exec founder "sudo ployzd mesh init alpha"
   apply_profile founder far data
   apply_profile joiner far data
-  guest_exec founder "sudo ployzd machine add --identity /root/.ssh/id_ed25519 lab@${NODE_MGMT_IP[joiner]}"
+  guest_exec founder "sudo ployzd machine add --identity /root/.ssh/id_ed25519 lab@${NODE_DATA_IP[joiner]}"
   await_contains founder "sudo ployzd machine ls" "joiner" 180
 }
 

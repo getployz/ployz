@@ -5,6 +5,7 @@ Wants=network-online.target docker.service
 
 [Service]
 Type=simple
+EnvironmentFile=-/etc/default/ployzd
 ExecStart=/usr/local/bin/ployzd --data-dir /var/lib/ployz run --mode host-service
 Restart=always
 RestartSec=2
