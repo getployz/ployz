@@ -1,0 +1,17 @@
+{
+  "name": "machine_remove_guard",
+  "description": "Verify machine remove gating for enabled, draining, disabled, and forced removal states.",
+  "topology": "pair",
+  "nodes": [
+    {
+      "name": "founder",
+      "family": "ubuntu"
+    },
+    {
+      "name": "joiner",
+      "family": "rocky"
+    }
+  ],
+  "default_profile": "clean",
+  "default_bootstrap_path": "ssh"
+}

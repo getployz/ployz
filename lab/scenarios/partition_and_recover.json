@@ -1,0 +1,17 @@
+{
+  "name": "partition_and_recover",
+  "description": "Partition a joiner from the founder on the data network and verify recovery after the partition is removed.",
+  "topology": "pair",
+  "nodes": [
+    {
+      "name": "founder",
+      "family": "ubuntu"
+    },
+    {
+      "name": "joiner",
+      "family": "rocky"
+    }
+  ],
+  "default_profile": "partition",
+  "default_bootstrap_path": "ssh"
+}

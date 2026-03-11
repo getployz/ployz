@@ -5,3 +5,6 @@ skills-lock.json
 .env.targets
 crates/ebpf/target/
 .idea/
+.lab/
+lab/lab.env
+bin/

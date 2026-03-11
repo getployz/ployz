@@ -1,0 +1,17 @@
+{
+  "name": "join_under_latency",
+  "description": "Join a node while the data interface has additional latency and jitter applied.",
+  "topology": "pair",
+  "nodes": [
+    {
+      "name": "founder",
+      "family": "ubuntu"
+    },
+    {
+      "name": "joiner",
+      "family": "rocky"
+    }
+  ],
+  "default_profile": "far",
+  "default_bootstrap_path": "ssh"
+}

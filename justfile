@@ -5,22 +5,28 @@ build:
     cargo build
 
 build-release:
-    cargo build --release
+    cargo build --release -p ployzd
 
 test:
     cargo test
 
+bootstrap-linux *args:
+    ./scripts/bootstrap-linux.sh {{args}}
+
+lab *args:
+    ./lab/bin/ployz-lab {{args}}
+
 ployz *args:
-    cargo run -p ployz-cli -- {{args}}
+    cargo run -p ployzd --bin ployzd -- {{args}}
 
 ployzd *args:
-    cargo run -p ployz --bin ployzd -- {{args}}
+    cargo run -p ployzd --bin ployzd -- {{args}}
 
 install prefix="/usr/local":
     just build-release
     install -d "{{prefix}}/bin"
-    install -m 0755 target/release/ployz "{{prefix}}/bin/ployz"
     install -m 0755 target/release/ployzd "{{prefix}}/bin/ployzd"
+    install -m 0755 packaging/bin/ployz "{{prefix}}/bin/ployz"
     just install-corrosion {{prefix}}
 
 install-corrosion prefix="/usr/local" repo="getployz/corrosion":

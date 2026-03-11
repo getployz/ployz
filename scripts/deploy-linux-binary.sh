@@ -68,20 +68,16 @@ read -r -a TARGET_LIST <<<"$TARGETS_RAW"
 
 # --- build ---
 
-echo "==> Cross-compiling Linux binaries"
-
-# Prefer cross if available, fall back to cargo with target
-FEATURES="--features ebpf-native"
-
+echo "==> Compiling Linux daemon binary"
 
 if command -v cross >/dev/null 2>&1; then
-  cross build --release --target x86_64-unknown-linux-gnu $FEATURES
+  cross build --release --target x86_64-unknown-linux-gnu -p ployzd
 elif command -v cargo-zigbuild >/dev/null 2>&1; then
-  cargo zigbuild --release --target x86_64-unknown-linux-gnu $FEATURES
+  cargo zigbuild --release --target x86_64-unknown-linux-gnu -p ployzd
 else
   echo "   No cross-compiler found. Trying cargo build --target directly..."
   echo "   (install 'cross' or 'cargo-zigbuild' for reliable cross-compilation)"
-  cargo build --release --target x86_64-unknown-linux-gnu $FEATURES
+  cargo build --release --target x86_64-unknown-linux-gnu -p ployzd
 fi
 
 TARGET_DIR="$ROOT_DIR/target/x86_64-unknown-linux-gnu/release"
@@ -89,8 +85,8 @@ TARGET_DIR="$ROOT_DIR/target/x86_64-unknown-linux-gnu/release"
 # --- deploy ---
 
 FILES=(
-  "$TARGET_DIR/ployz:/usr/local/bin/ployz:0755"
   "$TARGET_DIR/ployzd:/usr/local/bin/ployzd:0755"
+  "$ROOT_DIR/packaging/bin/ployz:/usr/local/bin/ployz:0755"
   "$ROOT_DIR/packaging/systemd/ployzd.service:/etc/systemd/system/ployzd.service:0644"
 )
 

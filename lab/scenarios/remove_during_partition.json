@@ -1,0 +1,17 @@
+{
+  "name": "remove_during_partition",
+  "description": "Attempt a guarded remove while the joiner is partitioned from the founder.",
+  "topology": "pair",
+  "nodes": [
+    {
+      "name": "founder",
+      "family": "ubuntu"
+    },
+    {
+      "name": "joiner",
+      "family": "rocky"
+    }
+  ],
+  "default_profile": "partition",
+  "default_bootstrap_path": "ssh"
+}

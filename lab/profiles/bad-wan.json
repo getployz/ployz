@@ -1,0 +1,5 @@
+{
+  "name": "bad-wan",
+  "interface": "data",
+  "netem": "delay 250ms 50ms distribution normal loss 2%"
+}

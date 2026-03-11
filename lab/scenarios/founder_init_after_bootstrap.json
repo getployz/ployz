@@ -1,0 +1,13 @@
+{
+  "name": "founder_init_after_bootstrap",
+  "description": "Bootstrap one raw VM, initialize it as founder, and wait for mesh readiness.",
+  "topology": "singleton",
+  "nodes": [
+    {
+      "name": "founder",
+      "family": "ubuntu"
+    }
+  ],
+  "default_profile": "clean",
+  "default_bootstrap_path": "ssh"
+}

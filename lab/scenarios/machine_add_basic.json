@@ -1,0 +1,17 @@
+{
+  "name": "machine_add_basic",
+  "description": "Bootstrap a founder and joiner, initialize the founder mesh, then add the joiner by SSH target.",
+  "topology": "pair",
+  "nodes": [
+    {
+      "name": "founder",
+      "family": "ubuntu"
+    },
+    {
+      "name": "joiner",
+      "family": "rocky"
+    }
+  ],
+  "default_profile": "clean",
+  "default_bootstrap_path": "ssh"
+}

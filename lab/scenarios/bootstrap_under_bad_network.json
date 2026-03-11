@@ -1,0 +1,13 @@
+{
+  "name": "bootstrap_under_bad_network",
+  "description": "Run the SSH bootstrap path while impairing the management network with latency and loss.",
+  "topology": "singleton",
+  "nodes": [
+    {
+      "name": "founder",
+      "family": "ubuntu"
+    }
+  ],
+  "default_profile": "bad-wan",
+  "default_bootstrap_path": "ssh"
+}
