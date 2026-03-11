@@ -5,7 +5,6 @@ use std::sync::{Arc, RwLock};
 use ployz_sdk::model::{DrainState, InstancePhase, RoutingState};
 use ployz_sdk::spec::Namespace;
 
-
 // ---------------------------------------------------------------------------
 // DnsSnapshot
 // ---------------------------------------------------------------------------
@@ -215,9 +214,7 @@ mod tests {
     #[test]
     fn project_skips_no_overlay_ip() {
         let mut state = empty_routing_state();
-        state
-            .instances
-            .push(ready_instance("prod", "web", None));
+        state.instances.push(ready_instance("prod", "web", None));
 
         let snapshot = project_dns(&state);
         assert!(snapshot.services.is_empty());

@@ -2,12 +2,12 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use hickory_server::ServerFuture;
 use hickory_server::authority::MessageResponseBuilder;
 use hickory_server::proto::op::{Header, ResponseCode};
 use hickory_server::proto::rr::rdata::{A, TXT};
 use hickory_server::proto::rr::{Name, RData, Record, RecordType};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
-use hickory_server::ServerFuture;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::oneshot;
 use tracing::{info, trace, warn};
@@ -76,9 +76,7 @@ impl RequestHandler for DnsHandler {
         let mut header = Header::response_from_request(request.header());
 
         match result {
-            ResolveResult::Addresses(ips)
-                if rtype == RecordType::A || rtype == RecordType::ANY =>
-            {
+            ResolveResult::Addresses(ips) if rtype == RecordType::A || rtype == RecordType::ANY => {
                 let records: Vec<Record> = ips
                     .into_iter()
                     .map(|ip| Record::from_rdata(query_name.clone(), DNS_TTL, RData::A(A(ip))))
@@ -206,12 +204,10 @@ pub fn run_dns_process() -> Result<(), DnsError> {
         .map_err(|err| DnsError::Runtime(err.to_string()))?;
 
     runtime.block_on(async {
-        let store = ployz_corrosion::CorrosionStore::connect_for_network(
-            &config.data_dir,
-            &config.network,
-        )
-        .await
-        .map_err(|err| DnsError::Store(err.to_string()))?;
+        let store =
+            ployz_corrosion::CorrosionStore::connect_for_network(&config.data_dir, &config.network)
+                .await
+                .map_err(|err| DnsError::Store(err.to_string()))?;
 
         let state = DnsStore::load_routing_state(&store).await?;
         let initial_snapshot = project_dns(&state);
@@ -219,18 +215,14 @@ pub fn run_dns_process() -> Result<(), DnsError> {
 
         tokio::spawn(crate::sync::run_sync_loop(store, shared.clone()));
 
-        let listen_addr: SocketAddr = config
-            .listen_addr
-            .parse()
-            .map_err(|err| {
-                DnsError::Config(format!(
-                    "invalid listen_addr '{}': {err}",
-                    config.listen_addr
-                ))
-            })?;
+        let listen_addr: SocketAddr = config.listen_addr.parse().map_err(|err| {
+            DnsError::Config(format!(
+                "invalid listen_addr '{}': {err}",
+                config.listen_addr
+            ))
+        })?;
 
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
         run_dns_server(listen_addr, shared, shutdown_rx).await
     })
 }
-

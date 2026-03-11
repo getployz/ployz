@@ -2789,50 +2789,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
-name = "ployz"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "aya",
- "aya-build",
- "base64",
- "bollard",
- "chrono",
- "clap",
- "defguard_boringtun",
- "defguard_wireguard_rs",
- "derive_more",
- "directories",
- "ed25519-dalek",
- "figment",
- "futures-util",
- "hostname",
- "if-addrs",
- "ipnet",
- "libc",
- "ployz-corrosion",
- "ployz-dns",
- "ployz-ebpf-common",
- "ployz-gateway",
- "ployz-routes",
- "ployz-sdk",
- "rand 0.10.0",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "smoltcp",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "toml",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "x25519-dalek",
-]
-
-[[package]]
 name = "ployz-bpfctl"
 version = "0.1.0"
 dependencies = [
@@ -2844,13 +2800,40 @@ dependencies = [
 ]
 
 [[package]]
-name = "ployz-cli"
+name = "ployz-core"
 version = "0.1.0"
 dependencies = [
- "clap",
+ "async-trait",
+ "aya",
+ "aya-build",
+ "base64",
+ "bollard",
+ "chrono",
+ "defguard_boringtun",
+ "defguard_wireguard_rs",
+ "derive_more",
+ "directories",
+ "ed25519-dalek",
+ "futures-util",
+ "hostname",
+ "if-addrs",
+ "ipnet",
+ "libc",
+ "ployz-corrosion",
+ "ployz-ebpf-common",
  "ployz-sdk",
+ "rand 0.10.0",
+ "reqwest",
+ "rusqlite",
+ "serde",
  "serde_json",
+ "smoltcp",
+ "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+ "x25519-dalek",
 ]
 
 [[package]]
@@ -2952,6 +2935,29 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toml",
+]
+
+[[package]]
+name = "ployzd"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "chrono",
+ "clap",
+ "ipnet",
+ "libc",
+ "ployz-core",
+ "ployz-dns",
+ "ployz-gateway",
+ "ployz-sdk",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "x25519-dalek",
 ]
 
 [[package]]

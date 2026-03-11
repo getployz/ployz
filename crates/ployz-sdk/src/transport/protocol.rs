@@ -133,13 +133,9 @@ pub enum DeployFrame {
         spec_json: String,
     },
     /// Mark an instance as draining.
-    DrainInstance {
-        instance_id: String,
-    },
+    DrainInstance { instance_id: String },
     /// Remove an instance.
-    RemoveInstance {
-        instance_id: String,
-    },
+    RemoveInstance { instance_id: String },
     /// Graceful session close (lock released).
     Close,
 
@@ -153,16 +149,9 @@ pub enum DeployFrame {
         instances: Vec<InstanceStatusRecord>,
     },
     /// Response to `StartCandidate`.
-    CandidateStarted {
-        status: Box<InstanceStatusRecord>,
-    },
+    CandidateStarted { status: Box<InstanceStatusRecord> },
     /// Generic success acknowledgement.
-    Ack {
-        message: String,
-    },
+    Ack { message: String },
     /// Error response.
-    Error {
-        code: String,
-        message: String,
-    },
+    Error { code: String, message: String },
 }

@@ -66,8 +66,7 @@ pub fn run_server(
     configuration.threads = threads;
     server.bootstrap();
 
-    let mut service =
-        http_proxy_service(&server.configuration, GatewayApp::new(shared_snapshot));
+    let mut service = http_proxy_service(&server.configuration, GatewayApp::new(shared_snapshot));
     service.add_tcp(listen_addr);
     server.add_service(service);
 
@@ -107,12 +106,10 @@ fn load_initial_snapshot(
         .build()
         .map_err(|err| GatewayError::Runtime(err.to_string()))?;
     runtime.block_on(async {
-        let store = ployz_corrosion::CorrosionStore::connect_for_network(
-            &config.data_dir,
-            &config.network,
-        )
-        .await
-        .map_err(|err| GatewayError::Store(err.to_string()))?;
+        let store =
+            ployz_corrosion::CorrosionStore::connect_for_network(&config.data_dir, &config.network)
+                .await
+                .map_err(|err| GatewayError::Store(err.to_string()))?;
         load_projected_snapshot_from_store(&store).await
     })
 }
