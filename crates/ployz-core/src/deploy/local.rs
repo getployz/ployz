@@ -98,6 +98,7 @@ impl LocalDeployRuntime {
 
     pub(super) async fn start_candidate(
         &self,
+        namespace: &Namespace,
         spec: &ServiceSpec,
         deploy_id: &DeployId,
         instance_id: &InstanceId,
@@ -105,14 +106,11 @@ impl LocalDeployRuntime {
         machine_id: &MachineId,
         revision_hash: &str,
     ) -> Result<ManagedInstance> {
-        let container_name = format!("ployz-{}-{}-{}", spec.namespace, spec.name, instance_id.0);
-        let key = format!(
-            "{}/{}/{}/{}",
-            spec.namespace, spec.name, slot_id.0, instance_id.0
-        );
+        let container_name = format!("ployz-{namespace}-{}-{}", spec.name, instance_id.0);
+        let key = format!("{namespace}/{}/{}/{}", spec.name, slot_id.0, instance_id.0);
 
         let meta = WorkloadMeta {
-            namespace: &spec.namespace.0,
+            namespace: &namespace.0,
             service: &spec.name,
             revision: revision_hash,
             deploy_id: &deploy_id.0,
@@ -139,9 +137,7 @@ impl LocalDeployRuntime {
         let network_mode = match &spec.network {
             NetworkMode::Host => Some("host".to_string()),
             NetworkMode::None => Some("none".to_string()),
-            NetworkMode::Service(service) => {
-                Some(format!("container:ployz-{}-{service}", spec.namespace))
-            }
+            NetworkMode::Service(service) => Some(format!("container:ployz-{namespace}-{service}")),
             NetworkMode::Overlay => self.overlay_network.clone(),
         };
 

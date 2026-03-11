@@ -129,15 +129,6 @@ impl DeployAgent {
 
         let spec: ServiceSpec = serde_json::from_str(spec_json)
             .map_err(|e| Error::operation("start_candidate", format!("decode spec: {e}")))?;
-        if spec.namespace != session.namespace {
-            return Err(Error::operation(
-                "start_candidate",
-                format!(
-                    "spec namespace '{}' did not match session namespace '{}'",
-                    spec.namespace, session.namespace
-                ),
-            ));
-        }
         if spec.name != service {
             return Err(Error::operation(
                 "start_candidate",
@@ -153,6 +144,7 @@ impl DeployAgent {
         let runtime = self.new_runtime()?;
         let instance = runtime
             .start_candidate(
+                &session.namespace,
                 &spec,
                 deploy_id,
                 instance_id,

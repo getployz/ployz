@@ -14,7 +14,7 @@ use crate::model::{
     DeployState, InstanceId, MachineId, ServiceHeadRecord, ServicePlan, ServiceRevisionRecord,
     ServiceSlotRecord, SlotId, SlotPlan,
 };
-use crate::spec::{DeployManifest, Namespace, Placement, ServiceSpec};
+use crate::spec::{DeployManifest, Placement, ServiceSpec};
 use crate::store::{DeployStore, MachineStore};
 
 pub use local::LocalDeployRuntime;
@@ -32,12 +32,12 @@ struct DesiredSlot {
 pub async fn preview(
     store: &StoreDriver,
     local_machine_id: &MachineId,
-    namespace: &Namespace,
     manifest: &DeployManifest,
 ) -> Result<DeployPreview> {
     manifest
-        .validate(namespace)
+        .validate()
         .map_err(|e| Error::operation("deploy_preview", e))?;
+    let namespace = &manifest.namespace;
 
     let current_heads = store.list_service_heads(namespace).await?;
     let current_slots = store.list_service_slots(namespace).await?;
@@ -173,12 +173,12 @@ pub async fn apply(
     store: &StoreDriver,
     session_factory: &dyn session::DeploySessionFactory,
     local_machine_id: &MachineId,
-    namespace: &Namespace,
     manifest: &DeployManifest,
 ) -> Result<DeployApplyResult> {
+    let namespace = &manifest.namespace;
     let deploy_id = DeployId(Uuid::new_v4().to_string());
     let started_at = now_unix_secs();
-    let initial_preview = preview(store, local_machine_id, namespace, manifest).await?;
+    let initial_preview = preview(store, local_machine_id, manifest).await?;
     let machines = store.list_machines().await?;
     let machine_map: HashMap<MachineId, crate::model::MachineRecord> = machines
         .iter()
@@ -219,7 +219,7 @@ pub async fn apply(
     }
 
     let result = async {
-        let final_preview = preview(store, local_machine_id, namespace, manifest).await?;
+        let final_preview = preview(store, local_machine_id, manifest).await?;
         if final_preview.participants != initial_preview.participants {
             return Err(Error::operation(
                 "deploy_apply",

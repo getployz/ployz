@@ -185,6 +185,19 @@ impl InviteStore for MemoryStore {
 }
 
 impl DeployStore for MemoryStore {
+    async fn list_service_revisions(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceRevisionRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner
+            .service_revisions
+            .values()
+            .filter(|record| record.namespace == *namespace)
+            .cloned()
+            .collect())
+    }
+
     async fn list_service_heads(&self, namespace: &Namespace) -> Result<Vec<ServiceHeadRecord>> {
         let inner = self.lock_inner();
         Ok(inner

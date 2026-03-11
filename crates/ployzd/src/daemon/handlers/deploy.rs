@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::daemon::DaemonState;
@@ -5,9 +6,8 @@ use crate::deploy::remote::DeployAgent;
 use crate::deploy::session::DefaultDeploySessionFactory;
 use crate::deploy::{apply, preview};
 use crate::spec::{DeployManifest, Namespace, ServiceSpec};
-use ployz_sdk::transport::{
-    DaemonResponse, DeployManifestFormat, DeployManifestInput, DeployOptions,
-};
+use crate::store::DeployStore;
+use ployz_sdk::transport::{DaemonResponse, DeployOptions};
 
 impl DaemonState {
     fn overlay_network_name(&self) -> Option<String> {
@@ -18,12 +18,10 @@ impl DaemonState {
 
     pub async fn handle_deploy_preview(
         &self,
-        namespace: &str,
         manifest_json: &str,
         _options: &DeployOptions,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
-        let manifest = match parse_manifest_input(manifest_json) {
+        let manifest = match decode_manifest(manifest_json) {
             Ok(manifest) => manifest,
             Err(response) => return response,
         };
@@ -32,19 +30,7 @@ impl DaemonState {
             None => return self.err("NO_MESH", "no mesh is running"),
         };
 
-        let deploy_manifest = match decode_manifest(&namespace, manifest) {
-            Ok(manifest) => manifest,
-            Err(response) => return response,
-        };
-
-        match preview(
-            &active.mesh.store,
-            &self.identity.machine_id,
-            &namespace,
-            &deploy_manifest,
-        )
-        .await
-        {
+        match preview(&active.mesh.store, &self.identity.machine_id, &manifest).await {
             Ok(plan) => match serde_json::to_string_pretty(&plan) {
                 Ok(json) => self.ok(json),
                 Err(err) => self.err("ENCODE_PREVIEW", format!("encode preview: {err}")),
@@ -55,23 +41,16 @@ impl DaemonState {
 
     pub async fn handle_deploy_apply(
         &self,
-        namespace: &str,
         manifest_json: &str,
         _options: &DeployOptions,
     ) -> DaemonResponse {
-        let namespace = Namespace(namespace.to_string());
-        let manifest = match parse_manifest_input(manifest_json) {
+        let manifest = match decode_manifest(manifest_json) {
             Ok(manifest) => manifest,
             Err(response) => return response,
         };
         let active = match &self.active {
             Some(active) => active,
             None => return self.err("NO_MESH", "no mesh is running"),
-        };
-
-        let deploy_manifest = match decode_manifest(&namespace, manifest) {
-            Ok(manifest) => manifest,
-            Err(response) => return response,
         };
 
         let agent = Arc::new(DeployAgent::new(
@@ -90,8 +69,7 @@ impl DaemonState {
             &active.mesh.store,
             &factory,
             &self.identity.machine_id,
-            &namespace,
-            &deploy_manifest,
+            &manifest,
         )
         .await
         {
@@ -102,57 +80,92 @@ impl DaemonState {
             Err(err) => self.err("DEPLOY_APPLY_FAILED", format!("{err}")),
         }
     }
+
+    pub async fn handle_deploy_export(&self, namespace: &str) -> DaemonResponse {
+        let active = match &self.active {
+            Some(active) => active,
+            None => return self.err("NO_MESH", "no mesh is running"),
+        };
+        let namespace = Namespace(namespace.to_string());
+        let manifest = match export_manifest(&active.mesh.store, &namespace).await {
+            Ok(manifest) => manifest,
+            Err(err) => return self.err("DEPLOY_EXPORT_FAILED", format!("{err}")),
+        };
+        match serde_json::to_string_pretty(&manifest) {
+            Ok(json) => self.ok(json),
+            Err(err) => self.err("ENCODE_MANIFEST", format!("encode manifest: {err}")),
+        }
+    }
 }
 
-fn parse_manifest_input(manifest_json: &str) -> Result<DeployManifestInput, DaemonResponse> {
-    serde_json::from_str(manifest_json).map_err(|err| DaemonResponse {
-        ok: false,
-        code: "INVALID_MANIFEST".into(),
-        message: format!("invalid deploy manifest envelope: {err}"),
-    })
-}
+fn decode_manifest(manifest_json: &str) -> Result<DeployManifest, DaemonResponse> {
+    let manifest: DeployManifest =
+        serde_json::from_str(manifest_json).map_err(|err| DaemonResponse {
+            ok: false,
+            code: "INVALID_MANIFEST".into(),
+            message: format!("invalid deploy manifest: {err}"),
+        })?;
 
-fn decode_manifest(
-    namespace: &Namespace,
-    manifest: DeployManifestInput,
-) -> Result<DeployManifest, DaemonResponse> {
-    if manifest.body.trim().is_empty() {
+    if manifest.services.is_empty() {
         return Err(DaemonResponse {
             ok: false,
             code: "INVALID_MANIFEST".into(),
-            message: "deploy manifest body was empty".into(),
+            message: "deploy manifest must contain at least one service".into(),
         });
     }
 
-    match manifest.format {
-        DeployManifestFormat::Service => {
-            let spec: ServiceSpec =
-                serde_json::from_str(&manifest.body).map_err(|err| DaemonResponse {
-                    ok: false,
-                    code: "INVALID_SPEC".into(),
-                    message: format!("invalid service manifest: {err}"),
-                })?;
-            if spec.namespace != *namespace {
-                return Err(DaemonResponse {
-                    ok: false,
-                    code: "INVALID_ARGUMENT".into(),
-                    message: format!(
-                        "manifest namespace '{}' did not match requested namespace '{}'",
-                        spec.namespace, namespace
-                    ),
-                });
-            }
-            Ok(DeployManifest {
-                services: vec![spec],
-            })
+    Ok(manifest)
+}
+
+async fn export_manifest(
+    store: &crate::StoreDriver,
+    namespace: &Namespace,
+) -> ployz_sdk::Result<DeployManifest> {
+    let heads = store.list_service_heads(namespace).await?;
+    let revisions = store.list_service_revisions(namespace).await?;
+    let revisions_by_key: BTreeMap<(String, String), String> = revisions
+        .into_iter()
+        .map(|revision| {
+            (
+                (revision.service.clone(), revision.revision_hash.clone()),
+                revision.spec_json,
+            )
+        })
+        .collect();
+
+    let mut services = Vec::with_capacity(heads.len());
+    for head in heads {
+        let key = (head.service.clone(), head.current_revision_hash.clone());
+        let Some(spec_json) = revisions_by_key.get(&key) else {
+            return Err(ployz_sdk::Error::operation(
+                "deploy_export",
+                format!(
+                    "current head for service '{}' referenced missing revision '{}'",
+                    head.service, head.current_revision_hash
+                ),
+            ));
+        };
+        let spec: ServiceSpec = serde_json::from_str(spec_json).map_err(|err| {
+            ployz_sdk::Error::operation(
+                "deploy_export",
+                format!("invalid stored spec for service '{}': {err}", head.service),
+            )
+        })?;
+        if spec.name != head.service {
+            return Err(ployz_sdk::Error::operation(
+                "deploy_export",
+                format!(
+                    "stored spec service '{}' did not match head service '{}'",
+                    spec.name, head.service
+                ),
+            ));
         }
-        DeployManifestFormat::Auto | DeployManifestFormat::Compose => Err(DaemonResponse {
-            ok: false,
-            code: "NOT_IMPLEMENTED".into(),
-            message: format!(
-                "{} manifest planning is not implemented yet",
-                manifest.format
-            ),
-        }),
+        services.push(spec);
     }
+    services.sort_by(|left, right| left.name.cmp(&right.name));
+
+    Ok(DeployManifest {
+        namespace: namespace.clone(),
+        services,
+    })
 }

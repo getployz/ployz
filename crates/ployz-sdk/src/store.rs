@@ -46,6 +46,11 @@ pub trait RoutingStore: Send + Sync {
 }
 
 pub trait DeployStore: Send + Sync {
+    fn list_service_revisions<'a>(
+        &'a self,
+        namespace: &'a Namespace,
+    ) -> impl Future<Output = Result<Vec<ServiceRevisionRecord>>> + Send + 'a;
+
     fn list_service_heads<'a>(
         &'a self,
         namespace: &'a Namespace,

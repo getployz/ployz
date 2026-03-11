@@ -1,12 +1,11 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use ployz_sdk::load_client_config;
 use ployz_sdk::spec::{
-    ContainerSpec, Namespace, NetworkMode, Placement, PortProtocol, PublishedPort, PullPolicy,
+    ContainerSpec, DeployManifest, NetworkMode, Placement, PortProtocol, PublishedPort, PullPolicy,
     Resources, RestartPolicy, RolloutStrategy, ServicePort, ServiceSpec, VolumeMount, VolumeSource,
 };
 use ployz_sdk::transport::{
-    DaemonRequest, DaemonResponse, DeployManifestFormat, DeployManifestInput, DeployOptions,
-    Transport, UnixSocketTransport,
+    DaemonRequest, DaemonResponse, DeployOptions, Transport, UnixSocketTransport,
 };
 use ployzd::daemon::{ActiveMesh, DaemonState};
 use ployzd::ipc::listener::{IncomingCommand, serve};
@@ -44,6 +43,7 @@ enum CliError {
     Serialize(String),
     Config(String),
     Identity(String),
+    Daemon { code: String, message: String },
     Transport { socket: String, message: String },
 }
 
@@ -51,7 +51,11 @@ impl CliError {
     fn exit_code(&self) -> i32 {
         match self {
             Self::Usage(_) | Self::Config(_) => 2,
-            Self::Io(_) | Self::Serialize(_) | Self::Identity(_) | Self::Transport { .. } => 1,
+            Self::Io(_)
+            | Self::Serialize(_)
+            | Self::Identity(_)
+            | Self::Daemon { .. }
+            | Self::Transport { .. } => 1,
         }
     }
 
@@ -62,6 +66,7 @@ impl CliError {
             | Self::Serialize(message)
             | Self::Config(message)
             | Self::Identity(message) => eprintln!("error: {message}"),
+            Self::Daemon { code, message } => eprintln!("error [{code}]: {message}"),
             Self::Transport { socket, message } => {
                 eprintln!("error: {message}");
                 eprintln!("is ployzd running? (socket: {socket})");
@@ -126,7 +131,7 @@ enum Command {
     },
     /// Show daemon and mesh status.
     Status,
-    /// Deploy manifests into an explicit namespace.
+    /// Deploy canonical namespace manifests.
     Deploy(Box<DeployCommand>),
     /// Mesh network management.
     #[command(alias = "network")]
@@ -155,23 +160,15 @@ struct DeployCommand {
 enum DeployAction {
     /// Preview a manifest without applying it.
     Preview(DeployManifestArgs),
-    /// Build a single-service deploy request.
+    /// Patch a single service into the current namespace manifest.
     Service(DeployServiceArgs),
 }
 
 #[derive(Debug, Args, Clone)]
 struct DeployManifestArgs {
-    /// Target namespace.
-    #[arg(long, value_name = "NAME")]
-    namespace: Option<String>,
-
     /// Manifest file path, or '-' for stdin.
     #[arg(short = 'f', long, value_name = "PATH")]
     file: Option<String>,
-
-    /// Manifest format (currently only "service" is supported).
-    #[arg(long, value_enum, default_value_t = DeployManifestFormat::Service)]
-    format: DeployManifestFormat,
 
     /// Preview only; do not apply changes.
     #[arg(short = 'n', long)]
@@ -383,14 +380,8 @@ async fn run() -> Result<i32> {
                 .map_err(|err| CliError::Config(err.to_string()))?;
             let socket = resolved.socket;
             let transport = UnixSocketTransport::new(socket.clone());
-            let request = build_request(other)?;
-            let response = transport
-                .request(request)
-                .await
-                .map_err(|err| CliError::Transport {
-                    socket,
-                    message: err.to_string(),
-                })?;
+            let request = build_request(other, &transport, &socket).await?;
+            let response = request_daemon(&transport, &socket, request).await?;
 
             render_response(cli.json, cli.plain, cli.quiet, &response)?;
             if response.ok { Ok(0) } else { Ok(1) }
@@ -512,10 +503,14 @@ async fn cmd_run(
     Ok(())
 }
 
-fn build_request(command: Command) -> Result<DaemonRequest> {
+async fn build_request<T: Transport>(
+    command: Command,
+    transport: &T,
+    socket: &str,
+) -> Result<DaemonRequest> {
     match command {
         Command::Status => Ok(DaemonRequest::Status),
-        Command::Deploy(command) => build_deploy_request(*command),
+        Command::Deploy(command) => build_deploy_request(*command, transport, socket).await,
         Command::Mesh { action } => build_mesh_request(action),
         Command::Machine { action } => build_machine_request(action),
         Command::Configure { .. } | Command::Run { .. } => Err(CliError::Usage(
@@ -524,44 +519,47 @@ fn build_request(command: Command) -> Result<DaemonRequest> {
     }
 }
 
-fn build_deploy_request(command: DeployCommand) -> Result<DaemonRequest> {
+async fn build_deploy_request<T: Transport>(
+    command: DeployCommand,
+    transport: &T,
+    socket: &str,
+) -> Result<DaemonRequest> {
     match command.action {
         Some(DeployAction::Preview(args)) => build_manifest_request(args, true),
-        Some(DeployAction::Service(args)) => build_deploy_service_request(args),
+        Some(DeployAction::Service(args)) => {
+            build_deploy_service_request(args, transport, socket).await
+        }
         None => build_manifest_request(command.manifest, false),
     }
 }
 
 fn build_manifest_request(args: DeployManifestArgs, force_preview: bool) -> Result<DaemonRequest> {
-    let namespace = required_value(args.namespace, "deploy requires --namespace")?;
     let file = required_value(args.file, "deploy requires --file")?;
-    let body = read_text_source("deploy manifest", &file)?;
-    let manifest_json = encode_manifest_json(DeployManifestInput {
-        format: args.format,
-        body,
-    })?;
+    let manifest_json = read_text_source("deploy manifest", &file)?;
     let options = DeployOptions::default();
 
     if force_preview || args.dry_run {
         Ok(DaemonRequest::DeployPreview {
-            namespace,
             manifest_json,
             options,
         })
     } else {
         Ok(DaemonRequest::DeployApply {
-            namespace,
             manifest_json,
             options,
         })
     }
 }
 
-fn build_deploy_service_request(args: DeployServiceArgs) -> Result<DaemonRequest> {
+async fn build_deploy_service_request<T: Transport>(
+    args: DeployServiceArgs,
+    transport: &T,
+    socket: &str,
+) -> Result<DaemonRequest> {
+    let mut manifest = export_namespace_manifest(transport, socket, &args.namespace).await?;
     let spec = build_service_spec(
         &args.image,
         Some(args.name.as_str()),
-        &args.namespace,
         &args.publish,
         &args.env,
         &args.volume,
@@ -570,27 +568,82 @@ fn build_deploy_service_request(args: DeployServiceArgs) -> Result<DaemonRequest
         &args.restart,
         &args.command,
     );
-    let spec_json = serde_json::to_string(&spec)
-        .map_err(|err| CliError::Serialize(format!("failed to serialize service spec: {err}")))?;
-    let manifest_json = encode_manifest_json(DeployManifestInput {
-        format: DeployManifestFormat::Service,
-        body: spec_json,
-    })?;
+    upsert_service_in_manifest(&mut manifest, spec);
+    let manifest_json = encode_manifest_json(&manifest)?;
     let options = DeployOptions::default();
 
     if args.dry_run {
         Ok(DaemonRequest::DeployPreview {
-            namespace: args.namespace,
             manifest_json,
             options,
         })
     } else {
         Ok(DaemonRequest::DeployApply {
-            namespace: args.namespace,
             manifest_json,
             options,
         })
     }
+}
+
+async fn request_daemon<T: Transport>(
+    transport: &T,
+    socket: &str,
+    request: DaemonRequest,
+) -> Result<DaemonResponse> {
+    transport
+        .request(request)
+        .await
+        .map_err(|err| CliError::Transport {
+            socket: socket.to_string(),
+            message: err.to_string(),
+        })
+}
+
+async fn export_namespace_manifest<T: Transport>(
+    transport: &T,
+    socket: &str,
+    namespace: &str,
+) -> Result<DeployManifest> {
+    let response = request_daemon(
+        transport,
+        socket,
+        DaemonRequest::DeployExport {
+            namespace: namespace.to_string(),
+        },
+    )
+    .await?;
+
+    if !response.ok {
+        return Err(CliError::Daemon {
+            code: response.code,
+            message: response.message,
+        });
+    }
+
+    serde_json::from_str(&response.message).map_err(|err| {
+        CliError::Serialize(format!(
+            "failed to decode exported namespace manifest: {err}"
+        ))
+    })
+}
+
+fn upsert_service_in_manifest(manifest: &mut DeployManifest, spec: ServiceSpec) {
+    let Some(index) = manifest
+        .services
+        .iter()
+        .position(|existing| existing.name == spec.name)
+    else {
+        manifest.services.push(spec);
+        manifest
+            .services
+            .sort_by(|left, right| left.name.cmp(&right.name));
+        return;
+    };
+
+    manifest.services[index] = spec;
+    manifest
+        .services
+        .sort_by(|left, right| left.name.cmp(&right.name));
 }
 
 fn build_mesh_request(action: MeshAction) -> Result<DaemonRequest> {
@@ -738,7 +791,7 @@ fn read_stdin_string(label: &str) -> Result<String> {
         .map_err(|err| CliError::Usage(format!("{label} from stdin was not valid utf-8: {err}")))
 }
 
-fn encode_manifest_json(manifest: DeployManifestInput) -> Result<String> {
+fn encode_manifest_json(manifest: &DeployManifest) -> Result<String> {
     serde_json::to_string(&manifest)
         .map_err(|err| CliError::Serialize(format!("failed to serialize deploy manifest: {err}")))
 }
@@ -747,7 +800,6 @@ fn encode_manifest_json(manifest: DeployManifestInput) -> Result<String> {
 fn build_service_spec(
     image: &str,
     name: Option<&str>,
-    namespace: &str,
     publish: &[String],
     env: &[String],
     volume: &[String],
@@ -837,7 +889,6 @@ fn build_service_spec(
 
     ServiceSpec {
         name: service_name,
-        namespace: Namespace(namespace.to_string()),
         placement: Placement::Singleton,
         template: ContainerSpec {
             image: image.to_string(),
@@ -885,39 +936,20 @@ mod tests {
 
     #[test]
     fn parse_deploy_apply_primitives() {
-        let cli = Cli::try_parse_from([
-            "ployzd",
-            "deploy",
-            "--namespace",
-            "prod",
-            "--file",
-            "compose.yaml",
-        ])
-        .expect("deploy apply args should parse");
+        let cli = Cli::try_parse_from(["ployzd", "deploy", "--file", "manifest.json"])
+            .expect("deploy apply args should parse");
 
         let Command::Deploy(command) = cli.command else {
             panic!("expected deploy command");
         };
         assert!(command.action.is_none());
-        assert_eq!(command.manifest.namespace.as_deref(), Some("prod"));
-        assert_eq!(command.manifest.file.as_deref(), Some("compose.yaml"));
-        assert_eq!(command.manifest.format, DeployManifestFormat::Service);
+        assert_eq!(command.manifest.file.as_deref(), Some("manifest.json"));
     }
 
     #[test]
     fn parse_deploy_preview_subcommand() {
-        let cli = Cli::try_parse_from([
-            "ployzd",
-            "deploy",
-            "preview",
-            "--namespace",
-            "prod",
-            "--file",
-            "-",
-            "--format",
-            "service",
-        ])
-        .expect("deploy preview args should parse");
+        let cli = Cli::try_parse_from(["ployzd", "deploy", "preview", "--file", "-"])
+            .expect("deploy preview args should parse");
 
         let Command::Deploy(command) = cli.command else {
             panic!("expected deploy command");
@@ -925,9 +957,7 @@ mod tests {
         let Some(DeployAction::Preview(args)) = command.action else {
             panic!("expected deploy preview subcommand");
         };
-        assert_eq!(args.namespace.as_deref(), Some("prod"));
         assert_eq!(args.file.as_deref(), Some("-"));
-        assert_eq!(args.format, DeployManifestFormat::Service);
     }
 
     #[test]
@@ -953,5 +983,61 @@ mod tests {
         assert_eq!(args.name, "api");
         assert_eq!(args.namespace, "prod");
         assert_eq!(args.image, "nginx:latest");
+    }
+
+    #[test]
+    fn upsert_service_replaces_existing_service_and_sorts() {
+        let mut manifest = DeployManifest {
+            namespace: ployz_sdk::spec::Namespace("prod".into()),
+            services: vec![
+                build_service_spec(
+                    "redis:latest",
+                    Some("cache"),
+                    &[],
+                    &[],
+                    &[],
+                    "overlay",
+                    false,
+                    "unless-stopped",
+                    &[],
+                ),
+                build_service_spec(
+                    "nginx:1",
+                    Some("api"),
+                    &[],
+                    &[],
+                    &[],
+                    "overlay",
+                    false,
+                    "unless-stopped",
+                    &[],
+                ),
+            ],
+        };
+
+        upsert_service_in_manifest(
+            &mut manifest,
+            build_service_spec(
+                "nginx:2",
+                Some("api"),
+                &[],
+                &[],
+                &[],
+                "overlay",
+                false,
+                "unless-stopped",
+                &[],
+            ),
+        );
+
+        let services: Vec<(&str, &str)> = manifest
+            .services
+            .iter()
+            .map(|service| (service.name.as_str(), service.template.image.as_str()))
+            .collect();
+        assert_eq!(
+            services,
+            vec![("api", "nginx:2"), ("cache", "redis:latest")]
+        );
     }
 }

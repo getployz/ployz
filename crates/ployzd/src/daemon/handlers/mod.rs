@@ -13,20 +13,15 @@ impl DaemonState {
         match req {
             DaemonRequest::Status => self.handle_status(),
             DaemonRequest::DeployPreview {
-                namespace,
                 manifest_json,
                 options,
-            } => {
-                self.handle_deploy_preview(&namespace, &manifest_json, &options)
-                    .await
-            }
+            } => self.handle_deploy_preview(&manifest_json, &options).await,
             DaemonRequest::DeployApply {
-                namespace,
                 manifest_json,
                 options,
-            } => {
-                self.handle_deploy_apply(&namespace, &manifest_json, &options)
-                    .await
+            } => self.handle_deploy_apply(&manifest_json, &options).await,
+            DaemonRequest::DeployExport { namespace } => {
+                self.handle_deploy_export(&namespace).await
             }
             DaemonRequest::MeshList => self.handle_mesh_list(),
             DaemonRequest::MeshStatus { network } => self.handle_mesh_status(&network),

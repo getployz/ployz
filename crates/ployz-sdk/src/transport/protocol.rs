@@ -1,25 +1,6 @@
-use clap::ValueEnum;
-use derive_more::Display;
 use serde::{Deserialize, Serialize};
 
 use crate::model::InstanceStatusRecord;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum, Display)]
-#[serde(rename_all = "snake_case")]
-pub enum DeployManifestFormat {
-    #[display("auto")]
-    Auto,
-    #[display("compose")]
-    Compose,
-    #[display("service")]
-    Service,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeployManifestInput {
-    pub format: DeployManifestFormat,
-    pub body: String,
-}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DeployOptions {
@@ -84,14 +65,15 @@ pub enum DaemonRequest {
         response: String,
     },
     DeployPreview {
-        namespace: String,
         manifest_json: String,
         options: DeployOptions,
     },
     DeployApply {
-        namespace: String,
         manifest_json: String,
         options: DeployOptions,
+    },
+    DeployExport {
+        namespace: String,
     },
     MachineLabel {
         id: String,

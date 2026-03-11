@@ -177,6 +177,13 @@ impl RoutingStore for CorrosionStore {
 }
 
 impl DeployStore for CorrosionStore {
+    async fn list_service_revisions(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceRevisionRecord>> {
+        tables::service_revisions::list_service_revisions(&self.client, namespace).await
+    }
+
     async fn list_service_heads(&self, namespace: &Namespace) -> Result<Vec<ServiceHeadRecord>> {
         tables::service_heads::list_service_heads(&self.client, namespace).await
     }

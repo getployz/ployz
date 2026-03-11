@@ -23,6 +23,21 @@ pub(crate) async fn load_all_service_revisions(
         .collect()
 }
 
+pub(crate) async fn list_service_revisions(
+    client: &CorrClient,
+    namespace: &Namespace,
+) -> Result<Vec<ServiceRevisionRecord>> {
+    let stmt = Statement::WithParams(
+        "SELECT namespace, service, revision_hash, spec_json, created_by, created_at FROM service_revisions WHERE namespace = ? ORDER BY service, revision_hash".to_string(),
+        vec![namespace.0.clone().into()],
+    );
+    query_rows(client, &stmt, "list_service_revisions")
+        .await?
+        .iter()
+        .map(|row| parse_service_revision(row))
+        .collect()
+}
+
 pub(crate) async fn upsert_service_revision(
     client: &CorrClient,
     record: &ServiceRevisionRecord,
