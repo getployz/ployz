@@ -44,7 +44,7 @@ if [[ -z "${version}" ]]; then
   exit 1
 fi
 
-dest_dir="${ROOT_DIR}/crates/ebpf/target/bpfel-unknown-none/release"
+dest_dir="${ROOT_DIR}/ebpf/target/bpfel-unknown-none/release"
 dest_file="${dest_dir}/ployz-ebpf-tc"
 stamp="${dest_dir}/.ebpf-release-version"
 
