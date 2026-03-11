@@ -125,10 +125,20 @@ impl Mesh {
     pub async fn ready_status(&self) -> MeshReadyStatus {
         let phase = self.phase;
         let store_healthy = self.store.healthy().await;
-        let sync_connected = match self.store.sync_status().await {
-            Ok(SyncStatus::Disconnected) => false,
-            Ok(SyncStatus::Syncing { .. }) | Ok(SyncStatus::Synced) => true,
-            Err(_) => false,
+        let has_remote_peer = self
+            .store
+            .list_machines()
+            .await
+            .map(|machines| machines.into_iter().any(|machine| machine.id != self.machine_id))
+            .unwrap_or(false);
+        let sync_connected = if has_remote_peer {
+            match self.store.sync_status().await {
+                Ok(SyncStatus::Disconnected) => false,
+                Ok(SyncStatus::Syncing { .. }) | Ok(SyncStatus::Synced) => true,
+                Err(_) => false,
+            }
+        } else {
+            true
         };
         let heartbeat_started = self.heartbeat_started.load(Ordering::SeqCst);
         let ready = phase == Phase::Running && store_healthy && sync_connected && heartbeat_started;
