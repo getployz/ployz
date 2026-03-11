@@ -230,7 +230,12 @@ impl Mesh {
     /// On macOS (Docker Desktop / OrbStack): starts a privileged sidecar container
     /// that runs `ployz-bpfctl` inside the VM where TC hooks live.
     async fn attach_ebpf_dataplane(&mut self) -> Result<()> {
-        let cn = self.container_network.as_ref().unwrap();
+        let Some(cn) = self.container_network.as_ref() else {
+            return Err(MeshError::Port(PortError::operation(
+                "attach_ebpf",
+                "container_network not configured".to_string(),
+            )));
+        };
         let bridge_ifname = cn.resolve_bridge_ifname().await?;
 
         #[cfg(feature = "ebpf-native")]
@@ -367,7 +372,7 @@ impl Mesh {
         // Mark self as down before tearing down infra
         if let Ok(machines) = self.store.list_machines().await
             && let Some(mut record) = machines.into_iter().find(|m| m.id == self.machine_id) {
-                let now = chrono::Utc::now().timestamp() as u64;
+                let now = crate::daemon::ssh::now_unix_secs();
                 record.status = MachineStatus::Down;
                 record.last_heartbeat = now;
                 record.updated_at = now;

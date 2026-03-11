@@ -7,23 +7,25 @@ publish = false
 [dependencies]
 ployz-sdk = { path = "../ployz-sdk" }
 corro-api-types = { git = "https://github.com/getployz/corrosion.git", branch = "main" }
-tokio = { version = "1", features = ["net", "io-util", "rt", "sync", "time"] }
+tokio = { workspace = true }
 hyper = { version = "1", features = ["client", "http2"] }
+# TODO: remove client-legacy when migrating to hyper's modern conn::http2 API
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "http2", "tokio"] }
-http = "1"
+http = { workspace = true }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 bytes = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-futures-util = "0.3"
-tokio-util = "0.7"
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures-util = { workspace = true }
+tokio-util = { workspace = true }
 pin-project-lite = "0.2"
-uuid = { version = "1", features = ["v4"] }
-tracing = "0.1"
-thiserror = "2"
-ipnet = { version = "2.12.0", features = ["serde"] }
-toml = "0.8"
+uuid = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+ipnet = { workspace = true }
+toml = { workspace = true }
+strum = { workspace = true }
 
 [lints.clippy]
 indexing_slicing = "warn"

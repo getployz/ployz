@@ -68,7 +68,7 @@ pub(crate) fn parse_deploy(row: &[SqliteValue]) -> Result<DeployRecord> {
 
     let state: DeployState = text(state_val, "state")?
         .parse()
-        .map_err(|e| Error::operation("parse_deploy", e))?;
+        .map_err(|e: strum::ParseError| Error::operation("parse_deploy", e.to_string()))?;
     let committed_at = integer(committed_val, "committed_at")? as u64;
     let finished_at = integer(finished_val, "finished_at")? as u64;
 
