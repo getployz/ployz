@@ -61,11 +61,11 @@ usage() {
 Usage:
   lab/bin/ployz-lab host bootstrap
   lab/bin/ployz-lab image build <ubuntu|rocky|arch>
-  lab/bin/ployz-lab snapshot build <bootstrapped-pristine|post-install> --family <family>
+  lab/bin/ployz-lab snapshot build <bootstrapped-pristine|post-install> --family <family> [--clean]
   lab/bin/ployz-lab snapshot list
-  lab/bin/ployz-lab bootstrap test <cloud-init|ssh> --family <family> [--base <raw|bootstrapped-pristine>]
-  lab/bin/ployz-lab scenario run <name> [--bootstrap-path <cloud-init|ssh>] [--family <spec>] [--profile <profile>] [--base <raw|bootstrapped-pristine|post-install>]
-  lab/bin/ployz-lab suite run <bootstrap|semantics|fault|full>
+  lab/bin/ployz-lab bootstrap test <cloud-init|ssh> --family <family> [--base <raw|bootstrapped-pristine>] [--clean]
+  lab/bin/ployz-lab scenario run <name> [--bootstrap-path <cloud-init|ssh>] [--family <spec>] [--profile <profile>] [--base <raw|bootstrapped-pristine|post-install>] [--clean]
+  lab/bin/ployz-lab suite run <bootstrap|semantics|fault|full> [--clean]
   lab/bin/ployz-lab report open <run-id>
 
 Examples:
@@ -204,6 +204,64 @@ remote_rsync_repo() {
     --exclude target \
     --exclude ebpf/target \
     "${ROOT_DIR}/" "${REMOTE_HOST}:${repo_dir}/"
+}
+
+list_stale_lab_domains() {
+  remote_bash <<EOF
+set -euo pipefail
+virsh --connect '${LIBVIRT_URI}' list --all --name | grep -E '^[0-9]{8}T[0-9]{6}Z-' || true
+EOF
+}
+
+list_stale_lab_run_dirs() {
+  remote_bash <<EOF
+set -euo pipefail
+find '${REMOTE_ROOT}/runs' -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | grep -E '^[0-9]{8}T[0-9]{6}Z-' || true
+EOF
+}
+
+assert_no_stale_lab_state() {
+  local domains runs
+  domains=$(list_stale_lab_domains)
+  runs=$(list_stale_lab_run_dirs)
+  if [[ -n "${domains}" || -n "${runs}" ]]; then
+    {
+      printf 'stale lab state exists on %s\n' "${REMOTE_HOST}"
+      if [[ -n "${domains}" ]]; then
+        printf 'domains:\n%s\n' "${domains}"
+      fi
+      if [[ -n "${runs}" ]]; then
+        printf 'run_dirs:\n%s\n' "${runs}"
+      fi
+      printf "rerun with --clean to remove stale lab state before starting a new pass"
+    } >&2
+    exit 1
+  fi
+}
+
+clean_stale_lab_state() {
+  log "cleaning stale lab state on ${REMOTE_HOST}"
+  remote_bash <<EOF
+set -euo pipefail
+while IFS= read -r vm; do
+  [[ -n "\${vm}" ]] || continue
+  virsh --connect '${LIBVIRT_URI}' destroy "\${vm}" >/dev/null 2>&1 || true
+  virsh --connect '${LIBVIRT_URI}' undefine "\${vm}" --nvram >/dev/null 2>&1 \
+    || virsh --connect '${LIBVIRT_URI}' undefine "\${vm}" >/dev/null 2>&1 \
+    || true
+done < <(virsh --connect '${LIBVIRT_URI}' list --all --name | grep -E '^[0-9]{8}T[0-9]{6}Z-' || true)
+
+find '${REMOTE_ROOT}/runs' -mindepth 1 -maxdepth 1 -type d -name '????????T??????Z-*' -exec rm -rf {} + 2>/dev/null || true
+EOF
+}
+
+prepare_pass() {
+  local clean_start=$1
+  if [[ "${clean_start}" == "1" ]]; then
+    clean_stale_lab_state
+    return
+  fi
+  assert_no_stale_lab_state
 }
 
 remote_install_ebpf_bytecode() {
@@ -407,11 +465,13 @@ register_nodes() {
 }
 
 cleanup_run() {
+  local retain_failed=0
   if [[ -z "${RUN_ID}" ]]; then
     return
   fi
 
   if [[ "${KEEP_FAILED}" == "1" && ${RUN_FAILED} -ne 0 ]]; then
+    retain_failed=1
     log "keeping failed run ${RUN_ID} for inspection"
   else
     if [[ ${#NODES[@]} -gt 0 ]]; then
@@ -423,8 +483,8 @@ cleanup_run() {
     fi
   fi
 
-  if [[ -n "${REMOTE_RUN_DIR}" && -n "${LOCAL_REPORT_DIR}" ]]; then
-    rsync -az "${REMOTE_HOST}:${REMOTE_RUN_DIR}/" "${LOCAL_REPORT_DIR}/" >/dev/null 2>&1 || true
+  if [[ ${retain_failed} -eq 0 && -n "${REMOTE_RUN_DIR}" ]]; then
+    remote_sh "rm -rf '${REMOTE_RUN_DIR}'" || true
   fi
 
   RUN_ID=""
@@ -1459,7 +1519,9 @@ run_bootstrap_test() {
   local bootstrap_path=$1
   local family=$2
   local base_kind=${3:-raw}
+  local clean_start=${4:-0}
   local manifest
+  prepare_pass "${clean_start}"
   validate_base_kind "${base_kind}"
   if [[ "${bootstrap_path}" == "cloud-init" && "${base_kind}" != "raw" ]]; then
     fail "cloud-init bootstrap tests must use --base raw"
@@ -1488,7 +1550,9 @@ run_scenario() {
   local family_override=$3
   local profile_override=$4
   local base_override=$5
+  local clean_start=${6:-0}
   local manifest bootstrap_path profile base_kind
+  prepare_pass "${clean_start}"
   manifest=$(scenario_manifest "${name}")
   bootstrap_path=$(jq -r '.default_bootstrap_path' "${manifest}")
   profile=$(jq -r '.default_profile' "${manifest}")
@@ -1597,6 +1661,8 @@ snapshot_build_post_install() {
 snapshot_build() {
   local kind=$1
   local family=$2
+  local clean_start=${3:-0}
+  prepare_pass "${clean_start}"
   validate_base_kind "${kind}"
   case "${kind}" in
     raw)
@@ -1646,6 +1712,8 @@ EOF
 
 run_suite() {
   local suite=$1
+  local clean_start=${2:-0}
+  prepare_pass "${clean_start}"
   case "${suite}" in
     bootstrap)
       run_bootstrap_test cloud-init ubuntu raw
@@ -1727,11 +1795,16 @@ main() {
           local kind=${3:-}
           shift 3
           local family=""
+          local clean_start=0
           while [[ $# -gt 0 ]]; do
             case "$1" in
               --family)
                 family=${2:-}
                 shift 2
+                ;;
+              --clean)
+                clean_start=1
+                shift
                 ;;
               *)
                 fail "unknown argument: $1"
@@ -1739,7 +1812,7 @@ main() {
             esac
           done
           [[ -n "${family}" ]] || fail "--family is required"
-          snapshot_build "${kind}" "${family}"
+          snapshot_build "${kind}" "${family}" "${clean_start}"
           ;;
         list)
           snapshot_list
@@ -1756,6 +1829,7 @@ main() {
       shift 3
       local family=""
       local base_kind="raw"
+      local clean_start=0
       while [[ $# -gt 0 ]]; do
         case "$1" in
           --family)
@@ -1766,13 +1840,17 @@ main() {
             base_kind=${2:-}
             shift 2
             ;;
+          --clean)
+            clean_start=1
+            shift
+            ;;
           *)
             fail "unknown argument: $1"
             ;;
         esac
       done
       [[ -n "${family}" ]] || fail "--family is required"
-      run_bootstrap_test "${path}" "${family}" "${base_kind}"
+      run_bootstrap_test "${path}" "${family}" "${base_kind}" "${clean_start}"
       ;;
     scenario)
       ensure_prereqs
@@ -1783,6 +1861,7 @@ main() {
       local family_override=""
       local profile_override=""
       local base_override=""
+      local clean_start=0
       while [[ $# -gt 0 ]]; do
         case "$1" in
           --bootstrap-path)
@@ -1801,17 +1880,35 @@ main() {
             base_override=${2:-}
             shift 2
             ;;
+          --clean)
+            clean_start=1
+            shift
+            ;;
           *)
             fail "unknown argument: $1"
             ;;
         esac
       done
-      run_scenario "${name}" "${bootstrap_path}" "${family_override}" "${profile_override}" "${base_override}"
+      run_scenario "${name}" "${bootstrap_path}" "${family_override}" "${profile_override}" "${base_override}" "${clean_start}"
       ;;
     suite)
       ensure_prereqs
       [[ ${2:-} == "run" ]] || fail "expected 'suite run <suite>'"
-      run_suite "${3:-}"
+      local suite_name=${3:-}
+      shift 3
+      local clean_start=0
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --clean)
+            clean_start=1
+            shift
+            ;;
+          *)
+            fail "unknown argument: $1"
+            ;;
+        esac
+      done
+      run_suite "${suite_name}" "${clean_start}"
       ;;
     report)
       ensure_local_state
