@@ -789,8 +789,13 @@ impl MeshNetwork for DockerWireGuard {
         .map_err(|e| Error::operation("write sync config", e.to_string()))?;
 
         let sync_path = self.paths.sync_config.to_string_lossy().into_owned();
-        self.exec_in_container(&["wg", "syncconf", INTERFACE_NAME, &sync_path])
-            .await?;
+        let syncconf_cmd: &[&str] = &["wg", "syncconf", INTERFACE_NAME, &sync_path];
+        // Retry once after a short delay — on macOS Docker Desktop, VirtioFS
+        // can take a moment to propagate host-written files into the container.
+        if let Err(first) = self.exec_in_container(syncconf_cmd).await {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            self.exec_in_container(syncconf_cmd).await.map_err(|_| first)?;
+        }
 
         // Sync per-peer subnet routes with src= set to our bridge IP (eth1)
         // so outbound IPv4 has a routable source address in the overlay.

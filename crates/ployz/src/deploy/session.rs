@@ -11,6 +11,7 @@ use super::remote::{DeployAgent, SessionState, TcpDeploySession};
 /// Each `open()` call acquires a namespace lock on the target machine and returns
 /// a snapshot of its current instances. The lock is held until the session is
 /// closed or dropped.
+// TODO: remove async_trait when RPITIT is sufficient for dyn dispatch
 #[async_trait::async_trait]
 pub trait DeploySessionFactory: Send + Sync {
     async fn open(
@@ -26,6 +27,7 @@ pub trait DeploySessionFactory: Send + Sync {
 ///
 /// The namespace lock is held for the lifetime of the session.
 /// Methods take `&mut self` — sessions are not shared.
+// TODO: remove async_trait when RPITIT is sufficient for dyn dispatch
 #[async_trait::async_trait]
 pub trait DeploySession: Send {
     fn machine_id(&self) -> &MachineId;
@@ -65,6 +67,7 @@ pub struct InProcessDeploySession {
     machine_id: MachineId,
 }
 
+// TODO: remove async_trait when RPITIT is sufficient for dyn dispatch
 #[async_trait::async_trait]
 impl DeploySession for InProcessDeploySession {
     fn machine_id(&self) -> &MachineId {
@@ -132,6 +135,7 @@ impl DefaultDeploySessionFactory {
     }
 }
 
+// TODO: remove async_trait when RPITIT is sufficient for dyn dispatch
 #[async_trait::async_trait]
 impl DeploySessionFactory for DefaultDeploySessionFactory {
     async fn open(

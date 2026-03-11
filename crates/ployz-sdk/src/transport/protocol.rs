@@ -1,25 +1,18 @@
 use clap::ValueEnum;
+use derive_more::Display;
 use serde::{Deserialize, Serialize};
-use std::fmt;
 
 use crate::model::InstanceStatusRecord;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum, Display)]
 #[serde(rename_all = "snake_case")]
 pub enum DeployManifestFormat {
+    #[display("auto")]
     Auto,
+    #[display("compose")]
     Compose,
+    #[display("service")]
     Service,
-}
-
-impl fmt::Display for DeployManifestFormat {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Auto => f.write_str("auto"),
-            Self::Compose => f.write_str("compose"),
-            Self::Service => f.write_str("service"),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
