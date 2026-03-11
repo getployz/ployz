@@ -23,7 +23,6 @@ Artifact directory contents:
   corrosion
   ployzd.service
   bootstrap-manifest.env   (optional)
-  ployz                    (optional; wrapper will be created if absent)
 EOF
 }
 
@@ -274,24 +273,11 @@ stage_from_url() {
   printf '%s' "${staged}"
 }
 
-write_wrapper() {
-  local wrapper_path=$1
-  cat >"${wrapper_path}" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-exec /usr/local/bin/ployzd "$@"
-EOF
-  chmod 0755 "${wrapper_path}"
-}
-
 install_artifacts() {
   local staged=$1
   local ployzd_src="${staged}/ployzd"
   local corrosion_src="${staged}/corrosion"
-  local ployz_src="${staged}/ployz"
   local unit_src="${staged}/ployzd.service"
-  local wrapper_tmp="${WORK_DIR}/ployz-wrapper"
 
   [[ -f "${ployzd_src}" ]] || fail "artifact missing: ${ployzd_src}"
   [[ -f "${corrosion_src}" ]] || fail "artifact missing: ${corrosion_src}"
@@ -299,13 +285,7 @@ install_artifacts() {
 
   install -m 0755 "${ployzd_src}" "${PREFIX}/bin/ployzd"
   install -m 0755 "${corrosion_src}" "${PREFIX}/bin/corrosion"
-
-  if [[ -f "${ployz_src}" ]]; then
-    install -m 0755 "${ployz_src}" "${PREFIX}/bin/ployz"
-  else
-    write_wrapper "${wrapper_tmp}"
-    install -m 0755 "${wrapper_tmp}" "${PREFIX}/bin/ployz"
-  fi
+  rm -f "${PREFIX}/bin/ployz"
 
   install -d /etc/systemd/system
   install -m 0644 "${unit_src}" /etc/systemd/system/ployzd.service

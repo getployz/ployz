@@ -123,7 +123,7 @@ The key domains:
 
 ## Future: macOS Host Access
 
-A future `ployz connect` command for macOS will:
+A future `ployzd connect` command for macOS will:
 
 - Spawn a local userspace WireGuard tunnel on macOS
 - Spawn a local DNS resolver on macOS

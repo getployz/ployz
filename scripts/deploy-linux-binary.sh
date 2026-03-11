@@ -86,7 +86,6 @@ TARGET_DIR="$ROOT_DIR/target/x86_64-unknown-linux-gnu/release"
 
 FILES=(
   "$TARGET_DIR/ployzd:/usr/local/bin/ployzd:0755"
-  "$ROOT_DIR/packaging/bin/ployz:/usr/local/bin/ployz:0755"
   "$ROOT_DIR/packaging/systemd/ployzd.service:/etc/systemd/system/ployzd.service:0644"
 )
 
@@ -114,6 +113,8 @@ for target in "${TARGET_LIST[@]}"; do
     echo "   ERROR: one or more uploads failed for $target" >&2
     continue
   fi
+
+  ssh -p "$SSH_PORT" "$target" "sudo rm -f /usr/local/bin/ployz"
 
   if [[ -f "$RESTART_FLAG" ]]; then
     echo "   restarting ployzd"
