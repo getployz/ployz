@@ -1,12 +1,53 @@
-use crate::mesh::peer::{PEER_DOWN_INTERVAL, WireGuardPeer};
+use crate::mesh::peer::{PEER_DOWN_INTERVAL, PeerStatus, WireGuardPeer};
+use crate::mesh::probe::{TcpProbeResult, TcpProbeStatus};
 use crate::mesh::{DevicePeer, MeshNetwork};
 use crate::model::{
     MachineEvent, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
 };
 use ipnet::Ipv4Net;
+use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::time::Duration;
 use tokio::time::Instant;
 use tracing::warn;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SelectionReason {
+    AdvertisedOrder,
+    PreservedLiveEndpoint,
+    TcpProbeRanking,
+    WireguardFallback,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct EndpointCandidateState {
+    pub(crate) endpoint: String,
+    pub(crate) advertised_index: usize,
+    pub(crate) last_tcp_probe_rtt: Option<Duration>,
+    pub(crate) tcp_probe_status: TcpProbeStatus,
+    pub(crate) last_wg_success: Option<Instant>,
+    pub(crate) last_wg_failure: Option<Instant>,
+}
+
+impl EndpointCandidateState {
+    fn new(endpoint: String, advertised_index: usize) -> Self {
+        Self {
+            endpoint,
+            advertised_index,
+            last_tcp_probe_rtt: None,
+            tcp_probe_status: TcpProbeStatus::Unreachable,
+            last_wg_success: None,
+            last_wg_failure: None,
+        }
+    }
+
+    fn merge_preserving_history(&mut self, other: &Self) {
+        self.last_tcp_probe_rtt = other.last_tcp_probe_rtt;
+        self.tcp_probe_status = other.tcp_probe_status;
+        self.last_wg_success = other.last_wg_success;
+        self.last_wg_failure = other.last_wg_failure;
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct PeerState {
@@ -16,6 +57,9 @@ pub(crate) struct PeerState {
     pub(crate) subnet: Option<Ipv4Net>,
     pub(crate) bridge_ip: Option<OverlayIp>,
     pub(crate) runtime: WireGuardPeer,
+    pub(crate) candidates: Vec<EndpointCandidateState>,
+    pub(crate) selection_reason: SelectionReason,
+    pub(crate) needs_ranking: bool,
 }
 
 impl PeerState {
@@ -27,15 +71,38 @@ impl PeerState {
             subnet: record.subnet,
             bridge_ip: record.bridge_ip,
             runtime: WireGuardPeer::new(record.endpoints.clone(), now),
+            candidates: build_candidates(&record.endpoints, &[]),
+            selection_reason: SelectionReason::AdvertisedOrder,
+            needs_ranking: !record.endpoints.is_empty(),
         }
     }
 
     pub(crate) fn update_from_record(&mut self, record: &MachineRecord) {
+        let previous_active = self.active_endpoint_value().map(str::to_string);
         self.public_key = record.public_key.clone();
         self.overlay_ip = record.overlay_ip;
         self.subnet = record.subnet;
         self.bridge_ip = record.bridge_ip;
+        let previous = self.candidates.clone();
+        self.candidates = build_candidates(&record.endpoints, &previous);
         self.runtime.update_endpoints(record.endpoints.clone());
+        if self.runtime.endpoints.is_empty() {
+            self.needs_ranking = false;
+            return;
+        }
+
+        let active_removed = previous_active.as_ref().is_some_and(|endpoint| {
+            !self
+                .runtime
+                .endpoints
+                .iter()
+                .any(|candidate| candidate == endpoint)
+        });
+
+        self.needs_ranking = match self.runtime.status {
+            PeerStatus::Up if !active_removed => false,
+            PeerStatus::Up | PeerStatus::Down | PeerStatus::Unknown => true,
+        };
     }
 
     fn planned_endpoints(&self) -> Vec<String> {
@@ -46,6 +113,10 @@ impl PeerState {
         let active_endpoint = self.runtime.active_endpoint % endpoints.len();
         endpoints.rotate_left(active_endpoint);
         endpoints
+    }
+
+    fn active_endpoint_value(&self) -> Option<&str> {
+        self.runtime.active_endpoint()
     }
 
     fn seed_from_device(&mut self, device_peer: &DevicePeer, now: Instant) {
@@ -74,6 +145,15 @@ impl PeerState {
         self.runtime.last_endpoint_change = last_handshake;
         self.runtime.last_handshake = Some(last_handshake);
         self.runtime.calculate_status(now);
+        if let Some(candidate) = self
+            .candidates
+            .iter_mut()
+            .find(|candidate| candidate.endpoint == endpoint)
+        {
+            candidate.last_wg_success = Some(last_handshake);
+        }
+        self.selection_reason = SelectionReason::PreservedLiveEndpoint;
+        self.needs_ranking = false;
     }
 
     fn refresh_from_device(&mut self, device_peer: Option<&DevicePeer>, now: Instant) -> bool {
@@ -90,14 +170,82 @@ impl PeerState {
             } else {
                 None
             };
+            if let Some(endpoint) = device_peer.endpoint.as_deref()
+                && let Some(last_handshake) = device_peer.last_handshake
+                && let Some(candidate) = self
+                    .candidates
+                    .iter_mut()
+                    .find(|candidate| candidate.endpoint == endpoint)
+            {
+                candidate.last_wg_success = Some(last_handshake);
+            }
         } else {
             self.runtime.last_handshake = None;
         }
+
         self.runtime.calculate_status(now);
-        if self.runtime.should_change_endpoint() {
-            self.runtime.rotate_endpoint(now);
-            return true;
+        if self.runtime.status == PeerStatus::Up {
+            self.needs_ranking = false;
+            return false;
         }
+
+        if self.runtime.status == PeerStatus::Down && self.runtime.endpoints.len() > 1 {
+            let previous_active = self.active_endpoint_value().map(str::to_string);
+            if let Some(active_endpoint) = previous_active.as_ref()
+                && let Some(candidate) = self
+                    .candidates
+                    .iter_mut()
+                    .find(|candidate| candidate.endpoint == *active_endpoint)
+            {
+                candidate.last_wg_failure = Some(now);
+            }
+
+            self.runtime.rotate_endpoint(now);
+            self.selection_reason = SelectionReason::WireguardFallback;
+            self.needs_ranking = false;
+            return previous_active.as_deref() != self.runtime.active_endpoint();
+        }
+
+        self.needs_ranking = false;
+        false
+    }
+
+    fn apply_probe_results(
+        &mut self,
+        results: &HashMap<String, TcpProbeResult>,
+        now: Instant,
+    ) -> bool {
+        for candidate in &mut self.candidates {
+            if let Some(result) = results.get(&candidate.endpoint) {
+                candidate.tcp_probe_status = result.status;
+                candidate.last_tcp_probe_rtt = result.rtt;
+            }
+        }
+
+        if self
+            .candidates
+            .iter()
+            .any(|candidate| candidate.tcp_probe_status == TcpProbeStatus::Reachable)
+        {
+            let previous_active = self.runtime.active_endpoint().map(str::to_string);
+            self.candidates.sort_by(compare_candidates);
+            let ranked_endpoints: Vec<String> = self
+                .candidates
+                .iter()
+                .map(|candidate| candidate.endpoint.clone())
+                .collect();
+            self.runtime.endpoints = ranked_endpoints;
+            self.runtime.active_endpoint = 0;
+            self.runtime.last_endpoint_change = now;
+            self.runtime.last_handshake = None;
+            self.runtime.status = PeerStatus::Unknown;
+            self.selection_reason = SelectionReason::TcpProbeRanking;
+            self.needs_ranking = false;
+            return previous_active.as_deref() != self.runtime.active_endpoint();
+        }
+
+        self.needs_ranking = false;
+        let _ = now;
         false
     }
 }
@@ -182,8 +330,8 @@ impl PeerStateMap {
             .iter()
             .map(|peer| (peer.public_key.clone(), peer))
             .collect();
-        let mut changed = false;
 
+        let mut changed = false;
         for peer_state in self.stored_peers.values_mut() {
             let device_peer = peers_by_key.get(&peer_state.public_key).copied();
             changed |= peer_state.refresh_from_device(device_peer, now);
@@ -192,8 +340,40 @@ impl PeerStateMap {
             let device_peer = peers_by_key.get(&peer_state.public_key).copied();
             changed |= peer_state.refresh_from_device(device_peer, now);
         }
-
         changed
+    }
+
+    pub(crate) fn pending_rankings(&self) -> Vec<(MachineId, Vec<String>)> {
+        let mut pending = Vec::new();
+        for peer_state in self.stored_peers.values() {
+            if peer_state.needs_ranking && peer_state.runtime.endpoints.len() > 1 {
+                pending.push((peer_state.id.clone(), peer_state.runtime.endpoints.clone()));
+            }
+        }
+        for peer_state in self.transient_peers.values() {
+            if peer_state.needs_ranking
+                && peer_state.runtime.endpoints.len() > 1
+                && !self.stored_peers.contains_key(&peer_state.id)
+            {
+                pending.push((peer_state.id.clone(), peer_state.runtime.endpoints.clone()));
+            }
+        }
+        pending
+    }
+
+    pub(crate) fn apply_probe_results(
+        &mut self,
+        id: &MachineId,
+        results: &HashMap<String, TcpProbeResult>,
+        now: Instant,
+    ) -> bool {
+        if let Some(peer_state) = self.stored_peers.get_mut(id) {
+            return peer_state.apply_probe_results(results, now);
+        }
+        if let Some(peer_state) = self.transient_peers.get_mut(id) {
+            return peer_state.apply_probe_results(results, now);
+        }
+        false
     }
 }
 
@@ -205,6 +385,65 @@ pub(crate) async fn sync_peers<N: MeshNetwork>(
     let planned = plan_mesh_peers(state, local_machine_id);
     if let Err(e) = network.set_peers(&planned).await {
         warn!(?e, "set_peers failed");
+    }
+}
+
+fn build_candidates(
+    endpoints: &[String],
+    existing: &[EndpointCandidateState],
+) -> Vec<EndpointCandidateState> {
+    endpoints
+        .iter()
+        .enumerate()
+        .map(|(index, endpoint)| {
+            let mut candidate = EndpointCandidateState::new(endpoint.clone(), index);
+            if let Some(previous) = existing
+                .iter()
+                .find(|previous| previous.endpoint == *endpoint)
+            {
+                candidate.merge_preserving_history(previous);
+            }
+            candidate
+        })
+        .collect()
+}
+
+fn compare_candidates(a: &EndpointCandidateState, b: &EndpointCandidateState) -> Ordering {
+    match (a.tcp_probe_status, b.tcp_probe_status) {
+        (TcpProbeStatus::Reachable, TcpProbeStatus::Unreachable) => return Ordering::Less,
+        (TcpProbeStatus::Unreachable, TcpProbeStatus::Reachable) => return Ordering::Greater,
+        (TcpProbeStatus::Reachable, TcpProbeStatus::Reachable)
+        | (TcpProbeStatus::Unreachable, TcpProbeStatus::Unreachable) => {}
+    }
+
+    match compare_option_duration_asc(a.last_tcp_probe_rtt, b.last_tcp_probe_rtt) {
+        Ordering::Equal => {}
+        ordering => return ordering,
+    }
+
+    match compare_option_instant_desc(a.last_wg_success, b.last_wg_success) {
+        Ordering::Equal => {}
+        ordering => return ordering,
+    }
+
+    a.advertised_index.cmp(&b.advertised_index)
+}
+
+fn compare_option_duration_asc(a: Option<Duration>, b: Option<Duration>) -> Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) => a.cmp(&b),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+fn compare_option_instant_desc(a: Option<Instant>, b: Option<Instant>) -> Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) => b.cmp(&a),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
     }
 }
 
@@ -260,7 +499,6 @@ fn plan_mesh_peers(state: &PeerStateMap, local_machine_id: &MachineId) -> Vec<Ma
 mod tests {
     use super::*;
     use std::net::Ipv6Addr;
-    use std::time::Duration;
 
     fn test_record(id: &str, endpoints: Vec<&str>) -> MachineRecord {
         MachineRecord {
@@ -399,6 +637,7 @@ mod tests {
             .get_mut(&remote_id)
             .expect("peer state for remote");
         peer_state.runtime.active_endpoint = 1;
+        peer_state.runtime.status = PeerStatus::Up;
 
         map.upsert_stored(
             &test_record("remote", vec!["c:3", "b:2", "d:4"]),
@@ -409,6 +648,38 @@ mod tests {
         assert_eq!(
             planned[0].endpoints,
             vec!["b:2".to_string(), "d:4".to_string(), "c:3".to_string()]
+        );
+        assert!(
+            !map.stored_peers
+                .get(&remote_id)
+                .expect("peer state for remote")
+                .needs_ranking
+        );
+    }
+
+    #[test]
+    fn update_marks_peer_for_ranking_when_active_endpoint_is_removed() {
+        let now = Instant::now();
+        let mut map = PeerStateMap::new();
+        let remote_id = MachineId("remote".into());
+        map.upsert_stored(&test_record("remote", vec!["a:1", "b:2", "c:3"]), now);
+        let peer_state = map
+            .stored_peers
+            .get_mut(&remote_id)
+            .expect("peer state for remote");
+        peer_state.runtime.active_endpoint = 1;
+        peer_state.runtime.status = PeerStatus::Up;
+
+        map.upsert_stored(
+            &test_record("remote", vec!["c:3", "d:4"]),
+            now + Duration::from_secs(1),
+        );
+
+        assert!(
+            map.stored_peers
+                .get(&remote_id)
+                .expect("peer state for remote")
+                .needs_ranking
         );
     }
 
@@ -437,6 +708,73 @@ mod tests {
         assert_eq!(
             planned[0].endpoints,
             vec!["b:2".to_string(), "a:1".to_string()]
+        );
+    }
+
+    #[test]
+    fn apply_probe_results_prefers_reachable_then_low_rtt() {
+        let now = Instant::now();
+        let mut peer_state =
+            PeerState::from_record(&test_record("remote", vec!["a:1", "b:2", "c:3"]), now);
+        let results = HashMap::from([
+            (
+                "a:1".to_string(),
+                TcpProbeResult {
+                    status: TcpProbeStatus::Unreachable,
+                    rtt: None,
+                },
+            ),
+            (
+                "b:2".to_string(),
+                TcpProbeResult {
+                    status: TcpProbeStatus::Reachable,
+                    rtt: Some(Duration::from_millis(30)),
+                },
+            ),
+            (
+                "c:3".to_string(),
+                TcpProbeResult {
+                    status: TcpProbeStatus::Reachable,
+                    rtt: Some(Duration::from_millis(10)),
+                },
+            ),
+        ]);
+
+        assert!(peer_state.apply_probe_results(&results, now + Duration::from_secs(1)));
+        assert_eq!(peer_state.runtime.endpoints[0], "c:3");
+        assert_eq!(
+            peer_state.selection_reason,
+            SelectionReason::TcpProbeRanking
+        );
+    }
+
+    #[test]
+    fn apply_probe_results_keeps_existing_order_when_no_probe_succeeds() {
+        let now = Instant::now();
+        let mut peer_state =
+            PeerState::from_record(&test_record("remote", vec!["a:1", "b:2"]), now);
+        let results = HashMap::from([
+            (
+                "a:1".to_string(),
+                TcpProbeResult {
+                    status: TcpProbeStatus::Unreachable,
+                    rtt: None,
+                },
+            ),
+            (
+                "b:2".to_string(),
+                TcpProbeResult {
+                    status: TcpProbeStatus::Unreachable,
+                    rtt: None,
+                },
+            ),
+        ]);
+
+        assert!(!peer_state.apply_probe_results(&results, now + Duration::from_secs(1)));
+        assert_eq!(peer_state.runtime.active_endpoint(), Some("a:1"));
+        assert_eq!(
+            peer_state.selection_reason,
+            SelectionReason::AdvertisedOrder
         );
     }
 }

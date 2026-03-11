@@ -2,6 +2,7 @@ use crate::error::Error as PortError;
 use crate::mesh::MeshNetwork;
 use crate::mesh::driver::WireguardDriver;
 use crate::mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
+use crate::mesh::probe::run_probe_listener_task;
 use crate::mesh::tasks::{
     PeerSyncCommand, TaskSet, TaskSetError, run_ebpf_sync_task, run_endpoint_refresh_task,
     run_heartbeat_task, run_peer_sync_task,
@@ -244,6 +245,9 @@ impl Mesh {
             .map_err(TaskSetError::Subscribe)?;
         let (peer_sync_tx, peer_sync_rx) = mpsc::channel(64);
         let (mut task_set, cancel) = TaskSet::new();
+        if !matches!(&self.network, WireguardDriver::Memory(_)) {
+            task_set.spawn(run_probe_listener_task(cancel.clone()));
+        }
         task_set.spawn(run_peer_sync_task(
             snapshot,
             events,
