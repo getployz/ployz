@@ -285,6 +285,9 @@ stage_from_url() {
 install_artifacts() {
   local staged=$1
   local ployzd_src="${staged}/ployzd"
+  local ployz_src="${staged}/ployz"
+  local gateway_src="${staged}/ployz-gateway"
+  local dns_src="${staged}/ployz-dns"
   local corrosion_src="${staged}/corrosion"
   local unit_src="${staged}/ployzd.service"
 
@@ -293,8 +296,24 @@ install_artifacts() {
   [[ -f "${unit_src}" ]] || fail "artifact missing: ${unit_src}"
 
   install -m 0755 "${ployzd_src}" "${PREFIX}/bin/ployzd"
+  if [[ -f "${ployz_src}" ]]; then
+    install -m 0755 "${ployz_src}" "${PREFIX}/bin/ployz"
+  else
+    cat > "${PREFIX}/bin/ployz" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec /usr/local/bin/ployzd "$@"
+EOF
+    chmod 0755 "${PREFIX}/bin/ployz"
+  fi
+  if [[ -f "${gateway_src}" ]]; then
+    install -m 0755 "${gateway_src}" "${PREFIX}/bin/ployz-gateway"
+  fi
+  if [[ -f "${dns_src}" ]]; then
+    install -m 0755 "${dns_src}" "${PREFIX}/bin/ployz-dns"
+  fi
   install -m 0755 "${corrosion_src}" "${PREFIX}/bin/corrosion"
-  rm -f "${PREFIX}/bin/ployz"
 
   install -d /etc/systemd/system
   install -m 0644 "${unit_src}" /etc/systemd/system/ployzd.service

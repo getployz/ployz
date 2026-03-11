@@ -205,6 +205,15 @@ remote_rsync_repo() {
     "${ROOT_DIR}/" "${REMOTE_HOST}:${repo_dir}/"
 }
 
+remote_install_ebpf_bytecode() {
+  require_host
+  remote_bash <<EOF
+set -euo pipefail
+cd '${REMOTE_ROOT}/src/repo'
+./scripts/install-ebpf-bytecode.sh
+EOF
+}
+
 scenario_manifest() {
   local name=$1
   local path="${LAB_DIR}/scenarios/${name}.json"
@@ -716,16 +725,21 @@ build_artifact_bundle() {
   git_rev="${CURRENT_GIT_REV}"
   corrosion_version=$(tr -d '[:space:]' < "${ROOT_DIR}/.corrosion-version")
   remote_rsync_repo
+  remote_install_ebpf_bytecode
   log "building branch artifacts on ${REMOTE_HOST}"
-  remote_bash <<EOF
+remote_bash <<EOF
 set -euo pipefail
 cd '${REMOTE_ROOT}/src/repo'
-cargo build --release -p ployzd
+cargo build --release -p ployzd --features ebpf-native
+cargo build --release -p ployz-gateway -p ployz-dns
 
 bundle_dir='${REMOTE_RUN_DIR}/bundle'
 cache_dir='${REMOTE_ROOT}/cache'
 mkdir -p "\${bundle_dir}" "\${cache_dir}"
 install -m 0755 target/release/ployzd "\${bundle_dir}/ployzd"
+install -m 0755 packaging/bin/ployz "\${bundle_dir}/ployz"
+install -m 0755 target/release/ployz-gateway "\${bundle_dir}/ployz-gateway"
+install -m 0755 target/release/ployz-dns "\${bundle_dir}/ployz-dns"
 install -m 0755 scripts/bootstrap-linux.sh "\${bundle_dir}/bootstrap-linux.sh"
 install -m 0644 packaging/systemd/ployzd.service "\${bundle_dir}/ployzd.service"
 
@@ -981,7 +995,7 @@ bootstrap_over_ssh() {
 
 verify_bootstrap() {
   local node=$1
-  guest_exec "${node}" "sudo test -x /usr/local/bin/ployzd && sudo test -x /usr/local/bin/corrosion"
+  guest_exec "${node}" "sudo test -x /usr/local/bin/ployzd && sudo test -x /usr/local/bin/ployz && sudo test -x /usr/local/bin/ployz-gateway && sudo test -x /usr/local/bin/ployz-dns && sudo test -x /usr/local/bin/corrosion"
   guest_exec "${node}" "sudo systemctl is-enabled ployzd.service"
   guest_exec "${node}" "sudo systemctl is-active ployzd.service"
 }

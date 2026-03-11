@@ -86,9 +86,9 @@ fn build_gateway_sidecar_spec(config: &GatewayConfig, paths: &GatewayPaths) -> S
             crate::services::supervisor::systemd_quote(&paths.pid_file.display().to_string());
         let pingora_config =
             crate::services::supervisor::systemd_quote(&paths.pingora_config.display().to_string());
-        // Gateway uses forking mode with PIDFile, ExecReload for hot upgrades.
-        // The binary path placeholder will be filled with the actual binary by sidecar.
-        // We need to use find_binary here for ExecReload lines.
+        // The gateway stays attached to the invoking process for normal startup,
+        // so the systemd unit must be `Type=simple`. Reload still uses Pingora's
+        // upgrade path and keeps the PID file/socket metadata available.
         let binary = crate::services::supervisor::find_binary("ployz-gateway")
             .map(|b| crate::services::supervisor::systemd_quote(&b.display().to_string()))
             .unwrap_or_default();
@@ -120,7 +120,7 @@ fn build_gateway_sidecar_spec(config: &GatewayConfig, paths: &GatewayPaths) -> S
         ],
         network_container: Some("ployz-networking".to_string()),
         compose_service: "gateway".to_string(),
-        systemd_type: SystemdType::Forking,
+        systemd_type: SystemdType::Simple,
         systemd_extra,
     }
 }

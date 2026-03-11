@@ -8,6 +8,9 @@ publish = false
 name = "ployzd"
 path = "src/main.rs"
 
+[features]
+ebpf-native = ["ployz-core/ebpf-native"]
+
 [dependencies]
 ployz-core = { path = "../ployz-core" }
 ployz-sdk = { path = "../ployz-sdk" }

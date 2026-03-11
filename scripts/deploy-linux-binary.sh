@@ -70,14 +70,19 @@ read -r -a TARGET_LIST <<<"$TARGETS_RAW"
 
 echo "==> Compiling Linux daemon binary"
 
+"$ROOT_DIR/scripts/install-ebpf-bytecode.sh"
+
 if command -v cross >/dev/null 2>&1; then
-  cross build --release --target x86_64-unknown-linux-gnu -p ployzd
+  cross build --release --target x86_64-unknown-linux-gnu -p ployzd --features ebpf-native
+  cross build --release --target x86_64-unknown-linux-gnu -p ployz-gateway -p ployz-dns
 elif command -v cargo-zigbuild >/dev/null 2>&1; then
-  cargo zigbuild --release --target x86_64-unknown-linux-gnu -p ployzd
+  cargo zigbuild --release --target x86_64-unknown-linux-gnu -p ployzd --features ebpf-native
+  cargo zigbuild --release --target x86_64-unknown-linux-gnu -p ployz-gateway -p ployz-dns
 else
   echo "   No cross-compiler found. Trying cargo build --target directly..."
   echo "   (install 'cross' or 'cargo-zigbuild' for reliable cross-compilation)"
-  cargo build --release --target x86_64-unknown-linux-gnu -p ployzd
+  cargo build --release --target x86_64-unknown-linux-gnu -p ployzd --features ebpf-native
+  cargo build --release --target x86_64-unknown-linux-gnu -p ployz-gateway -p ployz-dns
 fi
 
 TARGET_DIR="$ROOT_DIR/target/x86_64-unknown-linux-gnu/release"
@@ -86,6 +91,9 @@ TARGET_DIR="$ROOT_DIR/target/x86_64-unknown-linux-gnu/release"
 
 FILES=(
   "$TARGET_DIR/ployzd:/usr/local/bin/ployzd:0755"
+  "$TARGET_DIR/ployz-gateway:/usr/local/bin/ployz-gateway:0755"
+  "$TARGET_DIR/ployz-dns:/usr/local/bin/ployz-dns:0755"
+  "$ROOT_DIR/packaging/bin/ployz:/usr/local/bin/ployz:0755"
   "$ROOT_DIR/packaging/systemd/ployzd.service:/etc/systemd/system/ployzd.service:0644"
 )
 
@@ -113,9 +121,6 @@ for target in "${TARGET_LIST[@]}"; do
     echo "   ERROR: one or more uploads failed for $target" >&2
     continue
   fi
-
-  ssh -p "$SSH_PORT" "$target" "sudo rm -f /usr/local/bin/ployz"
-
   if [[ -f "$RESTART_FLAG" ]]; then
     echo "   restarting ployzd"
     ssh -p "$SSH_PORT" "$target" "sudo systemctl daemon-reload || true; sudo systemctl restart ployzd.service"
