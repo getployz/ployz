@@ -1,0 +1,1764 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+LAB_DIR="${ROOT_DIR}/lab"
+STATE_DIR="${PLOYZ_LAB_STATE_DIR:-${ROOT_DIR}/.lab}"
+ENV_FILE="${PLOYZ_LAB_ENV_FILE:-${LAB_DIR}/lab.env}"
+
+if [[ -f "${ENV_FILE}" ]]; then
+  # shellcheck disable=SC1090
+  source "${ENV_FILE}"
+fi
+
+REMOTE_HOST="${PLOYZ_LAB_HOST:-}"
+REMOTE_ROOT="${PLOYZ_LAB_HOST_ROOT:-/var/lib/ployz-lab}"
+STORAGE_POOL="${PLOYZ_LAB_STORAGE_POOL:-ployz-lab}"
+MGMT_NETWORK="${PLOYZ_LAB_MGMT_NETWORK:-ployz-lab-mgmt}"
+DATA_NETWORK="${PLOYZ_LAB_DATA_NETWORK:-ployz-lab-data}"
+HTTP_PORT="${PLOYZ_LAB_HTTP_PORT:-18080}"
+MGMT_CIDR="${PLOYZ_LAB_MGMT_CIDR:-192.168.150.0/24}"
+MGMT_GATEWAY="${PLOYZ_LAB_MGMT_GATEWAY:-192.168.150.1}"
+DATA_CIDR="${PLOYZ_LAB_DATA_CIDR:-10.77.0.0/24}"
+DATA_GATEWAY="${PLOYZ_LAB_DATA_GATEWAY:-10.77.0.1}"
+UBUNTU_IMAGE_URL="${PLOYZ_LAB_UBUNTU_IMAGE_URL:-https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img}"
+ROCKY_IMAGE_URL="${PLOYZ_LAB_ROCKY_IMAGE_URL:-https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud.latest.x86_64.qcow2}"
+ARCH_IMAGE_URL="${PLOYZ_LAB_ARCH_IMAGE_URL:-https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2}"
+KEEP_FAILED="${PLOYZ_LAB_KEEP_FAILED:-0}"
+DEFAULT_MEMORY_MB="${PLOYZ_LAB_MEMORY_MB:-4096}"
+DEFAULT_VCPUS="${PLOYZ_LAB_VCPUS:-2}"
+DEFAULT_DISK_GB="${PLOYZ_LAB_DISK_GB:-20}"
+LIBVIRT_URI="${PLOYZ_LAB_LIBVIRT_URI:-qemu:///system}"
+HOST_SUDO_PASSWORD="${PLOYZ_LAB_HOST_SUDO_PASSWORD:-}"
+APT_CACHE_ENABLED="${PLOYZ_LAB_APT_CACHE_ENABLED:-1}"
+APT_CACHE_PORT="${PLOYZ_LAB_APT_CACHE_PORT:-3142}"
+APT_CACHE_IMAGE="${PLOYZ_LAB_APT_CACHE_IMAGE:-sameersbn/apt-cacher-ng:latest}"
+CURRENT_GIT_REV="$(git -C "${ROOT_DIR}" rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
+
+RUN_ID=""
+REMOTE_RUN_DIR=""
+LOCAL_REPORT_DIR=""
+RUN_KEY=""
+BUNDLE_URL=""
+BUNDLE_TAR=""
+RUN_FAILED=1
+RUN_SUMMARY_LABEL=""
+RUN_SUMMARY_PRINTED=0
+RUN_BASE_KIND=""
+
+declare -a NODES=()
+declare -A NODE_FAMILY=()
+declare -A NODE_MGMT_IP=()
+declare -A NODE_DATA_IP=()
+declare -A NODE_MGMT_MAC=()
+declare -A NODE_DATA_MAC=()
+declare -A NODE_VM_NAME=()
+declare -A NODE_BASE_IMAGE=()
+
+usage() {
+  cat <<'EOF'
+Usage:
+  lab/bin/ployz-lab host bootstrap
+  lab/bin/ployz-lab image build <ubuntu|rocky|arch>
+  lab/bin/ployz-lab snapshot build <bootstrapped-pristine|post-install> --family <family>
+  lab/bin/ployz-lab snapshot list
+  lab/bin/ployz-lab bootstrap test <cloud-init|ssh> --family <family> [--base <raw|bootstrapped-pristine>]
+  lab/bin/ployz-lab scenario run <name> [--bootstrap-path <cloud-init|ssh>] [--family <spec>] [--profile <profile>] [--base <raw|bootstrapped-pristine|post-install>]
+  lab/bin/ployz-lab suite run <bootstrap|semantics|fault|full>
+  lab/bin/ployz-lab report open <run-id>
+
+Examples:
+  lab/bin/ployz-lab host bootstrap
+  lab/bin/ployz-lab image build ubuntu
+  lab/bin/ployz-lab snapshot build bootstrapped-pristine --family ubuntu
+  lab/bin/ployz-lab bootstrap test cloud-init --family ubuntu
+  lab/bin/ployz-lab scenario run machine_add_basic --family founder=ubuntu,joiner=rocky --profile regional --base post-install
+EOF
+}
+
+log() {
+  printf '[lab] %s\n' "$*"
+}
+
+fail() {
+  printf '[lab] ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+planned_cleanup_action() {
+  if [[ -z "${RUN_ID}" || ${#NODES[@]} -eq 0 ]]; then
+    printf 'none'
+    return
+  fi
+  if [[ "${KEEP_FAILED}" == "1" && ${RUN_FAILED} -ne 0 ]]; then
+    printf 'retained'
+    return
+  fi
+  printf 'destroyed'
+}
+
+print_run_summary() {
+  local result=$1
+  local run_id=$2
+  local report_path=$3
+  local cleanup_action=$4
+  local label=${5:-${RUN_SUMMARY_LABEL}}
+  [[ -n "${run_id}" ]] || return
+  log "${result} ${label}"
+  log "run_id=${run_id}"
+  log "report=${report_path}"
+  log "guest_cleanup=${cleanup_action}"
+  RUN_SUMMARY_PRINTED=1
+}
+
+need_cmd() {
+  local cmd=$1
+  command -v "$cmd" >/dev/null 2>&1 || fail "required command not found: $cmd"
+}
+
+require_host() {
+  [[ -n "${REMOTE_HOST}" ]] || fail "set PLOYZ_LAB_HOST in lab/lab.env or the environment"
+}
+
+ensure_local_state() {
+  install -d "${STATE_DIR}/reports" "${STATE_DIR}/tmp"
+}
+
+remote_env_prefix() {
+  printf 'export PATH="$HOME/.cargo/bin:$PATH"; export LIBVIRT_DEFAULT_URI=%q; ' "${LIBVIRT_URI}"
+}
+
+remote_sh() {
+  require_host
+  ssh "${REMOTE_HOST}" "$(remote_env_prefix)$*"
+}
+
+remote_capture() {
+  require_host
+  ssh "${REMOTE_HOST}" "$(remote_env_prefix)$*"
+}
+
+remote_bash() {
+  require_host
+  ssh "${REMOTE_HOST}" "$(remote_env_prefix)bash -se"
+}
+
+remote_bash_tty() {
+  require_host
+  local content remote_script
+  content=$(cat)
+  remote_script=$(ssh "${REMOTE_HOST}" "$(remote_env_prefix)mktemp /tmp/ployz-lab.XXXXXX.sh")
+  remote_write_file "${remote_script}" "${content}"
+  ssh -tt "${REMOTE_HOST}" "$(remote_env_prefix)bash '${remote_script}'; status=\$?; rm -f '${remote_script}'; exit \$status"
+}
+
+remote_bash_tty_sudo() {
+  require_host
+  local content remote_script
+  local remote_cmd
+  content=$(cat)
+  remote_script=$(ssh "${REMOTE_HOST}" "$(remote_env_prefix)mktemp /tmp/ployz-lab.XXXXXX.sh")
+  remote_write_file "${remote_script}" "${content}"
+  remote_cmd="$(remote_env_prefix)sudo -v && bash '${remote_script}'; status=\$?; rm -f '${remote_script}'; exit \$status"
+  if [[ -n "${HOST_SUDO_PASSWORD}" ]]; then
+    need_cmd expect
+    PLOYZ_EXPECT_REMOTE_HOST="${REMOTE_HOST}" \
+      PLOYZ_EXPECT_REMOTE_CMD="${remote_cmd}" \
+      PLOYZ_EXPECT_SUDO_PASSWORD="${HOST_SUDO_PASSWORD}" \
+      expect <<'EOF'
+set timeout -1
+log_user 1
+spawn ssh -tt $env(PLOYZ_EXPECT_REMOTE_HOST) $env(PLOYZ_EXPECT_REMOTE_CMD)
+expect {
+  -re {\[sudo\] password for .*: $} {
+    send -- "$env(PLOYZ_EXPECT_SUDO_PASSWORD)\r"
+    exp_continue
+  }
+  eof
+}
+catch wait result
+set exit_status [lindex $result 3]
+exit $exit_status
+EOF
+    return
+  fi
+  ssh -tt "${REMOTE_HOST}" "${remote_cmd}"
+}
+
+remote_write_file() {
+  local path=$1
+  local content=$2
+  local parent
+  parent=$(dirname "${path}")
+  require_host
+  ssh "${REMOTE_HOST}" "$(remote_env_prefix)mkdir -p '${parent}' && cat > '${path}'" <<<"${content}"
+}
+
+remote_rsync_repo() {
+  local repo_dir="${REMOTE_ROOT}/src/repo"
+  remote_sh "mkdir -p '${REMOTE_ROOT}/src'"
+  rsync -az --delete \
+    --exclude .git \
+    --exclude .lab \
+    --exclude target \
+    --exclude crates/ebpf/target \
+    "${ROOT_DIR}/" "${REMOTE_HOST}:${repo_dir}/"
+}
+
+scenario_manifest() {
+  local name=$1
+  local path="${LAB_DIR}/scenarios/${name}.json"
+  [[ -f "${path}" ]] || fail "unknown scenario '${name}'"
+  printf '%s' "${path}"
+}
+
+profile_manifest() {
+  local name=$1
+  local path="${LAB_DIR}/profiles/${name}.json"
+  [[ -f "${path}" ]] || fail "unknown profile '${name}'"
+  printf '%s' "${path}"
+}
+
+family_image_url() {
+  case "$1" in
+    ubuntu) printf '%s' "${UBUNTU_IMAGE_URL}" ;;
+    rocky) printf '%s' "${ROCKY_IMAGE_URL}" ;;
+    arch) printf '%s' "${ARCH_IMAGE_URL}" ;;
+    *) fail "unsupported family '$1'" ;;
+  esac
+}
+
+validate_base_kind() {
+  case "${1:-}" in
+    raw|bootstrapped-pristine|post-install) ;;
+    *)
+      fail "unsupported base '${1:-}' (expected raw, bootstrapped-pristine, or post-install)"
+      ;;
+  esac
+}
+
+base_image_path() {
+  local family=$1
+  local kind=$2
+  validate_base_kind "${kind}"
+  case "${kind}" in
+    raw) printf '%s/images/%s.qcow2' "${REMOTE_ROOT}" "${family}" ;;
+    *) printf '%s/images/%s--%s.qcow2' "${REMOTE_ROOT}" "${family}" "${kind}" ;;
+  esac
+}
+
+base_metadata_path() {
+  local family=$1
+  local kind=$2
+  validate_base_kind "${kind}"
+  case "${kind}" in
+    raw) printf '%s/images/%s--raw.metadata.env' "${REMOTE_ROOT}" "${family}" ;;
+    *) printf '%s/images/%s--%s.metadata.env' "${REMOTE_ROOT}" "${family}" "${kind}" ;;
+  esac
+}
+
+base_exists() {
+  local family=$1
+  local kind=$2
+  local image_path
+  image_path=$(base_image_path "${family}" "${kind}")
+  remote_sh "qemu-img info '${image_path}' >/dev/null 2>&1"
+}
+
+write_raw_metadata() {
+  local family=$1
+  local path
+  path=$(base_image_path "${family}" raw)
+  printf 'family=%s\n' "${family}"
+  printf 'kind=raw\n'
+  printf 'image_path=%s\n' "${path}"
+  printf 'git_rev=thin-cloud-image\n'
+  printf 'verified=raw-image-present\n'
+}
+
+fetch_base_metadata() {
+  local family=$1
+  local kind=$2
+  local metadata_path
+  metadata_path=$(base_metadata_path "${family}" "${kind}")
+  if [[ "${kind}" == "raw" ]]; then
+    write_raw_metadata "${family}"
+    return
+  fi
+  remote_capture "cat '${metadata_path}'"
+}
+
+base_metadata_value() {
+  local family=$1
+  local kind=$2
+  local key=$3
+  fetch_base_metadata "${family}" "${kind}" | awk -F= -v key="${key}" '$1 == key { sub(/^[^=]*=/, ""); print; exit }'
+}
+
+ensure_base_exists() {
+  local family=$1
+  local kind=$2
+  if base_exists "${family}" "${kind}"; then
+    return
+  fi
+  fail "missing ${kind} base for ${family}; run 'just lab snapshot build ${kind} --family ${family}' or pass --base raw"
+}
+
+warn_if_post_install_stale() {
+  local family=$1
+  local git_rev
+  git_rev=$(base_metadata_value "${family}" post-install git_rev)
+  [[ -n "${git_rev}" ]] || return
+  if [[ "${git_rev}" != "${CURRENT_GIT_REV}" ]]; then
+    log "WARNING: post-install base for ${family} was built from git_rev=${git_rev}, current git_rev=${CURRENT_GIT_REV}"
+  fi
+}
+
+apt_proxy_url() {
+  if [[ "${APT_CACHE_ENABLED}" != "1" ]]; then
+    return
+  fi
+  printf 'http://%s:%s' "${MGMT_GATEWAY}" "${APT_CACHE_PORT}"
+}
+
+apt_proxy_arg_for_family() {
+  local family=$1
+  local proxy_url
+  proxy_url=$(apt_proxy_url)
+  if [[ -z "${proxy_url}" ]]; then
+    return
+  fi
+  case "${family}" in
+    ubuntu) printf ' --apt-proxy %q' "${proxy_url}" ;;
+    *) ;;
+  esac
+}
+
+family_for_node() {
+  local manifest=$1
+  local node=$2
+  local override=$3
+  local manifest_family
+  manifest_family=$(jq -r --arg node "${node}" '.nodes[] | select(.name == $node) | .family' "${manifest}")
+
+  if [[ -z "${override}" ]]; then
+    printf '%s' "${manifest_family}"
+    return
+  fi
+
+  if [[ "${override}" == *"="* ]]; then
+    local entry key value
+    IFS=',' read -r -a entries <<<"${override}"
+    for entry in "${entries[@]}"; do
+      key=${entry%%=*}
+      value=${entry#*=}
+      if [[ "${key}" == "${node}" ]]; then
+        printf '%s' "${value}"
+        return
+      fi
+    done
+  fi
+
+  printf '%s' "${override}"
+}
+
+run_id_now() {
+  date -u +%Y%m%dT%H%M%SZ
+}
+
+calc_mgmt_ip() {
+  printf '192.168.150.%d' "$((10 + $1))"
+}
+
+calc_data_ip() {
+  printf '10.77.0.%d' "$((10 + $1))"
+}
+
+calc_mac() {
+  local network_byte=$1
+  local index=$2
+  printf '52:54:00:%02x:00:%02x' "${network_byte}" "${index}"
+}
+
+register_nodes() {
+  local manifest=$1
+  local family_override=$2
+  local index=1
+  mapfile -t NODES < <(jq -r '.nodes[].name' "${manifest}")
+  for node in "${NODES[@]}"; do
+    NODE_FAMILY["${node}"]=$(family_for_node "${manifest}" "${node}" "${family_override}")
+    NODE_MGMT_IP["${node}"]=$(calc_mgmt_ip "${index}")
+    NODE_DATA_IP["${node}"]=$(calc_data_ip "${index}")
+    NODE_MGMT_MAC["${node}"]=$(calc_mac 80 "${index}")
+    NODE_DATA_MAC["${node}"]=$(calc_mac 81 "${index}")
+    NODE_VM_NAME["${node}"]="${RUN_ID}-${node}"
+    index=$((index + 1))
+  done
+}
+
+cleanup_run() {
+  if [[ -z "${RUN_ID}" ]]; then
+    return
+  fi
+
+  if [[ "${KEEP_FAILED}" == "1" && ${RUN_FAILED} -ne 0 ]]; then
+    log "keeping failed run ${RUN_ID} for inspection"
+  else
+    if [[ ${#NODES[@]} -gt 0 ]]; then
+      local node vm
+      for node in "${NODES[@]}"; do
+        vm=${NODE_VM_NAME["${node}"]}
+        remote_sh "virsh --connect '${LIBVIRT_URI}' destroy '${vm}' >/dev/null 2>&1 || true; virsh --connect '${LIBVIRT_URI}' undefine '${vm}' --remove-all-storage >/dev/null 2>&1 || true" || true
+      done
+    fi
+  fi
+
+  if [[ -n "${REMOTE_RUN_DIR}" && -n "${LOCAL_REPORT_DIR}" ]]; then
+    rsync -az "${REMOTE_HOST}:${REMOTE_RUN_DIR}/" "${LOCAL_REPORT_DIR}/" >/dev/null 2>&1 || true
+  fi
+
+  RUN_ID=""
+  REMOTE_RUN_DIR=""
+  LOCAL_REPORT_DIR=""
+  RUN_KEY=""
+  BUNDLE_URL=""
+  BUNDLE_TAR=""
+  NODES=()
+  NODE_FAMILY=()
+  NODE_MGMT_IP=()
+  NODE_DATA_IP=()
+  NODE_MGMT_MAC=()
+  NODE_DATA_MAC=()
+  NODE_VM_NAME=()
+  NODE_BASE_IMAGE=()
+  RUN_FAILED=1
+  RUN_SUMMARY_LABEL=""
+  RUN_SUMMARY_PRINTED=0
+  RUN_BASE_KIND=""
+}
+
+on_exit() {
+  local status=$1
+  local run_id=${RUN_ID}
+  local report_path=${LOCAL_REPORT_DIR}
+  local cleanup_action=""
+  local summary_label=${RUN_SUMMARY_LABEL}
+  local summary_printed=${RUN_SUMMARY_PRINTED}
+  if [[ -n "${run_id}" ]]; then
+    cleanup_action=$(planned_cleanup_action)
+  fi
+  cleanup_run
+  if [[ -n "${run_id}" && "${summary_printed}" != "1" ]]; then
+    print_run_summary "FAIL" "${run_id}" "${report_path}" "${cleanup_action}" "${summary_label}"
+  fi
+  return "${status}"
+}
+
+trap 'on_exit "$?"' EXIT
+
+prepare_run() {
+  local label=$1
+  if [[ -n "${RUN_ID}" ]]; then
+    cleanup_run
+  fi
+  RUN_ID="$(run_id_now)-${label}"
+  REMOTE_RUN_DIR="${REMOTE_ROOT}/runs/${RUN_ID}"
+  LOCAL_REPORT_DIR="${STATE_DIR}/reports/${RUN_ID}"
+  RUN_SUMMARY_LABEL="${label}"
+  RUN_SUMMARY_PRINTED=0
+  RUN_BASE_KIND=""
+  install -d "${LOCAL_REPORT_DIR}"
+  remote_sh "mkdir -p '${REMOTE_RUN_DIR}' '${REMOTE_RUN_DIR}/reports' '${REMOTE_ROOT}/http/${RUN_ID}'"
+  RUN_KEY="${REMOTE_RUN_DIR}/run-key"
+  remote_sh "ssh-keygen -q -t ed25519 -N '' -f '${RUN_KEY}'"
+  remote_sh "chmod 600 '${RUN_KEY}' && chmod 644 '${RUN_KEY}.pub'"
+}
+
+host_bootstrap() {
+  require_host
+  log "bootstrapping remote lab host ${REMOTE_HOST}"
+  remote_bash_tty_sudo <<EOF
+set -euo pipefail
+
+ROOT='${REMOTE_ROOT}'
+POOL='${STORAGE_POOL}'
+MGMT='${MGMT_NETWORK}'
+DATA='${DATA_NETWORK}'
+MGMT_CIDR='${MGMT_CIDR}'
+MGMT_GATEWAY='${MGMT_GATEWAY}'
+DATA_CIDR='${DATA_CIDR}'
+DATA_GATEWAY='${DATA_GATEWAY}'
+LIBVIRT_URI='${LIBVIRT_URI}'
+APT_CACHE_ENABLED='${APT_CACHE_ENABLED}'
+APT_CACHE_PORT='${APT_CACHE_PORT}'
+APT_CACHE_IMAGE='${APT_CACHE_IMAGE}'
+LAB_USER='$(id -un)'
+LAB_HOME="\$(getent passwd "\${LAB_USER}" | cut -d: -f6)"
+
+step() {
+  printf '[lab][host-bootstrap] %s\n' "\$*"
+}
+
+grant_hypervisor_acl() {
+  local target=\$1
+  local perms=\$2
+  local account
+  for account in qemu libvirt-qemu; do
+    if id "\${account}" >/dev/null 2>&1; then
+      sudo -n setfacl -m "u:\${account}:\${perms}" "\${target}"
+    fi
+  done
+}
+
+grant_hypervisor_default_acl() {
+  local target=\$1
+  local perms=\$2
+  local account
+  for account in qemu libvirt-qemu; do
+    if id "\${account}" >/dev/null 2>&1; then
+      sudo -n setfacl -d -m "u:\${account}:\${perms}" "\${target}"
+    fi
+  done
+}
+
+install_packages() {
+  if command -v apt-get >/dev/null 2>&1; then
+    step "installing host packages with apt"
+    local packages=(
+      qemu-kvm libvirt-daemon-system libvirt-clients virtinst qemu-utils
+      cloud-image-utils jq rsync curl python3 python3-venv
+      build-essential cmake pkg-config make
+    )
+    if [[ "\${APT_CACHE_ENABLED}" == "1" ]]; then
+      packages+=(apt-cacher-ng)
+    fi
+    sudo -n apt-get update -y
+    sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y "\${packages[@]}"
+    return
+  fi
+  if command -v dnf >/dev/null 2>&1; then
+    step "installing host packages with dnf"
+    sudo -n dnf install -y \
+      qemu-kvm libvirt virt-install qemu-img cloud-utils jq rsync curl python3 \
+      gcc gcc-c++ make cmake pkgconf-pkg-config
+    if [[ "\${APT_CACHE_ENABLED}" == "1" ]]; then
+      sudo -n dnf install -y apt-cacher-ng >/dev/null 2>&1 || true
+    fi
+    return
+  fi
+  if command -v pacman >/dev/null 2>&1; then
+    step "installing host packages with pacman"
+    local packages=(
+      qemu-full libvirt virt-install dnsmasq qemu-img cloud-image-utils jq rsync curl python
+      base-devel cmake pkgconf
+    )
+    sudo -n pacman -Sy --needed --noconfirm "\${packages[@]}"
+    return
+  fi
+  echo "unsupported host distro" >&2
+  exit 1
+}
+
+configure_apt_cache() {
+  if [[ "\${APT_CACHE_ENABLED}" != "1" ]]; then
+    return
+  fi
+
+  if command -v apt-cacher-ng >/dev/null 2>&1; then
+    step "configuring apt-cacher-ng on port \${APT_CACHE_PORT}"
+    sudo -n install -d /etc/apt-cacher-ng
+    sudo -n tee /etc/apt-cacher-ng/ployz-lab.conf >/dev/null <<APTCONF
+BindAddress: 0.0.0.0
+Port: \${APT_CACHE_PORT}
+APTCONF
+    sudo -n systemctl enable --now apt-cacher-ng >/dev/null 2>&1 || true
+    return
+  fi
+
+  if command -v docker >/dev/null 2>&1; then
+    step "configuring docker-backed apt cache on port \${APT_CACHE_PORT}"
+    sudo -n install -d "\${ROOT}/cache/apt-cacher-ng"
+    docker rm -f ployz-lab-apt-cache >/dev/null 2>&1 || true
+    docker run -d \
+      --name ployz-lab-apt-cache \
+      --restart unless-stopped \
+      -p "\${APT_CACHE_PORT}:3142" \
+      -v "\${ROOT}/cache/apt-cacher-ng:/var/cache/apt-cacher-ng" \
+      "\${APT_CACHE_IMAGE}" >/dev/null
+    return
+  fi
+
+  step "apt cache enabled, but neither apt-cacher-ng nor docker is available; skipping"
+}
+
+step "validated sudo access for \${LAB_USER}"
+step "installing prerequisites"
+install_packages
+if getent group libvirt >/dev/null 2>&1; then
+  step "adding \${LAB_USER} to libvirt group"
+  sudo -n usermod -aG libvirt "\${LAB_USER}"
+fi
+if getent group kvm >/dev/null 2>&1; then
+  step "adding \${LAB_USER} to kvm group"
+  sudo -n usermod -aG kvm "\${LAB_USER}"
+fi
+
+step "enabling libvirt daemon"
+sudo -n systemctl enable --now libvirtd >/dev/null 2>&1 || sudo -n systemctl enable --now libvirt-bin >/dev/null 2>&1 || true
+
+configure_apt_cache
+
+if ! command -v cargo >/dev/null 2>&1; then
+  step "installing rustup"
+  curl -fsSL https://sh.rustup.rs | sh -s -- -y
+fi
+
+step "preparing lab directories under \${ROOT}"
+mkdir -p "\${ROOT}/images" "\${ROOT}/runs" "\${ROOT}/src" "\${ROOT}/http"
+sudo -n mkdir -p "\${ROOT}/images"
+sudo -n chown "\${LAB_USER}:\$(id -gn "\${LAB_USER}")" "\${ROOT}" "\${ROOT}/images" "\${ROOT}/runs" "\${ROOT}/src" "\${ROOT}/http"
+if command -v setfacl >/dev/null 2>&1 && { id qemu >/dev/null 2>&1 || id libvirt-qemu >/dev/null 2>&1; }; then
+  step "granting hypervisor access to \${LAB_HOME} and \${ROOT}"
+  grant_hypervisor_acl "\${LAB_HOME}" x
+  grant_hypervisor_acl "\${ROOT}" rx
+  grant_hypervisor_acl "\${ROOT}/images" rx
+  grant_hypervisor_acl "\${ROOT}/runs" rx
+  grant_hypervisor_acl "\${ROOT}/src" rx
+  grant_hypervisor_acl "\${ROOT}/http" rx
+  grant_hypervisor_default_acl "\${ROOT}/runs" rwx
+  grant_hypervisor_default_acl "\${ROOT}/images" rx
+fi
+
+if ! sudo -n virsh --connect "\${LIBVIRT_URI}" pool-info "\${POOL}" >/dev/null 2>&1; then
+  step "defining storage pool \${POOL}"
+  sudo -n virsh --connect "\${LIBVIRT_URI}" pool-define-as "\${POOL}" dir - - - - "\${ROOT}/images"
+fi
+step "starting storage pool \${POOL}"
+sudo -n virsh --connect "\${LIBVIRT_URI}" pool-start "\${POOL}" >/dev/null 2>&1 || true
+sudo -n virsh --connect "\${LIBVIRT_URI}" pool-autostart "\${POOL}" >/dev/null 2>&1 || true
+
+step "writing libvirt network definitions"
+cat > "\${ROOT}/mgmt-net.xml" <<XML
+<network>
+  <name>\${MGMT}</name>
+  <mtu size='1200'/>
+  <bridge name='virbr150' stp='on' delay='0'/>
+  <forward mode='nat'/>
+  <ip address='192.168.150.1' netmask='255.255.255.0'>
+    <dhcp>
+      <range start='192.168.150.100' end='192.168.150.200'/>
+    </dhcp>
+  </ip>
+</network>
+XML
+
+cat > "\${ROOT}/data-net.xml" <<XML
+<network>
+  <name>\${DATA}</name>
+  <mtu size='1500'/>
+  <bridge name='virbr151' stp='on' delay='0'/>
+  <ip address='10.77.0.1' netmask='255.255.255.0'>
+    <dhcp>
+      <range start='10.77.0.100' end='10.77.0.200'/>
+    </dhcp>
+  </ip>
+</network>
+XML
+
+if ! sudo -n virsh --connect "\${LIBVIRT_URI}" net-info "\${MGMT}" >/dev/null 2>&1; then
+  step "defining network \${MGMT}"
+  sudo -n virsh --connect "\${LIBVIRT_URI}" net-define "\${ROOT}/mgmt-net.xml"
+fi
+step "starting network \${MGMT}"
+sudo -n virsh --connect "\${LIBVIRT_URI}" net-start "\${MGMT}" >/dev/null 2>&1 || true
+sudo -n virsh --connect "\${LIBVIRT_URI}" net-autostart "\${MGMT}" >/dev/null 2>&1 || true
+
+if ! sudo -n virsh --connect "\${LIBVIRT_URI}" net-info "\${DATA}" >/dev/null 2>&1; then
+  step "defining network \${DATA}"
+  sudo -n virsh --connect "\${LIBVIRT_URI}" net-define "\${ROOT}/data-net.xml"
+fi
+step "starting network \${DATA}"
+sudo -n virsh --connect "\${LIBVIRT_URI}" net-start "\${DATA}" >/dev/null 2>&1 || true
+sudo -n virsh --connect "\${LIBVIRT_URI}" net-autostart "\${DATA}" >/dev/null 2>&1 || true
+step "host bootstrap complete"
+EOF
+}
+
+image_build() {
+  local family=$1
+  local url
+  url=$(family_image_url "${family}")
+  require_host
+  log "ensuring ${family} cloud image exists on ${REMOTE_HOST}"
+  remote_bash <<EOF
+set -euo pipefail
+image_dir='${REMOTE_ROOT}/images'
+image_path="\${image_dir}/${family}.qcow2"
+tmp_path="\${image_path}.tmp"
+
+mkdir -p "\${image_dir}"
+
+if [[ -f "\${image_path}" ]] && qemu-img info "\${image_path}" >/dev/null 2>&1; then
+  echo "[lab][image-build] reusing existing ${family} image at \${image_path}"
+  exit 0
+fi
+
+rm -f "\${tmp_path}"
+echo "[lab][image-build] downloading ${family} image to \${image_path}"
+curl -fL '${url}' -o "\${tmp_path}"
+qemu-img info "\${tmp_path}" >/dev/null
+mv "\${tmp_path}" "\${image_path}"
+EOF
+}
+
+build_artifact_bundle() {
+  local git_rev corrosion_version
+  git_rev="${CURRENT_GIT_REV}"
+  corrosion_version=$(tr -d '[:space:]' < "${ROOT_DIR}/.corrosion-version")
+  remote_rsync_repo
+  log "building branch artifacts on ${REMOTE_HOST}"
+  remote_bash <<EOF
+set -euo pipefail
+cd '${REMOTE_ROOT}/src/repo'
+cargo build --release -p ployzd
+
+bundle_dir='${REMOTE_RUN_DIR}/bundle'
+cache_dir='${REMOTE_ROOT}/cache'
+mkdir -p "\${bundle_dir}" "\${cache_dir}"
+install -m 0755 target/release/ployzd "\${bundle_dir}/ployzd"
+install -m 0755 scripts/bootstrap-linux.sh "\${bundle_dir}/bootstrap-linux.sh"
+install -m 0644 packaging/systemd/ployzd.service "\${bundle_dir}/ployzd.service"
+
+corrosion_asset='corrosion-x86_64-unknown-linux-gnu.tar.gz'
+corrosion_dir="\${cache_dir}/corrosion-${corrosion_version}"
+corrosion_bin="\${corrosion_dir}/corrosion"
+corrosion_archive="\${cache_dir}/\${corrosion_asset}"
+if [[ ! -x "\${corrosion_bin}" ]]; then
+  rm -rf "\${corrosion_dir}"
+  mkdir -p "\${corrosion_dir}"
+  rm -f "\${corrosion_archive}"
+  curl -fsSL "https://github.com/getployz/corrosion/releases/download/${corrosion_version}/\${corrosion_asset}" -o "\${corrosion_archive}"
+  tar -xzf "\${corrosion_archive}" -C "\${corrosion_dir}"
+fi
+if [[ ! -x "\${corrosion_bin}" ]]; then
+  echo "corrosion binary missing after extraction: \${corrosion_bin}" >&2
+  find "\${corrosion_dir}" -maxdepth 2 -type f -print >&2 || true
+  exit 1
+fi
+install -m 0755 "\${corrosion_bin}" "\${bundle_dir}/corrosion"
+
+cat > "\${bundle_dir}/bootstrap-manifest.env" <<MANIFEST
+BOOTSTRAP_GIT_REV=${git_rev}
+BOOTSTRAP_CORROSION_VERSION=${corrosion_version}
+MANIFEST
+
+tar -czf '${REMOTE_RUN_DIR}/bundle.tgz' -C "\${bundle_dir}" .
+mkdir -p '${REMOTE_ROOT}/http/${RUN_ID}'
+cp '${REMOTE_RUN_DIR}/bundle.tgz' '${REMOTE_ROOT}/http/${RUN_ID}/bundle.tgz'
+EOF
+
+  remote_bash <<EOF
+set -euo pipefail
+http_root='${REMOTE_ROOT}/http'
+pid_file="\${http_root}/http.pid"
+log_file="\${http_root}/http.log"
+if [[ -f "\${pid_file}" ]] && kill -0 "\$(cat "\${pid_file}")" >/dev/null 2>&1; then
+  exit 0
+fi
+nohup python3 -m http.server '${HTTP_PORT}' --bind 0.0.0.0 --directory "\${http_root}" >"\${log_file}" 2>&1 &
+echo \$! >"\${pid_file}"
+EOF
+
+  BUNDLE_TAR="${REMOTE_RUN_DIR}/bundle.tgz"
+  BUNDLE_URL="http://${MGMT_GATEWAY}:${HTTP_PORT}/${RUN_ID}/bundle.tgz"
+}
+
+pubkey_contents() {
+  remote_capture "cat '${RUN_KEY}.pub'"
+}
+
+render_user_data() {
+  local node=$1
+  local bootstrap_path=$2
+  local public_key=$3
+  local pristine_cmd family proxy_arg
+  family=${NODE_FAMILY["${node}"]}
+  proxy_arg=$(apt_proxy_arg_for_family "${family}")
+  pristine_cmd="mkdir -p /var/lib/ployz-lab && { command -v docker >/dev/null 2>&1 && echo docker=present || echo docker=absent; command -v ployzd >/dev/null 2>&1 && echo ployzd=present || echo ployzd=absent; systemctl list-unit-files ployzd.service >/dev/null 2>&1 && echo ployzd_unit=present || echo ployzd_unit=absent; [ -d /var/lib/ployz ] && echo data_dir=present || echo data_dir=absent; } >/var/lib/ployz-lab/pristine-state.txt"
+  local bootstrap_cmd=""
+  if [[ "${bootstrap_path}" == "cloud-init" ]]; then
+    bootstrap_cmd="mkdir -p /var/lib/ployz-lab/bootstrap && curl -fsSL '${BUNDLE_URL}' -o /var/lib/ployz-lab/bootstrap/bundle.tgz && tar -xzf /var/lib/ployz-lab/bootstrap/bundle.tgz -C /var/lib/ployz-lab/bootstrap && bash /var/lib/ployz-lab/bootstrap/bootstrap-linux.sh --artifacts-dir /var/lib/ployz-lab/bootstrap${proxy_arg}"
+  fi
+  cat <<EOF
+#cloud-config
+hostname: ${node}
+manage_etc_hosts: true
+users:
+  - name: lab
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ${public_key}
+runcmd:
+  - bash -lc '${pristine_cmd}'
+EOF
+  if [[ -n "${bootstrap_cmd}" ]]; then
+    cat <<EOF
+  - bash -lc '${bootstrap_cmd}'
+EOF
+  fi
+}
+
+render_meta_data() {
+  local node=$1
+  cat <<EOF
+instance-id: ${RUN_ID}-${node}
+local-hostname: ${node}
+EOF
+}
+
+render_network_config() {
+  local node=$1
+  cat <<EOF
+version: 2
+ethernets:
+  mgmt0:
+    match:
+      macaddress: "${NODE_MGMT_MAC[${node}]}"
+    set-name: eth-mgmt
+    dhcp4: false
+    addresses:
+      - ${NODE_MGMT_IP[${node}]}/24
+    nameservers:
+      addresses:
+        - 1.1.1.1
+        - 8.8.8.8
+    routes:
+      - to: default
+        via: ${MGMT_GATEWAY}
+    mtu: 1200
+  data0:
+    match:
+      macaddress: "${NODE_DATA_MAC[${node}]}"
+    set-name: eth-data
+    dhcp4: false
+    addresses:
+      - ${NODE_DATA_IP[${node}]}/24
+    mtu: 1500
+EOF
+}
+
+create_vm() {
+  local node=$1
+  local bootstrap_path=$2
+  local public_key user_data meta_data net_cfg family vm disk seed_dir seed_iso
+  family=${NODE_FAMILY["${node}"]}
+  local base_image=${NODE_BASE_IMAGE["${node}"]}
+  vm=${NODE_VM_NAME["${node}"]}
+  seed_dir="${REMOTE_RUN_DIR}/seed-${node}"
+  disk="${REMOTE_RUN_DIR}/${vm}.qcow2"
+  seed_iso="${REMOTE_RUN_DIR}/${vm}-seed.iso"
+  public_key=$(pubkey_contents)
+  user_data=$(render_user_data "${node}" "${bootstrap_path}" "${public_key}")
+  meta_data=$(render_meta_data "${node}")
+  net_cfg=$(render_network_config "${node}")
+
+  remote_write_file "${seed_dir}/user-data" "${user_data}"
+  remote_write_file "${seed_dir}/meta-data" "${meta_data}"
+  remote_write_file "${seed_dir}/network-config" "${net_cfg}"
+
+  remote_bash <<EOF
+set -euo pipefail
+base='${base_image}'
+disk='${disk}'
+seed='${seed_iso}'
+seed_dir='${seed_dir}'
+vm='${vm}'
+qemu-img create -f qcow2 -F qcow2 -b "\${base}" "\${disk}" '${DEFAULT_DISK_GB}G'
+cloud-localds --network-config "\${seed_dir}/network-config" "\${seed}" "\${seed_dir}/user-data" "\${seed_dir}/meta-data"
+virt-install \
+  --connect '${LIBVIRT_URI}' \
+  --name "\${vm}" \
+  --memory '${DEFAULT_MEMORY_MB}' \
+  --vcpus '${DEFAULT_VCPUS}' \
+  --import \
+  --disk "path=\${disk},format=qcow2,bus=virtio" \
+  --disk "path=\${seed},device=cdrom" \
+  --network "network=${MGMT_NETWORK},model=virtio,mac=${NODE_MGMT_MAC[${node}]}" \
+  --network "network=${DATA_NETWORK},model=virtio,mac=${NODE_DATA_MAC[${node}]}" \
+  --graphics none \
+  --noautoconsole \
+  --osinfo detect=off,name=linux2022 >/dev/null
+EOF
+}
+
+wait_for_ssh() {
+  local node=$1
+  local timeout=${2:-180}
+  remote_bash <<EOF
+set -euo pipefail
+deadline=\$((SECONDS + ${timeout}))
+while (( SECONDS < deadline )); do
+  if ssh -i '${RUN_KEY}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 "lab@${NODE_MGMT_IP[${node}]}" true >/dev/null 2>&1; then
+    exit 0
+  fi
+  sleep 2
+done
+echo "timed out waiting for ssh to ${node}" >&2
+exit 1
+EOF
+}
+
+wait_for_cloud_init() {
+  local node=$1
+  local timeout=${2:-240}
+  if guest_try "${node}" "command -v cloud-init >/dev/null 2>&1"; then
+    guest_exec "${node}" "sudo cloud-init status --wait >/dev/null"
+    return
+  fi
+  sleep 5
+}
+
+guest_exec() {
+  local node=$1
+  shift
+  local cmd cmd_b64
+  cmd="$*"
+  cmd_b64=$(printf '%s' "${cmd}" | base64 | tr -d '\n')
+  remote_bash <<EOF
+set -euo pipefail
+base64 -d <<'__PLOYZ_GUEST_CMD__' | ssh -i '${RUN_KEY}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 'lab@${NODE_MGMT_IP[${node}]}' bash -se
+${cmd_b64}
+__PLOYZ_GUEST_CMD__
+EOF
+}
+
+guest_try() {
+  local node=$1
+  shift
+  local cmd cmd_b64
+  cmd="$*"
+  cmd_b64=$(printf '%s' "${cmd}" | base64 | tr -d '\n')
+  remote_sh "base64 -d <<'__PLOYZ_GUEST_CMD__' | ssh -i '${RUN_KEY}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 'lab@${NODE_MGMT_IP[${node}]}' bash -se >/dev/null 2>&1
+${cmd_b64}
+__PLOYZ_GUEST_CMD__"
+}
+
+guest_scp_from_remote() {
+  local node=$1
+  local source=$2
+  local dest=$3
+  remote_sh "scp -i '${RUN_KEY}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null '${source}' 'lab@${NODE_MGMT_IP[${node}]}:${dest}'"
+}
+
+assert_pristine() {
+  local node=$1
+  local output=""
+  local deadline=$((SECONDS + 120))
+  while (( SECONDS < deadline )); do
+    output=$(guest_exec "${node}" "sudo cat /var/lib/ployz-lab/pristine-state.txt 2>/dev/null || true")
+    if [[ "${output}" == *"docker="* && "${output}" == *"ployzd="* && "${output}" == *"data_dir="* ]]; then
+      break
+    fi
+    sleep 2
+  done
+  printf '%s\n' "${output}" >"${LOCAL_REPORT_DIR}/${node}-pristine.txt"
+  [[ "${output}" == *"docker=absent"* ]] || fail "${node} was not pristine: docker present or state unavailable"
+  [[ "${output}" == *"ployzd=absent"* ]] || fail "${node} was not pristine: ployzd present or state unavailable"
+  [[ "${output}" == *"data_dir=absent"* ]] || fail "${node} was not pristine: data dir present or state unavailable"
+}
+
+bootstrap_over_ssh() {
+  local node=$1
+  local family proxy_arg
+  family=${NODE_FAMILY["${node}"]}
+  proxy_arg=$(apt_proxy_arg_for_family "${family}")
+  assert_pristine "${node}"
+  guest_scp_from_remote "${node}" "${BUNDLE_TAR}" "/tmp/ployz-bundle.tgz"
+  guest_exec "${node}" "rm -rf /tmp/ployz-bundle && mkdir -p /tmp/ployz-bundle && tar -xzf /tmp/ployz-bundle.tgz -C /tmp/ployz-bundle && sudo bash /tmp/ployz-bundle/bootstrap-linux.sh --artifacts-dir /tmp/ployz-bundle${proxy_arg}"
+}
+
+verify_bootstrap() {
+  local node=$1
+  guest_exec "${node}" "sudo test -x /usr/local/bin/ployzd && sudo test -x /usr/local/bin/corrosion"
+  guest_exec "${node}" "sudo systemctl is-enabled ployzd.service"
+  guest_exec "${node}" "sudo systemctl is-active ployzd.service"
+}
+
+reboot_and_verify() {
+  local node=$1
+  remote_sh "ssh -i '${RUN_KEY}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 'lab@${NODE_MGMT_IP[${node}]}' sudo reboot" >/dev/null 2>&1 || true
+  sleep 5
+  wait_for_ssh "${node}" 240
+  verify_bootstrap "${node}"
+}
+
+prepare_guest_for_reuse() {
+  local node=$1
+  guest_exec "${node}" "sudo cloud-init clean --logs || true"
+  guest_exec "${node}" "sudo truncate -s 0 /etc/machine-id && sudo rm -f /var/lib/dbus/machine-id"
+}
+
+shutdown_guest() {
+  local node=$1
+  local vm=${NODE_VM_NAME["${node}"]}
+  remote_sh "ssh -i '${RUN_KEY}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 'lab@${NODE_MGMT_IP[${node}]}' sudo systemctl poweroff" >/dev/null 2>&1 || true
+  remote_bash <<EOF
+set -euo pipefail
+deadline=\$((SECONDS + 180))
+while (( SECONDS < deadline )); do
+  state=\$(virsh --connect '${LIBVIRT_URI}' domstate '${vm}' 2>/dev/null || true)
+  if [[ "\${state}" == "shut off" ]]; then
+    exit 0
+  fi
+  sleep 2
+done
+echo "timed out waiting for ${vm} to power off" >&2
+exit 1
+EOF
+}
+
+capture_base_image() {
+  local node=$1
+  local family=$2
+  local kind=$3
+  local git_rev=$4
+  local verified=$5
+  local vm disk seed_iso target target_tmp metadata_path
+  vm=${NODE_VM_NAME["${node}"]}
+  disk="${REMOTE_RUN_DIR}/${vm}.qcow2"
+  seed_iso="${REMOTE_RUN_DIR}/${vm}-seed.iso"
+  target=$(base_image_path "${family}" "${kind}")
+  target_tmp="${target}.tmp"
+  metadata_path=$(base_metadata_path "${family}" "${kind}")
+
+  remote_bash <<EOF
+set -euo pipefail
+virsh --connect '${LIBVIRT_URI}' undefine '${vm}' >/dev/null 2>&1 || true
+rm -f '${seed_iso}'
+rm -f '${target_tmp}'
+mv '${disk}' '${target_tmp}'
+qemu-img info '${target_tmp}' >/dev/null
+mv '${target_tmp}' '${target}'
+EOF
+
+  remote_write_file "${metadata_path}" "$(printf 'family=%s\nkind=%s\nimage_path=%s\ngit_rev=%s\nbuilt_at=%s\nverified=%s\n' \
+    "${family}" "${kind}" "${target}" "${git_rev}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${verified}")"
+}
+
+seed_interguest_ssh() {
+  local node=$1
+  guest_scp_from_remote "${node}" "${RUN_KEY}" "/tmp/lab-run-key"
+  guest_exec "${node}" "sudo install -d -m 700 /root/.ssh && sudo install -m 600 /tmp/lab-run-key /root/.ssh/id_ed25519 && printf 'Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  IdentityFile /root/.ssh/id_ed25519\n' | sudo tee /root/.ssh/config >/dev/null && sudo chmod 600 /root/.ssh/config"
+}
+
+apply_profile() {
+  local node=$1
+  local profile=$2
+  local interface_override=${3:-}
+  local manifest iface netem
+  manifest=$(profile_manifest "${profile}")
+  iface=$(jq -r '.interface' "${manifest}")
+  netem=$(jq -r '.netem' "${manifest}")
+  if [[ -n "${interface_override}" ]]; then
+    iface=${interface_override}
+  fi
+  guest_exec "${node}" "sudo tc qdisc replace dev eth-${iface} root netem ${netem}"
+}
+
+clear_profile() {
+  local node=$1
+  local iface=${2:-data}
+  guest_exec "${node}" "sudo tc qdisc del dev eth-${iface} root >/dev/null 2>&1 || true"
+}
+
+await_contains() {
+  local node=$1
+  local cmd=$2
+  local needle=$3
+  local timeout=${4:-120}
+  local start output
+  start=$(date +%s)
+  while true; do
+    output=$(guest_exec "${node}" "${cmd}" || true)
+    if [[ "${output}" == *"${needle}"* ]]; then
+      return 0
+    fi
+    if (( "$(date +%s)" - start >= timeout )); then
+      printf '%s\n' "${output}" >"${LOCAL_REPORT_DIR}/${node}-await-timeout.txt"
+      fail "timed out waiting for '${needle}' from ${node}"
+    fi
+    sleep 2
+  done
+}
+
+await_machine_state() {
+  local node=$1
+  local machine=$2
+  local state=$3
+  local timeout=${4:-120}
+  local start output line
+  start=$(date +%s)
+  while true; do
+    output=$(guest_exec "${node}" "sudo ployzd machine ls" || true)
+    line=$(printf '%s\n' "${output}" | awk -v machine="${machine}" '$1 == machine { print $0 }')
+    if [[ "${line}" == *"${state}"* ]]; then
+      return 0
+    fi
+    if (( "$(date +%s)" - start >= timeout )); then
+      printf '%s\n' "${output}" >"${LOCAL_REPORT_DIR}/${node}-machine-state-timeout.txt"
+      fail "timed out waiting for ${machine} to reach state ${state} on ${node}"
+    fi
+    sleep 2
+  done
+}
+
+await_json_true() {
+  local node=$1
+  local cmd=$2
+  local field=$3
+  local timeout=${4:-120}
+  local start output
+  start=$(date +%s)
+  while true; do
+    output=$(guest_exec "${node}" "${cmd}" || true)
+    if printf '%s' "${output}" | jq -e --arg field "${field}" '.[$field] == true' >/dev/null 2>&1; then
+      return 0
+    fi
+    if (( "$(date +%s)" - start >= timeout )); then
+      printf '%s\n' "${output}" >"${LOCAL_REPORT_DIR}/${node}-await-json-timeout.txt"
+      fail "timed out waiting for JSON field ${field}=true on ${node}"
+    fi
+    sleep 2
+  done
+}
+
+collect_node_report() {
+  local node=$1
+  local out_dir="${LOCAL_REPORT_DIR}/${node}"
+  install -d "${out_dir}"
+  guest_exec "${node}" "hostnamectl --static" >"${out_dir}/hostname.txt" || true
+  guest_exec "${node}" "command -v dpkg-query >/dev/null 2>&1 && dpkg-query -W || command -v rpm >/dev/null 2>&1 && rpm -qa || pacman -Q" >"${out_dir}/packages.txt" || true
+  guest_exec "${node}" "sudo systemctl status ployzd.service --no-pager" >"${out_dir}/systemd-status.txt" || true
+  guest_exec "${node}" "sudo journalctl -u ployzd.service --no-pager -n 200" >"${out_dir}/journal.txt" || true
+  guest_exec "${node}" "sudo ployzd status" >"${out_dir}/ployzd-status.txt" || true
+  guest_exec "${node}" "sudo ployzd mesh ready --json" >"${out_dir}/mesh-ready.json" || true
+  guest_exec "${node}" "sudo ployzd machine ls" >"${out_dir}/machine-ls.txt" || true
+  guest_exec "${node}" "sudo tc qdisc show dev eth-data && echo && sudo tc qdisc show dev eth-mgmt" >"${out_dir}/tc.txt" || true
+  guest_exec "${node}" "sudo ip -br a" >"${out_dir}/ip.txt" || true
+  guest_exec "${node}" "sudo docker ps -a" >"${out_dir}/docker-ps.txt" || true
+  guest_exec "${node}" "sudo cat /var/lib/ployz-lab/pristine-state.txt 2>/dev/null || true" >"${out_dir}/pristine-state.txt" || true
+}
+
+collect_reports() {
+  local node
+  for node in "${NODES[@]}"; do
+    collect_node_report "${node}"
+  done
+}
+
+assign_node_base_images() {
+  local base_kind=$1
+  local node family
+  RUN_BASE_KIND="${base_kind}"
+  for node in "${NODES[@]}"; do
+    family=${NODE_FAMILY["${node}"]}
+    ensure_base_exists "${family}" "${base_kind}"
+    NODE_BASE_IMAGE["${node}"]=$(base_image_path "${family}" "${base_kind}")
+  done
+}
+
+copy_base_metadata_into_report() {
+  local bases_dir="${LOCAL_REPORT_DIR}/bases"
+  local node family kind metadata
+  declare -A seen=()
+  install -d "${bases_dir}"
+  kind=${RUN_BASE_KIND:-raw}
+  for node in "${NODES[@]}"; do
+    family=${NODE_FAMILY["${node}"]}
+    [[ -n "${family}" ]] || continue
+    [[ -z "${seen[${family}]:-}" ]] || continue
+    seen["${family}"]=1
+    metadata=$(fetch_base_metadata "${family}" "${kind}")
+    printf '%s\n' "${metadata}" >"${bases_dir}/${family}--${kind}.metadata.env"
+    if [[ "${kind}" == "post-install" ]]; then
+      warn_if_post_install_stale "${family}"
+    fi
+  done
+}
+
+resolve_default_scenario_base() {
+  local node family
+  declare -A seen=()
+  for node in "${NODES[@]}"; do
+    family=${NODE_FAMILY["${node}"]}
+    [[ -z "${seen[${family}]:-}" ]] || continue
+    seen["${family}"]=1
+    if ! base_exists "${family}" post-install; then
+      fail "missing post-install base for ${family}; run 'just lab snapshot build post-install --family ${family}' or pass --base raw"
+    fi
+  done
+  printf 'post-install'
+}
+
+bootstrap_nodes() {
+  local bootstrap_path=$1
+  local base_kind=$2
+  local node
+  for node in "${NODES[@]}"; do
+    create_vm "${node}" "${bootstrap_path}"
+  done
+  for node in "${NODES[@]}"; do
+    wait_for_ssh "${node}" 240
+    wait_for_cloud_init "${node}" 240
+    case "${base_kind}" in
+      raw)
+        assert_pristine "${node}"
+        if [[ "${bootstrap_path}" == "ssh" ]]; then
+          bootstrap_over_ssh "${node}"
+        fi
+        verify_bootstrap "${node}"
+        reboot_and_verify "${node}"
+        ;;
+      bootstrapped-pristine)
+        assert_pristine "${node}"
+        bootstrap_over_ssh "${node}"
+        verify_bootstrap "${node}"
+        reboot_and_verify "${node}"
+        ;;
+      post-install)
+        verify_bootstrap "${node}"
+        ;;
+    esac
+  done
+}
+
+scenario_founder_init_after_bootstrap() {
+  guest_exec founder "sudo ployzd mesh init alpha"
+  await_json_true founder "sudo ployzd mesh ready --json" ready 120
+}
+
+scenario_machine_add_basic() {
+  local joiner_target="lab@${NODE_MGMT_IP[joiner]}"
+  seed_interguest_ssh founder
+  seed_interguest_ssh joiner
+  guest_exec founder "sudo ployzd mesh init alpha"
+  await_json_true founder "sudo ployzd mesh ready --json" ready 120
+  guest_exec founder "sudo ployzd machine add ${joiner_target}"
+  await_contains founder "sudo ployzd machine ls" "joiner" 120
+  await_machine_state founder joiner disabled 60
+  await_machine_state founder joiner enabled 180
+}
+
+scenario_machine_remove_guard() {
+  scenario_machine_add_basic
+  local output
+  output=$(guest_exec founder "sudo ployzd machine rm joiner" || true)
+  [[ "${output}" == *"must be disabled"* ]] || fail "expected enabled remove guard failure"
+  guest_exec founder "sudo ployzd machine drain joiner"
+  output=$(guest_exec founder "sudo ployzd machine rm joiner" || true)
+  [[ "${output}" == *"must be disabled"* ]] || fail "expected draining remove guard failure"
+  apply_profile joiner partition data
+  sleep 20
+  output=$(guest_exec founder "sudo ployzd machine ls" || true)
+  printf '%s\n' "${output}" >"${LOCAL_REPORT_DIR}/founder-remove-guard-post-partition.txt"
+  guest_exec founder "sudo ployzd machine rm joiner --force"
+}
+
+scenario_replace_machine() {
+  local joiner_target="lab@${NODE_MGMT_IP[joiner]}"
+  local replacement_target="lab@${NODE_MGMT_IP[replacement]}"
+  seed_interguest_ssh founder
+  seed_interguest_ssh joiner
+  seed_interguest_ssh replacement
+  guest_exec founder "sudo ployzd mesh init alpha"
+  await_json_true founder "sudo ployzd mesh ready --json" ready 120
+  guest_exec founder "sudo ployzd machine add ${joiner_target}"
+  await_contains founder "sudo ployzd machine ls" "joiner" 120
+  guest_exec founder "sudo ployzd machine add ${replacement_target}"
+  await_contains founder "sudo ployzd machine ls" "replacement" 120
+  guest_exec founder "sudo ployzd machine drain joiner"
+  guest_exec founder "sudo ployzd machine rm joiner --force"
+  await_contains founder "sudo ployzd machine ls" "replacement" 120
+}
+
+scenario_rejoin_after_remove() {
+  local replacement_target="lab@${NODE_MGMT_IP[replacement]}"
+  seed_interguest_ssh founder
+  seed_interguest_ssh joiner
+  seed_interguest_ssh replacement
+  guest_exec founder "sudo ployzd mesh init alpha"
+  await_json_true founder "sudo ployzd mesh ready --json" ready 120
+  guest_exec founder "sudo ployzd machine add lab@${NODE_MGMT_IP[joiner]}"
+  await_contains founder "sudo ployzd machine ls" "joiner" 120
+  guest_exec founder "sudo ployzd machine rm joiner --force"
+  await_contains founder "sudo ployzd machine ls" "replacement" 1 || true
+  guest_exec founder "sudo ployzd machine add ${replacement_target}"
+  await_contains founder "sudo ployzd machine ls" "replacement" 120
+}
+
+scenario_join_under_latency() {
+  seed_interguest_ssh founder
+  seed_interguest_ssh joiner
+  guest_exec founder "sudo ployzd mesh init alpha"
+  apply_profile founder far data
+  apply_profile joiner far data
+  guest_exec founder "sudo ployzd machine add lab@${NODE_MGMT_IP[joiner]}"
+  await_contains founder "sudo ployzd machine ls" "joiner" 180
+}
+
+scenario_steady_state_jitter() {
+  scenario_machine_add_basic
+  apply_profile founder bad-wan data
+  apply_profile joiner bad-wan data
+  sleep 30
+  await_contains founder "sudo ployzd machine ls" "joiner" 30
+}
+
+scenario_partition_and_recover() {
+  scenario_machine_add_basic
+  apply_profile founder partition data
+  apply_profile joiner partition data
+  sleep 20
+  clear_profile founder data
+  clear_profile joiner data
+  await_contains founder "sudo ployzd machine ls" "joiner" 120
+}
+
+scenario_remove_during_partition() {
+  scenario_machine_add_basic
+  apply_profile founder partition data
+  apply_profile joiner partition data
+  local output
+  output=$(guest_exec founder "sudo ployzd machine rm joiner" || true)
+  [[ "${output}" == *"must be disabled"* ]] || fail "expected remove guard failure during partition"
+  guest_exec founder "sudo ployzd machine rm joiner --force"
+}
+
+scenario_bootstrap_under_bad_network() {
+  local node=founder
+  create_vm "${node}" ssh
+  wait_for_ssh "${node}" 240
+  wait_for_cloud_init "${node}" 240
+  assert_pristine "${node}"
+  apply_profile "${node}" bad-wan mgmt
+  bootstrap_over_ssh "${node}"
+  verify_bootstrap "${node}"
+}
+
+run_named_scenario() {
+  local name=$1
+  case "${name}" in
+    founder_init_after_bootstrap) scenario_founder_init_after_bootstrap ;;
+    machine_add_basic) scenario_machine_add_basic ;;
+    machine_remove_guard) scenario_machine_remove_guard ;;
+    replace_machine) scenario_replace_machine ;;
+    rejoin_after_remove) scenario_rejoin_after_remove ;;
+    join_under_latency) scenario_join_under_latency ;;
+    steady_state_jitter) scenario_steady_state_jitter ;;
+    partition_and_recover) scenario_partition_and_recover ;;
+    remove_during_partition) scenario_remove_during_partition ;;
+    bootstrap_under_bad_network) scenario_bootstrap_under_bad_network ;;
+    *) fail "unknown scenario implementation '${name}'" ;;
+  esac
+}
+
+write_run_metadata() {
+  local scenario=$1
+  local bootstrap_path=$2
+  local profile=$3
+  local base_kind=$4
+  {
+    local apt_proxy
+    apt_proxy=$(apt_proxy_url)
+    printf 'run_id=%s\n' "${RUN_ID}"
+    printf 'scenario=%s\n' "${scenario}"
+    printf 'bootstrap_path=%s\n' "${bootstrap_path}"
+    printf 'profile=%s\n' "${profile}"
+    printf 'base=%s\n' "${base_kind}"
+    printf 'base_action=%s\n' "reused"
+    printf 'apt_proxy=%s\n' "${apt_proxy}"
+    local node
+    for node in "${NODES[@]}"; do
+      printf 'node.%s.family=%s\n' "${node}" "${NODE_FAMILY[${node}]}"
+      printf 'node.%s.mgmt_ip=%s\n' "${node}" "${NODE_MGMT_IP[${node}]}"
+      printf 'node.%s.data_ip=%s\n' "${node}" "${NODE_DATA_IP[${node}]}"
+      printf 'node.%s.base_image=%s\n' "${node}" "${NODE_BASE_IMAGE[${node}]}"
+    done
+  } >"${LOCAL_REPORT_DIR}/metadata.env"
+  copy_base_metadata_into_report
+}
+
+run_bootstrap_test() {
+  local bootstrap_path=$1
+  local family=$2
+  local base_kind=${3:-raw}
+  local manifest
+  validate_base_kind "${base_kind}"
+  if [[ "${bootstrap_path}" == "cloud-init" && "${base_kind}" != "raw" ]]; then
+    fail "cloud-init bootstrap tests must use --base raw"
+  fi
+  if [[ "${bootstrap_path}" == "ssh" && "${base_kind}" == "post-install" ]]; then
+    fail "ssh bootstrap tests support --base raw or --base bootstrapped-pristine"
+  fi
+  manifest=$(scenario_manifest founder_init_after_bootstrap)
+  prepare_run "bootstrap-${bootstrap_path}-${family}"
+  RUN_SUMMARY_LABEL="bootstrap test ${bootstrap_path} family=${family} base=${base_kind}"
+  register_nodes "${manifest}" "founder=${family}"
+  assign_node_base_images "${base_kind}"
+  if [[ "${bootstrap_path}" == "cloud-init" || "${bootstrap_path}" == "ssh" ]]; then
+    build_artifact_bundle
+  fi
+  write_run_metadata "bootstrap_${bootstrap_path}_${family}" "${bootstrap_path}" "clean" "${base_kind}"
+  bootstrap_nodes "${bootstrap_path}" "${base_kind}"
+  collect_reports
+  RUN_FAILED=0
+  print_run_summary "PASS" "${RUN_ID}" "${LOCAL_REPORT_DIR}" "$(planned_cleanup_action)"
+}
+
+run_scenario() {
+  local name=$1
+  local bootstrap_path_override=$2
+  local family_override=$3
+  local profile_override=$4
+  local base_override=$5
+  local manifest bootstrap_path profile base_kind
+  manifest=$(scenario_manifest "${name}")
+  bootstrap_path=$(jq -r '.default_bootstrap_path' "${manifest}")
+  profile=$(jq -r '.default_profile' "${manifest}")
+  if [[ -n "${bootstrap_path_override}" ]]; then
+    bootstrap_path=${bootstrap_path_override}
+  fi
+  if [[ -n "${profile_override}" ]]; then
+    profile=${profile_override}
+  fi
+
+  prepare_run "${name}"
+  RUN_SUMMARY_LABEL="scenario ${name}"
+  register_nodes "${manifest}" "${family_override}"
+  if [[ "${name}" == "bootstrap_under_bad_network" ]]; then
+    base_kind=${base_override:-raw}
+    validate_base_kind "${base_kind}"
+    if [[ "${base_kind}" == "post-install" ]]; then
+      fail "bootstrap_under_bad_network requires --base raw or --base bootstrapped-pristine"
+    fi
+  elif [[ -n "${base_override}" ]]; then
+    base_kind=${base_override}
+    validate_base_kind "${base_kind}"
+  else
+    base_kind=$(resolve_default_scenario_base)
+  fi
+  assign_node_base_images "${base_kind}"
+  if [[ "${base_kind}" != "post-install" ]]; then
+    build_artifact_bundle
+  fi
+  write_run_metadata "${name}" "${bootstrap_path}" "${profile}" "${base_kind}"
+  if [[ "${name}" == "bootstrap_under_bad_network" ]]; then
+    run_named_scenario "${name}"
+  else
+    bootstrap_nodes "${bootstrap_path}" "${base_kind}"
+    run_named_scenario "${name}"
+  fi
+  collect_reports
+  RUN_FAILED=0
+  print_run_summary "PASS" "${RUN_ID}" "${LOCAL_REPORT_DIR}" "$(planned_cleanup_action)"
+}
+
+snapshot_is_current() {
+  local family=$1
+  local kind=$2
+  if ! base_exists "${family}" "${kind}"; then
+    return 1
+  fi
+  if [[ "${kind}" != "post-install" ]]; then
+    return 0
+  fi
+  [[ "$(base_metadata_value "${family}" "${kind}" git_rev)" == "${CURRENT_GIT_REV}" ]]
+}
+
+snapshot_build_bootstrapped_pristine() {
+  local family=$1
+  local manifest node=founder
+  if snapshot_is_current "${family}" bootstrapped-pristine; then
+    log "reusing existing bootstrapped-pristine base for ${family}"
+    return
+  fi
+
+  manifest=$(scenario_manifest founder_init_after_bootstrap)
+  prepare_run "snapshot-bootstrapped-pristine-${family}"
+  RUN_SUMMARY_LABEL="snapshot build bootstrapped-pristine family=${family}"
+  register_nodes "${manifest}" "founder=${family}"
+  assign_node_base_images raw
+  write_run_metadata "snapshot_bootstrapped_pristine_${family}" "none" "clean" raw
+  create_vm "${node}" none
+  wait_for_ssh "${node}" 240
+  wait_for_cloud_init "${node}" 240
+  assert_pristine "${node}"
+  collect_reports
+  prepare_guest_for_reuse "${node}"
+  shutdown_guest "${node}"
+  capture_base_image "${node}" "${family}" bootstrapped-pristine "cloud-init-ready" "cloud-init-complete,ssh-reachable,pristine"
+  RUN_FAILED=0
+  print_run_summary "PASS" "${RUN_ID}" "${LOCAL_REPORT_DIR}" "$(planned_cleanup_action)"
+}
+
+snapshot_build_post_install() {
+  local family=$1
+  local manifest node=founder
+  if snapshot_is_current "${family}" post-install; then
+    log "reusing existing post-install base for ${family} at git_rev=${CURRENT_GIT_REV}"
+    return
+  fi
+  if ! base_exists "${family}" bootstrapped-pristine; then
+    log "bootstrapped-pristine base for ${family} is missing; building it first"
+    snapshot_build_bootstrapped_pristine "${family}"
+  fi
+
+  manifest=$(scenario_manifest founder_init_after_bootstrap)
+  prepare_run "snapshot-post-install-${family}"
+  RUN_SUMMARY_LABEL="snapshot build post-install family=${family}"
+  register_nodes "${manifest}" "founder=${family}"
+  assign_node_base_images bootstrapped-pristine
+  build_artifact_bundle
+  write_run_metadata "snapshot_post_install_${family}" "ssh" "clean" "bootstrapped-pristine"
+  bootstrap_nodes ssh bootstrapped-pristine
+  collect_reports
+  prepare_guest_for_reuse "${node}"
+  shutdown_guest "${node}"
+  capture_base_image "${node}" "${family}" post-install "${CURRENT_GIT_REV}" "bootstrap-installed,service-enabled,service-active,reboot-verified"
+  RUN_FAILED=0
+  print_run_summary "PASS" "${RUN_ID}" "${LOCAL_REPORT_DIR}" "$(planned_cleanup_action)"
+}
+
+snapshot_build() {
+  local kind=$1
+  local family=$2
+  validate_base_kind "${kind}"
+  case "${kind}" in
+    raw)
+      fail "snapshot build supports bootstrapped-pristine or post-install"
+      ;;
+    bootstrapped-pristine)
+      snapshot_build_bootstrapped_pristine "${family}"
+      ;;
+    post-install)
+      snapshot_build_post_install "${family}"
+      ;;
+  esac
+}
+
+snapshot_list() {
+  require_host
+  remote_bash <<EOF
+set -euo pipefail
+image_root='${REMOTE_ROOT}/images'
+for family in ubuntu rocky arch; do
+  for kind in raw bootstrapped-pristine post-install; do
+    case "\${kind}" in
+      raw)
+        image_path="\${image_root}/\${family}.qcow2"
+        metadata_path="\${image_root}/\${family}--raw.metadata.env"
+        ;;
+      *)
+        image_path="\${image_root}/\${family}--\${kind}.qcow2"
+        metadata_path="\${image_root}/\${family}--\${kind}.metadata.env"
+        ;;
+    esac
+    if qemu-img info "\${image_path}" >/dev/null 2>&1; then
+      git_rev="-"
+      built_at="-"
+      if [[ -f "\${metadata_path}" ]]; then
+        git_rev=\$(awk -F= '\$1 == "git_rev" { print \$2; exit }' "\${metadata_path}")
+        built_at=\$(awk -F= '\$1 == "built_at" { print \$2; exit }' "\${metadata_path}")
+      fi
+      printf '%-8s %-22s %-10s %-22s %s\n' "\${family}" "\${kind}" "present" "\${built_at}" "\${git_rev}"
+    else
+      printf '%-8s %-22s %-10s %-22s %s\n' "\${family}" "\${kind}" "missing" "-" "-"
+    fi
+  done
+done
+EOF
+}
+
+run_suite() {
+  local suite=$1
+  case "${suite}" in
+    bootstrap)
+      run_bootstrap_test cloud-init ubuntu raw
+      run_bootstrap_test ssh ubuntu raw
+      run_bootstrap_test cloud-init rocky raw
+      run_bootstrap_test ssh rocky raw
+      run_bootstrap_test cloud-init arch raw
+      run_bootstrap_test ssh arch raw
+      ;;
+    semantics)
+      run_scenario founder_init_after_bootstrap ssh founder=ubuntu clean post-install
+      run_scenario machine_add_basic ssh founder=ubuntu,joiner=rocky regional post-install
+      run_scenario machine_remove_guard ssh founder=ubuntu,joiner=rocky clean post-install
+      run_scenario replace_machine ssh founder=ubuntu,joiner=rocky,replacement=arch far post-install
+      run_scenario rejoin_after_remove ssh founder=rocky,joiner=arch,replacement=ubuntu clean post-install
+      ;;
+    fault)
+      run_scenario join_under_latency ssh founder=ubuntu,joiner=rocky far post-install
+      run_scenario steady_state_jitter ssh founder=ubuntu,joiner=rocky bad-wan post-install
+      run_scenario partition_and_recover ssh founder=ubuntu,joiner=rocky partition post-install
+      run_scenario remove_during_partition ssh founder=ubuntu,joiner=rocky partition post-install
+      run_scenario bootstrap_under_bad_network ssh founder=ubuntu bad-wan raw
+      ;;
+    full)
+      run_suite bootstrap
+      run_suite semantics
+      run_suite fault
+      ;;
+    *)
+      fail "unknown suite '${suite}'"
+      ;;
+  esac
+}
+
+report_open() {
+  local run_id=$1
+  local path="${STATE_DIR}/reports/${run_id}"
+  [[ -d "${path}" ]] || fail "report not found: ${run_id}"
+  if command -v open >/dev/null 2>&1; then
+    open "${path}"
+    return
+  fi
+  if command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "${path}"
+    return
+  fi
+  printf '%s\n' "${path}"
+}
+
+ensure_prereqs() {
+  need_cmd ssh
+  need_cmd rsync
+  need_cmd jq
+  need_cmd tar
+  ensure_local_state
+  require_host
+}
+
+main() {
+  local cmd=${1:-}
+  case "${cmd}" in
+    ""|-h|--help|help)
+      usage
+      ;;
+    host)
+      ensure_prereqs
+      [[ ${2:-} == "bootstrap" ]] || fail "expected 'host bootstrap'"
+      host_bootstrap
+      ;;
+    image)
+      ensure_prereqs
+      [[ ${2:-} == "build" ]] || fail "expected 'image build <family>'"
+      image_build "${3:-}"
+      ;;
+    snapshot)
+      ensure_prereqs
+      case "${2:-}" in
+        build)
+          local kind=${3:-}
+          shift 3
+          local family=""
+          while [[ $# -gt 0 ]]; do
+            case "$1" in
+              --family)
+                family=${2:-}
+                shift 2
+                ;;
+              *)
+                fail "unknown argument: $1"
+                ;;
+            esac
+          done
+          [[ -n "${family}" ]] || fail "--family is required"
+          snapshot_build "${kind}" "${family}"
+          ;;
+        list)
+          snapshot_list
+          ;;
+        *)
+          fail "expected 'snapshot build <kind> --family <family>' or 'snapshot list'"
+          ;;
+      esac
+      ;;
+    bootstrap)
+      ensure_prereqs
+      [[ ${2:-} == "test" ]] || fail "expected 'bootstrap test <cloud-init|ssh> --family <family>'"
+      local path=${3:-}
+      shift 3
+      local family=""
+      local base_kind="raw"
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --family)
+            family=${2:-}
+            shift 2
+            ;;
+          --base)
+            base_kind=${2:-}
+            shift 2
+            ;;
+          *)
+            fail "unknown argument: $1"
+            ;;
+        esac
+      done
+      [[ -n "${family}" ]] || fail "--family is required"
+      run_bootstrap_test "${path}" "${family}" "${base_kind}"
+      ;;
+    scenario)
+      ensure_prereqs
+      [[ ${2:-} == "run" ]] || fail "expected 'scenario run <name> ...'"
+      local name=${3:-}
+      shift 3
+      local bootstrap_path=""
+      local family_override=""
+      local profile_override=""
+      local base_override=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --bootstrap-path)
+            bootstrap_path=${2:-}
+            shift 2
+            ;;
+          --family)
+            family_override=${2:-}
+            shift 2
+            ;;
+          --profile)
+            profile_override=${2:-}
+            shift 2
+            ;;
+          --base)
+            base_override=${2:-}
+            shift 2
+            ;;
+          *)
+            fail "unknown argument: $1"
+            ;;
+        esac
+      done
+      run_scenario "${name}" "${bootstrap_path}" "${family_override}" "${profile_override}" "${base_override}"
+      ;;
+    suite)
+      ensure_prereqs
+      [[ ${2:-} == "run" ]] || fail "expected 'suite run <suite>'"
+      run_suite "${3:-}"
+      ;;
+    report)
+      ensure_local_state
+      [[ ${2:-} == "open" ]] || fail "expected 'report open <run-id>'"
+      report_open "${3:-}"
+      ;;
+    *)
+      fail "unknown command '${cmd}'"
+      ;;
+  esac
+}
+
+main "$@"
