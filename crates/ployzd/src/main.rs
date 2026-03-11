@@ -453,7 +453,7 @@ async fn cmd_run(
     if let Some(network) = state.read_active_marker() {
         tracing::info!(%network, "resuming network");
         match state.start_mesh_by_name(&network).await {
-            Ok(()) => tracing::info!(%network, "resumed network"),
+            Ok(_) => tracing::info!(%network, "resumed network"),
             Err(err) => {
                 tracing::warn!(%err, %network, "failed to resume network");
                 state.clear_active_marker();
