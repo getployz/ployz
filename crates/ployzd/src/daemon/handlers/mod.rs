@@ -39,7 +39,9 @@ impl DaemonState {
             DaemonRequest::MachineInit { target, network } => {
                 self.handle_machine_init(&target, &network).await
             }
-            DaemonRequest::MachineAdd { targets } => self.handle_machine_add(&targets).await,
+            DaemonRequest::MachineAdd { targets, options } => {
+                self.handle_machine_add(&targets, &options).await
+            }
             DaemonRequest::MachineDrain { id } => self.handle_machine_drain(&id).await,
             DaemonRequest::MachineRemove { id, force } => {
                 self.handle_machine_remove(&id, force).await

@@ -1008,6 +1008,12 @@ bootstrap_over_ssh() {
   guest_exec "${node}" "rm -rf /tmp/ployz-bundle && mkdir -p /tmp/ployz-bundle && tar -xzf /tmp/ployz-bundle.tgz -C /tmp/ployz-bundle && sudo bash /tmp/ployz-bundle/bootstrap-linux.sh --artifacts-dir /tmp/ployz-bundle${proxy_arg}"
 }
 
+refresh_post_install_node() {
+  local node=$1
+  guest_scp_from_remote "${node}" "${BUNDLE_TAR}" "/tmp/ployz-bundle.tgz"
+  guest_exec "${node}" "rm -rf /tmp/ployz-bundle && mkdir -p /tmp/ployz-bundle && tar -xzf /tmp/ployz-bundle.tgz -C /tmp/ployz-bundle && sudo bash /tmp/ployz-bundle/bootstrap-linux.sh --artifacts-dir /tmp/ployz-bundle --refresh-only"
+}
+
 verify_bootstrap() {
   local node=$1
   guest_exec "${node}" "sudo test -x /usr/local/bin/ployzd && sudo test -x /usr/local/bin/ployz && sudo test -x /usr/local/bin/ployz-gateway && sudo test -x /usr/local/bin/ployz-dns && sudo test -x /usr/local/bin/corrosion"
@@ -1026,6 +1032,7 @@ reboot_and_verify() {
 prepare_guest_for_reuse() {
   local node=$1
   guest_exec "${node}" "sudo cloud-init clean --logs || true"
+  guest_exec "${node}" "sudo rm -f /var/lib/ployz/identity.json /var/lib/ployz/active_network && sudo rm -rf /var/lib/ployz/networks /var/lib/ployz/bootstrap/work"
   guest_exec "${node}" "sudo truncate -s 0 /etc/machine-id && sudo rm -f /var/lib/dbus/machine-id"
 }
 
@@ -1278,6 +1285,7 @@ bootstrap_nodes() {
         reboot_and_verify "${node}"
         ;;
       post-install)
+        refresh_post_install_node "${node}"
         verify_bootstrap "${node}"
         ;;
     esac
@@ -1296,7 +1304,7 @@ scenario_machine_add_basic() {
   seed_interguest_ssh joiner
   guest_exec founder "sudo ployzd mesh init alpha"
   await_json_true founder "sudo ployzd --plain mesh ready --json" ready 120
-  guest_exec founder "sudo ployzd machine add ${joiner_target}"
+  guest_exec founder "sudo ployzd machine add --identity /root/.ssh/id_ed25519 ${joiner_target}"
   await_contains founder "sudo ployzd machine ls" "joiner" 120
   await_machine_state founder joiner disabled 60
   await_machine_state founder joiner enabled 180
@@ -1325,9 +1333,9 @@ scenario_replace_machine() {
   seed_interguest_ssh replacement
   guest_exec founder "sudo ployzd mesh init alpha"
   await_json_true founder "sudo ployzd --plain mesh ready --json" ready 120
-  guest_exec founder "sudo ployzd machine add ${joiner_target}"
+  guest_exec founder "sudo ployzd machine add --identity /root/.ssh/id_ed25519 ${joiner_target}"
   await_contains founder "sudo ployzd machine ls" "joiner" 120
-  guest_exec founder "sudo ployzd machine add ${replacement_target}"
+  guest_exec founder "sudo ployzd machine add --identity /root/.ssh/id_ed25519 ${replacement_target}"
   await_contains founder "sudo ployzd machine ls" "replacement" 120
   guest_exec founder "sudo ployzd machine drain joiner"
   guest_exec founder "sudo ployzd machine rm joiner --force"
@@ -1341,11 +1349,11 @@ scenario_rejoin_after_remove() {
   seed_interguest_ssh replacement
   guest_exec founder "sudo ployzd mesh init alpha"
   await_json_true founder "sudo ployzd --plain mesh ready --json" ready 120
-  guest_exec founder "sudo ployzd machine add lab@${NODE_MGMT_IP[joiner]}"
+  guest_exec founder "sudo ployzd machine add --identity /root/.ssh/id_ed25519 lab@${NODE_MGMT_IP[joiner]}"
   await_contains founder "sudo ployzd machine ls" "joiner" 120
   guest_exec founder "sudo ployzd machine rm joiner --force"
   await_contains founder "sudo ployzd machine ls" "replacement" 1 || true
-  guest_exec founder "sudo ployzd machine add ${replacement_target}"
+  guest_exec founder "sudo ployzd machine add --identity /root/.ssh/id_ed25519 ${replacement_target}"
   await_contains founder "sudo ployzd machine ls" "replacement" 120
 }
 
@@ -1355,7 +1363,7 @@ scenario_join_under_latency() {
   guest_exec founder "sudo ployzd mesh init alpha"
   apply_profile founder far data
   apply_profile joiner far data
-  guest_exec founder "sudo ployzd machine add lab@${NODE_MGMT_IP[joiner]}"
+  guest_exec founder "sudo ployzd machine add --identity /root/.ssh/id_ed25519 lab@${NODE_MGMT_IP[joiner]}"
   await_contains founder "sudo ployzd machine ls" "joiner" 180
 }
 
@@ -1501,9 +1509,7 @@ run_scenario() {
     base_kind=$(resolve_default_scenario_base)
   fi
   assign_node_base_images "${base_kind}"
-  if [[ "${base_kind}" != "post-install" ]]; then
-    build_artifact_bundle
-  fi
+  build_artifact_bundle
   write_run_metadata "${name}" "${bootstrap_path}" "${profile}" "${base_kind}"
   if [[ "${name}" == "bootstrap_under_bad_network" ]]; then
     run_named_scenario "${name}"
