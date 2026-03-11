@@ -273,6 +273,18 @@ impl RoutingStore for StoreDriver {
 }
 
 impl DeployStore for StoreDriver {
+    async fn list_service_revisions(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceRevisionRecord>> {
+        match self {
+            Self::Memory { store, .. } => store.list_service_revisions(namespace).await,
+            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
+                store.list_service_revisions(namespace).await
+            }
+        }
+    }
+
     async fn list_service_heads(&self, namespace: &Namespace) -> Result<Vec<ServiceHeadRecord>> {
         match self {
             Self::Memory { store, .. } => store.list_service_heads(namespace).await,

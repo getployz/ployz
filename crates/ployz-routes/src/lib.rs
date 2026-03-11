@@ -203,8 +203,8 @@ pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> 
                         .into_iter()
                         .collect::<Vec<_>>();
                     http_routes.push(HttpRouteView {
-                        route_id: format!("http:{}:{}:{}", spec.namespace, spec.name, index),
-                        namespace: spec.namespace.clone(),
+                        route_id: format!("http:{}:{}:{}", revision.namespace, spec.name, index),
+                        namespace: revision.namespace.clone(),
                         service: spec.name.clone(),
                         revision_hash: head.current_revision_hash.clone(),
                         hostnames,
@@ -217,8 +217,8 @@ pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> 
                 }
                 RouteSpec::Tcp(route) => {
                     tcp_routes.push(TcpRouteView {
-                        route_id: format!("tcp:{}:{}:{}", spec.namespace, spec.name, index),
-                        namespace: spec.namespace.clone(),
+                        route_id: format!("tcp:{}:{}:{}", revision.namespace, spec.name, index),
+                        namespace: revision.namespace.clone(),
                         service: spec.name.clone(),
                         revision_hash: head.current_revision_hash.clone(),
                         listen_port: route.listen_port,
@@ -576,7 +576,7 @@ mod tests {
     }
 
     fn service_spec(
-        namespace: &Namespace,
+        _namespace: &Namespace,
         service: &str,
         image_tag: &str,
         _seed: String,
@@ -584,7 +584,6 @@ mod tests {
     ) -> ServiceSpec {
         ServiceSpec {
             name: service.into(),
-            namespace: namespace.clone(),
             placement: Placement::Singleton,
             template: ContainerSpec {
                 image: format!("example:{image_tag}"),
@@ -622,7 +621,7 @@ mod tests {
 
     fn revision_record(spec: &ServiceSpec) -> ServiceRevisionRecord {
         ServiceRevisionRecord {
-            namespace: spec.namespace.clone(),
+            namespace: Namespace("prod".into()),
             service: spec.name.clone(),
             revision_hash: spec.revision_hash().expect("revision hash"),
             spec_json: spec
