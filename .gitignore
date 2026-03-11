@@ -3,7 +3,7 @@
 .claude/
 skills-lock.json
 .env.targets
-crates/ebpf/target/
+ebpf/target/
 .idea/
 .lab/
 lab/lab.env

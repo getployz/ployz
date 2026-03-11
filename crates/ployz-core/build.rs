@@ -6,10 +6,10 @@ fn main() {
 
         // Use pre-built bytecode if available (downloaded from CI release)
         let prebuilt =
-            std::path::Path::new("../ebpf/target/bpfel-unknown-none/release/ployz-ebpf-tc");
+            std::path::Path::new("../../ebpf/target/bpfel-unknown-none/release/ployz-ebpf-tc");
         if prebuilt.exists() {
             println!(
-                "cargo:rerun-if-changed=../ebpf/target/bpfel-unknown-none/release/ployz-ebpf-tc"
+                "cargo:rerun-if-changed=../../ebpf/target/bpfel-unknown-none/release/ployz-ebpf-tc"
             );
             std::fs::copy(prebuilt, &dst).expect("failed to copy pre-built eBPF bytecode");
             return;
@@ -19,7 +19,7 @@ fn main() {
         aya_build::build_ebpf(
             [aya_build::Package {
                 name: "ployz-ebpf",
-                root_dir: "../ebpf",
+                root_dir: "../../ebpf",
                 ..Default::default()
             }],
             aya_build::Toolchain::Nightly,

@@ -201,7 +201,7 @@ remote_rsync_repo() {
     --exclude .git \
     --exclude .lab \
     --exclude target \
-    --exclude crates/ebpf/target \
+    --exclude ebpf/target \
     "${ROOT_DIR}/" "${REMOTE_HOST}:${repo_dir}/"
 }
 
