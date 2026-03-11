@@ -45,6 +45,7 @@ pub struct Mesh {
     pub store: StoreDriver,
     container_network: Option<DockerBridgeNetwork>,
     tasks: Option<TaskSet>,
+    task_cancel: Option<tokio_util::sync::CancellationToken>,
     peer_sync_tx: Option<mpsc::Sender<PeerSyncCommand>>,
     bootstrap_interval: Duration,
     connection_timeout: Duration,
@@ -73,6 +74,7 @@ impl Mesh {
             store,
             container_network,
             tasks: None,
+            task_cancel: None,
             peer_sync_tx: None,
             bootstrap_interval: Duration::from_millis(500),
             connection_timeout: Duration::from_secs(30),
@@ -129,7 +131,11 @@ impl Mesh {
             .store
             .list_machines()
             .await
-            .map(|machines| machines.into_iter().any(|machine| machine.id != self.machine_id))
+            .map(|machines| {
+                machines
+                    .into_iter()
+                    .any(|machine| machine.id != self.machine_id)
+            })
             .unwrap_or(false);
         let sync_connected = if has_remote_peer {
             match self.store.sync_status().await {
@@ -212,16 +218,7 @@ impl Mesh {
         self.wait_store_init().await?;
 
         // 5. Initial peer sync from store
-        let peers: Vec<_> = self
-            .store
-            .list_machines()
-            .await?
-            .into_iter()
-            .filter(|m| m.id != self.machine_id)
-            .collect();
-        if let Err(e) = self.network.set_peers(&peers).await {
-            warn!(?e, "initial peer sync failed");
-        }
+        self.start_peer_sync_task().await?;
 
         self.apply(PhaseEvent::ComponentsStarted)?;
 
@@ -232,6 +229,33 @@ impl Mesh {
         self.spawn_background_tasks().await?;
 
         info!(phase = %self.phase, "mesh up");
+        Ok(())
+    }
+
+    async fn start_peer_sync_task(&mut self) -> Result<()> {
+        if self.peer_sync_tx.is_some() {
+            return Ok(());
+        }
+
+        let (snapshot, events) = self
+            .store
+            .subscribe_machines()
+            .await
+            .map_err(TaskSetError::Subscribe)?;
+        let (peer_sync_tx, peer_sync_rx) = mpsc::channel(64);
+        let (mut task_set, cancel) = TaskSet::new();
+        task_set.spawn(run_peer_sync_task(
+            snapshot,
+            events,
+            peer_sync_rx,
+            self.network.clone(),
+            self.machine_id.clone(),
+            cancel.clone(),
+        ));
+
+        self.peer_sync_tx = Some(peer_sync_tx);
+        self.task_cancel = Some(cancel);
+        self.tasks = Some(task_set);
         Ok(())
     }
 
@@ -274,49 +298,48 @@ impl Mesh {
     }
 
     async fn spawn_background_tasks(&mut self) -> Result<()> {
-        let (mut task_set, cancel) = TaskSet::new();
-
-        let (snapshot, events) = self
-            .store
-            .subscribe_machines()
-            .await
-            .map_err(TaskSetError::Subscribe)?;
-        let (peer_sync_tx, peer_sync_rx) = mpsc::channel(64);
-        self.peer_sync_tx = Some(peer_sync_tx);
+        if self.tasks.is_none() {
+            return Err(TaskSetError::Subscribe(crate::error::Error::operation(
+                "peer sync task",
+                "peer sync task not started".to_string(),
+            ))
+            .into());
+        }
+        let Some(cancel) = self.task_cancel.clone() else {
+            return Err(TaskSetError::Subscribe(crate::error::Error::operation(
+                "peer sync task",
+                "peer sync cancellation token missing".to_string(),
+            ))
+            .into());
+        };
 
         let cancel2 = cancel.clone();
-        task_set.spawn(run_peer_sync_task(
-            snapshot,
-            events,
-            peer_sync_rx,
-            self.network.clone(),
-            self.machine_id.clone(),
-            cancel,
-        ));
+        if let Some(task_set) = self.tasks.as_mut() {
+            task_set.spawn(run_endpoint_refresh_task(
+                self.machine_id.clone(),
+                self.listen_port,
+                self.store.clone(),
+                cancel2,
+            ));
+        }
 
-        let cancel3 = cancel2.clone();
-        task_set.spawn(run_endpoint_refresh_task(
-            self.machine_id.clone(),
-            self.listen_port,
-            self.store.clone(),
-            cancel2,
-        ));
-
-        let cancel4 = cancel3.clone();
+        let cancel3 = cancel.clone();
         self.heartbeat_started.store(false, Ordering::SeqCst);
         let self_seed = self
             .seed_records
             .iter()
             .find(|m| m.id == self.machine_id)
             .cloned();
-        task_set.spawn(run_heartbeat_task(
-            self.machine_id.clone(),
-            self_seed,
-            self.store.clone(),
-            self.network.clone(),
-            self.heartbeat_started.clone(),
-            cancel3,
-        ));
+        if let Some(task_set) = self.tasks.as_mut() {
+            task_set.spawn(run_heartbeat_task(
+                self.machine_id.clone(),
+                self_seed,
+                self.store.clone(),
+                self.network.clone(),
+                self.heartbeat_started.clone(),
+                cancel3,
+            ));
+        }
 
         if let Some(ref dataplane) = self.dataplane {
             let (ebpf_snapshot, ebpf_events) = self
@@ -324,18 +347,20 @@ impl Mesh {
                 .subscribe_machines()
                 .await
                 .map_err(TaskSetError::Subscribe)?;
+            let cancel4 = cancel.clone();
 
-            task_set.spawn(run_ebpf_sync_task(
-                ebpf_snapshot,
-                ebpf_events,
-                dataplane.clone(),
-                self.wg_ifindex,
-                self.machine_id.clone(),
-                cancel4,
-            ));
+            if let Some(task_set) = self.tasks.as_mut() {
+                task_set.spawn(run_ebpf_sync_task(
+                    ebpf_snapshot,
+                    ebpf_events,
+                    dataplane.clone(),
+                    self.wg_ifindex,
+                    self.machine_id.clone(),
+                    cancel4,
+                ));
+            }
         }
 
-        self.tasks = Some(task_set);
         Ok(())
     }
 
@@ -343,6 +368,7 @@ impl Mesh {
     /// things not yet started.
     async fn teardown(&mut self) {
         self.peer_sync_tx = None;
+        self.task_cancel = None;
         self.heartbeat_started.store(false, Ordering::SeqCst);
         if let Some(mut tasks) = self.tasks.take()
             && let Err(e) = tasks.stop().await
@@ -371,6 +397,7 @@ impl Mesh {
     pub async fn detach(&mut self) -> Result<()> {
         self.apply(PhaseEvent::DetachRequested)?;
         self.peer_sync_tx = None;
+        self.task_cancel = None;
         self.heartbeat_started.store(false, Ordering::SeqCst);
         if let Some(mut tasks) = self.tasks.take() {
             tasks.stop().await?;
@@ -403,6 +430,7 @@ impl Mesh {
             warn!(?e, "task stop failed during destroy");
             first_err.get_or_insert(e.into());
         }
+        self.task_cancel = None;
 
         if let Some(dp) = self.dataplane.take()
             && let Ok(dp) = Arc::try_unwrap(dp)
