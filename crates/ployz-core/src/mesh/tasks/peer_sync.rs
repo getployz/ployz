@@ -1,6 +1,7 @@
 use crate::mesh::WireGuardDevice;
 use crate::mesh::driver::WireguardDriver;
 use crate::mesh::peer_state::{PeerStateMap, sync_peers};
+use crate::mesh::probe::probe_endpoints_parallel;
 use crate::model::{MachineEvent, MachineId, MachineRecord};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
@@ -28,6 +29,7 @@ pub(crate) async fn run_peer_sync_task(
     state.init_from_snapshot(&snapshot, now);
     let device_peers = read_device_peers(&network).await;
     state.seed_from_device_peers(&device_peers, now);
+    rank_pending_peers(&mut state).await;
     sync_peers(&state, &network, &local_machine_id).await;
     let mut interval = tokio::time::interval(PEER_SYNC_INTERVAL);
 
@@ -43,6 +45,7 @@ pub(crate) async fn run_peer_sync_task(
             Some(event) = events.recv() => {
                 debug!(?event, "peer sync event");
                 state.apply_event(&event, Instant::now());
+                rank_pending_peers(&mut state).await;
                 sync_peers(&state, &network, &local_machine_id).await;
             }
             Some(command) = commands.recv() => {
@@ -53,6 +56,7 @@ pub(crate) async fn run_peer_sync_task(
                     }
                     PeerSyncCommand::RemoveTransient(id) => state.remove_transient(&id),
                 }
+                rank_pending_peers(&mut state).await;
                 sync_peers(&state, &network, &local_machine_id).await;
             }
         }
@@ -76,10 +80,21 @@ async fn peer_sync_tick(
 ) {
     let now = Instant::now();
     let device_peers = read_device_peers(network).await;
-    let changed = state.refresh_from_device_peers(&device_peers, now);
-    if changed {
+    let refreshed = state.refresh_from_device_peers(&device_peers, now);
+    let ranked = rank_pending_peers(state).await;
+    if refreshed || ranked {
         sync_peers(state, network, local_machine_id).await;
     }
+}
+
+async fn rank_pending_peers(state: &mut PeerStateMap) -> bool {
+    let now = Instant::now();
+    let mut changed = false;
+    for (machine_id, endpoints) in state.pending_rankings() {
+        let probe_results = probe_endpoints_parallel(&endpoints).await;
+        changed |= state.apply_probe_results(&machine_id, &probe_results, now);
+    }
+    changed
 }
 
 #[cfg(test)]
@@ -200,6 +215,41 @@ mod tests {
         assert_eq!(
             peers[0].endpoints,
             vec!["b:2".to_string(), "a:1".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_sync_tick_falls_back_to_wireguard_order_when_tcp_probe_fails() {
+        let now = Instant::now();
+        let network = Arc::new(MemoryWireGuard::new());
+        let driver = WireguardDriver::Memory(network.clone());
+        let local_machine_id = MachineId("local".into());
+        let remote_key = PublicKey([10; 32]);
+        let snapshot = vec![test_record(
+            "remote",
+            remote_key.clone(),
+            vec!["10.255.255.1:51820", "10.255.255.2:51820"],
+        )];
+        let mut state = PeerStateMap::new();
+        state.init_from_snapshot(&snapshot, now - Duration::from_secs(20));
+        sync_peers(&state, &driver, &local_machine_id).await;
+
+        network.set_device_peers(vec![DevicePeer {
+            public_key: remote_key,
+            endpoint: Some("10.255.255.1:51820".into()),
+            last_handshake: None,
+        }]);
+
+        peer_sync_tick(&mut state, &driver, &local_machine_id).await;
+
+        let peers = network.current_peers();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(
+            peers[0].endpoints,
+            vec![
+                "10.255.255.2:51820".to_string(),
+                "10.255.255.1:51820".to_string()
+            ]
         );
     }
 }
