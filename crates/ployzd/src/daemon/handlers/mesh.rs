@@ -172,11 +172,14 @@ impl DaemonState {
         let options = MeshStartOptions {
             allow_disconnected_bootstrap: bootstrap.is_some(),
         };
-        if let Err(e) = self.start_mesh(net_config, bootstrap, options).await {
-            return self.err(
-                "NETWORK_START_FAILED",
-                format!("join failed to start mesh: {e}"),
-            );
+        match self.start_mesh(net_config, bootstrap, options).await {
+            Ok(_) => {}
+            Err(e) => {
+                return self.err(
+                    "NETWORK_START_FAILED",
+                    format!("join failed to start mesh: {e}"),
+                );
+            }
         }
 
         if let Some(active) = self.active.as_ref()
@@ -226,18 +229,21 @@ impl DaemonState {
 
         let network_name = net_config.name.clone();
         let overlay_ip = net_config.overlay_ip;
-        if let Err(e) = self
+        match self
             .start_mesh(net_config, None, MeshStartOptions::default())
             .await
         {
-            return DaemonResponse {
-                ok: false,
-                code: "NETWORK_START_FAILED".into(),
-                message: format!(
-                    "initialized network '{}' but failed to start: {e}\n  state:   created",
-                    network_name,
-                ),
-            };
+            Ok(_) => {}
+            Err(e) => {
+                return DaemonResponse {
+                    ok: false,
+                    code: "NETWORK_START_FAILED".into(),
+                    message: format!(
+                        "initialized network '{}' but failed to start: {e}\n  state:   created",
+                        network_name,
+                    ),
+                };
+            }
         }
 
         self.ok(format!(
@@ -317,12 +323,15 @@ impl DaemonState {
         let options = MeshStartOptions {
             allow_disconnected_bootstrap: skip_bootstrap_wait,
         };
-        if let Err(e) = self.start_mesh(net_config, None, options).await {
-            return DaemonResponse {
-                ok: false,
-                code: "NETWORK_START_FAILED".into(),
-                message: e,
-            };
+        match self.start_mesh(net_config, None, options).await {
+            Ok(_) => {}
+            Err(e) => {
+                return DaemonResponse {
+                    ok: false,
+                    code: "NETWORK_START_FAILED".into(),
+                    message: e.to_string(),
+                };
+            }
         }
 
         self.ok(format!("mesh '{}' started", network_name))
