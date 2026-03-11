@@ -37,7 +37,7 @@ impl AsRef<str> for NetworkId {
 }
 
 impl NetworkId {
-    #[must_use] 
+    #[must_use]
     pub fn random() -> Self {
         let mut bytes = [0u8; 16];
         rand::fill(&mut bytes);
@@ -78,8 +78,9 @@ impl fmt::Debug for PrivateKey {
 #[display("{_0}")]
 pub struct OverlayIp(pub Ipv6Addr);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
-#[derive(Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString, Default,
+)]
 pub enum MachineStatus {
     #[default]
     #[display("")]
@@ -93,8 +94,9 @@ pub enum MachineStatus {
     Down,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
-#[derive(Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString, Default,
+)]
 pub enum Participation {
     #[default]
     #[display("disabled")]
@@ -126,7 +128,7 @@ pub struct MachineRecord {
 
 impl MachineRecord {
     /// All CIDRs this peer should route, used by both host and docker WireGuard adapters.
-    #[must_use] 
+    #[must_use]
     pub fn allowed_cidrs(&self) -> Vec<String> {
         let mut cidrs = vec![format!("{}/128", self.overlay_ip.0)];
         if let Some(subnet) = &self.subnet {
@@ -382,7 +384,7 @@ impl JoinResponse {
         serde_json::from_slice(&bytes).map_err(|e| format!("json decode: {e}"))
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn into_machine_record(self) -> MachineRecord {
         MachineRecord {
             id: self.machine_id,
@@ -402,7 +404,7 @@ impl JoinResponse {
 }
 
 /// Derive a deterministic overlay IP from a public key (fd00::/8 ULA + first 15 key bytes).
-#[must_use] 
+#[must_use]
 pub fn management_ip_from_key(key: &PublicKey) -> OverlayIp {
     let mut octets = [0u8; 16];
     octets[0] = 0xfd;

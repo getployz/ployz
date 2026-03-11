@@ -112,7 +112,9 @@ fn cmd_attach(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     // Set the WG interface index for IPv6 ULA redirect
     {
-        let wg_map: &mut aya::maps::Map = bpf.map_mut("WG_IFINDEX").ok_or("WG_IFINDEX map not found")?;
+        let wg_map: &mut aya::maps::Map = bpf
+            .map_mut("WG_IFINDEX")
+            .ok_or("WG_IFINDEX map not found")?;
         let mut arr = aya::maps::Array::<_, u32>::try_from(wg_map)?;
         arr.set(0, wg_ifindex, 0)?;
     }
@@ -122,7 +124,9 @@ fn cmd_attach(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let map = bpf.map_mut("ROUTES").ok_or("ROUTES map not found")?;
     map.pin(format!("{PIN_PATH}/routes"))?;
 
-    let map = bpf.map_mut("OBSERVE_FLAG").ok_or("OBSERVE_FLAG map not found")?;
+    let map = bpf
+        .map_mut("OBSERVE_FLAG")
+        .ok_or("OBSERVE_FLAG map not found")?;
     map.pin(format!("{PIN_PATH}/observe_flag"))?;
 
     // Pin programs to keep them alive after this process exits
@@ -202,9 +206,14 @@ fn cmd_route(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-fn open_routes_map() -> Result<aya::maps::HashMap<aya::maps::MapData, PodRouteKey, PodRouteEntry>, Box<dyn std::error::Error>> {
+fn open_routes_map() -> Result<
+    aya::maps::HashMap<aya::maps::MapData, PodRouteKey, PodRouteEntry>,
+    Box<dyn std::error::Error>,
+> {
     let map_data = aya::maps::MapData::from_pin(format!("{PIN_PATH}/routes"))?;
-    Ok(aya::maps::HashMap::try_from(aya::maps::Map::HashMap(map_data))?)
+    Ok(aya::maps::HashMap::try_from(aya::maps::Map::HashMap(
+        map_data,
+    ))?)
 }
 
 fn resolve_ifindex(ifname: &str) -> Result<u32, Box<dyn std::error::Error>> {
@@ -233,7 +242,10 @@ fn cmd_observe(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut arr = aya::maps::Array::<_, u32>::try_from(aya::maps::Map::Array(map_data))?;
     arr.set(0, value, 0)?;
 
-    eprintln!("observation {}", if value == 1 { "enabled" } else { "disabled" });
+    eprintln!(
+        "observation {}",
+        if value == 1 { "enabled" } else { "disabled" }
+    );
     Ok(())
 }
 

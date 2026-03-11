@@ -24,17 +24,13 @@ pub trait RoutingStore: Send + Sync {
 }
 
 impl RoutingStore for ployz_corrosion::CorrosionStore {
-    async fn load_routing_state(
-        &self,
-    ) -> Result<ployz_sdk::model::RoutingState, GatewayError> {
+    async fn load_routing_state(&self) -> Result<ployz_sdk::model::RoutingState, GatewayError> {
         ployz_sdk::store::RoutingStore::load_routing_state(self)
             .await
             .map_err(|err| GatewayError::Store(err.to_string()))
     }
 
-    async fn subscribe_routing_invalidations(
-        &self,
-    ) -> Result<mpsc::Receiver<()>, GatewayError> {
+    async fn subscribe_routing_invalidations(&self) -> Result<mpsc::Receiver<()>, GatewayError> {
         ployz_sdk::store::RoutingStore::subscribe_routing_invalidations(self)
             .await
             .map_err(|err| GatewayError::Store(err.to_string()))
@@ -72,7 +68,10 @@ where
                 info!(http_routes, tcp_routes, "gateway snapshot refreshed");
             }
             Err(err) => {
-                warn!(?err, "failed to refresh gateway snapshot; keeping previous state")
+                warn!(
+                    ?err,
+                    "failed to refresh gateway snapshot; keeping previous state"
+                )
             }
         }
     }

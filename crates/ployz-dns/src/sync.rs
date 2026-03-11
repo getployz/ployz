@@ -23,17 +23,13 @@ pub trait DnsStore: Send + Sync {
 }
 
 impl DnsStore for ployz_corrosion::CorrosionStore {
-    async fn load_routing_state(
-        &self,
-    ) -> Result<ployz_sdk::model::RoutingState, DnsError> {
+    async fn load_routing_state(&self) -> Result<ployz_sdk::model::RoutingState, DnsError> {
         ployz_sdk::store::RoutingStore::load_routing_state(self)
             .await
             .map_err(|err| DnsError::Store(err.to_string()))
     }
 
-    async fn subscribe_routing_invalidations(
-        &self,
-    ) -> Result<mpsc::Receiver<()>, DnsError> {
+    async fn subscribe_routing_invalidations(&self) -> Result<mpsc::Receiver<()>, DnsError> {
         ployz_sdk::store::RoutingStore::subscribe_routing_invalidations(self)
             .await
             .map_err(|err| DnsError::Store(err.to_string()))
@@ -61,7 +57,10 @@ where
                 info!(service_count, "dns snapshot refreshed");
             }
             Err(err) => {
-                warn!(?err, "failed to refresh dns snapshot; keeping previous state");
+                warn!(
+                    ?err,
+                    "failed to refresh dns snapshot; keeping previous state"
+                );
             }
         }
     }

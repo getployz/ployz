@@ -116,17 +116,18 @@ impl ProxyHttp for GatewayApp {
                 })?;
         }
         if let Some(client_addr) = session.client_addr()
-            && let Some(address) = client_addr.as_inet() {
-                upstream_request
-                    .insert_header("X-Forwarded-For", address.ip().to_string())
-                    .map_err(|err| {
-                        Error::because(
-                            ErrorType::InternalError,
-                            "insert X-Forwarded-For header",
-                            err,
-                        )
-                    })?;
-            }
+            && let Some(address) = client_addr.as_inet()
+        {
+            upstream_request
+                .insert_header("X-Forwarded-For", address.ip().to_string())
+                .map_err(|err| {
+                    Error::because(
+                        ErrorType::InternalError,
+                        "insert X-Forwarded-For header",
+                        err,
+                    )
+                })?;
+        }
         upstream_request
             .insert_header("X-Forwarded-Proto", "http")
             .map_err(|err| {

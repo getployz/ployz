@@ -57,9 +57,8 @@ impl DnsConfig {
                     "PLOYZ_DNS_NETWORK was set but empty".into(),
                 ));
             }
-            Err(_) => ployz_sdk::paths::read_active_network(&data_dir).ok_or_else(|| {
-                DnsError::Config("no active network marker was found".into())
-            })?,
+            Err(_) => ployz_sdk::paths::read_active_network(&data_dir)
+                .ok_or_else(|| DnsError::Config("no active network marker was found".into()))?,
         };
         let listen_addr = match std::env::var("PLOYZ_DNS_LISTEN_ADDR") {
             Ok(address) if !address.trim().is_empty() => address,

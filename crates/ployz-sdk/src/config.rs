@@ -30,7 +30,7 @@ pub struct Affordances {
 }
 
 impl Affordances {
-    #[must_use] 
+    #[must_use]
     pub fn detect() -> Self {
         let os = if cfg!(target_os = "linux") {
             Os::Linux
@@ -138,7 +138,7 @@ struct DaemonOverrides {
 /// - Linux (user):  `$XDG_DATA_HOME/ployz` or `~/.local/share/ployz`
 /// - macOS:         `~/Library/Application Support/ployz`
 /// - Other:         project data dir (`~/.ployz` fallback)
-#[must_use] 
+#[must_use]
 pub fn default_data_dir(aff: &Affordances) -> PathBuf {
     match aff.os {
         Os::Linux if aff.is_root => "/var/lib/ployz".into(),
@@ -157,7 +157,7 @@ pub fn default_data_dir(aff: &Affordances) -> PathBuf {
 /// - Linux (user):  `$XDG_RUNTIME_DIR/ployz/ployzd.sock`
 /// - macOS:         `$TMPDIR/ployz/ployzd.sock` (per-user, per-boot)
 /// - Other:         `/tmp/ployz/ployzd.sock`
-#[must_use] 
+#[must_use]
 pub fn default_socket_path(aff: &Affordances) -> String {
     let path = match aff.os {
         Os::Linux if aff.is_root => PathBuf::from("/run/ployz/ployzd.sock"),
@@ -176,7 +176,7 @@ pub fn default_socket_path(aff: &Affordances) -> String {
 /// Returns the default config file path.
 ///
 /// Can be overridden via `PLOYZ_CONFIG`.
-#[must_use] 
+#[must_use]
 pub fn default_config_path() -> PathBuf {
     project_dirs()
         .map(|dirs| dirs.config_dir().join("config.toml"))
