@@ -15,7 +15,7 @@ use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, sleep};
 
 use super::super::DaemonState;
-use super::super::ssh::{run_ssh, run_ssh_with_stdin};
+use super::super::ssh::{now_unix_secs, run_ssh, run_ssh_with_stdin};
 
 const INVITE_TTL_SECS: u64 = 600;
 const REMOTE_READY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -95,7 +95,7 @@ impl DaemonState {
             return self.ok("no machines");
         }
 
-        let now = chrono::Utc::now().timestamp() as u64;
+        let now = now_unix_secs();
 
         struct Row {
             id: String,
@@ -308,7 +308,7 @@ impl DaemonState {
         };
 
         record.participation = Participation::Draining;
-        record.updated_at = chrono::Utc::now().timestamp() as u64;
+        record.updated_at = now_unix_secs();
 
         match active.mesh.store.upsert_machine(&record).await {
             Ok(()) => self.ok(format!("machine '{id}' marked draining")),
@@ -352,7 +352,7 @@ impl DaemonState {
         for key in remove {
             record.labels.remove(key);
         }
-        record.updated_at = chrono::Utc::now().timestamp() as u64;
+        record.updated_at = now_unix_secs();
 
         match active.mesh.store.upsert_machine(&record).await {
             Ok(()) => {
@@ -455,7 +455,7 @@ impl DaemonState {
             .list_machines()
             .await
             .map_err(|err| format!("failed to list machines: {err}"))?;
-        let now = chrono::Utc::now().timestamp() as u64;
+        let now = now_unix_secs();
 
         Ok(machines
             .into_iter()
@@ -781,6 +781,7 @@ fn format_timestamp(ts: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::ssh::now_unix_secs;
     use crate::store::backends::memory::{MemoryService, MemoryStore};
     use crate::mesh::wireguard::MemoryWireGuard;
     use crate::config::Mode;
@@ -830,7 +831,7 @@ mod tests {
             "peer-down",
             "10.210.1.0/24",
             Participation::Enabled,
-            chrono::Utc::now().timestamp() as u64,
+            now_unix_secs(),
             PublicKey([2; 32]),
         );
         down.status = MachineStatus::Down;

@@ -305,7 +305,7 @@ async fn bridge_event_loop(
 
     let bridge_smoltcp_addr = ipv6_to_smoltcp(bridge_ip);
     iface.update_ip_addrs(|addrs| {
-        addrs.push(IpCidr::new(bridge_smoltcp_addr, 128)).unwrap();
+        addrs.push(IpCidr::new(bridge_smoltcp_addr, 128)).expect("smoltcp address capacity");
     });
 
     // Default IPv6 route — required for smoltcp to send to non-local overlay IPs.
@@ -321,7 +321,7 @@ async fn bridge_event_loop(
         container_segs[6],
         container_segs[7],
     );
-    iface.routes_mut().add_default_ipv6_route(gateway).unwrap();
+    iface.routes_mut().add_default_ipv6_route(gateway).expect("smoltcp default route capacity");
     debug!(bridge = %bridge_ip, %gateway, "smoltcp interface configured");
 
     let mut sockets = SocketSet::new(Vec::new());

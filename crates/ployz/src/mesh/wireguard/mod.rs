@@ -1,9 +1,9 @@
-pub mod bridge;
-pub mod config;
-pub mod docker;
-pub mod host;
-pub mod memory;
-pub mod sidecar;
+pub(crate) mod bridge;
+pub(crate) mod config;
+pub(crate) mod docker;
+pub(crate) mod host;
+pub(crate) mod memory;
+pub(crate) mod sidecar;
 
 pub use docker::DockerWireGuard;
 pub use host::HostWireGuard;

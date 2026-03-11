@@ -1,37 +1,25 @@
-use bollard::Docker;
-use bollard::exec::{CreateExecOptions, StartExecResults};
-use bollard::models::{ContainerCreateBody, HostConfig, PortBinding, PortMap};
-use bollard::query_parameters::{
-    CreateContainerOptionsBuilder, ListContainersOptionsBuilder, RemoveContainerOptionsBuilder,
-    StopContainerOptionsBuilder,
-};
-use futures_util::stream::StreamExt;
-use reqwest::StatusCode;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::net::{IpAddr, SocketAddr};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::net::TcpStream;
-use tokio::time::{Instant, sleep};
+use std::net::IpAddr;
+use std::time::Duration;
+
+use bollard::models::{PortBinding, PortMap};
 
 use crate::StoreDriver;
 use crate::error::{Error, Result};
 use crate::model::{
     DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, SlotId,
 };
+use crate::runtime::labels::{self, WorkloadMeta, build_workload_labels};
+use crate::runtime::{ContainerEngine, Probe, PullPolicy, RuntimeContainerSpec};
 use crate::spec::{
-    ContainerSpec, Namespace, NetworkMode, PortProtocol, PullPolicy, ReadinessProbe,
+    ContainerSpec, Namespace, NetworkMode, PortProtocol, ReadinessProbe,
     ResourcesExt, ServicePort, ServiceSpec, VolumeSource,
 };
 use crate::store::DeployStore;
 
-const LABEL_MANAGED: &str = "dev.ployz.managed";
-const LABEL_NAMESPACE: &str = "dev.ployz.namespace";
-const LABEL_SERVICE: &str = "dev.ployz.service";
-const LABEL_REVISION: &str = "dev.ployz.revision";
-const LABEL_DEPLOY: &str = "dev.ployz.deploy";
-const LABEL_INSTANCE: &str = "dev.ployz.instance";
-const LABEL_SLOT: &str = "dev.ployz.slot";
-const LABEL_MACHINE: &str = "dev.ployz.machine";
+const READINESS_TIMEOUT: Duration = Duration::from_secs(15);
+const READINESS_INTERVAL: Duration = Duration::from_millis(250);
+const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
 pub(super) struct ManagedInstance {
@@ -47,72 +35,50 @@ pub(super) struct ManagedInstance {
 }
 
 pub struct LocalDeployRuntime {
-    docker: Docker,
+    engine: ContainerEngine,
     overlay_network: Option<String>,
 }
 
 impl LocalDeployRuntime {
     pub fn new(overlay_network: Option<String>) -> Result<Self> {
-        let docker = Docker::connect_with_socket_defaults()
+        let docker = bollard::Docker::connect_with_socket_defaults()
             .map_err(|e| Error::operation("docker connect", e.to_string()))?;
+        let engine = ContainerEngine::new(docker);
         Ok(Self {
-            docker,
+            engine,
             overlay_network,
         })
     }
 
     async fn list_instances(&self, namespace: &Namespace) -> Result<Vec<ManagedInstance>> {
-        let mut filters = HashMap::new();
-        filters.insert(
-            "label".to_string(),
-            vec![
-                format!("{LABEL_MANAGED}=true"),
-                format!("{LABEL_NAMESPACE}={}", namespace.0),
-            ],
-        );
-        let options = ListContainersOptionsBuilder::default()
-            .all(true)
-            .filters(&filters)
-            .build();
-
-        let containers = self
-            .docker
-            .list_containers(Some(options))
-            .await
-            .map_err(|e| Error::operation("list_instances", e.to_string()))?;
+        let observed = self
+            .engine
+            .list_by_labels(&[
+                (labels::LABEL_MANAGED, "true"),
+                (labels::LABEL_NAMESPACE, &namespace.0),
+            ])
+            .await?;
 
         let mut instances = Vec::new();
-        for container in containers {
-            let labels = container.labels.unwrap_or_default();
-            let Some(instance_id) = labels.get(LABEL_INSTANCE) else {
+        for obs in observed {
+            let Some(instance_id) = obs.labels.get(labels::LABEL_INSTANCE) else {
                 continue;
             };
-            let Some(service) = labels.get(LABEL_SERVICE) else {
+            let Some(service) = obs.labels.get(labels::LABEL_SERVICE) else {
                 continue;
             };
-            let Some(slot_id) = labels.get(LABEL_SLOT) else {
+            let Some(slot_id) = obs.labels.get(labels::LABEL_SLOT) else {
                 continue;
             };
-            let Some(machine_id) = labels.get(LABEL_MACHINE) else {
+            let Some(machine_id) = obs.labels.get(labels::LABEL_MACHINE) else {
                 continue;
             };
-            let Some(revision_hash) = labels.get(LABEL_REVISION) else {
+            let Some(revision_hash) = obs.labels.get(labels::LABEL_REVISION) else {
                 continue;
             };
-            let Some(deploy_id) = labels.get(LABEL_DEPLOY) else {
+            let Some(deploy_id) = obs.labels.get(labels::LABEL_DEPLOY) else {
                 continue;
             };
-
-            let ip_address = container
-                .network_settings
-                .as_ref()
-                .and_then(|settings| settings.networks.as_ref())
-                .and_then(|networks| {
-                    networks
-                        .values()
-                        .find_map(|network| network.ip_address.as_ref())
-                        .and_then(|ip| ip.parse::<IpAddr>().ok())
-                });
 
             instances.push(ManagedInstance {
                 instance_id: InstanceId(instance_id.clone()),
@@ -121,8 +87,8 @@ impl LocalDeployRuntime {
                 machine_id: MachineId(machine_id.clone()),
                 revision_hash: revision_hash.clone(),
                 deploy_id: DeployId(deploy_id.clone()),
-                docker_container_id: container.id.unwrap_or_default(),
-                ip_address,
+                docker_container_id: obs.container_id,
+                ip_address: obs.ip_address,
                 backend_ports: BTreeMap::new(),
             });
         }
@@ -140,55 +106,75 @@ impl LocalDeployRuntime {
         revision_hash: &str,
     ) -> Result<ManagedInstance> {
         let container_name = format!("ployz-{}-{}-{}", spec.namespace, spec.name, instance_id.0);
+        let key = format!(
+            "{}/{}/{}/{}",
+            spec.namespace, spec.name, slot_id.0, instance_id.0
+        );
 
-        match spec.template.pull_policy {
-            PullPolicy::Always => self.pull_image(&spec.template.image).await?,
-            PullPolicy::IfNotPresent => {
-                if !self.image_exists(&spec.template.image).await {
-                    self.pull_image(&spec.template.image).await?;
-                }
+        let meta = WorkloadMeta {
+            namespace: &spec.namespace.0,
+            service: &spec.name,
+            revision: revision_hash,
+            deploy_id: &deploy_id.0,
+            instance_id: &instance_id.0,
+            slot_id: &slot_id.0,
+            machine_id: &machine_id.0,
+        };
+        let workload_labels = build_workload_labels(&key, &meta, &spec.labels);
+
+        let container = &spec.template;
+
+        let pull_policy = match spec.template.pull_policy {
+            crate::spec::PullPolicy::Always => PullPolicy::Always,
+            crate::spec::PullPolicy::IfNotPresent => PullPolicy::IfNotPresent,
+            crate::spec::PullPolicy::Never => PullPolicy::Never,
+        };
+
+        let env: Vec<(String, String)> = container
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        let network_mode = match &spec.network {
+            NetworkMode::Host => Some("host".to_string()),
+            NetworkMode::None => Some("none".to_string()),
+            NetworkMode::Service(service) => {
+                Some(format!("container:ployz-{}-{service}", spec.namespace))
             }
-            PullPolicy::Never => {}
-        }
+            NetworkMode::Overlay => self.overlay_network.clone(),
+        };
 
-        let config = self.build_container_config(
-            spec,
-            deploy_id,
-            instance_id,
-            slot_id,
-            machine_id,
-            revision_hash,
-        )?;
-        let options = CreateContainerOptionsBuilder::default()
-            .name(&container_name)
-            .build();
+        let runtime_spec = RuntimeContainerSpec {
+            key,
+            container_name: container_name.clone(),
+            image: container.image.clone(),
+            pull_policy,
+            cmd: container.command.clone(),
+            entrypoint: container.entrypoint.clone(),
+            env,
+            labels: workload_labels,
+            binds: build_binds(container),
+            tmpfs: build_tmpfs(container),
+            network_mode,
+            port_bindings: build_port_bindings(spec)?,
+            exposed_ports: None,
+            cap_add: container.cap_add.clone(),
+            cap_drop: container.cap_drop.clone(),
+            privileged: container.privileged,
+            user: container.user.clone(),
+            restart_policy: Some(build_restart_policy(&spec.restart)),
+            memory_bytes: container.resources.memory_bytes.map(|v| v as i64),
+            nano_cpus: container.resources.cpu_nano(),
+            sysctls: container.sysctls.clone().into_iter().collect(),
+            stop_timeout: spec
+                .stop_grace_period
+                .as_ref()
+                .and_then(|v| parse_duration_secs(v)),
+            pid_mode: None,
+        };
 
-        self.docker
-            .create_container(Some(options), config)
-            .await
-            .map_err(|e| Error::operation("start_candidate", format!("create container: {e}")))?;
-
-        self.docker
-            .start_container(&container_name, None)
-            .await
-            .map_err(|e| Error::operation("start_candidate", format!("start container: {e}")))?;
-
-        let inspect = self
-            .docker
-            .inspect_container(&container_name, None)
-            .await
-            .map_err(|e| Error::operation("start_candidate", format!("inspect container: {e}")))?;
-
-        let ip_address = inspect
-            .network_settings
-            .as_ref()
-            .and_then(|settings| settings.networks.as_ref())
-            .and_then(|networks| {
-                networks
-                    .values()
-                    .find_map(|network| network.ip_address.as_ref())
-                    .and_then(|ip| ip.parse::<IpAddr>().ok())
-            });
+        let result = self.engine.ensure(&runtime_spec).await?;
 
         Ok(ManagedInstance {
             instance_id: instance_id.clone(),
@@ -197,8 +183,8 @@ impl LocalDeployRuntime {
             machine_id: machine_id.clone(),
             revision_hash: revision_hash.to_string(),
             deploy_id: deploy_id.clone(),
-            docker_container_id: inspect.id.unwrap_or_default(),
-            ip_address,
+            docker_container_id: result.container_id,
+            ip_address: result.ip_address,
             backend_ports: service_port_map(&spec.service_ports),
         })
     }
@@ -222,68 +208,35 @@ impl LocalDeployRuntime {
             ));
         };
 
-        let deadline = Instant::now() + Duration::from_secs(15);
-        loop {
-            let ready = match readiness {
-                ReadinessProbe::Tcp { service_port } => {
-                    probe_tcp(ip_address, resolve_service_port(spec, service_port)?).await
-                }
-                ReadinessProbe::Http { service_port, path } => {
-                    probe_http(ip_address, resolve_service_port(spec, service_port)?, path).await
-                }
-                ReadinessProbe::Exec { command } => {
-                    self.probe_exec(&instance.docker_container_id, command)
-                        .await?
-                }
-            };
+        let probe = match readiness {
+            ReadinessProbe::Tcp { service_port } => Probe::Tcp {
+                host: ip_address,
+                port: resolve_service_port(spec, service_port)?,
+            },
+            ReadinessProbe::Http { service_port, path } => Probe::Http {
+                host: ip_address,
+                port: resolve_service_port(spec, service_port)?,
+                path: path.clone(),
+            },
+            ReadinessProbe::Exec { command } => Probe::Exec {
+                container_id: instance.docker_container_id.clone(),
+                command: command.clone(),
+            },
+        };
 
-            if ready {
-                return Ok(());
-            }
-
-            if Instant::now() >= deadline {
-                return Err(Error::operation(
+        self.engine
+            .probe_runner()
+            .wait_ready(&probe, READINESS_TIMEOUT, READINESS_INTERVAL)
+            .await
+            .map_err(|_| {
+                Error::operation(
                     "wait_ready",
                     format!(
                         "instance '{}' for service '{}' did not become ready before timeout",
                         instance.instance_id, spec.name
                     ),
-                ));
-            }
-
-            sleep(Duration::from_millis(250)).await;
-        }
-    }
-
-    async fn probe_exec(&self, container_id: &str, command: &[String]) -> Result<bool> {
-        let options = CreateExecOptions {
-            attach_stdout: Some(false),
-            attach_stderr: Some(false),
-            cmd: Some(command.to_vec()),
-            ..Default::default()
-        };
-        let exec = self
-            .docker
-            .create_exec(container_id, options)
-            .await
-            .map_err(|e| Error::operation("probe_exec", format!("create exec: {e}")))?;
-        let result = self
-            .docker
-            .start_exec(&exec.id, None)
-            .await
-            .map_err(|e| Error::operation("probe_exec", format!("start exec: {e}")))?;
-
-        match result {
-            StartExecResults::Attached { mut output, .. } => while output.next().await.is_some() {},
-            StartExecResults::Detached => {}
-        }
-
-        let inspect = self
-            .docker
-            .inspect_exec(&exec.id)
-            .await
-            .map_err(|e| Error::operation("probe_exec", format!("inspect exec: {e}")))?;
-        Ok(inspect.exit_code == Some(0))
+                )
+            })
     }
 
     pub async fn remove_instance(
@@ -293,137 +246,9 @@ impl LocalDeployRuntime {
         service: &str,
     ) -> Result<()> {
         let container_name = format!("ployz-{namespace}-{service}-{}", instance_id.0);
-        // Graceful stop: sends SIGTERM and waits for the container's stop_timeout
-        // (set from stop_grace_period at creation time) before SIGKILL.
-        let stop_opts = StopContainerOptionsBuilder::default().build();
-        match self.docker.stop_container(&container_name, Some(stop_opts)).await {
-            Ok(()) => {}
-            Err(bollard::errors::Error::DockerResponseServerError { status_code: 304, .. }) => {
-                // Container already stopped
-            }
-            Err(e) => return Err(Error::operation("remove_instance", e.to_string())),
-        }
-        let remove_opts = RemoveContainerOptionsBuilder::default().build();
-        self.docker
-            .remove_container(&container_name, Some(remove_opts))
+        self.engine
+            .remove(&container_name, STOP_GRACE_PERIOD)
             .await
-            .map_err(|e| Error::operation("remove_instance", e.to_string()))?;
-        Ok(())
-    }
-
-    fn build_container_config(
-        &self,
-        spec: &ServiceSpec,
-        deploy_id: &DeployId,
-        instance_id: &InstanceId,
-        slot_id: &SlotId,
-        machine_id: &MachineId,
-        revision_hash: &str,
-    ) -> Result<ContainerCreateBody> {
-        let container = &spec.template;
-
-        let mut labels = HashMap::new();
-        labels.insert(LABEL_MANAGED.to_string(), "true".to_string());
-        labels.insert(LABEL_NAMESPACE.to_string(), spec.namespace.0.clone());
-        labels.insert(LABEL_SERVICE.to_string(), spec.name.clone());
-        labels.insert(LABEL_REVISION.to_string(), revision_hash.to_string());
-        labels.insert(LABEL_DEPLOY.to_string(), deploy_id.0.clone());
-        labels.insert(LABEL_INSTANCE.to_string(), instance_id.0.clone());
-        labels.insert(LABEL_SLOT.to_string(), slot_id.0.clone());
-        labels.insert(LABEL_MACHINE.to_string(), machine_id.0.clone());
-        for (key, value) in &spec.labels {
-            labels.insert(key.clone(), value.clone());
-        }
-
-        let host_config = HostConfig {
-            network_mode: match &spec.network {
-                NetworkMode::Host => Some("host".to_string()),
-                NetworkMode::None => Some("none".to_string()),
-                NetworkMode::Service(service) => {
-                    Some(format!("container:ployz-{}-{service}", spec.namespace))
-                }
-                NetworkMode::Overlay => self.overlay_network.clone(),
-            },
-            binds: Some(build_binds(container)),
-            port_bindings: build_port_bindings(spec)?,
-            cap_add: if container.cap_add.is_empty() {
-                None
-            } else {
-                Some(container.cap_add.clone())
-            },
-            cap_drop: if container.cap_drop.is_empty() {
-                None
-            } else {
-                Some(container.cap_drop.clone())
-            },
-            privileged: Some(container.privileged),
-            restart_policy: Some(build_restart_policy(&spec.restart)),
-            memory: container.resources.memory_bytes.map(|value| value as i64),
-            nano_cpus: container.resources.cpu_nano(),
-            sysctls: if container.sysctls.is_empty() {
-                None
-            } else {
-                Some(container.sysctls.clone().into_iter().collect())
-            },
-            tmpfs: {
-                let mounts: HashMap<String, String> = container
-                    .volumes
-                    .iter()
-                    .filter(|mount| matches!(mount.source, VolumeSource::Tmpfs))
-                    .map(|mount| (mount.target.clone(), String::new()))
-                    .collect();
-                if mounts.is_empty() {
-                    None
-                } else {
-                    Some(mounts)
-                }
-            },
-            ..Default::default()
-        };
-
-        let env: Vec<String> = container
-            .env
-            .iter()
-            .map(|(key, value)| format!("{key}={value}"))
-            .collect();
-
-        Ok(ContainerCreateBody {
-            image: Some(container.image.clone()),
-            cmd: container.command.clone(),
-            entrypoint: container.entrypoint.clone(),
-            env: if env.is_empty() { None } else { Some(env) },
-            labels: Some(labels),
-            user: container.user.clone(),
-            host_config: Some(host_config),
-            stop_timeout: spec
-                .stop_grace_period
-                .as_ref()
-                .and_then(|value| parse_duration_secs(value)),
-            ..Default::default()
-        })
-    }
-
-    async fn image_exists(&self, image: &str) -> bool {
-        self.docker.inspect_image(image).await.is_ok()
-    }
-
-    async fn pull_image(&self, image: &str) -> Result<()> {
-        use bollard::query_parameters::CreateImageOptionsBuilder;
-
-        let (from_image, tag) = match image.splitn(2, ':').collect::<Vec<_>>().as_slice() {
-            [img, tag] => (*img, *tag),
-            _ => (image, "latest"),
-        };
-
-        let options = CreateImageOptionsBuilder::default()
-            .from_image(from_image)
-            .tag(tag)
-            .build();
-        let mut stream = self.docker.create_image(Some(options), None, None);
-        while let Some(result) = stream.next().await {
-            result.map_err(|e| Error::operation("pull_image", e.to_string()))?;
-        }
-        Ok(())
     }
 }
 
@@ -559,6 +384,15 @@ fn build_binds(container: &ContainerSpec) -> Vec<String> {
         .collect()
 }
 
+fn build_tmpfs(container: &ContainerSpec) -> HashMap<String, String> {
+    container
+        .volumes
+        .iter()
+        .filter(|mount| matches!(mount.source, VolumeSource::Tmpfs))
+        .map(|mount| (mount.target.clone(), String::new()))
+        .collect()
+}
+
 fn build_port_bindings(spec: &ServiceSpec) -> Result<Option<PortMap>> {
     if spec.publish.is_empty() {
         return Ok(None);
@@ -630,20 +464,6 @@ fn parse_duration_secs(value: &str) -> Option<i64> {
     trimmed.parse().ok()
 }
 
-async fn probe_tcp(ip_address: IpAddr, port: u16) -> bool {
-    let address = SocketAddr::new(ip_address, port);
-    TcpStream::connect(address).await.is_ok()
-}
-
-async fn probe_http(ip_address: IpAddr, port: u16, path: &str) -> bool {
-    let url = format!("http://{ip_address}:{port}{path}");
-    let client = reqwest::Client::new();
-    match client.get(url).send().await {
-        Ok(response) => response.status() == StatusCode::OK,
-        Err(_) => false,
-    }
-}
-
 pub(super) fn stable_hash_hex(bytes: &[u8]) -> String {
     const OFFSET: u64 = 0xcbf29ce484222325;
     const PRIME: u64 = 0x00000100000001b3;
@@ -657,9 +477,4 @@ pub(super) fn stable_hash_hex(bytes: &[u8]) -> String {
     format!("{hash:016x}")
 }
 
-pub(super) fn now_unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| Duration::from_secs(0))
-        .as_secs()
-}
+pub(super) use crate::daemon::ssh::now_unix_secs;

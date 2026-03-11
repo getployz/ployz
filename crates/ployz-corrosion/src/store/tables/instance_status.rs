@@ -134,10 +134,10 @@ pub(crate) fn parse_instance_status(row: &[SqliteValue]) -> Result<InstanceStatu
         })?;
     let phase: InstancePhase = text(phase_val, "phase")?
         .parse()
-        .map_err(|e| Error::operation("parse_instance_status", e))?;
+        .map_err(|e: strum::ParseError| Error::operation("parse_instance_status", e.to_string()))?;
     let drain_state: DrainState = text(drain_val, "drain_state")?
         .parse()
-        .map_err(|e| Error::operation("parse_instance_status", e))?;
+        .map_err(|e: strum::ParseError| Error::operation("parse_instance_status", e.to_string()))?;
     let error = text(error_val, "error")?;
 
     Ok(InstanceStatusRecord {

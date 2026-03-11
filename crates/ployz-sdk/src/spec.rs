@@ -4,6 +4,12 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Namespace(pub String);
 
+impl AsRef<str> for Namespace {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
 impl Namespace {
     #[must_use] 
     pub fn system() -> Self {

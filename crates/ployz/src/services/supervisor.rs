@@ -1,23 +1,15 @@
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
-use bollard::Docker;
-use bollard::models::{ContainerCreateBody, HostConfig};
-use bollard::query_parameters::{
-    CreateContainerOptionsBuilder, CreateImageOptionsBuilder, RemoveContainerOptionsBuilder,
-    StopContainerOptionsBuilder,
-};
-use futures_util::StreamExt;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::{info, warn};
 
+use crate::runtime::labels::build_system_labels;
+use crate::runtime::{ContainerEngine, EnsureAction, PullPolicy, RuntimeContainerSpec};
+
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
-const LABEL_PLOYZ_CONFIG_HASH: &str = "ployz.config-hash";
-const LABEL_PLOYZ_PARENT_ID: &str = "ployz.parent-container-id";
 
 // ---------------------------------------------------------------------------
 // SidecarSpec — declarative description of a sidecar service
@@ -46,17 +38,28 @@ pub struct SidecarSpec {
     pub systemd_extra: String,
 }
 
-impl SidecarSpec {
-    /// Stable hash of the fields that determine whether a running service can be adopted.
-    fn config_hash(&self) -> String {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.image.hash(&mut hasher);
-        self.cmd.hash(&mut hasher);
-        self.env.hash(&mut hasher);
-        self.binds.hash(&mut hasher);
-        self.network_container.hash(&mut hasher);
-        self.systemd_extra.hash(&mut hasher);
-        format!("{:016x}", hasher.finish())
+/// Build a `RuntimeContainerSpec` from a `SidecarSpec`.
+fn sidecar_to_runtime_spec(spec: &SidecarSpec) -> RuntimeContainerSpec {
+    let key = format!("system/{}", spec.name);
+
+    let network_mode = spec
+        .network_container
+        .as_ref()
+        .map(|name| format!("container:{name}"));
+
+    let labels = build_system_labels(&key, None);
+
+    RuntimeContainerSpec {
+        key,
+        container_name: spec.container_name.clone(),
+        image: spec.image.clone(),
+        pull_policy: PullPolicy::IfNotPresent,
+        cmd: Some(spec.cmd.clone()),
+        env: spec.env.clone(),
+        labels,
+        binds: spec.binds.clone(),
+        network_mode,
+        ..Default::default()
     }
 }
 
@@ -77,9 +80,8 @@ enum SidecarInner {
 impl SidecarHandle {
     /// Ensure the service is running, adopting an existing instance when possible.
     ///
-    /// - **Docker**: inspects the existing container; adopts if running, config hash
-    ///   matches, and parent network container (if any) is unchanged. Otherwise
-    ///   tears down the old container and creates a fresh one.
+    /// - **Docker**: uses `ContainerEngine::ensure()` to inspect, diff, and adopt
+    ///   or recreate the container as needed.
     /// - **HostService** (systemd): adopts if the unit is active and its file content
     ///   matches the desired spec. Otherwise rewrites + restarts.
     /// - **HostExec**: always spawns a new child process (no persistent state to adopt).
@@ -225,242 +227,52 @@ async fn start_child(spec: SidecarSpec) -> Result<ChildHandle, SidecarError> {
 // ---------------------------------------------------------------------------
 
 struct DockerHandle {
-    docker: Docker,
+    engine: ContainerEngine,
     container_name: String,
     service_name: String,
 }
 
 impl DockerHandle {
     async fn shutdown(&self) -> Result<(), SidecarError> {
-        let stop_opts = StopContainerOptionsBuilder::default().t(10).build();
-        match self
-            .docker
-            .stop_container(&self.container_name, Some(stop_opts))
+        self.engine
+            .remove(&self.container_name, STOP_GRACE_PERIOD)
             .await
-        {
-            Ok(()) => {}
-            Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 304 | 404,
-                ..
-            }) => {}
-            Err(e) => {
-                return Err(SidecarError::Process(format!(
-                    "docker stop {}: {e}",
-                    self.service_name
-                )));
-            }
-        }
-
-        let remove_opts = RemoveContainerOptionsBuilder::default().build();
-        match self
-            .docker
-            .remove_container(&self.container_name, Some(remove_opts))
-            .await
-        {
-            Ok(()) => {}
-            Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 404, ..
-            }) => {}
-            Err(e) => {
-                return Err(SidecarError::Process(format!(
-                    "docker remove {}: {e}",
-                    self.service_name
-                )));
-            }
-        }
-
-        info!(name = %self.container_name, "{} container stopped and removed", self.service_name);
-        Ok(())
+            .map_err(|e| SidecarError::Process(format!("docker remove {}: {e}", self.service_name)))
     }
-}
-
-/// Resolve the Docker container ID for a container name, or `None` if not found.
-async fn resolve_container_id(docker: &Docker, name: &str) -> Option<String> {
-    docker
-        .inspect_container(name, None)
-        .await
-        .ok()
-        .and_then(|info| info.id)
-}
-
-/// Check whether an existing container can be adopted (running + identity match).
-async fn try_adopt_docker(
-    docker: &Docker,
-    spec: &SidecarSpec,
-    config_hash: &str,
-) -> Option<DockerHandle> {
-    let info = docker
-        .inspect_container(&spec.container_name, None)
-        .await
-        .ok()?;
-
-    let is_running = info.state.as_ref().and_then(|s| s.running).unwrap_or(false);
-    if !is_running {
-        return None;
-    }
-
-    let labels = info
-        .config
-        .as_ref()
-        .and_then(|c| c.labels.as_ref());
-
-    // Config hash must match.
-    let stored_hash = labels.and_then(|l| l.get(LABEL_PLOYZ_CONFIG_HASH));
-    if stored_hash.map(String::as_str) != Some(config_hash) {
-        info!(name = %spec.container_name, "config drift detected, recreating");
-        return None;
-    }
-
-    // If sharing a network namespace, the parent container must be the same instance.
-    if let Some(ref parent_name) = spec.network_container {
-        let stored_parent = labels.and_then(|l| l.get(LABEL_PLOYZ_PARENT_ID));
-        let current_parent = resolve_container_id(docker, parent_name).await;
-        match (stored_parent, current_parent.as_deref()) {
-            (Some(stored), Some(current)) if stored == current => {}
-            _ => {
-                info!(
-                    name = %spec.container_name,
-                    parent = %parent_name,
-                    "parent container changed, recreating"
-                );
-                return None;
-            }
-        }
-    }
-
-    info!(name = %spec.container_name, "adopted existing container");
-    Some(DockerHandle {
-        docker: docker.clone(),
-        container_name: spec.container_name.clone(),
-        service_name: spec.name.clone(),
-    })
 }
 
 async fn ensure_docker(spec: SidecarSpec) -> Result<DockerHandle, SidecarError> {
-    let docker = Docker::connect_with_socket_defaults()
-        .map_err(|e| SidecarError::Process(format!("docker connect: {e}")))?;
-
-    docker
-        .ping()
+    let engine = ContainerEngine::connect()
         .await
-        .map_err(|e| SidecarError::Process(format!("docker ping: {e}")))?;
+        .map_err(|e| SidecarError::Process(e.to_string()))?;
 
-    let config_hash = spec.config_hash();
+    let runtime_spec = sidecar_to_runtime_spec(&spec);
 
-    // Try to adopt an existing, matching container.
-    if let Some(handle) = try_adopt_docker(&docker, &spec, &config_hash).await {
-        return Ok(handle);
-    }
+    let result = engine
+        .ensure(&runtime_spec)
+        .await
+        .map_err(|e| SidecarError::Process(format!("{}: {e}", spec.name)))?;
 
-    // Best-effort pull.
-    let (repo, tag) = match spec.image.split_once(':') {
-        Some((r, t)) => (r, t),
-        None => (spec.image.as_str(), "latest"),
-    };
-    let pull_opts = CreateImageOptionsBuilder::default()
-        .from_image(repo)
-        .tag(tag)
-        .build();
-    let mut stream = docker.create_image(Some(pull_opts), None, None);
-    while let Some(result) = stream.next().await {
-        match result {
-            Ok(info) => {
-                if let Some(status) = info.status {
-                    info!(image = %spec.image, %status, "pulling");
-                }
-            }
-            Err(e) => {
-                warn!(?e, image = %spec.image, "pull failed, trying cached image");
-                break;
-            }
+    match &result.action {
+        EnsureAction::Adopted => {
+            info!(name = %spec.container_name, "adopted existing container");
+        }
+        EnsureAction::Created => {
+            info!(name = %spec.container_name, image = %spec.image, "{} container created", spec.name);
+        }
+        EnsureAction::Recreated { changed } => {
+            info!(
+                name = %spec.container_name,
+                image = %spec.image,
+                changed = ?changed,
+                "{} container recreated",
+                spec.name,
+            );
         }
     }
 
-    // Remove existing container.
-    let remove_opts = RemoveContainerOptionsBuilder::default()
-        .force(true)
-        .build();
-    if let Err(e) = docker
-        .remove_container(&spec.container_name, Some(remove_opts))
-        .await
-        && !matches!(
-            e,
-            bollard::errors::Error::DockerResponseServerError {
-                status_code: 404,
-                ..
-            }
-        )
-    {
-        warn!(?e, name = %spec.container_name, "failed to remove existing {} container", spec.name);
-    }
-
-    let network_mode = spec
-        .network_container
-        .as_ref()
-        .map(|name| format!("container:{name}"));
-
-    let host_config = HostConfig {
-        binds: Some(spec.binds.clone()),
-        network_mode,
-        ..Default::default()
-    };
-
-    let mut labels: HashMap<String, String> = [
-        ("com.docker.compose.project".into(), "ployz-system".into()),
-        (
-            "com.docker.compose.service".into(),
-            spec.compose_service.clone(),
-        ),
-        (LABEL_PLOYZ_CONFIG_HASH.into(), config_hash),
-    ]
-    .into_iter()
-    .collect();
-
-    // Track parent container ID so future ensure() calls can detect netns drift.
-    if let Some(ref parent_name) = spec.network_container
-        && let Some(parent_id) = resolve_container_id(&docker, parent_name).await
-    {
-        labels.insert(LABEL_PLOYZ_PARENT_ID.into(), parent_id);
-    }
-
-    let env: Vec<String> = spec
-        .env
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect();
-
-    let container_config = ContainerCreateBody {
-        image: Some(spec.image.clone()),
-        cmd: Some(spec.cmd.clone()),
-        env: Some(env),
-        labels: Some(labels),
-        host_config: Some(host_config),
-        ..Default::default()
-    };
-
-    let create_opts = CreateContainerOptionsBuilder::default()
-        .name(&spec.container_name)
-        .build();
-
-    docker
-        .create_container(Some(create_opts), container_config)
-        .await
-        .map_err(|e| SidecarError::Process(format!("docker create {}: {e}", spec.name)))?;
-
-    docker
-        .start_container(&spec.container_name, None)
-        .await
-        .map_err(|e| SidecarError::Process(format!("docker start {}: {e}", spec.name)))?;
-
-    info!(
-        name = %spec.container_name,
-        image = %spec.image,
-        "{} container started",
-        spec.name,
-    );
-
     Ok(DockerHandle {
-        docker,
+        engine,
         container_name: spec.container_name,
         service_name: spec.name,
     })

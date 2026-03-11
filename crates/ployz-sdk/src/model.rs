@@ -5,18 +5,36 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::str::FromStr;
+use strum::EnumString;
 
 use crate::spec::Namespace;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display)]
 pub struct MachineId(pub String);
 
+impl AsRef<str> for MachineId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
 pub struct NetworkName(pub String);
 
+impl AsRef<str> for NetworkName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
 pub struct NetworkId(pub String);
+
+impl AsRef<str> for NetworkId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
 
 impl NetworkId {
     #[must_use] 
@@ -60,68 +78,34 @@ impl fmt::Debug for PrivateKey {
 #[display("{_0}")]
 pub struct OverlayIp(pub Ipv6Addr);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
 #[derive(Default)]
 pub enum MachineStatus {
     #[default]
+    #[display("")]
+    #[strum(serialize = "")]
     Unknown,
+    #[display("up")]
+    #[strum(serialize = "up")]
     Up,
+    #[display("down")]
+    #[strum(serialize = "down")]
     Down,
 }
 
-
-impl fmt::Display for MachineStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Unknown => f.write_str(""),
-            Self::Up => f.write_str("up"),
-            Self::Down => f.write_str("down"),
-        }
-    }
-}
-
-impl FromStr for MachineStatus {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "" => Ok(Self::Unknown),
-            "up" => Ok(Self::Up),
-            "down" => Ok(Self::Down),
-            other => Err(format!("unknown machine status: {other:?}")),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
 #[derive(Default)]
 pub enum Participation {
     #[default]
+    #[display("disabled")]
+    #[strum(serialize = "disabled")]
     Disabled,
+    #[display("enabled")]
+    #[strum(serialize = "enabled")]
     Enabled,
+    #[display("draining")]
+    #[strum(serialize = "draining")]
     Draining,
-}
-
-
-impl fmt::Display for Participation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Disabled => f.write_str("disabled"),
-            Self::Enabled => f.write_str("enabled"),
-            Self::Draining => f.write_str("draining"),
-        }
-    }
-}
-
-impl FromStr for Participation {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "disabled" => Ok(Self::Disabled),
-            "enabled" => Ok(Self::Enabled),
-            "draining" => Ok(Self::Draining),
-            other => Err(format!("unknown participation: {other:?}")),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,73 +221,39 @@ pub struct RoutingState {
     pub instances: Vec<InstanceStatusRecord>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
 pub enum InstancePhase {
+    #[display("pending")]
+    #[strum(serialize = "pending")]
     Pending,
+    #[display("starting")]
+    #[strum(serialize = "starting")]
     Starting,
+    #[display("ready")]
+    #[strum(serialize = "ready")]
     Ready,
+    #[display("failed")]
+    #[strum(serialize = "failed")]
     Failed,
+    #[display("draining")]
+    #[strum(serialize = "draining")]
     Draining,
+    #[display("removed")]
+    #[strum(serialize = "removed")]
     Removed,
 }
 
-impl fmt::Display for InstancePhase {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Pending => f.write_str("pending"),
-            Self::Starting => f.write_str("starting"),
-            Self::Ready => f.write_str("ready"),
-            Self::Failed => f.write_str("failed"),
-            Self::Draining => f.write_str("draining"),
-            Self::Removed => f.write_str("removed"),
-        }
-    }
-}
-
-impl FromStr for InstancePhase {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "pending" => Ok(Self::Pending),
-            "starting" => Ok(Self::Starting),
-            "ready" => Ok(Self::Ready),
-            "failed" => Ok(Self::Failed),
-            "draining" => Ok(Self::Draining),
-            "removed" => Ok(Self::Removed),
-            other => Err(format!("unknown instance phase: {other:?}")),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
 pub enum DrainState {
+    #[display("none")]
+    #[strum(serialize = "none")]
     None,
+    #[display("requested")]
+    #[strum(serialize = "requested")]
     Requested,
+    #[display("complete")]
+    #[strum(serialize = "complete")]
     Complete,
-}
-
-impl fmt::Display for DrainState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::None => f.write_str("none"),
-            Self::Requested => f.write_str("requested"),
-            Self::Complete => f.write_str("complete"),
-        }
-    }
-}
-
-impl FromStr for DrainState {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "none" => Ok(Self::None),
-            "requested" => Ok(Self::Requested),
-            "complete" => Ok(Self::Complete),
-            other => Err(format!("unknown drain state: {other:?}")),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -326,40 +276,23 @@ pub struct InstanceStatusRecord {
     pub updated_at: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
 pub enum DeployState {
+    #[display("planning")]
+    #[strum(serialize = "planning")]
     Planning,
+    #[display("applying")]
+    #[strum(serialize = "applying")]
     Applying,
+    #[display("committed")]
+    #[strum(serialize = "committed")]
     Committed,
+    #[display("cleanup_pending")]
+    #[strum(serialize = "cleanup_pending")]
     CleanupPending,
+    #[display("failed")]
+    #[strum(serialize = "failed")]
     Failed,
-}
-
-impl fmt::Display for DeployState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Planning => f.write_str("planning"),
-            Self::Applying => f.write_str("applying"),
-            Self::Committed => f.write_str("committed"),
-            Self::CleanupPending => f.write_str("cleanup_pending"),
-            Self::Failed => f.write_str("failed"),
-        }
-    }
-}
-
-impl FromStr for DeployState {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "planning" => Ok(Self::Planning),
-            "applying" => Ok(Self::Applying),
-            "committed" => Ok(Self::Committed),
-            "cleanup_pending" => Ok(Self::CleanupPending),
-            "failed" => Ok(Self::Failed),
-            other => Err(format!("unknown deploy state: {other:?}")),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -480,6 +413,7 @@ pub fn management_ip_from_key(key: &PublicKey) -> OverlayIp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     #[test]
     fn management_ip_deterministic() {
