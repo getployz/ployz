@@ -225,17 +225,26 @@ install_core_packages() {
 }
 
 install_docker() {
+  local pm
   if command -v docker >/dev/null 2>&1; then
     return
   fi
 
-  if is_like arch; then
-    pacman -Sy --noconfirm docker
-    return
-  fi
-
-  log "installing docker via official convenience script"
-  curl -fsSL https://get.docker.com | sh
+  pm=$(package_manager)
+  case "${pm}" in
+    apt)
+      log "installing docker from apt"
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y docker.io
+      ;;
+    pacman)
+      pacman -Sy --noconfirm docker
+      ;;
+    *)
+      log "installing docker via official convenience script"
+      curl -fsSL https://get.docker.com | sh
+      ;;
+  esac
 }
 
 enable_docker() {
