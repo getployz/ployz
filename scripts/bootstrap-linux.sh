@@ -14,6 +14,7 @@ Options:
   --prefix PATH            Install prefix. Defaults to /usr/local.
   --data-dir PATH          Ployz data dir. Defaults to /var/lib/ployz.
   --mode MODE              Runtime mode. Only host-service is supported in v1.
+  --refresh-only          Skip package/bootstrap setup and refresh artifacts only.
   --skip-start             Install and enable the service but do not start it.
   --force-download         Re-download the artifact bundle even if cached.
   --help                   Show this help text.
@@ -34,6 +35,7 @@ ARTIFACTS_URL=""
 APT_PROXY=""
 SKIP_START=0
 FORCE_DOWNLOAD=0
+REFRESH_ONLY=0
 STATE_DIR=""
 WORK_DIR=""
 
@@ -79,6 +81,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-start)
       SKIP_START=1
+      shift
+      ;;
+    --refresh-only)
+      REFRESH_ONLY=1
       shift
       ;;
     --force-download)
@@ -346,11 +352,15 @@ verify_service() {
 }
 
 main() {
-  log "installing prerequisites for ${DISTRO_ID}"
-  configure_package_proxy
-  install_core_packages
-  install_docker
-  enable_docker
+  if [[ ${REFRESH_ONLY} -eq 0 ]]; then
+    log "installing prerequisites for ${DISTRO_ID}"
+    configure_package_proxy
+    install_core_packages
+    install_docker
+    enable_docker
+  else
+    log "refreshing installed artifacts for ${DISTRO_ID}"
+  fi
   prepare_state_dirs
 
   local staged
@@ -364,7 +374,11 @@ main() {
   write_bootstrap_state "${staged}"
   verify_service
 
-  log "bootstrap complete"
+  if [[ ${REFRESH_ONLY} -eq 0 ]]; then
+    log "bootstrap complete"
+  else
+    log "refresh complete"
+  fi
   if [[ ${SKIP_START} -eq 0 ]]; then
     log "service enabled: $(systemctl is-enabled ployzd.service)"
     log "service active: $(systemctl is-active ployzd.service)"

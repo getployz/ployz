@@ -8,14 +8,14 @@ use crate::store::MachineStore;
 use crate::store::driver::StoreDriver;
 use chrono::DateTime;
 use ipnet::Ipv4Net;
-use ployz_sdk::transport::DaemonResponse;
+use ployz_sdk::transport::{DaemonResponse, MachineAddOptions};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, sleep};
 
 use super::super::DaemonState;
-use super::super::ssh::{run_ssh, run_ssh_with_stdin};
+use super::super::ssh::{EphemeralSshIdentityFile, SshOptions, run_ssh, run_ssh_with_stdin};
 use crate::time::now_unix_secs;
 
 const INVITE_TTL_SECS: u64 = 600;
@@ -35,6 +35,7 @@ struct MachineAddContext {
     network_name: String,
     store: StoreDriver,
     peer_sync_tx: mpsc::Sender<PeerSyncCommand>,
+    ssh_options: SshOptions,
 }
 
 #[derive(Debug)]
@@ -203,12 +204,17 @@ impl DaemonState {
             );
         }
 
-        if let Err(err) = run_ssh(target, MACHINE_INIT_BOOTSTRAP_COMMAND).await {
+        if let Err(err) = run_ssh(target, MACHINE_INIT_BOOTSTRAP_COMMAND, &SshOptions::default()).await {
             return self.err("SSH_BOOTSTRAP_FAILED", err);
         }
 
-        if let Err(err) =
-            run_ssh_with_stdin(target, REMOTE_MESH_INIT_COMMAND, network.as_bytes()).await
+        if let Err(err) = run_ssh_with_stdin(
+            target,
+            REMOTE_MESH_INIT_COMMAND,
+            network.as_bytes(),
+            &SshOptions::default(),
+        )
+        .await
         {
             return self.err("REMOTE_INIT_FAILED", err);
         }
@@ -218,13 +224,32 @@ impl DaemonState {
         ))
     }
 
-    pub(crate) async fn handle_machine_add(&mut self, targets: &[String]) -> DaemonResponse {
+    pub(crate) async fn handle_machine_add(
+        &mut self,
+        targets: &[String],
+        options: &MachineAddOptions,
+    ) -> DaemonResponse {
+        tracing::info!(target_count = targets.len(), "machine add requested");
         if targets.is_empty() {
             return self.err(
                 "INVALID_ARGUMENT",
                 "machine add requires at least one target",
             );
         }
+
+        let identity_file = match options.ssh_identity_private_key.as_deref() {
+            Some(private_key) => match EphemeralSshIdentityFile::write(private_key) {
+                Ok(identity_file) => Some(identity_file),
+                Err(err) => {
+                    return self.err("INVALID_IDENTITY", err);
+                }
+            },
+            None => None,
+        };
+        let ssh_options = identity_file
+            .as_ref()
+            .map(EphemeralSshIdentityFile::ssh_options)
+            .unwrap_or_default();
 
         let (running, context) = match self.active.as_ref() {
             Some(active) => {
@@ -237,6 +262,7 @@ impl DaemonState {
                         network_name: active.config.name.0.clone(),
                         store: active.mesh.store.clone(),
                         peer_sync_tx,
+                        ssh_options,
                     },
                 )
             }
@@ -252,16 +278,22 @@ impl DaemonState {
             Ok(warnings) => warnings,
             Err(err) => return self.err("LIST_FAILED", err),
         };
+        tracing::info!(warning_count = warnings.len(), "machine add degraded-mesh check complete");
 
         let allocated_subnets = match self.allocate_machine_subnets(targets.len()).await {
             Ok(subnets) => subnets,
             Err(err) => return self.err("SUBNET_EXHAUSTION", err),
         };
+        tracing::info!(
+            allocated_count = allocated_subnets.len(),
+            "machine add subnet allocation complete"
+        );
 
         let mut summary = MachineAddSummary::default();
         let mut tasks = JoinSet::new();
 
         for (target, allocated_subnet) in targets.iter().cloned().zip(allocated_subnets) {
+            tracing::info!(%target, %allocated_subnet, "machine add issuing invite token");
             let token = match self
                 .do_issue_invite_token(&running, INVITE_TTL_SECS, allocated_subnet)
                 .await
@@ -274,6 +306,7 @@ impl DaemonState {
                     continue;
                 }
             };
+            tracing::info!(%target, "machine add invite token issued");
 
             let task_context = context.clone();
             tasks.spawn(async move { run_machine_add_target(task_context, target, token).await });
@@ -548,14 +581,24 @@ async fn run_machine_add_target(
     target: String,
     token: String,
 ) -> MachineAddOutcome {
-    if let Err(err) = run_ssh(&target, MACHINE_ADD_BOOTSTRAP_COMMAND).await {
+    tracing::info!(%target, "machine add target: ssh preflight starting");
+    if let Err(err) = run_ssh(&target, MACHINE_ADD_BOOTSTRAP_COMMAND, &context.ssh_options).await {
         return MachineAddOutcome::FailedPreflight {
             target,
             reason: err,
         };
     }
+    tracing::info!(%target, "machine add target: ssh preflight complete");
 
-    match run_ssh_with_stdin(&target, REMOTE_MESH_JOIN_COMMAND, token.as_bytes()).await {
+    tracing::info!(%target, "machine add target: remote join starting");
+    match run_ssh_with_stdin(
+        &target,
+        REMOTE_MESH_JOIN_COMMAND,
+        token.as_bytes(),
+        &context.ssh_options,
+    )
+    .await
+    {
         Ok(_) => {}
         Err(err) if err.contains("already exists") || err.contains("already running") => {
             tracing::info!(target, "remote already joined, continuing to self-record");
@@ -567,11 +610,21 @@ async fn run_machine_add_target(
             };
         }
     }
+    tracing::info!(%target, "machine add target: remote join complete");
 
-    let self_record_output = match run_ssh(&target, REMOTE_MESH_SELF_RECORD_COMMAND).await {
+    tracing::info!(%target, "machine add target: self-record starting");
+    let self_record_output = match run_ssh(
+        &target,
+        REMOTE_MESH_SELF_RECORD_COMMAND,
+        &context.ssh_options,
+    )
+    .await
+    {
         Ok(output) => output,
         Err(err) => {
-            let _ = best_effort_remote_cleanup(&target, &context.network_name).await;
+            let _ =
+                best_effort_remote_cleanup(&target, &context.network_name, &context.ssh_options)
+                    .await;
             return MachineAddOutcome::FailedSelfRecord {
                 target,
                 reason: format!(
@@ -580,11 +633,14 @@ async fn run_machine_add_target(
             };
         }
     };
+    tracing::info!(%target, "machine add target: self-record complete");
 
     let record = match decode_joiner_record(&self_record_output) {
         Ok(record) => record,
         Err(err) => {
-            let _ = best_effort_remote_cleanup(&target, &context.network_name).await;
+            let _ =
+                best_effort_remote_cleanup(&target, &context.network_name, &context.ssh_options)
+                    .await;
             return MachineAddOutcome::FailedSelfRecord {
                 target,
                 reason: err,
@@ -593,31 +649,40 @@ async fn run_machine_add_target(
     };
 
     let joiner_id = record.id.clone();
+    tracing::info!(%target, joiner_id = %joiner_id, "machine add target: transient peer install starting");
     if let Err(err) = upsert_transient_peer(&context.peer_sync_tx, record.clone()).await {
-        let _ = best_effort_remote_cleanup(&target, &context.network_name).await;
+        let _ = best_effort_remote_cleanup(&target, &context.network_name, &context.ssh_options)
+            .await;
         return MachineAddOutcome::FailedPreflight {
             target,
             reason: err,
         };
     }
+    tracing::info!(%target, joiner_id = %joiner_id, "machine add target: transient peer installed");
 
-    if let Err(err) = wait_for_remote_ready(&target).await {
+    tracing::info!(%target, joiner_id = %joiner_id, "machine add target: waiting for remote ready");
+    if let Err(err) = wait_for_remote_ready(&target, &context.ssh_options).await {
         let _ = remove_transient_peer(&context.peer_sync_tx, &joiner_id).await;
-        let _ = best_effort_remote_cleanup(&target, &context.network_name).await;
+        let _ = best_effort_remote_cleanup(&target, &context.network_name, &context.ssh_options)
+            .await;
         return MachineAddOutcome::FailedReady {
             target,
             reason: err,
         };
     }
+    tracing::info!(%target, joiner_id = %joiner_id, "machine add target: remote ready");
 
+    tracing::info!(%target, joiner_id = %joiner_id, "machine add target: publishing machine record");
     if let Err(err) = context.store.upsert_machine(&record).await {
         let _ = remove_transient_peer(&context.peer_sync_tx, &joiner_id).await;
-        let _ = best_effort_remote_cleanup(&target, &context.network_name).await;
+        let _ = best_effort_remote_cleanup(&target, &context.network_name, &context.ssh_options)
+            .await;
         return MachineAddOutcome::FailedPublish {
             target,
             reason: format!("failed to publish joiner record: {err}"),
         };
     }
+    tracing::info!(%target, joiner_id = %joiner_id, "machine add target: published disabled");
 
     MachineAddOutcome::PublishedDisabled { target, joiner_id }
 }
@@ -642,11 +707,11 @@ async fn remove_transient_peer(
         .map_err(|err| format!("failed to clear founder-local transient peer: {err}"))
 }
 
-async fn wait_for_remote_ready(target: &str) -> Result<(), String> {
+async fn wait_for_remote_ready(target: &str, ssh_options: &SshOptions) -> Result<(), String> {
     let deadline = Instant::now() + REMOTE_READY_TIMEOUT;
 
     loop {
-        let last_error = match run_ssh(target, REMOTE_MESH_READY_COMMAND).await {
+        let last_error = match run_ssh(target, REMOTE_MESH_READY_COMMAND, ssh_options).await {
             Ok(output) => match serde_json::from_str::<RemoteReadyPayload>(&output) {
                 Ok(payload) => {
                     if payload.ready {
@@ -672,10 +737,20 @@ async fn wait_for_remote_ready(target: &str) -> Result<(), String> {
     }
 }
 
-async fn best_effort_remote_cleanup(target: &str, network_name: &str) -> Result<(), String> {
-    let down_error = run_ssh(target, REMOTE_MESH_DOWN_COMMAND).await.err();
-    let destroy_error =
-        run_ssh_with_stdin(target, REMOTE_MESH_DESTROY_COMMAND, network_name.as_bytes())
+async fn best_effort_remote_cleanup(
+    target: &str,
+    network_name: &str,
+    ssh_options: &SshOptions,
+) -> Result<(), String> {
+    let down_error = run_ssh(target, REMOTE_MESH_DOWN_COMMAND, ssh_options)
+        .await
+        .err();
+    let destroy_error = run_ssh_with_stdin(
+        target,
+        REMOTE_MESH_DESTROY_COMMAND,
+        network_name.as_bytes(),
+        ssh_options,
+    )
             .await
             .err();
 
@@ -908,7 +983,9 @@ mod tests {
         let _ready_guard =
             EnvVarGuard::set("PLOYZ_TEST_READY_RESPONSE", Some("{\"ready\":true}".into()));
 
-        let response = state.handle_machine_add(&["join-target".into()]).await;
+        let response = state
+            .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
+            .await;
         assert!(response.ok, "{}", response.message);
         assert!(
             response

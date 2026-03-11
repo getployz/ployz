@@ -1,29 +1,94 @@
 use std::ffi::OsString;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command as TokioCommand;
 
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
 
-pub async fn run_ssh(target: &str, remote_script: &str) -> Result<String, String> {
-    run_ssh_inner(target, remote_script, None).await
+#[derive(Debug, Clone, Default)]
+pub struct SshOptions {
+    pub identity_file: Option<PathBuf>,
+}
+
+pub struct EphemeralSshIdentityFile {
+    path: PathBuf,
+}
+
+impl EphemeralSshIdentityFile {
+    pub fn write(private_key: &str) -> Result<Self, String> {
+        let pid = std::process::id();
+        let base_dir = std::env::temp_dir();
+        for attempt in 0..16 {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|err| format!("system clock error: {err}"))?
+                .as_nanos();
+            let path = base_dir.join(format!("ployz-ssh-{pid}-{nanos}-{attempt}.key"));
+            match write_identity_file(&path, private_key) {
+                Ok(()) => return Ok(Self { path }),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => {
+                    return Err(format!(
+                        "failed to write operation-scoped ssh identity '{}': {err}",
+                        path.display()
+                    ));
+                }
+            }
+        }
+        Err("failed to allocate a unique path for operation-scoped ssh identity".into())
+    }
+
+    #[must_use]
+    pub fn ssh_options(&self) -> SshOptions {
+        SshOptions {
+            identity_file: Some(self.path.clone()),
+        }
+    }
+}
+
+impl Drop for EphemeralSshIdentityFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+pub async fn run_ssh(
+    target: &str,
+    remote_script: &str,
+    options: &SshOptions,
+) -> Result<String, String> {
+    run_ssh_inner(target, remote_script, None, options).await
 }
 
 pub async fn run_ssh_with_stdin(
     target: &str,
     remote_script: &str,
     stdin_bytes: &[u8],
+    options: &SshOptions,
 ) -> Result<String, String> {
-    run_ssh_inner(target, remote_script, Some(stdin_bytes)).await
+    run_ssh_inner(target, remote_script, Some(stdin_bytes), options).await
 }
 
 async fn run_ssh_inner(
     target: &str,
     remote_script: &str,
     stdin_bytes: Option<&[u8]>,
+    options: &SshOptions,
 ) -> Result<String, String> {
     let mut command = TokioCommand::new(ssh_program());
+    append_common_ssh_options(&mut command);
+    if let Some(identity_file) = &options.identity_file {
+        command
+            .arg("-i")
+            .arg(identity_file)
+            .arg("-o")
+            .arg("IdentitiesOnly=yes");
+    }
     command.arg(target).arg(remote_script);
     if stdin_bytes.is_some() {
         command.stdin(Stdio::piped());
@@ -77,6 +142,16 @@ async fn run_ssh_inner(
     ))
 }
 
+fn append_common_ssh_options(command: &mut TokioCommand) {
+    command
+        .arg("-o")
+        .arg("BatchMode=yes")
+        .arg("-o")
+        .arg("StrictHostKeyChecking=accept-new")
+        .arg("-o")
+        .arg("ConnectTimeout=10");
+}
+
 fn ssh_program() -> OsString {
     #[cfg(test)]
     if let Some(path) = std::env::var_os(TEST_SSH_BIN_ENV) {
@@ -84,6 +159,19 @@ fn ssh_program() -> OsString {
     }
 
     OsString::from("ssh")
+}
+
+fn write_identity_file(path: &Path, private_key: &str) -> std::io::Result<()> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(private_key.as_bytes())?;
+    file.flush()?;
+    Ok(())
 }
 
 #[must_use]
@@ -129,6 +217,7 @@ mod tests {
             "fake-target",
             "set -eu; ployzd mesh join --token-stdin",
             &payload,
+            &SshOptions::default(),
         )
         .await
         .expect("ssh with stdin");
@@ -164,6 +253,59 @@ mod tests {
         }
 
         script
+    }
+
+    #[tokio::test]
+    async fn run_ssh_passes_explicit_identity_file() {
+        let _guard = test_ssh_env_lock().lock().expect("env lock");
+        let temp_dir = unique_temp_dir("ployz-ssh-identity-test");
+        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+        let fake_ssh = temp_dir.join("ssh");
+        let args_path = temp_dir.join("captured.args");
+
+        std::fs::write(
+            &fake_ssh,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf 'ok'\n",
+                args_path.display()
+            ),
+        )
+        .expect("write fake ssh");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = std::fs::metadata(&fake_ssh)
+                .expect("script metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&fake_ssh, permissions).expect("set script permissions");
+        }
+
+        let _ssh_guard = EnvVarGuard::set(TEST_SSH_BIN_ENV, Some(fake_ssh.into_os_string()));
+        let identity = temp_dir.join("id_ed25519");
+        std::fs::write(&identity, "fake-private-key").expect("write identity");
+
+        let output = run_ssh(
+            "fake-target",
+            "echo ok",
+            &SshOptions {
+                identity_file: Some(identity.clone()),
+            },
+        )
+        .await
+        .expect("ssh with identity");
+        assert_eq!(output, "ok");
+
+        let args = std::fs::read_to_string(&args_path).expect("read args");
+        assert!(args.contains("BatchMode=yes"));
+        assert!(args.contains("StrictHostKeyChecking=accept-new"));
+        assert!(args.contains("ConnectTimeout=10"));
+        assert!(args.contains("-i"));
+        assert!(args.contains(&identity.display().to_string()));
+        assert!(args.contains("IdentitiesOnly=yes"));
+        assert!(args.contains("fake-target"));
     }
 
     struct EnvVarGuard {

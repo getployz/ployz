@@ -12,6 +12,12 @@ pub struct DeployOptions {
     pub prune: bool,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MachineAddOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_identity_private_key: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonRequest {
     Status,
@@ -46,6 +52,7 @@ pub enum DaemonRequest {
     },
     MachineAdd {
         targets: Vec<String>,
+        options: MachineAddOptions,
     },
     MachineDrain {
         id: String,
