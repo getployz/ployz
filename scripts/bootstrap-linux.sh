@@ -10,6 +10,7 @@ Usage:
 Options:
   --artifacts-dir PATH     Install from a local artifact directory.
   --artifacts-url URL      Download a tar.gz artifact bundle from URL.
+  --apt-proxy URL          Use this apt proxy for Debian/Ubuntu package fetches.
   --prefix PATH            Install prefix. Defaults to /usr/local.
   --data-dir PATH          Ployz data dir. Defaults to /var/lib/ployz.
   --mode MODE              Runtime mode. Only host-service is supported in v1.
@@ -31,6 +32,7 @@ DATA_DIR="/var/lib/ployz"
 MODE="host-service"
 ARTIFACTS_DIR=""
 ARTIFACTS_URL=""
+APT_PROXY=""
 SKIP_START=0
 FORCE_DOWNLOAD=0
 STATE_DIR=""
@@ -58,6 +60,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --artifacts-url)
       ARTIFACTS_URL=${2:-}
+      shift 2
+      ;;
+    --apt-proxy)
+      APT_PROXY=${2:-}
       shift 2
       ;;
     --prefix)
@@ -150,14 +156,38 @@ package_manager() {
   fail "unsupported distro '${DISTRO_ID}' (no apt, dnf, or pacman found)"
 }
 
+configure_package_proxy() {
+  local pm
+  pm=$(package_manager)
+  if [[ -z "${APT_PROXY}" ]]; then
+    return
+  fi
+  case "${pm}" in
+    apt)
+      log "configuring apt proxy ${APT_PROXY}"
+      install -d /etc/apt/apt.conf.d
+      cat > /etc/apt/apt.conf.d/01ployz-proxy <<EOF
+Acquire::http::Proxy "${APT_PROXY}";
+Acquire::https::Proxy "${APT_PROXY}";
+Acquire::Retries "5";
+Acquire::http::Timeout "20";
+Acquire::https::Timeout "20";
+EOF
+      ;;
+    *)
+      log "ignoring --apt-proxy on non-apt distro ${DISTRO_ID}"
+      ;;
+  esac
+}
+
 install_core_packages() {
   local pm
   pm=$(package_manager)
   case "${pm}" in
     apt)
       export DEBIAN_FRONTEND=noninteractive
-      apt-get update -y
-      apt-get install -y \
+      apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update -y
+      apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y \
         ca-certificates \
         curl \
         jq \
@@ -290,6 +320,7 @@ write_bootstrap_state() {
     printf 'BOOTSTRAP_SOURCE=%s\n' "${ARTIFACTS_URL:-${ARTIFACTS_DIR}}"
     printf 'BOOTSTRAP_MODE=%s\n' "${MODE}"
     printf 'BOOTSTRAP_DISTRO=%s\n' "${DISTRO_ID}"
+    printf 'BOOTSTRAP_APT_PROXY=%s\n' "${APT_PROXY}"
     if [[ -f "${manifest}" ]]; then
       cat "${manifest}"
     fi
@@ -308,6 +339,7 @@ verify_service() {
 
 main() {
   log "installing prerequisites for ${DISTRO_ID}"
+  configure_package_proxy
   install_core_packages
   install_docker
   enable_docker
