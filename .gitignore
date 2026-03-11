@@ -7,4 +7,3 @@ crates/ebpf/target/
 .idea/
 .lab/
 lab/lab.env
-bin/
