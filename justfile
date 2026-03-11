@@ -16,9 +16,6 @@ bootstrap-linux *args:
 lab *args:
     ./lab/bin/ployz-lab {{args}}
 
-ployz *args:
-    cargo run -p ployzd --bin ployzd -- {{args}}
-
 ployzd *args:
     cargo run -p ployzd --bin ployzd -- {{args}}
 
@@ -26,7 +23,7 @@ install prefix="/usr/local":
     just build-release
     install -d "{{prefix}}/bin"
     install -m 0755 target/release/ployzd "{{prefix}}/bin/ployzd"
-    install -m 0755 packaging/bin/ployz "{{prefix}}/bin/ployz"
+    rm -f "{{prefix}}/bin/ployz"
     just install-corrosion {{prefix}}
 
 install-corrosion prefix="/usr/local" repo="getployz/corrosion":

@@ -155,7 +155,7 @@ drained instances.
 ## End-to-End: Deploy to First Request
 
 ```
-1. User runs `ployz deploy manifest.toml`
+1. User runs `ployzd deploy manifest.toml`
 
 2. Preview: diff manifest against current state
    -> "api" needs 3 new slots on machines A, B, C

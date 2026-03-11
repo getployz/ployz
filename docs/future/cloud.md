@@ -95,7 +95,7 @@ Canvas objects + edges compile to a flat `DeployManifest`:
 4. Emit `ServiceSpec` per service
 5. Wrap in `DeployManifest { services: [...] }`
 
-The compiled output is identical to what `ployz deploy -f manifest.json` accepts.
+The compiled output is identical to what `ployzd deploy -f manifest.json` accepts.
 No translation layer. Eject = export canvas as manifest JSON, use CLI going forward.
 
 ### Autoscaler
@@ -670,5 +670,5 @@ The agent detects changed paths (like a CI `paths` filter) to minimize work.
 ### Migration path
 
 Export canvas as `DeployManifest` JSON files (one per namespace). The compiled
-output is identical to what the CLI accepts. `ployz deploy -f manifest.json`
+output is identical to what the CLI accepts. `ployzd deploy -f manifest.json`
 from a CI pipeline replaces the dashboard entirely.
