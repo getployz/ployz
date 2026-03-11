@@ -914,7 +914,7 @@ wait_for_ssh() {
 set -euo pipefail
 deadline=\$((SECONDS + ${timeout}))
 while (( SECONDS < deadline )); do
-  if ssh -i '${RUN_KEY}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 "lab@${NODE_MGMT_IP[${node}]}" true >/dev/null 2>&1; then
+  if ssh -i '${RUN_KEY}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 "lab@${NODE_MGMT_IP[${node}]}" true >/dev/null 2>&1; then
     exit 0
   fi
   sleep 2
@@ -940,9 +940,24 @@ guest_exec() {
   local cmd cmd_b64
   cmd="$*"
   cmd_b64=$(printf '%s' "${cmd}" | base64 | tr -d '\n')
+remote_bash <<EOF
+set -euo pipefail
+base64 -d <<'__PLOYZ_GUEST_CMD__' | ssh -i '${RUN_KEY}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 'lab@${NODE_MGMT_IP[${node}]}' bash -se
+${cmd_b64}
+__PLOYZ_GUEST_CMD__
+EOF
+}
+
+guest_exec_timeout() {
+  local node=$1
+  local timeout_secs=$2
+  shift 2
+  local cmd cmd_b64
+  cmd="$*"
+  cmd_b64=$(printf '%s' "${cmd}" | base64 | tr -d '\n')
   remote_bash <<EOF
 set -euo pipefail
-base64 -d <<'__PLOYZ_GUEST_CMD__' | ssh -i '${RUN_KEY}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 'lab@${NODE_MGMT_IP[${node}]}' bash -se
+base64 -d <<'__PLOYZ_GUEST_CMD__' | ssh -i '${RUN_KEY}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 'lab@${NODE_MGMT_IP[${node}]}' timeout --signal=TERM ${timeout_secs}s bash -se
 ${cmd_b64}
 __PLOYZ_GUEST_CMD__
 EOF
@@ -954,7 +969,7 @@ guest_try() {
   local cmd cmd_b64
   cmd="$*"
   cmd_b64=$(printf '%s' "${cmd}" | base64 | tr -d '\n')
-  remote_sh "base64 -d <<'__PLOYZ_GUEST_CMD__' | ssh -i '${RUN_KEY}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 'lab@${NODE_MGMT_IP[${node}]}' bash -se >/dev/null 2>&1
+  remote_sh "base64 -d <<'__PLOYZ_GUEST_CMD__' | ssh -i '${RUN_KEY}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 'lab@${NODE_MGMT_IP[${node}]}' bash -se >/dev/null 2>&1
 ${cmd_b64}
 __PLOYZ_GUEST_CMD__"
 }
@@ -963,7 +978,7 @@ guest_scp_from_remote() {
   local node=$1
   local source=$2
   local dest=$3
-  remote_sh "scp -i '${RUN_KEY}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null '${source}' 'lab@${NODE_MGMT_IP[${node}]}:${dest}'"
+  remote_sh "scp -i '${RUN_KEY}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR '${source}' 'lab@${NODE_MGMT_IP[${node}]}:${dest}'"
 }
 
 assert_pristine() {
@@ -1137,7 +1152,10 @@ await_json_true() {
   start=$(date +%s)
   while true; do
     output=$(guest_exec "${node}" "${cmd}" || true)
-    if printf '%s' "${output}" | jq -e --arg field "${field}" '.[$field] == true' >/dev/null 2>&1; then
+    if printf '%s' "${output}" | jq -e --arg field "${field}" '
+      (.[$field] == true)
+      or ((.message? | fromjson? | .[$field]?) == true)
+    ' >/dev/null 2>&1; then
       return 0
     fi
     if (( "$(date +%s)" - start >= timeout )); then
@@ -1152,17 +1170,17 @@ collect_node_report() {
   local node=$1
   local out_dir="${LOCAL_REPORT_DIR}/${node}"
   install -d "${out_dir}"
-  guest_exec "${node}" "hostnamectl --static" >"${out_dir}/hostname.txt" || true
-  guest_exec "${node}" "command -v dpkg-query >/dev/null 2>&1 && dpkg-query -W || command -v rpm >/dev/null 2>&1 && rpm -qa || pacman -Q" >"${out_dir}/packages.txt" || true
-  guest_exec "${node}" "sudo systemctl status ployzd.service --no-pager" >"${out_dir}/systemd-status.txt" || true
-  guest_exec "${node}" "sudo journalctl -u ployzd.service --no-pager -n 200" >"${out_dir}/journal.txt" || true
-  guest_exec "${node}" "sudo ployzd status" >"${out_dir}/ployzd-status.txt" || true
-  guest_exec "${node}" "sudo ployzd mesh ready --json" >"${out_dir}/mesh-ready.json" || true
-  guest_exec "${node}" "sudo ployzd machine ls" >"${out_dir}/machine-ls.txt" || true
-  guest_exec "${node}" "sudo tc qdisc show dev eth-data && echo && sudo tc qdisc show dev eth-mgmt" >"${out_dir}/tc.txt" || true
-  guest_exec "${node}" "sudo ip -br a" >"${out_dir}/ip.txt" || true
-  guest_exec "${node}" "sudo docker ps -a" >"${out_dir}/docker-ps.txt" || true
-  guest_exec "${node}" "sudo cat /var/lib/ployz-lab/pristine-state.txt 2>/dev/null || true" >"${out_dir}/pristine-state.txt" || true
+  collect_node_report_artifact "${node}" "${out_dir}" "hostname.txt" 10 "hostnamectl --static"
+  collect_node_report_artifact "${node}" "${out_dir}" "packages.txt" 20 "command -v dpkg-query >/dev/null 2>&1 && dpkg-query -W || command -v rpm >/dev/null 2>&1 && rpm -qa || pacman -Q"
+  collect_node_report_artifact "${node}" "${out_dir}" "systemd-status.txt" 10 "sudo systemctl status ployzd.service --no-pager"
+  collect_node_report_artifact "${node}" "${out_dir}" "journal.txt" 15 "sudo journalctl -u ployzd.service --no-pager -n 200"
+  collect_node_report_artifact "${node}" "${out_dir}" "ployzd-status.txt" 10 "sudo ployzd status"
+  collect_node_report_artifact "${node}" "${out_dir}" "mesh-ready.json" 10 "sudo ployzd --plain mesh ready --json"
+  collect_node_report_artifact "${node}" "${out_dir}" "machine-ls.txt" 10 "sudo ployzd machine ls"
+  collect_node_report_artifact "${node}" "${out_dir}" "tc.txt" 10 "sudo tc qdisc show dev eth-data && echo && sudo tc qdisc show dev eth-mgmt"
+  collect_node_report_artifact "${node}" "${out_dir}" "ip.txt" 10 "sudo ip -br a"
+  collect_node_report_artifact "${node}" "${out_dir}" "docker-ps.txt" 10 "sudo docker ps -a"
+  collect_node_report_artifact "${node}" "${out_dir}" "pristine-state.txt" 10 "sudo cat /var/lib/ployz-lab/pristine-state.txt 2>/dev/null || true"
 }
 
 collect_reports() {
@@ -1170,6 +1188,24 @@ collect_reports() {
   for node in "${NODES[@]}"; do
     collect_node_report "${node}"
   done
+}
+
+collect_node_report_artifact() {
+  local node=$1
+  local out_dir=$2
+  local filename=$3
+  local timeout_secs=$4
+  shift 4
+  local command=$*
+  local target="${out_dir}/${filename}"
+  local stderr_path="${target}.stderr"
+  log "collecting ${node} report artifact ${filename}"
+  if ! guest_exec_timeout "${node}" "${timeout_secs}" "${command}" >"${target}" 2>"${stderr_path}"; then
+    log "WARNING: collecting ${node} report artifact ${filename} failed"
+  fi
+  if [[ ! -s "${stderr_path}" ]]; then
+    rm -f "${stderr_path}"
+  fi
 }
 
 assign_node_base_images() {
@@ -1245,12 +1281,13 @@ bootstrap_nodes() {
         verify_bootstrap "${node}"
         ;;
     esac
+    seed_interguest_ssh "${node}"
   done
 }
 
 scenario_founder_init_after_bootstrap() {
   guest_exec founder "sudo ployzd mesh init alpha"
-  await_json_true founder "sudo ployzd mesh ready --json" ready 120
+  await_json_true founder "sudo ployzd --plain mesh ready --json" ready 120
 }
 
 scenario_machine_add_basic() {
@@ -1258,7 +1295,7 @@ scenario_machine_add_basic() {
   seed_interguest_ssh founder
   seed_interguest_ssh joiner
   guest_exec founder "sudo ployzd mesh init alpha"
-  await_json_true founder "sudo ployzd mesh ready --json" ready 120
+  await_json_true founder "sudo ployzd --plain mesh ready --json" ready 120
   guest_exec founder "sudo ployzd machine add ${joiner_target}"
   await_contains founder "sudo ployzd machine ls" "joiner" 120
   await_machine_state founder joiner disabled 60
@@ -1287,7 +1324,7 @@ scenario_replace_machine() {
   seed_interguest_ssh joiner
   seed_interguest_ssh replacement
   guest_exec founder "sudo ployzd mesh init alpha"
-  await_json_true founder "sudo ployzd mesh ready --json" ready 120
+  await_json_true founder "sudo ployzd --plain mesh ready --json" ready 120
   guest_exec founder "sudo ployzd machine add ${joiner_target}"
   await_contains founder "sudo ployzd machine ls" "joiner" 120
   guest_exec founder "sudo ployzd machine add ${replacement_target}"
@@ -1303,7 +1340,7 @@ scenario_rejoin_after_remove() {
   seed_interguest_ssh joiner
   seed_interguest_ssh replacement
   guest_exec founder "sudo ployzd mesh init alpha"
-  await_json_true founder "sudo ployzd mesh ready --json" ready 120
+  await_json_true founder "sudo ployzd --plain mesh ready --json" ready 120
   guest_exec founder "sudo ployzd machine add lab@${NODE_MGMT_IP[joiner]}"
   await_contains founder "sudo ployzd machine ls" "joiner" 120
   guest_exec founder "sudo ployzd machine rm joiner --force"
