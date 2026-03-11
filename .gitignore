@@ -5,3 +5,7 @@ skills-lock.json
 .env.targets
 crates/ebpf/target/
 .idea/
+cloud/node_modules/
+cloud/.output/
+cloud/src/paraglide/
+cloud/src/routeTree.gen.ts
