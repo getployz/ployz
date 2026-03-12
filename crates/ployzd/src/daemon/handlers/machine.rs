@@ -4,6 +4,8 @@ use crate::model::{
     JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineRecord, MachineStatus, Participation,
 };
 use crate::network::ipam::Ipam;
+use crate::node::invite::parse_and_verify_invite_token;
+use crate::store::InviteStore;
 use crate::store::MachineStore;
 use crate::store::driver::StoreDriver;
 use chrono::DateTime;
@@ -207,7 +209,13 @@ impl DaemonState {
             );
         }
 
-        if let Err(err) = run_ssh(target, MACHINE_INIT_BOOTSTRAP_COMMAND, &SshOptions::default()).await {
+        if let Err(err) = run_ssh(
+            target,
+            MACHINE_INIT_BOOTSTRAP_COMMAND,
+            &SshOptions::default(),
+        )
+        .await
+        {
             return self.err("SSH_BOOTSTRAP_FAILED", err);
         }
 
@@ -281,7 +289,10 @@ impl DaemonState {
             Ok(warnings) => warnings,
             Err(err) => return self.err("LIST_FAILED", err),
         };
-        tracing::info!(warning_count = warnings.len(), "machine add degraded-mesh check complete");
+        tracing::info!(
+            warning_count = warnings.len(),
+            "machine add degraded-mesh check complete"
+        );
 
         let allocated_subnets = match self.allocate_machine_subnets(targets.len()).await {
             Ok(subnets) => subnets,
@@ -310,9 +321,20 @@ impl DaemonState {
                 }
             };
             tracing::info!(%target, "machine add invite token issued");
+            let invite = match parse_and_verify_invite_token(&token) {
+                Ok(invite) => invite,
+                Err(err) => {
+                    summary.failed_preflight.push(format!(
+                        "{target}: issued invite token could not be re-read for finalization: {err}"
+                    ));
+                    continue;
+                }
+            };
 
             let task_context = context.clone();
-            tasks.spawn(async move { run_machine_add_target(task_context, target, token).await });
+            tasks.spawn(async move {
+                run_machine_add_target(task_context, target, token, invite.invite_id).await
+            });
         }
 
         while let Some(join_result) = tasks.join_next().await {
@@ -583,6 +605,7 @@ async fn run_machine_add_target(
     context: MachineAddContext,
     target: String,
     token: String,
+    invite_id: String,
 ) -> MachineAddOutcome {
     tracing::info!(%target, "machine add target: ssh preflight starting");
     if let Err(err) = run_ssh(&target, MACHINE_ADD_BOOTSTRAP_COMMAND, &context.ssh_options).await {
@@ -654,8 +677,8 @@ async fn run_machine_add_target(
     let joiner_id = record.id.clone();
     tracing::info!(%target, joiner_id = %joiner_id, "machine add target: transient peer install starting");
     if let Err(err) = upsert_transient_peer(&context.peer_sync_tx, record.clone()).await {
-        let _ = best_effort_remote_cleanup(&target, &context.network_name, &context.ssh_options)
-            .await;
+        let _ =
+            best_effort_remote_cleanup(&target, &context.network_name, &context.ssh_options).await;
         return MachineAddOutcome::FailedPreflight {
             target,
             reason: err,
@@ -696,11 +719,34 @@ async fn run_machine_add_target(
     }
     tracing::info!(%target, joiner_id = %joiner_id, "machine add target: remote ready");
 
+    tracing::info!(
+        %target,
+        joiner_id = %joiner_id,
+        invite_id,
+        "machine add target: finalizing invite"
+    );
+    if let Err(err) = context.store.consume_invite(&invite_id, now_unix_secs()).await {
+        tracing::warn!(
+            %target,
+            joiner_id = %joiner_id,
+            invite_id,
+            error = %err,
+            "machine add target: invite finalization failed"
+        );
+    } else {
+        tracing::info!(
+            %target,
+            joiner_id = %joiner_id,
+            invite_id,
+            "machine add target: invite finalized"
+        );
+    }
+
     tracing::info!(%target, joiner_id = %joiner_id, "machine add target: publishing machine record");
     if let Err(err) = context.store.upsert_machine(&record).await {
         let _ = remove_transient_peer(&context.peer_sync_tx, &joiner_id).await;
-        let _ = best_effort_remote_cleanup(&target, &context.network_name, &context.ssh_options)
-            .await;
+        let _ =
+            best_effort_remote_cleanup(&target, &context.network_name, &context.ssh_options).await;
         return MachineAddOutcome::FailedPublish {
             target,
             reason: format!("failed to publish joiner record: {err}"),
@@ -737,14 +783,13 @@ async fn wait_for_remote_ready(target: &str, ssh_options: &SshOptions) -> Result
 
     loop {
         attempt += 1;
-        let last_error =
-            match timeout(
-                REMOTE_READY_SSH_TIMEOUT,
-                run_ssh(target, REMOTE_MESH_READY_COMMAND, ssh_options),
-            )
-            .await
-            {
-                Ok(Ok(output)) => match serde_json::from_str::<RemoteReadyPayload>(&output) {
+        let last_error = match timeout(
+            REMOTE_READY_SSH_TIMEOUT,
+            run_ssh(target, REMOTE_MESH_READY_COMMAND, ssh_options),
+        )
+        .await
+        {
+            Ok(Ok(output)) => match serde_json::from_str::<RemoteReadyPayload>(&output) {
                 Ok(payload) => {
                     if payload.ready {
                         tracing::debug!(%target, attempt, payload = %output, "remote mesh ready confirmed");
@@ -769,19 +814,19 @@ async fn wait_for_remote_ready(target: &str, ssh_options: &SshOptions) -> Result
                     format!("failed to parse remote readiness payload '{output}': {err}")
                 }
             },
-                Ok(Err(err)) => {
-                    tracing::debug!(%target, attempt, error = %err, "remote readiness ssh failed");
-                    err
-                }
-                Err(_) => {
-                    let err = format!(
-                        "ssh readiness probe exceeded {:?}",
-                        REMOTE_READY_SSH_TIMEOUT
-                    );
-                    tracing::debug!(%target, attempt, error = %err, "remote readiness ssh timed out");
-                    err
-                }
-            };
+            Ok(Err(err)) => {
+                tracing::debug!(%target, attempt, error = %err, "remote readiness ssh failed");
+                err
+            }
+            Err(_) => {
+                let err = format!(
+                    "ssh readiness probe exceeded {:?}",
+                    REMOTE_READY_SSH_TIMEOUT
+                );
+                tracing::debug!(%target, attempt, error = %err, "remote readiness ssh timed out");
+                err
+            }
+        };
 
         if Instant::now() >= deadline {
             return Err(format!(
@@ -1265,7 +1310,7 @@ mod tests {
         let script = dir.join("ssh");
         std::fs::write(
             &script,
-            "#!/bin/sh\ncommand=\"$2\"\ncase \"$command\" in\n  *\"mesh join --token-stdin\"*)\n    cat >/dev/null\n    exit 0\n    ;;\n  *\"mesh init --name-stdin\"*)\n    cat >/dev/null\n    exit 0\n    ;;\n  *\"mesh destroy --name-stdin\"*)\n    cat >/dev/null\n    exit 0\n    ;;\n  *\"mesh self-record\"*)\n    printf '%s' \"$PLOYZ_TEST_JOIN_RESPONSE\"\n    exit 0\n    ;;\n  *\"mesh ready --json\"*)\n    printf '%s' \"$PLOYZ_TEST_READY_RESPONSE\"\n    exit 0\n    ;;\n  *)\n    exit 0\n    ;;\nesac\n",
+            "#!/bin/sh\nfor arg in \"$@\"; do\n  command=\"$arg\"\ndone\ncase \"$command\" in\n  *\"mesh join --token-stdin\"*)\n    cat >/dev/null\n    exit 0\n    ;;\n  *\"mesh init --name-stdin\"*)\n    cat >/dev/null\n    exit 0\n    ;;\n  *\"mesh destroy --name-stdin\"*)\n    cat >/dev/null\n    exit 0\n    ;;\n  *\"mesh self-record\"*)\n    printf '%s' \"$PLOYZ_TEST_JOIN_RESPONSE\"\n    exit 0\n    ;;\n  *\"mesh ready --json\"*)\n    printf '%s' \"$PLOYZ_TEST_READY_RESPONSE\"\n    exit 0\n    ;;\n  *)\n    exit 0\n    ;;\nesac\n",
         )
         .expect("write fake ssh");
 
