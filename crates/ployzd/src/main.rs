@@ -5,7 +5,9 @@ use ployz_sdk::spec::{
     Resources, RestartPolicy, RolloutStrategy, ServicePort, ServiceSpec, VolumeMount, VolumeSource,
 };
 use ployz_sdk::transport::{
-    DaemonRequest, DaemonResponse, DeployOptions, MachineAddOptions, Transport, UnixSocketTransport,
+    DaemonRequest, DaemonResponse, DeployOptions, InstallMode as MachineInstallMode,
+    InstallSource as MachineInstallSource, MachineAddOptions, MachineInstallOptions, Transport,
+    UnixSocketTransport,
 };
 use ployzd::daemon::{ActiveMesh, DaemonState};
 use ployzd::ipc::listener::{IncomingCommand, serve};
@@ -26,12 +28,37 @@ enum RuntimeMode {
     HostService,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum InstallSourceArg {
+    Release,
+    Git,
+}
+
 impl From<RuntimeMode> for Mode {
     fn from(value: RuntimeMode) -> Self {
         match value {
             RuntimeMode::Docker => Mode::Docker,
             RuntimeMode::HostExec => Mode::HostExec,
             RuntimeMode::HostService => Mode::HostService,
+        }
+    }
+}
+
+impl From<RuntimeMode> for MachineInstallMode {
+    fn from(value: RuntimeMode) -> Self {
+        match value {
+            RuntimeMode::Docker => MachineInstallMode::Docker,
+            RuntimeMode::HostExec => MachineInstallMode::HostExec,
+            RuntimeMode::HostService => MachineInstallMode::HostService,
+        }
+    }
+}
+
+impl From<InstallSourceArg> for MachineInstallSource {
+    fn from(value: InstallSourceArg) -> Self {
+        match value {
+            InstallSourceArg::Release => MachineInstallSource::Release,
+            InstallSourceArg::Git => MachineInstallSource::Git,
         }
     }
 }
@@ -116,11 +143,6 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Perform privileged one-time install/update setup.
-    Configure {
-        #[arg(long, value_enum, default_value_t = RuntimeMode::Docker)]
-        mode: RuntimeMode,
-    },
     /// Start the daemon (control loop + command listener).
     Run {
         #[arg(long, value_enum, default_value_t = RuntimeMode::Docker)]
@@ -277,12 +299,32 @@ enum MachineAction {
         target: String,
         #[arg(long)]
         network: String,
+        #[arg(long, value_enum)]
+        mode: Option<RuntimeMode>,
+        #[arg(long, value_enum)]
+        install_source: Option<InstallSourceArg>,
+        #[arg(long)]
+        install_version: Option<String>,
+        #[arg(long)]
+        install_git_url: Option<String>,
+        #[arg(long)]
+        install_git_ref: Option<String>,
     },
     /// Add a remote machine to the currently running network.
     Add {
         /// SSH private key to use for this add operation only.
         #[arg(long, value_name = "PATH")]
         identity: Option<PathBuf>,
+        #[arg(long, value_enum)]
+        mode: Option<RuntimeMode>,
+        #[arg(long, value_enum)]
+        install_source: Option<InstallSourceArg>,
+        #[arg(long)]
+        install_version: Option<String>,
+        #[arg(long)]
+        install_git_url: Option<String>,
+        #[arg(long)]
+        install_git_ref: Option<String>,
         #[arg(required = true, num_args = 1..)]
         targets: Vec<String>,
     },
@@ -346,11 +388,6 @@ async fn run() -> Result<i32> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Configure { mode } => {
-            init_tracing();
-            cmd_configure(mode.into())?;
-            Ok(0)
-        }
         Command::Run {
             mode,
             remote_control_port,
@@ -394,13 +431,6 @@ async fn run() -> Result<i32> {
 
 fn init_tracing() {
     let _ = tracing_subscriber::fmt::try_init();
-}
-
-#[allow(clippy::result_large_err)]
-fn cmd_configure(mode: Mode) -> Result<()> {
-    tracing::info!(?mode, "configure");
-    tracing::info!("configure is install-time only; runtime daemon stays rootless");
-    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -516,7 +546,7 @@ async fn build_request<T: Transport>(
         Command::Deploy(command) => build_deploy_request(*command, transport, socket).await,
         Command::Mesh { action } => build_mesh_request(action),
         Command::Machine { action } => build_machine_request(action),
-        Command::Configure { .. } | Command::Run { .. } => Err(CliError::Usage(
+        Command::Run { .. } => Err(CliError::Usage(
             "internal error: daemon command cannot be encoded as a daemon request".into(),
         )),
     }
@@ -691,15 +721,51 @@ fn build_mesh_request(action: MeshAction) -> Result<DaemonRequest> {
 fn build_machine_request(action: MachineAction) -> Result<DaemonRequest> {
     match action {
         MachineAction::Ls => Ok(DaemonRequest::MachineList),
-        MachineAction::Init { target, network } => {
-            Ok(DaemonRequest::MachineInit { target, network })
-        }
-        MachineAction::Add { identity, targets } => {
+        MachineAction::Init {
+            target,
+            network,
+            mode,
+            install_source,
+            install_version,
+            install_git_url,
+            install_git_ref,
+        } => Ok(DaemonRequest::MachineInit {
+            target,
+            network,
+            install: build_machine_install_options(
+                mode,
+                install_source,
+                install_version,
+                install_git_url,
+                install_git_ref,
+            ),
+        }),
+        MachineAction::Add {
+            identity,
+            mode,
+            install_source,
+            install_version,
+            install_git_url,
+            install_git_ref,
+            targets,
+        } => {
+            let install = build_machine_install_options(
+                mode,
+                install_source,
+                install_version,
+                install_git_url,
+                install_git_ref,
+            );
             let options = MachineAddOptions {
                 ssh_identity_private_key: read_optional_text_file(
                     "machine add identity",
                     identity.as_deref(),
                 )?,
+                install: if install == MachineInstallOptions::default() {
+                    None
+                } else {
+                    Some(install)
+                },
             };
             Ok(DaemonRequest::MachineAdd { targets, options })
         }
@@ -727,6 +793,30 @@ fn build_machine_request(action: MachineAction) -> Result<DaemonRequest> {
                 Ok(DaemonRequest::MachineInviteImport { token })
             }
         },
+    }
+}
+
+fn build_machine_install_options(
+    mode: Option<RuntimeMode>,
+    install_source: Option<InstallSourceArg>,
+    install_version: Option<String>,
+    install_git_url: Option<String>,
+    install_git_ref: Option<String>,
+) -> MachineInstallOptions {
+    let has_version = install_version.is_some();
+    let has_git = install_git_url.is_some() || install_git_ref.is_some();
+    let resolved_source = match install_source {
+        Some(source) => Some(source.into()),
+        None if has_version && !has_git => Some(MachineInstallSource::Release),
+        None if !has_version && has_git => Some(MachineInstallSource::Git),
+        None => None,
+    };
+    MachineInstallOptions {
+        mode: mode.map(Into::into),
+        source: resolved_source,
+        version: install_version,
+        git_url: install_git_url,
+        git_ref: install_git_ref,
     }
 }
 
@@ -1083,6 +1173,11 @@ mod tests {
 
         let request = build_machine_request(MachineAction::Add {
             identity: Some(path.clone()),
+            mode: Some(RuntimeMode::HostExec),
+            install_source: Some(InstallSourceArg::Git),
+            install_version: None,
+            install_git_url: Some("https://example.invalid/ployz.git".into()),
+            install_git_ref: Some("main".into()),
             targets: vec!["lab@example".into()],
         })
         .expect("machine add request");
@@ -1094,6 +1189,10 @@ mod tests {
         assert_eq!(
             options.ssh_identity_private_key.as_deref(),
             Some("test-private-key")
+        );
+        assert_eq!(
+            options.install.as_ref().and_then(|install| install.mode.clone()),
+            Some(MachineInstallMode::HostExec)
         );
 
         std::fs::remove_file(path).expect("remove identity");

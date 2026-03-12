@@ -36,8 +36,12 @@ impl DaemonState {
             DaemonRequest::MeshDown => self.handle_mesh_down().await,
             DaemonRequest::MeshDestroy { network } => self.handle_mesh_destroy(&network).await,
             DaemonRequest::MachineList => self.handle_machine_list().await,
-            DaemonRequest::MachineInit { target, network } => {
-                self.handle_machine_init(&target, &network).await
+            DaemonRequest::MachineInit {
+                target,
+                network,
+                install,
+            } => {
+                self.handle_machine_init(&target, &network, &install).await
             }
             DaemonRequest::MachineAdd { targets, options } => {
                 self.handle_machine_add(&targets, &options).await

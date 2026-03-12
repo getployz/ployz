@@ -30,6 +30,7 @@ pub(crate) struct ScenarioRun {
     scenario: Scenario,
     image: String,
     root_dir: PathBuf,
+    payload_dir: PathBuf,
     outer_network: String,
     private_key_path: PathBuf,
     public_key_path: PathBuf,
@@ -52,6 +53,7 @@ impl ScenarioRun {
         let run_id = format!("{}-{timestamp}-{}", scenario.as_str(), Uuid::new_v4());
         let root_dir = artifacts_root.join(&run_id);
         let key_dir = root_dir.join("keys");
+        let payload_dir = artifacts_root.join("payload-cache");
 
         fs::create_dir_all(&key_dir).map_err(|error| {
             Error::Io(format!("create key dir '{}': {error}", key_dir.display()))
@@ -63,6 +65,7 @@ impl ScenarioRun {
             scenario,
             image: image.to_string(),
             root_dir,
+            payload_dir,
             outer_network: format!("ployz-e2e-net-{run_id}"),
             private_key_path,
             public_key_path,
@@ -70,6 +73,7 @@ impl ScenarioRun {
             keep_failed,
             nodes: Vec::new(),
         };
+        run.ensure_payload()?;
         run.write_metadata()?;
         Ok(run)
     }
@@ -314,6 +318,32 @@ impl ScenarioRun {
         Ok(())
     }
 
+    fn ensure_payload(&self) -> Result<()> {
+        if self.payload_dir.exists() {
+            fs::remove_dir_all(&self.payload_dir).map_err(|error| {
+                Error::Io(format!(
+                    "remove stale payload dir '{}': {error}",
+                    self.payload_dir.display()
+                ))
+            })?;
+        }
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| Error::Message("failed to resolve repo root".into()))?
+            .to_path_buf();
+        let script = repo_root.join("scripts/build-install-payload.sh");
+        run_command_expect_ok(
+            "bash",
+            &[
+                script.to_string_lossy().as_ref(),
+                "--output",
+                self.payload_dir.to_string_lossy().as_ref(),
+            ],
+        )?;
+        Ok(())
+    }
+
     fn start_nodes(&mut self, names: &[&str]) -> Result<()> {
         for name in names {
             let ssh_port = pick_free_port()?;
@@ -328,6 +358,7 @@ impl ScenarioRun {
                     .unwrap_or_else(|| self.root_dir.join("keys"))
                     .to_string_lossy()
             );
+            let payload_mount = format!("{}:/e2e-payload:ro", self.payload_dir.to_string_lossy());
 
             docker_outer([
                 "run",
@@ -345,6 +376,8 @@ impl ScenarioRun {
                 &format!("PLOYZ_E2E_SSH_AUTHORIZED_KEY={}", self.public_key),
                 "-v",
                 key_mount.as_str(),
+                "-v",
+                payload_mount.as_str(),
                 self.image.as_str(),
             ])?;
 

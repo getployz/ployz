@@ -10,7 +10,7 @@ use crate::store::MachineStore;
 use crate::store::driver::StoreDriver;
 use chrono::DateTime;
 use ipnet::Ipv4Net;
-use ployz_sdk::transport::{DaemonResponse, MachineAddOptions};
+use ployz_sdk::transport::{DaemonResponse, InstallMode, InstallSource, MachineAddOptions, MachineInstallOptions};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -18,6 +18,7 @@ use tokio::time::{Duration, Instant, sleep, timeout};
 
 use super::super::DaemonState;
 use super::super::ssh::{EphemeralSshIdentityFile, SshOptions, run_ssh, run_ssh_with_stdin};
+use crate::install::find_installer_script;
 use crate::time::now_unix_secs;
 
 const INVITE_TTL_SECS: u64 = 600;
@@ -25,15 +26,14 @@ const REMOTE_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const REMOTE_READY_SSH_TIMEOUT: Duration = Duration::from_secs(10);
 const REMOTE_CLEANUP_SSH_TIMEOUT: Duration = Duration::from_secs(10);
-const MACHINE_INIT_BOOTSTRAP_COMMAND: &str = "set -eu; command -v ployzd >/dev/null 2>&1 || { echo 'ployzd not installed'; exit 12; }; command -v docker >/dev/null 2>&1 || { echo 'docker not installed'; exit 13; }; sudo -n ployzd status >/dev/null 2>&1 || { echo 'ployzd not running under sudo'; exit 15; };";
-const MACHINE_ADD_BOOTSTRAP_COMMAND: &str = "set -eu; command -v ployzd >/dev/null 2>&1 || { echo 'ployzd not installed'; exit 12; }; sudo -n ployzd status >/dev/null 2>&1 || { echo 'ployzd not running under sudo'; exit 15; };";
-const REMOTE_MESH_INIT_COMMAND: &str = "set -eu; sudo -n ployzd mesh init --name-stdin";
-const REMOTE_MESH_JOIN_COMMAND: &str = "set -eu; sudo -n ployzd mesh join --token-stdin";
-const REMOTE_MESH_SELF_RECORD_COMMAND: &str = "set -eu; sudo -n ployzd mesh self-record";
+const REMOTE_STATUS_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" status >/dev/null";
+const REMOTE_MESH_INIT_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" mesh init --name-stdin";
+const REMOTE_MESH_JOIN_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" mesh join --token-stdin";
+const REMOTE_MESH_SELF_RECORD_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" mesh self-record";
 const REMOTE_MESH_READY_COMMAND: &str =
-    "set -eu; sudo -n ployzd mesh ready --json | jq -r '.message'";
-const REMOTE_MESH_DOWN_COMMAND: &str = "set -eu; sudo -n ployzd mesh down";
-const REMOTE_MESH_DESTROY_COMMAND: &str = "set -eu; sudo -n ployzd mesh destroy --name-stdin";
+    "set -eu; \"$HOME/.local/bin/ployz\" --plain mesh ready --json";
+const REMOTE_MESH_DOWN_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" mesh down";
+const REMOTE_MESH_DESTROY_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" mesh destroy --name-stdin";
 
 #[derive(Clone)]
 struct MachineAddContext {
@@ -41,6 +41,7 @@ struct MachineAddContext {
     store: StoreDriver,
     peer_sync_tx: mpsc::Sender<PeerSyncCommand>,
     ssh_options: SshOptions,
+    install: MachineInstallOptions,
 }
 
 #[derive(Debug)]
@@ -84,6 +85,33 @@ struct MachineAddSummary {
 #[derive(Debug, Deserialize)]
 struct RemoteReadyPayload {
     ready: bool,
+    #[serde(default)]
+    phase: String,
+    #[serde(default)]
+    store_healthy: bool,
+    #[serde(default)]
+    heartbeat_started: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoteReadyEnvelope {
+    message: String,
+}
+
+fn parse_remote_ready_payload(output: &str) -> Result<RemoteReadyPayload, String> {
+    if let Ok(payload) = serde_json::from_str::<RemoteReadyPayload>(output) {
+        return Ok(payload);
+    }
+
+    let envelope = serde_json::from_str::<RemoteReadyEnvelope>(output)
+        .map_err(|error| format!("failed to parse remote readiness envelope: {error}"))?;
+    serde_json::from_str::<RemoteReadyPayload>(&envelope.message)
+        .map_err(|error| format!("failed to parse remote readiness message: {error}"))
+}
+
+fn remote_join_ready(payload: &RemoteReadyPayload) -> bool {
+    payload.ready
+        || (payload.phase == "running" && payload.store_healthy && payload.heartbeat_started)
 }
 
 impl DaemonState {
@@ -201,6 +229,7 @@ impl DaemonState {
         &mut self,
         target: &str,
         network: &str,
+        install: &MachineInstallOptions,
     ) -> DaemonResponse {
         if self.active.is_some() {
             return self.err(
@@ -209,13 +238,7 @@ impl DaemonState {
             );
         }
 
-        if let Err(err) = run_ssh(
-            target,
-            MACHINE_INIT_BOOTSTRAP_COMMAND,
-            &SshOptions::default(),
-        )
-        .await
-        {
+        if let Err(err) = bootstrap_remote_machine(target, install, &SshOptions::default()).await {
             return self.err("SSH_BOOTSTRAP_FAILED", err);
         }
 
@@ -274,6 +297,7 @@ impl DaemonState {
                         store: active.mesh.store.clone(),
                         peer_sync_tx,
                         ssh_options,
+                        install: options.install.clone().unwrap_or_default(),
                     },
                 )
             }
@@ -607,14 +631,14 @@ async fn run_machine_add_target(
     token: String,
     invite_id: String,
 ) -> MachineAddOutcome {
-    tracing::info!(%target, "machine add target: ssh preflight starting");
-    if let Err(err) = run_ssh(&target, MACHINE_ADD_BOOTSTRAP_COMMAND, &context.ssh_options).await {
+    tracing::info!(%target, "machine add target: bootstrap starting");
+    if let Err(err) = bootstrap_remote_machine(&target, &context.install, &context.ssh_options).await {
         return MachineAddOutcome::FailedPreflight {
             target,
             reason: err,
         };
     }
-    tracing::info!(%target, "machine add target: ssh preflight complete");
+    tracing::info!(%target, "machine add target: bootstrap complete");
 
     tracing::info!(%target, "machine add target: remote join starting");
     match run_ssh_with_stdin(
@@ -654,7 +678,7 @@ async fn run_machine_add_target(
             return MachineAddOutcome::FailedSelfRecord {
                 target,
                 reason: format!(
-                    "{err}\nhint: run `ployzd mesh self-record` on the joiner and `ployzd mesh accept <response>` on this machine"
+                    "{err}\nhint: run `ployz mesh self-record` on the joiner and `ployz mesh accept <response>` on this machine"
                 ),
             };
         }
@@ -789,9 +813,9 @@ async fn wait_for_remote_ready(target: &str, ssh_options: &SshOptions) -> Result
         )
         .await
         {
-            Ok(Ok(output)) => match serde_json::from_str::<RemoteReadyPayload>(&output) {
+            Ok(Ok(output)) => match parse_remote_ready_payload(&output) {
                 Ok(payload) => {
-                    if payload.ready {
+                    if remote_join_ready(&payload) {
                         tracing::debug!(%target, attempt, payload = %output, "remote mesh ready confirmed");
                         return Ok(());
                     }
@@ -837,6 +861,21 @@ async fn wait_for_remote_ready(target: &str, ssh_options: &SshOptions) -> Result
 
         sleep(REMOTE_READY_POLL_INTERVAL).await;
     }
+}
+
+async fn bootstrap_remote_machine(
+    target: &str,
+    install: &MachineInstallOptions,
+    ssh_options: &SshOptions,
+) -> Result<(), String> {
+    let installer_path = find_installer_script()?;
+    let installer = std::fs::read(&installer_path)
+        .map_err(|error| format!("read installer '{}': {error}", installer_path.display()))?;
+    let remote_command = format!("bash -s -- {}", install_script_args(install));
+    run_ssh_with_stdin(target, &remote_command, &installer, ssh_options).await?;
+    run_ssh(target, REMOTE_STATUS_COMMAND, ssh_options)
+        .await
+        .map(|_| ())
 }
 
 async fn best_effort_remote_cleanup(
@@ -926,7 +965,7 @@ fn decode_joiner_record(output: &str) -> Result<MachineRecord, String> {
         Some(line) => line,
         None => {
             return Err(format!(
-                "self-record output missing {JOIN_RESPONSE_PREFIX} line\nhint: run `ployzd mesh self-record` on the joiner and `ployzd mesh accept <response>` on this machine"
+                "self-record output missing {JOIN_RESPONSE_PREFIX} line\nhint: run `ployz mesh self-record` on the joiner and `ployz mesh accept <response>` on this machine"
             ));
         }
     };
@@ -947,6 +986,45 @@ fn format_status(machine: &MachineRecord) -> &'static str {
         MachineStatus::Down => "down",
         MachineStatus::Unknown => "—",
     }
+}
+
+fn install_script_args(install: &MachineInstallOptions) -> String {
+    let mut args = vec!["install".to_string()];
+    if let Some(mode) = install.mode {
+        args.push("--mode".into());
+        args.push(match mode {
+            InstallMode::Docker => "docker",
+            InstallMode::HostExec => "host-exec",
+            InstallMode::HostService => "host-service",
+        }
+        .into());
+    }
+    if let Some(source) = &install.source {
+        args.push("--source".into());
+        args.push(match source {
+            InstallSource::Release => "release",
+            InstallSource::Git => "git",
+        }
+        .into());
+    }
+    if let Some(version) = &install.version {
+        args.push("--version".into());
+        args.push(shell_quote(version));
+    }
+    if let Some(git_url) = &install.git_url {
+        args.push("--git-url".into());
+        args.push(shell_quote(git_url));
+    }
+    if let Some(git_ref) = &install.git_ref {
+        args.push("--git-ref".into());
+        args.push(shell_quote(git_ref));
+    }
+
+    args.join(" ")
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn format_participation(machine: &MachineRecord) -> &'static str {
@@ -1134,6 +1212,49 @@ mod tests {
         let joiner = machines
             .into_iter()
             .find(|machine| machine.id.0 == "joiner-1")
+            .expect("joiner published");
+        assert_eq!(joiner.participation, Participation::Disabled);
+
+        teardown_state(&mut state).await;
+    }
+
+    #[tokio::test]
+    async fn machine_add_accepts_running_joiner_before_full_sync() {
+        let _guard = test_ssh_env_lock().lock().expect("env lock");
+        let (mut state, store) = make_state(true).await;
+
+        let join_response = JoinResponse {
+            machine_id: MachineId("joiner-2".into()),
+            public_key: PublicKey([5; 32]),
+            overlay_ip: "fd00::5".parse().map(OverlayIp).expect("valid overlay"),
+            subnet: Some("10.210.10.0/24".parse().expect("valid subnet")),
+            endpoints: vec!["203.0.113.11:51820".into()],
+        }
+        .encode()
+        .expect("encode join response");
+
+        let ssh_dir = unique_temp_dir("ployz-fake-ssh");
+        std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
+        let fake_ssh = write_fake_ssh(&ssh_dir);
+        let _ssh_guard = EnvVarGuard::set(TEST_SSH_BIN_ENV, Some(fake_ssh.into_os_string()));
+        let _join_guard = EnvVarGuard::set("PLOYZ_TEST_JOIN_RESPONSE", Some(join_response.into()));
+        let _ready_guard = EnvVarGuard::set(
+            "PLOYZ_TEST_READY_RESPONSE",
+            Some(
+                "{\"ready\":false,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":false,\"heartbeat_started\":true}".into(),
+            ),
+        );
+
+        let response = state
+            .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
+            .await;
+        assert!(response.ok, "{}", response.message);
+        assert!(response.message.contains("published_disabled: 1"));
+
+        let machines = store.list_machines().await.expect("list machines");
+        let joiner = machines
+            .into_iter()
+            .find(|machine| machine.id.0 == "joiner-2")
             .expect("joiner published");
         assert_eq!(joiner.participation, Participation::Disabled);
 

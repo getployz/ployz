@@ -1,4 +1,5 @@
 pub mod daemon;
+pub mod install;
 pub mod ipc;
 pub mod services;
 

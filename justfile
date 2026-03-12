@@ -9,11 +9,11 @@ build-release:
     set -euo pipefail
     if [[ "$(uname -s)" == "Linux" ]]; then
       ./scripts/install-ebpf-bytecode.sh
-      cargo build --release -p ployzd --features ebpf-native
+      cargo build --release -p ployzd --features ebpf-native --bins
       cargo build --release -p ployz-gateway -p ployz-dns
       exit 0
     fi
-    cargo build --release -p ployzd -p ployz-gateway -p ployz-dns
+    cargo build --release -p ployzd --bins -p ployz-gateway -p ployz-dns
 
 test:
     cargo test
@@ -24,16 +24,23 @@ bootstrap-linux *args:
 lab *args:
     ./lab/bin/ployz-lab {{args}}
 
+e2e *args:
+    cargo run -p ployz-e2e -- {{args}}
+
 ployzd *args:
     cargo run -p ployzd --bin ployzd -- {{args}}
+
+ployz *args:
+    cargo run -p ployzd --bin ployz -- {{args}}
 
 install prefix="/usr/local":
     just build-release
     install -d "{{prefix}}/bin"
+    install -m 0755 ployz.sh "{{prefix}}/bin/ployz.sh"
+    install -m 0755 target/release/ployz "{{prefix}}/bin/ployz"
     install -m 0755 target/release/ployzd "{{prefix}}/bin/ployzd"
     install -m 0755 target/release/ployz-gateway "{{prefix}}/bin/ployz-gateway"
     install -m 0755 target/release/ployz-dns "{{prefix}}/bin/ployz-dns"
-    install -m 0755 packaging/bin/ployz "{{prefix}}/bin/ployz"
     just install-corrosion {{prefix}}
 
 install-corrosion prefix="/usr/local" repo="getployz/corrosion":
