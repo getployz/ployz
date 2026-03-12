@@ -7,9 +7,9 @@ use crate::model::{JoinResponse, NetworkName};
 use crate::network::endpoints::detect_endpoints;
 use crate::network::ipam::Ipam;
 use crate::node::invite::parse_and_verify_invite_token;
-use crate::store::bootstrap::BootstrapInfo;
+use crate::store::bootstrap::{BootstrapInfo, BootstrapPeerRecord, write_bootstrap_peer_record};
 use crate::store::network::NetworkConfig;
-use crate::store::{InviteStore, MachineStore};
+use crate::store::MachineStore;
 use ployz_sdk::transport::DaemonResponse;
 
 use super::super::DaemonState;
@@ -167,6 +167,16 @@ impl DaemonState {
             return self.err("IO_ERROR", format!("failed to save network config: {e}"));
         }
 
+        if let Some(bootstrap_peer) = BootstrapPeerRecord::from_invite(&invite)
+            && let Err(error) =
+                write_bootstrap_peer_record(&NetworkConfig::dir(&self.data_dir, network), &bootstrap_peer)
+        {
+            return self.err(
+                "IO_ERROR",
+                format!("failed to persist bootstrap founder peer: {error}"),
+            );
+        }
+
         let bootstrap = Self::extract_bootstrap(&invite);
 
         let options = MeshStartOptions {
@@ -180,16 +190,6 @@ impl DaemonState {
                     format!("join failed to start mesh: {e}"),
                 );
             }
-        }
-
-        if let Some(active) = self.active.as_ref()
-            && let Err(e) = active
-                .mesh
-                .store
-                .consume_invite(&invite.invite_id, now_unix_secs())
-                .await
-        {
-            tracing::warn!(?e, "failed to consume invite (mesh already joined)");
         }
 
         self.ok(format!("joined and started network '{network}'"))
