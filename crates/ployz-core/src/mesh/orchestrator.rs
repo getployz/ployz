@@ -128,7 +128,7 @@ impl Mesh {
     pub async fn ready_status(&self) -> MeshReadyStatus {
         let phase = self.phase;
         let store_healthy = self.store.healthy().await;
-        let has_remote_peer = self
+        let has_remote_store_peer = self
             .store
             .list_machines()
             .await
@@ -138,6 +138,11 @@ impl Mesh {
                     .any(|machine| machine.id != self.machine_id)
             })
             .unwrap_or(false);
+        let has_remote_seed_peer = self
+            .seed_records
+            .iter()
+            .any(|machine| machine.id != self.machine_id);
+        let has_remote_peer = has_remote_store_peer || has_remote_seed_peer;
         let sync_connected = if has_remote_peer {
             match self.store.sync_status().await {
                 Ok(SyncStatus::Disconnected) => false,
@@ -245,6 +250,12 @@ impl Mesh {
             .map_err(TaskSetError::Subscribe)?;
         let (peer_sync_tx, peer_sync_rx) = mpsc::channel(64);
         let (mut task_set, cancel) = TaskSet::new();
+        let bootstrap_peers: Vec<_> = self
+            .seed_records
+            .iter()
+            .filter(|machine| machine.id != self.machine_id)
+            .cloned()
+            .collect();
         if !matches!(&self.network, WireguardDriver::Memory(_)) {
             task_set.spawn(run_probe_listener_task(cancel.clone()));
         }
@@ -252,6 +263,7 @@ impl Mesh {
             snapshot,
             events,
             peer_sync_rx,
+            bootstrap_peers,
             self.network.clone(),
             self.machine_id.clone(),
             cancel.clone(),

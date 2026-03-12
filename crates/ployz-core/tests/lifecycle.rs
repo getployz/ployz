@@ -82,7 +82,89 @@ async fn startup_reaches_running_single_node() {
     .await
     .expect("single-node founder should become ready within the timeout");
     assert!(ready.ready, "single-node founder should report ready");
-    assert!(ready.sync_connected, "single-node founder should not wait for remote sync");
+    assert!(
+        ready.sync_connected,
+        "single-node founder should not wait for remote sync"
+    );
+}
+
+#[tokio::test]
+async fn joiner_seed_peer_requires_sync_for_ready() {
+    let wg = Arc::new(MemoryWireGuard::new());
+    let svc = Arc::new(MemoryService::new());
+    let store = Arc::new(MemoryStore::new());
+
+    let founder_record = test_record("founder", 1);
+    let joiner_record = test_record("joiner", 2);
+    store.upsert_machine(&joiner_record).await.unwrap();
+    store.set_sync_status(SyncStatus::Disconnected);
+
+    let mut mesh = Mesh::new(
+        WireguardDriver::Memory(wg),
+        StoreDriver::Memory {
+            store: store.clone(),
+            service: svc,
+        },
+        None,
+        joiner_record.id.clone(),
+        51820,
+    )
+    .with_seed_records(vec![founder_record])
+    .with_bootstrap_timing(Duration::from_millis(10), Duration::from_secs(5));
+    mesh.up().await.unwrap();
+    assert_eq!(mesh.phase(), Phase::Running);
+
+    let ready = mesh.ready_status().await;
+    assert!(
+        !ready.sync_connected,
+        "joiner with only a bootstrap seed peer should not report sync connected"
+    );
+    assert!(
+        !ready.ready,
+        "joiner with only a bootstrap seed peer should not report ready"
+    );
+}
+
+#[tokio::test]
+async fn joiner_retains_founder_peer_across_peer_sync_handoff() {
+    let wg = Arc::new(MemoryWireGuard::new());
+    let svc = Arc::new(MemoryService::new());
+    let store = Arc::new(MemoryStore::new());
+
+    let founder_record = test_record("founder", 1);
+    let joiner_record = test_record("joiner", 2);
+    store.upsert_machine(&joiner_record).await.unwrap();
+
+    let mut mesh = Mesh::new(
+        WireguardDriver::Memory(wg.clone()),
+        StoreDriver::Memory {
+            store: store.clone(),
+            service: svc,
+        },
+        None,
+        joiner_record.id.clone(),
+        51820,
+    )
+    .with_seed_records(vec![founder_record.clone(), joiner_record.clone()])
+    .with_bootstrap_timing(Duration::from_millis(10), Duration::from_secs(5));
+    mesh.up().await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        wg.current_peers()
+            .iter()
+            .any(|peer| peer.id == founder_record.id),
+        "bootstrap founder peer must remain configured before store convergence"
+    );
+
+    store.upsert_machine(&founder_record).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        wg.current_peers()
+            .iter()
+            .any(|peer| peer.id == founder_record.id),
+        "founder peer must remain configured after store convergence"
+    );
 }
 
 #[tokio::test]
