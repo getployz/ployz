@@ -1100,6 +1100,10 @@ prepare_guest_for_reuse() {
   guest_exec "${node}" "sudo cloud-init clean --logs || true"
   guest_exec "${node}" "sudo rm -f /var/lib/ployz/identity.json /var/lib/ployz/active_network && sudo rm -rf /var/lib/ployz/networks /var/lib/ployz/bootstrap/work"
   guest_exec "${node}" "sudo truncate -s 0 /etc/machine-id && sudo rm -f /var/lib/dbus/machine-id"
+  guest_exec "${node}" "! sudo test -e /var/lib/ployz/identity.json"
+  guest_exec "${node}" "! sudo test -e /var/lib/ployz/active_network"
+  guest_exec "${node}" "! sudo test -d /var/lib/ployz/networks"
+  guest_exec "${node}" "! sudo test -d /var/lib/ployz/bootstrap/work"
 }
 
 shutdown_guest() {
