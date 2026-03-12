@@ -8,6 +8,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command as TokioCommand;
 
 #[cfg(test)]
+use std::collections::BTreeMap;
+#[cfg(test)]
 use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone, Default)]
@@ -81,6 +83,13 @@ async fn run_ssh_inner(
     options: &SshOptions,
 ) -> Result<String, String> {
     let mut command = TokioCommand::new(ssh_program());
+    #[cfg(test)]
+    {
+        let overrides = test_ssh_overrides_snapshot();
+        for (key, value) in overrides.env {
+            command.env(key, value);
+        }
+    }
     append_common_ssh_options(&mut command);
     if let Some(identity_file) = &options.identity_file {
         command
@@ -154,7 +163,7 @@ fn append_common_ssh_options(command: &mut TokioCommand) {
 
 fn ssh_program() -> OsString {
     #[cfg(test)]
-    if let Some(path) = std::env::var_os(TEST_SSH_BIN_ENV) {
+    if let Some(path) = test_ssh_overrides_snapshot().program {
         return path;
     }
 
@@ -180,7 +189,80 @@ pub fn shell_escape(input: &str) -> String {
 }
 
 #[cfg(test)]
-pub(crate) const TEST_SSH_BIN_ENV: &str = "PLOYZ_TEST_SSH_BIN";
+#[derive(Debug, Clone, Default)]
+struct TestSshOverrides {
+    program: Option<OsString>,
+    env: BTreeMap<&'static str, OsString>,
+}
+
+#[cfg(test)]
+fn test_ssh_overrides() -> &'static Mutex<TestSshOverrides> {
+    static OVERRIDES: OnceLock<Mutex<TestSshOverrides>> = OnceLock::new();
+    OVERRIDES.get_or_init(|| Mutex::new(TestSshOverrides::default()))
+}
+
+#[cfg(test)]
+fn test_ssh_overrides_snapshot() -> TestSshOverrides {
+    test_ssh_overrides()
+        .lock()
+        .expect("ssh overrides lock")
+        .clone()
+}
+
+#[cfg(test)]
+pub(crate) struct TestSshProgramGuard {
+    previous: Option<OsString>,
+}
+
+#[cfg(test)]
+impl TestSshProgramGuard {
+    pub(crate) fn set(path: PathBuf) -> Self {
+        let mut overrides = test_ssh_overrides().lock().expect("ssh overrides lock");
+        let previous = overrides.program.replace(path.into_os_string());
+        Self { previous }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestSshProgramGuard {
+    fn drop(&mut self) {
+        let mut overrides = test_ssh_overrides().lock().expect("ssh overrides lock");
+        overrides.program = self.previous.take();
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct TestSshEnvGuard {
+    key: &'static str,
+    previous: Option<OsString>,
+}
+
+#[cfg(test)]
+impl TestSshEnvGuard {
+    pub(crate) fn set(key: &'static str, value: Option<OsString>) -> Self {
+        let mut overrides = test_ssh_overrides().lock().expect("ssh overrides lock");
+        let previous = match value {
+            Some(value) => overrides.env.insert(key, value),
+            None => overrides.env.remove(key),
+        };
+        Self { key, previous }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestSshEnvGuard {
+    fn drop(&mut self) {
+        let mut overrides = test_ssh_overrides().lock().expect("ssh overrides lock");
+        match self.previous.take() {
+            Some(value) => {
+                overrides.env.insert(self.key, value);
+            }
+            None => {
+                overrides.env.remove(self.key);
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 pub(crate) fn test_ssh_env_lock() -> &'static Mutex<()> {
@@ -191,7 +273,6 @@ pub(crate) fn test_ssh_env_lock() -> &'static Mutex<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsString;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -206,9 +287,9 @@ mod tests {
         let fake_ssh = write_fake_ssh(&temp_dir);
 
         let payload = "quotes'\nnewlines\n$HOME;`rm -rf /`\"".as_bytes().to_vec();
-        let _ssh_guard = EnvVarGuard::set(TEST_SSH_BIN_ENV, Some(fake_ssh.into_os_string()));
+        let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
         let stdin_path = temp_dir.join("captured.stdin");
-        let _stdin_guard = EnvVarGuard::set(
+        let _stdin_guard = TestSshEnvGuard::set(
             "PLOYZ_TEST_SSH_STDIN_PATH",
             Some(stdin_path.clone().into_os_string()),
         );
@@ -283,7 +364,7 @@ mod tests {
             std::fs::set_permissions(&fake_ssh, permissions).expect("set script permissions");
         }
 
-        let _ssh_guard = EnvVarGuard::set(TEST_SSH_BIN_ENV, Some(fake_ssh.into_os_string()));
+        let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
         let identity = temp_dir.join("id_ed25519");
         std::fs::write(&identity, "fake-private-key").expect("write identity");
 
@@ -306,42 +387,5 @@ mod tests {
         assert!(args.contains(&identity.display().to_string()));
         assert!(args.contains("IdentitiesOnly=yes"));
         assert!(args.contains("fake-target"));
-    }
-
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<OsString>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: Option<OsString>) -> Self {
-            let previous = std::env::var_os(key);
-            match value {
-                Some(value) => {
-                    // Tests serialize PATH/env mutations behind a process-wide mutex.
-                    unsafe { std::env::set_var(key, value) }
-                }
-                None => {
-                    // Tests serialize PATH/env mutations behind a process-wide mutex.
-                    unsafe { std::env::remove_var(key) }
-                }
-            }
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            match self.previous.as_ref() {
-                Some(value) => {
-                    // Tests serialize PATH/env mutations behind a process-wide mutex.
-                    unsafe { std::env::set_var(self.key, value) }
-                }
-                None => {
-                    // Tests serialize PATH/env mutations behind a process-wide mutex.
-                    unsafe { std::env::remove_var(self.key) }
-                }
-            }
-        }
     }
 }
