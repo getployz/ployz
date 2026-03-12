@@ -12,10 +12,41 @@ pub struct DeployOptions {
     pub prune: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MachineAddOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh_identity_private_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install: Option<MachineInstallOptions>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InstallSource {
+    Release,
+    Git,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InstallMode {
+    Docker,
+    HostExec,
+    HostService,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MachineInstallOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<InstallMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<InstallSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +80,7 @@ pub enum DaemonRequest {
     MachineInit {
         target: String,
         network: String,
+        install: MachineInstallOptions,
     },
     MachineAdd {
         targets: Vec<String>,

@@ -40,12 +40,22 @@ impl Affordances {
             Os::Other
         };
         let is_root = cfg!(unix) && unsafe { libc::geteuid() } == 0;
+        let has_docker = std::process::Command::new("docker")
+            .arg("info")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+        let has_wg_helper = std::process::Command::new("wg")
+            .arg("--help")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
         Self {
             os,
             has_kernel_wireguard: false,
-            has_docker: false,
+            has_docker,
             is_root,
-            has_wg_helper: false,
+            has_wg_helper,
         }
     }
 }
