@@ -20,6 +20,7 @@ pub(crate) async fn run_peer_sync_task(
     snapshot: Vec<MachineRecord>,
     mut events: mpsc::Receiver<MachineEvent>,
     mut commands: mpsc::Receiver<PeerSyncCommand>,
+    bootstrap_peers: Vec<MachineRecord>,
     network: WireguardDriver,
     local_machine_id: MachineId,
     cancel: CancellationToken,
@@ -27,6 +28,11 @@ pub(crate) async fn run_peer_sync_task(
     let mut state = PeerStateMap::new();
     let now = Instant::now();
     state.init_from_snapshot(&snapshot, now);
+    for record in &bootstrap_peers {
+        if record.id != local_machine_id {
+            state.upsert_transient(record, now);
+        }
+    }
     let device_peers = read_device_peers(&network).await;
     state.seed_from_device_peers(&device_peers, now);
     rank_pending_peers(&mut state).await;
@@ -103,9 +109,11 @@ mod tests {
     use crate::mesh::DevicePeer;
     use crate::mesh::driver::WireguardDriver;
     use crate::mesh::wireguard::MemoryWireGuard;
-    use crate::model::{MachineStatus, OverlayIp, Participation, PublicKey};
+    use crate::model::{MachineEvent, MachineStatus, OverlayIp, Participation, PublicKey};
     use std::net::Ipv6Addr;
     use std::sync::Arc;
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
 
     fn test_record(id: &str, key: PublicKey, endpoints: Vec<&str>) -> MachineRecord {
         MachineRecord {
@@ -251,5 +259,39 @@ mod tests {
                 "10.255.255.1:51820".to_string()
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn initial_sync_keeps_bootstrap_peer_until_store_catches_up() {
+        let network = Arc::new(MemoryWireGuard::new());
+        let driver = WireguardDriver::Memory(network.clone());
+        let local_machine_id = MachineId("joiner".into());
+        let snapshot = vec![test_record("joiner", PublicKey([1; 32]), vec!["self:1"])];
+        let bootstrap_peers = vec![test_record("founder", PublicKey([2; 32]), vec!["founder:1"])];
+        let (_event_tx, event_rx) = mpsc::channel::<MachineEvent>(4);
+        let (_command_tx, command_rx) = mpsc::channel::<PeerSyncCommand>(4);
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+
+        let handle = tokio::spawn(async move {
+            run_peer_sync_task(
+                snapshot,
+                event_rx,
+                command_rx,
+                bootstrap_peers,
+                driver,
+                local_machine_id,
+                task_cancel,
+            )
+            .await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cancel.cancel();
+        handle.await.expect("peer sync task exits");
+
+        let peers = network.current_peers();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].id.0, "founder");
     }
 }
