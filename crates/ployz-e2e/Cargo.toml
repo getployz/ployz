@@ -1,0 +1,19 @@
+[package]
+name = "ployz-e2e"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[dependencies]
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true

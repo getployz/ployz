@@ -2828,6 +2828,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ployz-e2e"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "ployz-ebpf-common"
 version = "0.1.0"
 

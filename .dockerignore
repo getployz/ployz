@@ -1,0 +1,14 @@
+.git
+.github
+.lab
+.e2e-artifacts
+.agents
+.claude
+target
+ebpf/target
+!ebpf/target/
+!ebpf/target/bpfel-unknown-none/
+!ebpf/target/bpfel-unknown-none/release/
+!ebpf/target/bpfel-unknown-none/release/ployz-ebpf-tc
+!ebpf/target/bpfel-unknown-none/release/.ebpf-release-version
+lab/lab.env

@@ -1,0 +1,100 @@
+name: HostExec E2E
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+  pull_request:
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/getployz/ployz-e2e-node
+
+jobs:
+  hostexec-e2e:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux/amd64
+            suffix: amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            suffix: arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push prebuilt node image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.e2e-node
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.suffix }}
+
+      - name: Pull node image tag under test
+        run: docker pull ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.suffix }}
+
+      - name: Build E2E runner
+        run: cargo build -p ployz-e2e
+
+      - name: Run HostExec E2E suite
+        run: cargo run -p ployz-e2e -- --image ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.suffix }}
+
+      - name: Upload HostExec E2E artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hostexec-e2e-artifacts-${{ matrix.suffix }}
+          path: .e2e-artifacts/
+          if-no-files-found: ignore
+
+  manifest:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
+    needs: hostexec-e2e
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Create multi-arch manifest
+        run: |
+          docker buildx imagetools create \
+            -t ${{ env.IMAGE }}:${{ github.sha }} \
+            ${{ env.IMAGE }}:${{ github.sha }}-amd64 \
+            ${{ env.IMAGE }}:${{ github.sha }}-arm64
+
+      - name: Update latest on main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker buildx imagetools create \
+            -t ${{ env.IMAGE }}:latest \
+            ${{ env.IMAGE }}:${{ github.sha }}-amd64 \
+            ${{ env.IMAGE }}:${{ github.sha }}-arm64
