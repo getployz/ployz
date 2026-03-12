@@ -5,8 +5,7 @@ use ployz_sdk::spec::{
     Resources, RestartPolicy, RolloutStrategy, ServicePort, ServiceSpec, VolumeMount, VolumeSource,
 };
 use ployz_sdk::transport::{
-    DaemonRequest, DaemonResponse, DeployOptions, MachineAddOptions, Transport,
-    UnixSocketTransport,
+    DaemonRequest, DaemonResponse, DeployOptions, MachineAddOptions, Transport, UnixSocketTransport,
 };
 use ployzd::daemon::{ActiveMesh, DaemonState};
 use ployzd::ipc::listener::{IncomingCommand, serve};
@@ -736,7 +735,10 @@ fn read_optional_text_file(label: &str, path: Option<&Path>) -> Result<Option<St
         return Ok(None);
     };
     let contents = std::fs::read_to_string(path).map_err(|err| {
-        CliError::Io(format!("failed to read {label} '{}': {err}", path.display()))
+        CliError::Io(format!(
+            "failed to read {label} '{}': {err}",
+            path.display()
+        ))
     })?;
     if contents.trim().is_empty() {
         return Err(CliError::Usage(format!(
