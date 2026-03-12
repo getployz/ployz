@@ -1,7 +1,10 @@
 pub mod protocol;
 pub mod unix;
 
-pub use protocol::{DaemonRequest, DaemonResponse, DeployFrame, DeployOptions, MachineAddOptions};
+pub use protocol::{
+    DaemonRequest, DaemonResponse, DeployFrame, DeployOptions, InstallMode, InstallSource,
+    MachineAddOptions, MachineInstallOptions,
+};
 pub use unix::UnixSocketTransport;
 
 use std::future::Future;

@@ -43,7 +43,7 @@ The lab now supports three VM bases:
 
 - `raw`: the upstream cloud image for a distro family
 - `bootstrapped-pristine`: first boot complete, cloud-init complete, SSH working, but still no Docker, no `ployzd`, no service unit, and no Ployz data dir
-- `post-install`: `ployzd`, `ployz`, and `corrosion` installed, `ployzd.service` enabled and active, and reboot survival verified
+- `post-install`: `ployzd`, `ployz`, `ployz-gateway`, `ployz-dns`, and `corrosion` installed via `ployz.sh`, `ployzd.service` enabled and active, and reboot survival verified
 
 Build cached bases explicitly:
 
@@ -76,7 +76,7 @@ When enabled:
 - `host bootstrap` uses a native `apt-cacher-ng` package when available
 - on Omarchy/Arch, `host bootstrap` falls back to a Docker-backed apt cache
 - Ubuntu `cloud-init` bootstrap uses the proxy automatically
-- Ubuntu SSH bootstrap uses `scripts/bootstrap-linux.sh --apt-proxy ...`
+- Ubuntu SSH bootstrap stages a payload and runs `ployz.sh install --source payload --mode host-service`
 - run metadata records the proxy URL in `.lab/reports/<run-id>/metadata.env`
 
 This keeps guests pristine while reducing repeated upstream apt mirror fetches on
@@ -107,22 +107,24 @@ sudo virsh --connect qemu:///system net-info ployz-lab-data
 
 ## Bootstrap Contract
 
-The installer entrypoint under test is [`scripts/bootstrap-linux.sh`](../../scripts/bootstrap-linux.sh).
+The installer entrypoint under test is [`ployz.sh`](../../ployz.sh).
 
 It supports:
 
-- `--artifacts-dir PATH`
-- `--artifacts-url URL`
-- `--apt-proxy URL`
-- `--mode host-service`
+- `install --source release|git|payload`
+- `--mode docker|host-exec|host-service`
+- `--payload-dir PATH`
+- `--no-daemon-install`
 
 Its contract in v1 is:
 
-- install OS prerequisites
-- install `ployzd`, `ployz`, and `corrosion`
-- install and enable `ployzd.service`
-- start the daemon in `HostService`
+- install `ployzd`, `ployz`, `ployz-gateway`, `ployz-dns`, and `corrosion` into user space
+- write an install manifest and client config
+- run `ployz daemon install --mode ...`
+- for lab, promote into `HostService`
 - remain safe to rerun
+
+[`scripts/bootstrap-linux.sh`](../../scripts/bootstrap-linux.sh) remains as a compatibility shim and maps legacy lab flows onto `ployz.sh install --source payload --mode host-service`.
 
 Supported families in v1:
 

@@ -8,6 +8,10 @@ publish = false
 name = "ployzd"
 path = "src/main.rs"
 
+[[bin]]
+name = "ployz"
+path = "src/bin/ployz.rs"
+
 [features]
 ebpf-native = ["ployz-core/ebpf-native"]
 

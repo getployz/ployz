@@ -117,6 +117,113 @@ need_cmd() {
   command -v "$cmd" >/dev/null 2>&1 || fail "required command not found: $cmd"
 }
 
+json_manifest_node_family() {
+  local manifest=$1
+  local node=$2
+  python3 - "${manifest}" "${node}" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest = pathlib.Path(sys.argv[1])
+node_name = sys.argv[2]
+data = json.loads(manifest.read_text())
+for node in data.get("nodes", []):
+    if node.get("name") == node_name:
+        family = node.get("family")
+        if isinstance(family, str):
+            print(family)
+            raise SystemExit(0)
+raise SystemExit(f"node not found in manifest: {node_name}")
+PY
+}
+
+json_manifest_node_names() {
+  local manifest=$1
+  python3 - "${manifest}" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest = pathlib.Path(sys.argv[1])
+data = json.loads(manifest.read_text())
+for node in data.get("nodes", []):
+    name = node.get("name")
+    if isinstance(name, str):
+        print(name)
+PY
+}
+
+json_profile_values() {
+  local manifest=$1
+  python3 - "${manifest}" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest = pathlib.Path(sys.argv[1])
+data = json.loads(manifest.read_text())
+interface = data.get("interface")
+netem = data.get("netem")
+if not isinstance(interface, str):
+    raise SystemExit("profile interface must be a string")
+if not isinstance(netem, str):
+    raise SystemExit("profile netem must be a string")
+print(interface)
+print(netem)
+PY
+}
+
+json_scenario_defaults() {
+  local manifest=$1
+  python3 - "${manifest}" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest = pathlib.Path(sys.argv[1])
+data = json.loads(manifest.read_text())
+bootstrap = data.get("default_bootstrap_path")
+profile = data.get("default_profile")
+if not isinstance(bootstrap, str):
+    raise SystemExit("scenario default_bootstrap_path must be a string")
+if not isinstance(profile, str):
+    raise SystemExit("scenario default_profile must be a string")
+print(bootstrap)
+print(profile)
+PY
+}
+
+json_field_is_true() {
+  local field=$1
+  python3 - "${field}" <<'PY'
+import json
+import sys
+
+field = sys.argv[1]
+raw = sys.stdin.read()
+
+try:
+    payload = json.loads(raw)
+except json.JSONDecodeError:
+    raise SystemExit(1)
+
+if payload.get(field) is True:
+    raise SystemExit(0)
+
+message = payload.get("message")
+if isinstance(message, str):
+    try:
+        nested = json.loads(message)
+    except json.JSONDecodeError:
+        nested = None
+    if isinstance(nested, dict) and nested.get(field) is True:
+        raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+}
+
 require_host() {
   [[ -n "${REMOTE_HOST}" ]] || fail "set PLOYZ_LAB_HOST in lab/lab.env or the environment"
 }
@@ -407,7 +514,7 @@ family_for_node() {
   local node=$2
   local override=$3
   local manifest_family
-  manifest_family=$(jq -r --arg node "${node}" '.nodes[] | select(.name == $node) | .family' "${manifest}")
+  manifest_family=$(json_manifest_node_family "${manifest}" "${node}")
 
   if [[ -z "${override}" ]]; then
     printf '%s' "${manifest_family}"
@@ -452,7 +559,7 @@ register_nodes() {
   local manifest=$1
   local family_override=$2
   local index=1
-  mapfile -t NODES < <(jq -r '.nodes[].name' "${manifest}")
+  mapfile -t NODES < <(json_manifest_node_names "${manifest}")
   for node in "${NODES[@]}"; do
     NODE_FAMILY["${node}"]=$(family_for_node "${manifest}" "${node}" "${family_override}")
     NODE_MGMT_IP["${node}"]=$(calc_mgmt_ip "${index}")
@@ -596,7 +703,7 @@ install_packages() {
     step "installing host packages with apt"
     local packages=(
       qemu-kvm libvirt-daemon-system libvirt-clients virtinst qemu-utils
-      cloud-image-utils jq rsync curl python3 python3-venv
+      cloud-image-utils rsync curl python3 python3-venv
       build-essential cmake pkg-config make
     )
     if [[ "\${APT_CACHE_ENABLED}" == "1" ]]; then
@@ -609,7 +716,7 @@ install_packages() {
   if command -v dnf >/dev/null 2>&1; then
     step "installing host packages with dnf"
     sudo -n dnf install -y \
-      qemu-kvm libvirt virt-install qemu-img cloud-utils jq rsync curl python3 \
+      qemu-kvm libvirt virt-install qemu-img cloud-utils rsync curl python3 \
       gcc gcc-c++ make cmake pkgconf-pkg-config
     if [[ "\${APT_CACHE_ENABLED}" == "1" ]]; then
       sudo -n dnf install -y apt-cacher-ng >/dev/null 2>&1 || true
@@ -619,7 +726,7 @@ install_packages() {
   if command -v pacman >/dev/null 2>&1; then
     step "installing host packages with pacman"
     local packages=(
-      qemu-full libvirt virt-install dnsmasq qemu-img cloud-image-utils jq rsync curl python
+      qemu-full libvirt virt-install dnsmasq qemu-img cloud-image-utils rsync curl python
       base-devel cmake pkgconf
     )
     sudo -n pacman -Sy --needed --noconfirm "\${packages[@]}"
@@ -782,51 +889,13 @@ EOF
 }
 
 build_artifact_bundle() {
-  local git_rev corrosion_version
-  git_rev="${CURRENT_GIT_REV}"
-  corrosion_version=$(tr -d '[:space:]' < "${ROOT_DIR}/.corrosion-version")
   remote_rsync_repo
-  remote_install_ebpf_bytecode
   log "building branch artifacts on ${REMOTE_HOST}"
 remote_bash <<EOF
 set -euo pipefail
 cd '${REMOTE_ROOT}/src/repo'
-cargo build --release -p ployzd --features ebpf-native
-cargo build --release -p ployz-gateway -p ployz-dns
-
 bundle_dir='${REMOTE_RUN_DIR}/bundle'
-cache_dir='${REMOTE_ROOT}/cache'
-mkdir -p "\${bundle_dir}" "\${cache_dir}"
-install -m 0755 target/release/ployzd "\${bundle_dir}/ployzd"
-install -m 0755 packaging/bin/ployz "\${bundle_dir}/ployz"
-install -m 0755 target/release/ployz-gateway "\${bundle_dir}/ployz-gateway"
-install -m 0755 target/release/ployz-dns "\${bundle_dir}/ployz-dns"
-install -m 0755 scripts/bootstrap-linux.sh "\${bundle_dir}/bootstrap-linux.sh"
-install -m 0644 packaging/systemd/ployzd.service "\${bundle_dir}/ployzd.service"
-
-corrosion_asset='corrosion-x86_64-unknown-linux-gnu.tar.gz'
-corrosion_dir="\${cache_dir}/corrosion-${corrosion_version}"
-corrosion_bin="\${corrosion_dir}/corrosion"
-corrosion_archive="\${cache_dir}/\${corrosion_asset}"
-if [[ ! -x "\${corrosion_bin}" ]]; then
-  rm -rf "\${corrosion_dir}"
-  mkdir -p "\${corrosion_dir}"
-  rm -f "\${corrosion_archive}"
-  curl -fsSL "https://github.com/getployz/corrosion/releases/download/${corrosion_version}/\${corrosion_asset}" -o "\${corrosion_archive}"
-  tar -xzf "\${corrosion_archive}" -C "\${corrosion_dir}"
-fi
-if [[ ! -x "\${corrosion_bin}" ]]; then
-  echo "corrosion binary missing after extraction: \${corrosion_bin}" >&2
-  find "\${corrosion_dir}" -maxdepth 2 -type f -print >&2 || true
-  exit 1
-fi
-install -m 0755 "\${corrosion_bin}" "\${bundle_dir}/corrosion"
-
-cat > "\${bundle_dir}/bootstrap-manifest.env" <<MANIFEST
-BOOTSTRAP_GIT_REV=${git_rev}
-BOOTSTRAP_CORROSION_VERSION=${corrosion_version}
-MANIFEST
-
+bash ./scripts/build-install-payload.sh --repo '${REMOTE_ROOT}/src/repo' --output "\${bundle_dir}"
 tar -czf '${REMOTE_RUN_DIR}/bundle.tgz' -C "\${bundle_dir}" .
 mkdir -p '${REMOTE_ROOT}/http/${RUN_ID}'
 cp '${REMOTE_RUN_DIR}/bundle.tgz' '${REMOTE_ROOT}/http/${RUN_ID}/bundle.tgz'
@@ -864,7 +933,7 @@ render_user_data() {
   pristine_cmd="mkdir -p /var/lib/ployz-lab && { command -v docker >/dev/null 2>&1 && echo docker=present || echo docker=absent; command -v ployzd >/dev/null 2>&1 && echo ployzd=present || echo ployzd=absent; systemctl list-unit-files ployzd.service >/dev/null 2>&1 && echo ployzd_unit=present || echo ployzd_unit=absent; [ -d /var/lib/ployz ] && echo data_dir=present || echo data_dir=absent; } >/var/lib/ployz-lab/pristine-state.txt"
   local bootstrap_cmd=""
   if [[ "${bootstrap_path}" == "cloud-init" ]]; then
-    bootstrap_cmd="mkdir -p /var/lib/ployz-lab/bootstrap && curl -fsSL '${BUNDLE_URL}' -o /var/lib/ployz-lab/bootstrap/bundle.tgz && tar -xzf /var/lib/ployz-lab/bootstrap/bundle.tgz -C /var/lib/ployz-lab/bootstrap && ${bootstrap_prefix} bash /var/lib/ployz-lab/bootstrap/bootstrap-linux.sh --artifacts-dir /var/lib/ployz-lab/bootstrap${proxy_arg}"
+    bootstrap_cmd="mkdir -p /var/lib/ployz-lab/bootstrap && curl -fsSL '${BUNDLE_URL}' -o /var/lib/ployz-lab/bootstrap/bundle.tgz && tar -xzf /var/lib/ployz-lab/bootstrap/bundle.tgz -C /var/lib/ployz-lab/bootstrap && ${bootstrap_prefix} bash /var/lib/ployz-lab/bootstrap/ployz.sh install --source payload --payload-dir /var/lib/ployz-lab/bootstrap --mode host-service"
   fi
   cat <<EOF
 #cloud-config
@@ -1069,7 +1138,7 @@ bootstrap_over_ssh() {
   printf -v rust_log_escaped '%q' "${PLOYZD_RUST_LOG}"
   assert_pristine "${node}"
   guest_scp_from_remote "${node}" "${BUNDLE_TAR}" "/tmp/ployz-bundle.tgz"
-  guest_exec "${node}" "rm -rf /tmp/ployz-bundle && mkdir -p /tmp/ployz-bundle && tar -xzf /tmp/ployz-bundle.tgz -C /tmp/ployz-bundle && sudo env PLOYZ_RUST_LOG=${rust_log_escaped} RUST_BACKTRACE=1 bash /tmp/ployz-bundle/bootstrap-linux.sh --artifacts-dir /tmp/ployz-bundle${proxy_arg}"
+  guest_exec "${node}" "rm -rf /tmp/ployz-bundle && mkdir -p /tmp/ployz-bundle && tar -xzf /tmp/ployz-bundle.tgz -C /tmp/ployz-bundle && sudo env PLOYZ_RUST_LOG=${rust_log_escaped} RUST_BACKTRACE=1 bash /tmp/ployz-bundle/ployz.sh install --source payload --payload-dir /tmp/ployz-bundle --mode host-service"
 }
 
 refresh_post_install_node() {
@@ -1077,7 +1146,7 @@ refresh_post_install_node() {
   local rust_log_escaped
   printf -v rust_log_escaped '%q' "${PLOYZD_RUST_LOG}"
   guest_scp_from_remote "${node}" "${BUNDLE_TAR}" "/tmp/ployz-bundle.tgz"
-  guest_exec "${node}" "rm -rf /tmp/ployz-bundle && mkdir -p /tmp/ployz-bundle && tar -xzf /tmp/ployz-bundle.tgz -C /tmp/ployz-bundle && sudo env PLOYZ_RUST_LOG=${rust_log_escaped} RUST_BACKTRACE=1 bash /tmp/ployz-bundle/bootstrap-linux.sh --artifacts-dir /tmp/ployz-bundle --refresh-only"
+  guest_exec "${node}" "rm -rf /tmp/ployz-bundle && mkdir -p /tmp/ployz-bundle && tar -xzf /tmp/ployz-bundle.tgz -C /tmp/ployz-bundle && sudo env PLOYZ_RUST_LOG=${rust_log_escaped} RUST_BACKTRACE=1 bash /tmp/ployz-bundle/ployz.sh install --source payload --payload-dir /tmp/ployz-bundle --mode host-service"
 }
 
 verify_bootstrap() {
@@ -1164,9 +1233,11 @@ apply_profile() {
   local profile=$2
   local interface_override=${3:-}
   local manifest iface netem
+  local -a profile_values
   manifest=$(profile_manifest "${profile}")
-  iface=$(jq -r '.interface' "${manifest}")
-  netem=$(jq -r '.netem' "${manifest}")
+  mapfile -t profile_values < <(json_profile_values "${manifest}")
+  iface=${profile_values[0]}
+  netem=${profile_values[1]}
   if [[ -n "${interface_override}" ]]; then
     iface=${interface_override}
   fi
@@ -1229,10 +1300,7 @@ await_json_true() {
   start=$(date +%s)
   while true; do
     output=$(guest_exec "${node}" "${cmd}" || true)
-    if printf '%s' "${output}" | jq -e --arg field "${field}" '
-      (.[$field] == true)
-      or ((.message? | fromjson? | .[$field]?) == true)
-    ' >/dev/null 2>&1; then
+    if printf '%s' "${output}" | json_field_is_true "${field}" >/dev/null 2>&1; then
       return 0
     fi
     if (( "$(date +%s)" - start >= timeout )); then
@@ -1556,10 +1624,12 @@ run_scenario() {
   local base_override=$5
   local clean_start=${6:-0}
   local manifest bootstrap_path profile base_kind
+  local -a scenario_defaults
   prepare_pass "${clean_start}"
   manifest=$(scenario_manifest "${name}")
-  bootstrap_path=$(jq -r '.default_bootstrap_path' "${manifest}")
-  profile=$(jq -r '.default_profile' "${manifest}")
+  mapfile -t scenario_defaults < <(json_scenario_defaults "${manifest}")
+  bootstrap_path=${scenario_defaults[0]}
+  profile=${scenario_defaults[1]}
   if [[ -n "${bootstrap_path_override}" ]]; then
     bootstrap_path=${bootstrap_path_override}
   fi
@@ -1770,7 +1840,7 @@ report_open() {
 ensure_prereqs() {
   need_cmd ssh
   need_cmd rsync
-  need_cmd jq
+  need_cmd python3
   need_cmd tar
   ensure_local_state
   require_host
