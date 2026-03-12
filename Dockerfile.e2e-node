@@ -1,0 +1,29 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    docker.io \
+    iproute2 \
+    iptables \
+    openssh-client \
+    openssh-server \
+    sudo \
+    tini \
+    wireguard-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /run/sshd /var/lib/ployz && \
+    sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed -i 's/^#\?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config && \
+    printf 'AuthorizedKeysFile .ssh/authorized_keys\n' >> /etc/ssh/sshd_config
+
+COPY ployz.sh /usr/local/bin/ployz.sh
+COPY packaging/e2e/e2e-dind.sh /usr/local/bin/e2e-dind.sh
+COPY packaging/e2e/e2e-node-entrypoint.sh /usr/local/bin/e2e-node-entrypoint.sh
+
+RUN chmod 0755 /usr/local/bin/ployz.sh \
+    /usr/local/bin/e2e-dind.sh \
+    /usr/local/bin/e2e-node-entrypoint.sh
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/e2e-node-entrypoint.sh"]
