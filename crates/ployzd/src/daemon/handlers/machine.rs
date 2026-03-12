@@ -10,7 +10,9 @@ use crate::store::MachineStore;
 use crate::store::driver::StoreDriver;
 use chrono::DateTime;
 use ipnet::Ipv4Net;
-use ployz_sdk::transport::{DaemonResponse, InstallMode, InstallSource, MachineAddOptions, MachineInstallOptions};
+use ployz_sdk::transport::{
+    DaemonResponse, InstallMode, InstallSource, MachineAddOptions, MachineInstallOptions,
+};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -28,12 +30,15 @@ const REMOTE_READY_SSH_TIMEOUT: Duration = Duration::from_secs(10);
 const REMOTE_CLEANUP_SSH_TIMEOUT: Duration = Duration::from_secs(10);
 const REMOTE_STATUS_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" status >/dev/null";
 const REMOTE_MESH_INIT_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" mesh init --name-stdin";
-const REMOTE_MESH_JOIN_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" mesh join --token-stdin";
-const REMOTE_MESH_SELF_RECORD_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" mesh self-record";
+const REMOTE_MESH_JOIN_COMMAND: &str =
+    "set -eu; \"$HOME/.local/bin/ployz\" mesh join --token-stdin";
+const REMOTE_MESH_SELF_RECORD_COMMAND: &str =
+    "set -eu; \"$HOME/.local/bin/ployz\" mesh self-record";
 const REMOTE_MESH_READY_COMMAND: &str =
     "set -eu; \"$HOME/.local/bin/ployz\" --plain mesh ready --json";
 const REMOTE_MESH_DOWN_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" mesh down";
-const REMOTE_MESH_DESTROY_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" mesh destroy --name-stdin";
+const REMOTE_MESH_DESTROY_COMMAND: &str =
+    "set -eu; \"$HOME/.local/bin/ployz\" mesh destroy --name-stdin";
 
 #[derive(Clone)]
 struct MachineAddContext {
@@ -632,7 +637,9 @@ async fn run_machine_add_target(
     invite_id: String,
 ) -> MachineAddOutcome {
     tracing::info!(%target, "machine add target: bootstrap starting");
-    if let Err(err) = bootstrap_remote_machine(&target, &context.install, &context.ssh_options).await {
+    if let Err(err) =
+        bootstrap_remote_machine(&target, &context.install, &context.ssh_options).await
+    {
         return MachineAddOutcome::FailedPreflight {
             target,
             reason: err,
@@ -749,7 +756,11 @@ async fn run_machine_add_target(
         invite_id,
         "machine add target: finalizing invite"
     );
-    if let Err(err) = context.store.consume_invite(&invite_id, now_unix_secs()).await {
+    if let Err(err) = context
+        .store
+        .consume_invite(&invite_id, now_unix_secs())
+        .await
+    {
         tracing::warn!(
             %target,
             joiner_id = %joiner_id,
@@ -992,20 +1003,24 @@ fn install_script_args(install: &MachineInstallOptions) -> String {
     let mut args = vec!["install".to_string()];
     if let Some(mode) = install.mode {
         args.push("--mode".into());
-        args.push(match mode {
-            InstallMode::Docker => "docker",
-            InstallMode::HostExec => "host-exec",
-            InstallMode::HostService => "host-service",
-        }
-        .into());
+        args.push(
+            match mode {
+                InstallMode::Docker => "docker",
+                InstallMode::HostExec => "host-exec",
+                InstallMode::HostService => "host-service",
+            }
+            .into(),
+        );
     }
     if let Some(source) = &install.source {
         args.push("--source".into());
-        args.push(match source {
-            InstallSource::Release => "release",
-            InstallSource::Git => "git",
-        }
-        .into());
+        args.push(
+            match source {
+                InstallSource::Release => "release",
+                InstallSource::Git => "git",
+            }
+            .into(),
+        );
     }
     if let Some(version) = &install.version {
         args.push("--version".into());
@@ -1073,7 +1088,7 @@ mod tests {
     use super::*;
     use crate::config::Mode;
     use crate::daemon::ActiveMesh;
-    use crate::daemon::ssh::{TEST_SSH_BIN_ENV, test_ssh_env_lock};
+    use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock};
     use crate::deploy::remote::RemoteControlHandle;
     use crate::mesh::driver::WireguardDriver;
     use crate::mesh::orchestrator::Mesh;
@@ -1083,7 +1098,6 @@ mod tests {
     use crate::store::backends::memory::{MemoryService, MemoryStore};
     use crate::store::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
     use crate::time::now_unix_secs;
-    use std::ffi::OsString;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1192,10 +1206,11 @@ mod tests {
         let ssh_dir = unique_temp_dir("ployz-fake-ssh");
         std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
         let fake_ssh = write_fake_ssh(&ssh_dir);
-        let _ssh_guard = EnvVarGuard::set(TEST_SSH_BIN_ENV, Some(fake_ssh.into_os_string()));
-        let _join_guard = EnvVarGuard::set("PLOYZ_TEST_JOIN_RESPONSE", Some(join_response.into()));
+        let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
+        let _join_guard =
+            TestSshEnvGuard::set("PLOYZ_TEST_JOIN_RESPONSE", Some(join_response.into()));
         let _ready_guard =
-            EnvVarGuard::set("PLOYZ_TEST_READY_RESPONSE", Some("{\"ready\":true}".into()));
+            TestSshEnvGuard::set("PLOYZ_TEST_READY_RESPONSE", Some("{\"ready\":true}".into()));
 
         let response = state
             .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
@@ -1236,9 +1251,10 @@ mod tests {
         let ssh_dir = unique_temp_dir("ployz-fake-ssh");
         std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
         let fake_ssh = write_fake_ssh(&ssh_dir);
-        let _ssh_guard = EnvVarGuard::set(TEST_SSH_BIN_ENV, Some(fake_ssh.into_os_string()));
-        let _join_guard = EnvVarGuard::set("PLOYZ_TEST_JOIN_RESPONSE", Some(join_response.into()));
-        let _ready_guard = EnvVarGuard::set(
+        let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
+        let _join_guard =
+            TestSshEnvGuard::set("PLOYZ_TEST_JOIN_RESPONSE", Some(join_response.into()));
+        let _ready_guard = TestSshEnvGuard::set(
             "PLOYZ_TEST_READY_RESPONSE",
             Some(
                 "{\"ready\":false,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":false,\"heartbeat_started\":true}".into(),
@@ -1445,42 +1461,5 @@ mod tests {
         }
 
         script
-    }
-
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<OsString>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: Option<OsString>) -> Self {
-            let previous = std::env::var_os(key);
-            match value {
-                Some(value) => {
-                    // Tests serialize PATH/env mutations behind a process-wide mutex.
-                    unsafe { std::env::set_var(key, value) }
-                }
-                None => {
-                    // Tests serialize PATH/env mutations behind a process-wide mutex.
-                    unsafe { std::env::remove_var(key) }
-                }
-            }
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            match self.previous.as_ref() {
-                Some(value) => {
-                    // Tests serialize PATH/env mutations behind a process-wide mutex.
-                    unsafe { std::env::set_var(self.key, value) }
-                }
-                None => {
-                    // Tests serialize PATH/env mutations behind a process-wide mutex.
-                    unsafe { std::env::remove_var(self.key) }
-                }
-            }
-        }
     }
 }
