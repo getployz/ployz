@@ -1,13 +1,13 @@
 use std::net::Ipv6Addr;
 use std::path::Path;
 
-use base64::Engine as _;
 use crate::corrosion_config;
 use crate::model::{MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey};
 use crate::network::endpoints::detect_endpoints;
 use crate::node::identity::Identity;
 use crate::node::invite::InviteClaims;
 use crate::store::network::NetworkConfig;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 const BOOTSTRAP_PEERS_FILE: &str = "bootstrap-peers.json";
@@ -89,10 +89,17 @@ pub fn load_bootstrap_peer_records(network_dir: &Path) -> Result<Vec<BootstrapPe
         .map_err(|error| format!("parse bootstrap peers '{}': {error}", path.display()))
 }
 
-pub fn write_bootstrap_peer_record(network_dir: &Path, peer: &BootstrapPeerRecord) -> Result<(), String> {
+pub fn write_bootstrap_peer_record(
+    network_dir: &Path,
+    peer: &BootstrapPeerRecord,
+) -> Result<(), String> {
     let path = bootstrap_peers_path(network_dir);
-    std::fs::create_dir_all(network_dir)
-        .map_err(|error| format!("create bootstrap peer dir '{}': {error}", network_dir.display()))?;
+    std::fs::create_dir_all(network_dir).map_err(|error| {
+        format!(
+            "create bootstrap peer dir '{}': {error}",
+            network_dir.display()
+        )
+    })?;
     let mut peers = load_bootstrap_peer_records(network_dir)?;
     if let Some(existing) = peers
         .iter_mut()
@@ -242,7 +249,10 @@ pub async fn build_seed_records(
 ) -> Vec<MachineRecord> {
     let mut seed_records: Vec<MachineRecord> = load_bootstrap_peer_records(network_dir)
         .unwrap_or_else(|error| {
-            tracing::warn!(?error, "failed to load local bootstrap peers, starting fresh");
+            tracing::warn!(
+                ?error,
+                "failed to load local bootstrap peers, starting fresh"
+            );
             Vec::new()
         })
         .into_iter()
@@ -254,7 +264,10 @@ pub async fn build_seed_records(
         Vec::new()
     });
     for record in db_records {
-        if let Some(existing) = seed_records.iter_mut().find(|machine| machine.id == record.id) {
+        if let Some(existing) = seed_records
+            .iter_mut()
+            .find(|machine| machine.id == record.id)
+        {
             *existing = record;
         } else {
             seed_records.push(record);
@@ -407,7 +420,8 @@ mod tests {
         )
         .expect("insert founder db record");
 
-        let seed_records = build_seed_records(&network_dir, &identity, &net_config, None, 51820).await;
+        let seed_records =
+            build_seed_records(&network_dir, &identity, &net_config, None, 51820).await;
 
         let founder = seed_records
             .iter()

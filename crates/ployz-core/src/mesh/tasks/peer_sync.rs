@@ -267,7 +267,11 @@ mod tests {
         let driver = WireguardDriver::Memory(network.clone());
         let local_machine_id = MachineId("joiner".into());
         let snapshot = vec![test_record("joiner", PublicKey([1; 32]), vec!["self:1"])];
-        let bootstrap_peers = vec![test_record("founder", PublicKey([2; 32]), vec!["founder:1"])];
+        let bootstrap_peers = vec![test_record(
+            "founder",
+            PublicKey([2; 32]),
+            vec!["founder:1"],
+        )];
         let (_event_tx, event_rx) = mpsc::channel::<MachineEvent>(4);
         let (_command_tx, command_rx) = mpsc::channel::<PeerSyncCommand>(4);
         let cancel = CancellationToken::new();
