@@ -2,10 +2,13 @@ use crate::error::{Error, Result};
 use crate::runner::ScenarioRun;
 
 pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
-    run.setup_founder_and_joiner()?;
-    let founder = run.node("founder")?;
+    run.mesh_init("founder", "alpha")?;
+    run.wait_mesh_ready_name("founder")?;
+    run.machine_add("founder", "joiner")?;
+    run.wait_all_machine_states("founder", &["joiner"], "disabled")?;
+    run.wait_all_machine_states("founder", &["joiner"], "enabled")?;
 
-    let remove_enabled = run.ssh_run(founder, "ployzd machine rm joiner")?;
+    let remove_enabled = run.ssh_run_name("founder", "ployzd machine rm joiner")?;
     if remove_enabled.status.success() {
         return Err(Error::Message(
             "machine remove unexpectedly succeeded while joiner was enabled".into(),
@@ -18,8 +21,8 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
         )));
     }
 
-    run.ssh_expect_ok(founder, "ployzd machine drain joiner")?;
-    let remove_draining = run.ssh_run(founder, "ployzd machine rm joiner")?;
+    run.machine_drain("founder", "joiner")?;
+    let remove_draining = run.ssh_run_name("founder", "ployzd machine rm joiner")?;
     if remove_draining.status.success() {
         return Err(Error::Message(
             "machine remove unexpectedly succeeded while joiner was draining".into(),
@@ -32,6 +35,6 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
         )));
     }
 
-    run.ssh_expect_ok(founder, "ployzd machine rm joiner --force")?;
-    run.wait_machine_absent_default(founder, "joiner")
+    run.machine_remove_force("founder", "joiner")?;
+    run.wait_machine_absent_name("founder", "joiner")
 }

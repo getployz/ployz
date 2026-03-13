@@ -5,9 +5,11 @@ use crate::support::{
     CommandOutput, docker_outer, docker_outer_raw, parse_ready, pick_free_port, run_command,
     run_command_expect_ok, wait_until,
 };
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -135,7 +137,10 @@ impl ScenarioRun {
             })?;
 
             let inner_docker_ps = self
-                .ssh_run(node, "docker ps -a --format '{{.ID}} {{.Names}} {{.Status}}'")
+                .ssh_run(
+                    node,
+                    "docker ps -a --format '{{.ID}} {{.Names}} {{.Status}}'",
+                )
                 .unwrap_or_else(|_| CommandOutput::default());
             fs::write(
                 logs_dir.join(format!("{}-inner-docker-ps.txt", node.name)),
@@ -203,28 +208,72 @@ impl ScenarioRun {
             .ok_or_else(|| Error::Message(format!("node '{name}' is not running")))
     }
 
-    pub(crate) fn setup_founder_and_joiner(&self) -> Result<()> {
-        self.mesh_init_founder()?;
-        self.wait_mesh_ready_default(self.node("founder")?)?;
-        let founder = self.node("founder")?;
-        let joiner = self.node("joiner")?;
-        let add_joiner = format!(
-            "ployzd machine add --identity /e2e-keys/id_ed25519 root@{}",
-            joiner.outer_ip
-        );
-        self.ssh_expect_ok(founder, &add_joiner)?;
-        self.wait_machine_state_default(founder, "joiner", "disabled")?;
-        self.wait_machine_state_default(founder, "joiner", "enabled")
+    pub(crate) fn mesh_init(&self, node_name: &str, network: &str) -> Result<()> {
+        self.ssh_expect_ok_name(node_name, &format!("ployzd mesh init {network}"))?;
+        Ok(())
     }
 
-    pub(crate) fn mesh_init_founder(&self) -> Result<()> {
-        let founder = self.node("founder")?;
-        self.ssh_expect_ok(founder, "ployzd mesh init alpha")?;
+    pub(crate) fn wait_mesh_ready_name(&self, node_name: &str) -> Result<()> {
+        self.wait_mesh_ready_default(self.node(node_name)?)
+    }
+
+    pub(crate) fn machine_add(&self, controller_name: &str, target_name: &str) -> Result<()> {
+        self.machine_add_many(controller_name, &[target_name])
+    }
+
+    pub(crate) fn machine_add_many(
+        &self,
+        controller_name: &str,
+        target_names: &[&str],
+    ) -> Result<()> {
+        let controller = self.node(controller_name)?;
+        let command = self.machine_add_command(target_names)?;
+        self.ssh_expect_ok(controller, &command)?;
+        Ok(())
+    }
+
+    pub(crate) fn machine_add_command(&self, target_names: &[&str]) -> Result<String> {
+        let mut command = String::from("ployzd machine add --identity /e2e-keys/id_ed25519");
+
+        for target_name in target_names {
+            let target = self.node(target_name)?;
+            let _ = write!(&mut command, " root@{}", target.outer_ip);
+        }
+
+        Ok(command)
+    }
+
+    pub(crate) fn machine_drain(&self, controller_name: &str, machine_id: &str) -> Result<()> {
+        self.ssh_expect_ok_name(
+            controller_name,
+            &format!("ployzd machine drain {machine_id}"),
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn machine_remove_force(
+        &self,
+        controller_name: &str,
+        machine_id: &str,
+    ) -> Result<()> {
+        self.ssh_expect_ok_name(
+            controller_name,
+            &format!("ployzd machine rm {machine_id} --force"),
+        )?;
         Ok(())
     }
 
     pub(crate) fn wait_mesh_ready_default(&self, node: &Node) -> Result<()> {
         self.wait_mesh_ready(node, READY_WAIT_TIMEOUT)
+    }
+
+    pub(crate) fn wait_machine_state_name(
+        &self,
+        node_name: &str,
+        machine_id: &str,
+        expected_state: &str,
+    ) -> Result<()> {
+        self.wait_machine_state_default(self.node(node_name)?, machine_id, expected_state)
     }
 
     pub(crate) fn wait_machine_state_default(
@@ -236,12 +285,174 @@ impl ScenarioRun {
         self.wait_machine_state(node, machine_id, expected_state, STATE_WAIT_TIMEOUT)
     }
 
-    pub(crate) fn wait_machine_absent_default(
-        &self,
-        node: &Node,
-        machine_id: &str,
-    ) -> Result<()> {
+    pub(crate) fn wait_machine_absent_default(&self, node: &Node, machine_id: &str) -> Result<()> {
         self.wait_machine_absent(node, machine_id, STATE_WAIT_TIMEOUT)
+    }
+
+    pub(crate) fn wait_machine_absent_name(&self, node_name: &str, machine_id: &str) -> Result<()> {
+        self.wait_machine_absent_default(self.node(node_name)?, machine_id)
+    }
+
+    pub(crate) fn wait_all_machine_states(
+        &self,
+        node_name: &str,
+        machine_ids: &[&str],
+        expected_state: &str,
+    ) -> Result<()> {
+        let node = self.node(node_name)?;
+        let joined_ids = machine_ids.join(", ");
+
+        wait_until(STATE_WAIT_TIMEOUT, || {
+            let Ok(output) = self.ssh_run(node, "ployzd machine ls") else {
+                return Ok(false);
+            };
+            if !output.status.success() {
+                return Ok(false);
+            }
+            Ok(machine_ids.iter().all(|machine_id| {
+                machine_state(&output.stdout, machine_id).as_deref() == Some(expected_state)
+            }))
+        })
+        .map_err(|error| {
+            Error::Message(format!(
+                "machines '{joined_ids}' did not reach state '{expected_state}' on {}: {error}",
+                node.name
+            ))
+        })
+    }
+
+    pub(crate) fn wait_for_settled_machine_states(
+        &self,
+        node_name: &str,
+        expected_states: &[(&str, &str)],
+    ) -> Result<()> {
+        let node = self.node(node_name)?;
+        let expected_count = expected_states.len();
+        let expected_labels = expected_states
+            .iter()
+            .map(|(machine_id, state)| format!("{machine_id}:{state}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut last_snapshot: Option<Vec<MachineRow>> = None;
+        let mut consecutive_matches: u8 = 0;
+
+        wait_until(STATE_WAIT_TIMEOUT, || {
+            let Ok(output) = self.ssh_run(node, "ployzd machine ls") else {
+                return Ok(false);
+            };
+            if !output.status.success() {
+                return Ok(false);
+            }
+
+            let snapshot = machine_rows(&output.stdout);
+            if snapshot.len() != expected_count {
+                consecutive_matches = 0;
+                last_snapshot = None;
+                return Ok(false);
+            }
+            if !expected_states.iter().all(|(machine_id, expected_state)| {
+                snapshot.iter().any(|row| {
+                    row.id == *machine_id
+                        && row.participation == *expected_state
+                        && row.subnet != "—"
+                })
+            }) {
+                consecutive_matches = 0;
+                last_snapshot = None;
+                return Ok(false);
+            }
+
+            if last_snapshot.as_ref() == Some(&snapshot) {
+                consecutive_matches = consecutive_matches.saturating_add(1);
+            } else {
+                consecutive_matches = 1;
+                last_snapshot = Some(snapshot);
+            }
+
+            Ok(consecutive_matches >= 3)
+        })
+        .map_err(|error| {
+            Error::Message(format!(
+                "machine state did not settle on {} for [{}]: {error}",
+                node.name, expected_labels
+            ))
+        })
+    }
+
+    pub(crate) fn assert_unique_machine_subnets(&self, node_name: &str) -> Result<()> {
+        let output = self.ssh_expect_ok_name(node_name, "ployzd machine ls")?;
+        let mut seen: BTreeMap<String, String> = BTreeMap::new();
+
+        for prefix in machine_rows(&output.stdout) {
+            if !prefix.subnet.contains('/') {
+                continue;
+            }
+            if let Some(existing) = seen.insert(prefix.subnet.clone(), prefix.id.clone()) {
+                return Err(Error::Message(format!(
+                    "duplicate subnet '{}' reported by {} for machines '{}' and '{}'",
+                    prefix.subnet, node_name, existing, prefix.id
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn wait_service_container_name(
+        &self,
+        node_name: &str,
+        namespace: &str,
+        service: &str,
+    ) -> Result<()> {
+        self.wait_service_container(self.node(node_name)?, namespace, service)
+    }
+
+    pub(crate) fn ssh_expect_ok_name(
+        &self,
+        node_name: &str,
+        script: &str,
+    ) -> Result<CommandOutput> {
+        self.ssh_expect_ok(self.node(node_name)?, script)
+    }
+
+    pub(crate) fn ssh_expect_ok_concurrent(
+        &self,
+        commands: &[(&str, String)],
+    ) -> Result<Vec<CommandOutput>> {
+        let mut handles = Vec::with_capacity(commands.len());
+
+        for (node_name, script) in commands {
+            let node = self.node(node_name)?.clone();
+            let private_key_path = self.private_key_path.clone();
+            let script = script.clone();
+            handles.push(thread::spawn(move || {
+                ssh_run_with_key(private_key_path.as_path(), &node, &script)
+            }));
+        }
+
+        let mut outputs = Vec::with_capacity(commands.len());
+        for ((node_name, script), handle) in commands.iter().zip(handles) {
+            let output = handle.join().map_err(|_| {
+                Error::Message(format!(
+                    "concurrent ssh command panicked on node '{node_name}'"
+                ))
+            })??;
+            if output.status.success() {
+                outputs.push(output);
+                continue;
+            }
+            return Err(Error::CommandFailed {
+                command: format!("ssh {node_name} -> {script}"),
+                stdout: output.stdout,
+                stderr: output.stderr,
+            });
+        }
+
+        Ok(outputs)
+    }
+
+    pub(crate) fn ssh_run_name(&self, node_name: &str, script: &str) -> Result<CommandOutput> {
+        self.ssh_run(self.node(node_name)?, script)
     }
 
     pub(crate) fn wait_service_container(
@@ -285,31 +496,7 @@ impl ScenarioRun {
     }
 
     pub(crate) fn ssh_run(&self, node: &Node, script: &str) -> Result<CommandOutput> {
-        let target = "root@127.0.0.1";
-        let key = self.private_key_path.to_string_lossy().into_owned();
-        run_command(
-            "ssh",
-            &[
-                "-F",
-                "/dev/null",
-                "-i",
-                key.as_str(),
-                "-p",
-                &node.ssh_port.to_string(),
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "IdentitiesOnly=yes",
-                "-o",
-                "StrictHostKeyChecking=no",
-                "-o",
-                "UserKnownHostsFile=/dev/null",
-                "-o",
-                "ConnectTimeout=5",
-                target,
-                script,
-            ],
-        )
+        ssh_run_with_key(self.private_key_path.as_path(), node, script)
     }
 
     fn create_outer_network(&self) -> Result<()> {
@@ -425,9 +612,11 @@ impl ScenarioRun {
     }
 
     fn wait_for_daemon(&self, node: &Node) -> Result<()> {
-        wait_until(DAEMON_WAIT_TIMEOUT, || match self.ssh_run(node, "ployzd status") {
-            Ok(output) => Ok(output.status.success()),
-            Err(_) => Ok(false),
+        wait_until(DAEMON_WAIT_TIMEOUT, || {
+            match self.ssh_run(node, "ployzd status") {
+                Ok(output) => Ok(output.status.success()),
+                Err(_) => Ok(false),
+            }
         })
         .map_err(|error| {
             Error::Message(format!(
@@ -469,7 +658,7 @@ impl ScenarioRun {
             if !output.status.success() {
                 return Ok(false);
             }
-            Ok(machine_state(&output.stdout, machine_id) == Some(expected_state))
+            Ok(machine_state(&output.stdout, machine_id).as_deref() == Some(expected_state))
         })
         .map_err(|error| {
             Error::Message(format!(
@@ -563,26 +752,71 @@ impl ScenarioRun {
     }
 }
 
-fn machine_state<'a>(machine_ls: &'a str, machine_id: &str) -> Option<&'a str> {
-    machine_ls.lines().find_map(|line| {
-        let mut fields = line.split_whitespace();
-        let Some([id, status, participation]) = collect_prefix(&mut fields) else {
-            return None;
-        };
-        if id != machine_id {
-            return None;
-        }
-        let _ = status;
-        Some(participation)
+fn machine_state(machine_ls: &str, machine_id: &str) -> Option<String> {
+    machine_ls
+        .lines()
+        .filter_map(parse_machine_row)
+        .find_map(|row| {
+            if row.id == machine_id {
+                return Some(row.participation);
+            }
+            None
+        })
+}
+
+fn ssh_run_with_key(private_key_path: &Path, node: &Node, script: &str) -> Result<CommandOutput> {
+    let target = "root@127.0.0.1";
+    let key = private_key_path.to_string_lossy().into_owned();
+    run_command(
+        "ssh",
+        &[
+            "-F",
+            "/dev/null",
+            "-i",
+            key.as_str(),
+            "-p",
+            &node.ssh_port.to_string(),
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "ConnectTimeout=5",
+            target,
+            script,
+        ],
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MachineRow {
+    id: String,
+    participation: String,
+    subnet: String,
+}
+
+fn parse_machine_row(line: &str) -> Option<MachineRow> {
+    let mut fields = line.split_whitespace();
+    let id = fields.next()?;
+    let _status = fields.next()?;
+    let participation = fields.next()?;
+    let _liveness = fields.next()?;
+    let _overlay = fields.next()?;
+    let subnet = fields.next()?;
+    if id == "ID" {
+        return None;
+    }
+    Some(MachineRow {
+        id: id.to_string(),
+        participation: participation.to_string(),
+        subnet: subnet.to_string(),
     })
 }
 
-fn collect_prefix<'a, I>(iter: &mut I) -> Option<[&'a str; 3]>
-where
-    I: Iterator<Item = &'a str>,
-{
-    let first = iter.next()?;
-    let second = iter.next()?;
-    let third = iter.next()?;
-    Some([first, second, third])
+fn machine_rows(machine_ls: &str) -> Vec<MachineRow> {
+    machine_ls.lines().filter_map(parse_machine_row).collect()
 }
