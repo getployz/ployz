@@ -9,6 +9,7 @@ use ployz_sdk::transport::{
     InstallSource as MachineInstallSource, MachineAddOptions, MachineInstallOptions, Transport,
     UnixSocketTransport,
 };
+use ployzd::daemon::handlers::RequestLane;
 use ployzd::daemon::{ActiveMesh, DaemonState};
 use ployzd::ipc::listener::{IncomingCommand, serve};
 use ployzd::{Affordances, Identity, Mode, load_daemon_config};
@@ -16,7 +17,8 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process;
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
 type Result<T> = std::result::Result<T, CliError>;
@@ -472,7 +474,7 @@ async fn cmd_run(
         std::process::exit(1);
     });
 
-    let mut state = DaemonState::new(
+    let state = Arc::new(RwLock::new(DaemonState::new(
         data_dir,
         identity,
         mode,
@@ -481,15 +483,20 @@ async fn cmd_run(
         remote_control_port,
         gateway_listen_addr,
         gateway_threads,
-    );
+    )));
 
-    if let Some(network) = state.read_active_marker() {
+    let active_marker = {
+        let state_guard = state.read().await;
+        state_guard.read_active_marker()
+    };
+    if let Some(network) = active_marker {
         tracing::info!(%network, "resuming network");
-        match state.start_mesh_by_name(&network).await {
+        let mut state_guard = state.write().await;
+        match state_guard.start_mesh_by_name(&network).await {
             Ok(_) => tracing::info!(%network, "resumed network"),
             Err(err) => {
                 tracing::warn!(%err, %network, "failed to resume network");
-                state.clear_active_marker();
+                state_guard.clear_active_marker();
             }
         }
     }
@@ -500,23 +507,35 @@ async fn cmd_run(
         tokio::select! {
             _ = cancel.cancelled() => break,
             Some(cmd) = cmd_rx.recv() => {
-                tokio::select! {
-                    response = state.handle(cmd.request) => {
-                        let _ = cmd.reply.send(response);
-                    }
-                    _ = cancel.cancelled() => {
-                        let _ = cmd.reply.send(DaemonResponse {
+                let state = Arc::clone(&state);
+                let cancel = cancel.clone();
+                tokio::spawn(async move {
+                    let response = tokio::select! {
+                        _ = cancel.cancelled() => DaemonResponse {
                             ok: false,
                             code: "SHUTDOWN".into(),
                             message: "daemon shutting down".into(),
-                        });
-                        break;
-                    }
-                }
+                        },
+                        response = async {
+                            match DaemonState::request_lane(&cmd.request) {
+                                RequestLane::Shared => {
+                                    let state_guard = state.read_owned().await;
+                                    state_guard.handle_shared(cmd.request).await
+                                }
+                                RequestLane::Exclusive => {
+                                    let mut state_guard = state.write_owned().await;
+                                    state_guard.handle_exclusive(cmd.request).await
+                                }
+                            }
+                        } => response,
+                    };
+                    let _ = cmd.reply.send(response);
+                });
             }
         }
     }
 
+    let mut state = state.write().await;
     if let Some(active) = state.active.take() {
         let ActiveMesh {
             config: _config,
@@ -1191,7 +1210,10 @@ mod tests {
             Some("test-private-key")
         );
         assert_eq!(
-            options.install.as_ref().and_then(|install| install.mode.clone()),
+            options
+                .install
+                .as_ref()
+                .and_then(|install| install.mode.clone()),
             Some(MachineInstallMode::HostExec)
         );
 
