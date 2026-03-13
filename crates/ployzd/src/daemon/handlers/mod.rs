@@ -8,8 +8,43 @@ use ployz_sdk::transport::{DaemonRequest, DaemonResponse};
 
 use super::DaemonState;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestLane {
+    Shared,
+    Exclusive,
+}
+
 impl DaemonState {
-    pub async fn handle(&mut self, req: DaemonRequest) -> DaemonResponse {
+    #[must_use]
+    pub fn request_lane(req: &DaemonRequest) -> RequestLane {
+        match req {
+            DaemonRequest::MeshJoin { .. }
+            | DaemonRequest::MeshInit { .. }
+            | DaemonRequest::MeshUp { .. }
+            | DaemonRequest::MeshDown
+            | DaemonRequest::MeshDestroy { .. } => RequestLane::Exclusive,
+            DaemonRequest::Status
+            | DaemonRequest::DeployPreview { .. }
+            | DaemonRequest::DeployApply { .. }
+            | DaemonRequest::DeployExport { .. }
+            | DaemonRequest::MeshList
+            | DaemonRequest::MeshStatus { .. }
+            | DaemonRequest::MeshReady { .. }
+            | DaemonRequest::MeshCreate { .. }
+            | DaemonRequest::MachineList
+            | DaemonRequest::MachineInit { .. }
+            | DaemonRequest::MachineAdd { .. }
+            | DaemonRequest::MachineDrain { .. }
+            | DaemonRequest::MachineRemove { .. }
+            | DaemonRequest::MachineInviteCreate { .. }
+            | DaemonRequest::MachineInviteImport { .. }
+            | DaemonRequest::MeshSelfRecord
+            | DaemonRequest::MeshAccept { .. }
+            | DaemonRequest::MachineLabel { .. } => RequestLane::Shared,
+        }
+    }
+
+    pub async fn handle_shared(&self, req: DaemonRequest) -> DaemonResponse {
         match req {
             DaemonRequest::Status => self.handle_status(),
             DaemonRequest::DeployPreview {
@@ -25,24 +60,14 @@ impl DaemonState {
             }
             DaemonRequest::MeshList => self.handle_mesh_list(),
             DaemonRequest::MeshStatus { network } => self.handle_mesh_status(&network),
-            DaemonRequest::MeshJoin { token } => self.handle_mesh_join(&token).await,
             DaemonRequest::MeshReady { json } => self.handle_mesh_ready(json).await,
             DaemonRequest::MeshCreate { network } => self.handle_mesh_create(&network),
-            DaemonRequest::MeshInit { network } => self.handle_mesh_init(&network).await,
-            DaemonRequest::MeshUp {
-                network,
-                skip_bootstrap_wait,
-            } => self.handle_mesh_up(&network, skip_bootstrap_wait).await,
-            DaemonRequest::MeshDown => self.handle_mesh_down().await,
-            DaemonRequest::MeshDestroy { network } => self.handle_mesh_destroy(&network).await,
             DaemonRequest::MachineList => self.handle_machine_list().await,
             DaemonRequest::MachineInit {
                 target,
                 network,
                 install,
-            } => {
-                self.handle_machine_init(&target, &network, &install).await
-            }
+            } => self.handle_machine_init(&target, &network, &install).await,
             DaemonRequest::MachineAdd { targets, options } => {
                 self.handle_machine_add(&targets, &options).await
             }
@@ -60,6 +85,46 @@ impl DaemonState {
             DaemonRequest::MeshAccept { response } => self.handle_mesh_accept(&response).await,
             DaemonRequest::MachineLabel { id, set, remove } => {
                 self.handle_machine_label(&id, &set, &remove).await
+            }
+            DaemonRequest::MeshJoin { .. }
+            | DaemonRequest::MeshInit { .. }
+            | DaemonRequest::MeshUp { .. }
+            | DaemonRequest::MeshDown
+            | DaemonRequest::MeshDestroy { .. } => {
+                self.err("INTERNAL", "exclusive request routed to shared handler")
+            }
+        }
+    }
+
+    pub async fn handle_exclusive(&mut self, req: DaemonRequest) -> DaemonResponse {
+        match req {
+            DaemonRequest::MeshJoin { token } => self.handle_mesh_join(&token).await,
+            DaemonRequest::MeshInit { network } => self.handle_mesh_init(&network).await,
+            DaemonRequest::MeshUp {
+                network,
+                skip_bootstrap_wait,
+            } => self.handle_mesh_up(&network, skip_bootstrap_wait).await,
+            DaemonRequest::MeshDown => self.handle_mesh_down().await,
+            DaemonRequest::MeshDestroy { network } => self.handle_mesh_destroy(&network).await,
+            DaemonRequest::Status
+            | DaemonRequest::DeployPreview { .. }
+            | DaemonRequest::DeployApply { .. }
+            | DaemonRequest::DeployExport { .. }
+            | DaemonRequest::MeshList
+            | DaemonRequest::MeshStatus { .. }
+            | DaemonRequest::MeshReady { .. }
+            | DaemonRequest::MeshCreate { .. }
+            | DaemonRequest::MachineList
+            | DaemonRequest::MachineInit { .. }
+            | DaemonRequest::MachineAdd { .. }
+            | DaemonRequest::MachineDrain { .. }
+            | DaemonRequest::MachineRemove { .. }
+            | DaemonRequest::MachineInviteCreate { .. }
+            | DaemonRequest::MachineInviteImport { .. }
+            | DaemonRequest::MeshSelfRecord
+            | DaemonRequest::MeshAccept { .. }
+            | DaemonRequest::MachineLabel { .. } => {
+                self.err("INTERNAL", "shared request routed to exclusive handler")
             }
         }
     }
