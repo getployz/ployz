@@ -231,7 +231,7 @@ impl DaemonState {
     }
 
     pub(crate) async fn handle_machine_init(
-        &mut self,
+        &self,
         target: &str,
         network: &str,
         install: &MachineInstallOptions,
@@ -264,7 +264,7 @@ impl DaemonState {
     }
 
     pub(crate) async fn handle_machine_add(
-        &mut self,
+        &self,
         targets: &[String],
         options: &MachineAddOptions,
     ) -> DaemonResponse {
