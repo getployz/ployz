@@ -4,13 +4,13 @@ use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
 use crate::model::{MachineId, MachineRecord, MachineStatus, Participation};
 use crate::store::MachineStore;
 use crate::store::driver::StoreDriver;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const PARTICIPATION_FRESHNESS_WINDOW: Duration = Duration::from_secs(30);
@@ -20,6 +20,18 @@ const PARTICIPATION_HYSTERESIS_SAMPLES: u8 = 3;
 struct HeartbeatState {
     consecutive_good_samples: u8,
     consecutive_bad_samples: u8,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RequiredPeerHealth {
+    required_peer_ids: Vec<String>,
+    unhealthy_required_peer_ids: Vec<String>,
+}
+
+impl RequiredPeerHealth {
+    fn healthy(&self) -> bool {
+        self.unhealthy_required_peer_ids.is_empty()
+    }
 }
 
 pub(crate) async fn run_heartbeat_task(
@@ -71,6 +83,15 @@ async fn heartbeat_once(
         }
     };
 
+    let duplicate_subnets = duplicate_subnet_claims(&machines);
+    if !duplicate_subnets.is_empty() {
+        warn!(
+            machine_id = %machine_id,
+            ?duplicate_subnets,
+            "duplicate machine subnet claims detected"
+        );
+    }
+
     let required_peers = required_peers_for_participation(&machines, machine_id, now);
 
     let mut record = match machines
@@ -102,8 +123,9 @@ async fn heartbeat_once(
         record.bridge_ip = Some(bridge_ip);
     }
 
-    let healthy_required_peers = required_peers_healthy(network, &required_peers).await;
-    update_hysteresis(state, healthy_required_peers);
+    let peer_health = required_peers_health(network, &required_peers).await;
+    update_hysteresis(state, peer_health.healthy());
+    let previous_participation = record.participation;
 
     match record.participation {
         Participation::Disabled => {
@@ -117,6 +139,29 @@ async fn heartbeat_once(
             }
         }
         Participation::Draining => {}
+    }
+
+    if record.participation != previous_participation {
+        info!(
+            machine_id = %machine_id,
+            from = %previous_participation,
+            to = %record.participation,
+            good_samples = state.consecutive_good_samples,
+            bad_samples = state.consecutive_bad_samples,
+            required_peers = ?peer_health.required_peer_ids,
+            unhealthy_required_peers = ?peer_health.unhealthy_required_peer_ids,
+            "heartbeat participation changed"
+        );
+    } else if !peer_health.healthy() {
+        debug!(
+            machine_id = %machine_id,
+            participation = %record.participation,
+            good_samples = state.consecutive_good_samples,
+            bad_samples = state.consecutive_bad_samples,
+            required_peers = ?peer_health.required_peer_ids,
+            unhealthy_required_peers = ?peer_health.unhealthy_required_peer_ids,
+            "heartbeat waiting on required peers"
+        );
     }
 
     if let Err(e) = store.upsert_machine(&record).await {
@@ -158,29 +203,48 @@ fn update_hysteresis(state: &mut HeartbeatState, healthy_required_peers: bool) {
         .min(PARTICIPATION_HYSTERESIS_SAMPLES);
 }
 
-async fn required_peers_healthy(
+async fn required_peers_health(
     network: &WireguardDriver,
     required_peers: &[MachineRecord],
-) -> bool {
+) -> RequiredPeerHealth {
+    let required_peer_ids = required_peers
+        .iter()
+        .map(|peer| peer.id.0.clone())
+        .collect::<Vec<_>>();
     if required_peers.is_empty() {
-        return true;
+        return RequiredPeerHealth {
+            required_peer_ids,
+            unhealthy_required_peer_ids: Vec::new(),
+        };
     }
 
     let device_peers = match network.read_peers().await {
         Ok(peers) => peers,
         Err(e) => {
             warn!(?e, "failed to read direct wireguard peers for heartbeat");
-            return false;
+            return RequiredPeerHealth {
+                required_peer_ids: required_peer_ids.clone(),
+                unhealthy_required_peer_ids: required_peer_ids,
+            };
         }
     };
 
     let fresh_handshakes = fresh_handshake_map(&device_peers);
-    required_peers.iter().all(|peer| {
-        fresh_handshakes
-            .get(&peer.public_key)
-            .copied()
-            .unwrap_or(false)
-    })
+    let unhealthy_required_peer_ids = required_peers
+        .iter()
+        .filter(|peer| {
+            !fresh_handshakes
+                .get(&peer.public_key)
+                .copied()
+                .unwrap_or(false)
+        })
+        .map(|peer| peer.id.0.clone())
+        .collect();
+
+    RequiredPeerHealth {
+        required_peer_ids,
+        unhealthy_required_peer_ids,
+    }
 }
 
 fn fresh_handshake_map(device_peers: &[DevicePeer]) -> HashMap<crate::model::PublicKey, bool> {
@@ -196,6 +260,31 @@ fn fresh_handshake_map(device_peers: &[DevicePeer]) -> HashMap<crate::model::Pub
                 None => false,
             };
             (peer.public_key.clone(), fresh)
+        })
+        .collect()
+}
+
+fn duplicate_subnet_claims(machines: &[MachineRecord]) -> Vec<(String, Vec<String>)> {
+    let mut claimants_by_subnet: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+    for machine in machines {
+        let Some(subnet) = machine.subnet else {
+            continue;
+        };
+        claimants_by_subnet
+            .entry(subnet.to_string())
+            .or_default()
+            .push(machine.id.0.clone());
+    }
+
+    claimants_by_subnet
+        .into_iter()
+        .filter_map(|(subnet, mut claimants)| {
+            if claimants.len() < 2 {
+                return None;
+            }
+            claimants.sort();
+            Some((subnet, claimants))
         })
         .collect()
 }
@@ -223,6 +312,33 @@ mod tests {
         update_hysteresis(&mut state, false);
         assert_eq!(state.consecutive_good_samples, 0);
         assert_eq!(state.consecutive_bad_samples, 1);
+    }
+
+    #[test]
+    fn duplicate_subnet_claims_reports_overlaps() {
+        let machines = vec![
+            test_machine("m1", Participation::Enabled, PublicKey([1; 32]), 100),
+            MachineRecord {
+                subnet: Some("10.210.2.0/24".parse().expect("valid subnet")),
+                ..test_machine("m2", Participation::Enabled, PublicKey([2; 32]), 100)
+            },
+            MachineRecord {
+                subnet: Some("10.210.2.0/24".parse().expect("valid subnet")),
+                ..test_machine("m3", Participation::Enabled, PublicKey([3; 32]), 100)
+            },
+            MachineRecord {
+                subnet: Some("10.210.3.0/24".parse().expect("valid subnet")),
+                ..test_machine("m4", Participation::Enabled, PublicKey([4; 32]), 100)
+            },
+        ];
+
+        assert_eq!(
+            duplicate_subnet_claims(&machines),
+            vec![(
+                String::from("10.210.2.0/24"),
+                vec![String::from("m2"), String::from("m3")]
+            )]
+        );
     }
 
     #[test]
