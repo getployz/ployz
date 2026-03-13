@@ -1,7 +1,7 @@
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
-const DEFAULT_IMAGE: &str = "ghcr.io/getployz/ployz-e2e-node:latest";
+const DEFAULT_IMAGE: &str = "ployz-e2e-node:test";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -28,15 +28,17 @@ pub(crate) enum Scenario {
     MachineAddBasic,
     MachineRemoveGuard,
     ReplaceMachine,
+    DualControllerAdd,
     DeploySmoke,
 }
 
 impl Scenario {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::SingleNodeInit,
         Self::MachineAddBasic,
         Self::MachineRemoveGuard,
         Self::ReplaceMachine,
+        Self::DualControllerAdd,
         Self::DeploySmoke,
     ];
 
@@ -51,6 +53,9 @@ impl Scenario {
             Self::SingleNodeInit | Self::DeploySmoke => &["founder"],
             Self::MachineAddBasic | Self::MachineRemoveGuard => &["founder", "joiner"],
             Self::ReplaceMachine => &["founder", "joiner", "replacement"],
+            Self::DualControllerAdd => &[
+                "founder", "peer", "joiner1", "joiner2", "joiner3", "joiner4", "joiner5", "joiner6",
+            ],
         }
     }
 
@@ -61,6 +66,7 @@ impl Scenario {
             Self::MachineAddBasic => "machine_add_basic",
             Self::MachineRemoveGuard => "machine_remove_guard",
             Self::ReplaceMachine => "replace_machine",
+            Self::DualControllerAdd => "dual_controller_add",
             Self::DeploySmoke => "deploy_smoke",
         }
     }
