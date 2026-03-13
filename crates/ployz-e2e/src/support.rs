@@ -53,10 +53,14 @@ pub(crate) fn parse_ready(output: &str) -> Result<bool> {
     }
 
     let envelope = serde_json::from_str::<ReadyEnvelope>(output).map_err(|error| {
-        Error::Message(format!("failed to parse readiness response envelope: {error}"))
+        Error::Message(format!(
+            "failed to parse readiness response envelope: {error}"
+        ))
     })?;
     let payload = serde_json::from_str::<ReadyPayload>(&envelope.message).map_err(|error| {
-        Error::Message(format!("failed to parse readiness response message: {error}"))
+        Error::Message(format!(
+            "failed to parse readiness response message: {error}"
+        ))
     })?;
     Ok(payload.ready)
 }

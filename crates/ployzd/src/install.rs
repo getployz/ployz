@@ -116,7 +116,9 @@ impl InstallManifest {
                 "PLOYZ_DNS_PATH" => dns_path = Some(PathBuf::from(value)),
                 "CORROSION_PATH" => corrosion_path = Some(PathBuf::from(value)),
                 "REQUESTED_MODE" => requested_mode = Some(parse_mode(&value)?),
-                "CONFIGURED_MODE" => configured_mode = non_empty(value).map(|mode| parse_mode(&mode)).transpose()?,
+                "CONFIGURED_MODE" => {
+                    configured_mode = non_empty(value).map(|mode| parse_mode(&mode)).transpose()?
+                }
                 "SERVICE_BACKEND" => {
                     service_backend = non_empty(value)
                         .map(|backend| ServiceBackend::parse(&backend))
@@ -150,10 +152,17 @@ impl InstallManifest {
 
     pub fn store_to_path(&self, path: &Path) -> Result<(), String> {
         let Some(parent) = path.parent() else {
-            return Err(format!("invalid install manifest path '{}'", path.display()));
+            return Err(format!(
+                "invalid install manifest path '{}'",
+                path.display()
+            ));
         };
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("create install manifest dir '{}': {error}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "create install manifest dir '{}': {error}",
+                parent.display()
+            )
+        })?;
         let content = [
             env_line("SOURCE_KIND", &self.source_kind),
             env_line_opt("SOURCE_VERSION", self.source_version.as_deref()),
@@ -167,14 +176,14 @@ impl InstallManifest {
             env_line("INSTALLER_PATH", &self.installer_path.display().to_string()),
             env_line("PLOYZ_PATH", &self.ployz_path.display().to_string()),
             env_line("PLOYZD_PATH", &self.ployzd_path.display().to_string()),
-            env_line("PLOYZ_GATEWAY_PATH", &self.gateway_path.display().to_string()),
+            env_line(
+                "PLOYZ_GATEWAY_PATH",
+                &self.gateway_path.display().to_string(),
+            ),
             env_line("PLOYZ_DNS_PATH", &self.dns_path.display().to_string()),
             env_line("CORROSION_PATH", &self.corrosion_path.display().to_string()),
             env_line("REQUESTED_MODE", mode_name(self.requested_mode)),
-            env_line_opt(
-                "CONFIGURED_MODE",
-                self.configured_mode.map(mode_name),
-            ),
+            env_line_opt("CONFIGURED_MODE", self.configured_mode.map(mode_name)),
             env_line_opt(
                 "SERVICE_BACKEND",
                 self.service_backend.map(ServiceBackend::as_str),
@@ -201,7 +210,13 @@ pub fn daemon_install(mode: Mode, manifest_path: Option<&Path>) -> Result<Instal
             return Err("memory mode is not supported by `ployz daemon install`".into());
         }
         Mode::HostExec => {
-            ensure_user_service(&aff, &manifest.ployzd_path, &paths.data_dir, &paths.socket_path, mode)?;
+            ensure_user_service(
+                &aff,
+                &manifest.ployzd_path,
+                &paths.data_dir,
+                &paths.socket_path,
+                mode,
+            )?;
             manifest.configured_mode = Some(mode);
             manifest.service_backend = Some(user_backend(&aff)?);
         }
@@ -209,7 +224,13 @@ pub fn daemon_install(mode: Mode, manifest_path: Option<&Path>) -> Result<Instal
             if !aff.has_docker {
                 return Err("docker mode requires a reachable Docker daemon".into());
             }
-            ensure_user_service(&aff, &manifest.ployzd_path, &paths.data_dir, &paths.socket_path, mode)?;
+            ensure_user_service(
+                &aff,
+                &manifest.ployzd_path,
+                &paths.data_dir,
+                &paths.socket_path,
+                mode,
+            )?;
             manifest.configured_mode = Some(mode);
             manifest.service_backend = Some(user_backend(&aff)?);
         }
@@ -235,12 +256,14 @@ pub fn daemon_install(mode: Mode, manifest_path: Option<&Path>) -> Result<Instal
 }
 
 pub fn default_manifest_path(aff: &Affordances) -> PathBuf {
-    default_data_dir(aff).join(INSTALL_DIR_NAME).join(MANIFEST_FILE_NAME)
+    default_data_dir(aff)
+        .join(INSTALL_DIR_NAME)
+        .join(MANIFEST_FILE_NAME)
 }
 
 pub fn find_installer_script() -> Result<PathBuf, String> {
-    let current_exe = std::env::current_exe()
-        .map_err(|error| format!("current_exe failed: {error}"))?;
+    let current_exe =
+        std::env::current_exe().map_err(|error| format!("current_exe failed: {error}"))?;
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -363,19 +386,33 @@ fn install_launch_agent(
     let uid = nix_like_uid()?;
     let domain = format!("gui/{uid}");
     let plist_str = plist_path.display().to_string();
-    let _ = run_command("launchctl", ["bootout", domain.as_str(), plist_str.as_str()]);
-    run_command("launchctl", ["bootstrap", domain.as_str(), plist_str.as_str()])?;
+    let _ = run_command(
+        "launchctl",
+        ["bootout", domain.as_str(), plist_str.as_str()],
+    );
     run_command(
         "launchctl",
-        ["kickstart", "-k", format!("{domain}/{SERVICE_LABEL}").as_str()],
+        ["bootstrap", domain.as_str(), plist_str.as_str()],
+    )?;
+    run_command(
+        "launchctl",
+        [
+            "kickstart",
+            "-k",
+            format!("{domain}/{SERVICE_LABEL}").as_str(),
+        ],
     )?;
     Ok(())
 }
 
 fn promote_system_binaries(manifest: &InstallManifest) -> Result<(), String> {
     let system_bin_dir = PathBuf::from("/usr/local/bin");
-    fs::create_dir_all(&system_bin_dir)
-        .map_err(|error| format!("create system bin dir '{}': {error}", system_bin_dir.display()))?;
+    fs::create_dir_all(&system_bin_dir).map_err(|error| {
+        format!(
+            "create system bin dir '{}': {error}",
+            system_bin_dir.display()
+        )
+    })?;
     let copies = [
         (&manifest.installer_path, system_bin_dir.join("ployz.sh")),
         (&manifest.ployz_path, system_bin_dir.join("ployz")),
@@ -400,7 +437,10 @@ fn install_system_service(assets_dir: &Path, mode: Mode) -> Result<(), String> {
     let source_unit = assets_dir.join("systemd/ployzd.service");
     let unit_path = PathBuf::from("/etc/systemd/system/ployzd.service");
     let Some(parent) = unit_path.parent() else {
-        return Err(format!("invalid systemd unit path '{}'", unit_path.display()));
+        return Err(format!(
+            "invalid systemd unit path '{}'",
+            unit_path.display()
+        ));
     };
     fs::create_dir_all(parent)
         .map_err(|error| format!("create systemd dir '{}': {error}", parent.display()))?;
@@ -498,7 +538,9 @@ fn client_paths(mode: Mode, home_dir: &Path) -> ClientPaths {
 }
 
 fn linux_user_manifest_path(home_dir: &Path) -> PathBuf {
-    linux_user_data_dir(home_dir).join(INSTALL_DIR_NAME).join(MANIFEST_FILE_NAME)
+    linux_user_data_dir(home_dir)
+        .join(INSTALL_DIR_NAME)
+        .join(MANIFEST_FILE_NAME)
 }
 
 fn linux_user_data_dir(home_dir: &Path) -> PathBuf {
@@ -533,11 +575,7 @@ fn sudo_user_home_dir() -> Result<Option<PathBuf>, String> {
         let configured_size = {
             // SAFETY: `sysconf` has no Rust-side preconditions.
             let size = unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) };
-            if size > 0 {
-                size as usize
-            } else {
-                16_384
-            }
+            if size > 0 { size as usize } else { 16_384 }
         };
         let mut buffer = vec![0_u8; configured_size];
         // SAFETY: `passwd` is a plain old data struct provided by libc.
@@ -594,10 +632,7 @@ fn run_command<const N: usize>(program: &str, args: [&str; N]) -> Result<(), Str
     } else {
         stderr.trim()
     };
-    Err(format!(
-        "{program} {} failed: {detail}",
-        args.join(" "),
-    ))
+    Err(format!("{program} {} failed: {detail}", args.join(" "),))
 }
 
 fn mode_name(mode: Mode) -> &'static str {
@@ -648,11 +683,7 @@ fn required_value<T>(value: Option<T>, key: &str, path: &Path) -> Result<T, Stri
 }
 
 fn non_empty(value: String) -> Option<String> {
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
+    if value.is_empty() { None } else { Some(value) }
 }
 
 fn toml_string(value: &str) -> String {
@@ -736,10 +767,8 @@ mod tests {
             service_backend: Some(ServiceBackend::SystemdSystem),
         };
 
-        let path = std::env::temp_dir().join(format!(
-            "ployz-install-manifest-{}.env",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("ployz-install-manifest-{}.env", std::process::id()));
         manifest.store_to_path(&path).expect("store manifest");
         let loaded = InstallManifest::load_from_path(&path).expect("load manifest");
         assert_eq!(loaded.source_kind, "payload");

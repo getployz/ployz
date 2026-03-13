@@ -6,4 +6,5 @@ skills-lock.json
 ebpf/target/
 .idea/
 .lab/
+.e2e-artifacts/
 lab/lab.env
