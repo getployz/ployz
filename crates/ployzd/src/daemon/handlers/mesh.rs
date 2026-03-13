@@ -7,9 +7,9 @@ use crate::model::{JoinResponse, NetworkName};
 use crate::network::endpoints::detect_endpoints;
 use crate::network::ipam::Ipam;
 use crate::node::invite::parse_and_verify_invite_token;
+use crate::store::MachineStore;
 use crate::store::bootstrap::{BootstrapInfo, BootstrapPeerRecord, write_bootstrap_peer_record};
 use crate::store::network::NetworkConfig;
-use crate::store::MachineStore;
 use ployz_sdk::transport::DaemonResponse;
 
 use super::super::DaemonState;
@@ -168,8 +168,10 @@ impl DaemonState {
         }
 
         if let Some(bootstrap_peer) = BootstrapPeerRecord::from_invite(&invite)
-            && let Err(error) =
-                write_bootstrap_peer_record(&NetworkConfig::dir(&self.data_dir, network), &bootstrap_peer)
+            && let Err(error) = write_bootstrap_peer_record(
+                &NetworkConfig::dir(&self.data_dir, network),
+                &bootstrap_peer,
+            )
         {
             return self.err(
                 "IO_ERROR",

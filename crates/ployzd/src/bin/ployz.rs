@@ -74,10 +74,7 @@ fn run() -> Result<i32, String> {
                 },
         }) => {
             let manifest = install::daemon_install(mode.into(), install_manifest.as_deref())?;
-            let configured = manifest
-                .configured_mode
-                .map(mode_name)
-                .unwrap_or("unknown");
+            let configured = manifest.configured_mode.map(mode_name).unwrap_or("unknown");
             let backend = manifest
                 .service_backend
                 .map(install::ServiceBackend::as_str)
@@ -95,8 +92,8 @@ fn run() -> Result<i32, String> {
 }
 
 fn forward_to_ployzd(args: &[OsString]) -> Result<i32, String> {
-    let current_exe = std::env::current_exe()
-        .map_err(|error| format!("current_exe failed: {error}"))?;
+    let current_exe =
+        std::env::current_exe().map_err(|error| format!("current_exe failed: {error}"))?;
     let ployzd_path = current_exe.with_file_name("ployzd");
     let status = Command::new(&ployzd_path)
         .args(args)
