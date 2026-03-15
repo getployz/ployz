@@ -43,8 +43,7 @@ machine. Placement depends on the service's strategy:
 
 | Strategy | Behavior |
 |----------|----------|
-| Singleton | One slot, pinned to a single machine (sticky across redeploys) |
-| Replicated(N) | N slots, distributed across available machines |
+| Replicated(N) | N slots, distributed across available machines. `replicated(1)` is the single-instance case. |
 | Global | One slot per machine in the mesh |
 
 A slot points to an **active instance** (a Docker container). During a deploy, new

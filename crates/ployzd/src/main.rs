@@ -1149,7 +1149,7 @@ fn build_service_spec(
 
     ServiceSpec {
         name: service_name,
-        placement: Placement::Singleton,
+        placement: Placement::Replicated { count: 1 },
         template: ContainerSpec {
             image: image.to_string(),
             command: if command.is_empty() {
