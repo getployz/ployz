@@ -643,7 +643,7 @@ mod tests {
     ) -> ServiceSpec {
         ServiceSpec {
             name: service.into(),
-            placement: Placement::Singleton,
+            placement: Placement::Replicated { count: 1 },
             template: ContainerSpec {
                 image: format!("example:{image_tag}"),
                 command: None,

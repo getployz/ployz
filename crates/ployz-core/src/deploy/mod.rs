@@ -472,16 +472,6 @@ fn desired_slots(
 
     let mut desired = Vec::new();
     match spec.placement {
-        Placement::Singleton => {
-            let machine_id = current_slots
-                .and_then(|slots| slots.first().map(|slot| slot.machine_id.clone()))
-                .or_else(|| candidates.first().cloned())
-                .ok_or_else(|| Error::operation("desired_slots", "no candidate machines"))?;
-            desired.push(DesiredSlot {
-                slot_id: SlotId("slot-0001".into()),
-                machine_id,
-            });
-        }
         Placement::Replicated { count } => {
             if count == 0 {
                 return Err(Error::operation(
@@ -490,9 +480,16 @@ fn desired_slots(
                 ));
             }
             for index in 0..count {
-                let machine_id = candidates[usize::from(index) % candidates.len()].clone();
+                let slot_id = SlotId(format!("slot-{number:04}", number = usize::from(index) + 1));
+                let machine_id = current_slots
+                    .and_then(|slots| {
+                        slots.iter()
+                            .find(|slot| slot.slot_id == slot_id)
+                            .map(|slot| slot.machine_id.clone())
+                    })
+                    .unwrap_or_else(|| candidates[usize::from(index) % candidates.len()].clone());
                 desired.push(DesiredSlot {
-                    slot_id: SlotId(format!("slot-{number:04}", number = usize::from(index) + 1)),
+                    slot_id,
                     machine_id,
                 });
             }
@@ -531,7 +528,11 @@ fn current_slots_by_service_from_releases(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey};
+    use crate::model::{
+        InstanceId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
+        ServiceReleaseSlot,
+    };
+    use crate::spec::{ContainerSpec, NetworkMode, PullPolicy, Resources, RestartPolicy};
     use std::net::Ipv6Addr;
 
     #[test]
@@ -589,6 +590,50 @@ mod tests {
         let deployable = deployable_machines(&machines, &MachineId("local".into()), 100);
 
         assert_eq!(deployable, vec![MachineId("local".into())]);
+    }
+
+    #[test]
+    fn replicated_one_reuses_existing_slot_machine() {
+        let spec = ServiceSpec {
+            name: "api".into(),
+            placement: Placement::Replicated { count: 1 },
+            template: ContainerSpec {
+                image: "nginx:latest".into(),
+                command: None,
+                entrypoint: None,
+                env: BTreeMap::new(),
+                volumes: Vec::new(),
+                cap_add: Vec::new(),
+                cap_drop: Vec::new(),
+                privileged: false,
+                user: None,
+                pull_policy: PullPolicy::IfNotPresent,
+                resources: Resources::empty(),
+                sysctls: BTreeMap::new(),
+            },
+            network: NetworkMode::Overlay,
+            service_ports: Vec::new(),
+            publish: Vec::new(),
+            routes: Vec::new(),
+            readiness: None,
+            rollout: crate::spec::RolloutStrategy::Recreate,
+            labels: BTreeMap::new(),
+            stop_grace_period: None,
+            restart: RestartPolicy::UnlessStopped,
+        };
+        let machines = vec![MachineId("machine-a".into()), MachineId("machine-b".into())];
+        let current_slots = [ServiceReleaseSlot {
+            slot_id: SlotId("slot-0001".into()),
+            machine_id: MachineId("machine-b".into()),
+            active_instance_id: InstanceId("inst-1".into()),
+            revision_hash: "rev-1".into(),
+        }];
+
+        let desired = desired_slots(&spec, &machines, Some(&current_slots)).expect("desired slots");
+
+        assert_eq!(desired.len(), 1);
+        assert_eq!(desired[0].slot_id, SlotId("slot-0001".into()));
+        assert_eq!(desired[0].machine_id, MachineId("machine-b".into()));
     }
 
     fn test_machine(
