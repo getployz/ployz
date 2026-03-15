@@ -1,8 +1,6 @@
 use crate::mesh::MeshNetwork;
 use crate::mesh::driver::WireguardDriver;
-use crate::mesh::tasks::{
-    SelfRecordMutation, apply_self_record_mutation,
-};
+use crate::mesh::tasks::{SelfRecordMutation, apply_self_record_mutation};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -55,7 +53,10 @@ async fn publish_liveness(
     let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => duration.as_secs(),
         Err(error) => {
-            warn!(?error, "system clock before unix epoch, skipping liveness publish");
+            warn!(
+                ?error,
+                "system clock before unix epoch, skipping liveness publish"
+            );
             return;
         }
     };
@@ -74,10 +75,12 @@ mod tests {
     use crate::mesh::driver::WireguardDriver;
     use crate::mesh::tasks::run_self_record_writer_task;
     use crate::mesh::wireguard::MemoryWireGuard;
-    use crate::model::{MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey};
+    use crate::model::{
+        MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
+    };
+    use crate::store::MachineStore;
     use crate::store::backends::memory::{MemoryService, MemoryStore};
     use crate::store::driver::StoreDriver;
-    use crate::store::MachineStore;
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
     use tokio::sync::RwLock;
@@ -189,8 +192,11 @@ mod tests {
             .await;
         });
 
-        publish_liveness(&WireguardDriver::Memory(Arc::new(MemoryWireGuard::new())), &self_record_tx)
-            .await;
+        publish_liveness(
+            &WireguardDriver::Memory(Arc::new(MemoryWireGuard::new())),
+            &self_record_tx,
+        )
+        .await;
 
         writer_cancel.cancel();
         writer_handle.await.expect("writer exits");

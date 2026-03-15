@@ -118,7 +118,9 @@ impl SyncProbe for CorrosionStore {
             let active_remote_members = admin
                 .cluster_membership_states_latest()
                 .await
-                .map_err(|e| Error::operation("sync_status", format!("admin membership request: {e}")))?
+                .map_err(|e| {
+                    Error::operation("sync_status", format!("admin membership request: {e}"))
+                })?
                 .into_iter()
                 .filter(|state| state.addr != self.gossip_addr)
                 .filter(|state| state.state.is_active())

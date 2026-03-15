@@ -289,14 +289,8 @@ async fn bootstrap_connection_timeout() {
     let founder_record = test_record("founder", 1);
     let joiner_record = test_record("joiner", 2);
 
-    store
-        .upsert_self_machine(&joiner_record)
-        .await
-        .unwrap();
-    store
-        .upsert_self_machine(&founder_record)
-        .await
-        .unwrap();
+    store.upsert_self_machine(&joiner_record).await.unwrap();
+    store.upsert_self_machine(&founder_record).await.unwrap();
 
     // Store returns Disconnected forever.
     store.set_sync_status(SyncStatus::Disconnected);
@@ -329,14 +323,8 @@ async fn bootstrap_proceeds_on_membership() {
     let founder_record = test_record("founder", 1);
     let joiner_record = test_record("joiner", 2);
 
-    store
-        .upsert_self_machine(&joiner_record)
-        .await
-        .unwrap();
-    store
-        .upsert_self_machine(&founder_record)
-        .await
-        .unwrap();
+    store.upsert_self_machine(&joiner_record).await.unwrap();
+    store.upsert_self_machine(&founder_record).await.unwrap();
 
     store.set_sync_status(SyncStatus::Disconnected);
 
@@ -381,7 +369,12 @@ async fn founder_can_configure_joiner_from_transient_peer() {
         .await
         .unwrap();
 
-    let mut founder_mesh = make_mesh("founder", founder_wg.clone(), founder_svc, founder_store.clone());
+    let mut founder_mesh = make_mesh(
+        "founder",
+        founder_wg.clone(),
+        founder_svc,
+        founder_store.clone(),
+    );
     founder_mesh.up().await.unwrap();
     assert_eq!(founder_mesh.phase(), Phase::Running);
 

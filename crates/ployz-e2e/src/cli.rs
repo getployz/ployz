@@ -69,9 +69,7 @@ impl Scenario {
             Self::MachineAddBasic => "machine_add_basic",
             Self::MachineRemoveGuard => "machine_remove_guard",
             Self::ReplaceMachine => "replace_machine",
-            Self::SplitBrainConcurrentAddSubnetHeal => {
-                "split_brain_concurrent_add_subnet_heal"
-            }
+            Self::SplitBrainConcurrentAddSubnetHeal => "split_brain_concurrent_add_subnet_heal",
             Self::WireguardReconnect => "wireguard_reconnect",
             Self::DeploySmoke => "deploy_smoke",
         }
