@@ -11,6 +11,7 @@ pub enum ChangedField {
     Env,
     Binds,
     Tmpfs,
+    DnsServers,
     NetworkMode,
     PortBindings,
     CapAdd,
@@ -81,6 +82,10 @@ pub fn eval_spec_change(
 
     if observed.tmpfs != desired.tmpfs {
         fields.push(ChangedField::Tmpfs);
+    }
+
+    if !sorted_eq(&observed.dns_servers, &desired.dns_servers) {
+        fields.push(ChangedField::DnsServers);
     }
 
     if observed.network_mode != desired.network_mode {
@@ -201,6 +206,7 @@ mod tests {
             labels: HashMap::new(),
             binds: vec!["/host:/container".into()],
             tmpfs: HashMap::new(),
+            dns_servers: Vec::new(),
             network_mode: None,
             port_bindings: None,
             cap_add: Vec::new(),
@@ -225,6 +231,7 @@ mod tests {
             cmd: Some(vec!["run".into()]),
             env: vec![("FOO".into(), "bar".into())],
             binds: vec!["/host:/container".into()],
+            dns_servers: Vec::new(),
             ..Default::default()
         }
     }
@@ -275,6 +282,18 @@ mod tests {
             panic!("expected drifted change");
         };
         assert!(fields.contains(&ChangedField::Env));
+    }
+
+    #[test]
+    fn changed_dns_servers_is_drifted() {
+        let observed = base_observed();
+        let mut desired = base_spec();
+        desired.dns_servers = vec!["10.210.0.2".into()];
+        let change = eval_spec_change(Some(&observed), &desired);
+        let SpecChange::Drifted { fields } = change else {
+            panic!("expected drifted change");
+        };
+        assert!(fields.contains(&ChangedField::DnsServers));
     }
 
     #[test]

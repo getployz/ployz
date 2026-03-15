@@ -142,9 +142,10 @@ DNS projects the routing snapshot into service name → IP mappings. Only ready,
 instances with overlay IPs are included.
 
 Namespace derivation is implicit: a container's source IP is looked up to find which
-namespace it belongs to. This means containers can resolve services in their own namespace
-by short name (`db`) without knowing the namespace. Cross-namespace queries use the full
-form (`db.prod.ployz.internal`).
+namespace it belongs to. Overlay workloads are configured to use `ployz-dns` by default,
+so newly deployed overlay services can resolve services in their own namespace by short
+name (`db`) without knowing the namespace. Cross-namespace queries use the full form
+(`db.prod.ployz.internal`).
 
 TTL is always 0 — clients re-query every time, ensuring they never cache routes to
 drained instances.

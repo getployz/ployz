@@ -14,6 +14,7 @@ use crate::network::docker_bridge::DockerBridgeNetwork;
 use crate::network::ebpf::EbpfDataplane;
 use crate::store::driver::StoreDriver;
 use crate::store::{MachineStore, StoreRuntimeControl, SyncProbe, SyncStatus};
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -117,6 +118,13 @@ impl Mesh {
     pub fn with_seed_records(mut self, seed_records: Vec<MachineRecord>) -> Self {
         self.seed_records = seed_records;
         self
+    }
+
+    #[must_use]
+    pub fn container_dns_server(&self) -> Option<Ipv4Addr> {
+        self.container_network
+            .as_ref()
+            .map(DockerBridgeNetwork::container_v4)
     }
 
     #[must_use]

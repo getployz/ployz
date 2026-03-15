@@ -162,24 +162,26 @@ fn servfail_response() -> ResponseInfo {
 // ---------------------------------------------------------------------------
 
 pub async fn run_dns_server(
-    listen_addr: SocketAddr,
+    listen_addrs: &[SocketAddr],
     snapshot: SharedDnsSnapshot,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<(), DnsError> {
     let handler = DnsHandler { snapshot };
     let mut server = ServerFuture::new(handler);
 
-    let udp_socket = UdpSocket::bind(listen_addr)
-        .await
-        .map_err(|err| DnsError::Runtime(format!("bind UDP {listen_addr}: {err}")))?;
-    server.register_socket(udp_socket);
+    for listen_addr in listen_addrs {
+        let udp_socket = UdpSocket::bind(*listen_addr)
+            .await
+            .map_err(|err| DnsError::Runtime(format!("bind UDP {listen_addr}: {err}")))?;
+        server.register_socket(udp_socket);
 
-    let tcp_listener = TcpListener::bind(listen_addr)
-        .await
-        .map_err(|err| DnsError::Runtime(format!("bind TCP {listen_addr}: {err}")))?;
-    server.register_listener(tcp_listener, TCP_TIMEOUT);
+        let tcp_listener = TcpListener::bind(*listen_addr)
+            .await
+            .map_err(|err| DnsError::Runtime(format!("bind TCP {listen_addr}: {err}")))?;
+        server.register_listener(tcp_listener, TCP_TIMEOUT);
 
-    info!(listen = %listen_addr, "dns server listening");
+        info!(listen = %listen_addr, "dns server listening");
+    }
 
     tokio::select! {
         result = server.block_until_done() => {
@@ -215,14 +217,29 @@ pub fn run_dns_process() -> Result<(), DnsError> {
 
         tokio::spawn(crate::sync::run_sync_loop(store, shared.clone()));
 
-        let listen_addr: SocketAddr = config.listen_addr.parse().map_err(|err| {
-            DnsError::Config(format!(
-                "invalid listen_addr '{}': {err}",
-                config.listen_addr
-            ))
-        })?;
+        let mut listen_addrs = vec![
+            config
+                .overlay_listen_addr
+                .parse()
+                .map_err(|err| {
+                    DnsError::Config(format!(
+                        "invalid overlay listen addr '{}': {err}",
+                        config.overlay_listen_addr
+                    ))
+                })?,
+        ];
+        if let Some(bridge_listen_addr) = &config.bridge_listen_addr {
+            listen_addrs.push(bridge_listen_addr.parse().map_err(|err| {
+                DnsError::Config(format!(
+                    "invalid bridge listen addr '{}': {err}",
+                    bridge_listen_addr
+                ))
+            })?);
+        }
+        listen_addrs.sort();
+        listen_addrs.dedup();
 
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
-        run_dns_server(listen_addr, shared, shutdown_rx).await
+        run_dns_server(&listen_addrs, shared, shutdown_rx).await
     })
 }

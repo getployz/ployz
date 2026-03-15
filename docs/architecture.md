@@ -40,10 +40,11 @@ macOS Host                           Docker Desktop VM (Linux)
 │                 │                  │   HTTP proxy on overlay IP        │
 │                 │                  │                                   │
 │                 │                  │ ployz-dns (container:plz-nw)      │
-│                 │                  │   DNS server on [overlay]:53      │
+│                 │                  │   DNS on [overlay]:53 + bridge:53 │
 │                 │                  │                                   │
 │                 │                  │ workload containers               │
 │                 │                  │   Docker bridge network           │
+│                 │                  │   DNS -> ployz-networking (.2)    │
 └─────────────────┘                  └───────────────────────────────────┘
 ```
 
@@ -67,9 +68,11 @@ native aya.
 
 ### DNS
 
-Listens on the node's overlay IP. Resolves service names to instance IPs using routing
-state from the distributed store. Containers can use short names (`db`) within their
-namespace or fully-qualified names (`db.prod.ployz.internal`) across namespaces.
+Listens on the node's overlay IP, and in the Docker runtime also listens on the bridge
+side of the shared `ployz-networking` namespace so overlay workloads can use it as their
+container resolver. New overlay workloads are configured to use `ployz-dns` by default.
+Those workloads can use short names (`db`) within their namespace or fully-qualified names
+(`db.prod.ployz.internal`) across namespaces.
 
 ### Gateway
 

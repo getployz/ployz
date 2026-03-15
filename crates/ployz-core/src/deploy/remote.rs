@@ -1,4 +1,4 @@
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufStream};
 use tokio::net::{TcpListener, TcpStream};
@@ -54,6 +54,7 @@ pub struct DeployAgent {
     locks: NamespaceLockManager,
     local_machine_id: MachineId,
     overlay_network_name: Option<String>,
+    overlay_dns_server: Option<Ipv4Addr>,
 }
 
 /// Per-session state. The namespace lock is held for the session lifetime.
@@ -77,12 +78,14 @@ impl DeployAgent {
         locks: NamespaceLockManager,
         local_machine_id: MachineId,
         overlay_network_name: Option<String>,
+        overlay_dns_server: Option<Ipv4Addr>,
     ) -> Self {
         Self {
             store,
             locks,
             local_machine_id,
             overlay_network_name,
+            overlay_dns_server,
         }
     }
 
@@ -230,7 +233,7 @@ impl DeployAgent {
     }
 
     fn new_runtime(&self) -> Result<LocalDeployRuntime> {
-        LocalDeployRuntime::new(self.overlay_network_name.clone())
+        LocalDeployRuntime::new(self.overlay_network_name.clone(), self.overlay_dns_server)
     }
 
     async fn find_local_instance_status(
@@ -257,6 +260,7 @@ pub async fn start_remote_control_listener(
     namespace_locks: NamespaceLockManager,
     local_machine_id: MachineId,
     overlay_network_name: Option<String>,
+    overlay_dns_server: Option<Ipv4Addr>,
 ) -> Result<RemoteControlHandle> {
     let listener = TcpListener::bind(bind_addr).await.map_err(|e| {
         Error::operation("remote_control_listener", format!("bind {bind_addr}: {e}"))
@@ -267,6 +271,7 @@ pub async fn start_remote_control_listener(
         namespace_locks,
         local_machine_id,
         overlay_network_name,
+        overlay_dns_server,
     );
     let listener_cancel = cancel.clone();
     let task = tokio::spawn(async move {

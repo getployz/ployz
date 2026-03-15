@@ -24,6 +24,7 @@ pub struct RuntimeContainerSpec {
     pub labels: HashMap<String, String>,
     pub binds: Vec<String>,
     pub tmpfs: HashMap<String, String>,
+    pub dns_servers: Vec<String>,
     pub network_mode: Option<String>,
     pub port_bindings: Option<PortMap>,
     pub exposed_ports: Option<Vec<String>>,
@@ -52,6 +53,7 @@ impl Default for RuntimeContainerSpec {
             labels: HashMap::new(),
             binds: Vec::new(),
             tmpfs: HashMap::new(),
+            dns_servers: Vec::new(),
             network_mode: None,
             port_bindings: None,
             exposed_ports: None,
@@ -82,6 +84,7 @@ pub struct ObservedContainer {
     pub labels: HashMap<String, String>,
     pub binds: Vec<String>,
     pub tmpfs: HashMap<String, String>,
+    pub dns_servers: Vec<String>,
     pub network_mode: Option<String>,
     pub port_bindings: Option<PortMap>,
     pub cap_add: Vec<String>,
@@ -129,6 +132,11 @@ pub fn observe(info: &ContainerInspectResponse) -> ObservedContainer {
 
     let tmpfs = host_config
         .and_then(|h| h.tmpfs.as_ref())
+        .cloned()
+        .unwrap_or_default();
+
+    let dns_servers = host_config
+        .and_then(|h| h.dns.as_ref())
         .cloned()
         .unwrap_or_default();
 
@@ -208,6 +216,7 @@ pub fn observe(info: &ContainerInspectResponse) -> ObservedContainer {
         labels,
         binds,
         tmpfs,
+        dns_servers,
         network_mode,
         port_bindings,
         cap_add,
@@ -221,5 +230,30 @@ pub fn observe(info: &ContainerInspectResponse) -> ObservedContainer {
         pid_mode,
         ip_address,
         networks,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::observe;
+    use bollard::models::{ContainerConfig, ContainerInspectResponse, HostConfig};
+
+    #[test]
+    fn observe_reads_dns_servers_from_host_config() {
+        let observed = observe(&ContainerInspectResponse {
+            name: Some("/ployz-test".into()),
+            config: Some(ContainerConfig {
+                image: Some("busybox:latest".into()),
+                ..Default::default()
+            }),
+            host_config: Some(HostConfig {
+                dns: Some(vec!["10.210.0.2".into()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        assert_eq!(observed.container_name, "ployz-test");
+        assert_eq!(observed.dns_servers, vec!["10.210.0.2"]);
     }
 }
