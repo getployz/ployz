@@ -1,7 +1,5 @@
 use crate::services::supervisor::{ServiceSupervision, SidecarHandle, SidecarSpec, SystemdType};
 
-const DNS_IMAGE: &str = "ghcr.io/getployz/ployz-dns:latest";
-
 // Re-export library types for public API consumers
 pub use ployz_dns::{self as runtime, DnsConfig, DnsError, SharedDnsSnapshot};
 
@@ -52,12 +50,13 @@ impl DnsHandle {
 pub async fn start_managed_dns(
     supervision: Option<ServiceSupervision>,
     config: DnsConfig,
+    image: &str,
 ) -> Result<DnsHandle, DnsError> {
     let Some(supervision) = supervision else {
         return Ok(DnsHandle::noop());
     };
 
-    let spec = build_dns_sidecar_spec(&config);
+    let spec = build_dns_sidecar_spec(&config, image);
     SidecarHandle::ensure(supervision, spec)
         .await
         .map(|handle| DnsHandle {
@@ -66,28 +65,28 @@ pub async fn start_managed_dns(
         .map_err(|e| DnsError::Process(e.to_string()))
 }
 
-fn build_dns_sidecar_spec(config: &DnsConfig) -> SidecarSpec {
+fn build_dns_sidecar_spec(config: &DnsConfig, image: &str) -> SidecarSpec {
     let data_dir_str = config.data_dir.display().to_string();
 
     SidecarSpec {
         name: format!("dns-{}", config.network),
-        image: DNS_IMAGE.to_string(),
+        image: image.to_string(),
         binary_name: "ployz-dns".to_string(),
         container_name: "ployz-dns".to_string(),
         cmd: vec!["ployz-dns".into()],
         env: {
             let mut env = vec![
-            ("PLOYZ_DNS_DATA_DIR".into(), data_dir_str.clone()),
-            ("PLOYZ_DNS_NETWORK".into(), config.network.clone()),
-            (
-                "PLOYZ_DNS_OVERLAY_LISTEN_ADDR".into(),
-                config.overlay_listen_addr.clone(),
-            ),
-            (
-                "PLOYZ_DNS_LISTEN_ADDR".into(),
-                config.overlay_listen_addr.clone(),
-            ),
-        ];
+                ("PLOYZ_DNS_DATA_DIR".into(), data_dir_str.clone()),
+                ("PLOYZ_DNS_NETWORK".into(), config.network.clone()),
+                (
+                    "PLOYZ_DNS_OVERLAY_LISTEN_ADDR".into(),
+                    config.overlay_listen_addr.clone(),
+                ),
+                (
+                    "PLOYZ_DNS_LISTEN_ADDR".into(),
+                    config.overlay_listen_addr.clone(),
+                ),
+            ];
             if let Some(bridge_listen_addr) = &config.bridge_listen_addr {
                 env.push((
                     "PLOYZ_DNS_BRIDGE_LISTEN_ADDR".into(),

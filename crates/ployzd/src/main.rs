@@ -13,7 +13,8 @@ use ployzd::daemon::handlers::RequestLane;
 use ployzd::daemon::{ActiveMesh, DaemonState};
 use ployzd::ipc::listener::{IncomingCommand, serve};
 use ployzd::{
-    Affordances, Identity, RuntimeTarget, ServiceMode, load_daemon_config, validate_runtime,
+    Affordances, BuiltInImages, Identity, RuntimeTarget, ServiceMode, load_daemon_config,
+    validate_runtime,
 };
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -458,11 +459,14 @@ async fn run() -> Result<i32> {
             let runtime_target: RuntimeTarget = runtime.into();
             let service_mode: ServiceMode = service_mode.into();
             validate_runtime(runtime_target, service_mode, &aff).map_err(CliError::Config)?;
+            let built_in_images = BuiltInImages::load(cfg.built_in_images_manifest.as_deref())
+                .map_err(CliError::Config)?;
             cmd_run(
                 &cfg.data_dir,
                 runtime_target,
                 service_mode,
                 &cfg.socket,
+                built_in_images,
                 cfg.cluster_cidr,
                 cfg.subnet_prefix_len,
                 cfg.remote_control_port,
@@ -532,6 +536,7 @@ async fn cmd_run(
     runtime_target: RuntimeTarget,
     service_mode: ServiceMode,
     socket_path: &str,
+    built_in_images: BuiltInImages,
     cluster_cidr: String,
     subnet_prefix_len: u8,
     remote_control_port: u16,
@@ -571,6 +576,7 @@ async fn cmd_run(
         identity,
         runtime_target,
         service_mode,
+        built_in_images,
         cluster_cidr,
         subnet_prefix_len,
         remote_control_port,

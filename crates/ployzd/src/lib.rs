@@ -1,3 +1,4 @@
+mod built_in_images;
 pub mod daemon;
 pub mod install;
 pub mod ipc;
@@ -25,3 +26,5 @@ pub use ployz_sdk::{
     Affordances, ConfigLoadError, DaemonConfig, RuntimeTarget, ServiceMode, load_daemon_config,
     validate_runtime,
 };
+
+pub use built_in_images::{BuiltInImage, BuiltInImages};

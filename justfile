@@ -27,9 +27,17 @@ lab *args:
 e2e *args:
     cargo run -p ployz-e2e -- {{args}}
 
-ployzd *args:
-    cargo run -p ployzd --bin ployzd -- {{args}}
+built-in-images-dev output="target/ployz-dev/built-in-images.toml":
+    bash ./scripts/build-dev-built-in-images.sh "{{output}}"
 
+ployzd *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    set -- {{args}}
+    if [[ "$(uname -s)" == "Darwin" && "${1:-}" == "run" ]]; then
+      export PLOYZ_BUILTIN_IMAGES_MANIFEST="$(bash ./scripts/build-dev-built-in-images.sh)"
+    fi
+    cargo run -p ployzd --bin ployzd -- "$@"
 ployz *args:
     cargo run -p ployzd --bin ployz -- {{args}}
 
