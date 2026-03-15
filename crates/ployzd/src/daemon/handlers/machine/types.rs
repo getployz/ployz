@@ -207,7 +207,7 @@ pub(super) struct LocalSubnetHealPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct RestartableWorkload {
+pub(crate) struct RestartableWorkload {
     pub container_name: String,
     pub was_running: bool,
 }

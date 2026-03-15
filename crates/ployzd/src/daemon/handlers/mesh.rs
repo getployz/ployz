@@ -510,7 +510,6 @@ fn mesh_ready_payload(value: crate::mesh::orchestrator::MeshReadyStatus) -> Mesh
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Mode;
     use crate::daemon::ActiveMesh;
     use crate::deploy::remote::RemoteControlHandle;
     use crate::mesh::wireguard::MemoryWireGuard;
@@ -555,10 +554,9 @@ mod tests {
         .expect("issue invite");
 
         let data_dir = unique_temp_dir("ployz-mesh-join");
-        let mut state = DaemonState::new(
+        let mut state = DaemonState::new_for_tests(
             &data_dir,
             joiner_identity,
-            Mode::Memory,
             "10.210.0.0/16".into(),
             24,
             4317,
@@ -649,10 +647,9 @@ mod tests {
         );
         mesh.up().await.expect("mesh up");
 
-        let mut state = DaemonState::new(
+        let mut state = DaemonState::new_for_tests(
             &unique_temp_dir("ployz-mesh-accept"),
             identity,
-            Mode::Memory,
             "10.210.0.0/16".into(),
             24,
             4317,

@@ -4,7 +4,6 @@
 //! compile time, exhaustive matching catches new variants, and there is no
 //! vtable/`Arc` overhead on hot dispatch paths.
 
-use crate::config::Mode;
 use crate::error::Result;
 use crate::mesh::wireguard::{DockerWireGuard, HostWireGuard, MemoryWireGuard};
 use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
@@ -23,59 +22,52 @@ pub enum WireguardDriver {
 }
 
 impl WireguardDriver {
-    pub async fn from_mode(
-        mode: Mode,
+    #[must_use]
+    pub fn memory() -> Self {
+        Self::Memory(Arc::new(MemoryWireGuard::new()))
+    }
+
+    pub async fn docker(
         identity: &Identity,
         overlay_ip: OverlayIp,
         network_dir: &Path,
-        network_name: &str,
-        subnet: ipnet::Ipv4Net,
         exposed_tcp_ports: &[u16],
     ) -> std::result::Result<Self, String> {
-        match mode {
-            Mode::Memory => Ok(Self::Memory(Arc::new(MemoryWireGuard::new()))),
-            Mode::Docker => {
-                let api_port = corrosion_config::DEFAULT_API_PORT;
-                let overlay_api = SocketAddr::new(IpAddr::V6(overlay_ip.0), api_port);
-                let local_api = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), api_port);
+        let api_port = corrosion_config::DEFAULT_API_PORT;
+        let overlay_api = SocketAddr::new(IpAddr::V6(overlay_ip.0), api_port);
+        let local_api = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), api_port);
 
-                let mut builder = DockerWireGuard::new(
-                    "ployz-networking",
-                    network_dir,
-                    identity.private_key.clone(),
-                    overlay_ip,
-                )
-                .with_bridge_forward(local_api, overlay_api);
-                for &port in exposed_tcp_ports {
-                    builder = builder.expose_tcp(port);
-                }
-                let wg = builder
-                    .build()
-                    .await
-                    .map_err(|e| format!("docker wireguard: {e}"))?;
-                Ok(Self::Docker(Arc::new(wg)))
-            }
-            Mode::HostExec | Mode::HostService => {
-                let ifname = format!("plz-{network_name}");
-                #[cfg(target_os = "linux")]
-                let wg = HostWireGuard::kernel(
-                    &ifname,
-                    identity.private_key.clone(),
-                    overlay_ip,
-                    subnet,
-                )
-                .map_err(|e| format!("host wireguard: {e}"))?;
-                #[cfg(not(target_os = "linux"))]
-                let wg = HostWireGuard::userspace(
-                    &ifname,
-                    identity.private_key.clone(),
-                    overlay_ip,
-                    subnet,
-                )
-                .map_err(|e| format!("host wireguard: {e}"))?;
-                Ok(Self::Host(Arc::new(wg)))
-            }
+        let mut builder = DockerWireGuard::new(
+            "ployz-networking",
+            network_dir,
+            identity.private_key.clone(),
+            overlay_ip,
+        )
+        .with_bridge_forward(local_api, overlay_api);
+        for &port in exposed_tcp_ports {
+            builder = builder.expose_tcp(port);
         }
+        let wg = builder
+            .build()
+            .await
+            .map_err(|e| format!("docker wireguard: {e}"))?;
+        Ok(Self::Docker(Arc::new(wg)))
+    }
+
+    pub fn host(
+        identity: &Identity,
+        overlay_ip: OverlayIp,
+        network_name: &str,
+        subnet: ipnet::Ipv4Net,
+    ) -> std::result::Result<Self, String> {
+        let ifname = format!("plz-{network_name}");
+        #[cfg(target_os = "linux")]
+        let wg = HostWireGuard::kernel(&ifname, identity.private_key.clone(), overlay_ip, subnet)
+            .map_err(|e| format!("host wireguard: {e}"))?;
+        #[cfg(not(target_os = "linux"))]
+        let wg = HostWireGuard::userspace(&ifname, identity.private_key.clone(), overlay_ip, subnet)
+            .map_err(|e| format!("host wireguard: {e}"))?;
+        Ok(Self::Host(Arc::new(wg)))
     }
 }
 

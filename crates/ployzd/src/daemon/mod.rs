@@ -4,11 +4,12 @@ pub mod ssh;
 
 use std::path::{Path, PathBuf};
 
-use crate::config::Mode;
+use crate::config::{RuntimeTarget, ServiceMode};
 use crate::deploy::NamespaceLockManager;
 use crate::deploy::remote::RemoteControlHandle;
 use crate::mesh::orchestrator::Mesh;
 use crate::node::identity::Identity;
+use crate::runtime_profile::RuntimeProfile;
 use crate::services::dns::DnsHandle;
 use crate::services::gateway::GatewayHandle;
 use crate::store::network::NetworkConfig;
@@ -40,7 +41,9 @@ pub(crate) struct PendingSubnetHeal {
 pub struct DaemonState {
     pub data_dir: PathBuf,
     pub identity: Identity,
-    pub mode: Mode,
+    pub runtime_target: RuntimeTarget,
+    pub service_mode: ServiceMode,
+    pub(crate) runtime_profile: RuntimeProfile,
     pub cluster_cidr: String,
     pub subnet_prefix_len: u8,
     pub remote_control_port: u16,
@@ -58,7 +61,8 @@ impl DaemonState {
     pub fn new(
         data_dir: &Path,
         identity: Identity,
-        mode: Mode,
+        runtime_target: RuntimeTarget,
+        service_mode: ServiceMode,
         cluster_cidr: String,
         subnet_prefix_len: u8,
         remote_control_port: u16,
@@ -68,7 +72,38 @@ impl DaemonState {
         Self {
             data_dir: data_dir.to_path_buf(),
             identity,
-            mode,
+            runtime_target,
+            service_mode,
+            runtime_profile: RuntimeProfile::from_runtime(runtime_target, service_mode),
+            cluster_cidr,
+            subnet_prefix_len,
+            remote_control_port,
+            gateway_listen_addr,
+            gateway_threads,
+            active: None,
+            namespace_locks: NamespaceLockManager::default(),
+            pending_subnet_heal: None,
+            last_subnet_heal_attempt: None,
+        }
+    }
+
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_for_tests(
+        data_dir: &Path,
+        identity: Identity,
+        cluster_cidr: String,
+        subnet_prefix_len: u8,
+        remote_control_port: u16,
+        gateway_listen_addr: String,
+        gateway_threads: usize,
+    ) -> Self {
+        Self {
+            data_dir: data_dir.to_path_buf(),
+            identity,
+            runtime_target: RuntimeTarget::Host,
+            service_mode: ServiceMode::User,
+            runtime_profile: RuntimeProfile::memory_for_tests(),
             cluster_cidr,
             subnet_prefix_len,
             remote_control_port,

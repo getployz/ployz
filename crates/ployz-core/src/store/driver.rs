@@ -4,7 +4,6 @@
 //! compile time, exhaustive matching catches new variants, and there is no
 //! vtable/`Arc` overhead on hot dispatch paths.
 
-use crate::config::Mode;
 use crate::error::Result;
 use crate::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
@@ -55,109 +54,110 @@ fn which_corrosion() -> std::result::Result<PathBuf, String> {
 }
 
 impl StoreDriver {
-    pub async fn from_mode(
-        mode: Mode,
+    #[must_use]
+    pub fn memory() -> Self {
+        Self::Memory {
+            store: Arc::new(MemoryStore::new()),
+            service: Arc::new(MemoryService::new()),
+        }
+    }
+
+    pub async fn corrosion_docker(
         overlay_ip: OverlayIp,
         network_dir: &Path,
         bootstrap: &[String],
         network_id: &str,
     ) -> std::result::Result<Self, String> {
-        match mode {
-            Mode::Memory => Ok(Self::Memory {
-                store: Arc::new(MemoryStore::new()),
-                service: Arc::new(MemoryService::new()),
-            }),
-            Mode::Docker | Mode::HostExec | Mode::HostService => {
-                let paths = corrosion_config::Paths::new(network_dir);
-                let gossip_addr = SocketAddr::new(
-                    IpAddr::V6(overlay_ip.0),
-                    corrosion_config::DEFAULT_GOSSIP_PORT,
-                );
-                let api_addr =
-                    SocketAddr::new(IpAddr::V6(overlay_ip.0), corrosion_config::DEFAULT_API_PORT);
+        let paths = corrosion_config::Paths::new(network_dir);
+        let gossip_addr = SocketAddr::new(
+            IpAddr::V6(overlay_ip.0),
+            corrosion_config::DEFAULT_GOSSIP_PORT,
+        );
+        let api_addr = SocketAddr::new(IpAddr::V6(overlay_ip.0), corrosion_config::DEFAULT_API_PORT);
+        let config_paths = corrosion_config::Paths {
+            db: PathBuf::from("/data/store.db"),
+            admin: PathBuf::from("/data/admin.sock"),
+            schema: PathBuf::from("/etc/corrosion/schema.sql"),
+            ..paths.clone()
+        };
 
-                // In Docker mode, config.toml references container-internal
-                // paths so Corrosion finds its DB and socket inside the container.
-                let config_paths = match mode {
-                    Mode::Docker => corrosion_config::Paths {
-                        db: PathBuf::from("/data/store.db"),
-                        admin: PathBuf::from("/data/admin.sock"),
-                        schema: PathBuf::from("/etc/corrosion/schema.sql"),
-                        ..paths.clone()
-                    },
-                    Mode::HostExec | Mode::HostService | Mode::Memory => paths.clone(),
-                };
+        corrosion_config::write_config(
+            &config_paths,
+            &paths,
+            SCHEMA_SQL,
+            gossip_addr,
+            api_addr,
+            bootstrap,
+            Some(network_id),
+        )
+        .map_err(|e| format!("write corrosion config: {e}"))?;
 
-                corrosion_config::write_config(
-                    &config_paths,
-                    &paths,
-                    SCHEMA_SQL,
-                    gossip_addr,
-                    api_addr,
-                    bootstrap,
-                    Some(network_id),
-                )
-                .map_err(|e| format!("write corrosion config: {e}"))?;
+        let local_api = SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            corrosion_config::DEFAULT_API_PORT,
+        );
+        let corrosion = CorrosionStore::new(
+            api_addr,
+            Transport::Bridge {
+                local_addr: local_api,
+            },
+            None,
+        );
 
-                let corrosion = CorrosionStore::new(
-                    api_addr,
-                    match mode {
-                        Mode::Docker => {
-                            let local_api = SocketAddr::new(
-                                IpAddr::V4(Ipv4Addr::LOCALHOST),
-                                corrosion_config::DEFAULT_API_PORT,
-                            );
-                            Transport::Bridge {
-                                local_addr: local_api,
-                            }
-                        }
-                        Mode::HostExec | Mode::HostService | Mode::Memory => Transport::Direct,
-                    },
-                    match mode {
-                        Mode::Docker => None,
-                        Mode::HostExec | Mode::HostService | Mode::Memory => {
-                            Some(paths.admin.clone())
-                        }
-                    },
-                );
+        let config_host = paths.config.to_string_lossy().into_owned();
+        let schema_host = paths.schema.to_string_lossy().into_owned();
+        let config_container = "/etc/corrosion/config.toml";
+        let schema_container = "/etc/corrosion/schema.sql";
+        let service = DockerCorrosion::new("ployz-corrosion", "ghcr.io/getployz/corrosion")
+            .cmd(vec!["agent".into(), "-c".into(), config_container.into()])
+            .volume(&format!("{config_host}:{config_container}:ro"))
+            .volume(&format!("{schema_host}:{schema_container}:ro"))
+            .volume("ployz-corrosion-data:/data")
+            .network_mode("container:ployz-networking")
+            .build()
+            .await
+            .map_err(|e| format!("docker service: {e}"))?;
 
-                if mode == Mode::Docker {
-                    let config_host = paths.config.to_string_lossy().into_owned();
-                    let schema_host = paths.schema.to_string_lossy().into_owned();
-                    let config_container = "/etc/corrosion/config.toml";
-                    let schema_container = "/etc/corrosion/schema.sql";
+        tracing::info!(endpoint = %api_addr, "store backend: corrosion (docker)");
+        Ok(Self::Corrosion {
+            store: corrosion,
+            service: Arc::new(service),
+        })
+    }
 
-                    let service =
-                        DockerCorrosion::new("ployz-corrosion", "ghcr.io/getployz/corrosion")
-                            .cmd(vec!["agent".into(), "-c".into(), config_container.into()])
-                            .volume(&format!("{config_host}:{config_container}:ro"))
-                            .volume(&format!("{schema_host}:{schema_container}:ro"))
-                            // Named volume so the DB lives on the Linux-native
-                            // filesystem inside the Docker VM, avoiding VirtioFS
-                            // overhead for SQLite writes on macOS.
-                            .volume("ployz-corrosion-data:/data")
-                            .network_mode("container:ployz-networking")
-                            .build()
-                            .await
-                            .map_err(|e| format!("docker service: {e}"))?;
+    pub fn corrosion_host(
+        overlay_ip: OverlayIp,
+        network_dir: &Path,
+        bootstrap: &[String],
+        network_id: &str,
+    ) -> std::result::Result<Self, String> {
+        let paths = corrosion_config::Paths::new(network_dir);
+        let gossip_addr = SocketAddr::new(
+            IpAddr::V6(overlay_ip.0),
+            corrosion_config::DEFAULT_GOSSIP_PORT,
+        );
+        let api_addr = SocketAddr::new(IpAddr::V6(overlay_ip.0), corrosion_config::DEFAULT_API_PORT);
 
-                    tracing::info!(endpoint = %api_addr, "store backend: corrosion (docker)");
-                    Ok(Self::Corrosion {
-                        store: corrosion,
-                        service: Arc::new(service),
-                    })
-                } else {
-                    let binary = which_corrosion()?;
-                    let service = HostCorrosion::new(binary, &paths.config);
+        corrosion_config::write_config(
+            &paths,
+            &paths,
+            SCHEMA_SQL,
+            gossip_addr,
+            api_addr,
+            bootstrap,
+            Some(network_id),
+        )
+        .map_err(|e| format!("write corrosion config: {e}"))?;
 
-                    tracing::info!(endpoint = %api_addr, "store backend: corrosion (host)");
-                    Ok(Self::CorrosionHost {
-                        store: corrosion,
-                        service: Arc::new(service),
-                    })
-                }
-            }
-        }
+        let corrosion = CorrosionStore::new(api_addr, Transport::Direct, Some(paths.admin.clone()));
+        let binary = which_corrosion()?;
+        let service = HostCorrosion::new(binary, &paths.config);
+
+        tracing::info!(endpoint = %api_addr, "store backend: corrosion (host)");
+        Ok(Self::CorrosionHost {
+            store: corrosion,
+            service: Arc::new(service),
+        })
     }
 }
 

@@ -2,7 +2,6 @@ use super::heal::plan_local_subnet_heal;
 use super::operations::{
     MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus,
 };
-use crate::config::Mode;
 use crate::daemon::ActiveMesh;
 use crate::daemon::DaemonState;
 use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock};
@@ -665,10 +664,9 @@ async fn make_state(start_mesh: bool) -> (DaemonState, Arc<MemoryStore>, Arc<Mem
         mesh.up().await.expect("mesh up");
     }
 
-    let mut state = DaemonState::new(
+    let mut state = DaemonState::new_for_tests(
         &unique_temp_dir("ployz-machine-state"),
         identity,
-        Mode::Memory,
         DEFAULT_CLUSTER_CIDR.into(),
         24,
         4317,
@@ -714,10 +712,9 @@ async fn make_state_with_store(
         51820,
     );
 
-    let mut state = DaemonState::new(
+    let mut state = DaemonState::new_for_tests(
         &data_dir,
         identity,
-        Mode::Memory,
         DEFAULT_CLUSTER_CIDR.into(),
         24,
         4317,

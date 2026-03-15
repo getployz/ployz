@@ -6,13 +6,15 @@ use ployz_sdk::spec::{
 };
 use ployz_sdk::transport::{
     DaemonRequest, DaemonResponse, DebugTickTask as ProtocolDebugTickTask, DeployOptions,
-    InstallMode as MachineInstallMode, InstallSource as MachineInstallSource, MachineAddOptions,
-    MachineInstallOptions, Transport, UnixSocketTransport,
+    InstallSource as MachineInstallSource, MachineAddOptions, MachineInstallOptions, Transport,
+    UnixSocketTransport,
 };
 use ployzd::daemon::handlers::RequestLane;
 use ployzd::daemon::{ActiveMesh, DaemonState};
 use ployzd::ipc::listener::{IncomingCommand, serve};
-use ployzd::{Affordances, Identity, Mode, load_daemon_config};
+use ployzd::{
+    Affordances, Identity, RuntimeTarget, ServiceMode, load_daemon_config, validate_runtime,
+};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -26,10 +28,15 @@ type Result<T> = std::result::Result<T, CliError>;
 const SUBNET_HEAL_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
-enum RuntimeMode {
+enum RuntimeTargetArg {
     Docker,
-    HostExec,
-    HostService,
+    Host,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ServiceModeArg {
+    User,
+    System,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -46,22 +53,20 @@ enum DebugTickTaskArg {
     All,
 }
 
-impl From<RuntimeMode> for Mode {
-    fn from(value: RuntimeMode) -> Self {
+impl From<RuntimeTargetArg> for RuntimeTarget {
+    fn from(value: RuntimeTargetArg) -> Self {
         match value {
-            RuntimeMode::Docker => Mode::Docker,
-            RuntimeMode::HostExec => Mode::HostExec,
-            RuntimeMode::HostService => Mode::HostService,
+            RuntimeTargetArg::Docker => RuntimeTarget::Docker,
+            RuntimeTargetArg::Host => RuntimeTarget::Host,
         }
     }
 }
 
-impl From<RuntimeMode> for MachineInstallMode {
-    fn from(value: RuntimeMode) -> Self {
+impl From<ServiceModeArg> for ServiceMode {
+    fn from(value: ServiceModeArg) -> Self {
         match value {
-            RuntimeMode::Docker => MachineInstallMode::Docker,
-            RuntimeMode::HostExec => MachineInstallMode::HostExec,
-            RuntimeMode::HostService => MachineInstallMode::HostService,
+            ServiceModeArg::User => ServiceMode::User,
+            ServiceModeArg::System => ServiceMode::System,
         }
     }
 }
@@ -168,8 +173,10 @@ struct Cli {
 enum Command {
     /// Start the daemon (control loop + command listener).
     Run {
-        #[arg(long, value_enum, default_value_t = RuntimeMode::Docker)]
-        mode: RuntimeMode,
+        #[arg(long, value_enum, default_value_t = RuntimeTargetArg::Docker)]
+        runtime: RuntimeTargetArg,
+        #[arg(long, value_enum, default_value_t = ServiceModeArg::User)]
+        service_mode: ServiceModeArg,
         /// Overlay TCP control port for daemon-to-daemon deploy sessions.
         #[arg(long)]
         remote_control_port: Option<u16>,
@@ -343,7 +350,9 @@ enum MachineAction {
         #[arg(long)]
         network: String,
         #[arg(long, value_enum)]
-        mode: Option<RuntimeMode>,
+        runtime: Option<RuntimeTargetArg>,
+        #[arg(long, value_enum)]
+        service_mode: Option<ServiceModeArg>,
         #[arg(long, value_enum)]
         install_source: Option<InstallSourceArg>,
         #[arg(long)]
@@ -359,7 +368,9 @@ enum MachineAction {
         #[arg(long, value_name = "PATH")]
         identity: Option<PathBuf>,
         #[arg(long, value_enum)]
-        mode: Option<RuntimeMode>,
+        runtime: Option<RuntimeTargetArg>,
+        #[arg(long, value_enum)]
+        service_mode: Option<ServiceModeArg>,
         #[arg(long, value_enum)]
         install_source: Option<InstallSourceArg>,
         #[arg(long)]
@@ -430,7 +441,8 @@ async fn run() -> Result<i32> {
 
     match cli.command {
         Command::Run {
-            mode,
+            runtime,
+            service_mode,
             remote_control_port,
         } => {
             init_tracing();
@@ -443,9 +455,13 @@ async fn run() -> Result<i32> {
                 &aff,
             )
             .map_err(|err| CliError::Config(err.to_string()))?;
+            let runtime_target: RuntimeTarget = runtime.into();
+            let service_mode: ServiceMode = service_mode.into();
+            validate_runtime(runtime_target, service_mode, &aff).map_err(CliError::Config)?;
             cmd_run(
                 &cfg.data_dir,
-                mode.into(),
+                runtime_target,
+                service_mode,
                 &cfg.socket,
                 cfg.cluster_cidr,
                 cfg.subnet_prefix_len,
@@ -511,7 +527,8 @@ fn init_tracing() {
 #[allow(clippy::too_many_arguments)]
 async fn cmd_run(
     data_dir: &Path,
-    mode: Mode,
+    runtime_target: RuntimeTarget,
+    service_mode: ServiceMode,
     socket_path: &str,
     cluster_cidr: String,
     subnet_prefix_len: u8,
@@ -519,7 +536,7 @@ async fn cmd_run(
     gateway_listen_addr: String,
     gateway_threads: usize,
 ) -> Result<()> {
-    tracing::info!(?mode, "starting daemon");
+    tracing::info!(?runtime_target, ?service_mode, "starting daemon");
 
     let id_path = data_dir.join("identity.json");
     let identity =
@@ -550,7 +567,8 @@ async fn cmd_run(
     let state = Arc::new(RwLock::new(DaemonState::new(
         data_dir,
         identity,
-        mode,
+        runtime_target,
+        service_mode,
         cluster_cidr,
         subnet_prefix_len,
         remote_control_port,
@@ -855,7 +873,8 @@ fn build_machine_request(action: MachineAction) -> Result<DaemonRequest> {
         MachineAction::Init {
             target,
             network,
-            mode,
+            runtime,
+            service_mode,
             install_source,
             install_version,
             install_git_url,
@@ -864,7 +883,8 @@ fn build_machine_request(action: MachineAction) -> Result<DaemonRequest> {
             target,
             network,
             install: build_machine_install_options(
-                mode,
+                runtime,
+                service_mode,
                 install_source,
                 install_version,
                 install_git_url,
@@ -873,7 +893,8 @@ fn build_machine_request(action: MachineAction) -> Result<DaemonRequest> {
         }),
         MachineAction::Add {
             identity,
-            mode,
+            runtime,
+            service_mode,
             install_source,
             install_version,
             install_git_url,
@@ -881,7 +902,8 @@ fn build_machine_request(action: MachineAction) -> Result<DaemonRequest> {
             targets,
         } => {
             let install = build_machine_install_options(
-                mode,
+                runtime,
+                service_mode,
                 install_source,
                 install_version,
                 install_git_url,
@@ -917,7 +939,8 @@ fn build_machine_request(action: MachineAction) -> Result<DaemonRequest> {
 }
 
 fn build_machine_install_options(
-    mode: Option<RuntimeMode>,
+    runtime: Option<RuntimeTargetArg>,
+    service_mode: Option<ServiceModeArg>,
     install_source: Option<InstallSourceArg>,
     install_version: Option<String>,
     install_git_url: Option<String>,
@@ -932,7 +955,8 @@ fn build_machine_install_options(
         None => None,
     };
     MachineInstallOptions {
-        mode: mode.map(Into::into),
+        runtime_target: runtime.map(Into::into),
+        service_mode: service_mode.map(Into::into),
         source: resolved_source,
         version: install_version,
         git_url: install_git_url,
@@ -1287,7 +1311,8 @@ mod tests {
 
         let request = build_machine_request(MachineAction::Add {
             identity: Some(path.clone()),
-            mode: Some(RuntimeMode::HostExec),
+            runtime: Some(RuntimeTargetArg::Host),
+            service_mode: Some(ServiceModeArg::User),
             install_source: Some(InstallSourceArg::Git),
             install_version: None,
             install_git_url: Some("https://example.invalid/ployz.git".into()),
@@ -1308,8 +1333,15 @@ mod tests {
             options
                 .install
                 .as_ref()
-                .and_then(|install| install.mode),
-            Some(MachineInstallMode::HostExec)
+                .and_then(|install| install.runtime_target),
+            Some(RuntimeTarget::Host)
+        );
+        assert_eq!(
+            options
+                .install
+                .as_ref()
+                .and_then(|install| install.service_mode),
+            Some(ServiceMode::User)
         );
 
         std::fs::remove_file(path).expect("remove identity");
