@@ -151,6 +151,11 @@ impl Mesh {
         self.heartbeat_tx.clone()
     }
 
+    #[must_use]
+    pub fn participation_sender(&self) -> Option<mpsc::Sender<ParticipationCommand>> {
+        self.participation_tx.clone()
+    }
+
     pub async fn authoritative_self_record(&self) -> Option<MachineRecord> {
         let authoritative_self = self.authoritative_self.as_ref()?.clone();
         Some(authoritative_self.read().await.clone())

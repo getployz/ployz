@@ -20,11 +20,18 @@ const PARTICIPATION_HYSTERESIS_SAMPLES: u8 = 3;
 struct ParticipationState {
     consecutive_good_samples: u8,
     consecutive_bad_samples: u8,
+    forced_participation: Option<Participation>,
 }
 
 #[derive(Debug)]
 pub enum ParticipationCommand {
-    TickNow { done: oneshot::Sender<()> },
+    TickNow {
+        done: oneshot::Sender<()>,
+    },
+    SetForced {
+        participation: Option<Participation>,
+        done: oneshot::Sender<()>,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -80,6 +87,18 @@ pub(crate) async fn run_participation_task(
                         ).await;
                         let _ = done.send(());
                     }
+                    ParticipationCommand::SetForced { participation, done } => {
+                        state.forced_participation = participation;
+                        participation_once(
+                            &machine_id,
+                            &authoritative_self,
+                            &store,
+                            &network,
+                            &self_record_tx,
+                            &mut state,
+                        ).await;
+                        let _ = done.send(());
+                    }
                 }
             }
         }
@@ -108,23 +127,26 @@ async fn participation_once(
     let peer_health = required_peers_health(network, &required_peers).await;
     update_hysteresis(state, peer_health.healthy());
 
-    let next = match current.participation {
-        Participation::Disabled => {
-            if state.consecutive_good_samples >= PARTICIPATION_HYSTERESIS_SAMPLES {
-                Participation::Enabled
-            } else {
-                Participation::Disabled
+    let next = state
+        .forced_participation
+        .clone()
+        .unwrap_or_else(|| match current.participation {
+            Participation::Disabled => {
+                if state.consecutive_good_samples >= PARTICIPATION_HYSTERESIS_SAMPLES {
+                    Participation::Enabled
+                } else {
+                    Participation::Disabled
+                }
             }
-        }
-        Participation::Enabled => {
-            if state.consecutive_bad_samples >= PARTICIPATION_HYSTERESIS_SAMPLES {
-                Participation::Disabled
-            } else {
-                Participation::Enabled
+            Participation::Enabled => {
+                if state.consecutive_bad_samples >= PARTICIPATION_HYSTERESIS_SAMPLES {
+                    Participation::Disabled
+                } else {
+                    Participation::Enabled
+                }
             }
-        }
-        Participation::Draining => Participation::Draining,
-    };
+            Participation::Draining => Participation::Draining,
+        });
 
     if next != current.participation {
         info!(
@@ -513,6 +535,61 @@ mod tests {
             .find(|machine| machine.id == self_id)
             .expect("self record");
         assert_eq!(self_record.participation, Participation::Draining);
+    }
+
+    #[tokio::test]
+    async fn forced_disabled_override_blocks_reenable() {
+        let (_probe_guard, probe_cancel, probe_task) = start_test_probe_listener();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let (
+            store,
+            service,
+            network,
+            authoritative_self,
+            self_record_tx,
+            self_id,
+            peer_key,
+            cancel,
+            writer_handle,
+        ) = test_runtime(Participation::Disabled, Participation::Enabled).await;
+        network.set_device_peers(vec![DevicePeer {
+            public_key: peer_key,
+            endpoint: Some("127.0.0.1:51820".into()),
+            last_handshake: Some(tokio::time::Instant::now()),
+        }]);
+
+        let mut state = ParticipationState {
+            forced_participation: Some(Participation::Disabled),
+            ..ParticipationState::default()
+        };
+        let store_driver = StoreDriver::Memory {
+            store: store.clone(),
+            service,
+        };
+        let network_driver = WireguardDriver::Memory(network);
+
+        for _ in 0..3 {
+            participation_once(
+                &self_id,
+                &authoritative_self,
+                &store_driver,
+                &network_driver,
+                &self_record_tx,
+                &mut state,
+            )
+            .await;
+        }
+
+        cancel.cancel();
+        writer_handle.await.expect("writer exits");
+
+        let machines = store.list_machines().await.expect("list machines");
+        let self_record = machines
+            .into_iter()
+            .find(|machine| machine.id == self_id)
+            .expect("self record");
+        assert_eq!(self_record.participation, Participation::Disabled);
+        stop_test_probe_listener(probe_cancel, probe_task).await;
     }
 
     fn start_test_probe_listener() -> (
