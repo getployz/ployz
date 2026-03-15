@@ -104,7 +104,10 @@ impl super::Transport for StdioTransport {
         if !status.success() {
             let stderr = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
             let detail = if stderr.is_empty() {
-                format!("command exited with status {}", status.code().unwrap_or_default())
+                format!(
+                    "command exited with status {}",
+                    status.code().unwrap_or_default()
+                )
             } else {
                 stderr
             };

@@ -67,13 +67,14 @@ impl DaemonState {
             "local subnet heal: duplicate subnet claims detected"
         );
 
-        let current_conflict = match local_duplicate_subnet_conflict(&machines, &self.identity.machine_id) {
-            Some(conflict) => conflict,
-            None => {
-                self.pending_subnet_heal = None;
-                return;
-            }
-        };
+        let current_conflict =
+            match local_duplicate_subnet_conflict(&machines, &self.identity.machine_id) {
+                Some(conflict) => conflict,
+                None => {
+                    self.pending_subnet_heal = None;
+                    return;
+                }
+            };
 
         let now = now_unix_secs();
         let pending = match self.pending_subnet_heal {
@@ -108,7 +109,8 @@ impl DaemonState {
             }
         };
 
-        let target_winner = target_subnet_winner(&machines, &self.identity.machine_id, pending.target_subnet);
+        let target_winner =
+            target_subnet_winner(&machines, &self.identity.machine_id, pending.target_subnet);
         if target_winner != self.identity.machine_id {
             let target_subnet = match allocate_replacement_subnet(
                 &machines,
@@ -197,7 +199,9 @@ impl DaemonState {
         let operation_store = self.machine_operation_store();
         let mut operation = match operation_store.begin(
             MachineOperationKind::Heal,
-            self.active.as_ref().map(|active| active.config.name.0.clone()),
+            self.active
+                .as_ref()
+                .map(|active| active.config.name.0.clone()),
             Vec::new(),
             "apply-local-subnet-heal",
             MachineOperationArtifacts {
@@ -224,7 +228,11 @@ impl DaemonState {
         match self.apply_local_subnet_heal(&plan).await {
             Ok(()) => {
                 if let Some(ref mut operation) = operation {
-                    let _ = operation_store.update_status(operation, MachineOperationStatus::Succeeded, None);
+                    let _ = operation_store.update_status(
+                        operation,
+                        MachineOperationStatus::Succeeded,
+                        None,
+                    );
                 }
                 tracing::info!(
                     machine_id = %self.identity.machine_id,
@@ -396,7 +404,9 @@ impl DaemonState {
     }
 }
 
-pub(super) fn duplicate_subnet_groups(machines: &[MachineRecord]) -> Vec<(Ipv4Net, Vec<MachineId>)> {
+pub(super) fn duplicate_subnet_groups(
+    machines: &[MachineRecord],
+) -> Vec<(Ipv4Net, Vec<MachineId>)> {
     let mut groups: BTreeMap<Ipv4Net, Vec<MachineId>> = BTreeMap::new();
 
     for machine in machines {
@@ -444,7 +454,10 @@ fn local_duplicate_subnet_conflict(
         if winner_machine_id == local_machine_id {
             return None;
         }
-        if machine_ids.iter().any(|machine_id| machine_id == local_machine_id) {
+        if machine_ids
+            .iter()
+            .any(|machine_id| machine_id == local_machine_id)
+        {
             return Some(LocalSubnetConflict {
                 subnet,
                 winner_machine_id: winner_machine_id.clone(),
@@ -486,7 +499,10 @@ pub(super) fn plan_local_subnet_heal(
         if winner_machine_id == local_machine_id {
             return Ok(None);
         }
-        if !machine_ids.iter().any(|machine_id| machine_id == local_machine_id) {
+        if !machine_ids
+            .iter()
+            .any(|machine_id| machine_id == local_machine_id)
+        {
             continue;
         }
 
@@ -521,7 +537,8 @@ fn allocate_replacement_subnet(
         }
         machine.subnet
     });
-    let mut ipam = crate::network::ipam::Ipam::with_allocated(cluster, subnet_prefix_len, allocated);
+    let mut ipam =
+        crate::network::ipam::Ipam::with_allocated(cluster, subnet_prefix_len, allocated);
     ipam.allocate()
         .ok_or_else(|| "no available subnets for local heal".into())
 }

@@ -73,7 +73,8 @@ impl StoreDriver {
             IpAddr::V6(overlay_ip.0),
             corrosion_config::DEFAULT_GOSSIP_PORT,
         );
-        let api_addr = SocketAddr::new(IpAddr::V6(overlay_ip.0), corrosion_config::DEFAULT_API_PORT);
+        let api_addr =
+            SocketAddr::new(IpAddr::V6(overlay_ip.0), corrosion_config::DEFAULT_API_PORT);
         let config_paths = corrosion_config::Paths {
             db: PathBuf::from("/data/store.db"),
             admin: PathBuf::from("/data/admin.sock"),
@@ -136,7 +137,8 @@ impl StoreDriver {
             IpAddr::V6(overlay_ip.0),
             corrosion_config::DEFAULT_GOSSIP_PORT,
         );
-        let api_addr = SocketAddr::new(IpAddr::V6(overlay_ip.0), corrosion_config::DEFAULT_API_PORT);
+        let api_addr =
+            SocketAddr::new(IpAddr::V6(overlay_ip.0), corrosion_config::DEFAULT_API_PORT);
 
         corrosion_config::write_config(
             &paths,

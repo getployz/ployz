@@ -1,7 +1,5 @@
 use super::heal::plan_local_subnet_heal;
-use super::operations::{
-    MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus,
-};
+use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
 use crate::daemon::ActiveMesh;
 use crate::daemon::DaemonState;
 use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock};
@@ -537,8 +535,8 @@ async fn local_subnet_heal_skips_when_store_unhealthy() {
 
     state.heal_local_subnet_conflict_if_needed().await;
 
-    let healed_config = NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha"))
-        .expect("load config");
+    let healed_config =
+        NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha")).expect("load config");
     assert_eq!(
         healed_config.subnet,
         "10.210.1.0/24".parse().expect("valid")
@@ -580,8 +578,8 @@ async fn local_subnet_heal_skips_when_mesh_not_running() {
 
     state.heal_local_subnet_conflict_if_needed().await;
 
-    let healed_config = NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha"))
-        .expect("load config");
+    let healed_config =
+        NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha")).expect("load config");
     assert_eq!(
         healed_config.subnet,
         "10.210.1.0/24".parse().expect("valid")
@@ -618,11 +616,13 @@ async fn interrupted_machine_add_is_marked_interrupted_on_startup() {
         .expect("load operation")
         .expect("operation exists");
     assert_eq!(reconciled.status, MachineOperationStatus::Interrupted);
-    assert!(reconciled
-        .last_error
-        .as_deref()
-        .expect("last error")
-        .contains("daemon restarted"));
+    assert!(
+        reconciled
+            .last_error
+            .as_deref()
+            .expect("last error")
+            .contains("daemon restarted")
+    );
 }
 
 async fn make_state(start_mesh: bool) -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {

@@ -65,8 +65,9 @@ impl WireguardDriver {
         let wg = HostWireGuard::kernel(&ifname, identity.private_key.clone(), overlay_ip, subnet)
             .map_err(|e| format!("host wireguard: {e}"))?;
         #[cfg(not(target_os = "linux"))]
-        let wg = HostWireGuard::userspace(&ifname, identity.private_key.clone(), overlay_ip, subnet)
-            .map_err(|e| format!("host wireguard: {e}"))?;
+        let wg =
+            HostWireGuard::userspace(&ifname, identity.private_key.clone(), overlay_ip, subnet)
+                .map_err(|e| format!("host wireguard: {e}"))?;
         Ok(Self::Host(Arc::new(wg)))
     }
 }

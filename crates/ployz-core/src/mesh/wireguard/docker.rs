@@ -952,9 +952,6 @@ mod tests {
         };
         let expected_port = DEFAULT_LISTEN_PORT.to_string();
         assert_eq!(binding.host_ip.as_deref(), Some(BRIDGE_HOST_LOOPBACK));
-        assert_eq!(
-            binding.host_port.as_deref(),
-            Some(expected_port.as_str())
-        );
+        assert_eq!(binding.host_port.as_deref(), Some(expected_port.as_str()));
     }
 }

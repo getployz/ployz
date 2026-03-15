@@ -516,7 +516,8 @@ fn resolve_manifest_path(
 }
 
 fn resolve_config_target(aff: &Affordances) -> Result<ConfigTarget, String> {
-    if aff.is_root && aff.os == Os::Linux
+    if aff.is_root
+        && aff.os == Os::Linux
         && let Some(home_dir) = sudo_user_home_dir()?
     {
         return Ok(ConfigTarget { home_dir });

@@ -6,7 +6,13 @@ use chrono::DateTime;
 use super::types::{MachineAddReport, MachineListReport};
 
 pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
-    let w_id = report.rows.iter().map(|row| row.id.len()).max().unwrap_or(0).max(2);
+    let w_id = report
+        .rows
+        .iter()
+        .map(|row| row.id.len())
+        .max()
+        .unwrap_or(0)
+        .max(2);
     let w_ov = report
         .rows
         .iter()

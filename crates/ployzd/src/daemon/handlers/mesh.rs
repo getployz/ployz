@@ -9,7 +9,9 @@ use crate::network::ipam::Ipam;
 use crate::node::invite::parse_and_verify_invite_token;
 use crate::store::bootstrap::{BootstrapInfo, BootstrapPeerRecord, write_bootstrap_peer_record};
 use crate::store::network::NetworkConfig;
-use ployz_sdk::transport::{DaemonPayload, DaemonResponse, MeshReadyPayload, MeshSelfRecordPayload};
+use ployz_sdk::transport::{
+    DaemonPayload, DaemonResponse, MeshReadyPayload, MeshSelfRecordPayload,
+};
 
 use super::super::DaemonState;
 use crate::time::now_unix_secs;

@@ -754,10 +754,7 @@ mod tests {
         let [peer] = planned.as_slice() else {
             panic!("expected one peer");
         };
-        assert_eq!(
-            peer.endpoints,
-            vec!["b:2".to_string(), "a:1".to_string()]
-        );
+        assert_eq!(peer.endpoints, vec!["b:2".to_string(), "a:1".to_string()]);
     }
 
     #[test]

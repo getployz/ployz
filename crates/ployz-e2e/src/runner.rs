@@ -2,8 +2,8 @@ use crate::cli::Scenario;
 use crate::error::{Error, Result};
 use crate::scenarios;
 use crate::support::{
-    docker_outer, docker_outer_raw, parse_ready, pick_free_port, run_command,
-    run_command_expect_ok, wait_until, CommandOutput,
+    CommandOutput, docker_outer, docker_outer_raw, parse_ready, pick_free_port, run_command,
+    run_command_expect_ok, wait_until,
 };
 use std::collections::BTreeMap;
 use std::fmt::Write as _;

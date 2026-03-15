@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use ipnet::Ipv4Net;
 use ployz_sdk::model::{JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineRecord};
 use ployz_sdk::transport::{
-    DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions,
-    MachineInstallOptions, MeshReadyPayload, MeshSelfRecordPayload, Transport,
+    DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MachineInstallOptions,
+    MeshReadyPayload, MeshSelfRecordPayload, Transport,
 };
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, sleep, timeout};
@@ -19,8 +19,8 @@ use crate::store::InviteStore;
 use crate::store::MachineStore;
 
 use super::operations::{
-    MachineOperationArtifacts, MachineOperationKind, MachineOperationRecord, MachineOperationStatus,
-    MachineOperationStore,
+    MachineOperationArtifacts, MachineOperationKind, MachineOperationRecord,
+    MachineOperationStatus, MachineOperationStore,
 };
 use super::render::render_machine_add_report;
 use super::types::{
@@ -93,7 +93,8 @@ impl DaemonState {
         }
 
         let _ = operation_store.update_stage(&mut operation, "complete");
-        let _ = operation_store.update_status(&mut operation, MachineOperationStatus::Succeeded, None);
+        let _ =
+            operation_store.update_status(&mut operation, MachineOperationStatus::Succeeded, None);
         self.ok(format!(
             "remote founder initialized\n  target:  {target}\n  network: {network}"
         ))
@@ -317,7 +318,9 @@ async fn run_machine_add_target(
     let mut joiner_id = None;
 
     tracing::info!(%target, "machine add target: bootstrap starting");
-    if let Err(err) = bootstrap_remote_machine(&target, &context.install, &context.ssh_options).await {
+    if let Err(err) =
+        bootstrap_remote_machine(&target, &context.install, &context.ssh_options).await
+    {
         let _ = operation_store.update_status(
             &mut operation,
             MachineOperationStatus::Failed,
@@ -364,13 +367,7 @@ async fn run_machine_add_target(
     let record = match remote_self_record(&target, &context.ssh_options).await {
         Ok(record) => record,
         Err(err) => {
-            let _ = rollback_machine_add_target(
-                &context,
-                &target,
-                stage,
-                joiner_id.as_ref(),
-            )
-            .await;
+            let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
             let _ = operation_store.update_status(
                 &mut operation,
                 MachineOperationStatus::Failed,
@@ -456,7 +453,11 @@ async fn run_machine_add_target(
         invite_id,
         "machine add target: finalizing invite"
     );
-    if let Err(err) = context.store.consume_invite(&invite_id, crate::time::now_unix_secs()).await {
+    if let Err(err) = context
+        .store
+        .consume_invite(&invite_id, crate::time::now_unix_secs())
+        .await
+    {
         tracing::warn!(
             %target,
             joiner_id = %machine_id,
@@ -501,7 +502,9 @@ pub(super) async fn remove_transient_peer(
     machine_id: &MachineId,
 ) -> Result<(), String> {
     peer_sync_tx
-        .send(crate::mesh::tasks::PeerSyncCommand::RemoveTransient(machine_id.clone()))
+        .send(crate::mesh::tasks::PeerSyncCommand::RemoveTransient(
+            machine_id.clone(),
+        ))
         .await
         .map_err(|err| format!("failed to clear founder-local transient peer: {err}"))
 }
@@ -515,7 +518,9 @@ async fn rollback_machine_add_target(
     let mut errors = Vec::new();
     if matches!(
         stage,
-        MachineAddStage::TransientPeerInstalled | MachineAddStage::Ready | MachineAddStage::Finalized
+        MachineAddStage::TransientPeerInstalled
+            | MachineAddStage::Ready
+            | MachineAddStage::Finalized
     ) && let Some(joiner_id) = joiner_id
         && let Err(err) = remove_transient_peer(&context.peer_sync_tx, joiner_id).await
     {
@@ -528,7 +533,8 @@ async fn rollback_machine_add_target(
             | MachineAddStage::TransientPeerInstalled
             | MachineAddStage::Ready
             | MachineAddStage::Finalized
-    ) && let Err(err) = best_effort_remote_cleanup(target, &context.network_name, &context.ssh_options).await
+    ) && let Err(err) =
+        best_effort_remote_cleanup(target, &context.network_name, &context.ssh_options).await
     {
         errors.push(err);
     }
@@ -547,7 +553,11 @@ async fn wait_for_remote_ready(target: &str, ssh_options: &SshOptions) -> Result
         attempt += 1;
         let last_error = match timeout(
             REMOTE_READY_RPC_TIMEOUT,
-            remote_rpc(target, DaemonRequest::MeshReady { json: false }, ssh_options),
+            remote_rpc(
+                target,
+                DaemonRequest::MeshReady { json: false },
+                ssh_options,
+            ),
         )
         .await
         {
@@ -590,7 +600,10 @@ async fn wait_for_remote_ready(target: &str, ssh_options: &SshOptions) -> Result
     }
 }
 
-async fn remote_self_record(target: &str, ssh_options: &SshOptions) -> Result<MachineRecord, String> {
+async fn remote_self_record(
+    target: &str,
+    ssh_options: &SshOptions,
+) -> Result<MachineRecord, String> {
     let response = remote_rpc(target, DaemonRequest::MeshSelfRecord, ssh_options).await?;
     if !response.ok {
         return Err(remote_response_error(&response));
@@ -658,7 +671,10 @@ async fn remote_rpc_expect_ok(
 }
 
 fn remote_response_error(response: &DaemonResponse) -> String {
-    format!("remote daemon error [{}]: {}", response.code, response.message)
+    format!(
+        "remote daemon error [{}]: {}",
+        response.code, response.message
+    )
 }
 
 pub(super) async fn best_effort_remote_cleanup(
