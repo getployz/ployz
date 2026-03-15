@@ -2,9 +2,9 @@ use crate::client::CorrClient;
 use crate::store::shared::decode::text;
 use crate::store::shared::sql::{exec_one, query_rows};
 use corro_api_types::{SqliteValue, Statement};
-use ployz_sdk::error::{Error, Result};
-use ployz_sdk::model::{InstanceId, InstanceStatusRecord};
-use ployz_sdk::spec::Namespace;
+use ployz_types::error::{Error, Result};
+use ployz_types::model::{InstanceId, InstanceStatusRecord};
+use ployz_types::spec::Namespace;
 
 pub(crate) const SQL_ALL_INSTANCE_STATUS: &str = "SELECT instance_id, namespace, service, machine_id, payload_json FROM instance_status WHERE payload_json <> '' ORDER BY namespace, service, machine_id, instance_id";
 
@@ -71,7 +71,14 @@ pub(crate) async fn delete_instance_status(
 }
 
 pub(crate) fn parse_instance_status(row: &[SqliteValue]) -> Result<InstanceStatusRecord> {
-    let [instance_val, namespace_val, service_val, machine_val, payload_val] = row else {
+    let [
+        instance_val,
+        namespace_val,
+        service_val,
+        machine_val,
+        payload_val,
+    ] = row
+    else {
         return Err(Error::operation(
             "parse_instance_status",
             format!("expected 5 columns, got {}", row.len()),
@@ -84,9 +91,8 @@ pub(crate) fn parse_instance_status(row: &[SqliteValue]) -> Result<InstanceStatu
     let machine_id = text(machine_val, "machine_id")?;
     let payload_json = text(payload_val, "payload_json")?;
 
-    let record: InstanceStatusRecord = serde_json::from_str(&payload_json).map_err(|e| {
-        Error::operation("parse_instance_status", format!("decode payload: {e}"))
-    })?;
+    let record: InstanceStatusRecord = serde_json::from_str(&payload_json)
+        .map_err(|e| Error::operation("parse_instance_status", format!("decode payload: {e}")))?;
     if record.instance_id.0 != instance_id
         || record.namespace.0 != namespace
         || record.service != service

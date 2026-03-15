@@ -3,8 +3,8 @@ use crate::store::shared::decode::text;
 use crate::store::shared::sql::{exec_one, query_rows};
 use corro_api_types::{SqliteValue, Statement, TypedQueryEvent, sqlite::ChangeType};
 use futures_util::StreamExt;
-use ployz_sdk::error::{Error, Result};
-use ployz_sdk::model::{MachineEvent, MachineId, MachineRecord};
+use ployz_types::error::{Error, Result};
+use ployz_types::model::{MachineEvent, MachineId, MachineRecord};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tracing::warn;
@@ -213,7 +213,7 @@ fn upsert_event(
 mod tests {
     use super::{into_machine_event, parse_machine_row};
     use corro_api_types::{ChangeId, RowId, TypedQueryEvent, sqlite::ChangeType};
-    use ployz_sdk::model::{
+    use ployz_types::model::{
         MachineEvent, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
     };
     use std::collections::{BTreeMap, HashMap};
@@ -249,8 +249,8 @@ mod tests {
 
     #[test]
     fn parse_machine_reads_payload() {
-        let record = parse_machine_row(&machine_row("machine-1", "db"))
-            .expect("machine row should parse");
+        let record =
+            parse_machine_row(&machine_row("machine-1", "db")).expect("machine row should parse");
 
         assert_eq!(record.id.0, "machine-1");
         assert_eq!(record.labels.get("role"), Some(&String::from("db")));

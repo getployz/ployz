@@ -1,7 +1,6 @@
-use bollard::Docker;
-use bollard::exec::{CreateExecOptions, StartExecResults};
-use futures_util::StreamExt;
 use ipnet::Ipv4Net;
+use std::process::Stdio;
+use tokio::process::Command;
 use tracing::{info, warn};
 
 use crate::error::{Error, Result};
@@ -12,7 +11,6 @@ const CTL_BIN: &str = "/usr/local/bin/ployz-bpfctl";
 /// The WG container image includes the dataplane binary, so no separate
 /// sidecar is needed — just docker exec.
 pub struct ContainerDataplane {
-    docker: Docker,
     container_name: String,
     bridge_ifname: String,
 }
@@ -23,11 +21,7 @@ impl ContainerDataplane {
         bridge_ifname: &str,
         wg_ifname: &str,
     ) -> Result<Self> {
-        let docker = Docker::connect_with_socket_defaults()
-            .map_err(|e| Error::operation("docker connect", e.to_string()))?;
-
         let dp = Self {
-            docker,
             container_name: wg_container_name.to_string(),
             bridge_ifname: bridge_ifname.to_string(),
         };
@@ -80,70 +74,30 @@ impl ContainerDataplane {
         // classifiers must attach to the bridge in the host netns. Since the
         // container runs with pid_mode=host, nsenter into PID 1's netns.
         let mut full_cmd = vec![
-            "nsenter".to_string(),
-            "--net=/proc/1/ns/net".to_string(),
-            "--".to_string(),
+            String::from("exec"),
+            String::from("--privileged"),
+            self.container_name.clone(),
+            String::from("nsenter"),
+            String::from("--net=/proc/1/ns/net"),
+            String::from("--"),
         ];
-        full_cmd.extend(cmd.iter().map(|s| s.to_string()));
+        full_cmd.extend(cmd.iter().map(|part| (*part).to_string()));
 
-        let exec = self
-            .docker
-            .create_exec(
-                &self.container_name,
-                CreateExecOptions::<String> {
-                    attach_stdout: Some(true),
-                    attach_stderr: Some(true),
-                    privileged: Some(true),
-                    cmd: Some(full_cmd),
-                    ..Default::default()
-                },
-            )
+        let output = Command::new("docker")
+            .args(&full_cmd)
+            .stdin(Stdio::null())
+            .output()
             .await
-            .map_err(|e| Error::operation("ebpf exec create", e.to_string()))?;
+            .map_err(|error| Error::operation("ebpf exec", error.to_string()))?;
 
-        let exec_id = exec.id.clone();
-        let mut stderr_buf = String::new();
-
-        match self
-            .docker
-            .start_exec(&exec.id, None)
-            .await
-            .map_err(|e| Error::operation("ebpf exec start", e.to_string()))?
-        {
-            StartExecResults::Attached { mut output, .. } => {
-                while let Some(result) = output.next().await {
-                    match result {
-                        Ok(bollard::container::LogOutput::StdErr { message }) => {
-                            if stderr_buf.len() < 4096 {
-                                stderr_buf.push_str(&String::from_utf8_lossy(&message));
-                                stderr_buf.truncate(4096);
-                            }
-                        }
-                        Err(e) => {
-                            return Err(Error::operation("ebpf exec", e.to_string()));
-                        }
-                        _ => {}
-                    }
-                }
-
-                let inspect = self
-                    .docker
-                    .inspect_exec(&exec_id)
-                    .await
-                    .map_err(|e| Error::operation("ebpf exec inspect", e.to_string()))?;
-
-                if let Some(code) = inspect.exit_code
-                    && code != 0
-                {
-                    let detail = if stderr_buf.is_empty() {
-                        format!("exit code {code}")
-                    } else {
-                        format!("exit code {code}: {}", stderr_buf.trim())
-                    };
-                    return Err(Error::operation("ebpf exec", detail));
-                }
-            }
-            StartExecResults::Detached => {}
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let detail = if stderr.is_empty() {
+                format!("exit code {}", output.status)
+            } else {
+                stderr
+            };
+            return Err(Error::operation("ebpf exec", detail));
         }
 
         Ok(())

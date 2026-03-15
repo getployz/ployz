@@ -95,51 +95,11 @@ fn get_interface_mtu(name: &str) -> Option<u32> {
     }
 }
 
-/// Try to detect public IP via external services.
-pub async fn get_public_ip() -> Option<IpAddr> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .ok()?;
-
-    let services = [
-        "https://api.ipify.org",
-        "https://ipinfo.io/ip",
-        "http://ip-api.com/line/?fields=query",
-    ];
-
-    for url in services {
-        match client.get(url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                if let Ok(body) = resp.text().await
-                    && let Ok(ip) = body.trim().parse::<IpAddr>()
-                {
-                    return Some(ip);
-                }
-            }
-            Ok(_) => continue,
-            Err(e) => {
-                tracing::debug!(?e, url, "public IP lookup failed");
-            }
-        }
-    }
-
-    tracing::warn!("could not detect public IP from any service");
-    None
-}
-
-/// Detect all reachable endpoints for this node, including public IP.
+/// Detect all reachable endpoints for this node from local interfaces only.
 /// Returns a list of `ip:port` strings.
 pub async fn detect_endpoints(listen_port: u16) -> Vec<String> {
-    let mut ips = list_routable_ips();
-
-    if let Some(public_ip) = get_public_ip().await
-        && !ips.contains(&public_ip)
-    {
-        ips.insert(0, public_ip);
-    }
-
-    ips.into_iter()
+    list_routable_ips()
+        .into_iter()
         .map(|ip| match ip {
             IpAddr::V6(v6) => format!("[{v6}]:{listen_port}"),
             IpAddr::V4(v4) => format!("{v4}:{listen_port}"),

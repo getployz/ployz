@@ -638,11 +638,8 @@ mod tests {
             .expect("upsert founder");
         let network = Arc::new(MemoryWireGuard::new());
         let mut mesh = Mesh::new(
-            WireguardDriver::Memory(network.clone()),
-            StoreDriver::Memory {
-                store: store.clone(),
-                service: Arc::new(MemoryService::new()),
-            },
+            WireguardDriver::memory_with(network.clone()),
+            StoreDriver::memory_with(store.clone(), Arc::new(MemoryService::new())),
             None,
             identity.machine_id.clone(),
             51820,

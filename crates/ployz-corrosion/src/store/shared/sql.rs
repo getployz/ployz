@@ -1,7 +1,7 @@
 use crate::client::CorrClient;
 use corro_api_types::{ExecResult, SqliteValue, Statement, TypedQueryEvent};
 use futures_util::StreamExt;
-use ployz_sdk::error::{Error, Result};
+use ployz_types::error::{Error, Result};
 use std::time::Duration;
 use tokio::time::timeout;
 

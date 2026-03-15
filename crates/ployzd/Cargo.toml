@@ -17,6 +17,7 @@ ebpf-native = ["ployz-core/ebpf-native"]
 
 [dependencies]
 ployz-core = { path = "../ployz-core" }
+ployz-runtime-backends = { path = "../ployz-runtime-backends" }
 ployz-sdk = { path = "../ployz-sdk" }
 ployz-gateway = { path = "../ployz-gateway" }
 ployz-dns = { path = "../ployz-dns" }

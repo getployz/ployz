@@ -24,7 +24,8 @@ pub fn machine_liveness(machine: &MachineRecord, now: u64) -> MachineLiveness {
     MachineLiveness::Fresh
 }
 
-pub(crate) fn machine_is_fresh(machine: &MachineRecord, now: u64) -> bool {
+#[must_use]
+pub fn machine_is_fresh(machine: &MachineRecord, now: u64) -> bool {
     machine_liveness(machine, now) == MachineLiveness::Fresh
 }
 

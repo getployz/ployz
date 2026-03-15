@@ -2,14 +2,13 @@ use crate::admin::AdminClient;
 use crate::client::{CorrClient, Transport};
 use crate::config as corrosion_config;
 use corro_api_types::{ExecResult, Statement};
-use ployz_sdk::error::{Error, Result};
-use ployz_sdk::model::{
+use ployz_types::error::{Error, Result};
+use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, OverlayIp, RoutingState, ServiceReleaseRecord,
-    ServiceRevisionRecord,
+    MachineId, MachineRecord, OverlayIp, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
 };
-use ployz_sdk::spec::Namespace;
-use ployz_sdk::store::{
+use ployz_types::spec::Namespace;
+use ployz_types::store::{
     DeployStore, InviteStore, MachineStore, RoutingStore, SyncProbe, SyncStatus,
 };
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -47,9 +46,9 @@ impl CorrosionStore {
     }
 
     pub async fn connect_for_network(data_dir: &Path, network: &str) -> Result<Self> {
-        let network_dir = ployz_sdk::paths::network_dir(data_dir, network);
+        let network_dir = ployz_types::paths::network_dir(data_dir, network);
         let admin_path = corrosion_config::Paths::new(&network_dir).admin;
-        let network_path = ployz_sdk::paths::network_config_path(data_dir, network);
+        let network_path = ployz_types::paths::network_config_path(data_dir, network);
         let raw = std::fs::read_to_string(&network_path).map_err(|e| {
             Error::operation(
                 "connect_for_network",

@@ -2,9 +2,9 @@ use crate::client::CorrClient;
 use crate::store::shared::sql::exec_all;
 use crate::store::tables::{deploys, service_releases};
 use corro_api_types::Statement;
-use ployz_sdk::error::Result;
-use ployz_sdk::model::{DeployRecord, ServiceReleaseRecord};
-use ployz_sdk::spec::Namespace;
+use ployz_types::error::Result;
+use ployz_types::model::{DeployRecord, ServiceReleaseRecord};
+use ployz_types::spec::Namespace;
 
 pub(crate) async fn commit_deploy(
     client: &CorrClient,
@@ -53,11 +53,11 @@ fn build_commit_statements(
 mod tests {
     use super::build_commit_statements;
     use corro_api_types::Statement;
-    use ployz_sdk::model::{
+    use ployz_types::model::{
         DeployId, DeployRecord, DeployState, MachineId, ServiceRelease, ServiceReleaseRecord,
         ServiceRoutingPolicy,
     };
-    use ployz_sdk::spec::Namespace;
+    use ployz_types::spec::Namespace;
 
     #[test]
     fn build_commit_statements_deduplicates_services_and_preserves_order() {
@@ -105,9 +105,8 @@ mod tests {
             summary_json: String::from("{}"),
         };
 
-        let statements =
-            build_commit_statements(&namespace, &removed_services, &releases, &deploy)
-                .expect("commit statements");
+        let statements = build_commit_statements(&namespace, &removed_services, &releases, &deploy)
+            .expect("commit statements");
 
         let [
             delete_api_release,

@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, RwLock};
 
-use ployz_sdk::model::{DrainState, InstancePhase, RoutingState};
-use ployz_sdk::spec::Namespace;
+use ployz_types::model::{DrainState, InstancePhase, RoutingState};
+use ployz_types::spec::Namespace;
 
 // ---------------------------------------------------------------------------
 // DnsSnapshot
@@ -114,7 +114,7 @@ pub fn project_dns(state: &RoutingState) -> DnsSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_sdk::model::{
+    use ployz_types::model::{
         DeployId, InstanceId, InstanceStatusRecord, MachineId, RoutingState, SlotId,
     };
     use std::collections::BTreeMap;

@@ -2,8 +2,8 @@ use crate::client::CorrClient;
 use crate::store::shared::decode::text;
 use crate::store::shared::sql::{exec_one, query_rows};
 use corro_api_types::{SqliteValue, Statement};
-use ployz_sdk::error::{Error, Result};
-use ployz_sdk::model::{DeployId, DeployRecord};
+use ployz_types::error::{Error, Result};
+use ployz_types::model::{DeployId, DeployRecord};
 
 pub(crate) async fn upsert_deploy(client: &CorrClient, record: &DeployRecord) -> Result<()> {
     let stmt = upsert_statement(record)?;

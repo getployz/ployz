@@ -107,10 +107,7 @@ mod tests {
         let authoritative_self = Arc::new(RwLock::new(test_record()));
         let store = Arc::new(MemoryStore::new());
         let service = Arc::new(MemoryService::new());
-        let store_driver = StoreDriver::Memory {
-            store: store.clone(),
-            service,
-        };
+        let store_driver = StoreDriver::memory_with(store.clone(), service);
         let (self_record_tx, self_record_rx) = mpsc::channel(8);
         let writer_cancel = CancellationToken::new();
         let writer_task_cancel = writer_cancel.clone();
@@ -126,7 +123,7 @@ mod tests {
         });
 
         let network = Arc::new(MemoryWireGuard::new());
-        let network_driver = WireguardDriver::Memory(network);
+        let network_driver = WireguardDriver::memory_with(network);
         let started = Arc::new(AtomicBool::new(false));
         let started_flag = started.clone();
         let (command_tx, command_rx) = mpsc::channel(4);
@@ -174,10 +171,7 @@ mod tests {
         }));
         let store = Arc::new(MemoryStore::new());
         let service = Arc::new(MemoryService::new());
-        let store_driver = StoreDriver::Memory {
-            store: store.clone(),
-            service,
-        };
+        let store_driver = StoreDriver::memory_with(store.clone(), service);
         let (self_record_tx, self_record_rx) = mpsc::channel(8);
         let writer_cancel = CancellationToken::new();
         let writer_task_cancel = writer_cancel.clone();
@@ -193,7 +187,7 @@ mod tests {
         });
 
         publish_liveness(
-            &WireguardDriver::Memory(Arc::new(MemoryWireGuard::new())),
+            &WireguardDriver::memory_with(Arc::new(MemoryWireGuard::new())),
             &self_record_tx,
         )
         .await;

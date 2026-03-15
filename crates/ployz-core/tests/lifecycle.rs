@@ -35,11 +35,8 @@ fn make_mesh(
     store: Arc<MemoryStore>,
 ) -> Mesh {
     Mesh::new(
-        WireguardDriver::Memory(wg),
-        StoreDriver::Memory {
-            store,
-            service: svc,
-        },
+        WireguardDriver::memory_with(wg),
+        StoreDriver::memory_with(store, svc),
         None,
         MachineId(machine_id.into()),
         51820,
@@ -135,11 +132,8 @@ async fn joiner_seed_peer_requires_sync_for_ready() {
     store.set_sync_status(SyncStatus::Disconnected);
 
     let mut mesh = Mesh::new(
-        WireguardDriver::Memory(wg),
-        StoreDriver::Memory {
-            store: store.clone(),
-            service: svc,
-        },
+        WireguardDriver::memory_with(wg),
+        StoreDriver::memory_with(store.clone(), svc),
         None,
         joiner_record.id.clone(),
         51820,
@@ -171,11 +165,8 @@ async fn joiner_retains_founder_peer_across_peer_sync_handoff() {
     store.upsert_self_machine(&joiner_record).await.unwrap();
 
     let mut mesh = Mesh::new(
-        WireguardDriver::Memory(wg.clone()),
-        StoreDriver::Memory {
-            store: store.clone(),
-            service: svc,
-        },
+        WireguardDriver::memory_with(wg.clone()),
+        StoreDriver::memory_with(store.clone(), svc),
         None,
         joiner_record.id.clone(),
         51820,
@@ -296,11 +287,8 @@ async fn bootstrap_connection_timeout() {
     store.set_sync_status(SyncStatus::Disconnected);
 
     let mut mesh = Mesh::new(
-        WireguardDriver::Memory(wg),
-        StoreDriver::Memory {
-            store,
-            service: svc,
-        },
+        WireguardDriver::memory_with(wg),
+        StoreDriver::memory_with(store, svc),
         None,
         joiner_record.id.clone(),
         51820,
@@ -336,11 +324,8 @@ async fn bootstrap_proceeds_on_membership() {
     });
 
     let mut mesh = Mesh::new(
-        WireguardDriver::Memory(wg),
-        StoreDriver::Memory {
-            store,
-            service: svc,
-        },
+        WireguardDriver::memory_with(wg),
+        StoreDriver::memory_with(store, svc),
         None,
         joiner_record.id.clone(),
         51820,

@@ -1,5 +1,5 @@
 use corro_api_types::SqliteValue;
-use ployz_sdk::error::{Error, Result};
+use ployz_types::error::{Error, Result};
 
 pub(crate) fn text(val: &SqliteValue, field: &'static str) -> Result<String> {
     val.as_text()

@@ -2,11 +2,11 @@ use crate::client::{CorrClient, SubscriptionStream};
 use crate::store::tables::{instance_status, service_releases, service_revisions};
 use corro_api_types::{RowId, SqliteValue, Statement, TypedQueryEvent, sqlite::ChangeType};
 use futures_util::StreamExt;
-use ployz_sdk::error::{Error, Result};
-use ployz_sdk::model::{
+use ployz_types::error::{Error, Result};
+use ployz_types::model::{
     InstanceId, InstanceStatusRecord, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
 };
-use ployz_sdk::spec::Namespace;
+use ployz_types::spec::Namespace;
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -417,8 +417,8 @@ mod tests {
     use super::apply_routing_change;
     use crate::store::tables::service_releases;
     use corro_api_types::{RowId, SqliteValue, sqlite::ChangeType};
-    use ployz_sdk::model::{DeployId, ServiceRelease, ServiceReleaseRecord, ServiceRoutingPolicy};
-    use ployz_sdk::spec::Namespace;
+    use ployz_types::model::{DeployId, ServiceRelease, ServiceReleaseRecord, ServiceRoutingPolicy};
+    use ployz_types::spec::Namespace;
     use std::collections::HashMap;
 
     fn release_row(namespace: &str, service: &str) -> Vec<SqliteValue> {

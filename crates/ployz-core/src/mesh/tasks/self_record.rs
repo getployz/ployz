@@ -132,10 +132,7 @@ mod tests {
         let authoritative_self = Arc::new(RwLock::new(test_record()));
         let store = Arc::new(MemoryStore::new());
         let service = Arc::new(MemoryService::new());
-        let store_driver = StoreDriver::Memory {
-            store: store.clone(),
-            service,
-        };
+        let store_driver = StoreDriver::memory_with(store.clone(), service);
         let (tx, rx) = mpsc::channel(8);
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();
@@ -176,10 +173,7 @@ mod tests {
         let authoritative_self = Arc::new(RwLock::new(test_record()));
         let store = Arc::new(MemoryStore::new());
         let service = Arc::new(MemoryService::new());
-        let store_driver = StoreDriver::Memory {
-            store: store.clone(),
-            service,
-        };
+        let store_driver = StoreDriver::memory_with(store.clone(), service);
         let (tx, rx) = mpsc::channel(8);
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();

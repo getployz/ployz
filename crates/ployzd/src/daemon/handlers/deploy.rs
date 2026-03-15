@@ -163,7 +163,10 @@ async fn export_manifest(
         let spec: ServiceSpec = serde_json::from_str(spec_json).map_err(|err| {
             ployz_sdk::Error::operation(
                 "deploy_export",
-                format!("invalid stored spec for service '{}': {err}", release.service),
+                format!(
+                    "invalid stored spec for service '{}': {err}",
+                    release.service
+                ),
             )
         })?;
         if spec.name != release.service {

@@ -4,6 +4,14 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 output_path="${1:-$repo_dir/target/ployz-dev/built-in-images.toml}"
 
+log() {
+  if [[ -w /dev/tty ]]; then
+    printf '%s\n' "$*" > /dev/tty
+    return
+  fi
+  printf '%s\n' "$*" >&2
+}
+
 case "$(uname -m)" in
   arm64|aarch64)
     target_arch="arm64"
@@ -16,6 +24,22 @@ case "$(uname -m)" in
     exit 1
     ;;
 esac
+
+log "Preparing local built-in Docker images for ployzd dev run (arch: $target_arch)..."
+
+build_image() {
+  local dockerfile="$1"
+  local image_ref="$2"
+
+  log "Building $image_ref from $dockerfile ..."
+  docker build \
+    --progress=plain \
+    --build-arg TARGETARCH="$target_arch" \
+    -f "$repo_dir/$dockerfile" \
+    -t "$image_ref" \
+    "$repo_dir"
+  log "Finished $image_ref"
+}
 
 git_tag() {
   if ! command -v git >/dev/null 2>&1; then
@@ -55,29 +79,14 @@ networking_ref="ployz-dev/ployz-networking:${tag_suffix}"
 dns_ref="ployz-dev/ployz-dns:${tag_suffix}"
 gateway_ref="ployz-dev/ployz-gateway:${tag_suffix}"
 
-echo "Building $networking_ref ..." >&2
-docker build \
-  --build-arg TARGETARCH="$target_arch" \
-  -f "$repo_dir/Dockerfile.networking" \
-  -t "$networking_ref" \
-  "$repo_dir" >&2
-
-echo "Building $dns_ref ..." >&2
-docker build \
-  --build-arg TARGETARCH="$target_arch" \
-  -f "$repo_dir/Dockerfile.dns" \
-  -t "$dns_ref" \
-  "$repo_dir" >&2
-
-echo "Building $gateway_ref ..." >&2
-docker build \
-  --build-arg TARGETARCH="$target_arch" \
-  -f "$repo_dir/Dockerfile.gateway" \
-  -t "$gateway_ref" \
-  "$repo_dir" >&2
+build_image "Dockerfile.networking" "$networking_ref" >&2
+build_image "Dockerfile.dns" "$dns_ref" >&2
+build_image "Dockerfile.gateway" "$gateway_ref" >&2
 
 bash "$repo_dir/scripts/write-built-in-images-manifest.sh" \
   "$output_path" \
   "networking=$networking_ref" \
   "dns=$dns_ref" \
   "gateway=$gateway_ref"
+
+log "Wrote built-in image manifest to $output_path"
