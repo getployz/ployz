@@ -11,8 +11,8 @@ use crate::error::{Error, Result};
 use crate::machine_liveness::machine_is_fresh;
 use crate::model::{
     DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployPreview, DeployRecord,
-    DeployState, InstanceId, MachineId, ServiceHeadRecord, ServicePlan, ServiceRevisionRecord,
-    ServiceSlotRecord, SlotId, SlotPlan,
+    DeployState, InstanceId, MachineId, ServicePlan, ServiceRelease, ServiceReleaseRecord,
+    ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy, SlotId, SlotPlan,
 };
 use crate::spec::{DeployManifest, Placement, ServiceSpec};
 use crate::store::{DeployStore, MachineStore};
@@ -39,21 +39,14 @@ pub async fn preview(
         .map_err(|e| Error::operation("deploy_preview", e))?;
     let namespace = &manifest.namespace;
 
-    let current_heads = store.list_service_heads(namespace).await?;
-    let current_slots = store.list_service_slots(namespace).await?;
+    let current_releases = store.list_service_releases(namespace).await?;
     let machines = store.list_machines().await?;
     let desired_machines = deployable_machines(&machines, local_machine_id, now_unix_secs());
-    let current_head_map: HashMap<String, ServiceHeadRecord> = current_heads
+    let current_release_map: HashMap<String, ServiceReleaseRecord> = current_releases
         .into_iter()
         .map(|record| (record.service.clone(), record))
         .collect();
-    let mut current_slots_by_service: HashMap<String, Vec<ServiceSlotRecord>> = HashMap::new();
-    for slot in current_slots {
-        current_slots_by_service
-            .entry(slot.service.clone())
-            .or_default()
-            .push(slot);
-    }
+    let current_slots_by_service = current_slots_by_service(&current_release_map);
 
     let manifest_hash = stable_hash_hex(
         serde_json::to_vec(manifest)
@@ -73,13 +66,13 @@ pub async fn preview(
         let desired_slots = desired_slots(
             spec,
             &desired_machines,
-            current_slots_by_service.get(&spec.name),
+            current_slots_by_service.get(&spec.name).map(Vec::as_slice),
         )?;
         let current_service_slots = current_slots_by_service
             .get(&spec.name)
             .cloned()
             .unwrap_or_default();
-        let current_head = current_head_map.get(&spec.name);
+        let current_release = current_release_map.get(&spec.name);
         let mut slot_plans = Vec::new();
         for desired_slot in desired_slots {
             participants.insert(desired_slot.machine_id.clone());
@@ -112,18 +105,20 @@ pub async fn preview(
         let action = if slot_plans
             .iter()
             .all(|plan| plan.action == DeployChangeKind::Unchanged)
-            && current_head.map(|head| head.current_revision_hash.as_str())
+            && current_release
+                .map(|release| release.release.primary_revision_hash.as_str())
                 == Some(revision_hash.as_str())
         {
             DeployChangeKind::Unchanged
-        } else if current_head.is_none() {
+        } else if current_release.is_none() {
             DeployChangeKind::Create
         } else {
             DeployChangeKind::Replace
         };
         services.push(ServicePlan {
             service: spec.name.clone(),
-            current_revision_hash: current_head.map(|head| head.current_revision_hash.clone()),
+            current_revision_hash: current_release
+                .map(|release| release.release.primary_revision_hash.clone()),
             next_revision_hash: Some(revision_hash),
             slots: slot_plans,
             action,
@@ -138,10 +133,10 @@ pub async fn preview(
             participants.insert(slot.machine_id.clone());
         }
         services.push(ServicePlan {
-            service,
-            current_revision_hash: current_head_map
-                .get(&slots[0].service)
-                .map(|head| head.current_revision_hash.clone()),
+            service: service.clone(),
+            current_revision_hash: current_release_map
+                .get(&service)
+                .map(|release| release.release.primary_revision_hash.clone()),
             next_revision_hash: None,
             slots: slots
                 .into_iter()
@@ -242,10 +237,10 @@ pub async fn apply(
         store.upsert_deploy(&deploy_record).await?;
 
         let current_slots_by_service =
-            current_slots_by_service(store.list_service_slots(namespace).await?);
+            current_slots_by_service_from_releases(&store.list_service_releases(namespace).await?);
         let desired_machines = deployable_machines(&machines, local_machine_id, now_unix_secs());
         let mut removed_services = Vec::new();
-        let mut committed_heads = Vec::new();
+        let mut committed_releases = Vec::new();
         let mut committed_slots = Vec::new();
 
         for spec in &manifest.services {
@@ -269,7 +264,7 @@ pub async fn apply(
             let desired = desired_slots(
                 spec,
                 &desired_machines,
-                current_slots_by_service.get(&spec.name),
+                current_slots_by_service.get(&spec.name).map(Vec::as_slice),
             )?;
             let mut next_slots = Vec::new();
             for desired_slot in desired {
@@ -318,24 +313,27 @@ pub async fn apply(
                     status.instance_id
                 };
 
-                next_slots.push(ServiceSlotRecord {
-                    namespace: namespace.clone(),
-                    service: spec.name.clone(),
+                next_slots.push(ServiceReleaseSlot {
                     slot_id: desired_slot.slot_id,
                     machine_id: desired_slot.machine_id,
                     active_instance_id,
                     revision_hash: revision_hash.clone(),
-                    updated_by_deploy_id: deploy_id.clone(),
-                    updated_at: now_unix_secs(),
                 });
             }
 
-            committed_heads.push(ServiceHeadRecord {
+            committed_releases.push(ServiceReleaseRecord {
                 namespace: namespace.clone(),
                 service: spec.name.clone(),
-                current_revision_hash: revision_hash,
-                updated_by_deploy_id: deploy_id.clone(),
-                updated_at: now_unix_secs(),
+                release: ServiceRelease {
+                    primary_revision_hash: revision_hash.clone(),
+                    referenced_revision_hashes: vec![revision_hash.clone()],
+                    routing: ServiceRoutingPolicy::Direct {
+                        revision_hash: revision_hash,
+                    },
+                    slots: next_slots.clone(),
+                    updated_by_deploy_id: deploy_id.clone(),
+                    updated_at: now_unix_secs(),
+                },
             });
             committed_slots.extend(next_slots);
         }
@@ -359,8 +357,7 @@ pub async fn apply(
             .commit_deploy(
                 namespace,
                 &removed_services,
-                &committed_heads,
-                &committed_slots,
+                &committed_releases,
                 &deploy_record,
             )
             .await?;
@@ -465,7 +462,7 @@ fn deployable_machines(
 fn desired_slots(
     spec: &ServiceSpec,
     machines: &[MachineId],
-    current_slots: Option<&Vec<ServiceSlotRecord>>,
+    current_slots: Option<&[ServiceReleaseSlot]>,
 ) -> Result<Vec<DesiredSlot>> {
     let candidates = if machines.is_empty() {
         vec![MachineId("local".into())]
@@ -478,7 +475,8 @@ fn desired_slots(
         Placement::Singleton => {
             let machine_id = current_slots
                 .and_then(|slots| slots.first().map(|slot| slot.machine_id.clone()))
-                .unwrap_or_else(|| candidates[0].clone());
+                .or_else(|| candidates.first().cloned())
+                .ok_or_else(|| Error::operation("desired_slots", "no candidate machines"))?;
             desired.push(DesiredSlot {
                 slot_id: SlotId("slot-0001".into()),
                 machine_id,
@@ -512,14 +510,20 @@ fn desired_slots(
 }
 
 fn current_slots_by_service(
-    current_slots: Vec<ServiceSlotRecord>,
-) -> HashMap<String, Vec<ServiceSlotRecord>> {
+    current_releases: &HashMap<String, ServiceReleaseRecord>,
+) -> HashMap<String, Vec<ServiceReleaseSlot>> {
+    current_releases
+        .iter()
+        .map(|(service, release)| (service.clone(), release.release.slots.clone()))
+        .collect()
+}
+
+fn current_slots_by_service_from_releases(
+    current_releases: &[ServiceReleaseRecord],
+) -> HashMap<String, Vec<ServiceReleaseSlot>> {
     let mut grouped = HashMap::new();
-    for slot in current_slots {
-        grouped
-            .entry(slot.service.clone())
-            .or_insert_with(Vec::new)
-            .push(slot);
+    for release in current_releases {
+        grouped.insert(release.service.clone(), release.release.slots.clone());
     }
     grouped
 }

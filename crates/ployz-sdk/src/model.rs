@@ -195,31 +195,52 @@ pub struct ServiceRevisionRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ServiceHeadRecord {
+pub struct ServiceReleaseRecord {
     pub namespace: Namespace,
     pub service: String,
-    pub current_revision_hash: String,
+    pub release: ServiceRelease,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceRelease {
+    pub primary_revision_hash: String,
+    pub referenced_revision_hashes: Vec<String>,
+    pub routing: ServiceRoutingPolicy,
+    pub slots: Vec<ServiceReleaseSlot>,
     pub updated_by_deploy_id: DeployId,
     pub updated_at: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ServiceSlotRecord {
-    pub namespace: Namespace,
-    pub service: String,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ServiceRoutingPolicy {
+    Direct {
+        revision_hash: String,
+    },
+    Split {
+        allocations: Vec<ServiceTrafficAllocation>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceTrafficAllocation {
+    pub revision_hash: String,
+    pub percent: u8,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceReleaseSlot {
     pub slot_id: SlotId,
     pub machine_id: MachineId,
     pub active_instance_id: InstanceId,
     pub revision_hash: String,
-    pub updated_by_deploy_id: DeployId,
-    pub updated_at: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoutingState {
     pub revisions: Vec<ServiceRevisionRecord>,
-    pub heads: Vec<ServiceHeadRecord>,
-    pub slots: Vec<ServiceSlotRecord>,
+    pub releases: Vec<ServiceReleaseRecord>,
     pub instances: Vec<InstanceStatusRecord>,
 }
 

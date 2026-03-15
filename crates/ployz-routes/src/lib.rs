@@ -1,9 +1,10 @@
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::net::{SocketAddr, SocketAddrV4};
 
 use ployz_sdk::model::{
-    InstanceId, InstancePhase, InstanceStatusRecord, MachineId, RoutingState, ServiceSlotRecord,
+    InstanceId, InstancePhase, InstanceStatusRecord, MachineId, RoutingState, ServiceRelease,
+    ServiceReleaseSlot, ServiceRoutingPolicy,
 };
 use ployz_sdk::spec::{Namespace, RouteSpec, ServiceSpec};
 use serde::{Deserialize, Serialize};
@@ -57,7 +58,7 @@ pub struct BackendView {
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ProjectionError {
     #[error(
-        "current head for service '{service}' in namespace '{namespace}' referenced missing revision '{revision_hash}'"
+        "service release for '{service}' in namespace '{namespace}' referenced missing revision '{revision_hash}'"
     )]
     MissingRevision {
         namespace: Namespace,
@@ -65,7 +66,7 @@ pub enum ProjectionError {
         revision_hash: String,
     },
     #[error(
-        "current head for service '{service}' in namespace '{namespace}' had invalid spec json: {message}"
+        "service release for '{service}' in namespace '{namespace}' had invalid spec json: {message}"
     )]
     InvalidRevisionSpec {
         namespace: Namespace,
@@ -146,31 +147,21 @@ pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> 
         .into_iter()
         .map(|instance| (instance.instance_id.clone(), instance))
         .collect::<HashMap<_, _>>();
-    let mut slots_by_revision = HashMap::new();
-    for slot in state.slots {
-        slots_by_revision
-            .entry((
-                slot.namespace.clone(),
-                slot.service.clone(),
-                slot.revision_hash.clone(),
-            ))
-            .or_insert_with(Vec::new)
-            .push(slot);
-    }
 
     let mut http_routes = Vec::new();
     let mut tcp_routes = Vec::new();
-    for head in state.heads {
+    for release_record in state.releases {
+        let routing_revision_hash = routing_revision_hash(&release_record.release);
         let revision_key = (
-            head.namespace.clone(),
-            head.service.clone(),
-            head.current_revision_hash.clone(),
+            release_record.namespace.clone(),
+            release_record.service.clone(),
+            routing_revision_hash.clone(),
         );
         let Some(revision) = revisions.get(&revision_key) else {
             return Err(ProjectionError::MissingRevision {
-                namespace: head.namespace,
-                service: head.service,
-                revision_hash: head.current_revision_hash,
+                namespace: release_record.namespace,
+                service: release_record.service,
+                revision_hash: routing_revision_hash,
             });
         };
         let spec: ServiceSpec = serde_json::from_str(&revision.spec_json).map_err(|err| {
@@ -183,11 +174,10 @@ pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> 
 
         let backends_by_port = routable_backends_by_port(
             &spec,
-            &head.current_revision_hash,
-            slots_by_revision
-                .get(&revision_key)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]),
+            &release_record.namespace,
+            &release_record.service,
+            &allowed_revision_hashes(&release_record.release),
+            &release_record.release.slots,
             &instances,
         );
 
@@ -206,7 +196,7 @@ pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> 
                         route_id: format!("http:{}:{}:{}", revision.namespace, spec.name, index),
                         namespace: revision.namespace.clone(),
                         service: spec.name.clone(),
-                        revision_hash: head.current_revision_hash.clone(),
+                        revision_hash: revision.revision_hash.clone(),
                         hostnames,
                         path_prefix: normalize_path_prefix(&route.path_prefix),
                         backends: backends_by_port
@@ -220,7 +210,7 @@ pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> 
                         route_id: format!("tcp:{}:{}:{}", revision.namespace, spec.name, index),
                         namespace: revision.namespace.clone(),
                         service: spec.name.clone(),
-                        revision_hash: head.current_revision_hash.clone(),
+                        revision_hash: revision.revision_hash.clone(),
                         listen_port: route.listen_port,
                         backends: backends_by_port
                             .get(&route.service_port)
@@ -253,8 +243,10 @@ pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> 
 
 fn routable_backends_by_port(
     spec: &ServiceSpec,
-    revision_hash: &str,
-    slots: &[ServiceSlotRecord],
+    namespace: &Namespace,
+    service: &str,
+    allowed_revision_hashes: &HashSet<String>,
+    slots: &[ServiceReleaseSlot],
     instances: &HashMap<InstanceId, InstanceStatusRecord>,
 ) -> BTreeMap<String, Vec<BackendView>> {
     let service_ports = spec
@@ -267,7 +259,7 @@ fn routable_backends_by_port(
         let Some(instance) = instances.get(&slot.active_instance_id) else {
             continue;
         };
-        if !is_routable_instance(instance, slot, revision_hash) {
+        if !is_routable_instance(instance, slot, namespace, service, allowed_revision_hashes) {
             continue;
         }
         let Some(overlay_ip) = instance.overlay_ip else {
@@ -302,18 +294,45 @@ fn routable_backends_by_port(
 
 fn is_routable_instance(
     instance: &InstanceStatusRecord,
-    slot: &ServiceSlotRecord,
-    revision_hash: &str,
+    slot: &ServiceReleaseSlot,
+    namespace: &Namespace,
+    service: &str,
+    allowed_revision_hashes: &HashSet<String>,
 ) -> bool {
-    instance.namespace == slot.namespace
-        && instance.service == slot.service
+    instance.namespace == *namespace
+        && instance.service == service
         && instance.slot_id == slot.slot_id
         && instance.machine_id == slot.machine_id
-        && instance.revision_hash == revision_hash
+        && instance.revision_hash == slot.revision_hash
+        && allowed_revision_hashes.contains(&instance.revision_hash)
         && instance.ready
         && instance.phase == InstancePhase::Ready
         && instance.drain_state == ployz_sdk::model::DrainState::None
         && instance.error.is_none()
+}
+
+fn routing_revision_hash(release: &ServiceRelease) -> String {
+    match &release.routing {
+        ServiceRoutingPolicy::Direct { revision_hash } => revision_hash.clone(),
+        ServiceRoutingPolicy::Split { .. } => release.primary_revision_hash.clone(),
+    }
+}
+
+fn allowed_revision_hashes(release: &ServiceRelease) -> HashSet<String> {
+    match &release.routing {
+        ServiceRoutingPolicy::Direct { revision_hash } => HashSet::from([revision_hash.clone()]),
+        ServiceRoutingPolicy::Split { allocations } => {
+            let hashes = allocations
+                .iter()
+                .map(|allocation| allocation.revision_hash.clone())
+                .collect::<HashSet<_>>();
+            if hashes.is_empty() {
+                release.referenced_revision_hashes.iter().cloned().collect()
+            } else {
+                hashes
+            }
+        }
+    }
 }
 
 fn validate_http_conflicts(routes: &[HttpRouteView]) -> Result<(), ProjectionError> {
@@ -379,48 +398,32 @@ fn normalize_path_prefix(path_prefix: &str) -> String {
 mod tests {
     use super::*;
     use ployz_sdk::model::{
-        DeployId, DrainState, InstanceStatusRecord, ServiceHeadRecord, ServiceRevisionRecord,
-        ServiceSlotRecord, SlotId,
+        DeployId, DrainState, InstanceStatusRecord, ServiceRelease, ServiceReleaseRecord,
+        ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy, SlotId,
     };
     use ployz_sdk::spec::{
-        ContainerSpec, HttpRoute, NetworkMode, Placement, PortProtocol, PullPolicy, Resources,
+        ContainerSpec, NetworkMode, Placement, PortProtocol, PullPolicy, Resources,
         RestartPolicy, RouteSpec, ServicePort, ServiceSpec,
     };
     use std::net::Ipv4Addr;
 
     #[test]
-    fn project_only_routes_current_head_ready_instances() {
+    fn project_only_routes_release_ready_instances() {
         let namespace = Namespace("prod".into());
-        let revision_a = "rev-a".to_string();
-        let revision_b = "rev-b".to_string();
-        let old = service_spec(
-            &namespace,
-            "api",
-            "v1",
-            revision_a.clone(),
-            vec!["old.example.com".into()],
-        );
-        let current = service_spec(
-            &namespace,
-            "api",
-            "v2",
-            revision_b.clone(),
-            vec!["api.example.com".into()],
-        );
+        let old = service_spec(&namespace, "api", "v1", vec!["old.example.com".into()]);
+        let current = service_spec(&namespace, "api", "v2", vec!["api.example.com".into()]);
 
         let snapshot = project(RoutingState {
             revisions: vec![revision_record(&old), revision_record(&current)],
-            heads: vec![ServiceHeadRecord {
-                namespace: namespace.clone(),
-                service: "api".into(),
-                current_revision_hash: current.revision_hash().expect("revision hash"),
-                updated_by_deploy_id: DeployId("dep-1".into()),
-                updated_at: 1,
-            }],
-            slots: vec![
-                slot_record(&namespace, "api", "slot-1", "inst-ready", &current),
-                slot_record(&namespace, "api", "slot-2", "inst-draining", &current),
-            ],
+            releases: vec![release_record(
+                &namespace,
+                "api",
+                &current.revision_hash().expect("revision hash"),
+                vec![
+                    slot_record("slot-1", "inst-ready", &current),
+                    slot_record("slot-2", "inst-draining", &current),
+                ],
+            )],
             instances: vec![
                 instance_record(
                     &namespace,
@@ -452,6 +455,73 @@ mod tests {
             panic!("expected one backend");
         };
         assert_eq!(backend.instance_id.0, "inst-ready");
+    }
+
+    #[test]
+    fn split_release_includes_backends_from_multiple_revisions() {
+        let namespace = Namespace("prod".into());
+        let stable = service_spec(&namespace, "api", "v1", vec!["api.example.com".into()]);
+        let canary = service_spec(&namespace, "api", "v2", vec!["api.example.com".into()]);
+        let stable_hash = stable.revision_hash().expect("stable revision hash");
+        let canary_hash = canary.revision_hash().expect("canary revision hash");
+
+        let snapshot = project(RoutingState {
+            revisions: vec![revision_record(&stable), revision_record(&canary)],
+            releases: vec![ServiceReleaseRecord {
+                namespace: namespace.clone(),
+                service: String::from("api"),
+                release: ServiceRelease {
+                    primary_revision_hash: stable_hash.clone(),
+                    referenced_revision_hashes: vec![stable_hash.clone(), canary_hash.clone()],
+                    routing: ServiceRoutingPolicy::Split {
+                        allocations: vec![
+                            ployz_sdk::model::ServiceTrafficAllocation {
+                                revision_hash: stable_hash.clone(),
+                                percent: 90,
+                                label: Some(String::from("stable")),
+                            },
+                            ployz_sdk::model::ServiceTrafficAllocation {
+                                revision_hash: canary_hash.clone(),
+                                percent: 10,
+                                label: Some(String::from("canary")),
+                            },
+                        ],
+                    },
+                    slots: vec![
+                        slot_record("slot-stable", "inst-stable", &stable),
+                        slot_record("slot-canary", "inst-canary", &canary),
+                    ],
+                    updated_by_deploy_id: DeployId(String::from("dep-1")),
+                    updated_at: 1,
+                },
+            }],
+            instances: vec![
+                instance_record(
+                    &namespace,
+                    "api",
+                    "slot-stable",
+                    "inst-stable",
+                    true,
+                    DrainState::None,
+                    &stable,
+                ),
+                instance_record(
+                    &namespace,
+                    "api",
+                    "slot-canary",
+                    "inst-canary",
+                    true,
+                    DrainState::None,
+                    &canary,
+                ),
+            ],
+        })
+        .expect("projection succeeds");
+
+        let [route] = snapshot.http_routes.as_slice() else {
+            panic!("expected one http route");
+        };
+        assert_eq!(route.backends.len(), 2);
     }
 
     #[test]
@@ -488,40 +558,25 @@ mod tests {
     #[test]
     fn duplicate_http_host_and_path_is_rejected() {
         let namespace = Namespace("prod".into());
-        let left = service_spec(
-            &namespace,
-            "one",
-            "v1",
-            "rev-1".into(),
-            vec!["api.example.com".into()],
-        );
-        let right = service_spec(
-            &namespace,
-            "two",
-            "v1",
-            "rev-2".into(),
-            vec!["api.example.com".into()],
-        );
+        let left = service_spec(&namespace, "one", "v1", vec!["api.example.com".into()]);
+        let right = service_spec(&namespace, "two", "v1", vec!["api.example.com".into()]);
 
         let error = project(RoutingState {
             revisions: vec![revision_record(&left), revision_record(&right)],
-            heads: vec![
-                ServiceHeadRecord {
-                    namespace: namespace.clone(),
-                    service: "one".into(),
-                    current_revision_hash: left.revision_hash().expect("revision hash"),
-                    updated_by_deploy_id: DeployId("dep-1".into()),
-                    updated_at: 1,
-                },
-                ServiceHeadRecord {
-                    namespace: namespace.clone(),
-                    service: "two".into(),
-                    current_revision_hash: right.revision_hash().expect("revision hash"),
-                    updated_by_deploy_id: DeployId("dep-1".into()),
-                    updated_at: 1,
-                },
+            releases: vec![
+                release_record(
+                    &namespace,
+                    "one",
+                    &left.revision_hash().expect("revision hash"),
+                    Vec::new(),
+                ),
+                release_record(
+                    &namespace,
+                    "two",
+                    &right.revision_hash().expect("revision hash"),
+                    Vec::new(),
+                ),
             ],
-            slots: Vec::new(),
             instances: Vec::new(),
         })
         .expect_err("conflict expected");
@@ -542,7 +597,7 @@ mod tests {
     #[test]
     fn tcp_routes_are_projected_with_no_serving_dependency() {
         let namespace = Namespace("prod".into());
-        let mut spec = service_spec(&namespace, "db", "v1", "rev-db".into(), Vec::new());
+        let mut spec = service_spec(&namespace, "db", "v1", Vec::new());
         spec.routes = vec![RouteSpec::Tcp(ployz_sdk::spec::TcpRoute {
             service_port: "sql".into(),
             listen_port: 5432,
@@ -555,14 +610,12 @@ mod tests {
 
         let snapshot = project(RoutingState {
             revisions: vec![revision_record(&spec)],
-            heads: vec![ServiceHeadRecord {
-                namespace: namespace.clone(),
-                service: "db".into(),
-                current_revision_hash: spec.revision_hash().expect("revision hash"),
-                updated_by_deploy_id: DeployId("dep-1".into()),
-                updated_at: 1,
-            }],
-            slots: vec![slot_record(&namespace, "db", "slot-1", "inst-db", &spec)],
+            releases: vec![release_record(
+                &namespace,
+                "db",
+                &spec.revision_hash().expect("revision hash"),
+                vec![slot_record("slot-1", "inst-db", &spec)],
+            )],
             instances: vec![instance_record(
                 &namespace,
                 "db",
@@ -586,7 +639,6 @@ mod tests {
         _namespace: &Namespace,
         service: &str,
         image_tag: &str,
-        _seed: String,
         hostnames: Vec<String>,
     ) -> ServiceSpec {
         ServiceSpec {
@@ -613,7 +665,7 @@ mod tests {
                 protocol: PortProtocol::Tcp,
             }],
             publish: Vec::new(),
-            routes: vec![RouteSpec::Http(HttpRoute {
+            routes: vec![RouteSpec::Http(ployz_sdk::spec::HttpRoute {
                 service_port: "http".into(),
                 hostnames,
                 path_prefix: "/".into(),
@@ -639,22 +691,34 @@ mod tests {
         }
     }
 
-    fn slot_record(
+    fn release_record(
         namespace: &Namespace,
         service: &str,
-        slot_id: &str,
-        instance_id: &str,
-        spec: &ServiceSpec,
-    ) -> ServiceSlotRecord {
-        ServiceSlotRecord {
+        revision_hash: &str,
+        slots: Vec<ServiceReleaseSlot>,
+    ) -> ServiceReleaseRecord {
+        ServiceReleaseRecord {
             namespace: namespace.clone(),
             service: service.into(),
+            release: ServiceRelease {
+                primary_revision_hash: revision_hash.into(),
+                referenced_revision_hashes: vec![revision_hash.into()],
+                routing: ServiceRoutingPolicy::Direct {
+                    revision_hash: revision_hash.into(),
+                },
+                slots,
+                updated_by_deploy_id: DeployId("dep-1".into()),
+                updated_at: 1,
+            },
+        }
+    }
+
+    fn slot_record(slot_id: &str, instance_id: &str, spec: &ServiceSpec) -> ServiceReleaseSlot {
+        ServiceReleaseSlot {
             slot_id: SlotId(slot_id.into()),
             machine_id: MachineId("machine-a".into()),
             active_instance_id: InstanceId(instance_id.into()),
             revision_hash: spec.revision_hash().expect("revision hash"),
-            updated_by_deploy_id: DeployId("dep-1".into()),
-            updated_at: 1,
         }
     }
 

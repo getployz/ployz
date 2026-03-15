@@ -5,9 +5,11 @@ use ployz_sdk::error::{Error, Result};
 use ployz_sdk::model::InviteRecord;
 
 pub(crate) async fn create_invite(client: &CorrClient, invite: &InviteRecord) -> Result<()> {
+    let payload_json = serde_json::to_string(invite)
+        .map_err(|e| Error::operation("create_invite", format!("serialize: {e}")))?;
     let stmt = Statement::WithParams(
-        "INSERT INTO invites (id, expires_at) VALUES (?, ?)".to_string(),
-        vec![invite.id.clone().into(), (invite.expires_at as i64).into()],
+        "INSERT INTO invites (invite_id, payload_json) VALUES (?, ?)".to_string(),
+        vec![invite.id.clone().into(), payload_json.into()],
     );
     let res = client
         .execute(&[stmt], None)
@@ -29,7 +31,7 @@ pub(crate) async fn consume_invite(
     now_unix_secs: u64,
 ) -> Result<()> {
     let stmt = Statement::WithParams(
-        "DELETE FROM invites WHERE id = ? AND expires_at >= ?".to_string(),
+        "DELETE FROM invites WHERE invite_id = ? AND payload_json <> '' AND json_extract(payload_json, '$.expires_at') >= ?".to_string(),
         vec![invite_id.to_string().into(), (now_unix_secs as i64).into()],
     );
     let res = client
@@ -42,7 +44,7 @@ pub(crate) async fn consume_invite(
         Some(ExecResult::Error { error }) => Err(Error::operation("consume_invite", error.clone())),
         _ => {
             let lookup = Statement::WithParams(
-                "SELECT id, expires_at FROM invites WHERE id = ? LIMIT 1".to_string(),
+                "SELECT invite_id FROM invites WHERE invite_id = ? AND payload_json <> '' LIMIT 1".to_string(),
                 vec![invite_id.to_string().into()],
             );
             if query_rows(client, &lookup, "consume_invite")
