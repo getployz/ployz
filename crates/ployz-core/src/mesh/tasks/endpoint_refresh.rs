@@ -1,5 +1,5 @@
-use crate::model::MachineId;
 use crate::mesh::tasks::{SelfRecordMutation, apply_self_record_mutation};
+use crate::model::MachineId;
 use crate::network::endpoints::detect_endpoints;
 use std::sync::Arc;
 use std::time::Duration;

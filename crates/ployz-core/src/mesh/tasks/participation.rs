@@ -1,8 +1,8 @@
 use crate::machine_liveness::machine_is_fresh;
+use crate::mesh::WireGuardDevice;
 use crate::mesh::driver::WireguardDriver;
 use crate::mesh::probe::{TcpProbeResult, TcpProbeStatus, probe_overlay_ips_parallel};
 use crate::mesh::tasks::{SelfRecordMutation, apply_self_record_mutation};
-use crate::mesh::WireGuardDevice;
 use crate::model::{MachineId, MachineRecord, Participation};
 use crate::store::MachineStore;
 use crate::store::driver::StoreDriver;
@@ -210,7 +210,10 @@ async fn required_peers_health(
     }
 
     if let Err(error) = network.read_peers().await {
-        warn!(?error, "failed to read direct wireguard peers for participation");
+        warn!(
+            ?error,
+            "failed to read direct wireguard peers for participation"
+        );
         return RequiredPeerHealth {
             required_peer_ids: required_peer_ids.clone(),
             unhealthy_required_peer_ids: required_peer_ids,
@@ -258,9 +261,9 @@ mod tests {
     use crate::mesh::wireguard::MemoryWireGuard;
     use crate::model::{MachineStatus, OverlayIp, PublicKey};
     use crate::store::backends::memory::{MemoryService, MemoryStore};
-    use std::sync::{Mutex, MutexGuard, OnceLock};
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
     use tokio::sync::RwLock;
 
     fn test_machine(
@@ -512,7 +515,11 @@ mod tests {
         assert_eq!(self_record.participation, Participation::Draining);
     }
 
-    fn start_test_probe_listener() -> (MutexGuard<'static, ()>, CancellationToken, tokio::task::JoinHandle<()>) {
+    fn start_test_probe_listener() -> (
+        MutexGuard<'static, ()>,
+        CancellationToken,
+        tokio::task::JoinHandle<()>,
+    ) {
         static PROBE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         let probe_guard = PROBE_LOCK
             .get_or_init(|| Mutex::new(()))
