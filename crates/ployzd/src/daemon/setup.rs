@@ -148,6 +148,11 @@ impl MeshStartTx {
                 state.namespace_locks.clone(),
                 state.identity.machine_id.clone(),
                 plan.overlay_network_name.clone(),
+                if state.runtime_target == crate::config::RuntimeTarget::Docker {
+                    mesh.container_dns_server()
+                } else {
+                    None
+                },
             )
             .await
             .map_err(|error| StartMeshError::RemoteControl {
@@ -361,8 +366,16 @@ impl DaemonState {
             self.gateway_listen_addr.clone(),
             self.gateway_threads,
         );
-        let dns_config =
-            DnsConfig::for_network(&self.data_dir, &net_config.name.0, net_config.overlay_ip);
+        let dns_config = DnsConfig::for_network(
+            &self.data_dir,
+            &net_config.name.0,
+            net_config.overlay_ip,
+            if self.runtime_target == crate::config::RuntimeTarget::Docker {
+                Some("0.0.0.0:53".into())
+            } else {
+                None
+            },
+        );
 
         let new_gateway = self
             .runtime_profile
@@ -417,8 +430,16 @@ impl DaemonState {
             self.gateway_listen_addr.clone(),
             self.gateway_threads,
         );
-        let dns_config =
-            DnsConfig::for_network(&self.data_dir, &net_config.name.0, net_config.overlay_ip);
+        let dns_config = DnsConfig::for_network(
+            &self.data_dir,
+            &net_config.name.0,
+            net_config.overlay_ip,
+            if self.runtime_target == crate::config::RuntimeTarget::Docker {
+                Some("0.0.0.0:53".into())
+            } else {
+                None
+            },
+        );
 
         Ok(StartPlan {
             network_dir,

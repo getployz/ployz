@@ -337,6 +337,11 @@ impl ContainerEngine {
             } else {
                 Some(spec.binds.clone())
             },
+            dns: if spec.dns_servers.is_empty() {
+                None
+            } else {
+                Some(spec.dns_servers.clone())
+            },
             network_mode: spec.network_mode.clone(),
             port_bindings: spec.port_bindings.clone(),
             cap_add: if spec.cap_add.is_empty() {
