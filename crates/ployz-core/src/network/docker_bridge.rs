@@ -1,7 +1,7 @@
 use bollard::Docker;
 use bollard::models::{
     EndpointIpamConfig, EndpointSettings, Ipam, IpamConfig, NetworkConnectRequest,
-    NetworkCreateRequest,
+    NetworkCreateRequest, NetworkDisconnectRequest,
 };
 use ipnet::Ipv4Net;
 use std::net::Ipv4Addr;
@@ -165,6 +165,24 @@ impl DockerBridgeNetwork {
                 Ok(())
             }
             Err(e) => Err(Error::operation("connect network", e.to_string())),
+        }
+    }
+
+    pub async fn disconnect(&self, container: &str, force: bool) -> Result<()> {
+        let request = NetworkDisconnectRequest {
+            container: container.to_string(),
+            force: Some(force),
+        };
+
+        match self.docker.disconnect_network(&self.name, request).await {
+            Ok(()) => {
+                info!(network = %self.name, container, force, "disconnected container from network");
+                Ok(())
+            }
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(()),
+            Err(e) => Err(Error::operation("disconnect network", e.to_string())),
         }
     }
 

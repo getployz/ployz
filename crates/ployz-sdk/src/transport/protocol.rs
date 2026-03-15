@@ -49,9 +49,23 @@ pub struct MachineInstallOptions {
     pub git_ref: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DebugTickTask {
+    PeerSync,
+    Heartbeat,
+    Heal,
+    All,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonRequest {
     Status,
+    Doctor,
+    DebugTick {
+        task: DebugTickTask,
+        repeat: u32,
+    },
     MeshList,
     MeshStatus {
         network: String,
@@ -86,9 +100,6 @@ pub enum DaemonRequest {
         targets: Vec<String>,
         options: MachineAddOptions,
     },
-    MachineDrain {
-        id: String,
-    },
     MachineRemove {
         id: String,
         force: bool,
@@ -113,11 +124,6 @@ pub enum DaemonRequest {
     },
     DeployExport {
         namespace: String,
-    },
-    MachineLabel {
-        id: String,
-        set: Vec<(String, String)>,
-        remove: Vec<String>,
     },
 }
 

@@ -177,6 +177,39 @@ impl ContainerEngine {
         Ok(())
     }
 
+    pub async fn stop(&self, container_name: &str, grace_period: Duration) -> Result<()> {
+        let grace_secs = grace_period.as_secs() as i32;
+        let stop_opts = StopContainerOptionsBuilder::default().t(grace_secs).build();
+        match self
+            .docker
+            .stop_container(container_name, Some(stop_opts))
+            .await
+        {
+            Ok(()) => {
+                info!(name = %container_name, "container stopped");
+                Ok(())
+            }
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 304 | 404,
+                ..
+            }) => Ok(()),
+            Err(e) => Err(Error::operation("docker stop", e.to_string())),
+        }
+    }
+
+    pub async fn start(&self, container_name: &str) -> Result<()> {
+        match self.docker.start_container(container_name, None).await {
+            Ok(()) => {
+                info!(name = %container_name, "container started");
+                Ok(())
+            }
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 304, ..
+            }) => Ok(()),
+            Err(e) => Err(Error::operation("docker start", e.to_string())),
+        }
+    }
+
     pub async fn inspect(&self, container_name: &str) -> Result<Option<ObservedContainer>> {
         match self.docker.inspect_container(container_name, None).await {
             Ok(info) => Ok(Some(observe(&info))),
@@ -185,6 +218,13 @@ impl ContainerEngine {
             }) => Ok(None),
             Err(e) => Err(Error::operation("docker inspect", e.to_string())),
         }
+    }
+
+    pub async fn is_running(&self, container_name: &str) -> Result<bool> {
+        let Some(observed) = self.inspect(container_name).await? else {
+            return Ok(false);
+        };
+        Ok(observed.running)
     }
 
     pub async fn list_by_labels(&self, filters: &[(&str, &str)]) -> Result<Vec<ObservedContainer>> {

@@ -12,6 +12,7 @@ use crate::node::identity::Identity;
 use crate::services::dns::DnsHandle;
 use crate::services::gateway::GatewayHandle;
 use crate::store::network::NetworkConfig;
+use ipnet::Ipv4Net;
 use ployz_sdk::transport::DaemonResponse;
 
 pub struct ActiveMesh {
@@ -20,6 +21,20 @@ pub struct ActiveMesh {
     pub remote_control: RemoteControlHandle,
     pub gateway: GatewayHandle,
     pub dns: DnsHandle,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SubnetHealAttempt {
+    pub network_subnet: Ipv4Net,
+    pub target_subnet: Ipv4Net,
+    pub attempted_at: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PendingSubnetHeal {
+    pub network_subnet: Ipv4Net,
+    pub target_subnet: Ipv4Net,
+    pub planned_at: u64,
 }
 
 pub struct DaemonState {
@@ -33,6 +48,8 @@ pub struct DaemonState {
     pub gateway_threads: usize,
     pub active: Option<ActiveMesh>,
     pub namespace_locks: NamespaceLockManager,
+    pub(crate) pending_subnet_heal: Option<PendingSubnetHeal>,
+    pub(crate) last_subnet_heal_attempt: Option<SubnetHealAttempt>,
 }
 
 impl DaemonState {
@@ -59,6 +76,8 @@ impl DaemonState {
             gateway_threads,
             active: None,
             namespace_locks: NamespaceLockManager::default(),
+            pending_subnet_heal: None,
+            last_subnet_heal_attempt: None,
         }
     }
 

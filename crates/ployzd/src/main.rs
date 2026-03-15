@@ -5,9 +5,9 @@ use ployz_sdk::spec::{
     Resources, RestartPolicy, RolloutStrategy, ServicePort, ServiceSpec, VolumeMount, VolumeSource,
 };
 use ployz_sdk::transport::{
-    DaemonRequest, DaemonResponse, DeployOptions, InstallMode as MachineInstallMode,
-    InstallSource as MachineInstallSource, MachineAddOptions, MachineInstallOptions, Transport,
-    UnixSocketTransport,
+    DaemonRequest, DaemonResponse, DebugTickTask as ProtocolDebugTickTask, DeployOptions,
+    InstallMode as MachineInstallMode, InstallSource as MachineInstallSource, MachineAddOptions,
+    MachineInstallOptions, Transport, UnixSocketTransport,
 };
 use ployzd::daemon::handlers::RequestLane;
 use ployzd::daemon::{ActiveMesh, DaemonState};
@@ -19,9 +19,11 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
+use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 type Result<T> = std::result::Result<T, CliError>;
+const SUBNET_HEAL_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum RuntimeMode {
@@ -34,6 +36,14 @@ enum RuntimeMode {
 enum InstallSourceArg {
     Release,
     Git,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum DebugTickTaskArg {
+    PeerSync,
+    Heartbeat,
+    Heal,
+    All,
 }
 
 impl From<RuntimeMode> for Mode {
@@ -61,6 +71,17 @@ impl From<InstallSourceArg> for MachineInstallSource {
         match value {
             InstallSourceArg::Release => MachineInstallSource::Release,
             InstallSourceArg::Git => MachineInstallSource::Git,
+        }
+    }
+}
+
+impl From<DebugTickTaskArg> for ProtocolDebugTickTask {
+    fn from(value: DebugTickTaskArg) -> Self {
+        match value {
+            DebugTickTaskArg::PeerSync => ProtocolDebugTickTask::PeerSync,
+            DebugTickTaskArg::Heartbeat => ProtocolDebugTickTask::Heartbeat,
+            DebugTickTaskArg::Heal => ProtocolDebugTickTask::Heal,
+            DebugTickTaskArg::All => ProtocolDebugTickTask::All,
         }
     }
 }
@@ -155,6 +176,13 @@ enum Command {
     },
     /// Show daemon and mesh status.
     Status,
+    /// Diagnose local cluster health from this machine's point of view.
+    Doctor,
+    #[command(hide = true)]
+    Debug {
+        #[command(subcommand)]
+        action: DebugAction,
+    },
     /// Deploy canonical namespace manifests.
     Deploy(Box<DeployCommand>),
     /// Mesh network management.
@@ -167,6 +195,17 @@ enum Command {
     Machine {
         #[command(subcommand)]
         action: MachineAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DebugAction {
+    #[command(hide = true)]
+    Tick {
+        #[arg(long, value_enum, default_value_t = DebugTickTaskArg::All)]
+        task: DebugTickTaskArg,
+        #[arg(long, default_value_t = 1)]
+        repeat: u32,
     },
 }
 
@@ -287,7 +326,7 @@ enum MeshAction {
     },
     /// Print this machine's identity as an encoded JoinResponse (requires running network).
     SelfRecord,
-    /// Accept a JoinResponse and seed the joiner's record into the local store.
+    /// Accept a JoinResponse and install the joiner as a transient local peer.
     Accept { response: String },
 }
 
@@ -330,24 +369,11 @@ enum MachineAction {
         #[arg(required = true, num_args = 1..)]
         targets: Vec<String>,
     },
-    /// Mark a machine as draining.
-    Drain { id: String },
     /// Remove a machine from the mesh.
     Rm {
         id: String,
         #[arg(long)]
         force: bool,
-    },
-    /// Set or remove labels on a machine.
-    Label {
-        /// Machine ID (or "self" for the local machine).
-        id: String,
-        /// Labels to set (key=value).
-        #[arg(long, num_args = 1..)]
-        set: Vec<String>,
-        /// Label keys to remove.
-        #[arg(long, num_args = 1..)]
-        rm: Vec<String>,
     },
     /// Invite token operations.
     Invite {
@@ -503,6 +529,22 @@ async fn cmd_run(
 
     tracing::info!(socket = socket_path, "daemon running");
 
+    let heal_state = Arc::clone(&state);
+    let heal_cancel = cancel.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(SUBNET_HEAL_INTERVAL);
+        interval.tick().await;
+        loop {
+            tokio::select! {
+                _ = heal_cancel.cancelled() => break,
+                _ = interval.tick() => {
+                    let mut state_guard = heal_state.write().await;
+                    state_guard.heal_local_subnet_conflict_if_needed().await;
+                }
+            }
+        }
+    });
+
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
@@ -562,12 +604,23 @@ async fn build_request<T: Transport>(
 ) -> Result<DaemonRequest> {
     match command {
         Command::Status => Ok(DaemonRequest::Status),
+        Command::Doctor => Ok(DaemonRequest::Doctor),
+        Command::Debug { action } => build_debug_request(action),
         Command::Deploy(command) => build_deploy_request(*command, transport, socket).await,
         Command::Mesh { action } => build_mesh_request(action),
         Command::Machine { action } => build_machine_request(action),
         Command::Run { .. } => Err(CliError::Usage(
             "internal error: daemon command cannot be encoded as a daemon request".into(),
         )),
+    }
+}
+
+fn build_debug_request(action: DebugAction) -> Result<DaemonRequest> {
+    match action {
+        DebugAction::Tick { task, repeat } => Ok(DaemonRequest::DebugTick {
+            task: task.into(),
+            repeat,
+        }),
     }
 }
 
@@ -788,22 +841,7 @@ fn build_machine_request(action: MachineAction) -> Result<DaemonRequest> {
             };
             Ok(DaemonRequest::MachineAdd { targets, options })
         }
-        MachineAction::Drain { id } => Ok(DaemonRequest::MachineDrain { id }),
         MachineAction::Rm { id, force } => Ok(DaemonRequest::MachineRemove { id, force }),
-        MachineAction::Label { id, set, rm } => {
-            let set_pairs: Vec<(String, String)> = set
-                .into_iter()
-                .filter_map(|entry| {
-                    let (key, value) = entry.split_once('=')?;
-                    Some((key.to_string(), value.to_string()))
-                })
-                .collect();
-            Ok(DaemonRequest::MachineLabel {
-                id,
-                set: set_pairs,
-                remove: rm,
-            })
-        }
         MachineAction::Invite { action } => match action {
             MachineInviteAction::Create { ttl_secs } => {
                 Ok(DaemonRequest::MachineInviteCreate { ttl_secs })
@@ -1218,5 +1256,29 @@ mod tests {
         );
 
         std::fs::remove_file(path).expect("remove identity");
+    }
+
+    #[test]
+    fn parse_doctor_command() {
+        let cli = Cli::try_parse_from(["ployzd", "doctor"]).expect("doctor args should parse");
+
+        let Command::Doctor = cli.command else {
+            panic!("expected doctor command");
+        };
+    }
+
+    #[test]
+    fn build_debug_tick_request_defaults_to_all() {
+        let request = build_debug_request(DebugAction::Tick {
+            task: DebugTickTaskArg::All,
+            repeat: 1,
+        })
+        .expect("debug tick request");
+
+        let DaemonRequest::DebugTick { task, repeat } = request else {
+            panic!("expected debug tick request");
+        };
+        assert_eq!(task, ProtocolDebugTickTask::All);
+        assert_eq!(repeat, 1);
     }
 }
