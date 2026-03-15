@@ -1,8 +1,8 @@
 pub mod daemon;
 pub mod install;
 pub mod ipc;
-pub mod services;
 mod runtime_profile;
+pub mod services;
 
 pub use ployz_core::config;
 pub use ployz_core::deploy;

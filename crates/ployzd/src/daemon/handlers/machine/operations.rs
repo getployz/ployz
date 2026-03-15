@@ -169,8 +169,12 @@ impl MachineOperationStore {
     pub(super) fn save(&self, record: &MachineOperationRecord) -> Result<(), String> {
         let path = self.path_for(&record.id);
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|err| format!("create machine operations dir '{}': {err}", parent.display()))?;
+            std::fs::create_dir_all(parent).map_err(|err| {
+                format!(
+                    "create machine operations dir '{}': {err}",
+                    parent.display()
+                )
+            })?;
         }
         let body = serde_json::to_vec_pretty(record)
             .map_err(|err| format!("encode machine operation '{}': {err}", record.id))?;
@@ -231,7 +235,9 @@ impl DaemonState {
         MachineOperationStore::new(self.data_dir.clone())
     }
 
-    pub(crate) async fn handle_machine_operation_list(&self) -> ployz_sdk::transport::DaemonResponse {
+    pub(crate) async fn handle_machine_operation_list(
+        &self,
+    ) -> ployz_sdk::transport::DaemonResponse {
         let records = match self.machine_operation_store().list() {
             Ok(records) => records,
             Err(err) => return self.err("MACHINE_OPERATION_LIST_FAILED", err),
@@ -323,9 +329,11 @@ impl DaemonState {
             };
             if let Some(note) = note {
                 let combined = merge_operation_notes(record.last_error.as_deref(), &note);
-                if let Err(err) =
-                    store.update_status(&mut record, MachineOperationStatus::Interrupted, Some(combined))
-                {
+                if let Err(err) = store.update_status(
+                    &mut record,
+                    MachineOperationStatus::Interrupted,
+                    Some(combined),
+                ) {
                     tracing::warn!(error = %err, operation_id = %record.id, "machine operation reconciliation: update note failed");
                 }
             }
@@ -399,7 +407,6 @@ impl DaemonState {
         }
         Ok(Some(notes.join("; ")))
     }
-
 }
 
 fn unique_operation_id(kind: MachineOperationKind, now: u64) -> String {

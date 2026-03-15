@@ -428,7 +428,9 @@ impl DaemonState {
             remote_control_bind_addr,
             gateway_config,
             dns_config,
-            overlay_network_name: self.runtime_profile.overlay_network_name(&net_config.name.0),
+            overlay_network_name: self
+                .runtime_profile
+                .overlay_network_name(&net_config.name.0),
         })
     }
 

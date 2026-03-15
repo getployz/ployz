@@ -85,8 +85,14 @@ impl MachineAddFailure {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum MachineAddTargetResult {
-    AwaitingSelfPublication { target: String, joiner_id: MachineId },
-    Failed { target: String, failure: MachineAddFailure },
+    AwaitingSelfPublication {
+        target: String,
+        joiner_id: MachineId,
+    },
+    Failed {
+        target: String,
+        failure: MachineAddFailure,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -161,7 +167,11 @@ impl MachineListReport {
     #[must_use]
     pub(super) fn payload(&self) -> MachineListPayload {
         MachineListPayload {
-            rows: self.rows.iter().map(MachineListReportRow::payload).collect(),
+            rows: self
+                .rows
+                .iter()
+                .map(MachineListReportRow::payload)
+                .collect(),
         }
     }
 }

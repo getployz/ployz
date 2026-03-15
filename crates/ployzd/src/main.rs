@@ -499,7 +499,9 @@ async fn cmd_rpc_stdio(socket: &str) -> Result<i32> {
     let mut line = String::new();
     BufReader::new(std::io::stdin())
         .read_line(&mut line)
-        .map_err(|err| CliError::Usage(format!("failed to read daemon request from stdin: {err}")))?;
+        .map_err(|err| {
+            CliError::Usage(format!("failed to read daemon request from stdin: {err}"))
+        })?;
     let request = serde_json::from_str::<DaemonRequest>(&line)
         .map_err(|err| CliError::Usage(format!("invalid daemon request from stdin: {err}")))?;
 

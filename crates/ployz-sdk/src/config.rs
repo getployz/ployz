@@ -328,46 +328,68 @@ mod tests {
     #[test]
     fn docker_runtime_requires_docker() {
         assert!(
-            validate_runtime(RuntimeTarget::Docker, ServiceMode::User, &aff(Os::Linux, false))
-                .is_err()
+            validate_runtime(
+                RuntimeTarget::Docker,
+                ServiceMode::User,
+                &aff(Os::Linux, false)
+            )
+            .is_err()
         );
         assert!(
-            validate_runtime(RuntimeTarget::Docker, ServiceMode::User, &aff(Os::Linux, true))
-                .is_ok()
+            validate_runtime(
+                RuntimeTarget::Docker,
+                ServiceMode::User,
+                &aff(Os::Linux, true)
+            )
+            .is_ok()
         );
     }
 
     #[test]
     fn docker_runtime_rejects_system_service_mode() {
         assert!(
-            validate_runtime(RuntimeTarget::Docker, ServiceMode::System, &aff(Os::Linux, true))
-                .is_err()
+            validate_runtime(
+                RuntimeTarget::Docker,
+                ServiceMode::System,
+                &aff(Os::Linux, true)
+            )
+            .is_err()
         );
     }
 
     #[test]
     fn host_runtime_rejects_unknown_os() {
         assert!(
-            validate_runtime(RuntimeTarget::Host, ServiceMode::User, &aff(Os::Other, false))
-                .is_err()
+            validate_runtime(
+                RuntimeTarget::Host,
+                ServiceMode::User,
+                &aff(Os::Other, false)
+            )
+            .is_err()
         );
         assert!(
-            validate_runtime(RuntimeTarget::Host, ServiceMode::User, &aff(Os::Linux, false))
-                .is_ok()
+            validate_runtime(
+                RuntimeTarget::Host,
+                ServiceMode::User,
+                &aff(Os::Linux, false)
+            )
+            .is_ok()
         );
     }
 
     #[test]
     fn host_system_service_requires_linux_root() {
         assert!(
-            validate_runtime(RuntimeTarget::Host, ServiceMode::System, &aff(Os::Darwin, false))
-                .is_err()
+            validate_runtime(
+                RuntimeTarget::Host,
+                ServiceMode::System,
+                &aff(Os::Darwin, false)
+            )
+            .is_err()
         );
 
         let mut affordances = aff(Os::Linux, false);
         affordances.is_root = true;
-        assert!(
-            validate_runtime(RuntimeTarget::Host, ServiceMode::System, &affordances).is_ok()
-        );
+        assert!(validate_runtime(RuntimeTarget::Host, ServiceMode::System, &affordances).is_ok());
     }
 }

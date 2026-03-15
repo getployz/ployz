@@ -107,7 +107,8 @@ impl RuntimeProfile {
         let network = match self.execution_backend {
             ExecutionBackend::Memory => WireguardDriver::memory(),
             ExecutionBackend::Docker => {
-                WireguardDriver::docker(identity, overlay_ip, network_dir, exposed_tcp_ports).await?
+                WireguardDriver::docker(identity, overlay_ip, network_dir, exposed_tcp_ports)
+                    .await?
             }
             ExecutionBackend::Host => {
                 WireguardDriver::host(identity, overlay_ip, network_name, subnet)?
@@ -117,7 +118,8 @@ impl RuntimeProfile {
         let store = match self.execution_backend {
             ExecutionBackend::Memory => StoreDriver::memory(),
             ExecutionBackend::Docker => {
-                StoreDriver::corrosion_docker(overlay_ip, network_dir, bootstrap, network_id).await?
+                StoreDriver::corrosion_docker(overlay_ip, network_dir, bootstrap, network_id)
+                    .await?
             }
             ExecutionBackend::Host => {
                 StoreDriver::corrosion_host(overlay_ip, network_dir, bootstrap, network_id)?
@@ -147,7 +149,9 @@ impl RuntimeProfile {
         overlay_ip: OverlayIp,
     ) -> SocketAddr {
         match self.control_plane_binding {
-            ControlPlaneBinding::Loopback => SocketAddr::from(([127, 0, 0, 1], remote_control_port)),
+            ControlPlaneBinding::Loopback => {
+                SocketAddr::from(([127, 0, 0, 1], remote_control_port))
+            }
             ControlPlaneBinding::Overlay => {
                 SocketAddr::new(IpAddr::V6(overlay_ip.0), remote_control_port)
             }
