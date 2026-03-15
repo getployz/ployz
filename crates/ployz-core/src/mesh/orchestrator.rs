@@ -4,8 +4,11 @@ use crate::mesh::driver::WireguardDriver;
 use crate::mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
 use crate::mesh::probe::run_probe_listener_task;
 use crate::mesh::tasks::{
-    PeerSyncCommand, TaskSet, TaskSetError, run_ebpf_sync_task, run_endpoint_refresh_task,
-    run_heartbeat_task, run_peer_sync_task,
+    HeartbeatCommand, ParticipationCommand, PeerSyncCommand, SelfLivenessCommand,
+    SelfRecordMutation, TaskSet, TaskSetError, apply_self_record_mutation, run_ebpf_sync_task,
+    run_endpoint_refresh_task, run_heartbeat_task, run_participation_task,
+    run_peer_sync_task, run_self_liveness_task, run_self_record_writer_task,
+    run_subnet_claim_monitor_task,
 };
 use crate::model::{MachineId, MachineRecord, MachineStatus};
 use crate::network::docker_bridge::DockerBridgeNetwork;
@@ -16,7 +19,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use thiserror::Error;
-use tokio::sync::mpsc;
+use tokio::sync::{RwLock, mpsc};
 use tracing::{info, warn};
 
 pub type Result<T> = std::result::Result<T, MeshError>;
@@ -48,12 +51,17 @@ pub struct Mesh {
     tasks: Option<TaskSet>,
     task_cancel: Option<tokio_util::sync::CancellationToken>,
     peer_sync_tx: Option<mpsc::Sender<PeerSyncCommand>>,
+    heartbeat_tx: Option<mpsc::Sender<HeartbeatCommand>>,
+    self_liveness_tx: Option<mpsc::Sender<SelfLivenessCommand>>,
+    participation_tx: Option<mpsc::Sender<ParticipationCommand>>,
+    self_record_tx: Option<mpsc::Sender<crate::mesh::tasks::SelfRecordCommand>>,
     bootstrap_interval: Duration,
     connection_timeout: Duration,
     service_ready_timeout: Duration,
     machine_id: MachineId,
     listen_port: u16,
     seed_records: Vec<MachineRecord>,
+    authoritative_self: Option<Arc<RwLock<MachineRecord>>>,
     allow_disconnected_bootstrap: bool,
     dataplane: Option<Arc<EbpfDataplane>>,
     wg_ifindex: u32,
@@ -77,12 +85,17 @@ impl Mesh {
             tasks: None,
             task_cancel: None,
             peer_sync_tx: None,
+            heartbeat_tx: None,
+            self_liveness_tx: None,
+            participation_tx: None,
+            self_record_tx: None,
             bootstrap_interval: Duration::from_millis(500),
             connection_timeout: Duration::from_secs(30),
             service_ready_timeout: Duration::from_secs(15),
             machine_id,
             listen_port,
             seed_records: Vec::new(),
+            authoritative_self: None,
             allow_disconnected_bootstrap: false,
             dataplane: None,
             wg_ifindex: 0,
@@ -123,6 +136,33 @@ impl Mesh {
 
     pub fn peer_sync_sender(&self) -> Option<mpsc::Sender<PeerSyncCommand>> {
         self.peer_sync_tx.clone()
+    }
+
+    pub fn heartbeat_sender(&self) -> Option<mpsc::Sender<HeartbeatCommand>> {
+        self.heartbeat_tx.clone()
+    }
+
+    pub async fn authoritative_self_record(&self) -> Option<MachineRecord> {
+        let authoritative_self = self.authoritative_self.as_ref()?.clone();
+        Some(authoritative_self.read().await.clone())
+    }
+
+    pub async fn update_authoritative_self_record(
+        &self,
+        update: impl FnOnce(&mut MachineRecord),
+    ) -> Option<MachineRecord> {
+        let current = self.authoritative_self_record().await?;
+        let mut next = current;
+        update(&mut next);
+        if let Some(self_record_tx) = &self.self_record_tx {
+            return apply_self_record_mutation(self_record_tx, SelfRecordMutation::Replace(next))
+                .await;
+        }
+
+        let authoritative_self = self.authoritative_self.as_ref()?.clone();
+        let mut record = authoritative_self.write().await;
+        *record = next;
+        Some(record.clone())
     }
 
     pub async fn ready_status(&self) -> MeshReadyStatus {
@@ -329,31 +369,108 @@ impl Mesh {
             .into());
         };
 
+        if self.authoritative_self.is_none() {
+            let store_self = self.store.list_machines().await.ok().and_then(|machines| {
+                machines
+                    .into_iter()
+                    .find(|machine| machine.id == self.machine_id)
+            });
+            let authoritative = self
+                .seed_records
+                .iter()
+                .find(|machine| machine.id == self.machine_id)
+                .cloned()
+                .or(store_self)
+                .ok_or_else(|| {
+                    TaskSetError::Subscribe(crate::error::Error::operation(
+                        "self machine record",
+                        "authoritative self record missing".to_string(),
+                    ))
+                })?;
+            self.authoritative_self = Some(Arc::new(RwLock::new(authoritative)));
+        }
+        let authoritative_self = self.authoritative_self.as_ref().cloned().ok_or_else(|| {
+            TaskSetError::Subscribe(crate::error::Error::operation(
+                "self machine record",
+                "authoritative self record missing".to_string(),
+            ))
+        })?;
+
         let cancel2 = cancel.clone();
+        let (self_record_tx, self_record_rx) = mpsc::channel(64);
+        self.self_record_tx = Some(self_record_tx.clone());
         if let Some(task_set) = self.tasks.as_mut() {
-            task_set.spawn(run_endpoint_refresh_task(
-                self.machine_id.clone(),
-                self.listen_port,
+            task_set.spawn(run_self_record_writer_task(
+                authoritative_self.clone(),
                 self.store.clone(),
+                self_record_rx,
                 cancel2,
             ));
         }
 
         let cancel3 = cancel.clone();
-        self.heartbeat_started.store(false, Ordering::SeqCst);
-        let self_seed = self
-            .seed_records
-            .iter()
-            .find(|m| m.id == self.machine_id)
-            .cloned();
         if let Some(task_set) = self.tasks.as_mut() {
-            task_set.spawn(run_heartbeat_task(
+            task_set.spawn(run_endpoint_refresh_task(
                 self.machine_id.clone(),
-                self_seed,
-                self.store.clone(),
+                self.listen_port,
+                authoritative_self.clone(),
+                self_record_tx.clone(),
+                cancel3,
+            ));
+        }
+
+        let cancel4 = cancel.clone();
+        self.heartbeat_started.store(false, Ordering::SeqCst);
+        let (self_liveness_tx, self_liveness_rx) = mpsc::channel(16);
+        self.self_liveness_tx = Some(self_liveness_tx.clone());
+        if let Some(task_set) = self.tasks.as_mut() {
+            task_set.spawn(run_self_liveness_task(
                 self.network.clone(),
                 self.heartbeat_started.clone(),
-                cancel3,
+                self_record_tx.clone(),
+                self_liveness_rx,
+                cancel4,
+            ));
+        }
+
+        let cancel5 = cancel.clone();
+        let (participation_tx, participation_rx) = mpsc::channel(16);
+        self.participation_tx = Some(participation_tx.clone());
+        if let Some(task_set) = self.tasks.as_mut() {
+            task_set.spawn(run_participation_task(
+                self.machine_id.clone(),
+                authoritative_self.clone(),
+                self.store.clone(),
+                self.network.clone(),
+                self_record_tx,
+                participation_rx,
+                cancel5,
+            ));
+        }
+
+        let cancel6 = cancel.clone();
+        let (heartbeat_tx, heartbeat_rx) = mpsc::channel(16);
+        self.heartbeat_tx = Some(heartbeat_tx);
+        if let Some(task_set) = self.tasks.as_mut() {
+            task_set.spawn(run_heartbeat_task(
+                self_liveness_tx,
+                participation_tx,
+                heartbeat_rx,
+                cancel6,
+            ));
+        }
+
+        let (subnet_snapshot, subnet_events) = self
+            .store
+            .subscribe_machines()
+            .await
+            .map_err(TaskSetError::Subscribe)?;
+        let cancel7 = cancel.clone();
+        if let Some(task_set) = self.tasks.as_mut() {
+            task_set.spawn(run_subnet_claim_monitor_task(
+                subnet_snapshot,
+                subnet_events,
+                cancel7,
             ));
         }
 
@@ -380,39 +497,68 @@ impl Mesh {
         Ok(())
     }
 
+    async fn stop_runtime(&mut self, stop_store: bool) -> Option<MeshError> {
+        let mut first_err: Option<MeshError> = None;
+
+        self.peer_sync_tx = None;
+        self.heartbeat_tx = None;
+        self.self_liveness_tx = None;
+        self.participation_tx = None;
+        self.self_record_tx = None;
+        self.task_cancel = None;
+        self.heartbeat_started.store(false, Ordering::SeqCst);
+
+        if let Some(mut tasks) = self.tasks.take()
+            && let Err(error) = tasks.stop().await
+        {
+            warn!(?error, "task stop failed during runtime stop");
+            first_err.get_or_insert(error.into());
+        }
+
+        if let Some(dp) = self.dataplane.take()
+            && let Ok(dp) = Arc::try_unwrap(dp)
+            && let Err(error) = dp.detach().await
+        {
+            warn!(?error, "ebpf detach failed during runtime stop");
+        }
+        self.wg_ifindex = 0;
+
+        if stop_store && let Err(error) = self.store.stop().await {
+            warn!(?error, "service stop failed during runtime stop");
+            first_err.get_or_insert(error.into());
+        }
+
+        if let Err(error) = self.network.down().await {
+            warn!(?error, "network down failed during runtime stop");
+            first_err.get_or_insert(error.into());
+        }
+
+        if let Some(container_network) = &self.container_network
+            && let Err(error) = container_network.remove().await
+        {
+            warn!(
+                ?error,
+                "container network remove failed during runtime stop"
+            );
+            first_err.get_or_insert(error.into());
+        }
+
+        first_err
+    }
+
     /// Idempotent teardown — stops whatever was started, ignores errors on
     /// things not yet started.
     async fn teardown(&mut self) {
-        self.peer_sync_tx = None;
-        self.task_cancel = None;
-        self.heartbeat_started.store(false, Ordering::SeqCst);
-        if let Some(mut tasks) = self.tasks.take()
-            && let Err(e) = tasks.stop().await
-        {
-            warn!(?e, "task stop failed during teardown");
-        }
-        if let Some(dp) = self.dataplane.take()
-            && let Ok(dp) = Arc::try_unwrap(dp)
-            && let Err(e) = dp.detach().await
-        {
-            warn!(?e, "ebpf detach failed during teardown");
-        }
-        if let Err(e) = self.store.stop().await {
-            warn!(?e, "service stop failed during teardown");
-        }
-        if let Err(e) = self.network.down().await {
-            warn!(?e, "network down failed during teardown");
-        }
-        if let Some(cn) = &self.container_network
-            && let Err(e) = cn.remove().await
-        {
-            warn!(?e, "container network remove failed during teardown");
-        }
+        let _ = self.stop_runtime(true).await;
     }
 
     pub async fn detach(&mut self) -> Result<()> {
         self.apply(PhaseEvent::DetachRequested)?;
         self.peer_sync_tx = None;
+        self.heartbeat_tx = None;
+        self.self_liveness_tx = None;
+        self.participation_tx = None;
+        self.self_record_tx = None;
         self.task_cancel = None;
         self.heartbeat_started.store(false, Ordering::SeqCst);
         if let Some(mut tasks) = self.tasks.take() {
@@ -426,51 +572,21 @@ impl Mesh {
         self.apply(PhaseEvent::DestroyRequested)?;
 
         // Mark self as down before tearing down infra
-        if let Ok(machines) = self.store.list_machines().await
-            && let Some(mut record) = machines.into_iter().find(|m| m.id == self.machine_id)
+        let now = crate::time::now_unix_secs();
+        if self
+            .update_authoritative_self_record(|record| {
+                record.status = MachineStatus::Down;
+                record.last_heartbeat = now;
+                record.updated_at = now;
+            })
+            .await
+            .is_none()
+            && self.authoritative_self_record().await.is_some()
         {
-            let now = crate::time::now_unix_secs();
-            record.status = MachineStatus::Down;
-            record.last_heartbeat = now;
-            record.updated_at = now;
-            if let Err(e) = self.store.upsert_machine(&record).await {
-                warn!(?e, "failed to set status=down on destroy");
-            }
+            warn!(timestamp = now, "failed to set status=down on destroy");
         }
 
-        let mut first_err: Option<MeshError> = None;
-
-        if let Some(mut tasks) = self.tasks.take()
-            && let Err(e) = tasks.stop().await
-        {
-            warn!(?e, "task stop failed during destroy");
-            first_err.get_or_insert(e.into());
-        }
-        self.task_cancel = None;
-
-        if let Some(dp) = self.dataplane.take()
-            && let Ok(dp) = Arc::try_unwrap(dp)
-            && let Err(e) = dp.detach().await
-        {
-            warn!(?e, "ebpf detach failed during destroy");
-        }
-
-        if let Err(e) = self.store.stop().await {
-            warn!(?e, "service stop failed during destroy");
-            first_err.get_or_insert(e.into());
-        }
-
-        if let Err(e) = self.network.down().await {
-            warn!(?e, "network down failed during destroy");
-            first_err.get_or_insert(e.into());
-        }
-
-        if let Some(cn) = &self.container_network
-            && let Err(e) = cn.remove().await
-        {
-            warn!(?e, "container network remove failed during destroy");
-            first_err.get_or_insert(e.into());
-        }
+        let first_err = self.stop_runtime(true).await;
 
         self.apply(PhaseEvent::TeardownComplete)?;
         info!("mesh destroyed");
@@ -478,6 +594,42 @@ impl Mesh {
         match first_err {
             Some(e) => Err(e),
             None => Ok(()),
+        }
+    }
+
+    pub async fn restart_runtime_for_subnet_change(
+        &mut self,
+        network: WireguardDriver,
+        container_network: Option<DockerBridgeNetwork>,
+    ) -> Result<()> {
+        self.apply(PhaseEvent::DestroyRequested)?;
+
+        let stop_err = self.stop_runtime(false).await;
+        self.network = network;
+        self.container_network = container_network;
+
+        self.apply(PhaseEvent::TeardownComplete)?;
+        self.apply(PhaseEvent::UpRequested)?;
+
+        match self.bring_up().await {
+            Ok(()) => {
+                if let Some(error) = stop_err {
+                    warn!(
+                        ?error,
+                        "runtime stop reported an error before subnet restart"
+                    );
+                }
+                Ok(())
+            }
+            Err(error) => {
+                warn!(
+                    ?error,
+                    "subnet runtime restart failed, tearing down runtime"
+                );
+                let _ = self.stop_runtime(false).await;
+                self.apply(PhaseEvent::ComponentFailed)?;
+                Err(error)
+            }
         }
     }
 

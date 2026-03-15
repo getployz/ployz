@@ -9,7 +9,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::Instant;
-use tracing::warn;
+use tracing::{debug, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SelectionReason {
@@ -158,6 +158,8 @@ impl PeerState {
 
     fn refresh_from_device(&mut self, device_peer: Option<&DevicePeer>, now: Instant) -> bool {
         if let Some(device_peer) = device_peer {
+            let configured_endpoint = self.active_endpoint_value().map(str::to_string);
+            let device_endpoint = device_peer.endpoint.clone();
             self.seed_from_device(device_peer, now);
             let matches_known_endpoint = device_peer.endpoint.as_deref().is_some_and(|endpoint| {
                 self.runtime
@@ -165,6 +167,15 @@ impl PeerState {
                     .iter()
                     .any(|candidate| candidate == endpoint)
             });
+            if device_endpoint.as_deref() != configured_endpoint.as_deref() {
+                debug!(
+                    machine_id = %self.id,
+                    ?configured_endpoint,
+                    ?device_endpoint,
+                    matches_known_endpoint,
+                    "peer sync observed device endpoint differing from configured active endpoint"
+                );
+            }
             self.runtime.last_handshake = if matches_known_endpoint {
                 device_peer.last_handshake
             } else {
@@ -180,6 +191,7 @@ impl PeerState {
                 candidate.last_wg_success = Some(last_handshake);
             }
         } else {
+            debug!(machine_id = %self.id, "peer sync found no device peer for configured machine");
             self.runtime.last_handshake = None;
         }
 
@@ -203,6 +215,13 @@ impl PeerState {
             self.runtime.rotate_endpoint(now);
             self.selection_reason = SelectionReason::WireguardFallback;
             self.needs_ranking = false;
+            debug!(
+                machine_id = %self.id,
+                ?previous_active,
+                next_active = ?self.active_endpoint_value(),
+                status = ?self.runtime.status,
+                "peer sync rotated endpoint after stale or missing handshake"
+            );
             return previous_active.as_deref() != self.runtime.active_endpoint();
         }
 
@@ -241,6 +260,13 @@ impl PeerState {
             self.runtime.status = PeerStatus::Unknown;
             self.selection_reason = SelectionReason::TcpProbeRanking;
             self.needs_ranking = false;
+            debug!(
+                machine_id = %self.id,
+                ?previous_active,
+                next_active = ?self.runtime.active_endpoint(),
+                endpoints = ?self.runtime.endpoints,
+                "peer sync re-ranked endpoints from TCP probe results"
+            );
             return previous_active.as_deref() != self.runtime.active_endpoint();
         }
 
@@ -383,6 +409,14 @@ pub(crate) async fn sync_peers<N: MeshNetwork>(
     local_machine_id: &MachineId,
 ) {
     let planned = plan_mesh_peers(state, local_machine_id);
+    debug!(
+        local_machine_id = %local_machine_id,
+        peers = ?planned
+            .iter()
+            .map(|peer| (&peer.id, &peer.endpoints, peer.subnet))
+            .collect::<Vec<_>>(),
+        "peer sync applying planned wireguard peers"
+    );
     if let Err(e) = network.set_peers(&planned).await {
         warn!(?e, "set_peers failed");
     }
