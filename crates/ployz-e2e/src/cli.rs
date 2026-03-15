@@ -28,17 +28,19 @@ pub(crate) enum Scenario {
     MachineAddBasic,
     MachineRemoveGuard,
     ReplaceMachine,
-    DualControllerAdd,
+    SplitBrainConcurrentAddSubnetHeal,
+    WireguardReconnect,
     DeploySmoke,
 }
 
 impl Scenario {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::SingleNodeInit,
         Self::MachineAddBasic,
         Self::MachineRemoveGuard,
         Self::ReplaceMachine,
-        Self::DualControllerAdd,
+        Self::SplitBrainConcurrentAddSubnetHeal,
+        Self::WireguardReconnect,
         Self::DeploySmoke,
     ];
 
@@ -53,7 +55,8 @@ impl Scenario {
             Self::SingleNodeInit | Self::DeploySmoke => &["founder"],
             Self::MachineAddBasic | Self::MachineRemoveGuard => &["founder", "joiner"],
             Self::ReplaceMachine => &["founder", "joiner", "replacement"],
-            Self::DualControllerAdd => &[
+            Self::WireguardReconnect => &["founder", "peer"],
+            Self::SplitBrainConcurrentAddSubnetHeal => &[
                 "founder", "peer", "joiner1", "joiner2", "joiner3", "joiner4", "joiner5", "joiner6",
             ],
         }
@@ -66,7 +69,10 @@ impl Scenario {
             Self::MachineAddBasic => "machine_add_basic",
             Self::MachineRemoveGuard => "machine_remove_guard",
             Self::ReplaceMachine => "replace_machine",
-            Self::DualControllerAdd => "dual_controller_add",
+            Self::SplitBrainConcurrentAddSubnetHeal => {
+                "split_brain_concurrent_add_subnet_heal"
+            }
+            Self::WireguardReconnect => "wireguard_reconnect",
             Self::DeploySmoke => "deploy_smoke",
         }
     }

@@ -401,7 +401,7 @@ main() {
       esac
 
       work_dir="$(mktemp -d)"
-      trap 'rm -rf "${work_dir}"' EXIT
+      trap "rm -rf -- \"${work_dir}\"" EXIT
 
       case "${source}" in
         release)

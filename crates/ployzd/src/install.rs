@@ -422,10 +422,30 @@ fn promote_system_binaries(manifest: &InstallManifest) -> Result<(), String> {
         (&manifest.corrosion_path, system_bin_dir.join("corrosion")),
     ];
     for (src, dest) in copies {
-        fs::copy(src, &dest).map_err(|error| {
-            format!("copy '{}' to '{}': {error}", src.display(), dest.display())
+        let Some(file_name) = dest.file_name() else {
+            return Err(format!("invalid system binary path '{}'", dest.display()));
+        };
+        let temp_dest = system_bin_dir.join(format!(
+            ".{}.tmp-{}",
+            file_name.to_string_lossy(),
+            std::process::id()
+        ));
+        fs::copy(src, &temp_dest).map_err(|error| {
+            format!(
+                "copy '{}' to temporary '{}': {error}",
+                src.display(),
+                temp_dest.display()
+            )
         })?;
-        set_executable(&dest)?;
+        set_executable(&temp_dest)?;
+        fs::rename(&temp_dest, &dest).map_err(|error| {
+            let _ = fs::remove_file(&temp_dest);
+            format!(
+                "rename temporary '{}' to '{}': {error}",
+                temp_dest.display(),
+                dest.display()
+            )
+        })?;
     }
     Ok(())
 }
