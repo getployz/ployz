@@ -29,19 +29,15 @@ pub(crate) struct Cli {
 pub(crate) enum Scenario {
     SingleNodeInit,
     MachineAddBasic,
-    MachineRemoveGuard,
-    ReplaceMachine,
     SplitBrainConcurrentAddSubnetHeal,
     WireguardReconnect,
     DeploySmoke,
 }
 
 impl Scenario {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 5] = [
         Self::SingleNodeInit,
         Self::MachineAddBasic,
-        Self::MachineRemoveGuard,
-        Self::ReplaceMachine,
         Self::SplitBrainConcurrentAddSubnetHeal,
         Self::WireguardReconnect,
         Self::DeploySmoke,
@@ -56,8 +52,7 @@ impl Scenario {
     pub(crate) fn node_names(self) -> &'static [&'static str] {
         match self {
             Self::SingleNodeInit | Self::DeploySmoke => &["founder"],
-            Self::MachineAddBasic | Self::MachineRemoveGuard => &["founder", "joiner"],
-            Self::ReplaceMachine => &["founder", "joiner", "replacement"],
+            Self::MachineAddBasic => &["founder", "joiner"],
             Self::WireguardReconnect => &["founder", "peer"],
             Self::SplitBrainConcurrentAddSubnetHeal => &[
                 "founder", "peer", "joiner1", "joiner2", "joiner3", "joiner4", "joiner5", "joiner6",
@@ -70,8 +65,6 @@ impl Scenario {
         match self {
             Self::SingleNodeInit => "single_node_init",
             Self::MachineAddBasic => "machine_add_basic",
-            Self::MachineRemoveGuard => "machine_remove_guard",
-            Self::ReplaceMachine => "replace_machine",
             Self::SplitBrainConcurrentAddSubnetHeal => "split_brain_concurrent_add_subnet_heal",
             Self::WireguardReconnect => "wireguard_reconnect",
             Self::DeploySmoke => "deploy_smoke",

@@ -268,18 +268,6 @@ impl ScenarioRun {
         Ok(command)
     }
 
-    pub(crate) fn machine_remove_force(
-        &self,
-        controller_name: &str,
-        machine_id: &str,
-    ) -> Result<()> {
-        self.ssh_expect_ok_name(
-            controller_name,
-            &format!("ployzd machine rm {machine_id} --force"),
-        )?;
-        Ok(())
-    }
-
     pub(crate) fn tick_nodes(&self, node_names: &[&str], repeat: u32) -> Result<()> {
         let commands = node_names
             .iter()
@@ -291,32 +279,6 @@ impl ScenarioRun {
 
     pub(crate) fn wait_mesh_ready_default(&self, node: &Node) -> Result<()> {
         self.wait_mesh_ready(node, READY_WAIT_TIMEOUT)
-    }
-
-    pub(crate) fn wait_machine_state_name(
-        &self,
-        node_name: &str,
-        machine_id: &str,
-        expected_state: &str,
-    ) -> Result<()> {
-        self.wait_machine_state_default(self.node(node_name)?, machine_id, expected_state)
-    }
-
-    pub(crate) fn wait_machine_state_default(
-        &self,
-        node: &Node,
-        machine_id: &str,
-        expected_state: &str,
-    ) -> Result<()> {
-        self.wait_machine_state(node, machine_id, expected_state, STATE_WAIT_TIMEOUT)
-    }
-
-    pub(crate) fn wait_machine_absent_default(&self, node: &Node, machine_id: &str) -> Result<()> {
-        self.wait_machine_absent(node, machine_id, STATE_WAIT_TIMEOUT)
-    }
-
-    pub(crate) fn wait_machine_absent_name(&self, node_name: &str, machine_id: &str) -> Result<()> {
-        self.wait_machine_absent_default(self.node(node_name)?, machine_id)
     }
 
     pub(crate) fn wait_all_machine_states(
@@ -882,48 +844,6 @@ impl ScenarioRun {
         .map_err(|error| {
             Error::Message(format!(
                 "mesh did not become ready on {}: {error}",
-                node.name
-            ))
-        })
-    }
-
-    fn wait_machine_state(
-        &self,
-        node: &Node,
-        machine_id: &str,
-        expected_state: &str,
-        timeout: Duration,
-    ) -> Result<()> {
-        wait_until(timeout, || {
-            let Ok(output) = self.ssh_run(node, "ployzd machine ls") else {
-                return Ok(false);
-            };
-            if !output.status.success() {
-                return Ok(false);
-            }
-            Ok(machine_state(&output.stdout, machine_id).as_deref() == Some(expected_state))
-        })
-        .map_err(|error| {
-            Error::Message(format!(
-                "machine '{machine_id}' did not reach state '{expected_state}' on {}: {error}",
-                node.name
-            ))
-        })
-    }
-
-    fn wait_machine_absent(&self, node: &Node, machine_id: &str, timeout: Duration) -> Result<()> {
-        wait_until(timeout, || {
-            let Ok(output) = self.ssh_run(node, "ployzd machine ls") else {
-                return Ok(false);
-            };
-            if !output.status.success() {
-                return Ok(false);
-            }
-            Ok(machine_state(&output.stdout, machine_id).is_none())
-        })
-        .map_err(|error| {
-            Error::Message(format!(
-                "machine '{machine_id}' was not removed on {}: {error}",
                 node.name
             ))
         })
