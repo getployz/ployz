@@ -1,3 +1,4 @@
+use ployz_core::mesh::tasks::PeerSyncCommand;
 use ployz_core::mesh::wireguard::MemoryWireGuard;
 use ployz_core::model::{
     JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
@@ -26,7 +27,12 @@ fn test_record(id: &str, key_byte: u8) -> MachineRecord {
     }
 }
 
-fn make_mesh(wg: Arc<MemoryWireGuard>, svc: Arc<MemoryService>, store: Arc<MemoryStore>) -> Mesh {
+fn make_mesh(
+    machine_id: &str,
+    wg: Arc<MemoryWireGuard>,
+    svc: Arc<MemoryService>,
+    store: Arc<MemoryStore>,
+) -> Mesh {
     Mesh::new(
         WireguardDriver::Memory(wg),
         StoreDriver::Memory {
@@ -34,7 +40,7 @@ fn make_mesh(wg: Arc<MemoryWireGuard>, svc: Arc<MemoryService>, store: Arc<Memor
             service: svc,
         },
         None,
-        MachineId("test-machine".into()),
+        MachineId(machine_id.into()),
         51820,
     )
     .with_bootstrap_timing(Duration::from_millis(10), Duration::from_secs(5))
@@ -48,9 +54,12 @@ async fn startup_reaches_running_with_healthy_service() {
     let svc = Arc::new(MemoryService::new());
     let store = Arc::new(MemoryStore::new());
 
-    store.upsert_machine(&test_record("m1", 1)).await.unwrap();
+    store
+        .upsert_self_machine(&test_record("m1", 1))
+        .await
+        .unwrap();
 
-    let mut mesh = make_mesh(wg.clone(), svc.clone(), store);
+    let mut mesh = make_mesh("m1", wg.clone(), svc.clone(), store);
     mesh.up().await.unwrap();
     assert_eq!(mesh.phase(), Phase::Running);
     assert!(wg.is_up());
@@ -65,8 +74,13 @@ async fn startup_reaches_running_single_node() {
     let svc = Arc::new(MemoryService::new());
     let store = Arc::new(MemoryStore::new());
 
-    // No peers in store — single node.
-    let mut mesh = make_mesh(wg, svc, store);
+    store
+        .upsert_self_machine(&test_record("m1", 1))
+        .await
+        .unwrap();
+
+    // No remote peers in store — single node.
+    let mut mesh = make_mesh("m1", wg, svc, store);
     mesh.up().await.unwrap();
     assert_eq!(mesh.phase(), Phase::Running);
 
@@ -96,7 +110,7 @@ async fn joiner_seed_peer_requires_sync_for_ready() {
 
     let founder_record = test_record("founder", 1);
     let joiner_record = test_record("joiner", 2);
-    store.upsert_machine(&joiner_record).await.unwrap();
+    store.upsert_self_machine(&joiner_record).await.unwrap();
     store.set_sync_status(SyncStatus::Disconnected);
 
     let mut mesh = Mesh::new(
@@ -133,7 +147,7 @@ async fn joiner_retains_founder_peer_across_peer_sync_handoff() {
 
     let founder_record = test_record("founder", 1);
     let joiner_record = test_record("joiner", 2);
-    store.upsert_machine(&joiner_record).await.unwrap();
+    store.upsert_self_machine(&joiner_record).await.unwrap();
 
     let mut mesh = Mesh::new(
         WireguardDriver::Memory(wg.clone()),
@@ -157,7 +171,7 @@ async fn joiner_retains_founder_peer_across_peer_sync_handoff() {
         "bootstrap founder peer must remain configured before store convergence"
     );
 
-    store.upsert_machine(&founder_record).await.unwrap();
+    store.upsert_self_machine(&founder_record).await.unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(
         wg.current_peers()
@@ -173,7 +187,12 @@ async fn detach_stops_tasks_leaves_infra() {
     let svc = Arc::new(MemoryService::new());
     let store = Arc::new(MemoryStore::new());
 
-    let mut mesh = make_mesh(wg.clone(), svc.clone(), store);
+    store
+        .upsert_self_machine(&test_record("m1", 1))
+        .await
+        .unwrap();
+
+    let mut mesh = make_mesh("m1", wg.clone(), svc.clone(), store);
     mesh.up().await.unwrap();
 
     mesh.detach().await.unwrap();
@@ -193,7 +212,7 @@ async fn component_failure_returns_to_stopped() {
     let svc = Arc::new(MemoryService::new());
     let store = Arc::new(MemoryStore::new());
 
-    let mut mesh = make_mesh(wg, svc, store);
+    let mut mesh = make_mesh("m1", wg, svc, store);
     let err = mesh.up().await.unwrap_err();
     assert!(err.to_string().contains("injected failure"));
     assert_eq!(mesh.phase(), Phase::Stopped);
@@ -206,7 +225,7 @@ async fn service_failure_tears_down_wg() {
     svc.set_fail_start(true);
     let store = Arc::new(MemoryStore::new());
 
-    let mut mesh = make_mesh(wg.clone(), svc, store);
+    let mut mesh = make_mesh("m1", wg.clone(), svc, store);
     let err = mesh.up().await.unwrap_err();
     assert!(err.to_string().contains("injected failure"));
     assert_eq!(mesh.phase(), Phase::Stopped);
@@ -220,7 +239,12 @@ async fn destroy_continues_on_errors_returns_first() {
     let svc = Arc::new(MemoryService::new());
     let store = Arc::new(MemoryStore::new());
 
-    let mut mesh = make_mesh(wg.clone(), svc.clone(), store);
+    store
+        .upsert_self_machine(&test_record("m1", 1))
+        .await
+        .unwrap();
+
+    let mut mesh = make_mesh("m1", wg.clone(), svc.clone(), store);
     mesh.up().await.unwrap();
 
     // Make both service stop and wg down fail.
@@ -241,8 +265,17 @@ async fn bootstrap_connection_timeout() {
     let wg = Arc::new(MemoryWireGuard::new());
     let svc = Arc::new(MemoryService::new());
     let store = Arc::new(MemoryStore::new());
+    let founder_record = test_record("founder", 1);
+    let joiner_record = test_record("joiner", 2);
 
-    store.upsert_machine(&test_record("m1", 1)).await.unwrap();
+    store
+        .upsert_self_machine(&joiner_record)
+        .await
+        .unwrap();
+    store
+        .upsert_self_machine(&founder_record)
+        .await
+        .unwrap();
 
     // Store returns Disconnected forever.
     store.set_sync_status(SyncStatus::Disconnected);
@@ -254,9 +287,10 @@ async fn bootstrap_connection_timeout() {
             service: svc,
         },
         None,
-        MachineId("test-machine".into()),
+        joiner_record.id.clone(),
         51820,
     )
+    .with_seed_records(vec![founder_record])
     .with_bootstrap_timing(Duration::from_millis(10), Duration::from_millis(100));
 
     let err = mesh.up().await.unwrap_err();
@@ -271,8 +305,17 @@ async fn bootstrap_proceeds_on_membership() {
     let wg = Arc::new(MemoryWireGuard::new());
     let svc = Arc::new(MemoryService::new());
     let store = Arc::new(MemoryStore::new());
+    let founder_record = test_record("founder", 1);
+    let joiner_record = test_record("joiner", 2);
 
-    store.upsert_machine(&test_record("m1", 1)).await.unwrap();
+    store
+        .upsert_self_machine(&joiner_record)
+        .await
+        .unwrap();
+    store
+        .upsert_self_machine(&founder_record)
+        .await
+        .unwrap();
 
     store.set_sync_status(SyncStatus::Disconnected);
 
@@ -290,9 +333,10 @@ async fn bootstrap_proceeds_on_membership() {
             service: svc,
         },
         None,
-        MachineId("test-machine".into()),
+        joiner_record.id.clone(),
         51820,
     )
+    .with_seed_records(vec![founder_record])
     .with_bootstrap_timing(Duration::from_millis(10), Duration::from_secs(5));
 
     mesh.up().await.unwrap();
@@ -301,25 +345,27 @@ async fn bootstrap_proceeds_on_membership() {
 
 // --- Two-node join ---
 
-/// After a joiner joins the mesh, the founder's store must contain the joiner's
-/// machine record so peer_sync can configure WireGuard. Without this, Corrosion
-/// gossip can't flow (it runs over the overlay) and we have a chicken-and-egg.
+/// Founder-side join bootstrap must be able to configure a remote peer without
+/// durably publishing that remote machine row into the store.
 #[tokio::test]
-async fn founder_has_joiner_record_after_add() {
+async fn founder_can_configure_joiner_from_transient_peer() {
     // Founder node
     let founder_wg = Arc::new(MemoryWireGuard::new());
     let founder_svc = Arc::new(MemoryService::new());
     let founder_store = Arc::new(MemoryStore::new());
 
     let founder_record = test_record("founder", 1);
-    founder_store.upsert_machine(&founder_record).await.unwrap();
+    founder_store
+        .upsert_self_machine(&founder_record)
+        .await
+        .unwrap();
 
-    let mut founder_mesh = make_mesh(founder_wg.clone(), founder_svc, founder_store.clone());
+    let mut founder_mesh = make_mesh("founder", founder_wg.clone(), founder_svc, founder_store.clone());
     founder_mesh.up().await.unwrap();
     assert_eq!(founder_mesh.phase(), Phase::Running);
 
-    // Simulate the JoinResponse flow: joiner builds a JoinResponse from its identity,
-    // encodes it, founder decodes and upserts the record.
+    // Simulate the JoinResponse flow: joiner builds a JoinResponse from its identity
+    // and founder installs it as a transient peer only.
     let joiner_record = test_record("joiner", 2);
     let join_resp = JoinResponse {
         machine_id: joiner_record.id.clone(),
@@ -332,20 +378,30 @@ async fn founder_has_joiner_record_after_add() {
     // Encode → decode roundtrip (simulates SSH transport)
     let encoded = join_resp.encode().unwrap();
     let decoded = JoinResponse::decode(&encoded).unwrap();
-    let record = decoded.into_machine_record();
+    let record = decoded.into_seed_machine_record();
 
-    // Founder seeds the joiner's record into its store (what machine add does)
-    founder_store.upsert_machine(&record).await.unwrap();
+    founder_mesh
+        .peer_sync_sender()
+        .expect("peer sync sender")
+        .send(PeerSyncCommand::UpsertTransient(record))
+        .await
+        .unwrap();
 
     // Give peer_sync time to pick up the record.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // The founder's store must contain the joiner's record for the overlay to form.
-    let machines = founder_store.list_machines().await.unwrap();
-    let has_joiner = machines.iter().any(|m| m.id.0 == "joiner");
     assert!(
-        has_joiner,
-        "founder's store must contain the joiner's record after machine add"
+        founder_wg
+            .current_peers()
+            .iter()
+            .any(|peer| peer.id.0 == "joiner"),
+        "transient joiner peer must be configured for the overlay to form"
+    );
+
+    let machines = founder_store.list_machines().await.unwrap();
+    assert!(
+        !machines.iter().any(|m| m.id.0 == "joiner"),
+        "founder must not durably publish the joiner row"
     );
 
     founder_mesh.destroy().await.unwrap();
@@ -359,13 +415,21 @@ async fn store_event_triggers_reconcile() {
     let svc = Arc::new(MemoryService::new());
     let store = Arc::new(MemoryStore::new());
 
-    let mut mesh = make_mesh(wg.clone(), svc, store.clone());
+    store
+        .upsert_self_machine(&test_record("m1", 1))
+        .await
+        .unwrap();
+
+    let mut mesh = make_mesh("m1", wg.clone(), svc, store.clone());
     mesh.up().await.unwrap();
 
     let initial_count = wg.set_peers_count();
 
     // Add a peer via the store — should trigger event → reconcile.
-    store.upsert_machine(&test_record("m2", 2)).await.unwrap();
+    store
+        .upsert_self_machine(&test_record("m2", 2))
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     assert!(
@@ -382,10 +446,15 @@ async fn remove_event_drops_wireguard_peer() {
     let svc = Arc::new(MemoryService::new());
     let store = Arc::new(MemoryStore::new());
 
-    let peer = test_record("m2", 2);
-    store.upsert_machine(&peer).await.unwrap();
+    store
+        .upsert_self_machine(&test_record("m1", 1))
+        .await
+        .unwrap();
 
-    let mut mesh = make_mesh(wg.clone(), svc, store.clone());
+    let peer = test_record("m2", 2);
+    store.upsert_self_machine(&peer).await.unwrap();
+
+    let mut mesh = make_mesh("m1", wg.clone(), svc, store.clone());
     mesh.up().await.unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
 

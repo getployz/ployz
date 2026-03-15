@@ -1,765 +1,98 @@
-use crate::machine_liveness::machine_is_fresh;
-use crate::mesh::driver::WireguardDriver;
-use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
-use crate::model::{MachineId, MachineRecord, MachineStatus, Participation};
-use crate::store::MachineStore;
-use crate::store::driver::StoreDriver;
-use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::time::Instant;
+use crate::mesh::tasks::{ParticipationCommand, SelfLivenessCommand};
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::info;
 
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
-const PARTICIPATION_FRESHNESS_WINDOW: Duration = Duration::from_secs(30);
-const PARTICIPATION_HYSTERESIS_SAMPLES: u8 = 3;
-
-#[derive(Debug, Default)]
-struct HeartbeatState {
-    consecutive_good_samples: u8,
-    consecutive_bad_samples: u8,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct RequiredPeerHealth {
-    required_peer_ids: Vec<String>,
-    unhealthy_required_peer_ids: Vec<String>,
-}
-
-impl RequiredPeerHealth {
-    fn healthy(&self) -> bool {
-        self.unhealthy_required_peer_ids.is_empty()
-    }
+#[derive(Debug)]
+pub enum HeartbeatCommand {
+    TickNow { done: oneshot::Sender<()> },
 }
 
 pub(crate) async fn run_heartbeat_task(
-    machine_id: MachineId,
-    self_seed: Option<MachineRecord>,
-    store: StoreDriver,
-    network: WireguardDriver,
-    started: Arc<AtomicBool>,
+    self_liveness_tx: mpsc::Sender<SelfLivenessCommand>,
+    participation_tx: mpsc::Sender<ParticipationCommand>,
+    mut commands: mpsc::Receiver<HeartbeatCommand>,
     cancel: CancellationToken,
 ) {
-    started.store(true, Ordering::SeqCst);
-    let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
-    let mut state = HeartbeatState::default();
-    let mut seed = self_seed;
-
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
-                info!("heartbeat task cancelled");
+                info!("heartbeat coordinator task cancelled");
                 break;
             }
-            _ = interval.tick() => {
-                heartbeat_once(&machine_id, &mut seed, &store, &network, &mut state).await;
+            Some(command) = commands.recv() => {
+                match command {
+                    HeartbeatCommand::TickNow { done } => {
+                        let _ = tick_self_liveness(&self_liveness_tx).await;
+                        let _ = tick_participation(&participation_tx).await;
+                        let _ = done.send(());
+                    }
+                }
             }
         }
     }
 }
 
-async fn heartbeat_once(
-    machine_id: &MachineId,
-    seed: &mut Option<MachineRecord>,
-    store: &StoreDriver,
-    network: &WireguardDriver,
-    state: &mut HeartbeatState,
-) {
-    let machines = match store.list_machines().await {
-        Ok(machines) => machines,
-        Err(e) => {
-            warn!(?e, "failed to read machines for heartbeat");
-            return;
-        }
-    };
-
-    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration.as_secs(),
-        Err(err) => {
-            warn!(?err, "system clock before unix epoch, skipping heartbeat");
-            return;
-        }
-    };
-
-    let duplicate_subnets = duplicate_subnet_claims(&machines);
-    if !duplicate_subnets.is_empty() {
-        warn!(
-            machine_id = %machine_id,
-            ?duplicate_subnets,
-            "duplicate machine subnet claims detected"
-        );
-    }
-
-    let required_peers = required_peers_for_participation(&machines, machine_id, now);
-
-    let mut record = match machines
-        .into_iter()
-        .find(|machine| machine.id == *machine_id)
-    {
-        Some(existing) => {
-            // Record exists in store; seed is no longer needed.
-            *seed = None;
-            existing
-        }
-        None => match seed.take() {
-            Some(s) => {
-                info!("bootstrapping self record from seed");
-                s
-            }
-            None => {
-                warn!("self record not found in store, skipping heartbeat");
-                return;
-            }
-        },
-    };
-
-    record.status = MachineStatus::Up;
-    record.last_heartbeat = now;
-    record.updated_at = now;
-
-    if let Some(bridge_ip) = network.bridge_ip().await {
-        record.bridge_ip = Some(bridge_ip);
-    }
-
-    let peer_health = required_peers_health(network, &required_peers).await;
-    update_hysteresis(state, peer_health.healthy());
-    let previous_participation = record.participation;
-
-    match record.participation {
-        Participation::Disabled => {
-            if state.consecutive_good_samples >= PARTICIPATION_HYSTERESIS_SAMPLES {
-                record.participation = Participation::Enabled;
-            }
-        }
-        Participation::Enabled => {
-            if state.consecutive_bad_samples >= PARTICIPATION_HYSTERESIS_SAMPLES {
-                record.participation = Participation::Disabled;
-            }
-        }
-        Participation::Draining => {}
-    }
-
-    if record.participation != previous_participation {
-        info!(
-            machine_id = %machine_id,
-            from = %previous_participation,
-            to = %record.participation,
-            good_samples = state.consecutive_good_samples,
-            bad_samples = state.consecutive_bad_samples,
-            required_peers = ?peer_health.required_peer_ids,
-            unhealthy_required_peers = ?peer_health.unhealthy_required_peer_ids,
-            "heartbeat participation changed"
-        );
-    } else if !peer_health.healthy() {
-        debug!(
-            machine_id = %machine_id,
-            participation = %record.participation,
-            good_samples = state.consecutive_good_samples,
-            bad_samples = state.consecutive_bad_samples,
-            required_peers = ?peer_health.required_peer_ids,
-            unhealthy_required_peers = ?peer_health.unhealthy_required_peer_ids,
-            "heartbeat waiting on required peers"
-        );
-    }
-
-    if let Err(e) = store.upsert_machine(&record).await {
-        warn!(?e, "heartbeat upsert failed");
-    }
+async fn tick_self_liveness(
+    self_liveness_tx: &mpsc::Sender<SelfLivenessCommand>,
+) -> Result<(), ()> {
+    let (done_tx, done_rx) = oneshot::channel();
+    self_liveness_tx
+        .send(SelfLivenessCommand::TickNow { done: done_tx })
+        .await
+        .map_err(|_| ())?;
+    done_rx.await.map_err(|_| ())
 }
 
-fn required_peers_for_participation(
-    machines: &[MachineRecord],
-    machine_id: &MachineId,
-    now: u64,
-) -> Vec<MachineRecord> {
-    machines
-        .iter()
-        .filter(|machine| machine.id != *machine_id)
-        .filter(|machine| match machine.participation {
-            Participation::Disabled => false,
-            Participation::Enabled | Participation::Draining => true,
-        })
-        .filter(|machine| machine_is_fresh(machine, now))
-        .cloned()
-        .collect()
-}
-
-fn update_hysteresis(state: &mut HeartbeatState, healthy_required_peers: bool) {
-    if healthy_required_peers {
-        state.consecutive_bad_samples = 0;
-        state.consecutive_good_samples = state
-            .consecutive_good_samples
-            .saturating_add(1)
-            .min(PARTICIPATION_HYSTERESIS_SAMPLES);
-        return;
-    }
-
-    state.consecutive_good_samples = 0;
-    state.consecutive_bad_samples = state
-        .consecutive_bad_samples
-        .saturating_add(1)
-        .min(PARTICIPATION_HYSTERESIS_SAMPLES);
-}
-
-async fn required_peers_health(
-    network: &WireguardDriver,
-    required_peers: &[MachineRecord],
-) -> RequiredPeerHealth {
-    let required_peer_ids = required_peers
-        .iter()
-        .map(|peer| peer.id.0.clone())
-        .collect::<Vec<_>>();
-    if required_peers.is_empty() {
-        return RequiredPeerHealth {
-            required_peer_ids,
-            unhealthy_required_peer_ids: Vec::new(),
-        };
-    }
-
-    let device_peers = match network.read_peers().await {
-        Ok(peers) => peers,
-        Err(e) => {
-            warn!(?e, "failed to read direct wireguard peers for heartbeat");
-            return RequiredPeerHealth {
-                required_peer_ids: required_peer_ids.clone(),
-                unhealthy_required_peer_ids: required_peer_ids,
-            };
-        }
-    };
-
-    let fresh_handshakes = fresh_handshake_map(&device_peers);
-    let unhealthy_required_peer_ids = required_peers
-        .iter()
-        .filter(|peer| {
-            !fresh_handshakes
-                .get(&peer.public_key)
-                .copied()
-                .unwrap_or(false)
-        })
-        .map(|peer| peer.id.0.clone())
-        .collect();
-
-    RequiredPeerHealth {
-        required_peer_ids,
-        unhealthy_required_peer_ids,
-    }
-}
-
-fn fresh_handshake_map(device_peers: &[DevicePeer]) -> HashMap<crate::model::PublicKey, bool> {
-    let now = Instant::now();
-    device_peers
-        .iter()
-        .map(|peer| {
-            let fresh = match peer.last_handshake {
-                Some(last_handshake) => match now.checked_duration_since(last_handshake) {
-                    Some(elapsed) => elapsed < PARTICIPATION_FRESHNESS_WINDOW,
-                    None => true,
-                },
-                None => false,
-            };
-            (peer.public_key.clone(), fresh)
-        })
-        .collect()
-}
-
-fn duplicate_subnet_claims(machines: &[MachineRecord]) -> Vec<(String, Vec<String>)> {
-    let mut claimants_by_subnet: BTreeMap<String, Vec<String>> = BTreeMap::new();
-
-    for machine in machines {
-        let Some(subnet) = machine.subnet else {
-            continue;
-        };
-        claimants_by_subnet
-            .entry(subnet.to_string())
-            .or_default()
-            .push(machine.id.0.clone());
-    }
-
-    claimants_by_subnet
-        .into_iter()
-        .filter_map(|(subnet, mut claimants)| {
-            if claimants.len() < 2 {
-                return None;
-            }
-            claimants.sort();
-            Some((subnet, claimants))
-        })
-        .collect()
+async fn tick_participation(
+    participation_tx: &mpsc::Sender<ParticipationCommand>,
+) -> Result<(), ()> {
+    let (done_tx, done_rx) = oneshot::channel();
+    participation_tx
+        .send(ParticipationCommand::TickNow { done: done_tx })
+        .await
+        .map_err(|_| ())?;
+    done_rx.await.map_err(|_| ())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mesh::DevicePeer;
-    use crate::mesh::driver::WireguardDriver;
-    use crate::mesh::wireguard::MemoryWireGuard;
-    use crate::model::{MachineId, OverlayIp, PublicKey};
-    use crate::store::backends::memory::{MemoryService, MemoryStore};
-    use crate::store::driver::StoreDriver;
-    use std::net::Ipv6Addr;
-    use std::sync::Arc;
-
-    #[test]
-    fn update_hysteresis_tracks_good_and_bad_samples() {
-        let mut state = HeartbeatState::default();
-        update_hysteresis(&mut state, true);
-        update_hysteresis(&mut state, true);
-        assert_eq!(state.consecutive_good_samples, 2);
-        assert_eq!(state.consecutive_bad_samples, 0);
-
-        update_hysteresis(&mut state, false);
-        assert_eq!(state.consecutive_good_samples, 0);
-        assert_eq!(state.consecutive_bad_samples, 1);
-    }
-
-    #[test]
-    fn duplicate_subnet_claims_reports_overlaps() {
-        let machines = vec![
-            test_machine("m1", Participation::Enabled, PublicKey([1; 32]), 100),
-            MachineRecord {
-                subnet: Some("10.210.2.0/24".parse().expect("valid subnet")),
-                ..test_machine("m2", Participation::Enabled, PublicKey([2; 32]), 100)
-            },
-            MachineRecord {
-                subnet: Some("10.210.2.0/24".parse().expect("valid subnet")),
-                ..test_machine("m3", Participation::Enabled, PublicKey([3; 32]), 100)
-            },
-            MachineRecord {
-                subnet: Some("10.210.3.0/24".parse().expect("valid subnet")),
-                ..test_machine("m4", Participation::Enabled, PublicKey([4; 32]), 100)
-            },
-        ];
-
-        assert_eq!(
-            duplicate_subnet_claims(&machines),
-            vec![(
-                String::from("10.210.2.0/24"),
-                vec![String::from("m2"), String::from("m3")]
-            )]
-        );
-    }
-
-    #[test]
-    fn fresh_handshake_map_marks_recent_handshakes_healthy() {
-        let peer = DevicePeer {
-            public_key: PublicKey([7; 32]),
-            endpoint: Some("127.0.0.1:51820".into()),
-            last_handshake: Some(Instant::now()),
-        };
-
-        let map = fresh_handshake_map(&[peer]);
-        assert_eq!(map.get(&PublicKey([7; 32])), Some(&true));
-    }
-
-    #[test]
-    fn fresh_handshake_map_marks_missing_handshakes_unhealthy() {
-        let peer = DevicePeer {
-            public_key: PublicKey([8; 32]),
-            endpoint: None,
-            last_handshake: None,
-        };
-
-        let map = fresh_handshake_map(&[peer]);
-        assert_eq!(map.get(&PublicKey([8; 32])), Some(&false));
-    }
-
-    #[test]
-    fn fresh_handshake_map_marks_31s_old_handshakes_unhealthy_for_participation() {
-        let peer = DevicePeer {
-            public_key: PublicKey([9; 32]),
-            endpoint: Some("127.0.0.1:51820".into()),
-            last_handshake: Some(Instant::now() - Duration::from_secs(31)),
-        };
-
-        let map = fresh_handshake_map(&[peer]);
-        assert_eq!(map.get(&PublicKey([9; 32])), Some(&false));
-    }
-
-    #[test]
-    fn required_peer_filter_ignores_disabled_peers() {
-        let machine_id = MachineId("self".into());
-        let record = |id: &str,
-                      participation: Participation,
-                      status: MachineStatus,
-                      last_heartbeat: u64| MachineRecord {
-            id: MachineId(id.into()),
-            public_key: PublicKey([0; 32]),
-            overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
-            subnet: None,
-            bridge_ip: None,
-            endpoints: vec![],
-            status,
-            participation,
-            last_heartbeat,
-            created_at: 0,
-            updated_at: 0,
-            labels: std::collections::BTreeMap::new(),
-        };
-
-        let machines = [
-            record("self", Participation::Disabled, MachineStatus::Unknown, 100),
-            record(
-                "disabled",
-                Participation::Disabled,
-                MachineStatus::Unknown,
-                100,
-            ),
-            record(
-                "enabled",
-                Participation::Enabled,
-                MachineStatus::Unknown,
-                100,
-            ),
-            record(
-                "draining",
-                Participation::Draining,
-                MachineStatus::Unknown,
-                100,
-            ),
-            record("stale", Participation::Enabled, MachineStatus::Unknown, 69),
-            record("down", Participation::Enabled, MachineStatus::Down, 100),
-        ];
-
-        let required = required_peers_for_participation(&machines, &machine_id, 100);
-
-        assert_eq!(
-            required
-                .iter()
-                .map(|machine| machine.id.0.as_str())
-                .collect::<Vec<_>>(),
-            vec!["enabled", "draining"]
-        );
-    }
 
     #[tokio::test]
-    async fn heartbeat_promotes_disabled_after_three_healthy_samples() {
-        let (store, service, network, self_id, peer_key) =
-            test_runtime(Participation::Disabled, Participation::Enabled).await;
-        network.set_device_peers(vec![DevicePeer {
-            public_key: peer_key,
-            endpoint: Some("127.0.0.1:51820".into()),
-            last_handshake: Some(Instant::now()),
-        }]);
+    async fn heartbeat_tick_now_runs_liveness_then_participation() {
+        let (self_liveness_tx, mut self_liveness_rx) = mpsc::channel(1);
+        let (participation_tx, mut participation_rx) = mpsc::channel(1);
+        let (command_tx, command_rx) = mpsc::channel(1);
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let handle = tokio::spawn(async move {
+            run_heartbeat_task(self_liveness_tx, participation_tx, command_rx, task_cancel).await;
+        });
 
-        let mut state = HeartbeatState::default();
-        let store_driver = StoreDriver::Memory {
-            store: store.clone(),
-            service,
-        };
-        let network_driver = WireguardDriver::Memory(network.clone());
+        let liveness_ack = tokio::spawn(async move {
+            let Some(SelfLivenessCommand::TickNow { done }) = self_liveness_rx.recv().await else {
+                panic!("expected liveness tick");
+            };
+            done.send(()).expect("ack liveness");
+        });
+        let participation_ack = tokio::spawn(async move {
+            let Some(ParticipationCommand::TickNow { done }) = participation_rx.recv().await else {
+                panic!("expected participation tick");
+            };
+            done.send(()).expect("ack participation");
+        });
 
-        for _ in 0..3 {
-            heartbeat_once(
-                &self_id,
-                &mut None,
-                &store_driver,
-                &network_driver,
-                &mut state,
-            )
-            .await;
-        }
-
-        let machines = store.list_machines().await.expect("list machines");
-        let self_record = machines
-            .into_iter()
-            .find(|machine| machine.id == self_id)
-            .expect("self record");
-        assert_eq!(self_record.participation, Participation::Enabled);
-    }
-
-    #[tokio::test]
-    async fn heartbeat_demotes_enabled_after_three_unhealthy_samples() {
-        let (store, service, network, self_id, _peer_key) =
-            test_runtime(Participation::Enabled, Participation::Enabled).await;
-
-        let mut state = HeartbeatState::default();
-        let store_driver = StoreDriver::Memory {
-            store: store.clone(),
-            service,
-        };
-        let network_driver = WireguardDriver::Memory(network);
-
-        for _ in 0..3 {
-            heartbeat_once(
-                &self_id,
-                &mut None,
-                &store_driver,
-                &network_driver,
-                &mut state,
-            )
-            .await;
-        }
-
-        let machines = store.list_machines().await.expect("list machines");
-        let self_record = machines
-            .into_iter()
-            .find(|machine| machine.id == self_id)
-            .expect("self record");
-        assert_eq!(self_record.participation, Participation::Disabled);
-    }
-
-    #[tokio::test]
-    async fn heartbeat_ignores_disabled_joiners_in_required_set() {
-        let store = Arc::new(MemoryStore::new());
-        let service = Arc::new(MemoryService::new());
-        let network = Arc::new(MemoryWireGuard::new());
-        let self_id = MachineId("self".into());
-        let enabled_peer_key = PublicKey([2; 32]);
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("current time")
-            .as_secs();
-
-        store
-            .upsert_machine(&test_machine(
-                "self",
-                Participation::Enabled,
-                PublicKey([1; 32]),
-                now,
-            ))
+        let (done_tx, done_rx) = oneshot::channel();
+        command_tx
+            .send(HeartbeatCommand::TickNow { done: done_tx })
             .await
-            .expect("upsert self");
-        store
-            .upsert_machine(&test_machine(
-                "enabled",
-                Participation::Enabled,
-                enabled_peer_key.clone(),
-                now,
-            ))
-            .await
-            .expect("upsert enabled");
-        store
-            .upsert_machine(&test_machine(
-                "disabled",
-                Participation::Disabled,
-                PublicKey([3; 32]),
-                0,
-            ))
-            .await
-            .expect("upsert disabled");
+            .expect("send heartbeat tick");
+        done_rx.await.expect("heartbeat ack");
 
-        network.set_device_peers(vec![DevicePeer {
-            public_key: enabled_peer_key,
-            endpoint: Some("127.0.0.1:51820".into()),
-            last_handshake: Some(Instant::now()),
-        }]);
-
-        let mut state = HeartbeatState::default();
-        let store_driver = StoreDriver::Memory {
-            store: store.clone(),
-            service,
-        };
-        let network_driver = WireguardDriver::Memory(network);
-
-        for _ in 0..3 {
-            heartbeat_once(
-                &self_id,
-                &mut None,
-                &store_driver,
-                &network_driver,
-                &mut state,
-            )
-            .await;
-        }
-
-        let machines = store.list_machines().await.expect("list machines");
-        let self_record = machines
-            .into_iter()
-            .find(|machine| machine.id == self_id)
-            .expect("self record");
-        assert_eq!(self_record.participation, Participation::Enabled);
-    }
-
-    #[tokio::test]
-    async fn heartbeat_ignores_stale_enabled_peers_in_required_set() {
-        let (store, service, network, self_id, _peer_key) =
-            test_runtime(Participation::Enabled, Participation::Enabled).await;
-
-        let stale_heartbeat = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("current time")
-            .as_secs()
-            .saturating_sub(31);
-        store
-            .upsert_machine(&MachineRecord {
-                last_heartbeat: stale_heartbeat,
-                ..test_machine(
-                    "peer",
-                    Participation::Enabled,
-                    PublicKey([2; 32]),
-                    stale_heartbeat,
-                )
-            })
-            .await
-            .expect("refresh stale peer");
-
-        let mut state = HeartbeatState::default();
-        let store_driver = StoreDriver::Memory {
-            store: store.clone(),
-            service,
-        };
-        let network_driver = WireguardDriver::Memory(network);
-
-        for _ in 0..3 {
-            heartbeat_once(
-                &self_id,
-                &mut None,
-                &store_driver,
-                &network_driver,
-                &mut state,
-            )
-            .await;
-        }
-
-        let machines = store.list_machines().await.expect("list machines");
-        let self_record = machines
-            .into_iter()
-            .find(|machine| machine.id == self_id)
-            .expect("self record");
-        assert_eq!(self_record.participation, Participation::Enabled);
-    }
-
-    #[tokio::test]
-    async fn heartbeat_ignores_down_enabled_peers_in_required_set() {
-        let (store, service, network, self_id, peer_key) =
-            test_runtime(Participation::Enabled, Participation::Enabled).await;
-        store
-            .upsert_machine(&MachineRecord {
-                status: MachineStatus::Down,
-                last_heartbeat: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("current time")
-                    .as_secs(),
-                ..test_machine(
-                    "peer",
-                    Participation::Enabled,
-                    peer_key,
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("current time")
-                        .as_secs(),
-                )
-            })
-            .await
-            .expect("mark peer down");
-
-        let mut state = HeartbeatState::default();
-        let store_driver = StoreDriver::Memory {
-            store: store.clone(),
-            service,
-        };
-        let network_driver = WireguardDriver::Memory(network);
-
-        for _ in 0..3 {
-            heartbeat_once(
-                &self_id,
-                &mut None,
-                &store_driver,
-                &network_driver,
-                &mut state,
-            )
-            .await;
-        }
-
-        let machines = store.list_machines().await.expect("list machines");
-        let self_record = machines
-            .into_iter()
-            .find(|machine| machine.id == self_id)
-            .expect("self record");
-        assert_eq!(self_record.participation, Participation::Enabled);
-    }
-
-    #[tokio::test]
-    async fn heartbeat_never_overwrites_draining() {
-        let (store, service, network, self_id, peer_key) =
-            test_runtime(Participation::Draining, Participation::Enabled).await;
-        network.set_device_peers(vec![DevicePeer {
-            public_key: peer_key,
-            endpoint: Some("127.0.0.1:51820".into()),
-            last_handshake: Some(Instant::now()),
-        }]);
-
-        let mut state = HeartbeatState::default();
-        let store_driver = StoreDriver::Memory {
-            store: store.clone(),
-            service,
-        };
-        let network_driver = WireguardDriver::Memory(network);
-
-        for _ in 0..3 {
-            heartbeat_once(
-                &self_id,
-                &mut None,
-                &store_driver,
-                &network_driver,
-                &mut state,
-            )
-            .await;
-        }
-
-        let machines = store.list_machines().await.expect("list machines");
-        let self_record = machines
-            .into_iter()
-            .find(|machine| machine.id == self_id)
-            .expect("self record");
-        assert_eq!(self_record.participation, Participation::Draining);
-    }
-
-    async fn test_runtime(
-        self_participation: Participation,
-        peer_participation: Participation,
-    ) -> (
-        Arc<MemoryStore>,
-        Arc<MemoryService>,
-        Arc<MemoryWireGuard>,
-        MachineId,
-        PublicKey,
-    ) {
-        let store = Arc::new(MemoryStore::new());
-        let service = Arc::new(MemoryService::new());
-        let network = Arc::new(MemoryWireGuard::new());
-        let self_id = MachineId("self".into());
-        let peer_key = PublicKey([2; 32]);
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("current time")
-            .as_secs();
-
-        let self_record = test_machine("self", self_participation, PublicKey([1; 32]), now);
-        let peer_record = test_machine("peer", peer_participation, peer_key.clone(), now);
-        store
-            .upsert_machine(&self_record)
-            .await
-            .expect("upsert self");
-        store
-            .upsert_machine(&peer_record)
-            .await
-            .expect("upsert peer");
-
-        (store, service, network, self_id, peer_key)
-    }
-
-    fn test_machine(
-        id: &str,
-        participation: Participation,
-        public_key: PublicKey,
-        last_heartbeat: u64,
-    ) -> MachineRecord {
-        MachineRecord {
-            id: MachineId(id.into()),
-            public_key,
-            overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
-            subnet: None,
-            bridge_ip: None,
-            endpoints: vec!["127.0.0.1:51820".into()],
-            status: MachineStatus::Unknown,
-            participation,
-            last_heartbeat,
-            labels: std::collections::BTreeMap::new(),
-            created_at: 0,
-            updated_at: 0,
-        }
+        cancel.cancel();
+        handle.await.expect("heartbeat task exits");
+        liveness_ack.await.expect("liveness ack task");
+        participation_ack.await.expect("participation ack task");
     }
 }

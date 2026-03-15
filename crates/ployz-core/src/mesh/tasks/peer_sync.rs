@@ -3,7 +3,7 @@ use crate::mesh::driver::WireguardDriver;
 use crate::mesh::peer_state::{PeerStateMap, sync_peers};
 use crate::mesh::probe::probe_endpoints_parallel;
 use crate::model::{MachineEvent, MachineId, MachineRecord};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -14,6 +14,7 @@ const PEER_SYNC_INTERVAL: Duration = Duration::from_secs(5);
 pub enum PeerSyncCommand {
     UpsertTransient(MachineRecord),
     RemoveTransient(MachineId),
+    TickNow { done: oneshot::Sender<()> },
 }
 
 pub(crate) async fn run_peer_sync_task(
@@ -61,6 +62,11 @@ pub(crate) async fn run_peer_sync_task(
                         state.upsert_transient(&record, Instant::now())
                     }
                     PeerSyncCommand::RemoveTransient(id) => state.remove_transient(&id),
+                    PeerSyncCommand::TickNow { done } => {
+                        peer_sync_tick(&mut state, &network, &local_machine_id).await;
+                        let _ = done.send(());
+                        continue;
+                    }
                 }
                 rank_pending_peers(&mut state).await;
                 sync_peers(&state, &network, &local_machine_id).await;
@@ -88,6 +94,13 @@ async fn peer_sync_tick(
     let device_peers = read_device_peers(network).await;
     let refreshed = state.refresh_from_device_peers(&device_peers, now);
     let ranked = rank_pending_peers(state).await;
+    debug!(
+        local_machine_id = %local_machine_id,
+        device_peer_count = device_peers.len(),
+        refreshed,
+        ranked,
+        "peer sync tick complete"
+    );
     if refreshed || ranked {
         sync_peers(state, network, local_machine_id).await;
     }
@@ -297,5 +310,47 @@ mod tests {
         let peers = network.current_peers();
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].id.0, "founder");
+    }
+
+    #[tokio::test]
+    async fn peer_sync_tick_now_runs_one_pass_and_acknowledges() {
+        let network = Arc::new(MemoryWireGuard::new());
+        let driver = WireguardDriver::Memory(network.clone());
+        let local_machine_id = MachineId("local".into());
+        let snapshot = vec![test_record(
+            "remote",
+            PublicKey([11; 32]),
+            vec!["a:1", "b:2"],
+        )];
+        let (_event_tx, event_rx) = mpsc::channel::<MachineEvent>(4);
+        let (command_tx, command_rx) = mpsc::channel::<PeerSyncCommand>(4);
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+
+        let handle = tokio::spawn(async move {
+            run_peer_sync_task(
+                snapshot,
+                event_rx,
+                command_rx,
+                Vec::new(),
+                driver,
+                local_machine_id,
+                task_cancel,
+            )
+            .await;
+        });
+
+        let (done_tx, done_rx) = oneshot::channel();
+        command_tx
+            .send(PeerSyncCommand::TickNow { done: done_tx })
+            .await
+            .expect("send tick");
+        done_rx.await.expect("tick ack");
+        cancel.cancel();
+        handle.await.expect("peer sync task exits");
+
+        let peers = network.current_peers();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].id.0, "remote");
     }
 }

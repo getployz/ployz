@@ -1,7 +1,8 @@
+use crate::model::OverlayIp;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use std::collections::HashMap;
 use std::io;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, SocketAddr, TcpListener as StdTcpListener};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -108,9 +109,39 @@ pub(crate) async fn probe_endpoints_parallel(
     results
 }
 
+pub(crate) async fn probe_overlay_ips_parallel(
+    overlay_ips: &[OverlayIp],
+) -> HashMap<OverlayIp, TcpProbeResult> {
+    let mut probes = FuturesUnordered::new();
+    for overlay_ip in overlay_ips {
+        let overlay_ip = *overlay_ip;
+        probes.push(async move {
+            let result = match probe_overlay_ip(overlay_ip, PROBE_TIMEOUT).await {
+                Some(rtt) => TcpProbeResult::reachable(rtt),
+                None => TcpProbeResult::unreachable(),
+            };
+            (overlay_ip, result)
+        });
+    }
+
+    let mut results = HashMap::with_capacity(overlay_ips.len());
+    while let Some((overlay_ip, result)) = probes.next().await {
+        results.insert(overlay_ip, result);
+    }
+    results
+}
+
 async fn probe_endpoint(endpoint: &str, timeout: Duration) -> Option<Duration> {
     let addr = probe_socket_addr(endpoint)?;
     probe_addr(addr, timeout).await
+}
+
+async fn probe_overlay_ip(overlay_ip: OverlayIp, timeout: Duration) -> Option<Duration> {
+    probe_addr(
+        SocketAddr::new(IpAddr::from(overlay_ip.0), MESH_PROBE_PORT),
+        timeout,
+    )
+    .await
 }
 
 async fn probe_addr(addr: SocketAddr, timeout: Duration) -> Option<Duration> {
@@ -186,6 +217,82 @@ async fn bind_v4(port: u16) -> io::Result<TcpListener> {
 }
 
 async fn bind_v6(port: u16) -> io::Result<TcpListener> {
+    bind_v6_only_listener(port)
+}
+
+#[cfg(unix)]
+fn bind_v6_only_listener(port: u16) -> io::Result<TcpListener> {
+    use std::mem::{size_of, zeroed};
+    use std::os::fd::FromRawFd;
+
+    let fd = unsafe { libc::socket(libc::AF_INET6, libc::SOCK_STREAM, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let enabled: libc::c_int = 1;
+    let set_result = unsafe {
+        libc::setsockopt(
+            fd,
+            libc::IPPROTO_IPV6,
+            libc::IPV6_V6ONLY,
+            (&enabled as *const libc::c_int).cast(),
+            size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if set_result != 0 {
+        let error = io::Error::last_os_error();
+        let _ = unsafe { libc::close(fd) };
+        return Err(error);
+    }
+
+    let reuse_result = unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_REUSEADDR,
+            (&enabled as *const libc::c_int).cast(),
+            size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if reuse_result != 0 {
+        let error = io::Error::last_os_error();
+        let _ = unsafe { libc::close(fd) };
+        return Err(error);
+    }
+
+    let mut addr: libc::sockaddr_in6 = unsafe { zeroed() };
+    addr.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+    addr.sin6_port = port.to_be();
+    addr.sin6_addr = libc::in6_addr { s6_addr: [0; 16] };
+
+    let bind_result = unsafe {
+        libc::bind(
+            fd,
+            (&addr as *const libc::sockaddr_in6).cast(),
+            size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+        )
+    };
+    if bind_result != 0 {
+        let error = io::Error::last_os_error();
+        let _ = unsafe { libc::close(fd) };
+        return Err(error);
+    }
+
+    let listen_result = unsafe { libc::listen(fd, 1024) };
+    if listen_result != 0 {
+        let error = io::Error::last_os_error();
+        let _ = unsafe { libc::close(fd) };
+        return Err(error);
+    }
+
+    let std_listener = unsafe { StdTcpListener::from_raw_fd(fd) };
+    std_listener.set_nonblocking(true)?;
+    TcpListener::from_std(std_listener)
+}
+
+#[cfg(not(unix))]
+async fn bind_v6_only_listener(port: u16) -> io::Result<TcpListener> {
     TcpListener::bind(SocketAddr::new(
         IpAddr::from(std::net::Ipv6Addr::UNSPECIFIED),
         port,
@@ -224,5 +331,14 @@ mod tests {
                 .await
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn v4_and_v6_probe_listeners_can_share_a_port() {
+        let v4 = bind_v4(0).await.expect("bind IPv4 listener");
+        let port = v4.local_addr().expect("v4 addr").port();
+        let v6 = bind_v6(port).await.expect("bind IPv6 listener");
+
+        assert_eq!(v6.local_addr().expect("v6 addr").port(), port);
     }
 }
