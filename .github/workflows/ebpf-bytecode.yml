@@ -12,6 +12,8 @@ permissions:
 jobs:
   build:
     runs-on: blacksmith-4vcpu-ubuntu-2204
+    env:
+      CARGO_TARGET_DIR: target/ebpf-bytecode
     steps:
       - uses: actions/checkout@v4
 
@@ -23,16 +25,16 @@ jobs:
 
       - name: Build BPF bytecode
         run: |
-          cd crates/ebpf
           cargo +nightly build \
             -Z build-std=core \
             --release \
-            --target bpfel-unknown-none
+            --target bpfel-unknown-none \
+            --manifest-path ebpf/Cargo.toml
 
       - name: Package artifact
         run: |
           mkdir -p dist
-          cp target/bpfel-unknown-none/release/ployz-ebpf-tc dist/
+          cp target/ebpf-bytecode/bpfel-unknown-none/release/ployz-ebpf-tc dist/
           sha256sum dist/ployz-ebpf-tc > dist/checksums.txt
           cat dist/checksums.txt
 

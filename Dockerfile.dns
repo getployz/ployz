@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 FROM rust:1-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends musl-tools cmake g++ && rm -rf /var/lib/apt/lists/*
@@ -5,26 +6,17 @@ RUN rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
 
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
-COPY crates/ployz-sdk/ crates/ployz-sdk/
-COPY crates/ployz-corrosion/ crates/ployz-corrosion/
-COPY crates/ployz-dns/ crates/ployz-dns/
-
-# Stub out workspace members we don't need so the workspace Cargo.toml resolves.
-RUN for dir in ployz-core ployzd ployz-e2e ployz-routes ployz-gateway ployz-bpfctl ebpf-common; do \
-      mkdir -p "crates/$dir/src" && \
-      echo '' > "crates/$dir/src/lib.rs" && \
-      case "$dir" in \
-        ebpf-common) package_name='ployz-ebpf-common' ;; \
-        *) package_name="$dir" ;; \
-      esac && \
-      printf '[package]\nname = "%s"\nversion = "0.1.0"\nedition = "2024"\n' "$package_name" > "crates/$dir/Cargo.toml"; \
-    done
+COPY crates/ crates/
 
 ARG TARGETARCH
-RUN if [ "$TARGETARCH" = "arm64" ]; then TARGET=aarch64-unknown-linux-musl; else TARGET=x86_64-unknown-linux-musl; fi && \
-    cargo build --release --target "$TARGET" -p ployz-dns && \
-    cp /build/target/"$TARGET"/release/ployz-dns /build/target/release/ployz-dns
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    if [ "$TARGETARCH" = "arm64" ]; then TARGET=aarch64-unknown-linux-musl; else TARGET=x86_64-unknown-linux-musl; fi && \
+    cargo build --locked --release --target "$TARGET" -p ployz-dns && \
+    mkdir -p /build/release-bin && \
+    cp /build/target/"$TARGET"/release/ployz-dns /build/release-bin/ployz-dns
 
 FROM alpine:3.21
-COPY --from=builder /build/target/release/ployz-dns /usr/local/bin/ployz-dns
+COPY --from=builder /build/release-bin/ployz-dns /usr/local/bin/ployz-dns
 ENTRYPOINT ["ployz-dns"]

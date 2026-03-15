@@ -59,14 +59,14 @@ jobs:
         run: cargo build -p ployz-e2e
 
       - name: Run HostExec E2E suite
-        run: cargo run -p ployz-e2e -- --image ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.suffix }}
+        run: cargo run -p ployz-e2e -- --image ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.suffix }} --artifacts-dir e2e-artifacts
 
       - name: Upload HostExec E2E artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: hostexec-e2e-artifacts-${{ matrix.suffix }}
-          path: .e2e-artifacts/
+          path: e2e-artifacts/
           if-no-files-found: ignore
 
   manifest:
