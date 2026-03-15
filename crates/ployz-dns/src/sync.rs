@@ -16,21 +16,21 @@ const REFRESH_DEBOUNCE: Duration = Duration::from_millis(100);
 pub trait DnsStore: Send + Sync {
     fn load_routing_state(
         &self,
-    ) -> impl Future<Output = Result<ployz_sdk::model::RoutingState, DnsError>> + Send + '_;
+    ) -> impl Future<Output = Result<ployz_types::model::RoutingState, DnsError>> + Send + '_;
     fn subscribe_routing_invalidations(
         &self,
     ) -> impl Future<Output = Result<mpsc::Receiver<()>, DnsError>> + Send + '_;
 }
 
 impl DnsStore for ployz_corrosion::CorrosionStore {
-    async fn load_routing_state(&self) -> Result<ployz_sdk::model::RoutingState, DnsError> {
-        ployz_sdk::store::RoutingStore::load_routing_state(self)
+    async fn load_routing_state(&self) -> Result<ployz_types::model::RoutingState, DnsError> {
+        ployz_types::store::RoutingStore::load_routing_state(self)
             .await
             .map_err(|err| DnsError::Store(err.to_string()))
     }
 
     async fn subscribe_routing_invalidations(&self) -> Result<mpsc::Receiver<()>, DnsError> {
-        ployz_sdk::store::RoutingStore::subscribe_routing_invalidations(self)
+        ployz_types::store::RoutingStore::subscribe_routing_invalidations(self)
             .await
             .map_err(|err| DnsError::Store(err.to_string()))
     }

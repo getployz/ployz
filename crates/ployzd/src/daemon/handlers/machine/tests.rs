@@ -541,12 +541,14 @@ async fn local_subnet_heal_skips_when_store_unhealthy() {
         .await
         .expect("mesh up");
 
-    let service = match &state.active.as_ref().expect("active").mesh.store {
-        StoreDriver::Memory { service, .. } => service.clone(),
-        StoreDriver::Corrosion { .. } | StoreDriver::CorrosionHost { .. } => {
-            panic!("expected memory store")
-        }
-    };
+    let service = state
+        .active
+        .as_ref()
+        .expect("active")
+        .mesh
+        .store
+        .memory_service()
+        .expect("expected memory store");
     service.set_healthy(false);
 
     state.heal_local_subnet_conflict_if_needed().await;
@@ -667,11 +669,8 @@ async fn make_state(start_mesh: bool) -> (DaemonState, Arc<MemoryStore>, Arc<Mem
         .expect("upsert founder");
 
     let mut mesh = Mesh::new(
-        WireguardDriver::Memory(network.clone()),
-        StoreDriver::Memory {
-            store: store.clone(),
-            service,
-        },
+        WireguardDriver::memory_with(network.clone()),
+        StoreDriver::memory_with(store.clone(), service),
         None,
         identity.machine_id.clone(),
         51820,
@@ -718,11 +717,8 @@ async fn make_state_with_store(
         .expect("save config");
 
     let mesh = Mesh::new(
-        WireguardDriver::Memory(Arc::new(MemoryWireGuard::new())),
-        StoreDriver::Memory {
-            store,
-            service: Arc::new(MemoryService::new()),
-        },
+        WireguardDriver::memory_with(Arc::new(MemoryWireGuard::new())),
+        StoreDriver::memory_with(store, Arc::new(MemoryService::new())),
         None,
         identity.machine_id.clone(),
         51820,

@@ -1,8 +1,8 @@
 use crate::client::CorrClient;
 use crate::store::shared::sql::query_rows;
 use corro_api_types::{ExecResult, Statement};
-use ployz_sdk::error::{Error, Result};
-use ployz_sdk::model::InviteRecord;
+use ployz_types::error::{Error, Result};
+use ployz_types::model::InviteRecord;
 
 pub(crate) async fn create_invite(client: &CorrClient, invite: &InviteRecord) -> Result<()> {
     let payload_json = serde_json::to_string(invite)
@@ -44,7 +44,8 @@ pub(crate) async fn consume_invite(
         Some(ExecResult::Error { error }) => Err(Error::operation("consume_invite", error.clone())),
         _ => {
             let lookup = Statement::WithParams(
-                "SELECT invite_id FROM invites WHERE invite_id = ? AND payload_json <> '' LIMIT 1".to_string(),
+                "SELECT invite_id FROM invites WHERE invite_id = ? AND payload_json <> '' LIMIT 1"
+                    .to_string(),
                 vec![invite_id.to_string().into()],
             );
             if query_rows(client, &lookup, "consume_invite")

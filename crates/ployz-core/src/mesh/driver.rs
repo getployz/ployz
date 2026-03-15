@@ -1,135 +1,170 @@
-//! Concrete driver enum that dispatches to backend-specific WireGuard adapters.
-//!
-//! Closed enum rather than `dyn Trait` because the set of backends is fixed at
-//! compile time, exhaustive matching catches new variants, and there is no
-//! vtable/`Arc` overhead on hot dispatch paths.
-
 use crate::error::Result;
-use crate::mesh::wireguard::{DockerWireGuard, HostWireGuard, MemoryWireGuard};
+use crate::mesh::wireguard::MemoryWireGuard;
 use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
 use crate::model::{MachineRecord, OverlayIp, PublicKey};
-use crate::node::identity::Identity;
-use ployz_corrosion::config as corrosion_config;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::Path;
+use async_trait::async_trait;
 use std::sync::Arc;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireguardBackendMode {
+    Memory,
+    Docker,
+    Host,
+}
+
+#[async_trait]
+pub trait WireguardBackend: Send + Sync {
+    fn mode(&self) -> WireguardBackendMode;
+
+    fn host_interface_name(&self) -> Option<&str> {
+        None
+    }
+
+    async fn up(&self) -> Result<()>;
+    async fn down(&self) -> Result<()>;
+    async fn set_peers(&self, peers: &[MachineRecord]) -> Result<()>;
+
+    async fn has_remote_handshake(&self) -> bool {
+        true
+    }
+
+    async fn bridge_ip(&self) -> Option<OverlayIp> {
+        None
+    }
+
+    async fn read_peers(&self) -> Result<Vec<DevicePeer>>;
+    async fn set_peer_endpoint(&self, key: &PublicKey, endpoint: &str) -> Result<()>;
+}
+
 #[derive(Clone)]
-pub enum WireguardDriver {
-    Memory(Arc<MemoryWireGuard>),
-    Docker(Arc<DockerWireGuard>),
-    Host(Arc<HostWireGuard>),
+pub struct WireguardDriver {
+    backend: Arc<dyn WireguardBackend>,
+    memory: Option<Arc<MemoryWireGuard>>,
 }
 
 impl WireguardDriver {
     #[must_use]
     pub fn memory() -> Self {
-        Self::Memory(Arc::new(MemoryWireGuard::new()))
+        Self::memory_with(Arc::new(MemoryWireGuard::new()))
     }
 
-    pub async fn docker(
-        identity: &Identity,
-        overlay_ip: OverlayIp,
-        network_dir: &Path,
-        exposed_tcp_ports: &[u16],
-        image: &str,
-    ) -> std::result::Result<Self, String> {
-        let api_port = corrosion_config::DEFAULT_API_PORT;
-        let overlay_api = SocketAddr::new(IpAddr::V6(overlay_ip.0), api_port);
-        let local_api = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), api_port);
-
-        let mut builder = DockerWireGuard::new(
-            "ployz-networking",
-            network_dir,
-            identity.private_key.clone(),
-            overlay_ip,
-        )
-        .image(image)
-        .with_bridge_forward(local_api, overlay_api);
-        for &port in exposed_tcp_ports {
-            builder = builder.expose_tcp(port);
+    #[must_use]
+    pub fn memory_with(memory: Arc<MemoryWireGuard>) -> Self {
+        Self {
+            backend: Arc::new(MemoryWireguardBackend {
+                memory: Arc::clone(&memory),
+            }),
+            memory: Some(memory),
         }
-        let wg = builder
-            .build()
-            .await
-            .map_err(|e| format!("docker wireguard: {e}"))?;
-        Ok(Self::Docker(Arc::new(wg)))
     }
 
-    pub fn host(
-        identity: &Identity,
-        overlay_ip: OverlayIp,
-        network_name: &str,
-        subnet: ipnet::Ipv4Net,
-    ) -> std::result::Result<Self, String> {
-        let ifname = format!("plz-{network_name}");
-        #[cfg(target_os = "linux")]
-        let wg = HostWireGuard::kernel(&ifname, identity.private_key.clone(), overlay_ip, subnet)
-            .map_err(|e| format!("host wireguard: {e}"))?;
-        #[cfg(not(target_os = "linux"))]
-        let wg =
-            HostWireGuard::userspace(&ifname, identity.private_key.clone(), overlay_ip, subnet)
-                .map_err(|e| format!("host wireguard: {e}"))?;
-        Ok(Self::Host(Arc::new(wg)))
+    #[doc(hidden)]
+    #[must_use]
+    pub fn from_backend(backend: Arc<dyn WireguardBackend>) -> Self {
+        Self {
+            backend,
+            memory: None,
+        }
+    }
+
+    #[must_use]
+    pub fn mode(&self) -> WireguardBackendMode {
+        self.backend.mode()
+    }
+
+    #[must_use]
+    pub fn runs_probe_listener(&self) -> bool {
+        self.mode() != WireguardBackendMode::Memory
+    }
+
+    #[must_use]
+    pub fn ebpf_attachment_ifname(&self, bridge_ifname: &str) -> String {
+        match (self.mode(), self.backend.host_interface_name()) {
+            (WireguardBackendMode::Host, Some(ifname)) => ifname.to_string(),
+            (
+                WireguardBackendMode::Docker | WireguardBackendMode::Memory,
+                _,
+            ) => bridge_ifname.to_string(),
+            (WireguardBackendMode::Host, None) => bridge_ifname.to_string(),
+        }
+    }
+
+    #[must_use]
+    pub fn memory_backend(&self) -> Option<Arc<MemoryWireGuard>> {
+        self.memory.as_ref().map(Arc::clone)
     }
 }
 
 impl MeshNetwork for WireguardDriver {
-    async fn up(&self) -> Result<()> {
-        match self {
-            Self::Memory(n) => n.up().await,
-            Self::Docker(n) => n.up().await,
-            Self::Host(n) => n.up().await,
-        }
+    fn up(&self) -> impl std::future::Future<Output = Result<()>> + Send + '_ {
+        async move { self.backend.up().await }
     }
 
-    async fn down(&self) -> Result<()> {
-        match self {
-            Self::Memory(n) => n.down().await,
-            Self::Docker(n) => n.down().await,
-            Self::Host(n) => n.down().await,
-        }
+    fn down(&self) -> impl std::future::Future<Output = Result<()>> + Send + '_ {
+        async move { self.backend.down().await }
     }
 
-    async fn set_peers<'a>(&'a self, peers: &'a [MachineRecord]) -> Result<()> {
-        match self {
-            Self::Memory(n) => n.set_peers(peers).await,
-            Self::Docker(n) => n.set_peers(peers).await,
-            Self::Host(n) => n.set_peers(peers).await,
-        }
+    fn set_peers<'a>(
+        &'a self,
+        peers: &'a [MachineRecord],
+    ) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
+        async move { self.backend.set_peers(peers).await }
     }
 
-    async fn has_remote_handshake(&self) -> bool {
-        match self {
-            Self::Memory(n) => n.has_remote_handshake().await,
-            Self::Docker(n) => n.has_remote_handshake().await,
-            Self::Host(n) => n.has_remote_handshake().await,
-        }
+    fn has_remote_handshake(&self) -> impl std::future::Future<Output = bool> + Send + '_ {
+        async move { self.backend.has_remote_handshake().await }
     }
 
-    async fn bridge_ip(&self) -> Option<OverlayIp> {
-        match self {
-            Self::Memory(n) => n.bridge_ip().await,
-            Self::Docker(n) => n.bridge_ip().await,
-            Self::Host(n) => n.bridge_ip().await,
-        }
+    fn bridge_ip(
+        &self,
+    ) -> impl std::future::Future<Output = Option<OverlayIp>> + Send + '_ {
+        async move { self.backend.bridge_ip().await }
     }
 }
 
 impl WireGuardDevice for WireguardDriver {
-    async fn read_peers(&self) -> Result<Vec<DevicePeer>> {
-        match self {
-            Self::Memory(n) => n.read_peers().await,
-            Self::Docker(n) => n.read_peers().await,
-            Self::Host(n) => n.read_peers().await,
-        }
+    fn read_peers(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<DevicePeer>>> + Send + '_ {
+        async move { self.backend.read_peers().await }
     }
 
-    async fn set_peer_endpoint<'a>(&'a self, key: &'a PublicKey, endpoint: &'a str) -> Result<()> {
-        match self {
-            Self::Memory(n) => n.set_peer_endpoint(key, endpoint).await,
-            Self::Docker(n) => n.set_peer_endpoint(key, endpoint).await,
-            Self::Host(n) => n.set_peer_endpoint(key, endpoint).await,
-        }
+    fn set_peer_endpoint<'a>(
+        &'a self,
+        key: &'a PublicKey,
+        endpoint: &'a str,
+    ) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
+        async move { self.backend.set_peer_endpoint(key, endpoint).await }
+    }
+}
+
+struct MemoryWireguardBackend {
+    memory: Arc<MemoryWireGuard>,
+}
+
+#[async_trait]
+impl WireguardBackend for MemoryWireguardBackend {
+    fn mode(&self) -> WireguardBackendMode {
+        WireguardBackendMode::Memory
+    }
+
+    async fn up(&self) -> Result<()> {
+        self.memory.up().await
+    }
+
+    async fn down(&self) -> Result<()> {
+        self.memory.down().await
+    }
+
+    async fn set_peers(&self, peers: &[MachineRecord]) -> Result<()> {
+        self.memory.set_peers(peers).await
+    }
+
+    async fn read_peers(&self) -> Result<Vec<DevicePeer>> {
+        self.memory.read_peers().await
+    }
+
+    async fn set_peer_endpoint(&self, key: &PublicKey, endpoint: &str) -> Result<()> {
+        self.memory.set_peer_endpoint(key, endpoint).await
     }
 }

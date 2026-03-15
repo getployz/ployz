@@ -5,16 +5,17 @@ use crate::built_in_images::{BuiltInImage, BuiltInImages};
 use crate::config::{RuntimeTarget, ServiceMode};
 use crate::daemon::handlers::machine::types::RestartableWorkload;
 use crate::deploy::remote::{RemoteControlHandle, start_remote_control_listener};
-use crate::mesh::driver::WireguardDriver;
 use crate::model::{MachineId, OverlayIp};
-use crate::network::docker_bridge::DockerBridgeNetwork;
 use crate::runtime::ContainerEngine;
 use crate::runtime::labels::{LABEL_KIND, LABEL_MACHINE, LABEL_MANAGED};
 use crate::services::dns::{DnsConfig, DnsHandle, start_managed_dns};
 use crate::services::gateway::{GatewayConfig, GatewayHandle, start_managed_gateway};
 use crate::services::supervisor::ServiceSupervision;
-use crate::store::driver::StoreDriver;
+use crate::{ContainerNetwork, StoreDriver, WireguardDriver};
 use ipnet::Ipv4Net;
+use ployz_runtime_backends::mesh::driver as mesh_backends;
+use ployz_runtime_backends::network::docker_bridge_network;
+use ployz_runtime_backends::store::driver as store_backends;
 
 const HEAL_WORKLOAD_STOP_GRACE: tokio::time::Duration = tokio::time::Duration::from_secs(10);
 
@@ -44,7 +45,7 @@ pub(crate) struct RuntimeProfile {
 pub(crate) struct MeshRuntimeComponents {
     pub(crate) network: WireguardDriver,
     pub(crate) store: StoreDriver,
-    pub(crate) container_network: Option<DockerBridgeNetwork>,
+    pub(crate) container_network: Option<ContainerNetwork>,
 }
 
 impl RuntimeProfile {
@@ -117,42 +118,36 @@ impl RuntimeProfile {
     ) -> Result<MeshRuntimeComponents, String> {
         let network = match self.execution_backend {
             ExecutionBackend::Memory => WireguardDriver::memory(),
-            ExecutionBackend::Docker => {
-                WireguardDriver::docker(
-                    identity,
-                    overlay_ip,
-                    network_dir,
-                    exposed_tcp_ports,
-                    self.built_in_images.resolve(BuiltInImage::Networking),
-                )
-                .await?
-            }
-            ExecutionBackend::Host => {
-                WireguardDriver::host(identity, overlay_ip, network_name, subnet)?
-            }
+            ExecutionBackend::Docker => mesh_backends::docker(
+                identity,
+                overlay_ip,
+                network_dir,
+                exposed_tcp_ports,
+                self.built_in_images.resolve(BuiltInImage::Networking),
+            )
+            .await?,
+            ExecutionBackend::Host => mesh_backends::host(identity, overlay_ip, network_name, subnet)?,
         };
 
         let store = match self.execution_backend {
             ExecutionBackend::Memory => StoreDriver::memory(),
-            ExecutionBackend::Docker => {
-                StoreDriver::corrosion_docker(
-                    overlay_ip,
-                    network_dir,
-                    bootstrap,
-                    network_id,
-                    self.built_in_images.resolve(BuiltInImage::Corrosion),
-                )
-                .await?
-            }
+            ExecutionBackend::Docker => store_backends::corrosion_docker(
+                overlay_ip,
+                network_dir,
+                bootstrap,
+                network_id,
+                self.built_in_images.resolve(BuiltInImage::Corrosion),
+            )
+            .await?,
             ExecutionBackend::Host => {
-                StoreDriver::corrosion_host(overlay_ip, network_dir, bootstrap, network_id)?
+                store_backends::corrosion_host(overlay_ip, network_dir, bootstrap, network_id)?
             }
         };
 
         let container_network = match self.execution_backend {
             ExecutionBackend::Memory => None,
             ExecutionBackend::Docker | ExecutionBackend::Host => Some(
-                DockerBridgeNetwork::new(network_name, subnet)
+                docker_bridge_network(network_name, subnet)
                     .await
                     .map_err(|error| error.to_string())?,
             ),
@@ -251,7 +246,7 @@ impl RuntimeProfile {
             .await
             .map_err(|err| format!("list local workloads for subnet heal: {err}"))?;
 
-        let bridge = DockerBridgeNetwork::new(network_name, target_subnet)
+        let bridge = docker_bridge_network(network_name, target_subnet)
             .await
             .map_err(|err| format!("build bridge handle for subnet heal: {err}"))?;
 
@@ -293,7 +288,7 @@ impl RuntimeProfile {
     }
 
     pub(crate) async fn start_local_workloads_after_subnet_heal(
-        self,
+        &self,
         network_name: &str,
         target_subnet: Ipv4Net,
         workloads: &[RestartableWorkload],
@@ -305,7 +300,7 @@ impl RuntimeProfile {
         let engine = ContainerEngine::connect()
             .await
             .map_err(|err| format!("connect docker engine after subnet heal: {err}"))?;
-        let bridge = DockerBridgeNetwork::new(network_name, target_subnet)
+        let bridge = docker_bridge_network(network_name, target_subnet)
             .await
             .map_err(|err| format!("build target bridge handle after subnet heal: {err}"))?;
 

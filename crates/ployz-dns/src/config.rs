@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-use ployz_sdk::model::OverlayIp;
+use ployz_types::model::OverlayIp;
 
 // ---------------------------------------------------------------------------
 // DnsError
@@ -64,7 +64,7 @@ impl DnsConfig {
                     "PLOYZ_DNS_NETWORK was set but empty".into(),
                 ));
             }
-            Err(_) => ployz_sdk::paths::read_active_network(&data_dir)
+            Err(_) => ployz_types::paths::read_active_network(&data_dir)
                 .ok_or_else(|| DnsError::Config("no active network marker was found".into()))?,
         };
         let overlay_listen_addr = match std::env::var("PLOYZ_DNS_OVERLAY_LISTEN_ADDR")
@@ -104,7 +104,7 @@ impl DnsConfig {
 #[cfg(test)]
 mod tests {
     use super::DnsConfig;
-    use ployz_sdk::model::OverlayIp;
+    use ployz_types::model::OverlayIp;
     use std::net::Ipv6Addr;
     use std::path::Path;
 

@@ -2,9 +2,9 @@ use crate::client::CorrClient;
 use crate::store::shared::decode::text;
 use crate::store::shared::sql::{exec_one, query_rows};
 use corro_api_types::{SqliteValue, Statement};
-use ployz_sdk::error::{Error, Result};
-use ployz_sdk::model::ServiceRevisionRecord;
-use ployz_sdk::spec::Namespace;
+use ployz_types::error::{Error, Result};
+use ployz_types::model::ServiceRevisionRecord;
+use ployz_types::spec::Namespace;
 
 pub(crate) const SQL_ALL_SERVICE_REVISIONS: &str = "SELECT namespace, service, revision_hash, payload_json FROM service_revisions WHERE payload_json <> '' ORDER BY namespace, service, revision_hash";
 
@@ -71,10 +71,11 @@ pub(crate) fn parse_service_revision(row: &[SqliteValue]) -> Result<ServiceRevis
     let revision_hash = text(revision_val, "revision_hash")?;
     let payload_json = text(payload_val, "payload_json")?;
 
-    let record: ServiceRevisionRecord = serde_json::from_str(&payload_json).map_err(|e| {
-        Error::operation("parse_service_revision", format!("decode payload: {e}"))
-    })?;
-    if record.namespace.0 != namespace || record.service != service || record.revision_hash != revision_hash
+    let record: ServiceRevisionRecord = serde_json::from_str(&payload_json)
+        .map_err(|e| Error::operation("parse_service_revision", format!("decode payload: {e}")))?;
+    if record.namespace.0 != namespace
+        || record.service != service
+        || record.revision_hash != revision_hash
     {
         return Err(Error::operation(
             "parse_service_revision",

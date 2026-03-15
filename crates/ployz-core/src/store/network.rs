@@ -66,13 +66,13 @@ impl NetworkConfig {
     /// Path to network config dir: `<data_dir>/networks/<name>/`
     #[must_use]
     pub fn dir(data_dir: &Path, name: &str) -> PathBuf {
-        ployz_sdk::paths::network_dir(data_dir, name)
+        ployz_types::paths::network_dir(data_dir, name)
     }
 
     /// Path to network config file: `<data_dir>/networks/<name>/network.json`
     #[must_use]
     pub fn path(data_dir: &Path, name: &str) -> PathBuf {
-        ployz_sdk::paths::network_config_path(data_dir, name)
+        ployz_types::paths::network_config_path(data_dir, name)
     }
 
     pub fn load(path: &Path) -> Result<Self> {
@@ -102,7 +102,7 @@ impl NetworkConfig {
     /// Read the active network name from `<data_dir>/active_network`.
     #[must_use]
     pub fn read_active_network(data_dir: &Path) -> Option<String> {
-        ployz_sdk::paths::read_active_network(data_dir)
+        ployz_types::paths::read_active_network(data_dir)
     }
 
     pub fn delete(data_dir: &Path, name: &str) -> std::io::Result<()> {

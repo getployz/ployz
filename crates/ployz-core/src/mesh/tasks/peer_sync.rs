@@ -149,7 +149,7 @@ mod tests {
     async fn peer_sync_tick_rotates_after_missing_handshake_timeout() {
         let now = Instant::now();
         let network = Arc::new(MemoryWireGuard::new());
-        let driver = WireguardDriver::Memory(network.clone());
+        let driver = WireguardDriver::memory_with(network.clone());
         let local_machine_id = MachineId("local".into());
         let remote_key = PublicKey([7; 32]);
         let snapshot = vec![test_record(
@@ -180,7 +180,7 @@ mod tests {
     async fn peer_sync_tick_preserves_fresh_live_endpoint_on_restart() {
         let now = Instant::now();
         let network = Arc::new(MemoryWireGuard::new());
-        let driver = WireguardDriver::Memory(network.clone());
+        let driver = WireguardDriver::memory_with(network.clone());
         let local_machine_id = MachineId("local".into());
         let remote_key = PublicKey([8; 32]);
         let snapshot = vec![test_record(
@@ -209,7 +209,7 @@ mod tests {
     async fn peer_sync_tick_rotates_after_stale_handshake() {
         let now = Instant::now();
         let network = Arc::new(MemoryWireGuard::new());
-        let driver = WireguardDriver::Memory(network.clone());
+        let driver = WireguardDriver::memory_with(network.clone());
         let local_machine_id = MachineId("local".into());
         let remote_key = PublicKey([9; 32]);
         let snapshot = vec![test_record(
@@ -240,7 +240,7 @@ mod tests {
     async fn peer_sync_tick_falls_back_to_wireguard_order_when_tcp_probe_fails() {
         let now = Instant::now();
         let network = Arc::new(MemoryWireGuard::new());
-        let driver = WireguardDriver::Memory(network.clone());
+        let driver = WireguardDriver::memory_with(network.clone());
         let local_machine_id = MachineId("local".into());
         let remote_key = PublicKey([10; 32]);
         let snapshot = vec![test_record(
@@ -276,7 +276,7 @@ mod tests {
     #[tokio::test]
     async fn initial_sync_keeps_bootstrap_peer_until_store_catches_up() {
         let network = Arc::new(MemoryWireGuard::new());
-        let driver = WireguardDriver::Memory(network.clone());
+        let driver = WireguardDriver::memory_with(network.clone());
         let local_machine_id = MachineId("joiner".into());
         let snapshot = vec![test_record("joiner", PublicKey([1; 32]), vec!["self:1"])];
         let bootstrap_peers = vec![test_record(
@@ -316,7 +316,7 @@ mod tests {
     #[tokio::test]
     async fn peer_sync_tick_now_runs_one_pass_and_acknowledges() {
         let network = Arc::new(MemoryWireGuard::new());
-        let driver = WireguardDriver::Memory(network.clone());
+        let driver = WireguardDriver::memory_with(network.clone());
         let local_machine_id = MachineId("local".into());
         let snapshot = vec![test_record(
             "remote",

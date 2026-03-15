@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::runtime::labels::build_system_labels;
 use crate::runtime::{ContainerEngine, EnsureAction, PullPolicy, RuntimeContainerSpec};
-use ployz_sdk::store::StoreRuntimeControl;
+use ployz_types::store::StoreRuntimeControl;
 use std::time::Duration;
 use tracing::info;
 

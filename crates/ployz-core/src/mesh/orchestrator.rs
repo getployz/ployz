@@ -1,6 +1,7 @@
 use crate::error::Error as PortError;
 use crate::mesh::MeshNetwork;
-use crate::mesh::driver::WireguardDriver;
+use crate::mesh::container_network::ContainerNetwork;
+use crate::mesh::driver::{WireguardBackendMode, WireguardDriver};
 use crate::mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
 use crate::mesh::probe::run_probe_listener_task;
 use crate::mesh::tasks::{
@@ -10,7 +11,6 @@ use crate::mesh::tasks::{
     run_self_liveness_task, run_self_record_writer_task, run_subnet_claim_monitor_task,
 };
 use crate::model::{MachineId, MachineRecord, MachineStatus};
-use crate::network::docker_bridge::DockerBridgeNetwork;
 use crate::network::ebpf::EbpfDataplane;
 use crate::store::driver::StoreDriver;
 use crate::store::{MachineStore, StoreRuntimeControl, SyncProbe, SyncStatus};
@@ -47,7 +47,7 @@ pub struct Mesh {
     phase: Phase,
     pub network: WireguardDriver,
     pub store: StoreDriver,
-    container_network: Option<DockerBridgeNetwork>,
+    container_network: Option<ContainerNetwork>,
     tasks: Option<TaskSet>,
     task_cancel: Option<tokio_util::sync::CancellationToken>,
     peer_sync_tx: Option<mpsc::Sender<PeerSyncCommand>>,
@@ -73,7 +73,7 @@ impl Mesh {
     pub fn new(
         network: WireguardDriver,
         store: StoreDriver,
-        container_network: Option<DockerBridgeNetwork>,
+        container_network: Option<ContainerNetwork>,
         machine_id: MachineId,
         listen_port: u16,
     ) -> Self {
@@ -124,7 +124,7 @@ impl Mesh {
     pub fn container_dns_server(&self) -> Option<Ipv4Addr> {
         self.container_network
             .as_ref()
-            .map(DockerBridgeNetwork::container_v4)
+            .map(ContainerNetwork::container_v4)
     }
 
     #[must_use]
@@ -247,7 +247,7 @@ impl Mesh {
         // 2. Container network — create bridge for all modes that use Docker.
         if let Some(cn) = &self.container_network {
             cn.ensure().await?;
-            if let WireguardDriver::Docker(_) = &self.network {
+            if self.network.mode() == WireguardBackendMode::Docker {
                 cn.connect("ployz-networking", Some(cn.container_v4()))
                     .await?;
             }
@@ -310,7 +310,7 @@ impl Mesh {
             .filter(|machine| machine.id != self.machine_id)
             .cloned()
             .collect();
-        if !matches!(&self.network, WireguardDriver::Memory(_)) {
+        if self.network.runs_probe_listener() {
             task_set.spawn(run_probe_listener_task(cancel.clone()));
         }
         task_set.spawn(run_peer_sync_task(
@@ -344,10 +344,7 @@ impl Mesh {
 
         #[cfg(feature = "ebpf-native")]
         {
-            let wg_ifname = match &self.network {
-                WireguardDriver::Host(wg) => wg.ifname().to_string(),
-                WireguardDriver::Docker(_) | WireguardDriver::Memory(_) => bridge_ifname.clone(),
-            };
+            let wg_ifname = self.network.ebpf_attachment_ifname(&bridge_ifname);
             let wg_ifindex = resolve_ifindex(&wg_ifname)?;
             let dp = EbpfDataplane::attach_native(&bridge_ifname)?;
             self.wg_ifindex = wg_ifindex;
@@ -614,7 +611,7 @@ impl Mesh {
     pub async fn restart_runtime_for_subnet_change(
         &mut self,
         network: WireguardDriver,
-        container_network: Option<DockerBridgeNetwork>,
+        container_network: Option<ContainerNetwork>,
     ) -> Result<()> {
         self.apply(PhaseEvent::DestroyRequested)?;
 

@@ -1,6 +1,6 @@
 use std::net::Ipv4Addr;
 
-use ployz_sdk::spec::Namespace;
+use ployz_types::spec::Namespace;
 
 use crate::snapshot::DnsSnapshot;
 
