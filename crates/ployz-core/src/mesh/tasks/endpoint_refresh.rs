@@ -1,15 +1,17 @@
 use crate::model::MachineId;
+use crate::mesh::tasks::{SelfRecordMutation, apply_self_record_mutation};
 use crate::network::endpoints::detect_endpoints;
-use crate::store::MachineStore;
-use crate::store::driver::StoreDriver;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 pub(crate) async fn run_endpoint_refresh_task(
     machine_id: MachineId,
     listen_port: u16,
-    store: StoreDriver,
+    authoritative_self: Arc<RwLock<crate::model::MachineRecord>>,
+    self_record_tx: tokio::sync::mpsc::Sender<crate::mesh::tasks::self_record::SelfRecordCommand>,
     cancel: CancellationToken,
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(30 * 60));
@@ -29,21 +31,11 @@ pub(crate) async fn run_endpoint_refresh_task(
                     continue;
                 }
 
-                let current = match store.list_machines().await {
-                    Ok(machines) => {
-                        match machines.into_iter().find(|m| m.id == machine_id) {
-                            Some(record) => record,
-                            None => {
-                                warn!("self record not found in store, skipping endpoint refresh");
-                                continue;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!(?e, "failed to read machines for endpoint refresh");
-                        continue;
-                    }
-                };
+                let current = authoritative_self.read().await.clone();
+                if current.id != machine_id {
+                    warn!("authoritative self record mismatch, skipping endpoint refresh");
+                    continue;
+                }
 
                 if current.endpoints != new_endpoints {
                     info!(
@@ -51,11 +43,12 @@ pub(crate) async fn run_endpoint_refresh_task(
                         new = ?new_endpoints,
                         "endpoints changed, updating"
                     );
-                    let mut updated = current;
-                    updated.endpoints = new_endpoints;
-                    if let Err(e) = store.upsert_machine(&updated).await {
-                        warn!(?e, "failed to update endpoints in store");
-                    }
+                    let _ = apply_self_record_mutation(
+                        &self_record_tx,
+                        SelfRecordMutation::SetEndpoints {
+                            endpoints: new_endpoints,
+                        },
+                    ).await;
                 }
             }
         }
