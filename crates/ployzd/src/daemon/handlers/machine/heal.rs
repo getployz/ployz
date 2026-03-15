@@ -2,11 +2,8 @@ use std::collections::BTreeMap;
 
 use ipnet::Ipv4Net;
 
-use crate::config::Mode;
 use crate::daemon::{DaemonState, PendingSubnetHeal, SubnetHealAttempt};
 use crate::model::{MachineId, MachineRecord, MachineStatus, Participation};
-use crate::runtime::ContainerEngine;
-use crate::runtime::labels::{LABEL_KIND, LABEL_MACHINE, LABEL_MANAGED};
 use crate::store::MachineStore;
 use crate::store::StoreRuntimeControl;
 use crate::store::network::NetworkConfig;
@@ -16,7 +13,6 @@ use super::operations::{MachineOperationArtifacts, MachineOperationKind, Machine
 use super::types::{LocalSubnetConflict, LocalSubnetHealPlan, RestartableWorkload};
 
 const SUBNET_HEAL_COOLDOWN_SECS: u64 = 10;
-const HEAL_WORKLOAD_STOP_GRACE: tokio::time::Duration = tokio::time::Duration::from_secs(10);
 const SUBNET_HEAL_SETTLE_SECS: u64 = 10;
 
 impl DaemonState {
@@ -270,15 +266,12 @@ impl DaemonState {
             .save(&config_path)
             .map_err(|err| format!("save network config: {err}"))?;
 
-        match self.mode {
-            Mode::Memory => {
-                self.apply_local_subnet_heal_in_memory_mode(&network_name)
-                    .await
-            }
-            Mode::Docker | Mode::HostExec | Mode::HostService => {
-                self.restart_active_mesh_for_subnet_heal(&network_name)
-                    .await
-            }
+        if self.runtime_profile.is_memory_test() {
+            self.apply_local_subnet_heal_in_memory_mode(&network_name)
+                .await
+        } else {
+            self.restart_active_mesh_for_subnet_heal(&network_name)
+                .await
         }
     }
 
@@ -373,69 +366,18 @@ impl DaemonState {
         &self,
         network_name: &str,
     ) -> Result<Vec<RestartableWorkload>, String> {
-        match self.mode {
-            Mode::Memory => Ok(Vec::new()),
-            Mode::Docker | Mode::HostExec | Mode::HostService => {
-                let engine = ContainerEngine::connect()
-                    .await
-                    .map_err(|err| format!("connect docker engine for subnet heal: {err}"))?;
-                let bridge_name = format!("ployz-{network_name}");
-                let observed = engine
-                    .list_by_labels(&[
-                        (LABEL_MANAGED, "true"),
-                        (LABEL_KIND, "workload"),
-                        (LABEL_MACHINE, &self.identity.machine_id.0),
-                    ])
-                    .await
-                    .map_err(|err| format!("list local workloads for subnet heal: {err}"))?;
-
-                let target_subnet = self
-                    .active
-                    .as_ref()
-                    .map(|active| active.config.subnet)
-                    .ok_or_else(|| "no running network".to_string())?;
-                let bridge =
-                    crate::network::docker_bridge::DockerBridgeNetwork::new(network_name, target_subnet)
-                        .await
-                        .map_err(|err| format!("build bridge handle for subnet heal: {err}"))?;
-
-                let mut restartable = Vec::new();
-                for container in observed {
-                    if !container.networks.contains_key(&bridge_name) {
-                        continue;
-                    }
-
-                    if container.running {
-                        engine
-                            .stop(&container.container_name, HEAL_WORKLOAD_STOP_GRACE)
-                            .await
-                            .map_err(|err| {
-                                format!(
-                                    "stop workload '{}' for subnet heal: {err}",
-                                    container.container_name
-                                )
-                            })?;
-                    }
-
-                    bridge
-                        .disconnect(&container.container_name, true)
-                        .await
-                        .map_err(|err| {
-                            format!(
-                                "disconnect workload '{}' from old bridge: {err}",
-                                container.container_name
-                            )
-                        })?;
-
-                    restartable.push(RestartableWorkload {
-                        container_name: container.container_name,
-                        was_running: container.running,
-                    });
-                }
-
-                Ok(restartable)
-            }
-        }
+        let target_subnet = self
+            .active
+            .as_ref()
+            .map(|active| active.config.subnet)
+            .ok_or_else(|| "no running network".to_string())?;
+        self.runtime_profile
+            .stop_local_workloads_for_subnet_heal(
+                &self.identity.machine_id,
+                network_name,
+                target_subnet,
+            )
+            .await
     }
 
     async fn start_local_workloads_after_subnet_heal(
@@ -443,54 +385,14 @@ impl DaemonState {
         network_name: &str,
         workloads: &[RestartableWorkload],
     ) -> Result<(), String> {
-        match self.mode {
-            Mode::Memory => Ok(()),
-            Mode::Docker | Mode::HostExec | Mode::HostService => {
-                if workloads.is_empty() {
-                    return Ok(());
-                }
-
-                let engine = ContainerEngine::connect()
-                    .await
-                    .map_err(|err| format!("connect docker engine after subnet heal: {err}"))?;
-                let target_subnet = self
-                    .active
-                    .as_ref()
-                    .map(|active| active.config.subnet)
-                    .ok_or_else(|| "no running network".to_string())?;
-                let bridge = crate::network::docker_bridge::DockerBridgeNetwork::new(
-                    network_name,
-                    target_subnet,
-                )
-                .await
-                .map_err(|err| format!("build target bridge handle after subnet heal: {err}"))?;
-
-                for workload in workloads {
-                    bridge
-                        .connect(&workload.container_name, None)
-                        .await
-                        .map_err(|err| {
-                            format!(
-                                "reconnect workload '{}' to healed bridge: {err}",
-                                workload.container_name
-                            )
-                        })?;
-                    if workload.was_running {
-                        engine
-                            .start(&workload.container_name)
-                            .await
-                            .map_err(|err| {
-                                format!(
-                                    "restart workload '{}' after subnet heal: {err}",
-                                    workload.container_name
-                                )
-                            })?;
-                    }
-                }
-
-                Ok(())
-            }
-        }
+        let target_subnet = self
+            .active
+            .as_ref()
+            .map(|active| active.config.subnet)
+            .ok_or_else(|| "no running network".to_string())?;
+        self.runtime_profile
+            .start_local_workloads_after_subnet_heal(network_name, target_subnet, workloads)
+            .await
     }
 }
 

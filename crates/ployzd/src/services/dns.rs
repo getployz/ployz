@@ -1,5 +1,4 @@
-use crate::Mode;
-use crate::services::supervisor::{SidecarHandle, SidecarSpec, SystemdType};
+use crate::services::supervisor::{ServiceSupervision, SidecarHandle, SidecarSpec, SystemdType};
 
 const DNS_IMAGE: &str = "ghcr.io/getployz/ployz-dns:latest";
 
@@ -50,19 +49,21 @@ impl DnsHandle {
     }
 }
 
-pub async fn start_managed_dns(mode: Mode, config: DnsConfig) -> Result<DnsHandle, DnsError> {
-    match mode {
-        Mode::Memory => Ok(DnsHandle::noop()),
-        Mode::Docker | Mode::HostExec | Mode::HostService => {
-            let spec = build_dns_sidecar_spec(&config);
-            SidecarHandle::ensure(mode, spec)
-                .await
-                .map(|handle| DnsHandle {
-                    inner: DnsHandleInner::Sidecar(Box::new(handle)),
-                })
-                .map_err(|e| DnsError::Process(e.to_string()))
-        }
-    }
+pub async fn start_managed_dns(
+    supervision: Option<ServiceSupervision>,
+    config: DnsConfig,
+) -> Result<DnsHandle, DnsError> {
+    let Some(supervision) = supervision else {
+        return Ok(DnsHandle::noop());
+    };
+
+    let spec = build_dns_sidecar_spec(&config);
+    SidecarHandle::ensure(supervision, spec)
+        .await
+        .map(|handle| DnsHandle {
+            inner: DnsHandleInner::Sidecar(Box::new(handle)),
+        })
+        .map_err(|e| DnsError::Process(e.to_string()))
 }
 
 fn build_dns_sidecar_spec(config: &DnsConfig) -> SidecarSpec {

@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() {
   cat <<'EOF'
-Compatibility shim for the legacy Linux bootstrap entrypoint.
+Linux bootstrap shim for host system installs.
 
 Usage:
   scripts/bootstrap-linux.sh --artifacts-dir PATH [options]
@@ -16,7 +16,8 @@ EOF
 ARTIFACTS_DIR=""
 ARTIFACTS_URL=""
 FORCE_DOWNLOAD=0
-MODE="host-service"
+RUNTIME="host"
+SERVICE_MODE="system"
 SKIP_START=0
 WORK_DIR=""
 
@@ -34,8 +35,12 @@ while [[ $# -gt 0 ]]; do
       FORCE_DOWNLOAD=1
       shift
       ;;
-    --mode)
-      MODE=${2:-}
+    --runtime)
+      RUNTIME=${2:-}
+      shift 2
+      ;;
+    --service-mode)
+      SERVICE_MODE=${2:-}
       shift 2
       ;;
     --skip-start|--refresh-only|--apt-proxy|--prefix|--data-dir)
@@ -57,8 +62,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ "${MODE}" == "host-service" ]] || {
-  printf 'legacy bootstrap shim only supports --mode host-service\n' >&2
+[[ "${RUNTIME}" == "host" && "${SERVICE_MODE}" == "system" ]] || {
+  printf 'bootstrap shim only supports --runtime host --service-mode system\n' >&2
   exit 1
 }
 
@@ -88,7 +93,11 @@ if [[ -n "${ARTIFACTS_URL}" ]]; then
   ARTIFACTS_DIR="${WORK_DIR}/payload"
 fi
 
-"${ROOT_DIR}/ployz.sh" install --source payload --payload-dir "${ARTIFACTS_DIR}" --mode host-service
+"${ROOT_DIR}/ployz.sh" install \
+  --source payload \
+  --payload-dir "${ARTIFACTS_DIR}" \
+  --runtime host \
+  --service-mode system
 
 if [[ ${SKIP_START} -eq 1 ]]; then
   printf 'warning: legacy --skip-start is no longer supported by the shim\n' >&2

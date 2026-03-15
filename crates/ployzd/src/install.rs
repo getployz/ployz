@@ -1,5 +1,7 @@
-use crate::Mode;
-use ployz_sdk::{Affordances, Os, default_config_path, default_data_dir, default_socket_path};
+use crate::{RuntimeTarget, ServiceMode};
+use ployz_sdk::{
+    Affordances, Os, default_config_path, default_data_dir, default_socket_path, validate_runtime,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -52,8 +54,8 @@ pub struct InstallManifest {
     pub gateway_path: PathBuf,
     pub dns_path: PathBuf,
     pub corrosion_path: PathBuf,
-    pub requested_mode: Mode,
-    pub configured_mode: Option<Mode>,
+    pub runtime_target: RuntimeTarget,
+    pub service_mode: ServiceMode,
     pub service_backend: Option<ServiceBackend>,
 }
 
@@ -83,8 +85,8 @@ impl InstallManifest {
         let mut gateway_path = None;
         let mut dns_path = None;
         let mut corrosion_path = None;
-        let mut requested_mode = None;
-        let mut configured_mode = None;
+        let mut runtime_target = None;
+        let mut service_mode = None;
         let mut service_backend = None;
 
         for line in raw.lines() {
@@ -115,10 +117,8 @@ impl InstallManifest {
                 "PLOYZ_GATEWAY_PATH" => gateway_path = Some(PathBuf::from(value)),
                 "PLOYZ_DNS_PATH" => dns_path = Some(PathBuf::from(value)),
                 "CORROSION_PATH" => corrosion_path = Some(PathBuf::from(value)),
-                "REQUESTED_MODE" => requested_mode = Some(parse_mode(&value)?),
-                "CONFIGURED_MODE" => {
-                    configured_mode = non_empty(value).map(|mode| parse_mode(&mode)).transpose()?
-                }
+                "RUNTIME_TARGET" => runtime_target = Some(parse_runtime_target(&value)?),
+                "SERVICE_MODE" => service_mode = Some(parse_service_mode(&value)?),
                 "SERVICE_BACKEND" => {
                     service_backend = non_empty(value)
                         .map(|backend| ServiceBackend::parse(&backend))
@@ -144,8 +144,8 @@ impl InstallManifest {
             gateway_path: required_value(gateway_path, "PLOYZ_GATEWAY_PATH", path)?,
             dns_path: required_value(dns_path, "PLOYZ_DNS_PATH", path)?,
             corrosion_path: required_value(corrosion_path, "CORROSION_PATH", path)?,
-            requested_mode: required_value(requested_mode, "REQUESTED_MODE", path)?,
-            configured_mode,
+            runtime_target: required_value(runtime_target, "RUNTIME_TARGET", path)?,
+            service_mode: required_value(service_mode, "SERVICE_MODE", path)?,
             service_backend,
         })
     }
@@ -182,8 +182,8 @@ impl InstallManifest {
             ),
             env_line("PLOYZ_DNS_PATH", &self.dns_path.display().to_string()),
             env_line("CORROSION_PATH", &self.corrosion_path.display().to_string()),
-            env_line("REQUESTED_MODE", mode_name(self.requested_mode)),
-            env_line_opt("CONFIGURED_MODE", self.configured_mode.map(mode_name)),
+            env_line("RUNTIME_TARGET", runtime_target_name(self.runtime_target)),
+            env_line("SERVICE_MODE", service_mode_name(self.service_mode)),
             env_line_opt(
                 "SERVICE_BACKEND",
                 self.service_backend.map(ServiceBackend::as_str),
@@ -195,55 +195,36 @@ impl InstallManifest {
     }
 }
 
-pub fn daemon_install(mode: Mode, manifest_path: Option<&Path>) -> Result<InstallManifest, String> {
+pub fn daemon_install(
+    runtime_target: RuntimeTarget,
+    service_mode: ServiceMode,
+    manifest_path: Option<&Path>,
+) -> Result<InstallManifest, String> {
     let aff = Affordances::detect();
-    let manifest_path = resolve_manifest_path(mode, manifest_path)?;
+    validate_runtime(runtime_target, service_mode, &aff)?;
+    let manifest_path = resolve_manifest_path(runtime_target, service_mode, manifest_path)?;
     let mut manifest = InstallManifest::load_from_path(&manifest_path)?;
     let config_target = resolve_config_target(&aff)?;
-    let paths = client_paths(mode, &config_target.home_dir);
+    let paths = client_paths(runtime_target, service_mode, &config_target.home_dir);
 
     validate_install_manifest(&manifest)?;
     write_client_config(&paths.config_path, &paths.data_dir, &paths.socket_path)?;
 
-    match mode {
-        Mode::Memory => {
-            return Err("memory mode is not supported by `ployz daemon install`".into());
-        }
-        Mode::HostExec => {
+    match service_mode {
+        ServiceMode::User => {
             ensure_user_service(
                 &aff,
                 &manifest.ployzd_path,
                 &paths.data_dir,
                 &paths.socket_path,
-                mode,
+                runtime_target,
+                service_mode,
             )?;
-            manifest.configured_mode = Some(mode);
             manifest.service_backend = Some(user_backend(&aff)?);
         }
-        Mode::Docker => {
-            if !aff.has_docker {
-                return Err("docker mode requires a reachable Docker daemon".into());
-            }
-            ensure_user_service(
-                &aff,
-                &manifest.ployzd_path,
-                &paths.data_dir,
-                &paths.socket_path,
-                mode,
-            )?;
-            manifest.configured_mode = Some(mode);
-            manifest.service_backend = Some(user_backend(&aff)?);
-        }
-        Mode::HostService => {
-            if aff.os != Os::Linux {
-                return Err("host-service mode is only supported on Linux".into());
-            }
-            if !aff.is_root {
-                return Err("host-service mode requires sudo/root".into());
-            }
+        ServiceMode::System => {
             promote_system_binaries(&manifest)?;
-            install_system_service(&manifest.assets_dir, mode)?;
-            manifest.configured_mode = Some(mode);
+            install_system_service(&manifest.assets_dir, runtime_target, service_mode)?;
             manifest.service_backend = Some(ServiceBackend::SystemdSystem);
         }
     }
@@ -251,6 +232,8 @@ pub fn daemon_install(mode: Mode, manifest_path: Option<&Path>) -> Result<Instal
     manifest.config_path = paths.config_path;
     manifest.data_dir = paths.data_dir;
     manifest.socket_path = paths.socket_path;
+    manifest.runtime_target = runtime_target;
+    manifest.service_mode = service_mode;
     manifest.store_to_path(&manifest_path)?;
     Ok(manifest)
 }
@@ -318,11 +301,24 @@ fn ensure_user_service(
     ployzd_path: &Path,
     data_dir: &Path,
     socket_path: &str,
-    mode: Mode,
+    runtime_target: RuntimeTarget,
+    service_mode: ServiceMode,
 ) -> Result<(), String> {
     match aff.os {
-        Os::Linux => install_systemd_user_service(ployzd_path, data_dir, socket_path, mode),
-        Os::Darwin => install_launch_agent(ployzd_path, data_dir, socket_path, mode),
+        Os::Linux => install_systemd_user_service(
+            ployzd_path,
+            data_dir,
+            socket_path,
+            runtime_target,
+            service_mode,
+        ),
+        Os::Darwin => install_launch_agent(
+            ployzd_path,
+            data_dir,
+            socket_path,
+            runtime_target,
+            service_mode,
+        ),
         Os::Other => Err("user services are not supported on this platform".into()),
     }
 }
@@ -339,7 +335,8 @@ fn install_systemd_user_service(
     ployzd_path: &Path,
     data_dir: &Path,
     socket_path: &str,
-    mode: Mode,
+    runtime_target: RuntimeTarget,
+    service_mode: ServiceMode,
 ) -> Result<(), String> {
     let home = home_dir_for_current_user()?;
     let unit_dir = home.join(".config/systemd/user");
@@ -347,11 +344,12 @@ fn install_systemd_user_service(
         .map_err(|error| format!("create systemd user dir '{}': {error}", unit_dir.display()))?;
     let unit_path = unit_dir.join("ployzd.service");
     let unit = format!(
-        "[Unit]\nDescription=Ployz control plane daemon\nAfter=default.target\n\n[Service]\nType=simple\nExecStart={} --data-dir {} --socket {} run --mode {}\nRestart=always\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n",
+        "[Unit]\nDescription=Ployz control plane daemon\nAfter=default.target\n\n[Service]\nType=simple\nExecStart={} --data-dir {} --socket {} run --runtime {} --service-mode {}\nRestart=always\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n",
         systemd_quote(&ployzd_path.display().to_string()),
         systemd_quote(&data_dir.display().to_string()),
         systemd_quote(socket_path),
-        mode_name(mode),
+        runtime_target_name(runtime_target),
+        service_mode_name(service_mode),
     );
     fs::write(&unit_path, unit)
         .map_err(|error| format!("write systemd user unit '{}': {error}", unit_path.display()))?;
@@ -364,7 +362,8 @@ fn install_launch_agent(
     ployzd_path: &Path,
     data_dir: &Path,
     socket_path: &str,
-    mode: Mode,
+    runtime_target: RuntimeTarget,
+    service_mode: ServiceMode,
 ) -> Result<(), String> {
     let home = home_dir_for_current_user()?;
     let agents_dir = home.join("Library/LaunchAgents");
@@ -376,11 +375,12 @@ fn install_launch_agent(
     })?;
     let plist_path = agents_dir.join(format!("{SERVICE_LABEL}.plist"));
     let plist = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>Label</key>\n  <string>{SERVICE_LABEL}</string>\n  <key>ProgramArguments</key>\n  <array>\n    <string>{}</string>\n    <string>--data-dir</string>\n    <string>{}</string>\n    <string>--socket</string>\n    <string>{}</string>\n    <string>run</string>\n    <string>--mode</string>\n    <string>{}</string>\n  </array>\n  <key>KeepAlive</key>\n  <true/>\n  <key>RunAtLoad</key>\n  <true/>\n</dict>\n</plist>\n",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>Label</key>\n  <string>{SERVICE_LABEL}</string>\n  <key>ProgramArguments</key>\n  <array>\n    <string>{}</string>\n    <string>--data-dir</string>\n    <string>{}</string>\n    <string>--socket</string>\n    <string>{}</string>\n    <string>run</string>\n    <string>--runtime</string>\n    <string>{}</string>\n    <string>--service-mode</string>\n    <string>{}</string>\n  </array>\n  <key>KeepAlive</key>\n  <true/>\n  <key>RunAtLoad</key>\n  <true/>\n</dict>\n</plist>\n",
         xml_escape(&ployzd_path.display().to_string()),
         xml_escape(&data_dir.display().to_string()),
         xml_escape(socket_path),
-        mode_name(mode),
+        runtime_target_name(runtime_target),
+        service_mode_name(service_mode),
     );
     fs::write(&plist_path, plist)
         .map_err(|error| format!("write LaunchAgent '{}': {error}", plist_path.display()))?;
@@ -451,9 +451,13 @@ fn promote_system_binaries(manifest: &InstallManifest) -> Result<(), String> {
     Ok(())
 }
 
-fn install_system_service(assets_dir: &Path, mode: Mode) -> Result<(), String> {
-    if mode != Mode::HostService {
-        return Err("system service install requires host-service mode".into());
+fn install_system_service(
+    assets_dir: &Path,
+    runtime_target: RuntimeTarget,
+    service_mode: ServiceMode,
+) -> Result<(), String> {
+    if runtime_target != RuntimeTarget::Host || service_mode != ServiceMode::System {
+        return Err("system service install requires host runtime with system service mode".into());
     }
     let source_unit = assets_dir.join("systemd/ployzd.service");
     let unit_path = PathBuf::from("/etc/systemd/system/ployzd.service");
@@ -491,13 +495,19 @@ fn write_client_config(path: &Path, data_dir: &Path, socket_path: &str) -> Resul
     fs::write(path, body).map_err(|error| format!("write config '{}': {error}", path.display()))
 }
 
-fn resolve_manifest_path(mode: Mode, explicit: Option<&Path>) -> Result<PathBuf, String> {
+fn resolve_manifest_path(
+    runtime_target: RuntimeTarget,
+    service_mode: ServiceMode,
+    explicit: Option<&Path>,
+) -> Result<PathBuf, String> {
     if let Some(path) = explicit {
         return Ok(path.to_path_buf());
     }
 
     let aff = Affordances::detect();
-    if aff.is_root && mode == Mode::HostService
+    if aff.is_root
+        && runtime_target == RuntimeTarget::Host
+        && service_mode == ServiceMode::System
         && let Some(home) = sudo_user_home_dir()?
     {
         return Ok(linux_user_manifest_path(&home));
@@ -521,9 +531,13 @@ struct ConfigTarget {
     home_dir: PathBuf,
 }
 
-fn client_paths(mode: Mode, home_dir: &Path) -> ClientPaths {
+fn client_paths(
+    runtime_target: RuntimeTarget,
+    service_mode: ServiceMode,
+    home_dir: &Path,
+) -> ClientPaths {
     let aff = Affordances::detect();
-    if mode == Mode::HostService {
+    if runtime_target == RuntimeTarget::Host && service_mode == ServiceMode::System {
         return ClientPaths {
             config_path: linux_user_config_path(home_dir),
             data_dir: PathBuf::from("/var/lib/ployz"),
@@ -656,22 +670,33 @@ fn run_command<const N: usize>(program: &str, args: [&str; N]) -> Result<(), Str
     Err(format!("{program} {} failed: {detail}", args.join(" "),))
 }
 
-fn mode_name(mode: Mode) -> &'static str {
-    match mode {
-        Mode::Memory => "memory",
-        Mode::Docker => "docker",
-        Mode::HostExec => "host-exec",
-        Mode::HostService => "host-service",
+fn runtime_target_name(runtime_target: RuntimeTarget) -> &'static str {
+    match runtime_target {
+        RuntimeTarget::Docker => "docker",
+        RuntimeTarget::Host => "host",
     }
 }
 
-fn parse_mode(value: &str) -> Result<Mode, String> {
+fn parse_runtime_target(value: &str) -> Result<RuntimeTarget, String> {
     match value {
-        "memory" => Ok(Mode::Memory),
-        "docker" => Ok(Mode::Docker),
-        "host-exec" => Ok(Mode::HostExec),
-        "host-service" => Ok(Mode::HostService),
-        other => Err(format!("unsupported runtime mode '{other}'")),
+        "docker" => Ok(RuntimeTarget::Docker),
+        "host" => Ok(RuntimeTarget::Host),
+        other => Err(format!("unsupported runtime target '{other}'")),
+    }
+}
+
+fn service_mode_name(service_mode: ServiceMode) -> &'static str {
+    match service_mode {
+        ServiceMode::User => "user",
+        ServiceMode::System => "system",
+    }
+}
+
+fn parse_service_mode(value: &str) -> Result<ServiceMode, String> {
+    match value {
+        "user" => Ok(ServiceMode::User),
+        "system" => Ok(ServiceMode::System),
+        other => Err(format!("unsupported service mode '{other}'")),
     }
 }
 
@@ -783,8 +808,8 @@ mod tests {
             gateway_path: PathBuf::from("/tmp/bin/ployz-gateway"),
             dns_path: PathBuf::from("/tmp/bin/ployz-dns"),
             corrosion_path: PathBuf::from("/tmp/bin/corrosion"),
-            requested_mode: Mode::HostExec,
-            configured_mode: Some(Mode::HostService),
+            runtime_target: RuntimeTarget::Host,
+            service_mode: ServiceMode::System,
             service_backend: Some(ServiceBackend::SystemdSystem),
         };
 
@@ -795,8 +820,8 @@ mod tests {
         assert_eq!(loaded.source_kind, "payload");
         assert_eq!(loaded.source_version.as_deref(), Some("v1.2.3"));
         assert_eq!(loaded.bin_dir, PathBuf::from("/tmp/bin dir"));
-        assert_eq!(loaded.requested_mode, Mode::HostExec);
-        assert_eq!(loaded.configured_mode, Some(Mode::HostService));
+        assert_eq!(loaded.runtime_target, RuntimeTarget::Host);
+        assert_eq!(loaded.service_mode, ServiceMode::System);
         assert_eq!(loaded.service_backend, Some(ServiceBackend::SystemdSystem));
         fs::remove_file(path).expect("remove temp manifest");
     }

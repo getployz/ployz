@@ -2,7 +2,7 @@ mod debug;
 mod deploy;
 mod doctor;
 mod invite;
-mod machine;
+pub(crate) mod machine;
 mod mesh;
 mod status;
 

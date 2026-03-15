@@ -12,12 +12,18 @@ pub enum Os {
     Other,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    Memory,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeTarget {
     Docker,
-    HostExec,
-    HostService,
+    Host,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ServiceMode {
+    User,
+    System,
 }
 
 #[derive(Debug, Clone)]
@@ -273,18 +279,32 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/tmp"))
 }
 
-pub fn validate_mode(mode: Mode, aff: &Affordances) -> std::result::Result<(), String> {
-    match mode {
-        Mode::Memory => Ok(()),
-        Mode::Docker => {
+pub fn validate_runtime(
+    runtime_target: RuntimeTarget,
+    service_mode: ServiceMode,
+    aff: &Affordances,
+) -> std::result::Result<(), String> {
+    match runtime_target {
+        RuntimeTarget::Docker => {
             if !aff.has_docker {
-                return Err("Docker mode requires a running Docker daemon".into());
+                return Err("docker runtime requires a running Docker daemon".into());
+            }
+            if service_mode != ServiceMode::User {
+                return Err("docker runtime only supports user service mode".into());
             }
             Ok(())
         }
-        Mode::HostExec | Mode::HostService => {
+        RuntimeTarget::Host => {
             if aff.os == Os::Other {
-                return Err(format!("{mode:?} is not supported on this platform"));
+                return Err("host runtime is not supported on this platform".into());
+            }
+            if service_mode == ServiceMode::System {
+                if aff.os != Os::Linux {
+                    return Err("system service mode is only supported on Linux".into());
+                }
+                if !aff.is_root {
+                    return Err("system service mode requires sudo/root".into());
+                }
             }
             Ok(())
         }
@@ -306,19 +326,48 @@ mod tests {
     }
 
     #[test]
-    fn memory_mode_always_valid() {
-        assert!(validate_mode(Mode::Memory, &aff(Os::Other, false)).is_ok());
+    fn docker_runtime_requires_docker() {
+        assert!(
+            validate_runtime(RuntimeTarget::Docker, ServiceMode::User, &aff(Os::Linux, false))
+                .is_err()
+        );
+        assert!(
+            validate_runtime(RuntimeTarget::Docker, ServiceMode::User, &aff(Os::Linux, true))
+                .is_ok()
+        );
     }
 
     #[test]
-    fn docker_mode_requires_docker() {
-        assert!(validate_mode(Mode::Docker, &aff(Os::Linux, false)).is_err());
-        assert!(validate_mode(Mode::Docker, &aff(Os::Linux, true)).is_ok());
+    fn docker_runtime_rejects_system_service_mode() {
+        assert!(
+            validate_runtime(RuntimeTarget::Docker, ServiceMode::System, &aff(Os::Linux, true))
+                .is_err()
+        );
     }
 
     #[test]
-    fn host_modes_reject_unknown_os() {
-        assert!(validate_mode(Mode::HostExec, &aff(Os::Other, false)).is_err());
-        assert!(validate_mode(Mode::HostExec, &aff(Os::Linux, false)).is_ok());
+    fn host_runtime_rejects_unknown_os() {
+        assert!(
+            validate_runtime(RuntimeTarget::Host, ServiceMode::User, &aff(Os::Other, false))
+                .is_err()
+        );
+        assert!(
+            validate_runtime(RuntimeTarget::Host, ServiceMode::User, &aff(Os::Linux, false))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn host_system_service_requires_linux_root() {
+        assert!(
+            validate_runtime(RuntimeTarget::Host, ServiceMode::System, &aff(Os::Darwin, false))
+                .is_err()
+        );
+
+        let mut affordances = aff(Os::Linux, false);
+        affordances.is_root = true;
+        assert!(
+            validate_runtime(RuntimeTarget::Host, ServiceMode::System, &affordances).is_ok()
+        );
     }
 }

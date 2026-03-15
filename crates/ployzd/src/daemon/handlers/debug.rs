@@ -110,17 +110,15 @@ fn format_debug_tick_task(task: DebugTickTask) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Mode;
     use crate::node::identity::Identity;
     use crate::store::network::DEFAULT_CLUSTER_CIDR;
     use ployz_sdk::transport::DebugTickTask;
 
     #[tokio::test]
     async fn debug_tick_rejects_when_no_mesh_is_running() {
-        let mut state = DaemonState::new(
+        let mut state = DaemonState::new_for_tests(
             &std::env::temp_dir().join("ployz-debug-tick-no-mesh"),
             Identity::generate(crate::model::MachineId("self".into()), [1; 32]),
-            Mode::Memory,
             DEFAULT_CLUSTER_CIDR.into(),
             24,
             4317,

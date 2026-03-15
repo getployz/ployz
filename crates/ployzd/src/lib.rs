@@ -2,6 +2,7 @@ pub mod daemon;
 pub mod install;
 pub mod ipc;
 pub mod services;
+mod runtime_profile;
 
 pub use ployz_core::config;
 pub use ployz_core::deploy;
@@ -17,7 +18,10 @@ pub use ployz_core::spec;
 pub use ployz_core::store;
 pub use ployz_core::time;
 pub use ployz_core::{
-    Error, Identity, IdentityError, Mesh, MeshError, Mode, NetworkConfig, NetworkConfigError,
-    Phase, Result, StoreDriver, WireguardDriver,
+    Error, Identity, IdentityError, Mesh, MeshError, NetworkConfig, NetworkConfigError, Phase,
+    Result, StoreDriver, WireguardDriver,
 };
-pub use ployz_sdk::{Affordances, ConfigLoadError, DaemonConfig, load_daemon_config};
+pub use ployz_sdk::{
+    Affordances, ConfigLoadError, DaemonConfig, RuntimeTarget, ServiceMode, load_daemon_config,
+    validate_runtime,
+};

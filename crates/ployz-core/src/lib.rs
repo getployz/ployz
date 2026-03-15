@@ -22,6 +22,6 @@ pub use mesh::driver::WireguardDriver;
 pub use mesh::orchestrator::{Mesh, MeshError};
 pub use mesh::phase::Phase;
 pub use node::identity::{Identity, IdentityError};
-pub use ployz_sdk::{Error, Mode, Result};
+pub use ployz_sdk::{Error, Result};
 pub use store::driver::StoreDriver;
 pub use store::network::{NetworkConfig, NetworkConfigError};

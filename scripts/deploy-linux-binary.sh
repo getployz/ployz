@@ -38,7 +38,7 @@ for target in "${TARGET_LIST[@]}"; do
     scp -Cr -P "$SSH_PORT" "$PAYLOAD_DIR"/. "$target:/tmp/ployz-payload/"
   fi
   scp -C -P "$SSH_PORT" "$ROOT_DIR/ployz.sh" "$target:/tmp/ployz.sh"
-  ssh -p "$SSH_PORT" "$target" "bash /tmp/ployz.sh install --source payload --payload-dir /tmp/ployz-payload --mode host-service"
+  ssh -p "$SSH_PORT" "$target" "bash /tmp/ployz.sh install --source payload --payload-dir /tmp/ployz-payload --runtime host --service-mode system"
 done
 
 echo "Deploy complete"
