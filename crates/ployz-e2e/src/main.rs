@@ -42,6 +42,9 @@ fn run() -> Result<()> {
                 eprintln!("FAIL {}: {error}", scenario.as_str());
                 let _ = run.collect_failure_artifacts();
                 run.cleanup(true);
+                if cli.fail_fast {
+                    return Err(Error::Message(format!("{}: {error}", scenario.as_str())));
+                }
                 failures.push((scenario, error));
             }
         }
