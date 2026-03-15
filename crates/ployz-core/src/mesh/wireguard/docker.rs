@@ -22,7 +22,7 @@ use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
 use crate::model::{MachineRecord, OverlayIp, PrivateKey, PublicKey};
 
 use super::PERSISTENT_KEEPALIVE_SECS;
-use super::bridge::{InboundForward, OutboundForward, OverlayBridge};
+use super::bridge::{OutboundForward, OverlayBridge};
 use super::config::{
     BridgePeerInfo, WgPaths, decode_key, encode_key, write_private_key,
     write_sync_config_with_extra_peers,
@@ -44,7 +44,6 @@ pub struct DockerWireGuard {
     overlay_ip: OverlayIp,
     listen_port: u16,
     outbound_forwards: Vec<OutboundForward>,
-    inbound_forwards: Vec<InboundForward>,
     exposed_tcp_ports: Vec<u16>,
     bridge: Mutex<Option<OverlayBridge>>,
     bridge_overlay_ip: Mutex<Option<OverlayIp>>,
@@ -59,7 +58,6 @@ pub struct DockerWireGuardBuilder {
     overlay_ip: OverlayIp,
     listen_port: u16,
     outbound_forwards: Vec<OutboundForward>,
-    inbound_forwards: Vec<InboundForward>,
     exposed_tcp_ports: Vec<u16>,
 }
 
@@ -93,16 +91,6 @@ impl DockerWireGuardBuilder {
         self
     }
 
-    /// Add an inbound forward rule (overlay TCP → host TCP via bridge).
-    #[must_use]
-    pub fn with_inbound_forward(mut self, overlay_port: u16, local_dest: SocketAddr) -> Self {
-        self.inbound_forwards.push(InboundForward {
-            overlay_port,
-            local_dest,
-        });
-        self
-    }
-
     pub async fn build(self) -> Result<DockerWireGuard> {
         let docker = Docker::connect_with_socket_defaults()
             .map_err(|e| Error::operation("docker connect", e.to_string()))?;
@@ -128,7 +116,6 @@ impl DockerWireGuardBuilder {
             overlay_ip: self.overlay_ip,
             listen_port: self.listen_port,
             outbound_forwards: self.outbound_forwards,
-            inbound_forwards: self.inbound_forwards,
             exposed_tcp_ports: self.exposed_tcp_ports,
             bridge: Mutex::new(None),
             bridge_overlay_ip: Mutex::new(None),
@@ -154,7 +141,6 @@ impl DockerWireGuard {
             overlay_ip,
             listen_port: DEFAULT_LISTEN_PORT,
             outbound_forwards: Vec::new(),
-            inbound_forwards: Vec::new(),
             exposed_tcp_ports: Vec::new(),
         }
     }
@@ -533,7 +519,7 @@ impl DockerWireGuard {
 
     /// Start the overlay bridge and register it as a WG peer on the container.
     async fn start_bridge(&self) -> Result<()> {
-        if self.outbound_forwards.is_empty() && self.inbound_forwards.is_empty() {
+        if self.outbound_forwards.is_empty() {
             return Ok(());
         }
 
@@ -578,7 +564,6 @@ impl DockerWireGuard {
             self.overlay_ip,
             peer_endpoint,
             self.outbound_forwards.clone(),
-            self.inbound_forwards.clone(),
         )
         .await
         .map_err(|e| Error::operation("bridge start", e.to_string()))?;
@@ -935,7 +920,6 @@ mod tests {
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             listen_port: DEFAULT_LISTEN_PORT,
             outbound_forwards: Vec::new(),
-            inbound_forwards: Vec::new(),
             exposed_tcp_ports: Vec::new(),
             bridge: Mutex::new(None),
             bridge_overlay_ip: Mutex::new(None),
@@ -963,11 +947,13 @@ mod tests {
             .get(&port)
             .and_then(|entry| entry.as_ref())
             .unwrap();
+        let [binding] = binding.as_slice() else {
+            panic!("expected one port binding");
+        };
         let expected_port = DEFAULT_LISTEN_PORT.to_string();
-        assert_eq!(binding.len(), 1);
-        assert_eq!(binding[0].host_ip.as_deref(), Some(BRIDGE_HOST_LOOPBACK));
+        assert_eq!(binding.host_ip.as_deref(), Some(BRIDGE_HOST_LOOPBACK));
         assert_eq!(
-            binding[0].host_port.as_deref(),
+            binding.host_port.as_deref(),
             Some(expected_port.as_str())
         );
     }

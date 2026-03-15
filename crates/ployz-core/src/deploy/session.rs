@@ -49,7 +49,6 @@ pub struct StartCandidateRequest {
     pub service: String,
     pub slot_id: SlotId,
     pub instance_id: InstanceId,
-    pub deploy_id: DeployId,
     pub spec_json: String,
 }
 
@@ -86,7 +85,7 @@ impl DeploySession for InProcessDeploySession {
                 &req.service,
                 &req.slot_id,
                 &req.instance_id,
-                &req.deploy_id,
+                self.state.deploy_id(),
                 &req.spec_json,
             )
             .await

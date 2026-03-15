@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use ployz_sdk::store::StoreRuntimeControl;
 use std::fs::OpenOptions;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::{Child, Command};
@@ -32,16 +32,16 @@ impl HostCorrosion {
     }
 }
 
-fn default_log_path(config_path: &PathBuf) -> PathBuf {
+fn default_log_path(config_path: &Path) -> PathBuf {
     config_path
         .parent()
         .map(|parent| parent.join("corrosion.log"))
         .unwrap_or_else(|| PathBuf::from("corrosion.log"))
 }
 
-fn configured_log_path(default_log_path: &PathBuf) -> Option<PathBuf> {
+fn configured_log_path(default_log_path: &Path) -> Option<PathBuf> {
     match std::env::var(CORROSION_LOG_PATH_ENV) {
-        Ok(path) if path.is_empty() => Some(default_log_path.clone()),
+        Ok(path) if path.is_empty() => Some(default_log_path.to_path_buf()),
         Ok(path) => Some(PathBuf::from(path)),
         Err(_) => None,
     }

@@ -9,6 +9,7 @@ pub enum MachineLiveness {
     Down,
 }
 
+#[must_use]
 pub fn machine_liveness(machine: &MachineRecord, now: u64) -> MachineLiveness {
     if machine.status == MachineStatus::Down {
         return MachineLiveness::Down;

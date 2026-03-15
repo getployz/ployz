@@ -4,6 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
+use ployz_sdk::transport::StdioTransport;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command as TokioCommand;
 
@@ -74,6 +75,31 @@ pub async fn run_ssh_with_stdin(
     options: &SshOptions,
 ) -> Result<String, String> {
     run_ssh_inner(target, remote_script, Some(stdin_bytes), options).await
+}
+
+#[must_use]
+pub fn ssh_stdio_transport(
+    target: &str,
+    remote_script: &str,
+    options: &SshOptions,
+) -> StdioTransport {
+    let mut transport = StdioTransport::new(ssh_program());
+    #[cfg(test)]
+    {
+        let overrides = test_ssh_overrides_snapshot();
+        for (key, value) in overrides.env {
+            transport = transport.env(key, value);
+        }
+    }
+    transport = append_common_ssh_transport_options(transport);
+    if let Some(identity_file) = &options.identity_file {
+        transport = transport
+            .arg("-i")
+            .arg(identity_file)
+            .arg("-o")
+            .arg("IdentitiesOnly=yes");
+    }
+    transport.arg(target).arg(remote_script)
 }
 
 async fn run_ssh_inner(
@@ -159,6 +185,16 @@ fn append_common_ssh_options(command: &mut TokioCommand) {
         .arg("StrictHostKeyChecking=accept-new")
         .arg("-o")
         .arg("ConnectTimeout=10");
+}
+
+fn append_common_ssh_transport_options(transport: StdioTransport) -> StdioTransport {
+    transport
+        .arg("-o")
+        .arg("BatchMode=yes")
+        .arg("-o")
+        .arg("StrictHostKeyChecking=accept-new")
+        .arg("-o")
+        .arg("ConnectTimeout=10")
 }
 
 fn ssh_program() -> OsString {
@@ -265,9 +301,9 @@ impl Drop for TestSshEnvGuard {
 }
 
 #[cfg(test)]
-pub(crate) fn test_ssh_env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+pub(crate) fn test_ssh_env_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 #[cfg(test)]
@@ -281,7 +317,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_ssh_with_stdin_preserves_quotes_newlines_and_shell_metacharacters() {
-        let _guard = test_ssh_env_lock().lock().expect("env lock");
+        let _guard = test_ssh_env_lock().lock().await;
         let temp_dir = unique_temp_dir("ployz-ssh-test");
         std::fs::create_dir_all(&temp_dir).expect("create temp dir");
         let fake_ssh = write_fake_ssh(&temp_dir);
@@ -316,7 +352,7 @@ mod tests {
         std::env::temp_dir().join(format!("{label}-{}-{nanos}", std::process::id()))
     }
 
-    fn write_fake_ssh(dir: &PathBuf) -> PathBuf {
+    fn write_fake_ssh(dir: &std::path::Path) -> PathBuf {
         let script = dir.join("ssh");
         std::fs::write(
             &script,
@@ -338,7 +374,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_ssh_passes_explicit_identity_file() {
-        let _guard = test_ssh_env_lock().lock().expect("env lock");
+        let _guard = test_ssh_env_lock().lock().await;
         let temp_dir = unique_temp_dir("ployz-ssh-identity-test");
         std::fs::create_dir_all(&temp_dir).expect("create temp dir");
         let fake_ssh = temp_dir.join("ssh");

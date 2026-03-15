@@ -520,13 +520,14 @@ impl DaemonState {
             "local subnet heal: duplicate subnet claims detected"
         );
 
-        let current_conflict = match local_duplicate_subnet_conflict(&machines, &self.identity.machine_id) {
-            Some(conflict) => conflict,
-            None => {
-                self.pending_subnet_heal = None;
-                return;
-            }
-        };
+        let current_conflict =
+            match local_duplicate_subnet_conflict(&machines, &self.identity.machine_id) {
+                Some(conflict) => conflict,
+                None => {
+                    self.pending_subnet_heal = None;
+                    return;
+                }
+            };
 
         let now = now_unix_secs();
         let pending = match self.pending_subnet_heal {
@@ -561,7 +562,8 @@ impl DaemonState {
             }
         };
 
-        let target_winner = target_subnet_winner(&machines, &self.identity.machine_id, pending.target_subnet);
+        let target_winner =
+            target_subnet_winner(&machines, &self.identity.machine_id, pending.target_subnet);
         if target_winner != self.identity.machine_id {
             let target_subnet = match allocate_replacement_subnet(
                 &machines,
@@ -743,12 +745,8 @@ impl DaemonState {
             .stop_local_workloads_for_subnet_heal(network_name)
             .await?;
 
-        if let Err(error) = self
-            .restart_active_runtime_for_subnet_heal(network_name)
-            .await
-        {
-            return Err(error);
-        }
+        self.restart_active_runtime_for_subnet_heal(network_name)
+            .await?;
 
         self.start_local_workloads_after_subnet_heal(network_name, &workloads)
             .await
@@ -1489,9 +1487,10 @@ fn local_duplicate_subnet_conflict(
         if local_index == 0 {
             return None;
         }
+        let winner_machine_id = machine_ids.first().cloned().expect("non-empty group");
         return Some(LocalSubnetConflict {
             subnet,
-            winner_machine_id: machine_ids[0].clone(),
+            winner_machine_id,
         });
     }
 
@@ -1510,7 +1509,7 @@ fn target_subnet_winner(
         .collect();
     contenders.push(local_machine_id.clone());
     contenders.sort_by(|left, right| left.0.cmp(&right.0));
-    contenders[0].clone()
+    contenders.first().cloned().expect("at least one contender")
 }
 
 fn plan_local_subnet_heal(
@@ -1536,9 +1535,10 @@ fn plan_local_subnet_heal(
             cluster_cidr,
             subnet_prefix_len,
         )?;
+        let winner_machine_id = machine_ids.first().cloned().expect("non-empty group");
         return Ok(Some(LocalSubnetHealPlan {
             current_subnet: subnet,
-            winner_machine_id: machine_ids[0].clone(),
+            winner_machine_id,
             target_subnet,
         }));
     }
@@ -1877,7 +1877,7 @@ mod tests {
 
     #[tokio::test]
     async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
-        let _guard = test_ssh_env_lock().lock().expect("env lock");
+        let _guard = test_ssh_env_lock().lock().await;
         let (mut state, store, network) = make_state(true).await;
         store
             .upsert_self_machine(&test_machine_record(
@@ -1938,7 +1938,7 @@ mod tests {
 
     #[tokio::test]
     async fn machine_add_accepts_running_joiner_before_full_sync() {
-        let _guard = test_ssh_env_lock().lock().expect("env lock");
+        let _guard = test_ssh_env_lock().lock().await;
         let (mut state, store, network) = make_state(true).await;
 
         let join_response = JoinResponse {
@@ -2348,7 +2348,7 @@ mod tests {
         std::env::temp_dir().join(format!("{label}-{}-{nanos}", std::process::id()))
     }
 
-    fn write_fake_ssh(dir: &PathBuf) -> PathBuf {
+    fn write_fake_ssh(dir: &std::path::Path) -> PathBuf {
         let script = dir.join("ssh");
         std::fs::write(
             &script,

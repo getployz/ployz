@@ -125,76 +125,67 @@ mod tests {
             panic!("unexpected statement layout");
         };
 
-        match delete_api_head {
-            Statement::WithParams(query, _) => {
-                assert_eq!(
-                    query,
-                    "DELETE FROM service_heads WHERE namespace = ? AND service = ?"
-                );
-            }
-            _ => panic!("expected delete head statement"),
-        }
-        match delete_api_slot {
-            Statement::WithParams(query, _) => {
-                assert_eq!(
-                    query,
-                    "DELETE FROM service_slots WHERE namespace = ? AND service = ?"
-                );
-            }
-            _ => panic!("expected delete slot statement"),
-        }
-        match delete_worker_head {
-            Statement::WithParams(query, params) => {
-                assert_eq!(
-                    query,
-                    "DELETE FROM service_heads WHERE namespace = ? AND service = ?"
-                );
-                assert_eq!(params.len(), 2);
-            }
-            _ => panic!("expected delete head statement"),
-        }
-        match delete_worker_slot {
-            Statement::WithParams(query, params) => {
-                assert_eq!(
-                    query,
-                    "DELETE FROM service_slots WHERE namespace = ? AND service = ?"
-                );
-                assert_eq!(params.len(), 2);
-            }
-            _ => panic!("expected delete slot statement"),
-        }
-        match insert_api_head {
-            Statement::WithParams(query, _) => {
-                assert_eq!(
-                    query,
-                    "INSERT INTO service_heads (namespace, service, current_revision_hash, updated_by_deploy_id, updated_at) VALUES (?, ?, ?, ?, ?)"
-                );
-            }
-            _ => panic!("expected head insert statement"),
-        }
-        match insert_worker_head {
-            Statement::WithParams(query, _) => {
-                assert_eq!(
-                    query,
-                    "INSERT INTO service_heads (namespace, service, current_revision_hash, updated_by_deploy_id, updated_at) VALUES (?, ?, ?, ?, ?)"
-                );
-            }
-            _ => panic!("expected head insert statement"),
-        }
-        match insert_worker_slot {
-            Statement::WithParams(query, _) => {
-                assert_eq!(
-                    query,
-                    "INSERT INTO service_slots (namespace, service, slot_id, machine_id, active_instance_id, revision_hash, updated_by_deploy_id, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-                );
-            }
-            _ => panic!("expected slot insert statement"),
-        }
-        match upsert_deploy {
-            Statement::WithParams(query, _) => {
-                assert!(query.starts_with("INSERT INTO deploys"));
-            }
-            _ => panic!("expected deploy upsert statement"),
-        }
+        let Statement::WithParams(query, _) = delete_api_head else {
+            panic!("expected delete head statement");
+        };
+        assert_eq!(
+            query,
+            "DELETE FROM service_heads WHERE namespace = ? AND service = ?"
+        );
+
+        let Statement::WithParams(query, _) = delete_api_slot else {
+            panic!("expected delete slot statement");
+        };
+        assert_eq!(
+            query,
+            "DELETE FROM service_slots WHERE namespace = ? AND service = ?"
+        );
+
+        let Statement::WithParams(query, params) = delete_worker_head else {
+            panic!("expected delete head statement");
+        };
+        assert_eq!(
+            query,
+            "DELETE FROM service_heads WHERE namespace = ? AND service = ?"
+        );
+        assert_eq!(params.len(), 2);
+
+        let Statement::WithParams(query, params) = delete_worker_slot else {
+            panic!("expected delete slot statement");
+        };
+        assert_eq!(
+            query,
+            "DELETE FROM service_slots WHERE namespace = ? AND service = ?"
+        );
+        assert_eq!(params.len(), 2);
+
+        let Statement::WithParams(query, _) = insert_api_head else {
+            panic!("expected head insert statement");
+        };
+        assert_eq!(
+            query,
+            "INSERT INTO service_heads (namespace, service, current_revision_hash, updated_by_deploy_id, updated_at) VALUES (?, ?, ?, ?, ?)"
+        );
+
+        let Statement::WithParams(query, _) = insert_worker_head else {
+            panic!("expected head insert statement");
+        };
+        assert_eq!(
+            query,
+            "INSERT INTO service_heads (namespace, service, current_revision_hash, updated_by_deploy_id, updated_at) VALUES (?, ?, ?, ?, ?)"
+        );
+
+        let Statement::WithParams(query, _) = insert_worker_slot else {
+            panic!("expected slot insert statement");
+        };
+        assert_eq!(
+            query,
+            "INSERT INTO service_slots (namespace, service, slot_id, machine_id, active_instance_id, revision_hash, updated_by_deploy_id, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        );
+
+        let Statement::WithParams(query, _) = upsert_deploy else {
+            panic!("expected deploy upsert statement");
+        };
+        assert!(query.starts_with("INSERT INTO deploys"));
     }
 }

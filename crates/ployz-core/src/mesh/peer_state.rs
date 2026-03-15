@@ -452,12 +452,12 @@ fn compare_candidates(a: &EndpointCandidateState, b: &EndpointCandidateState) ->
 
     match compare_option_duration_asc(a.last_tcp_probe_rtt, b.last_tcp_probe_rtt) {
         Ordering::Equal => {}
-        ordering => return ordering,
+        ordering @ (Ordering::Less | Ordering::Greater) => return ordering,
     }
 
     match compare_option_instant_desc(a.last_wg_success, b.last_wg_success) {
         Ordering::Equal => {}
-        ordering => return ordering,
+        ordering @ (Ordering::Less | Ordering::Greater) => return ordering,
     }
 
     a.advertised_index.cmp(&b.advertised_index)
@@ -572,9 +572,11 @@ mod tests {
         map.upsert_stored(&r, now);
 
         let planned = plan_mesh_peers(&map, &MachineId("local".into()));
-        assert_eq!(planned.len(), 1);
+        let [peer] = planned.as_slice() else {
+            panic!("expected one peer");
+        };
         assert_eq!(
-            planned[0].endpoints,
+            peer.endpoints,
             vec!["a:1".to_string(), "b:2".to_string(), "c:3".to_string()]
         );
     }
@@ -596,8 +598,10 @@ mod tests {
         map.upsert_stored(&test_record("remote", vec!["b:2"]), now);
 
         let planned = plan_mesh_peers(&map, &MachineId("local".into()));
-        assert_eq!(planned.len(), 1);
-        assert_eq!(planned[0].id.0, "remote");
+        let [peer] = planned.as_slice() else {
+            panic!("expected one peer");
+        };
+        assert_eq!(peer.id.0, "remote");
     }
 
     #[test]
@@ -637,8 +641,10 @@ mod tests {
                 .contains_key(&MachineId("joiner".into()))
         );
         let planned = plan_mesh_peers(&map, &MachineId("local".into()));
-        assert_eq!(planned.len(), 1);
-        assert_eq!(planned[0].endpoints, vec!["stored:1".to_string()]);
+        let [peer] = planned.as_slice() else {
+            panic!("expected one peer");
+        };
+        assert_eq!(peer.endpoints, vec!["stored:1".to_string()]);
     }
 
     #[test]
@@ -654,8 +660,11 @@ mod tests {
         peer_state.runtime.active_endpoint = 1;
 
         let planned = plan_mesh_peers(&map, &MachineId("local".into()));
+        let [peer] = planned.as_slice() else {
+            panic!("expected one peer");
+        };
         assert_eq!(
-            planned[0].endpoints,
+            peer.endpoints,
             vec!["b:2".to_string(), "c:3".to_string(), "a:1".to_string()]
         );
     }
@@ -679,8 +688,11 @@ mod tests {
         );
 
         let planned = plan_mesh_peers(&map, &MachineId("local".into()));
+        let [peer] = planned.as_slice() else {
+            panic!("expected one peer");
+        };
         assert_eq!(
-            planned[0].endpoints,
+            peer.endpoints,
             vec!["b:2".to_string(), "d:4".to_string(), "c:3".to_string()]
         );
         assert!(
@@ -739,8 +751,11 @@ mod tests {
         );
 
         let planned = plan_mesh_peers(&map, &MachineId("local".into()));
+        let [peer] = planned.as_slice() else {
+            panic!("expected one peer");
+        };
         assert_eq!(
-            planned[0].endpoints,
+            peer.endpoints,
             vec!["b:2".to_string(), "a:1".to_string()]
         );
     }
@@ -775,7 +790,10 @@ mod tests {
         ]);
 
         assert!(peer_state.apply_probe_results(&results, now + Duration::from_secs(1)));
-        assert_eq!(peer_state.runtime.endpoints[0], "c:3");
+        let Some(endpoint) = peer_state.runtime.endpoints.first() else {
+            panic!("expected one endpoint");
+        };
+        assert_eq!(endpoint, "c:3");
         assert_eq!(
             peer_state.selection_reason,
             SelectionReason::TcpProbeRanking

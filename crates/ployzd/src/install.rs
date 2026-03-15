@@ -255,6 +255,7 @@ pub fn daemon_install(mode: Mode, manifest_path: Option<&Path>) -> Result<Instal
     Ok(manifest)
 }
 
+#[must_use]
 pub fn default_manifest_path(aff: &Affordances) -> PathBuf {
     default_data_dir(aff)
         .join(INSTALL_DIR_NAME)
@@ -496,19 +497,19 @@ fn resolve_manifest_path(mode: Mode, explicit: Option<&Path>) -> Result<PathBuf,
     }
 
     let aff = Affordances::detect();
-    if aff.is_root && mode == Mode::HostService {
-        if let Some(home) = sudo_user_home_dir()? {
-            return Ok(linux_user_manifest_path(&home));
-        }
+    if aff.is_root && mode == Mode::HostService
+        && let Some(home) = sudo_user_home_dir()?
+    {
+        return Ok(linux_user_manifest_path(&home));
     }
     Ok(default_manifest_path(&aff))
 }
 
 fn resolve_config_target(aff: &Affordances) -> Result<ConfigTarget, String> {
-    if aff.is_root && aff.os == Os::Linux {
-        if let Some(home_dir) = sudo_user_home_dir()? {
-            return Ok(ConfigTarget { home_dir });
-        }
+    if aff.is_root && aff.os == Os::Linux
+        && let Some(home_dir) = sudo_user_home_dir()?
+    {
+        return Ok(ConfigTarget { home_dir });
     }
     Ok(ConfigTarget {
         home_dir: home_dir_for_current_user()?,
@@ -628,7 +629,7 @@ fn sudo_user_home_dir() -> Result<Option<PathBuf>, String> {
         // SAFETY: `pw_dir` points into `buffer`, which is still alive here, and is
         // NUL-terminated by libc on success.
         let home = unsafe { CStr::from_ptr(home_ptr) };
-        return Ok(Some(PathBuf::from(home.to_string_lossy().into_owned())));
+        Ok(Some(PathBuf::from(home.to_string_lossy().into_owned())))
     }
     #[cfg(not(unix))]
     {
@@ -752,7 +753,7 @@ fn nix_like_uid() -> Result<u32, String> {
     #[cfg(unix)]
     {
         // SAFETY: simple libc call with no preconditions.
-        return Ok(unsafe { libc::geteuid() });
+        Ok(unsafe { libc::geteuid() })
     }
     #[cfg(not(unix))]
     {

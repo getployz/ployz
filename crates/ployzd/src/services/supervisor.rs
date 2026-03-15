@@ -87,7 +87,9 @@ impl SidecarHandle {
     /// - **HostExec**: always spawns a new child process (no persistent state to adopt).
     pub async fn ensure(mode: crate::Mode, spec: SidecarSpec) -> Result<Self, SidecarError> {
         match mode {
-            crate::Mode::Memory => unreachable!("memory mode does not use sidecars"),
+            crate::Mode::Memory => Err(SidecarError::UnsupportedMode(
+                "memory mode does not manage sidecars",
+            )),
             crate::Mode::Docker => ensure_docker(spec).await.map(|h| Self {
                 inner: SidecarInner::Docker(h),
             }),
@@ -125,6 +127,8 @@ impl SidecarHandle {
 pub enum SidecarError {
     #[error("sidecar process error: {0}")]
     Process(String),
+    #[error("unsupported sidecar mode: {0}")]
+    UnsupportedMode(&'static str),
 }
 
 // ---------------------------------------------------------------------------

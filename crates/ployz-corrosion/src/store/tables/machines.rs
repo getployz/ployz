@@ -446,7 +446,7 @@ fn machine_row_anomalies(row: &[SqliteValue]) -> Vec<String> {
     let _ = updated_at;
 
     match id.as_text() {
-        Some(value) if value.is_empty() => anomalies.push("id_empty".into()),
+        Some("") => anomalies.push("id_empty".into()),
         None => anomalies.push(format!("id_type={:?}", id.column_type())),
         Some(_) => {}
     }
@@ -460,7 +460,7 @@ fn machine_row_anomalies(row: &[SqliteValue]) -> Vec<String> {
     }
 
     match overlay_ip.as_text() {
-        Some(value) if value.is_empty() => anomalies.push("overlay_ip_empty".into()),
+        Some("") => anomalies.push("overlay_ip_empty".into()),
         None => anomalies.push(format!("overlay_ip_type={:?}", overlay_ip.column_type())),
         Some(_) => {}
     }
@@ -472,13 +472,13 @@ fn machine_row_anomalies(row: &[SqliteValue]) -> Vec<String> {
     }
 
     match status.as_text() {
-        Some(value) if value.is_empty() => anomalies.push("status_empty".into()),
+        Some("") => anomalies.push("status_empty".into()),
         None => anomalies.push(format!("status_type={:?}", status.column_type())),
         Some(_) => {}
     }
 
     match participation.as_text() {
-        Some(value) if value.is_empty() => anomalies.push("participation_empty".into()),
+        Some("") => anomalies.push("participation_empty".into()),
         None => anomalies.push(format!(
             "participation_type={:?}",
             participation.column_type()

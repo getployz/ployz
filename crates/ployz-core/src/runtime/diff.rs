@@ -259,12 +259,10 @@ mod tests {
         let mut desired = base_spec();
         desired.image = "other:v2".into();
         let change = eval_spec_change(Some(&observed), &desired);
-        match change {
-            SpecChange::Drifted { fields } => {
-                assert!(fields.contains(&ChangedField::Image));
-            }
-            other => panic!("expected Drifted, got {other:?}"),
-        }
+        let SpecChange::Drifted { fields } = change else {
+            panic!("expected drifted change");
+        };
+        assert!(fields.contains(&ChangedField::Image));
     }
 
     #[test]
@@ -273,12 +271,10 @@ mod tests {
         let mut desired = base_spec();
         desired.env = vec![("FOO".into(), "baz".into())];
         let change = eval_spec_change(Some(&observed), &desired);
-        match change {
-            SpecChange::Drifted { fields } => {
-                assert!(fields.contains(&ChangedField::Env));
-            }
-            other => panic!("expected Drifted, got {other:?}"),
-        }
+        let SpecChange::Drifted { fields } = change else {
+            panic!("expected drifted change");
+        };
+        assert!(fields.contains(&ChangedField::Env));
     }
 
     #[test]

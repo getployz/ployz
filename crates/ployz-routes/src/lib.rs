@@ -444,11 +444,14 @@ mod tests {
         })
         .expect("projection succeeds");
 
-        assert_eq!(snapshot.http_routes.len(), 1);
-        let route = &snapshot.http_routes[0];
+        let [route] = snapshot.http_routes.as_slice() else {
+            panic!("expected one http route");
+        };
         assert_eq!(route.hostnames, vec!["api.example.com".to_string()]);
-        assert_eq!(route.backends.len(), 1);
-        assert_eq!(route.backends[0].instance_id.0, "inst-ready");
+        let [backend] = route.backends.as_slice() else {
+            panic!("expected one backend");
+        };
+        assert_eq!(backend.instance_id.0, "inst-ready");
     }
 
     #[test]
@@ -530,7 +533,9 @@ mod tests {
                 assert_eq!(host, "api.example.com");
                 assert_eq!(path_prefix, "/");
             }
-            other => panic!("unexpected error: {other}"),
+            ProjectionError::MissingRevision { .. }
+            | ProjectionError::InvalidRevisionSpec { .. }
+            | ProjectionError::TcpRouteConflict { .. } => panic!("unexpected error"),
         }
     }
 
@@ -570,9 +575,11 @@ mod tests {
         })
         .expect("projection succeeds");
 
-        assert_eq!(snapshot.http_routes.len(), 0);
-        assert_eq!(snapshot.tcp_routes.len(), 1);
-        assert_eq!(snapshot.tcp_routes[0].listen_port, 5432);
+        assert!(snapshot.http_routes.is_empty());
+        let [route] = snapshot.tcp_routes.as_slice() else {
+            panic!("expected one tcp route");
+        };
+        assert_eq!(route.listen_port, 5432);
     }
 
     fn service_spec(
