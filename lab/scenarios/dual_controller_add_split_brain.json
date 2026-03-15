@@ -1,0 +1,17 @@
+{
+  "name": "dual_controller_add_split_brain",
+  "description": "Founder and peer add three joiners each while partitioned, then heal and converge.",
+  "topology": "custom-8",
+  "nodes": [
+    { "name": "founder", "family": "ubuntu" },
+    { "name": "peer", "family": "ubuntu" },
+    { "name": "joiner1", "family": "rocky" },
+    { "name": "joiner2", "family": "rocky" },
+    { "name": "joiner3", "family": "rocky" },
+    { "name": "joiner4", "family": "rocky" },
+    { "name": "joiner5", "family": "rocky" },
+    { "name": "joiner6", "family": "rocky" }
+  ],
+  "default_profile": "clean",
+  "default_bootstrap_path": "ssh"
+}
