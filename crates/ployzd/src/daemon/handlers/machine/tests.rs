@@ -456,6 +456,22 @@ async fn memory_mode_local_subnet_heal_updates_local_config_and_store() {
     let Some(pending) = state.pending_subnet_heal else {
         panic!("expected pending heal after first pass");
     };
+    let initial_config = NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha"))
+        .expect("load config after reservation");
+    assert_eq!(
+        initial_config.subnet,
+        "10.210.1.0/24".parse().expect("valid")
+    );
+    let reserved_peer = store
+        .list_machines()
+        .await
+        .expect("list machines after reservation")
+        .into_iter()
+        .find(|machine| machine.id.0 == "peer")
+        .expect("peer present after reservation");
+    assert_eq!(reserved_peer.subnet, Some(pending.target_subnet));
+    assert_eq!(reserved_peer.participation, Participation::Disabled);
+
     state.pending_subnet_heal = Some(crate::daemon::PendingSubnetHeal {
         planned_at: pending.planned_at.saturating_sub(20),
         ..pending
