@@ -1,9 +1,10 @@
 mod deploy_smoke;
-mod dual_controller_add;
 mod machine_add_basic;
 mod machine_remove_guard;
 mod replace_machine;
 mod single_node_init;
+mod split_brain_concurrent_add_subnet_heal;
+mod wireguard_reconnect;
 
 use crate::cli::Scenario;
 use crate::error::Result;
@@ -15,7 +16,10 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
         Scenario::MachineAddBasic => machine_add_basic::run(run),
         Scenario::MachineRemoveGuard => machine_remove_guard::run(run),
         Scenario::ReplaceMachine => replace_machine::run(run),
-        Scenario::DualControllerAdd => dual_controller_add::run(run),
+        Scenario::SplitBrainConcurrentAddSubnetHeal => {
+            split_brain_concurrent_add_subnet_heal::run(run)
+        }
+        Scenario::WireguardReconnect => wireguard_reconnect::run(run),
         Scenario::DeploySmoke => deploy_smoke::run(run),
     }
 }

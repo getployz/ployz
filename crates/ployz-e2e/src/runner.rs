@@ -18,6 +18,11 @@ const DAEMON_WAIT_TIMEOUT: Duration = Duration::from_secs(90);
 const READY_WAIT_TIMEOUT: Duration = Duration::from_secs(180);
 const STATE_WAIT_TIMEOUT: Duration = Duration::from_secs(180);
 const CONTAINER_WAIT_TIMEOUT: Duration = Duration::from_secs(180);
+const PARTITION_INPUT_CHAIN: &str = "PLOYZ_E2E_PARTITION_INPUT";
+const PARTITION_OUTPUT_CHAIN: &str = "PLOYZ_E2E_PARTITION_OUTPUT";
+const E2E_PAYLOAD_BUILD_PROFILE: &str = "debug";
+const CORROSION_LOG_PATH_ENV: &str = "PLOYZ_CORROSION_LOG_PATH";
+const CORROSION_RUST_LOG_ENV: &str = "PLOYZ_CORROSION_RUST_LOG";
 
 #[derive(Debug, Clone)]
 pub(crate) struct Node {
@@ -31,6 +36,8 @@ pub(crate) struct Node {
 pub(crate) struct ScenarioRun {
     scenario: Scenario,
     image: String,
+    image_id: String,
+    image_platform: String,
     root_dir: PathBuf,
     payload_dir: PathBuf,
     outer_network: String,
@@ -63,9 +70,15 @@ impl ScenarioRun {
 
         let private_key_path = key_dir.join("id_ed25519");
         let public_key_path = key_dir.join("id_ed25519.pub");
+        let ImageMetadata {
+            id: image_id,
+            platform: image_platform,
+        } = image_metadata(image)?;
         let run = Self {
             scenario,
             image: image.to_string(),
+            image_id,
+            image_platform,
             root_dir,
             payload_dir,
             outer_network: format!("ployz-e2e-net-{run_id}"),
@@ -81,10 +94,22 @@ impl ScenarioRun {
     }
 
     pub(crate) fn execute(&mut self) -> Result<()> {
+        self.log_progress("starting scenario");
         self.generate_ssh_keypair()?;
         self.create_outer_network()?;
         self.start_nodes(self.scenario.node_names())?;
         scenarios::run(self)
+    }
+
+    pub(crate) fn log_progress(&self, step: &str) {
+        eprintln!(
+            "[ployz-e2e:{}] {}",
+            self.root_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(self.scenario.as_str()),
+            step
+        );
     }
 
     pub(crate) fn cleanup(&self, failed: bool) {
@@ -243,14 +268,6 @@ impl ScenarioRun {
         Ok(command)
     }
 
-    pub(crate) fn machine_drain(&self, controller_name: &str, machine_id: &str) -> Result<()> {
-        self.ssh_expect_ok_name(
-            controller_name,
-            &format!("ployzd machine drain {machine_id}"),
-        )?;
-        Ok(())
-    }
-
     pub(crate) fn machine_remove_force(
         &self,
         controller_name: &str,
@@ -260,6 +277,21 @@ impl ScenarioRun {
             controller_name,
             &format!("ployzd machine rm {machine_id} --force"),
         )?;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn tick_node(&self, node_name: &str, repeat: u32) -> Result<()> {
+        self.ssh_expect_ok_name(node_name, &format!("ployzd debug tick --repeat {repeat}"))?;
+        Ok(())
+    }
+
+    pub(crate) fn tick_nodes(&self, node_names: &[&str], repeat: u32) -> Result<()> {
+        let commands = node_names
+            .iter()
+            .map(|node_name| (*node_name, format!("ployzd debug tick --repeat {repeat}")))
+            .collect::<Vec<_>>();
+        self.ssh_expect_ok_concurrent(&commands)?;
         Ok(())
     }
 
@@ -379,6 +411,68 @@ impl ScenarioRun {
         })
     }
 
+    pub(crate) fn wait_for_settled_machine_states_with_ticks(
+        &self,
+        node_name: &str,
+        expected_states: &[(&str, &str)],
+        tick_nodes: &[&str],
+        repeat: u32,
+    ) -> Result<()> {
+        let node = self.node(node_name)?;
+        let expected_count = expected_states.len();
+        let expected_labels = expected_states
+            .iter()
+            .map(|(machine_id, state)| format!("{machine_id}:{state}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut last_snapshot: Option<Vec<MachineRow>> = None;
+        let mut consecutive_matches: u8 = 0;
+
+        wait_until(STATE_WAIT_TIMEOUT, || {
+            self.tick_nodes(tick_nodes, repeat)?;
+
+            let Ok(output) = self.ssh_run(node, "ployzd machine ls") else {
+                return Ok(false);
+            };
+            if !output.status.success() {
+                return Ok(false);
+            }
+
+            let snapshot = machine_rows(&output.stdout);
+            if snapshot.len() != expected_count {
+                consecutive_matches = 0;
+                last_snapshot = None;
+                return Ok(false);
+            }
+            if !expected_states.iter().all(|(machine_id, expected_state)| {
+                snapshot.iter().any(|row| {
+                    row.id == *machine_id
+                        && row.participation == *expected_state
+                        && row.subnet != "—"
+                })
+            }) {
+                consecutive_matches = 0;
+                last_snapshot = None;
+                return Ok(false);
+            }
+
+            if last_snapshot.as_ref() == Some(&snapshot) {
+                consecutive_matches = consecutive_matches.saturating_add(1);
+            } else {
+                consecutive_matches = 1;
+                last_snapshot = Some(snapshot);
+            }
+
+            Ok(consecutive_matches >= 3)
+        })
+        .map_err(|error| {
+            Error::Message(format!(
+                "machine state did not settle on {} for [{}]: {error}",
+                node.name, expected_labels
+            ))
+        })
+    }
+
     pub(crate) fn assert_unique_machine_subnets(&self, node_name: &str) -> Result<()> {
         let output = self.ssh_expect_ok_name(node_name, "ployzd machine ls")?;
         let mut seen: BTreeMap<String, String> = BTreeMap::new();
@@ -393,6 +487,109 @@ impl ScenarioRun {
                     prefix.subnet, node_name, existing, prefix.id
                 )));
             }
+        }
+
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn wait_for_unique_machine_subnets(&self, node_name: &str) -> Result<()> {
+        wait_until(STATE_WAIT_TIMEOUT, || {
+            match self.assert_unique_machine_subnets(node_name) {
+                Ok(()) => Ok(true),
+                Err(_) => Ok(false),
+            }
+        })
+        .map_err(|error| {
+            Error::Message(format!(
+                "machine subnets did not become unique on {node_name}: {error}"
+            ))
+        })
+    }
+
+    pub(crate) fn wait_for_unique_machine_subnets_with_ticks(
+        &self,
+        node_name: &str,
+        tick_nodes: &[&str],
+        repeat: u32,
+    ) -> Result<()> {
+        wait_until(STATE_WAIT_TIMEOUT, || {
+            self.tick_nodes(tick_nodes, repeat)?;
+            match self.assert_unique_machine_subnets(node_name) {
+                Ok(()) => Ok(true),
+                Err(_) => Ok(false),
+            }
+        })
+        .map_err(|error| {
+            Error::Message(format!(
+                "machine subnets did not become unique on {node_name}: {error}"
+            ))
+        })
+    }
+
+    pub(crate) fn wait_for_machine_ids_with_subnets(
+        &self,
+        node_name: &str,
+        machine_ids: &[&str],
+    ) -> Result<()> {
+        let node = self.node(node_name)?;
+        let joined_ids = machine_ids.join(", ");
+
+        wait_until(STATE_WAIT_TIMEOUT, || {
+            let Ok(output) = self.ssh_run(node, "ployzd machine ls") else {
+                return Ok(false);
+            };
+            if !output.status.success() {
+                return Ok(false);
+            }
+
+            let snapshot = machine_rows(&output.stdout);
+            Ok(machine_ids.iter().all(|machine_id| {
+                snapshot
+                    .iter()
+                    .any(|row| row.id == *machine_id && row.subnet != "—")
+            }))
+        })
+        .map_err(|error| {
+            Error::Message(format!(
+                "machines '{joined_ids}' did not appear with subnets on {}: {error}",
+                node.name
+            ))
+        })
+    }
+
+    pub(crate) fn partition_groups(&self, left: &[&str], right: &[&str]) -> Result<()> {
+        self.clear_partition_rules()?;
+
+        for node in &self.nodes {
+            self.install_partition_chains(node)?;
+        }
+
+        for left_name in left {
+            let left_node = self.node(left_name)?;
+            for right_name in right {
+                let right_node = self.node(right_name)?;
+                self.add_partition_drop_rule(left_node, &right_node.outer_ip)?;
+                self.add_partition_drop_rule(right_node, &left_node.outer_ip)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn clear_partition_rules(&self) -> Result<()> {
+        for node in &self.nodes {
+            self.ssh_expect_ok(
+                node,
+                &format!(
+                    "sh -lc 'iptables -N {PARTITION_INPUT_CHAIN} 2>/dev/null || true; \
+                     iptables -N {PARTITION_OUTPUT_CHAIN} 2>/dev/null || true; \
+                     iptables -F {PARTITION_INPUT_CHAIN}; \
+                     iptables -F {PARTITION_OUTPUT_CHAIN}; \
+                     iptables -C INPUT -j {PARTITION_INPUT_CHAIN} 2>/dev/null || iptables -I INPUT 1 -j {PARTITION_INPUT_CHAIN}; \
+                     iptables -C OUTPUT -j {PARTITION_OUTPUT_CHAIN} 2>/dev/null || iptables -I OUTPUT 1 -j {PARTITION_OUTPUT_CHAIN}'"
+                ),
+            )?;
         }
 
         Ok(())
@@ -499,6 +696,32 @@ impl ScenarioRun {
         ssh_run_with_key(self.private_key_path.as_path(), node, script)
     }
 
+    fn install_partition_chains(&self, node: &Node) -> Result<()> {
+        self.ssh_expect_ok(
+            node,
+            &format!(
+                "sh -lc 'iptables -N {PARTITION_INPUT_CHAIN} 2>/dev/null || true; \
+                 iptables -N {PARTITION_OUTPUT_CHAIN} 2>/dev/null || true; \
+                 iptables -F {PARTITION_INPUT_CHAIN}; \
+                 iptables -F {PARTITION_OUTPUT_CHAIN}; \
+                 iptables -C INPUT -j {PARTITION_INPUT_CHAIN} 2>/dev/null || iptables -I INPUT 1 -j {PARTITION_INPUT_CHAIN}; \
+                 iptables -C OUTPUT -j {PARTITION_OUTPUT_CHAIN} 2>/dev/null || iptables -I OUTPUT 1 -j {PARTITION_OUTPUT_CHAIN}'"
+            ),
+        )?;
+        Ok(())
+    }
+
+    fn add_partition_drop_rule(&self, node: &Node, peer_outer_ip: &str) -> Result<()> {
+        self.ssh_expect_ok(
+            node,
+            &format!(
+                "sh -lc 'iptables -A {PARTITION_INPUT_CHAIN} -s {peer_outer_ip} -j DROP; \
+                 iptables -A {PARTITION_OUTPUT_CHAIN} -d {peer_outer_ip} -j DROP'"
+            ),
+        )?;
+        Ok(())
+    }
+
     fn create_outer_network(&self) -> Result<()> {
         let _ = docker_outer(["network", "rm", self.outer_network.as_str()]);
         docker_outer(["network", "create", self.outer_network.as_str()])?;
@@ -526,6 +749,10 @@ impl ScenarioRun {
                 script.to_string_lossy().as_ref(),
                 "--output",
                 self.payload_dir.to_string_lossy().as_ref(),
+                "--target-platform",
+                self.image_platform.as_str(),
+                "--profile",
+                E2E_PAYLOAD_BUILD_PROFILE,
             ],
         )?;
         Ok(())
@@ -546,27 +773,60 @@ impl ScenarioRun {
                     .to_string_lossy()
             );
             let payload_mount = format!("{}:/e2e-payload:ro", self.payload_dir.to_string_lossy());
+            let ssh_mapping = format!("{ssh_port}:22");
+            let authorized_key = format!("PLOYZ_E2E_SSH_AUTHORIZED_KEY={}", self.public_key);
+            let image_name = format!("PLOYZ_E2E_IMAGE={}", self.image);
+            let image_id = format!("PLOYZ_E2E_IMAGE_ID={}", self.image_id);
+            let scenario_name = format!("PLOYZ_E2E_SCENARIO={}", self.scenario.as_str());
+            let node_name = format!("PLOYZ_E2E_NODE={name}");
+            let run_id = format!(
+                "PLOYZ_E2E_RUN_ID={}",
+                self.root_dir
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or_default()
+            );
+            let mut args = vec![
+                "run".to_string(),
+                "-d".to_string(),
+                "--privileged".to_string(),
+                "--name".to_string(),
+                container_name.clone(),
+                "--hostname".to_string(),
+                (*name).to_string(),
+                "--network".to_string(),
+                self.outer_network.clone(),
+                "-p".to_string(),
+                ssh_mapping,
+                "-e".to_string(),
+                authorized_key,
+                "-e".to_string(),
+                image_name,
+                "-e".to_string(),
+                image_id,
+                "-e".to_string(),
+                scenario_name,
+                "-e".to_string(),
+                node_name,
+                "-e".to_string(),
+                run_id,
+            ];
 
-            docker_outer([
-                "run",
-                "-d",
-                "--privileged",
-                "--name",
-                container_name.as_str(),
-                "--hostname",
-                name,
-                "--network",
-                self.outer_network.as_str(),
-                "-p",
-                &format!("{ssh_port}:22"),
-                "-e",
-                &format!("PLOYZ_E2E_SSH_AUTHORIZED_KEY={}", self.public_key),
-                "-v",
-                key_mount.as_str(),
-                "-v",
-                payload_mount.as_str(),
-                self.image.as_str(),
-            ])?;
+            for env_name in [CORROSION_LOG_PATH_ENV, CORROSION_RUST_LOG_ENV] {
+                if let Ok(value) = std::env::var(env_name) {
+                    args.push("-e".to_string());
+                    args.push(format!("{env_name}={value}"));
+                }
+            }
+
+            args.push("-v".to_string());
+            args.push(key_mount);
+            args.push("-v".to_string());
+            args.push(payload_mount);
+            args.push(self.image.clone());
+
+            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            run_command_expect_ok("docker", &arg_refs)?;
 
             let outer_ip = docker_outer([
                 "inspect",
@@ -589,10 +849,15 @@ impl ScenarioRun {
                 ssh_port,
                 outer_ip,
             };
-            self.wait_for_ssh(&node)?;
-            self.wait_for_daemon(&node)?;
             self.nodes.push(node);
             self.write_metadata()?;
+        }
+
+        for node in &self.nodes {
+            self.wait_for_ssh(node)?;
+        }
+        for node in &self.nodes {
+            self.wait_for_daemon(node)?;
         }
 
         Ok(())
@@ -725,6 +990,8 @@ impl ScenarioRun {
         let mut metadata = String::new();
         let _ = writeln!(&mut metadata, "scenario={}", self.scenario.as_str());
         let _ = writeln!(&mut metadata, "image={}", self.image);
+        let _ = writeln!(&mut metadata, "image_id={}", self.image_id);
+        let _ = writeln!(&mut metadata, "image_platform={}", self.image_platform);
         let _ = writeln!(&mut metadata, "outer_network={}", self.outer_network);
         let _ = writeln!(
             &mut metadata,
@@ -750,6 +1017,38 @@ impl ScenarioRun {
             ))
         })
     }
+}
+
+#[derive(Debug)]
+struct ImageMetadata {
+    id: String,
+    platform: String,
+}
+
+fn image_metadata(image: &str) -> Result<ImageMetadata> {
+    let output = docker_outer([
+        "image",
+        "inspect",
+        "--format",
+        "{{.Id}} {{.Os}}/{{.Architecture}}",
+        image,
+    ])?;
+    let metadata = output.stdout.trim();
+    let mut parts = metadata.split_whitespace();
+    let Some(image_id) = parts.next() else {
+        return Err(Error::Message(format!(
+            "docker image inspect returned empty id for '{image}'"
+        )));
+    };
+    let Some(image_platform) = parts.next() else {
+        return Err(Error::Message(format!(
+            "docker image inspect returned empty platform for '{image}'"
+        )));
+    };
+    Ok(ImageMetadata {
+        id: image_id.to_string(),
+        platform: image_platform.to_string(),
+    })
 }
 
 fn machine_state(machine_ls: &str, machine_id: &str) -> Option<String> {

@@ -1,4 +1,4 @@
-use ployz_core::mesh::tasks::PeerSyncCommand;
+use ployz_core::mesh::tasks::{HeartbeatCommand, PeerSyncCommand};
 use ployz_core::mesh::wireguard::MemoryWireGuard;
 use ployz_core::model::{
     JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
@@ -9,6 +9,7 @@ use ployz_core::{Mesh, Phase, StoreDriver, WireguardDriver};
 use std::net::Ipv6Addr;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::oneshot;
 
 fn test_record(id: &str, key_byte: u8) -> MachineRecord {
     MachineRecord {
@@ -101,21 +102,25 @@ async fn startup_reaches_running_single_node() {
         "single-node founder should not wait for remote sync"
     );
 
-    let participation = tokio::time::timeout(Duration::from_secs(12), async {
-        loop {
-            let Some(self_record) = mesh.authoritative_self_record().await else {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                continue;
-            };
-            if self_record.participation == Participation::Enabled {
-                return self_record.participation;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("single-node founder should reach enabled participation within the timeout");
-    assert_eq!(participation, Participation::Enabled);
+    let heartbeat_tx = mesh
+        .heartbeat_sender()
+        .expect("heartbeat coordinator should be running");
+    for _ in 0..3 {
+        let (done_tx, done_rx) = oneshot::channel();
+        heartbeat_tx
+            .send(HeartbeatCommand::TickNow { done: done_tx })
+            .await
+            .expect("manual heartbeat tick should send");
+        done_rx
+            .await
+            .expect("manual heartbeat tick should acknowledge");
+    }
+
+    let self_record = mesh
+        .authoritative_self_record()
+        .await
+        .expect("self record should exist");
+    assert_eq!(self_record.participation, Participation::Enabled);
 }
 
 #[tokio::test]

@@ -40,12 +40,16 @@ RUN_ID=""
 REMOTE_RUN_DIR=""
 LOCAL_REPORT_DIR=""
 RUN_KEY=""
+LOCAL_RUN_KEY=""
 BUNDLE_URL=""
 BUNDLE_TAR=""
 RUN_FAILED=1
 RUN_SUMMARY_LABEL=""
 RUN_SUMMARY_PRINTED=0
 RUN_BASE_KIND=""
+PERSIST_RUN=0
+SESSION_RETAIN_ON_EXIT=0
+RUN_KIND=""
 
 declare -a NODES=()
 declare -A NODE_FAMILY=()
@@ -65,6 +69,13 @@ Usage:
   lab/bin/ployz-lab snapshot list
   lab/bin/ployz-lab bootstrap test <cloud-init|ssh> --family <family> [--base <raw|bootstrapped-pristine>] [--clean]
   lab/bin/ployz-lab scenario run <name> [--bootstrap-path <cloud-init|ssh>] [--family <spec>] [--profile <profile>] [--base <raw|bootstrapped-pristine|post-install>] [--clean]
+  lab/bin/ployz-lab session up <manifest|scenario> [--bootstrap-path <cloud-init|ssh>] [--family <spec>] [--base <raw|bootstrapped-pristine|post-install>] [--clean]
+  lab/bin/ployz-lab session exec <run-id> <node> -- <command>
+  lab/bin/ployz-lab session ssh <run-id> <node>
+  lab/bin/ployz-lab session tick <run-id> [--task <all|peer-sync|heartbeat|heal>] [--repeat <n>] [--nodes <csv>]
+  lab/bin/ployz-lab session partition add <run-id> <left_csv> <right_csv>
+  lab/bin/ployz-lab session partition clear <run-id> [--nodes <csv>]
+  lab/bin/ployz-lab session destroy <run-id>
   lab/bin/ployz-lab suite run <bootstrap|semantics|fault|full> [--clean]
   lab/bin/ployz-lab report open <run-id>
 
@@ -81,6 +92,13 @@ log() {
   printf '[lab] %s\n' "$*"
 }
 
+log_timing() {
+  local label=$1
+  local started_at=$2
+  local elapsed=$((SECONDS - started_at))
+  log "${label} (${elapsed}s)"
+}
+
 fail() {
   printf '[lab] ERROR: %s\n' "$*" >&2
   exit 1
@@ -89,6 +107,14 @@ fail() {
 planned_cleanup_action() {
   if [[ -z "${RUN_ID}" || ${#NODES[@]} -eq 0 ]]; then
     printf 'none'
+    return
+  fi
+  if [[ "${PERSIST_RUN}" == "1" ]]; then
+    printf 'retained'
+    return
+  fi
+  if [[ "${SESSION_RETAIN_ON_EXIT}" == "1" ]]; then
+    printf 'retained'
     return
   fi
   if [[ "${KEEP_FAILED}" == "1" && ${RUN_FAILED} -ne 0 ]]; then
@@ -305,7 +331,7 @@ remote_write_file() {
 remote_rsync_repo() {
   local repo_dir="${REMOTE_ROOT}/src/repo"
   remote_sh "mkdir -p '${REMOTE_ROOT}/src'"
-  rsync -az --delete \
+  rsync -az --delete --force \
     --exclude .git \
     --exclude .lab \
     --exclude target \
@@ -577,7 +603,13 @@ cleanup_run() {
     return
   fi
 
-  if [[ "${KEEP_FAILED}" == "1" && ${RUN_FAILED} -ne 0 ]]; then
+  if [[ "${PERSIST_RUN}" == "1" ]]; then
+    retain_failed=1
+    log "keeping run ${RUN_ID} for imperative use"
+  elif [[ "${SESSION_RETAIN_ON_EXIT}" == "1" ]]; then
+    retain_failed=1
+    log "keeping session run ${RUN_ID} for imperative use"
+  elif [[ "${KEEP_FAILED}" == "1" && ${RUN_FAILED} -ne 0 ]]; then
     retain_failed=1
     log "keeping failed run ${RUN_ID} for inspection"
   else
@@ -598,6 +630,7 @@ cleanup_run() {
   REMOTE_RUN_DIR=""
   LOCAL_REPORT_DIR=""
   RUN_KEY=""
+  LOCAL_RUN_KEY=""
   BUNDLE_URL=""
   BUNDLE_TAR=""
   NODES=()
@@ -612,6 +645,9 @@ cleanup_run() {
   RUN_SUMMARY_LABEL=""
   RUN_SUMMARY_PRINTED=0
   RUN_BASE_KIND=""
+  PERSIST_RUN=0
+  SESSION_RETAIN_ON_EXIT=0
+  RUN_KIND=""
 }
 
 on_exit() {
@@ -621,11 +657,15 @@ on_exit() {
   local cleanup_action=""
   local summary_label=${RUN_SUMMARY_LABEL}
   local summary_printed=${RUN_SUMMARY_PRINTED}
+  if [[ "${status}" != "0" && "${RUN_KIND}" == "session" ]]; then
+    PERSIST_RUN=1
+    SESSION_RETAIN_ON_EXIT=1
+  fi
   if [[ -n "${run_id}" ]]; then
     cleanup_action=$(planned_cleanup_action)
   fi
   cleanup_run
-  if [[ -n "${run_id}" && "${summary_printed}" != "1" ]]; then
+  if [[ -n "${run_id}" && "${summary_printed}" != "1" && "${status}" != "0" ]]; then
     print_run_summary "FAIL" "${run_id}" "${report_path}" "${cleanup_action}" "${summary_label}"
   fi
   return "${status}"
@@ -644,11 +684,18 @@ prepare_run() {
   RUN_SUMMARY_LABEL="${label}"
   RUN_SUMMARY_PRINTED=0
   RUN_BASE_KIND=""
+  PERSIST_RUN=0
+  RUN_KIND=""
   install -d "${LOCAL_REPORT_DIR}"
   remote_sh "mkdir -p '${REMOTE_RUN_DIR}' '${REMOTE_RUN_DIR}/reports' '${REMOTE_ROOT}/http/${RUN_ID}'"
   RUN_KEY="${REMOTE_RUN_DIR}/run-key"
+  LOCAL_RUN_KEY="${LOCAL_REPORT_DIR}/run-key"
   remote_sh "ssh-keygen -q -t ed25519 -N '' -f '${RUN_KEY}'"
   remote_sh "chmod 600 '${RUN_KEY}' && chmod 644 '${RUN_KEY}.pub'"
+  scp "${REMOTE_HOST}:${RUN_KEY}" "${LOCAL_RUN_KEY}" >/dev/null
+  scp "${REMOTE_HOST}:${RUN_KEY}.pub" "${LOCAL_RUN_KEY}.pub" >/dev/null
+  chmod 600 "${LOCAL_RUN_KEY}"
+  chmod 644 "${LOCAL_RUN_KEY}.pub"
 }
 
 host_bootstrap() {
@@ -889,6 +936,7 @@ EOF
 }
 
 build_artifact_bundle() {
+  local started_at=${SECONDS}
   remote_rsync_repo
   log "building branch artifacts on ${REMOTE_HOST}"
 remote_bash <<EOF
@@ -915,6 +963,7 @@ EOF
 
   BUNDLE_TAR="${REMOTE_RUN_DIR}/bundle.tgz"
   BUNDLE_URL="http://${MGMT_GATEWAY}:${HTTP_PORT}/${RUN_ID}/bundle.tgz"
+  log_timing "artifact bundle ready" "${started_at}"
 }
 
 pubkey_contents() {
@@ -998,6 +1047,7 @@ EOF
 create_vm() {
   local node=$1
   local bootstrap_path=$2
+  local started_at=${SECONDS}
   local public_key user_data meta_data net_cfg family vm disk seed_dir seed_iso
   family=${NODE_FAMILY["${node}"]}
   local base_image=${NODE_BASE_IMAGE["${node}"]}
@@ -1037,11 +1087,13 @@ virt-install \
   --noautoconsole \
   --osinfo detect=off,name=linux2022 >/dev/null
 EOF
+  log_timing "vm created ${node}" "${started_at}"
 }
 
 wait_for_ssh() {
   local node=$1
   local timeout=${2:-180}
+  local started_at=${SECONDS}
   remote_bash <<EOF
 set -euo pipefail
 deadline=\$((SECONDS + ${timeout}))
@@ -1054,6 +1106,7 @@ done
 echo "timed out waiting for ssh to ${node}" >&2
 exit 1
 EOF
+  log_timing "ssh ready ${node}" "${started_at}"
 }
 
 wait_for_cloud_init() {
@@ -1311,6 +1364,307 @@ await_json_true() {
   done
 }
 
+resolve_manifest_path() {
+  local name=$1
+  if [[ -f "${name}" ]]; then
+    printf '%s\n' "${name}"
+    return
+  fi
+  local path="${LAB_DIR}/scenarios/${name}.json"
+  [[ -f "${path}" ]] || fail "unknown manifest or scenario '${name}'"
+  printf '%s\n' "${path}"
+}
+
+load_run_context() {
+  local run_id=$1
+  local metadata_path="${STATE_DIR}/reports/${run_id}/metadata.env"
+  [[ -f "${metadata_path}" ]] || fail "run metadata not found: ${metadata_path}"
+
+  RUN_ID="${run_id}"
+  REMOTE_RUN_DIR="${REMOTE_ROOT}/runs/${RUN_ID}"
+  LOCAL_REPORT_DIR="${STATE_DIR}/reports/${RUN_ID}"
+  LOCAL_RUN_KEY="${LOCAL_REPORT_DIR}/run-key"
+  RUN_KEY="${REMOTE_RUN_DIR}/run-key"
+  if [[ -f "${LOCAL_RUN_KEY}" ]]; then
+    remote_sh "mkdir -p '${REMOTE_RUN_DIR}'"
+    scp "${LOCAL_RUN_KEY}" "${REMOTE_HOST}:${RUN_KEY}" >/dev/null
+    scp "${LOCAL_RUN_KEY}.pub" "${REMOTE_HOST}:${RUN_KEY}.pub" >/dev/null
+    remote_sh "chmod 600 '${RUN_KEY}' && chmod 644 '${RUN_KEY}.pub'"
+  fi
+  RUN_FAILED=1
+  RUN_KIND="session"
+  RUN_SUMMARY_LABEL="session ${RUN_ID}"
+  RUN_SUMMARY_PRINTED=0
+  RUN_BASE_KIND=""
+  NODES=()
+  NODE_FAMILY=()
+  NODE_MGMT_IP=()
+  NODE_DATA_IP=()
+  NODE_MGMT_MAC=()
+  NODE_DATA_MAC=()
+  NODE_VM_NAME=()
+  NODE_BASE_IMAGE=()
+
+  local key value node
+  declare -A seen=()
+  while IFS='=' read -r key value; do
+    case "${key}" in
+      base)
+        RUN_BASE_KIND="${value}"
+        ;;
+      node.*.family)
+        node=${key#node.}
+        node=${node%.family}
+        NODE_FAMILY["${node}"]="${value}"
+        NODE_VM_NAME["${node}"]="${RUN_ID}-${node}"
+        if [[ -z "${seen[${node}]:-}" ]]; then
+          seen["${node}"]=1
+          NODES+=("${node}")
+        fi
+        ;;
+      node.*.mgmt_ip)
+        node=${key#node.}
+        node=${node%.mgmt_ip}
+        NODE_MGMT_IP["${node}"]="${value}"
+        ;;
+      node.*.data_ip)
+        node=${key#node.}
+        node=${node%.data_ip}
+        NODE_DATA_IP["${node}"]="${value}"
+        ;;
+      node.*.base_image)
+        node=${key#node.}
+        node=${node%.base_image}
+        NODE_BASE_IMAGE["${node}"]="${value}"
+        ;;
+    esac
+  done <"${metadata_path}"
+
+  [[ ${#NODES[@]} -gt 0 ]] || fail "no nodes found in ${metadata_path}"
+}
+
+guest_ssh_tty() {
+  local node=$1
+  remote_bash_tty <<EOF
+set -euo pipefail
+exec ssh -i '${RUN_KEY}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 'lab@${NODE_MGMT_IP[${node}]}'
+EOF
+}
+
+tick_node() {
+  local node=$1
+  local task=${2:-all}
+  local repeat=${3:-1}
+  guest_exec "${node}" "sudo ployzd debug tick --task ${task} --repeat ${repeat}"
+}
+
+tick_nodes() {
+  local task=${1:-all}
+  local repeat=${2:-1}
+  shift 2 || true
+  local nodes=("$@")
+  if [[ ${#nodes[@]} -eq 0 ]]; then
+    nodes=("${NODES[@]}")
+  fi
+
+  local pid node log_path
+  local -a pids=()
+  local -a pid_nodes=()
+  for node in "${nodes[@]}"; do
+    log_path="${LOCAL_REPORT_DIR}/${node}-tick-${task}.log"
+    (
+      tick_node "${node}" "${task}" "${repeat}"
+    ) >>"${log_path}" 2>&1 &
+    pids+=($!)
+    pid_nodes+=("${node}")
+  done
+
+  local i
+  for i in "${!pids[@]}"; do
+    pid=${pids[${i}]}
+    node=${pid_nodes[${i}]}
+    wait "${pid}" || fail "tick ${task} failed on ${node}"
+  done
+}
+
+await_machine_ids_with_subnets() {
+  local node=$1
+  local timeout=${2:-180}
+  shift 2
+  local start output
+  start=$(date +%s)
+  while true; do
+    output=$(guest_exec "${node}" "sudo ployzd machine ls" || true)
+    if printf '%s' "${output}" | python3 - "$@" <<'PY'
+import sys
+
+expected = set(sys.argv[1:])
+seen = set()
+for line in sys.stdin.read().splitlines():
+    line = line.strip()
+    if not line or line.startswith("ID ") or line.startswith("error "):
+        continue
+    parts = line.split()
+    if len(parts) < 6:
+        continue
+    machine_id = parts[0]
+    subnet = parts[5]
+    if subnet != "—":
+        seen.add(machine_id)
+
+raise SystemExit(0 if expected.issubset(seen) else 1)
+PY
+    then
+      return 0
+    fi
+    if (( "$(date +%s)" - start >= timeout )); then
+      printf '%s\n' "${output}" >"${LOCAL_REPORT_DIR}/${node}-machine-ids-timeout.txt"
+      fail "timed out waiting for machine ids with subnets on ${node}: $*"
+    fi
+    sleep 2
+  done
+}
+
+await_unique_machine_subnets() {
+  local node=$1
+  local timeout=${2:-300}
+  local start output
+  start=$(date +%s)
+  while true; do
+    tick_nodes all 1
+    output=$(guest_exec "${node}" "sudo ployzd machine ls" || true)
+    if printf '%s' "${output}" | python3 <<'PY'
+import sys
+
+owners = {}
+for line in sys.stdin.read().splitlines():
+    line = line.strip()
+    if not line or line.startswith("ID ") or line.startswith("error "):
+        continue
+    parts = line.split()
+    if len(parts) < 6:
+        continue
+    machine_id = parts[0]
+    subnet = parts[5]
+    if subnet == "—":
+        continue
+    owners.setdefault(subnet, []).append(machine_id)
+
+dupes = {subnet: ids for subnet, ids in owners.items() if len(ids) > 1}
+raise SystemExit(0 if not dupes else 1)
+PY
+    then
+      return 0
+    fi
+    if (( "$(date +%s)" - start >= timeout )); then
+      printf '%s\n' "${output}" >"${LOCAL_REPORT_DIR}/${node}-unique-subnets-timeout.txt"
+      fail "timed out waiting for unique subnets on ${node}"
+    fi
+    sleep 5
+  done
+}
+
+await_all_nodes_enabled() {
+  local node=$1
+  local timeout=${2:-300}
+  shift 2 || true
+  local expected=("$@")
+  if [[ ${#expected[@]} -eq 0 ]]; then
+    expected=("${NODES[@]}")
+  fi
+  local start output
+  start=$(date +%s)
+  while true; do
+    tick_nodes all 1
+    output=$(guest_exec "${node}" "sudo ployzd machine ls" || true)
+    if printf '%s' "${output}" | python3 - "${expected[@]}" <<'PY'
+import sys
+
+expected = set(sys.argv[1:])
+enabled = set()
+for line in sys.stdin.read().splitlines():
+    line = line.strip()
+    if not line or line.startswith("ID ") or line.startswith("error "):
+        continue
+    parts = line.split()
+    if len(parts) < 3:
+        continue
+    machine_id = parts[0]
+    participation = parts[2]
+    if participation == "enabled":
+        enabled.add(machine_id)
+
+raise SystemExit(0 if expected.issubset(enabled) else 1)
+PY
+    then
+      return 0
+    fi
+    if (( "$(date +%s)" - start >= timeout )); then
+      printf '%s\n' "${output}" >"${LOCAL_REPORT_DIR}/${node}-all-enabled-timeout.txt"
+      fail "timed out waiting for all nodes enabled on ${node}"
+    fi
+    sleep 5
+  done
+}
+
+ensure_partition_chains() {
+  local node=$1
+  guest_exec "${node}" "sudo iptables -N PLOYZ_LAB_PARTITION_INPUT 2>/dev/null || true && sudo iptables -N PLOYZ_LAB_PARTITION_OUTPUT 2>/dev/null || true && sudo iptables -C INPUT -j PLOYZ_LAB_PARTITION_INPUT 2>/dev/null || sudo iptables -I INPUT 1 -j PLOYZ_LAB_PARTITION_INPUT && sudo iptables -C OUTPUT -j PLOYZ_LAB_PARTITION_OUTPUT 2>/dev/null || sudo iptables -I OUTPUT 1 -j PLOYZ_LAB_PARTITION_OUTPUT"
+}
+
+add_partition_drop_rule() {
+  local node=$1
+  local remote_ip=$2
+  ensure_partition_chains "${node}"
+  guest_exec "${node}" "sudo iptables -C PLOYZ_LAB_PARTITION_INPUT -s ${remote_ip} -j DROP 2>/dev/null || sudo iptables -A PLOYZ_LAB_PARTITION_INPUT -s ${remote_ip} -j DROP && sudo iptables -C PLOYZ_LAB_PARTITION_OUTPUT -d ${remote_ip} -j DROP 2>/dev/null || sudo iptables -A PLOYZ_LAB_PARTITION_OUTPUT -d ${remote_ip} -j DROP"
+}
+
+partition_groups() {
+  local left_csv=$1
+  local right_csv=$2
+  local left_node right_node
+  IFS=',' read -r -a left <<<"${left_csv}"
+  IFS=',' read -r -a right <<<"${right_csv}"
+  for left_node in "${left[@]}"; do
+    for right_node in "${right[@]}"; do
+      add_partition_drop_rule "${left_node}" "${NODE_DATA_IP[${right_node}]}"
+      add_partition_drop_rule "${right_node}" "${NODE_DATA_IP[${left_node}]}"
+    done
+  done
+}
+
+clear_partition_rules() {
+  local node
+  for node in "$@"; do
+    guest_exec "${node}" "sudo iptables -F PLOYZ_LAB_PARTITION_INPUT 2>/dev/null || true && sudo iptables -F PLOYZ_LAB_PARTITION_OUTPUT 2>/dev/null || true"
+  done
+}
+
+run_guest_cmds_concurrently() {
+  local label=$1
+  shift
+  local spec pid node cmd log_path
+  local -a pids=()
+  local -a pid_nodes=()
+  for spec in "$@"; do
+    node=${spec%%::*}
+    cmd=${spec#*::}
+    log_path="${LOCAL_REPORT_DIR}/${node}-${label}.log"
+    (
+      guest_exec "${node}" "${cmd}"
+    ) >>"${log_path}" 2>&1 &
+    pids+=($!)
+    pid_nodes+=("${node}")
+  done
+
+  local i
+  for i in "${!pids[@]}"; do
+    pid=${pids[${i}]}
+    node=${pid_nodes[${i}]}
+    wait "${pid}" || fail "${label} failed on ${node}"
+  done
+}
+
 collect_node_report() {
   local node=$1
   local out_dir="${LOCAL_REPORT_DIR}/${node}"
@@ -1320,8 +1674,10 @@ collect_node_report() {
   collect_node_report_artifact "${node}" "${out_dir}" "systemd-status.txt" 10 "sudo systemctl status ployzd.service --no-pager"
   collect_node_report_artifact "${node}" "${out_dir}" "journal.txt" 15 "sudo journalctl -u ployzd.service --no-pager -n 200"
   collect_node_report_artifact "${node}" "${out_dir}" "ployzd-status.txt" 10 "sudo ployzd status"
+  collect_node_report_artifact "${node}" "${out_dir}" "doctor.txt" 10 "sudo ployzd doctor"
   collect_node_report_artifact "${node}" "${out_dir}" "mesh-ready.json" 10 "sudo ployzd --plain mesh ready --json"
   collect_node_report_artifact "${node}" "${out_dir}" "machine-ls.txt" 10 "sudo ployzd machine ls"
+  collect_node_report_artifact "${node}" "${out_dir}" "wg.txt" 10 "sudo wg show plz-alpha dump"
   collect_node_report_artifact "${node}" "${out_dir}" "tc.txt" 10 "sudo tc qdisc show dev eth-data && echo && sudo tc qdisc show dev eth-mgmt"
   collect_node_report_artifact "${node}" "${out_dir}" "ip.txt" 10 "sudo ip -br a"
   collect_node_report_artifact "${node}" "${out_dir}" "docker-ps.txt" 10 "sudo docker ps -a"
@@ -1401,10 +1757,12 @@ bootstrap_nodes() {
   local bootstrap_path=$1
   local base_kind=$2
   local node
+  local started_at=${SECONDS}
   for node in "${NODES[@]}"; do
     create_vm "${node}" "${bootstrap_path}"
   done
   for node in "${NODES[@]}"; do
+    local node_started_at=${SECONDS}
     wait_for_ssh "${node}" 240
     wait_for_cloud_init "${node}" 240
     case "${base_kind}" in
@@ -1428,7 +1786,9 @@ bootstrap_nodes() {
         ;;
     esac
     seed_interguest_ssh "${node}"
+    log_timing "bootstrap complete ${node}" "${node_started_at}"
   done
+  log_timing "all nodes bootstrapped" "${started_at}"
 }
 
 scenario_founder_init_after_bootstrap() {
@@ -1533,6 +1893,41 @@ scenario_remove_during_partition() {
   guest_exec founder "sudo ployzd machine rm joiner --force"
 }
 
+scenario_dual_controller_add_split_brain() {
+  local founder_joiners=(joiner1 joiner2 joiner3)
+  local peer_joiners=(joiner4 joiner5 joiner6)
+  local left_group="founder,joiner1,joiner2,joiner3"
+  local right_group="peer,joiner4,joiner5,joiner6"
+
+  guest_exec founder "sudo ployzd mesh init alpha"
+  await_json_true founder "sudo ployzd --plain mesh ready --json" ready 120
+  guest_exec founder "sudo ployzd machine add --identity /root/.ssh/id_ed25519 lab@${NODE_DATA_IP[peer]}"
+  await_machine_ids_with_subnets founder 180 founder peer
+  await_machine_state founder peer enabled 240
+  await_machine_state peer founder enabled 240
+
+  partition_groups "${left_group}" "${right_group}"
+
+  run_guest_cmds_concurrently founder-add \
+    "founder::sudo ployzd machine add --identity /root/.ssh/id_ed25519 lab@${NODE_DATA_IP[joiner1]}" \
+    "founder::sudo ployzd machine add --identity /root/.ssh/id_ed25519 lab@${NODE_DATA_IP[joiner2]}" \
+    "founder::sudo ployzd machine add --identity /root/.ssh/id_ed25519 lab@${NODE_DATA_IP[joiner3]}"
+
+  run_guest_cmds_concurrently peer-add \
+    "peer::sudo ployzd machine add --identity /root/.ssh/id_ed25519 lab@${NODE_DATA_IP[joiner4]}" \
+    "peer::sudo ployzd machine add --identity /root/.ssh/id_ed25519 lab@${NODE_DATA_IP[joiner5]}" \
+    "peer::sudo ployzd machine add --identity /root/.ssh/id_ed25519 lab@${NODE_DATA_IP[joiner6]}"
+
+  await_machine_ids_with_subnets founder 240 founder peer "${founder_joiners[@]}"
+  await_machine_ids_with_subnets peer 240 founder peer "${peer_joiners[@]}"
+
+  clear_partition_rules "${NODES[@]}"
+  tick_nodes all 3
+
+  await_unique_machine_subnets founder 600
+  await_all_nodes_enabled founder 600
+}
+
 scenario_bootstrap_under_bad_network() {
   local node=founder
   create_vm "${node}" ssh
@@ -1556,6 +1951,7 @@ run_named_scenario() {
     steady_state_jitter) scenario_steady_state_jitter ;;
     partition_and_recover) scenario_partition_and_recover ;;
     remove_during_partition) scenario_remove_during_partition ;;
+    dual_controller_add_split_brain) scenario_dual_controller_add_split_brain ;;
     bootstrap_under_bad_network) scenario_bootstrap_under_bad_network ;;
     *) fail "unknown scenario implementation '${name}'" ;;
   esac
@@ -1664,6 +2060,105 @@ run_scenario() {
   collect_reports
   RUN_FAILED=0
   print_run_summary "PASS" "${RUN_ID}" "${LOCAL_REPORT_DIR}" "$(planned_cleanup_action)"
+}
+
+session_up() {
+  local manifest_ref=$1
+  local bootstrap_path_override=$2
+  local family_override=$3
+  local base_override=$4
+  local clean_start=${5:-0}
+  local manifest bootstrap_path base_kind
+  local -a scenario_defaults
+
+  prepare_pass "${clean_start}"
+  manifest=$(resolve_manifest_path "${manifest_ref}")
+  mapfile -t scenario_defaults < <(json_scenario_defaults "${manifest}")
+  bootstrap_path=${scenario_defaults[0]}
+  if [[ -n "${bootstrap_path_override}" ]]; then
+    bootstrap_path=${bootstrap_path_override}
+  fi
+
+  prepare_run "session-$(basename "${manifest}" .json)"
+  RUN_KIND="session"
+  RUN_SUMMARY_LABEL="session $(basename "${manifest}" .json)"
+  PERSIST_RUN=1
+  SESSION_RETAIN_ON_EXIT=1
+  register_nodes "${manifest}" "${family_override}"
+
+  if [[ -n "${base_override}" ]]; then
+    base_kind=${base_override}
+    validate_base_kind "${base_kind}"
+  else
+    base_kind=$(resolve_default_scenario_base)
+  fi
+  assign_node_base_images "${base_kind}"
+  build_artifact_bundle
+  write_run_metadata "$(basename "${manifest}" .json)" "${bootstrap_path}" "clean" "${base_kind}"
+  bootstrap_nodes "${bootstrap_path}" "${base_kind}"
+  RUN_FAILED=0
+  print_run_summary "READY" "${RUN_ID}" "${LOCAL_REPORT_DIR}" "retained" "${RUN_SUMMARY_LABEL}"
+}
+
+session_exec() {
+  local run_id=$1
+  local node=$2
+  shift 2
+  load_run_context "${run_id}"
+  guest_exec "${node}" "$*"
+  RUN_FAILED=0
+  PERSIST_RUN=1
+}
+
+session_ssh() {
+  local run_id=$1
+  local node=$2
+  load_run_context "${run_id}"
+  guest_ssh_tty "${node}"
+  RUN_FAILED=0
+  PERSIST_RUN=1
+}
+
+session_tick() {
+  local run_id=$1
+  local task=$2
+  local repeat=$3
+  shift 3
+  load_run_context "${run_id}"
+  tick_nodes "${task}" "${repeat}" "$@"
+  RUN_FAILED=0
+  PERSIST_RUN=1
+}
+
+session_partition_add() {
+  local run_id=$1
+  local left_csv=$2
+  local right_csv=$3
+  load_run_context "${run_id}"
+  partition_groups "${left_csv}" "${right_csv}"
+  RUN_FAILED=0
+  PERSIST_RUN=1
+}
+
+session_partition_clear() {
+  local run_id=$1
+  shift
+  load_run_context "${run_id}"
+  if [[ $# -eq 0 ]]; then
+    clear_partition_rules "${NODES[@]}"
+  else
+    clear_partition_rules "$@"
+  fi
+  RUN_FAILED=0
+  PERSIST_RUN=1
+}
+
+session_destroy() {
+  local run_id=$1
+  load_run_context "${run_id}"
+  PERSIST_RUN=0
+  RUN_FAILED=0
+  cleanup_run
 }
 
 snapshot_is_current() {
@@ -1964,6 +2459,139 @@ main() {
         esac
       done
       run_scenario "${name}" "${bootstrap_path}" "${family_override}" "${profile_override}" "${base_override}" "${clean_start}"
+      ;;
+    session)
+      ensure_prereqs
+      local action=${2:-}
+      shift 2 || true
+      case "${action}" in
+        up)
+          local manifest_ref=${1:-}
+          shift || true
+          [[ -n "${manifest_ref}" ]] || fail "expected 'session up <manifest|scenario> ...'"
+          local bootstrap_path=""
+          local family_override=""
+          local base_override=""
+          local clean_start=0
+          while [[ $# -gt 0 ]]; do
+            case "$1" in
+              --bootstrap-path)
+                bootstrap_path=${2:-}
+                shift 2
+                ;;
+              --family)
+                family_override=${2:-}
+                shift 2
+                ;;
+              --base)
+                base_override=${2:-}
+                shift 2
+                ;;
+              --clean)
+                clean_start=1
+                shift
+                ;;
+              *)
+                fail "unknown argument: $1"
+                ;;
+            esac
+          done
+          session_up "${manifest_ref}" "${bootstrap_path}" "${family_override}" "${base_override}" "${clean_start}"
+          ;;
+        exec)
+          local run_id=${1:-}
+          local node=${2:-}
+          shift 2 || true
+          [[ -n "${run_id}" && -n "${node}" ]] || fail "expected 'session exec <run-id> <node> -- <command>'"
+          [[ ${1:-} == "--" ]] || fail "expected '--' before command"
+          shift
+          session_exec "${run_id}" "${node}" "$*"
+          ;;
+        ssh)
+          local run_id=${1:-}
+          local node=${2:-}
+          [[ -n "${run_id}" && -n "${node}" ]] || fail "expected 'session ssh <run-id> <node>'"
+          session_ssh "${run_id}" "${node}"
+          ;;
+        tick)
+          local run_id=${1:-}
+          shift || true
+          [[ -n "${run_id}" ]] || fail "expected 'session tick <run-id> ...'"
+          local task=all
+          local repeat=1
+          local nodes_csv=""
+          while [[ $# -gt 0 ]]; do
+            case "$1" in
+              --task)
+                task=${2:-}
+                shift 2
+                ;;
+              --repeat)
+                repeat=${2:-}
+                shift 2
+                ;;
+              --nodes)
+                nodes_csv=${2:-}
+                shift 2
+                ;;
+              *)
+                fail "unknown argument: $1"
+                ;;
+            esac
+          done
+          local -a tick_nodes_arg=()
+          if [[ -n "${nodes_csv}" ]]; then
+            IFS=',' read -r -a tick_nodes_arg <<<"${nodes_csv}"
+          fi
+          session_tick "${run_id}" "${task}" "${repeat}" "${tick_nodes_arg[@]}"
+          ;;
+        partition)
+          local partition_action=${1:-}
+          shift || true
+          case "${partition_action}" in
+            add)
+              local run_id=${1:-}
+              local left_csv=${2:-}
+              local right_csv=${3:-}
+              [[ -n "${run_id}" && -n "${left_csv}" && -n "${right_csv}" ]] || fail "expected 'session partition add <run-id> <left_csv> <right_csv>'"
+              session_partition_add "${run_id}" "${left_csv}" "${right_csv}"
+              ;;
+            clear)
+              local run_id=${1:-}
+              shift || true
+              [[ -n "${run_id}" ]] || fail "expected 'session partition clear <run-id> [--nodes <csv>]'"
+              local nodes_csv=""
+              while [[ $# -gt 0 ]]; do
+                case "$1" in
+                  --nodes)
+                    nodes_csv=${2:-}
+                    shift 2
+                    ;;
+                  *)
+                    fail "unknown argument: $1"
+                    ;;
+                esac
+              done
+              local -a clear_nodes=()
+              if [[ -n "${nodes_csv}" ]]; then
+                IFS=',' read -r -a clear_nodes <<<"${nodes_csv}"
+              fi
+              session_partition_clear "${run_id}" "${clear_nodes[@]}"
+              ;;
+            *)
+              fail "expected 'session partition <add|clear> ...'"
+              ;;
+          esac
+          ;;
+        destroy)
+          local run_id=${1:-}
+          [[ -n "${run_id}" ]] || fail "expected 'session destroy <run-id>'"
+          session_destroy "${run_id}"
+          ;;
+        *)
+          fail "expected 'session <up|exec|ssh|tick|partition|destroy> ...'"
+          ;;
+      esac
       ;;
     suite)
       ensure_prereqs
