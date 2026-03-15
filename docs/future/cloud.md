@@ -135,7 +135,7 @@ produces one line:
 | Add env var       | `env.NEW_KEY: + "value"`                            |
 | Remove env var    | `env.OLD_KEY: - "value"`                            |
 | Edit env var      | `env.PORT: "3000" → "8080"`                         |
-| Change replicas   | `placement: singleton → replicated(3)`              |
+| Change replicas   | `placement: replicated(1) → replicated(3)`          |
 | Add route         | `routes[1]: + http(api.example.com)`                |
 
 ### Attribution

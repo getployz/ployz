@@ -109,6 +109,18 @@ impl ServiceSpec {
             return Err("service name cannot be empty".into());
         }
 
+        match self.placement {
+            Placement::Global => {}
+            Placement::Replicated { count } => {
+                if count == 0 {
+                    return Err(format!(
+                        "service '{}' must request at least one replica",
+                        self.name
+                    ));
+                }
+            }
+        }
+
         let mut seen_ports = BTreeSet::new();
         for port in &self.service_ports {
             if port.name.trim().is_empty() {
@@ -220,7 +232,6 @@ impl ServiceSpec {
 #[serde(rename_all = "snake_case")]
 pub enum Placement {
     Global,
-    Singleton,
     Replicated { count: u16 },
 }
 
@@ -549,6 +560,14 @@ mod tests {
             .validate()
             .expect_err("empty namespace should fail");
         assert!(error.contains("namespace"));
+    }
+
+    #[test]
+    fn replicated_zero_is_rejected() {
+        let mut spec = sample_spec();
+        spec.placement = Placement::Replicated { count: 0 };
+        let error = spec.validate().expect_err("zero replicas should fail");
+        assert!(error.contains("at least one replica"));
     }
 
     #[test]

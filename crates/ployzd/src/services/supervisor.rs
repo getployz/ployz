@@ -60,7 +60,7 @@ fn sidecar_to_runtime_spec(spec: &SidecarSpec) -> RuntimeContainerSpec {
         key,
         container_name: spec.container_name.clone(),
         image: spec.image.clone(),
-        pull_policy: PullPolicy::IfNotPresent,
+        pull_policy: PullPolicy::Always,
         cmd: Some(spec.cmd.clone()),
         env: spec.env.clone(),
         labels,
