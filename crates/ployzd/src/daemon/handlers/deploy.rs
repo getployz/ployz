@@ -104,6 +104,7 @@ fn decode_manifest(manifest_json: &str) -> Result<DeployManifest, DaemonResponse
             ok: false,
             code: "INVALID_MANIFEST".into(),
             message: format!("invalid deploy manifest: {err}"),
+            payload: None,
         })?;
 
     if manifest.services.is_empty() {
@@ -111,6 +112,7 @@ fn decode_manifest(manifest_json: &str) -> Result<DeployManifest, DaemonResponse
             ok: false,
             code: "INVALID_MANIFEST".into(),
             message: "deploy manifest must contain at least one service".into(),
+            payload: None,
         });
     }
 

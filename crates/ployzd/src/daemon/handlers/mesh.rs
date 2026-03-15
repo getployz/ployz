@@ -1,5 +1,4 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use serde::Serialize;
 use tracing::warn;
 
 use crate::daemon::setup::MeshStartOptions;
@@ -10,7 +9,7 @@ use crate::network::ipam::Ipam;
 use crate::node::invite::parse_and_verify_invite_token;
 use crate::store::bootstrap::{BootstrapInfo, BootstrapPeerRecord, write_bootstrap_peer_record};
 use crate::store::network::NetworkConfig;
-use ployz_sdk::transport::DaemonResponse;
+use ployz_sdk::transport::{DaemonPayload, DaemonResponse, MeshReadyPayload, MeshSelfRecordPayload};
 
 use super::super::DaemonState;
 use crate::time::now_unix_secs;
@@ -89,11 +88,10 @@ impl DaemonState {
             None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
         };
 
-        let status = active.mesh.ready_status().await;
+        let status = mesh_ready_payload(active.mesh.ready_status().await);
         if json {
-            let payload = MeshReadyPayload::from(status);
-            return match serde_json::to_string(&payload) {
-                Ok(body) => self.ok(body),
+            return match serde_json::to_string(&status) {
+                Ok(body) => self.ok_with_payload(body, Some(DaemonPayload::MeshReady(status))),
                 Err(err) => self.err(
                     "ENCODE_FAILED",
                     format!("failed to encode readiness payload: {err}"),
@@ -101,14 +99,14 @@ impl DaemonState {
             };
         }
 
-        self.ok(format!(
+        self.ok_with_payload(format!(
             "ready:            {}\nphase:            {}\nstore healthy:    {}\nsync connected:   {}\nheartbeat ready:  {}",
             status.ready,
             status.phase,
             status.store_healthy,
             status.sync_connected,
             status.heartbeat_started,
-        ))
+        ), Some(DaemonPayload::MeshReady(status)))
     }
 
     pub(crate) async fn handle_mesh_join(&mut self, token: &str) -> DaemonResponse {
@@ -244,6 +242,7 @@ impl DaemonState {
                         "initialized network '{}' but failed to start: {e}\n  state:   created",
                         network_name,
                     ),
+                    payload: None,
                 };
             }
         }
@@ -317,6 +316,7 @@ impl DaemonState {
                     ok: false,
                     code: "IO_ERROR".into(),
                     message: format!("failed to load network config: {e}"),
+                    payload: None,
                 };
             }
         };
@@ -332,6 +332,7 @@ impl DaemonState {
                     ok: false,
                     code: "NETWORK_START_FAILED".into(),
                     message: e.to_string(),
+                    payload: None,
                 };
             }
         }
@@ -385,6 +386,7 @@ impl DaemonState {
                     ok: false,
                     code: "NETWORK_DESTROY_FAILED".into(),
                     message: format!("destroy failed: {e}"),
+                    payload: None,
                 };
             }
             active.remote_control.shutdown().await;
@@ -404,6 +406,7 @@ impl DaemonState {
                 ok: false,
                 code: "IO_ERROR".into(),
                 message: format!("failed to delete network config: {e}"),
+                payload: None,
             };
         }
 
@@ -427,7 +430,13 @@ impl DaemonState {
         };
 
         match resp.encode() {
-            Ok(encoded) => self.ok(encoded),
+            Ok(encoded) => self.ok_with_payload(
+                encoded.clone(),
+                Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
+                    encoded,
+                    record: resp.into_seed_machine_record(),
+                })),
+            ),
             Err(e) => self.err(
                 "ENCODE_FAILED",
                 format!("failed to encode self-record: {e}"),
@@ -488,24 +497,13 @@ impl DaemonState {
     }
 }
 
-#[derive(Serialize)]
-struct MeshReadyPayload {
-    ready: bool,
-    phase: String,
-    store_healthy: bool,
-    sync_connected: bool,
-    heartbeat_started: bool,
-}
-
-impl From<crate::mesh::orchestrator::MeshReadyStatus> for MeshReadyPayload {
-    fn from(value: crate::mesh::orchestrator::MeshReadyStatus) -> Self {
-        Self {
-            ready: value.ready,
-            phase: value.phase.to_string(),
-            store_healthy: value.store_healthy,
-            sync_connected: value.sync_connected,
-            heartbeat_started: value.heartbeat_started,
-        }
+fn mesh_ready_payload(value: crate::mesh::orchestrator::MeshReadyStatus) -> MeshReadyPayload {
+    MeshReadyPayload {
+        ready: value.ready,
+        phase: value.phase.to_string(),
+        store_healthy: value.store_healthy,
+        sync_connected: value.sync_connected,
+        heartbeat_started: value.heartbeat_started,
     }
 }
 
