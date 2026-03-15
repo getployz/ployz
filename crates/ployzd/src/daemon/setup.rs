@@ -252,7 +252,7 @@ impl MeshStartTx {
         remote_control.shutdown().await;
 
         if let Some(mut mesh) = self.mesh.take()
-            && let Err(error) = mesh.destroy().await
+            && let Err(error) = mesh.detach().await
         {
             warn!(?error, "mesh rollback failed");
         }
@@ -308,6 +308,115 @@ impl DaemonState {
         }
 
         Ok(tx.finish())
+    }
+
+    pub async fn restart_active_runtime_for_subnet_heal(
+        &mut self,
+        network: &str,
+    ) -> Result<(), String> {
+        let config_path = NetworkConfig::path(&self.data_dir, network);
+        let net_config = NetworkConfig::load(&config_path)
+            .map_err(|error| format!("load network config: {error}"))?;
+        let gateway_port =
+            Self::gateway_port(&self.gateway_listen_addr).map_err(|error| error.to_string())?;
+        let exposed_tcp_ports = [gateway_port];
+        let network_dir = self.network_dir(&net_config.name.0);
+
+        let Some(active) = self.active.as_mut() else {
+            return Err("no running network".into());
+        };
+
+        let new_network = WireguardDriver::from_mode(
+            self.mode,
+            &self.identity,
+            net_config.overlay_ip,
+            &network_dir,
+            &net_config.name.0,
+            net_config.subnet,
+            &exposed_tcp_ports,
+        )
+        .await
+        .map_err(|error| format!("network driver failed: {error}"))?;
+
+        let new_container_network = match self.mode {
+            Mode::Memory => None,
+            Mode::Docker | Mode::HostExec | Mode::HostService => Some(
+                crate::network::docker_bridge::DockerBridgeNetwork::new(
+                    &net_config.name.0,
+                    net_config.subnet,
+                )
+                .await
+                .map_err(|error| format!("container network failed: {error}"))?,
+            ),
+        };
+
+        let mut dns = std::mem::replace(&mut active.dns, DnsHandle::noop());
+        if let Err(error) = dns.shutdown().await {
+            tracing::warn!(
+                ?error,
+                "subnet heal: dns stop failed during runtime restart"
+            );
+        }
+
+        let mut gateway = std::mem::replace(&mut active.gateway, GatewayHandle::noop());
+        if let Err(error) = gateway.shutdown().await {
+            tracing::warn!(
+                ?error,
+                "subnet heal: gateway stop failed during runtime restart"
+            );
+        }
+
+        let _ = active
+            .mesh
+            .update_authoritative_self_record(|record| {
+                record.overlay_ip = net_config.overlay_ip;
+                record.subnet = Some(net_config.subnet);
+            })
+            .await;
+
+        active
+            .mesh
+            .restart_runtime_for_subnet_change(new_network, new_container_network)
+            .await
+            .map_err(|error| format!("mesh runtime restart failed: {error}"))?;
+
+        let gateway_config = GatewayConfig::for_network(
+            &self.data_dir,
+            &net_config.name.0,
+            self.gateway_listen_addr.clone(),
+            self.gateway_threads,
+        );
+        let dns_config =
+            DnsConfig::for_network(&self.data_dir, &net_config.name.0, net_config.overlay_ip);
+
+        let new_gateway = start_managed_gateway(self.mode, gateway_config)
+            .await
+            .map_err(|error| format!("gateway start failed: {error}"))?;
+        let new_dns = match start_managed_dns(self.mode, dns_config).await {
+            Ok(handle) => handle,
+            Err(error) => {
+                let mut gateway = new_gateway;
+                if let Err(shutdown_error) = gateway.shutdown().await {
+                    tracing::warn!(
+                        ?shutdown_error,
+                        "subnet heal: gateway rollback failed after dns start error"
+                    );
+                }
+                return Err(format!("dns start failed: {error}"));
+            }
+        };
+
+        let _ = active
+            .mesh
+            .update_authoritative_self_record(|record| {
+                record.overlay_ip = net_config.overlay_ip;
+                record.subnet = Some(net_config.subnet);
+            })
+            .await;
+        active.config = net_config;
+        active.gateway = new_gateway;
+        active.dns = new_dns;
+        Ok(())
     }
 
     /// Fatal before startup: resolve every startup input and explicit policy value into a `StartPlan`.

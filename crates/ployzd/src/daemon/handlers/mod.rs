@@ -1,4 +1,6 @@
+mod debug;
 mod deploy;
+mod doctor;
 mod invite;
 mod machine;
 mod mesh;
@@ -18,12 +20,14 @@ impl DaemonState {
     #[must_use]
     pub fn request_lane(req: &DaemonRequest) -> RequestLane {
         match req {
-            DaemonRequest::MeshJoin { .. }
+            DaemonRequest::DebugTick { .. }
+            | DaemonRequest::MeshJoin { .. }
             | DaemonRequest::MeshInit { .. }
             | DaemonRequest::MeshUp { .. }
             | DaemonRequest::MeshDown
             | DaemonRequest::MeshDestroy { .. } => RequestLane::Exclusive,
             DaemonRequest::Status
+            | DaemonRequest::Doctor
             | DaemonRequest::DeployPreview { .. }
             | DaemonRequest::DeployApply { .. }
             | DaemonRequest::DeployExport { .. }
@@ -34,19 +38,26 @@ impl DaemonState {
             | DaemonRequest::MachineList
             | DaemonRequest::MachineInit { .. }
             | DaemonRequest::MachineAdd { .. }
-            | DaemonRequest::MachineDrain { .. }
             | DaemonRequest::MachineRemove { .. }
             | DaemonRequest::MachineInviteCreate { .. }
             | DaemonRequest::MachineInviteImport { .. }
             | DaemonRequest::MeshSelfRecord
-            | DaemonRequest::MeshAccept { .. }
-            | DaemonRequest::MachineLabel { .. } => RequestLane::Shared,
+            | DaemonRequest::MeshAccept { .. } => RequestLane::Shared,
         }
     }
 
     pub async fn handle_shared(&self, req: DaemonRequest) -> DaemonResponse {
         match req {
             DaemonRequest::Status => self.handle_status(),
+            DaemonRequest::Doctor => self.handle_doctor().await,
+            DaemonRequest::DebugTick { .. }
+            | DaemonRequest::MeshJoin { .. }
+            | DaemonRequest::MeshInit { .. }
+            | DaemonRequest::MeshUp { .. }
+            | DaemonRequest::MeshDown
+            | DaemonRequest::MeshDestroy { .. } => {
+                self.err("INTERNAL", "exclusive request routed to shared handler")
+            }
             DaemonRequest::DeployPreview {
                 manifest_json,
                 options,
@@ -71,7 +82,6 @@ impl DaemonState {
             DaemonRequest::MachineAdd { targets, options } => {
                 self.handle_machine_add(&targets, &options).await
             }
-            DaemonRequest::MachineDrain { id } => self.handle_machine_drain(&id).await,
             DaemonRequest::MachineRemove { id, force } => {
                 self.handle_machine_remove(&id, force).await
             }
@@ -83,21 +93,12 @@ impl DaemonState {
             }
             DaemonRequest::MeshSelfRecord => self.handle_mesh_self_record().await,
             DaemonRequest::MeshAccept { response } => self.handle_mesh_accept(&response).await,
-            DaemonRequest::MachineLabel { id, set, remove } => {
-                self.handle_machine_label(&id, &set, &remove).await
-            }
-            DaemonRequest::MeshJoin { .. }
-            | DaemonRequest::MeshInit { .. }
-            | DaemonRequest::MeshUp { .. }
-            | DaemonRequest::MeshDown
-            | DaemonRequest::MeshDestroy { .. } => {
-                self.err("INTERNAL", "exclusive request routed to shared handler")
-            }
         }
     }
 
     pub async fn handle_exclusive(&mut self, req: DaemonRequest) -> DaemonResponse {
         match req {
+            DaemonRequest::DebugTick { task, repeat } => self.handle_debug_tick(task, repeat).await,
             DaemonRequest::MeshJoin { token } => self.handle_mesh_join(&token).await,
             DaemonRequest::MeshInit { network } => self.handle_mesh_init(&network).await,
             DaemonRequest::MeshUp {
@@ -107,6 +108,7 @@ impl DaemonState {
             DaemonRequest::MeshDown => self.handle_mesh_down().await,
             DaemonRequest::MeshDestroy { network } => self.handle_mesh_destroy(&network).await,
             DaemonRequest::Status
+            | DaemonRequest::Doctor
             | DaemonRequest::DeployPreview { .. }
             | DaemonRequest::DeployApply { .. }
             | DaemonRequest::DeployExport { .. }
@@ -117,15 +119,29 @@ impl DaemonState {
             | DaemonRequest::MachineList
             | DaemonRequest::MachineInit { .. }
             | DaemonRequest::MachineAdd { .. }
-            | DaemonRequest::MachineDrain { .. }
             | DaemonRequest::MachineRemove { .. }
             | DaemonRequest::MachineInviteCreate { .. }
             | DaemonRequest::MachineInviteImport { .. }
             | DaemonRequest::MeshSelfRecord
-            | DaemonRequest::MeshAccept { .. }
-            | DaemonRequest::MachineLabel { .. } => {
+            | DaemonRequest::MeshAccept { .. } => {
                 self.err("INTERNAL", "shared request routed to exclusive handler")
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RequestLane;
+    use crate::daemon::DaemonState;
+    use ployz_sdk::transport::{DaemonRequest, DebugTickTask};
+
+    #[test]
+    fn debug_tick_routes_to_exclusive_lane() {
+        let lane = DaemonState::request_lane(&DaemonRequest::DebugTick {
+            task: DebugTickTask::All,
+            repeat: 1,
+        });
+        assert_eq!(lane, RequestLane::Exclusive);
     }
 }
