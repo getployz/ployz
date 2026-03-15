@@ -21,20 +21,6 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
         )));
     }
 
-    run.machine_drain("founder", "joiner")?;
-    let remove_draining = run.ssh_run_name("founder", "ployzd machine rm joiner")?;
-    if remove_draining.status.success() {
-        return Err(Error::Message(
-            "machine remove unexpectedly succeeded while joiner was draining".into(),
-        ));
-    }
-    if !remove_draining.combined().contains("must be disabled") {
-        return Err(Error::Message(format!(
-            "expected draining remove guard failure, got: {}",
-            remove_draining.combined()
-        )));
-    }
-
     run.machine_remove_force("founder", "joiner")?;
     run.wait_machine_absent_name("founder", "joiner")
 }

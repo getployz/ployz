@@ -1,5 +1,6 @@
 use crate::error::{Error, Result};
 use ployz_sdk::store::StoreRuntimeControl;
+use std::fs::OpenOptions;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -8,20 +9,41 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
+const CORROSION_LOG_PATH_ENV: &str = "PLOYZ_CORROSION_LOG_PATH";
+const CORROSION_RUST_LOG_ENV: &str = "PLOYZ_CORROSION_RUST_LOG";
 
 pub struct HostCorrosion {
     binary: PathBuf,
     config_path: PathBuf,
+    log_path: PathBuf,
     child: Mutex<Option<Child>>,
 }
 
 impl HostCorrosion {
     pub fn new(binary: impl Into<PathBuf>, config_path: impl Into<PathBuf>) -> Self {
+        let config_path = config_path.into();
+        let log_path = default_log_path(&config_path);
         Self {
             binary: binary.into(),
-            config_path: config_path.into(),
+            config_path,
+            log_path,
             child: Mutex::new(None),
         }
+    }
+}
+
+fn default_log_path(config_path: &PathBuf) -> PathBuf {
+    config_path
+        .parent()
+        .map(|parent| parent.join("corrosion.log"))
+        .unwrap_or_else(|| PathBuf::from("corrosion.log"))
+}
+
+fn configured_log_path(default_log_path: &PathBuf) -> Option<PathBuf> {
+    match std::env::var(CORROSION_LOG_PATH_ENV) {
+        Ok(path) if path.is_empty() => Some(default_log_path.clone()),
+        Ok(path) => Some(PathBuf::from(path)),
+        Err(_) => None,
     }
 }
 
@@ -45,21 +67,55 @@ impl StoreRuntimeControl for HostCorrosion {
             }
         }
 
-        let child = Command::new(&self.binary)
+        let mut command = Command::new(&self.binary);
+        command
             .arg("agent")
             .arg("-c")
             .arg(&self.config_path)
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| {
-                Error::operation(
-                    "corrosion start",
-                    format!("failed to spawn {}: {e}", self.binary.display()),
-                )
-            })?;
+            .kill_on_drop(true);
+
+        match configured_log_path(&self.log_path) {
+            Some(log_path) => {
+                let log_file = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                    .map_err(|e| {
+                        Error::operation(
+                            "corrosion start",
+                            format!("failed to open log file {}: {e}", log_path.display()),
+                        )
+                    })?;
+                let stdout_log = log_file.try_clone().map_err(|e| {
+                    Error::operation(
+                        "corrosion start",
+                        format!(
+                            "failed to clone log file handle {}: {e}",
+                            log_path.display()
+                        ),
+                    )
+                })?;
+                command
+                    .stdout(Stdio::from(stdout_log))
+                    .stderr(Stdio::from(log_file));
+                info!(log = %log_path.display(), "corrosion file logging enabled");
+            }
+            None => {
+                command.stdout(Stdio::null()).stderr(Stdio::null());
+            }
+        }
+
+        if let Ok(rust_log) = std::env::var(CORROSION_RUST_LOG_ENV) {
+            command.env("RUST_LOG", rust_log);
+        }
+
+        let child = command.spawn().map_err(|e| {
+            Error::operation(
+                "corrosion start",
+                format!("failed to spawn {}: {e}", self.binary.display()),
+            )
+        })?;
 
         info!(
             pid = child.id(),
