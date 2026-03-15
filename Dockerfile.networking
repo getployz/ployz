@@ -20,7 +20,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
     if [ "$TARGETARCH" = "arm64" ]; then TARGET=aarch64-unknown-linux-musl; else TARGET=x86_64-unknown-linux-musl; fi && \
-    cargo +nightly build --locked --release --target "$TARGET" && \
+    cargo +nightly build --release --target "$TARGET" && \
     mkdir -p /build/release-bin && \
     cp /build/target/"$TARGET"/release/ployz-bpfctl /build/release-bin/ployz-bpfctl
 
