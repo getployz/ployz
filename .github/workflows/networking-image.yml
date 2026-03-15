@@ -4,9 +4,11 @@ on:
   push:
     branches: [main]
     paths:
-      - "crates/ebpf/**"
+      - ".github/workflows/networking-image.yml"
+      - "ebpf/**"
       - "crates/ebpf-common/**"
       - "crates/ployz-bpfctl/**"
+      - "Dockerfile.networking"
   workflow_dispatch:
 
 env:

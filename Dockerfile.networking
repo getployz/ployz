@@ -1,9 +1,10 @@
+# syntax=docker/dockerfile:1.7
 FROM rust:1-bookworm AS builder
 
 RUN rustup install nightly && \
     rustup target add --toolchain nightly x86_64-unknown-linux-musl aarch64-unknown-linux-musl && \
     rustup component add rust-src --toolchain nightly && \
-    cargo +nightly install bpf-linker
+    cargo +nightly install --locked bpf-linker
 RUN apt-get update && apt-get install -y --no-install-recommends musl-tools && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -15,11 +16,15 @@ RUN printf '[workspace]\nresolver = "2"\nmembers = ["crates/ployz-bpfctl", "ebpf
 
 WORKDIR /build/crates/ployz-bpfctl
 ARG TARGETARCH
-RUN if [ "$TARGETARCH" = "arm64" ]; then TARGET=aarch64-unknown-linux-musl; else TARGET=x86_64-unknown-linux-musl; fi && \
-    cargo +nightly build --release --target "$TARGET" && \
-    cp /build/target/"$TARGET"/release/ployz-bpfctl /build/target/release/ployz-bpfctl
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    if [ "$TARGETARCH" = "arm64" ]; then TARGET=aarch64-unknown-linux-musl; else TARGET=x86_64-unknown-linux-musl; fi && \
+    cargo +nightly build --locked --release --target "$TARGET" && \
+    mkdir -p /build/release-bin && \
+    cp /build/target/"$TARGET"/release/ployz-bpfctl /build/release-bin/ployz-bpfctl
 
 FROM alpine:3.21
 RUN apk add --no-cache wireguard-tools iproute2
-COPY --from=builder /build/target/release/ployz-bpfctl /usr/local/bin/ployz-bpfctl
+COPY --from=builder /build/release-bin/ployz-bpfctl /usr/local/bin/ployz-bpfctl
 CMD ["sleep", "infinity"]
