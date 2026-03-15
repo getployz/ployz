@@ -6,7 +6,7 @@ use bollard::exec::{CreateExecOptions, StartExecResults};
 use futures_util::StreamExt;
 use reqwest::StatusCode;
 use tokio::net::TcpStream;
-use tokio::time::{Instant, sleep};
+use tokio::time::{Instant, sleep, timeout};
 
 use crate::error::{Error, Result};
 
@@ -60,21 +60,42 @@ impl ProbeRunner {
     pub async fn wait_ready(
         &self,
         probe: &Probe,
-        timeout: Duration,
+        start_period: Duration,
         interval: Duration,
+        attempt_timeout: Duration,
+        retries: u32,
     ) -> Result<()> {
-        let deadline = Instant::now() + timeout;
+        let start_deadline = Instant::now() + start_period;
         loop {
-            if self.check(probe).await? {
+            if self.check_with_timeout(probe, attempt_timeout).await? {
                 return Ok(());
             }
-            if Instant::now() >= deadline {
+            if Instant::now() >= start_deadline {
+                break;
+            }
+            sleep(interval).await;
+        }
+
+        let mut failures = 0_u32;
+        loop {
+            if self.check_with_timeout(probe, attempt_timeout).await? {
+                return Ok(());
+            }
+            failures += 1;
+            if failures >= retries {
                 return Err(Error::operation(
                     "wait_ready",
-                    "probe did not become ready before timeout",
+                    "probe did not become ready before retries were exhausted",
                 ));
             }
             sleep(interval).await;
+        }
+    }
+
+    async fn check_with_timeout(&self, probe: &Probe, probe_timeout: Duration) -> Result<bool> {
+        match timeout(probe_timeout, self.check(probe)).await {
+            Ok(result) => result,
+            Err(_) => Ok(false),
         }
     }
 

@@ -12,13 +12,11 @@ use crate::model::{
 use crate::runtime::labels::{self, WorkloadMeta, build_workload_labels};
 use crate::runtime::{ContainerEngine, Probe, PullPolicy, RuntimeContainerSpec};
 use crate::spec::{
-    ContainerSpec, Namespace, NetworkMode, PortProtocol, ReadinessProbe, ResourcesExt, ServicePort,
+    ContainerSpec, Namespace, NetworkMode, PortProtocol, ResourcesExt, ServicePort,
     ServiceSpec, VolumeSource,
 };
 use crate::store::DeployStore;
 
-const READINESS_TIMEOUT: Duration = Duration::from_secs(15);
-const READINESS_INTERVAL: Duration = Duration::from_millis(250);
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
@@ -217,25 +215,42 @@ impl LocalDeployRuntime {
             ));
         };
 
-        let probe = match readiness {
-            ReadinessProbe::Tcp { service_port } => Probe::Tcp {
+        let probe = match &readiness.check {
+            crate::spec::ReadinessCheck::Tcp { service_port } => Probe::Tcp {
                 host: ip_address,
                 port: resolve_service_port(spec, service_port)?,
             },
-            ReadinessProbe::Http { service_port, path } => Probe::Http {
+            crate::spec::ReadinessCheck::Http { service_port, path } => Probe::Http {
                 host: ip_address,
                 port: resolve_service_port(spec, service_port)?,
                 path: path.clone(),
             },
-            ReadinessProbe::Exec { command } => Probe::Exec {
+            crate::spec::ReadinessCheck::Exec { command } => Probe::Exec {
                 container_id: instance.docker_container_id.clone(),
                 command: command.clone(),
             },
         };
 
+        let interval = readiness
+            .interval_duration()
+            .map_err(|error| Error::operation("wait_ready", error))?;
+        let timeout = readiness
+            .timeout_duration()
+            .map_err(|error| Error::operation("wait_ready", error))?;
+        let start_period = readiness
+            .start_period_duration()
+            .map_err(|error| Error::operation("wait_ready", error))?;
+        let retries = readiness.retries();
+
         self.engine
             .probe_runner()
-            .wait_ready(&probe, READINESS_TIMEOUT, READINESS_INTERVAL)
+            .wait_ready(
+                &probe,
+                start_period,
+                interval,
+                timeout,
+                retries,
+            )
             .await
             .map_err(|_| {
                 Error::operation(
