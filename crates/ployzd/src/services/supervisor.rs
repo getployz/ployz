@@ -11,6 +11,13 @@ use crate::runtime::{ContainerEngine, EnsureAction, PullPolicy, RuntimeContainer
 
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceSupervision {
+    DockerContainer,
+    ChildProcess,
+    Systemd,
+}
+
 // ---------------------------------------------------------------------------
 // SidecarSpec — declarative description of a sidecar service
 // ---------------------------------------------------------------------------
@@ -82,21 +89,21 @@ impl SidecarHandle {
     ///
     /// - **Docker**: uses `ContainerEngine::ensure()` to inspect, diff, and adopt
     ///   or recreate the container as needed.
-    /// - **HostService** (systemd): adopts if the unit is active and its file content
+    /// - **Systemd**: adopts if the unit is active and its file content
     ///   matches the desired spec. Otherwise rewrites + restarts.
-    /// - **HostExec**: always spawns a new child process (no persistent state to adopt).
-    pub async fn ensure(mode: crate::Mode, spec: SidecarSpec) -> Result<Self, SidecarError> {
-        match mode {
-            crate::Mode::Memory => Err(SidecarError::UnsupportedMode(
-                "memory mode does not manage sidecars",
-            )),
-            crate::Mode::Docker => ensure_docker(spec).await.map(|h| Self {
+    /// - **ChildProcess**: always spawns a new child process (no persistent state to adopt).
+    pub async fn ensure(
+        supervision: ServiceSupervision,
+        spec: SidecarSpec,
+    ) -> Result<Self, SidecarError> {
+        match supervision {
+            ServiceSupervision::DockerContainer => ensure_docker(spec).await.map(|h| Self {
                 inner: SidecarInner::Docker(h),
             }),
-            crate::Mode::HostExec => start_child(spec).await.map(|h| Self {
+            ServiceSupervision::ChildProcess => start_child(spec).await.map(|h| Self {
                 inner: SidecarInner::Child(h),
             }),
-            crate::Mode::HostService => ensure_systemd(spec).await.map(|h| Self {
+            ServiceSupervision::Systemd => ensure_systemd(spec).await.map(|h| Self {
                 inner: SidecarInner::Systemd(h),
             }),
         }
@@ -127,12 +134,10 @@ impl SidecarHandle {
 pub enum SidecarError {
     #[error("sidecar process error: {0}")]
     Process(String),
-    #[error("unsupported sidecar mode: {0}")]
-    UnsupportedMode(&'static str),
 }
 
 // ---------------------------------------------------------------------------
-// Child (HostExec) handle
+// Child-process handle
 // ---------------------------------------------------------------------------
 
 struct ChildHandle {

@@ -1,17 +1,14 @@
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use thiserror::Error;
 use tracing::warn;
 
-use crate::config::Mode;
-use crate::deploy::remote::{RemoteControlHandle, start_remote_control_listener};
-use crate::mesh::driver::WireguardDriver;
+use crate::deploy::remote::RemoteControlHandle;
 use crate::mesh::orchestrator::Mesh;
-use crate::services::dns::{DnsConfig, DnsHandle, start_managed_dns};
-use crate::services::gateway::{GatewayConfig, GatewayHandle, start_managed_gateway};
+use crate::services::dns::{DnsConfig, DnsHandle};
+use crate::services::gateway::{GatewayConfig, GatewayHandle};
 use crate::store::bootstrap::{BootstrapInfo, build_seed_records, resolve_bootstrap_addrs};
-use crate::store::driver::StoreDriver;
 use crate::store::network::NetworkConfig;
 
 use super::{ActiveMesh, DaemonState};
@@ -88,39 +85,20 @@ impl MeshStartTx {
         options: MeshStartOptions,
     ) -> Result<(), StartMeshError> {
         let exposed_tcp_ports = [plan.gateway_port];
-        let network = WireguardDriver::from_mode(
-            state.mode,
-            &state.identity,
-            self.config.overlay_ip,
-            &plan.network_dir,
-            &self.config.name.0,
-            self.config.subnet,
-            &exposed_tcp_ports,
-        )
-        .await
-        .map_err(StartMeshError::NetworkDriver)?;
-
-        let store = StoreDriver::from_mode(
-            state.mode,
-            self.config.overlay_ip,
-            &plan.network_dir,
-            &plan.bootstrap_addrs,
-            &self.config.id.0,
-        )
-        .await
-        .map_err(StartMeshError::StoreDriver)?;
-
-        let container_network = match state.mode {
-            Mode::Memory => None,
-            Mode::Docker | Mode::HostExec | Mode::HostService => Some(
-                crate::network::docker_bridge::DockerBridgeNetwork::new(
-                    &self.config.name.0,
-                    self.config.subnet,
-                )
-                .await
-                .map_err(|error| StartMeshError::ContainerNetwork(error.to_string()))?,
-            ),
-        };
+        let components = state
+            .runtime_profile
+            .build_mesh_components(
+                &state.identity,
+                self.config.overlay_ip,
+                &plan.network_dir,
+                &self.config.name.0,
+                self.config.subnet,
+                &exposed_tcp_ports,
+                &plan.bootstrap_addrs,
+                &self.config.id.0,
+            )
+            .await
+            .map_err(StartMeshError::NetworkDriver)?;
 
         let listen_port = crate::mesh::wireguard::DEFAULT_LISTEN_PORT;
         let seed_records = build_seed_records(
@@ -133,9 +111,9 @@ impl MeshStartTx {
         .await;
 
         let mut mesh = Mesh::new(
-            network,
-            store,
-            container_network,
+            components.network,
+            components.store,
+            components.container_network,
             state.identity.machine_id.clone(),
             listen_port,
         )
@@ -156,32 +134,29 @@ impl MeshStartTx {
         state: &DaemonState,
         plan: &StartPlan,
     ) -> Result<(), StartMeshError> {
-        match state.mode {
-            Mode::Memory => Ok(()),
-            Mode::Docker | Mode::HostExec | Mode::HostService => {
-                let Some(mesh) = self.mesh.as_ref() else {
-                    return Err(StartMeshError::MeshUp(
-                        "startup transaction missing mesh before remote control start".into(),
-                    ));
-                };
+        let Some(mesh) = self.mesh.as_ref() else {
+            return Err(StartMeshError::MeshUp(
+                "startup transaction missing mesh before remote control start".into(),
+            ));
+        };
 
-                let handle = start_remote_control_listener(
-                    plan.remote_control_bind_addr,
-                    mesh.store.clone(),
-                    state.namespace_locks.clone(),
-                    state.identity.machine_id.clone(),
-                    plan.overlay_network_name.clone(),
-                )
-                .await
-                .map_err(|error| StartMeshError::RemoteControl {
-                    bind: plan.remote_control_bind_addr,
-                    error: error.to_string(),
-                })?;
+        let handle = state
+            .runtime_profile
+            .start_remote_control(
+                plan.remote_control_bind_addr,
+                mesh.store.clone(),
+                state.namespace_locks.clone(),
+                state.identity.machine_id.clone(),
+                plan.overlay_network_name.clone(),
+            )
+            .await
+            .map_err(|error| StartMeshError::RemoteControl {
+                bind: plan.remote_control_bind_addr,
+                error,
+            })?;
 
-                self.remote_control = handle;
-                Ok(())
-            }
-        }
+        self.remote_control = handle;
+        Ok(())
     }
 
     /// Fatal: start gateway or roll back remote control plus mesh.
@@ -190,7 +165,9 @@ impl MeshStartTx {
         state: &DaemonState,
         plan: &StartPlan,
     ) -> Result<(), StartMeshError> {
-        let handle = start_managed_gateway(state.mode, plan.gateway_config.clone())
+        let handle = state
+            .runtime_profile
+            .start_gateway(plan.gateway_config.clone())
             .await
             .map_err(|error| StartMeshError::Gateway(error.to_string()))?;
         self.gateway = handle;
@@ -203,7 +180,9 @@ impl MeshStartTx {
         state: &DaemonState,
         plan: &StartPlan,
     ) -> Result<(), StartMeshError> {
-        let handle = start_managed_dns(state.mode, plan.dns_config.clone())
+        let handle = state
+            .runtime_profile
+            .start_dns(plan.dns_config.clone())
             .await
             .map_err(|error| StartMeshError::Dns(error.to_string()))?;
         self.dns = handle;
@@ -282,7 +261,12 @@ impl DaemonState {
         options: MeshStartOptions,
     ) -> Result<MeshStartSummary, StartMeshError> {
         let plan = self.plan_mesh_start(&net_config, bootstrap, options)?;
-        tracing::info!(mode = ?self.mode, network = %net_config.name, "starting mesh");
+        tracing::info!(
+            ?self.runtime_target,
+            ?self.service_mode,
+            network = %net_config.name,
+            "starting mesh"
+        );
 
         let mut tx = MeshStartTx::new(net_config);
         tx.build_mesh(self, &plan, options).await?;
@@ -326,29 +310,20 @@ impl DaemonState {
             return Err("no running network".into());
         };
 
-        let new_network = WireguardDriver::from_mode(
-            self.mode,
-            &self.identity,
-            net_config.overlay_ip,
-            &network_dir,
-            &net_config.name.0,
-            net_config.subnet,
-            &exposed_tcp_ports,
-        )
-        .await
-        .map_err(|error| format!("network driver failed: {error}"))?;
-
-        let new_container_network = match self.mode {
-            Mode::Memory => None,
-            Mode::Docker | Mode::HostExec | Mode::HostService => Some(
-                crate::network::docker_bridge::DockerBridgeNetwork::new(
-                    &net_config.name.0,
-                    net_config.subnet,
-                )
-                .await
-                .map_err(|error| format!("container network failed: {error}"))?,
-            ),
-        };
+        let components = self
+            .runtime_profile
+            .build_mesh_components(
+                &self.identity,
+                net_config.overlay_ip,
+                &network_dir,
+                &net_config.name.0,
+                net_config.subnet,
+                &exposed_tcp_ports,
+                &[],
+                &net_config.id.0,
+            )
+            .await
+            .map_err(|error| format!("runtime components failed: {error}"))?;
 
         let mut dns = std::mem::replace(&mut active.dns, DnsHandle::noop());
         if let Err(error) = dns.shutdown().await {
@@ -376,7 +351,7 @@ impl DaemonState {
 
         active
             .mesh
-            .restart_runtime_for_subnet_change(new_network, new_container_network)
+            .restart_runtime_for_subnet_change(components.network, components.container_network)
             .await
             .map_err(|error| format!("mesh runtime restart failed: {error}"))?;
 
@@ -389,10 +364,12 @@ impl DaemonState {
         let dns_config =
             DnsConfig::for_network(&self.data_dir, &net_config.name.0, net_config.overlay_ip);
 
-        let new_gateway = start_managed_gateway(self.mode, gateway_config)
+        let new_gateway = self
+            .runtime_profile
+            .start_gateway(gateway_config)
             .await
             .map_err(|error| format!("gateway start failed: {error}"))?;
-        let new_dns = match start_managed_dns(self.mode, dns_config).await {
+        let new_dns = match self.runtime_profile.start_dns(dns_config).await {
             Ok(handle) => handle,
             Err(error) => {
                 let mut gateway = new_gateway;
@@ -431,7 +408,9 @@ impl DaemonState {
             resolve_bootstrap_addrs(&network_dir, &self.identity.machine_id, &bootstrap)
                 .map_err(StartMeshError::BootstrapResolve)?;
         let gateway_port = Self::gateway_port(&self.gateway_listen_addr)?;
-        let remote_control_bind_addr = self.remote_control_bind_addr(net_config);
+        let remote_control_bind_addr = self
+            .runtime_profile
+            .remote_control_bind_addr(self.remote_control_port, net_config.overlay_ip);
         let gateway_config = GatewayConfig::for_network(
             &self.data_dir,
             &net_config.name.0,
@@ -449,20 +428,8 @@ impl DaemonState {
             remote_control_bind_addr,
             gateway_config,
             dns_config,
-            overlay_network_name: Some(format!("ployz-{}", net_config.name.0)),
+            overlay_network_name: self.runtime_profile.overlay_network_name(&net_config.name.0),
         })
-    }
-
-    fn remote_control_bind_addr(&self, net_config: &NetworkConfig) -> SocketAddr {
-        match self.mode {
-            Mode::Memory | Mode::Docker => {
-                SocketAddr::from(([127, 0, 0, 1], self.remote_control_port))
-            }
-            Mode::HostExec | Mode::HostService => SocketAddr::new(
-                IpAddr::V6(net_config.overlay_ip.0),
-                self.remote_control_port,
-            ),
-        }
     }
 
     fn gateway_port(gateway_listen_addr: &str) -> Result<u16, StartMeshError> {
@@ -479,16 +446,18 @@ impl DaemonState {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::net::IpAddr;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+    use crate::config::{RuntimeTarget, ServiceMode};
     use crate::model::{MachineId, NetworkName};
     use crate::node::identity::Identity;
 
     #[test]
     fn plan_mesh_start_uses_localhost_for_docker_remote_control() {
-        let state = make_state(Mode::Docker, "0.0.0.0:80");
+        let state = make_state(RuntimeTarget::Docker, ServiceMode::User, "0.0.0.0:80");
         let config = make_network_config(&state, "alpha");
 
         let plan = state
@@ -503,7 +472,7 @@ mod tests {
 
     #[test]
     fn plan_mesh_start_uses_overlay_ip_for_host_remote_control() {
-        let state = make_state(Mode::HostExec, "0.0.0.0:80");
+        let state = make_state(RuntimeTarget::Host, ServiceMode::User, "0.0.0.0:80");
         let config = make_network_config(&state, "alpha");
 
         let plan = state
@@ -518,7 +487,7 @@ mod tests {
 
     #[test]
     fn plan_mesh_start_rejects_invalid_gateway_listen_addr() {
-        let state = make_state(Mode::Memory, "not-a-socket");
+        let state = make_test_state("not-a-socket");
         let config = make_network_config(&state, "alpha");
 
         let error = match state.plan_mesh_start(&config, None, MeshStartOptions::default()) {
@@ -531,7 +500,7 @@ mod tests {
 
     #[test]
     fn plan_mesh_start_maps_bootstrap_resolution_failures() {
-        let state = make_state(Mode::Memory, "0.0.0.0:80");
+        let state = make_test_state("0.0.0.0:80");
         let config = make_network_config(&state, "alpha");
         let network_dir = state.network_dir(&config.name.0);
         let db_path = ployz_core::corrosion_config::Paths::new(&network_dir).db;
@@ -547,7 +516,7 @@ mod tests {
 
     #[tokio::test]
     async fn start_mesh_returns_summary_and_publishes_active_mesh() {
-        let mut state = make_state(Mode::Memory, "127.0.0.1:8080");
+        let mut state = make_test_state("127.0.0.1:8080");
         let config = make_network_config(&state, "alpha");
 
         let summary = state
@@ -563,7 +532,7 @@ mod tests {
 
     #[tokio::test]
     async fn start_mesh_rolls_back_when_active_marker_persist_fails() {
-        let mut state = make_state(Mode::Memory, "127.0.0.1:8080");
+        let mut state = make_test_state("127.0.0.1:8080");
         let config = make_network_config(&state, "alpha");
 
         fs::create_dir_all(state.active_marker_path()).expect("create marker dir");
@@ -577,14 +546,34 @@ mod tests {
         assert!(state.active.is_none());
     }
 
-    fn make_state(mode: Mode, gateway_listen_addr: &str) -> DaemonState {
+    fn make_state(
+        runtime_target: RuntimeTarget,
+        service_mode: ServiceMode,
+        gateway_listen_addr: &str,
+    ) -> DaemonState {
         let data_dir = unique_temp_dir("ployz-start-mesh");
         let identity = Identity::generate(MachineId("founder".into()), [1; 32]);
 
         DaemonState::new(
             &data_dir,
             identity,
-            mode,
+            runtime_target,
+            service_mode,
+            "10.210.0.0/16".into(),
+            24,
+            4317,
+            gateway_listen_addr.into(),
+            1,
+        )
+    }
+
+    fn make_test_state(gateway_listen_addr: &str) -> DaemonState {
+        let data_dir = unique_temp_dir("ployz-start-mesh");
+        let identity = Identity::generate(MachineId("founder".into()), [1; 32]);
+
+        DaemonState::new_for_tests(
+            &data_dir,
+            identity,
             "10.210.0.0/16".into(),
             24,
             4317,

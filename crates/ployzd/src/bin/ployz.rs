@@ -1,22 +1,35 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use ployzd::{Mode, install};
+use ployzd::{RuntimeTarget, ServiceMode, install};
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::{self, Command, ExitStatus};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
-enum RuntimeMode {
+enum RuntimeTargetArg {
     Docker,
-    HostExec,
-    HostService,
+    Host,
 }
 
-impl From<RuntimeMode> for Mode {
-    fn from(value: RuntimeMode) -> Self {
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ServiceModeArg {
+    User,
+    System,
+}
+
+impl From<RuntimeTargetArg> for RuntimeTarget {
+    fn from(value: RuntimeTargetArg) -> Self {
         match value {
-            RuntimeMode::Docker => Mode::Docker,
-            RuntimeMode::HostExec => Mode::HostExec,
-            RuntimeMode::HostService => Mode::HostService,
+            RuntimeTargetArg::Docker => RuntimeTarget::Docker,
+            RuntimeTargetArg::Host => RuntimeTarget::Host,
+        }
+    }
+}
+
+impl From<ServiceModeArg> for ServiceMode {
+    fn from(value: ServiceModeArg) -> Self {
+        match value {
+            ServiceModeArg::User => ServiceMode::User,
+            ServiceModeArg::System => ServiceMode::System,
         }
     }
 }
@@ -43,7 +56,9 @@ enum DaemonCommand {
     /// Install or reconfigure the local daemon runtime.
     Install {
         #[arg(long, value_enum)]
-        mode: RuntimeMode,
+        runtime: RuntimeTargetArg,
+        #[arg(long, value_enum, default_value_t = ServiceModeArg::User)]
+        service_mode: ServiceModeArg,
         #[arg(long, value_name = "PATH")]
         install_manifest: Option<PathBuf>,
     },
@@ -69,18 +84,24 @@ fn run() -> Result<i32, String> {
         Some(CommandLine::Daemon {
             action:
                 DaemonCommand::Install {
-                    mode,
+                    runtime,
+                    service_mode,
                     install_manifest,
                 },
         }) => {
-            let manifest = install::daemon_install(mode.into(), install_manifest.as_deref())?;
-            let configured = manifest.configured_mode.map(mode_name).unwrap_or("unknown");
+            let manifest = install::daemon_install(
+                runtime.into(),
+                service_mode.into(),
+                install_manifest.as_deref(),
+            )?;
             let backend = manifest
                 .service_backend
                 .map(install::ServiceBackend::as_str)
                 .unwrap_or("none");
             println!(
-                "daemon install complete\n  mode: {configured}\n  backend: {backend}\n  config: {}\n  socket: {}",
+                "daemon install complete\n  runtime: {}\n  service-mode: {}\n  backend: {backend}\n  config: {}\n  socket: {}",
+                runtime_target_name(manifest.runtime_target),
+                service_mode_name(manifest.service_mode),
                 manifest.config_path.display(),
                 manifest.socket_path
             );
@@ -106,11 +127,16 @@ fn exit_code(status: ExitStatus) -> i32 {
     status.code().unwrap_or(1)
 }
 
-fn mode_name(mode: Mode) -> &'static str {
-    match mode {
-        Mode::Memory => "memory",
-        Mode::Docker => "docker",
-        Mode::HostExec => "host-exec",
-        Mode::HostService => "host-service",
+fn runtime_target_name(runtime_target: RuntimeTarget) -> &'static str {
+    match runtime_target {
+        RuntimeTarget::Docker => "docker",
+        RuntimeTarget::Host => "host",
+    }
+}
+
+fn service_mode_name(service_mode: ServiceMode) -> &'static str {
+    match service_mode {
+        ServiceMode::User => "user",
+        ServiceMode::System => "system",
     }
 }

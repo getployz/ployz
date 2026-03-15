@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::config::{RuntimeTarget, ServiceMode};
 use crate::model::{InstanceStatusRecord, MachineId, MachineRecord};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -27,18 +28,12 @@ pub enum InstallSource {
     Git,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum InstallMode {
-    Docker,
-    HostExec,
-    HostService,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MachineInstallOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<InstallMode>,
+    pub runtime_target: Option<RuntimeTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_mode: Option<ServiceMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<InstallSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

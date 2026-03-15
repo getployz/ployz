@@ -380,7 +380,6 @@ fn format_heartbeat(ts: u64, now: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Mode;
     use crate::daemon::ActiveMesh;
     use crate::deploy::remote::RemoteControlHandle;
     use crate::mesh::DevicePeer;
@@ -548,10 +547,9 @@ mod tests {
             51820,
         );
 
-        let mut state = DaemonState::new(
+        let mut state = DaemonState::new_for_tests(
             &unique_temp_dir("ployz-doctor-state"),
             identity,
-            Mode::Memory,
             String::from("10.210.0.0/16"),
             24,
             4317,

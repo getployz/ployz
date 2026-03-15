@@ -6,7 +6,7 @@ const DEFAULT_IMAGE: &str = "ployz-e2e-node:test";
 #[derive(Debug, Parser)]
 #[command(
     name = "ployz-e2e",
-    about = "HostExec E2E harness for prebuilt node images"
+    about = "Host runtime E2E harness for prebuilt node images"
 )]
 pub(crate) struct Cli {
     #[arg(long, default_value = DEFAULT_IMAGE)]

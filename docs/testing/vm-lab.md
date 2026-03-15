@@ -6,7 +6,7 @@ The VM lab exercises Ployz from a cloud-like starting point:
 - cloud-init guest seeding
 - no preinstalled Ployz binaries
 - bootstrap/install under test
-- `HostService` runtime mode
+- `runtime=host` with `service-mode=system`
 - reusable cached bases for fast iteration
 
 The lab runs from your main machine and uses a dedicated Linux workstation as the
@@ -76,7 +76,7 @@ When enabled:
 - `host bootstrap` uses a native `apt-cacher-ng` package when available
 - on Omarchy/Arch, `host bootstrap` falls back to a Docker-backed apt cache
 - Ubuntu `cloud-init` bootstrap uses the proxy automatically
-- Ubuntu SSH bootstrap stages a payload and runs `ployz.sh install --source payload --mode host-service`
+- Ubuntu SSH bootstrap stages a payload and runs `ployz.sh install --source payload --runtime host --service-mode system`
 - run metadata records the proxy URL in `.lab/reports/<run-id>/metadata.env`
 
 This keeps guests pristine while reducing repeated upstream apt mirror fetches on
@@ -112,7 +112,8 @@ The installer entrypoint under test is [`ployz.sh`](../../ployz.sh).
 It supports:
 
 - `install --source release|git|payload`
-- `--mode docker|host-exec|host-service`
+- `--runtime docker|host`
+- `--service-mode user|system`
 - `--payload-dir PATH`
 - `--no-daemon-install`
 
@@ -120,11 +121,11 @@ Its contract in v1 is:
 
 - install `ployzd`, `ployz`, `ployz-gateway`, `ployz-dns`, and `corrosion` into user space
 - write an install manifest and client config
-- run `ployz daemon install --mode ...`
-- for lab, promote into `HostService`
+- run `ployz daemon install --runtime ... --service-mode ...`
+- for lab, promote into `runtime=host` and `service-mode=system`
 - remain safe to rerun
 
-[`scripts/bootstrap-linux.sh`](../../scripts/bootstrap-linux.sh) remains as a compatibility shim and maps legacy lab flows onto `ployz.sh install --source payload --mode host-service`.
+[`scripts/bootstrap-linux.sh`](../../scripts/bootstrap-linux.sh) remains as a compatibility shim and maps legacy lab flows onto `ployz.sh install --source payload --runtime host --service-mode system`.
 
 Supported families in v1:
 

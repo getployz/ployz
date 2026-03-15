@@ -4,10 +4,10 @@ pub mod unix;
 
 pub use protocol::{
     DaemonPayload, DaemonRequest, DaemonResponse, DebugTickTask, DeployFrame, DeployOptions,
-    InstallMode, InstallSource, MachineAddOptions, MachineAddPayload,
-    MachineAwaitingSelfPublication, MachineInstallOptions, MachineListPayload, MachineListRow,
-    MachineOperationInfo, MachineOperationListPayload, MachineOperationPayload,
-    MachineRemovePayload, MeshReadyPayload, MeshSelfRecordPayload,
+    InstallSource, MachineAddOptions, MachineAddPayload, MachineAwaitingSelfPublication,
+    MachineInstallOptions, MachineListPayload, MachineListRow, MachineOperationInfo,
+    MachineOperationListPayload, MachineOperationPayload, MachineRemovePayload, MeshReadyPayload,
+    MeshSelfRecordPayload,
 };
 pub use stdio::StdioTransport;
 pub use unix::UnixSocketTransport;

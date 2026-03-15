@@ -3,7 +3,7 @@ mod join;
 mod list;
 mod operations;
 mod render;
-mod types;
+pub(crate) mod types;
 
 #[cfg(test)]
 mod tests;

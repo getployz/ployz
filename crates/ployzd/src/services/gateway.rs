@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
-use crate::Mode;
-use crate::services::supervisor::{SidecarHandle, SidecarSpec, SystemdType};
+use crate::services::supervisor::{ServiceSupervision, SidecarHandle, SidecarSpec, SystemdType};
 use crate::store::network::NetworkConfig;
 
 const GATEWAY_IMAGE: &str = "ghcr.io/getployz/ployz-gateway:latest";
@@ -56,24 +55,23 @@ impl GatewayHandle {
 }
 
 pub async fn start_managed_gateway(
-    mode: Mode,
+    supervision: Option<ServiceSupervision>,
     config: GatewayConfig,
 ) -> Result<GatewayHandle, GatewayError> {
-    match mode {
-        Mode::Memory => Ok(GatewayHandle::noop()),
-        Mode::Docker | Mode::HostExec | Mode::HostService => {
-            let paths = GatewayPaths::for_config(&config);
-            write_pingora_config(&paths, config.threads)?;
+    let Some(supervision) = supervision else {
+        return Ok(GatewayHandle::noop());
+    };
 
-            let spec = build_gateway_sidecar_spec(&config, &paths);
-            SidecarHandle::ensure(mode, spec)
-                .await
-                .map(|handle| GatewayHandle {
-                    inner: GatewayHandleInner::Sidecar(Box::new(handle)),
-                })
-                .map_err(|e| GatewayError::Process(e.to_string()))
-        }
-    }
+    let paths = GatewayPaths::for_config(&config);
+    write_pingora_config(&paths, config.threads)?;
+
+    let spec = build_gateway_sidecar_spec(&config, &paths);
+    SidecarHandle::ensure(supervision, spec)
+        .await
+        .map(|handle| GatewayHandle {
+            inner: GatewayHandleInner::Sidecar(Box::new(handle)),
+        })
+        .map_err(|e| GatewayError::Process(e.to_string()))
 }
 
 fn build_gateway_sidecar_spec(config: &GatewayConfig, paths: &GatewayPaths) -> SidecarSpec {

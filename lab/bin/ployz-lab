@@ -982,7 +982,7 @@ render_user_data() {
   pristine_cmd="mkdir -p /var/lib/ployz-lab && { command -v docker >/dev/null 2>&1 && echo docker=present || echo docker=absent; command -v ployzd >/dev/null 2>&1 && echo ployzd=present || echo ployzd=absent; systemctl list-unit-files ployzd.service >/dev/null 2>&1 && echo ployzd_unit=present || echo ployzd_unit=absent; [ -d /var/lib/ployz ] && echo data_dir=present || echo data_dir=absent; } >/var/lib/ployz-lab/pristine-state.txt"
   local bootstrap_cmd=""
   if [[ "${bootstrap_path}" == "cloud-init" ]]; then
-    bootstrap_cmd="mkdir -p /var/lib/ployz-lab/bootstrap && curl -fsSL '${BUNDLE_URL}' -o /var/lib/ployz-lab/bootstrap/bundle.tgz && tar -xzf /var/lib/ployz-lab/bootstrap/bundle.tgz -C /var/lib/ployz-lab/bootstrap && ${bootstrap_prefix} bash /var/lib/ployz-lab/bootstrap/ployz.sh install --source payload --payload-dir /var/lib/ployz-lab/bootstrap --mode host-service"
+    bootstrap_cmd="mkdir -p /var/lib/ployz-lab/bootstrap && curl -fsSL '${BUNDLE_URL}' -o /var/lib/ployz-lab/bootstrap/bundle.tgz && tar -xzf /var/lib/ployz-lab/bootstrap/bundle.tgz -C /var/lib/ployz-lab/bootstrap && ${bootstrap_prefix} bash /var/lib/ployz-lab/bootstrap/ployz.sh install --source payload --payload-dir /var/lib/ployz-lab/bootstrap --runtime host --service-mode system"
   fi
   cat <<EOF
 #cloud-config
@@ -1191,7 +1191,7 @@ bootstrap_over_ssh() {
   printf -v rust_log_escaped '%q' "${PLOYZD_RUST_LOG}"
   assert_pristine "${node}"
   guest_scp_from_remote "${node}" "${BUNDLE_TAR}" "/tmp/ployz-bundle.tgz"
-  guest_exec "${node}" "rm -rf /tmp/ployz-bundle && mkdir -p /tmp/ployz-bundle && tar -xzf /tmp/ployz-bundle.tgz -C /tmp/ployz-bundle && sudo env PLOYZ_RUST_LOG=${rust_log_escaped} RUST_BACKTRACE=1 bash /tmp/ployz-bundle/ployz.sh install --source payload --payload-dir /tmp/ployz-bundle --mode host-service"
+  guest_exec "${node}" "rm -rf /tmp/ployz-bundle && mkdir -p /tmp/ployz-bundle && tar -xzf /tmp/ployz-bundle.tgz -C /tmp/ployz-bundle && sudo env PLOYZ_RUST_LOG=${rust_log_escaped} RUST_BACKTRACE=1 bash /tmp/ployz-bundle/ployz.sh install --source payload --payload-dir /tmp/ployz-bundle --runtime host --service-mode system"
 }
 
 refresh_post_install_node() {
@@ -1199,7 +1199,7 @@ refresh_post_install_node() {
   local rust_log_escaped
   printf -v rust_log_escaped '%q' "${PLOYZD_RUST_LOG}"
   guest_scp_from_remote "${node}" "${BUNDLE_TAR}" "/tmp/ployz-bundle.tgz"
-  guest_exec "${node}" "rm -rf /tmp/ployz-bundle && mkdir -p /tmp/ployz-bundle && tar -xzf /tmp/ployz-bundle.tgz -C /tmp/ployz-bundle && sudo env PLOYZ_RUST_LOG=${rust_log_escaped} RUST_BACKTRACE=1 bash /tmp/ployz-bundle/ployz.sh install --source payload --payload-dir /tmp/ployz-bundle --mode host-service"
+  guest_exec "${node}" "rm -rf /tmp/ployz-bundle && mkdir -p /tmp/ployz-bundle && tar -xzf /tmp/ployz-bundle.tgz -C /tmp/ployz-bundle && sudo env PLOYZ_RUST_LOG=${rust_log_escaped} RUST_BACKTRACE=1 bash /tmp/ployz-bundle/ployz.sh install --source payload --payload-dir /tmp/ployz-bundle --runtime host --service-mode system"
 }
 
 verify_bootstrap() {

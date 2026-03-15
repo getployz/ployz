@@ -10,22 +10,20 @@ configuration has drifted.
 
 This is the north star. Every design decision flows from it.
 
-## Runtime Modes
+## Runtime Model
 
-The same daemon binary runs in four modes. Each mode provides different implementations
-of the same abstractions (WireGuard, store, eBPF, sidecar services):
+The public runtime surface is split across two axes:
 
-| Mode | Target | Key trait |
-|------|--------|-----------|
-| Memory | Testing | Everything in-process, no real networking, no containers |
-| Docker | macOS | Infrastructure runs as containers inside Docker Desktop's Linux VM |
-| HostExec | Linux dev | Infrastructure runs as child processes of the daemon |
-| HostService | Linux prod | Infrastructure runs as systemd units |
+| Runtime target | Service mode | Meaning |
+|----------------|--------------|---------|
+| Docker | User | Docker-backed mesh/store/sidecars with loopback control-plane binding |
+| Host | User | Host-backed mesh/store, child-process sidecars, overlay control-plane binding |
+| Host | System | Host-backed mesh/store, system-managed sidecars, overlay control-plane binding |
 
-Memory mode is first-class — it's how tests run without Docker or Linux. Gateway and DNS
-return noop handles in memory mode; there's nothing to proxy to.
+`Memory` is test-only. It is not an operator-facing runtime and does not shape the daemon's
+public API.
 
-## Docker Mode (macOS)
+## Docker Runtime (macOS)
 
 ```
 macOS Host                           Docker Desktop VM (Linux)
@@ -63,8 +61,9 @@ container overlay network over a UDP-over-TCP tunnel to 127.0.0.1.
 
 ### eBPF TC Classifiers
 
-Attach TC hooks to intercept and redirect traffic at the kernel level. In Docker mode,
-uses `nsenter` into the VM's host network namespace. In host modes, uses native aya.
+Attach TC hooks to intercept and redirect traffic at the kernel level. In the Docker
+runtime, uses `nsenter` into the VM's host network namespace. In the host runtime, uses
+native aya.
 
 ### DNS
 
@@ -101,15 +100,16 @@ All managed infrastructure follows the same pattern regardless of runtime mode:
 4. If drifted or missing → recreate
 
 Docker containers carry identity as labels (`ployz.config-hash`, `ployz.parent-container-id`).
-Systemd units are compared by unit file content. HostExec mode always spawns fresh — it's
-for development and makes no persistence guarantees.
+Systemd units are compared by unit file content. Host user mode always spawns fresh child
+processes and makes no persistence guarantees.
 
 ## Module Organization
 
 Code is organized by domain, not by adapter pattern. WireGuard implementations live under
 the mesh domain because mesh owns the overlay lifecycle. Store backends live under the
-store domain because store owns distributed state. Each domain has a driver enum that
-dispatches across runtime modes.
+store domain because store owns distributed state. Runtime selection happens at the daemon
+composition root; core domains receive explicit backends rather than matching on a public
+mode enum.
 
 The key domains:
 - **mesh** — WireGuard overlay lifecycle, phase state machine, background sync loops

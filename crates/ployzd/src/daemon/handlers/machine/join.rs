@@ -833,13 +833,22 @@ fn local_ployz_path() -> Result<PathBuf, String> {
 
 fn install_script_args(install: &MachineInstallOptions) -> String {
     let mut args = vec!["install".to_string()];
-    if let Some(mode) = install.mode {
-        args.push("--mode".into());
+    if let Some(runtime_target) = install.runtime_target {
+        args.push("--runtime".into());
         args.push(
-            match mode {
-                ployz_sdk::transport::InstallMode::Docker => "docker",
-                ployz_sdk::transport::InstallMode::HostExec => "host-exec",
-                ployz_sdk::transport::InstallMode::HostService => "host-service",
+            match runtime_target {
+                ployz_sdk::RuntimeTarget::Docker => "docker",
+                ployz_sdk::RuntimeTarget::Host => "host",
+            }
+            .into(),
+        );
+    }
+    if let Some(service_mode) = install.service_mode {
+        args.push("--service-mode".into());
+        args.push(
+            match service_mode {
+                ployz_sdk::ServiceMode::User => "user",
+                ployz_sdk::ServiceMode::System => "system",
             }
             .into(),
         );
