@@ -83,8 +83,8 @@ pub struct OverlayIp(pub Ipv6Addr);
 )]
 pub enum MachineStatus {
     #[default]
-    #[display("")]
-    #[strum(serialize = "")]
+    #[display("unknown")]
+    #[strum(serialize = "unknown", serialize = "")]
     Unknown,
     #[display("up")]
     #[strum(serialize = "up")]
@@ -385,7 +385,7 @@ impl JoinResponse {
     }
 
     #[must_use]
-    pub fn into_machine_record(self) -> MachineRecord {
+    pub fn into_seed_machine_record(self) -> MachineRecord {
         MachineRecord {
             id: self.machine_id,
             public_key: self.public_key,
@@ -455,7 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn join_response_into_machine_record() {
+    fn join_response_into_seed_machine_record() {
         let resp = JoinResponse {
             machine_id: MachineId("joiner-1".into()),
             public_key: PublicKey([0xab; 32]),
@@ -463,9 +463,23 @@ mod tests {
             subnet: None,
             endpoints: vec![],
         };
-        let record = resp.into_machine_record();
+        let record = resp.into_seed_machine_record();
         assert_eq!(record.id.0, "joiner-1");
         assert!(record.bridge_ip.is_none());
+    }
+
+    #[test]
+    fn machine_status_display_is_explicit() {
+        assert_eq!(MachineStatus::Unknown.to_string(), "unknown");
+    }
+
+    #[test]
+    fn machine_status_from_str_accepts_legacy_empty_string() {
+        assert_eq!(MachineStatus::from_str(""), Ok(MachineStatus::Unknown));
+        assert_eq!(
+            MachineStatus::from_str("unknown"),
+            Ok(MachineStatus::Unknown)
+        );
     }
 
     #[test]

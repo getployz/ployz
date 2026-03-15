@@ -2,18 +2,29 @@ use crate::client::CorrClient;
 use corro_api_types::{ExecResult, SqliteValue, Statement, TypedQueryEvent};
 use futures_util::StreamExt;
 use ployz_sdk::error::{Error, Result};
+use std::time::Duration;
+use tokio::time::timeout;
+
+const QUERY_REQUEST_TIMEOUT_SECS: u64 = 5;
+const QUERY_EVENT_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) async fn query_rows(
     client: &CorrClient,
     stmt: &Statement,
     op: &'static str,
 ) -> Result<Vec<Vec<SqliteValue>>> {
-    let mut stream = client
-        .query(stmt, None)
-        .await
-        .map_err(|e| Error::operation(op, e.to_string()))?;
+    let mut stream = timeout(
+        QUERY_EVENT_TIMEOUT,
+        client.query(stmt, Some(QUERY_REQUEST_TIMEOUT_SECS)),
+    )
+    .await
+    .map_err(|_| Error::operation(op, "timed out starting query stream"))?
+    .map_err(|e| Error::operation(op, e.to_string()))?;
     let mut rows = Vec::new();
-    while let Some(event) = stream.next().await {
+    while let Some(event) = timeout(QUERY_EVENT_TIMEOUT, stream.next())
+        .await
+        .map_err(|_| Error::operation(op, "timed out waiting for query event"))?
+    {
         match event.map_err(|e| Error::operation(op, e.to_string()))? {
             TypedQueryEvent::Row(_, cells) => rows.push(cells),
             TypedQueryEvent::EndOfQuery { .. } => break,
