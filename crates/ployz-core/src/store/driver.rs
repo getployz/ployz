@@ -113,6 +113,10 @@ impl StoreDriver {
                         }
                         Mode::HostExec | Mode::HostService | Mode::Memory => Transport::Direct,
                     },
+                    match mode {
+                        Mode::Docker => None,
+                        Mode::HostExec | Mode::HostService | Mode::Memory => Some(paths.admin.clone()),
+                    },
                 );
 
                 match mode {
@@ -202,11 +206,11 @@ impl MachineStore for StoreDriver {
         }
     }
 
-    async fn upsert_machine<'a>(&'a self, record: &'a MachineRecord) -> Result<()> {
+    async fn upsert_self_machine<'a>(&'a self, record: &'a MachineRecord) -> Result<()> {
         match self {
-            Self::Memory { store, .. } => store.upsert_machine(record).await,
+            Self::Memory { store, .. } => store.upsert_self_machine(record).await,
             Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
-                store.upsert_machine(record).await
+                store.upsert_self_machine(record).await
             }
         }
     }

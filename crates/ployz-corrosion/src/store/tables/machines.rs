@@ -11,24 +11,63 @@ use ployz_sdk::model::{
 use std::collections::{BTreeMap, HashMap};
 use std::net::Ipv6Addr;
 use tokio::sync::mpsc;
-use tracing::warn;
+use tracing::{debug, info, warn};
 
 const SQL_LIST_MACHINES: &str = "SELECT id, public_key, overlay_ip, subnet, bridge_ip, endpoints, status, participation, last_heartbeat, labels, created_at, updated_at FROM machines ORDER BY id";
 
 pub(crate) async fn list_machines(client: &CorrClient) -> Result<Vec<MachineRecord>> {
     let stmt = Statement::Simple(SQL_LIST_MACHINES.to_string());
-    query_rows(client, &stmt, "list_machines")
-        .await?
-        .iter()
-        .map(|row| parse_machine(row))
-        .collect()
+    let rows = query_rows(client, &stmt, "list_machines").await?;
+    let mut machines = Vec::with_capacity(rows.len());
+    let mut skipped = 0_usize;
+
+    for (row_index, row) in rows.iter().enumerate() {
+        log_machine_row_if_anomalous("list_machines", Some(row_index), None, row);
+        match parse_machine(row) {
+            Ok(machine) => machines.push(machine),
+            Err(err) => {
+                warn!(
+                    row_index,
+                    row = %describe_machine_row(row),
+                    error = %err,
+                    "skipping invalid machine row from list_machines"
+                );
+                skipped += 1;
+            }
+        }
+    }
+
+    if skipped > 0 {
+        warn!(
+            skipped,
+            valid = machines.len(),
+            "list_machines skipped invalid machine rows"
+        );
+    }
+
+    Ok(machines)
 }
 
-pub(crate) async fn upsert_machine(client: &CorrClient, record: &MachineRecord) -> Result<()> {
+pub(crate) async fn upsert_self_machine(client: &CorrClient, record: &MachineRecord) -> Result<()> {
+    info!(
+        machine_id = %record.id.0,
+        public_key_len = record.public_key.0.len(),
+        overlay_ip = %record.overlay_ip.0,
+        subnet = ?record.subnet,
+        bridge_ip = ?record.bridge_ip.map(|bridge_ip| bridge_ip.0),
+        endpoints = ?record.endpoints,
+        status = %record.status,
+        participation = %record.participation,
+        last_heartbeat = record.last_heartbeat,
+        created_at = record.created_at,
+        updated_at = record.updated_at,
+        labels = ?record.labels,
+        "writing self machine row"
+    );
     let endpoints = serde_json::to_string(&record.endpoints)
-        .map_err(|e| Error::operation("upsert_machine", format!("serialize: {e}")))?;
+        .map_err(|e| Error::operation("upsert_self_machine", format!("serialize: {e}")))?;
     let labels = serde_json::to_string(&record.labels)
-        .map_err(|e| Error::operation("upsert_machine", format!("serialize labels: {e}")))?;
+        .map_err(|e| Error::operation("upsert_self_machine", format!("serialize labels: {e}")))?;
     let subnet_str = record
         .subnet
         .map(|subnet| subnet.to_string())
@@ -63,7 +102,7 @@ pub(crate) async fn upsert_machine(client: &CorrClient, record: &MachineRecord) 
             (record.updated_at as i64).into(),
         ],
     );
-    exec_one(client, &[stmt], "upsert_machine").await
+    exec_one(client, &[stmt], "upsert_self_machine").await
 }
 
 pub(crate) async fn delete_machine(client: &CorrClient, id: &MachineId) -> Result<()> {
@@ -100,11 +139,21 @@ pub(crate) async fn subscribe_machines(
                 return Err(Error::operation("subscribe_machines", e.to_string()));
             }
             TypedQueryEvent::Row(rowid, cells) => {
-                let record = parse_machine(&cells)?;
-                row_index.insert(rowid.0, record.id.clone());
-                machines.insert(record.id.clone(), record);
+                log_machine_row_if_anomalous("subscribe_snapshot_row", None, Some(rowid.0), &cells);
+                if let Some(record) =
+                    try_parse_machine_row("subscribe_snapshot_row", Some(rowid.0), &cells)
+                {
+                    row_index.insert(rowid.0, record.id.clone());
+                    machines.insert(record.id.clone(), record);
+                }
             }
             TypedQueryEvent::Change(change_type, rowid, cells, _) => {
+                log_machine_row_if_anomalous(
+                    "subscribe_snapshot_change",
+                    None,
+                    Some(rowid.0),
+                    &cells,
+                );
                 apply_change(change_type, rowid.0, &cells, &mut machines, &mut row_index)?;
             }
         }
@@ -156,7 +205,11 @@ fn apply_change(
 ) -> Result<()> {
     match change_type {
         ChangeType::Insert | ChangeType::Update => {
-            let record = parse_machine(cells)?;
+            let Some(record) =
+                try_parse_machine_row("subscribe_snapshot_change", Some(rowid), cells)
+            else {
+                return Ok(());
+            };
             row_index.insert(rowid, record.id.clone());
             machines.insert(record.id.clone(), record);
         }
@@ -175,7 +228,9 @@ fn upsert_event(
     known: &mut HashMap<MachineId, MachineRecord>,
     row_index: &mut HashMap<u64, MachineId>,
 ) -> Result<Option<MachineEvent>> {
-    let record = parse_machine(cells)?;
+    let Some(record) = try_parse_machine_row("subscribe_upsert_event", Some(rowid), cells) else {
+        return Ok(None);
+    };
     let is_update = known.contains_key(&record.id);
     row_index.insert(rowid, record.id.clone());
     known.insert(record.id.clone(), record.clone());
@@ -194,9 +249,13 @@ fn into_machine_event(
     match event {
         TypedQueryEvent::Columns(_) | TypedQueryEvent::EndOfQuery { .. } => Ok(None),
         TypedQueryEvent::Error(e) => Err(Error::operation("subscribe_machines", e.to_string())),
-        TypedQueryEvent::Row(rowid, cells) => upsert_event(rowid.0, &cells, known, row_index),
+        TypedQueryEvent::Row(rowid, cells) => {
+            log_machine_row_if_anomalous("subscribe_event_row", None, Some(rowid.0), &cells);
+            upsert_event(rowid.0, &cells, known, row_index)
+        }
         TypedQueryEvent::Change(change_type, rowid, cells, _) => match change_type {
             ChangeType::Insert | ChangeType::Update => {
+                log_machine_row_if_anomalous("subscribe_event_change", None, Some(rowid.0), &cells);
                 upsert_event(rowid.0, &cells, known, row_index)
             }
             ChangeType::Delete => {
@@ -306,9 +365,188 @@ fn parse_machine(row: &[SqliteValue]) -> Result<MachineRecord> {
     })
 }
 
+fn try_parse_machine_row(
+    context: &'static str,
+    rowid: Option<u64>,
+    row: &[SqliteValue],
+) -> Option<MachineRecord> {
+    match parse_machine(row) {
+        Ok(record) => Some(record),
+        Err(err) => {
+            warn!(
+                context,
+                rowid,
+                row = %describe_machine_row(row),
+                error = %err,
+                "skipping invalid machine row"
+            );
+            None
+        }
+    }
+}
+
+fn log_machine_row_if_anomalous(
+    context: &'static str,
+    row_index: Option<usize>,
+    rowid: Option<u64>,
+    row: &[SqliteValue],
+) {
+    let anomalies = machine_row_anomalies(row);
+    if anomalies.is_empty() {
+        debug!(
+            context,
+            row_index,
+            rowid,
+            row = %describe_machine_row(row),
+            "machine row observed"
+        );
+        return;
+    }
+
+    warn!(
+        context,
+        row_index,
+        rowid,
+        anomalies = ?anomalies,
+        row = %describe_machine_row(row),
+        "machine row anomaly detected"
+    );
+}
+
+fn machine_row_anomalies(row: &[SqliteValue]) -> Vec<String> {
+    let mut anomalies = Vec::new();
+    if row.len() != 12 {
+        anomalies.push(format!("column_count={}", row.len()));
+        return anomalies;
+    }
+
+    let [
+        id,
+        public_key,
+        overlay_ip,
+        subnet,
+        bridge_ip,
+        endpoints,
+        status,
+        participation,
+        last_heartbeat,
+        labels,
+        created_at,
+        updated_at,
+    ] = row
+    else {
+        return anomalies;
+    };
+
+    let _ = subnet;
+    let _ = bridge_ip;
+    let _ = last_heartbeat;
+    let _ = labels;
+    let _ = created_at;
+    let _ = updated_at;
+
+    match id.as_text() {
+        Some(value) if value.is_empty() => anomalies.push("id_empty".into()),
+        None => anomalies.push(format!("id_type={:?}", id.column_type())),
+        Some(_) => {}
+    }
+
+    match public_key.as_blob() {
+        Some(value) if value.len() != 32 => {
+            anomalies.push(format!("public_key_len={}", value.len()))
+        }
+        None => anomalies.push(format!("public_key_type={:?}", public_key.column_type())),
+        Some(_) => {}
+    }
+
+    match overlay_ip.as_text() {
+        Some(value) if value.is_empty() => anomalies.push("overlay_ip_empty".into()),
+        None => anomalies.push(format!("overlay_ip_type={:?}", overlay_ip.column_type())),
+        Some(_) => {}
+    }
+
+    match endpoints.as_text() {
+        Some(value) if value.is_empty() || value == "[]" => {}
+        Some(_) => {}
+        None => anomalies.push(format!("endpoints_type={:?}", endpoints.column_type())),
+    }
+
+    match status.as_text() {
+        Some(value) if value.is_empty() => anomalies.push("status_empty".into()),
+        None => anomalies.push(format!("status_type={:?}", status.column_type())),
+        Some(_) => {}
+    }
+
+    match participation.as_text() {
+        Some(value) if value.is_empty() => anomalies.push("participation_empty".into()),
+        None => anomalies.push(format!(
+            "participation_type={:?}",
+            participation.column_type()
+        )),
+        Some(_) => {}
+    }
+
+    anomalies
+}
+
+fn describe_machine_row(row: &[SqliteValue]) -> String {
+    const FIELDS: [&str; 12] = [
+        "id",
+        "public_key",
+        "overlay_ip",
+        "subnet",
+        "bridge_ip",
+        "endpoints",
+        "status",
+        "participation",
+        "last_heartbeat",
+        "labels",
+        "created_at",
+        "updated_at",
+    ];
+
+    row.iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let field = FIELDS.get(index).copied().unwrap_or("extra");
+            format!("{field}={}", describe_sqlite_value(value))
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn describe_sqlite_value(value: &SqliteValue) -> String {
+    match value {
+        SqliteValue::Null => "null".into(),
+        SqliteValue::Integer(number) => format!("int({number})"),
+        SqliteValue::Real(number) => format!("real({})", number.0),
+        SqliteValue::Text(text) => {
+            let preview = text.chars().take(64).collect::<String>();
+            if text.len() > 64 {
+                format!("text(len={},preview={preview:?}...)", text.len())
+            } else {
+                format!("text(len={},value={preview:?})", text.len())
+            }
+        }
+        SqliteValue::Blob(bytes) => {
+            let preview = bytes
+                .iter()
+                .take(8)
+                .map(|byte| format!("{byte:02X}"))
+                .collect::<Vec<_>>()
+                .join("");
+            if bytes.len() > 8 {
+                format!("blob(len={},hex={}...)", bytes.len(), preview)
+            } else {
+                format!("blob(len={},hex={})", bytes.len(), preview)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{into_machine_event, parse_machine};
+    use super::{into_machine_event, parse_machine, try_parse_machine_row};
     use corro_api_types::{ChangeId, RowId, SqliteValue, TypedQueryEvent, sqlite::ChangeType};
     use ployz_sdk::model::{MachineEvent, MachineId};
     use std::collections::HashMap;
@@ -327,6 +565,23 @@ mod tests {
             labels_json.into(),
             100_i64.into(),
             200_i64.into(),
+        ]
+    }
+
+    fn invalid_machine_row(id: &str) -> Vec<SqliteValue> {
+        vec![
+            id.into(),
+            Vec::<u8>::new().into(),
+            "".into(),
+            "".into(),
+            "".into(),
+            "[]".into(),
+            "".into(),
+            "enabled".into(),
+            123_i64.into(),
+            "{}".into(),
+            0_i64.into(),
+            123_i64.into(),
         ]
     }
 
@@ -397,5 +652,45 @@ mod tests {
             Some(MachineEvent::Updated(_)) => panic!("expected remove event"),
             None => panic!("expected remove event"),
         }
+    }
+
+    #[test]
+    fn try_parse_machine_row_hides_invalid_rows() {
+        assert!(
+            try_parse_machine_row("test", Some(1), &invalid_machine_row("machine-1")).is_none()
+        );
+    }
+
+    #[test]
+    fn invalid_update_does_not_replace_known_good_machine() {
+        let mut known = HashMap::new();
+        let mut row_index = HashMap::new();
+
+        let added = into_machine_event(
+            TypedQueryEvent::Row(RowId(1), machine_row("machine-1", "{\"role\":\"db\"}")),
+            &mut known,
+            &mut row_index,
+        )
+        .expect("row event should succeed");
+        assert!(matches!(added, Some(MachineEvent::Added(_))));
+
+        let invalid_update = into_machine_event(
+            TypedQueryEvent::Change(
+                ChangeType::Update,
+                RowId(1),
+                invalid_machine_row("machine-1"),
+                ChangeId(9),
+            ),
+            &mut known,
+            &mut row_index,
+        )
+        .expect("invalid update should be ignored");
+
+        assert!(invalid_update.is_none());
+        let record = known
+            .get(&MachineId(String::from("machine-1")))
+            .expect("known good record should remain");
+        assert_eq!(record.public_key.0.len(), 32);
+        assert_eq!(record.overlay_ip.0.to_string(), "fd00::1");
     }
 }

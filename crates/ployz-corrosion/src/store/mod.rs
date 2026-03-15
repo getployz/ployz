@@ -1,3 +1,4 @@
+use crate::admin::AdminClient;
 use crate::client::{CorrClient, Transport};
 use crate::config as corrosion_config;
 use corro_api_types::{ExecResult, Statement};
@@ -12,7 +13,7 @@ use ployz_sdk::store::{
     DeployStore, InviteStore, MachineStore, RoutingStore, SyncProbe, SyncStatus,
 };
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -25,13 +26,19 @@ pub const SCHEMA_SQL: &str = include_str!("../schema.sql");
 #[derive(Clone)]
 pub struct CorrosionStore {
     client: CorrClient,
+    admin: Option<AdminClient>,
+    gossip_addr: SocketAddr,
 }
 
 impl CorrosionStore {
     #[must_use]
-    pub fn new(api_addr: SocketAddr, transport: Transport) -> Self {
+    pub fn new(api_addr: SocketAddr, transport: Transport, admin_path: Option<PathBuf>) -> Self {
         let client = CorrClient::new(api_addr, transport);
-        Self { client }
+        Self {
+            client,
+            admin: admin_path.map(AdminClient::new),
+            gossip_addr: SocketAddr::new(api_addr.ip(), corrosion_config::DEFAULT_GOSSIP_PORT),
+        }
     }
 
     #[must_use]
@@ -40,6 +47,8 @@ impl CorrosionStore {
     }
 
     pub async fn connect_for_network(data_dir: &Path, network: &str) -> Result<Self> {
+        let network_dir = ployz_sdk::paths::network_dir(data_dir, network);
+        let admin_path = corrosion_config::Paths::new(&network_dir).admin;
         let network_path = ployz_sdk::paths::network_config_path(data_dir, network);
         let raw = std::fs::read_to_string(&network_path).map_err(|e| {
             Error::operation(
@@ -77,13 +86,14 @@ impl CorrosionStore {
             Transport::Bridge {
                 local_addr: bridge_addr,
             },
+            Some(admin_path.clone()),
         );
         if bridge.client.health().await.is_ok() {
             info!(%api_addr, %bridge_addr, "using local bridge transport for corrosion");
             return Ok(bridge);
         }
 
-        let direct = Self::new(api_addr, Transport::Direct);
+        let direct = Self::new(api_addr, Transport::Direct, Some(admin_path));
         if direct.client.health().await.is_ok() {
             info!(%api_addr, "using direct overlay transport for corrosion");
             return Ok(direct);
@@ -104,15 +114,27 @@ impl CorrosionStore {
 
 impl SyncProbe for CorrosionStore {
     async fn sync_status(&self) -> Result<SyncStatus> {
+        if let Some(admin) = &self.admin {
+            let active_remote_members = admin
+                .cluster_membership_states_latest()
+                .await
+                .map_err(|e| Error::operation("sync_status", format!("admin membership request: {e}")))?
+                .into_iter()
+                .filter(|state| state.addr != self.gossip_addr)
+                .filter(|state| state.state.is_active())
+                .count();
+            if active_remote_members < 1 {
+                return Ok(SyncStatus::Disconnected);
+            }
+        }
+
         let health = self
             .client
             .health()
             .await
             .map_err(|e| Error::operation("sync_status", format!("health request: {e}")))?;
 
-        let status = if health.members < 1 {
-            SyncStatus::Disconnected
-        } else if health.gaps > 0 {
+        let status = if health.gaps > 0 {
             SyncStatus::Syncing {
                 gaps: health.gaps as u64,
             }
@@ -141,8 +163,8 @@ impl MachineStore for CorrosionStore {
         tables::machines::list_machines(&self.client).await
     }
 
-    async fn upsert_machine(&self, record: &MachineRecord) -> Result<()> {
-        tables::machines::upsert_machine(&self.client, record).await
+    async fn upsert_self_machine(&self, record: &MachineRecord) -> Result<()> {
+        tables::machines::upsert_self_machine(&self.client, record).await
     }
 
     async fn delete_machine(&self, id: &MachineId) -> Result<()> {

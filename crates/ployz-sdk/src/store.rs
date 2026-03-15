@@ -13,7 +13,7 @@ pub trait MachineStore: Send + Sync {
         async { Ok(()) }
     }
     fn list_machines(&self) -> impl Future<Output = Result<Vec<MachineRecord>>> + Send + '_;
-    fn upsert_machine<'a>(
+    fn upsert_self_machine<'a>(
         &'a self,
         record: &'a MachineRecord,
     ) -> impl Future<Output = Result<()>> + Send + 'a;

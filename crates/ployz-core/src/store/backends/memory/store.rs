@@ -99,7 +99,7 @@ impl MachineStore for MemoryStore {
         Ok(inner.machines.values().cloned().collect())
     }
 
-    async fn upsert_machine(&self, record: &MachineRecord) -> Result<()> {
+    async fn upsert_self_machine(&self, record: &MachineRecord) -> Result<()> {
         let mut inner = self.lock_inner();
         let is_update = inner.machines.contains_key(&record.id);
         inner.machines.insert(record.id.clone(), record.clone());
