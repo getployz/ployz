@@ -2,6 +2,7 @@ use super::labels::{
     LABEL_KEY, LABEL_KIND, LABEL_MANAGED, LABEL_PARENT_ID, LEGACY_LABEL_CONFIG_HASH,
 };
 use super::spec::{ObservedContainer, RuntimeContainerSpec};
+use bollard::models::{RestartPolicy, RestartPolicyNameEnum};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChangedField {
@@ -66,7 +67,7 @@ pub fn eval_spec_change(
         fields.push(ChangedField::Cmd);
     }
 
-    if observed.entrypoint != desired.entrypoint {
+    if !entrypoint_equal(observed.entrypoint.as_ref(), desired.entrypoint.as_ref()) {
         fields.push(ChangedField::Entrypoint);
     }
 
@@ -88,7 +89,7 @@ pub fn eval_spec_change(
         fields.push(ChangedField::DnsServers);
     }
 
-    if observed.network_mode != desired.network_mode {
+    if !network_mode_equal(observed.network_mode.as_deref(), desired.network_mode.as_deref()) {
         fields.push(ChangedField::NetworkMode);
     }
 
@@ -112,7 +113,7 @@ pub fn eval_spec_change(
         fields.push(ChangedField::User);
     }
 
-    if observed.restart_policy != desired.restart_policy {
+    if !restart_policy_equal(observed.restart_policy.as_ref(), desired.restart_policy.as_ref()) {
         fields.push(ChangedField::RestartPolicy);
     }
 
@@ -128,7 +129,7 @@ pub fn eval_spec_change(
         fields.push(ChangedField::Sysctls);
     }
 
-    if observed.pid_mode != desired.pid_mode {
+    if !pid_mode_equal(observed.pid_mode.as_deref(), desired.pid_mode.as_deref()) {
         fields.push(ChangedField::PidMode);
     }
 
@@ -173,12 +174,67 @@ pub fn parent_id_matches(observed: &ObservedContainer, desired_parent_id: Option
     }
 }
 
-fn env_equal(a: &[(String, String)], b: &[(String, String)]) -> bool {
-    let mut a_sorted: Vec<_> = a.to_vec();
-    let mut b_sorted: Vec<_> = b.to_vec();
-    a_sorted.sort();
-    b_sorted.sort();
-    a_sorted == b_sorted
+fn entrypoint_equal(observed: Option<&Vec<String>>, desired: Option<&Vec<String>>) -> bool {
+    match desired {
+        None => true,
+        Some(desired) => observed == Some(desired),
+    }
+}
+
+fn env_equal(observed: &[(String, String)], desired: &[(String, String)]) -> bool {
+    let ignore_path = !desired.iter().any(|(key, _)| key == "PATH");
+    let mut observed_sorted: Vec<_> = observed
+        .iter()
+        .filter(|(key, _)| !(ignore_path && key == "PATH"))
+        .cloned()
+        .collect();
+    let mut desired_sorted: Vec<_> = desired.to_vec();
+    observed_sorted.sort();
+    desired_sorted.sort();
+    observed_sorted == desired_sorted
+}
+
+fn network_mode_equal(observed: Option<&str>, desired: Option<&str>) -> bool {
+    if observed == desired {
+        return true;
+    }
+
+    matches!(
+        (observed, desired),
+        (Some(observed), Some(desired))
+            if observed.starts_with("container:") && desired.starts_with("container:")
+    )
+}
+
+fn restart_policy_equal(observed: Option<&RestartPolicy>, desired: Option<&RestartPolicy>) -> bool {
+    let observed = normalize_restart_policy(observed);
+    let desired = desired.cloned();
+    observed == desired
+}
+
+fn normalize_restart_policy(policy: Option<&RestartPolicy>) -> Option<RestartPolicy> {
+    let Some(policy) = policy else {
+        return None;
+    };
+
+    let name = policy.name.as_ref();
+    let maximum_retry_count = policy.maximum_retry_count;
+    if name == Some(&RestartPolicyNameEnum::NO) && maximum_retry_count.unwrap_or(0) == 0 {
+        return None;
+    }
+
+    Some(policy.clone())
+}
+
+fn pid_mode_equal(observed: Option<&str>, desired: Option<&str>) -> bool {
+    normalize_optional_string(observed) == normalize_optional_string(desired)
+}
+
+fn normalize_optional_string(value: Option<&str>) -> Option<&str> {
+    match value {
+        Some(value) if value.is_empty() => None,
+        _ => value,
+    }
 }
 
 fn sorted_eq(a: &[String], b: &[String]) -> bool {
@@ -192,6 +248,7 @@ fn sorted_eq(a: &[String], b: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bollard::models::{RestartPolicy, RestartPolicyNameEnum};
     use std::collections::HashMap;
 
     fn base_observed() -> ObservedContainer {
@@ -285,6 +342,27 @@ mod tests {
     }
 
     #[test]
+    fn observed_path_is_ignored_when_not_explicitly_desired() {
+        let mut observed = base_observed();
+        observed.env.push(("PATH".into(), "/usr/local/bin".into()));
+        let desired = base_spec();
+        let change = eval_spec_change(Some(&observed), &desired);
+        assert!(change.is_in_sync());
+    }
+
+    #[test]
+    fn extra_non_path_env_is_drifted() {
+        let mut observed = base_observed();
+        observed.env.push(("BAR".into(), "baz".into()));
+        let desired = base_spec();
+        let change = eval_spec_change(Some(&observed), &desired);
+        let SpecChange::Drifted { fields } = change else {
+            panic!("expected drifted change");
+        };
+        assert!(fields.contains(&ChangedField::Env));
+    }
+
+    #[test]
     fn changed_dns_servers_is_drifted() {
         let observed = base_observed();
         let mut desired = base_spec();
@@ -294,6 +372,99 @@ mod tests {
             panic!("expected drifted change");
         };
         assert!(fields.contains(&ChangedField::DnsServers));
+    }
+
+    #[test]
+    fn image_entrypoint_is_ignored_when_not_explicitly_desired() {
+        let mut observed = base_observed();
+        observed.entrypoint = Some(vec!["/bin/service".into()]);
+        let desired = base_spec();
+        let change = eval_spec_change(Some(&observed), &desired);
+        assert!(change.is_in_sync());
+    }
+
+    #[test]
+    fn explicit_entrypoint_mismatch_is_drifted() {
+        let mut observed = base_observed();
+        observed.entrypoint = Some(vec!["/bin/service".into()]);
+        let mut desired = base_spec();
+        desired.entrypoint = Some(vec!["/bin/other".into()]);
+        let change = eval_spec_change(Some(&observed), &desired);
+        let SpecChange::Drifted { fields } = change else {
+            panic!("expected drifted change");
+        };
+        assert!(fields.contains(&ChangedField::Entrypoint));
+    }
+
+    #[test]
+    fn container_network_mode_uses_parent_match_not_raw_string() {
+        let mut observed = base_observed();
+        observed.network_mode = Some("container:abc123".into());
+        let mut desired = base_spec();
+        desired.network_mode = Some("container:ployz-networking".into());
+        let change = eval_spec_change(Some(&observed), &desired);
+        assert!(change.is_in_sync());
+    }
+
+    #[test]
+    fn non_container_network_mode_mismatch_is_drifted() {
+        let mut observed = base_observed();
+        observed.network_mode = Some("host".into());
+        let mut desired = base_spec();
+        desired.network_mode = Some("none".into());
+        let change = eval_spec_change(Some(&observed), &desired);
+        let SpecChange::Drifted { fields } = change else {
+            panic!("expected drifted change");
+        };
+        assert!(fields.contains(&ChangedField::NetworkMode));
+    }
+
+    #[test]
+    fn default_restart_policy_is_equivalent_to_none() {
+        let mut observed = base_observed();
+        observed.restart_policy = Some(RestartPolicy {
+            name: Some(RestartPolicyNameEnum::NO),
+            maximum_retry_count: Some(0),
+        });
+        let desired = base_spec();
+        let change = eval_spec_change(Some(&observed), &desired);
+        assert!(change.is_in_sync());
+    }
+
+    #[test]
+    fn explicit_restart_policy_mismatch_is_drifted() {
+        let mut observed = base_observed();
+        observed.restart_policy = Some(RestartPolicy {
+            name: Some(RestartPolicyNameEnum::ALWAYS),
+            maximum_retry_count: None,
+        });
+        let desired = base_spec();
+        let change = eval_spec_change(Some(&observed), &desired);
+        let SpecChange::Drifted { fields } = change else {
+            panic!("expected drifted change");
+        };
+        assert!(fields.contains(&ChangedField::RestartPolicy));
+    }
+
+    #[test]
+    fn empty_pid_mode_is_equivalent_to_none() {
+        let mut observed = base_observed();
+        observed.pid_mode = Some(String::new());
+        let desired = base_spec();
+        let change = eval_spec_change(Some(&observed), &desired);
+        assert!(change.is_in_sync());
+    }
+
+    #[test]
+    fn explicit_pid_mode_mismatch_is_drifted() {
+        let mut observed = base_observed();
+        observed.pid_mode = Some("host".into());
+        let desired = base_spec();
+        let change = eval_spec_change(Some(&observed), &desired);
+        let SpecChange::Drifted { fields } = change else {
+            panic!("expected drifted change");
+        };
+        assert!(fields.contains(&ChangedField::PidMode));
     }
 
     #[test]
