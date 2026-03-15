@@ -3,11 +3,11 @@ use serde::Serialize;
 use tracing::warn;
 
 use crate::daemon::setup::MeshStartOptions;
+use crate::mesh::tasks::PeerSyncCommand;
 use crate::model::{JoinResponse, NetworkName};
 use crate::network::endpoints::detect_endpoints;
 use crate::network::ipam::Ipam;
 use crate::node::invite::parse_and_verify_invite_token;
-use crate::store::MachineStore;
 use crate::store::bootstrap::{BootstrapInfo, BootstrapPeerRecord, write_bootstrap_peer_record};
 use crate::store::network::NetworkConfig;
 use ployz_sdk::transport::DaemonResponse;
@@ -446,11 +446,24 @@ impl DaemonState {
             Err(e) => return self.err("INVALID_JOIN_RESPONSE", format!("decode failed: {e}")),
         };
 
-        let record = join_resp.into_machine_record();
+        let Some(peer_sync_tx) = active.mesh.peer_sync_sender() else {
+            return self.err("PEER_SYNC_UNAVAILABLE", "peer sync task is not running");
+        };
+
+        let record = join_resp.into_seed_machine_record();
         let machine_id = record.id.clone();
-        match active.mesh.store.upsert_machine(&record).await {
-            Ok(()) => self.ok(format!("accepted machine '{}'", machine_id)),
-            Err(e) => self.err("UPSERT_FAILED", format!("failed to upsert machine: {e}")),
+        match peer_sync_tx
+            .send(PeerSyncCommand::UpsertTransient(record))
+            .await
+        {
+            Ok(()) => self.ok(format!(
+                "accepted transient peer '{}' (awaiting self-publication)",
+                machine_id
+            )),
+            Err(e) => self.err(
+                "PEER_SYNC_UNAVAILABLE",
+                format!("failed to install transient peer: {e}"),
+            ),
         }
     }
 
@@ -500,11 +513,20 @@ impl From<crate::mesh::orchestrator::MeshReadyStatus> for MeshReadyPayload {
 mod tests {
     use super::*;
     use crate::config::Mode;
+    use crate::daemon::ActiveMesh;
+    use crate::deploy::remote::RemoteControlHandle;
+    use crate::mesh::wireguard::MemoryWireGuard;
     use crate::node::identity::Identity;
     use crate::node::invite::issue_invite_token;
+    use crate::store::MachineStore;
+    use crate::store::backends::memory::{MemoryService, MemoryStore};
+    use crate::store::driver::StoreDriver;
     use crate::store::network::NetworkConfig;
     use crate::time::now_unix_secs;
+    use crate::{Mesh, WireguardDriver};
+    use ployz_sdk::model::{MachineId, OverlayIp, PublicKey};
     use std::path::PathBuf;
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[tokio::test]
@@ -555,6 +577,99 @@ mod tests {
         if let Some(active) = state.active.as_mut() {
             active.mesh.destroy().await.expect("destroy mesh");
         }
+    }
+
+    #[tokio::test]
+    async fn mesh_accept_installs_transient_peer_without_store_write() {
+        let (mut state, store, network) = make_active_state().await;
+        let response = JoinResponse {
+            machine_id: MachineId("joiner".into()),
+            public_key: PublicKey([2; 32]),
+            overlay_ip: "fd00::2".parse().map(OverlayIp).expect("valid overlay"),
+            subnet: Some("10.210.1.0/24".parse().expect("valid subnet")),
+            endpoints: vec!["203.0.113.10:51820".into()],
+        }
+        .encode()
+        .expect("encode join response");
+
+        let result = state.handle_mesh_accept(&response).await;
+        assert!(result.ok, "{}", result.message);
+        assert!(result.message.contains("awaiting self-publication"));
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let machines = store.list_machines().await.expect("list machines");
+        assert!(!machines.into_iter().any(|machine| machine.id.0 == "joiner"));
+        assert!(
+            network
+                .current_peers()
+                .into_iter()
+                .any(|machine| machine.id.0 == "joiner")
+        );
+
+        if let Some(active) = state.active.as_mut() {
+            active.mesh.destroy().await.expect("destroy mesh");
+        }
+    }
+
+    async fn make_active_state() -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {
+        let identity = Identity::generate(MachineId("founder".into()), [1; 32]);
+        let config = NetworkConfig::new(
+            crate::model::NetworkName("alpha".into()),
+            &identity.public_key,
+            "10.210.0.0/16",
+            "10.210.0.0/24".parse().expect("valid subnet"),
+        );
+        let store = Arc::new(MemoryStore::new());
+        store
+            .upsert_self_machine(&crate::model::MachineRecord {
+                id: identity.machine_id.clone(),
+                public_key: identity.public_key.clone(),
+                overlay_ip: config.overlay_ip,
+                subnet: Some(config.subnet),
+                bridge_ip: None,
+                endpoints: vec!["127.0.0.1:51820".into()],
+                status: crate::model::MachineStatus::Unknown,
+                participation: crate::model::Participation::Disabled,
+                last_heartbeat: 0,
+                created_at: 0,
+                updated_at: 0,
+                labels: std::collections::BTreeMap::new(),
+            })
+            .await
+            .expect("upsert founder");
+        let network = Arc::new(MemoryWireGuard::new());
+        let mut mesh = Mesh::new(
+            WireguardDriver::Memory(network.clone()),
+            StoreDriver::Memory {
+                store: store.clone(),
+                service: Arc::new(MemoryService::new()),
+            },
+            None,
+            identity.machine_id.clone(),
+            51820,
+        );
+        mesh.up().await.expect("mesh up");
+
+        let mut state = DaemonState::new(
+            &unique_temp_dir("ployz-mesh-accept"),
+            identity,
+            Mode::Memory,
+            "10.210.0.0/16".into(),
+            24,
+            4317,
+            "127.0.0.1:0".into(),
+            1,
+        );
+        state.active = Some(ActiveMesh {
+            config,
+            mesh,
+            remote_control: RemoteControlHandle::noop(),
+            gateway: crate::services::gateway::GatewayHandle::noop(),
+            dns: crate::services::dns::DnsHandle::noop(),
+        });
+
+        (state, store, network)
     }
 
     fn unique_temp_dir(label: &str) -> PathBuf {

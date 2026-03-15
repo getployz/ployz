@@ -1,3 +1,4 @@
+use crate::config::Mode;
 use crate::machine_liveness::{MachineLiveness, machine_liveness};
 use crate::mesh::tasks::PeerSyncCommand;
 use crate::model::{
@@ -5,8 +6,11 @@ use crate::model::{
 };
 use crate::network::ipam::Ipam;
 use crate::node::invite::parse_and_verify_invite_token;
+use crate::runtime::ContainerEngine;
+use crate::runtime::labels::{LABEL_KIND, LABEL_MACHINE, LABEL_MANAGED};
 use crate::store::InviteStore;
 use crate::store::MachineStore;
+use crate::store::StoreRuntimeControl;
 use crate::store::driver::StoreDriver;
 use chrono::DateTime;
 use ipnet::Ipv4Net;
@@ -14,16 +18,20 @@ use ployz_sdk::transport::{
     DaemonResponse, InstallMode, InstallSource, MachineAddOptions, MachineInstallOptions,
 };
 use serde::Deserialize;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, sleep, timeout};
 
-use super::super::DaemonState;
 use super::super::ssh::{EphemeralSshIdentityFile, SshOptions, run_ssh, run_ssh_with_stdin};
+use super::super::{DaemonState, PendingSubnetHeal, SubnetHealAttempt};
 use crate::install::find_installer_script;
+use crate::store::network::NetworkConfig;
 use crate::time::now_unix_secs;
 
 const INVITE_TTL_SECS: u64 = 600;
+const SUBNET_HEAL_COOLDOWN_SECS: u64 = 10;
 const REMOTE_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const REMOTE_READY_SSH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -34,11 +42,13 @@ const REMOTE_MESH_JOIN_COMMAND: &str =
     "set -eu; \"$HOME/.local/bin/ployz\" mesh join --token-stdin";
 const REMOTE_MESH_SELF_RECORD_COMMAND: &str =
     "set -eu; \"$HOME/.local/bin/ployz\" mesh self-record";
-const REMOTE_MESH_READY_COMMAND: &str =
-    "set -eu; \"$HOME/.local/bin/ployz\" --plain mesh ready --json";
+const REMOTE_MESH_READY_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" mesh ready --json";
 const REMOTE_MESH_DOWN_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" mesh down";
 const REMOTE_MESH_DESTROY_COMMAND: &str =
     "set -eu; \"$HOME/.local/bin/ployz\" mesh destroy --name-stdin";
+const REMOTE_PLOYZ_VERSION_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" --version";
+const HEAL_WORKLOAD_STOP_GRACE: Duration = Duration::from_secs(10);
+const SUBNET_HEAL_SETTLE_SECS: u64 = 10;
 
 #[derive(Clone)]
 struct MachineAddContext {
@@ -51,7 +61,7 @@ struct MachineAddContext {
 
 #[derive(Debug)]
 enum MachineAddOutcome {
-    PublishedDisabled {
+    AwaitingSelfPublication {
         target: String,
         joiner_id: MachineId,
     },
@@ -71,20 +81,15 @@ enum MachineAddOutcome {
         target: String,
         reason: String,
     },
-    FailedPublish {
-        target: String,
-        reason: String,
-    },
 }
 
 #[derive(Debug, Default)]
 struct MachineAddSummary {
-    published_disabled: Vec<String>,
+    awaiting_self_publication: Vec<String>,
     failed_preflight: Vec<String>,
     failed_join: Vec<String>,
     failed_self_record: Vec<String>,
     failed_ready: Vec<String>,
-    failed_publish: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -101,6 +106,19 @@ struct RemoteReadyPayload {
 #[derive(Debug, Deserialize)]
 struct RemoteReadyEnvelope {
     message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocalSubnetHealPlan {
+    current_subnet: Ipv4Net,
+    winner_machine_id: MachineId,
+    target_subnet: Ipv4Net,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestartableWorkload {
+    container_name: String,
+    was_running: bool,
 }
 
 fn parse_remote_ready_payload(output: &str) -> Result<RemoteReadyPayload, String> {
@@ -362,7 +380,14 @@ impl DaemonState {
 
             let task_context = context.clone();
             tasks.spawn(async move {
-                run_machine_add_target(task_context, target, token, invite.invite_id).await
+                run_machine_add_target(
+                    task_context,
+                    target,
+                    allocated_subnet,
+                    token,
+                    invite.invite_id,
+                )
+                .await
             });
         }
 
@@ -376,94 +401,6 @@ impl DaemonState {
         }
 
         summary.into_response(self, &warnings)
-    }
-
-    pub(crate) async fn handle_machine_drain(&self, id: &str) -> DaemonResponse {
-        let active = match self.active.as_ref() {
-            Some(active) => active,
-            None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
-        };
-
-        let machine_id = MachineId(id.to_string());
-        let mut record = match find_machine_record(&active.mesh.store, &machine_id).await {
-            Ok(Some(record)) => record,
-            Ok(None) => {
-                return self.err("MACHINE_NOT_FOUND", format!("machine '{id}' not found"));
-            }
-            Err(err) => {
-                return self.err("LIST_FAILED", format!("failed to read machines: {err}"));
-            }
-        };
-
-        record.participation = Participation::Draining;
-        record.updated_at = now_unix_secs();
-
-        match active.mesh.store.upsert_machine(&record).await {
-            Ok(()) => self.ok(format!("machine '{id}' marked draining")),
-            Err(err) => self.err(
-                "UPSERT_FAILED",
-                format!("failed to update machine participation: {err}"),
-            ),
-        }
-    }
-
-    pub(crate) async fn handle_machine_label(
-        &self,
-        id: &str,
-        set: &[(String, String)],
-        remove: &[String],
-    ) -> DaemonResponse {
-        let active = match self.active.as_ref() {
-            Some(active) => active,
-            None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
-        };
-
-        let resolved_id = if id == "self" {
-            self.identity.machine_id.clone()
-        } else {
-            MachineId(id.to_string())
-        };
-
-        let mut record = match find_machine_record(&active.mesh.store, &resolved_id).await {
-            Ok(Some(record)) => record,
-            Ok(None) => {
-                return self.err("MACHINE_NOT_FOUND", format!("machine '{id}' not found"));
-            }
-            Err(err) => {
-                return self.err("LIST_FAILED", format!("failed to read machines: {err}"));
-            }
-        };
-
-        for (key, value) in set {
-            record.labels.insert(key.clone(), value.clone());
-        }
-        for key in remove {
-            record.labels.remove(key);
-        }
-        record.updated_at = now_unix_secs();
-
-        match active.mesh.store.upsert_machine(&record).await {
-            Ok(()) => {
-                let labels_display: Vec<String> = record
-                    .labels
-                    .iter()
-                    .map(|(k, v)| format!("{k}={v}"))
-                    .collect();
-                if labels_display.is_empty() {
-                    self.ok(format!("machine '{}' labels cleared", resolved_id))
-                } else {
-                    self.ok(format!(
-                        "machine '{}' labels: {}",
-                        resolved_id,
-                        labels_display.join(", ")
-                    ))
-                }
-            }
-            Err(err) => self.err(
-                "UPSERT_FAILED",
-                format!("failed to update machine labels: {err}"),
-            ),
-        }
     }
 
     pub(crate) async fn handle_machine_remove(&self, id: &str, force: bool) -> DaemonResponse {
@@ -532,6 +469,440 @@ impl DaemonState {
         Ok(subnets)
     }
 
+    pub async fn heal_local_subnet_conflict_if_needed(&mut self) {
+        let Some(active) = self.active.as_ref() else {
+            self.pending_subnet_heal = None;
+            self.last_subnet_heal_attempt = None;
+            return;
+        };
+
+        if active.mesh.phase() != crate::Phase::Running {
+            return;
+        }
+
+        if !active.mesh.store.healthy().await {
+            tracing::info!(
+                machine_id = %self.identity.machine_id,
+                "local subnet heal: store unhealthy, deferring"
+            );
+            return;
+        }
+
+        let machines = match active.mesh.store.list_machines().await {
+            Ok(machines) => machines,
+            Err(err) => {
+                tracing::warn!(error = %err, "local subnet heal: failed to list machines");
+                return;
+            }
+        };
+
+        if !machines
+            .iter()
+            .any(|machine| machine.id == self.identity.machine_id)
+        {
+            tracing::warn!(
+                machine_id = %self.identity.machine_id,
+                "local subnet heal: local machine missing from store, deferring"
+            );
+            return;
+        }
+
+        let duplicate_groups = duplicate_subnet_groups(&machines);
+        if duplicate_groups.is_empty() {
+            self.pending_subnet_heal = None;
+            self.last_subnet_heal_attempt = None;
+            return;
+        }
+
+        tracing::warn!(
+            machine_id = %self.identity.machine_id,
+            duplicate_groups = ?duplicate_group_log_view(&duplicate_groups),
+            "local subnet heal: duplicate subnet claims detected"
+        );
+
+        let current_conflict = match local_duplicate_subnet_conflict(&machines, &self.identity.machine_id) {
+            Some(conflict) => conflict,
+            None => {
+                self.pending_subnet_heal = None;
+                return;
+            }
+        };
+
+        let now = now_unix_secs();
+        let pending = match self.pending_subnet_heal {
+            Some(pending) if pending.network_subnet == current_conflict.subnet => pending,
+            _ => {
+                let target_subnet = match allocate_replacement_subnet(
+                    &machines,
+                    &self.identity.machine_id,
+                    &self.cluster_cidr,
+                    self.subnet_prefix_len,
+                ) {
+                    Ok(target_subnet) => target_subnet,
+                    Err(err) => {
+                        tracing::warn!(error = %err, "local subnet heal: failed to plan subnet heal");
+                        return;
+                    }
+                };
+                let pending = PendingSubnetHeal {
+                    network_subnet: current_conflict.subnet,
+                    target_subnet,
+                    planned_at: now,
+                };
+                self.pending_subnet_heal = Some(pending);
+                tracing::info!(
+                    machine_id = %self.identity.machine_id,
+                    current_subnet = %pending.network_subnet,
+                    target_subnet = %pending.target_subnet,
+                    settle_secs = SUBNET_HEAL_SETTLE_SECS,
+                    "local subnet heal: planned replacement subnet, waiting for settle window"
+                );
+                return;
+            }
+        };
+
+        let target_winner = target_subnet_winner(&machines, &self.identity.machine_id, pending.target_subnet);
+        if target_winner != self.identity.machine_id {
+            let target_subnet = match allocate_replacement_subnet(
+                &machines,
+                &self.identity.machine_id,
+                &self.cluster_cidr,
+                self.subnet_prefix_len,
+            ) {
+                Ok(target_subnet) => target_subnet,
+                Err(err) => {
+                    tracing::warn!(error = %err, "local subnet heal: failed to replan subnet heal");
+                    return;
+                }
+            };
+            let pending = PendingSubnetHeal {
+                network_subnet: current_conflict.subnet,
+                target_subnet,
+                planned_at: now,
+            };
+            self.pending_subnet_heal = Some(pending);
+            tracing::info!(
+                machine_id = %self.identity.machine_id,
+                losing_machine_id = %target_winner,
+                current_subnet = %pending.network_subnet,
+                target_subnet = %pending.target_subnet,
+                settle_secs = SUBNET_HEAL_SETTLE_SECS,
+                "local subnet heal: lost target subnet tie-break, replanning"
+            );
+            return;
+        }
+
+        if now.saturating_sub(pending.planned_at) < SUBNET_HEAL_SETTLE_SECS {
+            tracing::info!(
+                machine_id = %self.identity.machine_id,
+                current_subnet = %pending.network_subnet,
+                target_subnet = %pending.target_subnet,
+                settle_secs = SUBNET_HEAL_SETTLE_SECS,
+                "local subnet heal: waiting for settle window"
+            );
+            return;
+        }
+
+        let plan = LocalSubnetHealPlan {
+            current_subnet: current_conflict.subnet,
+            winner_machine_id: current_conflict.winner_machine_id,
+            target_subnet: pending.target_subnet,
+        };
+
+        match plan_local_subnet_heal(
+            &machines,
+            &self.identity.machine_id,
+            &self.cluster_cidr,
+            self.subnet_prefix_len,
+        ) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                self.pending_subnet_heal = None;
+                return;
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "local subnet heal: failed to plan subnet heal");
+                return;
+            }
+        }
+
+        if let Some(last_attempt) = self.last_subnet_heal_attempt
+            && last_attempt.network_subnet == plan.current_subnet
+            && last_attempt.target_subnet == plan.target_subnet
+            && now.saturating_sub(last_attempt.attempted_at) < SUBNET_HEAL_COOLDOWN_SECS
+        {
+            tracing::info!(
+                machine_id = %self.identity.machine_id,
+                current_subnet = %plan.current_subnet,
+                target_subnet = %plan.target_subnet,
+                "local subnet heal: skipping repeated attempt during cooldown"
+            );
+            return;
+        }
+
+        self.pending_subnet_heal = None;
+        self.last_subnet_heal_attempt = Some(SubnetHealAttempt {
+            network_subnet: plan.current_subnet,
+            target_subnet: plan.target_subnet,
+            attempted_at: now,
+        });
+
+        tracing::warn!(
+            machine_id = %self.identity.machine_id,
+            winner_machine_id = %plan.winner_machine_id,
+            current_subnet = %plan.current_subnet,
+            target_subnet = %plan.target_subnet,
+            "local subnet heal: starting"
+        );
+
+        match self.apply_local_subnet_heal(&plan).await {
+            Ok(()) => {
+                tracing::info!(
+                    machine_id = %self.identity.machine_id,
+                    current_subnet = %plan.current_subnet,
+                    target_subnet = %plan.target_subnet,
+                    "local subnet heal: complete"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    machine_id = %self.identity.machine_id,
+                    current_subnet = %plan.current_subnet,
+                    target_subnet = %plan.target_subnet,
+                    error = %err,
+                    "local subnet heal: failed"
+                );
+            }
+        }
+    }
+
+    async fn apply_local_subnet_heal(&mut self, plan: &LocalSubnetHealPlan) -> Result<(), String> {
+        let network_name = self
+            .active
+            .as_ref()
+            .map(|active| active.config.name.0.clone())
+            .ok_or_else(|| "no running network".to_string())?;
+        let config_path = NetworkConfig::path(&self.data_dir, &network_name);
+        let mut config = NetworkConfig::load(&config_path)
+            .map_err(|err| format!("load network config: {err}"))?;
+        config.subnet = plan.target_subnet;
+        config
+            .save(&config_path)
+            .map_err(|err| format!("save network config: {err}"))?;
+
+        match self.mode {
+            Mode::Memory => {
+                self.apply_local_subnet_heal_in_memory_mode(&network_name)
+                    .await
+            }
+            Mode::Docker | Mode::HostExec | Mode::HostService => {
+                self.restart_active_mesh_for_subnet_heal(&network_name)
+                    .await
+            }
+        }
+    }
+
+    async fn apply_local_subnet_heal_in_memory_mode(
+        &mut self,
+        network_name: &str,
+    ) -> Result<(), String> {
+        let config_path = NetworkConfig::path(&self.data_dir, network_name);
+        let config = NetworkConfig::load(&config_path)
+            .map_err(|err| format!("load network config: {err}"))?;
+        let Some(active) = self.active.as_mut() else {
+            return Err("no running network".into());
+        };
+
+        active.config = config.clone();
+        let Some(record) = active
+            .mesh
+            .update_authoritative_self_record(|record| {
+                record.subnet = Some(config.subnet);
+                record.updated_at = now_unix_secs();
+            })
+            .await
+        else {
+            return Err("local authoritative self record missing".into());
+        };
+        let _ = record;
+        Ok(())
+    }
+
+    async fn restart_active_mesh_for_subnet_heal(
+        &mut self,
+        network_name: &str,
+    ) -> Result<(), String> {
+        let Some(active) = self.active.as_ref() else {
+            return Err("no running network".into());
+        };
+
+        self.publish_local_machine_down_for_subnet_heal(&active.config.subnet)
+            .await?;
+
+        let workloads = self
+            .stop_local_workloads_for_subnet_heal(network_name)
+            .await?;
+
+        if let Err(error) = self
+            .restart_active_runtime_for_subnet_heal(network_name)
+            .await
+        {
+            return Err(error);
+        }
+
+        self.start_local_workloads_after_subnet_heal(network_name, &workloads)
+            .await
+    }
+
+    async fn publish_local_machine_down_for_subnet_heal(
+        &self,
+        current_subnet: &Ipv4Net,
+    ) -> Result<(), String> {
+        let Some(active) = self.active.as_ref() else {
+            return Err("no running network".into());
+        };
+
+        let now = now_unix_secs();
+        let Some(record) = active
+            .mesh
+            .update_authoritative_self_record(|record| {
+                record.subnet = Some(*current_subnet);
+                record.status = MachineStatus::Down;
+                record.participation = Participation::Disabled;
+                record.last_heartbeat = now;
+                record.updated_at = now;
+            })
+            .await
+        else {
+            return Err("local authoritative self record missing".into());
+        };
+        let _ = record;
+        Ok(())
+    }
+
+    async fn stop_local_workloads_for_subnet_heal(
+        &self,
+        network_name: &str,
+    ) -> Result<Vec<RestartableWorkload>, String> {
+        match self.mode {
+            Mode::Memory => Ok(Vec::new()),
+            Mode::Docker | Mode::HostExec | Mode::HostService => {
+                let engine = ContainerEngine::connect()
+                    .await
+                    .map_err(|err| format!("connect docker engine for subnet heal: {err}"))?;
+                let bridge_name = format!("ployz-{network_name}");
+                let observed = engine
+                    .list_by_labels(&[
+                        (LABEL_MANAGED, "true"),
+                        (LABEL_KIND, "workload"),
+                        (LABEL_MACHINE, &self.identity.machine_id.0),
+                    ])
+                    .await
+                    .map_err(|err| format!("list local workloads for subnet heal: {err}"))?;
+
+                let mut restartable = Vec::new();
+                for container in observed {
+                    if !container.networks.contains_key(&bridge_name) {
+                        continue;
+                    }
+
+                    if container.running {
+                        engine
+                            .stop(&container.container_name, HEAL_WORKLOAD_STOP_GRACE)
+                            .await
+                            .map_err(|err| {
+                                format!(
+                                    "stop workload '{}' for subnet heal: {err}",
+                                    container.container_name
+                                )
+                            })?;
+                    }
+
+                    let bridge = crate::network::docker_bridge::DockerBridgeNetwork::new(
+                        network_name,
+                        self.active
+                            .as_ref()
+                            .map(|active| active.config.subnet)
+                            .ok_or_else(|| "no running network".to_string())?,
+                    )
+                    .await
+                    .map_err(|err| format!("build bridge handle for subnet heal: {err}"))?;
+                    bridge
+                        .disconnect(&container.container_name, true)
+                        .await
+                        .map_err(|err| {
+                            format!(
+                                "disconnect workload '{}' from old bridge: {err}",
+                                container.container_name
+                            )
+                        })?;
+
+                    restartable.push(RestartableWorkload {
+                        container_name: container.container_name,
+                        was_running: container.running,
+                    });
+                }
+
+                Ok(restartable)
+            }
+        }
+    }
+
+    async fn start_local_workloads_after_subnet_heal(
+        &self,
+        network_name: &str,
+        workloads: &[RestartableWorkload],
+    ) -> Result<(), String> {
+        match self.mode {
+            Mode::Memory => Ok(()),
+            Mode::Docker | Mode::HostExec | Mode::HostService => {
+                if workloads.is_empty() {
+                    return Ok(());
+                }
+
+                let engine = ContainerEngine::connect()
+                    .await
+                    .map_err(|err| format!("connect docker engine after subnet heal: {err}"))?;
+                let target_subnet = self
+                    .active
+                    .as_ref()
+                    .map(|active| active.config.subnet)
+                    .ok_or_else(|| "no running network".to_string())?;
+                let bridge = crate::network::docker_bridge::DockerBridgeNetwork::new(
+                    network_name,
+                    target_subnet,
+                )
+                .await
+                .map_err(|err| format!("build target bridge handle after subnet heal: {err}"))?;
+
+                for workload in workloads {
+                    bridge
+                        .connect(&workload.container_name, None)
+                        .await
+                        .map_err(|err| {
+                            format!(
+                                "reconnect workload '{}' to healed bridge: {err}",
+                                workload.container_name
+                            )
+                        })?;
+                    if workload.was_running {
+                        engine
+                            .start(&workload.container_name)
+                            .await
+                            .map_err(|err| {
+                                format!(
+                                    "restart workload '{}' after subnet heal: {err}",
+                                    workload.container_name
+                                )
+                            })?;
+                    }
+                }
+
+                Ok(())
+            }
+        }
+    }
+
     async fn degraded_mesh_warnings(&self) -> Result<Vec<String>, String> {
         let active = self
             .active
@@ -572,8 +943,8 @@ impl DaemonState {
 impl MachineAddSummary {
     fn push(&mut self, outcome: MachineAddOutcome) {
         match outcome {
-            MachineAddOutcome::PublishedDisabled { target, joiner_id } => {
-                self.published_disabled
+            MachineAddOutcome::AwaitingSelfPublication { target, joiner_id } => {
+                self.awaiting_self_publication
                     .push(format!("{target} -> {}", joiner_id.0));
             }
             MachineAddOutcome::FailedPreflight { target, reason } => {
@@ -588,9 +959,6 @@ impl MachineAddSummary {
             MachineAddOutcome::FailedReady { target, reason } => {
                 self.failed_ready.push(format!("{target}: {reason}"));
             }
-            MachineAddOutcome::FailedPublish { target, reason } => {
-                self.failed_publish.push(format!("{target}: {reason}"));
-            }
         }
     }
 
@@ -599,7 +967,6 @@ impl MachineAddSummary {
             || !self.failed_join.is_empty()
             || !self.failed_self_record.is_empty()
             || !self.failed_ready.is_empty()
-            || !self.failed_publish.is_empty()
     }
 
     fn into_response(self, state: &DaemonState, warnings: &[String]) -> DaemonResponse {
@@ -610,12 +977,15 @@ impl MachineAddSummary {
         }
 
         lines.push("machine add summary".into());
-        push_summary_section(&mut lines, "published_disabled", &self.published_disabled);
+        push_summary_section(
+            &mut lines,
+            "awaiting_self_publication",
+            &self.awaiting_self_publication,
+        );
         push_summary_section(&mut lines, "failed_preflight", &self.failed_preflight);
         push_summary_section(&mut lines, "failed_join", &self.failed_join);
         push_summary_section(&mut lines, "failed_self_record", &self.failed_self_record);
         push_summary_section(&mut lines, "failed_ready", &self.failed_ready);
-        push_summary_section(&mut lines, "failed_publish", &self.failed_publish);
 
         let message = lines.join("\n");
         if self.has_failures() {
@@ -633,6 +1003,7 @@ impl MachineAddSummary {
 async fn run_machine_add_target(
     context: MachineAddContext,
     target: String,
+    allocated_subnet: Ipv4Net,
     token: String,
     invite_id: String,
 ) -> MachineAddOutcome {
@@ -704,6 +1075,20 @@ async fn run_machine_add_target(
             };
         }
     };
+    if record.subnet != Some(allocated_subnet) {
+        let actual_subnet = record
+            .subnet
+            .map(|subnet| subnet.to_string())
+            .unwrap_or_else(|| "—".into());
+        let _ =
+            best_effort_remote_cleanup(&target, &context.network_name, &context.ssh_options).await;
+        return MachineAddOutcome::FailedSelfRecord {
+            target,
+            reason: format!(
+                "joiner self-record subnet '{actual_subnet}' did not match allocated subnet '{allocated_subnet}'"
+            ),
+        };
+    }
 
     let joiner_id = record.id.clone();
     tracing::info!(%target, joiner_id = %joiner_id, "machine add target: transient peer install starting");
@@ -777,19 +1162,12 @@ async fn run_machine_add_target(
         );
     }
 
-    tracing::info!(%target, joiner_id = %joiner_id, "machine add target: publishing machine record");
-    if let Err(err) = context.store.upsert_machine(&record).await {
-        let _ = remove_transient_peer(&context.peer_sync_tx, &joiner_id).await;
-        let _ =
-            best_effort_remote_cleanup(&target, &context.network_name, &context.ssh_options).await;
-        return MachineAddOutcome::FailedPublish {
-            target,
-            reason: format!("failed to publish joiner record: {err}"),
-        };
-    }
-    tracing::info!(%target, joiner_id = %joiner_id, "machine add target: published disabled");
-
-    MachineAddOutcome::PublishedDisabled { target, joiner_id }
+    tracing::info!(
+        %target,
+        joiner_id = %joiner_id,
+        "machine add target: awaiting self-publication"
+    );
+    MachineAddOutcome::AwaitingSelfPublication { target, joiner_id }
 }
 
 async fn upsert_transient_peer(
@@ -879,6 +1257,28 @@ async fn bootstrap_remote_machine(
     install: &MachineInstallOptions,
     ssh_options: &SshOptions,
 ) -> Result<(), String> {
+    let local_version = local_ployz_version()?;
+    if let Ok(remote_version) = run_ssh(target, REMOTE_PLOYZ_VERSION_COMMAND, ssh_options).await {
+        if remote_version.trim() == local_version.trim() {
+            tracing::info!(
+                %target,
+                version = remote_version.trim(),
+                "machine add bootstrap: remote ployz version already matches, skipping install"
+            );
+            return run_ssh(target, REMOTE_STATUS_COMMAND, ssh_options)
+                .await
+                .map(|_| ());
+        }
+        tracing::info!(
+            %target,
+            local_version = local_version.trim(),
+            remote_version = remote_version.trim(),
+            "machine add bootstrap: remote ployz version mismatch, reinstalling"
+        );
+    } else {
+        tracing::info!(%target, "machine add bootstrap: remote ployz missing, installing");
+    }
+
     let installer_path = find_installer_script()?;
     let installer = std::fs::read(&installer_path)
         .map_err(|error| format!("read installer '{}': {error}", installer_path.display()))?;
@@ -887,6 +1287,52 @@ async fn bootstrap_remote_machine(
     run_ssh(target, REMOTE_STATUS_COMMAND, ssh_options)
         .await
         .map(|_| ())
+}
+
+fn local_ployz_version() -> Result<String, String> {
+    let ployz_path = local_ployz_path()?;
+    let output = std::process::Command::new(&ployz_path)
+        .arg("--version")
+        .output()
+        .map_err(|error| format!("run '{}' --version: {error}", ployz_path.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!(
+            "'{}' --version failed (status: {}){}",
+            ployz_path.display(),
+            output
+                .status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "signal".into()),
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn local_ployz_path() -> Result<PathBuf, String> {
+    let current_exe =
+        std::env::current_exe().map_err(|error| format!("current_exe failed: {error}"))?;
+    let candidates = [
+        current_exe.with_file_name("ployz"),
+        current_exe
+            .parent()
+            .map(|parent| parent.join("ployz"))
+            .unwrap_or_else(|| PathBuf::from("ployz")),
+        PathBuf::from("/usr/local/bin/ployz"),
+        PathBuf::from("/usr/bin/ployz"),
+    ];
+    for candidate in candidates {
+        if Path::new(&candidate).exists() {
+            return Ok(candidate);
+        }
+    }
+    Err("ployz binary not found next to current daemon".into())
 }
 
 async fn best_effort_remote_cleanup(
@@ -983,7 +1429,141 @@ fn decode_joiner_record(output: &str) -> Result<MachineRecord, String> {
 
     let join_response = JoinResponse::decode(response_line)
         .map_err(|err| format!("failed to decode join response: {err}"))?;
-    Ok(join_response.into_machine_record())
+    Ok(join_response.into_seed_machine_record())
+}
+
+fn duplicate_subnet_groups(machines: &[MachineRecord]) -> Vec<(Ipv4Net, Vec<MachineId>)> {
+    let mut groups: BTreeMap<Ipv4Net, Vec<MachineId>> = BTreeMap::new();
+
+    for machine in machines {
+        let Some(subnet) = machine.subnet else {
+            continue;
+        };
+        groups.entry(subnet).or_default().push(machine.id.clone());
+    }
+
+    groups
+        .into_iter()
+        .filter_map(|(subnet, mut machine_ids)| {
+            if machine_ids.len() < 2 {
+                return None;
+            }
+            machine_ids.sort_by(|left, right| left.0.cmp(&right.0));
+            Some((subnet, machine_ids))
+        })
+        .collect()
+}
+
+fn duplicate_group_log_view(groups: &[(Ipv4Net, Vec<MachineId>)]) -> Vec<(String, Vec<String>)> {
+    groups
+        .iter()
+        .map(|(subnet, machine_ids)| {
+            (
+                subnet.to_string(),
+                machine_ids
+                    .iter()
+                    .map(|machine_id| machine_id.0.clone())
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocalSubnetConflict {
+    subnet: Ipv4Net,
+    winner_machine_id: MachineId,
+}
+
+fn local_duplicate_subnet_conflict(
+    machines: &[MachineRecord],
+    local_machine_id: &MachineId,
+) -> Option<LocalSubnetConflict> {
+    for (subnet, machine_ids) in duplicate_subnet_groups(machines) {
+        let Some(local_index) = machine_ids
+            .iter()
+            .position(|machine_id| machine_id == local_machine_id)
+        else {
+            continue;
+        };
+        if local_index == 0 {
+            return None;
+        }
+        return Some(LocalSubnetConflict {
+            subnet,
+            winner_machine_id: machine_ids[0].clone(),
+        });
+    }
+
+    None
+}
+
+fn target_subnet_winner(
+    machines: &[MachineRecord],
+    local_machine_id: &MachineId,
+    target_subnet: Ipv4Net,
+) -> MachineId {
+    let mut contenders: Vec<MachineId> = machines
+        .iter()
+        .filter(|machine| machine.subnet == Some(target_subnet))
+        .map(|machine| machine.id.clone())
+        .collect();
+    contenders.push(local_machine_id.clone());
+    contenders.sort_by(|left, right| left.0.cmp(&right.0));
+    contenders[0].clone()
+}
+
+fn plan_local_subnet_heal(
+    machines: &[MachineRecord],
+    local_machine_id: &MachineId,
+    cluster_cidr: &str,
+    subnet_prefix_len: u8,
+) -> Result<Option<LocalSubnetHealPlan>, String> {
+    for (subnet, machine_ids) in duplicate_subnet_groups(machines) {
+        let Some(local_index) = machine_ids
+            .iter()
+            .position(|machine_id| machine_id == local_machine_id)
+        else {
+            continue;
+        };
+        if local_index == 0 {
+            return Ok(None);
+        }
+
+        let target_subnet = allocate_replacement_subnet(
+            machines,
+            local_machine_id,
+            cluster_cidr,
+            subnet_prefix_len,
+        )?;
+        return Ok(Some(LocalSubnetHealPlan {
+            current_subnet: subnet,
+            winner_machine_id: machine_ids[0].clone(),
+            target_subnet,
+        }));
+    }
+
+    Ok(None)
+}
+
+fn allocate_replacement_subnet(
+    machines: &[MachineRecord],
+    local_machine_id: &MachineId,
+    cluster_cidr: &str,
+    subnet_prefix_len: u8,
+) -> Result<Ipv4Net, String> {
+    let cluster: Ipv4Net = cluster_cidr
+        .parse()
+        .map_err(|err| format!("invalid cluster CIDR '{cluster_cidr}': {err}"))?;
+    let allocated = machines.iter().filter_map(|machine| {
+        if machine.id == *local_machine_id {
+            return None;
+        }
+        machine.subnet
+    });
+    let mut ipam = Ipam::with_allocated(cluster, subnet_prefix_len, allocated);
+    ipam.allocate()
+        .ok_or_else(|| "no available subnets for local heal".into())
 }
 
 fn push_summary_section(lines: &mut Vec<String>, label: &str, values: &[String]) {
@@ -1107,7 +1687,7 @@ mod tests {
 
     #[tokio::test]
     async fn machine_list_shows_disabled_explicitly() {
-        let (state, store) = make_state(false).await;
+        let (state, store, _) = make_state(false).await;
         let disabled = test_machine_record(
             "peer-disabled",
             "10.210.1.0/24",
@@ -1116,7 +1696,7 @@ mod tests {
             PublicKey([2; 32]),
         );
         store
-            .upsert_machine(&disabled)
+            .upsert_self_machine(&disabled)
             .await
             .expect("upsert disabled peer");
 
@@ -1130,7 +1710,7 @@ mod tests {
 
     #[tokio::test]
     async fn machine_list_shows_down_liveness() {
-        let (state, store) = make_state(false).await;
+        let (state, store, _) = make_state(false).await;
         let mut down = test_machine_record(
             "peer-down",
             "10.210.1.0/24",
@@ -1139,7 +1719,10 @@ mod tests {
             PublicKey([2; 32]),
         );
         down.status = MachineStatus::Down;
-        store.upsert_machine(&down).await.expect("upsert down peer");
+        store
+            .upsert_self_machine(&down)
+            .await
+            .expect("upsert down peer");
 
         let response = state.handle_machine_list().await;
         assert!(response.ok);
@@ -1149,9 +1732,9 @@ mod tests {
 
     #[tokio::test]
     async fn allocate_machine_subnets_returns_unique_values() {
-        let (state, store) = make_state(false).await;
+        let (state, store, _) = make_state(false).await;
         store
-            .upsert_machine(&test_machine_record(
+            .upsert_self_machine(&test_machine_record(
                 "peer-1",
                 "10.210.1.0/24",
                 Participation::Enabled,
@@ -1178,12 +1761,126 @@ mod tests {
         assert!(!subnets.contains(&"10.210.1.0/24".parse().expect("valid subnet")));
     }
 
+    #[test]
+    fn plan_local_subnet_heal_reassigns_losing_machine() {
+        let machines = vec![
+            test_machine_record(
+                "alpha",
+                "10.210.0.0/24",
+                Participation::Enabled,
+                0,
+                PublicKey([2; 32]),
+            ),
+            test_machine_record(
+                "beta",
+                "10.210.1.0/24",
+                Participation::Enabled,
+                0,
+                PublicKey([3; 32]),
+            ),
+            test_machine_record(
+                "gamma",
+                "10.210.1.0/24",
+                Participation::Enabled,
+                0,
+                PublicKey([4; 32]),
+            ),
+        ];
+
+        let plan = plan_local_subnet_heal(
+            &machines,
+            &MachineId("gamma".into()),
+            DEFAULT_CLUSTER_CIDR,
+            24,
+        )
+        .expect("plan should succeed")
+        .expect("gamma should heal");
+
+        assert_eq!(plan.current_subnet, "10.210.1.0/24".parse().expect("valid"));
+        assert_eq!(plan.winner_machine_id, MachineId("beta".into()));
+        assert_eq!(plan.target_subnet, "10.210.2.0/24".parse().expect("valid"));
+    }
+
+    #[test]
+    fn plan_local_subnet_heal_keeps_winner_in_place() {
+        let machines = vec![
+            test_machine_record(
+                "alpha",
+                "10.210.0.0/24",
+                Participation::Enabled,
+                0,
+                PublicKey([2; 32]),
+            ),
+            test_machine_record(
+                "beta",
+                "10.210.1.0/24",
+                Participation::Enabled,
+                0,
+                PublicKey([3; 32]),
+            ),
+            test_machine_record(
+                "gamma",
+                "10.210.1.0/24",
+                Participation::Enabled,
+                0,
+                PublicKey([4; 32]),
+            ),
+        ];
+
+        let plan = plan_local_subnet_heal(
+            &machines,
+            &MachineId("beta".into()),
+            DEFAULT_CLUSTER_CIDR,
+            24,
+        )
+        .expect("plan should succeed");
+
+        assert!(plan.is_none());
+    }
+
+    #[test]
+    fn plan_local_subnet_heal_is_noop_after_subnet_changes() {
+        let machines = vec![
+            test_machine_record(
+                "alpha",
+                "10.210.0.0/24",
+                Participation::Enabled,
+                0,
+                PublicKey([2; 32]),
+            ),
+            test_machine_record(
+                "beta",
+                "10.210.1.0/24",
+                Participation::Enabled,
+                0,
+                PublicKey([3; 32]),
+            ),
+            test_machine_record(
+                "gamma",
+                "10.210.2.0/24",
+                Participation::Enabled,
+                0,
+                PublicKey([4; 32]),
+            ),
+        ];
+
+        let plan = plan_local_subnet_heal(
+            &machines,
+            &MachineId("gamma".into()),
+            DEFAULT_CLUSTER_CIDR,
+            24,
+        )
+        .expect("plan should succeed");
+
+        assert!(plan.is_none());
+    }
+
     #[tokio::test]
     async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
         let _guard = test_ssh_env_lock().lock().expect("env lock");
-        let (mut state, store) = make_state(true).await;
+        let (mut state, store, network) = make_state(true).await;
         store
-            .upsert_machine(&test_machine_record(
+            .upsert_self_machine(&test_machine_record(
                 "stale-peer",
                 "10.210.1.0/24",
                 Participation::Enabled,
@@ -1197,7 +1894,7 @@ mod tests {
             machine_id: MachineId("joiner-1".into()),
             public_key: PublicKey([4; 32]),
             overlay_ip: "fd00::4".parse().map(OverlayIp).expect("valid overlay"),
-            subnet: Some("10.210.9.0/24".parse().expect("valid subnet")),
+            subnet: Some("10.210.2.0/24".parse().expect("valid subnet")),
             endpoints: vec!["203.0.113.10:51820".into()],
         }
         .encode()
@@ -1221,14 +1918,20 @@ mod tests {
                 .message
                 .contains("warning: enabled peer 'stale-peer' has a stale heartbeat")
         );
-        assert!(response.message.contains("published_disabled: 1"));
+        assert!(response.message.contains("awaiting_self_publication: 1"));
 
         let machines = store.list_machines().await.expect("list machines");
-        let joiner = machines
-            .into_iter()
-            .find(|machine| machine.id.0 == "joiner-1")
-            .expect("joiner published");
-        assert_eq!(joiner.participation, Participation::Disabled);
+        assert!(
+            !machines
+                .into_iter()
+                .any(|machine| machine.id.0 == "joiner-1")
+        );
+        assert!(
+            network
+                .current_peers()
+                .into_iter()
+                .any(|machine| machine.id.0 == "joiner-1")
+        );
 
         teardown_state(&mut state).await;
     }
@@ -1236,13 +1939,13 @@ mod tests {
     #[tokio::test]
     async fn machine_add_accepts_running_joiner_before_full_sync() {
         let _guard = test_ssh_env_lock().lock().expect("env lock");
-        let (mut state, store) = make_state(true).await;
+        let (mut state, store, network) = make_state(true).await;
 
         let join_response = JoinResponse {
             machine_id: MachineId("joiner-2".into()),
             public_key: PublicKey([5; 32]),
             overlay_ip: "fd00::5".parse().map(OverlayIp).expect("valid overlay"),
-            subnet: Some("10.210.10.0/24".parse().expect("valid subnet")),
+            subnet: Some("10.210.1.0/24".parse().expect("valid subnet")),
             endpoints: vec!["203.0.113.11:51820".into()],
         }
         .encode()
@@ -1265,48 +1968,29 @@ mod tests {
             .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
             .await;
         assert!(response.ok, "{}", response.message);
-        assert!(response.message.contains("published_disabled: 1"));
+        assert!(response.message.contains("awaiting_self_publication: 1"));
 
         let machines = store.list_machines().await.expect("list machines");
-        let joiner = machines
-            .into_iter()
-            .find(|machine| machine.id.0 == "joiner-2")
-            .expect("joiner published");
-        assert_eq!(joiner.participation, Participation::Disabled);
+        assert!(
+            !machines
+                .into_iter()
+                .any(|machine| machine.id.0 == "joiner-2")
+        );
+        assert!(
+            network
+                .current_peers()
+                .into_iter()
+                .any(|machine| machine.id.0 == "joiner-2")
+        );
 
         teardown_state(&mut state).await;
     }
 
     #[tokio::test]
-    async fn machine_drain_updates_participation_and_keeps_record() {
-        let (state, store) = make_state(false).await;
-        store
-            .upsert_machine(&test_machine_record(
-                "peer-1",
-                "10.210.1.0/24",
-                Participation::Enabled,
-                10,
-                PublicKey([2; 32]),
-            ))
-            .await
-            .expect("upsert peer");
-
-        let response = state.handle_machine_drain("peer-1").await;
-        assert!(response.ok, "{}", response.message);
-
-        let machines = store.list_machines().await.expect("list machines");
-        let peer = machines
-            .into_iter()
-            .find(|machine| machine.id.0 == "peer-1")
-            .expect("peer present");
-        assert_eq!(peer.participation, Participation::Draining);
-    }
-
-    #[tokio::test]
     async fn machine_remove_refuses_enabled_without_force() {
-        let (state, store) = make_state(false).await;
+        let (state, store, _) = make_state(false).await;
         store
-            .upsert_machine(&test_machine_record(
+            .upsert_self_machine(&test_machine_record(
                 "peer-1",
                 "10.210.1.0/24",
                 Participation::Enabled,
@@ -1323,9 +2007,9 @@ mod tests {
 
     #[tokio::test]
     async fn machine_remove_deletes_disabled_record() {
-        let (state, store) = make_state(false).await;
+        let (state, store, _) = make_state(false).await;
         store
-            .upsert_machine(&test_machine_record(
+            .upsert_self_machine(&test_machine_record(
                 "peer-1",
                 "10.210.1.0/24",
                 Participation::Disabled,
@@ -1342,7 +2026,180 @@ mod tests {
         assert!(!machines.into_iter().any(|machine| machine.id.0 == "peer-1"));
     }
 
-    async fn make_state(start_mesh: bool) -> (DaemonState, Arc<MemoryStore>) {
+    #[tokio::test]
+    async fn memory_mode_local_subnet_heal_updates_local_config_and_store() {
+        let store = Arc::new(MemoryStore::new());
+        store
+            .upsert_self_machine(&test_machine_record(
+                "founder",
+                "10.210.1.0/24",
+                Participation::Enabled,
+                0,
+                PublicKey([2; 32]),
+            ))
+            .await
+            .expect("upsert founder");
+        store
+            .upsert_self_machine(&test_machine_record(
+                "peer",
+                "10.210.1.0/24",
+                Participation::Enabled,
+                0,
+                PublicKey([3; 32]),
+            ))
+            .await
+            .expect("upsert peer");
+
+        let mut state = make_state_with_store(
+            Identity::generate(MachineId("peer".into()), [3; 32]),
+            "10.210.1.0/24",
+            store.clone(),
+        )
+        .await;
+        state
+            .active
+            .as_mut()
+            .expect("active mesh")
+            .mesh
+            .up()
+            .await
+            .expect("mesh up");
+
+        state.heal_local_subnet_conflict_if_needed().await;
+        let Some(pending) = state.pending_subnet_heal else {
+            panic!("expected pending subnet heal");
+        };
+        state.pending_subnet_heal = Some(PendingSubnetHeal {
+            planned_at: pending.planned_at.saturating_sub(SUBNET_HEAL_SETTLE_SECS),
+            ..pending
+        });
+        state.heal_local_subnet_conflict_if_needed().await;
+
+        let healed_config = NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha"))
+            .expect("load healed config");
+        assert_eq!(
+            healed_config.subnet,
+            "10.210.0.0/24".parse().expect("valid")
+        );
+        let machines = store.list_machines().await.expect("list machines");
+        let peer = machines
+            .into_iter()
+            .find(|machine| machine.id.0 == "peer")
+            .expect("peer present");
+        assert_eq!(peer.subnet, Some("10.210.0.0/24".parse().expect("valid")));
+        assert_eq!(
+            state
+                .active
+                .as_ref()
+                .map(|active| active.config.subnet)
+                .expect("active config present"),
+            "10.210.0.0/24".parse().expect("valid")
+        );
+
+        teardown_state(&mut state).await;
+    }
+
+    #[tokio::test]
+    async fn local_subnet_heal_skips_when_store_unhealthy() {
+        let store = Arc::new(MemoryStore::new());
+        store
+            .upsert_self_machine(&test_machine_record(
+                "founder",
+                "10.210.1.0/24",
+                Participation::Enabled,
+                0,
+                PublicKey([2; 32]),
+            ))
+            .await
+            .expect("upsert founder");
+        store
+            .upsert_self_machine(&test_machine_record(
+                "peer",
+                "10.210.1.0/24",
+                Participation::Enabled,
+                0,
+                PublicKey([3; 32]),
+            ))
+            .await
+            .expect("upsert peer");
+
+        let mut state = make_state_with_store(
+            Identity::generate(MachineId("peer".into()), [3; 32]),
+            "10.210.1.0/24",
+            store,
+        )
+        .await;
+        state
+            .active
+            .as_mut()
+            .expect("active mesh")
+            .mesh
+            .up()
+            .await
+            .expect("mesh up");
+
+        let service = match &state.active.as_ref().expect("active").mesh.store {
+            StoreDriver::Memory { service, .. } => service.clone(),
+            StoreDriver::Corrosion { .. } | StoreDriver::CorrosionHost { .. } => {
+                panic!("expected memory store")
+            }
+        };
+        service.set_healthy(false);
+
+        state.heal_local_subnet_conflict_if_needed().await;
+
+        let healed_config = NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha"))
+            .expect("load config");
+        assert_eq!(
+            healed_config.subnet,
+            "10.210.1.0/24".parse().expect("valid")
+        );
+
+        teardown_state(&mut state).await;
+    }
+
+    #[tokio::test]
+    async fn local_subnet_heal_skips_when_mesh_not_running() {
+        let store = Arc::new(MemoryStore::new());
+        store
+            .upsert_self_machine(&test_machine_record(
+                "founder",
+                "10.210.1.0/24",
+                Participation::Enabled,
+                0,
+                PublicKey([2; 32]),
+            ))
+            .await
+            .expect("upsert founder");
+        store
+            .upsert_self_machine(&test_machine_record(
+                "peer",
+                "10.210.1.0/24",
+                Participation::Enabled,
+                0,
+                PublicKey([3; 32]),
+            ))
+            .await
+            .expect("upsert peer");
+
+        let mut state = make_state_with_store(
+            Identity::generate(MachineId("peer".into()), [3; 32]),
+            "10.210.1.0/24",
+            store,
+        )
+        .await;
+
+        state.heal_local_subnet_conflict_if_needed().await;
+
+        let healed_config = NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha"))
+            .expect("load config");
+        assert_eq!(
+            healed_config.subnet,
+            "10.210.1.0/24".parse().expect("valid")
+        );
+    }
+
+    async fn make_state(start_mesh: bool) -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {
         let identity = Identity::generate(MachineId("founder".into()), [1; 32]);
         let founder_subnet: Ipv4Net = "10.210.0.0/24".parse().expect("valid subnet");
         let config = NetworkConfig::new(
@@ -1363,12 +2220,12 @@ mod tests {
             identity.public_key.clone(),
         );
         store
-            .upsert_machine(&founder_record)
+            .upsert_self_machine(&founder_record)
             .await
             .expect("upsert founder");
 
         let mut mesh = Mesh::new(
-            WireguardDriver::Memory(network),
+            WireguardDriver::Memory(network.clone()),
             StoreDriver::Memory {
                 store: store.clone(),
                 service,
@@ -1399,7 +2256,55 @@ mod tests {
             dns: crate::services::dns::DnsHandle::noop(),
         });
 
-        (state, store)
+        (state, store, network)
+    }
+
+    async fn make_state_with_store(
+        identity: Identity,
+        subnet: &str,
+        store: Arc<MemoryStore>,
+    ) -> DaemonState {
+        let subnet: Ipv4Net = subnet.parse().expect("valid subnet");
+        let data_dir = unique_temp_dir("ployz-machine-heal-state");
+        let config = NetworkConfig::new(
+            crate::model::NetworkName("alpha".into()),
+            &identity.public_key,
+            DEFAULT_CLUSTER_CIDR,
+            subnet,
+        );
+        config
+            .save(&NetworkConfig::path(&data_dir, "alpha"))
+            .expect("save config");
+
+        let mesh = Mesh::new(
+            WireguardDriver::Memory(Arc::new(MemoryWireGuard::new())),
+            StoreDriver::Memory {
+                store,
+                service: Arc::new(MemoryService::new()),
+            },
+            None,
+            identity.machine_id.clone(),
+            51820,
+        );
+
+        let mut state = DaemonState::new(
+            &data_dir,
+            identity,
+            Mode::Memory,
+            DEFAULT_CLUSTER_CIDR.into(),
+            24,
+            4317,
+            "127.0.0.1:0".into(),
+            1,
+        );
+        state.active = Some(ActiveMesh {
+            config,
+            mesh,
+            remote_control: RemoteControlHandle::noop(),
+            gateway: crate::services::gateway::GatewayHandle::noop(),
+            dns: crate::services::dns::DnsHandle::noop(),
+        });
+        state
     }
 
     async fn teardown_state(state: &mut DaemonState) {
