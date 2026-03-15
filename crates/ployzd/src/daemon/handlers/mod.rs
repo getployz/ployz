@@ -39,6 +39,8 @@ impl DaemonState {
             | DaemonRequest::MachineInit { .. }
             | DaemonRequest::MachineAdd { .. }
             | DaemonRequest::MachineRemove { .. }
+            | DaemonRequest::MachineOperationList
+            | DaemonRequest::MachineOperationGet { .. }
             | DaemonRequest::MachineInviteCreate { .. }
             | DaemonRequest::MachineInviteImport { .. }
             | DaemonRequest::MeshSelfRecord
@@ -85,6 +87,10 @@ impl DaemonState {
             DaemonRequest::MachineRemove { id, force } => {
                 self.handle_machine_remove(&id, force).await
             }
+            DaemonRequest::MachineOperationList => self.handle_machine_operation_list().await,
+            DaemonRequest::MachineOperationGet { id } => {
+                self.handle_machine_operation_get(&id).await
+            }
             DaemonRequest::MachineInviteCreate { ttl_secs } => {
                 self.handle_machine_invite_create(ttl_secs).await
             }
@@ -120,6 +126,8 @@ impl DaemonState {
             | DaemonRequest::MachineInit { .. }
             | DaemonRequest::MachineAdd { .. }
             | DaemonRequest::MachineRemove { .. }
+            | DaemonRequest::MachineOperationList
+            | DaemonRequest::MachineOperationGet { .. }
             | DaemonRequest::MachineInviteCreate { .. }
             | DaemonRequest::MachineInviteImport { .. }
             | DaemonRequest::MeshSelfRecord

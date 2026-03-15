@@ -573,6 +573,10 @@ async fn cmd_run(
             }
         }
     }
+    {
+        let state_guard = state.read().await;
+        state_guard.reconcile_machine_operations_on_startup().await;
+    }
 
     tracing::info!(socket = socket_path, "daemon running");
 

@@ -1,0 +1,625 @@
+use std::collections::BTreeMap;
+
+use ipnet::Ipv4Net;
+
+use crate::config::Mode;
+use crate::daemon::{DaemonState, PendingSubnetHeal, SubnetHealAttempt};
+use crate::model::{MachineId, MachineRecord, MachineStatus, Participation};
+use crate::runtime::ContainerEngine;
+use crate::runtime::labels::{LABEL_KIND, LABEL_MACHINE, LABEL_MANAGED};
+use crate::store::MachineStore;
+use crate::store::StoreRuntimeControl;
+use crate::store::network::NetworkConfig;
+use crate::time::now_unix_secs;
+
+use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
+use super::types::{LocalSubnetConflict, LocalSubnetHealPlan, RestartableWorkload};
+
+const SUBNET_HEAL_COOLDOWN_SECS: u64 = 10;
+const HEAL_WORKLOAD_STOP_GRACE: tokio::time::Duration = tokio::time::Duration::from_secs(10);
+const SUBNET_HEAL_SETTLE_SECS: u64 = 10;
+
+impl DaemonState {
+    pub async fn heal_local_subnet_conflict_if_needed(&mut self) {
+        let Some(active) = self.active.as_ref() else {
+            self.pending_subnet_heal = None;
+            self.last_subnet_heal_attempt = None;
+            return;
+        };
+
+        if active.mesh.phase() != crate::Phase::Running {
+            return;
+        }
+
+        if !active.mesh.store.healthy().await {
+            tracing::info!(
+                machine_id = %self.identity.machine_id,
+                "local subnet heal: store unhealthy, deferring"
+            );
+            return;
+        }
+
+        let machines = match active.mesh.store.list_machines().await {
+            Ok(machines) => machines,
+            Err(err) => {
+                tracing::warn!(error = %err, "local subnet heal: failed to list machines");
+                return;
+            }
+        };
+
+        if !machines
+            .iter()
+            .any(|machine| machine.id == self.identity.machine_id)
+        {
+            tracing::warn!(
+                machine_id = %self.identity.machine_id,
+                "local subnet heal: local machine missing from store, deferring"
+            );
+            return;
+        }
+
+        let duplicate_groups = duplicate_subnet_groups(&machines);
+        if duplicate_groups.is_empty() {
+            self.pending_subnet_heal = None;
+            self.last_subnet_heal_attempt = None;
+            return;
+        }
+
+        tracing::warn!(
+            machine_id = %self.identity.machine_id,
+            duplicate_groups = ?duplicate_group_log_view(&duplicate_groups),
+            "local subnet heal: duplicate subnet claims detected"
+        );
+
+        let current_conflict = match local_duplicate_subnet_conflict(&machines, &self.identity.machine_id) {
+            Some(conflict) => conflict,
+            None => {
+                self.pending_subnet_heal = None;
+                return;
+            }
+        };
+
+        let now = now_unix_secs();
+        let pending = match self.pending_subnet_heal {
+            Some(pending) if pending.network_subnet == current_conflict.subnet => pending,
+            _ => {
+                let target_subnet = match allocate_replacement_subnet(
+                    &machines,
+                    &self.identity.machine_id,
+                    &self.cluster_cidr,
+                    self.subnet_prefix_len,
+                ) {
+                    Ok(target_subnet) => target_subnet,
+                    Err(err) => {
+                        tracing::warn!(error = %err, "local subnet heal: failed to plan subnet heal");
+                        return;
+                    }
+                };
+                let pending = PendingSubnetHeal {
+                    network_subnet: current_conflict.subnet,
+                    target_subnet,
+                    planned_at: now,
+                };
+                self.pending_subnet_heal = Some(pending);
+                tracing::info!(
+                    machine_id = %self.identity.machine_id,
+                    current_subnet = %pending.network_subnet,
+                    target_subnet = %pending.target_subnet,
+                    settle_secs = SUBNET_HEAL_SETTLE_SECS,
+                    "local subnet heal: planned replacement subnet, waiting for settle window"
+                );
+                return;
+            }
+        };
+
+        let target_winner = target_subnet_winner(&machines, &self.identity.machine_id, pending.target_subnet);
+        if target_winner != self.identity.machine_id {
+            let target_subnet = match allocate_replacement_subnet(
+                &machines,
+                &self.identity.machine_id,
+                &self.cluster_cidr,
+                self.subnet_prefix_len,
+            ) {
+                Ok(target_subnet) => target_subnet,
+                Err(err) => {
+                    tracing::warn!(error = %err, "local subnet heal: failed to replan subnet heal");
+                    return;
+                }
+            };
+            let pending = PendingSubnetHeal {
+                network_subnet: current_conflict.subnet,
+                target_subnet,
+                planned_at: now,
+            };
+            self.pending_subnet_heal = Some(pending);
+            tracing::info!(
+                machine_id = %self.identity.machine_id,
+                losing_machine_id = %target_winner,
+                current_subnet = %pending.network_subnet,
+                target_subnet = %pending.target_subnet,
+                settle_secs = SUBNET_HEAL_SETTLE_SECS,
+                "local subnet heal: lost target subnet tie-break, replanning"
+            );
+            return;
+        }
+
+        if now.saturating_sub(pending.planned_at) < SUBNET_HEAL_SETTLE_SECS {
+            tracing::info!(
+                machine_id = %self.identity.machine_id,
+                current_subnet = %pending.network_subnet,
+                target_subnet = %pending.target_subnet,
+                settle_secs = SUBNET_HEAL_SETTLE_SECS,
+                "local subnet heal: waiting for settle window"
+            );
+            return;
+        }
+
+        let plan = LocalSubnetHealPlan {
+            current_subnet: current_conflict.subnet,
+            winner_machine_id: current_conflict.winner_machine_id,
+            target_subnet: pending.target_subnet,
+        };
+
+        match plan_local_subnet_heal(
+            &machines,
+            &self.identity.machine_id,
+            &self.cluster_cidr,
+            self.subnet_prefix_len,
+        ) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                self.pending_subnet_heal = None;
+                return;
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "local subnet heal: failed to plan subnet heal");
+                return;
+            }
+        }
+
+        if let Some(last_attempt) = self.last_subnet_heal_attempt
+            && last_attempt.network_subnet == plan.current_subnet
+            && last_attempt.target_subnet == plan.target_subnet
+            && now.saturating_sub(last_attempt.attempted_at) < SUBNET_HEAL_COOLDOWN_SECS
+        {
+            tracing::info!(
+                machine_id = %self.identity.machine_id,
+                current_subnet = %plan.current_subnet,
+                target_subnet = %plan.target_subnet,
+                "local subnet heal: skipping repeated attempt during cooldown"
+            );
+            return;
+        }
+
+        self.pending_subnet_heal = None;
+        self.last_subnet_heal_attempt = Some(SubnetHealAttempt {
+            network_subnet: plan.current_subnet,
+            target_subnet: plan.target_subnet,
+            attempted_at: now,
+        });
+
+        let operation_store = self.machine_operation_store();
+        let mut operation = match operation_store.begin(
+            MachineOperationKind::Heal,
+            self.active.as_ref().map(|active| active.config.name.0.clone()),
+            Vec::new(),
+            "apply-local-subnet-heal",
+            MachineOperationArtifacts {
+                machine_id: Some(self.identity.machine_id.clone()),
+                allocated_subnet: Some(plan.target_subnet.to_string()),
+                ..MachineOperationArtifacts::default()
+            },
+        ) {
+            Ok(operation) => Some(operation),
+            Err(err) => {
+                tracing::warn!(error = %err, "local subnet heal: failed to persist operation start");
+                None
+            }
+        };
+
+        tracing::warn!(
+            machine_id = %self.identity.machine_id,
+            winner_machine_id = %plan.winner_machine_id,
+            current_subnet = %plan.current_subnet,
+            target_subnet = %plan.target_subnet,
+            "local subnet heal: starting"
+        );
+
+        match self.apply_local_subnet_heal(&plan).await {
+            Ok(()) => {
+                if let Some(ref mut operation) = operation {
+                    let _ = operation_store.update_status(operation, MachineOperationStatus::Succeeded, None);
+                }
+                tracing::info!(
+                    machine_id = %self.identity.machine_id,
+                    current_subnet = %plan.current_subnet,
+                    target_subnet = %plan.target_subnet,
+                    "local subnet heal: complete"
+                );
+            }
+            Err(err) => {
+                if let Some(ref mut operation) = operation {
+                    let _ = operation_store.update_status(
+                        operation,
+                        MachineOperationStatus::Failed,
+                        Some(err.clone()),
+                    );
+                }
+                tracing::warn!(
+                    machine_id = %self.identity.machine_id,
+                    current_subnet = %plan.current_subnet,
+                    target_subnet = %plan.target_subnet,
+                    error = %err,
+                    "local subnet heal: failed"
+                );
+            }
+        }
+    }
+
+    async fn apply_local_subnet_heal(&mut self, plan: &LocalSubnetHealPlan) -> Result<(), String> {
+        let network_name = self
+            .active
+            .as_ref()
+            .map(|active| active.config.name.0.clone())
+            .ok_or_else(|| "no running network".to_string())?;
+        let config_path = NetworkConfig::path(&self.data_dir, &network_name);
+        let mut config = NetworkConfig::load(&config_path)
+            .map_err(|err| format!("load network config: {err}"))?;
+        config.subnet = plan.target_subnet;
+        config
+            .save(&config_path)
+            .map_err(|err| format!("save network config: {err}"))?;
+
+        match self.mode {
+            Mode::Memory => {
+                self.apply_local_subnet_heal_in_memory_mode(&network_name)
+                    .await
+            }
+            Mode::Docker | Mode::HostExec | Mode::HostService => {
+                self.restart_active_mesh_for_subnet_heal(&network_name)
+                    .await
+            }
+        }
+    }
+
+    async fn apply_local_subnet_heal_in_memory_mode(
+        &mut self,
+        network_name: &str,
+    ) -> Result<(), String> {
+        let config_path = NetworkConfig::path(&self.data_dir, network_name);
+        let config = NetworkConfig::load(&config_path)
+            .map_err(|err| format!("load network config: {err}"))?;
+        let Some(active) = self.active.as_mut() else {
+            return Err("no running network".into());
+        };
+
+        active.config = config.clone();
+        let Some(mut record) = active
+            .mesh
+            .update_authoritative_self_record(|record| {
+                record.subnet = Some(config.subnet);
+                record.updated_at = now_unix_secs();
+            })
+            .await
+        else {
+            return Err("local authoritative self record missing".into());
+        };
+        record.subnet = Some(config.subnet);
+        active
+            .mesh
+            .store
+            .upsert_self_machine(&record)
+            .await
+            .map_err(|err| format!("update healed local machine record: {err}"))
+    }
+
+    async fn restart_active_mesh_for_subnet_heal(
+        &mut self,
+        network_name: &str,
+    ) -> Result<(), String> {
+        let Some(active) = self.active.as_ref() else {
+            return Err("no running network".into());
+        };
+
+        self.publish_local_machine_down_for_subnet_heal(&active.config.subnet)
+            .await?;
+
+        let workloads = self
+            .stop_local_workloads_for_subnet_heal(network_name)
+            .await?;
+
+        if let Err(error) = self
+            .restart_active_runtime_for_subnet_heal(network_name)
+            .await
+        {
+            return Err(error);
+        }
+
+        self.start_local_workloads_after_subnet_heal(network_name, &workloads)
+            .await
+    }
+
+    async fn publish_local_machine_down_for_subnet_heal(
+        &self,
+        current_subnet: &Ipv4Net,
+    ) -> Result<(), String> {
+        let Some(active) = self.active.as_ref() else {
+            return Err("no running network".into());
+        };
+
+        let now = now_unix_secs();
+        let Some(record) = active
+            .mesh
+            .update_authoritative_self_record(|record| {
+                record.subnet = Some(*current_subnet);
+                record.status = MachineStatus::Down;
+                record.participation = Participation::Disabled;
+                record.last_heartbeat = now;
+                record.updated_at = now;
+            })
+            .await
+        else {
+            return Err("local authoritative self record missing".into());
+        };
+        active
+            .mesh
+            .store
+            .upsert_self_machine(&record)
+            .await
+            .map_err(|err| format!("mark local machine down before subnet heal: {err}"))
+    }
+
+    async fn stop_local_workloads_for_subnet_heal(
+        &self,
+        network_name: &str,
+    ) -> Result<Vec<RestartableWorkload>, String> {
+        match self.mode {
+            Mode::Memory => Ok(Vec::new()),
+            Mode::Docker | Mode::HostExec | Mode::HostService => {
+                let engine = ContainerEngine::connect()
+                    .await
+                    .map_err(|err| format!("connect docker engine for subnet heal: {err}"))?;
+                let bridge_name = format!("ployz-{network_name}");
+                let observed = engine
+                    .list_by_labels(&[
+                        (LABEL_MANAGED, "true"),
+                        (LABEL_KIND, "workload"),
+                        (LABEL_MACHINE, &self.identity.machine_id.0),
+                    ])
+                    .await
+                    .map_err(|err| format!("list local workloads for subnet heal: {err}"))?;
+
+                let target_subnet = self
+                    .active
+                    .as_ref()
+                    .map(|active| active.config.subnet)
+                    .ok_or_else(|| "no running network".to_string())?;
+                let bridge =
+                    crate::network::docker_bridge::DockerBridgeNetwork::new(network_name, target_subnet)
+                        .await
+                        .map_err(|err| format!("build bridge handle for subnet heal: {err}"))?;
+
+                let mut restartable = Vec::new();
+                for container in observed {
+                    if !container.networks.contains_key(&bridge_name) {
+                        continue;
+                    }
+
+                    if container.running {
+                        engine
+                            .stop(&container.container_name, HEAL_WORKLOAD_STOP_GRACE)
+                            .await
+                            .map_err(|err| {
+                                format!(
+                                    "stop workload '{}' for subnet heal: {err}",
+                                    container.container_name
+                                )
+                            })?;
+                    }
+
+                    bridge
+                        .disconnect(&container.container_name, true)
+                        .await
+                        .map_err(|err| {
+                            format!(
+                                "disconnect workload '{}' from old bridge: {err}",
+                                container.container_name
+                            )
+                        })?;
+
+                    restartable.push(RestartableWorkload {
+                        container_name: container.container_name,
+                        was_running: container.running,
+                    });
+                }
+
+                Ok(restartable)
+            }
+        }
+    }
+
+    async fn start_local_workloads_after_subnet_heal(
+        &self,
+        network_name: &str,
+        workloads: &[RestartableWorkload],
+    ) -> Result<(), String> {
+        match self.mode {
+            Mode::Memory => Ok(()),
+            Mode::Docker | Mode::HostExec | Mode::HostService => {
+                if workloads.is_empty() {
+                    return Ok(());
+                }
+
+                let engine = ContainerEngine::connect()
+                    .await
+                    .map_err(|err| format!("connect docker engine after subnet heal: {err}"))?;
+                let target_subnet = self
+                    .active
+                    .as_ref()
+                    .map(|active| active.config.subnet)
+                    .ok_or_else(|| "no running network".to_string())?;
+                let bridge = crate::network::docker_bridge::DockerBridgeNetwork::new(
+                    network_name,
+                    target_subnet,
+                )
+                .await
+                .map_err(|err| format!("build target bridge handle after subnet heal: {err}"))?;
+
+                for workload in workloads {
+                    bridge
+                        .connect(&workload.container_name, None)
+                        .await
+                        .map_err(|err| {
+                            format!(
+                                "reconnect workload '{}' to healed bridge: {err}",
+                                workload.container_name
+                            )
+                        })?;
+                    if workload.was_running {
+                        engine
+                            .start(&workload.container_name)
+                            .await
+                            .map_err(|err| {
+                                format!(
+                                    "restart workload '{}' after subnet heal: {err}",
+                                    workload.container_name
+                                )
+                            })?;
+                    }
+                }
+
+                Ok(())
+            }
+        }
+    }
+}
+
+pub(super) fn duplicate_subnet_groups(machines: &[MachineRecord]) -> Vec<(Ipv4Net, Vec<MachineId>)> {
+    let mut groups: BTreeMap<Ipv4Net, Vec<MachineId>> = BTreeMap::new();
+
+    for machine in machines {
+        let Some(subnet) = machine.subnet else {
+            continue;
+        };
+        groups.entry(subnet).or_default().push(machine.id.clone());
+    }
+
+    groups
+        .into_iter()
+        .filter_map(|(subnet, mut machine_ids)| {
+            if machine_ids.len() < 2 {
+                return None;
+            }
+            machine_ids.sort_by(|left, right| left.0.cmp(&right.0));
+            Some((subnet, machine_ids))
+        })
+        .collect()
+}
+
+fn duplicate_group_log_view(groups: &[(Ipv4Net, Vec<MachineId>)]) -> Vec<(String, Vec<String>)> {
+    groups
+        .iter()
+        .map(|(subnet, machine_ids)| {
+            (
+                subnet.to_string(),
+                machine_ids
+                    .iter()
+                    .map(|machine_id| machine_id.0.clone())
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+fn local_duplicate_subnet_conflict(
+    machines: &[MachineRecord],
+    local_machine_id: &MachineId,
+) -> Option<LocalSubnetConflict> {
+    for (subnet, machine_ids) in duplicate_subnet_groups(machines) {
+        let [winner_machine_id, ..] = machine_ids.as_slice() else {
+            continue;
+        };
+        if winner_machine_id == local_machine_id {
+            return None;
+        }
+        if machine_ids.iter().any(|machine_id| machine_id == local_machine_id) {
+            return Some(LocalSubnetConflict {
+                subnet,
+                winner_machine_id: winner_machine_id.clone(),
+            });
+        }
+    }
+
+    None
+}
+
+fn target_subnet_winner(
+    machines: &[MachineRecord],
+    local_machine_id: &MachineId,
+    target_subnet: Ipv4Net,
+) -> MachineId {
+    let mut contenders: Vec<MachineId> = machines
+        .iter()
+        .filter(|machine| machine.subnet == Some(target_subnet))
+        .map(|machine| machine.id.clone())
+        .collect();
+    contenders.push(local_machine_id.clone());
+    contenders.sort_by(|left, right| left.0.cmp(&right.0));
+    let [winner, ..] = contenders.as_slice() else {
+        return local_machine_id.clone();
+    };
+    winner.clone()
+}
+
+pub(super) fn plan_local_subnet_heal(
+    machines: &[MachineRecord],
+    local_machine_id: &MachineId,
+    cluster_cidr: &str,
+    subnet_prefix_len: u8,
+) -> Result<Option<LocalSubnetHealPlan>, String> {
+    for (subnet, machine_ids) in duplicate_subnet_groups(machines) {
+        let [winner_machine_id, ..] = machine_ids.as_slice() else {
+            continue;
+        };
+        if winner_machine_id == local_machine_id {
+            return Ok(None);
+        }
+        if !machine_ids.iter().any(|machine_id| machine_id == local_machine_id) {
+            continue;
+        }
+
+        let target_subnet = allocate_replacement_subnet(
+            machines,
+            local_machine_id,
+            cluster_cidr,
+            subnet_prefix_len,
+        )?;
+        return Ok(Some(LocalSubnetHealPlan {
+            current_subnet: subnet,
+            winner_machine_id: winner_machine_id.clone(),
+            target_subnet,
+        }));
+    }
+
+    Ok(None)
+}
+
+fn allocate_replacement_subnet(
+    machines: &[MachineRecord],
+    local_machine_id: &MachineId,
+    cluster_cidr: &str,
+    subnet_prefix_len: u8,
+) -> Result<Ipv4Net, String> {
+    let cluster: Ipv4Net = cluster_cidr
+        .parse()
+        .map_err(|err| format!("invalid cluster CIDR '{cluster_cidr}': {err}"))?;
+    let allocated = machines.iter().filter_map(|machine| {
+        if machine.id == *local_machine_id {
+            return None;
+        }
+        machine.subnet
+    });
+    let mut ipam = crate::network::ipam::Ipam::with_allocated(cluster, subnet_prefix_len, allocated);
+    ipam.allocate()
+        .ok_or_else(|| "no available subnets for local heal".into())
+}

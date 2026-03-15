@@ -15,5 +15,6 @@ pub use error::{Error, Result};
 pub use model::*;
 pub use spec::*;
 pub use transport::{
-    DaemonRequest, DaemonResponse, DeployFrame, DeployOptions, Transport, UnixSocketTransport,
+    DaemonPayload, DaemonRequest, DaemonResponse, DeployFrame, DeployOptions, StdioTransport,
+    Transport, UnixSocketTransport,
 };
