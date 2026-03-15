@@ -67,6 +67,7 @@ impl StoreDriver {
         network_dir: &Path,
         bootstrap: &[String],
         network_id: &str,
+        image: &str,
     ) -> std::result::Result<Self, String> {
         let paths = corrosion_config::Paths::new(network_dir);
         let gossip_addr = SocketAddr::new(
@@ -109,7 +110,7 @@ impl StoreDriver {
         let schema_host = paths.schema.to_string_lossy().into_owned();
         let config_container = "/etc/corrosion/config.toml";
         let schema_container = "/etc/corrosion/schema.sql";
-        let service = DockerCorrosion::new("ployz-corrosion", "ghcr.io/getployz/corrosion")
+        let service = DockerCorrosion::new("ployz-corrosion", image)
             .cmd(vec!["agent".into(), "-c".into(), config_container.into()])
             .volume(&format!("{config_host}:{config_container}:ro"))
             .volume(&format!("{schema_host}:{schema_container}:ro"))

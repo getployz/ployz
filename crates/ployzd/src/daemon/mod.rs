@@ -4,6 +4,7 @@ pub mod ssh;
 
 use std::path::{Path, PathBuf};
 
+use crate::built_in_images::BuiltInImages;
 use crate::config::{RuntimeTarget, ServiceMode};
 use crate::deploy::NamespaceLockManager;
 use crate::deploy::remote::RemoteControlHandle;
@@ -63,6 +64,7 @@ impl DaemonState {
         identity: Identity,
         runtime_target: RuntimeTarget,
         service_mode: ServiceMode,
+        built_in_images: BuiltInImages,
         cluster_cidr: String,
         subnet_prefix_len: u8,
         remote_control_port: u16,
@@ -74,7 +76,11 @@ impl DaemonState {
             identity,
             runtime_target,
             service_mode,
-            runtime_profile: RuntimeProfile::from_runtime(runtime_target, service_mode),
+            runtime_profile: RuntimeProfile::from_runtime(
+                runtime_target,
+                service_mode,
+                built_in_images,
+            ),
             cluster_cidr,
             subnet_prefix_len,
             remote_control_port,

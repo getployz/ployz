@@ -3,8 +3,6 @@ use std::path::PathBuf;
 use crate::services::supervisor::{ServiceSupervision, SidecarHandle, SidecarSpec, SystemdType};
 use crate::store::network::NetworkConfig;
 
-const GATEWAY_IMAGE: &str = "ghcr.io/getployz/ployz-gateway:latest";
-
 // Re-export library types for public API consumers
 pub use ployz_gateway::{
     self as runtime, GatewayApp, GatewayConfig, GatewayError, Opt, SharedSnapshot,
@@ -57,6 +55,7 @@ impl GatewayHandle {
 pub async fn start_managed_gateway(
     supervision: Option<ServiceSupervision>,
     config: GatewayConfig,
+    image: &str,
 ) -> Result<GatewayHandle, GatewayError> {
     let Some(supervision) = supervision else {
         return Ok(GatewayHandle::noop());
@@ -65,7 +64,7 @@ pub async fn start_managed_gateway(
     let paths = GatewayPaths::for_config(&config);
     write_pingora_config(&paths, config.threads)?;
 
-    let spec = build_gateway_sidecar_spec(&config, &paths);
+    let spec = build_gateway_sidecar_spec(&config, &paths, image);
     SidecarHandle::ensure(supervision, spec)
         .await
         .map(|handle| GatewayHandle {
@@ -74,7 +73,11 @@ pub async fn start_managed_gateway(
         .map_err(|e| GatewayError::Process(e.to_string()))
 }
 
-fn build_gateway_sidecar_spec(config: &GatewayConfig, paths: &GatewayPaths) -> SidecarSpec {
+fn build_gateway_sidecar_spec(
+    config: &GatewayConfig,
+    paths: &GatewayPaths,
+    image: &str,
+) -> SidecarSpec {
     let data_dir_str = config.data_dir.display().to_string();
     let gateway_dir_str = paths.gateway_dir.display().to_string();
 
@@ -99,7 +102,7 @@ fn build_gateway_sidecar_spec(config: &GatewayConfig, paths: &GatewayPaths) -> S
 
     SidecarSpec {
         name: format!("gateway-{}", config.network),
-        image: GATEWAY_IMAGE.to_string(),
+        image: image.to_string(),
         binary_name: "ployz-gateway".to_string(),
         container_name: "ployz-gateway".to_string(),
         cmd: vec!["-c".into(), paths.pingora_config.display().to_string()],

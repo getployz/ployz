@@ -1,6 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 
+use crate::built_in_images::{BuiltInImage, BuiltInImages};
 use crate::config::{RuntimeTarget, ServiceMode};
 use crate::daemon::handlers::machine::types::RestartableWorkload;
 use crate::deploy::remote::{RemoteControlHandle, start_remote_control_listener};
@@ -30,13 +31,14 @@ pub(crate) enum ControlPlaneBinding {
     Overlay,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RuntimeProfile {
     execution_backend: ExecutionBackend,
     runtime_target: RuntimeTarget,
     service_mode: ServiceMode,
     control_plane_binding: ControlPlaneBinding,
     sidecar_supervision: Option<ServiceSupervision>,
+    built_in_images: BuiltInImages,
 }
 
 pub(crate) struct MeshRuntimeComponents {
@@ -47,7 +49,11 @@ pub(crate) struct MeshRuntimeComponents {
 
 impl RuntimeProfile {
     #[must_use]
-    pub(crate) fn from_runtime(runtime_target: RuntimeTarget, service_mode: ServiceMode) -> Self {
+    pub(crate) fn from_runtime(
+        runtime_target: RuntimeTarget,
+        service_mode: ServiceMode,
+        built_in_images: BuiltInImages,
+    ) -> Self {
         match runtime_target {
             RuntimeTarget::Docker => Self {
                 execution_backend: ExecutionBackend::Docker,
@@ -55,6 +61,7 @@ impl RuntimeProfile {
                 service_mode,
                 control_plane_binding: ControlPlaneBinding::Loopback,
                 sidecar_supervision: Some(ServiceSupervision::DockerContainer),
+                built_in_images,
             },
             RuntimeTarget::Host => Self {
                 execution_backend: ExecutionBackend::Host,
@@ -65,28 +72,32 @@ impl RuntimeProfile {
                     ServiceMode::User => ServiceSupervision::ChildProcess,
                     ServiceMode::System => ServiceSupervision::Systemd,
                 }),
+                built_in_images,
             },
         }
     }
 
     #[must_use]
     pub(crate) fn memory_for_tests() -> Self {
+        let built_in_images =
+            BuiltInImages::load(None).expect("embedded built-in images manifest should parse");
         Self {
             execution_backend: ExecutionBackend::Memory,
             runtime_target: RuntimeTarget::Host,
             service_mode: ServiceMode::User,
             control_plane_binding: ControlPlaneBinding::Loopback,
             sidecar_supervision: None,
+            built_in_images,
         }
     }
 
     #[must_use]
-    pub(crate) fn is_memory_test(self) -> bool {
+    pub(crate) fn is_memory_test(&self) -> bool {
         self.execution_backend == ExecutionBackend::Memory
     }
 
     #[must_use]
-    pub(crate) fn overlay_network_name(self, network_name: &str) -> Option<String> {
+    pub(crate) fn overlay_network_name(&self, network_name: &str) -> Option<String> {
         if self.is_memory_test() {
             return None;
         }
@@ -94,7 +105,7 @@ impl RuntimeProfile {
     }
 
     pub(crate) async fn build_mesh_components(
-        self,
+        &self,
         identity: &crate::Identity,
         overlay_ip: OverlayIp,
         network_dir: &Path,
@@ -107,8 +118,14 @@ impl RuntimeProfile {
         let network = match self.execution_backend {
             ExecutionBackend::Memory => WireguardDriver::memory(),
             ExecutionBackend::Docker => {
-                WireguardDriver::docker(identity, overlay_ip, network_dir, exposed_tcp_ports)
-                    .await?
+                WireguardDriver::docker(
+                    identity,
+                    overlay_ip,
+                    network_dir,
+                    exposed_tcp_ports,
+                    self.built_in_images.resolve(BuiltInImage::Networking),
+                )
+                .await?
             }
             ExecutionBackend::Host => {
                 WireguardDriver::host(identity, overlay_ip, network_name, subnet)?
@@ -118,8 +135,14 @@ impl RuntimeProfile {
         let store = match self.execution_backend {
             ExecutionBackend::Memory => StoreDriver::memory(),
             ExecutionBackend::Docker => {
-                StoreDriver::corrosion_docker(overlay_ip, network_dir, bootstrap, network_id)
-                    .await?
+                StoreDriver::corrosion_docker(
+                    overlay_ip,
+                    network_dir,
+                    bootstrap,
+                    network_id,
+                    self.built_in_images.resolve(BuiltInImage::Corrosion),
+                )
+                .await?
             }
             ExecutionBackend::Host => {
                 StoreDriver::corrosion_host(overlay_ip, network_dir, bootstrap, network_id)?
@@ -144,7 +167,7 @@ impl RuntimeProfile {
 
     #[must_use]
     pub(crate) fn remote_control_bind_addr(
-        self,
+        &self,
         remote_control_port: u16,
         overlay_ip: OverlayIp,
     ) -> SocketAddr {
@@ -159,7 +182,7 @@ impl RuntimeProfile {
     }
 
     pub(crate) async fn start_remote_control(
-        self,
+        &self,
         bind_addr: SocketAddr,
         store: crate::StoreDriver,
         namespace_locks: crate::deploy::NamespaceLockManager,
@@ -183,22 +206,30 @@ impl RuntimeProfile {
     }
 
     pub(crate) async fn start_gateway(
-        self,
+        &self,
         config: GatewayConfig,
     ) -> Result<GatewayHandle, String> {
-        start_managed_gateway(self.sidecar_supervision, config)
-            .await
-            .map_err(|error| error.to_string())
+        start_managed_gateway(
+            self.sidecar_supervision,
+            config,
+            self.built_in_images.resolve(BuiltInImage::Gateway),
+        )
+        .await
+        .map_err(|error| error.to_string())
     }
 
-    pub(crate) async fn start_dns(self, config: DnsConfig) -> Result<DnsHandle, String> {
-        start_managed_dns(self.sidecar_supervision, config)
-            .await
-            .map_err(|error| error.to_string())
+    pub(crate) async fn start_dns(&self, config: DnsConfig) -> Result<DnsHandle, String> {
+        start_managed_dns(
+            self.sidecar_supervision,
+            config,
+            self.built_in_images.resolve(BuiltInImage::Dns),
+        )
+        .await
+        .map_err(|error| error.to_string())
     }
 
     pub(crate) async fn stop_local_workloads_for_subnet_heal(
-        self,
+        &self,
         machine_id: &MachineId,
         network_name: &str,
         target_subnet: Ipv4Net,

@@ -1,0 +1,4 @@
+networking = "ghcr.io/getployz/ployz-networking:latest@sha256:520abe6e45704e5b8ef1b8336188a1d6f2f70db1ef70fcb199bc1ce6bc34890f"
+corrosion = "ghcr.io/getployz/corrosion:latest@sha256:f1d1f8464e42cf0489d4b61fa8945097dc3af53c5001ac716223b3301e455405"
+dns = "ghcr.io/getployz/ployz-dns:latest@sha256:67e759f7a0f0480c8dc533856344bad79296006de85b36a8943063d72f598356"
+gateway = "ghcr.io/getployz/ployz-gateway:latest@sha256:de8bca7926fddd30aafd68f2bf4b2183f5ec4ff59382ef6fb12d1c5419a05ae1"
