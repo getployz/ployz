@@ -34,6 +34,16 @@ pub(super) struct ManagedInstance {
     pub(super) backend_ports: BTreeMap<String, u16>,
 }
 
+pub(super) struct StartCandidate<'a> {
+    pub(super) namespace: &'a Namespace,
+    pub(super) spec: &'a ServiceSpec,
+    pub(super) deploy_id: &'a DeployId,
+    pub(super) instance_id: &'a InstanceId,
+    pub(super) slot_id: &'a SlotId,
+    pub(super) machine_id: &'a MachineId,
+    pub(super) revision_hash: &'a str,
+}
+
 pub struct LocalDeployRuntime {
     engine: ContainerEngine,
     overlay_network: Option<String>,
@@ -98,14 +108,17 @@ impl LocalDeployRuntime {
 
     pub(super) async fn start_candidate(
         &self,
-        namespace: &Namespace,
-        spec: &ServiceSpec,
-        deploy_id: &DeployId,
-        instance_id: &InstanceId,
-        slot_id: &SlotId,
-        machine_id: &MachineId,
-        revision_hash: &str,
+        request: StartCandidate<'_>,
     ) -> Result<ManagedInstance> {
+        let StartCandidate {
+            namespace,
+            spec,
+            deploy_id,
+            instance_id,
+            slot_id,
+            machine_id,
+            revision_hash,
+        } = request;
         let container_name = format!("ployz-{namespace}-{}-{}", spec.name, instance_id.0);
         let key = format!("{namespace}/{}/{}/{}", spec.name, slot_id.0, instance_id.0);
 

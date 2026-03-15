@@ -16,8 +16,8 @@ use crate::store::DeployStore;
 use ployz_sdk::transport::DeployFrame;
 
 use super::local::{
-    LocalDeployRuntime, adopt_instances, build_instance_status_record, list_local_instance_status,
-    now_unix_secs,
+    LocalDeployRuntime, StartCandidate, adopt_instances, build_instance_status_record,
+    list_local_instance_status, now_unix_secs,
 };
 use super::session::{DeploySession, StartCandidateRequest};
 use super::{NamespaceLock, NamespaceLockManager};
@@ -64,7 +64,14 @@ pub struct SessionState {
     _lock: NamespaceLock,
 }
 
+impl SessionState {
+    pub(super) fn deploy_id(&self) -> &DeployId {
+        &self.deploy_id
+    }
+}
+
 impl DeployAgent {
+    #[must_use]
     pub fn new(
         store: StoreDriver,
         locks: NamespaceLockManager,
@@ -143,15 +150,15 @@ impl DeployAgent {
             .map_err(|e| Error::operation("start_candidate", e))?;
         let runtime = self.new_runtime()?;
         let instance = runtime
-            .start_candidate(
-                &session.namespace,
-                &spec,
+            .start_candidate(StartCandidate {
+                namespace: &session.namespace,
+                spec: &spec,
                 deploy_id,
                 instance_id,
                 slot_id,
-                &self.local_machine_id,
-                &revision_hash,
-            )
+                machine_id: &self.local_machine_id,
+                revision_hash: &revision_hash,
+            })
             .await?;
         runtime.wait_ready(&spec, &instance).await?;
         let status = build_instance_status_record(
@@ -393,7 +400,6 @@ async fn handle_session_frame_inner(
             service,
             slot_id,
             instance_id,
-            deploy_id,
             spec_json,
         } => {
             let status = agent
@@ -402,7 +408,7 @@ async fn handle_session_frame_inner(
                     &service,
                     &SlotId(slot_id),
                     &InstanceId(instance_id),
-                    &DeployId(deploy_id),
+                    session.deploy_id(),
                     &spec_json,
                 )
                 .await?;
@@ -552,7 +558,16 @@ impl TcpDeploySession {
                 "deploy_session",
                 format!("{code}: {message}"),
             )),
-            other => Ok(other),
+            DeployFrame::Open { .. }
+            | DeployFrame::InspectNamespace
+            | DeployFrame::StartCandidate { .. }
+            | DeployFrame::DrainInstance { .. }
+            | DeployFrame::RemoveInstance { .. }
+            | DeployFrame::Close
+            | DeployFrame::Opened { .. }
+            | DeployFrame::NamespaceSnapshot { .. }
+            | DeployFrame::CandidateStarted { .. }
+            | DeployFrame::Ack { .. } => Ok(response),
         }
     }
 }
@@ -564,27 +579,29 @@ impl DeploySession for TcpDeploySession {
     }
 
     async fn inspect_namespace(&mut self) -> Result<Vec<InstanceStatusRecord>> {
-        match self.send_and_recv(&DeployFrame::InspectNamespace).await? {
-            DeployFrame::NamespaceSnapshot { instances } => Ok(instances),
-            other => Err(unexpected_response("inspect_namespace", &other)),
-        }
+        let response = self.send_and_recv(&DeployFrame::InspectNamespace).await?;
+        let DeployFrame::NamespaceSnapshot { instances } = response else {
+            return Err(unexpected_response("inspect_namespace", &response));
+        };
+        Ok(instances)
     }
 
     async fn start_candidate(
         &mut self,
         req: StartCandidateRequest,
     ) -> Result<InstanceStatusRecord> {
-        let frame = DeployFrame::StartCandidate {
-            service: req.service,
-            slot_id: req.slot_id.0,
-            instance_id: req.instance_id.0,
-            deploy_id: req.deploy_id.0,
-            spec_json: req.spec_json,
+        let response = self
+            .send_and_recv(&DeployFrame::StartCandidate {
+                service: req.service,
+                slot_id: req.slot_id.0,
+                instance_id: req.instance_id.0,
+                spec_json: req.spec_json,
+            })
+            .await?;
+        let DeployFrame::CandidateStarted { status } = response else {
+            return Err(unexpected_response("start_candidate", &response));
         };
-        match self.send_and_recv(&frame).await? {
-            DeployFrame::CandidateStarted { status } => Ok(*status),
-            other => Err(unexpected_response("start_candidate", &other)),
-        }
+        Ok(*status)
     }
 
     async fn drain_instance(&mut self, instance_id: &InstanceId) -> Result<()> {
@@ -608,10 +625,10 @@ impl DeploySession for TcpDeploySession {
 }
 
 fn expect_ack(operation: &'static str, response: DeployFrame) -> Result<()> {
-    match response {
-        DeployFrame::Ack { .. } => Ok(()),
-        other => Err(unexpected_response(operation, &other)),
-    }
+    let DeployFrame::Ack { .. } = response else {
+        return Err(unexpected_response(operation, &response));
+    };
+    Ok(())
 }
 
 fn unexpected_response(operation: &'static str, response: &DeployFrame) -> Error {

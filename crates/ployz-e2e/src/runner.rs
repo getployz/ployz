@@ -2,8 +2,8 @@ use crate::cli::Scenario;
 use crate::error::{Error, Result};
 use crate::scenarios;
 use crate::support::{
-    CommandOutput, docker_outer, docker_outer_raw, parse_ready, pick_free_port, run_command,
-    run_command_expect_ok, wait_until,
+    docker_outer, docker_outer_raw, parse_ready, pick_free_port, run_command,
+    run_command_expect_ok, wait_until, CommandOutput,
 };
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -280,12 +280,6 @@ impl ScenarioRun {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn tick_node(&self, node_name: &str, repeat: u32) -> Result<()> {
-        self.ssh_expect_ok_name(node_name, &format!("ployzd debug tick --repeat {repeat}"))?;
-        Ok(())
-    }
-
     pub(crate) fn tick_nodes(&self, node_names: &[&str], repeat: u32) -> Result<()> {
         let commands = node_names
             .iter()
@@ -490,21 +484,6 @@ impl ScenarioRun {
         }
 
         Ok(())
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn wait_for_unique_machine_subnets(&self, node_name: &str) -> Result<()> {
-        wait_until(STATE_WAIT_TIMEOUT, || {
-            match self.assert_unique_machine_subnets(node_name) {
-                Ok(()) => Ok(true),
-                Err(_) => Ok(false),
-            }
-        })
-        .map_err(|error| {
-            Error::Message(format!(
-                "machine subnets did not become unique on {node_name}: {error}"
-            ))
-        })
     }
 
     pub(crate) fn wait_for_unique_machine_subnets_with_ticks(
@@ -768,8 +747,7 @@ impl ScenarioRun {
                 "{}:/e2e-keys:ro",
                 self.private_key_path
                     .parent()
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(|| self.root_dir.join("keys"))
+                    .map_or_else(|| self.root_dir.join("keys"), Path::to_path_buf)
                     .to_string_lossy()
             );
             let payload_mount = format!("{}:/e2e-payload:ro", self.payload_dir.to_string_lossy());

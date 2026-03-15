@@ -14,7 +14,7 @@ use ployzd::daemon::{ActiveMesh, DaemonState};
 use ployzd::ipc::listener::{IncomingCommand, serve};
 use ployzd::{Affordances, Identity, Mode, load_daemon_config};
 use std::collections::BTreeMap;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::Arc;
@@ -196,6 +196,8 @@ enum Command {
         #[command(subcommand)]
         action: MachineAction,
     },
+    #[command(hide = true)]
+    RpcStdio,
 }
 
 #[derive(Debug, Subcommand)]
@@ -380,6 +382,11 @@ enum MachineAction {
         #[command(subcommand)]
         action: MachineInviteAction,
     },
+    #[command(hide = true)]
+    Operation {
+        #[command(subcommand)]
+        action: MachineOperationAction,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -395,6 +402,12 @@ enum MachineInviteAction {
         #[arg(long)]
         token: String,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum MachineOperationAction {
+    List,
+    Get { id: String },
 }
 
 #[tokio::main]
@@ -443,10 +456,19 @@ async fn run() -> Result<i32> {
             .await?;
             Ok(0)
         }
-        other => {
+        other @ Command::Status
+        | other @ Command::Doctor
+        | other @ Command::Debug { .. }
+        | other @ Command::Deploy(_)
+        | other @ Command::Mesh { .. }
+        | other @ Command::Machine { .. }
+        | other @ Command::RpcStdio => {
             let resolved = load_client_config(cli.config, cli.socket, &Affordances::detect())
                 .map_err(|err| CliError::Config(err.to_string()))?;
             let socket = resolved.socket;
+            if let Command::RpcStdio = other {
+                return cmd_rpc_stdio(&socket).await;
+            }
             let transport = UnixSocketTransport::new(socket.clone());
             let request = build_request(other, &transport, &socket).await?;
             let response = request_daemon(&transport, &socket, request).await?;
@@ -455,6 +477,31 @@ async fn run() -> Result<i32> {
             if response.ok { Ok(0) } else { Ok(1) }
         }
     }
+}
+
+async fn cmd_rpc_stdio(socket: &str) -> Result<i32> {
+    let mut line = String::new();
+    BufReader::new(std::io::stdin())
+        .read_line(&mut line)
+        .map_err(|err| CliError::Usage(format!("failed to read daemon request from stdin: {err}")))?;
+    let request = serde_json::from_str::<DaemonRequest>(&line)
+        .map_err(|err| CliError::Usage(format!("invalid daemon request from stdin: {err}")))?;
+
+    let transport = UnixSocketTransport::new(socket.to_string());
+    let response = request_daemon(&transport, socket, request).await?;
+    let body = serde_json::to_string(&response)
+        .map_err(|err| CliError::Serialize(format!("failed to encode daemon response: {err}")))?;
+    let mut stdout = std::io::stdout().lock();
+    stdout
+        .write_all(body.as_bytes())
+        .map_err(|err| CliError::Io(format!("failed to write daemon response: {err}")))?;
+    stdout
+        .write_all(b"\n")
+        .map_err(|err| CliError::Io(format!("failed to write daemon response newline: {err}")))?;
+    stdout
+        .flush()
+        .map_err(|err| CliError::Io(format!("failed to flush daemon response: {err}")))?;
+    Ok(0)
 }
 
 fn init_tracing() {
@@ -557,6 +604,7 @@ async fn cmd_run(
                             ok: false,
                             code: "SHUTDOWN".into(),
                             message: "daemon shutting down".into(),
+                            payload: None,
                         },
                         response = async {
                             match DaemonState::request_lane(&cmd.request) {
@@ -609,6 +657,9 @@ async fn build_request<T: Transport>(
         Command::Deploy(command) => build_deploy_request(*command, transport, socket).await,
         Command::Mesh { action } => build_mesh_request(action),
         Command::Machine { action } => build_machine_request(action),
+        Command::RpcStdio => Err(CliError::Usage(
+            "internal error: rpc-stdio is handled directly".into(),
+        )),
         Command::Run { .. } => Err(CliError::Usage(
             "internal error: daemon command cannot be encoded as a daemon request".into(),
         )),
@@ -745,7 +796,11 @@ fn upsert_service_in_manifest(manifest: &mut DeployManifest, spec: ServiceSpec) 
         return;
     };
 
-    manifest.services[index] = spec;
+    let service = manifest
+        .services
+        .get_mut(index)
+        .expect("service index from position must exist");
+    *service = spec;
     manifest
         .services
         .sort_by(|left, right| left.name.cmp(&right.name));
@@ -850,6 +905,10 @@ fn build_machine_request(action: MachineAction) -> Result<DaemonRequest> {
                 Ok(DaemonRequest::MachineInviteImport { token })
             }
         },
+        MachineAction::Operation { action } => match action {
+            MachineOperationAction::List => Ok(DaemonRequest::MachineOperationList),
+            MachineOperationAction::Get { id } => Ok(DaemonRequest::MachineOperationGet { id }),
+        },
     }
 }
 
@@ -932,19 +991,13 @@ fn string_arg_or_stdin(
     value: Option<String>,
     read_stdin: bool,
 ) -> Result<String> {
-    let [has_value, reads_stdin] = [value.is_some(), read_stdin];
-    match [has_value, reads_stdin] {
-        [true, false] => {
-            let Some(text) = value else {
-                unreachable!("presence checked above");
-            };
-            Ok(text)
-        }
-        [false, true] => read_stdin_string(label),
-        [false, false] => Err(CliError::Usage(format!(
+    match (value, read_stdin) {
+        (Some(text), false) => Ok(text),
+        (None, true) => read_stdin_string(label),
+        (None, false) => Err(CliError::Usage(format!(
             "{label} requires either an argument or {stdin_flag}"
         ))),
-        [true, true] => Err(CliError::Usage(format!(
+        (Some(_), true) => Err(CliError::Usage(format!(
             "{label} cannot use both an argument and {stdin_flag}"
         ))),
     }
@@ -1251,7 +1304,7 @@ mod tests {
             options
                 .install
                 .as_ref()
-                .and_then(|install| install.mode.clone()),
+                .and_then(|install| install.mode),
             Some(MachineInstallMode::HostExec)
         );
 

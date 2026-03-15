@@ -13,7 +13,7 @@ use crate::services::dns::DnsHandle;
 use crate::services::gateway::GatewayHandle;
 use crate::store::network::NetworkConfig;
 use ipnet::Ipv4Net;
-use ployz_sdk::transport::DaemonResponse;
+use ployz_sdk::transport::{DaemonPayload, DaemonResponse};
 
 pub struct ActiveMesh {
     pub config: NetworkConfig,
@@ -81,14 +81,17 @@ impl DaemonState {
         }
     }
 
+    #[must_use]
     pub fn active_marker_path(&self) -> PathBuf {
         self.data_dir.join("active_network")
     }
 
+    #[must_use]
     pub fn network_dir(&self, network: &str) -> PathBuf {
         NetworkConfig::dir(&self.data_dir, network)
     }
 
+    #[must_use]
     pub fn read_active_marker(&self) -> Option<String> {
         NetworkConfig::read_active_network(&self.data_dir)
     }
@@ -103,18 +106,37 @@ impl DaemonState {
     }
 
     pub fn ok(&self, message: impl Into<String>) -> DaemonResponse {
+        self.ok_with_payload(message, None)
+    }
+
+    pub fn ok_with_payload(
+        &self,
+        message: impl Into<String>,
+        payload: Option<DaemonPayload>,
+    ) -> DaemonResponse {
         DaemonResponse {
             ok: true,
             code: "OK".into(),
             message: message.into(),
+            payload,
         }
     }
 
     pub fn err(&self, code: &str, message: impl Into<String>) -> DaemonResponse {
+        self.err_with_payload(code, message, None)
+    }
+
+    pub fn err_with_payload(
+        &self,
+        code: &str,
+        message: impl Into<String>,
+        payload: Option<DaemonPayload>,
+    ) -> DaemonResponse {
         DaemonResponse {
             ok: false,
             code: code.into(),
             message: message.into(),
+            payload,
         }
     }
 }

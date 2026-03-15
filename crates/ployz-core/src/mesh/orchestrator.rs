@@ -6,9 +6,8 @@ use crate::mesh::probe::run_probe_listener_task;
 use crate::mesh::tasks::{
     HeartbeatCommand, ParticipationCommand, PeerSyncCommand, SelfLivenessCommand,
     SelfRecordMutation, TaskSet, TaskSetError, apply_self_record_mutation, run_ebpf_sync_task,
-    run_endpoint_refresh_task, run_heartbeat_task, run_participation_task,
-    run_peer_sync_task, run_self_liveness_task, run_self_record_writer_task,
-    run_subnet_claim_monitor_task,
+    run_endpoint_refresh_task, run_heartbeat_task, run_participation_task, run_peer_sync_task,
+    run_self_liveness_task, run_self_record_writer_task, run_subnet_claim_monitor_task,
 };
 use crate::model::{MachineId, MachineRecord, MachineStatus};
 use crate::network::docker_bridge::DockerBridgeNetwork;
@@ -134,10 +133,12 @@ impl Mesh {
         self.phase
     }
 
+    #[must_use]
     pub fn peer_sync_sender(&self) -> Option<mpsc::Sender<PeerSyncCommand>> {
         self.peer_sync_tx.clone()
     }
 
+    #[must_use]
     pub fn heartbeat_sender(&self) -> Option<mpsc::Sender<HeartbeatCommand>> {
         self.heartbeat_tx.clone()
     }

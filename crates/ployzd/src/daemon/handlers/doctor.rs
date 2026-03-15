@@ -232,7 +232,7 @@ fn build_participation_rows(
                 participation: machine.participation.to_string(),
                 liveness: format_liveness(machine, now).to_string(),
                 required,
-                handshake: handshake_state.to_string(),
+                handshake: String::from(handshake_state.as_str()),
                 probe: overlay_probe_by_ip
                     .get(&machine.overlay_ip)
                     .copied()
@@ -269,19 +269,12 @@ impl ProbeState {
 }
 
 impl HandshakeState {
-    fn is_fresh(&self) -> bool {
+    fn as_str(&self) -> &'static str {
         match self {
-            Self::Fresh => true,
-            Self::Stale | Self::None | Self::Absent => false,
-        }
-    }
-
-    fn to_string(&self) -> String {
-        match self {
-            Self::Fresh => String::from("fresh"),
-            Self::Stale => String::from("stale"),
-            Self::None => String::from("none"),
-            Self::Absent => String::from("absent"),
+            Self::Fresh => "fresh",
+            Self::Stale => "stale",
+            Self::None => "none",
+            Self::Absent => "absent",
         }
     }
 }
@@ -401,16 +394,17 @@ mod tests {
     use ployz_sdk::Participation;
     use std::net::Ipv6Addr;
     use std::path::PathBuf;
-    use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+    use std::sync::{Arc, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+    use tokio::sync::{Mutex, MutexGuard};
     use tokio::task::JoinHandle;
     use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
     async fn doctor_reports_missing_required_peer_handshake() {
-        let _probe_guard = lock_test_probe_port();
+        let _probe_guard = lock_test_probe_port().await;
         let (state, store, network) = make_state().await;
         let now = now_unix_secs();
         let peer_key = PublicKey([2; 32]);
@@ -635,7 +629,7 @@ mod tests {
 
     async fn start_test_probe_listener()
     -> (MutexGuard<'static, ()>, CancellationToken, JoinHandle<()>) {
-        let probe_guard = lock_test_probe_port();
+        let probe_guard = lock_test_probe_port().await;
         let listener = TcpListener::bind((Ipv6Addr::LOCALHOST, PARTICIPATION_PROBE_PORT))
             .await
             .expect("bind probe listener");
@@ -667,12 +661,12 @@ mod tests {
         (probe_guard, probe_cancel, probe_task)
     }
 
-    fn lock_test_probe_port() -> MutexGuard<'static, ()> {
+    async fn lock_test_probe_port() -> MutexGuard<'static, ()> {
         static PROBE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         PROBE_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
-            .expect("lock probe listener")
+            .await
     }
 
     async fn stop_test_probe_listener(probe_cancel: CancellationToken, probe_task: JoinHandle<()>) {
