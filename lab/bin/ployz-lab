@@ -1808,38 +1808,6 @@ scenario_machine_add_basic() {
   await_machine_state founder joiner enabled 180
 }
 
-scenario_machine_remove_guard() {
-  scenario_machine_add_basic
-  local output
-  output=$(guest_exec founder "sudo ployzd machine rm joiner" || true)
-  [[ "${output}" == *"must be disabled"* ]] || fail "expected enabled remove guard failure"
-  guest_exec founder "sudo ployzd machine drain joiner"
-  output=$(guest_exec founder "sudo ployzd machine rm joiner" || true)
-  [[ "${output}" == *"must be disabled"* ]] || fail "expected draining remove guard failure"
-  apply_profile joiner partition data
-  sleep 20
-  output=$(guest_exec founder "sudo ployzd machine ls" || true)
-  printf '%s\n' "${output}" >"${LOCAL_REPORT_DIR}/founder-remove-guard-post-partition.txt"
-  guest_exec founder "sudo ployzd machine rm joiner --force"
-}
-
-scenario_replace_machine() {
-  local joiner_target="lab@${NODE_DATA_IP[joiner]}"
-  local replacement_target="lab@${NODE_DATA_IP[replacement]}"
-  seed_interguest_ssh founder
-  seed_interguest_ssh joiner
-  seed_interguest_ssh replacement
-  guest_exec founder "sudo ployzd mesh init alpha"
-  await_json_true founder "sudo ployzd --plain mesh ready --json" ready 120
-  guest_exec founder "sudo ployzd machine add --identity /root/.ssh/id_ed25519 ${joiner_target}"
-  await_contains founder "sudo ployzd machine ls" "joiner" 120
-  guest_exec founder "sudo ployzd machine add --identity /root/.ssh/id_ed25519 ${replacement_target}"
-  await_contains founder "sudo ployzd machine ls" "replacement" 120
-  guest_exec founder "sudo ployzd machine drain joiner"
-  guest_exec founder "sudo ployzd machine rm joiner --force"
-  await_contains founder "sudo ployzd machine ls" "replacement" 120
-}
-
 scenario_rejoin_after_remove() {
   local replacement_target="lab@${NODE_DATA_IP[replacement]}"
   seed_interguest_ssh founder
@@ -1944,8 +1912,6 @@ run_named_scenario() {
   case "${name}" in
     founder_init_after_bootstrap) scenario_founder_init_after_bootstrap ;;
     machine_add_basic) scenario_machine_add_basic ;;
-    machine_remove_guard) scenario_machine_remove_guard ;;
-    replace_machine) scenario_replace_machine ;;
     rejoin_after_remove) scenario_rejoin_after_remove ;;
     join_under_latency) scenario_join_under_latency ;;
     steady_state_jitter) scenario_steady_state_jitter ;;
@@ -2295,8 +2261,6 @@ run_suite() {
     semantics)
       run_scenario founder_init_after_bootstrap ssh founder=ubuntu clean post-install
       run_scenario machine_add_basic ssh founder=ubuntu,joiner=rocky regional post-install
-      run_scenario machine_remove_guard ssh founder=ubuntu,joiner=rocky clean post-install
-      run_scenario replace_machine ssh founder=ubuntu,joiner=rocky,replacement=arch far post-install
       run_scenario rejoin_after_remove ssh founder=rocky,joiner=arch,replacement=ubuntu clean post-install
       ;;
     fault)

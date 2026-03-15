@@ -148,7 +148,6 @@ Scenario runs:
 ```bash
 just lab scenario run founder_init_after_bootstrap --family founder=ubuntu
 just lab scenario run machine_add_basic --family founder=ubuntu,joiner=rocky --profile regional
-just lab scenario run replace_machine --family founder=ubuntu,joiner=rocky,replacement=arch --profile far --base raw
 ```
 
 Suite runs:

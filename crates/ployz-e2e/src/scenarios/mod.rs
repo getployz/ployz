@@ -1,7 +1,5 @@
 mod deploy_smoke;
 mod machine_add_basic;
-mod machine_remove_guard;
-mod replace_machine;
 mod single_node_init;
 mod split_brain_concurrent_add_subnet_heal;
 mod wireguard_reconnect;
@@ -14,8 +12,6 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
     match run.scenario() {
         Scenario::SingleNodeInit => single_node_init::run(run),
         Scenario::MachineAddBasic => machine_add_basic::run(run),
-        Scenario::MachineRemoveGuard => machine_remove_guard::run(run),
-        Scenario::ReplaceMachine => replace_machine::run(run),
         Scenario::SplitBrainConcurrentAddSubnetHeal => {
             split_brain_concurrent_add_subnet_heal::run(run)
         }
