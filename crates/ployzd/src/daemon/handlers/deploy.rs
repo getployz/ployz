@@ -123,7 +123,7 @@ async fn export_manifest(
     store: &crate::StoreDriver,
     namespace: &Namespace,
 ) -> ployz_sdk::Result<DeployManifest> {
-    let heads = store.list_service_heads(namespace).await?;
+    let releases = store.list_service_releases(namespace).await?;
     let revisions = store.list_service_revisions(namespace).await?;
     let revisions_by_key: BTreeMap<(String, String), String> = revisions
         .into_iter()
@@ -135,30 +135,33 @@ async fn export_manifest(
         })
         .collect();
 
-    let mut services = Vec::with_capacity(heads.len());
-    for head in heads {
-        let key = (head.service.clone(), head.current_revision_hash.clone());
+    let mut services = Vec::with_capacity(releases.len());
+    for release in releases {
+        let key = (
+            release.service.clone(),
+            release.release.primary_revision_hash.clone(),
+        );
         let Some(spec_json) = revisions_by_key.get(&key) else {
             return Err(ployz_sdk::Error::operation(
                 "deploy_export",
                 format!(
-                    "current head for service '{}' referenced missing revision '{}'",
-                    head.service, head.current_revision_hash
+                    "current release for service '{}' referenced missing revision '{}'",
+                    release.service, release.release.primary_revision_hash
                 ),
             ));
         };
         let spec: ServiceSpec = serde_json::from_str(spec_json).map_err(|err| {
             ployz_sdk::Error::operation(
                 "deploy_export",
-                format!("invalid stored spec for service '{}': {err}", head.service),
+                format!("invalid stored spec for service '{}': {err}", release.service),
             )
         })?;
-        if spec.name != head.service {
+        if spec.name != release.service {
             return Err(ployz_sdk::Error::operation(
                 "deploy_export",
                 format!(
-                    "stored spec service '{}' did not match head service '{}'",
-                    spec.name, head.service
+                    "stored spec service '{}' did not match release service '{}'",
+                    spec.name, release.service
                 ),
             ));
         }

@@ -5,8 +5,8 @@ use corro_api_types::{ExecResult, Statement};
 use ployz_sdk::error::{Error, Result};
 use ployz_sdk::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, OverlayIp, RoutingState, ServiceHeadRecord, ServiceRevisionRecord,
-    ServiceSlotRecord,
+    MachineId, MachineRecord, OverlayIp, RoutingState, ServiceReleaseRecord,
+    ServiceRevisionRecord,
 };
 use ployz_sdk::spec::Namespace;
 use ployz_sdk::store::{
@@ -208,12 +208,11 @@ impl DeployStore for CorrosionStore {
         tables::service_revisions::list_service_revisions(&self.client, namespace).await
     }
 
-    async fn list_service_heads(&self, namespace: &Namespace) -> Result<Vec<ServiceHeadRecord>> {
-        tables::service_heads::list_service_heads(&self.client, namespace).await
-    }
-
-    async fn list_service_slots(&self, namespace: &Namespace) -> Result<Vec<ServiceSlotRecord>> {
-        tables::service_slots::list_service_slots(&self.client, namespace).await
+    async fn list_service_releases(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceReleaseRecord>> {
+        tables::service_releases::list_service_releases(&self.client, namespace).await
     }
 
     async fn list_instance_status(
@@ -227,22 +226,12 @@ impl DeployStore for CorrosionStore {
         tables::service_revisions::upsert_service_revision(&self.client, record).await
     }
 
-    async fn upsert_service_head(&self, record: &ServiceHeadRecord) -> Result<()> {
-        tables::service_heads::upsert_service_head(&self.client, record).await
+    async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> Result<()> {
+        tables::service_releases::upsert_service_release(&self.client, record).await
     }
 
-    async fn delete_service_head(&self, namespace: &Namespace, service: &str) -> Result<()> {
-        tables::service_heads::delete_service_head(&self.client, namespace, service).await
-    }
-
-    async fn replace_service_slots(
-        &self,
-        namespace: &Namespace,
-        service: &str,
-        records: &[ServiceSlotRecord],
-    ) -> Result<()> {
-        tables::service_slots::replace_service_slots(&self.client, namespace, service, records)
-            .await
+    async fn delete_service_release(&self, namespace: &Namespace, service: &str) -> Result<()> {
+        tables::service_releases::delete_service_release(&self.client, namespace, service).await
     }
 
     async fn upsert_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
@@ -261,16 +250,14 @@ impl DeployStore for CorrosionStore {
         &self,
         namespace: &Namespace,
         removed_services: &[String],
-        heads: &[ServiceHeadRecord],
-        slots: &[ServiceSlotRecord],
+        releases: &[ServiceReleaseRecord],
         deploy: &DeployRecord,
     ) -> Result<()> {
         workflows::deploy_commit::commit_deploy(
             &self.client,
             namespace,
             removed_services,
-            heads,
-            slots,
+            releases,
             deploy,
         )
         .await

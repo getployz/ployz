@@ -1,8 +1,7 @@
 use crate::error::{Error, Result};
 use crate::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, RoutingState, ServiceHeadRecord, ServiceRevisionRecord,
-    ServiceSlotRecord, SlotId,
+    MachineId, MachineRecord, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
 };
 use crate::spec::Namespace;
 use crate::store::{DeployStore, InviteStore, MachineStore, RoutingStore, SyncProbe, SyncStatus};
@@ -21,8 +20,7 @@ struct StoreInner {
     routing_subscribers: Vec<mpsc::Sender<()>>,
     invites: HashMap<String, InviteRecord>,
     service_revisions: HashMap<(Namespace, String, String), ServiceRevisionRecord>,
-    service_heads: HashMap<(Namespace, String), ServiceHeadRecord>,
-    service_slots: HashMap<(Namespace, String, SlotId), ServiceSlotRecord>,
+    service_releases: HashMap<(Namespace, String), ServiceReleaseRecord>,
     instance_status: HashMap<InstanceId, InstanceStatusRecord>,
     deploys: HashMap<DeployId, DeployRecord>,
     sync_status: SyncStatus,
@@ -44,8 +42,7 @@ impl MemoryStore {
                 routing_subscribers: Vec::new(),
                 invites: HashMap::new(),
                 service_revisions: HashMap::new(),
-                service_heads: HashMap::new(),
-                service_slots: HashMap::new(),
+                service_releases: HashMap::new(),
                 instance_status: HashMap::new(),
                 deploys: HashMap::new(),
                 sync_status: SyncStatus::Synced,
@@ -136,8 +133,7 @@ impl RoutingStore for MemoryStore {
         let inner = self.lock_inner();
         Ok(RoutingState {
             revisions: inner.service_revisions.values().cloned().collect(),
-            heads: inner.service_heads.values().cloned().collect(),
-            slots: inner.service_slots.values().cloned().collect(),
+            releases: inner.service_releases.values().cloned().collect(),
             instances: inner.instance_status.values().cloned().collect(),
         })
     }
@@ -198,20 +194,13 @@ impl DeployStore for MemoryStore {
             .collect())
     }
 
-    async fn list_service_heads(&self, namespace: &Namespace) -> Result<Vec<ServiceHeadRecord>> {
+    async fn list_service_releases(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceReleaseRecord>> {
         let inner = self.lock_inner();
         Ok(inner
-            .service_heads
-            .values()
-            .filter(|record| record.namespace == *namespace)
-            .cloned()
-            .collect())
-    }
-
-    async fn list_service_slots(&self, namespace: &Namespace) -> Result<Vec<ServiceSlotRecord>> {
-        let inner = self.lock_inner();
-        Ok(inner
-            .service_slots
+            .service_releases
             .values()
             .filter(|record| record.namespace == *namespace)
             .cloned()
@@ -243,41 +232,19 @@ impl DeployStore for MemoryStore {
         Ok(())
     }
 
-    async fn upsert_service_head(&self, record: &ServiceHeadRecord) -> Result<()> {
+    async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> Result<()> {
         let mut inner = self.lock_inner();
         let key = (record.namespace.clone(), record.service.clone());
-        inner.service_heads.insert(key, record.clone());
+        inner.service_releases.insert(key, record.clone());
         Self::broadcast_routing_refresh(&mut inner);
         Ok(())
     }
 
-    async fn delete_service_head(&self, namespace: &Namespace, service: &str) -> Result<()> {
+    async fn delete_service_release(&self, namespace: &Namespace, service: &str) -> Result<()> {
         let mut inner = self.lock_inner();
         inner
-            .service_heads
+            .service_releases
             .remove(&(namespace.clone(), service.to_string()));
-        Self::broadcast_routing_refresh(&mut inner);
-        Ok(())
-    }
-
-    async fn replace_service_slots(
-        &self,
-        namespace: &Namespace,
-        service: &str,
-        records: &[ServiceSlotRecord],
-    ) -> Result<()> {
-        let mut inner = self.lock_inner();
-        inner
-            .service_slots
-            .retain(|(ns, svc, _), _| !(ns == namespace && svc == service));
-        for record in records {
-            let key = (
-                record.namespace.clone(),
-                record.service.clone(),
-                record.slot_id.clone(),
-            );
-            inner.service_slots.insert(key, record.clone());
-        }
         Self::broadcast_routing_refresh(&mut inner);
         Ok(())
     }
@@ -310,42 +277,25 @@ impl DeployStore for MemoryStore {
         &self,
         namespace: &Namespace,
         removed_services: &[String],
-        heads: &[ServiceHeadRecord],
-        slots: &[ServiceSlotRecord],
+        releases: &[ServiceReleaseRecord],
         deploy: &DeployRecord,
     ) -> Result<()> {
         let mut inner = self.lock_inner();
         let mut touched_services: Vec<String> = removed_services.to_vec();
-        for head in heads {
-            if !touched_services.contains(&head.service) {
-                touched_services.push(head.service.clone());
+        for release in releases {
+            if !touched_services.contains(&release.service) {
+                touched_services.push(release.service.clone());
             }
         }
 
         inner
-            .service_slots
-            .retain(|(ns, service, _), _| !(ns == namespace && touched_services.contains(service)));
+            .service_releases
+            .retain(|(ns, service), _| !(ns == namespace && touched_services.contains(service)));
 
-        for service in removed_services {
-            inner
-                .service_heads
-                .remove(&(namespace.clone(), service.clone()));
-        }
-
-        for head in heads {
-            inner
-                .service_heads
-                .insert((head.namespace.clone(), head.service.clone()), head.clone());
-        }
-
-        for slot in slots {
-            inner.service_slots.insert(
-                (
-                    slot.namespace.clone(),
-                    slot.service.clone(),
-                    slot.slot_id.clone(),
-                ),
-                slot.clone(),
+        for release in releases {
+            inner.service_releases.insert(
+                (release.namespace.clone(), release.service.clone()),
+                release.clone(),
             );
         }
 
@@ -420,18 +370,25 @@ mod tests {
             .expect("subscribe");
 
         let namespace = Namespace("prod".into());
-        let record = ServiceHeadRecord {
+        let record = ServiceReleaseRecord {
             namespace,
             service: "api".into(),
-            current_revision_hash: "rev-1".into(),
-            updated_by_deploy_id: DeployId("dep-1".into()),
-            updated_at: 1,
+            release: crate::model::ServiceRelease {
+                primary_revision_hash: "rev-1".into(),
+                referenced_revision_hashes: vec!["rev-1".into()],
+                routing: crate::model::ServiceRoutingPolicy::Direct {
+                    revision_hash: "rev-1".into(),
+                },
+                slots: Vec::new(),
+                updated_by_deploy_id: DeployId("dep-1".into()),
+                updated_at: 1,
+            },
         };
 
         store
-            .upsert_service_head(&record)
+            .upsert_service_release(&record)
             .await
-            .expect("upsert service head");
+            .expect("upsert service release");
 
         let event = tokio::time::timeout(std::time::Duration::from_secs(1), refresh_rx.recv())
             .await
