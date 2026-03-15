@@ -86,8 +86,6 @@ impl BridgeDiag {
 
 /// Bidirectional overlay bridge using boringtun (WireGuard) + smoltcp (userspace TCP/IP).
 pub struct OverlayBridge {
-    overlay_ip: OverlayIp,
-    public_key: X25519Public,
     task: JoinHandle<()>,
 }
 
@@ -96,13 +94,6 @@ pub struct OverlayBridge {
 pub struct OutboundForward {
     pub local_addr: SocketAddr,
     pub overlay_dest: SocketAddr,
-}
-
-/// Inbound forward rule: overlay port → localhost destination.
-#[derive(Debug, Clone)]
-pub struct InboundForward {
-    pub overlay_port: u16,
-    pub local_dest: SocketAddr,
 }
 
 impl OverlayBridge {
@@ -127,17 +118,14 @@ impl OverlayBridge {
     /// - `container_overlay_ip`: The overlay IPv6 assigned to the container interface.
     /// - `peer_endpoint`: UDP endpoint of the container WireGuard (e.g. `127.0.0.1:51820`).
     /// - `outbound`: Forward rules for host→overlay TCP connections.
-    /// - `inbound`: Forward rules for overlay→host TCP connections.
     pub async fn start(
         bridge_secret: StaticSecret,
         container_pubkey_bytes: &[u8; 32],
         container_overlay_ip: OverlayIp,
         peer_endpoint: SocketAddr,
         outbound: Vec<OutboundForward>,
-        inbound: Vec<InboundForward>,
     ) -> std::io::Result<Self> {
-        let bridge_public = X25519Public::from(&bridge_secret);
-        let bridge_pub_bytes: [u8; 32] = bridge_public.to_bytes();
+        let bridge_pub_bytes = X25519Public::from(&bridge_secret).to_bytes();
         let overlay_ip = management_ip_from_key(&PublicKey(bridge_pub_bytes));
 
         let container_pubkey = X25519Public::from(*container_pubkey_bytes);
@@ -156,7 +144,6 @@ impl OverlayBridge {
         info!(%peer_endpoint, ?udp_local, bridge_ip = %overlay_ip, "bridge tunnel started");
 
         let bridge_ip_v6 = overlay_ip.0;
-        let inbound_rules = inbound.clone();
 
         let task = tokio::spawn(async move {
             if let Err(e) = bridge_event_loop(
@@ -167,7 +154,6 @@ impl OverlayBridge {
                 peer_endpoint,
                 udp,
                 listeners,
-                inbound_rules,
             )
             .await
             {
@@ -175,21 +161,7 @@ impl OverlayBridge {
             }
         });
 
-        Ok(Self {
-            overlay_ip,
-            public_key: bridge_public,
-            task,
-        })
-    }
-
-    #[must_use]
-    pub fn overlay_ip(&self) -> OverlayIp {
-        self.overlay_ip
-    }
-
-    #[must_use]
-    pub fn public_key_bytes(&self) -> [u8; 32] {
-        self.public_key.to_bytes()
+        Ok(Self { task })
     }
 
     pub async fn stop(self) {
@@ -291,7 +263,6 @@ async fn bridge_event_loop(
     peer_endpoint: SocketAddr,
     udp: UdpSocket,
     listeners: Vec<(TcpListener, SocketAddr)>,
-    _inbound_rules: Vec<InboundForward>,
 ) -> std::io::Result<()> {
     let diag = Arc::new(BridgeDiag::new());
 

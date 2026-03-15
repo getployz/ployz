@@ -46,13 +46,10 @@ impl BootstrapPeerRecord {
         }
     }
 
+    #[must_use]
     pub fn from_invite(invite: &InviteClaims) -> Option<Self> {
-        let Some(overlay_str) = invite.issuer_overlay_ip.as_deref() else {
-            return None;
-        };
-        let Some(public_key_b64) = invite.issuer_wg_public_key.as_deref() else {
-            return None;
-        };
+        let overlay_str = invite.issuer_overlay_ip.as_deref()?;
+        let public_key_b64 = invite.issuer_wg_public_key.as_deref()?;
         if invite.issuer_endpoints.is_empty() {
             return None;
         }

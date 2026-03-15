@@ -311,7 +311,6 @@ pub async fn apply(
                             service: spec.name.clone(),
                             slot_id: desired_slot.slot_id.clone(),
                             instance_id,
-                            deploy_id: deploy_id.clone(),
                             spec_json: spec_json.clone(),
                         })
                         .await?;

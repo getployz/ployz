@@ -170,9 +170,11 @@ mod tests {
         peer_sync_tick(&mut state, &driver, &local_machine_id).await;
 
         let peers = network.current_peers();
-        assert_eq!(peers.len(), 1);
+        let [peer] = peers.as_slice() else {
+            panic!("expected one peer");
+        };
         assert_eq!(
-            peers[0].endpoints,
+            peer.endpoints,
             vec!["b:2".to_string(), "a:1".to_string()]
         );
     }
@@ -200,9 +202,11 @@ mod tests {
         sync_peers(&state, &driver, &local_machine_id).await;
 
         let peers = network.current_peers();
-        assert_eq!(peers.len(), 1);
+        let [peer] = peers.as_slice() else {
+            panic!("expected one peer");
+        };
         assert_eq!(
-            peers[0].endpoints,
+            peer.endpoints,
             vec!["b:2".to_string(), "a:1".to_string()]
         );
     }
@@ -232,9 +236,11 @@ mod tests {
         peer_sync_tick(&mut state, &driver, &local_machine_id).await;
 
         let peers = network.current_peers();
-        assert_eq!(peers.len(), 1);
+        let [peer] = peers.as_slice() else {
+            panic!("expected one peer");
+        };
         assert_eq!(
-            peers[0].endpoints,
+            peer.endpoints,
             vec!["b:2".to_string(), "a:1".to_string()]
         );
     }
@@ -264,9 +270,11 @@ mod tests {
         peer_sync_tick(&mut state, &driver, &local_machine_id).await;
 
         let peers = network.current_peers();
-        assert_eq!(peers.len(), 1);
+        let [peer] = peers.as_slice() else {
+            panic!("expected one peer");
+        };
         assert_eq!(
-            peers[0].endpoints,
+            peer.endpoints,
             vec![
                 "10.255.255.2:51820".to_string(),
                 "10.255.255.1:51820".to_string()
@@ -308,8 +316,10 @@ mod tests {
         handle.await.expect("peer sync task exits");
 
         let peers = network.current_peers();
-        assert_eq!(peers.len(), 1);
-        assert_eq!(peers[0].id.0, "founder");
+        let [peer] = peers.as_slice() else {
+            panic!("expected one peer");
+        };
+        assert_eq!(peer.id.0, "founder");
     }
 
     #[tokio::test]
@@ -350,7 +360,9 @@ mod tests {
         handle.await.expect("peer sync task exits");
 
         let peers = network.current_peers();
-        assert_eq!(peers.len(), 1);
-        assert_eq!(peers[0].id.0, "remote");
+        let [peer] = peers.as_slice() else {
+            panic!("expected one peer");
+        };
+        assert_eq!(peer.id.0, "remote");
     }
 }

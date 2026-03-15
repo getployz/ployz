@@ -43,7 +43,9 @@ impl AdminClient {
         }
     }
 
-    pub async fn cluster_membership_states_latest(&self) -> Result<Vec<ClusterMembershipState>, AdminError> {
+    pub async fn cluster_membership_states_latest(
+        &self,
+    ) -> Result<Vec<ClusterMembershipState>, AdminError> {
         let mut stream = UnixStream::connect(&self.sock_path).await?;
         stream
             .write_all(&encode_frame(br#"{"Cluster":"MembershipStates"}"#))
@@ -71,7 +73,11 @@ impl AdminClient {
                         }
                     }
                 }
-                _ => {}
+                Value::Null
+                | Value::Bool(_)
+                | Value::Number(_)
+                | Value::String(_)
+                | Value::Array(_) => {}
             }
         }
     }

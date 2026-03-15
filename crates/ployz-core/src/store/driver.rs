@@ -115,48 +115,46 @@ impl StoreDriver {
                     },
                     match mode {
                         Mode::Docker => None,
-                        Mode::HostExec | Mode::HostService | Mode::Memory => Some(paths.admin.clone()),
+                        Mode::HostExec | Mode::HostService | Mode::Memory => {
+                            Some(paths.admin.clone())
+                        }
                     },
                 );
 
-                match mode {
-                    Mode::Docker => {
-                        let config_host = paths.config.to_string_lossy().into_owned();
-                        let schema_host = paths.schema.to_string_lossy().into_owned();
-                        let config_container = "/etc/corrosion/config.toml";
-                        let schema_container = "/etc/corrosion/schema.sql";
+                if mode == Mode::Docker {
+                    let config_host = paths.config.to_string_lossy().into_owned();
+                    let schema_host = paths.schema.to_string_lossy().into_owned();
+                    let config_container = "/etc/corrosion/config.toml";
+                    let schema_container = "/etc/corrosion/schema.sql";
 
-                        let service =
-                            DockerCorrosion::new("ployz-corrosion", "ghcr.io/getployz/corrosion")
-                                .cmd(vec!["agent".into(), "-c".into(), config_container.into()])
-                                .volume(&format!("{config_host}:{config_container}:ro"))
-                                .volume(&format!("{schema_host}:{schema_container}:ro"))
-                                // Named volume so the DB lives on the Linux-native
-                                // filesystem inside the Docker VM, avoiding VirtioFS
-                                // overhead for SQLite writes on macOS.
-                                .volume("ployz-corrosion-data:/data")
-                                .network_mode("container:ployz-networking")
-                                .build()
-                                .await
-                                .map_err(|e| format!("docker service: {e}"))?;
+                    let service =
+                        DockerCorrosion::new("ployz-corrosion", "ghcr.io/getployz/corrosion")
+                            .cmd(vec!["agent".into(), "-c".into(), config_container.into()])
+                            .volume(&format!("{config_host}:{config_container}:ro"))
+                            .volume(&format!("{schema_host}:{schema_container}:ro"))
+                            // Named volume so the DB lives on the Linux-native
+                            // filesystem inside the Docker VM, avoiding VirtioFS
+                            // overhead for SQLite writes on macOS.
+                            .volume("ployz-corrosion-data:/data")
+                            .network_mode("container:ployz-networking")
+                            .build()
+                            .await
+                            .map_err(|e| format!("docker service: {e}"))?;
 
-                        tracing::info!(endpoint = %api_addr, "store backend: corrosion (docker)");
-                        Ok(Self::Corrosion {
-                            store: corrosion,
-                            service: Arc::new(service),
-                        })
-                    }
-                    Mode::HostExec | Mode::HostService => {
-                        let binary = which_corrosion()?;
-                        let service = HostCorrosion::new(binary, &paths.config);
+                    tracing::info!(endpoint = %api_addr, "store backend: corrosion (docker)");
+                    Ok(Self::Corrosion {
+                        store: corrosion,
+                        service: Arc::new(service),
+                    })
+                } else {
+                    let binary = which_corrosion()?;
+                    let service = HostCorrosion::new(binary, &paths.config);
 
-                        tracing::info!(endpoint = %api_addr, "store backend: corrosion (host)");
-                        Ok(Self::CorrosionHost {
-                            store: corrosion,
-                            service: Arc::new(service),
-                        })
-                    }
-                    Mode::Memory => unreachable!("Memory mode handled above"),
+                    tracing::info!(endpoint = %api_addr, "store backend: corrosion (host)");
+                    Ok(Self::CorrosionHost {
+                        store: corrosion,
+                        service: Arc::new(service),
+                    })
                 }
             }
         }

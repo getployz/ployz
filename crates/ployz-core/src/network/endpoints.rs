@@ -30,11 +30,11 @@ pub fn list_routable_ips() -> Vec<IpAddr> {
                 return false;
             }
             // Skip interfaces with MTU too small for overlay traffic
-            if let Some(mtu) = get_interface_mtu(name) {
-                if mtu < MIN_ENDPOINT_MTU {
-                    tracing::debug!(name, mtu, "skipping interface with low MTU");
-                    return false;
-                }
+            if let Some(mtu) = get_interface_mtu(name)
+                && mtu < MIN_ENDPOINT_MTU
+            {
+                tracing::debug!(name, mtu, "skipping interface with low MTU");
+                return false;
             }
             let ip = iface.ip();
             // Skip loopback
