@@ -68,6 +68,9 @@ impl DeployManifest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceSpec {
+    // This type is serialized into ServiceRevisionRecord.spec_json and read by ployzd,
+    // ployz-gateway, and ployz-dns. Shape changes must remain backward compatible during
+    // rolling upgrades, or routing readers can reject new revisions and keep stale snapshots.
     pub name: String,
     pub placement: Placement,
     pub template: ContainerSpec,
