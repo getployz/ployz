@@ -100,6 +100,22 @@ async fn startup_reaches_running_single_node() {
         ready.sync_connected,
         "single-node founder should not wait for remote sync"
     );
+
+    let participation = tokio::time::timeout(Duration::from_secs(12), async {
+        loop {
+            let Some(self_record) = mesh.authoritative_self_record().await else {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                continue;
+            };
+            if self_record.participation == Participation::Enabled {
+                return self_record.participation;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("single-node founder should reach enabled participation within the timeout");
+    assert_eq!(participation, Participation::Enabled);
 }
 
 #[tokio::test]
