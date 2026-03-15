@@ -75,11 +75,27 @@ fn build_dns_sidecar_spec(config: &DnsConfig) -> SidecarSpec {
         binary_name: "ployz-dns".to_string(),
         container_name: "ployz-dns".to_string(),
         cmd: vec!["ployz-dns".into()],
-        env: vec![
+        env: {
+            let mut env = vec![
             ("PLOYZ_DNS_DATA_DIR".into(), data_dir_str.clone()),
             ("PLOYZ_DNS_NETWORK".into(), config.network.clone()),
-            ("PLOYZ_DNS_LISTEN_ADDR".into(), config.listen_addr.clone()),
-        ],
+            (
+                "PLOYZ_DNS_OVERLAY_LISTEN_ADDR".into(),
+                config.overlay_listen_addr.clone(),
+            ),
+            (
+                "PLOYZ_DNS_LISTEN_ADDR".into(),
+                config.overlay_listen_addr.clone(),
+            ),
+        ];
+            if let Some(bridge_listen_addr) = &config.bridge_listen_addr {
+                env.push((
+                    "PLOYZ_DNS_BRIDGE_LISTEN_ADDR".into(),
+                    bridge_listen_addr.clone(),
+                ));
+            }
+            env
+        },
         binds: vec![format!("{data_dir_str}:{data_dir_str}")],
         network_container: Some("ployz-networking".to_string()),
         compose_service: "dns".to_string(),

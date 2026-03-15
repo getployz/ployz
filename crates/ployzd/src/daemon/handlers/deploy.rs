@@ -16,6 +16,15 @@ impl DaemonState {
             .map(|active| format!("ployz-{}", active.config.name.0))
     }
 
+    fn overlay_dns_server(&self) -> Option<std::net::Ipv4Addr> {
+        if self.runtime_target != crate::config::RuntimeTarget::Docker {
+            return None;
+        }
+        self.active
+            .as_ref()
+            .and_then(|active| active.mesh.container_dns_server())
+    }
+
     pub async fn handle_deploy_preview(
         &self,
         manifest_json: &str,
@@ -58,6 +67,7 @@ impl DaemonState {
             self.namespace_locks.clone(),
             self.identity.machine_id.clone(),
             self.overlay_network_name(),
+            self.overlay_dns_server(),
         ));
         let factory = DefaultDeploySessionFactory::new(
             agent,

@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 use bollard::models::{PortBinding, PortMap};
@@ -45,16 +45,18 @@ pub(super) struct StartCandidate<'a> {
 pub struct LocalDeployRuntime {
     engine: ContainerEngine,
     overlay_network: Option<String>,
+    overlay_dns_server: Option<Ipv4Addr>,
 }
 
 impl LocalDeployRuntime {
-    pub fn new(overlay_network: Option<String>) -> Result<Self> {
+    pub fn new(overlay_network: Option<String>, overlay_dns_server: Option<Ipv4Addr>) -> Result<Self> {
         let docker = bollard::Docker::connect_with_socket_defaults()
             .map_err(|e| Error::operation("docker connect", e.to_string()))?;
         let engine = ContainerEngine::new(docker);
         Ok(Self {
             engine,
             overlay_network,
+            overlay_dns_server,
         })
     }
 
@@ -152,6 +154,8 @@ impl LocalDeployRuntime {
             NetworkMode::Overlay => self.overlay_network.clone(),
         };
 
+        let dns_servers = workload_dns_servers(&spec.network, self.overlay_dns_server);
+
         let runtime_spec = RuntimeContainerSpec {
             key,
             container_name: container_name.clone(),
@@ -163,6 +167,7 @@ impl LocalDeployRuntime {
             labels: workload_labels,
             binds: build_binds(container),
             tmpfs: build_tmpfs(container),
+            dns_servers,
             network_mode,
             port_bindings: build_port_bindings(spec)?,
             exposed_ports: None,
@@ -460,6 +465,15 @@ fn build_port_bindings(spec: &ServiceSpec) -> Result<Option<PortMap>> {
     Ok(Some(bindings))
 }
 
+fn workload_dns_servers(network: &NetworkMode, overlay_dns_server: Option<Ipv4Addr>) -> Vec<String> {
+    match network {
+        NetworkMode::Overlay => overlay_dns_server
+            .map(|ip| vec![ip.to_string()])
+            .unwrap_or_default(),
+        NetworkMode::Host | NetworkMode::None | NetworkMode::Service(_) => Vec::new(),
+    }
+}
+
 fn build_restart_policy(policy: &crate::spec::RestartPolicy) -> bollard::models::RestartPolicy {
     let name = match policy {
         crate::spec::RestartPolicy::No => bollard::models::RestartPolicyNameEnum::NO,
@@ -500,3 +514,27 @@ pub(super) fn stable_hash_hex(bytes: &[u8]) -> String {
 }
 
 pub(super) use crate::time::now_unix_secs;
+
+#[cfg(test)]
+mod tests {
+    use super::workload_dns_servers;
+    use crate::spec::NetworkMode;
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn overlay_network_uses_overlay_dns_server() {
+        let dns_servers = workload_dns_servers(
+            &NetworkMode::Overlay,
+            Some(Ipv4Addr::new(10, 210, 0, 2)),
+        );
+        assert_eq!(dns_servers, vec!["10.210.0.2"]);
+    }
+
+    #[test]
+    fn non_overlay_networks_do_not_use_overlay_dns_server() {
+        let dns_server = Some(Ipv4Addr::new(10, 210, 0, 2));
+        assert!(workload_dns_servers(&NetworkMode::Host, dns_server).is_empty());
+        assert!(workload_dns_servers(&NetworkMode::None, dns_server).is_empty());
+        assert!(workload_dns_servers(&NetworkMode::Service("db".into()), dns_server).is_empty());
+    }
+}
