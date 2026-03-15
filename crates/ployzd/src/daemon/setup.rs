@@ -582,6 +582,8 @@ mod tests {
             identity,
             runtime_target,
             service_mode,
+            crate::BuiltInImages::load(None)
+                .expect("embedded built-in images manifest should parse"),
             "10.210.0.0/16".into(),
             24,
             4317,

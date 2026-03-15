@@ -14,7 +14,8 @@ use crate::error::{Error, Result};
 
 use super::diff::{ChangedField, SpecChange, eval_spec_change, parent_id_matches};
 use super::probe::ProbeRunner;
-use super::spec::{ObservedContainer, PullPolicy, RuntimeContainerSpec, observe};
+use super::spec::{ObservedContainer, observe};
+use super::{PullPolicy, RuntimeContainerSpec, parse_docker_image_ref};
 
 pub struct ContainerEngine {
     docker: Docker,
@@ -269,15 +270,12 @@ impl ContainerEngine {
             PullPolicy::Always => {}
         }
 
-        let (repo, tag) = match image.split_once(':') {
-            Some((r, t)) => (r, t),
-            None => (image, "latest"),
+        let parsed = parse_docker_image_ref(image);
+        let builder = CreateImageOptionsBuilder::default().from_image(parsed.from_image);
+        let options = match parsed.tag {
+            Some(tag) => builder.tag(tag).build(),
+            None => builder.build(),
         };
-
-        let options = CreateImageOptionsBuilder::default()
-            .from_image(repo)
-            .tag(tag)
-            .build();
 
         let mut stream = self.docker.create_image(Some(options), None, None);
         while let Some(result) = stream.next().await {

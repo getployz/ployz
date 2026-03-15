@@ -81,6 +81,8 @@ pub struct ClientConfig {
 pub struct DaemonConfig {
     pub data_dir: PathBuf,
     pub socket: String,
+    #[serde(default)]
+    pub built_in_images_manifest: Option<PathBuf>,
     #[serde(default = "default_cluster_cidr")]
     pub cluster_cidr: String,
     #[serde(default = "default_subnet_prefix_len")]
@@ -117,6 +119,8 @@ fn default_gateway_threads() -> usize {
 struct RuntimeDefaults {
     data_dir: PathBuf,
     socket: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    built_in_images_manifest: Option<PathBuf>,
     cluster_cidr: String,
     subnet_prefix_len: u8,
     remote_control_port: u16,
@@ -136,6 +140,8 @@ struct DaemonOverrides {
     data_dir: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     socket: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    built_in_images_manifest: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cluster_cidr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -231,6 +237,7 @@ pub fn load_daemon_config(
     let overrides = DaemonOverrides {
         data_dir: cli_data_dir,
         socket: cli_socket,
+        built_in_images_manifest: None,
         cluster_cidr: None,
         subnet_prefix_len: None,
         remote_control_port: cli_remote_control_port,
@@ -248,6 +255,7 @@ fn build_figment(cli_config_path: Option<PathBuf>, aff: &Affordances) -> Figment
     let defaults = RuntimeDefaults {
         data_dir: default_data_dir(aff),
         socket: default_socket_path(aff),
+        built_in_images_manifest: None,
         cluster_cidr: default_cluster_cidr(),
         subnet_prefix_len: default_subnet_prefix_len(),
         remote_control_port: default_remote_control_port(),
@@ -391,5 +399,27 @@ mod tests {
         let mut affordances = aff(Os::Linux, false);
         affordances.is_root = true;
         assert!(validate_runtime(RuntimeTarget::Host, ServiceMode::System, &affordances).is_ok());
+    }
+
+    #[test]
+    fn daemon_config_reads_built_in_images_manifest_from_env() {
+        let manifest_path = std::env::temp_dir().join("ployz-builtins-config-test.toml");
+        // SAFETY: the test sets and clears a process env var for its own duration.
+        unsafe {
+            std::env::set_var("PLOYZ_BUILTIN_IMAGES_MANIFEST", &manifest_path);
+        }
+
+        let loaded = load_daemon_config(None, None, None, None, &aff(Os::Darwin, true))
+            .expect("daemon config should load");
+
+        assert_eq!(
+            loaded.built_in_images_manifest.as_deref(),
+            Some(manifest_path.as_path())
+        );
+
+        // SAFETY: the test removes the env var it set above.
+        unsafe {
+            std::env::remove_var("PLOYZ_BUILTIN_IMAGES_MANIFEST");
+        }
     }
 }

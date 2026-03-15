@@ -32,6 +32,7 @@ impl WireguardDriver {
         overlay_ip: OverlayIp,
         network_dir: &Path,
         exposed_tcp_ports: &[u16],
+        image: &str,
     ) -> std::result::Result<Self, String> {
         let api_port = corrosion_config::DEFAULT_API_PORT;
         let overlay_api = SocketAddr::new(IpAddr::V6(overlay_ip.0), api_port);
@@ -43,6 +44,7 @@ impl WireguardDriver {
             identity.private_key.clone(),
             overlay_ip,
         )
+        .image(image)
         .with_bridge_forward(local_api, overlay_api);
         for &port in exposed_tcp_ports {
             builder = builder.expose_tcp(port);

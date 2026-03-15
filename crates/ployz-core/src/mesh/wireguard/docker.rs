@@ -20,6 +20,7 @@ use std::net::Ipv4Addr;
 use crate::error::{Error, Result};
 use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
 use crate::model::{MachineRecord, OverlayIp, PrivateKey, PublicKey};
+use crate::runtime::parse_docker_image_ref;
 
 use super::PERSISTENT_KEEPALIVE_SECS;
 use super::bridge::{OutboundForward, OverlayBridge};
@@ -146,15 +147,12 @@ impl DockerWireGuard {
     }
 
     async fn pull_image(&self) -> Result<()> {
-        let (repo, tag) = match self.image.split_once(':') {
-            Some((r, t)) => (r, t),
-            None => (self.image.as_str(), "latest"),
+        let parsed = parse_docker_image_ref(&self.image);
+        let builder = CreateImageOptionsBuilder::default().from_image(parsed.from_image);
+        let options = match parsed.tag {
+            Some(tag) => builder.tag(tag).build(),
+            None => builder.build(),
         };
-
-        let options = CreateImageOptionsBuilder::default()
-            .from_image(repo)
-            .tag(tag)
-            .build();
 
         let mut stream = self.docker.create_image(Some(options), None, None);
         while let Some(result) = stream.next().await {
@@ -165,7 +163,8 @@ impl DockerWireGuard {
                     }
                 }
                 Err(e) => {
-                    return Err(Error::operation("docker pull", e.to_string()));
+                    warn!(?e, image = %self.image, "pull failed, trying cached image");
+                    break;
                 }
             }
         }
