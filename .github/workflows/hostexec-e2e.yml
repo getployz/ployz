@@ -15,7 +15,7 @@ jobs:
   hostexec-e2e:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - runner: ubuntu-latest
@@ -59,7 +59,7 @@ jobs:
         run: cargo build -p ployz-e2e
 
       - name: Run HostExec E2E suite
-        run: cargo run -p ployz-e2e -- --image ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.suffix }} --artifacts-dir e2e-artifacts
+        run: cargo run -p ployz-e2e -- --image ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.suffix }} --artifacts-dir e2e-artifacts --fail-fast
 
       - name: Upload HostExec E2E artifacts
         if: always()

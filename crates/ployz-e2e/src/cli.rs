@@ -20,6 +20,9 @@ pub(crate) struct Cli {
 
     #[arg(long)]
     pub(crate) keep_failed: bool,
+
+    #[arg(long)]
+    pub(crate) fail_fast: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
