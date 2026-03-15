@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use ipnet::Ipv4Net;
 
 use crate::daemon::{DaemonState, PendingSubnetHeal, SubnetHealAttempt};
+use crate::mesh::tasks::ParticipationCommand;
 use crate::model::{MachineId, MachineRecord, MachineStatus, Participation};
 use crate::store::MachineStore;
 use crate::store::StoreRuntimeControl;
@@ -55,31 +56,46 @@ impl DaemonState {
         }
 
         let duplicate_groups = duplicate_subnet_groups(&machines);
-        if duplicate_groups.is_empty() {
+        let active_subnet = active.config.subnet;
+        let current_conflict =
+            local_duplicate_subnet_conflict(&machines, &self.identity.machine_id);
+        let healing_in_progress = self.pending_subnet_heal.is_some_and(|pending| {
+            pending.network_subnet == active_subnet && pending.target_subnet != active_subnet
+        });
+
+        if duplicate_groups.is_empty() && !healing_in_progress {
+            if let Err(err) = self.set_local_participation_override(None).await {
+                tracing::warn!(error = %err, "local subnet heal: failed to clear participation override");
+            }
             self.pending_subnet_heal = None;
             self.last_subnet_heal_attempt = None;
             return;
         }
 
-        tracing::warn!(
-            machine_id = %self.identity.machine_id,
-            duplicate_groups = ?duplicate_group_log_view(&duplicate_groups),
-            "local subnet heal: duplicate subnet claims detected"
-        );
-
-        let current_conflict =
-            match local_duplicate_subnet_conflict(&machines, &self.identity.machine_id) {
-                Some(conflict) => conflict,
-                None => {
-                    self.pending_subnet_heal = None;
-                    return;
-                }
-            };
+        if !duplicate_groups.is_empty() {
+            tracing::warn!(
+                machine_id = %self.identity.machine_id,
+                duplicate_groups = ?duplicate_group_log_view(&duplicate_groups),
+                "local subnet heal: duplicate subnet claims detected"
+            );
+        }
 
         let now = now_unix_secs();
         let pending = match self.pending_subnet_heal {
-            Some(pending) if pending.network_subnet == current_conflict.subnet => pending,
+            Some(pending)
+                if pending.network_subnet == active_subnet
+                    && pending.target_subnet != active_subnet =>
+            {
+                pending
+            }
             _ => {
+                let Some(current_conflict) = current_conflict else {
+                    if let Err(err) = self.set_local_participation_override(None).await {
+                        tracing::warn!(error = %err, "local subnet heal: failed to clear participation override");
+                    }
+                    self.pending_subnet_heal = None;
+                    return;
+                };
                 let target_subnet = match allocate_replacement_subnet(
                     &machines,
                     &self.identity.machine_id,
@@ -92,6 +108,10 @@ impl DaemonState {
                         return;
                     }
                 };
+                if let Err(err) = self.reserve_local_subnet_claim(target_subnet).await {
+                    tracing::warn!(error = %err, "local subnet heal: failed to reserve replacement subnet");
+                    return;
+                }
                 let pending = PendingSubnetHeal {
                     network_subnet: current_conflict.subnet,
                     target_subnet,
@@ -124,8 +144,12 @@ impl DaemonState {
                     return;
                 }
             };
+            if let Err(err) = self.reserve_local_subnet_claim(target_subnet).await {
+                tracing::warn!(error = %err, "local subnet heal: failed to reserve replanned subnet");
+                return;
+            }
             let pending = PendingSubnetHeal {
-                network_subnet: current_conflict.subnet,
+                network_subnet: active_subnet,
                 target_subnet,
                 planned_at: now,
             };
@@ -153,27 +177,11 @@ impl DaemonState {
         }
 
         let plan = LocalSubnetHealPlan {
-            current_subnet: current_conflict.subnet,
-            winner_machine_id: current_conflict.winner_machine_id,
+            current_subnet: active_subnet,
+            winner_machine_id: subnet_claim_winner(&machines, active_subnet)
+                .unwrap_or_else(|| self.identity.machine_id.clone()),
             target_subnet: pending.target_subnet,
         };
-
-        match plan_local_subnet_heal(
-            &machines,
-            &self.identity.machine_id,
-            &self.cluster_cidr,
-            self.subnet_prefix_len,
-        ) {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                self.pending_subnet_heal = None;
-                return;
-            }
-            Err(err) => {
-                tracing::warn!(error = %err, "local subnet heal: failed to plan subnet heal");
-                return;
-            }
-        }
 
         if let Some(last_attempt) = self.last_subnet_heal_attempt
             && last_attempt.network_subnet == plan.current_subnet
@@ -260,6 +268,35 @@ impl DaemonState {
         }
     }
 
+    async fn reserve_local_subnet_claim(&self, target_subnet: Ipv4Net) -> Result<(), String> {
+        let Some(active) = self.active.as_ref() else {
+            return Err("no running network".into());
+        };
+
+        let now = now_unix_secs();
+        let Some(record) = active
+            .mesh
+            .update_authoritative_self_record(|record| {
+                record.subnet = Some(target_subnet);
+                record.participation = Participation::Disabled;
+                record.updated_at = now;
+            })
+            .await
+        else {
+            return Err("local authoritative self record missing".into());
+        };
+
+        active
+            .mesh
+            .store
+            .upsert_self_machine(&record)
+            .await
+            .map_err(|err| format!("reserve local subnet claim: {err}"))?;
+
+        self.set_local_participation_override(Some(Participation::Disabled))
+            .await
+    }
+
     async fn apply_local_subnet_heal(&mut self, plan: &LocalSubnetHealPlan) -> Result<(), String> {
         let network_name = self
             .active
@@ -278,7 +315,7 @@ impl DaemonState {
             self.apply_local_subnet_heal_in_memory_mode(&network_name)
                 .await
         } else {
-            self.restart_active_mesh_for_subnet_heal(&network_name)
+            self.restart_active_mesh_for_subnet_heal(&network_name, plan.target_subnet)
                 .await
         }
     }
@@ -311,18 +348,44 @@ impl DaemonState {
             .store
             .upsert_self_machine(&record)
             .await
-            .map_err(|err| format!("update healed local machine record: {err}"))
+            .map_err(|err| format!("update healed local machine record: {err}"))?;
+
+        self.set_local_participation_override(None).await
+    }
+
+    async fn set_local_participation_override(
+        &self,
+        participation: Option<Participation>,
+    ) -> Result<(), String> {
+        let Some(active) = self.active.as_ref() else {
+            return Err("no running network".into());
+        };
+        let Some(participation_tx) = active.mesh.participation_sender() else {
+            return Ok(());
+        };
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        participation_tx
+            .send(ParticipationCommand::SetForced {
+                participation,
+                done: done_tx,
+            })
+            .await
+            .map_err(|err| format!("send participation override: {err}"))?;
+        done_rx
+            .await
+            .map_err(|err| format!("wait participation override ack: {err}"))
     }
 
     async fn restart_active_mesh_for_subnet_heal(
         &mut self,
         network_name: &str,
+        claimed_subnet: Ipv4Net,
     ) -> Result<(), String> {
-        let Some(active) = self.active.as_ref() else {
+        if self.active.is_none() {
             return Err("no running network".into());
-        };
+        }
 
-        self.publish_local_machine_down_for_subnet_heal(&active.config.subnet)
+        self.publish_local_machine_down_for_subnet_heal(claimed_subnet)
             .await?;
 
         let workloads = self
@@ -342,7 +405,7 @@ impl DaemonState {
 
     async fn publish_local_machine_down_for_subnet_heal(
         &self,
-        current_subnet: &Ipv4Net,
+        claimed_subnet: Ipv4Net,
     ) -> Result<(), String> {
         let Some(active) = self.active.as_ref() else {
             return Err("no running network".into());
@@ -352,7 +415,7 @@ impl DaemonState {
         let Some(record) = active
             .mesh
             .update_authoritative_self_record(|record| {
-                record.subnet = Some(*current_subnet);
+                record.subnet = Some(claimed_subnet);
                 record.status = MachineStatus::Down;
                 record.participation = Participation::Disabled;
                 record.last_heartbeat = now;
@@ -486,6 +549,20 @@ fn target_subnet_winner(
     winner.clone()
 }
 
+fn subnet_claim_winner(machines: &[MachineRecord], subnet: Ipv4Net) -> Option<MachineId> {
+    let mut contenders: Vec<MachineId> = machines
+        .iter()
+        .filter(|machine| machine.subnet == Some(subnet))
+        .map(|machine| machine.id.clone())
+        .collect();
+    contenders.sort_by(|left, right| left.0.cmp(&right.0));
+    let [winner, ..] = contenders.as_slice() else {
+        return None;
+    };
+    Some(winner.clone())
+}
+
+#[cfg(test)]
 pub(super) fn plan_local_subnet_heal(
     machines: &[MachineRecord],
     local_machine_id: &MachineId,
