@@ -661,10 +661,7 @@ mod tests {
 
     async fn lock_test_probe_port() -> MutexGuard<'static, ()> {
         static PROBE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        PROBE_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .await
+        PROBE_LOCK.get_or_init(|| Mutex::new(())).lock().await
     }
 
     async fn stop_test_probe_listener(probe_cancel: CancellationToken, probe_task: JoinHandle<()>) {
