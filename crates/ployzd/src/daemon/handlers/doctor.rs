@@ -537,11 +537,8 @@ mod tests {
             .expect("upsert self");
 
         let mesh = crate::Mesh::new(
-            WireguardDriver::Memory(network.clone()),
-            StoreDriver::Memory {
-                store: store.clone(),
-                service,
-            },
+            WireguardDriver::memory_with(network.clone()),
+            StoreDriver::memory_with(store.clone(), service),
             None,
             identity.machine_id.clone(),
             51820,
@@ -601,8 +598,8 @@ mod tests {
         let service = Arc::new(MemoryService::new());
         let network = Arc::new(MemoryWireGuard::new());
         let mesh = crate::Mesh::new(
-            WireguardDriver::Memory(network),
-            StoreDriver::Memory { store, service },
+            WireguardDriver::memory_with(network),
+            StoreDriver::memory_with(store, service),
             None,
             identity.machine_id,
             51820,

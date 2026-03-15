@@ -343,10 +343,7 @@ mod tests {
             .expect("upsert peer");
 
         let authoritative_self = Arc::new(RwLock::new(self_record));
-        let store_driver = StoreDriver::Memory {
-            store: store.clone(),
-            service: service.clone(),
-        };
+        let store_driver = StoreDriver::memory_with(store.clone(), service.clone());
         let (self_record_tx, self_record_rx) = mpsc::channel(8);
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();
@@ -458,11 +455,9 @@ mod tests {
         }]);
 
         let mut state = ParticipationState::default();
-        let store_driver = StoreDriver::Memory {
-            store: store.clone(),
-            service: Arc::new(MemoryService::new()),
-        };
-        let network_driver = WireguardDriver::Memory(network);
+        let store_driver =
+            StoreDriver::memory_with(store.clone(), Arc::new(MemoryService::new()));
+        let network_driver = WireguardDriver::memory_with(network);
 
         for _ in 0..3 {
             participation_once(
@@ -508,11 +503,8 @@ mod tests {
         }]);
 
         let mut state = ParticipationState::default();
-        let store_driver = StoreDriver::Memory {
-            store: store.clone(),
-            service,
-        };
-        let network_driver = WireguardDriver::Memory(network);
+        let store_driver = StoreDriver::memory_with(store.clone(), service);
+        let network_driver = WireguardDriver::memory_with(network);
 
         for _ in 0..3 {
             participation_once(
@@ -562,11 +554,8 @@ mod tests {
             forced_participation: Some(Participation::Disabled),
             ..ParticipationState::default()
         };
-        let store_driver = StoreDriver::Memory {
-            store: store.clone(),
-            service,
-        };
-        let network_driver = WireguardDriver::Memory(network);
+        let store_driver = StoreDriver::memory_with(store.clone(), service);
+        let network_driver = WireguardDriver::memory_with(network);
 
         for _ in 0..3 {
             participation_once(

@@ -2,9 +2,9 @@ use crate::client::CorrClient;
 use crate::store::shared::decode::text;
 use crate::store::shared::sql::{exec_one, query_rows};
 use corro_api_types::{SqliteValue, Statement};
-use ployz_sdk::error::{Error, Result};
-use ployz_sdk::model::ServiceReleaseRecord;
-use ployz_sdk::spec::Namespace;
+use ployz_types::error::{Error, Result};
+use ployz_types::model::ServiceReleaseRecord;
+use ployz_types::spec::Namespace;
 
 pub(crate) const SQL_ALL_SERVICE_RELEASES: &str = "SELECT namespace, service, payload_json FROM service_releases WHERE payload_json <> '' ORDER BY namespace, service";
 
@@ -89,9 +89,8 @@ pub(crate) fn parse_service_release(row: &[SqliteValue]) -> Result<ServiceReleas
     let service = text(service_val, "service")?;
     let payload_json = text(payload_val, "payload_json")?;
 
-    let record: ServiceReleaseRecord = serde_json::from_str(&payload_json).map_err(|e| {
-        Error::operation("parse_service_release", format!("decode payload: {e}"))
-    })?;
+    let record: ServiceReleaseRecord = serde_json::from_str(&payload_json)
+        .map_err(|e| Error::operation("parse_service_release", format!("decode payload: {e}")))?;
     if record.namespace.0 != namespace || record.service != service {
         return Err(Error::operation(
             "parse_service_release",

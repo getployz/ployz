@@ -2757,32 +2757,24 @@ dependencies = [
  "aya",
  "aya-build",
  "base64",
- "bollard",
- "chrono",
- "defguard_boringtun",
- "defguard_wireguard_rs",
  "derive_more",
- "directories",
  "ed25519-dalek",
  "futures-util",
  "hostname",
  "if-addrs",
  "ipnet",
  "libc",
- "ployz-corrosion",
  "ployz-ebpf-common",
- "ployz-sdk",
+ "ployz-types",
  "rand 0.10.0",
- "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
- "smoltcp",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
+ "toml",
  "tracing",
- "uuid",
  "x25519-dalek",
 ]
 
@@ -2799,7 +2791,7 @@ dependencies = [
  "hyper-util",
  "ipnet",
  "pin-project-lite",
- "ployz-sdk",
+ "ployz-types",
  "serde",
  "serde_json",
  "strum 0.26.3",
@@ -2820,6 +2812,7 @@ dependencies = [
  "hickory-server",
  "ployz-corrosion",
  "ployz-sdk",
+ "ployz-types",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2852,6 +2845,7 @@ dependencies = [
  "ployz-corrosion",
  "ployz-routes",
  "ployz-sdk",
+ "ployz-types",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2862,31 +2856,77 @@ dependencies = [
 name = "ployz-routes"
 version = "0.1.0"
 dependencies = [
- "ployz-sdk",
+ "ployz-types",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
 ]
 
 [[package]]
+name = "ployz-runtime-backends"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64",
+ "bollard",
+ "chrono",
+ "defguard_boringtun",
+ "defguard_wireguard_rs",
+ "derive_more",
+ "ed25519-dalek",
+ "futures-util",
+ "hostname",
+ "http",
+ "if-addrs",
+ "ipnet",
+ "libc",
+ "ployz-core",
+ "ployz-corrosion",
+ "ployz-sdk",
+ "ployz-types",
+ "rand 0.10.0",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "smoltcp",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+ "x25519-dalek",
+]
+
+[[package]]
 name = "ployz-sdk"
 version = "0.1.0"
 dependencies = [
- "base64",
- "chrono",
- "clap",
- "derive_more",
  "directories",
  "figment",
  "ipnet",
  "libc",
+ "ployz-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+]
+
+[[package]]
+name = "ployz-types"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "derive_more",
+ "ipnet",
  "rand 0.10.0",
  "serde",
  "serde_json",
  "strum 0.26.3",
  "thiserror 2.0.18",
  "tokio",
- "toml",
 ]
 
 [[package]]
@@ -2901,12 +2941,14 @@ dependencies = [
  "ployz-core",
  "ployz-dns",
  "ployz-gateway",
+ "ployz-runtime-backends",
  "ployz-sdk",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "x25519-dalek",

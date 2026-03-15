@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-ployz-sdk = { path = "../ployz-sdk" }
+ployz-types = { path = "../ployz-types" }
 corro-api-types = { git = "https://github.com/getployz/corrosion.git", branch = "main" }
 tokio = { workspace = true }
 hyper = { version = "1", features = ["client", "http2"] }

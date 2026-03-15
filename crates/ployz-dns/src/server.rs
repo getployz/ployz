@@ -217,17 +217,12 @@ pub fn run_dns_process() -> Result<(), DnsError> {
 
         tokio::spawn(crate::sync::run_sync_loop(store, shared.clone()));
 
-        let mut listen_addrs = vec![
-            config
-                .overlay_listen_addr
-                .parse()
-                .map_err(|err| {
-                    DnsError::Config(format!(
-                        "invalid overlay listen addr '{}': {err}",
-                        config.overlay_listen_addr
-                    ))
-                })?,
-        ];
+        let mut listen_addrs = vec![config.overlay_listen_addr.parse().map_err(|err| {
+            DnsError::Config(format!(
+                "invalid overlay listen addr '{}': {err}",
+                config.overlay_listen_addr
+            ))
+        })?];
         if let Some(bridge_listen_addr) = &config.bridge_listen_addr {
             listen_addrs.push(bridge_listen_addr.parse().map_err(|err| {
                 DnsError::Config(format!(

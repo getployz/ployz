@@ -2,11 +2,11 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::net::{SocketAddr, SocketAddrV4};
 
-use ployz_sdk::model::{
+use ployz_types::model::{
     InstanceId, InstancePhase, InstanceStatusRecord, MachineId, RoutingState, ServiceRelease,
     ServiceReleaseSlot, ServiceRoutingPolicy,
 };
-use ployz_sdk::spec::{Namespace, RouteSpec, ServiceSpec};
+use ployz_types::spec::{Namespace, RouteSpec, ServiceSpec};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -307,7 +307,7 @@ fn is_routable_instance(
         && allowed_revision_hashes.contains(&instance.revision_hash)
         && instance.ready
         && instance.phase == InstancePhase::Ready
-        && instance.drain_state == ployz_sdk::model::DrainState::None
+        && instance.drain_state == ployz_types::model::DrainState::None
         && instance.error.is_none()
 }
 
@@ -397,13 +397,13 @@ fn normalize_path_prefix(path_prefix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_sdk::model::{
+    use ployz_types::model::{
         DeployId, DrainState, InstanceStatusRecord, ServiceRelease, ServiceReleaseRecord,
         ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy, SlotId,
     };
-    use ployz_sdk::spec::{
-        ContainerSpec, NetworkMode, Placement, PortProtocol, PullPolicy, Resources,
-        RestartPolicy, RouteSpec, ServicePort, ServiceSpec,
+    use ployz_types::spec::{
+        ContainerSpec, NetworkMode, Placement, PortProtocol, PullPolicy, Resources, RestartPolicy,
+        RouteSpec, ServicePort, ServiceSpec,
     };
     use std::net::Ipv4Addr;
 
@@ -475,12 +475,12 @@ mod tests {
                     referenced_revision_hashes: vec![stable_hash.clone(), canary_hash.clone()],
                     routing: ServiceRoutingPolicy::Split {
                         allocations: vec![
-                            ployz_sdk::model::ServiceTrafficAllocation {
+                            ployz_types::model::ServiceTrafficAllocation {
                                 revision_hash: stable_hash.clone(),
                                 percent: 90,
                                 label: Some(String::from("stable")),
                             },
-                            ployz_sdk::model::ServiceTrafficAllocation {
+                            ployz_types::model::ServiceTrafficAllocation {
                                 revision_hash: canary_hash.clone(),
                                 percent: 10,
                                 label: Some(String::from("canary")),
@@ -598,7 +598,7 @@ mod tests {
     fn tcp_routes_are_projected_with_no_serving_dependency() {
         let namespace = Namespace("prod".into());
         let mut spec = service_spec(&namespace, "db", "v1", Vec::new());
-        spec.routes = vec![RouteSpec::Tcp(ployz_sdk::spec::TcpRoute {
+        spec.routes = vec![RouteSpec::Tcp(ployz_types::spec::TcpRoute {
             service_port: "sql".into(),
             listen_port: 5432,
         })];
@@ -665,13 +665,13 @@ mod tests {
                 protocol: PortProtocol::Tcp,
             }],
             publish: Vec::new(),
-            routes: vec![RouteSpec::Http(ployz_sdk::spec::HttpRoute {
+            routes: vec![RouteSpec::Http(ployz_types::spec::HttpRoute {
                 service_port: "http".into(),
                 hostnames,
                 path_prefix: "/".into(),
             })],
             readiness: None,
-            rollout: ployz_sdk::spec::RolloutStrategy::Recreate,
+            rollout: ployz_types::spec::RolloutStrategy::Recreate,
             labels: BTreeMap::new(),
             stop_grace_period: None,
             restart: RestartPolicy::UnlessStopped,

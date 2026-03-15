@@ -66,7 +66,7 @@ impl GatewayConfig {
                     "PLOYZ_GATEWAY_NETWORK was set but empty".into(),
                 ));
             }
-            Err(_) => ployz_sdk::paths::read_active_network(&data_dir)
+            Err(_) => ployz_types::paths::read_active_network(&data_dir)
                 .ok_or_else(|| GatewayError::Config("no active network marker was found".into()))?,
         };
         let listen_addr = match std::env::var("PLOYZ_GATEWAY_LISTEN_ADDR") {
