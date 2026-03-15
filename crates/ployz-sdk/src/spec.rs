@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Namespace(pub String);
@@ -168,9 +169,9 @@ impl ServiceSpec {
         }
 
         if let Some(readiness) = &self.readiness {
-            match readiness {
-                ReadinessProbe::Http { service_port, .. }
-                | ReadinessProbe::Tcp { service_port } => {
+            match &readiness.check {
+                ReadinessCheck::Http { service_port, .. }
+                | ReadinessCheck::Tcp { service_port } => {
                     if !seen_ports.contains(service_port) {
                         return Err(format!(
                             "service '{}' readiness probe references unknown service port '{}'",
@@ -178,7 +179,7 @@ impl ServiceSpec {
                         ));
                     }
                 }
-                ReadinessProbe::Exec { command } => {
+                ReadinessCheck::Exec { command } => {
                     if command.is_empty() {
                         return Err(format!(
                             "service '{}' exec readiness probe must define at least one argument",
@@ -187,6 +188,7 @@ impl ServiceSpec {
                     }
                 }
             }
+            readiness.validate(&self.name)?;
         }
 
         match self.rollout {
@@ -336,8 +338,87 @@ pub struct TcpRoute {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadinessProbe {
+    #[serde(flatten)]
+    pub check: ReadinessCheck,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retries: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_period: Option<String>,
+}
+
+impl ReadinessProbe {
+    pub fn validate(&self, service_name: &str) -> Result<(), String> {
+        let interval = self
+            .interval_duration()
+            .map_err(|error| format!("service '{service_name}' readiness interval {error}"))?;
+        if interval.is_zero() {
+            return Err(format!(
+                "service '{service_name}' readiness interval must be greater than zero"
+            ));
+        }
+
+        let timeout = self
+            .timeout_duration()
+            .map_err(|error| format!("service '{service_name}' readiness timeout {error}"))?;
+        if timeout.is_zero() {
+            return Err(format!(
+                "service '{service_name}' readiness timeout must be greater than zero"
+            ));
+        }
+
+        self.start_period_duration()
+            .map_err(|error| format!("service '{service_name}' readiness start_period {error}"))?;
+
+        if self.retries() == 0 {
+            return Err(format!(
+                "service '{service_name}' readiness retries must be greater than zero"
+            ));
+        }
+
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn interval_duration(&self) -> Result<Duration, String> {
+        self.interval
+            .as_deref()
+            .map(parse_duration)
+            .transpose()
+            .map(|duration| duration.unwrap_or(Duration::from_secs(30)))
+    }
+
+    #[must_use]
+    pub fn timeout_duration(&self) -> Result<Duration, String> {
+        self.timeout
+            .as_deref()
+            .map(parse_duration)
+            .transpose()
+            .map(|duration| duration.unwrap_or(Duration::from_secs(30)))
+    }
+
+    #[must_use]
+    pub fn start_period_duration(&self) -> Result<Duration, String> {
+        self.start_period
+            .as_deref()
+            .map(parse_duration)
+            .transpose()
+            .map(|duration| duration.unwrap_or(Duration::ZERO))
+    }
+
+    #[must_use]
+    pub fn retries(&self) -> u32 {
+        self.retries.unwrap_or(3)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ReadinessProbe {
+pub enum ReadinessCheck {
     Http { service_port: String, path: String },
     Tcp { service_port: String },
     Exec { command: Vec<String> },
@@ -434,6 +515,38 @@ fn default_http_path_prefix() -> String {
     "/".into()
 }
 
+fn parse_duration(value: &str) -> Result<Duration, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("cannot be empty".into());
+    }
+
+    let units = [
+        ("ms", 1_u64),
+        ("s", 1_000_u64),
+        ("m", 60_000_u64),
+        ("h", 3_600_000_u64),
+    ];
+
+    for (suffix, multiplier_ms) in units {
+        let Some(raw_value) = trimmed.strip_suffix(suffix) else {
+            continue;
+        };
+        let amount = raw_value
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| format!("must be an integer duration like '30s' or '5m', got '{value}'"))?;
+        let total_ms = amount.checked_mul(multiplier_ms).ok_or_else(|| {
+            format!("is too large to represent as a duration: '{value}'")
+        })?;
+        return Ok(Duration::from_millis(total_ms));
+    }
+
+    Err(format!(
+        "must use one of the supported suffixes: ms, s, m, h; got '{value}'"
+    ))
+}
+
 fn stable_hash_hex(bytes: &[u8]) -> String {
     const OFFSET: u64 = 0xcbf29ce484222325;
     const PRIME: u64 = 0x00000100000001b3;
@@ -492,9 +605,15 @@ mod tests {
                 hostnames: vec!["api.example.test".into()],
                 path_prefix: "/".into(),
             })],
-            readiness: Some(ReadinessProbe::Http {
-                service_port: "http".into(),
-                path: "/ready".into(),
+            readiness: Some(ReadinessProbe {
+                check: ReadinessCheck::Http {
+                    service_port: "http".into(),
+                    path: "/ready".into(),
+                },
+                interval: None,
+                timeout: None,
+                retries: None,
+                start_period: None,
             }),
             rollout: RolloutStrategy::BlueGreen,
             labels: BTreeMap::from([("env".into(), "prod".into())]),
@@ -571,6 +690,38 @@ mod tests {
     }
 
     #[test]
+    fn readiness_accepts_compose_style_timing() {
+        let mut spec = sample_spec();
+        spec.readiness = Some(ReadinessProbe {
+            check: ReadinessCheck::Http {
+                service_port: "http".into(),
+                path: "/ready".into(),
+            },
+            interval: Some("5s".into()),
+            timeout: Some("2s".into()),
+            retries: Some(60),
+            start_period: Some("10s".into()),
+        });
+        spec.validate().expect("compose style readiness should validate");
+    }
+
+    #[test]
+    fn readiness_rejects_invalid_timing() {
+        let mut spec = sample_spec();
+        spec.readiness = Some(ReadinessProbe {
+            check: ReadinessCheck::Tcp {
+                service_port: "http".into(),
+            },
+            interval: Some("0s".into()),
+            timeout: None,
+            retries: None,
+            start_period: None,
+        });
+        let error = spec.validate().expect_err("zero interval should fail");
+        assert!(error.contains("interval must be greater than zero"));
+    }
+
+    #[test]
     fn old_spec_json_with_namespace_still_deserializes() {
         let json = r#"{
             "name":"api",
@@ -591,5 +742,32 @@ mod tests {
         let spec: ServiceSpec = serde_json::from_str(json).expect("deserialize legacy spec");
         assert_eq!(spec.name, "api");
         assert_eq!(spec.network, NetworkMode::Overlay);
+    }
+
+    #[test]
+    fn readiness_json_roundtrips_with_timing_fields() {
+        let json = r#"{
+            "http":{"service_port":"http","path":"/ready"},
+            "interval":"5s",
+            "timeout":"2s",
+            "retries":60,
+            "start_period":"10s"
+        }"#;
+
+        let readiness: ReadinessProbe =
+            serde_json::from_str(json).expect("deserialize readiness");
+        assert_eq!(
+            readiness,
+            ReadinessProbe {
+                check: ReadinessCheck::Http {
+                    service_port: "http".into(),
+                    path: "/ready".into()
+                },
+                interval: Some("5s".into()),
+                timeout: Some("2s".into()),
+                retries: Some(60),
+                start_period: Some("10s".into()),
+            }
+        );
     }
 }
