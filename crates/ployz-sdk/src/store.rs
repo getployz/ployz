@@ -1,8 +1,7 @@
 use crate::error::Result;
 use crate::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, RoutingState, ServiceHeadRecord, ServiceRevisionRecord,
-    ServiceSlotRecord,
+    MachineId, MachineRecord, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
 };
 use crate::spec::Namespace;
 use std::future::Future;
@@ -51,15 +50,10 @@ pub trait DeployStore: Send + Sync {
         namespace: &'a Namespace,
     ) -> impl Future<Output = Result<Vec<ServiceRevisionRecord>>> + Send + 'a;
 
-    fn list_service_heads<'a>(
+    fn list_service_releases<'a>(
         &'a self,
         namespace: &'a Namespace,
-    ) -> impl Future<Output = Result<Vec<ServiceHeadRecord>>> + Send + 'a;
-
-    fn list_service_slots<'a>(
-        &'a self,
-        namespace: &'a Namespace,
-    ) -> impl Future<Output = Result<Vec<ServiceSlotRecord>>> + Send + 'a;
+    ) -> impl Future<Output = Result<Vec<ServiceReleaseRecord>>> + Send + 'a;
 
     fn list_instance_status<'a>(
         &'a self,
@@ -71,22 +65,15 @@ pub trait DeployStore: Send + Sync {
         record: &'a ServiceRevisionRecord,
     ) -> impl Future<Output = Result<()>> + Send + 'a;
 
-    fn upsert_service_head<'a>(
+    fn upsert_service_release<'a>(
         &'a self,
-        record: &'a ServiceHeadRecord,
+        record: &'a ServiceReleaseRecord,
     ) -> impl Future<Output = Result<()>> + Send + 'a;
 
-    fn delete_service_head<'a>(
+    fn delete_service_release<'a>(
         &'a self,
         namespace: &'a Namespace,
         service: &'a str,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
-
-    fn replace_service_slots<'a>(
-        &'a self,
-        namespace: &'a Namespace,
-        service: &'a str,
-        records: &'a [ServiceSlotRecord],
     ) -> impl Future<Output = Result<()>> + Send + 'a;
 
     fn upsert_instance_status<'a>(
@@ -108,8 +95,7 @@ pub trait DeployStore: Send + Sync {
         &'a self,
         namespace: &'a Namespace,
         removed_services: &'a [String],
-        heads: &'a [ServiceHeadRecord],
-        slots: &'a [ServiceSlotRecord],
+        releases: &'a [ServiceReleaseRecord],
         deploy: &'a DeployRecord,
     ) -> impl Future<Output = Result<()>> + Send + 'a;
 

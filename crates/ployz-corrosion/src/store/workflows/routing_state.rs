@@ -1,11 +1,10 @@
 use crate::client::{CorrClient, SubscriptionStream};
-use crate::store::tables::{instance_status, service_heads, service_revisions, service_slots};
+use crate::store::tables::{instance_status, service_releases, service_revisions};
 use corro_api_types::{RowId, SqliteValue, Statement, TypedQueryEvent, sqlite::ChangeType};
 use futures_util::StreamExt;
 use ployz_sdk::error::{Error, Result};
 use ployz_sdk::model::{
-    InstanceId, InstanceStatusRecord, RoutingState, ServiceHeadRecord, ServiceRevisionRecord,
-    ServiceSlotRecord, SlotId,
+    InstanceId, InstanceStatusRecord, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
 };
 use ployz_sdk::spec::Namespace;
 use std::collections::HashMap;
@@ -18,10 +17,8 @@ const DEBOUNCE_WINDOW: Duration = Duration::from_millis(100);
 struct LiveRoutingState {
     revisions: HashMap<(Namespace, String, String), ServiceRevisionRecord>,
     revision_rows: HashMap<u64, (Namespace, String, String)>,
-    heads: HashMap<(Namespace, String), ServiceHeadRecord>,
-    head_rows: HashMap<u64, (Namespace, String)>,
-    slots: HashMap<(Namespace, String, SlotId), ServiceSlotRecord>,
-    slot_rows: HashMap<u64, (Namespace, String, SlotId)>,
+    releases: HashMap<(Namespace, String), ServiceReleaseRecord>,
+    release_rows: HashMap<u64, (Namespace, String)>,
     instances: HashMap<InstanceId, InstanceStatusRecord>,
     instance_rows: HashMap<u64, InstanceId>,
 }
@@ -31,10 +28,8 @@ impl LiveRoutingState {
         Self {
             revisions: HashMap::new(),
             revision_rows: HashMap::new(),
-            heads: HashMap::new(),
-            head_rows: HashMap::new(),
-            slots: HashMap::new(),
-            slot_rows: HashMap::new(),
+            releases: HashMap::new(),
+            release_rows: HashMap::new(),
             instances: HashMap::new(),
             instance_rows: HashMap::new(),
         }
@@ -43,24 +38,21 @@ impl LiveRoutingState {
     fn to_routing_state(&self) -> RoutingState {
         RoutingState {
             revisions: self.revisions.values().cloned().collect(),
-            heads: self.heads.values().cloned().collect(),
-            slots: self.slots.values().cloned().collect(),
+            releases: self.releases.values().cloned().collect(),
             instances: self.instances.values().cloned().collect(),
         }
     }
 }
 
 pub(crate) async fn load_routing_state(client: &CorrClient) -> Result<RoutingState> {
-    let (revisions, heads, slots, instances) = tokio::join!(
+    let (revisions, releases, instances) = tokio::join!(
         service_revisions::load_all_service_revisions(client),
-        service_heads::load_all_service_heads(client),
-        service_slots::load_all_service_slots(client),
+        service_releases::load_all_service_releases(client),
         instance_status::load_all_instance_status(client),
     );
     Ok(RoutingState {
         revisions: revisions?,
-        heads: heads?,
-        slots: slots?,
+        releases: releases?,
         instances: instances?,
     })
 }
@@ -80,11 +72,10 @@ pub(crate) async fn subscribe_routing_invalidations(
     Ok(rx)
 }
 
-fn routing_subscription_statements() -> [(&'static str, Statement); 4] {
+fn routing_subscription_statements() -> [(&'static str, Statement); 3] {
     [
         ("service_revisions", service_revisions::all_statement()),
-        ("service_heads", service_heads::all_statement()),
-        ("service_slots", service_slots::all_statement()),
+        ("service_releases", service_releases::all_statement()),
         ("instance_status", instance_status::all_statement()),
     ]
 }
@@ -203,14 +194,10 @@ pub(crate) async fn subscribe_routing_state_inner(
         .subscribe(&service_revisions::all_statement(), false, None)
         .await
         .map_err(|e| Error::operation("subscribe_routing_state", format!("revisions: {e}")))?;
-    let mut head_stream = client
-        .subscribe(&service_heads::all_statement(), false, None)
+    let mut release_stream = client
+        .subscribe(&service_releases::all_statement(), false, None)
         .await
-        .map_err(|e| Error::operation("subscribe_routing_state", format!("heads: {e}")))?;
-    let mut slot_stream = client
-        .subscribe(&service_slots::all_statement(), false, None)
-        .await
-        .map_err(|e| Error::operation("subscribe_routing_state", format!("slots: {e}")))?;
+        .map_err(|e| Error::operation("subscribe_routing_state", format!("releases: {e}")))?;
     let mut instance_stream = client
         .subscribe(&instance_status::all_statement(), false, None)
         .await
@@ -233,28 +220,12 @@ pub(crate) async fn subscribe_routing_state_inner(
     .await?;
 
     collect_initial_rows(
-        &mut head_stream,
-        &service_heads::parse_service_head,
-        &|record: &ServiceHeadRecord| (record.namespace.clone(), record.service.clone()),
-        &mut state.heads,
-        &mut state.head_rows,
-        "heads",
-    )
-    .await?;
-
-    collect_initial_rows(
-        &mut slot_stream,
-        &service_slots::parse_service_slot,
-        &|record: &ServiceSlotRecord| {
-            (
-                record.namespace.clone(),
-                record.service.clone(),
-                record.slot_id.clone(),
-            )
-        },
-        &mut state.slots,
-        &mut state.slot_rows,
-        "slots",
+        &mut release_stream,
+        &service_releases::parse_service_release,
+        &|record: &ServiceReleaseRecord| (record.namespace.clone(), record.service.clone()),
+        &mut state.releases,
+        &mut state.release_rows,
+        "releases",
     )
     .await?;
 
@@ -273,15 +244,41 @@ pub(crate) async fn subscribe_routing_state_inner(
 
     tokio::spawn(async move {
         let mut dirty = false;
-        let mut debounce = std::pin::pin!(tokio::time::sleep(DEBOUNCE_WINDOW));
+        let debounce = tokio::time::sleep(DEBOUNCE_WINDOW);
+        tokio::pin!(debounce);
 
         loop {
             tokio::select! {
                 event = revision_stream.next() => {
-                    let Some(event) = event else { return; };
                     match event {
-                        Ok(TypedQueryEvent::Change(change_type, rowid, cells, _)) => {
-                            let _ = apply_routing_change(
+                        Some(Ok(TypedQueryEvent::Columns(_) | TypedQueryEvent::EndOfQuery { .. })) => {}
+                        Some(Ok(TypedQueryEvent::Error(err))) => {
+                            warn!(?err, "routing revision subscription error");
+                            return;
+                        }
+                        Some(Ok(TypedQueryEvent::Row(rowid, cells))) => {
+                            if apply_routing_change(
+                                ChangeType::Insert,
+                                rowid,
+                                &cells,
+                                &service_revisions::parse_service_revision,
+                                &|record: &ServiceRevisionRecord| {
+                                    (
+                                        record.namespace.clone(),
+                                        record.service.clone(),
+                                        record.revision_hash.clone(),
+                                    )
+                                },
+                                &mut state.revisions,
+                                &mut state.revision_rows,
+                            ).is_ok() {
+                                dirty = true;
+                            } else {
+                                return;
+                            }
+                        }
+                        Some(Ok(TypedQueryEvent::Change(change_type, rowid, cells, _))) => {
+                            if apply_routing_change(
                                 change_type,
                                 rowid,
                                 &cells,
@@ -295,70 +292,91 @@ pub(crate) async fn subscribe_routing_state_inner(
                                 },
                                 &mut state.revisions,
                                 &mut state.revision_rows,
-                            );
-                            dirty = true;
+                            ).is_ok() {
+                                dirty = true;
+                            } else {
+                                return;
+                            }
                         }
-                        Ok(_) => {}
-                        Err(e) => {
-                            warn!(?e, "revision subscription error");
+                        Some(Err(err)) => {
+                            warn!(?err, "routing revision stream error");
+                            return;
                         }
+                        None => return,
                     }
                 }
-                event = head_stream.next() => {
-                    let Some(event) = event else { return; };
+                event = release_stream.next() => {
                     match event {
-                        Ok(TypedQueryEvent::Change(change_type, rowid, cells, _)) => {
-                            let _ = apply_routing_change(
-                                change_type,
+                        Some(Ok(TypedQueryEvent::Columns(_) | TypedQueryEvent::EndOfQuery { .. })) => {}
+                        Some(Ok(TypedQueryEvent::Error(err))) => {
+                            warn!(?err, "routing release subscription error");
+                            return;
+                        }
+                        Some(Ok(TypedQueryEvent::Row(rowid, cells))) => {
+                            if apply_routing_change(
+                                ChangeType::Insert,
                                 rowid,
                                 &cells,
-                                &service_heads::parse_service_head,
-                                &|record: &ServiceHeadRecord| {
+                                &service_releases::parse_service_release,
+                                &|record: &ServiceReleaseRecord| {
                                     (record.namespace.clone(), record.service.clone())
                                 },
-                                &mut state.heads,
-                                &mut state.head_rows,
-                            );
-                            dirty = true;
+                                &mut state.releases,
+                                &mut state.release_rows,
+                            ).is_ok() {
+                                dirty = true;
+                            } else {
+                                return;
+                            }
                         }
-                        Ok(_) => {}
-                        Err(e) => {
-                            warn!(?e, "head subscription error");
-                        }
-                    }
-                }
-                event = slot_stream.next() => {
-                    let Some(event) = event else { return; };
-                    match event {
-                        Ok(TypedQueryEvent::Change(change_type, rowid, cells, _)) => {
-                            let _ = apply_routing_change(
+                        Some(Ok(TypedQueryEvent::Change(change_type, rowid, cells, _))) => {
+                            if apply_routing_change(
                                 change_type,
                                 rowid,
                                 &cells,
-                                &service_slots::parse_service_slot,
-                                &|record: &ServiceSlotRecord| {
-                                    (
-                                        record.namespace.clone(),
-                                        record.service.clone(),
-                                        record.slot_id.clone(),
-                                    )
+                                &service_releases::parse_service_release,
+                                &|record: &ServiceReleaseRecord| {
+                                    (record.namespace.clone(), record.service.clone())
                                 },
-                                &mut state.slots,
-                                &mut state.slot_rows,
-                            );
-                            dirty = true;
+                                &mut state.releases,
+                                &mut state.release_rows,
+                            ).is_ok() {
+                                dirty = true;
+                            } else {
+                                return;
+                            }
                         }
-                        Ok(_) => {}
-                        Err(e) => {
-                            warn!(?e, "slot subscription error");
+                        Some(Err(err)) => {
+                            warn!(?err, "routing release stream error");
+                            return;
                         }
+                        None => return,
                     }
                 }
                 event = instance_stream.next() => {
-                    let Some(event) = event else { return; };
                     match event {
-                        Ok(TypedQueryEvent::Change(change_type, rowid, cells, _)) => {
-                            let _ = apply_routing_change(
+                        Some(Ok(TypedQueryEvent::Columns(_) | TypedQueryEvent::EndOfQuery { .. })) => {}
+                        Some(Ok(TypedQueryEvent::Error(err))) => {
+                            warn!(?err, "routing instance subscription error");
+                            return;
+                        }
+                        Some(Ok(TypedQueryEvent::Row(rowid, cells))) => {
+                            if apply_routing_change(
+                                ChangeType::Insert,
+                                rowid,
+                                &cells,
+                                &instance_status::parse_instance_status,
+                                &|record: &InstanceStatusRecord| record.instance_id.clone(),
+                                &mut state.instances,
+                                &mut state.instance_rows,
+                            ).is_ok() {
+                                dirty = true;
+                            } else {
+                                return;
+                            }
+                        }
+                        Some(Ok(TypedQueryEvent::Change(change_type, rowid, cells, _))) => {
+                            if apply_routing_change(
                                 change_type,
                                 rowid,
                                 &cells,
@@ -366,30 +384,27 @@ pub(crate) async fn subscribe_routing_state_inner(
                                 &|record: &InstanceStatusRecord| record.instance_id.clone(),
                                 &mut state.instances,
                                 &mut state.instance_rows,
-                            );
-                            dirty = true;
+                            ).is_ok() {
+                                dirty = true;
+                            } else {
+                                return;
+                            }
                         }
-                        Ok(_) => {}
-                        Err(e) => {
-                            warn!(?e, "instance subscription error");
+                        Some(Err(err)) => {
+                            warn!(?err, "routing instance stream error");
+                            return;
                         }
+                        None => return,
                     }
                 }
                 _ = &mut debounce, if dirty => {
-                    let snapshot = state.to_routing_state();
-                    if tx.send(snapshot).await.is_err() {
-                        return;
-                    }
                     dirty = false;
                     debounce.as_mut().reset(tokio::time::Instant::now() + DEBOUNCE_WINDOW);
+                    if tx.send(state.to_routing_state()).await.is_err() {
+                        return;
+                    }
                 }
                 _ = tx.closed() => return,
-            }
-
-            if dirty {
-                debounce
-                    .as_mut()
-                    .reset(tokio::time::Instant::now() + DEBOUNCE_WINDOW);
             }
         }
     });
@@ -400,21 +415,34 @@ pub(crate) async fn subscribe_routing_state_inner(
 #[cfg(test)]
 mod tests {
     use super::apply_routing_change;
+    use crate::store::tables::service_releases;
     use corro_api_types::{RowId, SqliteValue, sqlite::ChangeType};
-    use ployz_sdk::error::{Error, Result};
+    use ployz_sdk::model::{DeployId, ServiceRelease, ServiceReleaseRecord, ServiceRoutingPolicy};
+    use ployz_sdk::spec::Namespace;
     use std::collections::HashMap;
 
-    fn parse_value(row: &[SqliteValue]) -> Result<u64> {
-        let [value] = row else {
-            return Err(Error::operation(
-                "parse_value",
-                format!("expected 1 column, got {}", row.len()),
-            ));
+    fn release_row(namespace: &str, service: &str) -> Vec<SqliteValue> {
+        let record = ServiceReleaseRecord {
+            namespace: Namespace(namespace.into()),
+            service: service.into(),
+            release: ServiceRelease {
+                primary_revision_hash: String::from("rev-1"),
+                referenced_revision_hashes: vec![String::from("rev-1")],
+                routing: ServiceRoutingPolicy::Direct {
+                    revision_hash: String::from("rev-1"),
+                },
+                slots: Vec::new(),
+                updated_by_deploy_id: DeployId(String::from("dep-1")),
+                updated_at: 1,
+            },
         };
-        let Some(number) = value.as_integer() else {
-            return Err(Error::operation("parse_value", "expected integer"));
-        };
-        Ok(*number as u64)
+        vec![
+            namespace.into(),
+            service.into(),
+            serde_json::to_string(&record)
+                .expect("serialize release")
+                .into(),
+        ]
     }
 
     #[test]
@@ -424,30 +452,28 @@ mod tests {
 
         apply_routing_change(
             ChangeType::Insert,
-            RowId(7),
-            &[7_i64.into()],
-            &parse_value,
-            &|value: &u64| *value,
+            RowId(1),
+            &release_row("prod", "api"),
+            &service_releases::parse_service_release,
+            &|record: &ServiceReleaseRecord| (record.namespace.clone(), record.service.clone()),
             &mut map,
             &mut row_index,
         )
         .expect("insert should succeed");
 
-        assert_eq!(map.get(&7), Some(&7));
-        assert_eq!(row_index.get(&7), Some(&7));
+        assert_eq!(map.len(), 1);
 
         apply_routing_change(
             ChangeType::Delete,
-            RowId(7),
+            RowId(1),
             &[],
-            &parse_value,
-            &|value: &u64| *value,
+            &service_releases::parse_service_release,
+            &|record: &ServiceReleaseRecord| (record.namespace.clone(), record.service.clone()),
             &mut map,
             &mut row_index,
         )
         .expect("delete should succeed");
 
         assert!(map.is_empty());
-        assert!(row_index.is_empty());
     }
 }

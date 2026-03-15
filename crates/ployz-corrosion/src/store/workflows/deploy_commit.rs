@@ -1,28 +1,27 @@
 use crate::client::CorrClient;
 use crate::store::shared::sql::exec_all;
-use crate::store::tables::{deploys, service_heads, service_slots};
+use crate::store::tables::{deploys, service_releases};
 use corro_api_types::Statement;
 use ployz_sdk::error::Result;
-use ployz_sdk::model::{DeployRecord, ServiceHeadRecord, ServiceSlotRecord};
+use ployz_sdk::model::{DeployRecord, ServiceReleaseRecord};
 use ployz_sdk::spec::Namespace;
 
 pub(crate) async fn commit_deploy(
     client: &CorrClient,
     namespace: &Namespace,
     removed_services: &[String],
-    heads: &[ServiceHeadRecord],
-    slots: &[ServiceSlotRecord],
+    releases: &[ServiceReleaseRecord],
     deploy: &DeployRecord,
 ) -> Result<()> {
-    let statements = build_commit_statements(namespace, removed_services, heads, slots, deploy);
+    let statements = build_commit_statements(namespace, removed_services, releases, deploy)?;
     exec_all(client, &statements, "commit_deploy").await
 }
 
-fn touched_services(removed_services: &[String], heads: &[ServiceHeadRecord]) -> Vec<String> {
+fn touched_services(removed_services: &[String], releases: &[ServiceReleaseRecord]) -> Vec<String> {
     let mut touched = removed_services.to_vec();
-    for head in heads {
-        if !touched.contains(&head.service) {
-            touched.push(head.service.clone());
+    for release in releases {
+        if !touched.contains(&release.service) {
+            touched.push(release.service.clone());
         }
     }
     touched
@@ -31,29 +30,23 @@ fn touched_services(removed_services: &[String], heads: &[ServiceHeadRecord]) ->
 fn build_commit_statements(
     namespace: &Namespace,
     removed_services: &[String],
-    heads: &[ServiceHeadRecord],
-    slots: &[ServiceSlotRecord],
+    releases: &[ServiceReleaseRecord],
     deploy: &DeployRecord,
-) -> Vec<Statement> {
-    let touched = touched_services(removed_services, heads);
+) -> Result<Vec<Statement>> {
+    let touched = touched_services(removed_services, releases);
     let mut statements = Vec::new();
 
     for service in &touched {
-        statements.push(service_heads::delete_statement(namespace, service));
-        statements.push(service_slots::delete_statement(namespace, service));
+        statements.push(service_releases::delete_statement(namespace, service));
     }
 
-    for head in heads {
-        statements.push(service_heads::insert_statement(head));
+    for release in releases {
+        statements.push(service_releases::upsert_statement(release)?);
     }
 
-    for slot in slots {
-        statements.push(service_slots::insert_statement(slot));
-    }
+    statements.push(deploys::upsert_statement(deploy)?);
 
-    statements.push(deploys::upsert_statement(deploy));
-
-    statements
+    Ok(statements)
 }
 
 #[cfg(test)]
@@ -61,8 +54,8 @@ mod tests {
     use super::build_commit_statements;
     use corro_api_types::Statement;
     use ployz_sdk::model::{
-        DeployId, DeployRecord, DeployState, InstanceId, MachineId, ServiceHeadRecord,
-        ServiceSlotRecord, SlotId,
+        DeployId, DeployRecord, DeployState, MachineId, ServiceRelease, ServiceReleaseRecord,
+        ServiceRoutingPolicy,
     };
     use ployz_sdk::spec::Namespace;
 
@@ -70,32 +63,36 @@ mod tests {
     fn build_commit_statements_deduplicates_services_and_preserves_order() {
         let namespace = Namespace(String::from("ns"));
         let removed_services = vec![String::from("api")];
-        let heads = vec![
-            ServiceHeadRecord {
+        let releases = vec![
+            ServiceReleaseRecord {
                 namespace: namespace.clone(),
                 service: String::from("api"),
-                current_revision_hash: String::from("rev-api"),
-                updated_by_deploy_id: DeployId(String::from("deploy-1")),
-                updated_at: 10,
+                release: ServiceRelease {
+                    primary_revision_hash: String::from("rev-api"),
+                    referenced_revision_hashes: vec![String::from("rev-api")],
+                    routing: ServiceRoutingPolicy::Direct {
+                        revision_hash: String::from("rev-api"),
+                    },
+                    slots: Vec::new(),
+                    updated_by_deploy_id: DeployId(String::from("deploy-1")),
+                    updated_at: 10,
+                },
             },
-            ServiceHeadRecord {
+            ServiceReleaseRecord {
                 namespace: namespace.clone(),
                 service: String::from("worker"),
-                current_revision_hash: String::from("rev-worker"),
-                updated_by_deploy_id: DeployId(String::from("deploy-1")),
-                updated_at: 11,
+                release: ServiceRelease {
+                    primary_revision_hash: String::from("rev-worker"),
+                    referenced_revision_hashes: vec![String::from("rev-worker")],
+                    routing: ServiceRoutingPolicy::Direct {
+                        revision_hash: String::from("rev-worker"),
+                    },
+                    slots: Vec::new(),
+                    updated_by_deploy_id: DeployId(String::from("deploy-1")),
+                    updated_at: 11,
+                },
             },
         ];
-        let slots = vec![ServiceSlotRecord {
-            namespace: namespace.clone(),
-            service: String::from("worker"),
-            slot_id: SlotId(String::from("slot-1")),
-            machine_id: MachineId(String::from("machine-1")),
-            active_instance_id: InstanceId(String::from("instance-1")),
-            revision_hash: String::from("rev-worker"),
-            updated_by_deploy_id: DeployId(String::from("deploy-1")),
-            updated_at: 12,
-        }];
         let deploy = DeployRecord {
             deploy_id: DeployId(String::from("deploy-1")),
             namespace: namespace.clone(),
@@ -109,79 +106,45 @@ mod tests {
         };
 
         let statements =
-            build_commit_statements(&namespace, &removed_services, &heads, &slots, &deploy);
+            build_commit_statements(&namespace, &removed_services, &releases, &deploy)
+                .expect("commit statements");
 
         let [
-            delete_api_head,
-            delete_api_slot,
-            delete_worker_head,
-            delete_worker_slot,
-            insert_api_head,
-            insert_worker_head,
-            insert_worker_slot,
+            delete_api_release,
+            delete_worker_release,
+            upsert_api_release,
+            upsert_worker_release,
             upsert_deploy,
         ] = statements.as_slice()
         else {
             panic!("unexpected statement layout");
         };
 
-        let Statement::WithParams(query, _) = delete_api_head else {
-            panic!("expected delete head statement");
+        let Statement::WithParams(query, _) = delete_api_release else {
+            panic!("expected delete release statement");
         };
         assert_eq!(
             query,
-            "DELETE FROM service_heads WHERE namespace = ? AND service = ?"
+            "DELETE FROM service_releases WHERE namespace = ? AND service = ?"
         );
 
-        let Statement::WithParams(query, _) = delete_api_slot else {
-            panic!("expected delete slot statement");
+        let Statement::WithParams(query, _) = delete_worker_release else {
+            panic!("expected delete release statement");
         };
         assert_eq!(
             query,
-            "DELETE FROM service_slots WHERE namespace = ? AND service = ?"
+            "DELETE FROM service_releases WHERE namespace = ? AND service = ?"
         );
 
-        let Statement::WithParams(query, params) = delete_worker_head else {
-            panic!("expected delete head statement");
+        let Statement::WithParams(query, _) = upsert_api_release else {
+            panic!("expected release upsert statement");
         };
-        assert_eq!(
-            query,
-            "DELETE FROM service_heads WHERE namespace = ? AND service = ?"
-        );
-        assert_eq!(params.len(), 2);
+        assert!(query.starts_with("INSERT INTO service_releases"));
 
-        let Statement::WithParams(query, params) = delete_worker_slot else {
-            panic!("expected delete slot statement");
+        let Statement::WithParams(query, _) = upsert_worker_release else {
+            panic!("expected release upsert statement");
         };
-        assert_eq!(
-            query,
-            "DELETE FROM service_slots WHERE namespace = ? AND service = ?"
-        );
-        assert_eq!(params.len(), 2);
-
-        let Statement::WithParams(query, _) = insert_api_head else {
-            panic!("expected head insert statement");
-        };
-        assert_eq!(
-            query,
-            "INSERT INTO service_heads (namespace, service, current_revision_hash, updated_by_deploy_id, updated_at) VALUES (?, ?, ?, ?, ?)"
-        );
-
-        let Statement::WithParams(query, _) = insert_worker_head else {
-            panic!("expected head insert statement");
-        };
-        assert_eq!(
-            query,
-            "INSERT INTO service_heads (namespace, service, current_revision_hash, updated_by_deploy_id, updated_at) VALUES (?, ?, ?, ?, ?)"
-        );
-
-        let Statement::WithParams(query, _) = insert_worker_slot else {
-            panic!("expected slot insert statement");
-        };
-        assert_eq!(
-            query,
-            "INSERT INTO service_slots (namespace, service, slot_id, machine_id, active_instance_id, revision_hash, updated_by_deploy_id, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-        );
+        assert!(query.starts_with("INSERT INTO service_releases"));
 
         let Statement::WithParams(query, _) = upsert_deploy else {
             panic!("expected deploy upsert statement");

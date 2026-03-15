@@ -7,8 +7,8 @@
 use crate::error::Result;
 use crate::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, OverlayIp, RoutingState, ServiceHeadRecord, ServiceRevisionRecord,
-    ServiceSlotRecord,
+    MachineId, MachineRecord, OverlayIp, RoutingState, ServiceReleaseRecord,
+    ServiceRevisionRecord,
 };
 use crate::spec::Namespace;
 use crate::store::backends::corrosion::docker::DockerCorrosion;
@@ -289,20 +289,14 @@ impl DeployStore for StoreDriver {
         }
     }
 
-    async fn list_service_heads(&self, namespace: &Namespace) -> Result<Vec<ServiceHeadRecord>> {
+    async fn list_service_releases(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceReleaseRecord>> {
         match self {
-            Self::Memory { store, .. } => store.list_service_heads(namespace).await,
+            Self::Memory { store, .. } => store.list_service_releases(namespace).await,
             Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
-                store.list_service_heads(namespace).await
-            }
-        }
-    }
-
-    async fn list_service_slots(&self, namespace: &Namespace) -> Result<Vec<ServiceSlotRecord>> {
-        match self {
-            Self::Memory { store, .. } => store.list_service_slots(namespace).await,
-            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
-                store.list_service_slots(namespace).await
+                store.list_service_releases(namespace).await
             }
         }
     }
@@ -328,40 +322,20 @@ impl DeployStore for StoreDriver {
         }
     }
 
-    async fn upsert_service_head(&self, record: &ServiceHeadRecord) -> Result<()> {
+    async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> Result<()> {
         match self {
-            Self::Memory { store, .. } => store.upsert_service_head(record).await,
+            Self::Memory { store, .. } => store.upsert_service_release(record).await,
             Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
-                store.upsert_service_head(record).await
+                store.upsert_service_release(record).await
             }
         }
     }
 
-    async fn delete_service_head(&self, namespace: &Namespace, service: &str) -> Result<()> {
+    async fn delete_service_release(&self, namespace: &Namespace, service: &str) -> Result<()> {
         match self {
-            Self::Memory { store, .. } => store.delete_service_head(namespace, service).await,
+            Self::Memory { store, .. } => store.delete_service_release(namespace, service).await,
             Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
-                store.delete_service_head(namespace, service).await
-            }
-        }
-    }
-
-    async fn replace_service_slots(
-        &self,
-        namespace: &Namespace,
-        service: &str,
-        records: &[ServiceSlotRecord],
-    ) -> Result<()> {
-        match self {
-            Self::Memory { store, .. } => {
-                store
-                    .replace_service_slots(namespace, service, records)
-                    .await
-            }
-            Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
-                store
-                    .replace_service_slots(namespace, service, records)
-                    .await
+                store.delete_service_release(namespace, service).await
             }
         }
     }
@@ -397,19 +371,18 @@ impl DeployStore for StoreDriver {
         &self,
         namespace: &Namespace,
         removed_services: &[String],
-        heads: &[ServiceHeadRecord],
-        slots: &[ServiceSlotRecord],
+        releases: &[ServiceReleaseRecord],
         deploy: &DeployRecord,
     ) -> Result<()> {
         match self {
             Self::Memory { store, .. } => {
                 store
-                    .commit_deploy(namespace, removed_services, heads, slots, deploy)
+                    .commit_deploy(namespace, removed_services, releases, deploy)
                     .await
             }
             Self::Corrosion { store, .. } | Self::CorrosionHost { store, .. } => {
                 store
-                    .commit_deploy(namespace, removed_services, heads, slots, deploy)
+                    .commit_deploy(namespace, removed_services, releases, deploy)
                     .await
             }
         }

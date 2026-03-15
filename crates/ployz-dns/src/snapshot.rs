@@ -147,8 +147,7 @@ mod tests {
     fn empty_routing_state() -> RoutingState {
         RoutingState {
             revisions: vec![],
-            heads: vec![],
-            slots: vec![],
+            releases: vec![],
             instances: vec![],
         }
     }
