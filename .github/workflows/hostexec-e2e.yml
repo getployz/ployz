@@ -18,10 +18,10 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          - runner: ubuntu-latest
+          - runner: blacksmith-4vcpu-ubuntu-2204
             platform: linux/amd64
             suffix: amd64
-          - runner: ubuntu-24.04-arm
+          - runner: blacksmith-4vcpu-ubuntu-2204-arm
             platform: linux/arm64
             suffix: arm64
     runs-on: ${{ matrix.runner }}
@@ -41,10 +41,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/setup-buildx-action@v3
+      - name: Setup Blacksmith Builder
+        uses: useblacksmith/setup-docker-builder@v1
 
       - name: Build and push prebuilt node image
-        uses: docker/build-push-action@v6
+        uses: useblacksmith/build-push-action@v2
         with:
           context: .
           file: Dockerfile.e2e-node
