@@ -12,7 +12,6 @@ pub use ployz_types::paths;
 pub use ployz_types::spec;
 pub use ployz_types::store;
 pub use ployz_types::{Error, Result};
-pub use ployz_types::{model::*, spec::*};
 pub use transport::{
     DaemonPayload, DaemonRequest, DaemonResponse, DeployFrame, DeployOptions, StdioTransport,
     Transport, UnixSocketTransport,

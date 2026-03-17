@@ -374,7 +374,7 @@ mod tests {
     use crate::store::backends::memory::{MemoryService, MemoryStore};
     use crate::store::driver::StoreDriver;
     use crate::store::network::NetworkConfig;
-    use ployz_sdk::Participation;
+    use ployz_sdk::model::Participation;
     use std::net::Ipv6Addr;
     use std::path::PathBuf;
     use std::sync::{Arc, OnceLock};
