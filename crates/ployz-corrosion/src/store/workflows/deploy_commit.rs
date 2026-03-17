@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::client::CorrClient;
 use crate::store::shared::sql::exec_all;
 use crate::store::tables::{deploys, service_releases};
@@ -18,9 +20,10 @@ pub(crate) async fn commit_deploy(
 }
 
 fn touched_services(removed_services: &[String], releases: &[ServiceReleaseRecord]) -> Vec<String> {
+    let mut seen: HashSet<&str> = removed_services.iter().map(String::as_str).collect();
     let mut touched = removed_services.to_vec();
     for release in releases {
-        if !touched.contains(&release.service) {
+        if seen.insert(&release.service) {
             touched.push(release.service.clone());
         }
     }
