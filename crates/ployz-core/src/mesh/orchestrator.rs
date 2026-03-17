@@ -365,17 +365,10 @@ impl Mesh {
     }
 
     async fn spawn_background_tasks(&mut self) -> Result<()> {
-        if self.tasks.is_none() {
-            return Err(TaskSetError::Subscribe(crate::error::Error::operation(
-                "peer sync task",
-                "peer sync task not started".to_string(),
-            ))
-            .into());
-        }
         let Some(cancel) = self.task_cancel.clone() else {
             return Err(TaskSetError::Subscribe(crate::error::Error::operation(
-                "peer sync task",
-                "peer sync cancellation token missing".to_string(),
+                "spawn_background_tasks",
+                "peer sync task not started (no cancel token)".to_string(),
             ))
             .into());
         };
@@ -400,90 +393,71 @@ impl Mesh {
                 })?;
             self.authoritative_self = Some(Arc::new(RwLock::new(authoritative)));
         }
-        let authoritative_self = self.authoritative_self.as_ref().cloned().ok_or_else(|| {
-            TaskSetError::Subscribe(crate::error::Error::operation(
-                "self machine record",
-                "authoritative self record missing".to_string(),
-            ))
-        })?;
+        // Safe to unwrap: we just ensured `authoritative_self` is `Some` above.
+        let authoritative_self = self.authoritative_self.clone().expect("set above");
 
-        let cancel2 = cancel.clone();
+        // Safe to unwrap: `start_peer_sync_task` always sets `self.tasks` before we get here.
+        let task_set = self.tasks.as_mut().expect("tasks set by start_peer_sync_task");
+
         let (self_record_tx, self_record_rx) = mpsc::channel(64);
         self.self_record_tx = Some(self_record_tx.clone());
-        if let Some(task_set) = self.tasks.as_mut() {
-            task_set.spawn(run_self_record_writer_task(
-                authoritative_self.clone(),
-                self.store.clone(),
-                self_record_rx,
-                cancel2,
-            ));
-        }
+        task_set.spawn(run_self_record_writer_task(
+            authoritative_self.clone(),
+            self.store.clone(),
+            self_record_rx,
+            cancel.clone(),
+        ));
 
-        let cancel3 = cancel.clone();
-        if let Some(task_set) = self.tasks.as_mut() {
-            task_set.spawn(run_endpoint_refresh_task(
-                self.machine_id.clone(),
-                self.listen_port,
-                authoritative_self.clone(),
-                self_record_tx.clone(),
-                cancel3,
-            ));
-        }
+        task_set.spawn(run_endpoint_refresh_task(
+            self.machine_id.clone(),
+            self.listen_port,
+            authoritative_self.clone(),
+            self_record_tx.clone(),
+            cancel.clone(),
+        ));
 
-        let cancel4 = cancel.clone();
         self.heartbeat_started.store(false, Ordering::SeqCst);
         let (self_liveness_tx, self_liveness_rx) = mpsc::channel(16);
         self.self_liveness_tx = Some(self_liveness_tx.clone());
-        if let Some(task_set) = self.tasks.as_mut() {
-            task_set.spawn(run_self_liveness_task(
-                self.network.clone(),
-                self.heartbeat_started.clone(),
-                self_record_tx.clone(),
-                self_liveness_rx,
-                cancel4,
-            ));
-        }
+        task_set.spawn(run_self_liveness_task(
+            self.network.clone(),
+            self.heartbeat_started.clone(),
+            self_record_tx.clone(),
+            self_liveness_rx,
+            cancel.clone(),
+        ));
 
-        let cancel5 = cancel.clone();
         let (participation_tx, participation_rx) = mpsc::channel(16);
         self.participation_tx = Some(participation_tx.clone());
-        if let Some(task_set) = self.tasks.as_mut() {
-            task_set.spawn(run_participation_task(
-                self.machine_id.clone(),
-                authoritative_self.clone(),
-                self.store.clone(),
-                self.network.clone(),
-                self_record_tx,
-                participation_rx,
-                cancel5,
-            ));
-        }
+        task_set.spawn(run_participation_task(
+            self.machine_id.clone(),
+            authoritative_self.clone(),
+            self.store.clone(),
+            self.network.clone(),
+            self_record_tx,
+            participation_rx,
+            cancel.clone(),
+        ));
 
-        let cancel6 = cancel.clone();
         let (heartbeat_tx, heartbeat_rx) = mpsc::channel(16);
         self.heartbeat_tx = Some(heartbeat_tx);
-        if let Some(task_set) = self.tasks.as_mut() {
-            task_set.spawn(run_heartbeat_task(
-                self_liveness_tx,
-                participation_tx,
-                heartbeat_rx,
-                cancel6,
-            ));
-        }
+        task_set.spawn(run_heartbeat_task(
+            self_liveness_tx,
+            participation_tx,
+            heartbeat_rx,
+            cancel.clone(),
+        ));
 
         let (subnet_snapshot, subnet_events) = self
             .store
             .subscribe_machines()
             .await
             .map_err(TaskSetError::Subscribe)?;
-        let cancel7 = cancel.clone();
-        if let Some(task_set) = self.tasks.as_mut() {
-            task_set.spawn(run_subnet_claim_monitor_task(
-                subnet_snapshot,
-                subnet_events,
-                cancel7,
-            ));
-        }
+        task_set.spawn(run_subnet_claim_monitor_task(
+            subnet_snapshot,
+            subnet_events,
+            cancel.clone(),
+        ));
 
         if let Some(ref dataplane) = self.dataplane {
             let (ebpf_snapshot, ebpf_events) = self
@@ -491,26 +465,20 @@ impl Mesh {
                 .subscribe_machines()
                 .await
                 .map_err(TaskSetError::Subscribe)?;
-            let cancel4 = cancel.clone();
-
-            if let Some(task_set) = self.tasks.as_mut() {
-                task_set.spawn(run_ebpf_sync_task(
-                    ebpf_snapshot,
-                    ebpf_events,
-                    dataplane.clone(),
-                    self.wg_ifindex,
-                    self.machine_id.clone(),
-                    cancel4,
-                ));
-            }
+            task_set.spawn(run_ebpf_sync_task(
+                ebpf_snapshot,
+                ebpf_events,
+                dataplane.clone(),
+                self.wg_ifindex,
+                self.machine_id.clone(),
+                cancel.clone(),
+            ));
         }
 
         Ok(())
     }
 
-    async fn stop_runtime(&mut self, stop_store: bool) -> Option<MeshError> {
-        let mut first_err: Option<MeshError> = None;
-
+    fn clear_task_channels(&mut self) {
         self.peer_sync_tx = None;
         self.heartbeat_tx = None;
         self.self_liveness_tx = None;
@@ -518,6 +486,12 @@ impl Mesh {
         self.self_record_tx = None;
         self.task_cancel = None;
         self.heartbeat_started.store(false, Ordering::SeqCst);
+    }
+
+    async fn stop_runtime(&mut self, stop_store: bool) -> Option<MeshError> {
+        let mut first_err: Option<MeshError> = None;
+
+        self.clear_task_channels();
 
         if let Some(mut tasks) = self.tasks.take()
             && let Err(error) = tasks.stop().await
@@ -565,13 +539,7 @@ impl Mesh {
 
     pub async fn detach(&mut self) -> Result<()> {
         self.apply(PhaseEvent::DetachRequested)?;
-        self.peer_sync_tx = None;
-        self.heartbeat_tx = None;
-        self.self_liveness_tx = None;
-        self.participation_tx = None;
-        self.self_record_tx = None;
-        self.task_cancel = None;
-        self.heartbeat_started.store(false, Ordering::SeqCst);
+        self.clear_task_channels();
         if let Some(mut tasks) = self.tasks.take() {
             tasks.stop().await?;
         }

@@ -814,23 +814,19 @@ async fn export_namespace_manifest<T: Transport>(
 }
 
 fn upsert_service_in_manifest(manifest: &mut DeployManifest, spec: ServiceSpec) {
-    let Some(index) = manifest
+    match manifest
         .services
         .iter()
         .position(|existing| existing.name == spec.name)
-    else {
-        manifest.services.push(spec);
-        manifest
-            .services
-            .sort_by(|left, right| left.name.cmp(&right.name));
-        return;
-    };
-
-    let service = manifest
-        .services
-        .get_mut(index)
-        .expect("service index from position must exist");
-    *service = spec;
+    {
+        Some(index) => {
+            let Some(slot) = manifest.services.get_mut(index) else {
+                return;
+            };
+            *slot = spec;
+        }
+        None => manifest.services.push(spec),
+    }
     manifest
         .services
         .sort_by(|left, right| left.name.cmp(&right.name));

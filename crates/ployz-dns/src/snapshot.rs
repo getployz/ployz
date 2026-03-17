@@ -81,7 +81,7 @@ impl SharedDnsSnapshot {
 pub fn project_dns(state: &RoutingState) -> DnsSnapshot {
     let mut services: HashMap<Namespace, HashMap<String, Vec<Ipv4Addr>>> = HashMap::new();
     let mut ip_to_namespace: HashMap<Ipv4Addr, Namespace> = HashMap::new();
-    let mut service_names_set: HashMap<Namespace, Vec<String>> = HashMap::new();
+    let mut service_names: HashMap<Namespace, Vec<String>> = HashMap::new();
 
     for instance in &state.instances {
         if instance.phase != InstancePhase::Ready || !instance.ready {
@@ -114,13 +114,13 @@ pub fn project_dns(state: &RoutingState) -> DnsSnapshot {
     for (namespace, by_service) in &services {
         let mut names: Vec<String> = by_service.keys().cloned().collect();
         names.sort();
-        service_names_set.insert(namespace.clone(), names);
+        service_names.insert(namespace.clone(), names);
     }
 
     DnsSnapshot {
         services,
         ip_to_namespace,
-        service_names: service_names_set,
+        service_names,
     }
 }
 

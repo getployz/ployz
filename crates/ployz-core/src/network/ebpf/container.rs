@@ -73,15 +73,15 @@ impl ContainerDataplane {
         // The WG container has its own network namespace (for wg0), but eBPF TC
         // classifiers must attach to the bridge in the host netns. Since the
         // container runs with pid_mode=host, nsenter into PID 1's netns.
-        let mut full_cmd = vec![
-            String::from("exec"),
-            String::from("--privileged"),
-            self.container_name.clone(),
-            String::from("nsenter"),
-            String::from("--net=/proc/1/ns/net"),
-            String::from("--"),
+        let mut full_cmd: Vec<&str> = vec![
+            "exec",
+            "--privileged",
+            &self.container_name,
+            "nsenter",
+            "--net=/proc/1/ns/net",
+            "--",
         ];
-        full_cmd.extend(cmd.iter().map(|part| (*part).to_string()));
+        full_cmd.extend_from_slice(cmd);
 
         let output = Command::new("docker")
             .args(&full_cmd)

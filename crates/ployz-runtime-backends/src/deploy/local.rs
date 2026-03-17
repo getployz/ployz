@@ -9,10 +9,10 @@ use crate::error::{Error, Result};
 use crate::model::{
     DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, SlotId,
 };
-use crate::runtime::labels::{self, WorkloadMeta, build_workload_labels};
+use crate::runtime::labels::{self, WorkloadMeta, build_workload_labels, extract_workload_labels};
 use crate::runtime::{ContainerEngine, Probe, PullPolicy, RuntimeContainerSpec};
 use crate::spec::{
-    ContainerSpec, Namespace, NetworkMode, PortProtocol, ResourcesExt, ServicePort, ServiceSpec,
+    ContainerSpec, Namespace, NetworkMode, PortProtocol, ServicePort, ServiceSpec,
     VolumeSource,
 };
 use crate::store::DeployStore;
@@ -30,6 +30,39 @@ pub(super) struct ManagedInstance {
     pub(super) docker_container_id: String,
     pub(super) ip_address: Option<IpAddr>,
     pub(super) backend_ports: BTreeMap<String, u16>,
+}
+
+impl ManagedInstance {
+    pub(super) fn to_status_record(
+        &self,
+        namespace: &Namespace,
+        phase: InstancePhase,
+        ready: bool,
+        drain_state: DrainState,
+        error: Option<String>,
+    ) -> InstanceStatusRecord {
+        InstanceStatusRecord {
+            instance_id: self.instance_id.clone(),
+            namespace: namespace.clone(),
+            service: self.service.clone(),
+            slot_id: self.slot_id.clone(),
+            machine_id: self.machine_id.clone(),
+            revision_hash: self.revision_hash.clone(),
+            deploy_id: self.deploy_id.clone(),
+            docker_container_id: self.docker_container_id.clone(),
+            overlay_ip: self.ip_address.and_then(|ip| match ip {
+                IpAddr::V4(v4) => Some(v4),
+                IpAddr::V6(_) => None,
+            }),
+            backend_ports: self.backend_ports.clone(),
+            phase,
+            ready,
+            drain_state,
+            error,
+            started_at: now_unix_secs(),
+            updated_at: now_unix_secs(),
+        }
+    }
 }
 
 pub(super) struct StartCandidate<'a> {
@@ -74,32 +107,16 @@ impl LocalDeployRuntime {
 
         let mut instances = Vec::new();
         for obs in observed {
-            let Some(instance_id) = obs.labels.get(labels::LABEL_INSTANCE) else {
+            let Some(wl) = extract_workload_labels(&obs.labels) else {
                 continue;
             };
-            let Some(service) = obs.labels.get(labels::LABEL_SERVICE) else {
-                continue;
-            };
-            let Some(slot_id) = obs.labels.get(labels::LABEL_SLOT) else {
-                continue;
-            };
-            let Some(machine_id) = obs.labels.get(labels::LABEL_MACHINE) else {
-                continue;
-            };
-            let Some(revision_hash) = obs.labels.get(labels::LABEL_REVISION) else {
-                continue;
-            };
-            let Some(deploy_id) = obs.labels.get(labels::LABEL_DEPLOY) else {
-                continue;
-            };
-
             instances.push(ManagedInstance {
-                instance_id: InstanceId(instance_id.clone()),
-                service: service.clone(),
-                slot_id: SlotId(slot_id.clone()),
-                machine_id: MachineId(machine_id.clone()),
-                revision_hash: revision_hash.clone(),
-                deploy_id: DeployId(deploy_id.clone()),
+                instance_id: InstanceId(wl.instance_id),
+                service: wl.service,
+                slot_id: SlotId(wl.slot_id),
+                machine_id: MachineId(wl.machine_id),
+                revision_hash: wl.revision_hash,
+                deploy_id: DeployId(wl.deploy_id),
                 docker_container_id: obs.container_id,
                 ip_address: obs.ip_address,
                 backend_ports: BTreeMap::new(),
@@ -290,29 +307,14 @@ pub(super) async fn adopt_instances(
         if known.contains(&instance.instance_id.0) {
             continue;
         }
-        store
-            .upsert_instance_status(&InstanceStatusRecord {
-                instance_id: instance.instance_id.clone(),
-                namespace: namespace.clone(),
-                service: instance.service.clone(),
-                slot_id: instance.slot_id.clone(),
-                machine_id: instance.machine_id.clone(),
-                revision_hash: instance.revision_hash.clone(),
-                deploy_id: instance.deploy_id.clone(),
-                docker_container_id: instance.docker_container_id.clone(),
-                overlay_ip: instance.ip_address.and_then(|ip| match ip {
-                    IpAddr::V4(v4) => Some(v4),
-                    IpAddr::V6(_) => None,
-                }),
-                backend_ports: instance.backend_ports.clone(),
-                phase: InstancePhase::Ready,
-                ready: true,
-                drain_state: crate::model::DrainState::None,
-                error: None,
-                started_at: now_unix_secs(),
-                updated_at: now_unix_secs(),
-            })
-            .await?;
+        let record = instance.to_status_record(
+            namespace,
+            InstancePhase::Ready,
+            true,
+            DrainState::None,
+            None,
+        );
+        store.upsert_instance_status(&record).await?;
     }
     Ok(())
 }
@@ -325,27 +327,7 @@ pub(super) fn build_instance_status_record(
     drain_state: DrainState,
     error: Option<String>,
 ) -> InstanceStatusRecord {
-    InstanceStatusRecord {
-        instance_id: instance.instance_id.clone(),
-        namespace: namespace.clone(),
-        service: instance.service.clone(),
-        slot_id: instance.slot_id.clone(),
-        machine_id: instance.machine_id.clone(),
-        revision_hash: instance.revision_hash.clone(),
-        deploy_id: instance.deploy_id.clone(),
-        docker_container_id: instance.docker_container_id.clone(),
-        overlay_ip: instance.ip_address.and_then(|ip| match ip {
-            IpAddr::V4(v4) => Some(v4),
-            IpAddr::V6(_) => None,
-        }),
-        backend_ports: instance.backend_ports.clone(),
-        phase,
-        ready,
-        drain_state,
-        error,
-        started_at: now_unix_secs(),
-        updated_at: now_unix_secs(),
-    }
+    instance.to_status_record(namespace, phase, ready, drain_state, error)
 }
 
 pub(super) async fn list_local_instance_status(

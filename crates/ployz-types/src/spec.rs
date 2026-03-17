@@ -491,14 +491,9 @@ impl Resources {
             memory_bytes: None,
         }
     }
-}
 
-pub trait ResourcesExt {
-    fn cpu_nano(&self) -> Option<i64>;
-}
-
-impl ResourcesExt for Resources {
-    fn cpu_nano(&self) -> Option<i64> {
+    #[must_use]
+    pub fn cpu_nano(&self) -> Option<i64> {
         self.cpu_millicores.map(|m| i64::from(m) * 1_000_000)
     }
 }
