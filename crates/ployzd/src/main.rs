@@ -459,7 +459,7 @@ async fn run() -> Result<i32> {
             let runtime_target: RuntimeTarget = runtime.into();
             let service_mode: ServiceMode = service_mode.into();
             validate_runtime(runtime_target, service_mode, &aff).map_err(CliError::Config)?;
-            let built_in_images = BuiltInImages::load(cfg.built_in_images_manifest.as_deref())
+            let built_in_images = BuiltInImages::load(cfg.builtin_images_manifest.as_deref())
                 .map_err(CliError::Config)?;
             cmd_run(
                 &cfg.data_dir,

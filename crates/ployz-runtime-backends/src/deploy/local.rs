@@ -494,20 +494,8 @@ fn parse_duration_secs(value: &str) -> Option<i64> {
     trimmed.parse().ok()
 }
 
-pub(super) fn stable_hash_hex(bytes: &[u8]) -> String {
-    const OFFSET: u64 = 0xcbf29ce484222325;
-    const PRIME: u64 = 0x00000100000001b3;
-
-    let mut hash = OFFSET;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(PRIME);
-    }
-
-    format!("{hash:016x}")
-}
-
 pub(super) use crate::time::now_unix_secs;
+pub(super) use ployz_types::spec::stable_hash_hex;
 
 #[cfg(test)]
 mod tests {
