@@ -28,12 +28,16 @@ pub enum Probe {
 
 pub struct ProbeRunner {
     docker: Docker,
+    http_client: reqwest::Client,
 }
 
 impl ProbeRunner {
     #[must_use]
     pub fn new(docker: Docker) -> Self {
-        Self { docker }
+        Self {
+            docker,
+            http_client: reqwest::Client::new(),
+        }
     }
 
     pub async fn check(&self, probe: &Probe) -> Result<bool> {
@@ -44,8 +48,7 @@ impl ProbeRunner {
             }
             Probe::Http { host, port, path } => {
                 let url = format!("http://{host}:{port}{path}");
-                let client = reqwest::Client::new();
-                match client.get(url).send().await {
+                match self.http_client.get(url).send().await {
                     Ok(response) => Ok(response.status() == StatusCode::OK),
                     Err(_) => Ok(false),
                 }

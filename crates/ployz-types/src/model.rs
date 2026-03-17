@@ -3,7 +3,7 @@ use derive_more::Display;
 use ipnet::Ipv4Net;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use strum::EnumString;
 
@@ -43,7 +43,6 @@ impl NetworkId {
         rand::fill(&mut bytes);
         let mut value = String::with_capacity(32);
         for b in &bytes {
-            use std::fmt::Write as _;
             let _ = write!(&mut value, "{b:02x}");
         }
         Self(value)
@@ -124,6 +123,34 @@ pub struct MachineRecord {
 }
 
 impl MachineRecord {
+    /// Create a minimal seed record for bootstrap/peer-discovery purposes.
+    ///
+    /// Control-plane fields (`status`, `participation`, timestamps, `labels`)
+    /// are zeroed — the real values arrive once the store is online.
+    #[must_use]
+    pub fn seed(
+        id: MachineId,
+        public_key: PublicKey,
+        overlay_ip: OverlayIp,
+        subnet: Option<Ipv4Net>,
+        endpoints: Vec<String>,
+    ) -> Self {
+        Self {
+            id,
+            public_key,
+            overlay_ip,
+            subnet,
+            bridge_ip: None,
+            endpoints,
+            status: MachineStatus::Unknown,
+            participation: Participation::Disabled,
+            last_heartbeat: 0,
+            created_at: 0,
+            updated_at: 0,
+            labels: BTreeMap::new(),
+        }
+    }
+
     /// All CIDRs this peer should route, used by both host and docker WireGuard adapters.
     #[must_use]
     pub fn allowed_cidrs(&self) -> Vec<String> {

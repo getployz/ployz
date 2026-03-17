@@ -65,6 +65,30 @@ pub fn parse_key(labels: &HashMap<String, String>) -> Option<&str> {
     labels.get(LABEL_KEY).map(String::as_str)
 }
 
+/// Extract workload labels from an observed container's label map.
+/// Returns `None` if any required label is missing.
+#[must_use]
+pub fn extract_workload_labels(labels: &HashMap<String, String>) -> Option<WorkloadLabels> {
+    Some(WorkloadLabels {
+        instance_id: labels.get(LABEL_INSTANCE)?.clone(),
+        service: labels.get(LABEL_SERVICE)?.clone(),
+        slot_id: labels.get(LABEL_SLOT)?.clone(),
+        machine_id: labels.get(LABEL_MACHINE)?.clone(),
+        revision_hash: labels.get(LABEL_REVISION)?.clone(),
+        deploy_id: labels.get(LABEL_DEPLOY)?.clone(),
+    })
+}
+
+/// Owned workload label values extracted from a container.
+pub struct WorkloadLabels {
+    pub instance_id: String,
+    pub service: String,
+    pub slot_id: String,
+    pub machine_id: String,
+    pub revision_hash: String,
+    pub deploy_id: String,
+}
+
 // Old label constants for migration-period adoption
 pub(crate) const LEGACY_LABEL_CONFIG_HASH: &str = "ployz.config-hash";
 pub(crate) const LEGACY_LABEL_PARENT_ID: &str = "ployz.parent-container-id";

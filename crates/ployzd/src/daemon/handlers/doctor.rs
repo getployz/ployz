@@ -174,7 +174,7 @@ struct ParticipationRow {
     participation: String,
     liveness: String,
     required: bool,
-    handshake: String,
+    handshake: HandshakeState,
     probe: ProbeState,
 }
 
@@ -184,7 +184,7 @@ impl ParticipationRow {
     }
 
     fn wg_status(&self) -> String {
-        format!("wg={}", self.handshake)
+        format!("wg={}", self.handshake.as_str())
     }
 
     fn probe_status(&self) -> String {
@@ -196,19 +196,20 @@ impl ParticipationRow {
     }
 
     fn cause(&self) -> &'static str {
-        match (self.handshake.as_str(), self.probe) {
+        match (self.handshake, self.probe) {
             (_, ProbeState::Reachable) => "healthy via overlay probe",
-            ("absent", ProbeState::Unreachable) => {
+            (HandshakeState::Absent, ProbeState::Unreachable) => {
                 "no direct peer configured and overlay probe failed"
             }
-            ("none", ProbeState::Unreachable) => {
+            (HandshakeState::None, ProbeState::Unreachable) => {
                 "direct peer exists but no handshake yet and overlay probe failed"
             }
-            ("stale", ProbeState::Unreachable) => {
+            (HandshakeState::Stale, ProbeState::Unreachable) => {
                 "handshake older than 30s and overlay probe failed"
             }
-            ("fresh", ProbeState::Unreachable) => "overlay probe failed despite recent handshake",
-            _ => "unknown",
+            (HandshakeState::Fresh, ProbeState::Unreachable) => {
+                "overlay probe failed despite recent handshake"
+            }
         }
     }
 }
@@ -227,14 +228,14 @@ fn build_participation_rows(
             let required = machine_liveness(machine, now) == MachineLiveness::Fresh;
             let handshake_state = handshake_by_key
                 .get(&machine.public_key)
-                .cloned()
+                .copied()
                 .unwrap_or(HandshakeState::Absent);
             ParticipationRow {
                 id: machine.id.0.clone(),
                 participation: machine.participation.to_string(),
                 liveness: format_liveness(machine, now).to_string(),
                 required,
-                handshake: String::from(handshake_state.as_str()),
+                handshake: handshake_state,
                 probe: overlay_probe_by_ip
                     .get(&machine.overlay_ip)
                     .copied()
@@ -247,7 +248,7 @@ fn build_participation_rows(
     rows
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 enum HandshakeState {
     Fresh,
     Stale,
@@ -281,22 +282,28 @@ impl HandshakeState {
     }
 }
 
+fn handshake_state(now: Instant, last_handshake: Option<Instant>) -> HandshakeState {
+    let Some(last_handshake) = last_handshake else {
+        return HandshakeState::None;
+    };
+    match now.checked_duration_since(last_handshake) {
+        Some(elapsed) if elapsed < PARTICIPATION_HANDSHAKE_FRESHNESS_WINDOW => {
+            HandshakeState::Fresh
+        }
+        Some(_) => HandshakeState::Stale,
+        None => HandshakeState::Fresh,
+    }
+}
+
 fn handshake_state_map(device_peers: &[DevicePeer]) -> HashMap<PublicKey, HandshakeState> {
     let now = Instant::now();
     device_peers
         .iter()
         .map(|peer| {
-            let state = match peer.last_handshake {
-                Some(last_handshake) => match now.checked_duration_since(last_handshake) {
-                    Some(elapsed) if elapsed < PARTICIPATION_HANDSHAKE_FRESHNESS_WINDOW => {
-                        HandshakeState::Fresh
-                    }
-                    Some(_) => HandshakeState::Stale,
-                    None => HandshakeState::Fresh,
-                },
-                None => HandshakeState::None,
-            };
-            (peer.public_key.clone(), state)
+            (
+                peer.public_key.clone(),
+                handshake_state(now, peer.last_handshake),
+            )
         })
         .collect()
 }

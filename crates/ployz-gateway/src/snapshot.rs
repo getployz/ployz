@@ -18,18 +18,14 @@ impl SnapshotState {
         let mut backend_lookup = HashMap::new();
 
         for route in &snapshot.http_routes {
-            let addrs: Vec<String> = route
-                .backends
-                .iter()
-                .map(|b| b.address.to_string())
-                .collect();
-
-            for backend in &route.backends {
-                backend_lookup.insert(backend.address, backend.clone());
+            if route.backends.is_empty() {
+                continue;
             }
 
-            if addrs.is_empty() {
-                continue;
+            let mut addrs = Vec::with_capacity(route.backends.len());
+            for backend in &route.backends {
+                addrs.push(backend.address.to_string());
+                backend_lookup.insert(backend.address, backend.clone());
             }
 
             let Ok(lb) = LoadBalancer::try_from_iter(addrs) else {

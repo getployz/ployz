@@ -256,7 +256,8 @@ impl CorrClient {
         let mut url = format!("{}/v1/subscriptions?skip_rows={skip_rows}", self.base_url());
         if let Some(change_id) = from {
             use std::fmt::Write;
-            write!(&mut url, "&from={change_id}").unwrap();
+            // write! to String is infallible
+            let _ = write!(&mut url, "&from={change_id}");
         }
         let uri: Uri = url.parse()?;
         let req = hyper::Request::builder()
