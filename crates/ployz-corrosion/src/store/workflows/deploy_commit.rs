@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use crate::client::CorrClient;
 use crate::store::shared::sql::exec_all;
 use crate::store::tables::{deploys, service_releases};
@@ -7,6 +5,7 @@ use corro_api_types::Statement;
 use ployz_types::error::Result;
 use ployz_types::model::{DeployRecord, ServiceReleaseRecord};
 use ployz_types::spec::Namespace;
+use std::collections::HashSet;
 
 pub(crate) async fn commit_deploy(
     client: &CorrClient,

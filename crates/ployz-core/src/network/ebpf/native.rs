@@ -82,7 +82,7 @@ impl NativeDataplane {
 
     pub fn set_observe(&self, enabled: bool) -> Result<()> {
         let value: u32 = if enabled { 1 } else { 0 };
-        let mut bpf = self.bpf.lock().expect("bpf mutex poisoned");
+        let mut bpf = self.bpf.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let mut arr: aya::maps::Array<_, u32> = aya::maps::Array::try_from(
             bpf.map_mut("OBSERVE_FLAG")
@@ -100,7 +100,7 @@ impl NativeDataplane {
     pub fn upsert_route(&self, subnet: Ipv4Net, ifindex: u32) -> Result<()> {
         let key = PodRouteKey(subnet_to_key(subnet));
         let entry = PodRouteEntry(RouteEntry { ifindex });
-        let mut bpf = self.bpf.lock().expect("bpf mutex poisoned");
+        let mut bpf = self.bpf.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let mut routes: HashMap<_, PodRouteKey, PodRouteEntry> = HashMap::try_from(
             bpf.map_mut("ROUTES")
@@ -118,7 +118,7 @@ impl NativeDataplane {
 
     pub fn remove_route(&self, subnet: Ipv4Net) -> Result<()> {
         let key = PodRouteKey(subnet_to_key(subnet));
-        let mut bpf = self.bpf.lock().expect("bpf mutex poisoned");
+        let mut bpf = self.bpf.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let mut routes: HashMap<_, PodRouteKey, PodRouteEntry> = HashMap::try_from(
             bpf.map_mut("ROUTES")

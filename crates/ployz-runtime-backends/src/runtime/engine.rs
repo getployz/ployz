@@ -108,18 +108,19 @@ impl ContainerEngine {
             }
             SpecChange::Missing => {
                 self.pull_image(&spec.image, spec.pull_policy).await?;
-                let result = self.create_and_start(spec, parent_id.as_deref()).await?;
+                let (container_id, ip_address, networks) =
+                    self.create_and_start(spec, parent_id.as_deref()).await?;
                 info!(
                     name = %spec.container_name,
                     image = %spec.image,
                     "container created"
                 );
                 Ok(EnsureResult {
-                    container_id: result.0,
+                    container_id,
                     container_name: spec.container_name.clone(),
                     action: EnsureAction::Created,
-                    ip_address: result.1,
-                    networks: result.2,
+                    ip_address,
+                    networks,
                 })
             }
             SpecChange::Drifted { fields } => {
@@ -130,38 +131,26 @@ impl ContainerEngine {
                 );
                 self.pull_image(&spec.image, spec.pull_policy).await?;
                 self.force_remove(&spec.container_name).await;
-                let result = self.create_and_start(spec, parent_id.as_deref()).await?;
+                let (container_id, ip_address, networks) =
+                    self.create_and_start(spec, parent_id.as_deref()).await?;
                 info!(
                     name = %spec.container_name,
                     image = %spec.image,
                     "container recreated"
                 );
                 Ok(EnsureResult {
-                    container_id: result.0,
+                    container_id,
                     container_name: spec.container_name.clone(),
                     action: EnsureAction::Recreated { changed: fields },
-                    ip_address: result.1,
-                    networks: result.2,
+                    ip_address,
+                    networks,
                 })
             }
         }
     }
 
     pub async fn remove(&self, container_name: &str, grace_period: Duration) -> Result<()> {
-        let grace_secs = grace_period.as_secs() as i32;
-        let stop_opts = StopContainerOptionsBuilder::default().t(grace_secs).build();
-        match self
-            .docker
-            .stop_container(container_name, Some(stop_opts))
-            .await
-        {
-            Ok(()) => {}
-            Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 304 | 404,
-                ..
-            }) => {}
-            Err(e) => return Err(Error::operation("docker stop", e.to_string())),
-        }
+        self.stop(container_name, grace_period).await?;
 
         let remove_opts = RemoveContainerOptionsBuilder::default().build();
         match self
@@ -176,7 +165,7 @@ impl ContainerEngine {
             Err(e) => return Err(Error::operation("docker remove", e.to_string())),
         }
 
-        info!(name = %container_name, "container stopped and removed");
+        info!(name = %container_name, "container removed");
         Ok(())
     }
 
@@ -332,42 +321,18 @@ impl ContainerEngine {
         let env: Vec<String> = spec.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
 
         let host_config = HostConfig {
-            binds: if spec.binds.is_empty() {
-                None
-            } else {
-                Some(spec.binds.clone())
-            },
-            dns: if spec.dns_servers.is_empty() {
-                None
-            } else {
-                Some(spec.dns_servers.clone())
-            },
+            binds: none_if_empty(&spec.binds),
+            dns: none_if_empty(&spec.dns_servers),
             network_mode: spec.network_mode.clone(),
             port_bindings: spec.port_bindings.clone(),
-            cap_add: if spec.cap_add.is_empty() {
-                None
-            } else {
-                Some(spec.cap_add.clone())
-            },
-            cap_drop: if spec.cap_drop.is_empty() {
-                None
-            } else {
-                Some(spec.cap_drop.clone())
-            },
+            cap_add: none_if_empty(&spec.cap_add),
+            cap_drop: none_if_empty(&spec.cap_drop),
             privileged: Some(spec.privileged),
             restart_policy: spec.restart_policy.clone(),
             memory: spec.memory_bytes,
             nano_cpus: spec.nano_cpus,
-            sysctls: if spec.sysctls.is_empty() {
-                None
-            } else {
-                Some(spec.sysctls.clone())
-            },
-            tmpfs: if spec.tmpfs.is_empty() {
-                None
-            } else {
-                Some(spec.tmpfs.clone())
-            },
+            sysctls: none_if_empty_map(&spec.sysctls),
+            tmpfs: none_if_empty_map(&spec.tmpfs),
             pid_mode: spec.pid_mode.clone(),
             ..Default::default()
         };
@@ -431,4 +396,12 @@ impl ContainerEngine {
             warn!(?e, name = %container_name, "failed to remove existing container");
         }
     }
+}
+
+fn none_if_empty<T: Clone>(v: &[T]) -> Option<Vec<T>> {
+    if v.is_empty() { None } else { Some(v.to_vec()) }
+}
+
+fn none_if_empty_map<K: Clone, V: Clone>(m: &HashMap<K, V>) -> Option<HashMap<K, V>> {
+    if m.is_empty() { None } else { Some(m.clone()) }
 }

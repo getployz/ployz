@@ -47,7 +47,7 @@ impl StdioTransport {
     fn command(&self) -> Command {
         let mut command = Command::new(&self.program);
         command.args(&self.args);
-        command.envs(self.env.iter().map(|(key, value)| (key, value)));
+        command.envs(&self.env);
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());

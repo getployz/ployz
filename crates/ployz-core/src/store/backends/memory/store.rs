@@ -5,7 +5,7 @@ use crate::model::{
 };
 use crate::spec::Namespace;
 use crate::store::{DeployStore, InviteStore, MachineStore, RoutingStore, SyncProbe, SyncStatus};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard};
 use tokio::sync::mpsc;
 use tracing::warn;
@@ -281,16 +281,15 @@ impl DeployStore for MemoryStore {
         deploy: &DeployRecord,
     ) -> Result<()> {
         let mut inner = self.lock_inner();
-        let mut touched_services: Vec<String> = removed_services.to_vec();
-        for release in releases {
-            if !touched_services.contains(&release.service) {
-                touched_services.push(release.service.clone());
-            }
-        }
+        let touched_services: HashSet<&str> = removed_services
+            .iter()
+            .map(String::as_str)
+            .chain(releases.iter().map(|r| r.service.as_str()))
+            .collect();
 
         inner
             .service_releases
-            .retain(|(ns, service), _| !(ns == namespace && touched_services.contains(service)));
+            .retain(|(ns, service), _| !(ns == namespace && touched_services.contains(service.as_str())));
 
         for release in releases {
             inner.service_releases.insert(

@@ -6,7 +6,7 @@ use ployz_types::error::{Error, Result};
 use ployz_types::model::ServiceReleaseRecord;
 use ployz_types::spec::Namespace;
 
-pub(crate) const SQL_ALL_SERVICE_RELEASES: &str = "SELECT namespace, service, payload_json FROM service_releases WHERE payload_json <> '' ORDER BY namespace, service";
+const SQL_ALL_SERVICE_RELEASES: &str = "SELECT namespace, service, payload_json FROM service_releases WHERE payload_json <> '' ORDER BY namespace, service";
 
 pub(crate) fn all_statement() -> Statement {
     Statement::Simple(SQL_ALL_SERVICE_RELEASES.to_string())
@@ -16,7 +16,7 @@ pub(crate) async fn load_all_service_releases(
     client: &CorrClient,
 ) -> Result<Vec<ServiceReleaseRecord>> {
     let stmt = all_statement();
-    query_rows(client, &stmt, "load_routing_state")
+    query_rows(client, &stmt, "load_all_service_releases")
         .await?
         .iter()
         .map(|row| parse_service_release(row))

@@ -6,7 +6,7 @@ use ployz_types::error::{Error, Result};
 use ployz_types::model::{InstanceId, InstanceStatusRecord};
 use ployz_types::spec::Namespace;
 
-pub(crate) const SQL_ALL_INSTANCE_STATUS: &str = "SELECT instance_id, namespace, service, machine_id, payload_json FROM instance_status WHERE payload_json <> '' ORDER BY namespace, service, machine_id, instance_id";
+const SQL_ALL_INSTANCE_STATUS: &str = "SELECT instance_id, namespace, service, machine_id, payload_json FROM instance_status WHERE payload_json <> '' ORDER BY namespace, service, machine_id, instance_id";
 
 pub(crate) fn all_statement() -> Statement {
     Statement::Simple(SQL_ALL_INSTANCE_STATUS.to_string())
@@ -16,7 +16,7 @@ pub(crate) async fn load_all_instance_status(
     client: &CorrClient,
 ) -> Result<Vec<InstanceStatusRecord>> {
     let stmt = all_statement();
-    query_rows(client, &stmt, "load_routing_state")
+    query_rows(client, &stmt, "load_all_instance_status")
         .await?
         .iter()
         .map(|row| parse_instance_status(row))

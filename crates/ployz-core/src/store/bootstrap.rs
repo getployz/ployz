@@ -2,7 +2,7 @@ use std::net::Ipv6Addr;
 use std::path::Path;
 
 use crate::corrosion_config;
-use crate::model::{MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey};
+use crate::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
 use crate::network::endpoints::detect_endpoints;
 use crate::node::identity::Identity;
 use crate::node::invite::InviteClaims;
@@ -30,20 +30,13 @@ pub struct BootstrapPeerRecord {
 impl BootstrapPeerRecord {
     #[must_use]
     pub fn into_machine_record(self) -> MachineRecord {
-        MachineRecord {
-            id: self.machine_id,
-            public_key: self.public_key,
-            overlay_ip: self.overlay_ip,
-            subnet: None,
-            bridge_ip: None,
-            endpoints: self.endpoints,
-            status: MachineStatus::Unknown,
-            participation: Participation::Disabled,
-            last_heartbeat: 0,
-            created_at: 0,
-            updated_at: 0,
-            labels: std::collections::BTreeMap::new(),
-        }
+        MachineRecord::seed(
+            self.machine_id,
+            self.public_key,
+            self.overlay_ip,
+            None,
+            self.endpoints,
+        )
     }
 
     #[must_use]
@@ -181,22 +174,21 @@ pub(crate) fn peer_records_from_db(network_dir: &Path) -> Result<Vec<MachineReco
         } else {
             bridge_ip.parse::<std::net::Ipv6Addr>().ok().map(OverlayIp)
         };
-        let endpoints_parsed: Vec<String> = serde_json::from_str(&endpoints).unwrap_or_default();
+        let endpoints_parsed: Vec<String> =
+            serde_json::from_str(&endpoints).unwrap_or_else(|error| {
+                tracing::warn!(%id, ?error, "malformed endpoints JSON in db, treating as empty");
+                Vec::new()
+            });
 
-        records.push(MachineRecord {
-            id: MachineId(id),
-            public_key: PublicKey(key),
-            overlay_ip: OverlayIp(overlay),
-            subnet: subnet_parsed,
-            bridge_ip: bridge_parsed,
-            endpoints: endpoints_parsed,
-            status: MachineStatus::Unknown,
-            participation: Participation::Disabled,
-            last_heartbeat: 0,
-            created_at: 0,
-            updated_at: 0,
-            labels: std::collections::BTreeMap::new(),
-        });
+        let mut record = MachineRecord::seed(
+            MachineId(id),
+            PublicKey(key),
+            OverlayIp(overlay),
+            subnet_parsed,
+            endpoints_parsed,
+        );
+        record.bridge_ip = bridge_parsed;
+        records.push(record);
     }
 
     Ok(records)
@@ -237,6 +229,15 @@ pub fn resolve_bootstrap_addrs(
         .unwrap_or(corrosion_bootstrap_from_db(network_dir, machine_id)?))
 }
 
+/// Insert `record` into `records`, replacing an existing entry with the same `id`.
+fn upsert_machine(records: &mut Vec<MachineRecord>, record: MachineRecord) {
+    if let Some(existing) = records.iter_mut().find(|m| m.id == record.id) {
+        *existing = record;
+    } else {
+        records.push(record);
+    }
+}
+
 pub async fn build_seed_records(
     network_dir: &Path,
     identity: &Identity,
@@ -261,59 +262,32 @@ pub async fn build_seed_records(
         Vec::new()
     });
     for record in db_records {
-        if let Some(existing) = seed_records
-            .iter_mut()
-            .find(|machine| machine.id == record.id)
-        {
-            *existing = record;
-        } else {
-            seed_records.push(record);
-        }
+        upsert_machine(&mut seed_records, record);
     }
 
     if let Some(bs) = bootstrap {
-        let bootstrap_record = MachineRecord {
-            id: MachineId(bs.peer_id.clone()),
-            public_key: PublicKey(bs.peer_wg_public_key),
-            overlay_ip: OverlayIp(bs.peer_overlay_ip),
-            subnet: None,
-            bridge_ip: None,
-            endpoints: bs.peer_endpoints.clone(),
-            status: MachineStatus::Unknown,
-            participation: Participation::Disabled,
-            last_heartbeat: 0,
-            created_at: 0,
-            updated_at: 0,
-            labels: std::collections::BTreeMap::new(),
-        };
-        if !seed_records
-            .iter()
-            .any(|machine| machine.id == bootstrap_record.id)
-        {
+        let bootstrap_record = MachineRecord::seed(
+            MachineId(bs.peer_id.clone()),
+            PublicKey(bs.peer_wg_public_key),
+            OverlayIp(bs.peer_overlay_ip),
+            None,
+            bs.peer_endpoints.clone(),
+        );
+        // Only insert if not already known from a richer source (db or file).
+        if !seed_records.iter().any(|m| m.id == bootstrap_record.id) {
             seed_records.push(bootstrap_record);
         }
     }
 
     let endpoints = detect_endpoints(listen_port).await;
-    let self_record = MachineRecord {
-        id: identity.machine_id.clone(),
-        public_key: identity.public_key.clone(),
-        overlay_ip: net_config.overlay_ip,
-        subnet: Some(net_config.subnet),
-        bridge_ip: None,
+    let self_record = MachineRecord::seed(
+        identity.machine_id.clone(),
+        identity.public_key.clone(),
+        net_config.overlay_ip,
+        Some(net_config.subnet),
         endpoints,
-        status: MachineStatus::Unknown,
-        participation: Participation::Disabled,
-        last_heartbeat: 0,
-        created_at: 0,
-        updated_at: 0,
-        labels: std::collections::BTreeMap::new(),
-    };
-    if let Some(existing) = seed_records.iter_mut().find(|m| m.id == self_record.id) {
-        *existing = self_record;
-    } else {
-        seed_records.push(self_record);
-    }
+    );
+    upsert_machine(&mut seed_records, self_record);
 
     seed_records
 }

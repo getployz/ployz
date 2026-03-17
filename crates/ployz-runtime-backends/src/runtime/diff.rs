@@ -222,9 +222,7 @@ fn restart_policy_equal(observed: Option<&RestartPolicy>, desired: Option<&Resta
 }
 
 fn normalize_restart_policy(policy: Option<&RestartPolicy>) -> Option<RestartPolicy> {
-    let Some(policy) = policy else {
-        return None;
-    };
+    let policy = policy?;
 
     let name = policy.name.as_ref();
     let maximum_retry_count = policy.maximum_retry_count;

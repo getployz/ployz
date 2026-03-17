@@ -236,15 +236,13 @@ impl DaemonState {
         {
             Ok(_) => {}
             Err(e) => {
-                return DaemonResponse {
-                    ok: false,
-                    code: "NETWORK_START_FAILED".into(),
-                    message: format!(
+                return self.err(
+                    "NETWORK_START_FAILED",
+                    format!(
                         "initialized network '{}' but failed to start: {e}\n  state:   created",
                         network_name,
                     ),
-                    payload: None,
-                };
+                );
             }
         }
 
@@ -313,12 +311,7 @@ impl DaemonState {
         let net_config = match NetworkConfig::load(&config_path) {
             Ok(config) => config,
             Err(e) => {
-                return DaemonResponse {
-                    ok: false,
-                    code: "IO_ERROR".into(),
-                    message: format!("failed to load network config: {e}"),
-                    payload: None,
-                };
+                return self.err("IO_ERROR", format!("failed to load network config: {e}"));
             }
         };
 
@@ -329,12 +322,7 @@ impl DaemonState {
         match self.start_mesh(net_config, None, options).await {
             Ok(_) => {}
             Err(e) => {
-                return DaemonResponse {
-                    ok: false,
-                    code: "NETWORK_START_FAILED".into(),
-                    message: e.to_string(),
-                    payload: None,
-                };
+                return self.err("NETWORK_START_FAILED", e.to_string());
             }
         }
 
@@ -382,12 +370,7 @@ impl DaemonState {
             };
             if let Err(e) = active.mesh.destroy().await {
                 self.active = Some(active);
-                return DaemonResponse {
-                    ok: false,
-                    code: "NETWORK_DESTROY_FAILED".into(),
-                    message: format!("destroy failed: {e}"),
-                    payload: None,
-                };
+                return self.err("NETWORK_DESTROY_FAILED", format!("destroy failed: {e}"));
             }
             active.remote_control.shutdown().await;
             if let Err(e) = active.dns.shutdown().await {
@@ -402,12 +385,7 @@ impl DaemonState {
         }
 
         if let Err(e) = NetworkConfig::delete(&self.data_dir, network) {
-            return DaemonResponse {
-                ok: false,
-                code: "IO_ERROR".into(),
-                message: format!("failed to delete network config: {e}"),
-                payload: None,
-            };
+            return self.err("IO_ERROR", format!("failed to delete network config: {e}"));
         }
 
         self.clear_active_marker();
