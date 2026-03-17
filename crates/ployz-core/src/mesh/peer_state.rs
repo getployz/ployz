@@ -271,7 +271,6 @@ impl PeerState {
         }
 
         self.needs_ranking = false;
-        let _ = now;
         false
     }
 }
@@ -481,26 +480,30 @@ fn compare_option_instant_desc(a: Option<Instant>, b: Option<Instant>) -> Orderi
     }
 }
 
+fn peer_state_to_planned_record(ps: &PeerState) -> MachineRecord {
+    MachineRecord {
+        id: ps.id.clone(),
+        public_key: ps.public_key.clone(),
+        overlay_ip: ps.overlay_ip,
+        subnet: ps.subnet,
+        bridge_ip: ps.bridge_ip,
+        endpoints: ps.planned_endpoints(),
+        status: MachineStatus::Unknown,
+        participation: Participation::Disabled,
+        last_heartbeat: 0,
+        created_at: 0,
+        updated_at: 0,
+        labels: std::collections::BTreeMap::new(),
+    }
+}
+
 fn plan_mesh_peers(state: &PeerStateMap, local_machine_id: &MachineId) -> Vec<MachineRecord> {
     let mut planned: Vec<MachineRecord> = state
         .stored_peers
         .values()
         .filter(|ps| ps.id != *local_machine_id)
         .filter(|ps| !ps.runtime.endpoints.is_empty())
-        .map(|ps| MachineRecord {
-            id: ps.id.clone(),
-            public_key: ps.public_key.clone(),
-            overlay_ip: ps.overlay_ip,
-            subnet: ps.subnet,
-            bridge_ip: ps.bridge_ip,
-            endpoints: ps.planned_endpoints(),
-            status: MachineStatus::Unknown,
-            participation: Participation::Disabled,
-            last_heartbeat: 0,
-            created_at: 0,
-            updated_at: 0,
-            labels: std::collections::BTreeMap::new(),
-        })
+        .map(peer_state_to_planned_record)
         .collect();
 
     planned.extend(
@@ -510,20 +513,7 @@ fn plan_mesh_peers(state: &PeerStateMap, local_machine_id: &MachineId) -> Vec<Ma
             .filter(|ps| ps.id != *local_machine_id)
             .filter(|ps| !state.stored_peers.contains_key(&ps.id))
             .filter(|ps| !ps.runtime.endpoints.is_empty())
-            .map(|ps| MachineRecord {
-                id: ps.id.clone(),
-                public_key: ps.public_key.clone(),
-                overlay_ip: ps.overlay_ip,
-                subnet: ps.subnet,
-                bridge_ip: ps.bridge_ip,
-                endpoints: ps.planned_endpoints(),
-                status: MachineStatus::Unknown,
-                participation: Participation::Disabled,
-                last_heartbeat: 0,
-                created_at: 0,
-                updated_at: 0,
-                labels: std::collections::BTreeMap::new(),
-            }),
+            .map(peer_state_to_planned_record),
     );
 
     planned

@@ -79,13 +79,9 @@ impl WireguardDriver {
 
     #[must_use]
     pub fn ebpf_attachment_ifname(&self, bridge_ifname: &str) -> String {
-        match (self.mode(), self.backend.host_interface_name()) {
-            (WireguardBackendMode::Host, Some(ifname)) => ifname.to_string(),
-            (
-                WireguardBackendMode::Docker | WireguardBackendMode::Memory,
-                _,
-            ) => bridge_ifname.to_string(),
-            (WireguardBackendMode::Host, None) => bridge_ifname.to_string(),
+        match self.backend.host_interface_name() {
+            Some(ifname) if self.mode() == WireguardBackendMode::Host => ifname.to_string(),
+            _ => bridge_ifname.to_string(),
         }
     }
 

@@ -2,7 +2,7 @@ mod heal;
 mod join;
 mod list;
 mod operations;
-mod render;
+pub(crate) mod render;
 pub(crate) mod types;
 
 #[cfg(test)]

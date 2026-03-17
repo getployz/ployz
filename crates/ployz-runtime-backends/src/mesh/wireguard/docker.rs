@@ -172,9 +172,7 @@ impl DockerWireGuard {
     }
 
     fn bridge_peer_endpoint(&self) -> SocketAddr {
-        format!("{BRIDGE_HOST_LOOPBACK}:{}", self.listen_port)
-            .parse()
-            .expect("loopback bridge endpoint must parse")
+        SocketAddr::new(Ipv4Addr::LOCALHOST.into(), self.listen_port)
     }
 
     fn port_bindings(&self) -> PortMap {
@@ -212,147 +210,15 @@ impl DockerWireGuard {
     }
 
     async fn remove_existing(&self) {
-        let options = RemoveContainerOptionsBuilder::default().force(true).build();
-
-        if let Err(e) = self
-            .docker
-            .remove_container(&self.container_name, Some(options))
-            .await
-            && !matches!(
-                e,
-                bollard::errors::Error::DockerResponseServerError {
-                    status_code: 404,
-                    ..
-                }
-            )
-        {
-            warn!(?e, name = %self.container_name, "failed to remove existing container");
-        }
+        docker_force_remove(&self.docker, &self.container_name).await;
     }
 
     async fn exec_in_container(&self, cmd: &[&str]) -> Result<()> {
-        let exec = self
-            .docker
-            .create_exec(
-                &self.container_name,
-                CreateExecOptions::<String> {
-                    attach_stdout: Some(true),
-                    attach_stderr: Some(true),
-                    cmd: Some(cmd.iter().map(|s| s.to_string()).collect()),
-                    ..Default::default()
-                },
-            )
-            .await
-            .map_err(|e| Error::operation("docker exec create", e.to_string()))?;
-
-        let exec_id = exec.id.clone();
-
-        match self
-            .docker
-            .start_exec(&exec.id, None)
-            .await
-            .map_err(|e| Error::operation("docker exec start", e.to_string()))?
-        {
-            StartExecResults::Attached { mut output, .. } => {
-                let mut stderr_buf = String::new();
-                while let Some(result) = output.next().await {
-                    match result {
-                        Ok(bollard::container::LogOutput::StdErr { message }) => {
-                            stderr_buf.push_str(&String::from_utf8_lossy(&message));
-                        }
-                        Err(e) => {
-                            return Err(Error::operation("docker exec", e.to_string()));
-                        }
-                        _ => {}
-                    }
-                }
-
-                let inspect = self
-                    .docker
-                    .inspect_exec(&exec_id)
-                    .await
-                    .map_err(|e| Error::operation("docker exec inspect", e.to_string()))?;
-
-                if let Some(code) = inspect.exit_code
-                    && code != 0
-                {
-                    let detail = if stderr_buf.is_empty() {
-                        format!("exit code {code}")
-                    } else {
-                        format!("exit code {code}: {}", stderr_buf.trim())
-                    };
-                    return Err(Error::operation("docker exec", detail));
-                }
-            }
-            StartExecResults::Detached => {}
-        }
-
-        Ok(())
+        self.exec_in_container_capture(cmd).await.map(|_| ())
     }
 
     async fn exec_in_container_capture(&self, cmd: &[&str]) -> Result<String> {
-        let exec = self
-            .docker
-            .create_exec(
-                &self.container_name,
-                CreateExecOptions::<String> {
-                    attach_stdout: Some(true),
-                    attach_stderr: Some(true),
-                    cmd: Some(cmd.iter().map(|s| s.to_string()).collect()),
-                    ..Default::default()
-                },
-            )
-            .await
-            .map_err(|e| Error::operation("docker exec create", e.to_string()))?;
-
-        let exec_id = exec.id.clone();
-
-        let mut stdout_buf = String::new();
-        let mut stderr_buf = String::new();
-
-        match self
-            .docker
-            .start_exec(&exec.id, None)
-            .await
-            .map_err(|e| Error::operation("docker exec start", e.to_string()))?
-        {
-            StartExecResults::Attached { mut output, .. } => {
-                while let Some(result) = output.next().await {
-                    match result {
-                        Ok(bollard::container::LogOutput::StdOut { message }) => {
-                            stdout_buf.push_str(&String::from_utf8_lossy(&message));
-                        }
-                        Ok(bollard::container::LogOutput::StdErr { message }) => {
-                            stderr_buf.push_str(&String::from_utf8_lossy(&message));
-                        }
-                        Err(e) => {
-                            return Err(Error::operation("docker exec", e.to_string()));
-                        }
-                        _ => {}
-                    }
-                }
-
-                let inspect = self
-                    .docker
-                    .inspect_exec(&exec_id)
-                    .await
-                    .map_err(|e| Error::operation("docker exec inspect", e.to_string()))?;
-
-                if let Some(code) = inspect.exit_code
-                    && code != 0
-                {
-                    let detail = if stderr_buf.is_empty() {
-                        format!("exit code {code}")
-                    } else {
-                        format!("exit code {code}: {}", stderr_buf.trim())
-                    };
-                    return Err(Error::operation("docker exec", detail));
-                }
-            }
-            StartExecResults::Detached => {}
-        }
-
-        Ok(stdout_buf)
+        docker_exec_capture(&self.docker, &self.container_name, cmd, "docker exec").await
     }
 
     async fn log_interface_diagnostics(&self, stage: &str) {
@@ -578,6 +444,99 @@ impl DockerWireGuard {
 
         Ok(())
     }
+}
+
+/// Force-remove a Docker container, ignoring 404 (already gone).
+///
+/// Shared between `DockerWireGuard` and `WgSidecar`.
+pub(super) async fn docker_force_remove(docker: &Docker, container_name: &str) {
+    let options = RemoveContainerOptionsBuilder::default()
+        .force(true)
+        .build();
+    if let Err(e) = docker
+        .remove_container(container_name, Some(options))
+        .await
+        && !matches!(
+            e,
+            bollard::errors::Error::DockerResponseServerError {
+                status_code: 404,
+                ..
+            }
+        )
+    {
+        warn!(?e, name = %container_name, "failed to remove existing container");
+    }
+}
+
+/// Execute a command inside a Docker container and capture stdout.
+///
+/// Shared between `DockerWireGuard` and `WgSidecar` to avoid duplicating
+/// the exec + inspect + exit-code-check boilerplate.
+pub(super) async fn docker_exec_capture(
+    docker: &Docker,
+    container_name: &str,
+    cmd: &[&str],
+    operation: &'static str,
+) -> Result<String> {
+    let exec = docker
+        .create_exec(
+            container_name,
+            CreateExecOptions::<String> {
+                attach_stdout: Some(true),
+                attach_stderr: Some(true),
+                cmd: Some(cmd.iter().map(|s| s.to_string()).collect()),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| Error::operation(operation, format!("create exec: {e}")))?;
+
+    let exec_id = exec.id.clone();
+
+    let mut stdout_buf = String::new();
+    let mut stderr_buf = String::new();
+
+    match docker
+        .start_exec(&exec.id, None)
+        .await
+        .map_err(|e| Error::operation(operation, format!("start exec: {e}")))?
+    {
+        StartExecResults::Attached { mut output, .. } => {
+            while let Some(result) = output.next().await {
+                match result {
+                    Ok(bollard::container::LogOutput::StdOut { message }) => {
+                        stdout_buf.push_str(&String::from_utf8_lossy(&message));
+                    }
+                    Ok(bollard::container::LogOutput::StdErr { message }) => {
+                        stderr_buf.push_str(&String::from_utf8_lossy(&message));
+                    }
+                    Err(e) => {
+                        return Err(Error::operation(operation, e.to_string()));
+                    }
+                    _ => {}
+                }
+            }
+
+            let inspect = docker
+                .inspect_exec(&exec_id)
+                .await
+                .map_err(|e| Error::operation(operation, format!("inspect exec: {e}")))?;
+
+            if let Some(code) = inspect.exit_code
+                && code != 0
+            {
+                let detail = if stderr_buf.is_empty() {
+                    format!("exit code {code}")
+                } else {
+                    format!("exit code {code}: {}", stderr_buf.trim())
+                };
+                return Err(Error::operation(operation, detail));
+            }
+        }
+        StartExecResults::Detached => {}
+    }
+
+    Ok(stdout_buf)
 }
 
 fn unix_seconds_to_instant(seconds: u64) -> Option<Instant> {
@@ -857,12 +816,11 @@ impl MeshNetwork for DockerWireGuard {
 
         // Output format: "<pubkey>\t<unix_timestamp>\n" per peer. Timestamp 0 = no handshake.
         for line in output.lines() {
-            let mut parts = line.split('\t');
-            let pubkey = parts.next().unwrap_or("").trim();
-            let ts = parts
-                .next()
-                .and_then(|ts| ts.trim().parse::<u64>().ok())
-                .unwrap_or(0);
+            let Some((pubkey_raw, ts_raw)) = line.split_once('\t') else {
+                continue;
+            };
+            let pubkey = pubkey_raw.trim();
+            let ts = ts_raw.trim().parse::<u64>().unwrap_or(0);
             let is_local = local_keys.contains(pubkey);
             let short_key = &pubkey[..pubkey.len().min(8)];
 

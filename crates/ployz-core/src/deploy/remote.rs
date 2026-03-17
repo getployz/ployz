@@ -358,14 +358,10 @@ async fn handle_connection(
         };
 
         let response = handle_session_frame(&agent, &_session, frame).await;
+        let is_close = matches!(&response, DeployFrame::Ack { message } if message.starts_with("session closed"));
         write_frame(&mut stream, &response).await?;
 
-        if matches!(response, DeployFrame::Ack { .. })
-            && matches!(
-                &response,
-                DeployFrame::Ack { message } if message.starts_with("session closed")
-            )
-        {
+        if is_close {
             break;
         }
     }

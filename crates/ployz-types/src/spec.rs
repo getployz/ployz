@@ -151,23 +151,15 @@ impl ServiceSpec {
         }
 
         for route in &self.routes {
-            match route {
-                RouteSpec::Http(route) => {
-                    if !seen_ports.contains(&route.service_port) {
-                        return Err(format!(
-                            "service '{}' HTTP route references unknown service port '{}'",
-                            self.name, route.service_port
-                        ));
-                    }
-                }
-                RouteSpec::Tcp(route) => {
-                    if !seen_ports.contains(&route.service_port) {
-                        return Err(format!(
-                            "service '{}' TCP route references unknown service port '{}'",
-                            self.name, route.service_port
-                        ));
-                    }
-                }
+            let (kind, service_port) = match route {
+                RouteSpec::Http(r) => ("HTTP", &r.service_port),
+                RouteSpec::Tcp(r) => ("TCP", &r.service_port),
+            };
+            if !seen_ports.contains(service_port) {
+                return Err(format!(
+                    "service '{}' {kind} route references unknown service port '{service_port}'",
+                    self.name
+                ));
             }
         }
 
@@ -197,12 +189,12 @@ impl ServiceSpec {
         match self.rollout {
             RolloutStrategy::Recreate => {}
             RolloutStrategy::BlueGreen => {
-                let Some(_) = self.readiness else {
+                if self.readiness.is_none() {
                     return Err(format!(
                         "service '{}' uses blue_green rollout but does not define readiness",
                         self.name
                     ));
-                };
+                }
                 if !self.publish.is_empty() {
                     return Err(format!(
                         "service '{}' cannot use blue_green rollout with published host ports",
@@ -386,7 +378,6 @@ impl ReadinessProbe {
         Ok(())
     }
 
-    #[must_use]
     pub fn interval_duration(&self) -> Result<Duration, String> {
         self.interval
             .as_deref()
@@ -395,7 +386,6 @@ impl ReadinessProbe {
             .map(|duration| duration.unwrap_or(Duration::from_secs(30)))
     }
 
-    #[must_use]
     pub fn timeout_duration(&self) -> Result<Duration, String> {
         self.timeout
             .as_deref()
@@ -404,7 +394,6 @@ impl ReadinessProbe {
             .map(|duration| duration.unwrap_or(Duration::from_secs(30)))
     }
 
-    #[must_use]
     pub fn start_period_duration(&self) -> Result<Duration, String> {
         self.start_period
             .as_deref()

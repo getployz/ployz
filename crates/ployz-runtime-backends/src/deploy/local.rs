@@ -317,14 +317,8 @@ pub(super) async fn adopt_instances(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn build_instance_status_record(
     namespace: &Namespace,
-    service: &str,
-    slot_id: &SlotId,
-    machine_id: &MachineId,
-    revision_hash: &str,
-    deploy_id: &DeployId,
     instance: &ManagedInstance,
     phase: InstancePhase,
     ready: bool,
@@ -334,11 +328,11 @@ pub(super) fn build_instance_status_record(
     InstanceStatusRecord {
         instance_id: instance.instance_id.clone(),
         namespace: namespace.clone(),
-        service: service.to_string(),
-        slot_id: slot_id.clone(),
-        machine_id: machine_id.clone(),
-        revision_hash: revision_hash.to_string(),
-        deploy_id: deploy_id.clone(),
+        service: instance.service.clone(),
+        slot_id: instance.slot_id.clone(),
+        machine_id: instance.machine_id.clone(),
+        revision_hash: instance.revision_hash.clone(),
+        deploy_id: instance.deploy_id.clone(),
         docker_container_id: instance.docker_container_id.clone(),
         overlay_ip: instance.ip_address.and_then(|ip| match ip {
             IpAddr::V4(v4) => Some(v4),
