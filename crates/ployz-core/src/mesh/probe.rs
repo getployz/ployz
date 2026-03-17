@@ -325,12 +325,12 @@ mod tests {
 
     #[tokio::test]
     async fn probe_times_out_when_unreachable() {
-        let endpoint = "127.0.0.1:9".to_string();
-        assert!(
-            probe_endpoint(&endpoint, Duration::from_millis(50))
-                .await
-                .is_none()
-        );
+        // Bind to a random port, then drop the listener so nothing is listening.
+        let listener = StdTcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+        drop(listener);
+
+        assert!(probe_addr(addr, Duration::from_millis(50)).await.is_none());
     }
 
     #[tokio::test]
