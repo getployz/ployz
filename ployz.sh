@@ -3,6 +3,20 @@ set -euo pipefail
 
 PLOYZ_REPO="${PLOYZ_REPO:-getployz/ployz}"
 
+# Set PLOYZ_QUIET=1 to suppress progress output (useful for CI/e2e).
+# Warnings and errors always print regardless.
+PLOYZ_QUIET="${PLOYZ_QUIET:-0}"
+
+# --- Output helpers ---
+# All progress goes to stderr so stdout stays clean (important for probe --json).
+
+step() { [[ "${PLOYZ_QUIET}" == "1" ]] || printf '==> %s\n' "$1" >&2; }
+info() { [[ "${PLOYZ_QUIET}" == "1" ]] || printf '    %s\n' "$1" >&2; }
+warn() { printf 'warning: %s\n' "$1" >&2; }
+die()  { printf 'error: %s\n' "$1" >&2; exit 1; }
+
+# --- Usage ---
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -21,10 +35,19 @@ Options:
 EOF
 }
 
+# --- String escaping ---
+
+# Wraps a value in single quotes for safe shell eval.
+# Embedded single quotes become: '\'' (end quote, escaped quote, resume quote).
+# This is the POSIX-standard trick for single-quote escaping.
+# The resulting format is parsed by install.rs:parse_shell_value() in the daemon.
 shell_quote() {
   printf "'%s'" "${1//\'/\'\"\'\"\'}"
 }
 
+# Escapes a string for embedding inside a JSON "double-quoted" value.
+# Handles: backslashes, double quotes, newlines, carriage returns, tabs.
+# No jq dependency required.
 json_escape() {
   local value=${1//\\/\\\\}
   value=${value//\"/\\\"}
@@ -34,6 +57,9 @@ json_escape() {
   printf '%s' "${value}"
 }
 
+# --- Platform detection ---
+
+# Returns: linux, darwin, or other
 current_os() {
   case "$(uname -s)" in
     Linux) printf 'linux' ;;
@@ -42,6 +68,7 @@ current_os() {
   esac
 }
 
+# Returns: x86_64, aarch64, or raw uname -m output
 current_arch() {
   case "$(uname -m)" in
     x86_64|amd64) printf 'x86_64' ;;
@@ -50,20 +77,15 @@ current_arch() {
   esac
 }
 
+# macOS defaults to docker (runs in Docker Desktop VM), Linux defaults to host
 default_runtime() {
   case "$(current_os)" in
-    darwin)
-      printf 'docker'
-      ;;
-    linux)
-      printf 'host'
-      ;;
-    *)
-      printf 'host'
-      ;;
+    darwin) printf 'docker' ;;
+    *)      printf 'host' ;;
   esac
 }
 
+# system mode requires systemctl + root/sudo; otherwise user mode
 default_service_mode() {
   case "$(current_os)" in
     darwin)
@@ -82,10 +104,16 @@ default_service_mode() {
   esac
 }
 
+# --- Path resolution ---
+# These functions define where ployz files live on each platform.
+# The paths follow XDG conventions on Linux and standard macOS locations.
+
+# Where binaries are installed (ployz, ployzd, etc.)
 user_bin_dir() {
   printf '%s/.local/bin' "${HOME}"
 }
 
+# Persistent data directory (state, databases, install metadata)
 default_data_dir() {
   case "$(current_os)" in
     linux)
@@ -104,6 +132,7 @@ default_data_dir() {
   esac
 }
 
+# TOML configuration file
 default_config_path() {
   case "$(current_os)" in
     linux)
@@ -118,6 +147,7 @@ default_config_path() {
   esac
 }
 
+# Unix domain socket for CLI <-> daemon communication
 default_socket_path() {
   case "$(current_os)" in
     linux)
@@ -136,6 +166,18 @@ default_socket_path() {
   esac
 }
 
+# --- Derived paths ---
+
+manifest_path() {
+  printf '%s/install/manifest.env' "$(default_data_dir)"
+}
+
+assets_dir() {
+  printf '%s/install/assets' "$(default_data_dir)"
+}
+
+# --- Download helper ---
+
 download_file() {
   local url=$1
   local dest=$2
@@ -147,27 +189,26 @@ download_file() {
     wget -qO "${dest}" "${url}"
     return
   fi
-  printf 'curl or wget is required to download %s\n' "${url}" >&2
-  exit 1
+  die "curl or wget is required to download ${url}"
 }
 
-manifest_path() {
-  printf '%s/install/manifest.env' "$(default_data_dir)"
-}
-
-assets_dir() {
-  printf '%s/install/assets' "$(default_data_dir)"
-}
+# --- Payload validation ---
 
 required_payload_file() {
   local base=$1
   local path=$2
-  [[ -e "${base}/${path}" ]] || {
-    printf 'payload missing %s\n' "${base}/${path}" >&2
-    exit 1
-  }
+  [[ -e "${base}/${path}" ]] || die "Payload is missing required file: ${base}/${path}"
 }
 
+# --- Install manifest ---
+
+# Writes a shell-sourceable KEY='value' file that records where every component
+# was installed and how. This file is read by:
+#   - probe_json() in this script (via `source`)
+#   - install.rs:InstallManifest::load_from_path() in the Rust daemon
+#
+# The format MUST remain KEY=<single-quoted-value>, one per line.
+# See shell_quote() for the quoting scheme.
 write_manifest() {
   local path=$1
   local source_kind=$2
@@ -205,6 +246,8 @@ SERVICE_BACKEND=$(shell_quote "")
 EOF
 }
 
+# --- Payload installation ---
+
 install_payload() {
   local payload_dir=$1
   local source_kind=$2
@@ -215,6 +258,7 @@ install_payload() {
   local service_mode=$7
   local bin_dir manifest assets_path
 
+  step "Validating payload contents"
   required_payload_file "${payload_dir}" "ployz.sh"
   required_payload_file "${payload_dir}" "bin/ployz"
   required_payload_file "${payload_dir}" "bin/ployzd"
@@ -227,16 +271,27 @@ install_payload() {
   manifest="$(manifest_path)"
   assets_path="$(assets_dir)"
 
+  step "Installing binaries to ${bin_dir}"
   install -d "${bin_dir}" "${assets_path}"
+  info "ployz.sh      -> ${bin_dir}/ployz.sh"
   install -m 0755 "${payload_dir}/ployz.sh" "${bin_dir}/ployz.sh"
+  info "ployz         -> ${bin_dir}/ployz"
   install -m 0755 "${payload_dir}/bin/ployz" "${bin_dir}/ployz"
+  info "ployzd        -> ${bin_dir}/ployzd"
   install -m 0755 "${payload_dir}/bin/ployzd" "${bin_dir}/ployzd"
+  info "ployz-gateway -> ${bin_dir}/ployz-gateway"
   install -m 0755 "${payload_dir}/bin/ployz-gateway" "${bin_dir}/ployz-gateway"
+  info "ployz-dns     -> ${bin_dir}/ployz-dns"
   install -m 0755 "${payload_dir}/bin/ployz-dns" "${bin_dir}/ployz-dns"
+  info "corrosion     -> ${bin_dir}/corrosion"
   install -m 0755 "${payload_dir}/bin/corrosion" "${bin_dir}/corrosion"
+
+  step "Installing assets to ${assets_path}"
   install -d "${assets_path}/systemd"
+  info "ployzd.service -> ${assets_path}/systemd/ployzd.service"
   install -m 0644 "${payload_dir}/assets/systemd/ployzd.service" "${assets_path}/systemd/ployzd.service"
 
+  step "Writing install manifest to ${manifest}"
   write_manifest \
     "${manifest}" \
     "${source_kind}" \
@@ -252,6 +307,8 @@ install_payload() {
     "${service_mode}"
 }
 
+# --- Source acquisition ---
+
 download_release_payload() {
   local version=$1
   local work_dir=$2
@@ -262,8 +319,12 @@ download_release_payload() {
   else
     url="https://github.com/${PLOYZ_REPO}/releases/download/${version}/${asset}"
   fi
+
+  step "Downloading release payload (version: ${version})"
+  info "${url}"
   mkdir -p "${work_dir}/payload"
   download_file "${url}" "${work_dir}/payload.tgz"
+  step "Extracting payload"
   tar -xzf "${work_dir}/payload.tgz" -C "${work_dir}/payload"
   printf '%s' "${work_dir}/payload"
 }
@@ -273,14 +334,20 @@ build_git_payload() {
   local git_ref=$2
   local work_dir=$3
 
+  step "Cloning repository for source build"
+  info "URL: ${git_url}, ref: ${git_ref:-HEAD}"
   git clone --depth 1 "${git_url}" "${work_dir}/repo" >/dev/null 2>&1
   if [[ -n "${git_ref}" ]]; then
     git -C "${work_dir}/repo" fetch --depth 1 origin "${git_ref}" >/dev/null 2>&1
     git -C "${work_dir}/repo" checkout --detach FETCH_HEAD >/dev/null 2>&1
   fi
+
+  step "Building payload from source (this may take several minutes)"
   bash "${work_dir}/repo/scripts/build-install-payload.sh" --repo "${work_dir}/repo" --output "${work_dir}/payload"
   printf '%s' "${work_dir}/payload"
 }
+
+# --- Daemon service registration ---
 
 daemon_install() {
   local runtime_target=$1
@@ -289,15 +356,23 @@ daemon_install() {
   local ployz_bin
 
   ployz_bin="$(user_bin_dir)/ployz"
+
+  step "Registering daemon service (runtime: ${runtime_target}, mode: ${service_mode})"
   if [[ "${runtime_target}" == "host" && "${service_mode}" == "system" && ${EUID} -ne 0 ]]; then
+    warn "System-mode daemon install requires root privileges"
+    info "Running: sudo ${ployz_bin} daemon install --runtime host --service-mode system --install-manifest ${manifest}"
     sudo "${ployz_bin}" daemon install --runtime host --service-mode system --install-manifest "${manifest}"
     return
   fi
+
+  info "Running: ${ployz_bin} daemon install --runtime ${runtime_target} --service-mode ${service_mode} --install-manifest ${manifest}"
   "${ployz_bin}" daemon install \
     --runtime "${runtime_target}" \
     --service-mode "${service_mode}" \
     --install-manifest "${manifest}"
 }
+
+# --- Probe ---
 
 probe_json() {
   local manifest current_runtime current_service_mode backend installed data_dir config_path socket_path bin_dir
@@ -333,6 +408,10 @@ probe_json() {
 
   if [[ -f "${manifest}" ]]; then
     installed=true
+    # Load the install manifest to report installed state.
+    # This `source`s a shell file — which means it executes code. The manifest
+    # is written by this script's own write_manifest(), so it is trusted as long
+    # as the data directory has not been tampered with.
     # shellcheck disable=SC1090
     source "${manifest}"
     current_runtime="${RUNTIME_TARGET:-}"
@@ -362,6 +441,8 @@ probe_json() {
   printf '  "service_backend": "%s"\n' "$(json_escape "${backend}")"
   printf '}\n'
 }
+
+# --- Main ---
 
 main() {
   local command=${1:-}
@@ -417,36 +498,40 @@ main() {
             exit 0
             ;;
           *)
-            printf 'unknown argument: %s\n' "$1" >&2
-            exit 1
+            die "Unknown argument: $1"
             ;;
         esac
       done
 
       resolved_runtime=${runtime:-$(default_runtime)}
       resolved_service_mode=${service_mode:-$(default_service_mode)}
+
+      # Validate runtime
       case "${resolved_runtime}" in
         docker|host) ;;
-        *)
-          printf 'unsupported runtime: %s\n' "${resolved_runtime}" >&2
-          exit 1
-          ;;
+        *) die "Unsupported runtime: ${resolved_runtime}" ;;
       esac
+
+      # Validate service mode
       case "${resolved_service_mode}" in
         user|system) ;;
-        *)
-          printf 'unsupported service mode: %s\n' "${resolved_service_mode}" >&2
-          exit 1
-          ;;
+        *) die "Unsupported service mode: ${resolved_service_mode}" ;;
       esac
+
+      # Docker runtime only works with user-mode services
       if [[ "${resolved_runtime}" == "docker" && "${resolved_service_mode}" != "user" ]]; then
-        printf 'docker runtime only supports --service-mode user\n' >&2
-        exit 1
+        die "Docker runtime only supports --service-mode user"
       fi
+
+      # System-mode services require systemd, which is Linux-only
       if [[ "${resolved_service_mode}" == "system" && "$(current_os)" != "linux" ]]; then
-        printf '--service-mode system is only supported on Linux\n' >&2
-        exit 1
+        die "--service-mode system is only supported on Linux"
       fi
+
+      step "Installing ployz"
+      info "OS: $(current_os), Arch: $(current_arch)"
+      info "Runtime: ${resolved_runtime}, Service mode: ${resolved_service_mode}"
+      info "Source: ${source}$([ "${source}" = "release" ] && printf ", version: ${version}" || true)"
 
       work_dir="$(mktemp -d)"
       trap "rm -rf -- \"${work_dir}\"" EXIT
@@ -459,12 +544,11 @@ main() {
           resolved_payload="$(build_git_payload "${git_url}" "${git_ref}" "${work_dir}")"
           ;;
         payload)
-          [[ -n "${payload_dir}" ]] || { printf '--payload-dir is required for --source payload\n' >&2; exit 1; }
+          [[ -n "${payload_dir}" ]] || die "--payload-dir is required for --source payload"
           resolved_payload="${payload_dir}"
           ;;
         *)
-          printf 'unsupported source: %s\n' "${source}" >&2
-          exit 1
+          die "Unsupported source: ${source}"
           ;;
       esac
 
@@ -476,16 +560,26 @@ main() {
         "${git_url}" \
         "${git_ref}" \
         "${resolved_service_mode}"
+
       manifest="$(manifest_path)"
       if [[ ${no_daemon_install} -eq 0 ]]; then
         daemon_install "${resolved_runtime}" "${manifest}" "${resolved_service_mode}"
       fi
-      printf 'install complete\n'
+
+      step "Installation complete"
+      info ""
+      info "Binaries:  $(user_bin_dir)/"
+      info "Assets:    $(assets_dir)/"
+      info "Manifest:  $(manifest_path)"
+      info "Config:    $(default_config_path)"
+      info "Data:      $(default_data_dir)"
+      info "Socket:    $(default_socket_path)"
+      info ""
+      info "Run 'ployz status' to check the daemon."
       ;;
     probe)
       if [[ ${1:-} != "--json" ]]; then
-        printf 'probe requires --json\n' >&2
-        exit 1
+        die "probe requires --json"
       fi
       probe_json
       ;;
@@ -493,8 +587,7 @@ main() {
       usage
       ;;
     *)
-      printf 'unknown command: %s\n' "${command}" >&2
-      exit 1
+      die "Unknown command: ${command}"
       ;;
   esac
 }

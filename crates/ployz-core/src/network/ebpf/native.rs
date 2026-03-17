@@ -33,41 +33,8 @@ impl NativeDataplane {
 
         let _ = aya::programs::tc::qdisc_add_clsact(bridge_ifname);
 
-        let egress: &mut SchedClassifier = bpf
-            .program_mut("ployz_egress")
-            .ok_or_else(|| Error::operation("ebpf", "ployz_egress program not found"))?
-            .try_into()
-            .map_err(|e: aya::programs::ProgramError| {
-                Error::operation("ebpf egress cast", e.to_string())
-            })?;
-        egress
-            .load()
-            .map_err(|e| Error::operation("ebpf egress load", e.to_string()))?;
-        egress
-            .attach_with_options(
-                bridge_ifname,
-                TcAttachType::Egress,
-                TcAttachOptions::Netlink(NlOptions::default()),
-            )
-            .map_err(|e| Error::operation("ebpf egress attach", e.to_string()))?;
-
-        let ingress: &mut SchedClassifier = bpf
-            .program_mut("ployz_ingress")
-            .ok_or_else(|| Error::operation("ebpf", "ployz_ingress program not found"))?
-            .try_into()
-            .map_err(|e: aya::programs::ProgramError| {
-                Error::operation("ebpf ingress cast", e.to_string())
-            })?;
-        ingress
-            .load()
-            .map_err(|e| Error::operation("ebpf ingress load", e.to_string()))?;
-        ingress
-            .attach_with_options(
-                bridge_ifname,
-                TcAttachType::Ingress,
-                TcAttachOptions::Netlink(NlOptions::default()),
-            )
-            .map_err(|e| Error::operation("ebpf ingress attach", e.to_string()))?;
+        attach_tc_classifier(&mut bpf, "ployz_egress", bridge_ifname, TcAttachType::Egress)?;
+        attach_tc_classifier(&mut bpf, "ployz_ingress", bridge_ifname, TcAttachType::Ingress)?;
 
         info!(
             bridge = bridge_ifname,
@@ -81,7 +48,7 @@ impl NativeDataplane {
     }
 
     pub fn set_observe(&self, enabled: bool) -> Result<()> {
-        let value: u32 = if enabled { 1 } else { 0 };
+        let value: u32 = u32::from(enabled);
         let mut bpf = self.bpf.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let mut arr: aya::maps::Array<_, u32> = aya::maps::Array::try_from(
@@ -146,6 +113,32 @@ impl NativeDataplane {
         );
         info!(bridge = %self.bridge_ifname, "eBPF TC classifiers detached (native)");
     }
+}
+
+fn attach_tc_classifier(
+    bpf: &mut Ebpf,
+    program_name: &str,
+    ifname: &str,
+    attach_type: TcAttachType,
+) -> Result<()> {
+    let classifier: &mut SchedClassifier = bpf
+        .program_mut(program_name)
+        .ok_or_else(|| Error::operation("ebpf", format!("{program_name} program not found")))?
+        .try_into()
+        .map_err(|e: aya::programs::ProgramError| {
+            Error::operation(&format!("ebpf {program_name} cast"), e.to_string())
+        })?;
+    classifier
+        .load()
+        .map_err(|e| Error::operation(&format!("ebpf {program_name} load"), e.to_string()))?;
+    classifier
+        .attach_with_options(
+            ifname,
+            attach_type,
+            TcAttachOptions::Netlink(NlOptions::default()),
+        )
+        .map_err(|e| Error::operation(&format!("ebpf {program_name} attach"), e.to_string()))?;
+    Ok(())
 }
 
 fn subnet_to_key(subnet: Ipv4Net) -> RouteKey {

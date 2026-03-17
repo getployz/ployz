@@ -30,16 +30,16 @@ macro_rules! include_bytes_aligned {
 
 pub(crate) fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        eprintln!("usage: ployz-bpfctl <attach|detach|route> ...");
+    let [_, cmd, rest @ ..] = args.as_slice() else {
+        eprintln!("usage: ployz-bpfctl <attach|detach|route|observe> ...");
         return ExitCode::FAILURE;
-    }
+    };
 
-    let result = match args[1].as_str() {
-        "attach" => cmd_attach(&args[2..]),
-        "detach" => cmd_detach(&args[2..]),
-        "route" => cmd_route(&args[2..]),
-        "observe" => cmd_observe(&args[2..]),
+    let result = match cmd.as_str() {
+        "attach" => cmd_attach(rest),
+        "detach" => cmd_detach(rest),
+        "route" => cmd_route(rest),
+        "observe" => cmd_observe(rest),
         other => {
             eprintln!("unknown command: {other}");
             Err("unknown command".into())
@@ -75,11 +75,9 @@ fn ensure_bpffs() {
 /// attach <bridge-ifname> <wg-ifname>
 /// Loads BPF bytecode, attaches TC classifiers, sets WG ifindex, pins maps.
 fn cmd_attach(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    if args.len() < 2 {
+    let [bridge, wg_ifname, ..] = args else {
         return Err("usage: attach <bridge-ifname> <wg-ifname>".into());
-    }
-    let bridge = &args[0];
-    let wg_ifname = &args[1];
+    };
     let wg_ifindex = resolve_ifindex(wg_ifname)?;
 
     ensure_bpffs();
@@ -88,23 +86,8 @@ fn cmd_attach(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut bpf = Ebpf::load(bytecode)?;
 
     let _ = aya::programs::tc::qdisc_add_clsact(bridge);
-    let nl_opts = TcAttachOptions::Netlink(NlOptions::default());
-
-    let egress: &mut SchedClassifier = bpf
-        .program_mut("ployz_egress")
-        .ok_or("ployz_egress not found")?
-        .try_into()?;
-    egress.load()?;
-    egress.attach_with_options(bridge, TcAttachType::Egress, nl_opts)?;
-
-    let nl_opts = TcAttachOptions::Netlink(NlOptions::default());
-
-    let ingress: &mut SchedClassifier = bpf
-        .program_mut("ployz_ingress")
-        .ok_or("ployz_ingress not found")?
-        .try_into()?;
-    ingress.load()?;
-    ingress.attach_with_options(bridge, TcAttachType::Ingress, nl_opts)?;
+    attach_tc_classifier(&mut bpf, "ployz_egress", bridge, TcAttachType::Egress)?;
+    attach_tc_classifier(&mut bpf, "ployz_ingress", bridge, TcAttachType::Ingress)?;
 
     {
         let wg_map: &mut aya::maps::Map = bpf
@@ -137,10 +120,9 @@ fn cmd_attach(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 /// detach <bridge-ifname>
 /// Removes pinned BPF objects. Removing the clsact qdisc detaches all TC programs.
 fn cmd_detach(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    if args.is_empty() {
+    let [bridge, ..] = args else {
         return Err("usage: detach <bridge-ifname>".into());
-    }
-    let bridge = &args[0];
+    };
 
     let _ = aya::programs::tc::qdisc_detach_program(bridge, TcAttachType::Egress, "ployz_egress");
     let _ = aya::programs::tc::qdisc_detach_program(bridge, TcAttachType::Ingress, "ployz_ingress");
@@ -159,17 +141,17 @@ fn cmd_detach(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 /// route del <subnet>
 /// Opens the pinned ROUTES map and inserts/removes entries.
 fn cmd_route(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    if args.is_empty() {
+    let [subcmd, rest @ ..] = args else {
         return Err("usage: route <add|del> <subnet> [ifindex]".into());
-    }
+    };
 
-    match args[0].as_str() {
+    match subcmd.as_str() {
         "add" => {
-            if args.len() < 3 {
+            let [subnet_str, ifindex_str, ..] = rest else {
                 return Err("usage: route add <subnet> <ifindex>".into());
-            }
-            let subnet: ipnet::Ipv4Net = args[1].parse()?;
-            let ifindex: u32 = args[2].parse()?;
+            };
+            let subnet: ipnet::Ipv4Net = subnet_str.parse()?;
+            let ifindex: u32 = ifindex_str.parse()?;
 
             let key = PodRouteKey(subnet_to_key(subnet));
             let entry = PodRouteEntry(RouteEntry { ifindex });
@@ -181,10 +163,10 @@ fn cmd_route(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         "del" => {
-            if args.len() < 2 {
+            let [subnet_str, ..] = rest else {
                 return Err("usage: route del <subnet>".into());
-            }
-            let subnet: ipnet::Ipv4Net = args[1].parse()?;
+            };
+            let subnet: ipnet::Ipv4Net = subnet_str.parse()?;
             let key = PodRouteKey(subnet_to_key(subnet));
 
             let mut map = open_routes_map()?;
@@ -219,11 +201,11 @@ fn resolve_ifindex(ifname: &str) -> Result<u32, Box<dyn std::error::Error>> {
 /// observe on|off
 /// Toggles the OBSERVE_FLAG in the pinned BPF map.
 fn cmd_observe(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    if args.is_empty() {
+    let [state, ..] = args else {
         return Err("usage: observe <on|off>".into());
-    }
+    };
 
-    let value: u32 = match args[0].as_str() {
+    let value: u32 = match state.as_str() {
         "on" => 1,
         "off" => 0,
         other => return Err(format!("unknown observe state: {other} (expected on|off)").into()),
@@ -237,6 +219,25 @@ fn cmd_observe(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         "observation {}",
         if value == 1 { "enabled" } else { "disabled" }
     );
+    Ok(())
+}
+
+fn attach_tc_classifier(
+    bpf: &mut Ebpf,
+    program_name: &str,
+    ifname: &str,
+    attach_type: TcAttachType,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let classifier: &mut SchedClassifier = bpf
+        .program_mut(program_name)
+        .ok_or(format!("{program_name} not found"))?
+        .try_into()?;
+    classifier.load()?;
+    classifier.attach_with_options(
+        ifname,
+        attach_type,
+        TcAttachOptions::Netlink(NlOptions::default()),
+    )?;
     Ok(())
 }
 
