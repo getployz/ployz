@@ -10,11 +10,11 @@ path = "src/lib.rs"
 
 [dependencies]
 ployz-types = { path = "../ployz-types" }
+ployz-corrosion = { path = "../ployz-corrosion" }
 ployz-ebpf-common = { path = "../ebpf-common" }
 tokio = { workspace = true, features = ["process", "fs"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-toml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio-util = { workspace = true }

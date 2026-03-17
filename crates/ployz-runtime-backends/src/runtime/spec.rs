@@ -3,13 +3,7 @@ use std::net::IpAddr;
 
 use bollard::models::{ContainerInspectResponse, PortMap};
 
-/// Pull policy for container images.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PullPolicy {
-    Always,
-    IfNotPresent,
-    Never,
-}
+pub use ployz_types::spec::PullPolicy;
 
 /// Flat declarative spec for a managed container.
 /// Callers construct this from their own domain types.
@@ -95,6 +89,7 @@ pub struct ObservedContainer {
     pub memory_bytes: Option<i64>,
     pub nano_cpus: Option<i64>,
     pub sysctls: HashMap<String, String>,
+    pub stop_timeout: Option<i64>,
     pub pid_mode: Option<String>,
     pub ip_address: Option<IpAddr>,
     pub networks: HashMap<String, String>,
@@ -173,6 +168,8 @@ pub fn observe(info: &ContainerInspectResponse) -> ObservedContainer {
 
     let pid_mode = host_config.and_then(|h| h.pid_mode.clone());
 
+    let stop_timeout = config.and_then(|c| c.stop_timeout).map(|t| t as i64);
+
     let image = config.and_then(|c| c.image.clone()).unwrap_or_default();
 
     let cmd = config.and_then(|c| c.cmd.clone());
@@ -227,6 +224,7 @@ pub fn observe(info: &ContainerInspectResponse) -> ObservedContainer {
         memory_bytes,
         nano_cpus,
         sysctls,
+        stop_timeout,
         pid_mode,
         ip_address,
         networks,

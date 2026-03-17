@@ -23,6 +23,7 @@ pub enum ChangedField {
     MemoryBytes,
     NanoCpus,
     Sysctls,
+    StopTimeout,
     PidMode,
 }
 
@@ -133,6 +134,10 @@ pub fn eval_spec_change(
 
     if observed.sysctls != desired.sysctls {
         fields.push(ChangedField::Sysctls);
+    }
+
+    if observed.stop_timeout != desired.stop_timeout {
+        fields.push(ChangedField::StopTimeout);
     }
 
     if !pid_mode_equal(observed.pid_mode.as_deref(), desired.pid_mode.as_deref()) {
@@ -284,6 +289,7 @@ mod tests {
             memory_bytes: None,
             nano_cpus: None,
             sysctls: HashMap::new(),
+            stop_timeout: None,
             pid_mode: None,
             ip_address: None,
             networks: HashMap::new(),

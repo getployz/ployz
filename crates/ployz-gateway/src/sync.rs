@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::time::Duration;
 
-use ployz_routes::{GatewaySnapshot, project};
+use crate::routes::{GatewaySnapshot, project};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 

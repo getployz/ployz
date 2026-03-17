@@ -4,7 +4,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use http::Method;
 use pingora::prelude::*;
-use ployz_routes::match_http_route;
+use crate::routes::match_http_route;
 use tracing::info;
 
 use crate::snapshot::SharedSnapshot;

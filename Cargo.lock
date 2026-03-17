@@ -2764,6 +2764,7 @@ dependencies = [
  "if-addrs",
  "ipnet",
  "libc",
+ "ployz-corrosion",
  "ployz-ebpf-common",
  "ployz-types",
  "rand 0.10.0",
@@ -2773,7 +2774,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
- "toml",
  "tracing",
  "x25519-dalek",
 ]
@@ -2843,23 +2843,14 @@ dependencies = [
  "libc",
  "pingora",
  "ployz-corrosion",
- "ployz-routes",
  "ployz-sdk",
- "ployz-types",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "ployz-routes"
-version = "0.1.0"
-dependencies = [
  "ployz-types",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

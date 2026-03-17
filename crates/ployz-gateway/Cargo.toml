@@ -15,8 +15,9 @@ path = "src/main.rs"
 [dependencies]
 ployz-sdk = { path = "../ployz-sdk" }
 ployz-types = { path = "../ployz-types" }
-ployz-routes = { path = "../ployz-routes" }
 ployz-corrosion = { path = "../ployz-corrosion" }
+serde = { workspace = true }
+serde_json = { workspace = true }
 pingora = { version = "0.8.0", features = ["lb"] }
 tokio = { workspace = true }
 # TODO: remove when upstream pingora drops async_trait
