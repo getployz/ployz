@@ -1,5 +1,6 @@
 mod config;
 mod proxy;
+pub mod routes;
 mod server;
 mod snapshot;
 mod sync;

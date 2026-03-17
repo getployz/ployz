@@ -1,5 +1,5 @@
-use crate::store::backends::corrosion::docker::DockerCorrosion;
-use crate::store::backends::corrosion::host::HostCorrosion;
+use crate::store::corrosion::docker::DockerCorrosion;
+use crate::store::corrosion::host::HostCorrosion;
 use async_trait::async_trait;
 use ployz_core::store::driver::StoreBackend;
 use ployz_core::store::{DeployStore, InviteStore, MachineStore, RoutingStore, SyncProbe, SyncStatus};

@@ -1,4 +1,4 @@
-pub mod corrosion_config;
+pub use ployz_corrosion::config as corrosion_config;
 pub mod machine_liveness;
 pub mod mesh;
 pub mod network;

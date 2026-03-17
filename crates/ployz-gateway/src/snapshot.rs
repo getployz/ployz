@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 
 use pingora::lb::prelude::LoadBalancer;
 use pingora::lb::selection::RoundRobin;
-use ployz_routes::{BackendView, GatewaySnapshot};
+use crate::routes::{BackendView, GatewaySnapshot};
 
 pub struct SnapshotState {
     pub snapshot: Arc<GatewaySnapshot>,
