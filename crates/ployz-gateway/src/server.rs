@@ -100,7 +100,7 @@ pub fn run_gateway_process() -> Result<(), GatewayError> {
 
 fn load_initial_snapshot(
     config: &GatewayConfig,
-) -> Result<ployz_routes::GatewaySnapshot, GatewayError> {
+) -> Result<crate::routes::GatewaySnapshot, GatewayError> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
