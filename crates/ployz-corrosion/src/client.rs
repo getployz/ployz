@@ -112,6 +112,7 @@ fn empty_body() -> ReqBody {
 pub struct CorrClient {
     transport: Transport,
     api_addr: SocketAddr,
+    base_url: String,
     http: HyperClient<BridgeConnector, ReqBody>,
 }
 
@@ -126,6 +127,7 @@ impl CorrClient {
             .build(connector);
         Self {
             transport,
+            base_url: format!("http://{api_addr}"),
             api_addr,
             http,
         }
@@ -141,8 +143,8 @@ impl CorrClient {
         &self.transport
     }
 
-    fn base_url(&self) -> String {
-        format!("http://{}", self.api_addr)
+    fn base_url(&self) -> &str {
+        &self.base_url
     }
 
     // -- schema (POST /v1/migrations) --
@@ -365,6 +367,7 @@ impl fmt::Display for CorrClient {
         let Self {
             transport: _,
             api_addr,
+            base_url: _,
             http: _,
         } = self;
         write!(f, "CorrClient({})", api_addr)

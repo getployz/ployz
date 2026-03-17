@@ -305,21 +305,27 @@ async fn probe_overlay_health(
     machines: &[MachineRecord],
     local_machine_id: &crate::model::MachineId,
 ) -> HashMap<OverlayIp, ProbeState> {
-    let overlay_ips = machines
+    let overlay_ips: HashSet<_> = machines
         .iter()
         .filter(|machine| machine.id != *local_machine_id)
         .map(|machine| machine.overlay_ip)
-        .collect::<HashSet<_>>();
-    let mut results = HashMap::with_capacity(overlay_ips.len());
+        .collect();
 
-    for overlay_ip in overlay_ips {
-        let state = match probe_overlay_ip(overlay_ip).await {
-            Some(()) => ProbeState::Reachable,
-            None => ProbeState::Unreachable,
-        };
-        let _ = results.insert(overlay_ip, state);
+    let mut set = tokio::task::JoinSet::new();
+    for ip in overlay_ips {
+        set.spawn(async move {
+            let state = match probe_overlay_ip(ip).await {
+                Some(()) => ProbeState::Reachable,
+                None => ProbeState::Unreachable,
+            };
+            (ip, state)
+        });
     }
 
+    let mut results = HashMap::with_capacity(set.len());
+    while let Some(Ok((ip, state))) = set.join_next().await {
+        results.insert(ip, state);
+    }
     results
 }
 

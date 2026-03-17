@@ -23,8 +23,10 @@ pub(crate) async fn run_heartbeat_task(
             Some(command) = commands.recv() => {
                 match command {
                     HeartbeatCommand::TickNow { done } => {
-                        let _ = tick_self_liveness(&self_liveness_tx).await;
-                        let _ = tick_participation(&participation_tx).await;
+                        let _ = tokio::join!(
+                            tick_self_liveness(&self_liveness_tx),
+                            tick_participation(&participation_tx),
+                        );
                         let _ = done.send(());
                     }
                 }

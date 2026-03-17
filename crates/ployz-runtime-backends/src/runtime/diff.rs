@@ -189,12 +189,15 @@ fn entrypoint_equal(observed: Option<&Vec<String>>, desired: Option<&Vec<String>
 
 fn env_equal(observed: &[(String, String)], desired: &[(String, String)]) -> bool {
     let ignore_path = !desired.iter().any(|(key, _)| key == "PATH");
-    let mut observed_sorted: Vec<_> = observed
+    let mut observed_sorted: Vec<(&str, &str)> = observed
         .iter()
         .filter(|(key, _)| !(ignore_path && key == "PATH"))
-        .cloned()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
-    let mut desired_sorted: Vec<_> = desired.to_vec();
+    let mut desired_sorted: Vec<(&str, &str)> = desired
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
     observed_sorted.sort();
     desired_sorted.sort();
     observed_sorted == desired_sorted
@@ -247,8 +250,8 @@ fn sorted_eq(a: &[String], b: &[String]) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    let mut a_sorted: Vec<_> = a.to_vec();
-    let mut b_sorted: Vec<_> = b.to_vec();
+    let mut a_sorted: Vec<&str> = a.iter().map(String::as_str).collect();
+    let mut b_sorted: Vec<&str> = b.iter().map(String::as_str).collect();
     a_sorted.sort();
     b_sorted.sort();
     a_sorted == b_sorted
