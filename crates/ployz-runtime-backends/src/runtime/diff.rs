@@ -238,12 +238,15 @@ fn pid_mode_equal(observed: Option<&str>, desired: Option<&str>) -> bool {
 
 fn normalize_optional_string(value: Option<&str>) -> Option<&str> {
     match value {
-        Some(value) if value.is_empty() => None,
+        Some("") => None,
         _ => value,
     }
 }
 
 fn sorted_eq(a: &[String], b: &[String]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
     let mut a_sorted: Vec<_> = a.to_vec();
     let mut b_sorted: Vec<_> = b.to_vec();
     a_sorted.sort();

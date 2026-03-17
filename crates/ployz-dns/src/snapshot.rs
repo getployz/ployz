@@ -10,8 +10,10 @@ use ployz_types::spec::Namespace;
 // ---------------------------------------------------------------------------
 
 pub struct DnsSnapshot {
-    /// (namespace, service) -> sorted Vec of overlay IPs for ready instances
-    pub services: HashMap<(Namespace, String), Vec<Ipv4Addr>>,
+    /// namespace -> service -> sorted Vec of overlay IPs for ready instances.
+    /// Two-level map avoids cloning `Namespace` + allocating a `String` on
+    /// every lookup in the hot path.
+    pub services: HashMap<Namespace, HashMap<String, Vec<Ipv4Addr>>>,
     /// overlay_ip -> namespace (reverse lookup for caller namespace detection)
     pub ip_to_namespace: HashMap<Ipv4Addr, Namespace>,
     /// namespace -> sorted list of service names (for TXT _services queries)
@@ -26,6 +28,15 @@ impl DnsSnapshot {
             ip_to_namespace: HashMap::new(),
             service_names: HashMap::new(),
         }
+    }
+
+    /// Look up overlay IPs for a service in a namespace without allocating.
+    #[must_use]
+    pub fn lookup_service(&self, namespace: &Namespace, service: &str) -> Option<&[Ipv4Addr]> {
+        self.services
+            .get(namespace)
+            .and_then(|by_service| by_service.get(service))
+            .map(Vec::as_slice)
     }
 }
 
@@ -68,7 +79,7 @@ impl SharedDnsSnapshot {
 
 #[must_use]
 pub fn project_dns(state: &RoutingState) -> DnsSnapshot {
-    let mut services: HashMap<(Namespace, String), Vec<Ipv4Addr>> = HashMap::new();
+    let mut services: HashMap<Namespace, HashMap<String, Vec<Ipv4Addr>>> = HashMap::new();
     let mut ip_to_namespace: HashMap<Ipv4Addr, Namespace> = HashMap::new();
     let mut service_names_set: HashMap<Namespace, Vec<String>> = HashMap::new();
 
@@ -83,25 +94,27 @@ pub fn project_dns(state: &RoutingState) -> DnsSnapshot {
             continue;
         };
 
-        let key = (instance.namespace.clone(), instance.service.clone());
-        services.entry(key).or_default().push(overlay_ip);
+        services
+            .entry(instance.namespace.clone())
+            .or_default()
+            .entry(instance.service.clone())
+            .or_default()
+            .push(overlay_ip);
         ip_to_namespace.insert(overlay_ip, instance.namespace.clone());
     }
 
     // Sort IPs for deterministic ordering
-    for ips in services.values_mut() {
-        ips.sort();
+    for by_service in services.values_mut() {
+        for ips in by_service.values_mut() {
+            ips.sort();
+        }
     }
 
     // Build service_names from services keys
-    for (namespace, service) in services.keys() {
-        service_names_set
-            .entry(namespace.clone())
-            .or_default()
-            .push(service.clone());
-    }
-    for names in service_names_set.values_mut() {
+    for (namespace, by_service) in &services {
+        let mut names: Vec<String> = by_service.keys().cloned().collect();
         names.sort();
+        service_names_set.insert(namespace.clone(), names);
     }
 
     DnsSnapshot {
@@ -169,8 +182,8 @@ mod tests {
             .push(ready_instance("prod", "web", Some(ip)));
 
         let snapshot = project_dns(&state);
-        let key = (Namespace("prod".into()), "web".into());
-        assert_eq!(snapshot.services.get(&key), Some(&vec![ip]));
+        let ns = Namespace("prod".into());
+        assert_eq!(snapshot.lookup_service(&ns, "web"), Some([ip].as_slice()));
         assert_eq!(
             snapshot.ip_to_namespace.get(&ip),
             Some(&Namespace("prod".into()))

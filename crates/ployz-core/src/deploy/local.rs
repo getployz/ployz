@@ -144,11 +144,7 @@ impl LocalDeployRuntime {
             crate::spec::PullPolicy::Never => PullPolicy::Never,
         };
 
-        let env: Vec<(String, String)> = container
-            .env
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
+        let env: Vec<(String, String)> = container.env.clone().into_iter().collect();
 
         let network_mode = match &spec.network {
             NetworkMode::Host => Some("host".to_string()),
@@ -182,10 +178,7 @@ impl LocalDeployRuntime {
             memory_bytes: container.resources.memory_bytes.map(|v| v as i64),
             nano_cpus: container.resources.cpu_nano(),
             sysctls: container.sysctls.clone().into_iter().collect(),
-            stop_timeout: spec
-                .stop_grace_period
-                .as_ref()
-                .and_then(|v| parse_duration_secs(v)),
+            stop_timeout: spec.stop_grace_period.as_deref().and_then(parse_duration_secs),
             pid_mode: None,
         };
 
@@ -276,6 +269,13 @@ impl LocalDeployRuntime {
     }
 }
 
+fn extract_v4(ip: Option<IpAddr>) -> Option<Ipv4Addr> {
+    match ip? {
+        IpAddr::V4(v4) => Some(v4),
+        IpAddr::V6(_) => None,
+    }
+}
+
 pub(super) async fn adopt_instances(
     store: &StoreDriver,
     runtime: &LocalDeployRuntime,
@@ -300,10 +300,7 @@ pub(super) async fn adopt_instances(
                 revision_hash: instance.revision_hash.clone(),
                 deploy_id: instance.deploy_id.clone(),
                 docker_container_id: instance.docker_container_id.clone(),
-                overlay_ip: instance.ip_address.and_then(|ip| match ip {
-                    IpAddr::V4(v4) => Some(v4),
-                    IpAddr::V6(_) => None,
-                }),
+                overlay_ip: extract_v4(instance.ip_address),
                 backend_ports: instance.backend_ports.clone(),
                 phase: InstancePhase::Ready,
                 ready: true,
@@ -340,10 +337,7 @@ pub(super) fn build_instance_status_record(
         revision_hash: revision_hash.to_string(),
         deploy_id: deploy_id.clone(),
         docker_container_id: instance.docker_container_id.clone(),
-        overlay_ip: instance.ip_address.and_then(|ip| match ip {
-            IpAddr::V4(v4) => Some(v4),
-            IpAddr::V6(_) => None,
-        }),
+        overlay_ip: extract_v4(instance.ip_address),
         backend_ports: instance.backend_ports.clone(),
         phase,
         ready,
@@ -394,16 +388,14 @@ fn build_binds(container: &ContainerSpec) -> Vec<String> {
     container
         .volumes
         .iter()
-        .filter_map(|mount| match &mount.source {
-            VolumeSource::Bind(source) => {
-                let ro = if mount.readonly { ":ro" } else { "" };
-                Some(format!("{source}:{}{ro}", mount.target))
-            }
-            VolumeSource::Managed(volume) => {
-                let ro = if mount.readonly { ":ro" } else { "" };
-                Some(format!("{}:{}{ro}", volume.name, mount.target))
-            }
-            VolumeSource::Tmpfs => None,
+        .filter_map(|mount| {
+            let source = match &mount.source {
+                VolumeSource::Bind(path) => path.as_str(),
+                VolumeSource::Managed(volume) => volume.name.as_str(),
+                VolumeSource::Tmpfs => return None,
+            };
+            let ro = if mount.readonly { ":ro" } else { "" };
+            Some(format!("{source}:{}{ro}", mount.target))
         })
         .collect()
 }

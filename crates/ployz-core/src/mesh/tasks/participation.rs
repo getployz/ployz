@@ -129,7 +129,6 @@ async fn participation_once(
 
     let next = state
         .forced_participation
-        .clone()
         .unwrap_or_else(|| match current.participation {
             Participation::Disabled => {
                 if state.consecutive_good_samples >= PARTICIPATION_HYSTERESIS_SAMPLES {

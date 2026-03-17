@@ -584,38 +584,31 @@ fn ipv6_to_smoltcp(addr: Ipv6Addr) -> IpAddress {
     ))
 }
 
-/// Accept a connection from any of the listeners.
+/// Accept a connection from any of the listeners, racing all of them.
 async fn accept_any(
     listeners: &[(TcpListener, SocketAddr)],
 ) -> Option<(TcpStream, SocketAddr, SocketAddr)> {
     if listeners.is_empty() {
-        // Never resolve — avoid busy loop
         std::future::pending::<()>().await;
         return None;
     }
 
-    // Poll all listeners
-    let futs: Vec<_> = listeners
-        .iter()
-        .map(|(listener, dest)| {
-            let dest = *dest;
-            async move {
-                let (stream, addr) = listener.accept().await.ok()?;
-                Some((stream, dest, addr))
-            }
-        })
-        .collect();
-
-    // Race them — first one to accept wins
-    tokio::select! {
-        result = async {
-            // Use select on all futures
-            for fut in futs {
-                if let Some(r) = fut.await {
-                    return Some(r);
-                }
-            }
-            None
-        } => result
+    // Build a FuturesUnordered set so all listeners are polled concurrently.
+    let mut futs = futures_util::stream::FuturesUnordered::new();
+    for (listener, dest) in listeners {
+        let dest = *dest;
+        futs.push(async move {
+            let (stream, addr) = listener.accept().await.ok()?;
+            Some((stream, dest, addr))
+        });
     }
+
+    // Return the first listener to accept a connection.
+    use futures_util::StreamExt;
+    while let Some(result) = futs.next().await {
+        if result.is_some() {
+            return result;
+        }
+    }
+    None
 }

@@ -94,7 +94,9 @@ impl ContainerEngine {
 
         match change {
             SpecChange::InSync => {
-                let obs = observed.expect("InSync requires observed");
+                let Some(obs) = observed else {
+                    return Err(Error::operation("ensure", "InSync but no observed container"));
+                };
                 info!(name = %spec.container_name, "adopted existing container");
                 Ok(EnsureResult {
                     container_id: obs.container_id.clone(),

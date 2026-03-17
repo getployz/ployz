@@ -518,11 +518,10 @@ fn current_slots_by_service(
 fn current_slots_by_service_from_releases(
     current_releases: &[ServiceReleaseRecord],
 ) -> HashMap<String, Vec<ServiceReleaseSlot>> {
-    let mut grouped = HashMap::new();
-    for release in current_releases {
-        grouped.insert(release.service.clone(), release.release.slots.clone());
-    }
-    grouped
+    current_releases
+        .iter()
+        .map(|release| (release.service.clone(), release.release.slots.clone()))
+        .collect()
 }
 
 #[cfg(test)]

@@ -56,11 +56,8 @@ pub struct PublicKey(pub [u8; 32]);
 impl fmt::Debug for PublicKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self(bytes) = self;
-        write!(
-            f,
-            "PublicKey({:02x}{:02x}{:02x}{:02x}..)",
-            bytes[0], bytes[1], bytes[2], bytes[3]
-        )
+        let [b0, b1, b2, b3, ..] = bytes;
+        write!(f, "PublicKey({b0:02x}{b1:02x}{b2:02x}{b3:02x}..)")
     }
 }
 

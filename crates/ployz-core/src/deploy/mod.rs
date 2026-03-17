@@ -46,7 +46,7 @@ pub async fn preview(
         .into_iter()
         .map(|record| (record.service.clone(), record))
         .collect();
-    let current_slots_by_service = current_slots_by_service(&current_release_map);
+    let current_slots_by_service = collect_slots_by_service(current_release_map.values());
 
     let manifest_hash = stable_hash_hex(
         serde_json::to_vec(manifest)
@@ -236,7 +236,7 @@ pub async fn apply(
         store.upsert_deploy(&deploy_record).await?;
 
         let current_slots_by_service =
-            current_slots_by_service_from_releases(&store.list_service_releases(namespace).await?);
+            collect_slots_by_service(&store.list_service_releases(namespace).await?);
         let desired_machines = deployable_machines(&machines, local_machine_id, now_unix_secs());
         let mut removed_services = Vec::new();
         let mut committed_releases = Vec::new();
@@ -506,23 +506,16 @@ fn desired_slots(
     Ok(desired)
 }
 
-fn current_slots_by_service(
-    current_releases: &HashMap<String, ServiceReleaseRecord>,
+fn collect_slots_by_service(
+    releases: impl IntoIterator<Item = impl std::borrow::Borrow<ServiceReleaseRecord>>,
 ) -> HashMap<String, Vec<ServiceReleaseSlot>> {
-    current_releases
-        .iter()
-        .map(|(service, release)| (service.clone(), release.release.slots.clone()))
+    releases
+        .into_iter()
+        .map(|r| {
+            let r = r.borrow();
+            (r.service.clone(), r.release.slots.clone())
+        })
         .collect()
-}
-
-fn current_slots_by_service_from_releases(
-    current_releases: &[ServiceReleaseRecord],
-) -> HashMap<String, Vec<ServiceReleaseSlot>> {
-    let mut grouped = HashMap::new();
-    for release in current_releases {
-        grouped.insert(release.service.clone(), release.release.slots.clone());
-    }
-    grouped
 }
 
 #[cfg(test)]

@@ -57,7 +57,6 @@ pub fn parse_query(name: &str) -> DnsQuery {
     let name = name.trim_end_matches('.').to_ascii_lowercase();
     let labels: Vec<&str> = name.split('.').collect();
 
-    #[allow(clippy::wildcard_enum_match_arm)]
     match labels.as_slice() {
         // bare name: "db"
         [service] if !service.is_empty() => DnsQuery::ServiceImplicit {
@@ -132,9 +131,8 @@ pub fn resolve(
 }
 
 fn lookup_service(snapshot: &DnsSnapshot, namespace: &Namespace, service: &str) -> ResolveResult {
-    let key = (namespace.clone(), service.to_string());
-    match snapshot.services.get(&key) {
-        Some(ips) if !ips.is_empty() => ResolveResult::Addresses(ips.clone()),
+    match snapshot.lookup_service(namespace, service) {
+        Some(ips) if !ips.is_empty() => ResolveResult::Addresses(ips.to_vec()),
         _ => ResolveResult::NxDomain,
     }
 }
@@ -235,13 +233,24 @@ mod tests {
     // resolve tests
     // -----------------------------------------------------------------------
 
+    fn insert_service(
+        snapshot: &mut crate::snapshot::DnsSnapshot,
+        namespace: &str,
+        service: &str,
+        ips: Vec<std::net::Ipv4Addr>,
+    ) {
+        snapshot
+            .services
+            .entry(Namespace(namespace.into()))
+            .or_default()
+            .insert(service.into(), ips);
+    }
+
     #[test]
     fn resolve_explicit_found() {
         let mut snapshot = crate::snapshot::DnsSnapshot::empty();
         let ip = std::net::Ipv4Addr::new(10, 42, 1, 10);
-        snapshot
-            .services
-            .insert((Namespace("prod".into()), "db".into()), vec![ip]);
+        insert_service(&mut snapshot, "prod", "db", vec![ip]);
 
         let result = resolve(
             &snapshot,
@@ -272,9 +281,7 @@ mod tests {
         let mut snapshot = crate::snapshot::DnsSnapshot::empty();
         let ip = std::net::Ipv4Addr::new(10, 42, 1, 10);
         let ns = Namespace("prod".into());
-        snapshot
-            .services
-            .insert((ns.clone(), "db".into()), vec![ip]);
+        insert_service(&mut snapshot, "prod", "db", vec![ip]);
 
         let result = resolve(
             &snapshot,

@@ -310,6 +310,7 @@ impl DaemonState {
             Self::gateway_port(&self.gateway_listen_addr).map_err(|error| error.to_string())?;
         let exposed_tcp_ports = [gateway_port];
         let network_dir = self.network_dir(&net_config.name.0);
+        let dns_bridge_listen_addr = self.dns_bridge_listen_addr();
 
         let Some(active) = self.active.as_mut() else {
             return Err("no running network".into());
@@ -370,11 +371,7 @@ impl DaemonState {
             &self.data_dir,
             &net_config.name.0,
             net_config.overlay_ip,
-            if self.runtime_target == crate::config::RuntimeTarget::Docker {
-                Some("0.0.0.0:53".into())
-            } else {
-                None
-            },
+            dns_bridge_listen_addr,
         );
 
         let new_gateway = self
@@ -434,11 +431,7 @@ impl DaemonState {
             &self.data_dir,
             &net_config.name.0,
             net_config.overlay_ip,
-            if self.runtime_target == crate::config::RuntimeTarget::Docker {
-                Some("0.0.0.0:53".into())
-            } else {
-                None
-            },
+            self.dns_bridge_listen_addr(),
         );
 
         Ok(StartPlan {
@@ -453,6 +446,16 @@ impl DaemonState {
                 .runtime_profile
                 .overlay_network_name(&net_config.name.0),
         })
+    }
+
+    /// Returns the DNS bridge listen address for Docker runtime targets,
+    /// or `None` for host-based runtimes.
+    fn dns_bridge_listen_addr(&self) -> Option<String> {
+        if self.runtime_target == crate::config::RuntimeTarget::Docker {
+            Some("0.0.0.0:53".into())
+        } else {
+            None
+        }
     }
 
     fn gateway_port(gateway_listen_addr: &str) -> Result<u16, StartMeshError> {

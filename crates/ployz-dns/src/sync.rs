@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::future::Future;
 use std::time::Duration;
 
@@ -52,7 +53,8 @@ where
         match store.load_routing_state().await {
             Ok(state) => {
                 let next = project_dns(&state);
-                let service_count = next.services.len();
+                let service_count: usize =
+                    next.services.values().map(HashMap::len).sum();
                 snapshot.replace(next);
                 info!(service_count, "dns snapshot refreshed");
             }

@@ -106,7 +106,7 @@ pub(super) fn format_participation(machine: &MachineRecord) -> &'static str {
     }
 }
 
-pub(super) fn format_liveness(machine: &MachineRecord, now: u64) -> &'static str {
+pub(crate) fn format_liveness(machine: &MachineRecord, now: u64) -> &'static str {
     match machine_liveness(machine, now) {
         MachineLiveness::Fresh => "fresh",
         MachineLiveness::Stale => "stale",
@@ -114,7 +114,7 @@ pub(super) fn format_liveness(machine: &MachineRecord, now: u64) -> &'static str
     }
 }
 
-pub(super) fn format_heartbeat(ts: u64, now: u64) -> String {
+pub(crate) fn format_heartbeat(ts: u64, now: u64) -> String {
     if ts == 0 {
         return "never".into();
     }

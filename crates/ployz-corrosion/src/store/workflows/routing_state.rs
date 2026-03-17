@@ -14,11 +14,30 @@ use tracing::warn;
 
 const DEBOUNCE_WINDOW: Duration = Duration::from_millis(100);
 
+type RevisionKey = (Namespace, String, String);
+type ReleaseKey = (Namespace, String);
+
+fn revision_key(record: &ServiceRevisionRecord) -> RevisionKey {
+    (
+        record.namespace.clone(),
+        record.service.clone(),
+        record.revision_hash.clone(),
+    )
+}
+
+fn release_key(record: &ServiceReleaseRecord) -> ReleaseKey {
+    (record.namespace.clone(), record.service.clone())
+}
+
+fn instance_key(record: &InstanceStatusRecord) -> InstanceId {
+    record.instance_id.clone()
+}
+
 struct LiveRoutingState {
-    revisions: HashMap<(Namespace, String, String), ServiceRevisionRecord>,
-    revision_rows: HashMap<u64, (Namespace, String, String)>,
-    releases: HashMap<(Namespace, String), ServiceReleaseRecord>,
-    release_rows: HashMap<u64, (Namespace, String)>,
+    revisions: HashMap<RevisionKey, ServiceRevisionRecord>,
+    revision_rows: HashMap<u64, RevisionKey>,
+    releases: HashMap<ReleaseKey, ServiceReleaseRecord>,
+    release_rows: HashMap<u64, ReleaseKey>,
     instances: HashMap<InstanceId, InstanceStatusRecord>,
     instance_rows: HashMap<u64, InstanceId>,
 }
@@ -185,6 +204,47 @@ where
     Ok(())
 }
 
+/// Handle a single subscription event for a tracked table.
+/// Returns `Ok(true)` if data changed, `Ok(false)` if no-op, `Err` on fatal error.
+fn handle_stream_event<T, K>(
+    event: Option<std::result::Result<TypedQueryEvent<Vec<SqliteValue>>, crate::client::SubscriptionError>>,
+    label: &'static str,
+    parse: &impl Fn(&[SqliteValue]) -> Result<T>,
+    key: &impl Fn(&T) -> K,
+    map: &mut HashMap<K, T>,
+    row_index: &mut HashMap<u64, K>,
+) -> std::result::Result<bool, ()>
+where
+    K: Eq + std::hash::Hash + Clone,
+{
+    match event {
+        Some(Ok(TypedQueryEvent::Columns(_) | TypedQueryEvent::EndOfQuery { .. })) => Ok(false),
+        Some(Ok(TypedQueryEvent::Error(err))) => {
+            warn!(%label, ?err, "routing subscription error");
+            Err(())
+        }
+        Some(Ok(TypedQueryEvent::Row(rowid, cells))) => {
+            apply_routing_change(ChangeType::Insert, rowid, &cells, parse, key, map, row_index)
+                .map(|()| true)
+                .map_err(|err| {
+                    warn!(%label, ?err, "routing change parse error");
+                })
+        }
+        Some(Ok(TypedQueryEvent::Change(change_type, rowid, cells, _))) => {
+            apply_routing_change(change_type, rowid, &cells, parse, key, map, row_index)
+                .map(|()| true)
+                .map_err(|err| {
+                    warn!(%label, ?err, "routing change parse error");
+                })
+        }
+        Some(Err(err)) => {
+            warn!(%label, ?err, "routing stream error");
+            Err(())
+        }
+        None => Err(()),
+    }
+}
+
 pub(crate) async fn subscribe_routing_state_inner(
     client: &CorrClient,
 ) -> Result<(RoutingState, mpsc::Receiver<RoutingState>)> {
@@ -206,13 +266,7 @@ pub(crate) async fn subscribe_routing_state_inner(
     collect_initial_rows(
         &mut revision_stream,
         &service_revisions::parse_service_revision,
-        &|record: &ServiceRevisionRecord| {
-            (
-                record.namespace.clone(),
-                record.service.clone(),
-                record.revision_hash.clone(),
-            )
-        },
+        &revision_key,
         &mut state.revisions,
         &mut state.revision_rows,
         "revisions",
@@ -222,7 +276,7 @@ pub(crate) async fn subscribe_routing_state_inner(
     collect_initial_rows(
         &mut release_stream,
         &service_releases::parse_service_release,
-        &|record: &ServiceReleaseRecord| (record.namespace.clone(), record.service.clone()),
+        &release_key,
         &mut state.releases,
         &mut state.release_rows,
         "releases",
@@ -232,7 +286,7 @@ pub(crate) async fn subscribe_routing_state_inner(
     collect_initial_rows(
         &mut instance_stream,
         &instance_status::parse_instance_status,
-        &|record: &InstanceStatusRecord| record.instance_id.clone(),
+        &instance_key,
         &mut state.instances,
         &mut state.instance_rows,
         "instances",
@@ -248,154 +302,27 @@ pub(crate) async fn subscribe_routing_state_inner(
         tokio::pin!(debounce);
 
         loop {
-            tokio::select! {
+            let changed = tokio::select! {
                 event = revision_stream.next() => {
-                    match event {
-                        Some(Ok(TypedQueryEvent::Columns(_) | TypedQueryEvent::EndOfQuery { .. })) => {}
-                        Some(Ok(TypedQueryEvent::Error(err))) => {
-                            warn!(?err, "routing revision subscription error");
-                            return;
-                        }
-                        Some(Ok(TypedQueryEvent::Row(rowid, cells))) => {
-                            if apply_routing_change(
-                                ChangeType::Insert,
-                                rowid,
-                                &cells,
-                                &service_revisions::parse_service_revision,
-                                &|record: &ServiceRevisionRecord| {
-                                    (
-                                        record.namespace.clone(),
-                                        record.service.clone(),
-                                        record.revision_hash.clone(),
-                                    )
-                                },
-                                &mut state.revisions,
-                                &mut state.revision_rows,
-                            ).is_ok() {
-                                dirty = true;
-                            } else {
-                                return;
-                            }
-                        }
-                        Some(Ok(TypedQueryEvent::Change(change_type, rowid, cells, _))) => {
-                            if apply_routing_change(
-                                change_type,
-                                rowid,
-                                &cells,
-                                &service_revisions::parse_service_revision,
-                                &|record: &ServiceRevisionRecord| {
-                                    (
-                                        record.namespace.clone(),
-                                        record.service.clone(),
-                                        record.revision_hash.clone(),
-                                    )
-                                },
-                                &mut state.revisions,
-                                &mut state.revision_rows,
-                            ).is_ok() {
-                                dirty = true;
-                            } else {
-                                return;
-                            }
-                        }
-                        Some(Err(err)) => {
-                            warn!(?err, "routing revision stream error");
-                            return;
-                        }
-                        None => return,
-                    }
+                    handle_stream_event(
+                        event, "revisions",
+                        &service_revisions::parse_service_revision, &revision_key,
+                        &mut state.revisions, &mut state.revision_rows,
+                    )
                 }
                 event = release_stream.next() => {
-                    match event {
-                        Some(Ok(TypedQueryEvent::Columns(_) | TypedQueryEvent::EndOfQuery { .. })) => {}
-                        Some(Ok(TypedQueryEvent::Error(err))) => {
-                            warn!(?err, "routing release subscription error");
-                            return;
-                        }
-                        Some(Ok(TypedQueryEvent::Row(rowid, cells))) => {
-                            if apply_routing_change(
-                                ChangeType::Insert,
-                                rowid,
-                                &cells,
-                                &service_releases::parse_service_release,
-                                &|record: &ServiceReleaseRecord| {
-                                    (record.namespace.clone(), record.service.clone())
-                                },
-                                &mut state.releases,
-                                &mut state.release_rows,
-                            ).is_ok() {
-                                dirty = true;
-                            } else {
-                                return;
-                            }
-                        }
-                        Some(Ok(TypedQueryEvent::Change(change_type, rowid, cells, _))) => {
-                            if apply_routing_change(
-                                change_type,
-                                rowid,
-                                &cells,
-                                &service_releases::parse_service_release,
-                                &|record: &ServiceReleaseRecord| {
-                                    (record.namespace.clone(), record.service.clone())
-                                },
-                                &mut state.releases,
-                                &mut state.release_rows,
-                            ).is_ok() {
-                                dirty = true;
-                            } else {
-                                return;
-                            }
-                        }
-                        Some(Err(err)) => {
-                            warn!(?err, "routing release stream error");
-                            return;
-                        }
-                        None => return,
-                    }
+                    handle_stream_event(
+                        event, "releases",
+                        &service_releases::parse_service_release, &release_key,
+                        &mut state.releases, &mut state.release_rows,
+                    )
                 }
                 event = instance_stream.next() => {
-                    match event {
-                        Some(Ok(TypedQueryEvent::Columns(_) | TypedQueryEvent::EndOfQuery { .. })) => {}
-                        Some(Ok(TypedQueryEvent::Error(err))) => {
-                            warn!(?err, "routing instance subscription error");
-                            return;
-                        }
-                        Some(Ok(TypedQueryEvent::Row(rowid, cells))) => {
-                            if apply_routing_change(
-                                ChangeType::Insert,
-                                rowid,
-                                &cells,
-                                &instance_status::parse_instance_status,
-                                &|record: &InstanceStatusRecord| record.instance_id.clone(),
-                                &mut state.instances,
-                                &mut state.instance_rows,
-                            ).is_ok() {
-                                dirty = true;
-                            } else {
-                                return;
-                            }
-                        }
-                        Some(Ok(TypedQueryEvent::Change(change_type, rowid, cells, _))) => {
-                            if apply_routing_change(
-                                change_type,
-                                rowid,
-                                &cells,
-                                &instance_status::parse_instance_status,
-                                &|record: &InstanceStatusRecord| record.instance_id.clone(),
-                                &mut state.instances,
-                                &mut state.instance_rows,
-                            ).is_ok() {
-                                dirty = true;
-                            } else {
-                                return;
-                            }
-                        }
-                        Some(Err(err)) => {
-                            warn!(?err, "routing instance stream error");
-                            return;
-                        }
-                        None => return,
-                    }
+                    handle_stream_event(
+                        event, "instances",
+                        &instance_status::parse_instance_status, &instance_key,
+                        &mut state.instances, &mut state.instance_rows,
+                    )
                 }
                 _ = &mut debounce, if dirty => {
                     dirty = false;
@@ -403,8 +330,15 @@ pub(crate) async fn subscribe_routing_state_inner(
                     if tx.send(state.to_routing_state()).await.is_err() {
                         return;
                     }
+                    Ok(false)
                 }
                 _ = tx.closed() => return,
+            };
+
+            match changed {
+                Ok(true) => dirty = true,
+                Ok(false) => {}
+                Err(()) => return,
             }
         }
     });
@@ -414,7 +348,7 @@ pub(crate) async fn subscribe_routing_state_inner(
 
 #[cfg(test)]
 mod tests {
-    use super::apply_routing_change;
+    use super::{apply_routing_change, release_key};
     use crate::store::tables::service_releases;
     use corro_api_types::{RowId, SqliteValue, sqlite::ChangeType};
     use ployz_types::model::{DeployId, ServiceRelease, ServiceReleaseRecord, ServiceRoutingPolicy};
@@ -455,7 +389,7 @@ mod tests {
             RowId(1),
             &release_row("prod", "api"),
             &service_releases::parse_service_release,
-            &|record: &ServiceReleaseRecord| (record.namespace.clone(), record.service.clone()),
+            &release_key,
             &mut map,
             &mut row_index,
         )
@@ -468,7 +402,7 @@ mod tests {
             RowId(1),
             &[],
             &service_releases::parse_service_release,
-            &|record: &ServiceReleaseRecord| (record.namespace.clone(), record.service.clone()),
+            &release_key,
             &mut map,
             &mut row_index,
         )

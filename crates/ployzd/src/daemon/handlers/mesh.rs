@@ -75,8 +75,7 @@ impl DaemonState {
         let running = self
             .active
             .as_ref()
-            .map(|a| a.config.name.0 == network)
-            .unwrap_or(false);
+            .is_some_and(|a| a.config.name.0 == network);
         let state = if running { "running" } else { "created" };
         self.ok(format!(
             "network: {}\noverlay: {}\nstate:   {}",
@@ -367,8 +366,7 @@ impl DaemonState {
         let running_target = self
             .active
             .as_ref()
-            .map(|a| a.config.name.0 == network)
-            .unwrap_or(false);
+            .is_some_and(|a| a.config.name.0 == network);
 
         let config_path = NetworkConfig::path(&self.data_dir, network);
         if !running_target && !config_path.exists() {
