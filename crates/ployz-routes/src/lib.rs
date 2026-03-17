@@ -96,13 +96,12 @@ pub fn normalize_request_host(host: &str) -> String {
     if trimmed.is_empty() {
         return String::new();
     }
-    if trimmed.starts_with('[') {
-        return trimmed
-            .trim_start_matches('[')
-            .split(']')
-            .next()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
+    if let Some(ipv6) = trimmed.strip_prefix('[') {
+        let bare = match ipv6.split_once(']') {
+            Some((addr, _)) => addr,
+            None => ipv6,
+        };
+        return bare.to_ascii_lowercase();
     }
     match trimmed.rsplit_once(':') {
         Some((left, right)) if right.chars().all(|char| char.is_ascii_digit()) => {
@@ -344,13 +343,14 @@ fn validate_http_conflicts(routes: &[HttpRouteView]) -> Result<(), ProjectionErr
             route.hostnames.clone()
         };
         for host in hosts {
-            let key = (host.clone(), route.path_prefix.clone());
-            if let Some(existing) = seen.insert(key.clone(), route.route_id.clone()) {
+            let path_prefix = route.path_prefix.clone();
+            let key = (host.clone(), path_prefix.clone());
+            if let Some(existing) = seen.insert(key, route.route_id.clone()) {
                 return Err(ProjectionError::HttpRouteConflict {
                     left: existing,
                     right: route.route_id.clone(),
                     host,
-                    path_prefix: key.1,
+                    path_prefix,
                 });
             }
         }

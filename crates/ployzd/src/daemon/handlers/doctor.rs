@@ -13,6 +13,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::Instant;
 
+use super::machine::render::{format_heartbeat, format_liveness};
+
 const PARTICIPATION_HANDSHAKE_FRESHNESS_WINDOW: Duration = Duration::from_secs(30);
 const PARTICIPATION_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
 const PARTICIPATION_PROBE_PORT: u16 = 51821;
@@ -351,30 +353,6 @@ async fn probe_overlay_ip(overlay_ip: OverlayIp) -> Option<()> {
     .ok()?;
 
     Some(())
-}
-
-fn format_liveness(machine: &MachineRecord, now: u64) -> &'static str {
-    match machine_liveness(machine, now) {
-        MachineLiveness::Fresh => "fresh",
-        MachineLiveness::Stale => "stale",
-        MachineLiveness::Down => "down",
-    }
-}
-
-fn format_heartbeat(ts: u64, now: u64) -> String {
-    if ts == 0 {
-        return String::from("never");
-    }
-    let ago = now.saturating_sub(ts);
-    if ago < 60 {
-        format!("{ago}s ago")
-    } else if ago < 3600 {
-        format!("{}m ago", ago / 60)
-    } else if ago < 86_400 {
-        format!("{}h ago", ago / 3600)
-    } else {
-        format!("{}d ago", ago / 86_400)
-    }
 }
 
 #[cfg(test)]

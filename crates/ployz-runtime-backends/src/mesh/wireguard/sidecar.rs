@@ -1,14 +1,13 @@
 use bollard::Docker;
-use bollard::exec::{CreateExecOptions, StartExecResults};
 use bollard::models::{ContainerCreateBody, HostConfig};
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
 };
-use futures_util::StreamExt;
 use std::net::Ipv4Addr;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::error::{Error, Result};
+use super::docker::{docker_exec_capture, docker_force_remove};
 
 use super::PERSISTENT_KEEPALIVE_SECS;
 use super::config::encode_key;
@@ -209,80 +208,12 @@ impl WgSidecar {
     }
 
     async fn remove_existing(&self) {
-        let options = RemoveContainerOptionsBuilder::default().force(true).build();
-        if let Err(e) = self
-            .docker
-            .remove_container(&self.config.container_name, Some(options))
-            .await
-            && !matches!(
-                e,
-                bollard::errors::Error::DockerResponseServerError {
-                    status_code: 404,
-                    ..
-                }
-            )
-        {
-            warn!(?e, name = %self.config.container_name, "failed to remove existing sidecar");
-        }
+        docker_force_remove(&self.docker, &self.config.container_name).await;
     }
 
     async fn exec(&self, cmd: &[&str]) -> Result<()> {
-        let exec = self
-            .docker
-            .create_exec(
-                &self.config.container_name,
-                CreateExecOptions::<String> {
-                    attach_stdout: Some(true),
-                    attach_stderr: Some(true),
-                    cmd: Some(cmd.iter().map(|s| s.to_string()).collect()),
-                    ..Default::default()
-                },
-            )
+        docker_exec_capture(&self.docker, &self.config.container_name, cmd, "sidecar exec")
             .await
-            .map_err(|e| Error::operation("sidecar exec create", e.to_string()))?;
-
-        let exec_id = exec.id.clone();
-
-        match self
-            .docker
-            .start_exec(&exec.id, None)
-            .await
-            .map_err(|e| Error::operation("sidecar exec start", e.to_string()))?
-        {
-            StartExecResults::Attached { mut output, .. } => {
-                let mut stderr_buf = String::new();
-                while let Some(result) = output.next().await {
-                    match result {
-                        Ok(bollard::container::LogOutput::StdErr { message }) => {
-                            stderr_buf.push_str(&String::from_utf8_lossy(&message));
-                        }
-                        Err(e) => {
-                            return Err(Error::operation("sidecar exec", e.to_string()));
-                        }
-                        _ => {}
-                    }
-                }
-
-                let inspect = self
-                    .docker
-                    .inspect_exec(&exec_id)
-                    .await
-                    .map_err(|e| Error::operation("sidecar exec inspect", e.to_string()))?;
-
-                if let Some(code) = inspect.exit_code
-                    && code != 0
-                {
-                    let detail = if stderr_buf.is_empty() {
-                        format!("exit code {code}")
-                    } else {
-                        format!("exit code {code}: {}", stderr_buf.trim())
-                    };
-                    return Err(Error::operation("sidecar exec", detail));
-                }
-            }
-            StartExecResults::Detached => {}
-        }
-
-        Ok(())
+            .map(|_| ())
     }
 }

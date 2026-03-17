@@ -166,11 +166,6 @@ impl DeployAgent {
         runtime.wait_ready(&spec, &instance).await?;
         let status = build_instance_status_record(
             &session.namespace,
-            service,
-            slot_id,
-            &self.local_machine_id,
-            &revision_hash,
-            deploy_id,
             &instance,
             InstancePhase::Ready,
             true,
@@ -350,14 +345,12 @@ async fn handle_connection(
 
     // Session loop: process commands until Close or EOF.
     // When this function returns, `session` drops and the lock is released.
-    let _session = session;
-
     loop {
         let Some(frame) = read_frame(&mut stream, &cancel).await? else {
             break; // EOF — lock released on drop.
         };
 
-        let response = handle_session_frame(&agent, &_session, frame).await;
+        let response = handle_session_frame(&agent, &session, frame).await;
         write_frame(&mut stream, &response).await?;
 
         if matches!(response, DeployFrame::Ack { .. })
