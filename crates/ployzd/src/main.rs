@@ -1,6 +1,5 @@
 mod cli;
 mod cli_io;
-mod daemon_entry;
 mod request_builder;
 
 use clap::Parser;
@@ -12,7 +11,6 @@ pub(crate) use cli::{
 #[cfg(test)]
 pub(crate) use cli::DebugTickTaskArg;
 use cli_io::{cmd_rpc_stdio, render_response, request_daemon};
-use daemon_entry::{cmd_run, init_tracing};
 #[cfg(test)]
 use ployz_api::DaemonRequest;
 #[cfg(test)]
@@ -24,18 +22,15 @@ use ployz_config::{RuntimeTarget, ServiceMode, load_client_config, load_daemon_c
 use ployz_sdk::UnixSocketTransport;
 #[cfg(test)]
 use ployz_types::spec::DeployManifest;
-use ployzd::BuiltInImages;
-use ployzd::platform::{HostPlatform, validate_runtime};
+use ployzd::{BuiltInImages, HostPlatform, init_tracing, run_daemon, validate_runtime};
 use request_builder::build_request;
 #[cfg(test)]
 use request_builder::{
     build_debug_request, build_machine_request, build_service_spec, upsert_service_in_manifest,
 };
 use std::process;
-use tokio::time::Duration;
 
 type Result<T> = std::result::Result<T, CliError>;
-const SUBNET_HEAL_INTERVAL: Duration = Duration::from_secs(5);
 
 #[tokio::main]
 async fn main() {
@@ -76,7 +71,7 @@ async fn run() -> Result<i32> {
             validate_runtime(runtime_target, service_mode, platform).map_err(CliError::Config)?;
             let built_in_images = BuiltInImages::load(cfg.builtin_images_manifest.as_deref())
                 .map_err(CliError::Config)?;
-            cmd_run(
+            run_daemon(
                 &cfg.data_dir,
                 runtime_target,
                 service_mode,
@@ -88,7 +83,8 @@ async fn run() -> Result<i32> {
                 cfg.gateway_listen_addr,
                 cfg.gateway_threads,
             )
-            .await?;
+            .await
+            .map_err(CliError::Io)?;
             Ok(0)
         }
         other @ Command::Status

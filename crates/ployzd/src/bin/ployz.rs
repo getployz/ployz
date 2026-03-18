@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use ployz_config::{RuntimeTarget, ServiceMode};
-use ployzd::install;
+use ployzd::{ServiceBackend, daemon_install};
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::{self, Command, ExitStatus};
@@ -90,14 +90,14 @@ fn run() -> Result<i32, String> {
                     install_manifest,
                 },
         }) => {
-            let manifest = install::daemon_install(
+            let manifest = daemon_install(
                 runtime.into(),
                 service_mode.into(),
                 install_manifest.as_deref(),
             )?;
             let backend = manifest
                 .service_backend
-                .map(install::ServiceBackend::as_str)
+                .map(ServiceBackend::as_str)
                 .unwrap_or("none");
             println!(
                 "daemon install complete\n  runtime: {}\n  service-mode: {}\n  backend: {backend}\n  config: {}\n  socket: {}",
