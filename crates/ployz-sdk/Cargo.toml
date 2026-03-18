@@ -5,18 +5,9 @@ edition = "2024"
 publish = false
 
 [dependencies]
+ployz-api = { path = "../ployz-api" }
+ployz-config = { path = "../ployz-config" }
 ployz-types = { path = "../ployz-types" }
-serde = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
-tokio = { workspace = true, features = ["process"] }
-figment = { workspace = true }
-toml = { workspace = true }
-ipnet = { workspace = true }
-directories = { workspace = true }
-
-[target.'cfg(unix)'.dependencies]
-libc = { workspace = true }
 
 [lints.clippy]
 indexing_slicing = "warn"

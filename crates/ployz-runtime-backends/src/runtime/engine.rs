@@ -8,9 +8,8 @@ use bollard::query_parameters::{
     RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
+use ployz_types::{Error, Result};
 use tracing::{info, warn};
-
-use crate::error::{Error, Result};
 
 use super::diff::{ChangedField, SpecChange, eval_spec_change, parent_id_matches};
 use super::probe::ProbeRunner;

@@ -2,12 +2,15 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::daemon::DaemonState;
-use crate::deploy::remote::DeployAgent;
-use crate::deploy::session::DefaultDeploySessionFactory;
-use crate::deploy::{apply, preview};
-use crate::spec::{DeployManifest, Namespace, ServiceSpec};
-use crate::store::DeployStore;
-use ployz_sdk::transport::{DaemonResponse, DeployOptions};
+use ployz_api::{DaemonResponse, DeployOptions};
+use ployz_config::RuntimeTarget;
+use ployz_state::StoreDriver;
+use ployz_store_api::DeployStore;
+use ployz_types::Error as PloyzError;
+use ployz_types::spec::{DeployManifest, Namespace, ServiceSpec};
+use ployz_runtime_backends::deploy::remote::DeployAgent;
+use ployz_runtime_backends::deploy::session::DefaultDeploySessionFactory;
+use ployz_runtime_backends::deploy::{apply, preview};
 
 impl DaemonState {
     fn overlay_network_name(&self) -> Option<String> {
@@ -17,7 +20,7 @@ impl DaemonState {
     }
 
     fn overlay_dns_server(&self) -> Option<std::net::Ipv4Addr> {
-        if self.runtime_target != crate::config::RuntimeTarget::Docker {
+        if self.runtime_target != RuntimeTarget::Docker {
             return None;
         }
         self.active
@@ -130,9 +133,9 @@ fn decode_manifest(manifest_json: &str) -> Result<DeployManifest, DaemonResponse
 }
 
 async fn export_manifest(
-    store: &crate::StoreDriver,
+    store: &StoreDriver,
     namespace: &Namespace,
-) -> ployz_sdk::Result<DeployManifest> {
+) -> ployz_types::Result<DeployManifest> {
     let releases = store.list_service_releases(namespace).await?;
     let revisions = store.list_service_revisions(namespace).await?;
     let revisions_by_key: BTreeMap<(String, String), String> = revisions
@@ -152,7 +155,7 @@ async fn export_manifest(
             release.release.primary_revision_hash.clone(),
         );
         let Some(spec_json) = revisions_by_key.get(&key) else {
-            return Err(ployz_sdk::Error::operation(
+            return Err(PloyzError::operation(
                 "deploy_export",
                 format!(
                     "current release for service '{}' referenced missing revision '{}'",
@@ -161,7 +164,7 @@ async fn export_manifest(
             ));
         };
         let spec: ServiceSpec = serde_json::from_str(spec_json).map_err(|err| {
-            ployz_sdk::Error::operation(
+            PloyzError::operation(
                 "deploy_export",
                 format!(
                     "invalid stored spec for service '{}': {err}",
@@ -170,7 +173,7 @@ async fn export_manifest(
             )
         })?;
         if spec.name != release.service {
-            return Err(ployz_sdk::Error::operation(
+            return Err(PloyzError::operation(
                 "deploy_export",
                 format!(
                     "stored spec service '{}' did not match release service '{}'",

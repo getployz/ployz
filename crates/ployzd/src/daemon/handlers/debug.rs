@@ -1,5 +1,5 @@
-use crate::mesh::tasks::{HeartbeatCommand, PeerSyncCommand};
-use ployz_sdk::transport::DebugTickTask;
+use ployz_api::{DaemonResponse, DebugTickTask};
+use ployz_orchestrator::mesh::tasks::{HeartbeatCommand, PeerSyncCommand};
 use tokio::sync::oneshot;
 
 use crate::daemon::DaemonState;
@@ -9,7 +9,7 @@ impl DaemonState {
         &mut self,
         task: DebugTickTask,
         repeat: u32,
-    ) -> ployz_sdk::transport::DaemonResponse {
+    ) -> DaemonResponse {
         if repeat == 0 {
             return self.err("INVALID_ARGUMENT", "debug tick requires repeat >= 1");
         }
@@ -110,15 +110,15 @@ fn format_debug_tick_task(task: DebugTickTask) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::identity::Identity;
-    use crate::store::network::DEFAULT_CLUSTER_CIDR;
-    use ployz_sdk::transport::DebugTickTask;
+    use ployz_api::DebugTickTask;
+    use ployz_state::node::identity::Identity;
+    use ployz_state::store::network::DEFAULT_CLUSTER_CIDR;
 
     #[tokio::test]
     async fn debug_tick_rejects_when_no_mesh_is_running() {
         let mut state = DaemonState::new_for_tests(
             &std::env::temp_dir().join("ployz-debug-tick-no-mesh"),
-            Identity::generate(crate::model::MachineId("self".into()), [1; 32]),
+            Identity::generate(ployz_types::model::MachineId("self".into()), [1; 32]),
             DEFAULT_CLUSTER_CIDR.into(),
             24,
             4317,

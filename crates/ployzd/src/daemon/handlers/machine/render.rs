@@ -1,7 +1,7 @@
-use crate::machine_liveness::{MachineLiveness, machine_liveness};
-use crate::model::{MachineRecord, MachineStatus, Participation};
-use crate::time::now_unix_secs;
 use chrono::DateTime;
+use ployz_state::machine_liveness::{MachineLiveness, machine_liveness};
+use ployz_state::time::now_unix_secs;
+use ployz_types::model::{MachineRecord, MachineStatus, Participation};
 
 use super::types::{MachineAddReport, MachineListReport};
 

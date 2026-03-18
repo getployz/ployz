@@ -1,0 +1,19 @@
+[package]
+name = "ployz-runtime-api"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ployz-orchestrator = { path = "../ployz-orchestrator" }
+ployz-state = { path = "../ployz-state" }
+ployz-types = { path = "../ployz-types" }
+async-trait = { workspace = true }
+ipnet = { workspace = true }
+
+[lints.clippy]
+indexing_slicing = "warn"
+fallible_impl_from = "warn"
+wildcard_enum_match_arm = "warn"
+fn_params_excessive_bools = "warn"
+must_use_candidate = "warn"

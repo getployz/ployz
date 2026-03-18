@@ -1,7 +1,7 @@
+use async_trait::async_trait;
 use crate::services::supervisor::{ServiceSupervision, SidecarHandle, SidecarSpec, SystemdType};
-
-// Re-export library types for public API consumers
-pub use ployz_dns::{self as runtime, DnsConfig, DnsError, SharedDnsSnapshot};
+use ployz_runtime_api::RuntimeHandle;
+use ployz_dns::{DnsConfig, DnsError};
 
 // ---------------------------------------------------------------------------
 // DnsHandle — supervision wrapper
@@ -44,6 +44,21 @@ impl DnsHandle {
                 .await
                 .map_err(|e| DnsError::Process(e.to_string())),
         }
+    }
+}
+
+#[async_trait]
+impl RuntimeHandle for DnsHandle {
+    async fn shutdown(mut self: Box<Self>) -> Result<(), String> {
+        DnsHandle::shutdown(&mut self)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn detach(mut self: Box<Self>) -> Result<(), String> {
+        DnsHandle::detach(&mut self)
+            .await
+            .map_err(|error| error.to_string())
     }
 }
 

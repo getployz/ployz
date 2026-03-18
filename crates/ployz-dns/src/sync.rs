@@ -23,15 +23,15 @@ pub trait DnsStore: Send + Sync {
     ) -> impl Future<Output = Result<mpsc::Receiver<()>, DnsError>> + Send + '_;
 }
 
-impl DnsStore for ployz_corrosion::CorrosionStore {
+impl DnsStore for ployz_store_corrosion::CorrosionRoutingStore {
     async fn load_routing_state(&self) -> Result<ployz_types::model::RoutingState, DnsError> {
-        ployz_types::store::RoutingStore::load_routing_state(self)
+        ployz_store_corrosion::CorrosionRoutingStore::load_routing_state(self)
             .await
             .map_err(|err| DnsError::Store(err.to_string()))
     }
 
     async fn subscribe_routing_invalidations(&self) -> Result<mpsc::Receiver<()>, DnsError> {
-        ployz_types::store::RoutingStore::subscribe_routing_invalidations(self)
+        ployz_store_corrosion::CorrosionRoutingStore::subscribe_routing_invalidations(self)
             .await
             .map_err(|err| DnsError::Store(err.to_string()))
     }

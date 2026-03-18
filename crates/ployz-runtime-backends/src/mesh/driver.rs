@@ -1,11 +1,12 @@
-use crate::corrosion_config;
 use crate::mesh::wireguard::{DockerWireGuard, HostWireGuard};
 use async_trait::async_trait;
-use ployz_core::mesh::driver::{WireguardBackend, WireguardBackendMode};
-use ployz_core::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
-use ployz_core::model::{MachineRecord, OverlayIp, PublicKey};
-use ployz_core::node::identity::Identity;
-use ployz_core::{WireguardDriver, error::Result};
+use ployz_orchestrator::mesh::driver::{WireguardBackend, WireguardBackendMode};
+use ployz_orchestrator::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
+use ployz_orchestrator::WireguardDriver;
+use ployz_state::Identity;
+use ployz_corrosion::config as corrosion_config;
+use ployz_types::Result;
+use ployz_types::model::{MachineRecord, OverlayIp, PublicKey};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::sync::Arc;
