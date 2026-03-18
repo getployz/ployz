@@ -13,9 +13,9 @@ name = "ployz-dns"
 path = "src/main.rs"
 
 [dependencies]
-ployz-sdk = { path = "../ployz-sdk" }
+ployz-config = { path = "../ployz-config" }
+ployz-store-corrosion = { path = "../ployz-store-corrosion" }
 ployz-types = { path = "../ployz-types" }
-ployz-corrosion = { path = "../ployz-corrosion" }
 hickory-server = "0.25"
 tokio = { workspace = true }
 # TODO: remove when upstream hickory drops async_trait

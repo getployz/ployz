@@ -1,20 +1,23 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use ployz_orchestrator::mesh::orchestrator::MeshReadyStatus;
+use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
+use ployz_state::network::endpoints::detect_endpoints;
+use ployz_state::network::ipam::Ipam;
+use ployz_state::node::invite::{InviteClaims, parse_and_verify_invite_token};
+use ployz_state::store::bootstrap::{
+    BootstrapInfo, BootstrapPeerRecord, write_bootstrap_peer_record,
+};
+use ployz_state::store::network::NetworkConfig;
+use ployz_state::time::now_unix_secs;
+use ployz_types::model::{JoinResponse, NetworkName};
 use tracing::warn;
 
 use crate::daemon::setup::MeshStartOptions;
-use crate::mesh::tasks::PeerSyncCommand;
-use crate::model::{JoinResponse, NetworkName};
-use crate::network::endpoints::detect_endpoints;
-use crate::network::ipam::Ipam;
-use crate::node::invite::parse_and_verify_invite_token;
-use crate::store::bootstrap::{BootstrapInfo, BootstrapPeerRecord, write_bootstrap_peer_record};
-use crate::store::network::NetworkConfig;
-use ployz_sdk::transport::{
+use ployz_api::{
     DaemonPayload, DaemonResponse, MeshReadyPayload, MeshSelfRecordPayload,
 };
 
 use super::super::DaemonState;
-use crate::time::now_unix_secs;
 
 impl DaemonState {
     pub(crate) fn handle_mesh_list(&self) -> DaemonResponse {
@@ -338,7 +341,7 @@ impl DaemonState {
             self.active = Some(active);
             return self.err("NETWORK_STOP_FAILED", format!("mesh down failed: {e}"));
         }
-        active.remote_control.shutdown().await;
+        let _ = active.remote_control.shutdown().await;
         if let Err(e) = active.dns.shutdown().await {
             warn!(?e, "dns stop failed during mesh down");
         }
@@ -372,7 +375,7 @@ impl DaemonState {
                 self.active = Some(active);
                 return self.err("NETWORK_DESTROY_FAILED", format!("destroy failed: {e}"));
             }
-            active.remote_control.shutdown().await;
+            let _ = active.remote_control.shutdown().await;
             if let Err(e) = active.dns.shutdown().await {
                 warn!(?e, "dns stop failed during mesh destroy");
             }
@@ -454,7 +457,7 @@ impl DaemonState {
         }
     }
 
-    fn extract_bootstrap(invite: &crate::node::invite::InviteClaims) -> Option<BootstrapInfo> {
+    fn extract_bootstrap(invite: &InviteClaims) -> Option<BootstrapInfo> {
         let wg_key_b64 = invite.issuer_wg_public_key.as_deref()?;
         let overlay_str = invite.issuer_overlay_ip.as_deref()?;
 
@@ -475,7 +478,7 @@ impl DaemonState {
     }
 }
 
-fn mesh_ready_payload(value: crate::mesh::orchestrator::MeshReadyStatus) -> MeshReadyPayload {
+fn mesh_ready_payload(value: MeshReadyStatus) -> MeshReadyPayload {
     MeshReadyPayload {
         ready: value.ready,
         phase: value.phase.to_string(),
@@ -489,17 +492,16 @@ fn mesh_ready_payload(value: crate::mesh::orchestrator::MeshReadyStatus) -> Mesh
 mod tests {
     use super::*;
     use crate::daemon::ActiveMesh;
-    use crate::deploy::remote::RemoteControlHandle;
-    use crate::mesh::wireguard::MemoryWireGuard;
-    use crate::node::identity::Identity;
-    use crate::node::invite::issue_invite_token;
-    use crate::store::MachineStore;
-    use crate::store::backends::memory::{MemoryService, MemoryStore};
-    use crate::store::driver::StoreDriver;
-    use crate::store::network::NetworkConfig;
-    use crate::time::now_unix_secs;
-    use crate::{Mesh, WireguardDriver};
-    use ployz_sdk::model::{MachineId, OverlayIp, PublicKey};
+    use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
+    use ployz_orchestrator::{Mesh, WireguardDriver};
+    use ployz_store_api::MachineStore;
+    use ployz_state::store::backends::memory::{MemoryService, MemoryStore};
+    use ployz_state::store::network::NetworkConfig;
+    use ployz_state::time::now_unix_secs;
+    use ployz_state::StoreDriver;
+    use ployz_state::node::identity::Identity;
+    use ployz_state::node::invite::issue_invite_token;
+    use ployz_types::model::{MachineId, OverlayIp, PublicKey};
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -507,12 +509,13 @@ mod tests {
     #[tokio::test]
     async fn mesh_join_uses_founder_allocated_subnet_exactly() {
         let founder_identity =
-            Identity::generate(crate::model::MachineId("founder".into()), [7; 32]);
-        let joiner_identity = Identity::generate(crate::model::MachineId("joiner".into()), [8; 32]);
+            Identity::generate(ployz_types::model::MachineId("founder".into()), [7; 32]);
+        let joiner_identity =
+            Identity::generate(ployz_types::model::MachineId("joiner".into()), [8; 32]);
         let founder_subnet: ipnet::Ipv4Net = "10.210.0.0/24".parse().expect("valid subnet");
         let allocated_subnet = "10.210.42.0/24";
         let network = NetworkConfig::new(
-            crate::model::NetworkName("alpha".into()),
+            ployz_types::model::NetworkName("alpha".into()),
             &founder_identity.public_key,
             "10.210.0.0/16",
             founder_subnet,
@@ -589,22 +592,22 @@ mod tests {
     async fn make_active_state() -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {
         let identity = Identity::generate(MachineId("founder".into()), [1; 32]);
         let config = NetworkConfig::new(
-            crate::model::NetworkName("alpha".into()),
+            ployz_types::model::NetworkName("alpha".into()),
             &identity.public_key,
             "10.210.0.0/16",
             "10.210.0.0/24".parse().expect("valid subnet"),
         );
         let store = Arc::new(MemoryStore::new());
         store
-            .upsert_self_machine(&crate::model::MachineRecord {
+            .upsert_self_machine(&ployz_types::model::MachineRecord {
                 id: identity.machine_id.clone(),
                 public_key: identity.public_key.clone(),
                 overlay_ip: config.overlay_ip,
                 subnet: Some(config.subnet),
                 bridge_ip: None,
                 endpoints: vec!["127.0.0.1:51820".into()],
-                status: crate::model::MachineStatus::Unknown,
-                participation: crate::model::Participation::Disabled,
+                status: ployz_types::model::MachineStatus::Unknown,
+                participation: ployz_types::model::Participation::Disabled,
                 last_heartbeat: 0,
                 created_at: 0,
                 updated_at: 0,
@@ -634,9 +637,9 @@ mod tests {
         state.active = Some(ActiveMesh {
             config,
             mesh,
-            remote_control: RemoteControlHandle::noop(),
-            gateway: crate::services::gateway::GatewayHandle::noop(),
-            dns: crate::services::dns::DnsHandle::noop(),
+            remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         });
 
         (state, store, network)

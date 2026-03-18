@@ -1,5 +1,5 @@
-use crate::{RuntimeTarget, ServiceMode};
-use ployz_sdk::{
+use ployz_config::{RuntimeTarget, ServiceMode};
+use ployz_config::{
     Affordances, Os, default_config_path, default_data_dir, default_socket_path, validate_runtime,
 };
 use std::fs;

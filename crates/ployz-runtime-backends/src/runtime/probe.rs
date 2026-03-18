@@ -4,11 +4,10 @@ use std::time::Duration;
 use bollard::Docker;
 use bollard::exec::{CreateExecOptions, StartExecResults};
 use futures_util::StreamExt;
+use ployz_types::{Error, Result};
 use reqwest::StatusCode;
 use tokio::net::TcpStream;
 use tokio::time::{Instant, sleep, timeout};
-
-use crate::error::{Error, Result};
 
 pub enum Probe {
     Tcp {

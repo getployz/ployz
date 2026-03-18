@@ -1,0 +1,23 @@
+[package]
+name = "ployz-store-corrosion"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ployz-corrosion = { path = "../ployz-corrosion" }
+ployz-runtime-backends = { path = "../ployz-runtime-backends" }
+ployz-state = { path = "../ployz-state" }
+ployz-store-api = { path = "../ployz-store-api" }
+ployz-types = { path = "../ployz-types" }
+tokio = { workspace = true, features = ["process"] }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+libc = { workspace = true }
+
+[lints.clippy]
+indexing_slicing = "warn"
+fallible_impl_from = "warn"
+wildcard_enum_match_arm = "warn"
+fn_params_excessive_bools = "warn"
+must_use_candidate = "warn"

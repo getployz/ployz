@@ -1,0 +1,18 @@
+[package]
+name = "ployz-api"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ployz-types = { path = "../ployz-types" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["process"] }
+
+[lints.clippy]
+indexing_slicing = "warn"
+fallible_impl_from = "warn"
+wildcard_enum_match_arm = "warn"
+fn_params_excessive_bools = "warn"
+must_use_candidate = "warn"

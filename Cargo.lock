@@ -2740,6 +2740,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
+name = "ployz-api"
+version = "0.1.0"
+dependencies = [
+ "ployz-types",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "ployz-bpfctl"
 version = "0.1.0"
 dependencies = [
@@ -2750,32 +2760,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "ployz-core"
+name = "ployz-config"
 version = "0.1.0"
 dependencies = [
- "async-trait",
- "aya",
- "aya-build",
- "base64",
- "derive_more",
- "ed25519-dalek",
- "futures-util",
- "hostname",
- "if-addrs",
- "ipnet",
+ "directories",
+ "figment",
  "libc",
- "ployz-corrosion",
- "ployz-ebpf-common",
- "ployz-types",
- "rand 0.10.0",
- "rusqlite",
  "serde",
- "serde_json",
  "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "x25519-dalek",
 ]
 
 [[package]]
@@ -2792,6 +2784,7 @@ dependencies = [
  "ipnet",
  "pin-project-lite",
  "ployz-types",
+ "rusqlite",
  "serde",
  "serde_json",
  "strum 0.26.3",
@@ -2810,8 +2803,8 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "hickory-server",
- "ployz-corrosion",
- "ployz-sdk",
+ "ployz-config",
+ "ployz-store-corrosion",
  "ployz-types",
  "thiserror 2.0.18",
  "tokio",
@@ -2842,8 +2835,8 @@ dependencies = [
  "http",
  "libc",
  "pingora",
- "ployz-corrosion",
- "ployz-sdk",
+ "ployz-config",
+ "ployz-store-corrosion",
  "ployz-types",
  "serde",
  "serde_json",
@@ -2851,6 +2844,34 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "ployz-orchestrator"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "ipnet",
+ "libc",
+ "ployz-state",
+ "ployz-store-api",
+ "ployz-types",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "ployz-runtime-api"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "ipnet",
+ "ployz-orchestrator",
+ "ployz-state",
+ "ployz-types",
 ]
 
 [[package]]
@@ -2871,13 +2892,15 @@ dependencies = [
  "if-addrs",
  "ipnet",
  "libc",
- "ployz-core",
+ "ployz-api",
  "ployz-corrosion",
- "ployz-sdk",
+ "ployz-orchestrator",
+ "ployz-runtime-api",
+ "ployz-state",
+ "ployz-store-api",
  "ployz-types",
  "rand 0.10.0",
  "reqwest",
- "rusqlite",
  "serde",
  "serde_json",
  "smoltcp",
@@ -2893,16 +2916,63 @@ dependencies = [
 name = "ployz-sdk"
 version = "0.1.0"
 dependencies = [
- "directories",
- "figment",
+ "ployz-api",
+ "ployz-config",
+ "ployz-types",
+]
+
+[[package]]
+name = "ployz-state"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "aya",
+ "aya-build",
+ "base64",
+ "derive_more",
+ "ed25519-dalek",
+ "futures-util",
+ "hostname",
+ "if-addrs",
  "ipnet",
  "libc",
+ "ployz-corrosion",
+ "ployz-ebpf-common",
+ "ployz-store-api",
  "ployz-types",
+ "rand 0.10.0",
+ "rusqlite",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
- "toml",
+ "tokio-util",
+ "tracing",
+ "x25519-dalek",
+]
+
+[[package]]
+name = "ployz-store-api"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "ployz-types",
+ "tokio",
+]
+
+[[package]]
+name = "ployz-store-corrosion"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "libc",
+ "ployz-corrosion",
+ "ployz-runtime-backends",
+ "ployz-state",
+ "ployz-store-api",
+ "ployz-types",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2924,16 +2994,25 @@ dependencies = [
 name = "ployzd"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "base64",
  "chrono",
  "clap",
  "ipnet",
  "libc",
- "ployz-core",
+ "ployz-api",
+ "ployz-config",
+ "ployz-corrosion",
  "ployz-dns",
  "ployz-gateway",
+ "ployz-orchestrator",
+ "ployz-runtime-api",
  "ployz-runtime-backends",
- "ployz-sdk",
+ "ployz-state",
+ "ployz-store-api",
+ "ployz-store-corrosion",
+ "ployz-types",
+ "rand 0.10.0",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

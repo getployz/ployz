@@ -206,10 +206,12 @@ pub fn run_dns_process() -> Result<(), DnsError> {
         .map_err(|err| DnsError::Runtime(err.to_string()))?;
 
     runtime.block_on(async {
-        let store =
-            ployz_corrosion::CorrosionStore::connect_for_network(&config.data_dir, &config.network)
-                .await
-                .map_err(|err| DnsError::Store(err.to_string()))?;
+        let store = ployz_store_corrosion::CorrosionRoutingStore::connect_for_network(
+            &config.data_dir,
+            &config.network,
+        )
+        .await
+        .map_err(|err| DnsError::Store(err.to_string()))?;
 
         let state = DnsStore::load_routing_state(&store).await?;
         let initial_snapshot = project_dns(&state);
