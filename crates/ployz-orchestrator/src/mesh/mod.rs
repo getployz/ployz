@@ -8,9 +8,9 @@ pub(crate) mod probe;
 pub mod tasks;
 pub mod wireguard;
 
-use async_trait::async_trait;
 use crate::error::Result;
 use crate::model::{MachineRecord, OverlayIp, PublicKey};
+use async_trait::async_trait;
 use ipnet::Ipv4Net;
 use std::future::Future;
 use tokio::time::Instant;

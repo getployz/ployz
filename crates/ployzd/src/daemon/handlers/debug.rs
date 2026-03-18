@@ -110,9 +110,9 @@ fn format_debug_tick_task(task: DebugTickTask) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mesh_state::network::DEFAULT_CLUSTER_CIDR;
     use ployz_api::DebugTickTask;
-    use ployz_state::node::identity::Identity;
-    use ployz_state::store::network::DEFAULT_CLUSTER_CIDR;
+    use ployz_runtime_api::Identity;
 
     #[tokio::test]
     async fn debug_tick_rejects_when_no_mesh_is_running() {

@@ -1,8 +1,8 @@
 use ployz_orchestrator::mesh::tasks::{HeartbeatCommand, PeerSyncCommand};
 use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
 use ployz_orchestrator::{Mesh, Phase, WireguardDriver};
-use ployz_state::StoreDriver;
-use ployz_state::store::backends::memory::{MemoryService, MemoryStore};
+use ployz_store_api::StoreDriver;
+use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{MachineStore, SyncStatus};
 use ployz_types::model::{
     JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,

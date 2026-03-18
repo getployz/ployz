@@ -3,20 +3,20 @@ use super::operations::{MachineOperationArtifacts, MachineOperationKind, Machine
 use crate::daemon::ActiveMesh;
 use crate::daemon::DaemonState;
 use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock};
+use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
 use ipnet::Ipv4Net;
 use ployz_api::{DaemonPayload, DaemonResponse, MachineAddOptions, MeshSelfRecordPayload};
+use ployz_orchestrator::Mesh;
 use ployz_orchestrator::mesh::driver::WireguardDriver;
 use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
-use ployz_orchestrator::Mesh;
-use ployz_state::node::identity::Identity;
+use ployz_runtime_api::Identity;
 use ployz_store_api::MachineStore;
-use ployz_state::store::backends::memory::{MemoryService, MemoryStore};
-use ployz_state::store::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
-use ployz_state::time::now_unix_secs;
-use ployz_state::StoreDriver;
+use ployz_store_api::StoreDriver;
+use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_types::model::{
     JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
 };
+use ployz_types::time::now_unix_secs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -258,14 +258,12 @@ async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
         ok: true,
         code: "OK".into(),
         message: join_response.clone(),
-        payload: Some(DaemonPayload::MeshSelfRecord(
-            MeshSelfRecordPayload {
-                encoded: join_response.clone(),
-                record: JoinResponse::decode(&join_response)
-                    .expect("decode join response")
-                    .into_seed_machine_record(),
-            },
-        )),
+        payload: Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
+            encoded: join_response.clone(),
+            record: JoinResponse::decode(&join_response)
+                .expect("decode join response")
+                .into_seed_machine_record(),
+        })),
     })
     .expect("encode self-record response");
     let _join_guard = TestSshEnvGuard::set(
@@ -329,14 +327,12 @@ async fn machine_add_accepts_running_joiner_before_full_sync() {
         ok: true,
         code: "OK".into(),
         message: join_response.clone(),
-        payload: Some(DaemonPayload::MeshSelfRecord(
-            MeshSelfRecordPayload {
-                encoded: join_response.clone(),
-                record: JoinResponse::decode(&join_response)
-                    .expect("decode join response")
-                    .into_seed_machine_record(),
-            },
-        )),
+        payload: Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
+            encoded: join_response.clone(),
+            record: JoinResponse::decode(&join_response)
+                .expect("decode join response")
+                .into_seed_machine_record(),
+        })),
     })
     .expect("encode self-record response");
     let _join_guard = TestSshEnvGuard::set(

@@ -207,7 +207,9 @@ where
 /// Handle a single subscription event for a tracked table.
 /// Returns `Ok(true)` if data changed, `Ok(false)` if no-op, `Err` on fatal error.
 fn handle_stream_event<T, K>(
-    event: Option<std::result::Result<TypedQueryEvent<Vec<SqliteValue>>, crate::client::SubscriptionError>>,
+    event: Option<
+        std::result::Result<TypedQueryEvent<Vec<SqliteValue>>, crate::client::SubscriptionError>,
+    >,
     label: &'static str,
     parse: &impl Fn(&[SqliteValue]) -> Result<T>,
     key: &impl Fn(&T) -> K,
@@ -223,13 +225,19 @@ where
             warn!(%label, ?err, "routing subscription error");
             Err(())
         }
-        Some(Ok(TypedQueryEvent::Row(rowid, cells))) => {
-            apply_routing_change(ChangeType::Insert, rowid, &cells, parse, key, map, row_index)
-                .map(|()| true)
-                .map_err(|err| {
-                    warn!(%label, ?err, "routing change parse error");
-                })
-        }
+        Some(Ok(TypedQueryEvent::Row(rowid, cells))) => apply_routing_change(
+            ChangeType::Insert,
+            rowid,
+            &cells,
+            parse,
+            key,
+            map,
+            row_index,
+        )
+        .map(|()| true)
+        .map_err(|err| {
+            warn!(%label, ?err, "routing change parse error");
+        }),
         Some(Ok(TypedQueryEvent::Change(change_type, rowid, cells, _))) => {
             apply_routing_change(change_type, rowid, &cells, parse, key, map, row_index)
                 .map(|()| true)
@@ -351,7 +359,9 @@ mod tests {
     use super::{apply_routing_change, release_key};
     use crate::store::tables::service_releases;
     use corro_api_types::{RowId, SqliteValue, sqlite::ChangeType};
-    use ployz_types::model::{DeployId, ServiceRelease, ServiceReleaseRecord, ServiceRoutingPolicy};
+    use ployz_types::model::{
+        DeployId, ServiceRelease, ServiceReleaseRecord, ServiceRoutingPolicy,
+    };
     use ployz_types::spec::Namespace;
     use std::collections::HashMap;
 

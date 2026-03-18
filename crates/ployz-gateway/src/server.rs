@@ -83,11 +83,17 @@ pub fn run_server(
 // Standalone process entry point
 // ---------------------------------------------------------------------------
 
-pub fn run_gateway_process() -> Result<(), GatewayError> {
-    let config = GatewayConfig::from_env()?;
-    let initial_snapshot = load_initial_snapshot(&config)?;
+pub fn run_gateway_process_with_store<S>(config: GatewayConfig, store: S) -> Result<(), GatewayError>
+where
+    S: crate::sync::RoutingStore + Send + Sync + 'static,
+{
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| GatewayError::Runtime(err.to_string()))?;
+    let initial_snapshot = runtime.block_on(load_projected_snapshot_from_store(&store))?;
     let shared_snapshot = SharedSnapshot::new(initial_snapshot);
-    spawn_standalone_sync_thread(config.clone(), shared_snapshot.clone())?;
+    crate::sync::spawn_sync_thread_with_store(store, shared_snapshot.clone())?;
     let opt = Opt::parse_args();
     run_server(
         opt,
@@ -96,41 +102,4 @@ pub fn run_gateway_process() -> Result<(), GatewayError> {
         shared_snapshot,
         None,
     )
-}
-
-fn load_initial_snapshot(
-    config: &GatewayConfig,
-) -> Result<crate::routes::GatewaySnapshot, GatewayError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|err| GatewayError::Runtime(err.to_string()))?;
-    runtime.block_on(async {
-        let store = ployz_store_corrosion::CorrosionRoutingStore::connect_for_network(
-            &config.data_dir,
-            &config.network,
-        )
-        .await
-        .map_err(|err| GatewayError::Store(err.to_string()))?;
-        load_projected_snapshot_from_store(&store).await
-    })
-}
-
-fn spawn_standalone_sync_thread(
-    config: GatewayConfig,
-    snapshot: SharedSnapshot,
-) -> Result<(), GatewayError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|err| GatewayError::Runtime(err.to_string()))?;
-    let store = runtime.block_on(async {
-        ployz_store_corrosion::CorrosionRoutingStore::connect_for_network(
-            &config.data_dir,
-            &config.network,
-        )
-        .await
-        .map_err(|err| GatewayError::Store(err.to_string()))
-    })?;
-    crate::sync::spawn_sync_thread_with_store(store, snapshot)
 }

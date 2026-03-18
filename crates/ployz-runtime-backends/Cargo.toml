@@ -8,7 +8,6 @@ publish = false
 ployz-api = { path = "../ployz-api" }
 ployz-orchestrator = { path = "../ployz-orchestrator" }
 ployz-runtime-api = { path = "../ployz-runtime-api" }
-ployz-state = { path = "../ployz-state" }
 ployz-store-api = { path = "../ployz-store-api" }
 ployz-types = { path = "../ployz-types" }
 ployz-corrosion = { path = "../ployz-corrosion" }

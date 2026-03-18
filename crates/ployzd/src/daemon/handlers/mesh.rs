@@ -1,21 +1,19 @@
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use ployz_orchestrator::mesh::orchestrator::MeshReadyStatus;
-use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
-use ployz_state::network::endpoints::detect_endpoints;
-use ployz_state::network::ipam::Ipam;
-use ployz_state::node::invite::{InviteClaims, parse_and_verify_invite_token};
-use ployz_state::store::bootstrap::{
+use crate::mesh_state::bootstrap::{
     BootstrapInfo, BootstrapPeerRecord, write_bootstrap_peer_record,
 };
-use ployz_state::store::network::NetworkConfig;
-use ployz_state::time::now_unix_secs;
+use crate::mesh_state::invite::{InviteClaims, parse_and_verify_invite_token};
+use crate::mesh_state::network::NetworkConfig;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use ployz_orchestrator::ipam::Ipam;
+use ployz_orchestrator::mesh::orchestrator::MeshReadyStatus;
+use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
+use ployz_orchestrator::network::endpoints::detect_endpoints;
 use ployz_types::model::{JoinResponse, NetworkName};
+use ployz_types::time::now_unix_secs;
 use tracing::warn;
 
 use crate::daemon::setup::MeshStartOptions;
-use ployz_api::{
-    DaemonPayload, DaemonResponse, MeshReadyPayload, MeshSelfRecordPayload,
-};
+use ployz_api::{DaemonPayload, DaemonResponse, MeshReadyPayload, MeshSelfRecordPayload};
 
 use super::super::DaemonState;
 
@@ -492,16 +490,16 @@ fn mesh_ready_payload(value: MeshReadyStatus) -> MeshReadyPayload {
 mod tests {
     use super::*;
     use crate::daemon::ActiveMesh;
+    use crate::mesh_state::invite::issue_invite_token;
+    use crate::mesh_state::network::NetworkConfig;
     use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
     use ployz_orchestrator::{Mesh, WireguardDriver};
+    use ployz_runtime_api::Identity;
     use ployz_store_api::MachineStore;
-    use ployz_state::store::backends::memory::{MemoryService, MemoryStore};
-    use ployz_state::store::network::NetworkConfig;
-    use ployz_state::time::now_unix_secs;
-    use ployz_state::StoreDriver;
-    use ployz_state::node::identity::Identity;
-    use ployz_state::node::invite::issue_invite_token;
+    use ployz_store_api::StoreDriver;
+    use ployz_store_api::memory::{MemoryService, MemoryStore};
     use ployz_types::model::{MachineId, OverlayIp, PublicKey};
+    use ployz_types::time::now_unix_secs;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};

@@ -1,6 +1,6 @@
 use crate::model::{MachineRecord, OverlayIp, Participation};
-use crate::store::driver::StoreDriver;
 use ployz_store_api::MachineStore;
+use ployz_store_api::StoreDriver;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -106,7 +106,7 @@ fn apply_mutation(record: &mut MachineRecord, mutation: SelfRecordMutation) {
 mod tests {
     use super::*;
     use crate::model::{MachineId, MachineStatus, PublicKey};
-    use crate::store::backends::memory::{MemoryService, MemoryStore};
+    use ployz_store_api::memory::{MemoryService, MemoryStore};
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
 

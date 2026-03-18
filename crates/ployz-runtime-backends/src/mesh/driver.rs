@@ -1,10 +1,10 @@
 use crate::mesh::wireguard::{DockerWireGuard, HostWireGuard};
 use async_trait::async_trait;
+use ployz_corrosion::config as corrosion_config;
+use ployz_orchestrator::WireguardDriver;
 use ployz_orchestrator::mesh::driver::{WireguardBackend, WireguardBackendMode};
 use ployz_orchestrator::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
-use ployz_orchestrator::WireguardDriver;
-use ployz_state::Identity;
-use ployz_corrosion::config as corrosion_config;
+use ployz_runtime_api::Identity;
 use ployz_types::Result;
 use ployz_types::model::{MachineRecord, OverlayIp, PublicKey};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -38,9 +38,11 @@ pub async fn docker(
         .await
         .map_err(|error| format!("docker wireguard: {error}"))?;
 
-    Ok(WireguardDriver::from_backend(Arc::new(DockerWireguardBackend {
-        inner: Arc::new(wireguard),
-    })))
+    Ok(WireguardDriver::from_backend(Arc::new(
+        DockerWireguardBackend {
+            inner: Arc::new(wireguard),
+        },
+    )))
 }
 
 pub fn host(
@@ -51,20 +53,19 @@ pub fn host(
 ) -> std::result::Result<WireguardDriver, String> {
     let ifname = format!("plz-{network_name}");
     #[cfg(target_os = "linux")]
-    let wireguard = HostWireGuard::kernel(&ifname, identity.private_key.clone(), overlay_ip, subnet)
-        .map_err(|error| format!("host wireguard: {error}"))?;
+    let wireguard =
+        HostWireGuard::kernel(&ifname, identity.private_key.clone(), overlay_ip, subnet)
+            .map_err(|error| format!("host wireguard: {error}"))?;
     #[cfg(not(target_os = "linux"))]
-    let wireguard = HostWireGuard::userspace(
-        &ifname,
-        identity.private_key.clone(),
-        overlay_ip,
-        subnet,
-    )
-    .map_err(|error| format!("host wireguard: {error}"))?;
+    let wireguard =
+        HostWireGuard::userspace(&ifname, identity.private_key.clone(), overlay_ip, subnet)
+            .map_err(|error| format!("host wireguard: {error}"))?;
 
-    Ok(WireguardDriver::from_backend(Arc::new(HostWireguardBackend {
-        inner: Arc::new(wireguard),
-    })))
+    Ok(WireguardDriver::from_backend(Arc::new(
+        HostWireguardBackend {
+            inner: Arc::new(wireguard),
+        },
+    )))
 }
 
 struct DockerWireguardBackend {

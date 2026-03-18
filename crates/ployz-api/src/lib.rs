@@ -1,10 +1,6 @@
 use ployz_types::model::{InstanceStatusRecord, MachineId, MachineRecord};
 use serde::{Deserialize, Serialize};
 
-pub mod transport;
-
-pub use transport::{StdioTransport, Transport, UnixSocketTransport};
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DeployOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -272,8 +268,12 @@ pub enum DeployFrame {
         instance_id: String,
         spec_json: String,
     },
-    DrainInstance { instance_id: String },
-    RemoveInstance { instance_id: String },
+    DrainInstance {
+        instance_id: String,
+    },
+    RemoveInstance {
+        instance_id: String,
+    },
     Close,
     Opened {
         instances: Vec<InstanceStatusRecord>,
@@ -281,9 +281,16 @@ pub enum DeployFrame {
     NamespaceSnapshot {
         instances: Vec<InstanceStatusRecord>,
     },
-    CandidateStarted { status: Box<InstanceStatusRecord> },
-    Ack { message: String },
-    Error { code: String, message: String },
+    CandidateStarted {
+        status: Box<InstanceStatusRecord>,
+    },
+    Ack {
+        message: String,
+    },
+    Error {
+        code: String,
+        message: String,
+    },
 }
 
 #[cfg(test)]
