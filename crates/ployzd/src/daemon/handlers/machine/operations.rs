@@ -9,8 +9,8 @@ use crate::daemon::ssh::SshOptions;
 use ployz_api::{
     DaemonPayload, MachineOperationInfo, MachineOperationListPayload, MachineOperationPayload,
 };
-use ployz_state::time::now_unix_secs;
 use ployz_types::model::MachineId;
+use ployz_types::time::now_unix_secs;
 
 use super::join::{best_effort_remote_cleanup, remove_transient_peer};
 use super::types::MachineAddStage;
@@ -236,9 +236,7 @@ impl DaemonState {
         MachineOperationStore::new(self.data_dir.clone())
     }
 
-    pub(crate) async fn handle_machine_operation_list(
-        &self,
-    ) -> ployz_api::DaemonResponse {
+    pub(crate) async fn handle_machine_operation_list(&self) -> ployz_api::DaemonResponse {
         let records = match self.machine_operation_store().list() {
             Ok(records) => records,
             Err(err) => return self.err("MACHINE_OPERATION_LIST_FAILED", err),
@@ -275,10 +273,7 @@ impl DaemonState {
         )
     }
 
-    pub(crate) async fn handle_machine_operation_get(
-        &self,
-        id: &str,
-    ) -> ployz_api::DaemonResponse {
+    pub(crate) async fn handle_machine_operation_get(&self, id: &str) -> ployz_api::DaemonResponse {
         let record = match self.machine_operation_store().load(id) {
             Ok(Some(record)) => record,
             Ok(None) => {

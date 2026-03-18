@@ -23,20 +23,6 @@ pub trait RoutingStore: Send + Sync {
     ) -> impl Future<Output = Result<mpsc::Receiver<()>, GatewayError>> + Send + '_;
 }
 
-impl RoutingStore for ployz_store_corrosion::CorrosionRoutingStore {
-    async fn load_routing_state(&self) -> Result<ployz_types::model::RoutingState, GatewayError> {
-        ployz_store_corrosion::CorrosionRoutingStore::load_routing_state(self)
-            .await
-            .map_err(|err| GatewayError::Store(err.to_string()))
-    }
-
-    async fn subscribe_routing_invalidations(&self) -> Result<mpsc::Receiver<()>, GatewayError> {
-        ployz_store_corrosion::CorrosionRoutingStore::subscribe_routing_invalidations(self)
-            .await
-            .map_err(|err| GatewayError::Store(err.to_string()))
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Sync logic
 // ---------------------------------------------------------------------------

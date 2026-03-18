@@ -4,8 +4,8 @@ use crate::mesh::driver::WireguardDriver;
 use crate::mesh::probe::{TcpProbeResult, TcpProbeStatus, probe_overlay_ips_parallel};
 use crate::mesh::tasks::{SelfRecordMutation, apply_self_record_mutation};
 use crate::model::{MachineId, MachineRecord, Participation};
-use crate::store::driver::StoreDriver;
 use ployz_store_api::MachineStore;
+use ployz_store_api::StoreDriver;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -281,7 +281,7 @@ mod tests {
     use crate::mesh::tasks::run_self_record_writer_task;
     use crate::mesh::wireguard::MemoryWireGuard;
     use crate::model::{MachineStatus, OverlayIp, PublicKey};
-    use crate::store::backends::memory::{MemoryService, MemoryStore};
+    use ployz_store_api::memory::{MemoryService, MemoryStore};
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
     use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -454,8 +454,7 @@ mod tests {
         }]);
 
         let mut state = ParticipationState::default();
-        let store_driver =
-            StoreDriver::memory_with(store.clone(), Arc::new(MemoryService::new()));
+        let store_driver = StoreDriver::memory_with(store.clone(), Arc::new(MemoryService::new()));
         let network_driver = WireguardDriver::memory_with(network);
 
         for _ in 0..3 {

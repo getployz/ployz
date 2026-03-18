@@ -14,7 +14,8 @@ path = "src/main.rs"
 
 [dependencies]
 ployz-config = { path = "../ployz-config" }
-ployz-store-corrosion = { path = "../ployz-store-corrosion" }
+ployz-corrosion = { path = "../ployz-corrosion" }
+ployz-store-api = { path = "../ployz-store-api" }
 ployz-types = { path = "../ployz-types" }
 hickory-server = "0.25"
 tokio = { workspace = true }
@@ -23,6 +24,9 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
 
 [lints.clippy]
 indexing_slicing = "warn"

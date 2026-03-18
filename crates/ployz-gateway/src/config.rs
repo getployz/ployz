@@ -54,10 +54,7 @@ impl GatewayConfig {
     pub fn from_env() -> Result<Self, GatewayError> {
         let data_dir = match std::env::var_os("PLOYZ_GATEWAY_DATA_DIR") {
             Some(path) => PathBuf::from(path),
-            None => {
-                let aff = ployz_config::Affordances::detect();
-                ployz_config::default_data_dir(&aff)
-            }
+            None => ployz_config::default_data_dir(&host_paths_context()),
         };
         let network = match std::env::var("PLOYZ_GATEWAY_NETWORK") {
             Ok(network) if !network.trim().is_empty() => network,
@@ -66,7 +63,7 @@ impl GatewayConfig {
                     "PLOYZ_GATEWAY_NETWORK was set but empty".into(),
                 ));
             }
-            Err(_) => ployz_types::paths::read_active_network(&data_dir)
+            Err(_) => ployz_config::read_active_network(&data_dir)
                 .ok_or_else(|| GatewayError::Config("no active network marker was found".into()))?,
         };
         let listen_addr = match std::env::var("PLOYZ_GATEWAY_LISTEN_ADDR") {
@@ -93,5 +90,31 @@ impl GatewayConfig {
             listen_addr,
             threads,
         })
+    }
+}
+
+fn host_paths_context() -> ployz_config::HostPathsContext {
+    ployz_config::HostPathsContext {
+        os: if cfg!(target_os = "linux") {
+            ployz_config::Os::Linux
+        } else if cfg!(target_os = "macos") {
+            ployz_config::Os::Darwin
+        } else {
+            ployz_config::Os::Other
+        },
+        is_root: current_user_is_root(),
+    }
+}
+
+fn current_user_is_root() -> bool {
+    #[cfg(unix)]
+    {
+        // SAFETY: `geteuid` has no Rust-side preconditions.
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    #[cfg(not(unix))]
+    {
+        false
     }
 }

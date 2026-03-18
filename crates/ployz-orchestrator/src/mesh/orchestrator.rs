@@ -1,5 +1,4 @@
 use crate::error::Error as PortError;
-use crate::mesh::{MeshDataplane, MeshNetwork};
 use crate::mesh::container_network::ContainerNetwork;
 use crate::mesh::driver::{WireguardBackendMode, WireguardDriver};
 use crate::mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
@@ -10,8 +9,9 @@ use crate::mesh::tasks::{
     run_endpoint_refresh_task, run_heartbeat_task, run_participation_task, run_peer_sync_task,
     run_self_liveness_task, run_self_record_writer_task, run_subnet_claim_monitor_task,
 };
+use crate::mesh::{MeshDataplane, MeshNetwork};
 use crate::model::{MachineId, MachineRecord, MachineStatus};
-use crate::store::driver::StoreDriver;
+use ployz_store_api::StoreDriver;
 use ployz_store_api::{MachineStore, StoreRuntimeControl, SyncProbe, SyncStatus};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -399,7 +399,10 @@ impl Mesh {
         let authoritative_self = self.authoritative_self.clone().expect("set above");
 
         // Safe to unwrap: `start_peer_sync_task` always sets `self.tasks` before we get here.
-        let task_set = self.tasks.as_mut().expect("tasks set by start_peer_sync_task");
+        let task_set = self
+            .tasks
+            .as_mut()
+            .expect("tasks set by start_peer_sync_task");
 
         let (self_record_tx, self_record_rx) = mpsc::channel(64);
         self.self_record_tx = Some(self_record_tx.clone());
@@ -502,7 +505,9 @@ impl Mesh {
             first_err.get_or_insert(error.into());
         }
 
-        if let Some(dp) = self.dataplane.take() && let Err(error) = dp.detach().await {
+        if let Some(dp) = self.dataplane.take()
+            && let Err(error) = dp.detach().await
+        {
             warn!(?error, "ebpf detach failed during runtime stop");
         }
         self.wg_ifindex = 0;

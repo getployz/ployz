@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
+use crate::mesh_state::network::NetworkConfig;
+use crate::services::supervisor::{ServiceSupervision, SidecarHandle, SidecarSpec};
 use async_trait::async_trait;
-use crate::services::supervisor::{ServiceSupervision, SidecarHandle, SidecarSpec, SystemdType};
 use ployz_gateway::{GatewayConfig, GatewayError};
 use ployz_runtime_api::RuntimeHandle;
-use ployz_state::store::network::NetworkConfig;
 
 // ---------------------------------------------------------------------------
 // GatewayHandle — supervision wrapper
@@ -133,8 +133,6 @@ fn build_gateway_sidecar_spec(
             format!("{gateway_dir_str}:{gateway_dir_str}"),
         ],
         network_container: Some("ployz-networking".to_string()),
-        compose_service: "gateway".to_string(),
-        systemd_type: SystemdType::Simple,
         systemd_extra,
     }
 }

@@ -3,8 +3,8 @@ pub mod docker_bridge;
 use async_trait::async_trait;
 use docker_bridge::DockerBridgeNetwork;
 use ipnet::Ipv4Net;
-use ployz_orchestrator::mesh::container_network::{ContainerNetwork, ContainerNetworkBackend};
 use ployz_orchestrator::ContainerNetwork as ContainerNetworkHandle;
+use ployz_orchestrator::mesh::container_network::{ContainerNetwork, ContainerNetworkBackend};
 use ployz_types::Result;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -14,9 +14,9 @@ pub async fn docker_bridge_network(
     subnet_v4: Ipv4Net,
 ) -> Result<ContainerNetworkHandle> {
     let network = DockerBridgeNetwork::new(mesh_name, subnet_v4).await?;
-    Ok(ContainerNetwork::from_backend(Arc::new(DockerBridgeBackend {
-        inner: network,
-    })))
+    Ok(ContainerNetwork::from_backend(Arc::new(
+        DockerBridgeBackend { inner: network },
+    )))
 }
 
 struct DockerBridgeBackend {

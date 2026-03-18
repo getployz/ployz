@@ -1,56 +1,13 @@
 use std::sync::Arc;
 
 use crate::error::Result;
-use crate::model::{DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineRecord, SlotId};
+use crate::model::{DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineRecord};
 use crate::spec::Namespace;
+pub use ployz_orchestrator::deploy::session::{
+    DeploySession, DeploySessionFactory, StartCandidateRequest,
+};
 
 use super::remote::{DeployAgent, SessionState, TcpDeploySession};
-
-/// Factory for opening deploy sessions to machines.
-///
-/// Each `open()` call acquires a namespace lock on the target machine and returns
-/// a snapshot of its current instances. The lock is held until the session is
-/// closed or dropped.
-// TODO: remove async_trait when RPITIT is sufficient for dyn dispatch
-#[async_trait::async_trait]
-pub trait DeploySessionFactory: Send + Sync {
-    async fn open(
-        &self,
-        machine: &MachineRecord,
-        namespace: &Namespace,
-        deploy_id: &DeployId,
-        coordinator_id: &MachineId,
-    ) -> Result<(Box<dyn DeploySession>, Vec<InstanceStatusRecord>)>;
-}
-
-/// A deploy session to a single machine for a single namespace.
-///
-/// The namespace lock is held for the lifetime of the session.
-/// Methods take `&mut self` — sessions are not shared.
-// TODO: remove async_trait when RPITIT is sufficient for dyn dispatch
-#[async_trait::async_trait]
-pub trait DeploySession: Send {
-    fn machine_id(&self) -> &MachineId;
-
-    async fn inspect_namespace(&mut self) -> Result<Vec<InstanceStatusRecord>>;
-
-    async fn start_candidate(&mut self, req: StartCandidateRequest)
-    -> Result<InstanceStatusRecord>;
-
-    async fn drain_instance(&mut self, instance_id: &InstanceId) -> Result<()>;
-
-    async fn remove_instance(&mut self, instance_id: &InstanceId) -> Result<()>;
-
-    async fn close(self: Box<Self>) -> Result<()>;
-}
-
-#[derive(Debug, Clone)]
-pub struct StartCandidateRequest {
-    pub service: String,
-    pub slot_id: SlotId,
-    pub instance_id: InstanceId,
-    pub spec_json: String,
-}
 
 // ---------------------------------------------------------------------------
 // InProcessDeploySession — local participant

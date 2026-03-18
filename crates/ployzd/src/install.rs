@@ -1,6 +1,6 @@
-use ployz_config::{RuntimeTarget, ServiceMode};
+use crate::platform::{HostPlatform, validate_runtime};
 use ployz_config::{
-    Affordances, Os, default_config_path, default_data_dir, default_socket_path, validate_runtime,
+    Os, RuntimeTarget, ServiceMode, default_config_path, default_data_dir, default_socket_path,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -200,11 +200,11 @@ pub fn daemon_install(
     service_mode: ServiceMode,
     manifest_path: Option<&Path>,
 ) -> Result<InstallManifest, String> {
-    let aff = Affordances::detect();
-    validate_runtime(runtime_target, service_mode, &aff)?;
+    let platform = HostPlatform::detect();
+    validate_runtime(runtime_target, service_mode, platform)?;
     let manifest_path = resolve_manifest_path(runtime_target, service_mode, manifest_path)?;
     let mut manifest = InstallManifest::load_from_path(&manifest_path)?;
-    let config_target = resolve_config_target(&aff)?;
+    let config_target = resolve_config_target(platform)?;
     let paths = client_paths(runtime_target, service_mode, &config_target.home_dir);
 
     validate_install_manifest(&manifest)?;
@@ -213,14 +213,14 @@ pub fn daemon_install(
     match service_mode {
         ServiceMode::User => {
             ensure_user_service(
-                &aff,
+                platform,
                 &manifest.ployzd_path,
                 &paths.data_dir,
                 &paths.socket_path,
                 runtime_target,
                 service_mode,
             )?;
-            manifest.service_backend = Some(user_backend(&aff)?);
+            manifest.service_backend = Some(user_backend(platform)?);
         }
         ServiceMode::System => {
             promote_system_binaries(&manifest)?;
@@ -239,8 +239,8 @@ pub fn daemon_install(
 }
 
 #[must_use]
-pub fn default_manifest_path(aff: &Affordances) -> PathBuf {
-    default_data_dir(aff)
+pub fn default_manifest_path(platform: HostPlatform) -> PathBuf {
+    default_data_dir(&platform.paths_context())
         .join(INSTALL_DIR_NAME)
         .join(MANIFEST_FILE_NAME)
 }
@@ -297,14 +297,14 @@ fn validate_install_manifest(manifest: &InstallManifest) -> Result<(), String> {
 }
 
 fn ensure_user_service(
-    aff: &Affordances,
+    platform: HostPlatform,
     ployzd_path: &Path,
     data_dir: &Path,
     socket_path: &str,
     runtime_target: RuntimeTarget,
     service_mode: ServiceMode,
 ) -> Result<(), String> {
-    match aff.os {
+    match platform.os {
         Os::Linux => install_systemd_user_service(
             ployzd_path,
             data_dir,
@@ -323,8 +323,8 @@ fn ensure_user_service(
     }
 }
 
-fn user_backend(aff: &Affordances) -> Result<ServiceBackend, String> {
-    match aff.os {
+fn user_backend(platform: HostPlatform) -> Result<ServiceBackend, String> {
+    match platform.os {
         Os::Linux => Ok(ServiceBackend::SystemdUser),
         Os::Darwin => Ok(ServiceBackend::LaunchAgent),
         Os::Other => Err("user services are not supported on this platform".into()),
@@ -504,20 +504,20 @@ fn resolve_manifest_path(
         return Ok(path.to_path_buf());
     }
 
-    let aff = Affordances::detect();
-    if aff.is_root
+    let platform = HostPlatform::detect();
+    if platform.is_root
         && runtime_target == RuntimeTarget::Host
         && service_mode == ServiceMode::System
         && let Some(home) = sudo_user_home_dir()?
     {
         return Ok(linux_user_manifest_path(&home));
     }
-    Ok(default_manifest_path(&aff))
+    Ok(default_manifest_path(platform))
 }
 
-fn resolve_config_target(aff: &Affordances) -> Result<ConfigTarget, String> {
-    if aff.is_root
-        && aff.os == Os::Linux
+fn resolve_config_target(platform: HostPlatform) -> Result<ConfigTarget, String> {
+    if platform.is_root
+        && platform.os == Os::Linux
         && let Some(home_dir) = sudo_user_home_dir()?
     {
         return Ok(ConfigTarget { home_dir });
@@ -537,7 +537,7 @@ fn client_paths(
     service_mode: ServiceMode,
     home_dir: &Path,
 ) -> ClientPaths {
-    let aff = Affordances::detect();
+    let platform = HostPlatform::detect();
     if runtime_target == RuntimeTarget::Host && service_mode == ServiceMode::System {
         return ClientPaths {
             config_path: linux_user_config_path(home_dir),
@@ -546,29 +546,29 @@ fn client_paths(
         };
     }
 
-    if aff.is_root {
+    if platform.is_root {
         return ClientPaths {
             config_path: default_config_path(),
-            data_dir: default_data_dir(&aff),
-            socket_path: default_socket_path(&aff),
+            data_dir: default_data_dir(&platform.paths_context()),
+            socket_path: default_socket_path(&platform.paths_context()),
         };
     }
 
-    match aff.os {
+    match platform.os {
         Os::Linux => ClientPaths {
             config_path: linux_user_config_path(home_dir),
             data_dir: linux_user_data_dir(home_dir),
-            socket_path: default_socket_path(&aff),
+            socket_path: default_socket_path(&platform.paths_context()),
         },
         Os::Darwin => ClientPaths {
             config_path: home_dir.join("Library/Application Support/ployz/config.toml"),
             data_dir: home_dir.join("Library/Application Support/ployz"),
-            socket_path: default_socket_path(&aff),
+            socket_path: default_socket_path(&platform.paths_context()),
         },
         Os::Other => ClientPaths {
             config_path: default_config_path(),
-            data_dir: default_data_dir(&aff),
-            socket_path: default_socket_path(&aff),
+            data_dir: default_data_dir(&platform.paths_context()),
+            socket_path: default_socket_path(&platform.paths_context()),
         },
     }
 }

@@ -9,14 +9,11 @@ use crate::error::{Error, Result};
 use crate::model::{
     DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, SlotId,
 };
-use crate::spec::{
-    ContainerSpec, Namespace, NetworkMode, PortProtocol, ServicePort, ServiceSpec,
-    VolumeSource,
-};
-use crate::runtime::labels::{
-    self, WorkloadMeta, build_workload_labels, extract_workload_labels,
-};
+use crate::runtime::labels::{self, WorkloadMeta, build_workload_labels, extract_workload_labels};
 use crate::runtime::{ContainerEngine, Probe, PullPolicy, RuntimeContainerSpec};
+use crate::spec::{
+    ContainerSpec, Namespace, NetworkMode, PortProtocol, ServicePort, ServiceSpec, VolumeSource,
+};
 use ployz_store_api::DeployStore;
 
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
@@ -479,7 +476,6 @@ fn parse_duration_secs(value: &str) -> Option<i64> {
 }
 
 pub(super) use crate::time::now_unix_secs;
-pub(super) use ployz_types::spec::stable_hash_hex;
 
 #[cfg(test)]
 mod tests {

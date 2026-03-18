@@ -1,18 +1,19 @@
 pub mod handlers;
+mod runtime;
 mod setup;
 pub mod ssh;
 
 use std::path::{Path, PathBuf};
 
 use crate::built_in_images::BuiltInImages;
+use crate::mesh_state::network::NetworkConfig;
 use crate::runtime_profile::RuntimeProfile;
 use ipnet::Ipv4Net;
 use ployz_api::{DaemonPayload, DaemonResponse};
 use ployz_config::{RuntimeTarget, ServiceMode};
 use ployz_orchestrator::Mesh;
-use ployz_runtime_api::{NamespaceLockManager, RuntimeHandle, RuntimeOps};
-use ployz_state::Identity;
-use ployz_state::store::network::NetworkConfig;
+use ployz_runtime_api::Identity;
+use ployz_runtime_api::{NamespaceLockManager, RuntimeHandle};
 
 pub struct ActiveMesh {
     pub config: NetworkConfig,
@@ -41,8 +42,7 @@ pub struct DaemonState {
     pub identity: Identity,
     pub runtime_target: RuntimeTarget,
     pub service_mode: ServiceMode,
-    pub(crate) runtime_profile: RuntimeProfile,
-    pub(crate) runtime_ops: Box<dyn RuntimeOps>,
+    runtime_profile: RuntimeProfile,
     pub cluster_cidr: String,
     pub subnet_prefix_len: u8,
     pub remote_control_port: u16,
@@ -129,8 +129,7 @@ impl DaemonState {
             identity,
             runtime_target,
             service_mode,
-            runtime_profile: runtime_profile.clone(),
-            runtime_ops: Box::new(runtime_profile),
+            runtime_profile,
             cluster_cidr,
             subnet_prefix_len,
             remote_control_port,

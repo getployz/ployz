@@ -23,20 +23,6 @@ pub trait DnsStore: Send + Sync {
     ) -> impl Future<Output = Result<mpsc::Receiver<()>, DnsError>> + Send + '_;
 }
 
-impl DnsStore for ployz_store_corrosion::CorrosionRoutingStore {
-    async fn load_routing_state(&self) -> Result<ployz_types::model::RoutingState, DnsError> {
-        ployz_store_corrosion::CorrosionRoutingStore::load_routing_state(self)
-            .await
-            .map_err(|err| DnsError::Store(err.to_string()))
-    }
-
-    async fn subscribe_routing_invalidations(&self) -> Result<mpsc::Receiver<()>, DnsError> {
-        ployz_store_corrosion::CorrosionRoutingStore::subscribe_routing_invalidations(self)
-            .await
-            .map_err(|err| DnsError::Store(err.to_string()))
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Sync logic
 // ---------------------------------------------------------------------------
@@ -53,8 +39,7 @@ where
         match store.load_routing_state().await {
             Ok(state) => {
                 let next = project_dns(&state);
-                let service_count: usize =
-                    next.services.values().map(HashMap::len).sum();
+                let service_count: usize = next.services.values().map(HashMap::len).sum();
                 snapshot.replace(next);
                 info!(service_count, "dns snapshot refreshed");
             }

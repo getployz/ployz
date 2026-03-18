@@ -198,21 +198,16 @@ pub async fn run_dns_server(
 // Standalone process entry point
 // ---------------------------------------------------------------------------
 
-pub fn run_dns_process() -> Result<(), DnsError> {
-    let config = DnsConfig::from_env()?;
+pub fn run_dns_process_with_store<S>(config: DnsConfig, store: S) -> Result<(), DnsError>
+where
+    S: DnsStore + Send + Sync + 'static,
+{
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|err| DnsError::Runtime(err.to_string()))?;
 
     runtime.block_on(async {
-        let store = ployz_store_corrosion::CorrosionRoutingStore::connect_for_network(
-            &config.data_dir,
-            &config.network,
-        )
-        .await
-        .map_err(|err| DnsError::Store(err.to_string()))?;
-
         let state = DnsStore::load_routing_state(&store).await?;
         let initial_snapshot = project_dns(&state);
         let shared = SharedDnsSnapshot::new(initial_snapshot);

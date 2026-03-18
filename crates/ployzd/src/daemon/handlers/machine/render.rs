@@ -1,7 +1,7 @@
 use chrono::DateTime;
-use ployz_state::machine_liveness::{MachineLiveness, machine_liveness};
-use ployz_state::time::now_unix_secs;
+use ployz_orchestrator::machine_liveness::{MachineLiveness, machine_liveness};
 use ployz_types::model::{MachineRecord, MachineStatus, Participation};
+use ployz_types::time::now_unix_secs;
 
 use super::types::{MachineAddReport, MachineListReport};
 

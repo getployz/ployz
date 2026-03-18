@@ -450,12 +450,8 @@ impl DockerWireGuard {
 ///
 /// Shared between `DockerWireGuard` and `WgSidecar`.
 pub(super) async fn docker_force_remove(docker: &Docker, container_name: &str) {
-    let options = RemoveContainerOptionsBuilder::default()
-        .force(true)
-        .build();
-    if let Err(e) = docker
-        .remove_container(container_name, Some(options))
-        .await
+    let options = RemoveContainerOptionsBuilder::default().force(true).build();
+    if let Err(e) = docker.remove_container(container_name, Some(options)).await
         && !matches!(
             e,
             bollard::errors::Error::DockerResponseServerError {

@@ -1,10 +1,10 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use crate::routes::match_http_route;
 use async_trait::async_trait;
 use http::Method;
 use pingora::prelude::*;
-use crate::routes::match_http_route;
 use tracing::info;
 
 use crate::snapshot::SharedSnapshot;

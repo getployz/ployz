@@ -78,9 +78,9 @@ mod tests {
     use crate::model::{
         MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
     };
-    use crate::store::backends::memory::{MemoryService, MemoryStore};
-    use crate::store::driver::StoreDriver;
     use ployz_store_api::MachineStore;
+    use ployz_store_api::StoreDriver;
+    use ployz_store_api::memory::{MemoryService, MemoryStore};
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
     use tokio::sync::RwLock;
