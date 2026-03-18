@@ -84,6 +84,7 @@ impl RuntimeProfile {
         }
     }
 
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn memory_for_tests() -> Self {
         let built_in_images =

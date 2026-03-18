@@ -94,7 +94,6 @@ pub(crate) enum CliError {
     Io(String),
     Serialize(String),
     Config(String),
-    Identity(String),
     Daemon { code: String, message: String },
     Transport { socket: String, message: String },
 }
@@ -105,7 +104,6 @@ impl CliError {
             Self::Usage(_) | Self::Config(_) => 2,
             Self::Io(_)
             | Self::Serialize(_)
-            | Self::Identity(_)
             | Self::Daemon { .. }
             | Self::Transport { .. } => 1,
         }
@@ -116,8 +114,7 @@ impl CliError {
             Self::Usage(message)
             | Self::Io(message)
             | Self::Serialize(message)
-            | Self::Config(message)
-            | Self::Identity(message) => eprintln!("error: {message}"),
+            | Self::Config(message) => eprintln!("error: {message}"),
             Self::Daemon { code, message } => eprintln!("error [{code}]: {message}"),
             Self::Transport { socket, message } => {
                 eprintln!("error: {message}");

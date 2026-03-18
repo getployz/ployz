@@ -1,0 +1,14 @@
+{
+  "name": "ployz",
+  "version": "0.0.1",
+  "private": false,
+  "description": "Ployz installer CLI placeholder",
+  "bin": {
+    "ployz": "./ployz.sh"
+  },
+  "files": [
+    "ployz.sh",
+    "README.md"
+  ],
+  "license": "MIT"
+}

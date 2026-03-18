@@ -1,23 +1,24 @@
-use crate::{CliError, Result, SUBNET_HEAL_INTERVAL};
-use ployz_config::{RuntimeTarget, ServiceMode};
-use ployz_runtime_api::Identity;
-use ployzd::BuiltInImages;
-use ployzd::daemon::ActiveMesh;
-use ployzd::daemon::DaemonState;
-use ployzd::daemon::handlers::RequestLane;
-use ployzd::ipc::listener::IncomingCommand;
-use ployzd::ipc::listener::serve;
 use std::path::Path;
 use std::sync::Arc;
+
+use ployz_config::{RuntimeTarget, ServiceMode};
+use ployz_runtime_api::Identity;
 use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
-pub(crate) fn init_tracing() {
+use crate::built_in_images::BuiltInImages;
+use crate::daemon::handlers::RequestLane;
+use crate::daemon::{ActiveMesh, DaemonState};
+use crate::ipc::listener::{IncomingCommand, serve};
+
+const SUBNET_HEAL_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(5);
+
+pub fn init_tracing() {
     let _ = tracing_subscriber::fmt::try_init();
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn cmd_run(
+pub async fn run_daemon(
     data_dir: &Path,
     runtime_target: RuntimeTarget,
     service_mode: ServiceMode,
@@ -28,12 +29,12 @@ pub(crate) async fn cmd_run(
     remote_control_port: u16,
     gateway_listen_addr: String,
     gateway_threads: usize,
-) -> Result<()> {
+) -> Result<(), String> {
     tracing::info!(?runtime_target, ?service_mode, "starting daemon");
 
     let identity_path = data_dir.join("identity.json");
     let identity = Identity::load_or_generate(&identity_path)
-        .map_err(|error| CliError::Identity(error.to_string()))?;
+        .map_err(|error| format!("load or generate identity: {error}"))?;
     tracing::info!(machine_id = %identity.machine_id, "loaded identity");
 
     let cancel = CancellationToken::new();
