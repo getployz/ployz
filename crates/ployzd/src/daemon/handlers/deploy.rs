@@ -2,11 +2,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::daemon::DaemonState;
+use crate::daemon::deploy_control::remote::DeployAgent;
+use crate::daemon::deploy_control::session::DefaultDeploySessionFactory;
 use ployz_api::{DaemonResponse, DeployOptions};
 use ployz_config::RuntimeTarget;
 use ployz_orchestrator::deploy::{apply, preview};
-use ployz_runtime_backends::deploy::remote::DeployAgent;
-use ployz_runtime_backends::deploy::session::DefaultDeploySessionFactory;
 use ployz_store_api::DeployStore;
 use ployz_store_api::StoreDriver;
 use ployz_types::Error as PloyzError;

@@ -78,7 +78,7 @@ mod tests {
     use ployz_runtime_api::MemoryWireGuard;
     use ployz_store_api::MachineStore;
     use ployz_store_api::StoreDriver;
-    use ployz_store_api::memory::{MemoryService, MemoryStore};
+    use ployz_store_api::memory::MemoryStore;
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
     use tokio::sync::RwLock;
@@ -104,8 +104,7 @@ mod tests {
     async fn self_liveness_tick_now_runs_one_sample_and_acknowledges() {
         let authoritative_self = Arc::new(RwLock::new(test_record()));
         let store = Arc::new(MemoryStore::new());
-        let service = Arc::new(MemoryService::new());
-        let store_driver = StoreDriver::memory_with(store.clone(), service);
+        let store_driver = StoreDriver::memory_with(store.clone());
         let (self_record_tx, self_record_rx) = mpsc::channel(8);
         let writer_cancel = CancellationToken::new();
         let writer_task_cancel = writer_cancel.clone();
@@ -168,8 +167,7 @@ mod tests {
             ..test_record()
         }));
         let store = Arc::new(MemoryStore::new());
-        let service = Arc::new(MemoryService::new());
-        let store_driver = StoreDriver::memory_with(store.clone(), service);
+        let store_driver = StoreDriver::memory_with(store.clone());
         let (self_record_tx, self_record_rx) = mpsc::channel(8);
         let writer_cancel = CancellationToken::new();
         let writer_task_cancel = writer_cancel.clone();

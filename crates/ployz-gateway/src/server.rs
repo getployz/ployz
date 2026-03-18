@@ -88,7 +88,7 @@ pub fn run_gateway_process_with_store<S>(
     store: S,
 ) -> Result<(), GatewayError>
 where
-    S: crate::sync::RoutingStore + Send + Sync + 'static,
+    S: ployz_store_api::RoutingStore + Send + Sync + 'static,
 {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

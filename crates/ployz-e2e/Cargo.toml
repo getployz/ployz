@@ -13,7 +13,10 @@ pedantic = "warn"
 
 [dependencies]
 clap.workspace = true
+ployz-api = { path = "../ployz-api" }
+ployz-sdk = { path = "../ployz-sdk" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true }
 uuid.workspace = true

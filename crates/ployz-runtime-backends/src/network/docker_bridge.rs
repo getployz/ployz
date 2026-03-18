@@ -4,7 +4,7 @@ use bollard::models::{
     NetworkCreateRequest, NetworkDisconnectRequest,
 };
 use ipnet::Ipv4Net;
-use ployz_runtime_api::{container_ip, machine_ip};
+use ployz_runtime_api::{DisconnectMode, container_ip, machine_ip};
 use std::net::Ipv4Addr;
 use tracing::{info, warn};
 
@@ -55,8 +55,9 @@ impl DockerBridgeNetwork {
             driver: Some("default".to_string()),
             config: Some(vec![IpamConfig {
                 subnet: Some(self.subnet_v4.to_string()),
+                ip_range: None,
                 gateway: Some(self.gateway_v4.to_string()),
-                ..Default::default()
+                auxiliary_addresses: None,
             }]),
             options: None,
         };
@@ -69,9 +70,17 @@ impl DockerBridgeNetwork {
         let config = NetworkCreateRequest {
             name: self.name.clone(),
             driver: Some("bridge".to_string()),
+            scope: None,
+            internal: None,
+            attachable: None,
+            ingress: None,
+            config_only: None,
+            config_from: None,
             ipam: Some(ipam),
+            enable_ipv4: None,
+            enable_ipv6: None,
             options: Some(options),
-            ..Default::default()
+            labels: None,
         };
 
         self.docker
@@ -131,9 +140,23 @@ impl DockerBridgeNetwork {
         let endpoint_config = EndpointSettings {
             ipam_config: ipv4.map(|ip| EndpointIpamConfig {
                 ipv4_address: Some(ip.to_string()),
-                ..Default::default()
+                ipv6_address: None,
+                link_local_ips: None,
             }),
-            ..Default::default()
+            links: None,
+            aliases: None,
+            network_id: None,
+            endpoint_id: None,
+            gateway: None,
+            ip_address: None,
+            ip_prefix_len: None,
+            ipv6_gateway: None,
+            global_ipv6_address: None,
+            global_ipv6_prefix_len: None,
+            mac_address: None,
+            driver_opts: None,
+            gw_priority: None,
+            dns_names: None,
         };
 
         let config = NetworkConnectRequest {
@@ -168,15 +191,15 @@ impl DockerBridgeNetwork {
         }
     }
 
-    pub async fn disconnect(&self, container: &str, force: bool) -> Result<()> {
+    pub async fn disconnect(&self, container: &str, mode: DisconnectMode) -> Result<()> {
         let request = NetworkDisconnectRequest {
             container: container.to_string(),
-            force: Some(force),
+            force: Some(matches!(mode, DisconnectMode::Force)),
         };
 
         match self.docker.disconnect_network(&self.name, request).await {
             Ok(()) => {
-                info!(network = %self.name, container, force, "disconnected container from network");
+                info!(network = %self.name, container, ?mode, "disconnected container from network");
                 Ok(())
             }
             Err(bollard::errors::Error::DockerResponseServerError {

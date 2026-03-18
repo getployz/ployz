@@ -5,6 +5,7 @@ use aya::programs::tc::{NlOptions, TcAttachOptions};
 use aya::programs::{SchedClassifier, TcAttachType};
 use ipnet::Ipv4Net;
 use ployz_ebpf_common::{RouteEntry, RouteKey};
+use ployz_runtime_api::ObserveMode;
 use std::net::Ipv4Addr;
 use std::sync::Mutex;
 use tracing::{info, warn};
@@ -60,8 +61,11 @@ impl NativeDataplane {
         })
     }
 
-    pub fn set_observe(&self, enabled: bool) -> Result<()> {
-        let value: u32 = u32::from(enabled);
+    pub fn set_observe(&self, mode: ObserveMode) -> Result<()> {
+        let value: u32 = match mode {
+            ObserveMode::Disabled => 0,
+            ObserveMode::Enabled => 1,
+        };
         let mut bpf = self
             .bpf
             .lock()
@@ -77,7 +81,7 @@ impl NativeDataplane {
             .set(0, value, 0)
             .map_err(|error| Error::operation("ebpf observe set", error.to_string()))?;
 
-        info!(enabled, "eBPF observation toggled (native)");
+        info!(?mode, "eBPF observation toggled (native)");
         Ok(())
     }
 

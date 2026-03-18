@@ -1,3 +1,4 @@
+use super::deploy_control::NamespaceLockManager;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 
@@ -5,7 +6,6 @@ use ipnet::Ipv4Net;
 use ployz_dns::DnsConfig;
 use ployz_gateway::GatewayConfig;
 use ployz_runtime_api::{RestartableWorkload, RuntimeHandle};
-use ployz_runtime_backends::deploy::NamespaceLockManager;
 use ployz_store_api::StoreDriver;
 use ployz_types::model::MachineId;
 use ployz_types::model::OverlayIp;

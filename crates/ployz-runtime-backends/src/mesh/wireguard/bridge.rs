@@ -146,15 +146,15 @@ impl OverlayBridge {
         let bridge_ip_v6 = overlay_ip.0;
 
         let task = tokio::spawn(async move {
-            if let Err(e) = bridge_event_loop(
+            if let Err(e) = bridge_event_loop(BridgeEventLoopConfig {
                 bridge_secret,
                 container_pubkey,
-                container_overlay_ip.0,
-                bridge_ip_v6,
+                container_overlay_ip: container_overlay_ip.0,
+                bridge_ip: bridge_ip_v6,
                 peer_endpoint,
                 udp,
                 listeners,
-            )
+            })
             .await
             {
                 error!(?e, "bridge event loop exited with error");
@@ -254,8 +254,7 @@ struct OutboundRelay {
     connected: bool,
 }
 
-#[allow(clippy::too_many_arguments, clippy::indexing_slicing)]
-async fn bridge_event_loop(
+struct BridgeEventLoopConfig {
     bridge_secret: StaticSecret,
     container_pubkey: X25519Public,
     container_overlay_ip: Ipv6Addr,
@@ -263,7 +262,18 @@ async fn bridge_event_loop(
     peer_endpoint: SocketAddr,
     udp: UdpSocket,
     listeners: Vec<(TcpListener, SocketAddr)>,
-) -> std::io::Result<()> {
+}
+
+async fn bridge_event_loop(config: BridgeEventLoopConfig) -> std::io::Result<()> {
+    let BridgeEventLoopConfig {
+        bridge_secret,
+        container_pubkey,
+        container_overlay_ip,
+        bridge_ip,
+        peer_endpoint,
+        udp,
+        listeners,
+    } = config;
     let diag = Arc::new(BridgeDiag::new());
 
     // Create boringtun tunnel
@@ -283,17 +293,8 @@ async fn bridge_event_loop(
 
     // Default IPv6 route — required for smoltcp to send to non-local overlay IPs.
     // Gateway is the container's overlay IP (all traffic goes through the WG tunnel).
-    let container_segs = container_overlay_ip.segments();
-    let gateway = smoltcp::wire::Ipv6Address::new(
-        container_segs[0],
-        container_segs[1],
-        container_segs[2],
-        container_segs[3],
-        container_segs[4],
-        container_segs[5],
-        container_segs[6],
-        container_segs[7],
-    );
+    let [seg0, seg1, seg2, seg3, seg4, seg5, seg6, seg7] = container_overlay_ip.segments();
+    let gateway = smoltcp::wire::Ipv6Address::new(seg0, seg1, seg2, seg3, seg4, seg5, seg6, seg7);
     iface
         .routes_mut()
         .add_default_ipv6_route(gateway)

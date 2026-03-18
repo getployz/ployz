@@ -22,11 +22,14 @@ use ployz_config::{RuntimeTarget, ServiceMode, load_client_config, load_daemon_c
 use ployz_sdk::UnixSocketTransport;
 #[cfg(test)]
 use ployz_types::spec::DeployManifest;
-use ployzd::{BuiltInImages, HostPlatform, init_tracing, run_daemon, validate_runtime};
+use ployzd::{
+    BuiltInImages, DaemonRuntimeConfig, HostPlatform, init_tracing, run_daemon, validate_runtime,
+};
 use request_builder::build_request;
 #[cfg(test)]
 use request_builder::{
-    build_debug_request, build_machine_request, build_service_spec, upsert_service_in_manifest,
+    ServiceSpecArgs, build_debug_request, build_machine_request, build_service_spec,
+    upsert_service_in_manifest,
 };
 use std::process;
 
@@ -77,11 +80,13 @@ async fn run() -> Result<i32> {
                 service_mode,
                 &cfg.socket,
                 built_in_images,
-                cfg.cluster_cidr,
-                cfg.subnet_prefix_len,
-                cfg.remote_control_port,
-                cfg.gateway_listen_addr,
-                cfg.gateway_threads,
+                DaemonRuntimeConfig {
+                    cluster_cidr: cfg.cluster_cidr,
+                    subnet_prefix_len: cfg.subnet_prefix_len,
+                    remote_control_port: cfg.remote_control_port,
+                    gateway_listen_addr: cfg.gateway_listen_addr,
+                    gateway_threads: cfg.gateway_threads,
+                },
             )
             .await
             .map_err(CliError::Io)?;
@@ -172,44 +177,44 @@ mod tests {
         let mut manifest = DeployManifest {
             namespace: ployz_types::spec::Namespace("prod".into()),
             services: vec![
-                build_service_spec(
-                    "redis:latest",
-                    Some("cache"),
-                    &[],
-                    &[],
-                    &[],
-                    "overlay",
-                    false,
-                    "unless-stopped",
-                    &[],
-                ),
-                build_service_spec(
-                    "nginx:1",
-                    Some("api"),
-                    &[],
-                    &[],
-                    &[],
-                    "overlay",
-                    false,
-                    "unless-stopped",
-                    &[],
-                ),
+                build_service_spec(ServiceSpecArgs {
+                    image: "redis:latest",
+                    name: Some("cache"),
+                    publish: &[],
+                    env: &[],
+                    volume: &[],
+                    network: "overlay",
+                    pull: false,
+                    restart: "unless-stopped",
+                    command: &[],
+                }),
+                build_service_spec(ServiceSpecArgs {
+                    image: "nginx:1",
+                    name: Some("api"),
+                    publish: &[],
+                    env: &[],
+                    volume: &[],
+                    network: "overlay",
+                    pull: false,
+                    restart: "unless-stopped",
+                    command: &[],
+                }),
             ],
         };
 
         upsert_service_in_manifest(
             &mut manifest,
-            build_service_spec(
-                "nginx:2",
-                Some("api"),
-                &[],
-                &[],
-                &[],
-                "overlay",
-                false,
-                "unless-stopped",
-                &[],
-            ),
+            build_service_spec(ServiceSpecArgs {
+                image: "nginx:2",
+                name: Some("api"),
+                publish: &[],
+                env: &[],
+                volume: &[],
+                network: "overlay",
+                pull: false,
+                restart: "unless-stopped",
+                command: &[],
+            }),
         );
 
         let services: Vec<(&str, &str)> = manifest

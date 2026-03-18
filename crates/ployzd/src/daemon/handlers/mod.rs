@@ -73,7 +73,7 @@ impl DaemonState {
             }
             DaemonRequest::MeshList => self.handle_mesh_list(),
             DaemonRequest::MeshStatus { network } => self.handle_mesh_status(&network),
-            DaemonRequest::MeshReady { json } => self.handle_mesh_ready(json).await,
+            DaemonRequest::MeshReady { output } => self.handle_mesh_ready(output).await,
             DaemonRequest::MeshCreate { network } => self.handle_mesh_create(&network),
             DaemonRequest::MachineList => self.handle_machine_list().await,
             DaemonRequest::MachineInit {
@@ -84,8 +84,8 @@ impl DaemonState {
             DaemonRequest::MachineAdd { targets, options } => {
                 self.handle_machine_add(&targets, &options).await
             }
-            DaemonRequest::MachineRemove { id, force } => {
-                self.handle_machine_remove(&id, force).await
+            DaemonRequest::MachineRemove { id, mode } => {
+                self.handle_machine_remove(&id, mode).await
             }
             DaemonRequest::MachineOperationList => self.handle_machine_operation_list().await,
             DaemonRequest::MachineOperationGet { id } => {
@@ -109,8 +109,8 @@ impl DaemonState {
             DaemonRequest::MeshInit { network } => self.handle_mesh_init(&network).await,
             DaemonRequest::MeshUp {
                 network,
-                skip_bootstrap_wait,
-            } => self.handle_mesh_up(&network, skip_bootstrap_wait).await,
+                bootstrap_wait,
+            } => self.handle_mesh_up(&network, bootstrap_wait).await,
             DaemonRequest::MeshDown => self.handle_mesh_down().await,
             DaemonRequest::MeshDestroy { network } => self.handle_mesh_destroy(&network).await,
             DaemonRequest::Status

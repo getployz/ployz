@@ -2,9 +2,10 @@ use crate::cli::Scenario;
 use crate::error::{Error, Result};
 use crate::scenarios;
 use crate::support::{
-    CommandOutput, docker_outer, docker_outer_raw, parse_ready, pick_free_port, run_command,
-    run_command_expect_ok, wait_until,
+    CommandOutput, daemon_machine_list_in_container, daemon_mesh_ready_in_container, docker_outer,
+    docker_outer_raw, pick_free_port, run_command, run_command_expect_ok, wait_until,
 };
+use ployz_api::{MachineListPayload, MachineListRow};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
@@ -46,6 +47,11 @@ pub(crate) struct ScenarioRun {
     public_key: String,
     keep_failed: bool,
     nodes: Vec<Node>,
+}
+
+pub(crate) enum CleanupReason {
+    Success,
+    Failure,
 }
 
 impl ScenarioRun {
@@ -112,8 +118,8 @@ impl ScenarioRun {
         );
     }
 
-    pub(crate) fn cleanup(&self, failed: bool) {
-        if failed && self.keep_failed {
+    pub(crate) fn cleanup(&self, reason: CleanupReason) {
+        if matches!(reason, CleanupReason::Failure) && self.keep_failed {
             return;
         }
 
@@ -291,14 +297,11 @@ impl ScenarioRun {
         let joined_ids = machine_ids.join(", ");
 
         wait_until(STATE_WAIT_TIMEOUT, || {
-            let Ok(output) = self.ssh_run(node, "ployzd machine ls") else {
+            let Ok(payload) = daemon_machine_list_in_container(&node.container_name) else {
                 return Ok(false);
             };
-            if !output.status.success() {
-                return Ok(false);
-            }
             Ok(machine_ids.iter().all(|machine_id| {
-                machine_state(&output.stdout, machine_id).as_deref() == Some(expected_state)
+                machine_state(&payload, machine_id).as_deref() == Some(expected_state)
             }))
         })
         .map_err(|error| {
@@ -325,14 +328,10 @@ impl ScenarioRun {
         let mut consecutive_matches: u8 = 0;
 
         wait_until(STATE_WAIT_TIMEOUT, || {
-            let Ok(output) = self.ssh_run(node, "ployzd machine ls") else {
+            let Ok(payload) = daemon_machine_list_in_container(&node.container_name) else {
                 return Ok(false);
             };
-            if !output.status.success() {
-                return Ok(false);
-            }
-
-            let snapshot = machine_rows(&output.stdout);
+            let snapshot = machine_rows(&payload);
             if snapshot.len() != expected_count {
                 consecutive_matches = 0;
                 last_snapshot = None;
@@ -387,14 +386,10 @@ impl ScenarioRun {
         wait_until(STATE_WAIT_TIMEOUT, || {
             self.tick_nodes(tick_nodes, repeat)?;
 
-            let Ok(output) = self.ssh_run(node, "ployzd machine ls") else {
+            let Ok(payload) = daemon_machine_list_in_container(&node.container_name) else {
                 return Ok(false);
             };
-            if !output.status.success() {
-                return Ok(false);
-            }
-
-            let snapshot = machine_rows(&output.stdout);
+            let snapshot = machine_rows(&payload);
             if snapshot.len() != expected_count {
                 consecutive_matches = 0;
                 last_snapshot = None;
@@ -430,10 +425,11 @@ impl ScenarioRun {
     }
 
     pub(crate) fn assert_unique_machine_subnets(&self, node_name: &str) -> Result<()> {
-        let output = self.ssh_expect_ok_name(node_name, "ployzd machine ls")?;
+        let node = self.node(node_name)?;
+        let payload = daemon_machine_list_in_container(&node.container_name)?;
         let mut seen: BTreeMap<String, String> = BTreeMap::new();
 
-        for prefix in machine_rows(&output.stdout) {
+        for prefix in machine_rows(&payload) {
             if !prefix.subnet.contains('/') {
                 continue;
             }
@@ -477,14 +473,10 @@ impl ScenarioRun {
         let joined_ids = machine_ids.join(", ");
 
         wait_until(STATE_WAIT_TIMEOUT, || {
-            let Ok(output) = self.ssh_run(node, "ployzd machine ls") else {
+            let Ok(payload) = daemon_machine_list_in_container(&node.container_name) else {
                 return Ok(false);
             };
-            if !output.status.success() {
-                return Ok(false);
-            }
-
-            let snapshot = machine_rows(&output.stdout);
+            let snapshot = machine_rows(&payload);
             Ok(machine_ids.iter().all(|machine_id| {
                 snapshot
                     .iter()
@@ -833,13 +825,10 @@ impl ScenarioRun {
 
     fn wait_mesh_ready(&self, node: &Node, timeout: Duration) -> Result<()> {
         wait_until(timeout, || {
-            let Ok(output) = self.ssh_run(node, "ployzd --plain mesh ready --json") else {
+            let Ok(payload) = daemon_mesh_ready_in_container(&node.container_name) else {
                 return Ok(false);
             };
-            if !output.status.success() {
-                return Ok(false);
-            }
-            parse_ready(output.stdout.trim())
+            Ok(payload.ready)
         })
         .map_err(|error| {
             Error::Message(format!(
@@ -949,16 +938,13 @@ fn image_metadata(image: &str) -> Result<ImageMetadata> {
     })
 }
 
-fn machine_state(machine_ls: &str, machine_id: &str) -> Option<String> {
-    machine_ls
-        .lines()
-        .filter_map(parse_machine_row)
-        .find_map(|row| {
-            if row.id == machine_id {
-                return Some(row.participation);
-            }
-            None
-        })
+fn machine_state(payload: &MachineListPayload, machine_id: &str) -> Option<String> {
+    payload.rows.iter().find_map(|row| {
+        if row.id == machine_id {
+            return Some(row.participation.clone());
+        }
+        None
+    })
 }
 
 fn ssh_run_with_key(private_key_path: &Path, node: &Node, script: &str) -> Result<CommandOutput> {
@@ -996,24 +982,16 @@ struct MachineRow {
     subnet: String,
 }
 
-fn parse_machine_row(line: &str) -> Option<MachineRow> {
-    let mut fields = line.split_whitespace();
-    let id = fields.next()?;
-    let _status = fields.next()?;
-    let participation = fields.next()?;
-    let _liveness = fields.next()?;
-    let _overlay = fields.next()?;
-    let subnet = fields.next()?;
-    if id == "ID" {
-        return None;
+impl MachineRow {
+    fn from_payload(row: &MachineListRow) -> Self {
+        Self {
+            id: row.id.clone(),
+            participation: row.participation.clone(),
+            subnet: row.subnet.clone().unwrap_or_else(|| "—".into()),
+        }
     }
-    Some(MachineRow {
-        id: id.to_string(),
-        participation: participation.to_string(),
-        subnet: subnet.to_string(),
-    })
 }
 
-fn machine_rows(machine_ls: &str) -> Vec<MachineRow> {
-    machine_ls.lines().filter_map(parse_machine_row).collect()
+fn machine_rows(payload: &MachineListPayload) -> Vec<MachineRow> {
+    payload.rows.iter().map(MachineRow::from_payload).collect()
 }

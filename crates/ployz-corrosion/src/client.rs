@@ -482,10 +482,11 @@ pub struct SubscriptionStream<T> {
     stream: Option<FramedBody>,
     backoff: Option<Pin<Box<Sleep>>>,
     backoff_count: u32,
-    #[allow(clippy::type_complexity)]
-    response: Option<Pin<Box<dyn Future<Output = Result<Incoming, ClientError>> + Send>>>,
+    response: Option<ResponseFuture>,
     _deser: std::marker::PhantomData<T>,
 }
+
+type ResponseFuture = Pin<Box<dyn Future<Output = Result<Incoming, ClientError>> + Send>>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SubscriptionError {

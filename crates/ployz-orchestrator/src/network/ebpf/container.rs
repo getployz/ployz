@@ -1,5 +1,6 @@
 use crate::error::{Error, Result};
 use ipnet::Ipv4Net;
+use ployz_runtime_api::ObserveMode;
 use std::process::Stdio;
 use tokio::process::Command;
 use tracing::{info, warn};
@@ -34,10 +35,13 @@ impl ContainerDataplane {
         Ok(dataplane)
     }
 
-    pub async fn set_observe(&self, enabled: bool) -> Result<()> {
-        let state = if enabled { "on" } else { "off" };
+    pub async fn set_observe(&self, mode: ObserveMode) -> Result<()> {
+        let state = match mode {
+            ObserveMode::Enabled => "on",
+            ObserveMode::Disabled => "off",
+        };
         self.exec(&[CTL_BIN, "observe", state]).await?;
-        info!(enabled, "eBPF observation toggled (container)");
+        info!(?mode, "eBPF observation toggled (container)");
         Ok(())
     }
 

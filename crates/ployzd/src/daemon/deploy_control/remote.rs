@@ -1,29 +1,73 @@
+use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
+use ployz_runtime_api::{DeployFrame, RuntimeHandle, StartCandidateRequest};
+use ployz_runtime_backends::deploy::local::{
+    LocalDeployRuntime, ManagedInstance, StartCandidate, now_unix_secs,
+};
+use ployz_store_api::{DeployStore, StoreDriver};
+use ployz_types::error::{Error, Result};
+use ployz_types::model::{
+    DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
+    MachineRecord, SlotId,
+};
+use ployz_types::spec::{Namespace, ServiceSpec};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufStream};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::StoreDriver;
-use crate::error::{Error, Result};
-use crate::model::{
-    DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
-    MachineRecord, SlotId,
-};
-use crate::spec::{Namespace, ServiceSpec};
-use ployz_runtime_api::{DeployFrame, RuntimeHandle};
-use ployz_store_api::DeployStore;
-
 use super::locks::{NamespaceLock, NamespaceLockManager};
-use super::local::{
-    LocalDeployRuntime, StartCandidate, adopt_instances, build_instance_status_record,
-    list_local_instance_status, now_unix_secs,
-};
-use super::session::{DeploySession, StartCandidateRequest};
-// ---------------------------------------------------------------------------
-// Remote control listener (server side)
-// ---------------------------------------------------------------------------
+
+async fn adopt_instances(
+    store: &StoreDriver,
+    runtime: &LocalDeployRuntime,
+    namespace: &Namespace,
+) -> Result<()> {
+    let existing = store.list_instance_status(namespace).await?;
+    let known: BTreeSet<String> = existing
+        .iter()
+        .map(|record| record.instance_id.0.clone())
+        .collect();
+    for instance in runtime.list_instances(namespace).await? {
+        if known.contains(&instance.instance_id.0) {
+            continue;
+        }
+        let record = instance.to_status_record(
+            namespace,
+            InstancePhase::Ready,
+            true,
+            DrainState::None,
+            None,
+        );
+        store.upsert_instance_status(&record).await?;
+    }
+    Ok(())
+}
+
+fn build_instance_status_record(
+    namespace: &Namespace,
+    instance: &ManagedInstance,
+    phase: InstancePhase,
+    ready: bool,
+    drain_state: DrainState,
+    error: Option<String>,
+) -> InstanceStatusRecord {
+    instance.to_status_record(namespace, phase, ready, drain_state, error)
+}
+
+async fn list_local_instance_status(
+    store: &StoreDriver,
+    namespace: &Namespace,
+    local_machine_id: &MachineId,
+) -> Result<Vec<InstanceStatusRecord>> {
+    Ok(store
+        .list_instance_status(namespace)
+        .await?
+        .into_iter()
+        .filter(|record| &record.machine_id == local_machine_id)
+        .collect())
+}
 
 pub struct RemoteControlHandle {
     cancel: CancellationToken,
@@ -53,8 +97,6 @@ impl RuntimeHandle for RemoteControlHandle {
     }
 }
 
-/// Server-side deploy agent. Shared across connections (cloneable).
-/// Each connection opens one session for one namespace.
 #[derive(Clone)]
 pub struct DeployAgent {
     store: StoreDriver,
@@ -64,8 +106,6 @@ pub struct DeployAgent {
     overlay_dns_server: Option<Ipv4Addr>,
 }
 
-/// Per-session state. The namespace lock is held for the session lifetime.
-/// When this struct drops, the lock is released.
 pub struct SessionState {
     namespace: Namespace,
     deploy_id: DeployId,
@@ -96,8 +136,6 @@ impl DeployAgent {
         }
     }
 
-    /// Open a session: acquire namespace lock, adopt orphaned containers,
-    /// and return a snapshot of current instances.
     pub async fn open_session(
         &self,
         namespace: &Namespace,
@@ -136,7 +174,6 @@ impl DeployAgent {
         deploy_id: &DeployId,
         spec_json: &str,
     ) -> Result<InstanceStatusRecord> {
-        // Idempotent: if instance already exists, return its status.
         if let Some(existing) = self
             .find_local_instance_status(&session.namespace, instance_id)
             .await?
@@ -192,10 +229,8 @@ impl DeployAgent {
             .find_local_instance_status(&session.namespace, instance_id)
             .await?
         else {
-            // Idempotent: already gone is not an error.
             return Ok(());
         };
-        // Idempotent: already draining is not an error.
         if status.phase == InstancePhase::Draining {
             return Ok(());
         }
@@ -216,7 +251,6 @@ impl DeployAgent {
             .find_local_instance_status(&session.namespace, instance_id)
             .await?
         else {
-            // Idempotent: already gone is not an error.
             return Ok(());
         };
         let runtime = self.new_runtime()?;
@@ -227,11 +261,6 @@ impl DeployAgent {
             .delete_instance_status(&status.instance_id)
             .await?;
         Ok(())
-    }
-
-    #[must_use]
-    pub fn local_machine_id(&self) -> &MachineId {
-        &self.local_machine_id
     }
 
     fn new_runtime(&self) -> Result<LocalDeployRuntime> {
@@ -251,10 +280,6 @@ impl DeployAgent {
         )
     }
 }
-
-// ---------------------------------------------------------------------------
-// Listener + connection handler
-// ---------------------------------------------------------------------------
 
 pub async fn start_remote_control_listener(
     bind_addr: SocketAddr,
@@ -309,11 +334,9 @@ async fn handle_connection(
     cancel: CancellationToken,
 ) -> Result<()> {
     let mut stream = BufStream::new(stream);
-
-    // First frame must be Open.
     let open_frame = read_frame(&mut stream, &cancel).await?;
     let Some(open_frame) = open_frame else {
-        return Ok(()); // EOF before Open — nothing to do.
+        return Ok(());
     };
 
     let DeployFrame::Open {
@@ -350,11 +373,9 @@ async fn handle_connection(
 
     write_frame(&mut stream, &DeployFrame::Opened { instances }).await?;
 
-    // Session loop: process commands until Close or EOF.
-    // When this function returns, `session` drops and the lock is released.
     loop {
         let Some(frame) = read_frame(&mut stream, &cancel).await? else {
-            break; // EOF — lock released on drop.
+            break;
         };
 
         let response = handle_session_frame(&agent, &session, frame).await;
@@ -440,7 +461,6 @@ async fn handle_session_frame_inner(
         DeployFrame::Close => Ok(DeployFrame::Ack {
             message: "session closed".into(),
         }),
-        // Server→client frames should never arrive on the server.
         DeployFrame::Opened { .. }
         | DeployFrame::NamespaceSnapshot { .. }
         | DeployFrame::CandidateStarted { .. }
@@ -451,10 +471,6 @@ async fn handle_session_frame_inner(
         )),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Wire helpers
-// ---------------------------------------------------------------------------
 
 async fn read_frame(
     stream: &mut BufStream<TcpStream>,
@@ -490,20 +506,12 @@ async fn write_frame(stream: &mut BufStream<TcpStream>, frame: &DeployFrame) -> 
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// TcpDeploySession (client side)
-// ---------------------------------------------------------------------------
-
-/// Client-side deploy session over TCP.
-/// One connection = one namespace lock on the remote machine.
 pub struct TcpDeploySession {
     machine_id: MachineId,
     stream: BufStream<TcpStream>,
 }
 
 impl TcpDeploySession {
-    /// Connect to a remote machine and open a deploy session.
-    /// Returns the session and a snapshot of current instances on that machine.
     pub async fn connect(
         machine: &MachineRecord,
         port: u16,
@@ -517,7 +525,6 @@ impl TcpDeploySession {
             .map_err(|e| Error::operation("deploy_connect", format!("{address}: {e}")))?;
         let mut stream = BufStream::new(tcp);
 
-        // Send Open frame.
         let open = DeployFrame::Open {
             namespace: namespace.0.clone(),
             deploy_id: deploy_id.0.clone(),
@@ -525,8 +532,7 @@ impl TcpDeploySession {
         };
         write_frame(&mut stream, &open).await?;
 
-        // Read Opened response.
-        let cancel = CancellationToken::new(); // no cancel during connect
+        let cancel = CancellationToken::new();
         let Some(response) = read_frame(&mut stream, &cancel).await? else {
             return Err(Error::operation(
                 "deploy_connect",
@@ -578,7 +584,7 @@ impl TcpDeploySession {
 }
 
 #[async_trait::async_trait]
-impl DeploySession for TcpDeploySession {
+impl ployz_runtime_api::DeploySession for TcpDeploySession {
     fn machine_id(&self) -> &MachineId {
         &self.machine_id
     }

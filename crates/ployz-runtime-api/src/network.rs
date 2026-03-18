@@ -43,7 +43,7 @@ pub trait WireGuardDevice: Send + Sync {
 
 #[async_trait]
 pub trait MeshDataplane: Send + Sync {
-    async fn set_observe(&self, enabled: bool) -> Result<()>;
+    async fn set_observe(&self, mode: ObserveMode) -> Result<()>;
     async fn upsert_route(&self, subnet: Ipv4Net, ifindex: u32) -> Result<()>;
     async fn remove_route(&self, subnet: Ipv4Net) -> Result<()>;
     async fn detach(&self) -> Result<()>;
@@ -54,6 +54,18 @@ pub enum WireguardBackendMode {
     Memory,
     Docker,
     Host,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObserveMode {
+    Disabled,
+    Enabled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisconnectMode {
+    Graceful,
+    Force,
 }
 
 #[async_trait]
@@ -209,7 +221,7 @@ impl WireguardBackend for MemoryWireguardBackend {
 pub trait ContainerNetworkBackend: Send + Sync {
     async fn ensure(&self) -> Result<()>;
     async fn connect(&self, container: &str, ipv4: Option<std::net::Ipv4Addr>) -> Result<()>;
-    async fn disconnect(&self, container: &str, force: bool) -> Result<()>;
+    async fn disconnect(&self, container: &str, mode: DisconnectMode) -> Result<()>;
     async fn remove(&self) -> Result<()>;
     async fn resolve_bridge_ifname(&self) -> Result<String>;
     fn container_v4(&self) -> std::net::Ipv4Addr;
@@ -235,8 +247,8 @@ impl ContainerNetwork {
         self.backend.connect(container, ipv4).await
     }
 
-    pub async fn disconnect(&self, container: &str, force: bool) -> Result<()> {
-        self.backend.disconnect(container, force).await
+    pub async fn disconnect(&self, container: &str, mode: DisconnectMode) -> Result<()> {
+        self.backend.disconnect(container, mode).await
     }
 
     pub async fn remove(&self) -> Result<()> {
@@ -293,12 +305,12 @@ impl MemoryWireGuard {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    pub fn set_fail_up(&self, fail: bool) {
-        self.lock_inner().fail_up = fail;
+    pub fn set_fail_up(&self, mode: ObserveMode) {
+        self.lock_inner().fail_up = matches!(mode, ObserveMode::Enabled);
     }
 
-    pub fn set_fail_down(&self, fail: bool) {
-        self.lock_inner().fail_down = fail;
+    pub fn set_fail_down(&self, mode: ObserveMode) {
+        self.lock_inner().fail_down = matches!(mode, ObserveMode::Enabled);
     }
 
     pub fn is_up(&self) -> bool {

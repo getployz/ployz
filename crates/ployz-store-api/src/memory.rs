@@ -1,8 +1,9 @@
 use crate::{
     DeployStore, InviteStore, MachineEventSubscription, MachineStore,
-    RoutingInvalidationSubscription, RoutingStore, StoreRuntimeControl, SyncProbe, SyncStatus,
+    RoutingInvalidationSubscription, RoutingStore, SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
+use ployz_runtime_api::ServiceRuntime;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
@@ -329,6 +330,16 @@ impl Default for MemoryService {
     }
 }
 
+pub enum ToggleState {
+    Enabled,
+    Disabled,
+}
+
+pub enum ServiceHealth {
+    Healthy,
+    Unhealthy,
+}
+
 impl MemoryService {
     #[must_use]
     pub fn new() -> Self {
@@ -340,16 +351,19 @@ impl MemoryService {
         }
     }
 
-    pub fn set_healthy(&self, healthy: bool) {
-        self.healthy.store(healthy, Ordering::SeqCst);
+    pub fn set_healthy(&self, health: ServiceHealth) {
+        self.healthy
+            .store(matches!(health, ServiceHealth::Healthy), Ordering::SeqCst);
     }
 
-    pub fn set_fail_start(&self, fail: bool) {
-        self.fail_start.store(fail, Ordering::SeqCst);
+    pub fn set_fail_start(&self, state: ToggleState) {
+        self.fail_start
+            .store(matches!(state, ToggleState::Enabled), Ordering::SeqCst);
     }
 
-    pub fn set_fail_stop(&self, fail: bool) {
-        self.fail_stop.store(fail, Ordering::SeqCst);
+    pub fn set_fail_stop(&self, state: ToggleState) {
+        self.fail_stop
+            .store(matches!(state, ToggleState::Enabled), Ordering::SeqCst);
     }
 
     pub fn is_started(&self) -> bool {
@@ -358,18 +372,18 @@ impl MemoryService {
 }
 
 #[async_trait]
-impl StoreRuntimeControl for MemoryService {
-    async fn start(&self) -> Result<()> {
+impl ServiceRuntime for MemoryService {
+    async fn start(&self) -> std::result::Result<(), String> {
         if self.fail_start.load(Ordering::SeqCst) {
-            return Err(Error::operation("service start", "injected failure"));
+            return Err(Error::operation("service start", "injected failure").to_string());
         }
         self.started.store(true, Ordering::SeqCst);
         Ok(())
     }
 
-    async fn stop(&self) -> Result<()> {
+    async fn stop(&self) -> std::result::Result<(), String> {
         if self.fail_stop.load(Ordering::SeqCst) {
-            return Err(Error::operation("service stop", "injected failure"));
+            return Err(Error::operation("service stop", "injected failure").to_string());
         }
         self.started.store(false, Ordering::SeqCst);
         Ok(())

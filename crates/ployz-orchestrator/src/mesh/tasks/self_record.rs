@@ -106,7 +106,7 @@ fn apply_mutation(record: &mut MachineRecord, mutation: SelfRecordMutation) {
 mod tests {
     use super::*;
     use crate::model::{MachineId, MachineStatus, PublicKey};
-    use ployz_store_api::memory::{MemoryService, MemoryStore};
+    use ployz_store_api::memory::MemoryStore;
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
 
@@ -131,8 +131,7 @@ mod tests {
     async fn writer_preserves_endpoints_when_liveness_updates() {
         let authoritative_self = Arc::new(RwLock::new(test_record()));
         let store = Arc::new(MemoryStore::new());
-        let service = Arc::new(MemoryService::new());
-        let store_driver = StoreDriver::memory_with(store.clone(), service);
+        let store_driver = StoreDriver::memory_with(store.clone());
         let (tx, rx) = mpsc::channel(8);
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();
@@ -172,8 +171,7 @@ mod tests {
     async fn writer_preserves_liveness_fields_when_participation_changes() {
         let authoritative_self = Arc::new(RwLock::new(test_record()));
         let store = Arc::new(MemoryStore::new());
-        let service = Arc::new(MemoryService::new());
-        let store_driver = StoreDriver::memory_with(store.clone(), service);
+        let store_driver = StoreDriver::memory_with(store.clone());
         let (tx, rx) = mpsc::channel(8);
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();

@@ -107,12 +107,12 @@ fn render_doctor_report(
     if !blocking_peers.is_empty() {
         lines.push(String::new());
         lines.push(String::from("blocking peers:"));
-        append_peer_section(&mut lines, &blocking_peers, false);
+        append_peer_section(&mut lines, &blocking_peers, CauseDisplay::Include);
     }
     if !all_peers.is_empty() {
         lines.push(String::new());
         lines.push(String::from("all peers:"));
-        append_peer_section(&mut lines, &all_peers, true);
+        append_peer_section(&mut lines, &all_peers, CauseDisplay::Omit);
     }
     lines.push(String::new());
     lines.push(format!(
@@ -127,7 +127,13 @@ fn render_doctor_report(
     lines.join("\n")
 }
 
-fn append_peer_section(lines: &mut Vec<String>, rows: &[&ParticipationRow], include_cause: bool) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CauseDisplay {
+    Include,
+    Omit,
+}
+
+fn append_peer_section(lines: &mut Vec<String>, rows: &[&ParticipationRow], cause: CauseDisplay) {
     let w_id = rows
         .iter()
         .map(|row| row.id.len())
@@ -160,7 +166,7 @@ fn append_peer_section(lines: &mut Vec<String>, rows: &[&ParticipationRow], incl
             row.wg_status(),
             row.probe_status(),
         );
-        if include_cause {
+        if cause == CauseDisplay::Omit {
             lines.push(base);
         } else {
             lines.push(format!("{base}  cause={}", row.cause()));
@@ -372,6 +378,7 @@ async fn probe_overlay_ip(overlay_ip: OverlayIp) -> Option<()> {
 mod tests {
     use super::*;
     use crate::daemon::ActiveMesh;
+    use crate::daemon::DaemonRuntimeConfig;
     use crate::mesh_state::network::NetworkConfig;
     use ployz_orchestrator::Mesh;
     use ployz_runtime_api::Identity;
@@ -526,7 +533,8 @@ mod tests {
 
         let mesh = Mesh::new(
             WireguardDriver::memory_with(network.clone()),
-            StoreDriver::memory_with(store.clone(), service),
+            StoreDriver::memory_with(store.clone()),
+            service,
             None,
             identity.machine_id.clone(),
             51820,
@@ -535,11 +543,13 @@ mod tests {
         let mut state = DaemonState::new_for_tests(
             &unique_temp_dir("ployz-doctor-state"),
             identity,
-            String::from("10.210.0.0/16"),
-            24,
-            4317,
-            String::from("127.0.0.1:0"),
-            1,
+            DaemonRuntimeConfig {
+                cluster_cidr: String::from("10.210.0.0/16"),
+                subnet_prefix_len: 24,
+                remote_control_port: 4317,
+                gateway_listen_addr: String::from("127.0.0.1:0"),
+                gateway_threads: 1,
+            },
         );
         state.active = Some(ActiveMesh {
             config,
@@ -587,7 +597,8 @@ mod tests {
         let network = Arc::new(MemoryWireGuard::new());
         let mesh = Mesh::new(
             WireguardDriver::memory_with(network),
-            StoreDriver::memory_with(store, service),
+            StoreDriver::memory_with(store),
+            service,
             None,
             identity.machine_id,
             51820,

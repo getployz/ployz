@@ -9,9 +9,9 @@ use ployz_api::{
 };
 use ployz_orchestrator::ipam::Ipam;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
-use ployz_sdk::Transport;
+use ployz_sdk::DaemonClient;
 use ployz_store_api::{InviteStore, MachineStore};
-use ployz_types::model::{JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineRecord};
+use ployz_types::model::{MachineId, MachineRecord};
 use ployz_types::time::now_unix_secs;
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, sleep, timeout};
@@ -554,27 +554,25 @@ async fn wait_for_remote_ready(target: &str, ssh_options: &SshOptions) -> Result
         attempt += 1;
         let last_error = match timeout(
             REMOTE_READY_RPC_TIMEOUT,
-            remote_rpc(
-                target,
-                DaemonRequest::MeshReady { json: false },
-                ssh_options,
-            ),
+            remote_mesh_ready(target, ssh_options),
         )
         .await
         {
-            Ok(Ok(response)) => match mesh_ready_payload(&response) {
-                Ok(payload) => {
-                    if remote_join_ready(&payload) {
-                        tracing::debug!(%target, attempt, "remote mesh ready confirmed");
-                        return Ok(());
-                    }
-                    tracing::debug!(%target, attempt, ?payload, "remote mesh not ready yet");
-                    format!("mesh reported not ready yet: {}", response.message)
+            Ok(Ok(payload)) => {
+                let response_message = format!(
+                    "ready={}, phase={}, store_healthy={}, sync_connected={}, heartbeat_started={}",
+                    payload.ready,
+                    payload.phase,
+                    payload.store_healthy,
+                    payload.sync_connected,
+                    payload.heartbeat_started
+                );
+                if remote_join_ready(&payload) {
+                    tracing::debug!(%target, attempt, "remote mesh ready confirmed");
+                    return Ok(());
                 }
-                Err(err) => {
-                    tracing::debug!(%target, attempt, error = %err, "remote readiness payload parse failed");
-                    err
-                }
+                tracing::debug!(%target, attempt, ?payload, "remote mesh not ready yet");
+                format!("mesh reported not ready yet: {response_message}")
             },
             Ok(Err(err)) => {
                 tracing::debug!(%target, attempt, error = %err, "remote readiness rpc failed");
@@ -605,39 +603,18 @@ async fn remote_self_record(
     target: &str,
     ssh_options: &SshOptions,
 ) -> Result<MachineRecord, String> {
-    let response = remote_rpc(target, DaemonRequest::MeshSelfRecord, ssh_options).await?;
-    if !response.ok {
-        return Err(remote_response_error(&response));
-    }
-    match response.payload {
-        Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload { record, .. })) => Ok(record),
-        Some(payload) => Err(format!("unexpected self-record payload: {payload:?}")),
-        None => decode_joiner_record(&response.message),
-    }
-}
-
-fn mesh_ready_payload(response: &DaemonResponse) -> Result<MeshReadyPayload, String> {
-    match &response.payload {
-        Some(DaemonPayload::MeshReady(payload)) => Ok(payload.clone()),
-        Some(payload) => Err(format!("unexpected readiness payload: {payload:?}")),
-        None => parse_remote_ready_payload(&response.message),
-    }
-}
-
-fn parse_remote_ready_payload(output: &str) -> Result<MeshReadyPayload, String> {
-    if let Ok(payload) = serde_json::from_str::<MeshReadyPayload>(output) {
-        return Ok(payload);
-    }
-
-    #[derive(serde::Deserialize)]
-    struct RemoteReadyEnvelope {
-        message: String,
-    }
-
-    let envelope = serde_json::from_str::<RemoteReadyEnvelope>(output)
-        .map_err(|error| format!("failed to parse remote readiness envelope: {error}"))?;
-    serde_json::from_str::<MeshReadyPayload>(&envelope.message)
-        .map_err(|error| format!("failed to parse remote readiness message: {error}"))
+    let transport = ssh_stdio_transport(target, REMOTE_RPC_COMMAND, ssh_options);
+    let client = DaemonClient::new(transport);
+    client
+        .mesh_self_record()
+        .await
+        .map(|MeshSelfRecordPayload { record, .. }| record)
+        .map_err(|error| {
+            format!(
+                "remote rpc via '{}' failed: {error}",
+                client.transport().command_display()
+            )
+        })
 }
 
 fn remote_join_ready(payload: &MeshReadyPayload) -> bool {
@@ -651,10 +628,25 @@ async fn remote_rpc(
     ssh_options: &SshOptions,
 ) -> Result<DaemonResponse, String> {
     let transport = ssh_stdio_transport(target, REMOTE_RPC_COMMAND, ssh_options);
-    transport.request(request).await.map_err(|err| {
+    let client = DaemonClient::new(transport);
+    client.request(request).await.map_err(|err| {
         format!(
             "remote rpc via '{}' failed: {err}",
-            transport.command_display()
+            client.transport().command_display()
+        )
+    })
+}
+
+async fn remote_mesh_ready(
+    target: &str,
+    ssh_options: &SshOptions,
+) -> Result<MeshReadyPayload, String> {
+    let transport = ssh_stdio_transport(target, REMOTE_RPC_COMMAND, ssh_options);
+    let client = DaemonClient::new(transport);
+    client.mesh_ready().await.map_err(|error| {
+        format!(
+            "remote rpc via '{}' failed: {error}",
+            client.transport().command_display()
         )
     })
 }
@@ -745,24 +737,6 @@ pub(super) async fn best_effort_remote_cleanup(
     }
 
     Err(errors.join("; "))
-}
-
-fn decode_joiner_record(output: &str) -> Result<MachineRecord, String> {
-    let response_line = match output
-        .lines()
-        .find(|line| line.starts_with(JOIN_RESPONSE_PREFIX))
-    {
-        Some(line) => line,
-        None => {
-            return Err(format!(
-                "self-record output missing {JOIN_RESPONSE_PREFIX} line\nhint: run `ployz mesh self-record` on the joiner and `ployz mesh accept <response>` on this machine"
-            ));
-        }
-    };
-
-    let join_response = JoinResponse::decode(response_line)
-        .map_err(|err| format!("failed to decode join response: {err}"))?;
-    Ok(join_response.into_seed_machine_record())
 }
 
 async fn bootstrap_remote_machine(

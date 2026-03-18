@@ -1,5 +1,5 @@
 use crate::daemon::DaemonState;
-use ployz_api::{DaemonPayload, DaemonResponse, MachineRemovePayload};
+use ployz_api::{DaemonPayload, DaemonResponse, MachineRemoveMode, MachineRemovePayload};
 use ployz_orchestrator::machine_liveness::{MachineLiveness, machine_liveness};
 use ployz_store_api::MachineStore;
 use ployz_store_api::StoreDriver;
@@ -36,7 +36,11 @@ impl DaemonState {
         )
     }
 
-    pub(crate) async fn handle_machine_remove(&self, id: &str, force: bool) -> DaemonResponse {
+    pub(crate) async fn handle_machine_remove(
+        &self,
+        id: &str,
+        mode: MachineRemoveMode,
+    ) -> DaemonResponse {
         let active = match self.active.as_ref() {
             Some(active) => active,
             None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
@@ -53,7 +57,7 @@ impl DaemonState {
             }
         };
 
-        if !force && record.participation != Participation::Disabled {
+        if mode != MachineRemoveMode::Force && record.participation != Participation::Disabled {
             return self.err(
                 "MACHINE_NOT_DISABLED",
                 format!(
@@ -68,7 +72,7 @@ impl DaemonState {
                 format!("machine '{id}' removed"),
                 Some(DaemonPayload::MachineRemove(MachineRemovePayload {
                     id: id.to_string(),
-                    force,
+                    mode,
                 })),
             ),
             Err(err) => self.err("DELETE_FAILED", format!("failed to remove machine: {err}")),

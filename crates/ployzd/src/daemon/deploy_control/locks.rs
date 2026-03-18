@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use ployz_types::error::{Error, Result};
 use ployz_types::model::DeployId;
 use ployz_types::spec::Namespace;
-use ployz_types::{Error, Result};
 
 #[derive(Clone, Default)]
 pub struct NamespaceLockManager {
@@ -10,7 +10,11 @@ pub struct NamespaceLockManager {
 }
 
 impl NamespaceLockManager {
-    pub fn try_acquire(&self, namespace: &Namespace, deploy_id: &DeployId) -> Result<NamespaceLock> {
+    pub fn try_acquire(
+        &self,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+    ) -> Result<NamespaceLock> {
         let mut guard = self.lock_inner();
         if let Some(current) = guard.get(&namespace.0) {
             return Err(Error::operation(

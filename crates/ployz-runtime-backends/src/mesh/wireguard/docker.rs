@@ -127,8 +127,7 @@ impl DockerWireGuardBuilder {
 
 impl DockerWireGuard {
     #[must_use]
-    #[allow(clippy::new_ret_no_self)]
-    pub fn new(
+    pub fn builder(
         container_name: &str,
         data_dir: &Path,
         private_key: PrivateKey,

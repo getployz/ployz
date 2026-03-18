@@ -1,27 +1,13 @@
-use std::future::Future;
 use std::time::Duration;
 
 use crate::routes::{GatewaySnapshot, project};
-use ployz_store_api::RoutingInvalidationSubscription;
+use ployz_store_api::RoutingStore;
 use tracing::{info, warn};
 
 use crate::config::GatewayError;
 use crate::snapshot::SharedSnapshot;
 
 const REFRESH_DEBOUNCE: Duration = Duration::from_millis(100);
-
-// ---------------------------------------------------------------------------
-// RoutingStore trait — consumer contract
-// ---------------------------------------------------------------------------
-
-pub trait RoutingStore: Send + Sync {
-    fn load_routing_state(
-        &self,
-    ) -> impl Future<Output = Result<ployz_types::model::RoutingState, GatewayError>> + Send + '_;
-    fn subscribe_routing_invalidations(
-        &self,
-    ) -> impl Future<Output = Result<RoutingInvalidationSubscription, GatewayError>> + Send + '_;
-}
 
 // ---------------------------------------------------------------------------
 // Sync logic
@@ -33,7 +19,10 @@ pub async fn load_projected_snapshot_from_store<S>(
 where
     S: RoutingStore + Send + Sync,
 {
-    let state = store.load_routing_state().await?;
+    let state = store
+        .load_routing_state()
+        .await
+        .map_err(|err| GatewayError::Store(err.to_string()))?;
     project(state).map_err(|err| GatewayError::Projection(err.to_string()))
 }
 
@@ -41,7 +30,10 @@ pub async fn run_sync_loop<S>(store: S, snapshot: SharedSnapshot) -> Result<(), 
 where
     S: RoutingStore + Send + Sync + 'static,
 {
-    let mut refresh_rx = store.subscribe_routing_invalidations().await?;
+    let mut refresh_rx = store
+        .subscribe_routing_invalidations()
+        .await
+        .map_err(|err| GatewayError::Store(err.to_string()))?;
 
     while refresh_rx.recv().await.is_some() {
         tokio::time::sleep(REFRESH_DEBOUNCE).await;

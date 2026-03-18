@@ -5,7 +5,7 @@ use ipnet::Ipv4Net;
 use ployz_orchestrator::Phase;
 use ployz_orchestrator::mesh::tasks::ParticipationCommand;
 use ployz_runtime_api::RestartableWorkload;
-use ployz_store_api::{MachineStore, StoreRuntimeControl};
+use ployz_store_api::MachineStore;
 use ployz_types::model::{MachineId, MachineRecord, MachineStatus, Participation};
 use ployz_types::time::now_unix_secs;
 
@@ -29,7 +29,7 @@ impl DaemonState {
             return;
         }
 
-        if !active.mesh.store.healthy().await {
+        if !active.mesh.store_healthy().await {
             tracing::info!(
                 machine_id = %self.identity.machine_id,
                 "local subnet heal: store unhealthy, deferring"

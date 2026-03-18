@@ -2739,6 +2739,7 @@ dependencies = [
 name = "ployz-corrosion"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytes",
  "corro-api-types",
  "futures-util",
@@ -2747,8 +2748,11 @@ dependencies = [
  "hyper",
  "hyper-util",
  "ipnet",
+ "libc",
  "pin-project-lite",
  "ployz-config",
+ "ployz-runtime-api",
+ "ployz-runtime-backends",
  "ployz-store-api",
  "ployz-types",
  "rusqlite",
@@ -2772,7 +2776,6 @@ dependencies = [
  "hickory-server",
  "libc",
  "ployz-config",
- "ployz-corrosion",
  "ployz-store-api",
  "ployz-types",
  "thiserror 2.0.18",
@@ -2786,9 +2789,12 @@ name = "ployz-e2e"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "ployz-api",
+ "ployz-sdk",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "uuid",
 ]
 
@@ -2805,7 +2811,6 @@ dependencies = [
  "libc",
  "pingora",
  "ployz-config",
- "ployz-corrosion",
  "ployz-store-api",
  "ployz-types",
  "serde",
@@ -2873,9 +2878,7 @@ dependencies = [
  "if-addrs",
  "ipnet",
  "libc",
- "ployz-corrosion",
  "ployz-runtime-api",
- "ployz-store-api",
  "ployz-types",
  "rand 0.10.0",
  "reqwest",
@@ -2906,6 +2909,7 @@ name = "ployz-store-api"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "ployz-runtime-api",
  "ployz-types",
  "tokio",
  "tracing",

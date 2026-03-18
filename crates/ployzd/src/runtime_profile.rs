@@ -1,26 +1,31 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::built_in_images::{BuiltInImage, BuiltInImages};
-use crate::services::corrosion::{corrosion_docker, corrosion_host};
+use crate::daemon::deploy_control::NamespaceLockManager;
+use crate::daemon::deploy_control::remote::{RemoteControlHandle, start_remote_control_listener};
 use crate::services::dns::{DnsHandle, start_managed_dns};
 use crate::services::gateway::{GatewayHandle, start_managed_gateway};
 use crate::services::supervisor::ServiceSupervision;
 use ipnet::Ipv4Net;
 use ployz_config::{RuntimeTarget, ServiceMode};
+use ployz_corrosion::config as corrosion_config;
+use ployz_corrosion::runtime::{docker as corrosion_docker, host as corrosion_host};
+use ployz_corrosion::ManagedCorrosionStore;
 use ployz_dns::DnsConfig;
 use ployz_gateway::GatewayConfig;
 use ployz_runtime_api::Identity;
-use ployz_runtime_api::{ContainerNetwork, RestartableWorkload, WireguardDriver};
-use ployz_runtime_backends::deploy::NamespaceLockManager;
-use ployz_runtime_backends::deploy::remote::{RemoteControlHandle, start_remote_control_listener};
+use ployz_runtime_api::{
+    ContainerNetwork, DisconnectMode, RestartableWorkload, ServiceRuntime, WireguardDriver,
+};
 use ployz_runtime_backends::mesh::driver as mesh_backends;
 use ployz_runtime_backends::network::docker_bridge_network;
 use ployz_runtime_backends::runtime::{
     ContainerEngine,
     labels::{LABEL_KIND, LABEL_MACHINE, LABEL_MANAGED},
 };
-use ployz_store_api::StoreDriver;
+use ployz_store_api::{StoreDriver, memory::MemoryService};
 use ployz_types::model::{MachineId, OverlayIp};
 
 const HEAL_WORKLOAD_STOP_GRACE: tokio::time::Duration = tokio::time::Duration::from_secs(10);
@@ -51,6 +56,7 @@ pub(crate) struct RuntimeProfile {
 pub(crate) struct MeshRuntimeComponents {
     pub(crate) network: WireguardDriver,
     pub(crate) store: StoreDriver,
+    pub(crate) store_runtime: Arc<dyn ServiceRuntime>,
     pub(crate) container_network: Option<ContainerNetwork>,
 }
 
@@ -131,6 +137,7 @@ impl RuntimeProfile {
                     overlay_ip,
                     network_dir,
                     exposed_tcp_ports,
+                    corrosion_config::DEFAULT_API_PORT,
                     self.built_in_images.resolve(BuiltInImage::Networking),
                 )
                 .await?
@@ -140,8 +147,11 @@ impl RuntimeProfile {
             }
         };
 
-        let store = match self.execution_backend {
-            ExecutionBackend::Memory => StoreDriver::memory(),
+        let managed_store = match self.execution_backend {
+            ExecutionBackend::Memory => ManagedCorrosionStore {
+                store: StoreDriver::memory(),
+                runtime: Arc::new(MemoryService::new()),
+            },
             ExecutionBackend::Docker => {
                 corrosion_docker(
                     overlay_ip,
@@ -156,6 +166,10 @@ impl RuntimeProfile {
                 corrosion_host(overlay_ip, network_dir, bootstrap, network_id)?
             }
         };
+        let ManagedCorrosionStore {
+            store,
+            runtime: store_runtime,
+        } = managed_store;
 
         let container_network = match self.execution_backend {
             ExecutionBackend::Memory => None,
@@ -169,6 +183,7 @@ impl RuntimeProfile {
         Ok(MeshRuntimeComponents {
             network,
             store,
+            store_runtime,
             container_network,
         })
     }
@@ -282,7 +297,7 @@ impl RuntimeProfile {
             }
 
             bridge
-                .disconnect(&container.container_name, true)
+                .disconnect(&container.container_name, DisconnectMode::Force)
                 .await
                 .map_err(|err| {
                     format!(

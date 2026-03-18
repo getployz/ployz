@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::built_in_images::BuiltInImages;
 use crate::daemon::handlers::RequestLane;
-use crate::daemon::{ActiveMesh, DaemonState};
+use crate::daemon::{ActiveMesh, DaemonRuntimeConfig, DaemonState};
 use crate::ipc::listener::{IncomingCommand, serve};
 
 const SUBNET_HEAL_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(5);
@@ -17,18 +17,13 @@ pub fn init_tracing() {
     let _ = tracing_subscriber::fmt::try_init();
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn run_daemon(
     data_dir: &Path,
     runtime_target: RuntimeTarget,
     service_mode: ServiceMode,
     socket_path: &str,
     built_in_images: BuiltInImages,
-    cluster_cidr: String,
-    subnet_prefix_len: u8,
-    remote_control_port: u16,
-    gateway_listen_addr: String,
-    gateway_threads: usize,
+    runtime: DaemonRuntimeConfig,
 ) -> Result<(), String> {
     tracing::info!(?runtime_target, ?service_mode, "starting daemon");
 
@@ -64,11 +59,7 @@ pub async fn run_daemon(
         runtime_target,
         service_mode,
         built_in_images,
-        cluster_cidr,
-        subnet_prefix_len,
-        remote_control_port,
-        gateway_listen_addr,
-        gateway_threads,
+        runtime,
     )));
 
     resume_active_network(&state).await;

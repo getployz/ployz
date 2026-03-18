@@ -1,25 +1,18 @@
 use std::sync::Arc;
 
-use crate::error::Result;
-use crate::model::{DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineRecord};
-use crate::spec::Namespace;
-pub use ployz_runtime_api::{DeploySession, DeploySessionFactory, StartCandidateRequest};
+use ployz_runtime_api::{DeploySession, DeploySessionFactory, StartCandidateRequest};
+use ployz_types::error::Result;
+use ployz_types::model::{DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineRecord};
+use ployz_types::spec::Namespace;
 
 use super::remote::{DeployAgent, SessionState, TcpDeploySession};
 
-// ---------------------------------------------------------------------------
-// InProcessDeploySession — local participant
-// ---------------------------------------------------------------------------
-
-/// Deploy session that runs in-process against the local DeployAgent.
-/// Lock is held via SessionState until the session is dropped.
 pub struct InProcessDeploySession {
     agent: Arc<DeployAgent>,
     state: SessionState,
     machine_id: MachineId,
 }
 
-// TODO: remove async_trait when RPITIT is sufficient for dyn dispatch
 #[async_trait::async_trait]
 impl DeploySession for InProcessDeploySession {
     fn machine_id(&self) -> &MachineId {
@@ -55,17 +48,10 @@ impl DeploySession for InProcessDeploySession {
     }
 
     async fn close(self: Box<Self>) -> Result<()> {
-        // Lock released on drop via SessionState._lock.
         Ok(())
     }
 }
 
-// ---------------------------------------------------------------------------
-// DefaultDeploySessionFactory
-// ---------------------------------------------------------------------------
-
-/// Factory that creates in-process sessions for the local machine and
-/// TCP sessions for remote machines.
 pub struct DefaultDeploySessionFactory {
     agent: Arc<DeployAgent>,
     local_machine_id: MachineId,
@@ -87,7 +73,6 @@ impl DefaultDeploySessionFactory {
     }
 }
 
-// TODO: remove async_trait when RPITIT is sufficient for dyn dispatch
 #[async_trait::async_trait]
 impl DeploySessionFactory for DefaultDeploySessionFactory {
     async fn open(

@@ -10,5 +10,6 @@ mod services;
 
 pub use app::{init_tracing, run_daemon};
 pub use built_in_images::{BuiltInImage, BuiltInImages};
+pub use daemon::DaemonRuntimeConfig;
 pub use install::{InstallManifest, ServiceBackend, daemon_install};
 pub use platform::{HostPlatform, validate_runtime};

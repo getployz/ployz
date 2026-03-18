@@ -9,10 +9,11 @@ use crate::mesh::tasks::{
 };
 use crate::model::{MachineId, MachineRecord, MachineStatus};
 use ployz_runtime_api::{
-    ContainerNetwork, MeshDataplane, MeshNetwork, WireguardBackendMode, WireguardDriver,
+    ContainerNetwork, MeshDataplane, MeshNetwork, ServiceRuntime, WireguardBackendMode,
+    WireguardDriver,
 };
 use ployz_store_api::StoreDriver;
-use ployz_store_api::{MachineStore, StoreRuntimeControl, SyncProbe, SyncStatus};
+use ployz_store_api::{MachineStore, SyncProbe, SyncStatus};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -42,10 +43,17 @@ pub struct MeshReadyStatus {
     pub heartbeat_started: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeStoreMode {
+    Keep,
+    Stop,
+}
+
 pub struct Mesh {
     phase: Phase,
     pub network: WireguardDriver,
     pub store: StoreDriver,
+    store_runtime: Arc<dyn ServiceRuntime>,
     container_network: Option<ContainerNetwork>,
     tasks: Option<TaskSet>,
     task_cancel: Option<tokio_util::sync::CancellationToken>,
@@ -72,6 +80,7 @@ impl Mesh {
     pub fn new(
         network: WireguardDriver,
         store: StoreDriver,
+        store_runtime: Arc<dyn ServiceRuntime>,
         container_network: Option<ContainerNetwork>,
         machine_id: MachineId,
         listen_port: u16,
@@ -80,6 +89,7 @@ impl Mesh {
             phase: Phase::Stopped,
             network,
             store,
+            store_runtime,
             container_network,
             tasks: None,
             task_cancel: None,
@@ -180,7 +190,7 @@ impl Mesh {
 
     pub async fn ready_status(&self) -> MeshReadyStatus {
         let phase = self.phase;
-        let store_healthy = self.store.healthy().await;
+        let store_healthy = self.store_runtime.healthy().await;
         let has_remote_store_peer = self
             .store
             .list_machines()
@@ -215,6 +225,10 @@ impl Mesh {
             sync_connected,
             heartbeat_started,
         }
+    }
+
+    pub async fn store_healthy(&self) -> bool {
+        self.store_runtime.healthy().await
     }
 
     fn apply(&mut self, event: PhaseEvent) -> Result<()> {
@@ -272,7 +286,10 @@ impl Mesh {
         }
 
         // 4. Start store service
-        self.store.start().await?;
+        self.store_runtime
+            .start()
+            .await
+            .map_err(|error| MeshError::Port(PortError::operation("store runtime start", error)))?;
         self.wait_service_ready().await?;
         self.wait_store_init().await?;
 
@@ -493,7 +510,7 @@ impl Mesh {
         self.heartbeat_started.store(false, Ordering::SeqCst);
     }
 
-    async fn stop_runtime(&mut self, stop_store: bool) -> Option<MeshError> {
+    async fn stop_runtime(&mut self, store: RuntimeStoreMode) -> Option<MeshError> {
         let mut first_err: Option<MeshError> = None;
 
         self.clear_task_channels();
@@ -512,9 +529,14 @@ impl Mesh {
         }
         self.wg_ifindex = 0;
 
-        if stop_store && let Err(error) = self.store.stop().await {
+        if store == RuntimeStoreMode::Stop
+            && let Err(error) = self.store_runtime.stop().await
+        {
             warn!(?error, "service stop failed during runtime stop");
-            first_err.get_or_insert(error.into());
+            first_err.get_or_insert(MeshError::Port(PortError::operation(
+                "store runtime stop",
+                error,
+            )));
         }
 
         if let Err(error) = self.network.down().await {
@@ -538,7 +560,7 @@ impl Mesh {
     /// Idempotent teardown — stops whatever was started, ignores errors on
     /// things not yet started.
     async fn teardown(&mut self) {
-        let _ = self.stop_runtime(true).await;
+        let _ = self.stop_runtime(RuntimeStoreMode::Stop).await;
     }
 
     pub async fn detach(&mut self) -> Result<()> {
@@ -569,7 +591,7 @@ impl Mesh {
             warn!(timestamp = now, "failed to set status=down on destroy");
         }
 
-        let first_err = self.stop_runtime(true).await;
+        let first_err = self.stop_runtime(RuntimeStoreMode::Stop).await;
 
         self.apply(PhaseEvent::TeardownComplete)?;
         info!("mesh destroyed");
@@ -587,7 +609,7 @@ impl Mesh {
     ) -> Result<()> {
         self.apply(PhaseEvent::DestroyRequested)?;
 
-        let stop_err = self.stop_runtime(false).await;
+        let stop_err = self.stop_runtime(RuntimeStoreMode::Keep).await;
         self.network = network;
         self.container_network = container_network;
 
@@ -609,7 +631,7 @@ impl Mesh {
                     ?error,
                     "subnet runtime restart failed, tearing down runtime"
                 );
-                let _ = self.stop_runtime(false).await;
+                let _ = self.stop_runtime(RuntimeStoreMode::Keep).await;
                 self.apply(PhaseEvent::ComponentFailed)?;
                 Err(error)
             }
@@ -643,7 +665,7 @@ impl Mesh {
             timeout,
             Duration::from_millis(50),
             Duration::from_secs(1),
-            || async { self.store.healthy().await },
+            || async { self.store_runtime.healthy().await },
         )
         .await;
         if !ok {

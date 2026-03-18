@@ -1,4 +1,6 @@
-use crate::mesh_state::invite::{issue_invite_token, parse_and_verify_invite_token};
+use crate::mesh_state::invite::{
+    InviteTokenContext, issue_invite_token, parse_and_verify_invite_token,
+};
 use crate::mesh_state::network::NetworkConfig;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ployz_orchestrator::network::endpoints::detect_endpoints;
@@ -125,11 +127,13 @@ impl DaemonState {
             network,
             ttl_secs,
             now_unix_secs(),
-            endpoints,
-            overlay_ip,
-            wg_public_key,
-            issuer_subnet,
-            allocated_subnet.to_string(),
+            InviteTokenContext {
+                issuer_endpoints: endpoints,
+                issuer_overlay_ip: overlay_ip,
+                issuer_wg_public_key: wg_public_key,
+                issuer_subnet,
+                allocated_subnet: allocated_subnet.to_string(),
+            },
         )?;
 
         let record = InviteRecord {

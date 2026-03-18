@@ -3,7 +3,7 @@ pub mod docker_bridge;
 use async_trait::async_trait;
 use docker_bridge::DockerBridgeNetwork;
 use ipnet::Ipv4Net;
-use ployz_runtime_api::{ContainerNetwork, ContainerNetworkBackend};
+use ployz_runtime_api::{ContainerNetwork, ContainerNetworkBackend, DisconnectMode};
 use ployz_types::Result;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -32,8 +32,8 @@ impl ContainerNetworkBackend for DockerBridgeBackend {
         self.inner.connect(container, ipv4).await
     }
 
-    async fn disconnect(&self, container: &str, force: bool) -> Result<()> {
-        self.inner.disconnect(container, force).await
+    async fn disconnect(&self, container: &str, mode: DisconnectMode) -> Result<()> {
+        self.inner.disconnect(container, mode).await
     }
 
     async fn remove(&self) -> Result<()> {

@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use ployz_types::Result;
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
@@ -157,11 +156,4 @@ pub trait SyncProbe: Send + Sync {
     fn sync_status(&self) -> impl Future<Output = Result<SyncStatus>> + Send + '_ {
         async { Ok(SyncStatus::Synced) }
     }
-}
-
-#[async_trait]
-pub trait StoreRuntimeControl: Send + Sync {
-    async fn start(&self) -> Result<()>;
-    async fn stop(&self) -> Result<()>;
-    async fn healthy(&self) -> bool;
 }

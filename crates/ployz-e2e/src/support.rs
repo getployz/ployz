@@ -1,5 +1,6 @@
 use crate::error::{Error, Result};
-use serde::Deserialize;
+use ployz_api::{MachineListPayload, MeshReadyPayload};
+use ployz_sdk::{DaemonClient, StdioTransport};
 use std::net::TcpListener;
 use std::process::{Command, ExitStatus};
 use std::thread;
@@ -37,32 +38,38 @@ impl Default for CommandOutput {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct ReadyPayload {
-    ready: bool,
+pub(crate) fn daemon_machine_list_in_container(container_name: &str) -> Result<MachineListPayload> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Error::Io(format!("build machine list runtime: {error}")))?;
+    let transport = StdioTransport::new("docker")
+        .arg("exec")
+        .arg("-i")
+        .arg(container_name)
+        .arg("ployzd")
+        .arg("rpc-stdio");
+    let client = DaemonClient::new(transport);
+    runtime
+        .block_on(async { client.machine_list().await })
+        .map_err(|error| Error::Io(format!("load machine list in '{container_name}': {error}")))
 }
 
-#[derive(Debug, Deserialize)]
-struct ReadyEnvelope {
-    message: String,
-}
-
-pub(crate) fn parse_ready(output: &str) -> Result<bool> {
-    if let Ok(payload) = serde_json::from_str::<ReadyPayload>(output) {
-        return Ok(payload.ready);
-    }
-
-    let envelope = serde_json::from_str::<ReadyEnvelope>(output).map_err(|error| {
-        Error::Message(format!(
-            "failed to parse readiness response envelope: {error}"
-        ))
-    })?;
-    let payload = serde_json::from_str::<ReadyPayload>(&envelope.message).map_err(|error| {
-        Error::Message(format!(
-            "failed to parse readiness response message: {error}"
-        ))
-    })?;
-    Ok(payload.ready)
+pub(crate) fn daemon_mesh_ready_in_container(container_name: &str) -> Result<MeshReadyPayload> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Error::Io(format!("build mesh ready runtime: {error}")))?;
+    let transport = StdioTransport::new("docker")
+        .arg("exec")
+        .arg("-i")
+        .arg(container_name)
+        .arg("ployzd")
+        .arg("rpc-stdio");
+    let client = DaemonClient::new(transport);
+    runtime
+        .block_on(async { client.mesh_ready().await })
+        .map_err(|error| Error::Io(format!("probe mesh readiness in '{container_name}': {error}")))
 }
 
 pub(crate) fn docker_outer<const N: usize>(args: [&str; N]) -> Result<CommandOutput> {

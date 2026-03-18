@@ -16,6 +16,8 @@ use ployz_orchestrator::Mesh;
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_runtime_api::{NoopRuntimeHandle, RuntimeHandle};
 
+#[cfg(test)]
+use super::DaemonRuntimeConfig;
 use super::{ActiveMesh, DaemonState};
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -120,6 +122,7 @@ impl MeshStartTx {
         let mut mesh = Mesh::new(
             components.network,
             components.store,
+            components.store_runtime,
             components.container_network,
             state.identity.machine_id.clone(),
             listen_port,
@@ -595,11 +598,13 @@ mod tests {
             service_mode,
             crate::BuiltInImages::load(None)
                 .expect("embedded built-in images manifest should parse"),
-            "10.210.0.0/16".into(),
-            24,
-            4317,
-            gateway_listen_addr.into(),
-            1,
+            DaemonRuntimeConfig {
+                cluster_cidr: "10.210.0.0/16".into(),
+                subnet_prefix_len: 24,
+                remote_control_port: 4317,
+                gateway_listen_addr: gateway_listen_addr.into(),
+                gateway_threads: 1,
+            },
         )
     }
 
@@ -610,11 +615,13 @@ mod tests {
         DaemonState::new_for_tests(
             &data_dir,
             identity,
-            "10.210.0.0/16".into(),
-            24,
-            4317,
-            gateway_listen_addr.into(),
-            1,
+            DaemonRuntimeConfig {
+                cluster_cidr: "10.210.0.0/16".into(),
+                subnet_prefix_len: 24,
+                remote_control_port: 4317,
+                gateway_listen_addr: gateway_listen_addr.into(),
+                gateway_threads: 1,
+            },
         )
     }
 

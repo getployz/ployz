@@ -1,8 +1,7 @@
 use std::collections::HashMap;
-use std::future::Future;
 use std::time::Duration;
 
-use ployz_store_api::RoutingInvalidationSubscription;
+use ployz_store_api::RoutingStore;
 use tracing::{info, warn};
 
 use crate::config::DnsError;
@@ -11,27 +10,17 @@ use crate::snapshot::{SharedDnsSnapshot, project_dns};
 const REFRESH_DEBOUNCE: Duration = Duration::from_millis(100);
 
 // ---------------------------------------------------------------------------
-// DnsStore trait — consumer contract
-// ---------------------------------------------------------------------------
-
-pub trait DnsStore: Send + Sync {
-    fn load_routing_state(
-        &self,
-    ) -> impl Future<Output = Result<ployz_types::model::RoutingState, DnsError>> + Send + '_;
-    fn subscribe_routing_invalidations(
-        &self,
-    ) -> impl Future<Output = Result<RoutingInvalidationSubscription, DnsError>> + Send + '_;
-}
-
-// ---------------------------------------------------------------------------
 // Sync logic
 // ---------------------------------------------------------------------------
 
 pub async fn run_sync_loop<S>(store: S, snapshot: SharedDnsSnapshot) -> Result<(), DnsError>
 where
-    S: DnsStore + Send + Sync + 'static,
+    S: RoutingStore + Send + Sync + 'static,
 {
-    let mut refresh_rx = store.subscribe_routing_invalidations().await?;
+    let mut refresh_rx = store
+        .subscribe_routing_invalidations()
+        .await
+        .map_err(|err| DnsError::Store(err.to_string()))?;
 
     while refresh_rx.recv().await.is_some() {
         tokio::time::sleep(REFRESH_DEBOUNCE).await;
@@ -44,10 +33,7 @@ where
                 info!(service_count, "dns snapshot refreshed");
             }
             Err(err) => {
-                warn!(
-                    ?err,
-                    "failed to refresh dns snapshot; keeping previous state"
-                );
+                warn!(?err, "failed to refresh dns snapshot; keeping previous state");
             }
         }
     }
@@ -60,7 +46,7 @@ pub fn spawn_sync_thread_with_store<S>(
     snapshot: SharedDnsSnapshot,
 ) -> Result<(), DnsError>
 where
-    S: DnsStore + Send + Sync + 'static,
+    S: RoutingStore + Send + Sync + 'static,
 {
     std::thread::Builder::new()
         .name("ployz-dns-sync".into())

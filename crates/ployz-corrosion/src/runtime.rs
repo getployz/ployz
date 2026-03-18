@@ -6,31 +6,30 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use ployz_corrosion::client::Transport;
-use ployz_corrosion::config as corrosion_config;
-use ployz_corrosion::{CorrosionStore, SCHEMA_SQL};
+use ployz_runtime_api::ServiceRuntime;
 use ployz_runtime_backends::runtime::labels::build_system_labels;
 use ployz_runtime_backends::runtime::{
     ContainerEngine, EnsureAction, PullPolicy, RuntimeContainerSpec,
 };
-use ployz_store_api::{
-    DeployStore, InviteStore, MachineEventSubscription, MachineStore,
-    RoutingInvalidationSubscription, RoutingStore, StoreBackend, StoreDriver, StoreRuntimeControl,
-    SyncProbe, SyncStatus,
-};
+use ployz_store_api::StoreDriver;
 use ployz_types::Result;
-use ployz_types::model::{
-    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
-    MachineRecord, OverlayIp, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
-};
-use ployz_types::spec::Namespace;
+use ployz_types::model::OverlayIp;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
+use crate::client::Transport;
+use crate::config as corrosion_config;
+use crate::{CorrosionStore, SCHEMA_SQL};
+
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
 const CORROSION_LOG_PATH_ENV: &str = "PLOYZ_CORROSION_LOG_PATH";
 const CORROSION_RUST_LOG_ENV: &str = "PLOYZ_CORROSION_RUST_LOG";
+
+pub struct ManagedCorrosionStore {
+    pub store: StoreDriver,
+    pub runtime: Arc<dyn ServiceRuntime>,
+}
 
 fn which_corrosion() -> std::result::Result<PathBuf, String> {
     let candidates = ["/usr/local/bin/corrosion", "/usr/bin/corrosion"];
@@ -45,13 +44,13 @@ fn which_corrosion() -> std::result::Result<PathBuf, String> {
     ))
 }
 
-pub async fn corrosion_docker(
+pub async fn docker(
     overlay_ip: OverlayIp,
     network_dir: &Path,
     bootstrap: &[String],
     network_id: &str,
     image: &str,
-) -> std::result::Result<StoreDriver, String> {
+) -> std::result::Result<ManagedCorrosionStore, String> {
     let paths = corrosion_config::Paths::new(network_dir);
     let gossip_addr = SocketAddr::new(
         IpAddr::V6(overlay_ip.0),
@@ -104,22 +103,18 @@ pub async fn corrosion_docker(
         .await
         .map_err(|error| format!("docker service: {error}"))?;
 
-    let backend = Arc::new(CorrosionBackend {
-        store,
-        service: Arc::new(service),
-    });
-    Ok(StoreDriver::from_backend(
-        Arc::clone(&backend) as Arc<dyn StoreBackend>,
-        backend as Arc<dyn StoreRuntimeControl>,
-    ))
+    Ok(ManagedCorrosionStore {
+        store: StoreDriver::from_store(Arc::new(store)),
+        runtime: Arc::new(service),
+    })
 }
 
-pub fn corrosion_host(
+pub fn host(
     overlay_ip: OverlayIp,
     network_dir: &Path,
     bootstrap: &[String],
     network_id: &str,
-) -> std::result::Result<StoreDriver, String> {
+) -> std::result::Result<ManagedCorrosionStore, String> {
     let paths = corrosion_config::Paths::new(network_dir);
     let gossip_addr = SocketAddr::new(
         IpAddr::V6(overlay_ip.0),
@@ -141,153 +136,10 @@ pub fn corrosion_host(
     let store = CorrosionStore::new(api_addr, Transport::Direct, Some(paths.admin.clone()));
     let service = HostCorrosion::new(which_corrosion()?, &paths.config);
 
-    let backend = Arc::new(CorrosionBackend {
-        store,
-        service: Arc::new(service),
-    });
-    Ok(StoreDriver::from_backend(
-        Arc::clone(&backend) as Arc<dyn StoreBackend>,
-        backend as Arc<dyn StoreRuntimeControl>,
-    ))
-}
-
-struct CorrosionBackend<S> {
-    store: CorrosionStore,
-    service: Arc<S>,
-}
-
-#[async_trait]
-impl<S> StoreBackend for CorrosionBackend<S>
-where
-    S: StoreRuntimeControl + Send + Sync + 'static,
-{
-    async fn init(&self) -> Result<()> {
-        self.store.init().await
-    }
-
-    async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
-        self.store.list_machines().await
-    }
-
-    async fn upsert_self_machine(&self, record: &MachineRecord) -> Result<()> {
-        self.store.upsert_self_machine(record).await
-    }
-
-    async fn delete_machine(&self, id: &MachineId) -> Result<()> {
-        self.store.delete_machine(id).await
-    }
-
-    async fn subscribe_machines(&self) -> Result<(Vec<MachineRecord>, MachineEventSubscription)> {
-        self.store.subscribe_machines().await
-    }
-
-    async fn create_invite(&self, invite: &InviteRecord) -> Result<()> {
-        self.store.create_invite(invite).await
-    }
-
-    async fn consume_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<()> {
-        self.store.consume_invite(invite_id, now_unix_secs).await
-    }
-
-    async fn load_routing_state(&self) -> Result<RoutingState> {
-        self.store.load_routing_state().await
-    }
-
-    async fn subscribe_routing_invalidations(&self) -> Result<RoutingInvalidationSubscription> {
-        self.store.subscribe_routing_invalidations().await
-    }
-
-    async fn list_service_revisions(
-        &self,
-        namespace: &Namespace,
-    ) -> Result<Vec<ServiceRevisionRecord>> {
-        self.store.list_service_revisions(namespace).await
-    }
-
-    async fn list_service_releases(
-        &self,
-        namespace: &Namespace,
-    ) -> Result<Vec<ServiceReleaseRecord>> {
-        self.store.list_service_releases(namespace).await
-    }
-
-    async fn list_instance_status(
-        &self,
-        namespace: &Namespace,
-    ) -> Result<Vec<InstanceStatusRecord>> {
-        self.store.list_instance_status(namespace).await
-    }
-
-    async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
-        self.store.upsert_service_revision(record).await
-    }
-
-    async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> Result<()> {
-        self.store.upsert_service_release(record).await
-    }
-
-    async fn delete_service_release(&self, namespace: &Namespace, service: &str) -> Result<()> {
-        self.store.delete_service_release(namespace, service).await
-    }
-
-    async fn upsert_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
-        self.store.upsert_instance_status(record).await
-    }
-
-    async fn delete_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
-        self.store.delete_instance_status(instance_id).await
-    }
-
-    async fn upsert_deploy(&self, record: &DeployRecord) -> Result<()> {
-        self.store.upsert_deploy(record).await
-    }
-
-    async fn commit_deploy(
-        &self,
-        namespace: &Namespace,
-        removed_services: &[String],
-        releases: &[ServiceReleaseRecord],
-        deploy: &DeployRecord,
-    ) -> Result<()> {
-        self.store
-            .commit_deploy(namespace, removed_services, releases, deploy)
-            .await
-    }
-
-    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
-        self.store.get_deploy(deploy_id).await
-    }
-
-    async fn sync_status(&self) -> Result<SyncStatus> {
-        self.store.sync_status().await
-    }
-}
-
-impl<S> SyncProbe for CorrosionBackend<S>
-where
-    S: StoreRuntimeControl + Send + Sync + 'static,
-{
-    fn sync_status(&self) -> impl std::future::Future<Output = Result<SyncStatus>> + Send + '_ {
-        async move { self.store.sync_status().await }
-    }
-}
-
-#[async_trait]
-impl<S> StoreRuntimeControl for CorrosionBackend<S>
-where
-    S: StoreRuntimeControl + Send + Sync + 'static,
-{
-    async fn start(&self) -> Result<()> {
-        self.service.start().await
-    }
-
-    async fn stop(&self) -> Result<()> {
-        self.service.stop().await
-    }
-
-    async fn healthy(&self) -> bool {
-        self.service.healthy().await
-    }
+    Ok(ManagedCorrosionStore {
+        store: StoreDriver::from_store(Arc::new(store)),
+        runtime: Arc::new(service),
+    })
 }
 
 struct HostCorrosion {
@@ -326,8 +178,8 @@ fn configured_log_path(default_log_path: &Path) -> Option<PathBuf> {
 }
 
 #[async_trait]
-impl StoreRuntimeControl for HostCorrosion {
-    async fn start(&self) -> Result<()> {
+impl ServiceRuntime for HostCorrosion {
+    async fn start(&self) -> std::result::Result<(), String> {
         let mut guard = self.child.lock().await;
 
         if let Some(child) = &mut *guard {
@@ -360,6 +212,7 @@ impl StoreRuntimeControl for HostCorrosion {
                             "corrosion start",
                             format!("failed to open log file {}: {error}", log_path.display()),
                         )
+                        .to_string()
                     })?;
                 let stdout_log = log_file.try_clone().map_err(|error| {
                     ployz_types::Error::operation(
@@ -369,6 +222,7 @@ impl StoreRuntimeControl for HostCorrosion {
                             log_path.display()
                         ),
                     )
+                    .to_string()
                 })?;
                 command
                     .stdout(Stdio::from(stdout_log))
@@ -389,6 +243,7 @@ impl StoreRuntimeControl for HostCorrosion {
                 "corrosion start",
                 format!("failed to spawn {}: {error}", self.binary.display()),
             )
+            .to_string()
         })?;
 
         info!(
@@ -402,7 +257,7 @@ impl StoreRuntimeControl for HostCorrosion {
         Ok(())
     }
 
-    async fn stop(&self) -> Result<()> {
+    async fn stop(&self) -> std::result::Result<(), String> {
         let mut guard = self.child.lock().await;
         let Some(child) = &mut *guard else {
             return Ok(());
@@ -438,12 +293,14 @@ impl StoreRuntimeControl for HostCorrosion {
                 "corrosion stop",
                 format!("failed to kill pid {pid:?}: {error}"),
             )
+            .to_string()
         })?;
         let status = child.wait().await.map_err(|error| {
             ployz_types::Error::operation(
                 "corrosion stop",
                 format!("failed to wait pid {pid:?}: {error}"),
             )
+            .to_string()
         })?;
 
         info!(?pid, %status, "corrosion stopped (killed)");
@@ -540,19 +397,37 @@ impl DockerCorrosion {
             image: self.image.clone(),
             pull_policy: PullPolicy::IfNotPresent,
             cmd: self.cmd.clone(),
+            entrypoint: None,
             env,
             labels: build_system_labels(&key, None),
             binds: self.volumes.clone(),
+            tmpfs: std::collections::HashMap::new(),
+            dns_servers: Vec::new(),
             network_mode: self.network_mode.clone(),
-            ..Default::default()
+            port_bindings: None,
+            exposed_ports: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            user: None,
+            restart_policy: None,
+            memory_bytes: None,
+            nano_cpus: None,
+            sysctls: std::collections::HashMap::new(),
+            stop_timeout: None,
+            pid_mode: None,
         }
     }
 }
 
 #[async_trait]
-impl StoreRuntimeControl for DockerCorrosion {
-    async fn start(&self) -> Result<()> {
-        let result = self.engine.ensure(&self.to_runtime_spec()).await?;
+impl ServiceRuntime for DockerCorrosion {
+    async fn start(&self) -> std::result::Result<(), String> {
+        let result = self
+            .engine
+            .ensure(&self.to_runtime_spec())
+            .await
+            .map_err(|error| error.to_string())?;
 
         match &result.action {
             EnsureAction::Adopted => {
@@ -572,10 +447,11 @@ impl StoreRuntimeControl for DockerCorrosion {
         Ok(())
     }
 
-    async fn stop(&self) -> Result<()> {
+    async fn stop(&self) -> std::result::Result<(), String> {
         self.engine
             .remove(&self.container_name, STOP_GRACE_PERIOD)
             .await
+            .map_err(|error| error.to_string())
     }
 
     async fn healthy(&self) -> bool {

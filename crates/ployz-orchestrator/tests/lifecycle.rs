@@ -1,6 +1,6 @@
 use ployz_orchestrator::mesh::tasks::{HeartbeatCommand, PeerSyncCommand};
 use ployz_orchestrator::{Mesh, Phase};
-use ployz_runtime_api::{MemoryWireGuard, WireguardDriver};
+use ployz_runtime_api::{MemoryWireGuard, ObserveMode, WireguardDriver};
 use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{MachineStore, SyncStatus};
@@ -37,7 +37,8 @@ fn make_mesh(
 ) -> Mesh {
     Mesh::new(
         WireguardDriver::memory_with(wg),
-        StoreDriver::memory_with(store, svc),
+        StoreDriver::memory_with(store),
+        svc,
         None,
         MachineId(machine_id.into()),
         51820,
@@ -134,7 +135,8 @@ async fn joiner_seed_peer_requires_sync_for_ready() {
 
     let mut mesh = Mesh::new(
         WireguardDriver::memory_with(wg),
-        StoreDriver::memory_with(store.clone(), svc),
+        StoreDriver::memory_with(store.clone()),
+        svc,
         None,
         joiner_record.id.clone(),
         51820,
@@ -167,7 +169,8 @@ async fn joiner_retains_founder_peer_across_peer_sync_handoff() {
 
     let mut mesh = Mesh::new(
         WireguardDriver::memory_with(wg.clone()),
-        StoreDriver::memory_with(store.clone(), svc),
+        StoreDriver::memory_with(store.clone()),
+        svc,
         None,
         joiner_record.id.clone(),
         51820,
@@ -221,7 +224,7 @@ async fn detach_stops_tasks_leaves_infra() {
 #[tokio::test]
 async fn component_failure_returns_to_stopped() {
     let wg = Arc::new(MemoryWireGuard::new());
-    wg.set_fail_up(true);
+    wg.set_fail_up(ObserveMode::Enabled);
     let svc = Arc::new(MemoryService::new());
     let store = Arc::new(MemoryStore::new());
 
@@ -235,7 +238,7 @@ async fn component_failure_returns_to_stopped() {
 async fn service_failure_tears_down_wg() {
     let wg = Arc::new(MemoryWireGuard::new());
     let svc = Arc::new(MemoryService::new());
-    svc.set_fail_start(true);
+    svc.set_fail_start(ployz_store_api::memory::ToggleState::Enabled);
     let store = Arc::new(MemoryStore::new());
 
     let mut mesh = make_mesh("m1", wg.clone(), svc, store);
@@ -261,8 +264,8 @@ async fn destroy_continues_on_errors_returns_first() {
     mesh.up().await.unwrap();
 
     // Make both service stop and wg down fail.
-    svc.set_fail_stop(true);
-    wg.set_fail_down(true);
+    svc.set_fail_stop(ployz_store_api::memory::ToggleState::Enabled);
+    wg.set_fail_down(ObserveMode::Enabled);
 
     let err = mesh.destroy().await.unwrap_err();
     // First error encountered was service stop.
@@ -289,7 +292,8 @@ async fn bootstrap_connection_timeout() {
 
     let mut mesh = Mesh::new(
         WireguardDriver::memory_with(wg),
-        StoreDriver::memory_with(store, svc),
+        StoreDriver::memory_with(store),
+        svc,
         None,
         joiner_record.id.clone(),
         51820,
@@ -326,7 +330,8 @@ async fn bootstrap_proceeds_on_membership() {
 
     let mut mesh = Mesh::new(
         WireguardDriver::memory_with(wg),
-        StoreDriver::memory_with(store, svc),
+        StoreDriver::memory_with(store),
+        svc,
         None,
         joiner_record.id.clone(),
         51820,

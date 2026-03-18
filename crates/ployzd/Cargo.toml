@@ -12,6 +12,14 @@ path = "src/main.rs"
 name = "ployz"
 path = "src/bin/ployz.rs"
 
+[[bin]]
+name = "ployz-gateway"
+path = "src/bin/ployz-gateway.rs"
+
+[[bin]]
+name = "ployz-dns"
+path = "src/bin/ployz-dns.rs"
+
 [features]
 ebpf-native = ["ployz-orchestrator/ebpf-native"]
 

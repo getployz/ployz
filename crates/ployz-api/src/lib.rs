@@ -65,6 +65,27 @@ pub enum DebugTickTask {
     All,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MeshReadyOutput {
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BootstrapWaitMode {
+    Wait,
+    Skip,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MachineRemoveMode {
+    DisabledOnly,
+    Force,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonRequest {
     Status,
@@ -81,7 +102,7 @@ pub enum DaemonRequest {
         token: String,
     },
     MeshReady {
-        json: bool,
+        output: MeshReadyOutput,
     },
     MeshCreate {
         network: String,
@@ -91,7 +112,7 @@ pub enum DaemonRequest {
     },
     MeshUp {
         network: String,
-        skip_bootstrap_wait: bool,
+        bootstrap_wait: BootstrapWaitMode,
     },
     MeshDown,
     MeshDestroy {
@@ -109,7 +130,7 @@ pub enum DaemonRequest {
     },
     MachineRemove {
         id: String,
-        force: bool,
+        mode: MachineRemoveMode,
     },
     MachineOperationList,
     MachineOperationGet {
@@ -195,7 +216,7 @@ pub struct MachineAwaitingSelfPublication {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineRemovePayload {
     pub id: String,
-    pub force: bool,
+    pub mode: MachineRemoveMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

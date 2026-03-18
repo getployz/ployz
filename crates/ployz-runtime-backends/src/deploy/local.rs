@@ -1,10 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 use bollard::models::{PortBinding, PortMap};
 
-use crate::StoreDriver;
 use crate::error::{Error, Result};
 use crate::model::{
     DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, SlotId,
@@ -14,25 +13,24 @@ use crate::runtime::{ContainerEngine, Probe, PullPolicy, RuntimeContainerSpec};
 use crate::spec::{
     ContainerSpec, Namespace, NetworkMode, PortProtocol, ServicePort, ServiceSpec, VolumeSource,
 };
-use ployz_store_api::DeployStore;
 
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
-pub(super) struct ManagedInstance {
-    pub(super) instance_id: InstanceId,
-    pub(super) service: String,
-    pub(super) slot_id: SlotId,
-    pub(super) machine_id: MachineId,
-    pub(super) revision_hash: String,
-    pub(super) deploy_id: DeployId,
-    pub(super) docker_container_id: String,
-    pub(super) ip_address: Option<IpAddr>,
-    pub(super) backend_ports: BTreeMap<String, u16>,
+pub struct ManagedInstance {
+    pub instance_id: InstanceId,
+    pub service: String,
+    pub slot_id: SlotId,
+    pub machine_id: MachineId,
+    pub revision_hash: String,
+    pub deploy_id: DeployId,
+    pub docker_container_id: String,
+    pub ip_address: Option<IpAddr>,
+    pub backend_ports: BTreeMap<String, u16>,
 }
 
 impl ManagedInstance {
-    pub(super) fn to_status_record(
+    pub fn to_status_record(
         &self,
         namespace: &Namespace,
         phase: InstancePhase,
@@ -64,14 +62,14 @@ impl ManagedInstance {
     }
 }
 
-pub(super) struct StartCandidate<'a> {
-    pub(super) namespace: &'a Namespace,
-    pub(super) spec: &'a ServiceSpec,
-    pub(super) deploy_id: &'a DeployId,
-    pub(super) instance_id: &'a InstanceId,
-    pub(super) slot_id: &'a SlotId,
-    pub(super) machine_id: &'a MachineId,
-    pub(super) revision_hash: &'a str,
+pub struct StartCandidate<'a> {
+    pub namespace: &'a Namespace,
+    pub spec: &'a ServiceSpec,
+    pub deploy_id: &'a DeployId,
+    pub instance_id: &'a InstanceId,
+    pub slot_id: &'a SlotId,
+    pub machine_id: &'a MachineId,
+    pub revision_hash: &'a str,
 }
 
 pub struct LocalDeployRuntime {
@@ -95,7 +93,7 @@ impl LocalDeployRuntime {
         })
     }
 
-    async fn list_instances(&self, namespace: &Namespace) -> Result<Vec<ManagedInstance>> {
+    pub async fn list_instances(&self, namespace: &Namespace) -> Result<Vec<ManagedInstance>> {
         let observed = self
             .engine
             .list_by_labels(&[
@@ -125,10 +123,7 @@ impl LocalDeployRuntime {
         Ok(instances)
     }
 
-    pub(super) async fn start_candidate(
-        &self,
-        request: StartCandidate<'_>,
-    ) -> Result<ManagedInstance> {
+    pub async fn start_candidate(&self, request: StartCandidate<'_>) -> Result<ManagedInstance> {
         let StartCandidate {
             namespace,
             spec,
@@ -220,11 +215,7 @@ impl LocalDeployRuntime {
         })
     }
 
-    pub(super) async fn wait_ready(
-        &self,
-        spec: &ServiceSpec,
-        instance: &ManagedInstance,
-    ) -> Result<()> {
+    pub async fn wait_ready(&self, spec: &ServiceSpec, instance: &ManagedInstance) -> Result<()> {
         let Some(readiness) = &spec.readiness else {
             return Ok(());
         };
@@ -290,56 +281,6 @@ impl LocalDeployRuntime {
         let container_name = format!("ployz-{namespace}-{service}-{}", instance_id.0);
         self.engine.remove(&container_name, STOP_GRACE_PERIOD).await
     }
-}
-
-pub(super) async fn adopt_instances(
-    store: &StoreDriver,
-    runtime: &LocalDeployRuntime,
-    namespace: &Namespace,
-) -> Result<()> {
-    let existing = store.list_instance_status(namespace).await?;
-    let known: BTreeSet<String> = existing
-        .iter()
-        .map(|record| record.instance_id.0.clone())
-        .collect();
-    for instance in runtime.list_instances(namespace).await? {
-        if known.contains(&instance.instance_id.0) {
-            continue;
-        }
-        let record = instance.to_status_record(
-            namespace,
-            InstancePhase::Ready,
-            true,
-            DrainState::None,
-            None,
-        );
-        store.upsert_instance_status(&record).await?;
-    }
-    Ok(())
-}
-
-pub(super) fn build_instance_status_record(
-    namespace: &Namespace,
-    instance: &ManagedInstance,
-    phase: InstancePhase,
-    ready: bool,
-    drain_state: DrainState,
-    error: Option<String>,
-) -> InstanceStatusRecord {
-    instance.to_status_record(namespace, phase, ready, drain_state, error)
-}
-
-pub(super) async fn list_local_instance_status(
-    store: &StoreDriver,
-    namespace: &Namespace,
-    local_machine_id: &MachineId,
-) -> Result<Vec<InstanceStatusRecord>> {
-    Ok(store
-        .list_instance_status(namespace)
-        .await?
-        .into_iter()
-        .filter(|record| &record.machine_id == local_machine_id)
-        .collect())
 }
 
 fn service_port_map(service_ports: &[ServicePort]) -> BTreeMap<String, u16> {
@@ -475,7 +416,7 @@ fn parse_duration_secs(value: &str) -> Option<i64> {
     trimmed.parse().ok()
 }
 
-pub(super) use crate::time::now_unix_secs;
+pub use crate::time::now_unix_secs;
 
 #[cfg(test)]
 mod tests {

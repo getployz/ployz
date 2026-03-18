@@ -8,13 +8,8 @@ publish = false
 name = "ployz_gateway"
 path = "src/lib.rs"
 
-[[bin]]
-name = "ployz-gateway"
-path = "src/main.rs"
-
 [dependencies]
 ployz-config = { path = "../ployz-config" }
-ployz-corrosion = { path = "../ployz-corrosion" }
 ployz-store-api = { path = "../ployz-store-api" }
 ployz-types = { path = "../ployz-types" }
 serde = { workspace = true }

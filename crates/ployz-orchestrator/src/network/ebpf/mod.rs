@@ -5,7 +5,7 @@ mod native;
 use crate::error::Result;
 use async_trait::async_trait;
 use ipnet::Ipv4Net;
-use ployz_runtime_api::MeshDataplane;
+use ployz_runtime_api::{MeshDataplane, ObserveMode};
 
 pub enum EbpfDataplane {
     #[cfg(feature = "ebpf-native")]
@@ -32,11 +32,11 @@ impl EbpfDataplane {
         ))
     }
 
-    pub async fn set_observe(&self, enabled: bool) -> Result<()> {
+    pub async fn set_observe(&self, mode: ObserveMode) -> Result<()> {
         match self {
             #[cfg(feature = "ebpf-native")]
-            Self::Native(dataplane) => dataplane.set_observe(enabled),
-            Self::Container(dataplane) => dataplane.set_observe(enabled).await,
+            Self::Native(dataplane) => dataplane.set_observe(mode),
+            Self::Container(dataplane) => dataplane.set_observe(mode).await,
         }
     }
 
@@ -81,8 +81,8 @@ impl EbpfDataplane {
 
 #[async_trait]
 impl MeshDataplane for EbpfDataplane {
-    async fn set_observe(&self, enabled: bool) -> Result<()> {
-        Self::set_observe(self, enabled).await
+    async fn set_observe(&self, mode: ObserveMode) -> Result<()> {
+        Self::set_observe(self, mode).await
     }
 
     async fn upsert_route(&self, subnet: Ipv4Net, ifindex: u32) -> Result<()> {
