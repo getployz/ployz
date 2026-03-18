@@ -1,10 +1,14 @@
+mod app;
 mod built_in_images;
-pub mod daemon;
-pub mod install;
-pub mod ipc;
-pub mod platform;
+mod daemon;
+mod install;
+mod ipc;
 mod mesh_state;
+mod platform;
 mod runtime_profile;
 mod services;
 
+pub use app::{init_tracing, run_daemon};
 pub use built_in_images::{BuiltInImage, BuiltInImages};
+pub use install::{InstallManifest, ServiceBackend, daemon_install};
+pub use platform::{HostPlatform, validate_runtime};

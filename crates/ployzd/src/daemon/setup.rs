@@ -36,10 +36,6 @@ pub enum StartMeshError {
     GatewayListenAddr(String),
     #[error("network driver failed: {0}")]
     NetworkDriver(String),
-    #[error("store driver failed: {0}")]
-    StoreDriver(String),
-    #[error("container network failed: {0}")]
-    ContainerNetwork(String),
     #[error("mesh up failed: {0}")]
     MeshUp(String),
     #[error("remote control start failed on {bind}: {error}")]

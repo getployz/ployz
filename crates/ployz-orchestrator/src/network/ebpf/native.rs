@@ -27,7 +27,10 @@ pub struct NativeDataplane {
 
 impl NativeDataplane {
     pub fn attach(bridge_ifname: &str) -> Result<Self> {
-        let bytecode = include_bytes_aligned!(concat!(env!("OUT_DIR"), "/ployz-ebpf-tc"));
+        let bytecode = include_bytes_aligned!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../ebpf/target/bpfel-unknown-none/release/ployz-ebpf-tc"
+        ));
         let mut bpf = Ebpf::load(bytecode)
             .map_err(|error| Error::operation("ebpf load", error.to_string()))?;
 
@@ -160,11 +163,11 @@ fn attach_tc_classifier(
         .ok_or_else(|| Error::operation("ebpf", format!("{program_name} program not found")))?
         .try_into()
         .map_err(|error: aya::programs::ProgramError| {
-            Error::operation(&format!("ebpf {program_name} cast"), error.to_string())
+            Error::operation("ebpf program cast", format!("{program_name}: {error}"))
         })?;
-    classifier.load().map_err(|error| {
-        Error::operation(&format!("ebpf {program_name} load"), error.to_string())
-    })?;
+    classifier
+        .load()
+        .map_err(|error| Error::operation("ebpf program load", format!("{program_name}: {error}")))?;
     classifier
         .attach_with_options(
             ifname,
@@ -172,7 +175,7 @@ fn attach_tc_classifier(
             TcAttachOptions::Netlink(NlOptions::default()),
         )
         .map_err(|error| {
-            Error::operation(&format!("ebpf {program_name} attach"), error.to_string())
+            Error::operation("ebpf program attach", format!("{program_name}: {error}"))
         })?;
     Ok(())
 }

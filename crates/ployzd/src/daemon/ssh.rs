@@ -219,11 +219,6 @@ fn write_identity_file(path: &Path, private_key: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-#[must_use]
-pub fn shell_escape(input: &str) -> String {
-    input.replace('"', "\\\"")
-}
-
 #[cfg(test)]
 #[derive(Debug, Clone, Default)]
 struct TestSshOverrides {
