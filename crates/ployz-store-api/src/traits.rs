@@ -8,8 +8,41 @@ use ployz_types::spec::Namespace;
 use std::future::Future;
 use tokio::sync::mpsc;
 
-pub type MachineSubscription = (Vec<MachineRecord>, mpsc::Receiver<MachineEvent>);
-pub type RoutingInvalidationSubscription = mpsc::Receiver<()>;
+pub type MachineSubscription = (Vec<MachineRecord>, MachineEventSubscription);
+
+pub struct MachineEventSubscription {
+    inner: mpsc::Receiver<MachineEvent>,
+}
+
+impl MachineEventSubscription {
+    #[must_use]
+    pub fn new(inner: mpsc::Receiver<MachineEvent>) -> Self {
+        Self { inner }
+    }
+
+    pub async fn recv(&mut self) -> Option<MachineEvent> {
+        self.inner.recv().await
+    }
+}
+
+pub struct RoutingInvalidationSubscription {
+    inner: mpsc::Receiver<()>,
+}
+
+impl RoutingInvalidationSubscription {
+    #[must_use]
+    pub fn new(inner: mpsc::Receiver<()>) -> Self {
+        Self { inner }
+    }
+
+    pub async fn recv(&mut self) -> Option<()> {
+        self.inner.recv().await
+    }
+
+    pub fn try_recv(&mut self) -> std::result::Result<(), mpsc::error::TryRecvError> {
+        self.inner.try_recv()
+    }
+}
 
 pub trait MachineStore: Send + Sync {
     fn init(&self) -> impl Future<Output = Result<()>> + Send + '_ {

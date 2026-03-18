@@ -3,9 +3,7 @@ use std::sync::Arc;
 use crate::error::Result;
 use crate::model::{DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineRecord};
 use crate::spec::Namespace;
-pub use ployz_orchestrator::deploy::session::{
-    DeploySession, DeploySessionFactory, StartCandidateRequest,
-};
+pub use ployz_runtime_api::{DeploySession, DeploySessionFactory, StartCandidateRequest};
 
 use super::remote::{DeployAgent, SessionState, TcpDeploySession};
 

@@ -14,17 +14,18 @@ use ployz_runtime_backends::runtime::{
     ContainerEngine, EnsureAction, PullPolicy, RuntimeContainerSpec,
 };
 use ployz_store_api::{
-    DeployStore, InviteStore, MachineStore, RoutingStore, StoreBackend, StoreDriver,
-    StoreRuntimeControl, SyncProbe, SyncStatus,
+    DeployStore, InviteStore, MachineEventSubscription, MachineStore,
+    RoutingInvalidationSubscription, RoutingStore, StoreBackend, StoreDriver, StoreRuntimeControl,
+    SyncProbe, SyncStatus,
 };
 use ployz_types::Result;
 use ployz_types::model::{
-    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, OverlayIp, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
+    MachineRecord, OverlayIp, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
 };
 use ployz_types::spec::Namespace;
 use tokio::process::{Child, Command};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
@@ -176,9 +177,7 @@ where
         self.store.delete_machine(id).await
     }
 
-    async fn subscribe_machines(
-        &self,
-    ) -> Result<(Vec<MachineRecord>, mpsc::Receiver<MachineEvent>)> {
+    async fn subscribe_machines(&self) -> Result<(Vec<MachineRecord>, MachineEventSubscription)> {
         self.store.subscribe_machines().await
     }
 
@@ -194,7 +193,7 @@ where
         self.store.load_routing_state().await
     }
 
-    async fn subscribe_routing_invalidations(&self) -> Result<mpsc::Receiver<()>> {
+    async fn subscribe_routing_invalidations(&self) -> Result<RoutingInvalidationSubscription> {
         self.store.subscribe_routing_invalidations().await
     }
 

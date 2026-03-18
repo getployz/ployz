@@ -492,9 +492,9 @@ mod tests {
     use crate::daemon::ActiveMesh;
     use crate::mesh_state::invite::issue_invite_token;
     use crate::mesh_state::network::NetworkConfig;
-    use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
-    use ployz_orchestrator::{Mesh, WireguardDriver};
+    use ployz_orchestrator::Mesh;
     use ployz_runtime_api::Identity;
+    use ployz_runtime_api::{MemoryWireGuard, WireguardDriver};
     use ployz_store_api::MachineStore;
     use ployz_store_api::StoreDriver;
     use ployz_store_api::memory::{MemoryService, MemoryStore};

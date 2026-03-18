@@ -3,12 +3,13 @@ use crate::client::{CorrClient, Transport};
 use crate::config as corrosion_config;
 use corro_api_types::{ExecResult, Statement};
 use ployz_store_api::{
-    DeployStore, InviteStore, MachineStore, RoutingStore, SyncProbe, SyncStatus,
+    DeployStore, InviteStore, MachineEventSubscription, MachineStore,
+    RoutingInvalidationSubscription, RoutingStore, SyncProbe, SyncStatus,
 };
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
-    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, OverlayIp, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
+    MachineRecord, OverlayIp, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
 };
 use ployz_types::spec::Namespace;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -172,10 +173,9 @@ impl MachineStore for CorrosionStore {
         tables::machines::delete_machine(&self.client, id).await
     }
 
-    async fn subscribe_machines(
-        &self,
-    ) -> Result<(Vec<MachineRecord>, mpsc::Receiver<MachineEvent>)> {
-        tables::machines::subscribe_machines(&self.client).await
+    async fn subscribe_machines(&self) -> Result<(Vec<MachineRecord>, MachineEventSubscription)> {
+        let (snapshot, receiver) = tables::machines::subscribe_machines(&self.client).await?;
+        Ok((snapshot, MachineEventSubscription::new(receiver)))
     }
 }
 
@@ -194,8 +194,10 @@ impl RoutingStore for CorrosionStore {
         workflows::routing_state::load_routing_state(&self.client).await
     }
 
-    async fn subscribe_routing_invalidations(&self) -> Result<mpsc::Receiver<()>> {
-        workflows::routing_state::subscribe_routing_invalidations(&self.client).await
+    async fn subscribe_routing_invalidations(&self) -> Result<RoutingInvalidationSubscription> {
+        let receiver =
+            workflows::routing_state::subscribe_routing_invalidations(&self.client).await?;
+        Ok(RoutingInvalidationSubscription::new(receiver))
     }
 }
 

@@ -3,7 +3,9 @@ mod container;
 mod native;
 
 use crate::error::Result;
+use async_trait::async_trait;
 use ipnet::Ipv4Net;
+use ployz_runtime_api::MeshDataplane;
 
 pub enum EbpfDataplane {
     #[cfg(feature = "ebpf-native")]
@@ -74,5 +76,24 @@ impl EbpfDataplane {
             }
             Self::Container(dataplane) => dataplane.detach_ref().await,
         }
+    }
+}
+
+#[async_trait]
+impl MeshDataplane for EbpfDataplane {
+    async fn set_observe(&self, enabled: bool) -> Result<()> {
+        Self::set_observe(self, enabled).await
+    }
+
+    async fn upsert_route(&self, subnet: Ipv4Net, ifindex: u32) -> Result<()> {
+        Self::upsert_route(self, subnet, ifindex).await
+    }
+
+    async fn remove_route(&self, subnet: Ipv4Net) -> Result<()> {
+        Self::remove_route(self, subnet).await
+    }
+
+    async fn detach(&self) -> Result<()> {
+        self.detach_ref().await
     }
 }

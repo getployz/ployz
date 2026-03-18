@@ -165,9 +165,9 @@ fn attach_tc_classifier(
         .map_err(|error: aya::programs::ProgramError| {
             Error::operation("ebpf program cast", format!("{program_name}: {error}"))
         })?;
-    classifier
-        .load()
-        .map_err(|error| Error::operation("ebpf program load", format!("{program_name}: {error}")))?;
+    classifier.load().map_err(|error| {
+        Error::operation("ebpf program load", format!("{program_name}: {error}"))
+    })?;
     classifier
         .attach_with_options(
             ifname,

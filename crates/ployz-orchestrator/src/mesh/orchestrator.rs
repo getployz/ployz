@@ -1,6 +1,4 @@
 use crate::error::Error as PortError;
-use crate::mesh::container_network::ContainerNetwork;
-use crate::mesh::driver::{WireguardBackendMode, WireguardDriver};
 use crate::mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
 use crate::mesh::probe::run_probe_listener_task;
 use crate::mesh::tasks::{
@@ -9,8 +7,10 @@ use crate::mesh::tasks::{
     run_endpoint_refresh_task, run_heartbeat_task, run_participation_task, run_peer_sync_task,
     run_self_liveness_task, run_self_record_writer_task, run_subnet_claim_monitor_task,
 };
-use crate::mesh::{MeshDataplane, MeshNetwork};
 use crate::model::{MachineId, MachineRecord, MachineStatus};
+use ployz_runtime_api::{
+    ContainerNetwork, MeshDataplane, MeshNetwork, WireguardBackendMode, WireguardDriver,
+};
 use ployz_store_api::StoreDriver;
 use ployz_store_api::{MachineStore, StoreRuntimeControl, SyncProbe, SyncStatus};
 use std::net::Ipv4Addr;

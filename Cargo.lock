@@ -2827,6 +2827,8 @@ dependencies = [
  "ipnet",
  "libc",
  "ployz-ebpf-common",
+ "ployz-runtime-api",
+ "ployz-runtime-backends",
  "ployz-store-api",
  "ployz-types",
  "serde_json",
@@ -2843,11 +2845,13 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "hostname",
+ "ipnet",
  "ployz-types",
  "rand 0.10.0",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "x25519-dalek",
 ]
 
@@ -2869,9 +2873,7 @@ dependencies = [
  "if-addrs",
  "ipnet",
  "libc",
- "ployz-api",
  "ployz-corrosion",
- "ployz-orchestrator",
  "ployz-runtime-api",
  "ployz-store-api",
  "ployz-types",
@@ -2893,7 +2895,7 @@ name = "ployz-sdk"
 version = "0.1.0"
 dependencies = [
  "ployz-api",
- "ployz-config",
+ "ployz-runtime-api",
  "ployz-types",
  "serde_json",
  "tokio",

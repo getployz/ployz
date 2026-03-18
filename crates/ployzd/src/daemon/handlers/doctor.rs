@@ -1,6 +1,6 @@
 use crate::daemon::{ActiveMesh, DaemonState};
-use ployz_orchestrator::mesh::{DevicePeer, WireGuardDevice};
 use ployz_orchestrator::machine_liveness::{MachineLiveness, machine_liveness};
+use ployz_orchestrator::mesh::{DevicePeer, WireGuardDevice};
 use ployz_store_api::MachineStore;
 use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
 use ployz_types::time::now_unix_secs;
@@ -374,10 +374,8 @@ mod tests {
     use crate::daemon::ActiveMesh;
     use crate::mesh_state::network::NetworkConfig;
     use ployz_orchestrator::Mesh;
-    use ployz_orchestrator::mesh::DevicePeer;
-    use ployz_orchestrator::mesh::driver::WireguardDriver;
-    use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
     use ployz_runtime_api::Identity;
+    use ployz_runtime_api::{DevicePeer, MemoryWireGuard, WireguardDriver};
     use ployz_store_api::StoreDriver;
     use ployz_store_api::memory::{MemoryService, MemoryStore};
     use ployz_types::model::{MachineId, MachineStatus, OverlayIp, Participation, PublicKey};

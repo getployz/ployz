@@ -8,7 +8,6 @@ pub mod machine_liveness;
 pub mod mesh;
 pub mod network;
 
-pub use mesh::container_network::ContainerNetwork;
-pub use mesh::driver::WireguardDriver;
 pub use mesh::orchestrator::{Mesh, MeshError};
 pub use mesh::phase::Phase;
+pub use ployz_runtime_api::{ContainerNetwork, WireguardDriver};

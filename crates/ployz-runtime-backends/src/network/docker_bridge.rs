@@ -4,7 +4,7 @@ use bollard::models::{
     NetworkCreateRequest, NetworkDisconnectRequest,
 };
 use ipnet::Ipv4Net;
-use ployz_orchestrator::ipam::{container_ip, machine_ip};
+use ployz_runtime_api::{container_ip, machine_ip};
 use std::net::Ipv4Addr;
 use tracing::{info, warn};
 

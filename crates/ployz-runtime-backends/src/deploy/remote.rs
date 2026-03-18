@@ -12,10 +12,10 @@ use crate::model::{
     MachineRecord, SlotId,
 };
 use crate::spec::{Namespace, ServiceSpec};
-use ployz_api::DeployFrame;
-use ployz_runtime_api::{NamespaceLock, NamespaceLockManager, RuntimeHandle};
+use ployz_runtime_api::{DeployFrame, RuntimeHandle};
 use ployz_store_api::DeployStore;
 
+use super::locks::{NamespaceLock, NamespaceLockManager};
 use super::local::{
     LocalDeployRuntime, StartCandidate, adopt_instances, build_instance_status_record,
     list_local_instance_status, now_unix_secs,

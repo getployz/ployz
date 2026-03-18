@@ -1,6 +1,6 @@
 use ployz_orchestrator::mesh::tasks::{HeartbeatCommand, PeerSyncCommand};
-use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
-use ployz_orchestrator::{Mesh, Phase, WireguardDriver};
+use ployz_orchestrator::{Mesh, Phase};
+use ployz_runtime_api::{MemoryWireGuard, WireguardDriver};
 use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{MachineStore, SyncStatus};

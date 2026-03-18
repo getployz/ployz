@@ -12,8 +12,8 @@ use ployz_types::spec::Namespace;
 
 pub use driver::StoreDriver;
 pub use traits::{
-    DeployStore, InviteStore, MachineStore, MachineSubscription, RoutingInvalidationSubscription,
-    RoutingStore, StoreRuntimeControl, SyncProbe, SyncStatus,
+    DeployStore, InviteStore, MachineEventSubscription, MachineStore, MachineSubscription,
+    RoutingInvalidationSubscription, RoutingStore, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 
 #[async_trait]

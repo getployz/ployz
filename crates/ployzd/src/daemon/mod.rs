@@ -13,7 +13,8 @@ use ployz_api::{DaemonPayload, DaemonResponse};
 use ployz_config::{RuntimeTarget, ServiceMode};
 use ployz_orchestrator::Mesh;
 use ployz_runtime_api::Identity;
-use ployz_runtime_api::{NamespaceLockManager, RuntimeHandle};
+use ployz_runtime_api::RuntimeHandle;
+use ployz_runtime_backends::deploy::NamespaceLockManager;
 
 pub struct ActiveMesh {
     pub config: NetworkConfig,

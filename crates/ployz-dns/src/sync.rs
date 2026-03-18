@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::time::Duration;
 
-use tokio::sync::mpsc;
+use ployz_store_api::RoutingInvalidationSubscription;
 use tracing::{info, warn};
 
 use crate::config::DnsError;
@@ -20,7 +20,7 @@ pub trait DnsStore: Send + Sync {
     ) -> impl Future<Output = Result<ployz_types::model::RoutingState, DnsError>> + Send + '_;
     fn subscribe_routing_invalidations(
         &self,
-    ) -> impl Future<Output = Result<mpsc::Receiver<()>, DnsError>> + Send + '_;
+    ) -> impl Future<Output = Result<RoutingInvalidationSubscription, DnsError>> + Send + '_;
 }
 
 // ---------------------------------------------------------------------------

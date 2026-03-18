@@ -22,7 +22,7 @@ fn main() -> Result<(), ployz_dns::DnsError> {
 
         async fn subscribe_routing_invalidations(
             &self,
-        ) -> Result<tokio::sync::mpsc::Receiver<()>, ployz_dns::DnsError> {
+        ) -> Result<ployz_store_api::RoutingInvalidationSubscription, ployz_dns::DnsError> {
             ployz_store_api::RoutingStore::subscribe_routing_invalidations(&self.0)
                 .await
                 .map_err(|err| ployz_dns::DnsError::Store(err.to_string()))

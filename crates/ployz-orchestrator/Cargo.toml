@@ -10,6 +10,7 @@ path = "src/lib.rs"
 
 [dependencies]
 ployz-ebpf-common = { path = "../ebpf-common" }
+ployz-runtime-api = { path = "../ployz-runtime-api" }
 ployz-store-api = { path = "../ployz-store-api" }
 ployz-types = { path = "../ployz-types" }
 async-trait = { workspace = true }
@@ -32,6 +33,9 @@ optional = true
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+
+[dev-dependencies]
+ployz-runtime-backends = { path = "../ployz-runtime-backends" }
 
 [lints.clippy]
 indexing_slicing = "warn"

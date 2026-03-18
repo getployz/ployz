@@ -22,7 +22,8 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
 
         async fn subscribe_routing_invalidations(
             &self,
-        ) -> Result<tokio::sync::mpsc::Receiver<()>, ployz_gateway::GatewayError> {
+        ) -> Result<ployz_store_api::RoutingInvalidationSubscription, ployz_gateway::GatewayError>
+        {
             ployz_store_api::RoutingStore::subscribe_routing_invalidations(&self.0)
                 .await
                 .map_err(|err| ployz_gateway::GatewayError::Store(err.to_string()))

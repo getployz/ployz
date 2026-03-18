@@ -1,6 +1,5 @@
-use crate::mesh::MeshNetwork;
-use crate::mesh::driver::WireguardDriver;
 use crate::mesh::tasks::{SelfRecordMutation, apply_self_record_mutation};
+use ployz_runtime_api::{MeshNetwork, WireguardDriver};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -72,12 +71,11 @@ async fn publish_liveness(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mesh::driver::WireguardDriver;
     use crate::mesh::tasks::run_self_record_writer_task;
-    use crate::mesh::wireguard::MemoryWireGuard;
     use crate::model::{
         MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
     };
+    use ployz_runtime_api::MemoryWireGuard;
     use ployz_store_api::MachineStore;
     use ployz_store_api::StoreDriver;
     use ployz_store_api::memory::{MemoryService, MemoryStore};

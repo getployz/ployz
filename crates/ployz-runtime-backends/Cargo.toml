@@ -5,8 +5,6 @@ edition = "2024"
 publish = false
 
 [dependencies]
-ployz-api = { path = "../ployz-api" }
-ployz-orchestrator = { path = "../ployz-orchestrator" }
 ployz-runtime-api = { path = "../ployz-runtime-api" }
 ployz-store-api = { path = "../ployz-store-api" }
 ployz-types = { path = "../ployz-types" }

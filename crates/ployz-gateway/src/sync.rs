@@ -2,7 +2,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use crate::routes::{GatewaySnapshot, project};
-use tokio::sync::mpsc;
+use ployz_store_api::RoutingInvalidationSubscription;
 use tracing::{info, warn};
 
 use crate::config::GatewayError;
@@ -20,7 +20,7 @@ pub trait RoutingStore: Send + Sync {
     ) -> impl Future<Output = Result<ployz_types::model::RoutingState, GatewayError>> + Send + '_;
     fn subscribe_routing_invalidations(
         &self,
-    ) -> impl Future<Output = Result<mpsc::Receiver<()>, GatewayError>> + Send + '_;
+    ) -> impl Future<Output = Result<RoutingInvalidationSubscription, GatewayError>> + Send + '_;
 }
 
 // ---------------------------------------------------------------------------

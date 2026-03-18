@@ -1,9 +1,8 @@
 use crate::machine_liveness::machine_is_fresh;
-use crate::mesh::WireGuardDevice;
-use crate::mesh::driver::WireguardDriver;
 use crate::mesh::probe::{TcpProbeResult, TcpProbeStatus, probe_overlay_ips_parallel};
 use crate::mesh::tasks::{SelfRecordMutation, apply_self_record_mutation};
 use crate::model::{MachineId, MachineRecord, Participation};
+use ployz_runtime_api::{WireGuardDevice, WireguardDriver};
 use ployz_store_api::MachineStore;
 use ployz_store_api::StoreDriver;
 use std::collections::HashMap;
@@ -275,12 +274,10 @@ fn required_peer_is_healthy(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mesh::DevicePeer;
-    use crate::mesh::driver::WireguardDriver;
     use crate::mesh::probe::run_probe_listener_task;
     use crate::mesh::tasks::run_self_record_writer_task;
-    use crate::mesh::wireguard::MemoryWireGuard;
     use crate::model::{MachineStatus, OverlayIp, PublicKey};
+    use ployz_runtime_api::{DevicePeer, MemoryWireGuard, WireguardDriver};
     use ployz_store_api::memory::{MemoryService, MemoryStore};
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;

@@ -83,7 +83,10 @@ pub fn run_server(
 // Standalone process entry point
 // ---------------------------------------------------------------------------
 
-pub fn run_gateway_process_with_store<S>(config: GatewayConfig, store: S) -> Result<(), GatewayError>
+pub fn run_gateway_process_with_store<S>(
+    config: GatewayConfig,
+    store: S,
+) -> Result<(), GatewayError>
 where
     S: crate::sync::RoutingStore + Send + Sync + 'static,
 {

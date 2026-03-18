@@ -1,12 +1,10 @@
-pub mod session;
-
-use crate::deploy::session::DeploySessionFactory;
 use crate::error::{Error, Result};
 use crate::model::{
     DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployPreview, DeployRecord,
     DeployState, InstanceId, MachineId, ServicePlan, ServiceRelease, ServiceReleaseRecord,
     ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy, SlotId, SlotPlan,
 };
+use ployz_runtime_api::{DeploySession, DeploySessionFactory, StartCandidateRequest};
 use ployz_store_api::{DeployStore, MachineStore, StoreDriver};
 use ployz_types::spec::{DeployManifest, Placement, ServiceSpec, stable_hash_hex};
 use ployz_types::time::now_unix_secs;
@@ -21,7 +19,6 @@ struct DesiredSlot {
     machine_id: MachineId,
 }
 
-#[allow(clippy::indexing_slicing)]
 pub async fn preview(
     store: &StoreDriver,
     local_machine_id: &MachineId,
@@ -162,7 +159,6 @@ pub async fn preview(
     })
 }
 
-#[allow(clippy::indexing_slicing)]
 pub async fn apply(
     store: &StoreDriver,
     session_factory: &dyn DeploySessionFactory,
@@ -183,7 +179,7 @@ pub async fn apply(
     let mut sorted_participants = initial_preview.participants.clone();
     sorted_participants.sort();
 
-    let mut sessions: BTreeMap<MachineId, Box<dyn session::DeploySession>> = BTreeMap::new();
+    let mut sessions: BTreeMap<MachineId, Box<dyn DeploySession>> = BTreeMap::new();
     for participant in &sorted_participants {
         let Some(machine) = machine_map.get(participant) else {
             return Err(Error::operation(
@@ -299,7 +295,7 @@ pub async fn apply(
                         ));
                     };
                     let status = session
-                        .start_candidate(session::StartCandidateRequest {
+                        .start_candidate(StartCandidateRequest {
                             service: spec.name.clone(),
                             slot_id: desired_slot.slot_id.clone(),
                             instance_id,
@@ -450,7 +446,6 @@ fn deployable_machines(
     enabled
 }
 
-#[allow(clippy::indexing_slicing)]
 fn desired_slots(
     spec: &ServiceSpec,
     machines: &[MachineId],
@@ -461,6 +456,12 @@ fn desired_slots(
     } else {
         machines.to_vec()
     };
+    if candidates.is_empty() {
+        return Err(Error::operation(
+            "desired_slots",
+            "slot placement requires at least one candidate machine",
+        ));
+    }
 
     let mut desired = Vec::new();
     match spec.placement {
@@ -473,14 +474,23 @@ fn desired_slots(
             }
             for index in 0..count {
                 let slot_id = SlotId(format!("slot-{number:04}", number = usize::from(index) + 1));
-                let machine_id = current_slots
-                    .and_then(|slots| {
-                        slots
-                            .iter()
-                            .find(|slot| slot.slot_id == slot_id)
-                            .map(|slot| slot.machine_id.clone())
-                    })
-                    .unwrap_or_else(|| candidates[usize::from(index) % candidates.len()].clone());
+                let machine_id = if let Some(machine_id) = current_slots.and_then(|slots| {
+                    slots
+                        .iter()
+                        .find(|slot| slot.slot_id == slot_id)
+                        .map(|slot| slot.machine_id.clone())
+                }) {
+                    machine_id
+                } else {
+                    let candidate_index = usize::from(index) % candidates.len();
+                    let Some(machine_id) = candidates.get(candidate_index) else {
+                        return Err(Error::operation(
+                            "desired_slots",
+                            format!("candidate index {candidate_index} out of bounds"),
+                        ));
+                    };
+                    machine_id.clone()
+                };
                 desired.push(DesiredSlot {
                     slot_id,
                     machine_id,

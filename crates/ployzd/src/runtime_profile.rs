@@ -10,9 +10,9 @@ use ipnet::Ipv4Net;
 use ployz_config::{RuntimeTarget, ServiceMode};
 use ployz_dns::DnsConfig;
 use ployz_gateway::GatewayConfig;
-use ployz_orchestrator::WireguardDriver;
 use ployz_runtime_api::Identity;
-use ployz_runtime_api::{NamespaceLockManager, RestartableWorkload};
+use ployz_runtime_api::{ContainerNetwork, RestartableWorkload, WireguardDriver};
+use ployz_runtime_backends::deploy::NamespaceLockManager;
 use ployz_runtime_backends::deploy::remote::{RemoteControlHandle, start_remote_control_listener};
 use ployz_runtime_backends::mesh::driver as mesh_backends;
 use ployz_runtime_backends::network::docker_bridge_network;
@@ -51,7 +51,7 @@ pub(crate) struct RuntimeProfile {
 pub(crate) struct MeshRuntimeComponents {
     pub(crate) network: WireguardDriver,
     pub(crate) store: StoreDriver,
-    pub(crate) container_network: Option<ployz_orchestrator::ContainerNetwork>,
+    pub(crate) container_network: Option<ContainerNetwork>,
 }
 
 impl RuntimeProfile {

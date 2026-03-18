@@ -3,13 +3,13 @@ mod cli_io;
 mod request_builder;
 
 use clap::Parser;
+#[cfg(test)]
+pub(crate) use cli::DebugTickTaskArg;
 pub(crate) use cli::{
     Cli, CliError, Command, DebugAction, DeployAction, DeployCommand, DeployManifestArgs,
     DeployServiceArgs, InstallSourceArg, MachineAction, MachineInviteAction,
     MachineOperationAction, MeshAction, RuntimeTargetArg, ServiceModeArg,
 };
-#[cfg(test)]
-pub(crate) use cli::DebugTickTaskArg;
 use cli_io::{cmd_rpc_stdio, render_response, request_daemon};
 #[cfg(test)]
 use ployz_api::DaemonRequest;

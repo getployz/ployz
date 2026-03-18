@@ -1,13 +1,13 @@
 use crate::mesh::MeshDataplane;
 use crate::model::{MachineEvent, MachineId, MachineRecord};
+use ployz_store_api::MachineEventSubscription;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 pub(crate) async fn run_ebpf_sync_task(
     snapshot: Vec<MachineRecord>,
-    mut events: mpsc::Receiver<MachineEvent>,
+    mut events: MachineEventSubscription,
     dataplane: Arc<dyn MeshDataplane>,
     wg_ifindex: u32,
     local_machine_id: MachineId,

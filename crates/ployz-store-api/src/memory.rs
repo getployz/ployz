@@ -1,8 +1,8 @@
-use async_trait::async_trait;
 use crate::{
-    DeployStore, InviteStore, MachineStore, RoutingInvalidationSubscription, RoutingStore,
-    StoreRuntimeControl, SyncProbe, SyncStatus,
+    DeployStore, InviteStore, MachineEventSubscription, MachineStore,
+    RoutingInvalidationSubscription, RoutingStore, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
+use async_trait::async_trait;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
@@ -127,7 +127,7 @@ impl MachineStore for MemoryStore {
         let snapshot = inner.machines.values().cloned().collect();
         let (sender, receiver) = mpsc::channel(64);
         inner.machine_subscribers.push(sender);
-        Ok((snapshot, receiver))
+        Ok((snapshot, MachineEventSubscription::new(receiver)))
     }
 }
 
@@ -145,7 +145,7 @@ impl RoutingStore for MemoryStore {
         let mut inner = self.lock_inner();
         let (sender, receiver) = mpsc::channel(64);
         inner.routing_subscribers.push(sender);
-        Ok(receiver)
+        Ok(RoutingInvalidationSubscription::new(receiver))
     }
 }
 

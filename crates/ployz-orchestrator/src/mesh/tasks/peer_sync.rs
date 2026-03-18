@@ -1,8 +1,8 @@
-use crate::mesh::WireGuardDevice;
-use crate::mesh::driver::WireguardDriver;
 use crate::mesh::peer_state::{PeerStateMap, sync_peers};
 use crate::mesh::probe::probe_endpoints_parallel;
-use crate::model::{MachineEvent, MachineId, MachineRecord};
+use crate::model::{MachineId, MachineRecord};
+use ployz_runtime_api::{WireGuardDevice, WireguardDriver};
+use ployz_store_api::MachineEventSubscription;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
@@ -19,7 +19,7 @@ pub enum PeerSyncCommand {
 
 pub(crate) async fn run_peer_sync_task(
     snapshot: Vec<MachineRecord>,
-    mut events: mpsc::Receiver<MachineEvent>,
+    mut events: MachineEventSubscription,
     mut commands: mpsc::Receiver<PeerSyncCommand>,
     bootstrap_peers: Vec<MachineRecord>,
     network: WireguardDriver,
@@ -119,10 +119,8 @@ async fn rank_pending_peers(state: &mut PeerStateMap) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mesh::DevicePeer;
-    use crate::mesh::driver::WireguardDriver;
-    use crate::mesh::wireguard::MemoryWireGuard;
     use crate::model::{MachineEvent, MachineStatus, OverlayIp, Participation, PublicKey};
+    use ployz_runtime_api::{DevicePeer, MemoryWireGuard, WireguardDriver};
     use std::net::Ipv6Addr;
     use std::sync::Arc;
     use tokio::sync::mpsc;
@@ -292,7 +290,7 @@ mod tests {
         let handle = tokio::spawn(async move {
             run_peer_sync_task(
                 snapshot,
-                event_rx,
+                MachineEventSubscription::new(event_rx),
                 command_rx,
                 bootstrap_peers,
                 driver,
@@ -331,7 +329,7 @@ mod tests {
         let handle = tokio::spawn(async move {
             run_peer_sync_task(
                 snapshot,
-                event_rx,
+                MachineEventSubscription::new(event_rx),
                 command_rx,
                 Vec::new(),
                 driver,
