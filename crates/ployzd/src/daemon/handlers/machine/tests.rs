@@ -3,20 +3,20 @@ use super::operations::{MachineOperationArtifacts, MachineOperationKind, Machine
 use crate::daemon::ActiveMesh;
 use crate::daemon::DaemonState;
 use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock};
-use crate::deploy::remote::RemoteControlHandle;
-use crate::mesh::driver::WireguardDriver;
-use crate::mesh::orchestrator::Mesh;
-use crate::mesh::wireguard::MemoryWireGuard;
-use crate::model::{MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey};
-use crate::node::identity::Identity;
-use crate::store::MachineStore;
-use crate::store::backends::memory::{MemoryService, MemoryStore};
-use crate::store::driver::StoreDriver;
-use crate::store::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
-use crate::time::now_unix_secs;
 use ipnet::Ipv4Net;
-use ployz_sdk::model::JoinResponse;
-use ployz_sdk::transport::{DaemonPayload, MachineAddOptions};
+use ployz_api::{DaemonPayload, DaemonResponse, MachineAddOptions, MeshSelfRecordPayload};
+use ployz_orchestrator::mesh::driver::WireguardDriver;
+use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
+use ployz_orchestrator::Mesh;
+use ployz_state::node::identity::Identity;
+use ployz_store_api::MachineStore;
+use ployz_state::store::backends::memory::{MemoryService, MemoryStore};
+use ployz_state::store::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
+use ployz_state::time::now_unix_secs;
+use ployz_state::StoreDriver;
+use ployz_types::model::{
+    JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -254,12 +254,12 @@ async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
     std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
     let fake_ssh = write_fake_ssh(&ssh_dir);
     let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
-    let self_record_response = serde_json::to_string(&ployz_sdk::transport::DaemonResponse {
+    let self_record_response = serde_json::to_string(&DaemonResponse {
         ok: true,
         code: "OK".into(),
         message: join_response.clone(),
-        payload: Some(ployz_sdk::transport::DaemonPayload::MeshSelfRecord(
-            ployz_sdk::transport::MeshSelfRecordPayload {
+        payload: Some(DaemonPayload::MeshSelfRecord(
+            MeshSelfRecordPayload {
                 encoded: join_response.clone(),
                 record: JoinResponse::decode(&join_response)
                     .expect("decode join response")
@@ -325,12 +325,12 @@ async fn machine_add_accepts_running_joiner_before_full_sync() {
     std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
     let fake_ssh = write_fake_ssh(&ssh_dir);
     let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
-    let self_record_response = serde_json::to_string(&ployz_sdk::transport::DaemonResponse {
+    let self_record_response = serde_json::to_string(&DaemonResponse {
         ok: true,
         code: "OK".into(),
         message: join_response.clone(),
-        payload: Some(ployz_sdk::transport::DaemonPayload::MeshSelfRecord(
-            ployz_sdk::transport::MeshSelfRecordPayload {
+        payload: Some(DaemonPayload::MeshSelfRecord(
+            MeshSelfRecordPayload {
                 encoded: join_response.clone(),
                 record: JoinResponse::decode(&join_response)
                     .expect("decode join response")
@@ -647,7 +647,7 @@ async fn make_state(start_mesh: bool) -> (DaemonState, Arc<MemoryStore>, Arc<Mem
     let identity = Identity::generate(MachineId("founder".into()), [1; 32]);
     let founder_subnet: Ipv4Net = "10.210.0.0/24".parse().expect("valid subnet");
     let config = NetworkConfig::new(
-        crate::model::NetworkName("alpha".into()),
+        ployz_types::model::NetworkName("alpha".into()),
         &identity.public_key,
         DEFAULT_CLUSTER_CIDR,
         founder_subnet,
@@ -691,9 +691,9 @@ async fn make_state(start_mesh: bool) -> (DaemonState, Arc<MemoryStore>, Arc<Mem
     state.active = Some(ActiveMesh {
         config,
         mesh,
-        remote_control: RemoteControlHandle::noop(),
-        gateway: crate::services::gateway::GatewayHandle::noop(),
-        dns: crate::services::dns::DnsHandle::noop(),
+        remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+        gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+        dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
     });
 
     (state, store, network)
@@ -707,7 +707,7 @@ async fn make_state_with_store(
     let subnet: Ipv4Net = subnet.parse().expect("valid subnet");
     let data_dir = unique_temp_dir("ployz-machine-heal-state");
     let config = NetworkConfig::new(
-        crate::model::NetworkName("alpha".into()),
+        ployz_types::model::NetworkName("alpha".into()),
         &identity.public_key,
         DEFAULT_CLUSTER_CIDR,
         subnet,
@@ -736,9 +736,9 @@ async fn make_state_with_store(
     state.active = Some(ActiveMesh {
         config,
         mesh,
-        remote_control: RemoteControlHandle::noop(),
-        gateway: crate::services::gateway::GatewayHandle::noop(),
-        dns: crate::services::dns::DnsHandle::noop(),
+        remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+        gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+        dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
     });
     state
 }

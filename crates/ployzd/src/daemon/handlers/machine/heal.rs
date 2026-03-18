@@ -1,17 +1,18 @@
 use std::collections::BTreeMap;
 
 use ipnet::Ipv4Net;
+use ployz_orchestrator::Phase;
+use ployz_orchestrator::mesh::tasks::ParticipationCommand;
+use ployz_runtime_api::RestartableWorkload;
+use ployz_store_api::{MachineStore, StoreRuntimeControl};
+use ployz_state::store::network::NetworkConfig;
+use ployz_state::time::now_unix_secs;
+use ployz_types::model::{MachineId, MachineRecord, MachineStatus, Participation};
 
 use crate::daemon::{DaemonState, PendingSubnetHeal, SubnetHealAttempt};
-use crate::mesh::tasks::ParticipationCommand;
-use crate::model::{MachineId, MachineRecord, MachineStatus, Participation};
-use crate::store::MachineStore;
-use crate::store::StoreRuntimeControl;
-use crate::store::network::NetworkConfig;
-use crate::time::now_unix_secs;
 
 use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
-use super::types::{LocalSubnetConflict, LocalSubnetHealPlan, RestartableWorkload};
+use super::types::{LocalSubnetConflict, LocalSubnetHealPlan};
 
 const SUBNET_HEAL_COOLDOWN_SECS: u64 = 10;
 const SUBNET_HEAL_SETTLE_SECS: u64 = 10;
@@ -24,7 +25,7 @@ impl DaemonState {
             return;
         };
 
-        if active.mesh.phase() != crate::Phase::Running {
+        if active.mesh.phase() != Phase::Running {
             return;
         }
 
@@ -311,7 +312,7 @@ impl DaemonState {
             .save(&config_path)
             .map_err(|err| format!("save network config: {err}"))?;
 
-        if self.runtime_profile.is_memory_test() {
+        if self.runtime_ops.is_memory_test() {
             self.apply_local_subnet_heal_in_memory_mode(&network_name)
                 .await
         } else {
@@ -442,7 +443,7 @@ impl DaemonState {
             .as_ref()
             .map(|active| active.config.subnet)
             .ok_or_else(|| "no running network".to_string())?;
-        self.runtime_profile
+        self.runtime_ops
             .stop_local_workloads_for_subnet_heal(
                 &self.identity.machine_id,
                 network_name,
@@ -461,7 +462,7 @@ impl DaemonState {
             .as_ref()
             .map(|active| active.config.subnet)
             .ok_or_else(|| "no running network".to_string())?;
-        self.runtime_profile
+        self.runtime_ops
             .start_local_workloads_after_subnet_heal(network_name, target_subnet, workloads)
             .await
     }
@@ -614,8 +615,11 @@ fn allocate_replacement_subnet(
         }
         machine.subnet
     });
-    let mut ipam =
-        crate::network::ipam::Ipam::with_allocated(cluster, subnet_prefix_len, allocated);
+    let mut ipam = ployz_state::network::ipam::Ipam::with_allocated(
+        cluster,
+        subnet_prefix_len,
+        allocated,
+    );
     ipam.allocate()
         .ok_or_else(|| "no available subnets for local heal".into())
 }

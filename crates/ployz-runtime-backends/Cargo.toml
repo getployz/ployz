@@ -5,8 +5,11 @@ edition = "2024"
 publish = false
 
 [dependencies]
-ployz-core = { path = "../ployz-core" }
-ployz-sdk = { path = "../ployz-sdk" }
+ployz-api = { path = "../ployz-api" }
+ployz-orchestrator = { path = "../ployz-orchestrator" }
+ployz-runtime-api = { path = "../ployz-runtime-api" }
+ployz-state = { path = "../ployz-state" }
+ployz-store-api = { path = "../ployz-store-api" }
 ployz-types = { path = "../ployz-types" }
 ployz-corrosion = { path = "../ployz-corrosion" }
 tokio = { workspace = true, features = ["process", "fs"] }
@@ -33,7 +36,6 @@ smoltcp = { version = "0.12.0", default-features = false, features = ["std", "me
 defguard_boringtun = "0.6"
 hostname = "0.4.2"
 if-addrs = "0.13"
-rusqlite = "0.38"
 ed25519-dalek = "2"
 
 [lints.clippy]

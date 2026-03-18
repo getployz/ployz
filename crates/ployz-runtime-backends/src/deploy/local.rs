@@ -9,13 +9,15 @@ use crate::error::{Error, Result};
 use crate::model::{
     DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, SlotId,
 };
-use crate::runtime::labels::{self, WorkloadMeta, build_workload_labels, extract_workload_labels};
-use crate::runtime::{ContainerEngine, Probe, PullPolicy, RuntimeContainerSpec};
 use crate::spec::{
     ContainerSpec, Namespace, NetworkMode, PortProtocol, ServicePort, ServiceSpec,
     VolumeSource,
 };
-use crate::store::DeployStore;
+use crate::runtime::labels::{
+    self, WorkloadMeta, build_workload_labels, extract_workload_labels,
+};
+use crate::runtime::{ContainerEngine, Probe, PullPolicy, RuntimeContainerSpec};
+use ployz_store_api::DeployStore;
 
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
 

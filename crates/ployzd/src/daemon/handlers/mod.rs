@@ -6,7 +6,7 @@ pub(crate) mod machine;
 mod mesh;
 mod status;
 
-use ployz_sdk::transport::{DaemonRequest, DaemonResponse};
+use ployz_api::{DaemonRequest, DaemonResponse};
 
 use super::DaemonState;
 
@@ -142,7 +142,7 @@ impl DaemonState {
 mod tests {
     use super::RequestLane;
     use crate::daemon::DaemonState;
-    use ployz_sdk::transport::{DaemonRequest, DebugTickTask};
+    use ployz_api::{DaemonRequest, DebugTickTask};
 
     #[test]
     fn debug_tick_routes_to_exclusive_lane() {

@@ -1,11 +1,17 @@
 use std::path::{Path, PathBuf};
 
 use ipnet::Ipv4Net;
-use ployz_sdk::model::{JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineRecord};
-use ployz_sdk::transport::{
-    DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MachineInstallOptions,
-    MeshReadyPayload, MeshSelfRecordPayload, Transport,
+use ployz_api::{
+    DaemonPayload, DaemonRequest, DaemonResponse, InstallRuntimeTarget, InstallServiceMode,
+    InstallSource, MachineAddOptions, MachineInstallOptions, MeshReadyPayload,
+    MeshSelfRecordPayload, Transport,
 };
+use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
+use ployz_state::network::ipam::Ipam;
+use ployz_state::node::invite::parse_and_verify_invite_token;
+use ployz_store_api::{InviteStore, MachineStore};
+use ployz_state::time::now_unix_secs;
+use ployz_types::model::{JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineRecord};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, sleep, timeout};
 
@@ -13,10 +19,6 @@ use crate::daemon::DaemonState;
 use crate::daemon::ssh::{
     EphemeralSshIdentityFile, SshOptions, run_ssh, run_ssh_with_stdin, ssh_stdio_transport,
 };
-use crate::network::ipam::Ipam;
-use crate::node::invite::parse_and_verify_invite_token;
-use crate::store::InviteStore;
-use crate::store::MachineStore;
 
 use super::operations::{
     MachineOperationArtifacts, MachineOperationKind, MachineOperationRecord,
@@ -455,7 +457,7 @@ async fn run_machine_add_target(
     );
     if let Err(err) = context
         .store
-        .consume_invite(&invite_id, crate::time::now_unix_secs())
+        .consume_invite(&invite_id, now_unix_secs())
         .await
     {
         tracing::warn!(
@@ -488,23 +490,21 @@ async fn run_machine_add_target(
 }
 
 async fn upsert_transient_peer(
-    peer_sync_tx: &tokio::sync::mpsc::Sender<crate::mesh::tasks::PeerSyncCommand>,
+    peer_sync_tx: &tokio::sync::mpsc::Sender<PeerSyncCommand>,
     record: MachineRecord,
 ) -> Result<(), String> {
     peer_sync_tx
-        .send(crate::mesh::tasks::PeerSyncCommand::UpsertTransient(record))
+        .send(PeerSyncCommand::UpsertTransient(record))
         .await
         .map_err(|err| format!("failed to install founder-local transient peer: {err}"))
 }
 
 pub(super) async fn remove_transient_peer(
-    peer_sync_tx: &tokio::sync::mpsc::Sender<crate::mesh::tasks::PeerSyncCommand>,
+    peer_sync_tx: &tokio::sync::mpsc::Sender<PeerSyncCommand>,
     machine_id: &MachineId,
 ) -> Result<(), String> {
     peer_sync_tx
-        .send(crate::mesh::tasks::PeerSyncCommand::RemoveTransient(
-            machine_id.clone(),
-        ))
+        .send(PeerSyncCommand::RemoveTransient(machine_id.clone()))
         .await
         .map_err(|err| format!("failed to clear founder-local transient peer: {err}"))
 }
@@ -853,8 +853,8 @@ fn install_script_args(install: &MachineInstallOptions) -> String {
         args.push("--runtime".into());
         args.push(
             match runtime_target {
-                ployz_sdk::RuntimeTarget::Docker => "docker",
-                ployz_sdk::RuntimeTarget::Host => "host",
+                InstallRuntimeTarget::Docker => "docker",
+                InstallRuntimeTarget::Host => "host",
             }
             .into(),
         );
@@ -863,8 +863,8 @@ fn install_script_args(install: &MachineInstallOptions) -> String {
         args.push("--service-mode".into());
         args.push(
             match service_mode {
-                ployz_sdk::ServiceMode::User => "user",
-                ployz_sdk::ServiceMode::System => "system",
+                InstallServiceMode::User => "user",
+                InstallServiceMode::System => "system",
             }
             .into(),
         );
@@ -873,8 +873,8 @@ fn install_script_args(install: &MachineInstallOptions) -> String {
         args.push("--source".into());
         args.push(
             match source {
-                ployz_sdk::transport::InstallSource::Release => "release",
-                ployz_sdk::transport::InstallSource::Git => "git",
+                InstallSource::Release => "release",
+                InstallSource::Git => "git",
             }
             .into(),
         );

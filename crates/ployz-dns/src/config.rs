@@ -53,8 +53,8 @@ impl DnsConfig {
         let data_dir = match std::env::var_os("PLOYZ_DNS_DATA_DIR") {
             Some(path) => PathBuf::from(path),
             None => {
-                let aff = ployz_sdk::config::Affordances::detect();
-                ployz_sdk::config::default_data_dir(&aff)
+                let aff = ployz_config::Affordances::detect();
+                ployz_config::default_data_dir(&aff)
             }
         };
         let network = match std::env::var("PLOYZ_DNS_NETWORK") {

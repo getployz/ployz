@@ -106,10 +106,12 @@ fn load_initial_snapshot(
         .build()
         .map_err(|err| GatewayError::Runtime(err.to_string()))?;
     runtime.block_on(async {
-        let store =
-            ployz_corrosion::CorrosionStore::connect_for_network(&config.data_dir, &config.network)
-                .await
-                .map_err(|err| GatewayError::Store(err.to_string()))?;
+        let store = ployz_store_corrosion::CorrosionRoutingStore::connect_for_network(
+            &config.data_dir,
+            &config.network,
+        )
+        .await
+        .map_err(|err| GatewayError::Store(err.to_string()))?;
         load_projected_snapshot_from_store(&store).await
     })
 }
@@ -123,9 +125,12 @@ fn spawn_standalone_sync_thread(
         .build()
         .map_err(|err| GatewayError::Runtime(err.to_string()))?;
     let store = runtime.block_on(async {
-        ployz_corrosion::CorrosionStore::connect_for_network(&config.data_dir, &config.network)
-            .await
-            .map_err(|err| GatewayError::Store(err.to_string()))
+        ployz_store_corrosion::CorrosionRoutingStore::connect_for_network(
+            &config.data_dir,
+            &config.network,
+        )
+        .await
+        .map_err(|err| GatewayError::Store(err.to_string()))
     })?;
     crate::sync::spawn_sync_thread_with_store(store, snapshot)
 }

@@ -1,14 +1,14 @@
 use crate::daemon::{ActiveMesh, DaemonState};
-use crate::machine_liveness::{MachineLiveness, machine_liveness};
-use crate::mesh::{DevicePeer, WireGuardDevice};
-use crate::model::{MachineRecord, OverlayIp, PublicKey};
-use crate::store::MachineStore;
-use crate::time::now_unix_secs;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
+use ployz_orchestrator::mesh::{DevicePeer, WireGuardDevice};
+use ployz_state::machine_liveness::{MachineLiveness, machine_liveness};
+use ployz_store_api::MachineStore;
+use ployz_state::time::now_unix_secs;
+use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::Instant;
@@ -22,7 +22,7 @@ const PROBE_REQUEST: &[u8; 4] = b"PLZ?";
 const PROBE_RESPONSE: &[u8; 4] = b"OK!!";
 
 impl DaemonState {
-    pub(crate) async fn handle_doctor(&self) -> ployz_sdk::transport::DaemonResponse {
+    pub(crate) async fn handle_doctor(&self) -> ployz_api::DaemonResponse {
         let Some(active) = self.active.as_ref() else {
             return self.err("NO_RUNNING_NETWORK", "no mesh running");
         };
@@ -216,7 +216,7 @@ impl ParticipationRow {
 
 fn build_participation_rows(
     machines: &[MachineRecord],
-    local_machine_id: &crate::model::MachineId,
+    local_machine_id: &MachineId,
     handshake_by_key: &HashMap<PublicKey, HandshakeState>,
     overlay_probe_by_ip: &HashMap<OverlayIp, ProbeState>,
     now: u64,
@@ -310,7 +310,7 @@ fn handshake_state_map(device_peers: &[DevicePeer]) -> HashMap<PublicKey, Handsh
 
 async fn probe_overlay_health(
     machines: &[MachineRecord],
-    local_machine_id: &crate::model::MachineId,
+    local_machine_id: &MachineId,
 ) -> HashMap<OverlayIp, ProbeState> {
     let overlay_ips: HashSet<_> = machines
         .iter()
@@ -372,16 +372,15 @@ async fn probe_overlay_ip(overlay_ip: OverlayIp) -> Option<()> {
 mod tests {
     use super::*;
     use crate::daemon::ActiveMesh;
-    use crate::deploy::remote::RemoteControlHandle;
-    use crate::mesh::DevicePeer;
-    use crate::mesh::driver::WireguardDriver;
-    use crate::mesh::wireguard::MemoryWireGuard;
-    use crate::model::{MachineId, MachineStatus, OverlayIp, PublicKey};
-    use crate::node::identity::Identity;
-    use crate::store::backends::memory::{MemoryService, MemoryStore};
-    use crate::store::driver::StoreDriver;
-    use crate::store::network::NetworkConfig;
-    use ployz_sdk::model::Participation;
+    use ployz_orchestrator::mesh::DevicePeer;
+    use ployz_orchestrator::mesh::driver::WireguardDriver;
+    use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
+    use ployz_orchestrator::Mesh;
+    use ployz_state::node::identity::Identity;
+    use ployz_state::store::backends::memory::{MemoryService, MemoryStore};
+    use ployz_state::store::network::NetworkConfig;
+    use ployz_state::StoreDriver;
+    use ployz_types::model::{MachineId, MachineStatus, OverlayIp, Participation, PublicKey};
     use std::net::Ipv6Addr;
     use std::path::PathBuf;
     use std::sync::{Arc, OnceLock};
@@ -508,7 +507,7 @@ mod tests {
     async fn make_state() -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {
         let identity = Identity::generate(MachineId(String::from("joiner5")), [1; 32]);
         let config = NetworkConfig::new(
-            crate::model::NetworkName(String::from("alpha")),
+            ployz_types::model::NetworkName(String::from("alpha")),
             &identity.public_key,
             "10.210.0.0/16",
             "10.210.3.0/24".parse().expect("valid subnet"),
@@ -527,7 +526,7 @@ mod tests {
             .await
             .expect("upsert self");
 
-        let mesh = crate::Mesh::new(
+        let mesh = Mesh::new(
             WireguardDriver::memory_with(network.clone()),
             StoreDriver::memory_with(store.clone(), service),
             None,
@@ -547,9 +546,9 @@ mod tests {
         state.active = Some(ActiveMesh {
             config,
             mesh,
-            remote_control: RemoteControlHandle::noop(),
-            gateway: crate::services::gateway::GatewayHandle::noop(),
-            dns: crate::services::dns::DnsHandle::noop(),
+            remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         });
 
         (state, store, network)
@@ -580,7 +579,7 @@ mod tests {
     fn test_active_mesh() -> ActiveMesh {
         let identity = Identity::generate(MachineId(String::from("joiner5")), [1; 32]);
         let config = NetworkConfig::new(
-            crate::model::NetworkName(String::from("alpha")),
+            ployz_types::model::NetworkName(String::from("alpha")),
             &identity.public_key,
             "10.210.0.0/16",
             "10.210.3.0/24".parse().expect("valid subnet"),
@@ -588,7 +587,7 @@ mod tests {
         let store = Arc::new(MemoryStore::new());
         let service = Arc::new(MemoryService::new());
         let network = Arc::new(MemoryWireGuard::new());
-        let mesh = crate::Mesh::new(
+        let mesh = Mesh::new(
             WireguardDriver::memory_with(network),
             StoreDriver::memory_with(store, service),
             None,
@@ -599,9 +598,9 @@ mod tests {
         ActiveMesh {
             config,
             mesh,
-            remote_control: RemoteControlHandle::noop(),
-            gateway: crate::services::gateway::GatewayHandle::noop(),
-            dns: crate::services::dns::DnsHandle::noop(),
+            remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         }
     }
 

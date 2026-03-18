@@ -1,5 +1,4 @@
 pub mod local;
-pub mod locks;
 pub mod remote;
 pub mod session;
 
@@ -15,10 +14,10 @@ use crate::model::{
     ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy, SlotId, SlotPlan,
 };
 use crate::spec::{DeployManifest, Placement, ServiceSpec};
-use crate::store::{DeployStore, MachineStore};
+use ployz_store_api::{DeployStore, MachineStore};
 
 pub use local::LocalDeployRuntime;
-pub use locks::{NamespaceLock, NamespaceLockManager};
+pub use ployz_runtime_api::{NamespaceLock, NamespaceLockManager};
 
 use local::{now_unix_secs, stable_hash_hex};
 

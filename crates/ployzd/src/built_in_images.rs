@@ -99,7 +99,11 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system clock before unix epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("ployz-builtins-{timestamp}.toml"))
+        std::env::temp_dir().join(format!(
+            "ployz-builtins-{timestamp}-{}-{}.toml",
+            std::process::id(),
+            rand::random::<u64>()
+        ))
     }
 
     #[test]

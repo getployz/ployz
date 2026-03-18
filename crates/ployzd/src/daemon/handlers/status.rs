@@ -1,4 +1,4 @@
-use ployz_sdk::transport::DaemonResponse;
+use ployz_api::DaemonResponse;
 
 use super::super::DaemonState;
 

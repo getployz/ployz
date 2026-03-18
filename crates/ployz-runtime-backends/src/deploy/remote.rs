@@ -12,16 +12,15 @@ use crate::model::{
     MachineRecord, SlotId,
 };
 use crate::spec::{Namespace, ServiceSpec};
-use crate::store::DeployStore;
-use ployz_sdk::transport::DeployFrame;
+use ployz_api::DeployFrame;
+use ployz_runtime_api::{NamespaceLock, NamespaceLockManager, RuntimeHandle};
+use ployz_store_api::DeployStore;
 
 use super::local::{
     LocalDeployRuntime, StartCandidate, adopt_instances, build_instance_status_record,
     list_local_instance_status, now_unix_secs,
 };
 use super::session::{DeploySession, StartCandidateRequest};
-use super::{NamespaceLock, NamespaceLockManager};
-
 // ---------------------------------------------------------------------------
 // Remote control listener (server side)
 // ---------------------------------------------------------------------------
@@ -43,6 +42,14 @@ impl RemoteControlHandle {
     pub async fn shutdown(self) {
         self.cancel.cancel();
         let _ = self.task.await;
+    }
+}
+
+#[async_trait::async_trait]
+impl RuntimeHandle for RemoteControlHandle {
+    async fn shutdown(self: Box<Self>) -> std::result::Result<(), String> {
+        RemoteControlHandle::shutdown(*self).await;
+        Ok(())
     }
 }
 

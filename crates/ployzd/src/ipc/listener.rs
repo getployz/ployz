@@ -1,4 +1,4 @@
-use ployz_sdk::transport::{DaemonRequest, DaemonResponse};
+use ployz_api::{DaemonRequest, DaemonResponse};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::{mpsc, oneshot};

@@ -5,24 +5,21 @@ pub mod ssh;
 use std::path::{Path, PathBuf};
 
 use crate::built_in_images::BuiltInImages;
-use crate::config::{RuntimeTarget, ServiceMode};
-use crate::deploy::NamespaceLockManager;
-use crate::deploy::remote::RemoteControlHandle;
-use crate::mesh::orchestrator::Mesh;
-use crate::node::identity::Identity;
 use crate::runtime_profile::RuntimeProfile;
-use crate::services::dns::DnsHandle;
-use crate::services::gateway::GatewayHandle;
-use crate::store::network::NetworkConfig;
 use ipnet::Ipv4Net;
-use ployz_sdk::transport::{DaemonPayload, DaemonResponse};
+use ployz_api::{DaemonPayload, DaemonResponse};
+use ployz_config::{RuntimeTarget, ServiceMode};
+use ployz_orchestrator::Mesh;
+use ployz_runtime_api::{NamespaceLockManager, RuntimeHandle, RuntimeOps};
+use ployz_state::Identity;
+use ployz_state::store::network::NetworkConfig;
 
 pub struct ActiveMesh {
     pub config: NetworkConfig,
     pub mesh: Mesh,
-    pub remote_control: RemoteControlHandle,
-    pub gateway: GatewayHandle,
-    pub dns: DnsHandle,
+    pub remote_control: Box<dyn RuntimeHandle>,
+    pub gateway: Box<dyn RuntimeHandle>,
+    pub dns: Box<dyn RuntimeHandle>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -45,6 +42,7 @@ pub struct DaemonState {
     pub runtime_target: RuntimeTarget,
     pub service_mode: ServiceMode,
     pub(crate) runtime_profile: RuntimeProfile,
+    pub(crate) runtime_ops: Box<dyn RuntimeOps>,
     pub cluster_cidr: String,
     pub subnet_prefix_len: u8,
     pub remote_control_port: u16,
@@ -71,26 +69,20 @@ impl DaemonState {
         gateway_listen_addr: String,
         gateway_threads: usize,
     ) -> Self {
-        Self {
-            data_dir: data_dir.to_path_buf(),
+        let runtime_profile =
+            RuntimeProfile::from_runtime(runtime_target, service_mode, built_in_images);
+        Self::new_with_runtime_profile(
+            data_dir,
             identity,
             runtime_target,
             service_mode,
-            runtime_profile: RuntimeProfile::from_runtime(
-                runtime_target,
-                service_mode,
-                built_in_images,
-            ),
+            runtime_profile,
             cluster_cidr,
             subnet_prefix_len,
             remote_control_port,
             gateway_listen_addr,
             gateway_threads,
-            active: None,
-            namespace_locks: NamespaceLockManager::default(),
-            pending_subnet_heal: None,
-            last_subnet_heal_attempt: None,
-        }
+        )
     }
 
     #[must_use]
@@ -104,12 +96,41 @@ impl DaemonState {
         gateway_listen_addr: String,
         gateway_threads: usize,
     ) -> Self {
+        Self::new_with_runtime_profile(
+            data_dir,
+            identity,
+            RuntimeTarget::Host,
+            ServiceMode::User,
+            RuntimeProfile::memory_for_tests(),
+            cluster_cidr,
+            subnet_prefix_len,
+            remote_control_port,
+            gateway_listen_addr,
+            gateway_threads,
+        )
+    }
+
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_runtime_profile(
+        data_dir: &Path,
+        identity: Identity,
+        runtime_target: RuntimeTarget,
+        service_mode: ServiceMode,
+        runtime_profile: RuntimeProfile,
+        cluster_cidr: String,
+        subnet_prefix_len: u8,
+        remote_control_port: u16,
+        gateway_listen_addr: String,
+        gateway_threads: usize,
+    ) -> Self {
         Self {
             data_dir: data_dir.to_path_buf(),
             identity,
-            runtime_target: RuntimeTarget::Host,
-            service_mode: ServiceMode::User,
-            runtime_profile: RuntimeProfile::memory_for_tests(),
+            runtime_target,
+            service_mode,
+            runtime_profile: runtime_profile.clone(),
+            runtime_ops: Box::new(runtime_profile),
             cluster_cidr,
             subnet_prefix_len,
             remote_control_port,

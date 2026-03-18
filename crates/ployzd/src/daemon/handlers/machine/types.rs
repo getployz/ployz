@@ -1,12 +1,12 @@
 use crate::daemon::ssh::SshOptions;
-use crate::mesh::tasks::PeerSyncCommand;
-use crate::model::MachineId;
-use crate::store::driver::StoreDriver;
 use ipnet::Ipv4Net;
-use ployz_sdk::transport::{
+use ployz_api::{
     MachineAddPayload, MachineAwaitingSelfPublication, MachineInstallOptions, MachineListPayload,
     MachineListRow,
 };
+use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
+use ployz_state::StoreDriver;
+use ployz_types::model::MachineId;
 use std::fmt;
 use std::str::FromStr;
 use tokio::sync::mpsc;
@@ -214,12 +214,6 @@ pub(super) struct LocalSubnetHealPlan {
     pub current_subnet: Ipv4Net,
     pub winner_machine_id: MachineId,
     pub target_subnet: Ipv4Net,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RestartableWorkload {
-    pub container_name: String,
-    pub was_running: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

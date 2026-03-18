@@ -13,9 +13,9 @@ name = "ployz-gateway"
 path = "src/main.rs"
 
 [dependencies]
-ployz-sdk = { path = "../ployz-sdk" }
+ployz-config = { path = "../ployz-config" }
+ployz-store-corrosion = { path = "../ployz-store-corrosion" }
 ployz-types = { path = "../ployz-types" }
-ployz-corrosion = { path = "../ployz-corrosion" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 pingora = { version = "0.8.0", features = ["lb"] }

@@ -6,10 +6,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::daemon::DaemonState;
 use crate::daemon::ssh::SshOptions;
-use crate::model::MachineId;
-use ployz_sdk::transport::{
+use ployz_api::{
     DaemonPayload, MachineOperationInfo, MachineOperationListPayload, MachineOperationPayload,
 };
+use ployz_state::time::now_unix_secs;
+use ployz_types::model::MachineId;
 
 use super::join::{best_effort_remote_cleanup, remove_transient_peer};
 use super::types::MachineAddStage;
@@ -125,7 +126,7 @@ impl MachineOperationStore {
         stage: impl Into<String>,
         artifacts: MachineOperationArtifacts,
     ) -> Result<MachineOperationRecord, String> {
-        let now = crate::time::now_unix_secs();
+        let now = now_unix_secs();
         let record = MachineOperationRecord {
             id: unique_operation_id(kind, now),
             kind,
@@ -148,7 +149,7 @@ impl MachineOperationStore {
         stage: impl Into<String>,
     ) -> Result<(), String> {
         record.stage = stage.into();
-        record.updated_at = crate::time::now_unix_secs();
+        record.updated_at = now_unix_secs();
         self.save(record)
     }
 
@@ -162,7 +163,7 @@ impl MachineOperationStore {
         if let Some(last_error) = last_error {
             record.last_error = Some(last_error);
         }
-        record.updated_at = crate::time::now_unix_secs();
+        record.updated_at = now_unix_secs();
         self.save(record)
     }
 
@@ -237,7 +238,7 @@ impl DaemonState {
 
     pub(crate) async fn handle_machine_operation_list(
         &self,
-    ) -> ployz_sdk::transport::DaemonResponse {
+    ) -> ployz_api::DaemonResponse {
         let records = match self.machine_operation_store().list() {
             Ok(records) => records,
             Err(err) => return self.err("MACHINE_OPERATION_LIST_FAILED", err),
@@ -277,7 +278,7 @@ impl DaemonState {
     pub(crate) async fn handle_machine_operation_get(
         &self,
         id: &str,
-    ) -> ployz_sdk::transport::DaemonResponse {
+    ) -> ployz_api::DaemonResponse {
         let record = match self.machine_operation_store().load(id) {
             Ok(Some(record)) => record,
             Ok(None) => {

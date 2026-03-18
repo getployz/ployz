@@ -1,21 +1,25 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use ployz_sdk::load_client_config;
-use ployz_sdk::spec::{
-    ContainerSpec, DeployManifest, NetworkMode, Placement, PortProtocol, PublishedPort, PullPolicy,
-    Resources, RestartPolicy, RolloutStrategy, ServicePort, ServiceSpec, VolumeMount, VolumeSource,
-};
-use ployz_sdk::transport::{
+use ployz_api::{
     DaemonRequest, DaemonResponse, DebugTickTask as ProtocolDebugTickTask, DeployOptions,
-    InstallSource as MachineInstallSource, MachineAddOptions, MachineInstallOptions, Transport,
-    UnixSocketTransport,
+    InstallRuntimeTarget as ApiInstallRuntimeTarget,
+    InstallServiceMode as ApiInstallServiceMode, InstallSource as MachineInstallSource,
+    MachineAddOptions, MachineInstallOptions,
 };
+use ployz_config::{
+    Affordances, RuntimeTarget, ServiceMode, load_client_config, load_daemon_config,
+    validate_runtime,
+};
+use ployz_api::{Transport, UnixSocketTransport};
+use ployz_state::node::identity::Identity;
+use ployz_types::spec::{
+    ContainerSpec, DeployManifest, NetworkMode, Placement, PortProtocol, PublishedPort, PullPolicy,
+    Resources, RestartPolicy, RolloutStrategy, ServicePort, ServiceSpec, VolumeMount,
+    VolumeSource,
+};
+use ployzd::BuiltInImages;
 use ployzd::daemon::handlers::RequestLane;
 use ployzd::daemon::{ActiveMesh, DaemonState};
 use ployzd::ipc::listener::{IncomingCommand, serve};
-use ployzd::{
-    Affordances, BuiltInImages, Identity, RuntimeTarget, ServiceMode, load_daemon_config,
-    validate_runtime,
-};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -77,6 +81,24 @@ impl From<InstallSourceArg> for MachineInstallSource {
         match value {
             InstallSourceArg::Release => MachineInstallSource::Release,
             InstallSourceArg::Git => MachineInstallSource::Git,
+        }
+    }
+}
+
+impl From<RuntimeTargetArg> for ApiInstallRuntimeTarget {
+    fn from(value: RuntimeTargetArg) -> Self {
+        match value {
+            RuntimeTargetArg::Docker => ApiInstallRuntimeTarget::Docker,
+            RuntimeTargetArg::Host => ApiInstallRuntimeTarget::Host,
+        }
+    }
+}
+
+impl From<ServiceModeArg> for ApiInstallServiceMode {
+    fn from(value: ServiceModeArg) -> Self {
+        match value {
+            ServiceModeArg::User => ApiInstallServiceMode::User,
+            ServiceModeArg::System => ApiInstallServiceMode::System,
         }
     }
 }
@@ -661,12 +683,12 @@ async fn cmd_run(
             config: _config,
             mut mesh,
             remote_control,
-            mut gateway,
-            mut dns,
+            gateway,
+            dns,
         } = active;
         let _ = dns.detach().await;
         let _ = gateway.detach().await;
-        remote_control.shutdown().await;
+        let _ = remote_control.shutdown().await;
         let _ = mesh.detach().await;
     }
 
@@ -1251,7 +1273,7 @@ mod tests {
     #[test]
     fn upsert_service_replaces_existing_service_and_sorts() {
         let mut manifest = DeployManifest {
-            namespace: ployz_sdk::spec::Namespace("prod".into()),
+            namespace: ployz_types::spec::Namespace("prod".into()),
             services: vec![
                 build_service_spec(
                     "redis:latest",

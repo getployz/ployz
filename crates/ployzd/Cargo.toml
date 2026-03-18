@@ -13,12 +13,19 @@ name = "ployz"
 path = "src/bin/ployz.rs"
 
 [features]
-ebpf-native = ["ployz-core/ebpf-native"]
+ebpf-native = ["ployz-orchestrator/ebpf-native"]
 
 [dependencies]
-ployz-core = { path = "../ployz-core" }
+ployz-api = { path = "../ployz-api" }
+ployz-config = { path = "../ployz-config" }
+ployz-corrosion = { path = "../ployz-corrosion" }
+ployz-orchestrator = { path = "../ployz-orchestrator" }
+ployz-runtime-api = { path = "../ployz-runtime-api" }
 ployz-runtime-backends = { path = "../ployz-runtime-backends" }
-ployz-sdk = { path = "../ployz-sdk" }
+ployz-state = { path = "../ployz-state" }
+ployz-store-api = { path = "../ployz-store-api" }
+ployz-store-corrosion = { path = "../ployz-store-corrosion" }
+ployz-types = { path = "../ployz-types" }
 ployz-gateway = { path = "../ployz-gateway" }
 ployz-dns = { path = "../ployz-dns" }
 clap = { workspace = true }
@@ -32,6 +39,8 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
+async-trait = { workspace = true }
+rand = { workspace = true }
 toml = { workspace = true }
 x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
 

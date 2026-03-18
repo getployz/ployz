@@ -4,12 +4,19 @@ use std::path::PathBuf;
 use thiserror::Error;
 use tracing::warn;
 
-use crate::deploy::remote::RemoteControlHandle;
-use crate::mesh::orchestrator::Mesh;
-use crate::services::dns::{DnsConfig, DnsHandle};
-use crate::services::gateway::{GatewayConfig, GatewayHandle};
-use crate::store::bootstrap::{BootstrapInfo, build_seed_records, resolve_bootstrap_addrs};
-use crate::store::network::NetworkConfig;
+use ployz_dns::DnsConfig;
+use ployz_gateway::GatewayConfig;
+use ployz_corrosion::{
+    config as corrosion_config, corrosion_bootstrap_from_db, peer_records_from_db,
+};
+use ployz_config::RuntimeTarget;
+use ployz_orchestrator::Mesh;
+use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
+use ployz_runtime_api::{NoopRuntimeHandle, RuntimeHandle};
+use ployz_state::store::bootstrap::{
+    BootstrapInfo, build_seed_records, resolve_bootstrap_addrs,
+};
+use ployz_state::store::network::NetworkConfig;
 
 use super::{ActiveMesh, DaemonState};
 
@@ -61,9 +68,9 @@ struct StartPlan {
 struct MeshStartTx {
     config: NetworkConfig,
     mesh: Option<Mesh>,
-    remote_control: RemoteControlHandle,
-    gateway: GatewayHandle,
-    dns: DnsHandle,
+    remote_control: Box<dyn RuntimeHandle>,
+    gateway: Box<dyn RuntimeHandle>,
+    dns: Box<dyn RuntimeHandle>,
 }
 
 impl MeshStartTx {
@@ -71,9 +78,9 @@ impl MeshStartTx {
         Self {
             config,
             mesh: None,
-            remote_control: RemoteControlHandle::noop(),
-            gateway: GatewayHandle::noop(),
-            dns: DnsHandle::noop(),
+            remote_control: Box::new(NoopRuntimeHandle),
+            gateway: Box::new(NoopRuntimeHandle),
+            dns: Box::new(NoopRuntimeHandle),
         }
     }
 
@@ -85,8 +92,15 @@ impl MeshStartTx {
         options: MeshStartOptions,
     ) -> Result<(), StartMeshError> {
         let exposed_tcp_ports = [plan.gateway_port];
+        let db_records = peer_records_from_db(&plan.network_dir).unwrap_or_else(|error| {
+            tracing::warn!(
+                ?error,
+                "failed to load corrosion bootstrap peers, continuing without db seeds"
+            );
+            Vec::new()
+        });
         let components = state
-            .runtime_profile
+            .runtime_ops
             .build_mesh_components(
                 &state.identity,
                 self.config.overlay_ip,
@@ -100,13 +114,14 @@ impl MeshStartTx {
             .await
             .map_err(StartMeshError::NetworkDriver)?;
 
-        let listen_port = crate::mesh::wireguard::DEFAULT_LISTEN_PORT;
+        let listen_port = DEFAULT_LISTEN_PORT;
         let seed_records = build_seed_records(
             &plan.network_dir,
             &state.identity,
             &self.config,
             plan.bootstrap.as_ref(),
             listen_port,
+            &db_records,
         )
         .await;
 
@@ -141,14 +156,14 @@ impl MeshStartTx {
         };
 
         let handle = state
-            .runtime_profile
+            .runtime_ops
             .start_remote_control(
                 plan.remote_control_bind_addr,
                 mesh.store.clone(),
                 state.namespace_locks.clone(),
                 state.identity.machine_id.clone(),
                 plan.overlay_network_name.clone(),
-                if state.runtime_target == crate::config::RuntimeTarget::Docker {
+                if state.runtime_target == RuntimeTarget::Docker {
                     mesh.container_dns_server()
                 } else {
                     None
@@ -174,8 +189,8 @@ impl MeshStartTx {
             .runtime_profile
             .start_gateway(plan.gateway_config.clone())
             .await
-            .map_err(|error| StartMeshError::Gateway(error.to_string()))?;
-        self.gateway = handle;
+            .map_err(StartMeshError::Gateway)?;
+        self.gateway = Box::new(handle);
         Ok(())
     }
 
@@ -189,8 +204,8 @@ impl MeshStartTx {
             .runtime_profile
             .start_dns(plan.dns_config.clone())
             .await
-            .map_err(|error| StartMeshError::Dns(error.to_string()))?;
-        self.dns = handle;
+            .map_err(StartMeshError::Dns)?;
+        self.dns = Box::new(handle);
         Ok(())
     }
 
@@ -206,9 +221,9 @@ impl MeshStartTx {
             ));
         };
         let remote_control =
-            std::mem::replace(&mut self.remote_control, RemoteControlHandle::noop());
-        let gateway = std::mem::replace(&mut self.gateway, GatewayHandle::noop());
-        let dns = std::mem::replace(&mut self.dns, DnsHandle::noop());
+            std::mem::replace(&mut self.remote_control, Box::new(NoopRuntimeHandle));
+        let gateway = std::mem::replace(&mut self.gateway, Box::new(NoopRuntimeHandle));
+        let dns = std::mem::replace(&mut self.dns, Box::new(NoopRuntimeHandle));
 
         state.active = Some(ActiveMesh {
             config: self.config.clone(),
@@ -221,19 +236,19 @@ impl MeshStartTx {
     }
 
     async fn rollback_startup(&mut self) {
-        let mut dns = std::mem::replace(&mut self.dns, DnsHandle::noop());
+        let dns = std::mem::replace(&mut self.dns, Box::new(NoopRuntimeHandle));
         if let Err(error) = dns.shutdown().await {
             warn!(?error, "dns rollback failed");
         }
 
-        let mut gateway = std::mem::replace(&mut self.gateway, GatewayHandle::noop());
+        let gateway = std::mem::replace(&mut self.gateway, Box::new(NoopRuntimeHandle));
         if let Err(error) = gateway.shutdown().await {
             warn!(?error, "gateway rollback failed");
         }
 
         let remote_control =
-            std::mem::replace(&mut self.remote_control, RemoteControlHandle::noop());
-        remote_control.shutdown().await;
+            std::mem::replace(&mut self.remote_control, Box::new(NoopRuntimeHandle));
+        let _ = remote_control.shutdown().await;
 
         if let Some(mut mesh) = self.mesh.take()
             && let Err(error) = mesh.detach().await
@@ -317,7 +332,7 @@ impl DaemonState {
         };
 
         let components = self
-            .runtime_profile
+            .runtime_ops
             .build_mesh_components(
                 &self.identity,
                 net_config.overlay_ip,
@@ -331,7 +346,7 @@ impl DaemonState {
             .await
             .map_err(|error| format!("runtime components failed: {error}"))?;
 
-        let mut dns = std::mem::replace(&mut active.dns, DnsHandle::noop());
+        let dns = std::mem::replace(&mut active.dns, Box::new(NoopRuntimeHandle));
         if let Err(error) = dns.shutdown().await {
             tracing::warn!(
                 ?error,
@@ -339,7 +354,7 @@ impl DaemonState {
             );
         }
 
-        let mut gateway = std::mem::replace(&mut active.gateway, GatewayHandle::noop());
+        let gateway = std::mem::replace(&mut active.gateway, Box::new(NoopRuntimeHandle));
         if let Err(error) = gateway.shutdown().await {
             tracing::warn!(
                 ?error,
@@ -378,11 +393,12 @@ impl DaemonState {
             .runtime_profile
             .start_gateway(gateway_config)
             .await
+            .map(|handle| Box::new(handle) as Box<dyn RuntimeHandle>)
             .map_err(|error| format!("gateway start failed: {error}"))?;
         let new_dns = match self.runtime_profile.start_dns(dns_config).await {
-            Ok(handle) => handle,
+            Ok(handle) => Box::new(handle) as Box<dyn RuntimeHandle>,
             Err(error) => {
-                let mut gateway = new_gateway;
+                let gateway = new_gateway;
                 if let Err(shutdown_error) = gateway.shutdown().await {
                     tracing::warn!(
                         ?shutdown_error,
@@ -414,12 +430,20 @@ impl DaemonState {
         _options: MeshStartOptions,
     ) -> Result<StartPlan, StartMeshError> {
         let network_dir = self.network_dir(&net_config.name.0);
-        let bootstrap_addrs =
-            resolve_bootstrap_addrs(&network_dir, &self.identity.machine_id, &bootstrap)
-                .map_err(StartMeshError::BootstrapResolve)?;
+        let fallback_bootstrap_addrs = corrosion_bootstrap_from_db(
+            &network_dir,
+            &self.identity.machine_id,
+        )
+        .map_err(StartMeshError::BootstrapResolve)?;
+        let bootstrap_addrs = resolve_bootstrap_addrs(
+            &bootstrap,
+            corrosion_config::DEFAULT_GOSSIP_PORT,
+            &fallback_bootstrap_addrs,
+        )
+        .map_err(StartMeshError::BootstrapResolve)?;
         let gateway_port = Self::gateway_port(&self.gateway_listen_addr)?;
         let remote_control_bind_addr = self
-            .runtime_profile
+            .runtime_ops
             .remote_control_bind_addr(self.remote_control_port, net_config.overlay_ip);
         let gateway_config = GatewayConfig::for_network(
             &self.data_dir,
@@ -443,7 +467,7 @@ impl DaemonState {
             gateway_config,
             dns_config,
             overlay_network_name: self
-                .runtime_profile
+                .runtime_ops
                 .overlay_network_name(&net_config.name.0),
         })
     }
@@ -451,7 +475,7 @@ impl DaemonState {
     /// Returns the DNS bridge listen address for Docker runtime targets,
     /// or `None` for host-based runtimes.
     fn dns_bridge_listen_addr(&self) -> Option<String> {
-        if self.runtime_target == crate::config::RuntimeTarget::Docker {
+        if self.runtime_target == RuntimeTarget::Docker {
             Some("0.0.0.0:53".into())
         } else {
             None
@@ -477,9 +501,9 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
-    use crate::config::{RuntimeTarget, ServiceMode};
-    use crate::model::{MachineId, NetworkName};
-    use crate::node::identity::Identity;
+    use ployz_config::{RuntimeTarget, ServiceMode};
+    use ployz_state::Identity;
+    use ployz_types::model::{MachineId, NetworkName};
 
     #[test]
     fn plan_mesh_start_uses_localhost_for_docker_remote_control() {
@@ -529,7 +553,7 @@ mod tests {
         let state = make_test_state("0.0.0.0:80");
         let config = make_network_config(&state, "alpha");
         let network_dir = state.network_dir(&config.name.0);
-        let db_path = ployz_core::corrosion_config::Paths::new(&network_dir).db;
+        let db_path = ployz_corrosion::config::Paths::new(&network_dir).db;
         fs::create_dir_all(&db_path).expect("create invalid db path");
 
         let error = match state.plan_mesh_start(&config, None, MeshStartOptions::default()) {
