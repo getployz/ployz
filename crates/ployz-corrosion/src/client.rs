@@ -72,11 +72,12 @@ impl tower::Service<Uri> for BridgeConnector {
             let port = uri.port_u16().unwrap_or(80);
 
             // Parse the logical address from the URI
-            let addr_str = if let Some(bare) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
-                format!("[{bare}]:{port}")
-            } else {
-                format!("{host}:{port}")
-            };
+            let addr_str =
+                if let Some(bare) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+                    format!("[{bare}]:{port}")
+                } else {
+                    format!("{host}:{port}")
+                };
             let logical: SocketAddr = addr_str.parse().map_err(|e| {
                 io::Error::new(io::ErrorKind::InvalidInput, format!("bad address: {e}"))
             })?;

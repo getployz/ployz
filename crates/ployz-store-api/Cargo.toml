@@ -8,6 +8,7 @@ publish = false
 ployz-types = { path = "../ployz-types" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
+tracing = { workspace = true }
 
 [lints.clippy]
 indexing_slicing = "warn"

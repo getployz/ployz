@@ -14,7 +14,8 @@ path = "src/main.rs"
 
 [dependencies]
 ployz-config = { path = "../ployz-config" }
-ployz-store-corrosion = { path = "../ployz-store-corrosion" }
+ployz-corrosion = { path = "../ployz-corrosion" }
+ployz-store-api = { path = "../ployz-store-api" }
 ployz-types = { path = "../ployz-types" }
 serde = { workspace = true }
 serde_json = { workspace = true }

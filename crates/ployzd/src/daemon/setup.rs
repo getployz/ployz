@@ -4,19 +4,17 @@ use std::path::PathBuf;
 use thiserror::Error;
 use tracing::warn;
 
-use ployz_dns::DnsConfig;
-use ployz_gateway::GatewayConfig;
+use crate::mesh_state::bootstrap::{BootstrapInfo, build_seed_records, resolve_bootstrap_addrs};
+use crate::mesh_state::network::NetworkConfig;
+use ployz_config::RuntimeTarget;
 use ployz_corrosion::{
     config as corrosion_config, corrosion_bootstrap_from_db, peer_records_from_db,
 };
-use ployz_config::RuntimeTarget;
+use ployz_dns::DnsConfig;
+use ployz_gateway::GatewayConfig;
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_runtime_api::{NoopRuntimeHandle, RuntimeHandle};
-use ployz_state::store::bootstrap::{
-    BootstrapInfo, build_seed_records, resolve_bootstrap_addrs,
-};
-use ployz_state::store::network::NetworkConfig;
 
 use super::{ActiveMesh, DaemonState};
 
@@ -100,9 +98,7 @@ impl MeshStartTx {
             Vec::new()
         });
         let components = state
-            .runtime_ops
-            .build_mesh_components(
-                &state.identity,
+            .build_runtime_mesh_components(
                 self.config.overlay_ip,
                 &plan.network_dir,
                 &self.config.name.0,
@@ -156,8 +152,7 @@ impl MeshStartTx {
         };
 
         let handle = state
-            .runtime_ops
-            .start_remote_control(
+            .start_runtime_remote_control(
                 plan.remote_control_bind_addr,
                 mesh.store.clone(),
                 state.namespace_locks.clone(),
@@ -186,11 +181,10 @@ impl MeshStartTx {
         plan: &StartPlan,
     ) -> Result<(), StartMeshError> {
         let handle = state
-            .runtime_profile
-            .start_gateway(plan.gateway_config.clone())
+            .start_runtime_gateway(plan.gateway_config.clone())
             .await
             .map_err(StartMeshError::Gateway)?;
-        self.gateway = Box::new(handle);
+        self.gateway = handle;
         Ok(())
     }
 
@@ -201,11 +195,10 @@ impl MeshStartTx {
         plan: &StartPlan,
     ) -> Result<(), StartMeshError> {
         let handle = state
-            .runtime_profile
-            .start_dns(plan.dns_config.clone())
+            .start_runtime_dns(plan.dns_config.clone())
             .await
             .map_err(StartMeshError::Dns)?;
-        self.dns = Box::new(handle);
+        self.dns = handle;
         Ok(())
     }
 
@@ -327,14 +320,12 @@ impl DaemonState {
         let network_dir = self.network_dir(&net_config.name.0);
         let dns_bridge_listen_addr = self.dns_bridge_listen_addr();
 
-        let Some(active) = self.active.as_mut() else {
+        if self.active.is_none() {
             return Err("no running network".into());
-        };
+        }
 
         let components = self
-            .runtime_ops
-            .build_mesh_components(
-                &self.identity,
+            .build_runtime_mesh_components(
                 net_config.overlay_ip,
                 &network_dir,
                 &net_config.name.0,
@@ -345,6 +336,41 @@ impl DaemonState {
             )
             .await
             .map_err(|error| format!("runtime components failed: {error}"))?;
+
+        let gateway_config = GatewayConfig::for_network(
+            &self.data_dir,
+            &net_config.name.0,
+            self.gateway_listen_addr.clone(),
+            self.gateway_threads,
+        );
+        let dns_config = DnsConfig::for_network(
+            &self.data_dir,
+            &net_config.name.0,
+            net_config.overlay_ip,
+            dns_bridge_listen_addr,
+        );
+
+        let new_gateway = self
+            .start_runtime_gateway(gateway_config)
+            .await
+            .map_err(|error| format!("gateway start failed: {error}"))?;
+        let new_dns = match self.start_runtime_dns(dns_config).await {
+            Ok(handle) => handle,
+            Err(error) => {
+                let gateway = new_gateway;
+                if let Err(shutdown_error) = gateway.shutdown().await {
+                    tracing::warn!(
+                        ?shutdown_error,
+                        "subnet heal: gateway rollback failed after dns start error"
+                    );
+                }
+                return Err(format!("dns start failed: {error}"));
+            }
+        };
+
+        let Some(active) = self.active.as_mut() else {
+            return Err("no running network".into());
+        };
 
         let dns = std::mem::replace(&mut active.dns, Box::new(NoopRuntimeHandle));
         if let Err(error) = dns.shutdown().await {
@@ -376,39 +402,6 @@ impl DaemonState {
             .await
             .map_err(|error| format!("mesh runtime restart failed: {error}"))?;
 
-        let gateway_config = GatewayConfig::for_network(
-            &self.data_dir,
-            &net_config.name.0,
-            self.gateway_listen_addr.clone(),
-            self.gateway_threads,
-        );
-        let dns_config = DnsConfig::for_network(
-            &self.data_dir,
-            &net_config.name.0,
-            net_config.overlay_ip,
-            dns_bridge_listen_addr,
-        );
-
-        let new_gateway = self
-            .runtime_profile
-            .start_gateway(gateway_config)
-            .await
-            .map(|handle| Box::new(handle) as Box<dyn RuntimeHandle>)
-            .map_err(|error| format!("gateway start failed: {error}"))?;
-        let new_dns = match self.runtime_profile.start_dns(dns_config).await {
-            Ok(handle) => Box::new(handle) as Box<dyn RuntimeHandle>,
-            Err(error) => {
-                let gateway = new_gateway;
-                if let Err(shutdown_error) = gateway.shutdown().await {
-                    tracing::warn!(
-                        ?shutdown_error,
-                        "subnet heal: gateway rollback failed after dns start error"
-                    );
-                }
-                return Err(format!("dns start failed: {error}"));
-            }
-        };
-
         let _ = active
             .mesh
             .update_authoritative_self_record(|record| {
@@ -430,11 +423,9 @@ impl DaemonState {
         _options: MeshStartOptions,
     ) -> Result<StartPlan, StartMeshError> {
         let network_dir = self.network_dir(&net_config.name.0);
-        let fallback_bootstrap_addrs = corrosion_bootstrap_from_db(
-            &network_dir,
-            &self.identity.machine_id,
-        )
-        .map_err(StartMeshError::BootstrapResolve)?;
+        let fallback_bootstrap_addrs =
+            corrosion_bootstrap_from_db(&network_dir, &self.identity.machine_id)
+                .map_err(StartMeshError::BootstrapResolve)?;
         let bootstrap_addrs = resolve_bootstrap_addrs(
             &bootstrap,
             corrosion_config::DEFAULT_GOSSIP_PORT,
@@ -442,9 +433,8 @@ impl DaemonState {
         )
         .map_err(StartMeshError::BootstrapResolve)?;
         let gateway_port = Self::gateway_port(&self.gateway_listen_addr)?;
-        let remote_control_bind_addr = self
-            .runtime_ops
-            .remote_control_bind_addr(self.remote_control_port, net_config.overlay_ip);
+        let remote_control_bind_addr =
+            self.remote_control_bind_addr(self.remote_control_port, net_config.overlay_ip);
         let gateway_config = GatewayConfig::for_network(
             &self.data_dir,
             &net_config.name.0,
@@ -466,9 +456,7 @@ impl DaemonState {
             remote_control_bind_addr,
             gateway_config,
             dns_config,
-            overlay_network_name: self
-                .runtime_ops
-                .overlay_network_name(&net_config.name.0),
+            overlay_network_name: self.runtime_overlay_network_name(&net_config.name.0),
         })
     }
 
@@ -502,7 +490,7 @@ mod tests {
 
     use super::*;
     use ployz_config::{RuntimeTarget, ServiceMode};
-    use ployz_state::Identity;
+    use ployz_runtime_api::Identity;
     use ployz_types::model::{MachineId, NetworkName};
 
     #[test]

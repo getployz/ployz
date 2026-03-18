@@ -1,30 +1,26 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 
-use async_trait::async_trait;
 use crate::built_in_images::{BuiltInImage, BuiltInImages};
+use crate::services::corrosion::{corrosion_docker, corrosion_host};
 use crate::services::dns::{DnsHandle, start_managed_dns};
 use crate::services::gateway::{GatewayHandle, start_managed_gateway};
 use crate::services::supervisor::ServiceSupervision;
 use ipnet::Ipv4Net;
-use ployz_dns::DnsConfig;
 use ployz_config::{RuntimeTarget, ServiceMode};
+use ployz_dns::DnsConfig;
 use ployz_gateway::GatewayConfig;
 use ployz_orchestrator::WireguardDriver;
-use ployz_runtime_backends::deploy::remote::{
-    RemoteControlHandle, start_remote_control_listener,
-};
+use ployz_runtime_api::Identity;
+use ployz_runtime_api::{NamespaceLockManager, RestartableWorkload};
+use ployz_runtime_backends::deploy::remote::{RemoteControlHandle, start_remote_control_listener};
 use ployz_runtime_backends::mesh::driver as mesh_backends;
 use ployz_runtime_backends::network::docker_bridge_network;
 use ployz_runtime_backends::runtime::{
     ContainerEngine,
     labels::{LABEL_KIND, LABEL_MACHINE, LABEL_MANAGED},
 };
-use ployz_runtime_api::{
-    MeshRuntimeComponents, NamespaceLockManager, RestartableWorkload, RuntimeHandle, RuntimeOps,
-};
-use ployz_state::{Identity, StoreDriver};
-use ployz_store_corrosion as store_backends;
+use ployz_store_api::StoreDriver;
 use ployz_types::model::{MachineId, OverlayIp};
 
 const HEAL_WORKLOAD_STOP_GRACE: tokio::time::Duration = tokio::time::Duration::from_secs(10);
@@ -42,7 +38,7 @@ pub(crate) enum ControlPlaneBinding {
     Overlay,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct RuntimeProfile {
     execution_backend: ExecutionBackend,
     runtime_target: RuntimeTarget,
@@ -50,6 +46,12 @@ pub(crate) struct RuntimeProfile {
     control_plane_binding: ControlPlaneBinding,
     sidecar_supervision: Option<ServiceSupervision>,
     built_in_images: BuiltInImages,
+}
+
+pub(crate) struct MeshRuntimeComponents {
+    pub(crate) network: WireguardDriver,
+    pub(crate) store: StoreDriver,
+    pub(crate) container_network: Option<ployz_orchestrator::ContainerNetwork>,
 }
 
 impl RuntimeProfile {
@@ -122,29 +124,35 @@ impl RuntimeProfile {
     ) -> Result<MeshRuntimeComponents, String> {
         let network = match self.execution_backend {
             ExecutionBackend::Memory => WireguardDriver::memory(),
-            ExecutionBackend::Docker => mesh_backends::docker(
-                identity,
-                overlay_ip,
-                network_dir,
-                exposed_tcp_ports,
-                self.built_in_images.resolve(BuiltInImage::Networking),
-            )
-            .await?,
-            ExecutionBackend::Host => mesh_backends::host(identity, overlay_ip, network_name, subnet)?,
+            ExecutionBackend::Docker => {
+                mesh_backends::docker(
+                    identity,
+                    overlay_ip,
+                    network_dir,
+                    exposed_tcp_ports,
+                    self.built_in_images.resolve(BuiltInImage::Networking),
+                )
+                .await?
+            }
+            ExecutionBackend::Host => {
+                mesh_backends::host(identity, overlay_ip, network_name, subnet)?
+            }
         };
 
         let store = match self.execution_backend {
             ExecutionBackend::Memory => StoreDriver::memory(),
-            ExecutionBackend::Docker => store_backends::corrosion_docker(
-                overlay_ip,
-                network_dir,
-                bootstrap,
-                network_id,
-                self.built_in_images.resolve(BuiltInImage::Corrosion),
-            )
-            .await?,
+            ExecutionBackend::Docker => {
+                corrosion_docker(
+                    overlay_ip,
+                    network_dir,
+                    bootstrap,
+                    network_id,
+                    self.built_in_images.resolve(BuiltInImage::Corrosion),
+                )
+                .await?
+            }
             ExecutionBackend::Host => {
-                store_backends::corrosion_host(overlay_ip, network_dir, bootstrap, network_id)?
+                corrosion_host(overlay_ip, network_dir, bootstrap, network_id)?
             }
         };
 
@@ -332,96 +340,5 @@ impl RuntimeProfile {
         }
 
         Ok(())
-    }
-}
-
-#[async_trait]
-impl RuntimeOps for RuntimeProfile {
-    fn is_memory_test(&self) -> bool {
-        Self::is_memory_test(self)
-    }
-
-    fn overlay_network_name(&self, network_name: &str) -> Option<String> {
-        Self::overlay_network_name(self, network_name)
-    }
-
-    async fn build_mesh_components(
-        &self,
-        identity: &Identity,
-        overlay_ip: OverlayIp,
-        network_dir: &Path,
-        network_name: &str,
-        subnet: Ipv4Net,
-        exposed_tcp_ports: &[u16],
-        bootstrap: &[String],
-        network_id: &str,
-    ) -> Result<MeshRuntimeComponents, String> {
-        Self::build_mesh_components(
-            self,
-            identity,
-            overlay_ip,
-            network_dir,
-            network_name,
-            subnet,
-            exposed_tcp_ports,
-            bootstrap,
-            network_id,
-        )
-        .await
-    }
-
-    fn remote_control_bind_addr(
-        &self,
-        remote_control_port: u16,
-        overlay_ip: OverlayIp,
-    ) -> SocketAddr {
-        Self::remote_control_bind_addr(self, remote_control_port, overlay_ip)
-    }
-
-    async fn start_remote_control(
-        &self,
-        bind_addr: SocketAddr,
-        store: StoreDriver,
-        namespace_locks: NamespaceLockManager,
-        machine_id: MachineId,
-        overlay_network_name: Option<String>,
-        overlay_dns_server: Option<Ipv4Addr>,
-    ) -> Result<Box<dyn RuntimeHandle>, String> {
-        Self::start_remote_control(
-            self,
-            bind_addr,
-            store,
-            namespace_locks,
-            machine_id,
-            overlay_network_name,
-            overlay_dns_server,
-        )
-        .await
-        .map(|handle| Box::new(handle) as Box<dyn RuntimeHandle>)
-    }
-
-    async fn stop_local_workloads_for_subnet_heal(
-        &self,
-        machine_id: &MachineId,
-        network_name: &str,
-        target_subnet: Ipv4Net,
-    ) -> Result<Vec<RestartableWorkload>, String> {
-        Self::stop_local_workloads_for_subnet_heal(self, machine_id, network_name, target_subnet)
-            .await
-    }
-
-    async fn start_local_workloads_after_subnet_heal(
-        &self,
-        network_name: &str,
-        target_subnet: Ipv4Net,
-        workloads: &[RestartableWorkload],
-    ) -> Result<(), String> {
-        Self::start_local_workloads_after_subnet_heal(
-            self,
-            network_name,
-            target_subnet,
-            workloads,
-        )
-        .await
     }
 }

@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 
+use crate::routes::{BackendView, GatewaySnapshot};
 use pingora::lb::prelude::LoadBalancer;
 use pingora::lb::selection::RoundRobin;
-use crate::routes::{BackendView, GatewaySnapshot};
 
 pub struct SnapshotState {
     pub snapshot: Arc<GatewaySnapshot>,

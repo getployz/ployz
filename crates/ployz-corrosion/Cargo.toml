@@ -5,6 +5,8 @@ edition = "2024"
 publish = false
 
 [dependencies]
+ployz-config = { path = "../ployz-config" }
+ployz-store-api = { path = "../ployz-store-api" }
 ployz-types = { path = "../ployz-types" }
 corro-api-types = { git = "https://github.com/getployz/corrosion.git", branch = "main" }
 tokio = { workspace = true }

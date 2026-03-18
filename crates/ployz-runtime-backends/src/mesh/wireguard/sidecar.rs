@@ -6,8 +6,8 @@ use bollard::query_parameters::{
 use std::net::Ipv4Addr;
 use tracing::info;
 
-use crate::error::{Error, Result};
 use super::docker::{docker_exec_capture, docker_force_remove};
+use crate::error::{Error, Result};
 
 use super::PERSISTENT_KEEPALIVE_SECS;
 use super::config::encode_key;
@@ -212,8 +212,13 @@ impl WgSidecar {
     }
 
     async fn exec(&self, cmd: &[&str]) -> Result<()> {
-        docker_exec_capture(&self.docker, &self.config.container_name, cmd, "sidecar exec")
-            .await
-            .map(|_| ())
+        docker_exec_capture(
+            &self.docker,
+            &self.config.container_name,
+            cmd,
+            "sidecar exec",
+        )
+        .await
+        .map(|_| ())
     }
 }

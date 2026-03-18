@@ -2,7 +2,7 @@ use directories::{BaseDirs, ProjectDirs};
 use figment::Figment;
 use figment::providers::{Env, Format, Serialized, Toml};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,44 +26,10 @@ pub enum ServiceMode {
     System,
 }
 
-#[derive(Debug, Clone)]
-pub struct Affordances {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostPathsContext {
     pub os: Os,
-    pub has_kernel_wireguard: bool,
-    pub has_docker: bool,
     pub is_root: bool,
-    pub has_wg_helper: bool,
-}
-
-impl Affordances {
-    #[must_use]
-    pub fn detect() -> Self {
-        let os = if cfg!(target_os = "linux") {
-            Os::Linux
-        } else if cfg!(target_os = "macos") {
-            Os::Darwin
-        } else {
-            Os::Other
-        };
-        let is_root = cfg!(unix) && unsafe { libc::geteuid() } == 0;
-        let has_docker = std::process::Command::new("docker")
-            .arg("info")
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false);
-        let has_wg_helper = std::process::Command::new("wg")
-            .arg("--help")
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false);
-        Self {
-            os,
-            has_kernel_wireguard: false,
-            has_docker,
-            is_root,
-            has_wg_helper,
-        }
-    }
 }
 
 #[derive(Debug, Error)]
@@ -155,9 +121,9 @@ struct DaemonOverrides {
 }
 
 #[must_use]
-pub fn default_data_dir(aff: &Affordances) -> PathBuf {
-    match aff.os {
-        Os::Linux if aff.is_root => "/var/lib/ployz".into(),
+pub fn default_data_dir(context: &HostPathsContext) -> PathBuf {
+    match context.os {
+        Os::Linux if context.is_root => "/var/lib/ployz".into(),
         Os::Linux | Os::Darwin | Os::Other => project_dirs()
             .map(|dirs| dirs.data_local_dir().to_path_buf())
             .unwrap_or_else(|| home_dir().join(".ployz")),
@@ -165,9 +131,9 @@ pub fn default_data_dir(aff: &Affordances) -> PathBuf {
 }
 
 #[must_use]
-pub fn default_socket_path(aff: &Affordances) -> String {
-    let path = match aff.os {
-        Os::Linux if aff.is_root => PathBuf::from("/run/ployz/ployzd.sock"),
+pub fn default_socket_path(context: &HostPathsContext) -> String {
+    let path = match context.os {
+        Os::Linux if context.is_root => PathBuf::from("/run/ployz/ployzd.sock"),
         Os::Linux => base_dirs()
             .and_then(|dirs| {
                 dirs.runtime_dir()
@@ -193,15 +159,36 @@ pub fn resolve_config_path(cli_config_path: Option<PathBuf>) -> PathBuf {
         .unwrap_or_else(default_config_path)
 }
 
+/// Path to a network's directory: `<data_dir>/networks/<name>/`
+#[must_use]
+pub fn network_dir(data_dir: &Path, name: &str) -> PathBuf {
+    data_dir.join("networks").join(name)
+}
+
+/// Path to a network's config file: `<data_dir>/networks/<name>/network.json`
+#[must_use]
+pub fn network_config_path(data_dir: &Path, name: &str) -> PathBuf {
+    network_dir(data_dir, name).join("network.json")
+}
+
+/// Read the active network name from `<data_dir>/active_network`.
+#[must_use]
+pub fn read_active_network(data_dir: &Path) -> Option<String> {
+    std::fs::read_to_string(data_dir.join("active_network"))
+        .ok()
+        .map(|content| content.trim().to_string())
+        .filter(|content| !content.is_empty())
+}
+
 #[allow(clippy::result_large_err)]
 pub fn load_client_config(
     cli_config_path: Option<PathBuf>,
     cli_socket: Option<String>,
-    aff: &Affordances,
+    context: &HostPathsContext,
 ) -> std::result::Result<ClientConfig, ConfigLoadError> {
     let overrides = ClientOverrides { socket: cli_socket };
 
-    build_figment(cli_config_path, aff)
+    build_figment(cli_config_path, context)
         .merge(Serialized::defaults(overrides))
         .extract()
         .map_err(ConfigLoadError::from)
@@ -213,7 +200,7 @@ pub fn load_daemon_config(
     cli_data_dir: Option<PathBuf>,
     cli_socket: Option<String>,
     cli_remote_control_port: Option<u16>,
-    aff: &Affordances,
+    context: &HostPathsContext,
 ) -> std::result::Result<DaemonConfig, ConfigLoadError> {
     let overrides = DaemonOverrides {
         data_dir: cli_data_dir,
@@ -226,16 +213,16 @@ pub fn load_daemon_config(
         gateway_threads: None,
     };
 
-    build_figment(cli_config_path, aff)
+    build_figment(cli_config_path, context)
         .merge(Serialized::defaults(overrides))
         .extract()
         .map_err(ConfigLoadError::from)
 }
 
-fn build_figment(cli_config_path: Option<PathBuf>, aff: &Affordances) -> Figment {
+fn build_figment(cli_config_path: Option<PathBuf>, context: &HostPathsContext) -> Figment {
     let defaults = RuntimeDefaults {
-        data_dir: default_data_dir(aff),
-        socket: default_socket_path(aff),
+        data_dir: default_data_dir(context),
+        socket: default_socket_path(context),
         builtin_images_manifest: None,
         cluster_cidr: default_cluster_cidr(),
         subnet_prefix_len: default_subnet_prefix_len(),
@@ -267,119 +254,15 @@ fn home_dir() -> PathBuf {
         .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("/tmp"))
 }
-
-pub fn validate_runtime(
-    runtime_target: RuntimeTarget,
-    service_mode: ServiceMode,
-    aff: &Affordances,
-) -> std::result::Result<(), String> {
-    match runtime_target {
-        RuntimeTarget::Docker => {
-            if !aff.has_docker {
-                return Err("docker runtime requires a running Docker daemon".into());
-            }
-            if service_mode != ServiceMode::User {
-                return Err("docker runtime only supports user service mode".into());
-            }
-            Ok(())
-        }
-        RuntimeTarget::Host => {
-            if aff.os == Os::Other {
-                return Err("host runtime is not supported on this platform".into());
-            }
-            if service_mode == ServiceMode::System {
-                if aff.os != Os::Linux {
-                    return Err("system service mode is only supported on Linux".into());
-                }
-                if !aff.is_root {
-                    return Err("system service mode requires sudo/root".into());
-                }
-            }
-            Ok(())
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn aff(os: Os, docker: bool) -> Affordances {
-        Affordances {
+    fn context(os: Os, is_root: bool) -> HostPathsContext {
+        HostPathsContext {
             os,
-            has_kernel_wireguard: false,
-            has_docker: docker,
-            is_root: false,
-            has_wg_helper: false,
+            is_root,
         }
-    }
-
-    #[test]
-    fn docker_runtime_requires_docker() {
-        assert!(
-            validate_runtime(
-                RuntimeTarget::Docker,
-                ServiceMode::User,
-                &aff(Os::Linux, false)
-            )
-            .is_err()
-        );
-        assert!(
-            validate_runtime(
-                RuntimeTarget::Docker,
-                ServiceMode::User,
-                &aff(Os::Linux, true)
-            )
-            .is_ok()
-        );
-    }
-
-    #[test]
-    fn docker_runtime_rejects_system_service_mode() {
-        assert!(
-            validate_runtime(
-                RuntimeTarget::Docker,
-                ServiceMode::System,
-                &aff(Os::Linux, true)
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn host_runtime_rejects_unknown_os() {
-        assert!(
-            validate_runtime(
-                RuntimeTarget::Host,
-                ServiceMode::User,
-                &aff(Os::Other, false)
-            )
-            .is_err()
-        );
-        assert!(
-            validate_runtime(
-                RuntimeTarget::Host,
-                ServiceMode::User,
-                &aff(Os::Linux, false)
-            )
-            .is_ok()
-        );
-    }
-
-    #[test]
-    fn host_system_service_requires_linux_root() {
-        assert!(
-            validate_runtime(
-                RuntimeTarget::Host,
-                ServiceMode::System,
-                &aff(Os::Darwin, false)
-            )
-            .is_err()
-        );
-
-        let mut affordances = aff(Os::Linux, false);
-        affordances.is_root = true;
-        assert!(validate_runtime(RuntimeTarget::Host, ServiceMode::System, &affordances).is_ok());
     }
 
     #[test]
@@ -389,7 +272,7 @@ mod tests {
             std::env::set_var("PLOYZ_BUILTIN_IMAGES_MANIFEST", &manifest_path);
         }
 
-        let loaded = load_daemon_config(None, None, None, None, &aff(Os::Darwin, true))
+        let loaded = load_daemon_config(None, None, None, None, &context(Os::Darwin, false))
             .expect("daemon config should load");
 
         assert_eq!(

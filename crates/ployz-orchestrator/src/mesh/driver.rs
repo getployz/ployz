@@ -111,17 +111,13 @@ impl MeshNetwork for WireguardDriver {
         async move { self.backend.has_remote_handshake().await }
     }
 
-    fn bridge_ip(
-        &self,
-    ) -> impl std::future::Future<Output = Option<OverlayIp>> + Send + '_ {
+    fn bridge_ip(&self) -> impl std::future::Future<Output = Option<OverlayIp>> + Send + '_ {
         async move { self.backend.bridge_ip().await }
     }
 }
 
 impl WireGuardDevice for WireguardDriver {
-    fn read_peers(
-        &self,
-    ) -> impl std::future::Future<Output = Result<Vec<DevicePeer>>> + Send + '_ {
+    fn read_peers(&self) -> impl std::future::Future<Output = Result<Vec<DevicePeer>>> + Send + '_ {
         async move { self.backend.read_peers().await }
     }
 

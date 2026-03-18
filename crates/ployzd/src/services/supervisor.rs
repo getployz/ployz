@@ -24,13 +24,8 @@ pub enum ServiceSupervision {
 // SidecarSpec — declarative description of a sidecar service
 // ---------------------------------------------------------------------------
 
-/// What kind of systemd unit type to use.
-pub enum SystemdType {
-    Simple,
-    Forking,
-}
-
 /// Declarative description of a sidecar service.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub struct SidecarSpec {
     pub name: String,
     pub image: String,
@@ -41,8 +36,6 @@ pub struct SidecarSpec {
     pub binds: Vec<String>,
     /// Container whose network namespace to share (Docker `--network=container:X`).
     pub network_container: Option<String>,
-    pub compose_service: String,
-    pub systemd_type: SystemdType,
     /// Extra unit file content (PIDFile, ExecReload, etc.) inserted into [Service].
     pub systemd_extra: String,
 }
@@ -314,11 +307,6 @@ impl SystemdHandle {
 fn build_unit_content(spec: &SidecarSpec, binary: &std::path::Path) -> String {
     let binary_str = systemd_quote(&binary.display().to_string());
 
-    let systemd_type_str = match spec.systemd_type {
-        SystemdType::Simple => "simple",
-        SystemdType::Forking => "forking",
-    };
-
     let env_lines: String = spec
         .env
         .iter()
@@ -340,7 +328,7 @@ fn build_unit_content(spec: &SidecarSpec, binary: &std::path::Path) -> String {
     };
 
     format!(
-        "[Unit]\nDescription=Ployz {name}\nAfter=network-online.target\n\n[Service]\nType={systemd_type_str}\n{env_lines}\nExecStart={exec_start}\n{extra}Restart=on-failure\n\n[Install]\nWantedBy=multi-user.target\n",
+        "[Unit]\nDescription=Ployz {name}\nAfter=network-online.target\n\n[Service]\nType=simple\n{env_lines}\nExecStart={exec_start}\n{extra}Restart=on-failure\n\n[Install]\nWantedBy=multi-user.target\n",
         name = spec.name,
         extra = spec.systemd_extra,
     )

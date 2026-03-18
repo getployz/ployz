@@ -1,7 +1,7 @@
+use crate::services::supervisor::{ServiceSupervision, SidecarHandle, SidecarSpec};
 use async_trait::async_trait;
-use crate::services::supervisor::{ServiceSupervision, SidecarHandle, SidecarSpec, SystemdType};
-use ployz_runtime_api::RuntimeHandle;
 use ployz_dns::{DnsConfig, DnsError};
+use ployz_runtime_api::RuntimeHandle;
 
 // ---------------------------------------------------------------------------
 // DnsHandle — supervision wrapper
@@ -112,8 +112,6 @@ fn build_dns_sidecar_spec(config: &DnsConfig, image: &str) -> SidecarSpec {
         },
         binds: vec![format!("{data_dir_str}:{data_dir_str}")],
         network_container: Some("ployz-networking".to_string()),
-        compose_service: "dns".to_string(),
-        systemd_type: SystemdType::Simple,
         systemd_extra: String::new(),
     }
 }
