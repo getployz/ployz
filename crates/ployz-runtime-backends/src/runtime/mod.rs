@@ -1,3 +1,4 @@
+pub mod corrosion;
 pub mod diff;
 pub mod engine;
 mod image_ref;

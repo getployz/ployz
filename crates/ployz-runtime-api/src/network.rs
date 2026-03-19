@@ -49,6 +49,25 @@ pub trait MeshDataplane: Send + Sync {
     async fn detach(&self) -> Result<()>;
 }
 
+#[async_trait]
+pub trait EndpointDiscovery: Send + Sync {
+    async fn detect_endpoints(&self, listen_port: u16) -> Result<Vec<String>>;
+}
+
+pub struct AttachedDataplane {
+    pub dataplane: Arc<dyn MeshDataplane>,
+    pub wg_ifindex: u32,
+}
+
+#[async_trait]
+pub trait DataplaneFactory: Send + Sync {
+    async fn attach(
+        &self,
+        network: &WireguardDriver,
+        container_network: &ContainerNetwork,
+    ) -> Result<AttachedDataplane>;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WireguardBackendMode {
     Memory,
@@ -262,6 +281,32 @@ impl ContainerNetwork {
     #[must_use]
     pub fn container_v4(&self) -> std::net::Ipv4Addr {
         self.backend.container_v4()
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct StaticEndpointDiscovery {
+    endpoints: Arc<Vec<String>>,
+}
+
+impl StaticEndpointDiscovery {
+    #[must_use]
+    pub fn new(endpoints: Vec<String>) -> Self {
+        Self {
+            endpoints: Arc::new(endpoints),
+        }
+    }
+
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::new(Vec::new())
+    }
+}
+
+#[async_trait]
+impl EndpointDiscovery for StaticEndpointDiscovery {
+    async fn detect_endpoints(&self, _listen_port: u16) -> Result<Vec<String>> {
+        Ok(self.endpoints.as_ref().clone())
     }
 }
 

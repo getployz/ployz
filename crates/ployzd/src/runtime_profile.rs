@@ -9,23 +9,26 @@ use crate::services::dns::{DnsHandle, start_managed_dns};
 use crate::services::gateway::{GatewayHandle, start_managed_gateway};
 use crate::services::supervisor::ServiceSupervision;
 use ipnet::Ipv4Net;
-use ployz_config::{RuntimeTarget, ServiceMode};
-use ployz_corrosion::config as corrosion_config;
-use ployz_corrosion::runtime::{docker as corrosion_docker, host as corrosion_host};
-use ployz_corrosion::ManagedCorrosionStore;
+use ployz_config::{RuntimeTarget, ServiceMode, corrosion as corrosion_config};
+use ployz_corrosion::CorrosionStore;
 use ployz_dns::DnsConfig;
 use ployz_gateway::GatewayConfig;
 use ployz_runtime_api::Identity;
 use ployz_runtime_api::{
-    ContainerNetwork, DisconnectMode, RestartableWorkload, ServiceRuntime, WireguardDriver,
+    ContainerNetwork, DataplaneFactory, DisconnectMode, EndpointDiscovery,
+    MemoryServiceRuntime, RestartableWorkload, ServiceRuntime, StaticEndpointDiscovery,
+    WireguardDriver,
 };
 use ployz_runtime_backends::mesh::driver as mesh_backends;
+use ployz_runtime_backends::mesh::dataplane::DefaultDataplaneFactory;
+use ployz_runtime_backends::mesh::endpoints::HostEndpointDiscovery;
 use ployz_runtime_backends::network::docker_bridge_network;
 use ployz_runtime_backends::runtime::{
     ContainerEngine,
+    corrosion::{docker_corrosion_runtime, host_corrosion_runtime},
     labels::{LABEL_KIND, LABEL_MACHINE, LABEL_MANAGED},
 };
-use ployz_store_api::{StoreDriver, memory::MemoryService};
+use ployz_store_api::StoreDriver;
 use ployz_types::model::{MachineId, OverlayIp};
 
 const HEAL_WORKLOAD_STOP_GRACE: tokio::time::Duration = tokio::time::Duration::from_secs(10);
@@ -58,6 +61,8 @@ pub(crate) struct MeshRuntimeComponents {
     pub(crate) store: StoreDriver,
     pub(crate) store_runtime: Arc<dyn ServiceRuntime>,
     pub(crate) container_network: Option<ContainerNetwork>,
+    pub(crate) endpoint_discovery: Arc<dyn EndpointDiscovery>,
+    pub(crate) dataplane_factory: Option<Arc<dyn DataplaneFactory>>,
 }
 
 impl RuntimeProfile {
@@ -147,29 +152,50 @@ impl RuntimeProfile {
             }
         };
 
-        let managed_store = match self.execution_backend {
-            ExecutionBackend::Memory => ManagedCorrosionStore {
-                store: StoreDriver::memory(),
-                runtime: Arc::new(MemoryService::new()),
-            },
+        let (store, store_runtime) = match self.execution_backend {
+            ExecutionBackend::Memory => (
+                StoreDriver::memory(),
+                Arc::new(MemoryServiceRuntime::new()) as Arc<dyn ServiceRuntime>,
+            ),
             ExecutionBackend::Docker => {
-                corrosion_docker(
+                let api_addr = SocketAddr::new(
+                    IpAddr::V6(overlay_ip.0),
+                    corrosion_config::DEFAULT_API_PORT,
+                );
+                let local_api =
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), corrosion_config::DEFAULT_API_PORT);
+                let store = StoreDriver::from_store(Arc::new(CorrosionStore::new(
+                    api_addr,
+                    ployz_corrosion::Transport::Bridge {
+                        local_addr: local_api,
+                    },
+                    None,
+                )));
+                let runtime = docker_corrosion_runtime(
                     overlay_ip,
                     network_dir,
                     bootstrap,
                     network_id,
                     self.built_in_images.resolve(BuiltInImage::Corrosion),
                 )
-                .await?
+                .await?;
+                (store, runtime)
             }
             ExecutionBackend::Host => {
-                corrosion_host(overlay_ip, network_dir, bootstrap, network_id)?
+                let paths = corrosion_config::Paths::new(network_dir);
+                let api_addr = SocketAddr::new(
+                    IpAddr::V6(overlay_ip.0),
+                    corrosion_config::DEFAULT_API_PORT,
+                );
+                let store = StoreDriver::from_store(Arc::new(CorrosionStore::new(
+                    api_addr,
+                    ployz_corrosion::Transport::Direct,
+                    Some(paths.admin),
+                )));
+                let runtime = host_corrosion_runtime(overlay_ip, network_dir, bootstrap, network_id)?;
+                (store, runtime)
             }
         };
-        let ManagedCorrosionStore {
-            store,
-            runtime: store_runtime,
-        } = managed_store;
 
         let container_network = match self.execution_backend {
             ExecutionBackend::Memory => None,
@@ -179,12 +205,24 @@ impl RuntimeProfile {
                     .map_err(|error| error.to_string())?,
             ),
         };
+        let endpoint_discovery: Arc<dyn EndpointDiscovery> = match self.execution_backend {
+            ExecutionBackend::Memory => Arc::new(StaticEndpointDiscovery::empty()),
+            ExecutionBackend::Docker | ExecutionBackend::Host => Arc::new(HostEndpointDiscovery),
+        };
+        let dataplane_factory: Option<Arc<dyn DataplaneFactory>> = match self.execution_backend {
+            ExecutionBackend::Memory => None,
+            ExecutionBackend::Docker | ExecutionBackend::Host => {
+                Some(Arc::new(DefaultDataplaneFactory::new("ployz-networking")))
+            }
+        };
 
         Ok(MeshRuntimeComponents {
             network,
             store,
             store_runtime,
             container_network,
+            endpoint_discovery,
+            dataplane_factory,
         })
     }
 

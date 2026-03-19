@@ -9,10 +9,13 @@ use ipnet::Ipv4Net;
 use ployz_api::{DaemonPayload, DaemonResponse, MachineAddOptions, MeshSelfRecordPayload};
 use ployz_orchestrator::Mesh;
 use ployz_runtime_api::Identity;
-use ployz_runtime_api::{MemoryWireGuard, WireguardDriver};
+use ployz_runtime_api::{
+    MemoryServiceRuntime, MemoryWireGuard, ServiceHealth, StaticEndpointDiscovery,
+    WireguardDriver,
+};
 use ployz_store_api::MachineStore;
 use ployz_store_api::StoreDriver;
-use ployz_store_api::memory::{MemoryService, MemoryStore};
+use ployz_store_api::memory::MemoryStore;
 use ployz_types::model::{
     JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
 };
@@ -547,7 +550,7 @@ async fn local_subnet_heal_skips_when_store_unhealthy() {
         .await
         .expect("mesh up");
 
-    service.set_healthy(ployz_store_api::memory::ServiceHealth::Unhealthy);
+    service.set_healthy(ServiceHealth::Unhealthy);
 
     state.heal_local_subnet_conflict_if_needed().await;
 
@@ -654,7 +657,7 @@ async fn make_state(
     );
 
     let store = Arc::new(MemoryStore::new());
-    let service = Arc::new(MemoryService::new());
+    let service = Arc::new(MemoryServiceRuntime::new());
     let network = Arc::new(MemoryWireGuard::new());
     let founder_record = test_machine_record(
         "founder",
@@ -672,6 +675,8 @@ async fn make_state(
         WireguardDriver::memory_with(network.clone()),
         StoreDriver::memory_with(store.clone()),
         service,
+        None,
+        Arc::new(StaticEndpointDiscovery::empty()),
         None,
         identity.machine_id.clone(),
         51820,
@@ -706,7 +711,7 @@ async fn make_state_with_store(
     identity: Identity,
     subnet: &str,
     store: Arc<MemoryStore>,
-) -> (DaemonState, Arc<MemoryService>) {
+) -> (DaemonState, Arc<MemoryServiceRuntime>) {
     let subnet: Ipv4Net = subnet.parse().expect("valid subnet");
     let data_dir = unique_temp_dir("ployz-machine-heal-state");
     let config = NetworkConfig::new(
@@ -719,11 +724,13 @@ async fn make_state_with_store(
         .save(&NetworkConfig::path(&data_dir, "alpha"))
         .expect("save config");
 
-    let service = Arc::new(MemoryService::new());
+    let service = Arc::new(MemoryServiceRuntime::new());
     let mesh = Mesh::new(
         WireguardDriver::memory_with(Arc::new(MemoryWireGuard::new())),
         StoreDriver::memory_with(store),
         service.clone(),
+        None,
+        Arc::new(StaticEndpointDiscovery::empty()),
         None,
         identity.machine_id.clone(),
         51820,

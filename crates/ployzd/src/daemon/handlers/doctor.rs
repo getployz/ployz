@@ -382,9 +382,12 @@ mod tests {
     use crate::mesh_state::network::NetworkConfig;
     use ployz_orchestrator::Mesh;
     use ployz_runtime_api::Identity;
-    use ployz_runtime_api::{DevicePeer, MemoryWireGuard, WireguardDriver};
+    use ployz_runtime_api::{
+        DevicePeer, MemoryServiceRuntime, MemoryWireGuard, StaticEndpointDiscovery,
+        WireguardDriver,
+    };
     use ployz_store_api::StoreDriver;
-    use ployz_store_api::memory::{MemoryService, MemoryStore};
+    use ployz_store_api::memory::MemoryStore;
     use ployz_types::model::{MachineId, MachineStatus, OverlayIp, Participation, PublicKey};
     use std::net::Ipv6Addr;
     use std::path::PathBuf;
@@ -518,7 +521,7 @@ mod tests {
             "10.210.3.0/24".parse().expect("valid subnet"),
         );
         let store = Arc::new(MemoryStore::new());
-        let service = Arc::new(MemoryService::new());
+        let service = Arc::new(MemoryServiceRuntime::new());
         let network = Arc::new(MemoryWireGuard::new());
 
         store
@@ -535,6 +538,8 @@ mod tests {
             WireguardDriver::memory_with(network.clone()),
             StoreDriver::memory_with(store.clone()),
             service,
+            None,
+            Arc::new(StaticEndpointDiscovery::empty()),
             None,
             identity.machine_id.clone(),
             51820,
@@ -593,12 +598,14 @@ mod tests {
             "10.210.3.0/24".parse().expect("valid subnet"),
         );
         let store = Arc::new(MemoryStore::new());
-        let service = Arc::new(MemoryService::new());
+        let service = Arc::new(MemoryServiceRuntime::new());
         let network = Arc::new(MemoryWireGuard::new());
         let mesh = Mesh::new(
             WireguardDriver::memory_with(network),
             StoreDriver::memory_with(store),
             service,
+            None,
+            Arc::new(StaticEndpointDiscovery::empty()),
             None,
             identity.machine_id,
             51820,

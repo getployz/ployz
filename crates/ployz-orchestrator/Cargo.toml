@@ -9,7 +9,6 @@ name = "ployz_orchestrator"
 path = "src/lib.rs"
 
 [dependencies]
-ployz-ebpf-common = { path = "../ebpf-common" }
 ployz-runtime-api = { path = "../ployz-runtime-api" }
 ployz-store-api = { path = "../ployz-store-api" }
 ployz-types = { path = "../ployz-types" }
@@ -22,16 +21,6 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
-if-addrs = "0.13"
-
-[features]
-ebpf-native = ["dep:aya"]
-
-[dependencies.aya]
-version = "0.13"
-optional = true
-
-[target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
 [dev-dependencies]

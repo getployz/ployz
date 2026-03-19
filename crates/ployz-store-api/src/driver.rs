@@ -1,7 +1,8 @@
 use crate::memory::MemoryStore;
 use crate::{
-    DeployStore, InviteStore, MachineStore, MachineSubscription, RoutingInvalidationSubscription,
-    RoutingStore, SyncProbe, SyncStatus,
+    DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore, InviteStore,
+    MachineStore, MachineSubscription, RoutingInvalidationSubscription, RoutingStore, SyncProbe,
+    SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::Result;
@@ -107,78 +108,66 @@ trait DeployBackend: Send + Sync {
     async fn upsert_instance_status(&self, record: &InstanceStatusRecord) -> Result<()>;
     async fn delete_instance_status(&self, instance_id: &InstanceId) -> Result<()>;
     async fn upsert_deploy(&self, record: &DeployRecord) -> Result<()>;
-    async fn commit_deploy(
-        &self,
-        namespace: &Namespace,
-        removed_services: &[String],
-        releases: &[ServiceReleaseRecord],
-        deploy: &DeployRecord,
-    ) -> Result<()>;
+    async fn commit_deploy(&self, commit: &DeployCommit) -> Result<()>;
     async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>>;
 }
 
 #[async_trait]
 impl<T> DeployBackend for T
 where
-    T: DeployStore + Send + Sync,
+    T: DeployReadStore + DeployWriteStore + DeployCommitStore + Send + Sync,
 {
     async fn list_service_revisions(
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<ServiceRevisionRecord>> {
-        DeployStore::list_service_revisions(self, namespace).await
+        DeployReadStore::list_service_revisions(self, namespace).await
     }
 
     async fn list_service_releases(
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<ServiceReleaseRecord>> {
-        DeployStore::list_service_releases(self, namespace).await
+        DeployReadStore::list_service_releases(self, namespace).await
     }
 
     async fn list_instance_status(
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<InstanceStatusRecord>> {
-        DeployStore::list_instance_status(self, namespace).await
+        DeployReadStore::list_instance_status(self, namespace).await
     }
 
     async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
-        DeployStore::upsert_service_revision(self, record).await
+        DeployWriteStore::upsert_service_revision(self, record).await
     }
 
     async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> Result<()> {
-        DeployStore::upsert_service_release(self, record).await
+        DeployWriteStore::upsert_service_release(self, record).await
     }
 
     async fn delete_service_release(&self, namespace: &Namespace, service: &str) -> Result<()> {
-        DeployStore::delete_service_release(self, namespace, service).await
+        DeployWriteStore::delete_service_release(self, namespace, service).await
     }
 
     async fn upsert_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
-        DeployStore::upsert_instance_status(self, record).await
+        DeployWriteStore::upsert_instance_status(self, record).await
     }
 
     async fn delete_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
-        DeployStore::delete_instance_status(self, instance_id).await
+        DeployWriteStore::delete_instance_status(self, instance_id).await
     }
 
     async fn upsert_deploy(&self, record: &DeployRecord) -> Result<()> {
-        DeployStore::upsert_deploy(self, record).await
+        DeployWriteStore::upsert_deploy(self, record).await
     }
 
-    async fn commit_deploy(
-        &self,
-        namespace: &Namespace,
-        removed_services: &[String],
-        releases: &[ServiceReleaseRecord],
-        deploy: &DeployRecord,
-    ) -> Result<()> {
-        DeployStore::commit_deploy(self, namespace, removed_services, releases, deploy).await
+    async fn commit_deploy(&self, commit: &DeployCommit) -> Result<()> {
+        DeployCommitStore::apply_deploy_commit(self, commit).await
     }
 
     async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
-        DeployStore::get_deploy(self, deploy_id).await
+        DeployReadStore::get_deploy(self, deploy_id).await
     }
 }
 
@@ -231,7 +220,9 @@ impl StoreDriver {
         T: MachineStore
             + InviteStore
             + RoutingStore
-            + DeployStore
+            + DeployReadStore
+            + DeployWriteStore
+            + DeployCommitStore
             + SyncProbe
             + Send
             + Sync
@@ -317,7 +308,7 @@ impl RoutingStore for StoreDriver {
     }
 }
 
-impl DeployStore for StoreDriver {
+impl DeployReadStore for StoreDriver {
     fn list_service_revisions<'a>(
         &'a self,
         namespace: &'a Namespace,
@@ -339,6 +330,15 @@ impl DeployStore for StoreDriver {
         async move { self.deploy.list_instance_status(namespace).await }
     }
 
+    fn get_deploy<'a>(
+        &'a self,
+        deploy_id: &'a DeployId,
+    ) -> impl std::future::Future<Output = Result<Option<DeployRecord>>> + Send + 'a {
+        async move { self.deploy.get_deploy(deploy_id).await }
+    }
+}
+
+impl DeployWriteStore for StoreDriver {
     fn upsert_service_revision<'a>(
         &'a self,
         record: &'a ServiceRevisionRecord,
@@ -381,26 +381,14 @@ impl DeployStore for StoreDriver {
     ) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
         async move { self.deploy.upsert_deploy(record).await }
     }
+}
 
-    fn commit_deploy<'a>(
+impl DeployCommitStore for StoreDriver {
+    fn apply_deploy_commit<'a>(
         &'a self,
-        namespace: &'a Namespace,
-        removed_services: &'a [String],
-        releases: &'a [ServiceReleaseRecord],
-        deploy: &'a DeployRecord,
+        commit: &'a DeployCommit,
     ) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
-        async move {
-            self.deploy
-                .commit_deploy(namespace, removed_services, releases, deploy)
-                .await
-        }
-    }
-
-    fn get_deploy<'a>(
-        &'a self,
-        deploy_id: &'a DeployId,
-    ) -> impl std::future::Future<Output = Result<Option<DeployRecord>>> + Send + 'a {
-        async move { self.deploy.get_deploy(deploy_id).await }
+        async move { self.deploy.commit_deploy(commit).await }
     }
 }
 

@@ -4,6 +4,7 @@ mod traits;
 
 pub use driver::StoreDriver;
 pub use traits::{
-    DeployStore, InviteStore, MachineEventSubscription, MachineStore, MachineSubscription,
+    DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore, InviteStore,
+    MachineEventSubscription, MachineStore, MachineSubscription,
     RoutingInvalidationSubscription, RoutingStore, SyncProbe, SyncStatus,
 };

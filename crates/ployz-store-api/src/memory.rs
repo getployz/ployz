@@ -1,9 +1,8 @@
 use crate::{
-    DeployStore, InviteStore, MachineEventSubscription, MachineStore,
+    DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore, InviteStore,
+    MachineEventSubscription, MachineStore,
     RoutingInvalidationSubscription, RoutingStore, SyncProbe, SyncStatus,
 };
-use async_trait::async_trait;
-use ployz_runtime_api::ServiceRuntime;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
@@ -11,7 +10,6 @@ use ployz_types::model::{
 };
 use ployz_types::spec::Namespace;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use tokio::sync::mpsc;
 use tracing::warn;
@@ -184,7 +182,7 @@ impl InviteStore for MemoryStore {
     }
 }
 
-impl DeployStore for MemoryStore {
+impl DeployReadStore for MemoryStore {
     async fn list_service_revisions(
         &self,
         namespace: &Namespace,
@@ -224,6 +222,13 @@ impl DeployStore for MemoryStore {
             .collect())
     }
 
+    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner.deploys.get(deploy_id).cloned())
+    }
+}
+
+impl DeployWriteStore for MemoryStore {
     async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
         let mut inner = self.lock_inner();
         let key = (
@@ -276,121 +281,38 @@ impl DeployStore for MemoryStore {
             .insert(record.deploy_id.clone(), record.clone());
         Ok(())
     }
+}
 
-    async fn commit_deploy(
-        &self,
-        namespace: &Namespace,
-        removed_services: &[String],
-        releases: &[ServiceReleaseRecord],
-        deploy: &DeployRecord,
-    ) -> Result<()> {
+impl DeployCommitStore for MemoryStore {
+    async fn apply_deploy_commit(&self, commit: &DeployCommit) -> Result<()> {
         let mut inner = self.lock_inner();
-        let touched_services: HashSet<&str> = removed_services
+        let touched_services: HashSet<&str> = commit
+            .removed_services
             .iter()
             .map(String::as_str)
-            .chain(releases.iter().map(|record| record.service.as_str()))
+            .chain(commit.releases.iter().map(|record| record.service.as_str()))
             .collect();
 
         inner
             .service_releases
             .retain(|(current_namespace, service), _| {
-                !(current_namespace == namespace && touched_services.contains(service.as_str()))
+                !(current_namespace == &commit.namespace
+                    && touched_services.contains(service.as_str()))
             });
 
-        for release in releases {
+        for release in &commit.releases {
             inner.service_releases.insert(
                 (release.namespace.clone(), release.service.clone()),
                 release.clone(),
             );
         }
 
-        inner
-            .deploys
-            .insert(deploy.deploy_id.clone(), deploy.clone());
+        inner.deploys.insert(
+            commit.deploy.deploy_id.clone(),
+            commit.deploy.clone(),
+        );
         Self::broadcast_routing_refresh(&mut inner);
         Ok(())
-    }
-
-    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
-        let inner = self.lock_inner();
-        Ok(inner.deploys.get(deploy_id).cloned())
-    }
-}
-
-pub struct MemoryService {
-    started: AtomicBool,
-    healthy: AtomicBool,
-    fail_start: AtomicBool,
-    fail_stop: AtomicBool,
-}
-
-impl Default for MemoryService {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-pub enum ToggleState {
-    Enabled,
-    Disabled,
-}
-
-pub enum ServiceHealth {
-    Healthy,
-    Unhealthy,
-}
-
-impl MemoryService {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            started: AtomicBool::new(false),
-            healthy: AtomicBool::new(true),
-            fail_start: AtomicBool::new(false),
-            fail_stop: AtomicBool::new(false),
-        }
-    }
-
-    pub fn set_healthy(&self, health: ServiceHealth) {
-        self.healthy
-            .store(matches!(health, ServiceHealth::Healthy), Ordering::SeqCst);
-    }
-
-    pub fn set_fail_start(&self, state: ToggleState) {
-        self.fail_start
-            .store(matches!(state, ToggleState::Enabled), Ordering::SeqCst);
-    }
-
-    pub fn set_fail_stop(&self, state: ToggleState) {
-        self.fail_stop
-            .store(matches!(state, ToggleState::Enabled), Ordering::SeqCst);
-    }
-
-    pub fn is_started(&self) -> bool {
-        self.started.load(Ordering::SeqCst)
-    }
-}
-
-#[async_trait]
-impl ServiceRuntime for MemoryService {
-    async fn start(&self) -> std::result::Result<(), String> {
-        if self.fail_start.load(Ordering::SeqCst) {
-            return Err(Error::operation("service start", "injected failure").to_string());
-        }
-        self.started.store(true, Ordering::SeqCst);
-        Ok(())
-    }
-
-    async fn stop(&self) -> std::result::Result<(), String> {
-        if self.fail_stop.load(Ordering::SeqCst) {
-            return Err(Error::operation("service stop", "injected failure").to_string());
-        }
-        self.started.store(false, Ordering::SeqCst);
-        Ok(())
-    }
-
-    async fn healthy(&self) -> bool {
-        self.healthy.load(Ordering::SeqCst)
     }
 }
 

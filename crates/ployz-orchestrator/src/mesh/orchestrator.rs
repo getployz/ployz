@@ -9,8 +9,8 @@ use crate::mesh::tasks::{
 };
 use crate::model::{MachineId, MachineRecord, MachineStatus};
 use ployz_runtime_api::{
-    ContainerNetwork, MeshDataplane, MeshNetwork, ServiceRuntime, WireguardBackendMode,
-    WireguardDriver,
+    ContainerNetwork, DataplaneFactory, EndpointDiscovery, MeshDataplane, MeshNetwork,
+    ServiceRuntime, WireguardBackendMode, WireguardDriver,
 };
 use ployz_store_api::StoreDriver;
 use ployz_store_api::{MachineStore, SyncProbe, SyncStatus};
@@ -55,6 +55,8 @@ pub struct Mesh {
     pub store: StoreDriver,
     store_runtime: Arc<dyn ServiceRuntime>,
     container_network: Option<ContainerNetwork>,
+    endpoint_discovery: Arc<dyn EndpointDiscovery>,
+    dataplane_factory: Option<Arc<dyn DataplaneFactory>>,
     tasks: Option<TaskSet>,
     task_cancel: Option<tokio_util::sync::CancellationToken>,
     peer_sync_tx: Option<mpsc::Sender<PeerSyncCommand>>,
@@ -82,6 +84,8 @@ impl Mesh {
         store: StoreDriver,
         store_runtime: Arc<dyn ServiceRuntime>,
         container_network: Option<ContainerNetwork>,
+        endpoint_discovery: Arc<dyn EndpointDiscovery>,
+        dataplane_factory: Option<Arc<dyn DataplaneFactory>>,
         machine_id: MachineId,
         listen_port: u16,
     ) -> Self {
@@ -91,6 +95,8 @@ impl Mesh {
             store,
             store_runtime,
             container_network,
+            endpoint_discovery,
+            dataplane_factory,
             tasks: None,
             task_cancel: None,
             peer_sync_tx: None,
@@ -231,6 +237,13 @@ impl Mesh {
         self.store_runtime.healthy().await
     }
 
+    pub async fn detect_endpoints(&self) -> Result<Vec<String>> {
+        self.endpoint_discovery
+            .detect_endpoints(self.listen_port)
+            .await
+            .map_err(MeshError::Port)
+    }
+
     fn apply(&mut self, event: PhaseEvent) -> Result<()> {
         let next = transition(self.phase, event)?;
         info!(from = %self.phase, to = %next, ?event, "phase transition");
@@ -265,8 +278,11 @@ impl Mesh {
                     .await?;
             }
 
-            // Attach eBPF TC classifiers to the bridge for WG↔Docker forwarding.
-            self.attach_ebpf_dataplane().await?;
+            if let Some(dataplane_factory) = &self.dataplane_factory {
+                let attached = dataplane_factory.attach(&self.network, cn).await?;
+                self.wg_ifindex = attached.wg_ifindex;
+                self.dataplane = Some(attached.dataplane);
+            }
         }
 
         // 3. Pre-configure WG peers from seed records
@@ -345,44 +361,6 @@ impl Mesh {
         Ok(())
     }
 
-    /// Attach the eBPF dataplane to the Docker bridge.
-    /// On Linux: loads BPF directly in-process via aya (no container overhead).
-    /// On macOS (Docker Desktop / OrbStack): starts a privileged sidecar container
-    /// that runs `ployz-bpfctl` inside the VM where TC hooks live.
-    async fn attach_ebpf_dataplane(&mut self) -> Result<()> {
-        let Some(cn) = self.container_network.as_ref() else {
-            return Err(MeshError::Port(PortError::operation(
-                "attach_ebpf",
-                "container_network not configured".to_string(),
-            )));
-        };
-        let bridge_ifname = cn.resolve_bridge_ifname().await?;
-
-        #[cfg(feature = "ebpf-native")]
-        {
-            let wg_ifname = self.network.ebpf_attachment_ifname(&bridge_ifname);
-            let wg_ifindex = resolve_ifindex(&wg_ifname)?;
-            let dp = crate::network::ebpf::EbpfDataplane::attach_native(&bridge_ifname)?;
-            self.wg_ifindex = wg_ifindex;
-            self.dataplane = Some(Arc::new(dp));
-        }
-
-        #[cfg(not(feature = "ebpf-native"))]
-        {
-            // Exec ployz-bpfctl inside the WG container (same image).
-            let dp = crate::network::ebpf::EbpfDataplane::attach_container(
-                "ployz-networking",
-                &bridge_ifname,
-                &bridge_ifname,
-            )
-            .await?;
-            self.wg_ifindex = 0;
-            self.dataplane = Some(Arc::new(dp));
-        }
-
-        Ok(())
-    }
-
     async fn spawn_background_tasks(&mut self) -> Result<()> {
         let Some(cancel) = self.task_cancel.clone() else {
             return Err(TaskSetError::Subscribe(crate::error::Error::operation(
@@ -433,6 +411,7 @@ impl Mesh {
         task_set.spawn(run_endpoint_refresh_task(
             self.machine_id.clone(),
             self.listen_port,
+            self.endpoint_discovery.clone(),
             authoritative_self.clone(),
             self_record_tx.clone(),
             cancel.clone(),
@@ -795,20 +774,6 @@ impl Mesh {
         self.apply(PhaseEvent::SyncComplete)?;
         Ok(())
     }
-}
-
-#[cfg(feature = "ebpf-native")]
-fn resolve_ifindex(ifname: &str) -> std::result::Result<u32, PortError> {
-    let c_name = std::ffi::CString::new(ifname)
-        .map_err(|e| PortError::operation("if_nametoindex", e.to_string()))?;
-    let idx = unsafe { libc::if_nametoindex(c_name.as_ptr()) };
-    if idx == 0 {
-        return Err(PortError::operation(
-            "if_nametoindex",
-            format!("interface {ifname} not found"),
-        ));
-    }
-    Ok(idx)
 }
 
 /// Poll `check` with exponential backoff until it returns `true` or `timeout` expires.

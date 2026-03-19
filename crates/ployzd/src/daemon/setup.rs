@@ -6,10 +6,8 @@ use tracing::warn;
 
 use crate::mesh_state::bootstrap::{BootstrapInfo, build_seed_records, resolve_bootstrap_addrs};
 use crate::mesh_state::network::NetworkConfig;
-use ployz_config::RuntimeTarget;
-use ployz_corrosion::{
-    config as corrosion_config, corrosion_bootstrap_from_db, peer_records_from_db,
-};
+use ployz_config::{RuntimeTarget, corrosion as corrosion_config};
+use ployz_corrosion::{corrosion_bootstrap_from_db, peer_records_from_db};
 use ployz_dns::DnsConfig;
 use ployz_gateway::GatewayConfig;
 use ployz_orchestrator::Mesh;
@@ -109,12 +107,17 @@ impl MeshStartTx {
             .map_err(StartMeshError::NetworkDriver)?;
 
         let listen_port = DEFAULT_LISTEN_PORT;
+        let self_endpoints = components
+            .endpoint_discovery
+            .detect_endpoints(listen_port)
+            .await
+            .map_err(|error| StartMeshError::NetworkDriver(error.to_string()))?;
         let seed_records = build_seed_records(
             &plan.network_dir,
             &state.identity,
             &self.config,
             plan.bootstrap.as_ref(),
-            listen_port,
+            self_endpoints,
             &db_records,
         )
         .await;
@@ -124,6 +127,8 @@ impl MeshStartTx {
             components.store,
             components.store_runtime,
             components.container_network,
+            components.endpoint_discovery,
+            components.dataplane_factory,
             state.identity.machine_id.clone(),
             listen_port,
         )
@@ -540,7 +545,7 @@ mod tests {
         let state = make_test_state("0.0.0.0:80");
         let config = make_network_config(&state, "alpha");
         let network_dir = state.network_dir(&config.name.0);
-        let db_path = ployz_corrosion::config::Paths::new(&network_dir).db;
+        let db_path = ployz_config::corrosion::Paths::new(&network_dir).db;
         fs::create_dir_all(&db_path).expect("create invalid db path");
 
         let error = match state.plan_mesh_start(&config, None, MeshStartOptions::default()) {

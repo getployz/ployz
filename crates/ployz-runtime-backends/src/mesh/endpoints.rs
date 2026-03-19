@@ -1,8 +1,27 @@
+use async_trait::async_trait;
+use ployz_runtime_api::EndpointDiscovery;
+use ployz_types::Result;
 use std::net::IpAddr;
 
 const MIN_ENDPOINT_MTU: u32 = 1280;
 
-pub fn list_routable_ips() -> Vec<IpAddr> {
+#[derive(Clone, Copy, Default)]
+pub struct HostEndpointDiscovery;
+
+#[async_trait]
+impl EndpointDiscovery for HostEndpointDiscovery {
+    async fn detect_endpoints(&self, listen_port: u16) -> Result<Vec<String>> {
+        Ok(list_routable_ips()
+            .into_iter()
+            .map(|ip| match ip {
+                IpAddr::V6(v6) => format!("[{v6}]:{listen_port}"),
+                IpAddr::V4(v4) => format!("{v4}:{listen_port}"),
+            })
+            .collect())
+    }
+}
+
+fn list_routable_ips() -> Vec<IpAddr> {
     let interfaces = match if_addrs::get_if_addrs() {
         Ok(interfaces) => interfaces,
         Err(error) => {
@@ -81,14 +100,4 @@ fn get_interface_mtu(name: &str) -> Option<u32> {
             None
         }
     }
-}
-
-pub async fn detect_endpoints(listen_port: u16) -> Vec<String> {
-    list_routable_ips()
-        .into_iter()
-        .map(|ip| match ip {
-            IpAddr::V6(v6) => format!("[{v6}]:{listen_port}"),
-            IpAddr::V4(v4) => format!("{v4}:{listen_port}"),
-        })
-        .collect()
 }

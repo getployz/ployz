@@ -1,6 +1,6 @@
 use crate::mesh::tasks::{SelfRecordMutation, apply_self_record_mutation};
 use crate::model::MachineId;
-use crate::network::endpoints::detect_endpoints;
+use ployz_runtime_api::EndpointDiscovery;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -10,6 +10,7 @@ use tracing::{info, warn};
 pub(crate) async fn run_endpoint_refresh_task(
     machine_id: MachineId,
     listen_port: u16,
+    endpoint_discovery: Arc<dyn EndpointDiscovery>,
     authoritative_self: Arc<RwLock<crate::model::MachineRecord>>,
     self_record_tx: tokio::sync::mpsc::Sender<crate::mesh::tasks::self_record::SelfRecordCommand>,
     cancel: CancellationToken,
@@ -25,7 +26,13 @@ pub(crate) async fn run_endpoint_refresh_task(
                 break;
             }
             _ = interval.tick() => {
-                let new_endpoints = detect_endpoints(listen_port).await;
+                let new_endpoints = match endpoint_discovery.detect_endpoints(listen_port).await {
+                    Ok(endpoints) => endpoints,
+                    Err(error) => {
+                        warn!(?error, "endpoint detection failed, skipping update");
+                        continue;
+                    }
+                };
                 if new_endpoints.is_empty() {
                     warn!("endpoint detection returned no results, skipping update");
                     continue;

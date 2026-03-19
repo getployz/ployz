@@ -1,35 +1,24 @@
+use super::labels::build_system_labels;
+use super::{ContainerEngine, EnsureAction, PullPolicy, RuntimeContainerSpec};
+use async_trait::async_trait;
+use ployz_config::corrosion as corrosion_config;
+use ployz_runtime_api::ServiceRuntime;
+use ployz_types::Result;
+use ployz_types::model::OverlayIp;
 use std::fs::OpenOptions;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
-
-use async_trait::async_trait;
-use ployz_runtime_api::ServiceRuntime;
-use ployz_runtime_backends::runtime::labels::build_system_labels;
-use ployz_runtime_backends::runtime::{
-    ContainerEngine, EnsureAction, PullPolicy, RuntimeContainerSpec,
-};
-use ployz_store_api::StoreDriver;
-use ployz_types::Result;
-use ployz_types::model::OverlayIp;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
-use crate::client::Transport;
-use crate::config as corrosion_config;
-use crate::{CorrosionStore, SCHEMA_SQL};
-
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
 const CORROSION_LOG_PATH_ENV: &str = "PLOYZ_CORROSION_LOG_PATH";
 const CORROSION_RUST_LOG_ENV: &str = "PLOYZ_CORROSION_RUST_LOG";
-
-pub struct ManagedCorrosionStore {
-    pub store: StoreDriver,
-    pub runtime: Arc<dyn ServiceRuntime>,
-}
+const SCHEMA_SQL: &str = include_str!("../../../ployz-corrosion/src/schema.sql");
 
 fn which_corrosion() -> std::result::Result<PathBuf, String> {
     let candidates = ["/usr/local/bin/corrosion", "/usr/bin/corrosion"];
@@ -44,13 +33,13 @@ fn which_corrosion() -> std::result::Result<PathBuf, String> {
     ))
 }
 
-pub async fn docker(
+pub async fn docker_corrosion_runtime(
     overlay_ip: OverlayIp,
     network_dir: &Path,
     bootstrap: &[String],
     network_id: &str,
     image: &str,
-) -> std::result::Result<ManagedCorrosionStore, String> {
+) -> std::result::Result<Arc<dyn ServiceRuntime>, String> {
     let paths = corrosion_config::Paths::new(network_dir);
     let gossip_addr = SocketAddr::new(
         IpAddr::V6(overlay_ip.0),
@@ -75,18 +64,6 @@ pub async fn docker(
     )
     .map_err(|error| format!("write corrosion config: {error}"))?;
 
-    let local_api = SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        corrosion_config::DEFAULT_API_PORT,
-    );
-    let store = CorrosionStore::new(
-        api_addr,
-        Transport::Bridge {
-            local_addr: local_api,
-        },
-        None,
-    );
-
     let config_host = paths.config.to_string_lossy().into_owned();
     let schema_host = paths.schema.to_string_lossy().into_owned();
     let service = DockerCorrosion::new("ployz-corrosion", image)
@@ -103,18 +80,15 @@ pub async fn docker(
         .await
         .map_err(|error| format!("docker service: {error}"))?;
 
-    Ok(ManagedCorrosionStore {
-        store: StoreDriver::from_store(Arc::new(store)),
-        runtime: Arc::new(service),
-    })
+    Ok(Arc::new(service))
 }
 
-pub fn host(
+pub fn host_corrosion_runtime(
     overlay_ip: OverlayIp,
     network_dir: &Path,
     bootstrap: &[String],
     network_id: &str,
-) -> std::result::Result<ManagedCorrosionStore, String> {
+) -> std::result::Result<Arc<dyn ServiceRuntime>, String> {
     let paths = corrosion_config::Paths::new(network_dir);
     let gossip_addr = SocketAddr::new(
         IpAddr::V6(overlay_ip.0),
@@ -133,13 +107,7 @@ pub fn host(
     )
     .map_err(|error| format!("write corrosion config: {error}"))?;
 
-    let store = CorrosionStore::new(api_addr, Transport::Direct, Some(paths.admin.clone()));
-    let service = HostCorrosion::new(which_corrosion()?, &paths.config);
-
-    Ok(ManagedCorrosionStore {
-        store: StoreDriver::from_store(Arc::new(store)),
-        runtime: Arc::new(service),
-    })
+    Ok(Arc::new(HostCorrosion::new(which_corrosion()?, &paths.config)))
 }
 
 struct HostCorrosion {

@@ -7,7 +7,6 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ployz_orchestrator::ipam::Ipam;
 use ployz_orchestrator::mesh::orchestrator::MeshReadyStatus;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
-use ployz_orchestrator::network::endpoints::detect_endpoints;
 use ployz_types::model::{JoinResponse, NetworkName};
 use ployz_types::time::now_unix_secs;
 use tracing::warn;
@@ -404,7 +403,15 @@ impl DaemonState {
             None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
         };
 
-        let endpoints = detect_endpoints(51820).await;
+        let endpoints = match active.mesh.detect_endpoints().await {
+            Ok(endpoints) => endpoints,
+            Err(error) => {
+                return self.err(
+                    "ENDPOINT_DISCOVERY_FAILED",
+                    format!("failed to detect mesh endpoints: {error}"),
+                );
+            }
+        };
         let resp = JoinResponse {
             machine_id: self.identity.machine_id.clone(),
             public_key: self.identity.public_key.clone(),
@@ -499,10 +506,12 @@ mod tests {
     use crate::mesh_state::network::NetworkConfig;
     use ployz_orchestrator::Mesh;
     use ployz_runtime_api::Identity;
-    use ployz_runtime_api::{MemoryWireGuard, WireguardDriver};
+    use ployz_runtime_api::{
+        MemoryServiceRuntime, MemoryWireGuard, StaticEndpointDiscovery, WireguardDriver,
+    };
     use ployz_store_api::MachineStore;
     use ployz_store_api::StoreDriver;
-    use ployz_store_api::memory::{MemoryService, MemoryStore};
+    use ployz_store_api::memory::MemoryStore;
     use ployz_types::model::{MachineId, OverlayIp, PublicKey};
     use ployz_types::time::now_unix_secs;
     use std::path::PathBuf;
@@ -623,11 +632,13 @@ mod tests {
             .await
             .expect("upsert founder");
         let network = Arc::new(MemoryWireGuard::new());
-        let service = Arc::new(MemoryService::new());
+        let service = Arc::new(MemoryServiceRuntime::new());
         let mut mesh = Mesh::new(
             WireguardDriver::memory_with(network.clone()),
             StoreDriver::memory_with(store.clone()),
             service,
+            None,
+            Arc::new(StaticEndpointDiscovery::empty()),
             None,
             identity.machine_id.clone(),
             51820,

@@ -1,8 +1,7 @@
 use std::path::Path;
 
+use ployz_config::corrosion as corrosion_config;
 use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
-
-use crate::config as corrosion_config;
 
 /// Read peer config from corrosion's sqlite DB (bypassing the API).
 /// Only fetches the columns needed for WG peer setup.

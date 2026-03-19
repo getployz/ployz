@@ -21,7 +21,7 @@ name = "ployz-dns"
 path = "src/bin/ployz-dns.rs"
 
 [features]
-ebpf-native = ["ployz-orchestrator/ebpf-native"]
+ebpf-native = ["ployz-runtime-backends/ebpf-native"]
 
 [dependencies]
 ployz-api = { path = "../ployz-api" }

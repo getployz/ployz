@@ -5,7 +5,9 @@ use crate::model::{
     ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy, SlotId, SlotPlan,
 };
 use ployz_runtime_api::{DeploySession, DeploySessionFactory, StartCandidateRequest};
-use ployz_store_api::{DeployStore, MachineStore, StoreDriver};
+use ployz_store_api::{
+    DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore, MachineStore, StoreDriver,
+};
 use ployz_types::spec::{DeployManifest, Placement, ServiceSpec, stable_hash_hex};
 use ployz_types::time::now_unix_secs;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -348,12 +350,12 @@ pub async fn apply(
         })?;
 
         store
-            .commit_deploy(
-                namespace,
-                &removed_services,
-                &committed_releases,
-                &deploy_record,
-            )
+            .apply_deploy_commit(&DeployCommit {
+                namespace: namespace.clone(),
+                removed_services,
+                releases: committed_releases,
+                deploy: deploy_record.clone(),
+            })
             .await?;
         events.push(DeployEvent {
             step: "commit".into(),

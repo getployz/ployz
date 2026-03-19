@@ -1,3 +1,5 @@
+pub mod corrosion;
+
 use directories::{BaseDirs, ProjectDirs};
 use figment::Figment;
 use figment::providers::{Env, Format, Serialized, Toml};

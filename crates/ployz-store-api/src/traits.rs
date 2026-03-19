@@ -84,7 +84,15 @@ pub trait RoutingStore: Send + Sync {
     ) -> impl Future<Output = Result<RoutingInvalidationSubscription>> + Send + '_;
 }
 
-pub trait DeployStore: Send + Sync {
+#[derive(Debug, Clone)]
+pub struct DeployCommit {
+    pub namespace: Namespace,
+    pub removed_services: Vec<String>,
+    pub releases: Vec<ServiceReleaseRecord>,
+    pub deploy: DeployRecord,
+}
+
+pub trait DeployReadStore: Send + Sync {
     fn list_service_revisions<'a>(
         &'a self,
         namespace: &'a Namespace,
@@ -100,6 +108,13 @@ pub trait DeployStore: Send + Sync {
         namespace: &'a Namespace,
     ) -> impl Future<Output = Result<Vec<InstanceStatusRecord>>> + Send + 'a;
 
+    fn get_deploy<'a>(
+        &'a self,
+        deploy_id: &'a DeployId,
+    ) -> impl Future<Output = Result<Option<DeployRecord>>> + Send + 'a;
+}
+
+pub trait DeployWriteStore: Send + Sync {
     fn upsert_service_revision<'a>(
         &'a self,
         record: &'a ServiceRevisionRecord,
@@ -130,19 +145,13 @@ pub trait DeployStore: Send + Sync {
         &'a self,
         record: &'a DeployRecord,
     ) -> impl Future<Output = Result<()>> + Send + 'a;
+}
 
-    fn commit_deploy<'a>(
+pub trait DeployCommitStore: Send + Sync {
+    fn apply_deploy_commit<'a>(
         &'a self,
-        namespace: &'a Namespace,
-        removed_services: &'a [String],
-        releases: &'a [ServiceReleaseRecord],
-        deploy: &'a DeployRecord,
+        commit: &'a DeployCommit,
     ) -> impl Future<Output = Result<()>> + Send + 'a;
-
-    fn get_deploy<'a>(
-        &'a self,
-        deploy_id: &'a DeployId,
-    ) -> impl Future<Output = Result<Option<DeployRecord>>> + Send + 'a;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,10 +1,11 @@
 use crate::admin::AdminClient;
 use crate::client::{CorrClient, Transport};
-use crate::config as corrosion_config;
 use corro_api_types::{ExecResult, Statement};
+use ployz_config::corrosion as corrosion_config;
 use ployz_store_api::{
-    DeployStore, InviteStore, MachineEventSubscription, MachineStore,
-    RoutingInvalidationSubscription, RoutingStore, SyncProbe, SyncStatus,
+    DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore, InviteStore,
+    MachineEventSubscription, MachineStore, RoutingInvalidationSubscription, RoutingStore,
+    SyncProbe, SyncStatus,
 };
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
@@ -201,7 +202,7 @@ impl RoutingStore for CorrosionStore {
     }
 }
 
-impl DeployStore for CorrosionStore {
+impl DeployReadStore for CorrosionStore {
     async fn list_service_revisions(
         &self,
         namespace: &Namespace,
@@ -222,6 +223,13 @@ impl DeployStore for CorrosionStore {
     ) -> Result<Vec<InstanceStatusRecord>> {
         tables::instance_status::list_instance_status(&self.client, namespace).await
     }
+
+    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
+        tables::deploys::get_deploy(&self.client, deploy_id).await
+    }
+}
+
+impl DeployWriteStore for CorrosionStore {
 
     async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
         tables::service_revisions::upsert_service_revision(&self.client, record).await
@@ -246,25 +254,10 @@ impl DeployStore for CorrosionStore {
     async fn upsert_deploy(&self, record: &DeployRecord) -> Result<()> {
         tables::deploys::upsert_deploy(&self.client, record).await
     }
+}
 
-    async fn commit_deploy(
-        &self,
-        namespace: &Namespace,
-        removed_services: &[String],
-        releases: &[ServiceReleaseRecord],
-        deploy: &DeployRecord,
-    ) -> Result<()> {
-        workflows::deploy_commit::commit_deploy(
-            &self.client,
-            namespace,
-            removed_services,
-            releases,
-            deploy,
-        )
-        .await
-    }
-
-    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
-        tables::deploys::get_deploy(&self.client, deploy_id).await
+impl DeployCommitStore for CorrosionStore {
+    async fn apply_deploy_commit(&self, commit: &DeployCommit) -> Result<()> {
+        workflows::deploy_commit::apply_deploy_commit(&self.client, commit).await
     }
 }

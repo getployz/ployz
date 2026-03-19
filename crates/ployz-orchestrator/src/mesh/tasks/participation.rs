@@ -291,8 +291,8 @@ mod tests {
     use crate::mesh::probe::run_probe_listener_task;
     use crate::mesh::tasks::run_self_record_writer_task;
     use crate::model::{MachineStatus, OverlayIp, PublicKey};
-    use ployz_runtime_api::{DevicePeer, MemoryWireGuard, WireguardDriver};
-    use ployz_store_api::memory::{MemoryService, MemoryStore};
+    use ployz_runtime_api::{DevicePeer, MemoryServiceRuntime, MemoryWireGuard, WireguardDriver};
+    use ployz_store_api::memory::MemoryStore;
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
     use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -325,7 +325,7 @@ mod tests {
         peer_participation: Participation,
     ) -> (
         Arc<MemoryStore>,
-        Arc<MemoryService>,
+        Arc<MemoryServiceRuntime>,
         Arc<MemoryWireGuard>,
         Arc<RwLock<MachineRecord>>,
         mpsc::Sender<crate::mesh::tasks::self_record::SelfRecordCommand>,
@@ -335,7 +335,7 @@ mod tests {
         tokio::task::JoinHandle<()>,
     ) {
         let store = Arc::new(MemoryStore::new());
-        let service = Arc::new(MemoryService::new());
+        let service = Arc::new(MemoryServiceRuntime::new());
         let network = Arc::new(MemoryWireGuard::new());
         let self_id = MachineId("self".into());
         let peer_key = PublicKey([2; 32]);

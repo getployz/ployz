@@ -3,7 +3,6 @@ use crate::mesh_state::invite::{
 };
 use crate::mesh_state::network::NetworkConfig;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use ployz_orchestrator::network::endpoints::detect_endpoints;
 use ployz_store_api::InviteStore;
 use ployz_types::Error;
 use ployz_types::model::InviteRecord;
@@ -113,7 +112,10 @@ impl DaemonState {
             .map(|a| &a.mesh)
             .ok_or_else(|| "no running network".to_string())?;
 
-        let endpoints = detect_endpoints(51820).await;
+        let endpoints = mesh
+            .detect_endpoints()
+            .await
+            .map_err(|error| format!("detect mesh endpoints: {error}"))?;
         let overlay_ip = Some(network.overlay_ip.0.to_string());
 
         let wg_secret = StaticSecret::from(self.identity.private_key.0);
