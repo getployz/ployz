@@ -3,8 +3,8 @@ use crate::mesh::probe::{TcpProbeResult, TcpProbeStatus, probe_overlay_ips_paral
 use crate::mesh::tasks::{SelfRecordMutation, apply_self_record_mutation};
 use crate::model::{MachineId, MachineRecord, Participation};
 use ployz_runtime_api::{WireGuardDevice, WireguardDriver};
+use ployz_store_api::internal::StoreDriver;
 use ployz_store_api::MachineStore;
-use ployz_store_api::StoreDriver;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;

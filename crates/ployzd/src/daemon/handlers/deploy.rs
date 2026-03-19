@@ -8,7 +8,6 @@ use ployz_api::{DaemonResponse, DeployOptions};
 use ployz_config::RuntimeTarget;
 use ployz_orchestrator::deploy::{apply, preview};
 use ployz_store_api::DeployReadStore;
-use ployz_store_api::StoreDriver;
 use ployz_types::Error as PloyzError;
 use ployz_types::spec::{DeployManifest, Namespace, ServiceSpec};
 
@@ -132,10 +131,13 @@ fn decode_manifest(manifest_json: &str) -> Result<DeployManifest, DaemonResponse
     Ok(manifest)
 }
 
-async fn export_manifest(
-    store: &StoreDriver,
+async fn export_manifest<S>(
+    store: &S,
     namespace: &Namespace,
-) -> ployz_types::Result<DeployManifest> {
+) -> ployz_types::Result<DeployManifest>
+where
+    S: DeployReadStore + ?Sized,
+{
     let releases = store.list_service_releases(namespace).await?;
     let revisions = store.list_service_revisions(namespace).await?;
     let revisions_by_key: BTreeMap<(String, String), String> = revisions

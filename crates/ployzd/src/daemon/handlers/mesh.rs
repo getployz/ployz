@@ -509,8 +509,8 @@ mod tests {
     use ployz_runtime_api::{
         MemoryServiceRuntime, MemoryWireGuard, StaticEndpointDiscovery, WireguardDriver,
     };
+    use ployz_store_api::internal::StoreDriver;
     use ployz_store_api::MachineStore;
-    use ployz_store_api::StoreDriver;
     use ployz_store_api::memory::MemoryStore;
     use ployz_types::model::{MachineId, OverlayIp, PublicKey};
     use ployz_types::time::now_unix_secs;

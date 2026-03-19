@@ -1,6 +1,6 @@
 use crate::model::{MachineRecord, OverlayIp, Participation};
+use ployz_store_api::internal::StoreDriver;
 use ployz_store_api::MachineStore;
-use ployz_store_api::StoreDriver;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};

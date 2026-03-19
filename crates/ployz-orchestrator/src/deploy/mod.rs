@@ -6,7 +6,7 @@ use crate::model::{
 };
 use ployz_runtime_api::{DeploySession, DeploySessionFactory, StartCandidateRequest};
 use ployz_store_api::{
-    DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore, MachineStore, StoreDriver,
+    DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore, MachineStore,
 };
 use ployz_types::spec::{DeployManifest, Placement, ServiceSpec, stable_hash_hex};
 use ployz_types::time::now_unix_secs;
@@ -21,11 +21,14 @@ struct DesiredSlot {
     machine_id: MachineId,
 }
 
-pub async fn preview(
-    store: &StoreDriver,
+pub async fn preview<S>(
+    store: &S,
     local_machine_id: &MachineId,
     manifest: &DeployManifest,
-) -> Result<DeployPreview> {
+) -> Result<DeployPreview>
+where
+    S: DeployReadStore + MachineStore + ?Sized,
+{
     manifest
         .validate()
         .map_err(|error| Error::operation("deploy_preview", error))?;
@@ -161,12 +164,15 @@ pub async fn preview(
     })
 }
 
-pub async fn apply(
-    store: &StoreDriver,
+pub async fn apply<S>(
+    store: &S,
     session_factory: &dyn DeploySessionFactory,
     local_machine_id: &MachineId,
     manifest: &DeployManifest,
-) -> Result<DeployApplyResult> {
+) -> Result<DeployApplyResult>
+where
+    S: DeployReadStore + DeployWriteStore + DeployCommitStore + MachineStore + ?Sized,
+{
     let namespace = &manifest.namespace;
     let deploy_id = DeployId(Uuid::new_v4().to_string());
     let started_at = now_unix_secs();

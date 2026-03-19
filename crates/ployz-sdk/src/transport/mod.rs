@@ -13,3 +13,15 @@ pub trait Transport: Send + Sync {
         request: DaemonRequest,
     ) -> impl Future<Output = std::io::Result<DaemonResponse>> + Send + '_;
 }
+
+impl<T> Transport for &T
+where
+    T: Transport + ?Sized,
+{
+    fn request(
+        &self,
+        request: DaemonRequest,
+    ) -> impl Future<Output = std::io::Result<DaemonResponse>> + Send + '_ {
+        (*self).request(request)
+    }
+}

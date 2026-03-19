@@ -94,7 +94,6 @@ pub(crate) enum CliError {
     Io(String),
     Serialize(String),
     Config(String),
-    Daemon { code: String, message: String },
     Transport { socket: String, message: String },
 }
 
@@ -102,7 +101,7 @@ impl CliError {
     pub(crate) fn exit_code(&self) -> i32 {
         match self {
             Self::Usage(_) | Self::Config(_) => 2,
-            Self::Io(_) | Self::Serialize(_) | Self::Daemon { .. } | Self::Transport { .. } => 1,
+            Self::Io(_) | Self::Serialize(_) | Self::Transport { .. } => 1,
         }
     }
 
@@ -112,7 +111,6 @@ impl CliError {
             | Self::Io(message)
             | Self::Serialize(message)
             | Self::Config(message) => eprintln!("error: {message}"),
-            Self::Daemon { code, message } => eprintln!("error [{code}]: {message}"),
             Self::Transport { socket, message } => {
                 eprintln!("error: {message}");
                 eprintln!("is ployzd running? (socket: {socket})");

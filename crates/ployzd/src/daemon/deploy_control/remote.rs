@@ -5,7 +5,8 @@ use ployz_runtime_api::{DeployFrame, RuntimeHandle, StartCandidateRequest};
 use ployz_runtime_backends::deploy::local::{
     LocalDeployRuntime, ManagedInstance, StartCandidate, now_unix_secs,
 };
-use ployz_store_api::{DeployReadStore, DeployWriteStore, StoreDriver};
+use ployz_store_api::internal::StoreDriver;
+use ployz_store_api::{DeployReadStore, DeployWriteStore};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,

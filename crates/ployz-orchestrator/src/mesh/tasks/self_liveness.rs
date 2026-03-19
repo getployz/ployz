@@ -76,8 +76,8 @@ mod tests {
         MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
     };
     use ployz_runtime_api::MemoryWireGuard;
+    use ployz_store_api::internal::StoreDriver;
     use ployz_store_api::MachineStore;
-    use ployz_store_api::StoreDriver;
     use ployz_store_api::memory::MemoryStore;
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;

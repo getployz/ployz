@@ -386,7 +386,7 @@ mod tests {
         DevicePeer, MemoryServiceRuntime, MemoryWireGuard, StaticEndpointDiscovery,
         WireguardDriver,
     };
-    use ployz_store_api::StoreDriver;
+    use ployz_store_api::internal::StoreDriver;
     use ployz_store_api::memory::MemoryStore;
     use ployz_types::model::{MachineId, MachineStatus, OverlayIp, Participation, PublicKey};
     use std::net::Ipv6Addr;

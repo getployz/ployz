@@ -4,7 +4,7 @@ use ployz_runtime_api::{
     MemoryServiceRuntime, MemoryWireGuard, ObserveMode, StaticEndpointDiscovery, ToggleState,
     WireguardDriver,
 };
-use ployz_store_api::StoreDriver;
+use ployz_store_api::internal::StoreDriver;
 use ployz_store_api::memory::MemoryStore;
 use ployz_store_api::{MachineStore, SyncStatus};
 use ployz_types::model::{

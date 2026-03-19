@@ -1,4 +1,4 @@
-use crate::cli_io::{read_optional_text_file, read_stdin_string, read_text_source, request_daemon};
+use crate::cli_io::{read_optional_text_file, read_stdin_string, read_text_source};
 use crate::{
     CliError, Command, DebugAction, DeployAction, DeployCommand, DeployManifestArgs,
     DeployServiceArgs, InstallSourceArg, MachineAction, MachineInviteAction,
@@ -8,7 +8,7 @@ use ployz_api::{
     BootstrapWaitMode, DaemonRequest, DeployOptions, InstallSource as MachineInstallSource,
     MachineAddOptions, MachineInstallOptions, MachineRemoveMode, MeshReadyOutput,
 };
-use ployz_sdk::Transport;
+use ployz_sdk::{DaemonClient, Transport};
 use ployz_types::spec::{
     ContainerSpec, DeployManifest, NetworkMode, Placement, PortProtocol, PublishedPort, PullPolicy,
     Resources, RestartPolicy, RolloutStrategy, ServicePort, ServiceSpec, VolumeMount, VolumeSource,
@@ -136,30 +136,13 @@ async fn build_deploy_service_request<T: Transport>(
 
 async fn export_namespace_manifest<T: Transport>(
     transport: &T,
-    socket: &str,
+    _socket: &str,
     namespace: &str,
 ) -> Result<DeployManifest> {
-    let response = request_daemon(
-        transport,
-        socket,
-        DaemonRequest::DeployExport {
-            namespace: namespace.to_string(),
-        },
-    )
-    .await?;
-
-    if !response.ok {
-        return Err(CliError::Daemon {
-            code: response.code,
-            message: response.message,
-        });
-    }
-
-    serde_json::from_str(&response.message).map_err(|error| {
-        CliError::Serialize(format!(
-            "failed to decode exported namespace manifest: {error}"
-        ))
-    })
+    DaemonClient::new(transport)
+        .deploy_export_manifest(namespace)
+        .await
+        .map_err(|error| CliError::Serialize(format!("failed to export namespace manifest: {error}")))
 }
 
 pub(crate) fn upsert_service_in_manifest(manifest: &mut DeployManifest, spec: ServiceSpec) {

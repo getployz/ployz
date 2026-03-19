@@ -12,7 +12,7 @@ use ployz_runtime_api::{
     ContainerNetwork, DataplaneFactory, EndpointDiscovery, MeshDataplane, MeshNetwork,
     ServiceRuntime, WireguardBackendMode, WireguardDriver,
 };
-use ployz_store_api::StoreDriver;
+use ployz_store_api::internal::StoreDriver;
 use ployz_store_api::{MachineStore, SyncProbe, SyncStatus};
 use std::net::Ipv4Addr;
 use std::sync::Arc;

@@ -2,6 +2,7 @@ use crate::admin::AdminClient;
 use crate::client::{CorrClient, Transport};
 use corro_api_types::{ExecResult, Statement};
 use ployz_config::corrosion as corrosion_config;
+use ployz_store_api::internal::StoreDriver;
 use ployz_store_api::{
     DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore, InviteStore,
     MachineEventSubscription, MachineStore, RoutingInvalidationSubscription, RoutingStore,
@@ -15,6 +16,7 @@ use ployz_types::model::{
 use ployz_types::spec::Namespace;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -111,6 +113,28 @@ impl CorrosionStore {
     ) -> Result<(RoutingState, mpsc::Receiver<RoutingState>)> {
         workflows::routing_state::subscribe_routing_state_inner(&self.client).await
     }
+}
+
+#[must_use]
+pub fn bridge_store_driver(
+    api_addr: SocketAddr,
+    local_addr: SocketAddr,
+    admin_path: Option<PathBuf>,
+) -> StoreDriver {
+    StoreDriver::from_store(Arc::new(CorrosionStore::new(
+        api_addr,
+        Transport::Bridge { local_addr },
+        admin_path,
+    )))
+}
+
+#[must_use]
+pub fn direct_store_driver(api_addr: SocketAddr, admin_path: Option<PathBuf>) -> StoreDriver {
+    StoreDriver::from_store(Arc::new(CorrosionStore::new(
+        api_addr,
+        Transport::Direct,
+        admin_path,
+    )))
 }
 
 impl SyncProbe for CorrosionStore {

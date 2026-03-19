@@ -6,7 +6,7 @@ use ipnet::Ipv4Net;
 use ployz_dns::DnsConfig;
 use ployz_gateway::GatewayConfig;
 use ployz_runtime_api::{RestartableWorkload, RuntimeHandle};
-use ployz_store_api::StoreDriver;
+use ployz_store_api::internal::StoreDriver;
 use ployz_types::model::MachineId;
 use ployz_types::model::OverlayIp;
 

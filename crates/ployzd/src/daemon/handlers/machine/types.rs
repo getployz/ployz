@@ -5,7 +5,7 @@ use ployz_api::{
     MachineListRow,
 };
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
-use ployz_store_api::StoreDriver;
+use ployz_store_api::internal::StoreDriver;
 use ployz_types::model::MachineId;
 use std::fmt;
 use std::str::FromStr;

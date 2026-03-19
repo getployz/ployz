@@ -13,8 +13,8 @@ use ployz_runtime_api::{
     MemoryServiceRuntime, MemoryWireGuard, ServiceHealth, StaticEndpointDiscovery,
     WireguardDriver,
 };
+use ployz_store_api::internal::StoreDriver;
 use ployz_store_api::MachineStore;
-use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::MemoryStore;
 use ployz_types::model::{
     JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
