@@ -2895,7 +2895,6 @@ name = "ployz-sdk"
 version = "0.1.0"
 dependencies = [
  "ployz-api",
- "ployz-runtime-api",
  "ployz-types",
  "serde_json",
  "tokio",
