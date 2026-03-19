@@ -311,7 +311,7 @@ impl DaemonState {
             .save(&config_path)
             .map_err(|err| format!("save network config: {err}"))?;
 
-        if self.runtime_is_memory_test() {
+        if self.runtime_profile.is_memory_test() {
             self.apply_local_subnet_heal_in_memory_mode(&network_name)
                 .await
         } else {
@@ -440,12 +440,13 @@ impl DaemonState {
             .as_ref()
             .map(|active| active.config.subnet)
             .ok_or_else(|| "no running network".to_string())?;
-        self.stop_runtime_local_workloads_for_subnet_heal(
-            &self.identity.machine_id,
-            network_name,
-            target_subnet,
-        )
-        .await
+        self.runtime_profile
+            .stop_local_workloads_for_subnet_heal(
+                &self.identity.machine_id,
+                network_name,
+                target_subnet,
+            )
+            .await
     }
 
     async fn start_local_workloads_after_subnet_heal(
@@ -458,7 +459,8 @@ impl DaemonState {
             .as_ref()
             .map(|active| active.config.subnet)
             .ok_or_else(|| "no running network".to_string())?;
-        self.start_runtime_local_workloads_after_subnet_heal(network_name, target_subnet, workloads)
+        self.runtime_profile
+            .start_local_workloads_after_subnet_heal(network_name, target_subnet, workloads)
             .await
     }
 }

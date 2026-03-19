@@ -1,6 +1,5 @@
 pub(crate) mod deploy_control;
 pub mod handlers;
-mod runtime;
 mod setup;
 pub(crate) mod store;
 pub mod ssh;
@@ -56,7 +55,7 @@ pub struct DaemonState {
     pub identity: Identity,
     pub runtime_target: RuntimeTarget,
     pub service_mode: ServiceMode,
-    runtime_profile: RuntimeProfile,
+    pub(crate) runtime_profile: RuntimeProfile,
     pub cluster_cidr: String,
     pub subnet_prefix_len: u8,
     pub remote_control_port: u16,

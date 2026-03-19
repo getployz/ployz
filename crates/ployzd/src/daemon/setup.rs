@@ -88,7 +88,9 @@ impl MeshStartTx {
     ) -> Result<(), StartMeshError> {
         let exposed_tcp_ports = [plan.gateway_port];
         let components = state
-            .build_runtime_mesh_components(
+            .runtime_profile
+            .build_mesh_components(
+                &state.identity,
                 self.config.overlay_ip,
                 &plan.network_dir,
                 &self.config.name.0,
@@ -168,7 +170,8 @@ impl MeshStartTx {
         };
 
         let handle = state
-            .start_runtime_remote_control(
+            .runtime_profile
+            .start_remote_control(
                 plan.remote_control_bind_addr,
                 store,
                 state.namespace_locks.clone(),
@@ -181,6 +184,7 @@ impl MeshStartTx {
                 },
             )
             .await
+            .map(|h| Box::new(h) as Box<dyn RuntimeHandle>)
             .map_err(|error| StartMeshError::RemoteControl {
                 bind: plan.remote_control_bind_addr,
                 error,
@@ -197,8 +201,10 @@ impl MeshStartTx {
         plan: &StartPlan,
     ) -> Result<(), StartMeshError> {
         let handle = state
-            .start_runtime_gateway(plan.gateway_config.clone())
+            .runtime_profile
+            .start_gateway(plan.gateway_config.clone())
             .await
+            .map(|h| Box::new(h) as Box<dyn RuntimeHandle>)
             .map_err(StartMeshError::Gateway)?;
         self.gateway = handle;
         Ok(())
@@ -211,8 +217,10 @@ impl MeshStartTx {
         plan: &StartPlan,
     ) -> Result<(), StartMeshError> {
         let handle = state
-            .start_runtime_dns(plan.dns_config.clone())
+            .runtime_profile
+            .start_dns(plan.dns_config.clone())
             .await
+            .map(|h| Box::new(h) as Box<dyn RuntimeHandle>)
             .map_err(StartMeshError::Dns)?;
         self.dns = handle;
         Ok(())
@@ -347,7 +355,9 @@ impl DaemonState {
         }
 
         let components = self
-            .build_runtime_mesh_components(
+            .runtime_profile
+            .build_mesh_components(
+                &self.identity,
                 net_config.overlay_ip,
                 &network_dir,
                 &net_config.name.0,
@@ -372,11 +382,18 @@ impl DaemonState {
             dns_bridge_listen_addr,
         );
 
-        let new_gateway = self
-            .start_runtime_gateway(gateway_config)
+        let new_gateway: Box<dyn RuntimeHandle> = self
+            .runtime_profile
+            .start_gateway(gateway_config)
             .await
+            .map(|h| Box::new(h) as Box<dyn RuntimeHandle>)
             .map_err(|error| format!("gateway start failed: {error}"))?;
-        let new_dns = match self.start_runtime_dns(dns_config).await {
+        let new_dns: Box<dyn RuntimeHandle> = match self
+            .runtime_profile
+            .start_dns(dns_config)
+            .await
+            .map(|h| Box::new(h) as Box<dyn RuntimeHandle>)
+        {
             Ok(handle) => handle,
             Err(error) => {
                 let gateway = new_gateway;
@@ -458,8 +475,9 @@ impl DaemonState {
         )
         .map_err(StartMeshError::BootstrapResolve)?;
         let gateway_port = Self::gateway_port(&self.gateway_listen_addr)?;
-        let remote_control_bind_addr =
-            self.remote_control_bind_addr(self.remote_control_port, net_config.overlay_ip);
+        let remote_control_bind_addr = self
+            .runtime_profile
+            .remote_control_bind_addr(self.remote_control_port, net_config.overlay_ip);
         let gateway_config = GatewayConfig::for_network(
             &self.data_dir,
             &net_config.name.0,
@@ -481,7 +499,7 @@ impl DaemonState {
             remote_control_bind_addr,
             gateway_config,
             dns_config,
-            overlay_network_name: self.runtime_overlay_network_name(&net_config.name.0),
+            overlay_network_name: self.runtime_profile.overlay_network_name(&net_config.name.0),
         })
     }
 

@@ -60,10 +60,14 @@ pub(crate) async fn run_self_record_writer_task(
                 let SelfRecordCommand { mutation, done } = command;
                 let mut next = current.clone();
                 apply_mutation(&mut next, mutation.clone());
+                if next == current {
+                    let _ = done.send(Some(next));
+                    continue;
+                }
                 match store.upsert_self_machine(&next).await {
                     Ok(()) => {
-                        current = next.clone();
                         *authoritative_self.write().await = next.clone();
+                        current = next.clone();
                         let _ = done.send(Some(next));
                     }
                     Err(error) => {

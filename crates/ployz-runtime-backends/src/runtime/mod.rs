@@ -7,6 +7,6 @@ pub mod probe;
 pub mod spec;
 
 pub use engine::{ContainerEngine, EnsureAction, EnsureResult};
-pub use image_ref::{DockerImageRef, parse_docker_image_ref};
+pub use image_ref::{DockerImageRef, parse_docker_image_ref, pull_docker_image};
 pub use probe::{Probe, ProbeRunner};
 pub use spec::{ObservedContainer, PullPolicy, RuntimeContainerSpec};
