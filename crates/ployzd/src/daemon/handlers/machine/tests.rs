@@ -6,6 +6,7 @@ use crate::daemon::DaemonState;
 use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock};
 use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
 use ipnet::Ipv4Net;
+use crate::daemon::store::StoreDriver;
 use ployz_api::{DaemonPayload, DaemonResponse, MachineAddOptions, MeshSelfRecordPayload};
 use ployz_orchestrator::Mesh;
 use ployz_runtime_api::Identity;
@@ -13,7 +14,6 @@ use ployz_runtime_api::{
     MemoryServiceRuntime, MemoryWireGuard, ServiceHealth, StaticEndpointDiscovery,
     WireguardDriver,
 };
-use ployz_store_api::internal::StoreDriver;
 use ployz_store_api::MachineStore;
 use ployz_store_api::memory::MemoryStore;
 use ployz_types::model::{
@@ -673,7 +673,8 @@ async fn make_state(
 
     let mut mesh = Mesh::new(
         WireguardDriver::memory_with(network.clone()),
-        StoreDriver::memory_with(store.clone()),
+        store.clone(),
+        store.clone(),
         service,
         None,
         Arc::new(StaticEndpointDiscovery::empty()),
@@ -699,6 +700,7 @@ async fn make_state(
     state.active = Some(ActiveMesh {
         config,
         mesh,
+        store: StoreDriver::memory_with(store.clone()),
         remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
@@ -727,7 +729,8 @@ async fn make_state_with_store(
     let service = Arc::new(MemoryServiceRuntime::new());
     let mesh = Mesh::new(
         WireguardDriver::memory_with(Arc::new(MemoryWireGuard::new())),
-        StoreDriver::memory_with(store),
+        store.clone(),
+        store.clone(),
         service.clone(),
         None,
         Arc::new(StaticEndpointDiscovery::empty()),
@@ -750,6 +753,7 @@ async fn make_state_with_store(
     state.active = Some(ActiveMesh {
         config,
         mesh,
+        store: StoreDriver::memory_with(store),
         remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),

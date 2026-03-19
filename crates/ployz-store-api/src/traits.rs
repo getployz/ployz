@@ -1,10 +1,10 @@
+use async_trait::async_trait;
 use ployz_types::Result;
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
     MachineId, MachineRecord, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
 };
 use ployz_types::spec::Namespace;
-use std::future::Future;
 use tokio::sync::mpsc;
 
 pub type MachineSubscription = (Vec<MachineRecord>, MachineEventSubscription);
@@ -43,45 +43,33 @@ impl RoutingInvalidationSubscription {
     }
 }
 
+#[async_trait]
 pub trait MachineStore: Send + Sync {
-    fn init(&self) -> impl Future<Output = Result<()>> + Send + '_ {
-        async { Ok(()) }
+    async fn init(&self) -> Result<()> {
+        Ok(())
     }
 
-    fn list_machines(&self) -> impl Future<Output = Result<Vec<MachineRecord>>> + Send + '_;
+    async fn list_machines(&self) -> Result<Vec<MachineRecord>>;
 
-    fn upsert_self_machine<'a>(
-        &'a self,
-        record: &'a MachineRecord,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
+    async fn upsert_self_machine(&self, record: &MachineRecord) -> Result<()>;
 
-    fn delete_machine<'a>(
-        &'a self,
-        id: &'a MachineId,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
+    async fn delete_machine(&self, id: &MachineId) -> Result<()>;
 
-    fn subscribe_machines(&self) -> impl Future<Output = Result<MachineSubscription>> + Send + '_;
+    async fn subscribe_machines(&self) -> Result<MachineSubscription>;
 }
 
+#[async_trait]
 pub trait InviteStore: Send + Sync {
-    fn create_invite<'a>(
-        &'a self,
-        invite: &'a InviteRecord,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
+    async fn create_invite(&self, invite: &InviteRecord) -> Result<()>;
 
-    fn consume_invite<'a>(
-        &'a self,
-        invite_id: &'a str,
-        now_unix_secs: u64,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
+    async fn consume_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<()>;
 }
 
+#[async_trait]
 pub trait RoutingStore: Send + Sync {
-    fn load_routing_state(&self) -> impl Future<Output = Result<RoutingState>> + Send + '_;
+    async fn load_routing_state(&self) -> Result<RoutingState>;
 
-    fn subscribe_routing_invalidations(
-        &self,
-    ) -> impl Future<Output = Result<RoutingInvalidationSubscription>> + Send + '_;
+    async fn subscribe_routing_invalidations(&self) -> Result<RoutingInvalidationSubscription>;
 }
 
 #[derive(Debug, Clone)]
@@ -92,66 +80,44 @@ pub struct DeployCommit {
     pub deploy: DeployRecord,
 }
 
+#[async_trait]
 pub trait DeployReadStore: Send + Sync {
-    fn list_service_revisions<'a>(
-        &'a self,
-        namespace: &'a Namespace,
-    ) -> impl Future<Output = Result<Vec<ServiceRevisionRecord>>> + Send + 'a;
+    async fn list_service_revisions(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceRevisionRecord>>;
 
-    fn list_service_releases<'a>(
-        &'a self,
-        namespace: &'a Namespace,
-    ) -> impl Future<Output = Result<Vec<ServiceReleaseRecord>>> + Send + 'a;
+    async fn list_service_releases(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceReleaseRecord>>;
 
-    fn list_instance_status<'a>(
-        &'a self,
-        namespace: &'a Namespace,
-    ) -> impl Future<Output = Result<Vec<InstanceStatusRecord>>> + Send + 'a;
+    async fn list_instance_status(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<InstanceStatusRecord>>;
 
-    fn get_deploy<'a>(
-        &'a self,
-        deploy_id: &'a DeployId,
-    ) -> impl Future<Output = Result<Option<DeployRecord>>> + Send + 'a;
+    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>>;
 }
 
+#[async_trait]
 pub trait DeployWriteStore: Send + Sync {
-    fn upsert_service_revision<'a>(
-        &'a self,
-        record: &'a ServiceRevisionRecord,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
+    async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()>;
 
-    fn upsert_service_release<'a>(
-        &'a self,
-        record: &'a ServiceReleaseRecord,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
+    async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> Result<()>;
 
-    fn delete_service_release<'a>(
-        &'a self,
-        namespace: &'a Namespace,
-        service: &'a str,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
+    async fn delete_service_release(&self, namespace: &Namespace, service: &str) -> Result<()>;
 
-    fn upsert_instance_status<'a>(
-        &'a self,
-        record: &'a InstanceStatusRecord,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
+    async fn upsert_instance_status(&self, record: &InstanceStatusRecord) -> Result<()>;
 
-    fn delete_instance_status<'a>(
-        &'a self,
-        instance_id: &'a InstanceId,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
+    async fn delete_instance_status(&self, instance_id: &InstanceId) -> Result<()>;
 
-    fn upsert_deploy<'a>(
-        &'a self,
-        record: &'a DeployRecord,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
+    async fn upsert_deploy(&self, record: &DeployRecord) -> Result<()>;
 }
 
+#[async_trait]
 pub trait DeployCommitStore: Send + Sync {
-    fn apply_deploy_commit<'a>(
-        &'a self,
-        commit: &'a DeployCommit,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
+    async fn apply_deploy_commit(&self, commit: &DeployCommit) -> Result<()>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,8 +127,16 @@ pub enum SyncStatus {
     Synced,
 }
 
+#[async_trait]
 pub trait SyncProbe: Send + Sync {
-    fn sync_status(&self) -> impl Future<Output = Result<SyncStatus>> + Send + '_ {
-        async { Ok(SyncStatus::Synced) }
+    async fn sync_status(&self) -> Result<SyncStatus> {
+        Ok(SyncStatus::Synced)
     }
+}
+
+#[async_trait]
+pub trait BootstrapStateReader: Send + Sync {
+    async fn seed_machine_records(&self) -> Result<Vec<MachineRecord>>;
+
+    async fn bootstrap_addrs(&self, local_machine_id: &MachineId) -> Result<Vec<String>>;
 }

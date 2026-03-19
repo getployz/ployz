@@ -9,7 +9,7 @@ use crate::model::{
     DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, SlotId,
 };
 use crate::runtime::labels::{self, WorkloadMeta, build_workload_labels, extract_workload_labels};
-use crate::runtime::{ContainerEngine, Probe, PullPolicy, RuntimeContainerSpec};
+use crate::runtime::{ContainerEngine, Probe, RuntimeContainerSpec};
 use crate::spec::{
     ContainerSpec, Namespace, NetworkMode, PortProtocol, ServicePort, ServiceSpec, VolumeSource,
 };
@@ -149,12 +149,6 @@ impl LocalDeployRuntime {
 
         let container = &spec.template;
 
-        let pull_policy = match spec.template.pull_policy {
-            crate::spec::PullPolicy::Always => PullPolicy::Always,
-            crate::spec::PullPolicy::IfNotPresent => PullPolicy::IfNotPresent,
-            crate::spec::PullPolicy::Never => PullPolicy::Never,
-        };
-
         let env: Vec<(String, String)> = container
             .env
             .iter()
@@ -174,7 +168,7 @@ impl LocalDeployRuntime {
             key,
             container_name: container_name.clone(),
             image: container.image.clone(),
-            pull_policy,
+            pull_policy: container.pull_policy,
             cmd: container.command.clone(),
             entrypoint: container.entrypoint.clone(),
             env,

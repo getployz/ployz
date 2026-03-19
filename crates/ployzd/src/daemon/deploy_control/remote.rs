@@ -1,11 +1,11 @@
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
+use crate::daemon::store::StoreDriver;
 use ployz_runtime_api::{DeployFrame, RuntimeHandle, StartCandidateRequest};
 use ployz_runtime_backends::deploy::local::{
     LocalDeployRuntime, ManagedInstance, StartCandidate, now_unix_secs,
 };
-use ployz_store_api::internal::StoreDriver;
 use ployz_store_api::{DeployReadStore, DeployWriteStore};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{

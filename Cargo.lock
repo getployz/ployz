@@ -2906,7 +2906,6 @@ name = "ployz-store-api"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "ployz-runtime-api",
  "ployz-types",
  "tokio",
  "tracing",

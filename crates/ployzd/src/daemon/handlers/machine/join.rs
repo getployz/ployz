@@ -139,7 +139,7 @@ impl DaemonState {
                     active.config.clone(),
                     MachineAddContext {
                         network_name: active.config.name.0.clone(),
-                        store: active.mesh.store.clone(),
+                        store: active.store.clone(),
                         peer_sync_tx,
                         ssh_options,
                         install: options.install.clone().unwrap_or_default(),
@@ -283,7 +283,6 @@ impl DaemonState {
             .as_ref()
             .ok_or_else(|| "no running network".to_string())?;
         let machines = active
-            .mesh
             .store
             .list_machines()
             .await

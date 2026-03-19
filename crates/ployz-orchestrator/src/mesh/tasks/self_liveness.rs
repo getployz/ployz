@@ -76,7 +76,6 @@ mod tests {
         MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
     };
     use ployz_runtime_api::MemoryWireGuard;
-    use ployz_store_api::internal::StoreDriver;
     use ployz_store_api::MachineStore;
     use ployz_store_api::memory::MemoryStore;
     use std::collections::BTreeMap;
@@ -104,15 +103,15 @@ mod tests {
     async fn self_liveness_tick_now_runs_one_sample_and_acknowledges() {
         let authoritative_self = Arc::new(RwLock::new(test_record()));
         let store = Arc::new(MemoryStore::new());
-        let store_driver = StoreDriver::memory_with(store.clone());
         let (self_record_tx, self_record_rx) = mpsc::channel(8);
         let writer_cancel = CancellationToken::new();
         let writer_task_cancel = writer_cancel.clone();
         let writer_authoritative_self = authoritative_self.clone();
+        let writer_store = store.clone();
         let writer_handle = tokio::spawn(async move {
             run_self_record_writer_task(
                 writer_authoritative_self,
-                store_driver,
+                writer_store,
                 self_record_rx,
                 writer_task_cancel,
             )
@@ -167,15 +166,15 @@ mod tests {
             ..test_record()
         }));
         let store = Arc::new(MemoryStore::new());
-        let store_driver = StoreDriver::memory_with(store.clone());
         let (self_record_tx, self_record_rx) = mpsc::channel(8);
         let writer_cancel = CancellationToken::new();
         let writer_task_cancel = writer_cancel.clone();
         let writer_authoritative_self = authoritative_self.clone();
+        let writer_store = store.clone();
         let writer_handle = tokio::spawn(async move {
             run_self_record_writer_task(
                 writer_authoritative_self,
-                store_driver,
+                writer_store,
                 self_record_rx,
                 writer_task_cancel,
             )

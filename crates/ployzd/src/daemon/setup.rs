@@ -7,7 +7,6 @@ use tracing::warn;
 use crate::mesh_state::bootstrap::{BootstrapInfo, build_seed_records, resolve_bootstrap_addrs};
 use crate::mesh_state::network::NetworkConfig;
 use ployz_config::{RuntimeTarget, corrosion as corrosion_config};
-use ployz_corrosion::{corrosion_bootstrap_from_db, peer_records_from_db};
 use ployz_dns::DnsConfig;
 use ployz_gateway::GatewayConfig;
 use ployz_orchestrator::Mesh;
@@ -62,6 +61,7 @@ struct StartPlan {
 struct MeshStartTx {
     config: NetworkConfig,
     mesh: Option<Mesh>,
+    store: Option<super::store::StoreDriver>,
     remote_control: Box<dyn RuntimeHandle>,
     gateway: Box<dyn RuntimeHandle>,
     dns: Box<dyn RuntimeHandle>,
@@ -72,6 +72,7 @@ impl MeshStartTx {
         Self {
             config,
             mesh: None,
+            store: None,
             remote_control: Box::new(NoopRuntimeHandle),
             gateway: Box::new(NoopRuntimeHandle),
             dns: Box::new(NoopRuntimeHandle),
@@ -86,13 +87,6 @@ impl MeshStartTx {
         options: MeshStartOptions,
     ) -> Result<(), StartMeshError> {
         let exposed_tcp_ports = [plan.gateway_port];
-        let db_records = peer_records_from_db(&plan.network_dir).unwrap_or_else(|error| {
-            tracing::warn!(
-                ?error,
-                "failed to load corrosion bootstrap peers, continuing without db seeds"
-            );
-            Vec::new()
-        });
         let components = state
             .build_runtime_mesh_components(
                 self.config.overlay_ip,
@@ -105,6 +99,17 @@ impl MeshStartTx {
             )
             .await
             .map_err(StartMeshError::NetworkDriver)?;
+        let db_records = components
+            .bootstrap_state
+            .seed_machine_records()
+            .await
+            .unwrap_or_else(|error| {
+            tracing::warn!(
+                ?error,
+                "failed to load corrosion bootstrap peers, continuing without db seeds"
+            );
+            Vec::new()
+            });
 
         let listen_port = DEFAULT_LISTEN_PORT;
         let self_endpoints = components
@@ -124,7 +129,8 @@ impl MeshStartTx {
 
         let mut mesh = Mesh::new(
             components.network,
-            components.store,
+            components.store.machine_store(),
+            components.store.sync_probe(),
             components.store_runtime,
             components.container_network,
             components.endpoint_discovery,
@@ -139,6 +145,7 @@ impl MeshStartTx {
             .await
             .map_err(|error| StartMeshError::MeshUp(error.to_string()))?;
 
+        self.store = Some(components.store);
         self.mesh = Some(mesh);
         Ok(())
     }
@@ -154,11 +161,16 @@ impl MeshStartTx {
                 "startup transaction missing mesh before remote control start".into(),
             ));
         };
+        let Some(store) = self.store.clone() else {
+            return Err(StartMeshError::MeshUp(
+                "startup transaction missing store before remote control start".into(),
+            ));
+        };
 
         let handle = state
             .start_runtime_remote_control(
                 plan.remote_control_bind_addr,
-                mesh.store.clone(),
+                store,
                 state.namespace_locks.clone(),
                 state.identity.machine_id.clone(),
                 plan.overlay_network_name.clone(),
@@ -217,6 +229,11 @@ impl MeshStartTx {
                 "startup transaction missing mesh at commit".into(),
             ));
         };
+        let Some(store) = self.store.take() else {
+            return Err(StartMeshError::MeshUp(
+                "startup transaction missing store at commit".into(),
+            ));
+        };
         let remote_control =
             std::mem::replace(&mut self.remote_control, Box::new(NoopRuntimeHandle));
         let gateway = std::mem::replace(&mut self.gateway, Box::new(NoopRuntimeHandle));
@@ -225,6 +242,7 @@ impl MeshStartTx {
         state.active = Some(ActiveMesh {
             config: self.config.clone(),
             mesh,
+            store,
             remote_control,
             gateway,
             dns,
@@ -277,7 +295,7 @@ impl DaemonState {
         bootstrap: Option<BootstrapInfo>,
         options: MeshStartOptions,
     ) -> Result<MeshStartSummary, StartMeshError> {
-        let plan = self.plan_mesh_start(&net_config, bootstrap, options)?;
+        let plan = self.plan_mesh_start(&net_config, bootstrap, options).await?;
         tracing::info!(
             ?self.runtime_target,
             ?self.service_mode,
@@ -420,7 +438,7 @@ impl DaemonState {
     }
 
     /// Fatal before startup: resolve every startup input and explicit policy value into a `StartPlan`.
-    fn plan_mesh_start(
+    async fn plan_mesh_start(
         &self,
         net_config: &NetworkConfig,
         bootstrap: Option<BootstrapInfo>,
@@ -428,8 +446,11 @@ impl DaemonState {
     ) -> Result<StartPlan, StartMeshError> {
         let network_dir = self.network_dir(&net_config.name.0);
         let fallback_bootstrap_addrs =
-            corrosion_bootstrap_from_db(&network_dir, &self.identity.machine_id)
-                .map_err(StartMeshError::BootstrapResolve)?;
+            self.runtime_profile
+                .build_bootstrap_state_reader(&network_dir)
+                .bootstrap_addrs(&self.identity.machine_id)
+                .await
+                .map_err(|error| StartMeshError::BootstrapResolve(error.to_string()))?;
         let bootstrap_addrs = resolve_bootstrap_addrs(
             &bootstrap,
             corrosion_config::DEFAULT_GOSSIP_PORT,
@@ -497,13 +518,14 @@ mod tests {
     use ployz_runtime_api::Identity;
     use ployz_types::model::{MachineId, NetworkName};
 
-    #[test]
-    fn plan_mesh_start_uses_localhost_for_docker_remote_control() {
+    #[tokio::test]
+    async fn plan_mesh_start_uses_localhost_for_docker_remote_control() {
         let state = make_state(RuntimeTarget::Docker, ServiceMode::User, "0.0.0.0:80");
         let config = make_network_config(&state, "alpha");
 
         let plan = state
             .plan_mesh_start(&config, None, MeshStartOptions::default())
+            .await
             .expect("plan should succeed");
 
         assert_eq!(
@@ -512,13 +534,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn plan_mesh_start_uses_overlay_ip_for_host_remote_control() {
+    #[tokio::test]
+    async fn plan_mesh_start_uses_overlay_ip_for_host_remote_control() {
         let state = make_state(RuntimeTarget::Host, ServiceMode::User, "0.0.0.0:80");
         let config = make_network_config(&state, "alpha");
 
         let plan = state
             .plan_mesh_start(&config, None, MeshStartOptions::default())
+            .await
             .expect("plan should succeed");
 
         assert_eq!(
@@ -527,12 +550,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn plan_mesh_start_rejects_invalid_gateway_listen_addr() {
+    #[tokio::test]
+    async fn plan_mesh_start_rejects_invalid_gateway_listen_addr() {
         let state = make_test_state("not-a-socket");
         let config = make_network_config(&state, "alpha");
 
-        let error = match state.plan_mesh_start(&config, None, MeshStartOptions::default()) {
+        let error = match state
+            .plan_mesh_start(&config, None, MeshStartOptions::default())
+            .await
+        {
             Ok(_) => panic!("plan should fail"),
             Err(error) => error,
         };
@@ -540,15 +566,18 @@ mod tests {
         assert!(matches!(error, StartMeshError::GatewayListenAddr(_)));
     }
 
-    #[test]
-    fn plan_mesh_start_maps_bootstrap_resolution_failures() {
-        let state = make_test_state("0.0.0.0:80");
+    #[tokio::test]
+    async fn plan_mesh_start_maps_bootstrap_resolution_failures() {
+        let state = make_state(RuntimeTarget::Host, ServiceMode::User, "0.0.0.0:80");
         let config = make_network_config(&state, "alpha");
         let network_dir = state.network_dir(&config.name.0);
         let db_path = ployz_config::corrosion::Paths::new(&network_dir).db;
         fs::create_dir_all(&db_path).expect("create invalid db path");
 
-        let error = match state.plan_mesh_start(&config, None, MeshStartOptions::default()) {
+        let error = match state
+            .plan_mesh_start(&config, None, MeshStartOptions::default())
+            .await
+        {
             Ok(_) => panic!("plan should fail"),
             Err(error) => error,
         };

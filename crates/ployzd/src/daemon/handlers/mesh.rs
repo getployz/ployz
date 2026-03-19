@@ -509,7 +509,7 @@ mod tests {
     use ployz_runtime_api::{
         MemoryServiceRuntime, MemoryWireGuard, StaticEndpointDiscovery, WireguardDriver,
     };
-    use ployz_store_api::internal::StoreDriver;
+    use crate::daemon::store::StoreDriver;
     use ployz_store_api::MachineStore;
     use ployz_store_api::memory::MemoryStore;
     use ployz_types::model::{MachineId, OverlayIp, PublicKey};
@@ -635,7 +635,8 @@ mod tests {
         let service = Arc::new(MemoryServiceRuntime::new());
         let mut mesh = Mesh::new(
             WireguardDriver::memory_with(network.clone()),
-            StoreDriver::memory_with(store.clone()),
+            store.clone(),
+            store.clone(),
             service,
             None,
             Arc::new(StaticEndpointDiscovery::empty()),
@@ -659,6 +660,7 @@ mod tests {
         state.active = Some(ActiveMesh {
             config,
             mesh,
+            store: StoreDriver::memory_with(store.clone()),
             remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),

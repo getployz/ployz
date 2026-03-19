@@ -41,7 +41,7 @@ impl DaemonState {
             None => return self.err("NO_MESH", "no mesh is running"),
         };
 
-        match preview(&active.mesh.store, &self.identity.machine_id, &manifest).await {
+        match preview(&active.store, &self.identity.machine_id, &manifest).await {
             Ok(plan) => match serde_json::to_string_pretty(&plan) {
                 Ok(json) => self.ok(json),
                 Err(err) => self.err("ENCODE_PREVIEW", format!("encode preview: {err}")),
@@ -65,7 +65,7 @@ impl DaemonState {
         };
 
         let agent = Arc::new(DeployAgent::new(
-            active.mesh.store.clone(),
+            active.store.clone(),
             self.namespace_locks.clone(),
             self.identity.machine_id.clone(),
             self.overlay_network_name(),
@@ -78,7 +78,7 @@ impl DaemonState {
         );
 
         match apply(
-            &active.mesh.store,
+            &active.store,
             &factory,
             &self.identity.machine_id,
             &manifest,
@@ -99,7 +99,7 @@ impl DaemonState {
             None => return self.err("NO_MESH", "no mesh is running"),
         };
         let namespace = Namespace(namespace.to_string());
-        let manifest = match export_manifest(&active.mesh.store, &namespace).await {
+        let manifest = match export_manifest(&active.store, &namespace).await {
             Ok(manifest) => manifest,
             Err(err) => return self.err("DEPLOY_EXPORT_FAILED", format!("{err}")),
         };

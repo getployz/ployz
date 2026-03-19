@@ -3,7 +3,6 @@ use crate::mesh::probe::{TcpProbeResult, TcpProbeStatus, probe_overlay_ips_paral
 use crate::mesh::tasks::{SelfRecordMutation, apply_self_record_mutation};
 use crate::model::{MachineId, MachineRecord, Participation};
 use ployz_runtime_api::{WireGuardDevice, WireguardDriver};
-use ployz_store_api::internal::StoreDriver;
 use ployz_store_api::MachineStore;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -56,7 +55,7 @@ impl RequiredPeerHealth {
 pub(crate) async fn run_participation_task(
     machine_id: MachineId,
     authoritative_self: Arc<RwLock<MachineRecord>>,
-    store: StoreDriver,
+    store: Arc<dyn MachineStore>,
     network: WireguardDriver,
     self_record_tx: mpsc::Sender<crate::mesh::tasks::self_record::SelfRecordCommand>,
     mut commands: mpsc::Receiver<ParticipationCommand>,
@@ -115,7 +114,7 @@ pub(crate) async fn run_participation_task(
 async fn participation_once(
     machine_id: &MachineId,
     authoritative_self: &Arc<RwLock<MachineRecord>>,
-    store: &StoreDriver,
+    store: &Arc<dyn MachineStore>,
     network: &WireguardDriver,
     self_record_tx: &mpsc::Sender<crate::mesh::tasks::self_record::SelfRecordCommand>,
     state: &mut ParticipationState,
@@ -353,15 +352,15 @@ mod tests {
             .expect("upsert peer");
 
         let authoritative_self = Arc::new(RwLock::new(self_record));
-        let store_driver = StoreDriver::memory_with(store.clone());
         let (self_record_tx, self_record_rx) = mpsc::channel(8);
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();
         let writer_authoritative_self = authoritative_self.clone();
+        let writer_store = store.clone();
         let writer_handle = tokio::spawn(async move {
             run_self_record_writer_task(
                 writer_authoritative_self,
-                store_driver,
+                writer_store,
                 self_record_rx,
                 task_cancel,
             )
@@ -465,14 +464,14 @@ mod tests {
         }]);
 
         let mut state = ParticipationState::default();
-        let store_driver = StoreDriver::memory_with(store.clone());
         let network_driver = WireguardDriver::memory_with(network);
+        let machine_store: Arc<dyn MachineStore> = store.clone();
 
         for _ in 0..3 {
             participation_once(
                 &self_id,
                 &authoritative_self,
-                &store_driver,
+                &machine_store,
                 &network_driver,
                 &self_record_tx,
                 &mut state,
@@ -512,14 +511,14 @@ mod tests {
         }]);
 
         let mut state = ParticipationState::default();
-        let store_driver = StoreDriver::memory_with(store.clone());
         let network_driver = WireguardDriver::memory_with(network);
+        let machine_store: Arc<dyn MachineStore> = store.clone();
 
         for _ in 0..3 {
             participation_once(
                 &self_id,
                 &authoritative_self,
-                &store_driver,
+                &machine_store,
                 &network_driver,
                 &self_record_tx,
                 &mut state,
@@ -563,14 +562,14 @@ mod tests {
             forced_participation: Some(Participation::Disabled),
             ..ParticipationState::default()
         };
-        let store_driver = StoreDriver::memory_with(store.clone());
         let network_driver = WireguardDriver::memory_with(network);
+        let machine_store: Arc<dyn MachineStore> = store.clone();
 
         for _ in 0..3 {
             participation_once(
                 &self_id,
                 &authoritative_self,
-                &store_driver,
+                &machine_store,
                 &network_driver,
                 &self_record_tx,
                 &mut state,

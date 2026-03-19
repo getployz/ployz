@@ -37,7 +37,7 @@ impl DaemonState {
             return;
         }
 
-        let machines = match active.mesh.store.list_machines().await {
+        let machines = match active.store.list_machines().await {
             Ok(machines) => machines,
             Err(err) => {
                 tracing::warn!(error = %err, "local subnet heal: failed to list machines");
@@ -288,7 +288,6 @@ impl DaemonState {
         };
 
         active
-            .mesh
             .store
             .upsert_self_machine(&record)
             .await
@@ -345,7 +344,6 @@ impl DaemonState {
         };
         record.subnet = Some(config.subnet);
         active
-            .mesh
             .store
             .upsert_self_machine(&record)
             .await
@@ -427,7 +425,6 @@ impl DaemonState {
             return Err("local authoritative self record missing".into());
         };
         active
-            .mesh
             .store
             .upsert_self_machine(&record)
             .await

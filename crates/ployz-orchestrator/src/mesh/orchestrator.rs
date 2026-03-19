@@ -12,7 +12,6 @@ use ployz_runtime_api::{
     ContainerNetwork, DataplaneFactory, EndpointDiscovery, MeshDataplane, MeshNetwork,
     ServiceRuntime, WireguardBackendMode, WireguardDriver,
 };
-use ployz_store_api::internal::StoreDriver;
 use ployz_store_api::{MachineStore, SyncProbe, SyncStatus};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -52,7 +51,8 @@ enum RuntimeStoreMode {
 pub struct Mesh {
     phase: Phase,
     pub network: WireguardDriver,
-    pub store: StoreDriver,
+    store: Arc<dyn MachineStore>,
+    sync_probe: Arc<dyn SyncProbe>,
     store_runtime: Arc<dyn ServiceRuntime>,
     container_network: Option<ContainerNetwork>,
     endpoint_discovery: Arc<dyn EndpointDiscovery>,
@@ -81,7 +81,8 @@ impl Mesh {
     #[must_use]
     pub fn new(
         network: WireguardDriver,
-        store: StoreDriver,
+        store: Arc<dyn MachineStore>,
+        sync_probe: Arc<dyn SyncProbe>,
         store_runtime: Arc<dyn ServiceRuntime>,
         container_network: Option<ContainerNetwork>,
         endpoint_discovery: Arc<dyn EndpointDiscovery>,
@@ -93,6 +94,7 @@ impl Mesh {
             phase: Phase::Stopped,
             network,
             store,
+            sync_probe,
             store_runtime,
             container_network,
             endpoint_discovery,
@@ -213,7 +215,7 @@ impl Mesh {
             .any(|machine| machine.id != self.machine_id);
         let has_remote_peer = has_remote_store_peer || has_remote_seed_peer;
         let sync_connected = if has_remote_peer {
-            match self.store.sync_status().await {
+            match self.sync_probe.sync_status().await {
                 Ok(SyncStatus::Disconnected) => false,
                 Ok(SyncStatus::Syncing { .. }) | Ok(SyncStatus::Synced) => true,
                 Err(_) => false,
@@ -403,7 +405,7 @@ impl Mesh {
         self.self_record_tx = Some(self_record_tx.clone());
         task_set.spawn(run_self_record_writer_task(
             authoritative_self.clone(),
-            self.store.clone(),
+            Arc::clone(&self.store),
             self_record_rx,
             cancel.clone(),
         ));
@@ -433,7 +435,7 @@ impl Mesh {
         task_set.spawn(run_participation_task(
             self.machine_id.clone(),
             authoritative_self.clone(),
-            self.store.clone(),
+            Arc::clone(&self.store),
             self.network.clone(),
             self_record_tx,
             participation_rx,
@@ -722,13 +724,13 @@ impl Mesh {
 
         let interval = self.bootstrap_interval;
         let connection_timeout = self.connection_timeout;
-        let store = self.store.clone();
+        let sync_probe = Arc::clone(&self.sync_probe);
 
         let result: std::result::Result<bool, String> =
             tokio::time::timeout(connection_timeout, async {
                 let mut consecutive_errors = 0u32;
                 loop {
-                    match store.sync_status().await {
+                    match sync_probe.sync_status().await {
                         Ok(SyncStatus::Disconnected) => {
                             consecutive_errors = 0;
                         }

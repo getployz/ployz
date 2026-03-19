@@ -2,12 +2,12 @@ use crate::admin::AdminClient;
 use crate::client::{CorrClient, Transport};
 use corro_api_types::{ExecResult, Statement};
 use ployz_config::corrosion as corrosion_config;
-use ployz_store_api::internal::StoreDriver;
 use ployz_store_api::{
     DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore, InviteStore,
     MachineEventSubscription, MachineStore, RoutingInvalidationSubscription, RoutingStore,
     SyncProbe, SyncStatus,
 };
+use async_trait::async_trait;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
@@ -16,7 +16,6 @@ use ployz_types::model::{
 use ployz_types::spec::Namespace;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -115,28 +114,7 @@ impl CorrosionStore {
     }
 }
 
-#[must_use]
-pub fn bridge_store_driver(
-    api_addr: SocketAddr,
-    local_addr: SocketAddr,
-    admin_path: Option<PathBuf>,
-) -> StoreDriver {
-    StoreDriver::from_store(Arc::new(CorrosionStore::new(
-        api_addr,
-        Transport::Bridge { local_addr },
-        admin_path,
-    )))
-}
-
-#[must_use]
-pub fn direct_store_driver(api_addr: SocketAddr, admin_path: Option<PathBuf>) -> StoreDriver {
-    StoreDriver::from_store(Arc::new(CorrosionStore::new(
-        api_addr,
-        Transport::Direct,
-        admin_path,
-    )))
-}
-
+#[async_trait]
 impl SyncProbe for CorrosionStore {
     async fn sync_status(&self) -> Result<SyncStatus> {
         if let Some(admin) = &self.admin {
@@ -173,6 +151,7 @@ impl SyncProbe for CorrosionStore {
     }
 }
 
+#[async_trait]
 impl MachineStore for CorrosionStore {
     async fn init(&self) -> Result<()> {
         let res = self
@@ -204,6 +183,7 @@ impl MachineStore for CorrosionStore {
     }
 }
 
+#[async_trait]
 impl InviteStore for CorrosionStore {
     async fn create_invite(&self, invite: &InviteRecord) -> Result<()> {
         tables::invites::create_invite(&self.client, invite).await
@@ -214,6 +194,7 @@ impl InviteStore for CorrosionStore {
     }
 }
 
+#[async_trait]
 impl RoutingStore for CorrosionStore {
     async fn load_routing_state(&self) -> Result<RoutingState> {
         workflows::routing_state::load_routing_state(&self.client).await
@@ -226,6 +207,7 @@ impl RoutingStore for CorrosionStore {
     }
 }
 
+#[async_trait]
 impl DeployReadStore for CorrosionStore {
     async fn list_service_revisions(
         &self,
@@ -253,6 +235,7 @@ impl DeployReadStore for CorrosionStore {
     }
 }
 
+#[async_trait]
 impl DeployWriteStore for CorrosionStore {
 
     async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
@@ -280,6 +263,7 @@ impl DeployWriteStore for CorrosionStore {
     }
 }
 
+#[async_trait]
 impl DeployCommitStore for CorrosionStore {
     async fn apply_deploy_commit(&self, commit: &DeployCommit) -> Result<()> {
         workflows::deploy_commit::apply_deploy_commit(&self.client, commit).await

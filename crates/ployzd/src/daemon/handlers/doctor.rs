@@ -27,7 +27,7 @@ impl DaemonState {
             return self.err("NO_RUNNING_NETWORK", "no mesh running");
         };
 
-        let machines = match active.mesh.store.list_machines().await {
+        let machines = match active.store.list_machines().await {
             Ok(machines) => machines,
             Err(err) => return self.err("LIST_FAILED", format!("failed to list machines: {err}")),
         };
@@ -386,7 +386,7 @@ mod tests {
         DevicePeer, MemoryServiceRuntime, MemoryWireGuard, StaticEndpointDiscovery,
         WireguardDriver,
     };
-    use ployz_store_api::internal::StoreDriver;
+    use crate::daemon::store::StoreDriver;
     use ployz_store_api::memory::MemoryStore;
     use ployz_types::model::{MachineId, MachineStatus, OverlayIp, Participation, PublicKey};
     use std::net::Ipv6Addr;
@@ -536,7 +536,8 @@ mod tests {
 
         let mesh = Mesh::new(
             WireguardDriver::memory_with(network.clone()),
-            StoreDriver::memory_with(store.clone()),
+            store.clone(),
+            store.clone(),
             service,
             None,
             Arc::new(StaticEndpointDiscovery::empty()),
@@ -559,6 +560,7 @@ mod tests {
         state.active = Some(ActiveMesh {
             config,
             mesh,
+            store: StoreDriver::memory_with(store.clone()),
             remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
@@ -602,7 +604,8 @@ mod tests {
         let network = Arc::new(MemoryWireGuard::new());
         let mesh = Mesh::new(
             WireguardDriver::memory_with(network),
-            StoreDriver::memory_with(store),
+            store.clone(),
+            store.clone(),
             service,
             None,
             Arc::new(StaticEndpointDiscovery::empty()),
@@ -614,6 +617,7 @@ mod tests {
         ActiveMesh {
             config,
             mesh,
+            store: StoreDriver::memory_with(store),
             remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),

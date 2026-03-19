@@ -4,7 +4,6 @@ use ployz_runtime_api::{
     MemoryServiceRuntime, MemoryWireGuard, ObserveMode, StaticEndpointDiscovery, ToggleState,
     WireguardDriver,
 };
-use ployz_store_api::internal::StoreDriver;
 use ployz_store_api::memory::MemoryStore;
 use ployz_store_api::{MachineStore, SyncStatus};
 use ployz_types::model::{
@@ -40,7 +39,8 @@ fn make_mesh(
 ) -> Mesh {
     Mesh::new(
         WireguardDriver::memory_with(wg),
-        StoreDriver::memory_with(store),
+        store.clone(),
+        store,
         svc,
         None,
         Arc::new(StaticEndpointDiscovery::empty()),
@@ -140,7 +140,8 @@ async fn joiner_seed_peer_requires_sync_for_ready() {
 
     let mut mesh = Mesh::new(
         WireguardDriver::memory_with(wg),
-        StoreDriver::memory_with(store.clone()),
+        store.clone(),
+        store,
         svc,
         None,
         Arc::new(StaticEndpointDiscovery::empty()),
@@ -176,7 +177,8 @@ async fn joiner_retains_founder_peer_across_peer_sync_handoff() {
 
     let mut mesh = Mesh::new(
         WireguardDriver::memory_with(wg.clone()),
-        StoreDriver::memory_with(store.clone()),
+        store.clone(),
+        store.clone(),
         svc,
         None,
         Arc::new(StaticEndpointDiscovery::empty()),
@@ -301,7 +303,8 @@ async fn bootstrap_connection_timeout() {
 
     let mut mesh = Mesh::new(
         WireguardDriver::memory_with(wg),
-        StoreDriver::memory_with(store),
+        store.clone(),
+        store,
         svc,
         None,
         Arc::new(StaticEndpointDiscovery::empty()),
@@ -341,7 +344,8 @@ async fn bootstrap_proceeds_on_membership() {
 
     let mut mesh = Mesh::new(
         WireguardDriver::memory_with(wg),
-        StoreDriver::memory_with(store),
+        store.clone(),
+        store,
         svc,
         None,
         Arc::new(StaticEndpointDiscovery::empty()),

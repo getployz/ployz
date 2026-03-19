@@ -1,7 +1,7 @@
 use crate::daemon::DaemonState;
+use crate::daemon::store::StoreDriver;
 use ployz_api::{DaemonPayload, DaemonResponse, MachineRemoveMode, MachineRemovePayload};
 use ployz_orchestrator::machine_liveness::{MachineLiveness, machine_liveness};
-use ployz_store_api::internal::StoreDriver;
 use ployz_store_api::MachineStore;
 use ployz_types::model::{MachineId, MachineRecord, Participation};
 use ployz_types::time::now_unix_secs;
@@ -19,7 +19,7 @@ impl DaemonState {
             None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
         };
 
-        let report = match machine_list_report(active.mesh.store.clone()).await {
+        let report = match machine_list_report(active.store.clone()).await {
             Ok(report) => report,
             Err(err) => return self.err("LIST_FAILED", err),
         };
@@ -47,7 +47,7 @@ impl DaemonState {
         };
 
         let machine_id = MachineId(id.to_string());
-        let record = match find_machine_record(&active.mesh.store, &machine_id).await {
+        let record = match find_machine_record(&active.store, &machine_id).await {
             Ok(Some(record)) => record,
             Ok(None) => {
                 return self.err("MACHINE_NOT_FOUND", format!("machine '{id}' not found"));
@@ -67,7 +67,7 @@ impl DaemonState {
             );
         }
 
-        match active.mesh.store.delete_machine(&machine_id).await {
+        match active.store.delete_machine(&machine_id).await {
             Ok(()) => self.ok_with_payload(
                 format!("machine '{id}' removed"),
                 Some(DaemonPayload::MachineRemove(MachineRemovePayload {
@@ -85,7 +85,6 @@ impl DaemonState {
             .as_ref()
             .ok_or_else(|| "no running network".to_string())?;
         let machines = active
-            .mesh
             .store
             .list_machines()
             .await

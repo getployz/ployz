@@ -1,8 +1,9 @@
 use crate::{
-    DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore, InviteStore,
+    BootstrapStateReader, DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore, InviteStore,
     MachineEventSubscription, MachineStore,
     RoutingInvalidationSubscription, RoutingStore, SyncProbe, SyncStatus,
 };
+use async_trait::async_trait;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
@@ -88,12 +89,14 @@ impl MemoryStore {
     }
 }
 
+#[async_trait]
 impl SyncProbe for MemoryStore {
     async fn sync_status(&self) -> Result<SyncStatus> {
         Ok(self.lock_inner().sync_status)
     }
 }
 
+#[async_trait]
 impl MachineStore for MemoryStore {
     async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
         let inner = self.lock_inner();
@@ -130,6 +133,7 @@ impl MachineStore for MemoryStore {
     }
 }
 
+#[async_trait]
 impl RoutingStore for MemoryStore {
     async fn load_routing_state(&self) -> Result<RoutingState> {
         let inner = self.lock_inner();
@@ -148,6 +152,7 @@ impl RoutingStore for MemoryStore {
     }
 }
 
+#[async_trait]
 impl InviteStore for MemoryStore {
     async fn create_invite(&self, invite: &InviteRecord) -> Result<()> {
         let mut inner = self.lock_inner();
@@ -182,6 +187,7 @@ impl InviteStore for MemoryStore {
     }
 }
 
+#[async_trait]
 impl DeployReadStore for MemoryStore {
     async fn list_service_revisions(
         &self,
@@ -228,6 +234,7 @@ impl DeployReadStore for MemoryStore {
     }
 }
 
+#[async_trait]
 impl DeployWriteStore for MemoryStore {
     async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
         let mut inner = self.lock_inner();
@@ -283,6 +290,7 @@ impl DeployWriteStore for MemoryStore {
     }
 }
 
+#[async_trait]
 impl DeployCommitStore for MemoryStore {
     async fn apply_deploy_commit(&self, commit: &DeployCommit) -> Result<()> {
         let mut inner = self.lock_inner();
@@ -313,6 +321,23 @@ impl DeployCommitStore for MemoryStore {
         );
         Self::broadcast_routing_refresh(&mut inner);
         Ok(())
+    }
+}
+
+#[async_trait]
+impl BootstrapStateReader for MemoryStore {
+    async fn seed_machine_records(&self) -> Result<Vec<MachineRecord>> {
+        self.list_machines().await
+    }
+
+    async fn bootstrap_addrs(&self, local_machine_id: &MachineId) -> Result<Vec<String>> {
+        Ok(self
+            .list_machines()
+            .await?
+            .into_iter()
+            .filter(|machine| machine.id != *local_machine_id)
+            .map(|machine| machine.overlay_ip.0.to_string())
+            .collect())
     }
 }
 

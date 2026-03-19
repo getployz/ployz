@@ -1,11 +1,11 @@
 use crate::daemon::ssh::SshOptions;
+use crate::daemon::store::StoreDriver;
 use ipnet::Ipv4Net;
 use ployz_api::{
     MachineAddPayload, MachineAwaitingSelfPublication, MachineInstallOptions, MachineListPayload,
     MachineListRow,
 };
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
-use ployz_store_api::internal::StoreDriver;
 use ployz_types::model::MachineId;
 use std::fmt;
 use std::str::FromStr;

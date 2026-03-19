@@ -5,7 +5,6 @@ edition = "2024"
 publish = false
 
 [dependencies]
-ployz-runtime-api = { path = "../ployz-runtime-api" }
 ployz-types = { path = "../ployz-types" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
