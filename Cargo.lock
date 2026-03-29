@@ -2791,7 +2791,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "ployz-api"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ployz-types",
  "serde",
@@ -2800,7 +2800,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-bpfctl"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aya",
  "ipnet",
@@ -2810,7 +2810,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-config"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "directories",
  "figment",
@@ -2822,7 +2822,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-corrosion"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2851,7 +2851,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-dns"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "hickory-server",
@@ -2867,7 +2867,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-e2e"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "clap",
  "ployz-api",
@@ -2881,7 +2881,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-ebpf"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aya-ebpf",
  "network-types",
@@ -2890,11 +2890,11 @@ dependencies = [
 
 [[package]]
 name = "ployz-ebpf-common"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "ployz-gateway"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "http",
@@ -2913,7 +2913,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-orchestrator"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -2933,7 +2933,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-runtime-api"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "hostname",
@@ -2949,7 +2949,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-runtime-backends"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "aya",
@@ -2985,7 +2985,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-sdk"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ployz-api",
  "ployz-types",
@@ -2995,7 +2995,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-store-api"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "ployz-types",
@@ -3005,7 +3005,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-types"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64",
  "derive_more",
@@ -3019,7 +3019,7 @@ dependencies = [
 
 [[package]]
 name = "ployzd"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "base64",
