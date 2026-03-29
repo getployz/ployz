@@ -1,24 +1,28 @@
-name: Build DNS image
+name: Reusable image build
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/dns-image.yml"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "crates/ployz-dns/**"
-      - "crates/ployz-sdk/**"
-      - "crates/ployz-corrosion/**"
-      - "Dockerfile.dns"
-  workflow_dispatch:
-
-env:
-  IMAGE: ghcr.io/getployz/ployz-dns
+  workflow_call:
+    inputs:
+      image:
+        required: true
+        type: string
+      dockerfile:
+        required: true
+        type: string
+      cache_scope:
+        required: true
+        type: string
+      tag:
+        required: true
+        type: string
+      publish_latest:
+        required: true
+        type: boolean
 
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - runner: blacksmith-4vcpu-ubuntu-2204
@@ -46,10 +50,12 @@ jobs:
       - uses: useblacksmith/build-push-action@v2
         with:
           context: .
-          file: Dockerfile.dns
+          file: ${{ inputs.dockerfile }}
           platforms: ${{ matrix.platform }}
+          cache-from: type=gha,scope=${{ inputs.cache_scope }}-${{ matrix.suffix }}
+          cache-to: type=gha,scope=${{ inputs.cache_scope }}-${{ matrix.suffix }},mode=max
           push: true
-          tags: ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.suffix }}
+          tags: ${{ inputs.image }}:${{ inputs.tag }}-${{ matrix.suffix }}
 
   manifest:
     needs: build
@@ -63,15 +69,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v3
 
       - name: Create and push multi-arch manifest
         run: |
-          docker buildx imagetools create -t ${{ env.IMAGE }}:latest \
-            ${{ env.IMAGE }}:${{ github.sha }}-amd64 \
-            ${{ env.IMAGE }}:${{ github.sha }}-arm64
+          tags=(-t "${{ inputs.image }}:${{ inputs.tag }}")
+          if [[ "${{ inputs.publish_latest }}" == "true" ]]; then
+            tags+=(-t "${{ inputs.image }}:latest")
+          fi
 
-          docker buildx imagetools create -t ${{ env.IMAGE }}:${{ github.sha }} \
-            ${{ env.IMAGE }}:${{ github.sha }}-amd64 \
-            ${{ env.IMAGE }}:${{ github.sha }}-arm64
+          docker buildx imagetools create \
+            "${tags[@]}" \
+            ${{ inputs.image }}:${{ inputs.tag }}-amd64 \
+            ${{ inputs.image }}:${{ inputs.tag }}-arm64

@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   validate-tag:
@@ -19,13 +20,13 @@ jobs:
       - name: Validate release tag
         id: version
         run: |
-          version="$(tr -d '[:space:]' < .release-version)"
+          version="$(bash ./scripts/read-workspace-version.sh --tag)"
           if [[ -z "${version}" ]]; then
-            echo ".release-version is empty" >&2
+            echo "workspace version is empty" >&2
             exit 1
           fi
           if [[ "${GITHUB_REF_NAME}" != "${version}" ]]; then
-            echo "tag ${GITHUB_REF_NAME} does not match .release-version ${version}" >&2
+            echo "tag ${GITHUB_REF_NAME} does not match workspace version tag ${version}" >&2
             exit 1
           fi
           echo "value=${version}" >> "${GITHUB_OUTPUT}"
@@ -44,7 +45,7 @@ jobs:
             target_platform: linux/arm64
             upload_name: payload-linux-arm64
             artifact_name: ployz-payload-linux-aarch64.tar.gz
-          - runner: macos-13
+          - runner: macos-15-intel
             target_platform: darwin/amd64
             upload_name: payload-darwin-amd64
             artifact_name: ployz-payload-darwin-x86_64.tar.gz
@@ -65,6 +66,8 @@ jobs:
 
       - name: Build eBPF bytecode for Linux payloads
         if: startsWith(matrix.target_platform, 'linux/')
+        env:
+          CARGO_TARGET_DIR: ebpf/target
         run: |
           rustup install nightly
           rustup component add rust-src --toolchain nightly
@@ -126,11 +129,47 @@ jobs:
           path: dist/ployz-ebpf-tc
           if-no-files-found: error
 
+  dns-image:
+    needs: validate-tag
+    uses: ./.github/workflows/reusable-image-build.yml
+    secrets: inherit
+    with:
+      cache_scope: ployz-dns-image
+      image: ghcr.io/getployz/ployz-dns
+      dockerfile: Dockerfile.dns
+      tag: ${{ needs.validate-tag.outputs.version }}
+      publish_latest: true
+
+  gateway-image:
+    needs: validate-tag
+    uses: ./.github/workflows/reusable-image-build.yml
+    secrets: inherit
+    with:
+      cache_scope: ployz-gateway-image
+      image: ghcr.io/getployz/ployz-gateway
+      dockerfile: Dockerfile.gateway
+      tag: ${{ needs.validate-tag.outputs.version }}
+      publish_latest: true
+
+  networking-image:
+    needs: validate-tag
+    uses: ./.github/workflows/reusable-image-build.yml
+    secrets: inherit
+    with:
+      cache_scope: ployz-networking-image
+      image: ghcr.io/getployz/ployz-networking
+      dockerfile: Dockerfile.networking
+      tag: ${{ needs.validate-tag.outputs.version }}
+      publish_latest: true
+
   release:
     needs:
       - validate-tag
       - payload
       - ebpf
+      - dns-image
+      - gateway-image
+      - networking-image
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -180,3 +219,10 @@ jobs:
             --title "Ployz ${tag}" \
             --notes "Unified install payloads and eBPF bytecode." \
             dist/*
+
+      - name: Deploy ployz.sh worker
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          wranglerVersion: "4"
+          workingDirectory: ployz-sh

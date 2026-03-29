@@ -1,0 +1,112 @@
+name: Build images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/images.yml"
+      - ".github/workflows/reusable-image-build.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/ployz-dns/**"
+      - "crates/ployz-gateway/**"
+      - "crates/ployz-sdk/**"
+      - "crates/ployz-routes/**"
+      - "crates/ployz-corrosion/**"
+      - "crates/ployzd/**"
+      - "ebpf/**"
+      - "crates/ebpf-common/**"
+      - "crates/ployz-bpfctl/**"
+      - "Dockerfile.dns"
+      - "Dockerfile.gateway"
+      - "Dockerfile.networking"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      dns: ${{ steps.filter.outputs.dns }}
+      gateway: ${{ steps.filter.outputs.gateway }}
+      networking: ${{ steps.filter.outputs.networking }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            dns:
+              - '.github/workflows/images.yml'
+              - '.github/workflows/reusable-image-build.yml'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'ebpf/**'
+              - 'crates/ployz-dns/**'
+              - 'crates/ployz-sdk/**'
+              - 'crates/ployz-corrosion/**'
+              - 'crates/ployzd/**'
+              - 'Dockerfile.dns'
+            gateway:
+              - '.github/workflows/images.yml'
+              - '.github/workflows/reusable-image-build.yml'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'ebpf/**'
+              - 'crates/ployz-gateway/**'
+              - 'crates/ployz-sdk/**'
+              - 'crates/ployz-routes/**'
+              - 'crates/ployz-corrosion/**'
+              - 'crates/ployzd/**'
+              - 'Dockerfile.gateway'
+            networking:
+              - '.github/workflows/images.yml'
+              - '.github/workflows/reusable-image-build.yml'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'ebpf/**'
+              - 'crates/ebpf-common/**'
+              - 'crates/ployz-bpfctl/**'
+              - 'Dockerfile.networking'
+
+  dns-image:
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.dns == 'true'
+    uses: ./.github/workflows/reusable-image-build.yml
+    secrets: inherit
+    with:
+      cache_scope: ployz-dns-image
+      image: ghcr.io/getployz/ployz-dns
+      dockerfile: Dockerfile.dns
+      tag: ${{ github.sha }}
+      publish_latest: true
+
+  gateway-image:
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.gateway == 'true'
+    uses: ./.github/workflows/reusable-image-build.yml
+    secrets: inherit
+    with:
+      cache_scope: ployz-gateway-image
+      image: ghcr.io/getployz/ployz-gateway
+      dockerfile: Dockerfile.gateway
+      tag: ${{ github.sha }}
+      publish_latest: true
+
+  networking-image:
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.networking == 'true'
+    uses: ./.github/workflows/reusable-image-build.yml
+    secrets: inherit
+    with:
+      cache_scope: ployz-networking-image
+      image: ghcr.io/getployz/ployz-networking
+      dockerfile: Dockerfile.networking
+      tag: ${{ github.sha }}
+      publish_latest: true

@@ -7,13 +7,14 @@ RUN rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+COPY ebpf/ ebpf/
 
 ARG TARGETARCH
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
     if [ "$TARGETARCH" = "arm64" ]; then TARGET=aarch64-unknown-linux-musl; else TARGET=x86_64-unknown-linux-musl; fi && \
-    cargo build --locked --release --target "$TARGET" -p ployz-dns && \
+    cargo build --locked --release --target "$TARGET" -p ployzd --bin ployz-dns && \
     mkdir -p /build/release-bin && \
     cp /build/target/"$TARGET"/release/ployz-dns /build/release-bin/ployz-dns
 

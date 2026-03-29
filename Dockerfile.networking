@@ -8,19 +8,15 @@ RUN rustup install nightly && \
 RUN apt-get update && apt-get install -y --no-install-recommends musl-tools && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY crates/ebpf-common/ crates/ebpf-common/
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
 COPY ebpf/ ebpf/
-COPY crates/ployz-bpfctl/ crates/ployz-bpfctl/
-
-RUN printf '[workspace]\nresolver = "2"\nmembers = ["crates/ployz-bpfctl", "ebpf", "crates/ebpf-common"]\n' > Cargo.toml
-
-WORKDIR /build/crates/ployz-bpfctl
 ARG TARGETARCH
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
     if [ "$TARGETARCH" = "arm64" ]; then TARGET=aarch64-unknown-linux-musl; else TARGET=x86_64-unknown-linux-musl; fi && \
-    cargo +nightly build --release --target "$TARGET" && \
+    cargo +nightly build --locked --release --target "$TARGET" -p ployz-bpfctl && \
     mkdir -p /build/release-bin && \
     cp /build/target/"$TARGET"/release/ployz-bpfctl /build/release-bin/ployz-bpfctl
 
