@@ -81,6 +81,7 @@ jobs:
     uses: ./.github/workflows/reusable-image-build.yml
     secrets: inherit
     with:
+      cache_scope: ployz-dns-image
       image: ghcr.io/getployz/ployz-dns
       dockerfile: Dockerfile.dns
       tag: ${{ github.sha }}
@@ -92,6 +93,7 @@ jobs:
     uses: ./.github/workflows/reusable-image-build.yml
     secrets: inherit
     with:
+      cache_scope: ployz-gateway-image
       image: ghcr.io/getployz/ployz-gateway
       dockerfile: Dockerfile.gateway
       tag: ${{ github.sha }}
@@ -103,6 +105,7 @@ jobs:
     uses: ./.github/workflows/reusable-image-build.yml
     secrets: inherit
     with:
+      cache_scope: ployz-networking-image
       image: ghcr.io/getployz/ployz-networking
       dockerfile: Dockerfile.networking
       tag: ${{ github.sha }}

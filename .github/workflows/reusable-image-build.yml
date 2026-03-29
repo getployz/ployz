@@ -9,6 +9,9 @@ on:
       dockerfile:
         required: true
         type: string
+      cache_scope:
+        required: true
+        type: string
       tag:
         required: true
         type: string
@@ -49,6 +52,8 @@ jobs:
           context: .
           file: ${{ inputs.dockerfile }}
           platforms: ${{ matrix.platform }}
+          cache-from: type=gha,scope=${{ inputs.cache_scope }}-${{ matrix.suffix }}
+          cache-to: type=gha,scope=${{ inputs.cache_scope }}-${{ matrix.suffix }},mode=max
           push: true
           tags: ${{ inputs.image }}:${{ inputs.tag }}-${{ matrix.suffix }}
 
