@@ -219,3 +219,9 @@ jobs:
             --title "Ployz ${tag}" \
             --notes "Unified install payloads and eBPF bytecode." \
             dist/*
+
+      - name: Deploy ployz.sh worker
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: ployz-sh
