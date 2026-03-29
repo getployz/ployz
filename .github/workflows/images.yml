@@ -68,6 +68,8 @@ jobs:
             networking:
               - '.github/workflows/images.yml'
               - '.github/workflows/reusable-image-build.yml'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
               - 'ebpf/**'
               - 'crates/ebpf-common/**'
               - 'crates/ployz-bpfctl/**'
