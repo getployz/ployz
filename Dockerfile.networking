@@ -8,11 +8,15 @@ RUN rustup install nightly && \
 RUN apt-get update && apt-get install -y --no-install-recommends musl-tools && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
+COPY Cargo.toml Cargo.root.toml
 COPY crates/ebpf-common/ crates/ebpf-common/
 COPY ebpf/ ebpf/
 COPY crates/ployz-bpfctl/ crates/ployz-bpfctl/
 
-RUN printf '[workspace]\nresolver = "2"\nmembers = ["crates/ployz-bpfctl", "ebpf", "crates/ebpf-common"]\n' > Cargo.toml
+RUN WORKSPACE_VERSION="$(awk '/^\[workspace.package\]$/ { in_section=1; next } /^\[/ { in_section=0 } in_section && /^version = / { gsub(/"/, "", $3); print $3; exit }' Cargo.root.toml)" && \
+    test -n "$WORKSPACE_VERSION" && \
+    printf '[workspace]\nresolver = "2"\nmembers = ["crates/ployz-bpfctl", "ebpf", "crates/ebpf-common"]\n\n[workspace.package]\nversion = "%s"\n' "$WORKSPACE_VERSION" > Cargo.toml && \
+    rm Cargo.root.toml
 
 WORKDIR /build/crates/ployz-bpfctl
 ARG TARGETARCH
