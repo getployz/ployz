@@ -41,7 +41,12 @@ impl<T: Transport> DaemonClient<T> {
         let response = self.request_ok(DaemonRequest::MachineList).await?;
         extract_payload(response, "machine list", |payload| match payload {
             DaemonPayload::MachineList(payload) => Some(payload),
-            _ => None,
+            DaemonPayload::MachineAdd(_)
+            | DaemonPayload::MachineRemove(_)
+            | DaemonPayload::MeshReady(_)
+            | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::MachineOperationList(_)
+            | DaemonPayload::MachineOperation(_) => None,
         })
     }
 
@@ -53,7 +58,12 @@ impl<T: Transport> DaemonClient<T> {
             .await?;
         extract_payload(response, "mesh ready", |payload| match payload {
             DaemonPayload::MeshReady(payload) => Some(payload),
-            _ => None,
+            DaemonPayload::MachineList(_)
+            | DaemonPayload::MachineAdd(_)
+            | DaemonPayload::MachineRemove(_)
+            | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::MachineOperationList(_)
+            | DaemonPayload::MachineOperation(_) => None,
         })
     }
 
@@ -61,7 +71,12 @@ impl<T: Transport> DaemonClient<T> {
         let response = self.request_ok(DaemonRequest::MeshSelfRecord).await?;
         extract_payload(response, "mesh self record", |payload| match payload {
             DaemonPayload::MeshSelfRecord(payload) => Some(payload),
-            _ => None,
+            DaemonPayload::MachineList(_)
+            | DaemonPayload::MachineAdd(_)
+            | DaemonPayload::MachineRemove(_)
+            | DaemonPayload::MeshReady(_)
+            | DaemonPayload::MachineOperationList(_)
+            | DaemonPayload::MachineOperation(_) => None,
         })
     }
 

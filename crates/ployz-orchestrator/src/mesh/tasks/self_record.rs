@@ -59,7 +59,7 @@ pub(crate) async fn run_self_record_writer_task(
             Some(command) = commands.recv() => {
                 let SelfRecordCommand { mutation, done } = command;
                 let mut next = current.clone();
-                apply_mutation(&mut next, mutation.clone());
+                apply_mutation(&mut next, mutation);
                 if next == current {
                     let _ = done.send(Some(next));
                     continue;
@@ -71,7 +71,7 @@ pub(crate) async fn run_self_record_writer_task(
                         let _ = done.send(Some(next));
                     }
                     Err(error) => {
-                        warn!(?error, ?mutation, "self record update failed");
+                        warn!(?error, "self record update failed");
                         let _ = done.send(None);
                     }
                 }

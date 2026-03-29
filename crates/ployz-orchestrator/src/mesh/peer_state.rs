@@ -83,7 +83,7 @@ impl PeerState {
         self.overlay_ip = record.overlay_ip;
         self.subnet = record.subnet;
         self.bridge_ip = record.bridge_ip;
-        let previous = self.candidates.clone();
+        let previous = std::mem::take(&mut self.candidates);
         self.candidates = build_candidates(&record.endpoints, &previous);
         self.runtime.update_endpoints(record.endpoints.clone());
         if self.runtime.endpoints.is_empty() {

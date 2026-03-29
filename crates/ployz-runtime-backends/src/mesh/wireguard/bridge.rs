@@ -579,10 +579,8 @@ async fn bridge_event_loop(config: BridgeEventLoopConfig) -> std::io::Result<()>
 }
 
 fn ipv6_to_smoltcp(addr: Ipv6Addr) -> IpAddress {
-    let segs = addr.segments();
-    IpAddress::Ipv6(smoltcp::wire::Ipv6Address::new(
-        segs[0], segs[1], segs[2], segs[3], segs[4], segs[5], segs[6], segs[7],
-    ))
+    let [s0, s1, s2, s3, s4, s5, s6, s7] = addr.segments();
+    IpAddress::Ipv6(smoltcp::wire::Ipv6Address::new(s0, s1, s2, s3, s4, s5, s6, s7))
 }
 
 /// Accept a connection from any of the listeners, racing all of them.

@@ -54,11 +54,11 @@ fn list_routable_ips() -> Vec<IpAddr> {
 
             match ip {
                 IpAddr::V6(v6) => {
-                    let segments = v6.segments();
-                    if segments[0] & 0xffc0 == 0xfe80 {
+                    let [s0, ..] = v6.segments();
+                    if s0 & 0xffc0 == 0xfe80 {
                         return false;
                     }
-                    if segments[0] >> 8 == 0xfd {
+                    if s0 >> 8 == 0xfd {
                         return false;
                     }
                     true

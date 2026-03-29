@@ -1,16 +1,99 @@
-name: Build eBPF bytecode
+name: Release install assets
 
 on:
   push:
     tags:
-      - "ebpf-v*"
-  workflow_dispatch:
+      - "v*"
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  validate-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate release tag
+        id: version
+        run: |
+          version="$(tr -d '[:space:]' < .release-version)"
+          if [[ -z "${version}" ]]; then
+            echo ".release-version is empty" >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_REF_NAME}" != "${version}" ]]; then
+            echo "tag ${GITHUB_REF_NAME} does not match .release-version ${version}" >&2
+            exit 1
+          fi
+          echo "value=${version}" >> "${GITHUB_OUTPUT}"
+
+  payload:
+    needs: validate-tag
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target_platform: linux/amd64
+            upload_name: payload-linux-amd64
+            artifact_name: ployz-payload-linux-x86_64.tar.gz
+          - runner: ubuntu-24.04-arm
+            target_platform: linux/arm64
+            upload_name: payload-linux-arm64
+            artifact_name: ployz-payload-linux-aarch64.tar.gz
+          - runner: macos-13
+            target_platform: darwin/amd64
+            upload_name: payload-darwin-amd64
+            artifact_name: ployz-payload-darwin-x86_64.tar.gz
+          - runner: macos-14
+            target_platform: darwin/arm64
+            upload_name: payload-darwin-arm64
+            artifact_name: ployz-payload-darwin-aarch64.tar.gz
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Verify asset naming
+        run: bash scripts/check-release-asset-names.sh
+
+      - name: Build eBPF bytecode for Linux payloads
+        if: startsWith(matrix.target_platform, 'linux/')
+        run: |
+          rustup install nightly
+          rustup component add rust-src --toolchain nightly
+          cargo +nightly install bpf-linker
+          cargo +nightly build \
+            -Z build-std=core \
+            --release \
+            --target bpfel-unknown-none \
+            --manifest-path ebpf/Cargo.toml
+
+      - name: Build release payload
+        run: |
+          mkdir -p dist
+          bash scripts/package-release-payload.sh \
+            --output-dir dist \
+            --target-platform "${{ matrix.target_platform }}"
+
+      - name: Verify expected payload asset
+        run: test -f "dist/${{ matrix.artifact_name }}"
+
+      - name: Upload payload asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.upload_name }}
+          path: dist/${{ matrix.artifact_name }}
+          if-no-files-found: error
+
+  ebpf:
+    needs: validate-tag
     runs-on: blacksmith-4vcpu-ubuntu-2204
     env:
       CARGO_TARGET_DIR: target/ebpf-bytecode
@@ -35,16 +118,65 @@ jobs:
         run: |
           mkdir -p dist
           cp target/ebpf-bytecode/bpfel-unknown-none/release/ployz-ebpf-tc dist/
-          sha256sum dist/ployz-ebpf-tc > dist/checksums.txt
+
+      - name: Upload eBPF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ebpf-bytecode
+          path: dist/ployz-ebpf-tc
+          if-no-files-found: error
+
+  release:
+    needs:
+      - validate-tag
+      - payload
+      - ebpf
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Flatten artifact directories
+        run: |
+          find dist -mindepth 2 -type f -exec mv -t dist {} +
+          find dist -mindepth 1 -type d -empty -delete
+
+      - name: Verify expected release assets
+        run: |
+          expected_assets=(
+            "$(bash ./ployz.sh internal payload-asset-name --target-platform linux/amd64)"
+            "$(bash ./ployz.sh internal payload-asset-name --target-platform linux/arm64)"
+            "$(bash ./ployz.sh internal payload-asset-name --target-platform darwin/amd64)"
+            "$(bash ./ployz.sh internal payload-asset-name --target-platform darwin/arm64)"
+            "ployz-ebpf-tc"
+          )
+          for asset in "${expected_assets[@]}"; do
+            [[ -f "dist/${asset}" ]] || {
+              echo "missing required release asset: ${asset}" >&2
+              exit 1
+            }
+          done
+          sha256sum "${expected_assets[@]/#/dist/}" | sed 's#dist/##' > dist/checksums.txt
           cat dist/checksums.txt
 
-      - name: Create release
+      - name: Create or update release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="${GITHUB_REF_NAME}"
+          tag="${{ needs.validate-tag.outputs.version }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+            gh release edit "$tag" \
+              --title "Ployz ${tag}" \
+              --notes "Unified install payloads and eBPF bytecode."
+            exit 0
+          fi
           gh release create "$tag" \
-            --title "eBPF bytecode $tag" \
-            --notes "Pre-built eBPF TC classifier bytecode." \
-            dist/ployz-ebpf-tc \
-            dist/checksums.txt
+            --verify-tag \
+            --title "Ployz ${tag}" \
+            --notes "Unified install payloads and eBPF bytecode." \
+            dist/*

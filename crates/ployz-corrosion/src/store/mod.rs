@@ -52,7 +52,7 @@ impl CorrosionStore {
         let network_dir = ployz_config::network_dir(data_dir, network);
         let admin_path = corrosion_config::Paths::new(&network_dir).admin;
         let network_path = ployz_config::network_config_path(data_dir, network);
-        let raw = std::fs::read_to_string(&network_path).map_err(|e| {
+        let raw = tokio::fs::read_to_string(&network_path).await.map_err(|e| {
             Error::operation(
                 "connect_for_network",
                 format!(
