@@ -36,11 +36,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
+          - runner: blacksmith-4vcpu-ubuntu-2204
             target_platform: linux/amd64
             upload_name: payload-linux-amd64
             artifact_name: ployz-payload-linux-x86_64.tar.gz
-          - runner: ubuntu-24.04-arm
+          - runner: blacksmith-4vcpu-ubuntu-2204-arm
             target_platform: linux/arm64
             upload_name: payload-linux-arm64
             artifact_name: ployz-payload-linux-aarch64.tar.gz
