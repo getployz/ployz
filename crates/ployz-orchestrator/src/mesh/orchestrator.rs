@@ -1,6 +1,4 @@
 use crate::error::Error as PortError;
-use crate::mesh::container_network::ContainerNetwork;
-use crate::mesh::driver::{WireguardBackendMode, WireguardDriver};
 use crate::mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
 use crate::mesh::probe::run_probe_listener_task;
 use crate::mesh::tasks::{
@@ -9,10 +7,12 @@ use crate::mesh::tasks::{
     run_endpoint_refresh_task, run_heartbeat_task, run_participation_task, run_peer_sync_task,
     run_self_liveness_task, run_self_record_writer_task, run_subnet_claim_monitor_task,
 };
-use crate::mesh::{MeshDataplane, MeshNetwork};
 use crate::model::{MachineId, MachineRecord, MachineStatus};
-use ployz_store_api::StoreDriver;
-use ployz_store_api::{MachineStore, StoreRuntimeControl, SyncProbe, SyncStatus};
+use ployz_runtime_api::{
+    ContainerNetwork, DataplaneFactory, EndpointDiscovery, MeshDataplane, MeshNetwork,
+    ServiceRuntime, WireguardBackendMode, WireguardDriver,
+};
+use ployz_store_api::{MachineStore, SyncProbe, SyncStatus};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -42,11 +42,21 @@ pub struct MeshReadyStatus {
     pub heartbeat_started: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeStoreMode {
+    Keep,
+    Stop,
+}
+
 pub struct Mesh {
     phase: Phase,
     pub network: WireguardDriver,
-    pub store: StoreDriver,
+    store: Arc<dyn MachineStore>,
+    sync_probe: Arc<dyn SyncProbe>,
+    store_runtime: Arc<dyn ServiceRuntime>,
     container_network: Option<ContainerNetwork>,
+    endpoint_discovery: Arc<dyn EndpointDiscovery>,
+    dataplane_factory: Option<Arc<dyn DataplaneFactory>>,
     tasks: Option<TaskSet>,
     task_cancel: Option<tokio_util::sync::CancellationToken>,
     peer_sync_tx: Option<mpsc::Sender<PeerSyncCommand>>,
@@ -71,8 +81,12 @@ impl Mesh {
     #[must_use]
     pub fn new(
         network: WireguardDriver,
-        store: StoreDriver,
+        store: Arc<dyn MachineStore>,
+        sync_probe: Arc<dyn SyncProbe>,
+        store_runtime: Arc<dyn ServiceRuntime>,
         container_network: Option<ContainerNetwork>,
+        endpoint_discovery: Arc<dyn EndpointDiscovery>,
+        dataplane_factory: Option<Arc<dyn DataplaneFactory>>,
         machine_id: MachineId,
         listen_port: u16,
     ) -> Self {
@@ -80,7 +94,11 @@ impl Mesh {
             phase: Phase::Stopped,
             network,
             store,
+            sync_probe,
+            store_runtime,
             container_network,
+            endpoint_discovery,
+            dataplane_factory,
             tasks: None,
             task_cancel: None,
             peer_sync_tx: None,
@@ -180,7 +198,7 @@ impl Mesh {
 
     pub async fn ready_status(&self) -> MeshReadyStatus {
         let phase = self.phase;
-        let store_healthy = self.store.healthy().await;
+        let store_healthy = self.store_runtime.healthy().await;
         let has_remote_store_peer = self
             .store
             .list_machines()
@@ -197,7 +215,7 @@ impl Mesh {
             .any(|machine| machine.id != self.machine_id);
         let has_remote_peer = has_remote_store_peer || has_remote_seed_peer;
         let sync_connected = if has_remote_peer {
-            match self.store.sync_status().await {
+            match self.sync_probe.sync_status().await {
                 Ok(SyncStatus::Disconnected) => false,
                 Ok(SyncStatus::Syncing { .. }) | Ok(SyncStatus::Synced) => true,
                 Err(_) => false,
@@ -215,6 +233,17 @@ impl Mesh {
             sync_connected,
             heartbeat_started,
         }
+    }
+
+    pub async fn store_healthy(&self) -> bool {
+        self.store_runtime.healthy().await
+    }
+
+    pub async fn detect_endpoints(&self) -> Result<Vec<String>> {
+        self.endpoint_discovery
+            .detect_endpoints(self.listen_port)
+            .await
+            .map_err(MeshError::Port)
     }
 
     fn apply(&mut self, event: PhaseEvent) -> Result<()> {
@@ -251,8 +280,11 @@ impl Mesh {
                     .await?;
             }
 
-            // Attach eBPF TC classifiers to the bridge for WG↔Docker forwarding.
-            self.attach_ebpf_dataplane().await?;
+            if let Some(dataplane_factory) = &self.dataplane_factory {
+                let attached = dataplane_factory.attach(&self.network, cn).await?;
+                self.wg_ifindex = attached.wg_ifindex;
+                self.dataplane = Some(attached.dataplane);
+            }
         }
 
         // 3. Pre-configure WG peers from seed records
@@ -272,7 +304,10 @@ impl Mesh {
         }
 
         // 4. Start store service
-        self.store.start().await?;
+        self.store_runtime
+            .start()
+            .await
+            .map_err(|error| MeshError::Port(PortError::operation("store runtime start", error)))?;
         self.wait_service_ready().await?;
         self.wait_store_init().await?;
 
@@ -328,44 +363,6 @@ impl Mesh {
         Ok(())
     }
 
-    /// Attach the eBPF dataplane to the Docker bridge.
-    /// On Linux: loads BPF directly in-process via aya (no container overhead).
-    /// On macOS (Docker Desktop / OrbStack): starts a privileged sidecar container
-    /// that runs `ployz-bpfctl` inside the VM where TC hooks live.
-    async fn attach_ebpf_dataplane(&mut self) -> Result<()> {
-        let Some(cn) = self.container_network.as_ref() else {
-            return Err(MeshError::Port(PortError::operation(
-                "attach_ebpf",
-                "container_network not configured".to_string(),
-            )));
-        };
-        let bridge_ifname = cn.resolve_bridge_ifname().await?;
-
-        #[cfg(feature = "ebpf-native")]
-        {
-            let wg_ifname = self.network.ebpf_attachment_ifname(&bridge_ifname);
-            let wg_ifindex = resolve_ifindex(&wg_ifname)?;
-            let dp = crate::network::ebpf::EbpfDataplane::attach_native(&bridge_ifname)?;
-            self.wg_ifindex = wg_ifindex;
-            self.dataplane = Some(Arc::new(dp));
-        }
-
-        #[cfg(not(feature = "ebpf-native"))]
-        {
-            // Exec ployz-bpfctl inside the WG container (same image).
-            let dp = crate::network::ebpf::EbpfDataplane::attach_container(
-                "ployz-networking",
-                &bridge_ifname,
-                &bridge_ifname,
-            )
-            .await?;
-            self.wg_ifindex = 0;
-            self.dataplane = Some(Arc::new(dp));
-        }
-
-        Ok(())
-    }
-
     async fn spawn_background_tasks(&mut self) -> Result<()> {
         let Some(cancel) = self.task_cancel.clone() else {
             return Err(TaskSetError::Subscribe(crate::error::Error::operation(
@@ -408,7 +405,7 @@ impl Mesh {
         self.self_record_tx = Some(self_record_tx.clone());
         task_set.spawn(run_self_record_writer_task(
             authoritative_self.clone(),
-            self.store.clone(),
+            Arc::clone(&self.store),
             self_record_rx,
             cancel.clone(),
         ));
@@ -416,6 +413,7 @@ impl Mesh {
         task_set.spawn(run_endpoint_refresh_task(
             self.machine_id.clone(),
             self.listen_port,
+            self.endpoint_discovery.clone(),
             authoritative_self.clone(),
             self_record_tx.clone(),
             cancel.clone(),
@@ -437,7 +435,7 @@ impl Mesh {
         task_set.spawn(run_participation_task(
             self.machine_id.clone(),
             authoritative_self.clone(),
-            self.store.clone(),
+            Arc::clone(&self.store),
             self.network.clone(),
             self_record_tx,
             participation_rx,
@@ -493,7 +491,7 @@ impl Mesh {
         self.heartbeat_started.store(false, Ordering::SeqCst);
     }
 
-    async fn stop_runtime(&mut self, stop_store: bool) -> Option<MeshError> {
+    async fn stop_runtime(&mut self, store: RuntimeStoreMode) -> Option<MeshError> {
         let mut first_err: Option<MeshError> = None;
 
         self.clear_task_channels();
@@ -512,9 +510,14 @@ impl Mesh {
         }
         self.wg_ifindex = 0;
 
-        if stop_store && let Err(error) = self.store.stop().await {
+        if store == RuntimeStoreMode::Stop
+            && let Err(error) = self.store_runtime.stop().await
+        {
             warn!(?error, "service stop failed during runtime stop");
-            first_err.get_or_insert(error.into());
+            first_err.get_or_insert(MeshError::Port(PortError::operation(
+                "store runtime stop",
+                error,
+            )));
         }
 
         if let Err(error) = self.network.down().await {
@@ -538,7 +541,7 @@ impl Mesh {
     /// Idempotent teardown — stops whatever was started, ignores errors on
     /// things not yet started.
     async fn teardown(&mut self) {
-        let _ = self.stop_runtime(true).await;
+        let _ = self.stop_runtime(RuntimeStoreMode::Stop).await;
     }
 
     pub async fn detach(&mut self) -> Result<()> {
@@ -569,7 +572,7 @@ impl Mesh {
             warn!(timestamp = now, "failed to set status=down on destroy");
         }
 
-        let first_err = self.stop_runtime(true).await;
+        let first_err = self.stop_runtime(RuntimeStoreMode::Stop).await;
 
         self.apply(PhaseEvent::TeardownComplete)?;
         info!("mesh destroyed");
@@ -587,7 +590,7 @@ impl Mesh {
     ) -> Result<()> {
         self.apply(PhaseEvent::DestroyRequested)?;
 
-        let stop_err = self.stop_runtime(false).await;
+        let stop_err = self.stop_runtime(RuntimeStoreMode::Keep).await;
         self.network = network;
         self.container_network = container_network;
 
@@ -609,7 +612,7 @@ impl Mesh {
                     ?error,
                     "subnet runtime restart failed, tearing down runtime"
                 );
-                let _ = self.stop_runtime(false).await;
+                let _ = self.stop_runtime(RuntimeStoreMode::Keep).await;
                 self.apply(PhaseEvent::ComponentFailed)?;
                 Err(error)
             }
@@ -643,7 +646,7 @@ impl Mesh {
             timeout,
             Duration::from_millis(50),
             Duration::from_secs(1),
-            || async { self.store.healthy().await },
+            || async { self.store_runtime.healthy().await },
         )
         .await;
         if !ok {
@@ -721,13 +724,13 @@ impl Mesh {
 
         let interval = self.bootstrap_interval;
         let connection_timeout = self.connection_timeout;
-        let store = self.store.clone();
+        let sync_probe = Arc::clone(&self.sync_probe);
 
         let result: std::result::Result<bool, String> =
             tokio::time::timeout(connection_timeout, async {
                 let mut consecutive_errors = 0u32;
                 loop {
-                    match store.sync_status().await {
+                    match sync_probe.sync_status().await {
                         Ok(SyncStatus::Disconnected) => {
                             consecutive_errors = 0;
                         }
@@ -773,20 +776,6 @@ impl Mesh {
         self.apply(PhaseEvent::SyncComplete)?;
         Ok(())
     }
-}
-
-#[cfg(feature = "ebpf-native")]
-fn resolve_ifindex(ifname: &str) -> std::result::Result<u32, PortError> {
-    let c_name = std::ffi::CString::new(ifname)
-        .map_err(|e| PortError::operation("if_nametoindex", e.to_string()))?;
-    let idx = unsafe { libc::if_nametoindex(c_name.as_ptr()) };
-    if idx == 0 {
-        return Err(PortError::operation(
-            "if_nametoindex",
-            format!("interface {ifname} not found"),
-        ));
-    }
-    Ok(idx)
 }
 
 /// Poll `check` with exponential backoff until it returns `true` or `timeout` expires.

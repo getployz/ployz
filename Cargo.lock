@@ -2733,12 +2733,14 @@ dependencies = [
  "libc",
  "serde",
  "thiserror 2.0.18",
+ "toml",
 ]
 
 [[package]]
 name = "ployz-corrosion"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytes",
  "corro-api-types",
  "futures-util",
@@ -2758,7 +2760,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
- "toml",
  "tower",
  "tracing",
  "uuid",
@@ -2772,7 +2773,6 @@ dependencies = [
  "hickory-server",
  "libc",
  "ployz-config",
- "ployz-corrosion",
  "ployz-store-api",
  "ployz-types",
  "thiserror 2.0.18",
@@ -2786,9 +2786,12 @@ name = "ployz-e2e"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "ployz-api",
+ "ployz-sdk",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "uuid",
 ]
 
@@ -2805,7 +2808,6 @@ dependencies = [
  "libc",
  "pingora",
  "ployz-config",
- "ployz-corrosion",
  "ployz-store-api",
  "ployz-types",
  "serde",
@@ -2821,12 +2823,11 @@ name = "ployz-orchestrator"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "aya",
  "futures-util",
- "if-addrs",
  "ipnet",
  "libc",
- "ployz-ebpf-common",
+ "ployz-runtime-api",
+ "ployz-runtime-backends",
  "ployz-store-api",
  "ployz-types",
  "serde_json",
@@ -2843,11 +2844,13 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "hostname",
+ "ipnet",
  "ployz-types",
  "rand 0.10.0",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "x25519-dalek",
 ]
 
@@ -2856,6 +2859,7 @@ name = "ployz-runtime-backends"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "aya",
  "base64",
  "bollard",
  "chrono",
@@ -2869,11 +2873,9 @@ dependencies = [
  "if-addrs",
  "ipnet",
  "libc",
- "ployz-api",
- "ployz-corrosion",
- "ployz-orchestrator",
+ "ployz-config",
+ "ployz-ebpf-common",
  "ployz-runtime-api",
- "ployz-store-api",
  "ployz-types",
  "rand 0.10.0",
  "reqwest",
@@ -2893,7 +2895,6 @@ name = "ployz-sdk"
 version = "0.1.0"
 dependencies = [
  "ployz-api",
- "ployz-config",
  "ployz-types",
  "serde_json",
  "tokio",

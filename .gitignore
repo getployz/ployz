@@ -8,3 +8,6 @@ ebpf/target/
 .lab/
 .e2e-artifacts/
 lab/lab.env
+.wrangler/
+dist/
+node_modules/

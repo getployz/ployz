@@ -1,11 +1,9 @@
 use crate::machine_liveness::machine_is_fresh;
-use crate::mesh::WireGuardDevice;
-use crate::mesh::driver::WireguardDriver;
 use crate::mesh::probe::{TcpProbeResult, TcpProbeStatus, probe_overlay_ips_parallel};
 use crate::mesh::tasks::{SelfRecordMutation, apply_self_record_mutation};
 use crate::model::{MachineId, MachineRecord, Participation};
+use ployz_runtime_api::{WireGuardDevice, WireguardDriver};
 use ployz_store_api::MachineStore;
-use ployz_store_api::StoreDriver;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -44,12 +42,20 @@ impl RequiredPeerHealth {
     fn healthy(&self) -> bool {
         self.unhealthy_required_peer_ids.is_empty()
     }
+
+    fn sample(&self) -> PeerHealthSample {
+        if self.healthy() {
+            PeerHealthSample::Healthy
+        } else {
+            PeerHealthSample::Unhealthy
+        }
+    }
 }
 
 pub(crate) async fn run_participation_task(
     machine_id: MachineId,
     authoritative_self: Arc<RwLock<MachineRecord>>,
-    store: StoreDriver,
+    store: Arc<dyn MachineStore>,
     network: WireguardDriver,
     self_record_tx: mpsc::Sender<crate::mesh::tasks::self_record::SelfRecordCommand>,
     mut commands: mpsc::Receiver<ParticipationCommand>,
@@ -108,7 +114,7 @@ pub(crate) async fn run_participation_task(
 async fn participation_once(
     machine_id: &MachineId,
     authoritative_self: &Arc<RwLock<MachineRecord>>,
-    store: &StoreDriver,
+    store: &Arc<dyn MachineStore>,
     network: &WireguardDriver,
     self_record_tx: &mpsc::Sender<crate::mesh::tasks::self_record::SelfRecordCommand>,
     state: &mut ParticipationState,
@@ -125,7 +131,7 @@ async fn participation_once(
     let required_peers = required_peers_for_participation(&machines, machine_id, now);
     let current = authoritative_self.read().await.clone();
     let peer_health = required_peers_health(network, &required_peers).await;
-    update_hysteresis(state, peer_health.healthy());
+    update_hysteresis(state, peer_health.sample());
 
     let next = state
         .forced_participation
@@ -198,8 +204,14 @@ fn required_peers_for_participation(
         .collect()
 }
 
-fn update_hysteresis(state: &mut ParticipationState, healthy_required_peers: bool) {
-    if healthy_required_peers {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PeerHealthSample {
+    Healthy,
+    Unhealthy,
+}
+
+fn update_hysteresis(state: &mut ParticipationState, sample: PeerHealthSample) {
+    if sample == PeerHealthSample::Healthy {
         state.consecutive_bad_samples = 0;
         state.consecutive_good_samples = state
             .consecutive_good_samples
@@ -275,13 +287,11 @@ fn required_peer_is_healthy(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mesh::DevicePeer;
-    use crate::mesh::driver::WireguardDriver;
     use crate::mesh::probe::run_probe_listener_task;
     use crate::mesh::tasks::run_self_record_writer_task;
-    use crate::mesh::wireguard::MemoryWireGuard;
     use crate::model::{MachineStatus, OverlayIp, PublicKey};
-    use ployz_store_api::memory::{MemoryService, MemoryStore};
+    use ployz_runtime_api::{DevicePeer, MemoryServiceRuntime, MemoryWireGuard, WireguardDriver};
+    use ployz_store_api::memory::MemoryStore;
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
     use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -314,7 +324,7 @@ mod tests {
         peer_participation: Participation,
     ) -> (
         Arc<MemoryStore>,
-        Arc<MemoryService>,
+        Arc<MemoryServiceRuntime>,
         Arc<MemoryWireGuard>,
         Arc<RwLock<MachineRecord>>,
         mpsc::Sender<crate::mesh::tasks::self_record::SelfRecordCommand>,
@@ -324,7 +334,7 @@ mod tests {
         tokio::task::JoinHandle<()>,
     ) {
         let store = Arc::new(MemoryStore::new());
-        let service = Arc::new(MemoryService::new());
+        let service = Arc::new(MemoryServiceRuntime::new());
         let network = Arc::new(MemoryWireGuard::new());
         let self_id = MachineId("self".into());
         let peer_key = PublicKey([2; 32]);
@@ -342,15 +352,15 @@ mod tests {
             .expect("upsert peer");
 
         let authoritative_self = Arc::new(RwLock::new(self_record));
-        let store_driver = StoreDriver::memory_with(store.clone(), service.clone());
         let (self_record_tx, self_record_rx) = mpsc::channel(8);
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();
         let writer_authoritative_self = authoritative_self.clone();
+        let writer_store = store.clone();
         let writer_handle = tokio::spawn(async move {
             run_self_record_writer_task(
                 writer_authoritative_self,
-                store_driver,
+                writer_store,
                 self_record_rx,
                 task_cancel,
             )
@@ -373,12 +383,12 @@ mod tests {
     #[test]
     fn update_hysteresis_tracks_good_and_bad_samples() {
         let mut state = ParticipationState::default();
-        update_hysteresis(&mut state, true);
-        update_hysteresis(&mut state, true);
+        update_hysteresis(&mut state, PeerHealthSample::Healthy);
+        update_hysteresis(&mut state, PeerHealthSample::Healthy);
         assert_eq!(state.consecutive_good_samples, 2);
         assert_eq!(state.consecutive_bad_samples, 0);
 
-        update_hysteresis(&mut state, false);
+        update_hysteresis(&mut state, PeerHealthSample::Unhealthy);
         assert_eq!(state.consecutive_good_samples, 0);
         assert_eq!(state.consecutive_bad_samples, 1);
     }
@@ -454,14 +464,14 @@ mod tests {
         }]);
 
         let mut state = ParticipationState::default();
-        let store_driver = StoreDriver::memory_with(store.clone(), Arc::new(MemoryService::new()));
         let network_driver = WireguardDriver::memory_with(network);
+        let machine_store: Arc<dyn MachineStore> = store.clone();
 
         for _ in 0..3 {
             participation_once(
                 &self_id,
                 &authoritative_self,
-                &store_driver,
+                &machine_store,
                 &network_driver,
                 &self_record_tx,
                 &mut state,
@@ -485,7 +495,7 @@ mod tests {
     async fn participation_never_overwrites_draining() {
         let (
             store,
-            service,
+            _service,
             network,
             authoritative_self,
             self_record_tx,
@@ -501,14 +511,14 @@ mod tests {
         }]);
 
         let mut state = ParticipationState::default();
-        let store_driver = StoreDriver::memory_with(store.clone(), service);
         let network_driver = WireguardDriver::memory_with(network);
+        let machine_store: Arc<dyn MachineStore> = store.clone();
 
         for _ in 0..3 {
             participation_once(
                 &self_id,
                 &authoritative_self,
-                &store_driver,
+                &machine_store,
                 &network_driver,
                 &self_record_tx,
                 &mut state,
@@ -533,7 +543,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
         let (
             store,
-            service,
+            _service,
             network,
             authoritative_self,
             self_record_tx,
@@ -552,14 +562,14 @@ mod tests {
             forced_participation: Some(Participation::Disabled),
             ..ParticipationState::default()
         };
-        let store_driver = StoreDriver::memory_with(store.clone(), service);
         let network_driver = WireguardDriver::memory_with(network);
+        let machine_store: Arc<dyn MachineStore> = store.clone();
 
         for _ in 0..3 {
             participation_once(
                 &self_id,
                 &authoritative_self,
-                &store_driver,
+                &machine_store,
                 &network_driver,
                 &self_record_tx,
                 &mut state,

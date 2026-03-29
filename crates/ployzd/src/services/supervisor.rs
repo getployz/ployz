@@ -57,11 +57,25 @@ fn sidecar_to_runtime_spec(spec: &SidecarSpec) -> RuntimeContainerSpec {
         image: spec.image.clone(),
         pull_policy: PullPolicy::Always,
         cmd: Some(spec.cmd.clone()),
+        entrypoint: None,
         env: spec.env.clone(),
         labels,
         binds: spec.binds.clone(),
+        tmpfs: std::collections::HashMap::new(),
+        dns_servers: Vec::new(),
         network_mode,
-        ..Default::default()
+        port_bindings: None,
+        exposed_ports: None,
+        cap_add: Vec::new(),
+        cap_drop: Vec::new(),
+        privileged: false,
+        user: None,
+        restart_policy: None,
+        memory_bytes: None,
+        nano_cpus: None,
+        sysctls: std::collections::HashMap::new(),
+        stop_timeout: None,
+        pid_mode: None,
     }
 }
 

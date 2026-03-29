@@ -106,7 +106,13 @@ impl ProbeRunner {
             attach_stdout: Some(false),
             attach_stderr: Some(false),
             cmd: Some(command.to_vec()),
-            ..Default::default()
+            attach_stdin: None,
+            tty: None,
+            detach_keys: None,
+            env: None,
+            privileged: None,
+            user: None,
+            working_dir: None,
         };
         let exec = self
             .docker

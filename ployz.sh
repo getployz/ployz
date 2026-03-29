@@ -77,6 +77,45 @@ current_arch() {
   esac
 }
 
+release_os() {
+  case "${1}" in
+    Linux|linux) printf 'linux' ;;
+    Darwin|darwin) printf 'darwin' ;;
+    *) printf '%s' "${1}" ;;
+  esac
+}
+
+release_arch() {
+  case "${1}" in
+    x86_64|amd64) printf 'x86_64' ;;
+    aarch64|arm64) printf 'aarch64' ;;
+    *) printf '%s' "${1}" ;;
+  esac
+}
+
+payload_asset_name() {
+  local os=$1
+  local arch=$2
+  printf 'ployz-payload-%s-%s.tar.gz' "${os}" "${arch}"
+}
+
+payload_asset_name_for_host() {
+  payload_asset_name "$(current_os)" "$(current_arch)"
+}
+
+payload_asset_name_for_target_platform() {
+  local target_platform=$1
+  local os raw_arch
+
+  os=${target_platform%%/*}
+  raw_arch=${target_platform#*/}
+  [[ -n "${os}" && -n "${raw_arch}" && "${os}" != "${target_platform}" ]] || {
+    die "invalid target platform '${target_platform}'"
+  }
+
+  payload_asset_name "$(release_os "${os}")" "$(release_arch "${raw_arch}")"
+}
+
 # macOS defaults to docker (runs in Docker Desktop VM), Linux defaults to host
 default_runtime() {
   case "$(current_os)" in
@@ -313,7 +352,7 @@ download_release_payload() {
   local version=$1
   local work_dir=$2
   local asset url
-  asset="ployz-payload-$(current_os)-$(current_arch).tar.gz"
+  asset="$(payload_asset_name_for_host)"
   if [[ "${version}" == "latest" ]]; then
     url="https://github.com/${PLOYZ_REPO}/releases/latest/download/${asset}"
   else
@@ -440,6 +479,48 @@ probe_json() {
   printf '  "service_mode": "%s",\n' "$(json_escape "${current_service_mode}")"
   printf '  "service_backend": "%s"\n' "$(json_escape "${backend}")"
   printf '}\n'
+}
+
+internal_payload_asset_name() {
+  local target_platform=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --target-platform)
+        target_platform=${2:-}
+        shift 2
+        ;;
+      --help|-h)
+        die "usage: ployz.sh internal payload-asset-name [--target-platform OS/ARCH]"
+        ;;
+      *)
+        die "unknown internal payload-asset-name argument: $1"
+        ;;
+    esac
+  done
+
+  if [[ -n "${target_platform}" ]]; then
+    payload_asset_name_for_target_platform "${target_platform}"
+    printf '\n'
+    return
+  fi
+
+  payload_asset_name_for_host
+  printf '\n'
+}
+
+internal_main() {
+  local command=${1:-}
+  shift || true
+
+  case "${command}" in
+    payload-asset-name)
+      internal_payload_asset_name "$@"
+      ;;
+    *)
+      die "Unknown internal command: ${command}"
+      ;;
+  esac
 }
 
 # --- Main ---
@@ -582,6 +663,9 @@ main() {
         die "probe requires --json"
       fi
       probe_json
+      ;;
+    internal)
+      internal_main "$@"
       ;;
     ""|--help|-h)
       usage

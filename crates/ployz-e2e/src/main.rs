@@ -7,7 +7,7 @@ mod support;
 use clap::Parser;
 use cli::Cli;
 use error::{Error, Result};
-use runner::ScenarioRun;
+use runner::{CleanupReason, ScenarioRun};
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
@@ -36,12 +36,12 @@ fn run() -> Result<()> {
         match run.execute() {
             Ok(()) => {
                 println!("PASS {}", scenario.as_str());
-                run.cleanup(false);
+                run.cleanup(CleanupReason::Success);
             }
             Err(error) => {
                 eprintln!("FAIL {}: {error}", scenario.as_str());
                 let _ = run.collect_failure_artifacts();
-                run.cleanup(true);
+                run.cleanup(CleanupReason::Failure);
                 if cli.fail_fast {
                     return Err(Error::Message(format!("{}: {error}", scenario.as_str())));
                 }

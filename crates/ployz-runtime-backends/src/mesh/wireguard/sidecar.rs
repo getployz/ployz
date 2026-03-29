@@ -1,12 +1,10 @@
 use bollard::Docker;
 use bollard::models::{ContainerCreateBody, HostConfig};
-use bollard::query_parameters::{
-    CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
-};
+use bollard::query_parameters::CreateContainerOptionsBuilder;
 use std::net::Ipv4Addr;
 use tracing::info;
 
-use super::docker::{docker_exec_capture, docker_force_remove};
+use super::docker::{docker_exec_capture, docker_force_remove, docker_graceful_remove};
 use crate::error::{Error, Result};
 
 use super::PERSISTENT_KEEPALIVE_SECS;
@@ -175,34 +173,7 @@ impl WgSidecar {
     }
 
     pub async fn down(&self) -> Result<()> {
-        let stop_opts = StopContainerOptionsBuilder::default().t(5).build();
-
-        match self
-            .docker
-            .stop_container(&self.config.container_name, Some(stop_opts))
-            .await
-        {
-            Ok(()) => {}
-            Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 304 | 404,
-                ..
-            }) => {}
-            Err(e) => return Err(Error::operation("sidecar stop", e.to_string())),
-        }
-
-        let remove_opts = RemoveContainerOptionsBuilder::default().build();
-        match self
-            .docker
-            .remove_container(&self.config.container_name, Some(remove_opts))
-            .await
-        {
-            Ok(()) => {}
-            Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 404, ..
-            }) => {}
-            Err(e) => return Err(Error::operation("sidecar remove", e.to_string())),
-        }
-
+        docker_graceful_remove(&self.docker, &self.config.container_name, 5).await?;
         info!(name = %self.config.container_name, "sidecar container stopped");
         Ok(())
     }

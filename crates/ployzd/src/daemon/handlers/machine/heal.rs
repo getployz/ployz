@@ -5,7 +5,7 @@ use ipnet::Ipv4Net;
 use ployz_orchestrator::Phase;
 use ployz_orchestrator::mesh::tasks::ParticipationCommand;
 use ployz_runtime_api::RestartableWorkload;
-use ployz_store_api::{MachineStore, StoreRuntimeControl};
+use ployz_store_api::MachineStore;
 use ployz_types::model::{MachineId, MachineRecord, MachineStatus, Participation};
 use ployz_types::time::now_unix_secs;
 
@@ -29,7 +29,7 @@ impl DaemonState {
             return;
         }
 
-        if !active.mesh.store.healthy().await {
+        if !active.mesh.store_healthy().await {
             tracing::info!(
                 machine_id = %self.identity.machine_id,
                 "local subnet heal: store unhealthy, deferring"
@@ -37,7 +37,7 @@ impl DaemonState {
             return;
         }
 
-        let machines = match active.mesh.store.list_machines().await {
+        let machines = match active.store.list_machines().await {
             Ok(machines) => machines,
             Err(err) => {
                 tracing::warn!(error = %err, "local subnet heal: failed to list machines");
@@ -288,7 +288,6 @@ impl DaemonState {
         };
 
         active
-            .mesh
             .store
             .upsert_self_machine(&record)
             .await
@@ -312,7 +311,7 @@ impl DaemonState {
             .save(&config_path)
             .map_err(|err| format!("save network config: {err}"))?;
 
-        if self.runtime_is_memory_test() {
+        if self.runtime_profile.is_memory_test() {
             self.apply_local_subnet_heal_in_memory_mode(&network_name)
                 .await
         } else {
@@ -345,7 +344,6 @@ impl DaemonState {
         };
         record.subnet = Some(config.subnet);
         active
-            .mesh
             .store
             .upsert_self_machine(&record)
             .await
@@ -427,7 +425,6 @@ impl DaemonState {
             return Err("local authoritative self record missing".into());
         };
         active
-            .mesh
             .store
             .upsert_self_machine(&record)
             .await
@@ -443,7 +440,8 @@ impl DaemonState {
             .as_ref()
             .map(|active| active.config.subnet)
             .ok_or_else(|| "no running network".to_string())?;
-        self.stop_runtime_local_workloads_for_subnet_heal(
+        self.runtime_profile
+            .stop_local_workloads_for_subnet_heal(
                 &self.identity.machine_id,
                 network_name,
                 target_subnet,
@@ -461,11 +459,8 @@ impl DaemonState {
             .as_ref()
             .map(|active| active.config.subnet)
             .ok_or_else(|| "no running network".to_string())?;
-        self.start_runtime_local_workloads_after_subnet_heal(
-            network_name,
-            target_subnet,
-            workloads,
-        )
+        self.runtime_profile
+            .start_local_workloads_after_subnet_heal(network_name, target_subnet, workloads)
             .await
     }
 }

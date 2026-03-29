@@ -1,26 +1,33 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::built_in_images::{BuiltInImage, BuiltInImages};
-use crate::services::corrosion::{corrosion_docker, corrosion_host};
+use crate::daemon::store::StoreDriver;
+use crate::daemon::deploy_control::NamespaceLockManager;
+use crate::daemon::deploy_control::remote::{RemoteControlHandle, start_remote_control_listener};
 use crate::services::dns::{DnsHandle, start_managed_dns};
 use crate::services::gateway::{GatewayHandle, start_managed_gateway};
 use crate::services::supervisor::ServiceSupervision;
 use ipnet::Ipv4Net;
-use ployz_config::{RuntimeTarget, ServiceMode};
+use ployz_config::{RuntimeTarget, ServiceMode, corrosion as corrosion_config};
+use ployz_corrosion::{CorrosionBootstrapState, CorrosionStore, Transport};
 use ployz_dns::DnsConfig;
 use ployz_gateway::GatewayConfig;
-use ployz_orchestrator::WireguardDriver;
 use ployz_runtime_api::Identity;
-use ployz_runtime_api::{NamespaceLockManager, RestartableWorkload};
-use ployz_runtime_backends::deploy::remote::{RemoteControlHandle, start_remote_control_listener};
+use ployz_runtime_api::{
+    ContainerNetwork, DataplaneFactory, DisconnectMode, EndpointDiscovery,
+    MemoryServiceRuntime, RestartableWorkload, ServiceRuntime, StaticEndpointDiscovery,
+    WireguardDriver,
+};
 use ployz_runtime_backends::mesh::driver as mesh_backends;
 use ployz_runtime_backends::network::docker_bridge_network;
 use ployz_runtime_backends::runtime::{
     ContainerEngine,
+    corrosion::{docker_corrosion_runtime, host_corrosion_runtime},
     labels::{LABEL_KIND, LABEL_MACHINE, LABEL_MANAGED},
 };
-use ployz_store_api::StoreDriver;
+use ployz_store_api::{BootstrapStateReader, memory::MemoryStore};
 use ployz_types::model::{MachineId, OverlayIp};
 
 const HEAL_WORKLOAD_STOP_GRACE: tokio::time::Duration = tokio::time::Duration::from_secs(10);
@@ -51,7 +58,11 @@ pub(crate) struct RuntimeProfile {
 pub(crate) struct MeshRuntimeComponents {
     pub(crate) network: WireguardDriver,
     pub(crate) store: StoreDriver,
-    pub(crate) container_network: Option<ployz_orchestrator::ContainerNetwork>,
+    pub(crate) bootstrap_state: Arc<dyn BootstrapStateReader>,
+    pub(crate) store_runtime: Arc<dyn ServiceRuntime>,
+    pub(crate) container_network: Option<ContainerNetwork>,
+    pub(crate) endpoint_discovery: Arc<dyn EndpointDiscovery>,
+    pub(crate) dataplane_factory: Option<Arc<dyn DataplaneFactory>>,
 }
 
 impl RuntimeProfile {
@@ -112,6 +123,19 @@ impl RuntimeProfile {
         Some(format!("ployz-{network_name}"))
     }
 
+    #[must_use]
+    pub(crate) fn build_bootstrap_state_reader(
+        &self,
+        network_dir: &Path,
+    ) -> Arc<dyn BootstrapStateReader> {
+        match self.execution_backend {
+            ExecutionBackend::Memory => Arc::new(MemoryStore::new()),
+            ExecutionBackend::Docker | ExecutionBackend::Host => {
+                Arc::new(CorrosionBootstrapState::new(network_dir))
+            }
+        }
+    }
+
     pub(crate) async fn build_mesh_components(
         &self,
         identity: &Identity,
@@ -123,54 +147,99 @@ impl RuntimeProfile {
         bootstrap: &[String],
         network_id: &str,
     ) -> Result<MeshRuntimeComponents, String> {
-        let network = match self.execution_backend {
-            ExecutionBackend::Memory => WireguardDriver::memory(),
+        let mesh_components = match self.execution_backend {
+            ExecutionBackend::Memory => {
+                let store = Arc::new(MemoryStore::new());
+                MeshRuntimeComponents {
+                    network: WireguardDriver::memory(),
+                    store: StoreDriver::memory_with(Arc::clone(&store)),
+                    bootstrap_state: store,
+                    store_runtime: Arc::new(MemoryServiceRuntime::new()),
+                    container_network: None,
+                    endpoint_discovery: Arc::new(StaticEndpointDiscovery::empty()),
+                    dataplane_factory: None,
+                }
+            }
             ExecutionBackend::Docker => {
-                mesh_backends::docker(
+                let mesh = mesh_backends::docker_components(
                     identity,
                     overlay_ip,
                     network_dir,
+                    network_name,
+                    subnet,
                     exposed_tcp_ports,
+                    corrosion_config::DEFAULT_API_PORT,
                     self.built_in_images.resolve(BuiltInImage::Networking),
                 )
-                .await?
+                .await?;
+                let api_addr = SocketAddr::new(
+                    IpAddr::V6(overlay_ip.0),
+                    corrosion_config::DEFAULT_API_PORT,
+                );
+                let local_api = SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    corrosion_config::DEFAULT_API_PORT,
+                );
+                let store = Arc::new(CorrosionStore::new(
+                    api_addr,
+                    Transport::Bridge {
+                        local_addr: local_api,
+                    },
+                    None,
+                ));
+                MeshRuntimeComponents {
+                    network: mesh.network,
+                    store: StoreDriver::from_store(store),
+                    bootstrap_state: self.build_bootstrap_state_reader(network_dir),
+                    store_runtime: docker_corrosion_runtime(
+                        overlay_ip,
+                        network_dir,
+                        bootstrap,
+                        network_id,
+                        self.built_in_images.resolve(BuiltInImage::Corrosion),
+                    )
+                    .await?,
+                    container_network: mesh.container_network,
+                    endpoint_discovery: mesh.endpoint_discovery,
+                    dataplane_factory: mesh.dataplane_factory,
+                }
             }
             ExecutionBackend::Host => {
-                mesh_backends::host(identity, overlay_ip, network_name, subnet)?
-            }
-        };
-
-        let store = match self.execution_backend {
-            ExecutionBackend::Memory => StoreDriver::memory(),
-            ExecutionBackend::Docker => {
-                corrosion_docker(
+                let mesh = mesh_backends::host_components(
+                    identity,
                     overlay_ip,
-                    network_dir,
-                    bootstrap,
-                    network_id,
-                    self.built_in_images.resolve(BuiltInImage::Corrosion),
+                    network_name,
+                    subnet,
                 )
-                .await?
-            }
-            ExecutionBackend::Host => {
-                corrosion_host(overlay_ip, network_dir, bootstrap, network_id)?
+                .await?;
+                let paths = corrosion_config::Paths::new(network_dir);
+                let api_addr = SocketAddr::new(
+                    IpAddr::V6(overlay_ip.0),
+                    corrosion_config::DEFAULT_API_PORT,
+                );
+                let store = Arc::new(CorrosionStore::new(
+                    api_addr,
+                    Transport::Direct,
+                    Some(paths.admin),
+                ));
+                MeshRuntimeComponents {
+                    network: mesh.network,
+                    store: StoreDriver::from_store(store),
+                    bootstrap_state: self.build_bootstrap_state_reader(network_dir),
+                    store_runtime: host_corrosion_runtime(
+                        overlay_ip,
+                        network_dir,
+                        bootstrap,
+                        network_id,
+                    )?,
+                    container_network: mesh.container_network,
+                    endpoint_discovery: mesh.endpoint_discovery,
+                    dataplane_factory: mesh.dataplane_factory,
+                }
             }
         };
 
-        let container_network = match self.execution_backend {
-            ExecutionBackend::Memory => None,
-            ExecutionBackend::Docker | ExecutionBackend::Host => Some(
-                docker_bridge_network(network_name, subnet)
-                    .await
-                    .map_err(|error| error.to_string())?,
-            ),
-        };
-
-        Ok(MeshRuntimeComponents {
-            network,
-            store,
-            container_network,
-        })
+        Ok(mesh_components)
     }
 
     #[must_use]
@@ -282,7 +351,7 @@ impl RuntimeProfile {
             }
 
             bridge
-                .disconnect(&container.container_name, true)
+                .disconnect(&container.container_name, DisconnectMode::Force)
                 .await
                 .map_err(|err| {
                     format!(

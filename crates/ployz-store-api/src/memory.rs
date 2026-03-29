@@ -1,8 +1,9 @@
-use async_trait::async_trait;
 use crate::{
-    DeployStore, InviteStore, MachineStore, RoutingInvalidationSubscription, RoutingStore,
-    StoreRuntimeControl, SyncProbe, SyncStatus,
+    BootstrapStateReader, DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore, InviteStore,
+    MachineEventSubscription, MachineStore,
+    RoutingInvalidationSubscription, RoutingStore, SyncProbe, SyncStatus,
 };
+use async_trait::async_trait;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
@@ -10,7 +11,6 @@ use ployz_types::model::{
 };
 use ployz_types::spec::Namespace;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use tokio::sync::mpsc;
 use tracing::warn;
@@ -89,12 +89,14 @@ impl MemoryStore {
     }
 }
 
+#[async_trait]
 impl SyncProbe for MemoryStore {
     async fn sync_status(&self) -> Result<SyncStatus> {
         Ok(self.lock_inner().sync_status)
     }
 }
 
+#[async_trait]
 impl MachineStore for MemoryStore {
     async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
         let inner = self.lock_inner();
@@ -127,10 +129,11 @@ impl MachineStore for MemoryStore {
         let snapshot = inner.machines.values().cloned().collect();
         let (sender, receiver) = mpsc::channel(64);
         inner.machine_subscribers.push(sender);
-        Ok((snapshot, receiver))
+        Ok((snapshot, MachineEventSubscription::new(receiver)))
     }
 }
 
+#[async_trait]
 impl RoutingStore for MemoryStore {
     async fn load_routing_state(&self) -> Result<RoutingState> {
         let inner = self.lock_inner();
@@ -145,10 +148,11 @@ impl RoutingStore for MemoryStore {
         let mut inner = self.lock_inner();
         let (sender, receiver) = mpsc::channel(64);
         inner.routing_subscribers.push(sender);
-        Ok(receiver)
+        Ok(RoutingInvalidationSubscription::new(receiver))
     }
 }
 
+#[async_trait]
 impl InviteStore for MemoryStore {
     async fn create_invite(&self, invite: &InviteRecord) -> Result<()> {
         let mut inner = self.lock_inner();
@@ -183,7 +187,8 @@ impl InviteStore for MemoryStore {
     }
 }
 
-impl DeployStore for MemoryStore {
+#[async_trait]
+impl DeployReadStore for MemoryStore {
     async fn list_service_revisions(
         &self,
         namespace: &Namespace,
@@ -223,6 +228,14 @@ impl DeployStore for MemoryStore {
             .collect())
     }
 
+    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner.deploys.get(deploy_id).cloned())
+    }
+}
+
+#[async_trait]
+impl DeployWriteStore for MemoryStore {
     async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
         let mut inner = self.lock_inner();
         let key = (
@@ -275,108 +288,56 @@ impl DeployStore for MemoryStore {
             .insert(record.deploy_id.clone(), record.clone());
         Ok(())
     }
+}
 
-    async fn commit_deploy(
-        &self,
-        namespace: &Namespace,
-        removed_services: &[String],
-        releases: &[ServiceReleaseRecord],
-        deploy: &DeployRecord,
-    ) -> Result<()> {
+#[async_trait]
+impl DeployCommitStore for MemoryStore {
+    async fn apply_deploy_commit(&self, commit: &DeployCommit) -> Result<()> {
         let mut inner = self.lock_inner();
-        let touched_services: HashSet<&str> = removed_services
+        let touched_services: HashSet<&str> = commit
+            .removed_services
             .iter()
             .map(String::as_str)
-            .chain(releases.iter().map(|record| record.service.as_str()))
+            .chain(commit.releases.iter().map(|record| record.service.as_str()))
             .collect();
 
         inner
             .service_releases
             .retain(|(current_namespace, service), _| {
-                !(current_namespace == namespace && touched_services.contains(service.as_str()))
+                !(current_namespace == &commit.namespace
+                    && touched_services.contains(service.as_str()))
             });
 
-        for release in releases {
+        for release in &commit.releases {
             inner.service_releases.insert(
                 (release.namespace.clone(), release.service.clone()),
                 release.clone(),
             );
         }
 
-        inner
-            .deploys
-            .insert(deploy.deploy_id.clone(), deploy.clone());
+        inner.deploys.insert(
+            commit.deploy.deploy_id.clone(),
+            commit.deploy.clone(),
+        );
         Self::broadcast_routing_refresh(&mut inner);
         Ok(())
-    }
-
-    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
-        let inner = self.lock_inner();
-        Ok(inner.deploys.get(deploy_id).cloned())
-    }
-}
-
-pub struct MemoryService {
-    started: AtomicBool,
-    healthy: AtomicBool,
-    fail_start: AtomicBool,
-    fail_stop: AtomicBool,
-}
-
-impl Default for MemoryService {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl MemoryService {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            started: AtomicBool::new(false),
-            healthy: AtomicBool::new(true),
-            fail_start: AtomicBool::new(false),
-            fail_stop: AtomicBool::new(false),
-        }
-    }
-
-    pub fn set_healthy(&self, healthy: bool) {
-        self.healthy.store(healthy, Ordering::SeqCst);
-    }
-
-    pub fn set_fail_start(&self, fail: bool) {
-        self.fail_start.store(fail, Ordering::SeqCst);
-    }
-
-    pub fn set_fail_stop(&self, fail: bool) {
-        self.fail_stop.store(fail, Ordering::SeqCst);
-    }
-
-    pub fn is_started(&self) -> bool {
-        self.started.load(Ordering::SeqCst)
     }
 }
 
 #[async_trait]
-impl StoreRuntimeControl for MemoryService {
-    async fn start(&self) -> Result<()> {
-        if self.fail_start.load(Ordering::SeqCst) {
-            return Err(Error::operation("service start", "injected failure"));
-        }
-        self.started.store(true, Ordering::SeqCst);
-        Ok(())
+impl BootstrapStateReader for MemoryStore {
+    async fn seed_machine_records(&self) -> Result<Vec<MachineRecord>> {
+        self.list_machines().await
     }
 
-    async fn stop(&self) -> Result<()> {
-        if self.fail_stop.load(Ordering::SeqCst) {
-            return Err(Error::operation("service stop", "injected failure"));
-        }
-        self.started.store(false, Ordering::SeqCst);
-        Ok(())
-    }
-
-    async fn healthy(&self) -> bool {
-        self.healthy.load(Ordering::SeqCst)
+    async fn bootstrap_addrs(&self, local_machine_id: &MachineId) -> Result<Vec<String>> {
+        Ok(self
+            .list_machines()
+            .await?
+            .into_iter()
+            .filter(|machine| machine.id != *local_machine_id)
+            .map(|machine| machine.overlay_ip.0.to_string())
+            .collect())
     }
 }
 

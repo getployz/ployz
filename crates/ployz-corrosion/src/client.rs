@@ -482,10 +482,11 @@ pub struct SubscriptionStream<T> {
     stream: Option<FramedBody>,
     backoff: Option<Pin<Box<Sleep>>>,
     backoff_count: u32,
-    #[allow(clippy::type_complexity)]
-    response: Option<Pin<Box<dyn Future<Output = Result<Incoming, ClientError>> + Send>>>,
+    response: Option<ResponseFuture>,
     _deser: std::marker::PhantomData<T>,
 }
+
+type ResponseFuture = Pin<Box<dyn Future<Output = Result<Incoming, ClientError>> + Send>>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SubscriptionError {
@@ -683,13 +684,17 @@ impl Decoder for LinesBytesCodec {
     type Item = BytesMut;
     type Error = LinesCodecError;
 
-    #[allow(clippy::indexing_slicing)]
     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<BytesMut>, LinesCodecError> {
         loop {
             let read_to = std::cmp::min(self.max_length.saturating_add(1), buf.len());
-            let newline_offset = buf[self.next_index..read_to]
-                .iter()
-                .position(|b| *b == b'\n');
+            let Some(search_window) = buf.as_ref().get(self.next_index..read_to) else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "line codec cursor exceeded buffer bounds",
+                )
+                .into());
+            };
+            let newline_offset = search_window.iter().position(|b| *b == b'\n');
 
             match (self.is_discarding, newline_offset) {
                 (true, Some(offset)) => {

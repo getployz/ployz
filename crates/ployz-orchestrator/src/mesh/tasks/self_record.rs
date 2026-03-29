@@ -1,6 +1,5 @@
 use crate::model::{MachineRecord, OverlayIp, Participation};
 use ployz_store_api::MachineStore;
-use ployz_store_api::StoreDriver;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -45,7 +44,7 @@ pub(crate) async fn apply_self_record_mutation(
 
 pub(crate) async fn run_self_record_writer_task(
     authoritative_self: Arc<RwLock<MachineRecord>>,
-    store: StoreDriver,
+    store: Arc<dyn MachineStore>,
     mut commands: mpsc::Receiver<SelfRecordCommand>,
     cancel: CancellationToken,
 ) {
@@ -60,15 +59,19 @@ pub(crate) async fn run_self_record_writer_task(
             Some(command) = commands.recv() => {
                 let SelfRecordCommand { mutation, done } = command;
                 let mut next = current.clone();
-                apply_mutation(&mut next, mutation.clone());
+                apply_mutation(&mut next, mutation);
+                if next == current {
+                    let _ = done.send(Some(next));
+                    continue;
+                }
                 match store.upsert_self_machine(&next).await {
                     Ok(()) => {
-                        current = next.clone();
                         *authoritative_self.write().await = next.clone();
+                        current = next.clone();
                         let _ = done.send(Some(next));
                     }
                     Err(error) => {
-                        warn!(?error, ?mutation, "self record update failed");
+                        warn!(?error, "self record update failed");
                         let _ = done.send(None);
                     }
                 }
@@ -106,7 +109,7 @@ fn apply_mutation(record: &mut MachineRecord, mutation: SelfRecordMutation) {
 mod tests {
     use super::*;
     use crate::model::{MachineId, MachineStatus, PublicKey};
-    use ployz_store_api::memory::{MemoryService, MemoryStore};
+    use ployz_store_api::memory::MemoryStore;
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
 
@@ -131,15 +134,12 @@ mod tests {
     async fn writer_preserves_endpoints_when_liveness_updates() {
         let authoritative_self = Arc::new(RwLock::new(test_record()));
         let store = Arc::new(MemoryStore::new());
-        let service = Arc::new(MemoryService::new());
-        let store_driver = StoreDriver::memory_with(store.clone(), service);
         let (tx, rx) = mpsc::channel(8);
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();
         let writer_authoritative_self = authoritative_self.clone();
         let handle = tokio::spawn(async move {
-            run_self_record_writer_task(writer_authoritative_self, store_driver, rx, task_cancel)
-                .await;
+            run_self_record_writer_task(writer_authoritative_self, store, rx, task_cancel).await;
         });
 
         let endpoints = vec!["10.0.0.1:51820".into(), "10.0.0.2:51820".into()];
@@ -172,15 +172,12 @@ mod tests {
     async fn writer_preserves_liveness_fields_when_participation_changes() {
         let authoritative_self = Arc::new(RwLock::new(test_record()));
         let store = Arc::new(MemoryStore::new());
-        let service = Arc::new(MemoryService::new());
-        let store_driver = StoreDriver::memory_with(store.clone(), service);
         let (tx, rx) = mpsc::channel(8);
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();
         let writer_authoritative_self = authoritative_self.clone();
         let handle = tokio::spawn(async move {
-            run_self_record_writer_task(writer_authoritative_self, store_driver, rx, task_cancel)
-                .await;
+            run_self_record_writer_task(writer_authoritative_self, store, rx, task_cancel).await;
         });
 
         let _ = apply_self_record_mutation(

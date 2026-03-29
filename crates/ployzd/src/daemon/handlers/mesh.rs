@@ -7,7 +7,6 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ployz_orchestrator::ipam::Ipam;
 use ployz_orchestrator::mesh::orchestrator::MeshReadyStatus;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
-use ployz_orchestrator::network::endpoints::detect_endpoints;
 use ployz_types::model::{JoinResponse, NetworkName};
 use ployz_types::time::now_unix_secs;
 use tracing::warn;
@@ -15,6 +14,8 @@ use tracing::warn;
 use crate::daemon::setup::MeshStartOptions;
 use ployz_api::{DaemonPayload, DaemonResponse, MeshReadyPayload, MeshSelfRecordPayload};
 
+#[cfg(test)]
+use super::super::DaemonRuntimeConfig;
 use super::super::DaemonState;
 
 impl DaemonState {
@@ -84,14 +85,17 @@ impl DaemonState {
         ))
     }
 
-    pub(crate) async fn handle_mesh_ready(&self, json: bool) -> DaemonResponse {
+    pub(crate) async fn handle_mesh_ready(
+        &self,
+        output: ployz_api::MeshReadyOutput,
+    ) -> DaemonResponse {
         let active = match self.active.as_ref() {
             Some(active) => active,
             None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
         };
 
         let status = mesh_ready_payload(active.mesh.ready_status().await);
-        if json {
+        if output == ployz_api::MeshReadyOutput::Json {
             return match serde_json::to_string(&status) {
                 Ok(body) => self.ok_with_payload(body, Some(DaemonPayload::MeshReady(status))),
                 Err(err) => self.err(
@@ -287,7 +291,7 @@ impl DaemonState {
     pub(crate) async fn handle_mesh_up(
         &mut self,
         network: &str,
-        skip_bootstrap_wait: bool,
+        bootstrap_wait: ployz_api::BootstrapWaitMode,
     ) -> DaemonResponse {
         if let Some(active) = &self.active {
             return self.err(
@@ -318,7 +322,7 @@ impl DaemonState {
 
         let network_name = net_config.name.clone();
         let options = MeshStartOptions {
-            allow_disconnected_bootstrap: skip_bootstrap_wait,
+            allow_disconnected_bootstrap: bootstrap_wait == ployz_api::BootstrapWaitMode::Skip,
         };
         match self.start_mesh(net_config, None, options).await {
             Ok(_) => {}
@@ -399,7 +403,15 @@ impl DaemonState {
             None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
         };
 
-        let endpoints = detect_endpoints(51820).await;
+        let endpoints = match active.mesh.detect_endpoints().await {
+            Ok(endpoints) => endpoints,
+            Err(error) => {
+                return self.err(
+                    "ENDPOINT_DISCOVERY_FAILED",
+                    format!("failed to detect mesh endpoints: {error}"),
+                );
+            }
+        };
         let resp = JoinResponse {
             machine_id: self.identity.machine_id.clone(),
             public_key: self.identity.public_key.clone(),
@@ -490,14 +502,16 @@ fn mesh_ready_payload(value: MeshReadyStatus) -> MeshReadyPayload {
 mod tests {
     use super::*;
     use crate::daemon::ActiveMesh;
-    use crate::mesh_state::invite::issue_invite_token;
+    use crate::mesh_state::invite::{InviteTokenContext, issue_invite_token};
     use crate::mesh_state::network::NetworkConfig;
-    use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
-    use ployz_orchestrator::{Mesh, WireguardDriver};
+    use ployz_orchestrator::Mesh;
     use ployz_runtime_api::Identity;
+    use ployz_runtime_api::{
+        MemoryServiceRuntime, MemoryWireGuard, StaticEndpointDiscovery, WireguardDriver,
+    };
+    use crate::daemon::store::StoreDriver;
     use ployz_store_api::MachineStore;
-    use ployz_store_api::StoreDriver;
-    use ployz_store_api::memory::{MemoryService, MemoryStore};
+    use ployz_store_api::memory::MemoryStore;
     use ployz_types::model::{MachineId, OverlayIp, PublicKey};
     use ployz_types::time::now_unix_secs;
     use std::path::PathBuf;
@@ -524,11 +538,13 @@ mod tests {
             &network,
             600,
             now_unix_secs(),
-            Vec::new(),
-            Some(network.overlay_ip.0.to_string()),
-            Some("wg-public".into()),
-            Some(network.subnet.to_string()),
-            allocated_subnet.into(),
+            InviteTokenContext {
+                issuer_endpoints: Vec::new(),
+                issuer_overlay_ip: Some(network.overlay_ip.0.to_string()),
+                issuer_wg_public_key: Some("wg-public".into()),
+                issuer_subnet: Some(network.subnet.to_string()),
+                allocated_subnet: allocated_subnet.into(),
+            },
         )
         .expect("issue invite");
 
@@ -536,11 +552,13 @@ mod tests {
         let mut state = DaemonState::new_for_tests(
             &data_dir,
             joiner_identity,
-            "10.210.0.0/16".into(),
-            24,
-            4317,
-            "127.0.0.1:0".into(),
-            1,
+            DaemonRuntimeConfig {
+                cluster_cidr: "10.210.0.0/16".into(),
+                subnet_prefix_len: 24,
+                remote_control_port: 4317,
+                gateway_listen_addr: "127.0.0.1:0".into(),
+                gateway_threads: 1,
+            },
         );
 
         let response = state.handle_mesh_join(&token).await;
@@ -614,9 +632,14 @@ mod tests {
             .await
             .expect("upsert founder");
         let network = Arc::new(MemoryWireGuard::new());
+        let service = Arc::new(MemoryServiceRuntime::new());
         let mut mesh = Mesh::new(
             WireguardDriver::memory_with(network.clone()),
-            StoreDriver::memory_with(store.clone(), Arc::new(MemoryService::new())),
+            store.clone(),
+            store.clone(),
+            service,
+            None,
+            Arc::new(StaticEndpointDiscovery::empty()),
             None,
             identity.machine_id.clone(),
             51820,
@@ -626,15 +649,18 @@ mod tests {
         let mut state = DaemonState::new_for_tests(
             &unique_temp_dir("ployz-mesh-accept"),
             identity,
-            "10.210.0.0/16".into(),
-            24,
-            4317,
-            "127.0.0.1:0".into(),
-            1,
+            DaemonRuntimeConfig {
+                cluster_cidr: "10.210.0.0/16".into(),
+                subnet_prefix_len: 24,
+                remote_control_port: 4317,
+                gateway_listen_addr: "127.0.0.1:0".into(),
+                gateway_threads: 1,
+            },
         );
         state.active = Some(ActiveMesh {
             config,
             mesh,
+            store: StoreDriver::memory_with(store.clone()),
             remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),

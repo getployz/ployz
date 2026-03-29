@@ -25,18 +25,28 @@ pub struct InviteClaims {
     pub allocated_subnet: String,
 }
 
-#[allow(clippy::too_many_arguments)]
+pub struct InviteTokenContext {
+    pub issuer_endpoints: Vec<String>,
+    pub issuer_overlay_ip: Option<String>,
+    pub issuer_wg_public_key: Option<String>,
+    pub issuer_subnet: Option<String>,
+    pub allocated_subnet: String,
+}
+
 pub fn issue_invite_token(
     identity: &Identity,
     network: &NetworkConfig,
     ttl_secs: u64,
     now_unix_secs: u64,
-    issuer_endpoints: Vec<String>,
-    issuer_overlay_ip: Option<String>,
-    issuer_wg_public_key: Option<String>,
-    issuer_subnet: Option<String>,
-    allocated_subnet: String,
+    context: InviteTokenContext,
 ) -> Result<(String, InviteClaims), String> {
+    let InviteTokenContext {
+        issuer_endpoints,
+        issuer_overlay_ip,
+        issuer_wg_public_key,
+        issuer_subnet,
+        allocated_subnet,
+    } = context;
     let expires_at = now_unix_secs
         .checked_add(ttl_secs)
         .ok_or_else(|| "ttl overflow".to_string())?;
@@ -144,11 +154,13 @@ mod tests {
             &network,
             600,
             1_700_000_000,
-            vec!["1.2.3.4:51820".into()],
-            Some(network.overlay_ip.0.to_string()),
-            Some("wg-public".into()),
-            Some(network.subnet.to_string()),
-            "10.210.99.0/24".into(),
+            InviteTokenContext {
+                issuer_endpoints: vec!["1.2.3.4:51820".into()],
+                issuer_overlay_ip: Some(network.overlay_ip.0.to_string()),
+                issuer_wg_public_key: Some("wg-public".into()),
+                issuer_subnet: Some(network.subnet.to_string()),
+                allocated_subnet: "10.210.99.0/24".into(),
+            },
         )
         .expect("issue invite");
 

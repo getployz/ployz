@@ -1,8 +1,10 @@
 use ployz_orchestrator::mesh::tasks::{HeartbeatCommand, PeerSyncCommand};
-use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
-use ployz_orchestrator::{Mesh, Phase, WireguardDriver};
-use ployz_store_api::StoreDriver;
-use ployz_store_api::memory::{MemoryService, MemoryStore};
+use ployz_orchestrator::{Mesh, Phase};
+use ployz_runtime_api::{
+    MemoryServiceRuntime, MemoryWireGuard, ObserveMode, StaticEndpointDiscovery, ToggleState,
+    WireguardDriver,
+};
+use ployz_store_api::memory::MemoryStore;
 use ployz_store_api::{MachineStore, SyncStatus};
 use ployz_types::model::{
     JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
@@ -32,12 +34,16 @@ fn test_record(id: &str, key_byte: u8) -> MachineRecord {
 fn make_mesh(
     machine_id: &str,
     wg: Arc<MemoryWireGuard>,
-    svc: Arc<MemoryService>,
+    svc: Arc<MemoryServiceRuntime>,
     store: Arc<MemoryStore>,
 ) -> Mesh {
     Mesh::new(
         WireguardDriver::memory_with(wg),
-        StoreDriver::memory_with(store, svc),
+        store.clone(),
+        store,
+        svc,
+        None,
+        Arc::new(StaticEndpointDiscovery::empty()),
         None,
         MachineId(machine_id.into()),
         51820,
@@ -50,7 +56,7 @@ fn make_mesh(
 #[tokio::test]
 async fn startup_reaches_running_with_healthy_service() {
     let wg = Arc::new(MemoryWireGuard::new());
-    let svc = Arc::new(MemoryService::new());
+    let svc = Arc::new(MemoryServiceRuntime::new());
     let store = Arc::new(MemoryStore::new());
 
     store
@@ -70,7 +76,7 @@ async fn startup_reaches_running_with_healthy_service() {
 #[tokio::test]
 async fn startup_reaches_running_single_node() {
     let wg = Arc::new(MemoryWireGuard::new());
-    let svc = Arc::new(MemoryService::new());
+    let svc = Arc::new(MemoryServiceRuntime::new());
     let store = Arc::new(MemoryStore::new());
 
     store
@@ -124,7 +130,7 @@ async fn startup_reaches_running_single_node() {
 #[tokio::test]
 async fn joiner_seed_peer_requires_sync_for_ready() {
     let wg = Arc::new(MemoryWireGuard::new());
-    let svc = Arc::new(MemoryService::new());
+    let svc = Arc::new(MemoryServiceRuntime::new());
     let store = Arc::new(MemoryStore::new());
 
     let founder_record = test_record("founder", 1);
@@ -134,7 +140,11 @@ async fn joiner_seed_peer_requires_sync_for_ready() {
 
     let mut mesh = Mesh::new(
         WireguardDriver::memory_with(wg),
-        StoreDriver::memory_with(store.clone(), svc),
+        store.clone(),
+        store,
+        svc,
+        None,
+        Arc::new(StaticEndpointDiscovery::empty()),
         None,
         joiner_record.id.clone(),
         51820,
@@ -158,7 +168,7 @@ async fn joiner_seed_peer_requires_sync_for_ready() {
 #[tokio::test]
 async fn joiner_retains_founder_peer_across_peer_sync_handoff() {
     let wg = Arc::new(MemoryWireGuard::new());
-    let svc = Arc::new(MemoryService::new());
+    let svc = Arc::new(MemoryServiceRuntime::new());
     let store = Arc::new(MemoryStore::new());
 
     let founder_record = test_record("founder", 1);
@@ -167,7 +177,11 @@ async fn joiner_retains_founder_peer_across_peer_sync_handoff() {
 
     let mut mesh = Mesh::new(
         WireguardDriver::memory_with(wg.clone()),
-        StoreDriver::memory_with(store.clone(), svc),
+        store.clone(),
+        store.clone(),
+        svc,
+        None,
+        Arc::new(StaticEndpointDiscovery::empty()),
         None,
         joiner_record.id.clone(),
         51820,
@@ -197,7 +211,7 @@ async fn joiner_retains_founder_peer_across_peer_sync_handoff() {
 #[tokio::test]
 async fn detach_stops_tasks_leaves_infra() {
     let wg = Arc::new(MemoryWireGuard::new());
-    let svc = Arc::new(MemoryService::new());
+    let svc = Arc::new(MemoryServiceRuntime::new());
     let store = Arc::new(MemoryStore::new());
 
     store
@@ -221,8 +235,8 @@ async fn detach_stops_tasks_leaves_infra() {
 #[tokio::test]
 async fn component_failure_returns_to_stopped() {
     let wg = Arc::new(MemoryWireGuard::new());
-    wg.set_fail_up(true);
-    let svc = Arc::new(MemoryService::new());
+    wg.set_fail_up(ObserveMode::Enabled);
+    let svc = Arc::new(MemoryServiceRuntime::new());
     let store = Arc::new(MemoryStore::new());
 
     let mut mesh = make_mesh("m1", wg, svc, store);
@@ -234,8 +248,8 @@ async fn component_failure_returns_to_stopped() {
 #[tokio::test]
 async fn service_failure_tears_down_wg() {
     let wg = Arc::new(MemoryWireGuard::new());
-    let svc = Arc::new(MemoryService::new());
-    svc.set_fail_start(true);
+    let svc = Arc::new(MemoryServiceRuntime::new());
+    svc.set_fail_start(ToggleState::Enabled);
     let store = Arc::new(MemoryStore::new());
 
     let mut mesh = make_mesh("m1", wg.clone(), svc, store);
@@ -249,7 +263,7 @@ async fn service_failure_tears_down_wg() {
 #[tokio::test]
 async fn destroy_continues_on_errors_returns_first() {
     let wg = Arc::new(MemoryWireGuard::new());
-    let svc = Arc::new(MemoryService::new());
+    let svc = Arc::new(MemoryServiceRuntime::new());
     let store = Arc::new(MemoryStore::new());
 
     store
@@ -261,8 +275,8 @@ async fn destroy_continues_on_errors_returns_first() {
     mesh.up().await.unwrap();
 
     // Make both service stop and wg down fail.
-    svc.set_fail_stop(true);
-    wg.set_fail_down(true);
+    svc.set_fail_stop(ToggleState::Enabled);
+    wg.set_fail_down(ObserveMode::Enabled);
 
     let err = mesh.destroy().await.unwrap_err();
     // First error encountered was service stop.
@@ -276,7 +290,7 @@ async fn destroy_continues_on_errors_returns_first() {
 #[tokio::test]
 async fn bootstrap_connection_timeout() {
     let wg = Arc::new(MemoryWireGuard::new());
-    let svc = Arc::new(MemoryService::new());
+    let svc = Arc::new(MemoryServiceRuntime::new());
     let store = Arc::new(MemoryStore::new());
     let founder_record = test_record("founder", 1);
     let joiner_record = test_record("joiner", 2);
@@ -289,7 +303,11 @@ async fn bootstrap_connection_timeout() {
 
     let mut mesh = Mesh::new(
         WireguardDriver::memory_with(wg),
-        StoreDriver::memory_with(store, svc),
+        store.clone(),
+        store,
+        svc,
+        None,
+        Arc::new(StaticEndpointDiscovery::empty()),
         None,
         joiner_record.id.clone(),
         51820,
@@ -307,7 +325,7 @@ async fn bootstrap_connection_timeout() {
 #[tokio::test]
 async fn bootstrap_proceeds_on_membership() {
     let wg = Arc::new(MemoryWireGuard::new());
-    let svc = Arc::new(MemoryService::new());
+    let svc = Arc::new(MemoryServiceRuntime::new());
     let store = Arc::new(MemoryStore::new());
     let founder_record = test_record("founder", 1);
     let joiner_record = test_record("joiner", 2);
@@ -326,7 +344,11 @@ async fn bootstrap_proceeds_on_membership() {
 
     let mut mesh = Mesh::new(
         WireguardDriver::memory_with(wg),
-        StoreDriver::memory_with(store, svc),
+        store.clone(),
+        store,
+        svc,
+        None,
+        Arc::new(StaticEndpointDiscovery::empty()),
         None,
         joiner_record.id.clone(),
         51820,
@@ -346,7 +368,7 @@ async fn bootstrap_proceeds_on_membership() {
 async fn founder_can_configure_joiner_from_transient_peer() {
     // Founder node
     let founder_wg = Arc::new(MemoryWireGuard::new());
-    let founder_svc = Arc::new(MemoryService::new());
+    let founder_svc = Arc::new(MemoryServiceRuntime::new());
     let founder_store = Arc::new(MemoryStore::new());
 
     let founder_record = test_record("founder", 1);
@@ -412,7 +434,7 @@ async fn founder_can_configure_joiner_from_transient_peer() {
 #[tokio::test]
 async fn store_event_triggers_reconcile() {
     let wg = Arc::new(MemoryWireGuard::new());
-    let svc = Arc::new(MemoryService::new());
+    let svc = Arc::new(MemoryServiceRuntime::new());
     let store = Arc::new(MemoryStore::new());
 
     store
@@ -443,7 +465,7 @@ async fn store_event_triggers_reconcile() {
 #[tokio::test]
 async fn remove_event_drops_wireguard_peer() {
     let wg = Arc::new(MemoryWireGuard::new());
-    let svc = Arc::new(MemoryService::new());
+    let svc = Arc::new(MemoryServiceRuntime::new());
     let store = Arc::new(MemoryStore::new());
 
     store

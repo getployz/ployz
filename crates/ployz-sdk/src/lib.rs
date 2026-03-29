@@ -1,13 +1,9 @@
-pub mod config;
+mod client;
 pub mod transport;
 
+pub use client::DaemonClient;
 pub use ployz_api::{
-    DaemonPayload, DaemonRequest, DaemonResponse, DebugTickTask, DeployFrame, DeployOptions,
-    InstallSource, MachineAddOptions, MachineAddPayload, MachineAwaitingSelfPublication,
-    MachineInstallOptions, MachineListPayload, MachineListRow, MachineOperationInfo,
-    MachineOperationListPayload, MachineOperationPayload, MachineRemovePayload, MeshReadyPayload,
-    MeshSelfRecordPayload,
+    DaemonRequest, DaemonResponse, DeployOptions, InstallSource, MachineAddOptions,
+    MachineInstallOptions, MachineListPayload, MeshReadyPayload, MeshSelfRecordPayload,
 };
-pub use ployz_types::{Error, Result};
-pub use ployz_types::{error, model, spec};
 pub use transport::{StdioTransport, Transport, UnixSocketTransport};

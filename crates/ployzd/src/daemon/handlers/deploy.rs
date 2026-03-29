@@ -2,13 +2,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::daemon::DaemonState;
+use crate::daemon::deploy_control::remote::DeployAgent;
+use crate::daemon::deploy_control::session::DefaultDeploySessionFactory;
 use ployz_api::{DaemonResponse, DeployOptions};
 use ployz_config::RuntimeTarget;
 use ployz_orchestrator::deploy::{apply, preview};
-use ployz_runtime_backends::deploy::remote::DeployAgent;
-use ployz_runtime_backends::deploy::session::DefaultDeploySessionFactory;
-use ployz_store_api::DeployStore;
-use ployz_store_api::StoreDriver;
+use ployz_store_api::DeployReadStore;
 use ployz_types::Error as PloyzError;
 use ployz_types::spec::{DeployManifest, Namespace, ServiceSpec};
 
@@ -42,7 +41,7 @@ impl DaemonState {
             None => return self.err("NO_MESH", "no mesh is running"),
         };
 
-        match preview(&active.mesh.store, &self.identity.machine_id, &manifest).await {
+        match preview(&active.store, &self.identity.machine_id, &manifest).await {
             Ok(plan) => match serde_json::to_string_pretty(&plan) {
                 Ok(json) => self.ok(json),
                 Err(err) => self.err("ENCODE_PREVIEW", format!("encode preview: {err}")),
@@ -66,7 +65,7 @@ impl DaemonState {
         };
 
         let agent = Arc::new(DeployAgent::new(
-            active.mesh.store.clone(),
+            active.store.clone(),
             self.namespace_locks.clone(),
             self.identity.machine_id.clone(),
             self.overlay_network_name(),
@@ -79,7 +78,7 @@ impl DaemonState {
         );
 
         match apply(
-            &active.mesh.store,
+            &active.store,
             &factory,
             &self.identity.machine_id,
             &manifest,
@@ -100,7 +99,7 @@ impl DaemonState {
             None => return self.err("NO_MESH", "no mesh is running"),
         };
         let namespace = Namespace(namespace.to_string());
-        let manifest = match export_manifest(&active.mesh.store, &namespace).await {
+        let manifest = match export_manifest(&active.store, &namespace).await {
             Ok(manifest) => manifest,
             Err(err) => return self.err("DEPLOY_EXPORT_FAILED", format!("{err}")),
         };
@@ -132,10 +131,13 @@ fn decode_manifest(manifest_json: &str) -> Result<DeployManifest, DaemonResponse
     Ok(manifest)
 }
 
-async fn export_manifest(
-    store: &StoreDriver,
+async fn export_manifest<S>(
+    store: &S,
     namespace: &Namespace,
-) -> ployz_types::Result<DeployManifest> {
+) -> ployz_types::Result<DeployManifest>
+where
+    S: DeployReadStore + ?Sized,
+{
     let releases = store.list_service_releases(namespace).await?;
     let revisions = store.list_service_revisions(namespace).await?;
     let revisions_by_key: BTreeMap<(String, String), String> = revisions

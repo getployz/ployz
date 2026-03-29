@@ -1,7 +1,6 @@
 use super::invite::InviteClaims;
 use super::network::NetworkConfig;
 use base64::Engine as _;
-use ployz_orchestrator::network::endpoints::detect_endpoints;
 use ployz_runtime_api::Identity;
 use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
 use serde::{Deserialize, Serialize};
@@ -134,7 +133,7 @@ pub async fn build_seed_records(
     identity: &Identity,
     net_config: &NetworkConfig,
     bootstrap: Option<&BootstrapInfo>,
-    listen_port: u16,
+    endpoints: Vec<String>,
     extra_records: &[MachineRecord],
 ) -> Vec<MachineRecord> {
     let mut seed_records: Vec<MachineRecord> = load_bootstrap_peer_records(network_dir)
@@ -169,7 +168,6 @@ pub async fn build_seed_records(
         }
     }
 
-    let endpoints = detect_endpoints(listen_port).await;
     let self_record = MachineRecord::seed(
         identity.machine_id.clone(),
         identity.public_key.clone(),
@@ -267,7 +265,7 @@ mod tests {
             &identity,
             &net_config,
             None,
-            51820,
+            vec!["self:51820".into()],
             &[db_founder.clone()],
         )
         .await;

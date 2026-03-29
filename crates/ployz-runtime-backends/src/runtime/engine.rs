@@ -4,17 +4,16 @@ use std::time::Duration;
 use bollard::Docker;
 use bollard::models::{ContainerCreateBody, HostConfig};
 use bollard::query_parameters::{
-    CreateContainerOptionsBuilder, CreateImageOptionsBuilder, ListContainersOptionsBuilder,
-    RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
+    CreateContainerOptionsBuilder, ListContainersOptionsBuilder, RemoveContainerOptionsBuilder,
+    StopContainerOptionsBuilder,
 };
-use futures_util::StreamExt;
 use ployz_types::{Error, Result};
 use tracing::{info, warn};
 
 use super::diff::{ChangedField, SpecChange, eval_spec_change, parent_id_matches};
 use super::probe::ProbeRunner;
 use super::spec::{ObservedContainer, observe};
-use super::{PullPolicy, RuntimeContainerSpec, parse_docker_image_ref};
+use super::{PullPolicy, RuntimeContainerSpec};
 
 pub struct ContainerEngine {
     docker: Docker,
@@ -263,27 +262,7 @@ impl ContainerEngine {
             PullPolicy::Always => {}
         }
 
-        let parsed = parse_docker_image_ref(image);
-        let builder = CreateImageOptionsBuilder::default().from_image(parsed.from_image);
-        let options = match parsed.tag {
-            Some(tag) => builder.tag(tag).build(),
-            None => builder.build(),
-        };
-
-        let mut stream = self.docker.create_image(Some(options), None, None);
-        while let Some(result) = stream.next().await {
-            match result {
-                Ok(info) => {
-                    if let Some(status) = info.status {
-                        info!(image = %image, %status, "pulling");
-                    }
-                }
-                Err(e) => {
-                    warn!(?e, image = %image, "pull failed, trying cached image");
-                    break;
-                }
-            }
-        }
+        super::pull_docker_image(&self.docker, image).await;
         Ok(())
     }
 

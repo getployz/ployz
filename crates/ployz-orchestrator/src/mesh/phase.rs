@@ -53,14 +53,64 @@ pub fn transition(
 
     match (current, event) {
         (Stopped, UpRequested) => Ok(Starting),
+        (Stopped, NetworkReady)
+        | (Stopped, ComponentsStarted)
+        | (Stopped, ComponentFailed)
+        | (Stopped, SyncComplete)
+        | (Stopped, DetachRequested)
+        | (Stopped, TeardownComplete) => Err(TransitionError::Invalid {
+            from: current,
+            event,
+        }),
         (Starting, NetworkReady) => Ok(Provisioning),
+        (Starting, UpRequested)
+        | (Starting, ComponentsStarted)
+        | (Starting, SyncComplete)
+        | (Starting, DetachRequested)
+        | (Starting, TeardownComplete) => Err(TransitionError::Invalid {
+            from: current,
+            event,
+        }),
         (Provisioning, ComponentsStarted) => Ok(Bootstrapping),
         (Starting | Provisioning | Bootstrapping, ComponentFailed) => Ok(Stopped),
+        (Provisioning, UpRequested)
+        | (Provisioning, NetworkReady)
+        | (Provisioning, SyncComplete)
+        | (Provisioning, DetachRequested)
+        | (Provisioning, TeardownComplete) => Err(TransitionError::Invalid {
+            from: current,
+            event,
+        }),
         (Bootstrapping, SyncComplete) => Ok(Running),
+        (Bootstrapping, UpRequested)
+        | (Bootstrapping, NetworkReady)
+        | (Bootstrapping, ComponentsStarted)
+        | (Bootstrapping, DetachRequested)
+        | (Bootstrapping, TeardownComplete) => Err(TransitionError::Invalid {
+            from: current,
+            event,
+        }),
         (Running, DetachRequested) => Ok(Stopped),
-        (Stopped | Running | Provisioning | Bootstrapping, DestroyRequested) => Ok(Stopping),
+        (Running, UpRequested)
+        | (Running, NetworkReady)
+        | (Running, ComponentsStarted)
+        | (Running, ComponentFailed)
+        | (Running, SyncComplete)
+        | (Running, TeardownComplete) => Err(TransitionError::Invalid {
+            from: current,
+            event,
+        }),
+        (Stopped | Starting | Running | Provisioning | Bootstrapping, DestroyRequested) => {
+            Ok(Stopping)
+        }
         (Stopping, TeardownComplete) => Ok(Stopped),
-        _ => Err(TransitionError::Invalid {
+        (Stopping, UpRequested)
+        | (Stopping, NetworkReady)
+        | (Stopping, ComponentsStarted)
+        | (Stopping, ComponentFailed)
+        | (Stopping, SyncComplete)
+        | (Stopping, DetachRequested)
+        | (Stopping, DestroyRequested) => Err(TransitionError::Invalid {
             from: current,
             event,
         }),

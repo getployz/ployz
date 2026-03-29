@@ -6,7 +6,6 @@ use std::{fs, io};
 pub const DEFAULT_GOSSIP_PORT: u16 = 51001;
 pub const DEFAULT_API_PORT: u16 = 51002;
 
-/// Filesystem paths for a Corrosion data directory.
 #[derive(Debug, Clone)]
 pub struct Paths {
     pub dir: PathBuf,
@@ -17,7 +16,6 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// Derive all paths from a root data directory.
     #[must_use]
     pub fn new(data_dir: &Path) -> Self {
         let dir = data_dir.join("corrosion");
@@ -31,19 +29,16 @@ impl Paths {
     }
 }
 
-/// Default gossip address (`0.0.0.0:51001`).
 #[must_use]
 pub fn default_gossip_addr() -> SocketAddr {
     SocketAddr::from(([0, 0, 0, 0], DEFAULT_GOSSIP_PORT))
 }
 
-/// Default API address (`0.0.0.0:51002`).
 #[must_use]
 pub fn default_api_addr() -> SocketAddr {
     SocketAddr::from(([0, 0, 0, 0], DEFAULT_API_PORT))
 }
 
-/// Corrosion TOML configuration.
 #[derive(Debug, Serialize)]
 struct Config {
     db: DbConfig,
@@ -77,8 +72,6 @@ struct AdminConfig {
     path: String,
 }
 
-/// Derive a deterministic u16 member_id from a network ID string.
-/// Uses FNV-style hashing to map to u16 space.
 fn network_id_to_member_id(network_id: &str) -> u16 {
     let mut hash: u32 = 0x811c_9dc5;
     for byte in network_id.as_bytes() {
@@ -88,11 +81,6 @@ fn network_id_to_member_id(network_id: &str) -> u16 {
     (hash & 0xFFFF) as u16
 }
 
-/// Write `config.toml` and `schema.sql` to disk.
-///
-/// `content_paths` controls what goes **inside** the generated config (may be
-/// container-internal paths in Docker mode).  `host_paths` is where the files
-/// are actually written on the host filesystem.
 pub fn write_config(
     content_paths: &Paths,
     host_paths: &Paths,

@@ -33,14 +33,14 @@ checksum_file() {
   exit 1
 }
 
-version_file="${ROOT_DIR}/.ebpf-version"
+version_file="${ROOT_DIR}/.release-version"
 if [[ ! -f "${version_file}" ]]; then
   echo "missing ${version_file}" >&2
   exit 1
 fi
 version="$(tr -d '[:space:]' < "${version_file}")"
 if [[ -z "${version}" ]]; then
-  echo "empty eBPF version in ${version_file}" >&2
+  echo "empty release version in ${version_file}" >&2
   exit 1
 fi
 
@@ -59,8 +59,12 @@ fi
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
 
-base_url="https://github.com/${REPO}/releases/download/ebpf-${version}"
-download "${base_url}/checksums.txt" "${tmp_dir}/checksums.txt"
+base_url="https://github.com/${REPO}/releases/download/${version}"
+if ! download "${base_url}/checksums.txt" "${tmp_dir}/checksums.txt"; then
+  legacy_base_url="https://github.com/${REPO}/releases/download/ebpf-${version}"
+  download "${legacy_base_url}/checksums.txt" "${tmp_dir}/checksums.txt"
+  base_url="${legacy_base_url}"
+fi
 download "${base_url}/ployz-ebpf-tc" "${tmp_dir}/ployz-ebpf-tc"
 
 expected="$(awk '$2 == "dist/ployz-ebpf-tc" || $2 == "ployz-ebpf-tc" { print $1; exit }' "${tmp_dir}/checksums.txt")"

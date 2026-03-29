@@ -110,6 +110,7 @@ fn format_debug_tick_task(task: DebugTickTask) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::DaemonRuntimeConfig;
     use crate::mesh_state::network::DEFAULT_CLUSTER_CIDR;
     use ployz_api::DebugTickTask;
     use ployz_runtime_api::Identity;
@@ -119,11 +120,13 @@ mod tests {
         let mut state = DaemonState::new_for_tests(
             &std::env::temp_dir().join("ployz-debug-tick-no-mesh"),
             Identity::generate(ployz_types::model::MachineId("self".into()), [1; 32]),
-            DEFAULT_CLUSTER_CIDR.into(),
-            24,
-            4317,
-            "127.0.0.1:0".into(),
-            1,
+            DaemonRuntimeConfig {
+                cluster_cidr: DEFAULT_CLUSTER_CIDR.into(),
+                subnet_prefix_len: 24,
+                remote_control_port: 4317,
+                gateway_listen_addr: "127.0.0.1:0".into(),
+                gateway_threads: 1,
+            },
         );
 
         let response = state.handle_debug_tick(DebugTickTask::All, 1).await;

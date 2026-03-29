@@ -4,13 +4,14 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+ebpf-native = ["dep:aya"]
+
 [dependencies]
-ployz-api = { path = "../ployz-api" }
-ployz-orchestrator = { path = "../ployz-orchestrator" }
+ployz-config = { path = "../ployz-config" }
+ployz-ebpf-common = { path = "../ebpf-common" }
 ployz-runtime-api = { path = "../ployz-runtime-api" }
-ployz-store-api = { path = "../ployz-store-api" }
 ployz-types = { path = "../ployz-types" }
-ployz-corrosion = { path = "../ployz-corrosion" }
 tokio = { workspace = true, features = ["process", "fs"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
@@ -36,6 +37,10 @@ defguard_boringtun = "0.6"
 hostname = "0.4.2"
 if-addrs = "0.13"
 ed25519-dalek = "2"
+
+[dependencies.aya]
+version = "0.13"
+optional = true
 
 [lints.clippy]
 indexing_slicing = "warn"

@@ -1,4 +1,3 @@
-use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::net::{SocketAddr, SocketAddrV4};
 
@@ -183,14 +182,14 @@ pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> 
         for (index, route) in spec.routes.iter().enumerate() {
             match route {
                 RouteSpec::Http(route) => {
-                    let hostnames = route
+                    let hostnames: Vec<_> = route
                         .hostnames
                         .iter()
                         .map(|hostname| normalize_request_host(hostname))
                         .filter(|hostname| !hostname.is_empty())
                         .collect::<BTreeSet<_>>()
                         .into_iter()
-                        .collect::<Vec<_>>();
+                        .collect();
                     http_routes.push(HttpRouteView {
                         route_id: format!("http:{}:{}:{}", revision.namespace, spec.name, index),
                         namespace: revision.namespace.clone(),
@@ -223,16 +222,20 @@ pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> 
 
     validate_http_conflicts(&http_routes)?;
     validate_tcp_conflicts(&tcp_routes)?;
-    http_routes.sort_by_key(|route| {
-        (
-            route.hostnames.is_empty(),
-            Reverse(route.path_prefix.len()),
-            route.namespace.0.clone(),
-            route.service.clone(),
-            route.route_id.clone(),
-        )
+    http_routes.sort_by(|a, b| {
+        a.hostnames
+            .is_empty()
+            .cmp(&b.hostnames.is_empty())
+            .then_with(|| b.path_prefix.len().cmp(&a.path_prefix.len()))
+            .then_with(|| a.namespace.0.cmp(&b.namespace.0))
+            .then_with(|| a.service.cmp(&b.service))
+            .then_with(|| a.route_id.cmp(&b.route_id))
     });
-    tcp_routes.sort_by_key(|route| (route.listen_port, route.route_id.clone()));
+    tcp_routes.sort_by(|a, b| {
+        a.listen_port
+            .cmp(&b.listen_port)
+            .then_with(|| a.route_id.cmp(&b.route_id))
+    });
 
     Ok(GatewaySnapshot {
         http_routes,
@@ -280,12 +283,12 @@ fn routable_backends_by_port(
         }
     }
     for values in backends.values_mut() {
-        values.sort_by_key(|backend| {
-            (
-                backend.machine_id.0.clone(),
-                backend.instance_id.0.clone(),
-                backend.address,
-            )
+        values.sort_by(|a, b| {
+            a.machine_id
+                .0
+                .cmp(&b.machine_id.0)
+                .then_with(|| a.instance_id.0.cmp(&b.instance_id.0))
+                .then_with(|| a.address.cmp(&b.address))
         });
     }
     backends
@@ -335,39 +338,41 @@ fn allowed_revision_hashes(release: &ServiceRelease) -> HashSet<String> {
 }
 
 fn validate_http_conflicts(routes: &[HttpRouteView]) -> Result<(), ProjectionError> {
-    let mut seen = HashMap::new();
+    let mut seen: HashMap<(&str, &str), &str> = HashMap::new();
+    let wildcard = ["*".to_string()];
     for route in routes {
         let hosts = if route.hostnames.is_empty() {
-            vec!["*".to_string()]
+            wildcard.as_slice()
         } else {
-            route.hostnames.clone()
+            &route.hostnames
         };
         for host in hosts {
-            let path_prefix = route.path_prefix.clone();
-            let key = (host.clone(), path_prefix.clone());
-            if let Some(existing) = seen.insert(key, route.route_id.clone()) {
+            let key = (host.as_str(), route.path_prefix.as_str());
+            if let Some(&existing) = seen.get(&key) {
                 return Err(ProjectionError::HttpRouteConflict {
-                    left: existing,
+                    left: existing.to_string(),
                     right: route.route_id.clone(),
-                    host,
-                    path_prefix,
+                    host: host.clone(),
+                    path_prefix: route.path_prefix.clone(),
                 });
             }
+            seen.insert(key, &route.route_id);
         }
     }
     Ok(())
 }
 
 fn validate_tcp_conflicts(routes: &[TcpRouteView]) -> Result<(), ProjectionError> {
-    let mut seen = HashMap::new();
+    let mut seen: HashMap<u16, &str> = HashMap::new();
     for route in routes {
-        if let Some(existing) = seen.insert(route.listen_port, route.route_id.clone()) {
+        if let Some(&existing) = seen.get(&route.listen_port) {
             return Err(ProjectionError::TcpRouteConflict {
-                left: existing,
+                left: existing.to_string(),
                 right: route.route_id.clone(),
                 listen_port: route.listen_port,
             });
         }
+        seen.insert(route.listen_port, &route.route_id);
     }
     Ok(())
 }

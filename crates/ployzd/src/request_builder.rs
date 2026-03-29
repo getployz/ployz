@@ -1,19 +1,37 @@
-use crate::cli_io::{read_optional_text_file, read_stdin_string, read_text_source, request_daemon};
+use crate::cli_io::{read_optional_text_file, read_stdin_string, read_text_source};
 use crate::{
     CliError, Command, DebugAction, DeployAction, DeployCommand, DeployManifestArgs,
     DeployServiceArgs, InstallSourceArg, MachineAction, MachineInviteAction,
     MachineOperationAction, MeshAction, Result, RuntimeTargetArg, ServiceModeArg,
 };
 use ployz_api::{
-    DaemonRequest, DeployOptions, InstallSource as MachineInstallSource, MachineAddOptions,
-    MachineInstallOptions,
+    BootstrapWaitMode, DaemonRequest, DeployOptions, InstallSource as MachineInstallSource,
+    MachineAddOptions, MachineInstallOptions, MachineRemoveMode, MeshReadyOutput,
 };
-use ployz_sdk::Transport;
+use ployz_sdk::{DaemonClient, Transport};
 use ployz_types::spec::{
     ContainerSpec, DeployManifest, NetworkMode, Placement, PortProtocol, PublishedPort, PullPolicy,
     Resources, RestartPolicy, RolloutStrategy, ServicePort, ServiceSpec, VolumeMount, VolumeSource,
 };
 use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManifestRequestMode {
+    Preview,
+    Apply,
+}
+
+pub(crate) struct ServiceSpecArgs<'a> {
+    pub(crate) image: &'a str,
+    pub(crate) name: Option<&'a str>,
+    pub(crate) publish: &'a [String],
+    pub(crate) env: &'a [String],
+    pub(crate) volume: &'a [String],
+    pub(crate) network: &'a str,
+    pub(crate) pull: bool,
+    pub(crate) restart: &'a str,
+    pub(crate) command: &'a [String],
+}
 
 pub(crate) async fn build_request<T: Transport>(
     command: Command,
@@ -51,20 +69,25 @@ async fn build_deploy_request<T: Transport>(
     socket: &str,
 ) -> Result<DaemonRequest> {
     match command.action {
-        Some(DeployAction::Preview(args)) => build_manifest_request(args, true),
+        Some(DeployAction::Preview(args)) => {
+            build_manifest_request(args, ManifestRequestMode::Preview)
+        }
         Some(DeployAction::Service(args)) => {
             build_deploy_service_request(args, transport, socket).await
         }
-        None => build_manifest_request(command.manifest, false),
+        None => build_manifest_request(command.manifest, ManifestRequestMode::Apply),
     }
 }
 
-fn build_manifest_request(args: DeployManifestArgs, force_preview: bool) -> Result<DaemonRequest> {
+fn build_manifest_request(
+    args: DeployManifestArgs,
+    mode: ManifestRequestMode,
+) -> Result<DaemonRequest> {
     let file = required_value(args.file, "deploy requires --file")?;
     let manifest_json = read_text_source("deploy manifest", &file)?;
     let options = DeployOptions::default();
 
-    if force_preview || args.dry_run {
+    if mode == ManifestRequestMode::Preview || args.dry_run {
         Ok(DaemonRequest::DeployPreview {
             manifest_json,
             options,
@@ -83,17 +106,17 @@ async fn build_deploy_service_request<T: Transport>(
     socket: &str,
 ) -> Result<DaemonRequest> {
     let mut manifest = export_namespace_manifest(transport, socket, &args.namespace).await?;
-    let spec = build_service_spec(
-        &args.image,
-        Some(args.name.as_str()),
-        &args.publish,
-        &args.env,
-        &args.volume,
-        &args.network,
-        args.pull,
-        &args.restart,
-        &args.command,
-    );
+    let spec = build_service_spec(ServiceSpecArgs {
+        image: &args.image,
+        name: Some(args.name.as_str()),
+        publish: &args.publish,
+        env: &args.env,
+        volume: &args.volume,
+        network: &args.network,
+        pull: args.pull,
+        restart: &args.restart,
+        command: &args.command,
+    });
     upsert_service_in_manifest(&mut manifest, spec);
     let manifest_json = encode_manifest_json(&manifest)?;
     let options = DeployOptions::default();
@@ -113,30 +136,13 @@ async fn build_deploy_service_request<T: Transport>(
 
 async fn export_namespace_manifest<T: Transport>(
     transport: &T,
-    socket: &str,
+    _socket: &str,
     namespace: &str,
 ) -> Result<DeployManifest> {
-    let response = request_daemon(
-        transport,
-        socket,
-        DaemonRequest::DeployExport {
-            namespace: namespace.to_string(),
-        },
-    )
-    .await?;
-
-    if !response.ok {
-        return Err(CliError::Daemon {
-            code: response.code,
-            message: response.message,
-        });
-    }
-
-    serde_json::from_str(&response.message).map_err(|error| {
-        CliError::Serialize(format!(
-            "failed to decode exported namespace manifest: {error}"
-        ))
-    })
+    DaemonClient::new(transport)
+        .deploy_export_manifest(namespace)
+        .await
+        .map_err(|error| CliError::Serialize(format!("failed to export namespace manifest: {error}")))
 }
 
 pub(crate) fn upsert_service_in_manifest(manifest: &mut DeployManifest, spec: ServiceSpec) {
@@ -165,7 +171,13 @@ fn build_mesh_request(action: MeshAction) -> Result<DaemonRequest> {
         MeshAction::Join { token, token_stdin } => Ok(DaemonRequest::MeshJoin {
             token: string_arg_or_stdin("mesh join token", "--token-stdin", token, token_stdin)?,
         }),
-        MeshAction::Ready { json } => Ok(DaemonRequest::MeshReady { json }),
+        MeshAction::Ready { json } => Ok(DaemonRequest::MeshReady {
+            output: if json {
+                MeshReadyOutput::Json
+            } else {
+                MeshReadyOutput::Text
+            },
+        }),
         MeshAction::Create { network } => Ok(DaemonRequest::MeshCreate { network }),
         MeshAction::Init {
             network,
@@ -178,7 +190,11 @@ fn build_mesh_request(action: MeshAction) -> Result<DaemonRequest> {
             skip_bootstrap_wait,
         } => Ok(DaemonRequest::MeshUp {
             network,
-            skip_bootstrap_wait,
+            bootstrap_wait: if skip_bootstrap_wait {
+                BootstrapWaitMode::Skip
+            } else {
+                BootstrapWaitMode::Wait
+            },
         }),
         MeshAction::Down => Ok(DaemonRequest::MeshDown),
         MeshAction::Destroy {
@@ -252,7 +268,14 @@ pub(crate) fn build_machine_request(action: MachineAction) -> Result<DaemonReque
             };
             Ok(DaemonRequest::MachineAdd { targets, options })
         }
-        MachineAction::Rm { id, force } => Ok(DaemonRequest::MachineRemove { id, force }),
+        MachineAction::Rm { id, force } => Ok(DaemonRequest::MachineRemove {
+            id,
+            mode: if force {
+                MachineRemoveMode::Force
+            } else {
+                MachineRemoveMode::DisabledOnly
+            },
+        }),
         MachineAction::Invite { action } => match action {
             MachineInviteAction::Create { ttl_secs } => {
                 Ok(DaemonRequest::MachineInviteCreate { ttl_secs })
@@ -325,18 +348,19 @@ fn encode_manifest_json(manifest: &DeployManifest) -> Result<String> {
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn build_service_spec(
-    image: &str,
-    name: Option<&str>,
-    publish: &[String],
-    env: &[String],
-    volume: &[String],
-    network: &str,
-    pull: bool,
-    restart: &str,
-    command: &[String],
-) -> ServiceSpec {
+pub(crate) fn build_service_spec(args: ServiceSpecArgs<'_>) -> ServiceSpec {
+    let ServiceSpecArgs {
+        image,
+        name,
+        publish,
+        env,
+        volume,
+        network,
+        pull,
+        restart,
+        command,
+    } = args;
+
     let service_name = match name {
         Some(name) => name.to_string(),
         None => {
@@ -449,12 +473,19 @@ pub(crate) fn build_service_spec(
         rollout: RolloutStrategy::Recreate,
         labels: BTreeMap::new(),
         stop_grace_period: None,
-        restart: match restart {
-            "always" => RestartPolicy::Always,
-            "on-failure" => RestartPolicy::OnFailure,
-            "no" => RestartPolicy::No,
-            "unless-stopped" => RestartPolicy::UnlessStopped,
-            _ => RestartPolicy::UnlessStopped,
-        },
+        restart: parse_restart_policy(restart),
+    }
+}
+
+fn parse_restart_policy(restart: &str) -> RestartPolicy {
+    match restart {
+        "always" => RestartPolicy::Always,
+        "on-failure" => RestartPolicy::OnFailure,
+        "no" => RestartPolicy::No,
+        "unless-stopped" => RestartPolicy::UnlessStopped,
+        value => {
+            eprintln!("warning: unknown restart policy '{value}', defaulting to unless-stopped");
+            RestartPolicy::UnlessStopped
+        }
     }
 }

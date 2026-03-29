@@ -1,8 +1,8 @@
 use crate::daemon::DaemonState;
-use ployz_api::{DaemonPayload, DaemonResponse, MachineRemovePayload};
+use crate::daemon::store::StoreDriver;
+use ployz_api::{DaemonPayload, DaemonResponse, MachineRemoveMode, MachineRemovePayload};
 use ployz_orchestrator::machine_liveness::{MachineLiveness, machine_liveness};
 use ployz_store_api::MachineStore;
-use ployz_store_api::StoreDriver;
 use ployz_types::model::{MachineId, MachineRecord, Participation};
 use ployz_types::time::now_unix_secs;
 
@@ -19,7 +19,7 @@ impl DaemonState {
             None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
         };
 
-        let report = match machine_list_report(active.mesh.store.clone()).await {
+        let report = match machine_list_report(active.store.clone()).await {
             Ok(report) => report,
             Err(err) => return self.err("LIST_FAILED", err),
         };
@@ -36,14 +36,18 @@ impl DaemonState {
         )
     }
 
-    pub(crate) async fn handle_machine_remove(&self, id: &str, force: bool) -> DaemonResponse {
+    pub(crate) async fn handle_machine_remove(
+        &self,
+        id: &str,
+        mode: MachineRemoveMode,
+    ) -> DaemonResponse {
         let active = match self.active.as_ref() {
             Some(active) => active,
             None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
         };
 
         let machine_id = MachineId(id.to_string());
-        let record = match find_machine_record(&active.mesh.store, &machine_id).await {
+        let record = match find_machine_record(&active.store, &machine_id).await {
             Ok(Some(record)) => record,
             Ok(None) => {
                 return self.err("MACHINE_NOT_FOUND", format!("machine '{id}' not found"));
@@ -53,7 +57,7 @@ impl DaemonState {
             }
         };
 
-        if !force && record.participation != Participation::Disabled {
+        if mode != MachineRemoveMode::Force && record.participation != Participation::Disabled {
             return self.err(
                 "MACHINE_NOT_DISABLED",
                 format!(
@@ -63,12 +67,12 @@ impl DaemonState {
             );
         }
 
-        match active.mesh.store.delete_machine(&machine_id).await {
+        match active.store.delete_machine(&machine_id).await {
             Ok(()) => self.ok_with_payload(
                 format!("machine '{id}' removed"),
                 Some(DaemonPayload::MachineRemove(MachineRemovePayload {
                     id: id.to_string(),
-                    force,
+                    mode,
                 })),
             ),
             Err(err) => self.err("DELETE_FAILED", format!("failed to remove machine: {err}")),
@@ -81,7 +85,6 @@ impl DaemonState {
             .as_ref()
             .ok_or_else(|| "no running network".to_string())?;
         let machines = active
-            .mesh
             .store
             .list_machines()
             .await

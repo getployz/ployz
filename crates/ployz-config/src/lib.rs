@@ -1,3 +1,5 @@
+pub mod corrosion;
+
 use directories::{BaseDirs, ProjectDirs};
 use figment::Figment;
 use figment::providers::{Env, Format, Serialized, Toml};
@@ -35,7 +37,13 @@ pub struct HostPathsContext {
 #[derive(Debug, Error)]
 pub enum ConfigLoadError {
     #[error("failed to load configuration: {0}")]
-    Load(#[from] figment::Error),
+    Load(Box<figment::Error>),
+}
+
+impl From<figment::Error> for ConfigLoadError {
+    fn from(error: figment::Error) -> Self {
+        Self::Load(Box::new(error))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -180,7 +188,6 @@ pub fn read_active_network(data_dir: &Path) -> Option<String> {
         .filter(|content| !content.is_empty())
 }
 
-#[allow(clippy::result_large_err)]
 pub fn load_client_config(
     cli_config_path: Option<PathBuf>,
     cli_socket: Option<String>,
@@ -194,7 +201,6 @@ pub fn load_client_config(
         .map_err(ConfigLoadError::from)
 }
 
-#[allow(clippy::result_large_err)]
 pub fn load_daemon_config(
     cli_config_path: Option<PathBuf>,
     cli_data_dir: Option<PathBuf>,
@@ -258,13 +264,6 @@ fn home_dir() -> PathBuf {
 mod tests {
     use super::*;
 
-    fn context(os: Os, is_root: bool) -> HostPathsContext {
-        HostPathsContext {
-            os,
-            is_root,
-        }
-    }
-
     #[test]
     fn daemon_config_reads_builtin_images_manifest_from_env() {
         let manifest_path = std::env::temp_dir().join("ployz-builtins-config-test.toml");
@@ -272,8 +271,17 @@ mod tests {
             std::env::set_var("PLOYZ_BUILTIN_IMAGES_MANIFEST", &manifest_path);
         }
 
-        let loaded = load_daemon_config(None, None, None, None, &context(Os::Darwin, false))
-            .expect("daemon config should load");
+        let loaded = load_daemon_config(
+            None,
+            None,
+            None,
+            None,
+            &HostPathsContext {
+                os: Os::Darwin,
+                is_root: false,
+            },
+        )
+        .expect("daemon config should load");
 
         assert_eq!(
             loaded.builtin_images_manifest.as_deref(),

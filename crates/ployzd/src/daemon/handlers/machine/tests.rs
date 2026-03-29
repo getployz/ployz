@@ -1,18 +1,21 @@
 use super::heal::plan_local_subnet_heal;
 use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
 use crate::daemon::ActiveMesh;
+use crate::daemon::DaemonRuntimeConfig;
 use crate::daemon::DaemonState;
 use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock};
 use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
 use ipnet::Ipv4Net;
+use crate::daemon::store::StoreDriver;
 use ployz_api::{DaemonPayload, DaemonResponse, MachineAddOptions, MeshSelfRecordPayload};
 use ployz_orchestrator::Mesh;
-use ployz_orchestrator::mesh::driver::WireguardDriver;
-use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
 use ployz_runtime_api::Identity;
+use ployz_runtime_api::{
+    MemoryServiceRuntime, MemoryWireGuard, ServiceHealth, StaticEndpointDiscovery,
+    WireguardDriver,
+};
 use ployz_store_api::MachineStore;
-use ployz_store_api::StoreDriver;
-use ployz_store_api::memory::{MemoryService, MemoryStore};
+use ployz_store_api::memory::MemoryStore;
 use ployz_types::model::{
     JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
 };
@@ -24,9 +27,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+#[derive(Clone, Copy)]
+enum MeshStartMode {
+    Stopped,
+    Started,
+}
+
 #[tokio::test]
 async fn machine_list_shows_disabled_explicitly() {
-    let (state, store, _) = make_state(false).await;
+    let (state, store, _) = make_state(MeshStartMode::Stopped).await;
     let disabled = test_machine_record(
         "peer-disabled",
         "10.210.1.0/24",
@@ -49,7 +58,7 @@ async fn machine_list_shows_disabled_explicitly() {
 
 #[tokio::test]
 async fn machine_list_shows_down_liveness() {
-    let (state, store, _) = make_state(false).await;
+    let (state, store, _) = make_state(MeshStartMode::Stopped).await;
     let mut down = test_machine_record(
         "peer-down",
         "10.210.1.0/24",
@@ -71,7 +80,7 @@ async fn machine_list_shows_down_liveness() {
 
 #[tokio::test]
 async fn machine_list_json_payload_contains_rows() {
-    let (state, _, _) = make_state(false).await;
+    let (state, _, _) = make_state(MeshStartMode::Stopped).await;
     let response = state.handle_machine_list().await;
     let Some(DaemonPayload::MachineList(payload)) = response.payload else {
         panic!("expected machine list payload");
@@ -82,7 +91,7 @@ async fn machine_list_json_payload_contains_rows() {
 
 #[tokio::test]
 async fn allocate_machine_subnets_returns_unique_values() {
-    let (state, store, _) = make_state(false).await;
+    let (state, store, _) = make_state(MeshStartMode::Stopped).await;
     store
         .upsert_self_machine(&test_machine_record(
             "peer-1",
@@ -228,7 +237,7 @@ fn plan_local_subnet_heal_is_noop_after_subnet_changes() {
 #[tokio::test]
 async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
     let _guard = test_ssh_env_lock().lock().await;
-    let (mut state, store, network) = make_state(true).await;
+    let (mut state, store, network) = make_state(MeshStartMode::Started).await;
     store
         .upsert_self_machine(&test_machine_record(
             "stale-peer",
@@ -307,7 +316,7 @@ async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
 #[tokio::test]
 async fn machine_add_accepts_running_joiner_before_full_sync() {
     let _guard = test_ssh_env_lock().lock().await;
-    let (mut state, store, network) = make_state(true).await;
+    let (mut state, store, network) = make_state(MeshStartMode::Started).await;
 
     let join_response = JoinResponse {
         machine_id: MachineId("joiner-2".into()),
@@ -370,7 +379,7 @@ async fn machine_add_accepts_running_joiner_before_full_sync() {
 
 #[tokio::test]
 async fn machine_remove_refuses_enabled_without_force() {
-    let (state, store, _) = make_state(false).await;
+    let (state, store, _) = make_state(MeshStartMode::Stopped).await;
     store
         .upsert_self_machine(&test_machine_record(
             "peer-1",
@@ -382,14 +391,16 @@ async fn machine_remove_refuses_enabled_without_force() {
         .await
         .expect("upsert peer");
 
-    let response = state.handle_machine_remove("peer-1", false).await;
+    let response = state
+        .handle_machine_remove("peer-1", ployz_api::MachineRemoveMode::DisabledOnly)
+        .await;
     assert!(!response.ok);
     assert!(response.message.contains("must be disabled"));
 }
 
 #[tokio::test]
 async fn machine_remove_deletes_disabled_record() {
-    let (state, store, _) = make_state(false).await;
+    let (state, store, _) = make_state(MeshStartMode::Stopped).await;
     store
         .upsert_self_machine(&test_machine_record(
             "peer-1",
@@ -401,7 +412,9 @@ async fn machine_remove_deletes_disabled_record() {
         .await
         .expect("upsert peer");
 
-    let response = state.handle_machine_remove("peer-1", false).await;
+    let response = state
+        .handle_machine_remove("peer-1", ployz_api::MachineRemoveMode::DisabledOnly)
+        .await;
     assert!(response.ok, "{}", response.message);
 
     let machines = store.list_machines().await.expect("list machines");
@@ -432,7 +445,7 @@ async fn memory_mode_local_subnet_heal_updates_local_config_and_store() {
         .await
         .expect("upsert peer");
 
-    let mut state = make_state_with_store(
+    let (mut state, _service) = make_state_with_store(
         Identity::generate(MachineId("peer".into()), [3; 32]),
         "10.210.1.0/24",
         store.clone(),
@@ -522,7 +535,7 @@ async fn local_subnet_heal_skips_when_store_unhealthy() {
         .await
         .expect("upsert peer");
 
-    let mut state = make_state_with_store(
+    let (mut state, service) = make_state_with_store(
         Identity::generate(MachineId("peer".into()), [3; 32]),
         "10.210.1.0/24",
         store,
@@ -537,15 +550,7 @@ async fn local_subnet_heal_skips_when_store_unhealthy() {
         .await
         .expect("mesh up");
 
-    let service = state
-        .active
-        .as_ref()
-        .expect("active")
-        .mesh
-        .store
-        .memory_service()
-        .expect("expected memory store");
-    service.set_healthy(false);
+    service.set_healthy(ServiceHealth::Unhealthy);
 
     state.heal_local_subnet_conflict_if_needed().await;
 
@@ -583,7 +588,7 @@ async fn local_subnet_heal_skips_when_mesh_not_running() {
         .await
         .expect("upsert peer");
 
-    let mut state = make_state_with_store(
+    let (mut state, _service) = make_state_with_store(
         Identity::generate(MachineId("peer".into()), [3; 32]),
         "10.210.1.0/24",
         store,
@@ -602,7 +607,7 @@ async fn local_subnet_heal_skips_when_mesh_not_running() {
 
 #[tokio::test]
 async fn interrupted_machine_add_is_marked_interrupted_on_startup() {
-    let (state, _, _) = make_state(false).await;
+    let (state, _, _) = make_state(MeshStartMode::Stopped).await;
     let store = state.machine_operation_store();
     let mut operation = store
         .begin(
@@ -639,7 +644,9 @@ async fn interrupted_machine_add_is_marked_interrupted_on_startup() {
     );
 }
 
-async fn make_state(start_mesh: bool) -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {
+async fn make_state(
+    start_mode: MeshStartMode,
+) -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {
     let identity = Identity::generate(MachineId("founder".into()), [1; 32]);
     let founder_subnet: Ipv4Net = "10.210.0.0/24".parse().expect("valid subnet");
     let config = NetworkConfig::new(
@@ -650,7 +657,7 @@ async fn make_state(start_mesh: bool) -> (DaemonState, Arc<MemoryStore>, Arc<Mem
     );
 
     let store = Arc::new(MemoryStore::new());
-    let service = Arc::new(MemoryService::new());
+    let service = Arc::new(MemoryServiceRuntime::new());
     let network = Arc::new(MemoryWireGuard::new());
     let founder_record = test_machine_record(
         "founder",
@@ -666,27 +673,34 @@ async fn make_state(start_mesh: bool) -> (DaemonState, Arc<MemoryStore>, Arc<Mem
 
     let mut mesh = Mesh::new(
         WireguardDriver::memory_with(network.clone()),
-        StoreDriver::memory_with(store.clone(), service),
+        store.clone(),
+        store.clone(),
+        service,
+        None,
+        Arc::new(StaticEndpointDiscovery::empty()),
         None,
         identity.machine_id.clone(),
         51820,
     );
-    if start_mesh {
+    if matches!(start_mode, MeshStartMode::Started) {
         mesh.up().await.expect("mesh up");
     }
 
     let mut state = DaemonState::new_for_tests(
         &unique_temp_dir("ployz-machine-state"),
         identity,
-        DEFAULT_CLUSTER_CIDR.into(),
-        24,
-        4317,
-        "127.0.0.1:0".into(),
-        1,
+        DaemonRuntimeConfig {
+            cluster_cidr: DEFAULT_CLUSTER_CIDR.into(),
+            subnet_prefix_len: 24,
+            remote_control_port: 4317,
+            gateway_listen_addr: "127.0.0.1:0".into(),
+            gateway_threads: 1,
+        },
     );
     state.active = Some(ActiveMesh {
         config,
         mesh,
+        store: StoreDriver::memory_with(store.clone()),
         remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
@@ -699,7 +713,7 @@ async fn make_state_with_store(
     identity: Identity,
     subnet: &str,
     store: Arc<MemoryStore>,
-) -> DaemonState {
+) -> (DaemonState, Arc<MemoryServiceRuntime>) {
     let subnet: Ipv4Net = subnet.parse().expect("valid subnet");
     let data_dir = unique_temp_dir("ployz-machine-heal-state");
     let config = NetworkConfig::new(
@@ -712,9 +726,14 @@ async fn make_state_with_store(
         .save(&NetworkConfig::path(&data_dir, "alpha"))
         .expect("save config");
 
+    let service = Arc::new(MemoryServiceRuntime::new());
     let mesh = Mesh::new(
         WireguardDriver::memory_with(Arc::new(MemoryWireGuard::new())),
-        StoreDriver::memory_with(store, Arc::new(MemoryService::new())),
+        store.clone(),
+        store.clone(),
+        service.clone(),
+        None,
+        Arc::new(StaticEndpointDiscovery::empty()),
         None,
         identity.machine_id.clone(),
         51820,
@@ -723,20 +742,23 @@ async fn make_state_with_store(
     let mut state = DaemonState::new_for_tests(
         &data_dir,
         identity,
-        DEFAULT_CLUSTER_CIDR.into(),
-        24,
-        4317,
-        "127.0.0.1:0".into(),
-        1,
+        DaemonRuntimeConfig {
+            cluster_cidr: DEFAULT_CLUSTER_CIDR.into(),
+            subnet_prefix_len: 24,
+            remote_control_port: 4317,
+            gateway_listen_addr: "127.0.0.1:0".into(),
+            gateway_threads: 1,
+        },
     );
     state.active = Some(ActiveMesh {
         config,
         mesh,
+        store: StoreDriver::memory_with(store),
         remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
     });
-    state
+    (state, service)
 }
 
 async fn teardown_state(state: &mut DaemonState) {

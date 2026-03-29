@@ -1,6 +1,5 @@
-use crate::mesh::MeshNetwork;
-use crate::mesh::driver::WireguardDriver;
 use crate::mesh::tasks::{SelfRecordMutation, apply_self_record_mutation};
+use ployz_runtime_api::{MeshNetwork, WireguardDriver};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -72,15 +71,13 @@ async fn publish_liveness(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mesh::driver::WireguardDriver;
     use crate::mesh::tasks::run_self_record_writer_task;
-    use crate::mesh::wireguard::MemoryWireGuard;
     use crate::model::{
         MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
     };
+    use ployz_runtime_api::MemoryWireGuard;
     use ployz_store_api::MachineStore;
-    use ployz_store_api::StoreDriver;
-    use ployz_store_api::memory::{MemoryService, MemoryStore};
+    use ployz_store_api::memory::MemoryStore;
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
     use tokio::sync::RwLock;
@@ -106,16 +103,15 @@ mod tests {
     async fn self_liveness_tick_now_runs_one_sample_and_acknowledges() {
         let authoritative_self = Arc::new(RwLock::new(test_record()));
         let store = Arc::new(MemoryStore::new());
-        let service = Arc::new(MemoryService::new());
-        let store_driver = StoreDriver::memory_with(store.clone(), service);
         let (self_record_tx, self_record_rx) = mpsc::channel(8);
         let writer_cancel = CancellationToken::new();
         let writer_task_cancel = writer_cancel.clone();
         let writer_authoritative_self = authoritative_self.clone();
+        let writer_store = store.clone();
         let writer_handle = tokio::spawn(async move {
             run_self_record_writer_task(
                 writer_authoritative_self,
-                store_driver,
+                writer_store,
                 self_record_rx,
                 writer_task_cancel,
             )
@@ -170,16 +166,15 @@ mod tests {
             ..test_record()
         }));
         let store = Arc::new(MemoryStore::new());
-        let service = Arc::new(MemoryService::new());
-        let store_driver = StoreDriver::memory_with(store.clone(), service);
         let (self_record_tx, self_record_rx) = mpsc::channel(8);
         let writer_cancel = CancellationToken::new();
         let writer_task_cancel = writer_cancel.clone();
         let writer_authoritative_self = authoritative_self.clone();
+        let writer_store = store.clone();
         let writer_handle = tokio::spawn(async move {
             run_self_record_writer_task(
                 writer_authoritative_self,
-                store_driver,
+                writer_store,
                 self_record_rx,
                 writer_task_cancel,
             )

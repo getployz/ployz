@@ -1,6 +1,38 @@
+use bollard::Docker;
+use bollard::query_parameters::CreateImageOptionsBuilder;
+use futures_util::StreamExt;
+use tracing::{info, warn};
+
 pub struct DockerImageRef<'a> {
     pub from_image: &'a str,
     pub tag: Option<&'a str>,
+}
+
+/// Pull a Docker image, logging progress and falling back to a cached
+/// version if the pull fails. This is the shared implementation used by
+/// both `ContainerEngine::pull_image` and the WireGuard Docker driver.
+pub async fn pull_docker_image(docker: &Docker, image: &str) {
+    let parsed = parse_docker_image_ref(image);
+    let builder = CreateImageOptionsBuilder::default().from_image(parsed.from_image);
+    let options = match parsed.tag {
+        Some(tag) => builder.tag(tag).build(),
+        None => builder.build(),
+    };
+
+    let mut stream = docker.create_image(Some(options), None, None);
+    while let Some(result) = stream.next().await {
+        match result {
+            Ok(info) => {
+                if let Some(status) = info.status {
+                    info!(image = %image, %status, "pulling");
+                }
+            }
+            Err(e) => {
+                warn!(?e, image = %image, "pull failed, trying cached image");
+                break;
+            }
+        }
+    }
 }
 
 #[must_use]

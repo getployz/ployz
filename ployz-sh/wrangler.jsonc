@@ -1,0 +1,7 @@
+{
+  "name": "ployz-sh",
+  "account_id": "793e01282306ab4668c9f0dba7d4cea4",
+  "main": "index.ts",
+  "compatibility_date": "2026-03-29",
+  "workers_dev": false
+}

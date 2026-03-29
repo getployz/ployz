@@ -83,9 +83,12 @@ pub fn run_server(
 // Standalone process entry point
 // ---------------------------------------------------------------------------
 
-pub fn run_gateway_process_with_store<S>(config: GatewayConfig, store: S) -> Result<(), GatewayError>
+pub fn run_gateway_process_with_store<S>(
+    config: GatewayConfig,
+    store: S,
+) -> Result<(), GatewayError>
 where
-    S: crate::sync::RoutingStore + Send + Sync + 'static,
+    S: ployz_store_api::RoutingStore + Send + Sync + 'static,
 {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

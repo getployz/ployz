@@ -1,6 +1,6 @@
 use crate::daemon::{ActiveMesh, DaemonState};
-use ployz_orchestrator::mesh::{DevicePeer, WireGuardDevice};
 use ployz_orchestrator::machine_liveness::{MachineLiveness, machine_liveness};
+use ployz_orchestrator::mesh::{DevicePeer, WireGuardDevice};
 use ployz_store_api::MachineStore;
 use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
 use ployz_types::time::now_unix_secs;
@@ -27,7 +27,7 @@ impl DaemonState {
             return self.err("NO_RUNNING_NETWORK", "no mesh running");
         };
 
-        let machines = match active.mesh.store.list_machines().await {
+        let machines = match active.store.list_machines().await {
             Ok(machines) => machines,
             Err(err) => return self.err("LIST_FAILED", format!("failed to list machines: {err}")),
         };
@@ -107,12 +107,12 @@ fn render_doctor_report(
     if !blocking_peers.is_empty() {
         lines.push(String::new());
         lines.push(String::from("blocking peers:"));
-        append_peer_section(&mut lines, &blocking_peers, false);
+        append_peer_section(&mut lines, &blocking_peers, CauseDisplay::Include);
     }
     if !all_peers.is_empty() {
         lines.push(String::new());
         lines.push(String::from("all peers:"));
-        append_peer_section(&mut lines, &all_peers, true);
+        append_peer_section(&mut lines, &all_peers, CauseDisplay::Omit);
     }
     lines.push(String::new());
     lines.push(format!(
@@ -127,7 +127,13 @@ fn render_doctor_report(
     lines.join("\n")
 }
 
-fn append_peer_section(lines: &mut Vec<String>, rows: &[&ParticipationRow], include_cause: bool) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CauseDisplay {
+    Include,
+    Omit,
+}
+
+fn append_peer_section(lines: &mut Vec<String>, rows: &[&ParticipationRow], cause: CauseDisplay) {
     let w_id = rows
         .iter()
         .map(|row| row.id.len())
@@ -160,7 +166,7 @@ fn append_peer_section(lines: &mut Vec<String>, rows: &[&ParticipationRow], incl
             row.wg_status(),
             row.probe_status(),
         );
-        if include_cause {
+        if cause == CauseDisplay::Omit {
             lines.push(base);
         } else {
             lines.push(format!("{base}  cause={}", row.cause()));
@@ -372,14 +378,16 @@ async fn probe_overlay_ip(overlay_ip: OverlayIp) -> Option<()> {
 mod tests {
     use super::*;
     use crate::daemon::ActiveMesh;
+    use crate::daemon::DaemonRuntimeConfig;
     use crate::mesh_state::network::NetworkConfig;
     use ployz_orchestrator::Mesh;
-    use ployz_orchestrator::mesh::DevicePeer;
-    use ployz_orchestrator::mesh::driver::WireguardDriver;
-    use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
     use ployz_runtime_api::Identity;
-    use ployz_store_api::StoreDriver;
-    use ployz_store_api::memory::{MemoryService, MemoryStore};
+    use ployz_runtime_api::{
+        DevicePeer, MemoryServiceRuntime, MemoryWireGuard, StaticEndpointDiscovery,
+        WireguardDriver,
+    };
+    use crate::daemon::store::StoreDriver;
+    use ployz_store_api::memory::MemoryStore;
     use ployz_types::model::{MachineId, MachineStatus, OverlayIp, Participation, PublicKey};
     use std::net::Ipv6Addr;
     use std::path::PathBuf;
@@ -513,7 +521,7 @@ mod tests {
             "10.210.3.0/24".parse().expect("valid subnet"),
         );
         let store = Arc::new(MemoryStore::new());
-        let service = Arc::new(MemoryService::new());
+        let service = Arc::new(MemoryServiceRuntime::new());
         let network = Arc::new(MemoryWireGuard::new());
 
         store
@@ -528,7 +536,11 @@ mod tests {
 
         let mesh = Mesh::new(
             WireguardDriver::memory_with(network.clone()),
-            StoreDriver::memory_with(store.clone(), service),
+            store.clone(),
+            store.clone(),
+            service,
+            None,
+            Arc::new(StaticEndpointDiscovery::empty()),
             None,
             identity.machine_id.clone(),
             51820,
@@ -537,15 +549,18 @@ mod tests {
         let mut state = DaemonState::new_for_tests(
             &unique_temp_dir("ployz-doctor-state"),
             identity,
-            String::from("10.210.0.0/16"),
-            24,
-            4317,
-            String::from("127.0.0.1:0"),
-            1,
+            DaemonRuntimeConfig {
+                cluster_cidr: String::from("10.210.0.0/16"),
+                subnet_prefix_len: 24,
+                remote_control_port: 4317,
+                gateway_listen_addr: String::from("127.0.0.1:0"),
+                gateway_threads: 1,
+            },
         );
         state.active = Some(ActiveMesh {
             config,
             mesh,
+            store: StoreDriver::memory_with(store.clone()),
             remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
@@ -585,11 +600,15 @@ mod tests {
             "10.210.3.0/24".parse().expect("valid subnet"),
         );
         let store = Arc::new(MemoryStore::new());
-        let service = Arc::new(MemoryService::new());
+        let service = Arc::new(MemoryServiceRuntime::new());
         let network = Arc::new(MemoryWireGuard::new());
         let mesh = Mesh::new(
             WireguardDriver::memory_with(network),
-            StoreDriver::memory_with(store, service),
+            store.clone(),
+            store.clone(),
+            service,
+            None,
+            Arc::new(StaticEndpointDiscovery::empty()),
             None,
             identity.machine_id,
             51820,
@@ -598,6 +617,7 @@ mod tests {
         ActiveMesh {
             config,
             mesh,
+            store: StoreDriver::memory_with(store),
             remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),

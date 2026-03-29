@@ -4,8 +4,7 @@ use bollard::models::{
     ContainerCreateBody, HostConfig, PortBinding, PortMap, RestartPolicy, RestartPolicyNameEnum,
 };
 use bollard::query_parameters::{
-    CreateContainerOptionsBuilder, CreateImageOptionsBuilder, RemoveContainerOptionsBuilder,
-    StopContainerOptionsBuilder,
+    CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
 use std::net::SocketAddr;
@@ -20,7 +19,7 @@ use std::net::Ipv4Addr;
 use crate::error::{Error, Result};
 use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
 use crate::model::{MachineRecord, OverlayIp, PrivateKey, PublicKey};
-use crate::runtime::parse_docker_image_ref;
+
 
 use super::PERSISTENT_KEEPALIVE_SECS;
 use super::bridge::{OutboundForward, OverlayBridge};
@@ -127,8 +126,7 @@ impl DockerWireGuardBuilder {
 
 impl DockerWireGuard {
     #[must_use]
-    #[allow(clippy::new_ret_no_self)]
-    pub fn new(
+    pub fn builder(
         container_name: &str,
         data_dir: &Path,
         private_key: PrivateKey,
@@ -147,27 +145,7 @@ impl DockerWireGuard {
     }
 
     async fn pull_image(&self) -> Result<()> {
-        let parsed = parse_docker_image_ref(&self.image);
-        let builder = CreateImageOptionsBuilder::default().from_image(parsed.from_image);
-        let options = match parsed.tag {
-            Some(tag) => builder.tag(tag).build(),
-            None => builder.build(),
-        };
-
-        let mut stream = self.docker.create_image(Some(options), None, None);
-        while let Some(result) = stream.next().await {
-            match result {
-                Ok(info) => {
-                    if let Some(status) = info.status {
-                        info!(image = %self.image, %status, "pulling");
-                    }
-                }
-                Err(e) => {
-                    warn!(?e, image = %self.image, "pull failed, trying cached image");
-                    break;
-                }
-            }
-        }
+        crate::runtime::pull_docker_image(&self.docker, &self.image).await;
         Ok(())
     }
 
@@ -464,6 +442,45 @@ pub(super) async fn docker_force_remove(docker: &Docker, container_name: &str) {
     }
 }
 
+/// Gracefully stop then remove a Docker container.
+/// Ignores 304 (already stopped) and 404 (already gone).
+///
+/// Shared between `DockerWireGuard::down()` and `WgSidecar::down()`.
+pub(super) async fn docker_graceful_remove(
+    docker: &Docker,
+    container_name: &str,
+    grace_secs: i32,
+) -> Result<()> {
+    let stop_opts = StopContainerOptionsBuilder::default()
+        .t(grace_secs)
+        .build();
+    match docker
+        .stop_container(container_name, Some(stop_opts))
+        .await
+    {
+        Ok(()) => {}
+        Err(bollard::errors::Error::DockerResponseServerError {
+            status_code: 304 | 404,
+            ..
+        }) => {}
+        Err(e) => return Err(Error::operation("docker stop", e.to_string())),
+    }
+
+    let remove_opts = RemoveContainerOptionsBuilder::default().build();
+    match docker
+        .remove_container(container_name, Some(remove_opts))
+        .await
+    {
+        Ok(()) => {}
+        Err(bollard::errors::Error::DockerResponseServerError {
+            status_code: 404, ..
+        }) => {}
+        Err(e) => return Err(Error::operation("docker remove", e.to_string())),
+    }
+
+    Ok(())
+}
+
 /// Execute a command inside a Docker container and capture stdout.
 ///
 /// Shared between `DockerWireGuard` and `WgSidecar` to avoid duplicating
@@ -683,35 +700,7 @@ impl MeshNetwork for DockerWireGuard {
         *self.bridge_overlay_ip.lock().await = None;
         self.extra_peers.lock().await.clear();
 
-        let stop_opts = StopContainerOptionsBuilder::default().t(10).build();
-
-        match self
-            .docker
-            .stop_container(&self.container_name, Some(stop_opts))
-            .await
-        {
-            Ok(()) => {}
-            Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 304 | 404,
-                ..
-            }) => {}
-            Err(e) => return Err(Error::operation("docker stop", e.to_string())),
-        }
-
-        let remove_opts = RemoveContainerOptionsBuilder::default().build();
-
-        match self
-            .docker
-            .remove_container(&self.container_name, Some(remove_opts))
-            .await
-        {
-            Ok(()) => {}
-            Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 404, ..
-            }) => {}
-            Err(e) => return Err(Error::operation("docker remove", e.to_string())),
-        }
-
+        docker_graceful_remove(&self.docker, &self.container_name, 10).await?;
         info!(name = %self.container_name, "wireguard container stopped");
         Ok(())
     }

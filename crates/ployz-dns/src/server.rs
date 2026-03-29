@@ -15,7 +15,6 @@ use tracing::{info, trace, warn};
 use crate::config::{DnsConfig, DnsError};
 use crate::resolve::{ResolveResult, parse_query, resolve};
 use crate::snapshot::{SharedDnsSnapshot, project_dns};
-use crate::sync::DnsStore;
 
 // TTL 0: clients always re-query, ensuring they never route to a
 // drained or removed instance. The resolver is local and serves from
@@ -200,7 +199,7 @@ pub async fn run_dns_server(
 
 pub fn run_dns_process_with_store<S>(config: DnsConfig, store: S) -> Result<(), DnsError>
 where
-    S: DnsStore + Send + Sync + 'static,
+    S: ployz_store_api::RoutingStore + Send + Sync + 'static,
 {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -208,7 +207,10 @@ where
         .map_err(|err| DnsError::Runtime(err.to_string()))?;
 
     runtime.block_on(async {
-        let state = DnsStore::load_routing_state(&store).await?;
+        let state = store
+            .load_routing_state()
+            .await
+            .map_err(|err| DnsError::Store(err.to_string()))?;
         let initial_snapshot = project_dns(&state);
         let shared = SharedDnsSnapshot::new(initial_snapshot);
 

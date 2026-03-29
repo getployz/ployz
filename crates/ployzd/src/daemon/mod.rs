@@ -1,10 +1,13 @@
+pub(crate) mod deploy_control;
 pub mod handlers;
-mod runtime;
 mod setup;
+pub(crate) mod store;
 pub mod ssh;
 
 use std::path::{Path, PathBuf};
 
+use self::deploy_control::NamespaceLockManager;
+use self::store::StoreDriver;
 use crate::built_in_images::BuiltInImages;
 use crate::mesh_state::network::NetworkConfig;
 use crate::runtime_profile::RuntimeProfile;
@@ -13,14 +16,24 @@ use ployz_api::{DaemonPayload, DaemonResponse};
 use ployz_config::{RuntimeTarget, ServiceMode};
 use ployz_orchestrator::Mesh;
 use ployz_runtime_api::Identity;
-use ployz_runtime_api::{NamespaceLockManager, RuntimeHandle};
+use ployz_runtime_api::RuntimeHandle;
 
 pub struct ActiveMesh {
     pub config: NetworkConfig,
     pub mesh: Mesh,
+    pub store: StoreDriver,
     pub remote_control: Box<dyn RuntimeHandle>,
     pub gateway: Box<dyn RuntimeHandle>,
     pub dns: Box<dyn RuntimeHandle>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DaemonRuntimeConfig {
+    pub cluster_cidr: String,
+    pub subnet_prefix_len: u8,
+    pub remote_control_port: u16,
+    pub gateway_listen_addr: String,
+    pub gateway_threads: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -42,7 +55,7 @@ pub struct DaemonState {
     pub identity: Identity,
     pub runtime_target: RuntimeTarget,
     pub service_mode: ServiceMode,
-    runtime_profile: RuntimeProfile,
+    pub(crate) runtime_profile: RuntimeProfile,
     pub cluster_cidr: String,
     pub subnet_prefix_len: u8,
     pub remote_control_port: u16,
@@ -56,18 +69,13 @@ pub struct DaemonState {
 
 impl DaemonState {
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         data_dir: &Path,
         identity: Identity,
         runtime_target: RuntimeTarget,
         service_mode: ServiceMode,
         built_in_images: BuiltInImages,
-        cluster_cidr: String,
-        subnet_prefix_len: u8,
-        remote_control_port: u16,
-        gateway_listen_addr: String,
-        gateway_threads: usize,
+        runtime: DaemonRuntimeConfig,
     ) -> Self {
         let runtime_profile =
             RuntimeProfile::from_runtime(runtime_target, service_mode, built_in_images);
@@ -77,25 +85,16 @@ impl DaemonState {
             runtime_target,
             service_mode,
             runtime_profile,
-            cluster_cidr,
-            subnet_prefix_len,
-            remote_control_port,
-            gateway_listen_addr,
-            gateway_threads,
+            runtime,
         )
     }
 
     #[cfg(test)]
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
     pub fn new_for_tests(
         data_dir: &Path,
         identity: Identity,
-        cluster_cidr: String,
-        subnet_prefix_len: u8,
-        remote_control_port: u16,
-        gateway_listen_addr: String,
-        gateway_threads: usize,
+        runtime: DaemonRuntimeConfig,
     ) -> Self {
         Self::new_with_runtime_profile(
             data_dir,
@@ -103,28 +102,26 @@ impl DaemonState {
             RuntimeTarget::Host,
             ServiceMode::User,
             RuntimeProfile::memory_for_tests(),
-            cluster_cidr,
-            subnet_prefix_len,
-            remote_control_port,
-            gateway_listen_addr,
-            gateway_threads,
+            runtime,
         )
     }
 
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_with_runtime_profile(
         data_dir: &Path,
         identity: Identity,
         runtime_target: RuntimeTarget,
         service_mode: ServiceMode,
         runtime_profile: RuntimeProfile,
-        cluster_cidr: String,
-        subnet_prefix_len: u8,
-        remote_control_port: u16,
-        gateway_listen_addr: String,
-        gateway_threads: usize,
+        runtime: DaemonRuntimeConfig,
     ) -> Self {
+        let DaemonRuntimeConfig {
+            cluster_cidr,
+            subnet_prefix_len,
+            remote_control_port,
+            gateway_listen_addr,
+            gateway_threads,
+        } = runtime;
         Self {
             data_dir: data_dir.to_path_buf(),
             identity,

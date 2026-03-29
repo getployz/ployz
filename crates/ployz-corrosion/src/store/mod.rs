@@ -1,14 +1,17 @@
 use crate::admin::AdminClient;
 use crate::client::{CorrClient, Transport};
-use crate::config as corrosion_config;
 use corro_api_types::{ExecResult, Statement};
+use ployz_config::corrosion as corrosion_config;
 use ployz_store_api::{
-    DeployStore, InviteStore, MachineStore, RoutingStore, SyncProbe, SyncStatus,
+    DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore, InviteStore,
+    MachineEventSubscription, MachineStore, RoutingInvalidationSubscription, RoutingStore,
+    SyncProbe, SyncStatus,
 };
+use async_trait::async_trait;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
-    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, OverlayIp, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
+    MachineRecord, OverlayIp, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
 };
 use ployz_types::spec::Namespace;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -49,7 +52,7 @@ impl CorrosionStore {
         let network_dir = ployz_config::network_dir(data_dir, network);
         let admin_path = corrosion_config::Paths::new(&network_dir).admin;
         let network_path = ployz_config::network_config_path(data_dir, network);
-        let raw = std::fs::read_to_string(&network_path).map_err(|e| {
+        let raw = tokio::fs::read_to_string(&network_path).await.map_err(|e| {
             Error::operation(
                 "connect_for_network",
                 format!(
@@ -111,6 +114,7 @@ impl CorrosionStore {
     }
 }
 
+#[async_trait]
 impl SyncProbe for CorrosionStore {
     async fn sync_status(&self) -> Result<SyncStatus> {
         if let Some(admin) = &self.admin {
@@ -147,6 +151,7 @@ impl SyncProbe for CorrosionStore {
     }
 }
 
+#[async_trait]
 impl MachineStore for CorrosionStore {
     async fn init(&self) -> Result<()> {
         let res = self
@@ -172,13 +177,13 @@ impl MachineStore for CorrosionStore {
         tables::machines::delete_machine(&self.client, id).await
     }
 
-    async fn subscribe_machines(
-        &self,
-    ) -> Result<(Vec<MachineRecord>, mpsc::Receiver<MachineEvent>)> {
-        tables::machines::subscribe_machines(&self.client).await
+    async fn subscribe_machines(&self) -> Result<(Vec<MachineRecord>, MachineEventSubscription)> {
+        let (snapshot, receiver) = tables::machines::subscribe_machines(&self.client).await?;
+        Ok((snapshot, MachineEventSubscription::new(receiver)))
     }
 }
 
+#[async_trait]
 impl InviteStore for CorrosionStore {
     async fn create_invite(&self, invite: &InviteRecord) -> Result<()> {
         tables::invites::create_invite(&self.client, invite).await
@@ -189,17 +194,21 @@ impl InviteStore for CorrosionStore {
     }
 }
 
+#[async_trait]
 impl RoutingStore for CorrosionStore {
     async fn load_routing_state(&self) -> Result<RoutingState> {
         workflows::routing_state::load_routing_state(&self.client).await
     }
 
-    async fn subscribe_routing_invalidations(&self) -> Result<mpsc::Receiver<()>> {
-        workflows::routing_state::subscribe_routing_invalidations(&self.client).await
+    async fn subscribe_routing_invalidations(&self) -> Result<RoutingInvalidationSubscription> {
+        let receiver =
+            workflows::routing_state::subscribe_routing_invalidations(&self.client).await?;
+        Ok(RoutingInvalidationSubscription::new(receiver))
     }
 }
 
-impl DeployStore for CorrosionStore {
+#[async_trait]
+impl DeployReadStore for CorrosionStore {
     async fn list_service_revisions(
         &self,
         namespace: &Namespace,
@@ -220,6 +229,14 @@ impl DeployStore for CorrosionStore {
     ) -> Result<Vec<InstanceStatusRecord>> {
         tables::instance_status::list_instance_status(&self.client, namespace).await
     }
+
+    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
+        tables::deploys::get_deploy(&self.client, deploy_id).await
+    }
+}
+
+#[async_trait]
+impl DeployWriteStore for CorrosionStore {
 
     async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
         tables::service_revisions::upsert_service_revision(&self.client, record).await
@@ -244,25 +261,11 @@ impl DeployStore for CorrosionStore {
     async fn upsert_deploy(&self, record: &DeployRecord) -> Result<()> {
         tables::deploys::upsert_deploy(&self.client, record).await
     }
+}
 
-    async fn commit_deploy(
-        &self,
-        namespace: &Namespace,
-        removed_services: &[String],
-        releases: &[ServiceReleaseRecord],
-        deploy: &DeployRecord,
-    ) -> Result<()> {
-        workflows::deploy_commit::commit_deploy(
-            &self.client,
-            namespace,
-            removed_services,
-            releases,
-            deploy,
-        )
-        .await
-    }
-
-    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
-        tables::deploys::get_deploy(&self.client, deploy_id).await
+#[async_trait]
+impl DeployCommitStore for CorrosionStore {
+    async fn apply_deploy_commit(&self, commit: &DeployCommit) -> Result<()> {
+        workflows::deploy_commit::apply_deploy_commit(&self.client, commit).await
     }
 }

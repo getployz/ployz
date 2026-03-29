@@ -1,12 +1,12 @@
 use crate::model::{MachineEvent, MachineRecord};
+use ployz_store_api::MachineEventSubscription;
 use std::collections::BTreeMap;
-use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 pub(crate) async fn run_subnet_claim_monitor_task(
     snapshot: Vec<MachineRecord>,
-    mut events: mpsc::Receiver<MachineEvent>,
+    mut events: MachineEventSubscription,
     cancel: CancellationToken,
 ) {
     let mut machines = snapshot

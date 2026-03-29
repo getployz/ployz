@@ -1,7 +1,8 @@
-use crate::mesh_state::invite::{issue_invite_token, parse_and_verify_invite_token};
+use crate::mesh_state::invite::{
+    InviteTokenContext, issue_invite_token, parse_and_verify_invite_token,
+};
 use crate::mesh_state::network::NetworkConfig;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use ployz_orchestrator::network::endpoints::detect_endpoints;
 use ployz_store_api::InviteStore;
 use ployz_types::Error;
 use ployz_types::model::InviteRecord;
@@ -56,8 +57,8 @@ impl DaemonState {
     }
 
     pub(crate) async fn handle_machine_invite_import(&self, token: &str) -> DaemonResponse {
-        let mesh = match self.active.as_ref() {
-            Some(a) => &a.mesh,
+        let active = match self.active.as_ref() {
+            Some(active) => active,
             None => {
                 return self.err(
                     "NO_RUNNING_NETWORK",
@@ -80,7 +81,7 @@ impl DaemonState {
             expires_at: invite.expires_at,
         };
 
-        match mesh.store.create_invite(&record).await {
+        match active.store.create_invite(&record).await {
             Ok(()) => self.ok(format!(
                 "invite imported\n  network: {}\n  invite:  {}",
                 invite.network_name, record.id
@@ -105,13 +106,17 @@ impl DaemonState {
         ttl_secs: u64,
         allocated_subnet: ipnet::Ipv4Net,
     ) -> Result<String, String> {
-        let mesh = self
+        let active = self
             .active
             .as_ref()
-            .map(|a| &a.mesh)
+            .map(|active| active)
             .ok_or_else(|| "no running network".to_string())?;
 
-        let endpoints = detect_endpoints(51820).await;
+        let endpoints = active
+            .mesh
+            .detect_endpoints()
+            .await
+            .map_err(|error| format!("detect mesh endpoints: {error}"))?;
         let overlay_ip = Some(network.overlay_ip.0.to_string());
 
         let wg_secret = StaticSecret::from(self.identity.private_key.0);
@@ -125,11 +130,13 @@ impl DaemonState {
             network,
             ttl_secs,
             now_unix_secs(),
-            endpoints,
-            overlay_ip,
-            wg_public_key,
-            issuer_subnet,
-            allocated_subnet.to_string(),
+            InviteTokenContext {
+                issuer_endpoints: endpoints,
+                issuer_overlay_ip: overlay_ip,
+                issuer_wg_public_key: wg_public_key,
+                issuer_subnet,
+                allocated_subnet: allocated_subnet.to_string(),
+            },
         )?;
 
         let record = InviteRecord {
@@ -137,7 +144,8 @@ impl DaemonState {
             expires_at: claims.expires_at,
         };
 
-        mesh.store
+        active
+            .store
             .create_invite(&record)
             .await
             .map_err(|e| format!("store invite: {e}"))?;
