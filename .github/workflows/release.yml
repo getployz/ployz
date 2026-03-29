@@ -66,6 +66,8 @@ jobs:
 
       - name: Build eBPF bytecode for Linux payloads
         if: startsWith(matrix.target_platform, 'linux/')
+        env:
+          CARGO_TARGET_DIR: ebpf/target
         run: |
           rustup install nightly
           rustup component add rust-src --toolchain nightly

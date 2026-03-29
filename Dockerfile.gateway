@@ -7,6 +7,7 @@ RUN rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+COPY ebpf/ ebpf/
 
 ARG TARGETARCH
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
