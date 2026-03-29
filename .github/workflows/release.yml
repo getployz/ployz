@@ -45,7 +45,7 @@ jobs:
             target_platform: linux/arm64
             upload_name: payload-linux-arm64
             artifact_name: ployz-payload-linux-aarch64.tar.gz
-          - runner: macos-13
+          - runner: macos-15-intel
             target_platform: darwin/amd64
             upload_name: payload-darwin-amd64
             artifact_name: ployz-payload-darwin-x86_64.tar.gz
