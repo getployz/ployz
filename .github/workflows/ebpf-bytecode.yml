@@ -19,13 +19,13 @@ jobs:
       - name: Validate release tag
         id: version
         run: |
-          version="$(tr -d '[:space:]' < .release-version)"
+          version="$(bash ./scripts/read-workspace-version.sh --tag)"
           if [[ -z "${version}" ]]; then
-            echo ".release-version is empty" >&2
+            echo "workspace version is empty" >&2
             exit 1
           fi
           if [[ "${GITHUB_REF_NAME}" != "${version}" ]]; then
-            echo "tag ${GITHUB_REF_NAME} does not match .release-version ${version}" >&2
+            echo "tag ${GITHUB_REF_NAME} does not match workspace version tag ${version}" >&2
             exit 1
           fi
           echo "value=${version}" >> "${GITHUB_OUTPUT}"
