@@ -1,5 +1,5 @@
 use crate::{CliError, Result};
-use ployz_api::{DaemonRequest, DaemonResponse};
+use ployz_api::{DaemonPayload, DaemonRequest, DaemonResponse};
 use ployz_sdk::{Transport, UnixSocketTransport};
 use std::io::{BufRead, BufReader, Read, Write};
 
@@ -71,6 +71,18 @@ pub(crate) fn render_response(
     } else {
         eprintln!("error [{}]: {}", response.code, response.message);
     }
+    Ok(())
+}
+
+pub(crate) fn render_mesh_ready_payload(response: &DaemonResponse) -> Result<()> {
+    let Some(DaemonPayload::MeshReady(payload)) = response.payload.as_ref() else {
+        return Err(CliError::Serialize(
+            "mesh ready response missing mesh-ready payload".into(),
+        ));
+    };
+    let body = serde_json::to_string_pretty(payload)
+        .map_err(|error| CliError::Serialize(format!("failed to encode JSON output: {error}")))?;
+    println!("{body}");
     Ok(())
 }
 

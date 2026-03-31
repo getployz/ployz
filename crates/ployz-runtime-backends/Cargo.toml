@@ -11,6 +11,7 @@ ebpf-native = ["dep:aya"]
 ployz-config = { path = "../ployz-config" }
 ployz-ebpf-common = { path = "../ebpf-common" }
 ployz-runtime-api = { path = "../ployz-runtime-api" }
+ployz-store-api = { path = "../ployz-store-api" }
 ployz-types = { path = "../ployz-types" }
 tokio = { workspace = true, features = ["process", "fs"] }
 tokio-util = { workspace = true }

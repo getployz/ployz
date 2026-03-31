@@ -14,4 +14,3 @@ pub mod mesh;
 
 pub use mesh::orchestrator::{Mesh, MeshError};
 pub use mesh::phase::Phase;
-pub use ployz_runtime_api::{ContainerNetwork, WireguardDriver};

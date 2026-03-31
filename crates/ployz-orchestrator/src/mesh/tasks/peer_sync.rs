@@ -75,7 +75,7 @@ pub(crate) async fn run_peer_sync_task(
     }
 }
 
-async fn read_device_peers(network: &WireguardDriver) -> Vec<crate::mesh::DevicePeer> {
+async fn read_device_peers(network: &WireguardDriver) -> Vec<ployz_runtime_api::DevicePeer> {
     match network.read_peers().await {
         Ok(peers) => peers,
         Err(error) => {

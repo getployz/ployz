@@ -4,14 +4,18 @@ use std::path::PathBuf;
 use thiserror::Error;
 use tracing::warn;
 
+use crate::built_in_images::BuiltInImage;
 use crate::mesh_state::bootstrap::{BootstrapInfo, build_seed_records, resolve_bootstrap_addrs};
 use crate::mesh_state::network::NetworkConfig;
+use crate::services::dns::start_managed_dns;
+use crate::services::gateway::start_managed_gateway;
 use ployz_config::{RuntimeTarget, corrosion as corrosion_config};
 use ployz_dns::DnsConfig;
 use ployz_gateway::GatewayConfig;
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_runtime_api::{NoopRuntimeHandle, RuntimeHandle};
+use ployz_runtime_backends::deploy::start_remote_control_listener;
 
 #[cfg(test)]
 use super::DaemonRuntimeConfig;
@@ -158,26 +162,31 @@ impl MeshStartTx {
             ));
         };
 
-        let handle = state
-            .runtime_profile
-            .start_remote_control(
-                plan.remote_control_bind_addr,
-                store,
-                state.namespace_locks.clone(),
-                state.identity.machine_id.clone(),
-                plan.overlay_network_name.clone(),
-                if state.runtime_target == RuntimeTarget::Docker {
-                    mesh.container_dns_server()
-                } else {
-                    None
-                },
+        let overlay_dns_server = if state.runtime_target == RuntimeTarget::Docker {
+            mesh.container_dns_server()
+        } else {
+            None
+        };
+        let handle: Box<dyn RuntimeHandle> = if state.runtime_profile.is_memory_test() {
+            Box::new(NoopRuntimeHandle)
+        } else {
+            Box::new(
+                start_remote_control_listener(
+                    plan.remote_control_bind_addr,
+                    store.deploy_read(),
+                    store.deploy_write(),
+                    state.namespace_locks.clone(),
+                    state.identity.machine_id.clone(),
+                    plan.overlay_network_name.clone(),
+                    overlay_dns_server,
+                )
+                .await
+                .map_err(|error| StartMeshError::RemoteControl {
+                    bind: plan.remote_control_bind_addr,
+                    error: error.to_string(),
+                })?,
             )
-            .await
-            .map(|h| Box::new(h) as Box<dyn RuntimeHandle>)
-            .map_err(|error| StartMeshError::RemoteControl {
-                bind: plan.remote_control_bind_addr,
-                error: error.to_string(),
-            })?;
+        };
 
         self.remote_control = handle;
         Ok(())
@@ -189,12 +198,16 @@ impl MeshStartTx {
         state: &DaemonState,
         plan: &StartPlan,
     ) -> Result<(), StartMeshError> {
-        let handle = state
-            .runtime_profile
-            .start_gateway(plan.gateway_config.clone())
-            .await
-            .map(|h| Box::new(h) as Box<dyn RuntimeHandle>)
-            .map_err(|error| StartMeshError::Gateway(error.to_string()))?;
+        let handle = start_managed_gateway(
+            state.runtime_profile.sidecar_supervision(),
+            plan.gateway_config.clone(),
+            state
+                .runtime_profile
+                .resolve_built_in_image(BuiltInImage::Gateway),
+        )
+        .await
+        .map(|handle| Box::new(handle) as Box<dyn RuntimeHandle>)
+        .map_err(|error| StartMeshError::Gateway(error.to_string()))?;
         self.gateway = handle;
         Ok(())
     }
@@ -205,12 +218,16 @@ impl MeshStartTx {
         state: &DaemonState,
         plan: &StartPlan,
     ) -> Result<(), StartMeshError> {
-        let handle = state
-            .runtime_profile
-            .start_dns(plan.dns_config.clone())
-            .await
-            .map(|h| Box::new(h) as Box<dyn RuntimeHandle>)
-            .map_err(|error| StartMeshError::Dns(error.to_string()))?;
+        let handle = start_managed_dns(
+            state.runtime_profile.sidecar_supervision(),
+            plan.dns_config.clone(),
+            state
+                .runtime_profile
+                .resolve_built_in_image(BuiltInImage::Dns),
+        )
+        .await
+        .map(|handle| Box::new(handle) as Box<dyn RuntimeHandle>)
+        .map_err(|error| StartMeshError::Dns(error.to_string()))?;
         self.dns = handle;
         Ok(())
     }
@@ -373,17 +390,23 @@ impl DaemonState {
             dns_bridge_listen_addr,
         );
 
-        let new_gateway: Box<dyn RuntimeHandle> = self
-            .runtime_profile
-            .start_gateway(gateway_config)
-            .await
-            .map(|h| Box::new(h) as Box<dyn RuntimeHandle>)
-            .map_err(|error| format!("gateway start failed: {error}"))?;
-        let new_dns: Box<dyn RuntimeHandle> = match self
-            .runtime_profile
-            .start_dns(dns_config)
-            .await
-            .map(|h| Box::new(h) as Box<dyn RuntimeHandle>)
+        let new_gateway: Box<dyn RuntimeHandle> = start_managed_gateway(
+            self.runtime_profile.sidecar_supervision(),
+            gateway_config,
+            self.runtime_profile
+                .resolve_built_in_image(BuiltInImage::Gateway),
+        )
+        .await
+        .map(|handle| Box::new(handle) as Box<dyn RuntimeHandle>)
+        .map_err(|error| format!("gateway start failed: {error}"))?;
+        let new_dns: Box<dyn RuntimeHandle> = match start_managed_dns(
+            self.runtime_profile.sidecar_supervision(),
+            dns_config,
+            self.runtime_profile
+                .resolve_built_in_image(BuiltInImage::Dns),
+        )
+        .await
+        .map(|handle| Box::new(handle) as Box<dyn RuntimeHandle>)
         {
             Ok(handle) => handle,
             Err(error) => {

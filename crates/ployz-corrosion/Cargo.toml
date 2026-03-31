@@ -6,10 +6,12 @@ publish = false
 
 [dependencies]
 ployz-config = { path = "../ployz-config" }
+ployz-runtime-api = { path = "../ployz-runtime-api" }
+ployz-runtime-backends = { path = "../ployz-runtime-backends" }
 ployz-store-api = { path = "../ployz-store-api" }
 ployz-types = { path = "../ployz-types" }
 corro-api-types = { git = "https://github.com/getployz/corrosion.git", branch = "main" }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["process"] }
 async-trait = { workspace = true }
 hyper = { version = "1", features = ["client", "http2"] }
 # TODO: remove client-legacy when migrating to hyper's modern conn::http2 API
@@ -29,6 +31,7 @@ thiserror = { workspace = true }
 ipnet = { workspace = true }
 strum = { workspace = true }
 rusqlite = "0.38"
+libc = { workspace = true }
 
 [lints]
 workspace = true

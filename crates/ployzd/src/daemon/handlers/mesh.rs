@@ -103,26 +103,13 @@ impl DaemonState {
         )
     }
 
-    pub(crate) async fn handle_mesh_ready(
-        &self,
-        output: ployz_api::MeshReadyOutput,
-    ) -> DaemonResponse {
+    pub(crate) async fn handle_mesh_ready(&self) -> DaemonResponse {
         let active = match self.active.as_ref() {
             Some(active) => active,
             None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
         };
 
         let status = mesh_ready_payload(active.mesh.ready_status().await);
-        if output == ployz_api::MeshReadyOutput::Json {
-            return match serde_json::to_string(&status) {
-                Ok(body) => self.ok_with_payload(body, Some(DaemonPayload::MeshReady(status))),
-                Err(err) => self.err(
-                    "ENCODE_FAILED",
-                    format!("failed to encode readiness payload: {err}"),
-                ),
-            };
-        }
-
         self.ok_with_payload(format!(
             "ready:            {}\nphase:            {}\nstore healthy:    {}\nsync connected:   {}\nheartbeat ready:  {}",
             status.ready,
@@ -309,7 +296,7 @@ impl DaemonState {
     pub(crate) async fn handle_mesh_up(
         &mut self,
         network: &str,
-        bootstrap_wait: ployz_api::BootstrapWaitMode,
+        allow_disconnected_bootstrap: bool,
     ) -> DaemonResponse {
         if let Some(active) = &self.active {
             return self.err(
@@ -340,7 +327,7 @@ impl DaemonState {
 
         let network_name = net_config.name.clone();
         let options = MeshStartOptions {
-            allow_disconnected_bootstrap: bootstrap_wait == ployz_api::BootstrapWaitMode::Skip,
+            allow_disconnected_bootstrap,
         };
         match self.start_mesh(net_config, None, options).await {
             Ok(_) => {}

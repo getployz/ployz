@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use ployz_store_api::{RoutingStore, SubscriptionPoll};
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::config::DnsError;
 use crate::snapshot::{SharedDnsSnapshot, project_dns};
@@ -33,7 +33,7 @@ where
                 info!(service_count, "dns snapshot refreshed");
             }
             Err(err) => {
-                warn!(
+                tracing::warn!(
                     ?err,
                     "failed to refresh dns snapshot; keeping previous state"
                 );
@@ -41,35 +41,5 @@ where
         }
     }
 
-    Ok(())
-}
-
-pub fn spawn_sync_thread_with_store<S>(
-    store: S,
-    snapshot: SharedDnsSnapshot,
-) -> Result<(), DnsError>
-where
-    S: RoutingStore + Send + Sync + 'static,
-{
-    std::thread::Builder::new()
-        .name("ployz-dns-sync".into())
-        .spawn(move || {
-            let runtime = match tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(runtime) => runtime,
-                Err(err) => {
-                    warn!(?err, "failed to create dns sync runtime");
-                    return;
-                }
-            };
-            runtime.block_on(async move {
-                if let Err(err) = run_sync_loop(store, snapshot).await {
-                    warn!(?err, "dns sync loop exited");
-                }
-            });
-        })
-        .map_err(|err| DnsError::Runtime(err.to_string()))?;
     Ok(())
 }

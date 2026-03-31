@@ -6,10 +6,8 @@ use tokio::process::{Child, Command};
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::{info, warn};
 
-use ployz_runtime_backends::runtime::labels::build_system_labels;
-use ployz_runtime_backends::runtime::{
-    ContainerEngine, EnsureAction, PullPolicy, RuntimeContainerSpec,
-};
+use crate::runtime::labels::build_system_labels;
+use crate::runtime::{ContainerEngine, EnsureAction, PullPolicy, RuntimeContainerSpec};
 
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
 
@@ -20,12 +18,6 @@ pub enum ServiceSupervision {
     Systemd,
 }
 
-// ---------------------------------------------------------------------------
-// SidecarSpec — declarative description of a sidecar service
-// ---------------------------------------------------------------------------
-
-/// Declarative description of a sidecar service.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub struct SidecarSpec {
     pub name: String,
     pub image: String,
@@ -34,21 +26,16 @@ pub struct SidecarSpec {
     pub cmd: Vec<String>,
     pub env: Vec<(String, String)>,
     pub binds: Vec<String>,
-    /// Container whose network namespace to share (Docker `--network=container:X`).
     pub network_container: Option<String>,
-    /// Extra unit file content (PIDFile, ExecReload, etc.) inserted into [Service].
     pub systemd_extra: String,
 }
 
-/// Build a `RuntimeContainerSpec` from a `SidecarSpec`.
 fn sidecar_to_runtime_spec(spec: &SidecarSpec) -> RuntimeContainerSpec {
     let key = format!("system/{}", spec.name);
-
     let network_mode = spec
         .network_container
         .as_ref()
         .map(|name| format!("container:{name}"));
-
     let labels = build_system_labels(&key, None);
 
     RuntimeContainerSpec {
@@ -79,10 +66,6 @@ fn sidecar_to_runtime_spec(spec: &SidecarSpec) -> RuntimeContainerSpec {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SidecarHandle — lifecycle wrapper
-// ---------------------------------------------------------------------------
-
 pub struct SidecarHandle {
     inner: SidecarInner,
 }
@@ -94,60 +77,44 @@ enum SidecarInner {
 }
 
 impl SidecarHandle {
-    /// Ensure the service is running, adopting an existing instance when possible.
-    ///
-    /// - **Docker**: uses `ContainerEngine::ensure()` to inspect, diff, and adopt
-    ///   or recreate the container as needed.
-    /// - **Systemd**: adopts if the unit is active and its file content
-    ///   matches the desired spec. Otherwise rewrites + restarts.
-    /// - **ChildProcess**: always spawns a new child process (no persistent state to adopt).
     pub async fn ensure(
         supervision: ServiceSupervision,
         spec: SidecarSpec,
     ) -> Result<Self, SidecarError> {
         match supervision {
-            ServiceSupervision::DockerContainer => ensure_docker(spec).await.map(|h| Self {
-                inner: SidecarInner::Docker(h),
+            ServiceSupervision::DockerContainer => ensure_docker(spec).await.map(|handle| Self {
+                inner: SidecarInner::Docker(handle),
             }),
-            ServiceSupervision::ChildProcess => start_child(spec).await.map(|h| Self {
-                inner: SidecarInner::Child(h),
+            ServiceSupervision::ChildProcess => start_child(spec).await.map(|handle| Self {
+                inner: SidecarInner::Child(handle),
             }),
-            ServiceSupervision::Systemd => ensure_systemd(spec).await.map(|h| Self {
-                inner: SidecarInner::Systemd(h),
+            ServiceSupervision::Systemd => ensure_systemd(spec).await.map(|handle| Self {
+                inner: SidecarInner::Systemd(handle),
             }),
         }
     }
 
     pub async fn shutdown(&mut self) -> Result<(), SidecarError> {
         match &mut self.inner {
-            SidecarInner::Child(h) => h.shutdown().await,
-            SidecarInner::Docker(h) => h.shutdown().await,
-            SidecarInner::Systemd(h) => h.shutdown().await,
+            SidecarInner::Child(handle) => handle.shutdown().await,
+            SidecarInner::Docker(handle) => handle.shutdown().await,
+            SidecarInner::Systemd(handle) => handle.shutdown().await,
         }
     }
 
-    /// Detach without stopping. Docker/systemd keep running across daemon restarts.
     pub async fn detach(&mut self) -> Result<(), SidecarError> {
         match &mut self.inner {
             SidecarInner::Docker(_) | SidecarInner::Systemd(_) => Ok(()),
-            SidecarInner::Child(h) => h.shutdown().await,
+            SidecarInner::Child(handle) => handle.shutdown().await,
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Error type
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, thiserror::Error)]
 pub enum SidecarError {
     #[error("sidecar process error: {0}")]
     Process(String),
 }
-
-// ---------------------------------------------------------------------------
-// Child-process handle
-// ---------------------------------------------------------------------------
 
 struct ChildHandle {
     name: String,
@@ -234,10 +201,6 @@ async fn start_child(spec: SidecarSpec) -> Result<ChildHandle, SidecarError> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Docker handle
-// ---------------------------------------------------------------------------
-
 struct DockerHandle {
     engine: ContainerEngine,
     container_name: String,
@@ -249,21 +212,22 @@ impl DockerHandle {
         self.engine
             .remove(&self.container_name, STOP_GRACE_PERIOD)
             .await
-            .map_err(|e| SidecarError::Process(format!("docker remove {}: {e}", self.service_name)))
+            .map_err(|error| {
+                SidecarError::Process(format!("docker remove {}: {error}", self.service_name))
+            })
     }
 }
 
 async fn ensure_docker(spec: SidecarSpec) -> Result<DockerHandle, SidecarError> {
     let engine = ContainerEngine::connect()
         .await
-        .map_err(|e| SidecarError::Process(e.to_string()))?;
+        .map_err(|error| SidecarError::Process(error.to_string()))?;
 
     let runtime_spec = sidecar_to_runtime_spec(&spec);
-
     let result = engine
         .ensure(&runtime_spec)
         .await
-        .map_err(|e| SidecarError::Process(format!("{}: {e}", spec.name)))?;
+        .map_err(|error| SidecarError::Process(format!("{}: {error}", spec.name)))?;
 
     match &result.action {
         EnsureAction::Adopted => {
@@ -290,10 +254,6 @@ async fn ensure_docker(spec: SidecarSpec) -> Result<DockerHandle, SidecarError> 
     })
 }
 
-// ---------------------------------------------------------------------------
-// Systemd handle
-// ---------------------------------------------------------------------------
-
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct SystemdHandle {
     unit_name: String,
@@ -316,7 +276,6 @@ impl SystemdHandle {
     }
 }
 
-/// Build the desired unit file content for a sidecar spec.
 #[cfg(target_os = "linux")]
 fn build_unit_content(spec: &SidecarSpec, binary: &std::path::Path) -> String {
     let binary_str = systemd_quote(&binary.display().to_string());
@@ -324,14 +283,20 @@ fn build_unit_content(spec: &SidecarSpec, binary: &std::path::Path) -> String {
     let env_lines: String = spec
         .env
         .iter()
-        .map(|(k, v)| format!("Environment=\"{}={}\"", systemd_quote(k), systemd_quote(v)))
+        .map(|(key, value)| {
+            format!(
+                "Environment=\"{}={}\"",
+                systemd_quote(key),
+                systemd_quote(value)
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
 
     let cmd_args = spec
         .cmd
         .iter()
-        .map(|a| systemd_quote(a))
+        .map(|arg| systemd_quote(arg))
         .collect::<Vec<_>>()
         .join(" ");
 
@@ -357,8 +322,6 @@ async fn ensure_systemd(spec: SidecarSpec) -> Result<SystemdHandle, SidecarError
         let unit_path = PathBuf::from("/etc/systemd/system").join(&unit_name);
 
         let desired_unit = build_unit_content(&spec, &binary);
-
-        // Try to adopt: if the unit file matches and the service is active, skip restart.
         let existing_unit = std::fs::read_to_string(&unit_path).ok();
         if existing_unit.as_deref() == Some(&desired_unit) {
             let output = tokio::process::Command::new("systemctl")
@@ -368,7 +331,7 @@ async fn ensure_systemd(spec: SidecarSpec) -> Result<SystemdHandle, SidecarError
                 .ok();
             let is_active = output
                 .as_ref()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "active")
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim() == "active")
                 .unwrap_or(false);
             if is_active {
                 info!(unit = %unit_name, "adopted existing systemd service");
@@ -397,11 +360,7 @@ async fn ensure_systemd(spec: SidecarSpec) -> Result<SystemdHandle, SidecarError
     }
 }
 
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
-
-pub fn find_binary(name: &str) -> Result<PathBuf, SidecarError> {
+pub(crate) fn find_binary(name: &str) -> Result<PathBuf, SidecarError> {
     let current_exe = std::env::current_exe()
         .map_err(|err| SidecarError::Process(format!("current_exe failed: {err}")))?;
     let candidates = [
@@ -443,7 +402,7 @@ async fn run_systemctl<const N: usize>(
 }
 
 #[cfg(target_os = "linux")]
-pub fn sanitize_unit_component(name: &str) -> String {
+pub(crate) fn sanitize_unit_component(name: &str) -> String {
     let sanitized = name
         .chars()
         .map(|character| {
@@ -462,6 +421,6 @@ pub fn sanitize_unit_component(name: &str) -> String {
 }
 
 #[cfg(target_os = "linux")]
-pub fn systemd_quote(value: &str) -> String {
+pub(crate) fn systemd_quote(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }

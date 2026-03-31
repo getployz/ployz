@@ -1,4 +1,3 @@
-pub(crate) mod deploy_control;
 pub mod handlers;
 mod setup;
 pub mod ssh;
@@ -6,7 +5,6 @@ pub(crate) mod store;
 
 use std::path::{Path, PathBuf};
 
-use self::deploy_control::NamespaceLockManager;
 use self::store::StoreDriver;
 use crate::built_in_images::BuiltInImages;
 use crate::mesh_state::network::NetworkConfig;
@@ -16,6 +14,7 @@ use ployz_api::{DaemonPayload, DaemonResponse};
 use ployz_config::{RuntimeTarget, ServiceMode};
 use ployz_orchestrator::Mesh;
 use ployz_runtime_api::RuntimeHandle;
+use ployz_runtime_backends::deploy::NamespaceLockManager;
 use ployz_types::model::Identity;
 
 pub struct ActiveMesh {

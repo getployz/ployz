@@ -202,9 +202,7 @@ impl MachineListReportRow {
             overlay_ip: self.overlay.clone(),
             subnet: self.subnet.map(|subnet| subnet.to_string()),
             last_heartbeat: self.last_heartbeat,
-            heartbeat_display: self.heartbeat_display.clone(),
             created_at: self.created_at,
-            created_display: self.created_display.clone(),
         }
     }
 }

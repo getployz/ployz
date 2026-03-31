@@ -80,23 +80,16 @@ pub fn run_server(
 }
 
 // ---------------------------------------------------------------------------
-// Standalone process entry point
+// Caller-owned startup
 // ---------------------------------------------------------------------------
 
-pub fn run_gateway_process_with_store<S>(
-    config: GatewayConfig,
-    store: S,
-) -> Result<(), GatewayError>
+pub async fn run_gateway_with_store<S>(config: GatewayConfig, store: S) -> Result<(), GatewayError>
 where
     S: ployz_store_api::RoutingStore + Send + Sync + 'static,
 {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|err| GatewayError::Runtime(err.to_string()))?;
-    let initial_snapshot = runtime.block_on(load_projected_snapshot_from_store(&store))?;
+    let initial_snapshot = load_projected_snapshot_from_store(&store).await?;
     let shared_snapshot = SharedSnapshot::new(initial_snapshot);
-    crate::sync::spawn_sync_thread_with_store(store, shared_snapshot.clone())?;
+    tokio::spawn(crate::sync::run_sync_loop(store, shared_snapshot.clone()));
     let opt = Opt::parse_args();
     run_server(
         opt,

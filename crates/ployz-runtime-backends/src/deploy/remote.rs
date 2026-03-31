@@ -1,13 +1,11 @@
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 
-use crate::daemon::store::StoreDriver;
 use ployz_runtime_api::{
     DeployFrame, Result as RuntimeResult, RuntimeError, RuntimeHandle, StartCandidateRequest,
 };
-use ployz_runtime_backends::deploy::local::{
-    LocalDeployRuntime, ManagedInstance, StartCandidate, now_unix_secs,
-};
+use ployz_store_api::{DeployReadStore, DeployWriteStore};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
@@ -19,16 +17,35 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::deploy::local::{LocalDeployRuntime, ManagedInstance, StartCandidate, now_unix_secs};
+
 use super::locks::{NamespaceLock, NamespaceLockManager};
 
+#[derive(Clone)]
+pub(crate) struct DeployStoreHandle {
+    deploy_read: Arc<dyn DeployReadStore>,
+    deploy_write: Arc<dyn DeployWriteStore>,
+}
+
+impl DeployStoreHandle {
+    #[must_use]
+    pub(crate) fn new(
+        deploy_read: Arc<dyn DeployReadStore>,
+        deploy_write: Arc<dyn DeployWriteStore>,
+    ) -> Self {
+        Self {
+            deploy_read,
+            deploy_write,
+        }
+    }
+}
+
 async fn adopt_instances(
-    store: &StoreDriver,
+    store: &DeployStoreHandle,
     runtime: &LocalDeployRuntime,
     namespace: &Namespace,
 ) -> Result<()> {
-    let deploy_read = store.deploy_read();
-    let deploy_write = store.deploy_write();
-    let existing = deploy_read.list_instance_status(namespace).await?;
+    let existing = store.deploy_read.list_instance_status(namespace).await?;
     let known: BTreeSet<String> = existing
         .iter()
         .map(|record| record.instance_id.0.clone())
@@ -44,7 +61,7 @@ async fn adopt_instances(
             DrainState::None,
             None,
         );
-        deploy_write.upsert_instance_status(&record).await?;
+        store.deploy_write.upsert_instance_status(&record).await?;
     }
     Ok(())
 }
@@ -61,12 +78,12 @@ fn build_instance_status_record(
 }
 
 async fn list_local_instance_status(
-    store: &StoreDriver,
+    store: &DeployStoreHandle,
     namespace: &Namespace,
     local_machine_id: &MachineId,
 ) -> Result<Vec<InstanceStatusRecord>> {
-    let deploy_read = store.deploy_read();
-    Ok(deploy_read
+    Ok(store
+        .deploy_read
         .list_instance_status(namespace)
         .await?
         .into_iter()
@@ -80,14 +97,6 @@ pub struct RemoteControlHandle {
 }
 
 impl RemoteControlHandle {
-    #[must_use]
-    pub fn noop() -> Self {
-        Self {
-            cancel: CancellationToken::new(),
-            task: tokio::spawn(async {}),
-        }
-    }
-
     pub async fn shutdown(self) {
         self.cancel.cancel();
         let _ = self.task.await;
@@ -103,30 +112,30 @@ impl RuntimeHandle for RemoteControlHandle {
 }
 
 #[derive(Clone)]
-pub struct DeployAgent {
-    store: StoreDriver,
+pub(crate) struct DeployAgent {
+    store: DeployStoreHandle,
     locks: NamespaceLockManager,
     local_machine_id: MachineId,
     overlay_network_name: Option<String>,
     overlay_dns_server: Option<Ipv4Addr>,
 }
 
-pub struct SessionState {
+pub(crate) struct SessionState {
     namespace: Namespace,
     deploy_id: DeployId,
     _lock: NamespaceLock,
 }
 
 impl SessionState {
-    pub(super) fn deploy_id(&self) -> &DeployId {
+    pub(crate) fn deploy_id(&self) -> &DeployId {
         &self.deploy_id
     }
 }
 
 impl DeployAgent {
     #[must_use]
-    pub fn new(
-        store: StoreDriver,
+    pub(crate) fn new(
+        store: DeployStoreHandle,
         locks: NamespaceLockManager,
         local_machine_id: MachineId,
         overlay_network_name: Option<String>,
@@ -141,7 +150,7 @@ impl DeployAgent {
         }
     }
 
-    pub async fn open_session(
+    pub(crate) async fn open_session(
         &self,
         namespace: &Namespace,
         deploy_id: &DeployId,
@@ -160,7 +169,7 @@ impl DeployAgent {
         Ok((state, instances))
     }
 
-    pub async fn inspect_namespace(
+    pub(crate) async fn inspect_namespace(
         &self,
         session: &SessionState,
     ) -> Result<Vec<InstanceStatusRecord>> {
@@ -170,7 +179,7 @@ impl DeployAgent {
         list_local_instance_status(&self.store, &session.namespace, &self.local_machine_id).await
     }
 
-    pub async fn start_candidate(
+    pub(crate) async fn start_candidate(
         &self,
         session: &SessionState,
         service: &str,
@@ -186,8 +195,9 @@ impl DeployAgent {
             return Ok(existing);
         }
 
-        let spec: ServiceSpec = serde_json::from_str(spec_json)
-            .map_err(|e| Error::operation("start_candidate", format!("decode spec: {e}")))?;
+        let spec: ServiceSpec = serde_json::from_str(spec_json).map_err(|error| {
+            Error::operation("start_candidate", format!("decode spec: {error}"))
+        })?;
         if spec.name != service {
             return Err(Error::operation(
                 "start_candidate",
@@ -199,7 +209,7 @@ impl DeployAgent {
         }
         let revision_hash = spec
             .revision_hash()
-            .map_err(|e| Error::operation("start_candidate", e))?;
+            .map_err(|error| Error::operation("start_candidate", error))?;
         let runtime = self.new_runtime()?;
         let instance = runtime
             .start_candidate(StartCandidate {
@@ -222,13 +232,13 @@ impl DeployAgent {
             None,
         );
         self.store
-            .deploy_write()
+            .deploy_write
             .upsert_instance_status(&status)
             .await?;
         Ok(status)
     }
 
-    pub async fn drain_instance(
+    pub(crate) async fn drain_instance(
         &self,
         session: &SessionState,
         instance_id: &InstanceId,
@@ -247,13 +257,13 @@ impl DeployAgent {
         status.drain_state = DrainState::Requested;
         status.updated_at = now_unix_secs();
         self.store
-            .deploy_write()
+            .deploy_write
             .upsert_instance_status(&status)
             .await?;
         Ok(())
     }
 
-    pub async fn remove_instance(
+    pub(crate) async fn remove_instance(
         &self,
         session: &SessionState,
         instance_id: &InstanceId,
@@ -269,7 +279,7 @@ impl DeployAgent {
             .remove_instance(&status.instance_id, &session.namespace, &status.service)
             .await?;
         self.store
-            .deploy_write()
+            .deploy_write
             .delete_instance_status(&status.instance_id)
             .await?;
         Ok(())
@@ -295,14 +305,19 @@ impl DeployAgent {
 
 pub async fn start_remote_control_listener(
     bind_addr: SocketAddr,
-    store: StoreDriver,
+    deploy_read: Arc<dyn DeployReadStore>,
+    deploy_write: Arc<dyn DeployWriteStore>,
     namespace_locks: NamespaceLockManager,
     local_machine_id: MachineId,
     overlay_network_name: Option<String>,
     overlay_dns_server: Option<Ipv4Addr>,
 ) -> Result<RemoteControlHandle> {
-    let listener = TcpListener::bind(bind_addr).await.map_err(|e| {
-        Error::operation("remote_control_listener", format!("bind {bind_addr}: {e}"))
+    let store = DeployStoreHandle::new(deploy_read, deploy_write);
+    let listener = TcpListener::bind(bind_addr).await.map_err(|error| {
+        Error::operation(
+            "remote_control_listener",
+            format!("bind {bind_addr}: {error}"),
+        )
     })?;
     let cancel = CancellationToken::new();
     let agent = DeployAgent::new(
@@ -320,16 +335,16 @@ pub async fn start_remote_control_listener(
                 accepted = listener.accept() => {
                     let (stream, _) = match accepted {
                         Ok(value) => value,
-                        Err(err) => {
-                            tracing::warn!(?err, "remote deploy listener accept failed");
+                        Err(error) => {
+                            tracing::warn!(?error, "remote deploy listener accept failed");
                             continue;
                         }
                     };
                     let agent = agent.clone();
                     let connection_cancel = listener_cancel.clone();
                     tokio::spawn(async move {
-                        if let Err(err) = handle_connection(stream, agent, connection_cancel).await {
-                            tracing::warn!(?err, "remote deploy connection failed");
+                        if let Err(error) = handle_connection(stream, agent, connection_cancel).await {
+                            tracing::warn!(?error, "remote deploy connection failed");
                         }
                     });
                 }
@@ -370,11 +385,11 @@ async fn handle_connection(
 
     let (session, instances) = match agent.open_session(&namespace, &deploy_id).await {
         Ok(result) => result,
-        Err(err) => {
+        Err(error) => {
             let response = DeployFrame::Error {
                 code: "LOCK_FAILED".into(),
                 message: format!(
-                    "failed to acquire lock for '{}' from coordinator '{}': {err}",
+                    "failed to acquire lock for '{}' from coordinator '{}': {error}",
                     namespace, coordinator_id
                 ),
             };
@@ -391,14 +406,13 @@ async fn handle_connection(
         };
 
         let response = handle_session_frame(&agent, &session, frame).await;
+        let should_close = matches!(
+            &response,
+            DeployFrame::Ack { message } if message.starts_with("session closed")
+        );
         write_frame(&mut stream, &response).await?;
 
-        if matches!(response, DeployFrame::Ack { .. })
-            && matches!(
-                &response,
-                DeployFrame::Ack { message } if message.starts_with("session closed")
-            )
-        {
+        if should_close {
             break;
         }
     }
@@ -413,9 +427,9 @@ async fn handle_session_frame(
 ) -> DeployFrame {
     match handle_session_frame_inner(agent, session, frame).await {
         Ok(response) => response,
-        Err(err) => DeployFrame::Error {
+        Err(error) => DeployFrame::Error {
             code: "DEPLOY_FAILED".into(),
-            message: err.to_string(),
+            message: error.to_string(),
         },
     }
 }
@@ -492,12 +506,12 @@ async fn read_frame(
     tokio::select! {
         _ = cancel.cancelled() => Ok(None),
         read = stream.read_line(&mut line) => {
-            let bytes = read.map_err(|e| Error::operation("deploy_session", format!("read: {e}")))?;
+            let bytes = read.map_err(|error| Error::operation("deploy_session", format!("read: {error}")))?;
             if bytes == 0 {
                 return Ok(None);
             }
             let frame: DeployFrame = serde_json::from_str(&line)
-                .map_err(|e| Error::operation("deploy_session", format!("decode frame: {e}")))?;
+                .map_err(|error| Error::operation("deploy_session", format!("decode frame: {error}")))?;
             Ok(Some(frame))
         }
     }
@@ -505,16 +519,16 @@ async fn read_frame(
 
 async fn write_frame(stream: &mut BufStream<TcpStream>, frame: &DeployFrame) -> Result<()> {
     let mut line = serde_json::to_string(frame)
-        .map_err(|e| Error::operation("deploy_session", format!("encode frame: {e}")))?;
+        .map_err(|error| Error::operation("deploy_session", format!("encode frame: {error}")))?;
     line.push('\n');
     stream
         .write_all(line.as_bytes())
         .await
-        .map_err(|e| Error::operation("deploy_session", format!("write: {e}")))?;
+        .map_err(|error| Error::operation("deploy_session", format!("write: {error}")))?;
     stream
         .flush()
         .await
-        .map_err(|e| Error::operation("deploy_session", format!("flush: {e}")))?;
+        .map_err(|error| Error::operation("deploy_session", format!("flush: {error}")))?;
     Ok(())
 }
 
@@ -534,7 +548,7 @@ impl TcpDeploySession {
         let address = SocketAddr::new(IpAddr::V6(machine.overlay_ip.0), port);
         let tcp = TcpStream::connect(address)
             .await
-            .map_err(|e| Error::operation("deploy_connect", format!("{address}: {e}")))?;
+            .map_err(|error| Error::operation("deploy_connect", format!("{address}: {error}")))?;
         let mut stream = BufStream::new(tcp);
 
         let open = DeployFrame::Open {

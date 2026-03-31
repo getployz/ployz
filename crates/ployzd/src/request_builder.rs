@@ -4,10 +4,7 @@ use crate::{
     DeployServiceArgs, InstallSourceArg, MachineAction, MachineInviteAction,
     MachineOperationAction, MeshAction, Result, RuntimeTargetArg, ServiceModeArg,
 };
-use ployz_api::{
-    BootstrapWaitMode, DaemonRequest, DeployOptions, InstallSource as MachineInstallSource,
-    MachineAddOptions, MachineInstallOptions, MachineRemoveMode, MeshReadyOutput,
-};
+use ployz_api::{DaemonRequest, DeployOptions, MachineAddOptions, MachineInstallOptions};
 use ployz_sdk::{DaemonClient, Transport};
 use ployz_types::spec::{
     ContainerSpec, DeployManifest, NetworkMode, Placement, PortProtocol, PublishedPort, PullPolicy,
@@ -173,13 +170,7 @@ fn build_mesh_request(action: MeshAction) -> Result<DaemonRequest> {
         MeshAction::Join { token, token_stdin } => Ok(DaemonRequest::MeshJoin {
             token: string_arg_or_stdin("mesh join token", "--token-stdin", token, token_stdin)?,
         }),
-        MeshAction::Ready { json } => Ok(DaemonRequest::MeshReady {
-            output: if json {
-                MeshReadyOutput::Json
-            } else {
-                MeshReadyOutput::Text
-            },
-        }),
+        MeshAction::Ready { json: _ } => Ok(DaemonRequest::MeshReady),
         MeshAction::Create { network } => Ok(DaemonRequest::MeshCreate { network }),
         MeshAction::Init {
             network,
@@ -192,11 +183,7 @@ fn build_mesh_request(action: MeshAction) -> Result<DaemonRequest> {
             skip_bootstrap_wait,
         } => Ok(DaemonRequest::MeshUp {
             network,
-            bootstrap_wait: if skip_bootstrap_wait {
-                BootstrapWaitMode::Skip
-            } else {
-                BootstrapWaitMode::Wait
-            },
+            allow_disconnected_bootstrap: skip_bootstrap_wait,
         }),
         MeshAction::Down => Ok(DaemonRequest::MeshDown),
         MeshAction::Destroy {
@@ -270,14 +257,7 @@ pub(crate) fn build_machine_request(action: MachineAction) -> Result<DaemonReque
             };
             Ok(DaemonRequest::MachineAdd { targets, options })
         }
-        MachineAction::Rm { id, force } => Ok(DaemonRequest::MachineRemove {
-            id,
-            mode: if force {
-                MachineRemoveMode::Force
-            } else {
-                MachineRemoveMode::DisabledOnly
-            },
-        }),
+        MachineAction::Rm { id, force } => Ok(DaemonRequest::MachineRemove { id, force }),
         MachineAction::Invite { action } => match action {
             MachineInviteAction::Create { ttl_secs } => {
                 Ok(DaemonRequest::MachineInviteCreate { ttl_secs })
@@ -304,14 +284,14 @@ fn build_machine_install_options(
     let has_version = install_version.is_some();
     let has_git = install_git_url.is_some() || install_git_ref.is_some();
     let resolved_source = match install_source {
-        Some(source) => Some(source.into()),
-        None if has_version && !has_git => Some(MachineInstallSource::Release),
-        None if !has_version && has_git => Some(MachineInstallSource::Git),
+        Some(source) => Some(source.as_protocol_str().to_string()),
+        None if has_version && !has_git => Some(String::from("release")),
+        None if !has_version && has_git => Some(String::from("git")),
         None => None,
     };
     MachineInstallOptions {
-        runtime_target: runtime.map(Into::into),
-        service_mode: service_mode.map(Into::into),
+        runtime_target: runtime.map(|value| value.as_protocol_str().to_string()),
+        service_mode: service_mode.map(|value| value.as_protocol_str().to_string()),
         source: resolved_source,
         version: install_version,
         git_url: install_git_url,

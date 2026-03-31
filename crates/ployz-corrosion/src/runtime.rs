@@ -1,8 +1,11 @@
-use super::labels::build_system_labels;
-use super::{ContainerEngine, EnsureAction, PullPolicy, RuntimeContainerSpec};
+use crate::SCHEMA_SQL;
 use async_trait::async_trait;
 use ployz_config::corrosion as corrosion_config;
 use ployz_runtime_api::{Result as RuntimeResult, RuntimeError, ServiceRuntime};
+use ployz_runtime_backends::runtime::labels::build_system_labels;
+use ployz_runtime_backends::runtime::{
+    ContainerEngine, EnsureAction, PullPolicy, RuntimeContainerSpec,
+};
 use ployz_types::Result;
 use ployz_types::model::OverlayIp;
 use std::fs::OpenOptions;
@@ -18,7 +21,6 @@ use tracing::{info, warn};
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
 const CORROSION_LOG_PATH_ENV: &str = "PLOYZ_CORROSION_LOG_PATH";
 const CORROSION_RUST_LOG_ENV: &str = "PLOYZ_CORROSION_RUST_LOG";
-const SCHEMA_SQL: &str = include_str!("../../../ployz-corrosion/src/schema.sql");
 
 fn which_corrosion() -> RuntimeResult<PathBuf> {
     let candidates = ["/usr/local/bin/corrosion", "/usr/bin/corrosion"];

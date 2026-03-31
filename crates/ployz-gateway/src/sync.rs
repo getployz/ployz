@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::routes::{GatewaySnapshot, project};
 use ployz_store_api::{RoutingStore, SubscriptionPoll};
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::config::GatewayError;
 use crate::snapshot::SharedSnapshot;
@@ -46,7 +46,7 @@ where
                 info!(http_routes, tcp_routes, "gateway snapshot refreshed");
             }
             Err(err) => {
-                warn!(
+                tracing::warn!(
                     ?err,
                     "failed to refresh gateway snapshot; keeping previous state"
                 )
@@ -54,35 +54,5 @@ where
         }
     }
 
-    Ok(())
-}
-
-pub fn spawn_sync_thread_with_store<S>(
-    store: S,
-    snapshot: SharedSnapshot,
-) -> Result<(), GatewayError>
-where
-    S: RoutingStore + Send + Sync + 'static,
-{
-    std::thread::Builder::new()
-        .name("ployz-gateway-sync".into())
-        .spawn(move || {
-            let runtime = match tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(runtime) => runtime,
-                Err(err) => {
-                    warn!(?err, "failed to create gateway sync runtime");
-                    return;
-                }
-            };
-            runtime.block_on(async move {
-                if let Err(err) = run_sync_loop(store, snapshot).await {
-                    warn!(?err, "gateway sync loop exited");
-                }
-            });
-        })
-        .map_err(|err| GatewayError::Runtime(err.to_string()))?;
     Ok(())
 }

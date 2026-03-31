@@ -1,15 +1,12 @@
-use std::collections::BTreeMap;
-use std::sync::Arc;
-
 use crate::daemon::DaemonState;
-use crate::daemon::deploy_control::remote::DeployAgent;
-use crate::daemon::deploy_control::session::DefaultDeploySessionFactory;
-use ployz_api::{DaemonPayload, DaemonResponse, DeployExportPayload, DeployOptions};
+use ployz_api::{
+    DaemonPayload, DaemonResponse, DeployApplyPayload, DeployExportPayload, DeployOptions,
+    DeployPreviewPayload,
+};
 use ployz_config::RuntimeTarget;
-use ployz_orchestrator::deploy::{apply, preview};
-use ployz_store_api::DeployReadStore;
-use ployz_types::Error as PloyzError;
-use ployz_types::spec::{DeployManifest, Namespace, ServiceSpec};
+use ployz_orchestrator::deploy::{apply, export_manifest, preview};
+use ployz_runtime_backends::deploy::DefaultDeploySessionFactory;
+use ployz_types::spec::{DeployManifest, Namespace};
 
 impl DaemonState {
     fn overlay_network_name(&self) -> Option<String> {
@@ -52,7 +49,12 @@ impl DaemonState {
         .await
         {
             Ok(plan) => match serde_json::to_string_pretty(&plan) {
-                Ok(json) => self.ok(json),
+                Ok(json) => self.ok_with_payload(
+                    json,
+                    Some(DaemonPayload::DeployPreview(DeployPreviewPayload {
+                        preview: plan,
+                    })),
+                ),
                 Err(err) => self.err("ENCODE_PREVIEW", format!("encode preview: {err}")),
             },
             Err(err) => self.err("DEPLOY_PREVIEW_FAILED", format!("{err}")),
@@ -77,16 +79,13 @@ impl DaemonState {
         let deploy_commit = active.store.deploy_commit();
         let machine_store = active.store.machine();
 
-        let agent = Arc::new(DeployAgent::new(
-            active.store.clone(),
+        let factory = DefaultDeploySessionFactory::for_local_machine(
+            active.store.deploy_read(),
+            active.store.deploy_write(),
             self.namespace_locks.clone(),
             self.identity.machine_id.clone(),
             self.overlay_network_name(),
             self.overlay_dns_server(),
-        ));
-        let factory = DefaultDeploySessionFactory::new(
-            agent,
-            self.identity.machine_id.clone(),
             self.remote_control_port,
         );
 
@@ -102,7 +101,10 @@ impl DaemonState {
         .await
         {
             Ok(result) => match serde_json::to_string_pretty(&result) {
-                Ok(json) => self.ok(json),
+                Ok(json) => self.ok_with_payload(
+                    json,
+                    Some(DaemonPayload::DeployApply(DeployApplyPayload { result })),
+                ),
                 Err(err) => self.err("ENCODE_DEPLOY", format!("encode deploy result: {err}")),
             },
             Err(err) => self.err("DEPLOY_APPLY_FAILED", format!("{err}")),
@@ -152,63 +154,4 @@ fn decode_manifest(manifest_json: &str) -> Result<DeployManifest, Box<DaemonResp
     }
 
     Ok(manifest)
-}
-
-async fn export_manifest<S>(store: &S, namespace: &Namespace) -> ployz_types::Result<DeployManifest>
-where
-    S: DeployReadStore + ?Sized,
-{
-    let releases = store.list_service_releases(namespace).await?;
-    let revisions = store.list_service_revisions(namespace).await?;
-    let revisions_by_key: BTreeMap<(String, String), String> = revisions
-        .into_iter()
-        .map(|revision| {
-            (
-                (revision.service.clone(), revision.revision_hash.clone()),
-                revision.spec_json,
-            )
-        })
-        .collect();
-
-    let mut services = Vec::with_capacity(releases.len());
-    for release in releases {
-        let key = (
-            release.service.clone(),
-            release.release.primary_revision_hash.clone(),
-        );
-        let Some(spec_json) = revisions_by_key.get(&key) else {
-            return Err(PloyzError::operation(
-                "deploy_export",
-                format!(
-                    "current release for service '{}' referenced missing revision '{}'",
-                    release.service, release.release.primary_revision_hash
-                ),
-            ));
-        };
-        let spec: ServiceSpec = serde_json::from_str(spec_json).map_err(|err| {
-            PloyzError::operation(
-                "deploy_export",
-                format!(
-                    "invalid stored spec for service '{}': {err}",
-                    release.service
-                ),
-            )
-        })?;
-        if spec.name != release.service {
-            return Err(PloyzError::operation(
-                "deploy_export",
-                format!(
-                    "stored spec service '{}' did not match release service '{}'",
-                    spec.name, release.service
-                ),
-            ));
-        }
-        services.push(spec);
-    }
-    services.sort_by(|left, right| left.name.cmp(&right.name));
-
-    Ok(DeployManifest {
-        namespace: namespace.clone(),
-        services,
-    })
 }
