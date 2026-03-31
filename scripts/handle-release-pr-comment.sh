@@ -65,6 +65,7 @@ fi
 comment_body="$(jq -r '.comment.body // empty' "${EVENT_PATH}")"
 pr_number="$(jq -r '.issue.number // empty' "${EVENT_PATH}")"
 commenter="$(jq -r '.comment.user.login // empty' "${EVENT_PATH}")"
+author_association="$(jq -r '.comment.author_association // "NONE"' "${EVENT_PATH}")"
 
 if [[ "${commenter}" == "github-actions[bot]" ]]; then
   exit 0
@@ -83,18 +84,16 @@ if [[ "${pr_state}" != "open" || "${pr_head_ref}" != "${RELEASE_BRANCH}" || "${p
   exit 0
 fi
 
-permission_json="$(
-  gh api "repos/${REPO}/collaborators/${commenter}/permission" 2>/dev/null || true
-)"
-permission="$(jq -r '.permission // "none"' <<< "${permission_json:-{}}")"
-role_name="$(jq -r '.role_name // "none"' <<< "${permission_json:-{}}")"
-
-if [[ "${permission}" != "write" && "${permission}" != "admin" && "${role_name}" != "maintain" ]]; then
+case "${author_association}" in
+  OWNER|COLLABORATOR)
+    ;;
+  *)
   reply_and_exit \
     "${pr_number}" \
-    "Permission denied. Release commands require write, maintain, or admin access." \
+    "Permission denied. Release commands require owner or collaborator access." \
     0
-fi
+    ;;
+esac
 
 manage_args=(
   --repo "${REPO}"
