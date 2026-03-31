@@ -70,15 +70,7 @@ jobs:
         if: startsWith(matrix.target_platform, 'linux/')
         env:
           CARGO_TARGET_DIR: ebpf/target
-        run: |
-          rustup install nightly
-          rustup component add rust-src --toolchain nightly
-          cargo +nightly install bpf-linker
-          cargo +nightly build \
-            -Z build-std=core \
-            --release \
-            --target bpfel-unknown-none \
-            --manifest-path ebpf/Cargo.toml
+        run: bash scripts/build-ebpf-bytecode.sh
 
       - name: Build release payload
         run: |
@@ -105,19 +97,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install nightly + bpf-linker
-        run: |
-          rustup install nightly
-          rustup component add rust-src --toolchain nightly
-          cargo +nightly install bpf-linker
-
       - name: Build BPF bytecode
-        run: |
-          cargo +nightly build \
-            -Z build-std=core \
-            --release \
-            --target bpfel-unknown-none \
-            --manifest-path ebpf/Cargo.toml
+        run: bash scripts/build-ebpf-bytecode.sh
 
       - name: Package artifact
         run: |

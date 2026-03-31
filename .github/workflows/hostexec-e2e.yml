@@ -99,6 +99,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Build eBPF bytecode for payloads
+        env:
+          CARGO_TARGET_DIR: ebpf/target
+        run: bash scripts/build-ebpf-bytecode.sh
+
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
