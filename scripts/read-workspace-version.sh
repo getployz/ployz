@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE="raw"
+MANIFEST_PATH="${ROOT_DIR}/Cargo.toml"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -10,8 +11,12 @@ while [[ $# -gt 0 ]]; do
       MODE="tag"
       shift
       ;;
+    --manifest)
+      MANIFEST_PATH=${2:-}
+      shift 2
+      ;;
     --help|-h)
-      printf 'Usage: scripts/read-workspace-version.sh [--tag]\n' >&2
+      printf 'Usage: scripts/read-workspace-version.sh [--tag] [--manifest PATH]\n' >&2
       exit 0
       ;;
     *)
@@ -38,7 +43,7 @@ version="$(
         exit 1
       }
     }
-  ' "${ROOT_DIR}/Cargo.toml"
+  ' "${MANIFEST_PATH}"
 )"
 
 case "${MODE}" in

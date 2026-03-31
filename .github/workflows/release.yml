@@ -16,6 +16,8 @@ jobs:
       version: ${{ steps.version.outputs.value }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Validate release tag
         id: version
@@ -173,6 +175,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Download release assets
         uses: actions/download-artifact@v4
@@ -207,17 +211,27 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${{ needs.validate-tag.outputs.version }}"
+          previous_tag="$(
+            git tag --list 'v*' --sort=-version:refname \
+              | awk -v current="${tag}" '$0 != current { print; exit }'
+          )"
+          notes_file="$(mktemp)"
+          notes_args=(--tag "${tag}")
+          if [[ -n "${previous_tag}" ]]; then
+            notes_args+=(--previous-tag "${previous_tag}")
+          fi
+          bash scripts/generate-release-notes.sh "${notes_args[@]}" > "${notes_file}"
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" dist/* --clobber
             gh release edit "$tag" \
               --title "Ployz ${tag}" \
-              --notes "Unified install payloads and eBPF bytecode."
+              --notes-file "${notes_file}"
             exit 0
           fi
           gh release create "$tag" \
             --verify-tag \
             --title "Ployz ${tag}" \
-            --notes "Unified install payloads and eBPF bytecode." \
+            --notes-file "${notes_file}" \
             dist/*
 
       - name: Deploy ployz.sh worker

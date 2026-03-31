@@ -1,0 +1,25 @@
+name: Tag release merge
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: create-release-tag
+  cancel-in-progress: false
+
+jobs:
+  tag-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create matching release tag when version changes
+        env:
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+        run: bash scripts/create-release-tag.sh
