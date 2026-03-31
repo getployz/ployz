@@ -75,7 +75,7 @@ jobs:
           )"
           echo "run_e2e=${result}" >> "${GITHUB_OUTPUT}"
 
-  build-node-image:
+  hostexec-e2e:
     needs: changes
     if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false) && needs.changes.outputs.run_e2e == 'true'
     strategy:
@@ -119,67 +119,23 @@ jobs:
       - name: Pull node image tag under test
         run: docker pull ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.suffix }}
 
-  hostexec-e2e:
-    needs:
-      - changes
-      - build-node-image
-    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false) && needs.changes.outputs.run_e2e == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        arch:
-          - runner: ubuntu-latest
-            suffix: amd64
-          - runner: ubuntu-24.04-arm
-            suffix: arm64
-        scenario:
-          - single-node-init
-          - machine-add-basic
-          - split-brain-concurrent-add-subnet-heal
-          - wireguard-reconnect
-          - deploy-smoke
-    runs-on: ${{ matrix.arch.runner }}
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Pull node image tag under test
-        run: docker pull ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.arch.suffix }}
-
       - name: Build E2E runner
         run: cargo build -p ployz-e2e
 
-      - name: Run HostExec E2E scenario
-        run: |
-          cargo run -p ployz-e2e -- \
-            --image ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.arch.suffix }} \
-            --scenario ${{ matrix.scenario }} \
-            --artifacts-dir e2e-artifacts/${{ matrix.scenario }}
+      - name: Run HostExec E2E suite
+        run: cargo run -p ployz-e2e -- --image ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.suffix }} --artifacts-dir e2e-artifacts --parallel
 
       - name: Upload HostExec E2E artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hostexec-e2e-artifacts-${{ matrix.arch.suffix }}-${{ matrix.scenario }}
+          name: hostexec-e2e-artifacts-${{ matrix.suffix }}
           path: e2e-artifacts/
           if-no-files-found: ignore
 
   manifest:
     needs:
       - changes
-      - build-node-image
       - hostexec-e2e
     if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false) && needs.changes.outputs.run_e2e == 'true'
     runs-on: ubuntu-latest

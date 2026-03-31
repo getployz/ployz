@@ -45,7 +45,7 @@ impl ScenarioRun {
         let run_id = format!("{}-{timestamp}-{}", scenario.as_str(), Uuid::new_v4());
         let root_dir = artifacts_root.join(&run_id);
         let key_dir = root_dir.join("keys");
-        let payload_dir = artifacts_root.join("payload-cache");
+        let payload_dir = root_dir.join("payload");
 
         fs::create_dir_all(&key_dir).map_err(|error| {
             Error::Io(format!("create key dir '{}': {error}", key_dir.display()))
