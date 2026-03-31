@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use ipnet::Ipv4Net;
 use ployz_runtime_api::{
     AttachedDataplane, ContainerNetwork, DataplaneFactory, MeshDataplane, ObserveMode,
-    WireguardDriver,
+    Result as RuntimeResult, RuntimeError, WireguardDriver,
 };
 use std::process::Stdio;
 use std::sync::Arc;
@@ -31,7 +31,7 @@ impl DataplaneFactory for DefaultDataplaneFactory {
         &self,
         network: &WireguardDriver,
         container_network: &ContainerNetwork,
-    ) -> Result<AttachedDataplane> {
+    ) -> RuntimeResult<AttachedDataplane> {
         let bridge_ifname = container_network.resolve_bridge_ifname().await?;
         let wg_ifname = network.ebpf_attachment_ifname(&bridge_ifname);
 
@@ -122,20 +122,26 @@ impl EbpfDataplane {
 
 #[async_trait]
 impl MeshDataplane for EbpfDataplane {
-    async fn set_observe(&self, mode: ObserveMode) -> Result<()> {
-        Self::set_observe(self, mode).await
+    async fn set_observe(&self, mode: ObserveMode) -> RuntimeResult<()> {
+        Self::set_observe(self, mode)
+            .await
+            .map_err(RuntimeError::from)
     }
 
-    async fn upsert_route(&self, subnet: Ipv4Net, ifindex: u32) -> Result<()> {
-        Self::upsert_route(self, subnet, ifindex).await
+    async fn upsert_route(&self, subnet: Ipv4Net, ifindex: u32) -> RuntimeResult<()> {
+        Self::upsert_route(self, subnet, ifindex)
+            .await
+            .map_err(RuntimeError::from)
     }
 
-    async fn remove_route(&self, subnet: Ipv4Net) -> Result<()> {
-        Self::remove_route(self, subnet).await
+    async fn remove_route(&self, subnet: Ipv4Net) -> RuntimeResult<()> {
+        Self::remove_route(self, subnet)
+            .await
+            .map_err(RuntimeError::from)
     }
 
-    async fn detach(&self) -> Result<()> {
-        self.detach_ref().await
+    async fn detach(&self) -> RuntimeResult<()> {
+        self.detach_ref().await.map_err(RuntimeError::from)
     }
 }
 

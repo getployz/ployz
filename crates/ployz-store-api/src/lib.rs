@@ -3,11 +3,11 @@
 //! The orchestrator depends on these traits rather than a concrete storage
 //! implementation so the core remains independent from the backing database.
 
-pub mod memory;
 mod traits;
 
 pub use traits::{
-    BootstrapStateReader, DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore,
-    InviteStore, MachineEventSubscription, MachineStore, MachineSubscription,
-    RoutingInvalidationSubscription, RoutingStore, SyncProbe, SyncStatus,
+    ClusterStore, DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore, InviteStore,
+    MachineEventReceiver, MachineEventSubscription, MachineStore, MachineSubscription,
+    RoutingInvalidationReceiver, RoutingInvalidationSubscription, RoutingStore, SubscriptionPoll,
+    SyncProbe, SyncStatus,
 };

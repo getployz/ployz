@@ -1,8 +1,7 @@
 use super::network::NetworkConfig;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use ployz_runtime_api::Identity;
-use ployz_types::model::NetworkId;
+use ployz_types::model::{Identity, NetworkId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,8 +134,7 @@ fn hex_string(bytes: [u8; 16]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_runtime_api::Identity;
-    use ployz_types::model::{MachineId, NetworkName};
+    use ployz_types::model::{Identity, MachineId, NetworkName};
 
     #[test]
     fn invite_roundtrip_preserves_allocated_subnet() {

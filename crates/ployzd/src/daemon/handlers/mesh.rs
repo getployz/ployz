@@ -4,6 +4,10 @@ use crate::mesh_state::bootstrap::{
 use crate::mesh_state::invite::{InviteClaims, parse_and_verify_invite_token};
 use crate::mesh_state::network::NetworkConfig;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use ployz_api::{
+    DaemonPayload, DaemonResponse, MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload,
+    decode_join_response, encode_join_response,
+};
 use ployz_orchestrator::ipam::Ipam;
 use ployz_orchestrator::mesh::orchestrator::MeshReadyStatus;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
@@ -12,9 +16,6 @@ use ployz_types::time::now_unix_secs;
 use tracing::warn;
 
 use crate::daemon::setup::MeshStartOptions;
-use ployz_api::{
-    DaemonPayload, DaemonResponse, MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload,
-};
 
 #[cfg(test)]
 use super::super::DaemonRuntimeConfig;
@@ -437,7 +438,7 @@ impl DaemonState {
             endpoints,
         };
 
-        match resp.encode() {
+        match encode_join_response(&resp) {
             Ok(encoded) => self.ok_with_payload(
                 encoded.clone(),
                 Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
@@ -458,7 +459,7 @@ impl DaemonState {
             None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
         };
 
-        let join_resp = match JoinResponse::decode(response) {
+        let join_resp = match decode_join_response(response) {
             Ok(r) => r,
             Err(e) => return self.err("INVALID_JOIN_RESPONSE", format!("decode failed: {e}")),
         };
@@ -522,14 +523,14 @@ mod tests {
     use crate::daemon::store::StoreDriver;
     use crate::mesh_state::invite::{InviteTokenContext, issue_invite_token};
     use crate::mesh_state::network::NetworkConfig;
-    use ployz_api::DaemonPayload;
+    use ployz_api::{DaemonPayload, encode_join_response};
     use ployz_orchestrator::Mesh;
-    use ployz_runtime_api::Identity;
-    use ployz_runtime_api::{
-        MemoryServiceRuntime, MemoryWireGuard, StaticEndpointDiscovery, WireguardDriver,
-    };
     use ployz_store_api::MachineStore;
-    use ployz_store_api::memory::MemoryStore;
+    use ployz_test_support::{
+        MemoryServiceRuntime, MemoryStore, MemoryWireGuard, StaticEndpointDiscovery,
+        memory_wireguard_driver,
+    };
+    use ployz_types::model::Identity;
     use ployz_types::model::{MachineId, OverlayIp, PublicKey};
     use ployz_types::time::now_unix_secs;
     use std::path::PathBuf;
@@ -599,9 +600,8 @@ mod tests {
             overlay_ip: "fd00::2".parse().map(OverlayIp).expect("valid overlay"),
             subnet: Some("10.210.1.0/24".parse().expect("valid subnet")),
             endpoints: vec!["203.0.113.10:51820".into()],
-        }
-        .encode()
-        .expect("encode join response");
+        };
+        let response = encode_join_response(&response).expect("encode join response");
 
         let result = state.handle_mesh_accept(&response).await;
         assert!(result.ok, "{}", result.message);
@@ -717,7 +717,7 @@ mod tests {
         let network = Arc::new(MemoryWireGuard::new());
         let service = Arc::new(MemoryServiceRuntime::new());
         let mut mesh = Mesh::new(
-            WireguardDriver::memory_with(network.clone()),
+            memory_wireguard_driver(network.clone()),
             store.clone(),
             store.clone(),
             service,
@@ -743,7 +743,7 @@ mod tests {
         state.active = Some(ActiveMesh {
             config,
             mesh,
-            store: StoreDriver::memory_with(store.clone()),
+            store: StoreDriver::from_store(store.clone()),
             remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),

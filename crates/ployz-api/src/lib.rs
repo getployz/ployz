@@ -1,5 +1,27 @@
-use ployz_types::model::{MachineId, MachineRecord};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use ployz_types::model::{JoinResponse, MachineId, MachineRecord};
+use ployz_types::spec::DeployManifest;
 use serde::{Deserialize, Serialize};
+
+pub const JOIN_RESPONSE_PREFIX: &str = "PLOYZ_JOIN_RESPONSE:";
+
+pub fn encode_join_response(response: &JoinResponse) -> Result<String, String> {
+    let json = serde_json::to_string(response).map_err(|error| format!("serialize: {error}"))?;
+    Ok(format!(
+        "{JOIN_RESPONSE_PREFIX}{}",
+        URL_SAFE_NO_PAD.encode(json.as_bytes())
+    ))
+}
+
+pub fn decode_join_response(encoded: &str) -> Result<JoinResponse, String> {
+    let payload = encoded
+        .strip_prefix(JOIN_RESPONSE_PREFIX)
+        .ok_or_else(|| format!("missing prefix '{JOIN_RESPONSE_PREFIX}'"))?;
+    let bytes = URL_SAFE_NO_PAD
+        .decode(payload)
+        .map_err(|error| format!("base64 decode: {error}"))?;
+    serde_json::from_slice(&bytes).map_err(|error| format!("json decode: {error}"))
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DeployOptions {
@@ -169,6 +191,7 @@ pub enum DaemonPayload {
     MachineRemove(MachineRemovePayload),
     MeshReady(MeshReadyPayload),
     MeshSelfRecord(MeshSelfRecordPayload),
+    DeployExport(DeployExportPayload),
     MachineOperationList(MachineOperationListPayload),
     MachineOperation(MachineOperationPayload),
 }
@@ -258,6 +281,11 @@ pub struct MeshSelfRecordPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeployExportPayload {
+    pub manifest: DeployManifest,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineOperationListPayload {
     pub operations: Vec<MachineOperationInfo>,
 }
@@ -296,4 +324,32 @@ pub struct DaemonResponse {
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<DaemonPayload>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{JOIN_RESPONSE_PREFIX, decode_join_response, encode_join_response};
+    use ployz_types::model::{JoinResponse, MachineId, OverlayIp, PublicKey};
+    use std::net::Ipv6Addr;
+
+    #[test]
+    fn join_response_codec_roundtrip() {
+        let response = JoinResponse {
+            machine_id: MachineId("joiner-1".into()),
+            public_key: PublicKey([0xab; 32]),
+            overlay_ip: OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1)),
+            subnet: Some("10.42.1.0/24".parse().expect("valid subnet")),
+            endpoints: vec!["1.2.3.4:51820".into()],
+        };
+
+        let encoded = encode_join_response(&response).expect("encode join response");
+        assert!(encoded.starts_with(JOIN_RESPONSE_PREFIX));
+
+        let decoded = decode_join_response(&encoded).expect("decode join response");
+        assert_eq!(decoded.machine_id, response.machine_id);
+        assert_eq!(decoded.public_key, response.public_key);
+        assert_eq!(decoded.overlay_ip, response.overlay_ip);
+        assert_eq!(decoded.subnet, response.subnet);
+        assert_eq!(decoded.endpoints, response.endpoints);
+    }
 }

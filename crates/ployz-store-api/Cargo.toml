@@ -6,9 +6,7 @@ publish = false
 
 [dependencies]
 ployz-types = { path = "../ployz-types" }
-tokio = { workspace = true }
 async-trait = { workspace = true }
-tracing = { workspace = true }
 
 [lints]
 workspace = true

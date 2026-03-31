@@ -7,16 +7,18 @@ use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock
 use crate::daemon::store::StoreDriver;
 use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
 use ipnet::Ipv4Net;
-use ployz_api::{DaemonPayload, DaemonResponse, MachineAddOptions, MeshSelfRecordPayload};
-use ployz_orchestrator::Mesh;
-use ployz_runtime_api::Identity;
-use ployz_runtime_api::{
-    MemoryServiceRuntime, MemoryWireGuard, ServiceHealth, StaticEndpointDiscovery, WireguardDriver,
+use ployz_api::{
+    DaemonPayload, DaemonResponse, MachineAddOptions, MeshSelfRecordPayload, encode_join_response,
 };
+use ployz_orchestrator::Mesh;
 use ployz_store_api::MachineStore;
-use ployz_store_api::memory::MemoryStore;
+use ployz_test_support::{
+    MemoryServiceRuntime, MemoryStore, MemoryWireGuard, ServiceHealth, StaticEndpointDiscovery,
+    memory_wireguard_driver,
+};
 use ployz_types::model::{
-    JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
+    Identity, JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation,
+    PublicKey,
 };
 use ployz_types::time::now_unix_secs;
 use std::path::PathBuf;
@@ -266,9 +268,8 @@ async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
         overlay_ip: "fd00::4".parse().map(OverlayIp).expect("valid overlay"),
         subnet: Some("10.210.2.0/24".parse().expect("valid subnet")),
         endpoints: vec!["203.0.113.10:51820".into()],
-    }
-    .encode()
-    .expect("encode join response");
+    };
+    let encoded = encode_join_response(&join_response).expect("encode join response");
 
     let ssh_dir = unique_temp_dir("ployz-fake-ssh");
     std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
@@ -277,12 +278,10 @@ async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
     let self_record_response = serde_json::to_string(&DaemonResponse {
         ok: true,
         code: "OK".into(),
-        message: join_response.clone(),
+        message: encoded.clone(),
         payload: Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
-            encoded: join_response.clone(),
-            record: JoinResponse::decode(&join_response)
-                .expect("decode join response")
-                .into_seed_machine_record(),
+            encoded,
+            record: join_response.clone().into_seed_machine_record(),
         })),
     })
     .expect("encode self-record response");
@@ -335,9 +334,8 @@ async fn machine_add_accepts_running_joiner_before_full_sync() {
         overlay_ip: "fd00::5".parse().map(OverlayIp).expect("valid overlay"),
         subnet: Some("10.210.1.0/24".parse().expect("valid subnet")),
         endpoints: vec!["203.0.113.11:51820".into()],
-    }
-    .encode()
-    .expect("encode join response");
+    };
+    let encoded = encode_join_response(&join_response).expect("encode join response");
 
     let ssh_dir = unique_temp_dir("ployz-fake-ssh");
     std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
@@ -346,12 +344,10 @@ async fn machine_add_accepts_running_joiner_before_full_sync() {
     let self_record_response = serde_json::to_string(&DaemonResponse {
         ok: true,
         code: "OK".into(),
-        message: join_response.clone(),
+        message: encoded.clone(),
         payload: Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
-            encoded: join_response.clone(),
-            record: JoinResponse::decode(&join_response)
-                .expect("decode join response")
-                .into_seed_machine_record(),
+            encoded,
+            record: join_response.clone().into_seed_machine_record(),
         })),
     })
     .expect("encode self-record response");
@@ -683,7 +679,7 @@ async fn make_state(
         .expect("upsert founder");
 
     let mut mesh = Mesh::new(
-        WireguardDriver::memory_with(network.clone()),
+        memory_wireguard_driver(network.clone()),
         store.clone(),
         store.clone(),
         service,
@@ -711,7 +707,7 @@ async fn make_state(
     state.active = Some(ActiveMesh {
         config,
         mesh,
-        store: StoreDriver::memory_with(store.clone()),
+        store: StoreDriver::from_store(store.clone()),
         remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
@@ -739,7 +735,7 @@ async fn make_state_with_store(
 
     let service = Arc::new(MemoryServiceRuntime::new());
     let mesh = Mesh::new(
-        WireguardDriver::memory_with(Arc::new(MemoryWireGuard::new())),
+        memory_wireguard_driver(Arc::new(MemoryWireGuard::new())),
         store.clone(),
         store.clone(),
         service.clone(),
@@ -764,7 +760,7 @@ async fn make_state_with_store(
     state.active = Some(ActiveMesh {
         config,
         mesh,
-        store: StoreDriver::memory_with(store),
+        store: StoreDriver::from_store(store),
         remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),

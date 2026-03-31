@@ -19,6 +19,7 @@ use std::net::Ipv4Addr;
 use crate::error::{Error, Result};
 use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
 use crate::model::{MachineRecord, OverlayIp, PrivateKey, PublicKey};
+use ployz_runtime_api::Result as RuntimeResult;
 
 use super::PERSISTENT_KEEPALIVE_SECS;
 use super::bridge::{OutboundForward, OverlayBridge};
@@ -580,7 +581,7 @@ fn parse_device_peer_line(line: &str) -> Result<DevicePeer> {
 }
 
 impl MeshNetwork for DockerWireGuard {
-    async fn up(&self) -> Result<()> {
+    async fn up(&self) -> RuntimeResult<()> {
         write_private_key(&self.paths, &self.private_key)
             .map_err(|e| Error::operation("write private key", e.to_string()))?;
 
@@ -686,7 +687,7 @@ impl MeshNetwork for DockerWireGuard {
         *self.bridge_overlay_ip.lock().await
     }
 
-    async fn down(&self) -> Result<()> {
+    async fn down(&self) -> RuntimeResult<()> {
         // Stop bridge first
         if let Some(bridge) = self.bridge.lock().await.take() {
             bridge.stop().await;
@@ -699,7 +700,7 @@ impl MeshNetwork for DockerWireGuard {
         Ok(())
     }
 
-    async fn set_peers(&self, peers: &[MachineRecord]) -> Result<()> {
+    async fn set_peers(&self, peers: &[MachineRecord]) -> RuntimeResult<()> {
         // Include extra peers (bridge + sidecars) in sync config to protect them from syncconf removal
         let extra = self.extra_peers.lock().await;
         let extra_refs: Vec<&BridgePeerInfo> = extra.iter().collect();
@@ -817,11 +818,17 @@ impl MeshNetwork for DockerWireGuard {
 }
 
 impl WireGuardDevice for DockerWireGuard {
-    async fn read_peers(&self) -> Result<Vec<DevicePeer>> {
-        self.read_device_peers().await
+    async fn read_peers(&self) -> RuntimeResult<Vec<DevicePeer>> {
+        self.read_device_peers()
+            .await
+            .map_err(ployz_runtime_api::RuntimeError::from)
     }
 
-    async fn set_peer_endpoint<'a>(&'a self, key: &'a PublicKey, endpoint: &'a str) -> Result<()> {
+    async fn set_peer_endpoint<'a>(
+        &'a self,
+        key: &'a PublicKey,
+        endpoint: &'a str,
+    ) -> RuntimeResult<()> {
         let key = encode_key(&key.0);
         self.exec_in_container(&[
             "wg",
@@ -833,6 +840,7 @@ impl WireGuardDevice for DockerWireGuard {
             endpoint,
         ])
         .await
+        .map_err(ployz_runtime_api::RuntimeError::from)
     }
 }
 

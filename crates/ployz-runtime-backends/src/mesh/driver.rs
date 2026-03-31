@@ -4,12 +4,11 @@ use crate::mesh::wireguard::{DockerWireGuard, HostWireGuard};
 use crate::network::docker_bridge_network;
 use async_trait::async_trait;
 use ployz_runtime_api::{
-    ContainerNetwork, DataplaneFactory, DevicePeer, EndpointDiscovery, Identity, MeshNetwork,
+    ContainerNetwork, DataplaneFactory, DevicePeer, EndpointDiscovery, MeshNetwork,
     Result as RuntimeResult, RuntimeError, WireGuardDevice, WireguardBackend, WireguardBackendMode,
     WireguardDriver,
 };
-use ployz_types::Result;
-use ployz_types::model::{MachineRecord, OverlayIp, PublicKey};
+use ployz_types::model::{Identity, MachineRecord, OverlayIp, PublicKey};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::sync::Arc;
@@ -142,15 +141,15 @@ impl WireguardBackend for DockerWireguardBackend {
         WireguardBackendMode::Docker
     }
 
-    async fn up(&self) -> Result<()> {
+    async fn up(&self) -> RuntimeResult<()> {
         self.inner.up().await
     }
 
-    async fn down(&self) -> Result<()> {
+    async fn down(&self) -> RuntimeResult<()> {
         self.inner.down().await
     }
 
-    async fn set_peers(&self, peers: &[MachineRecord]) -> Result<()> {
+    async fn set_peers(&self, peers: &[MachineRecord]) -> RuntimeResult<()> {
         self.inner.set_peers(peers).await
     }
 
@@ -162,11 +161,11 @@ impl WireguardBackend for DockerWireguardBackend {
         self.inner.bridge_ip().await
     }
 
-    async fn read_peers(&self) -> Result<Vec<DevicePeer>> {
+    async fn read_peers(&self) -> RuntimeResult<Vec<DevicePeer>> {
         self.inner.read_peers().await
     }
 
-    async fn set_peer_endpoint(&self, key: &PublicKey, endpoint: &str) -> Result<()> {
+    async fn set_peer_endpoint(&self, key: &PublicKey, endpoint: &str) -> RuntimeResult<()> {
         self.inner.set_peer_endpoint(key, endpoint).await
     }
 }
@@ -185,15 +184,15 @@ impl WireguardBackend for HostWireguardBackend {
         Some(self.inner.ifname())
     }
 
-    async fn up(&self) -> Result<()> {
+    async fn up(&self) -> RuntimeResult<()> {
         self.inner.up().await
     }
 
-    async fn down(&self) -> Result<()> {
+    async fn down(&self) -> RuntimeResult<()> {
         self.inner.down().await
     }
 
-    async fn set_peers(&self, peers: &[MachineRecord]) -> Result<()> {
+    async fn set_peers(&self, peers: &[MachineRecord]) -> RuntimeResult<()> {
         self.inner.set_peers(peers).await
     }
 
@@ -205,11 +204,11 @@ impl WireguardBackend for HostWireguardBackend {
         self.inner.bridge_ip().await
     }
 
-    async fn read_peers(&self) -> Result<Vec<DevicePeer>> {
+    async fn read_peers(&self) -> RuntimeResult<Vec<DevicePeer>> {
         self.inner.read_peers().await
     }
 
-    async fn set_peer_endpoint(&self, key: &PublicKey, endpoint: &str) -> Result<()> {
+    async fn set_peer_endpoint(&self, key: &PublicKey, endpoint: &str) -> RuntimeResult<()> {
         self.inner.set_peer_endpoint(key, endpoint).await
     }
 }

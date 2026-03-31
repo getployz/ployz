@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
-use ployz_runtime_api::{DeploySession, DeploySessionFactory, StartCandidateRequest};
-use ployz_types::error::Result;
+use ployz_runtime_api::{
+    DeploySession, DeploySessionFactory, Result, RuntimeError, StartCandidateRequest,
+};
 use ployz_types::model::{DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineRecord};
 use ployz_types::spec::Namespace;
 
@@ -20,7 +21,10 @@ impl DeploySession for InProcessDeploySession {
     }
 
     async fn inspect_namespace(&mut self) -> Result<Vec<InstanceStatusRecord>> {
-        self.agent.inspect_namespace(&self.state).await
+        self.agent
+            .inspect_namespace(&self.state)
+            .await
+            .map_err(RuntimeError::from)
     }
 
     async fn start_candidate(
@@ -37,14 +41,21 @@ impl DeploySession for InProcessDeploySession {
                 &req.spec_json,
             )
             .await
+            .map_err(RuntimeError::from)
     }
 
     async fn drain_instance(&mut self, instance_id: &InstanceId) -> Result<()> {
-        self.agent.drain_instance(&self.state, instance_id).await
+        self.agent
+            .drain_instance(&self.state, instance_id)
+            .await
+            .map_err(RuntimeError::from)
     }
 
     async fn remove_instance(&mut self, instance_id: &InstanceId) -> Result<()> {
-        self.agent.remove_instance(&self.state, instance_id).await
+        self.agent
+            .remove_instance(&self.state, instance_id)
+            .await
+            .map_err(RuntimeError::from)
     }
 
     async fn close(self: Box<Self>) -> Result<()> {

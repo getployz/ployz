@@ -14,11 +14,9 @@ use ployz_config::{RuntimeTarget, ServiceMode, corrosion as corrosion_config};
 use ployz_corrosion::{CorrosionBootstrapState, CorrosionStore, Transport};
 use ployz_dns::DnsConfig;
 use ployz_gateway::GatewayConfig;
-use ployz_runtime_api::Identity;
 use ployz_runtime_api::{
-    ContainerNetwork, DataplaneFactory, DisconnectMode, EndpointDiscovery, MemoryServiceRuntime,
-    RestartableWorkload, Result as RuntimeResult, RuntimeError, ServiceRuntime,
-    StaticEndpointDiscovery, WireguardDriver,
+    ContainerNetwork, DataplaneFactory, DisconnectMode, EndpointDiscovery, RestartableWorkload,
+    Result as RuntimeResult, RuntimeError, ServiceRuntime, WireguardDriver,
 };
 use ployz_runtime_backends::mesh::driver as mesh_backends;
 use ployz_runtime_backends::network::docker_bridge_network;
@@ -27,8 +25,11 @@ use ployz_runtime_backends::runtime::{
     corrosion::{docker_corrosion_runtime, host_corrosion_runtime},
     labels::{LABEL_KIND, LABEL_MACHINE, LABEL_MANAGED},
 };
-use ployz_store_api::{BootstrapStateReader, memory::MemoryStore};
-use ployz_types::model::{MachineId, OverlayIp};
+use ployz_test_support::{
+    MemoryServiceRuntime, MemoryStore, MemoryWireGuard, StaticEndpointDiscovery,
+    memory_wireguard_driver,
+};
+use ployz_types::model::{Identity, MachineId, MachineRecord, OverlayIp};
 
 const HEAL_WORKLOAD_STOP_GRACE: tokio::time::Duration = tokio::time::Duration::from_secs(10);
 
@@ -58,7 +59,7 @@ pub(crate) struct RuntimeProfile {
 pub(crate) struct MeshRuntimeComponents {
     pub(crate) network: WireguardDriver,
     pub(crate) store: StoreDriver,
-    pub(crate) bootstrap_state: Arc<dyn BootstrapStateReader>,
+    pub(crate) bootstrap_seed_records: Vec<MachineRecord>,
     pub(crate) store_runtime: Arc<dyn ServiceRuntime>,
     pub(crate) container_network: Option<ContainerNetwork>,
     pub(crate) endpoint_discovery: Arc<dyn EndpointDiscovery>,
@@ -123,15 +124,39 @@ impl RuntimeProfile {
         Some(format!("ployz-{network_name}"))
     }
 
-    #[must_use]
-    pub(crate) fn build_bootstrap_state_reader(
+    pub(crate) async fn load_bootstrap_addrs(
         &self,
         network_dir: &Path,
-    ) -> Arc<dyn BootstrapStateReader> {
+        local_machine_id: &MachineId,
+    ) -> RuntimeResult<Vec<String>> {
         match self.execution_backend {
-            ExecutionBackend::Memory => Arc::new(MemoryStore::new()),
+            ExecutionBackend::Memory => Ok(Vec::new()),
             ExecutionBackend::Docker | ExecutionBackend::Host => {
-                Arc::new(CorrosionBootstrapState::new(network_dir))
+                CorrosionBootstrapState::new(network_dir)
+                    .bootstrap_addrs(local_machine_id)
+                    .await
+                    .map_err(RuntimeError::from)
+            }
+        }
+    }
+
+    pub(crate) async fn load_bootstrap_seed_records(
+        &self,
+        network_dir: &Path,
+    ) -> Vec<MachineRecord> {
+        match self.execution_backend {
+            ExecutionBackend::Memory => Vec::new(),
+            ExecutionBackend::Docker | ExecutionBackend::Host => {
+                CorrosionBootstrapState::new(network_dir)
+                    .seed_machine_records()
+                    .await
+                    .unwrap_or_else(|error| {
+                        tracing::warn!(
+                            ?error,
+                            "failed to load corrosion bootstrap peers, continuing without db seeds"
+                        );
+                        Vec::new()
+                    })
             }
         }
     }
@@ -153,9 +178,9 @@ impl RuntimeProfile {
             ExecutionBackend::Memory => {
                 let store = Arc::new(MemoryStore::new());
                 MeshRuntimeComponents {
-                    network: WireguardDriver::memory(),
+                    network: memory_wireguard_driver(Arc::new(MemoryWireGuard::new())),
                     store: StoreDriver::memory_with(Arc::clone(&store)),
-                    bootstrap_state: store,
+                    bootstrap_seed_records: Vec::new(),
                     store_runtime: Arc::new(MemoryServiceRuntime::new()),
                     container_network: None,
                     endpoint_discovery: Arc::new(StaticEndpointDiscovery::empty()),
@@ -190,7 +215,7 @@ impl RuntimeProfile {
                 MeshRuntimeComponents {
                     network: mesh.network,
                     store: StoreDriver::from_store(store),
-                    bootstrap_state: self.build_bootstrap_state_reader(network_dir),
+                    bootstrap_seed_records: self.load_bootstrap_seed_records(network_dir).await,
                     store_runtime: docker_corrosion_runtime(
                         overlay_ip,
                         network_dir,
@@ -219,7 +244,7 @@ impl RuntimeProfile {
                 MeshRuntimeComponents {
                     network: mesh.network,
                     store: StoreDriver::from_store(store),
-                    bootstrap_state: self.build_bootstrap_state_reader(network_dir),
+                    bootstrap_seed_records: self.load_bootstrap_seed_records(network_dir).await,
                     store_runtime: host_corrosion_runtime(
                         overlay_ip,
                         network_dir,

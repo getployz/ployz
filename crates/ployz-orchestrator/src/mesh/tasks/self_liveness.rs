@@ -75,9 +75,9 @@ mod tests {
     use crate::model::{
         MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
     };
-    use ployz_runtime_api::MemoryWireGuard;
     use ployz_store_api::MachineStore;
-    use ployz_store_api::memory::MemoryStore;
+    use ployz_test_support::MemoryStore;
+    use ployz_test_support::{MemoryWireGuard, memory_wireguard_driver};
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
     use tokio::sync::RwLock;
@@ -119,7 +119,7 @@ mod tests {
         });
 
         let network = Arc::new(MemoryWireGuard::new());
-        let network_driver = WireguardDriver::memory_with(network);
+        let network_driver = memory_wireguard_driver(network);
         let started = Arc::new(AtomicBool::new(false));
         let started_flag = started.clone();
         let (command_tx, command_rx) = mpsc::channel(4);
@@ -182,7 +182,7 @@ mod tests {
         });
 
         publish_liveness(
-            &WireguardDriver::memory_with(Arc::new(MemoryWireGuard::new())),
+            &memory_wireguard_driver(Arc::new(MemoryWireGuard::new())),
             &self_record_tx,
         )
         .await;

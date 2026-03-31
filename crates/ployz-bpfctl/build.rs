@@ -8,7 +8,10 @@ fn main() {
     let repo_dir = manifest_dir.join("../..");
     let ebpf_dir = manifest_dir.join("../../ebpf");
     println!("cargo:rerun-if-changed={}", ebpf_dir.display());
-    println!("cargo:rerun-if-changed={}", repo_dir.join("Cargo.toml").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        repo_dir.join("Cargo.toml").display()
+    );
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS");
     if target_os != "linux" {

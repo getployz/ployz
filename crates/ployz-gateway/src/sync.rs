@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::routes::{GatewaySnapshot, project};
-use ployz_store_api::RoutingStore;
+use ployz_store_api::{RoutingStore, SubscriptionPoll};
 use tracing::{info, warn};
 
 use crate::config::GatewayError;
@@ -37,7 +37,7 @@ where
 
     while refresh_rx.recv().await.is_some() {
         tokio::time::sleep(REFRESH_DEBOUNCE).await;
-        while refresh_rx.try_recv().is_ok() {}
+        while matches!(refresh_rx.try_recv(), SubscriptionPoll::Item(())) {}
         match load_projected_snapshot_from_store(&store).await {
             Ok(next_snapshot) => {
                 let http_routes = next_snapshot.http_routes.len();

@@ -2711,6 +2711,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 name = "ployz-api"
 version = "0.2.2"
 dependencies = [
+ "base64",
  "ployz-types",
  "serde",
  "serde_json",
@@ -2732,8 +2733,12 @@ version = "0.2.2"
 dependencies = [
  "directories",
  "figment",
+ "hostname",
  "libc",
+ "ployz-types",
+ "rand 0.10.0",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "toml 0.8.23",
 ]
@@ -2831,6 +2836,7 @@ dependencies = [
  "ployz-runtime-api",
  "ployz-runtime-backends",
  "ployz-store-api",
+ "ployz-test-support",
  "ployz-types",
  "serde_json",
  "thiserror 2.0.18",
@@ -2845,15 +2851,12 @@ name = "ployz-runtime-api"
 version = "0.2.2"
 dependencies = [
  "async-trait",
- "hostname",
  "ipnet",
  "ployz-types",
- "rand 0.10.0",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
- "x25519-dalek",
 ]
 
 [[package]]
@@ -2908,6 +2911,17 @@ version = "0.2.2"
 dependencies = [
  "async-trait",
  "ployz-types",
+]
+
+[[package]]
+name = "ployz-test-support"
+version = "0.2.2"
+dependencies = [
+ "async-trait",
+ "ipnet",
+ "ployz-runtime-api",
+ "ployz-store-api",
+ "ployz-types",
  "tokio",
  "tracing",
 ]
@@ -2916,14 +2930,13 @@ dependencies = [
 name = "ployz-types"
 version = "0.2.2"
 dependencies = [
- "base64",
  "derive_more",
  "ipnet",
- "rand 0.10.0",
  "serde",
  "serde_json",
  "strum 0.26.3",
  "thiserror 2.0.18",
+ "x25519-dalek",
 ]
 
 [[package]]
@@ -2947,6 +2960,7 @@ dependencies = [
  "ployz-runtime-backends",
  "ployz-sdk",
  "ployz-store-api",
+ "ployz-test-support",
  "ployz-types",
  "rand 0.10.0",
  "serde",

@@ -47,6 +47,7 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MeshReady(_)
             | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::DeployExport(_)
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_) => None,
         })
@@ -66,6 +67,7 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MeshReady(_)
             | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::DeployExport(_)
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_) => None,
         })
@@ -81,6 +83,7 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MeshReady(_)
             | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::DeployExport(_)
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_) => None,
         })
@@ -100,6 +103,7 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::DeployExport(_)
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_) => None,
         })
@@ -115,6 +119,7 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MeshReady(_)
+            | DaemonPayload::DeployExport(_)
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_) => None,
         })
@@ -126,11 +131,17 @@ impl<T: Transport> DaemonClient<T> {
                 namespace: namespace.to_string(),
             })
             .await?;
-        serde_json::from_str(&response.message).map_err(|error| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("failed to decode exported deploy manifest: {error}"),
-            )
+        extract_payload(response, "deploy export", |payload| match payload {
+            DaemonPayload::DeployExport(payload) => Some(payload.manifest),
+            DaemonPayload::Status(_)
+            | DaemonPayload::MeshStatus(_)
+            | DaemonPayload::MachineList(_)
+            | DaemonPayload::MachineAdd(_)
+            | DaemonPayload::MachineRemove(_)
+            | DaemonPayload::MeshReady(_)
+            | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::MachineOperationList(_)
+            | DaemonPayload::MachineOperation(_) => None,
         })
     }
 }
@@ -288,11 +299,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deploy_export_manifest_errors_on_invalid_json() {
+    async fn deploy_export_manifest_errors_on_missing_payload() {
         let transport = StaticTransport::new(DaemonResponse {
             ok: true,
             code: "OK".into(),
-            message: "{not-json}".into(),
+            message: "deploy export".into(),
             payload: None,
         });
         let client = DaemonClient::new(&transport);
@@ -300,12 +311,8 @@ mod tests {
         let error = client
             .deploy_export_manifest("prod")
             .await
-            .expect_err("invalid manifest json should fail");
+            .expect_err("missing deploy export payload should fail");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
-        assert!(
-            error
-                .to_string()
-                .contains("failed to decode exported deploy manifest")
-        );
+        assert!(error.to_string().contains("missing deploy export payload"));
     }
 }

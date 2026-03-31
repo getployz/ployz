@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::daemon::DaemonState;
 use crate::daemon::deploy_control::remote::DeployAgent;
 use crate::daemon::deploy_control::session::DefaultDeploySessionFactory;
-use ployz_api::{DaemonResponse, DeployOptions};
+use ployz_api::{DaemonPayload, DaemonResponse, DeployExportPayload, DeployOptions};
 use ployz_config::RuntimeTarget;
 use ployz_orchestrator::deploy::{apply, preview};
 use ployz_store_api::DeployReadStore;
@@ -121,7 +121,12 @@ impl DaemonState {
             Err(err) => return self.err("DEPLOY_EXPORT_FAILED", format!("{err}")),
         };
         match serde_json::to_string_pretty(&manifest) {
-            Ok(json) => self.ok(json),
+            Ok(json) => self.ok_with_payload(
+                json,
+                Some(DaemonPayload::DeployExport(DeployExportPayload {
+                    manifest,
+                })),
+            ),
             Err(err) => self.err("ENCODE_MANIFEST", format!("encode manifest: {err}")),
         }
     }

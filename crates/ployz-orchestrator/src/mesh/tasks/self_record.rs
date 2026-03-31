@@ -109,7 +109,7 @@ fn apply_mutation(record: &mut MachineRecord, mutation: SelfRecordMutation) {
 mod tests {
     use super::*;
     use crate::model::{MachineId, MachineStatus, PublicKey};
-    use ployz_store_api::memory::MemoryStore;
+    use ployz_test_support::MemoryStore;
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
 

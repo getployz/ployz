@@ -1,6 +1,5 @@
 use async_trait::async_trait;
-use ployz_runtime_api::EndpointDiscovery;
-use ployz_types::Result;
+use ployz_runtime_api::{EndpointDiscovery, Result as RuntimeResult};
 use std::net::IpAddr;
 
 const MIN_ENDPOINT_MTU: u32 = 1280;
@@ -10,7 +9,7 @@ pub struct HostEndpointDiscovery;
 
 #[async_trait]
 impl EndpointDiscovery for HostEndpointDiscovery {
-    async fn detect_endpoints(&self, listen_port: u16) -> Result<Vec<String>> {
+    async fn detect_endpoints(&self, listen_port: u16) -> RuntimeResult<Vec<String>> {
         Ok(list_routable_ips()
             .into_iter()
             .map(|ip| match ip {

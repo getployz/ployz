@@ -1,8 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use ployz_config::{RuntimeTarget, ServiceMode};
-use ployz_runtime_api::Identity;
+use ployz_config::{RuntimeTarget, ServiceMode, load_or_generate_identity};
 use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
@@ -58,7 +57,7 @@ pub async fn run_daemon(
     tracing::info!(?runtime_target, ?service_mode, "starting daemon");
 
     let identity_path = data_dir.join("identity.json");
-    let identity = Identity::load_or_generate(&identity_path)
+    let identity = load_or_generate_identity(&identity_path)
         .map_err(|error| format!("load or generate identity: {error}"))?;
     tracing::info!(machine_id = %identity.machine_id, "loaded identity");
 
@@ -205,8 +204,7 @@ async fn shutdown_active_mesh(state: &Arc<RwLock<DaemonState>>) {
 mod tests {
     use super::*;
     use ployz_api::DaemonRequest;
-    use ployz_runtime_api::Identity;
-    use ployz_types::model::MachineId;
+    use ployz_types::model::{Identity, MachineId};
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::sync::oneshot;
 

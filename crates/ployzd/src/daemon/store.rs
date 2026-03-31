@@ -1,7 +1,8 @@
-use ployz_store_api::memory::MemoryStore;
 use ployz_store_api::{
-    DeployCommitStore, DeployReadStore, DeployWriteStore, InviteStore, MachineStore, SyncProbe,
+    ClusterStore, DeployCommitStore, DeployReadStore, DeployWriteStore, InviteStore, MachineStore,
+    SyncProbe,
 };
+use ployz_test_support::MemoryStore;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -30,15 +31,7 @@ impl StoreDriver {
     #[must_use]
     pub(crate) fn from_store<T>(store: Arc<T>) -> Self
     where
-        T: MachineStore
-            + InviteStore
-            + DeployReadStore
-            + DeployWriteStore
-            + DeployCommitStore
-            + SyncProbe
-            + Send
-            + Sync
-            + 'static,
+        T: ClusterStore + 'static,
     {
         Self {
             machine: Arc::clone(&store) as Arc<dyn MachineStore>,

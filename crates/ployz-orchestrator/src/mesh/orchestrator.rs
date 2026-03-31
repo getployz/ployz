@@ -10,7 +10,7 @@ use crate::mesh::tasks::{
 use crate::model::{MachineId, MachineRecord, MachineStatus};
 use ployz_runtime_api::{
     ContainerNetwork, DataplaneFactory, EndpointDiscovery, MeshDataplane, MeshNetwork,
-    ServiceRuntime, WireguardBackendMode, WireguardDriver,
+    RuntimeError, ServiceRuntime, WireguardBackendMode, WireguardDriver,
 };
 use ployz_store_api::{MachineStore, SyncProbe, SyncStatus};
 use std::net::Ipv4Addr;
@@ -29,6 +29,8 @@ pub enum MeshError {
     Transition(#[from] TransitionError),
     #[error(transparent)]
     Port(#[from] PortError),
+    #[error(transparent)]
+    Runtime(#[from] RuntimeError),
     #[error(transparent)]
     Task(#[from] TaskSetError),
 }
@@ -267,7 +269,7 @@ impl Mesh {
         self.endpoint_discovery
             .detect_endpoints(self.listen_port)
             .await
-            .map_err(MeshError::Port)
+            .map_err(MeshError::Runtime)
     }
 
     fn apply(&mut self, event: PhaseEvent) -> Result<()> {
@@ -696,28 +698,6 @@ impl Mesh {
     /// Wait for the store to accept its schema and serve queries.
     async fn wait_store_init(&self) -> Result<()> {
         let timeout = Duration::from_secs(30);
-        let init_ok = poll_until(
-            timeout,
-            Duration::from_millis(100),
-            Duration::from_secs(2),
-            || async {
-                match self.store.init().await {
-                    Ok(()) => true,
-                    Err(e) => {
-                        info!(?e, "store not ready, retrying");
-                        false
-                    }
-                }
-            },
-        )
-        .await;
-        if !init_ok {
-            return Err(MeshError::Port(PortError::operation(
-                "store init",
-                format!("store did not become ready within {timeout:?}"),
-            )));
-        }
-
         let query_ok = poll_until(
             timeout,
             Duration::from_millis(100),

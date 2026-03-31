@@ -10,6 +10,7 @@ use defguard_wireguard_rs::key::Key;
 use defguard_wireguard_rs::net::IpAddrMask;
 use defguard_wireguard_rs::peer::Peer;
 use defguard_wireguard_rs::{InterfaceConfiguration, WGApi, WireguardInterfaceApi};
+use ployz_runtime_api::{Result as RuntimeResult, RuntimeError};
 
 use crate::error::{Error, Result};
 use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
@@ -245,7 +246,7 @@ fn del_route(cidr: &str, ifname: &str) -> Result<()> {
 }
 
 impl MeshNetwork for HostWireGuard {
-    async fn up(&self) -> Result<()> {
+    async fn up(&self) -> RuntimeResult<()> {
         self.with_api(|backend| {
             wg_create_interface(backend)?;
 
@@ -280,7 +281,7 @@ impl MeshNetwork for HostWireGuard {
         Ok(())
     }
 
-    async fn down(&self) -> Result<()> {
+    async fn down(&self) -> RuntimeResult<()> {
         #[cfg(target_os = "linux")]
         {
             let _ = del_route("fd00::/8", &self.ifname);
@@ -293,7 +294,7 @@ impl MeshNetwork for HostWireGuard {
         Ok(())
     }
 
-    async fn set_peers(&self, peers: &[MachineRecord]) -> Result<()> {
+    async fn set_peers(&self, peers: &[MachineRecord]) -> RuntimeResult<()> {
         let desired: Vec<Peer> = peers
             .iter()
             .map(machine_to_peer)
@@ -359,7 +360,7 @@ impl MeshNetwork for HostWireGuard {
 }
 
 impl WireGuardDevice for HostWireGuard {
-    async fn read_peers(&self) -> Result<Vec<DevicePeer>> {
+    async fn read_peers(&self) -> RuntimeResult<Vec<DevicePeer>> {
         let backend = self.lock_backend();
         let peers = wg_read_peers(&backend)?;
         let device_peers = peers
@@ -373,7 +374,11 @@ impl WireGuardDevice for HostWireGuard {
         Ok(device_peers)
     }
 
-    async fn set_peer_endpoint<'a>(&'a self, key: &'a PublicKey, endpoint: &'a str) -> Result<()> {
+    async fn set_peer_endpoint<'a>(
+        &'a self,
+        key: &'a PublicKey,
+        endpoint: &'a str,
+    ) -> RuntimeResult<()> {
         let endpoint: SocketAddr = endpoint
             .parse()
             .map_err(|e| Error::operation("set peer endpoint", format!("{e}")))?;
@@ -381,12 +386,12 @@ impl WireGuardDevice for HostWireGuard {
         let mut peers = wg_read_peers(&backend)?;
         let key = Key::new(key.0);
         let Some(peer) = peers.iter_mut().find(|peer| peer.public_key == key) else {
-            return Err(Error::operation(
+            return Err(RuntimeError::operation(
                 "set peer endpoint",
                 "peer not found".to_string(),
             ));
         };
         peer.endpoint = Some(endpoint);
-        wg_configure_peer(&backend, peer)
+        Ok(wg_configure_peer(&backend, peer)?)
     }
 }

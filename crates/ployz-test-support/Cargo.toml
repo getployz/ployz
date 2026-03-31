@@ -1,0 +1,17 @@
+[package]
+name = "ployz-test-support"
+version.workspace = true
+edition = "2024"
+publish = false
+
+[dependencies]
+async-trait = { workspace = true }
+ipnet = { workspace = true }
+ployz-runtime-api = { path = "../ployz-runtime-api" }
+ployz-store-api = { path = "../ployz-store-api" }
+ployz-types = { path = "../ployz-types" }
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

@@ -307,8 +307,10 @@ mod tests {
     use crate::mesh::probe::{ProbeListenerFamily, probe_port_test_lock, run_probe_listener_task};
     use crate::mesh::tasks::run_self_record_writer_task;
     use crate::model::{MachineStatus, OverlayIp, PublicKey};
-    use ployz_runtime_api::{DevicePeer, MemoryServiceRuntime, MemoryWireGuard, WireguardDriver};
-    use ployz_store_api::memory::MemoryStore;
+    use ployz_runtime_api::DevicePeer;
+    use ployz_test_support::{
+        MemoryServiceRuntime, MemoryStore, MemoryWireGuard, memory_wireguard_driver,
+    };
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
     use std::sync::MutexGuard;
@@ -485,7 +487,7 @@ mod tests {
         }]);
 
         let mut state = ParticipationState::default();
-        let network_driver = WireguardDriver::memory_with(network);
+        let network_driver = memory_wireguard_driver(network);
         let machine_store: Arc<dyn MachineStore> = store.clone();
 
         for _ in 0..3 {
@@ -534,7 +536,7 @@ mod tests {
         }]);
 
         let mut state = ParticipationState::default();
-        let network_driver = WireguardDriver::memory_with(network);
+        let network_driver = memory_wireguard_driver(network);
         let machine_store: Arc<dyn MachineStore> = store.clone();
 
         for _ in 0..3 {
@@ -586,7 +588,7 @@ mod tests {
         let probe_readiness =
             Arc::new(ProbeListenerReadiness::new(Some(ProbeListenerFamily::Ipv6)));
         let mut state = ParticipationState::default();
-        let network_driver = WireguardDriver::memory_with(network);
+        let network_driver = memory_wireguard_driver(network);
         let machine_store: Arc<dyn MachineStore> = store.clone();
 
         for _ in 0..3 {
@@ -640,7 +642,7 @@ mod tests {
             Arc::new(ProbeListenerReadiness::new(Some(ProbeListenerFamily::Ipv6)));
         probe_readiness.set_family_ready(ProbeListenerFamily::Ipv6, true);
         let mut state = ParticipationState::default();
-        let network_driver = WireguardDriver::memory_with(network);
+        let network_driver = memory_wireguard_driver(network);
         let machine_store: Arc<dyn MachineStore> = store.clone();
 
         participation_once(
@@ -706,7 +708,7 @@ mod tests {
             forced_participation: Some(Participation::Disabled),
             ..ParticipationState::default()
         };
-        let network_driver = WireguardDriver::memory_with(network);
+        let network_driver = memory_wireguard_driver(network);
         let machine_store: Arc<dyn MachineStore> = store.clone();
 
         for _ in 0..3 {
