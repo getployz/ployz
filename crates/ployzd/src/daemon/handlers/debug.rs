@@ -113,7 +113,7 @@ mod tests {
     use crate::daemon::DaemonRuntimeConfig;
     use crate::mesh_state::network::DEFAULT_CLUSTER_CIDR;
     use ployz_api::DebugTickTask;
-    use ployz_runtime_api::Identity;
+    use ployz_types::model::Identity;
 
     #[tokio::test]
     async fn debug_tick_rejects_when_no_mesh_is_running() {

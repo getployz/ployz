@@ -4,11 +4,21 @@ use bollard::models::{
     NetworkCreateRequest, NetworkDisconnectRequest,
 };
 use ipnet::Ipv4Net;
-use ployz_runtime_api::{DisconnectMode, container_ip, machine_ip};
+use ployz_runtime_api::DisconnectMode;
 use std::net::Ipv4Addr;
 use tracing::{info, warn};
 
 use crate::error::{Error, Result};
+
+fn machine_ip(subnet: &Ipv4Net) -> Ipv4Addr {
+    let start = u32::from(subnet.network());
+    Ipv4Addr::from(start + 1)
+}
+
+fn container_ip(subnet: &Ipv4Net) -> Ipv4Addr {
+    let start = u32::from(subnet.network());
+    Ipv4Addr::from(start + 2)
+}
 
 /// Manages an IPv4 Docker bridge network for container connectivity.
 pub struct DockerBridgeNetwork {

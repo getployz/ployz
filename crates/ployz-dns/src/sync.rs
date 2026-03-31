@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use ployz_store_api::RoutingStore;
+use ployz_store_api::{RoutingStore, SubscriptionPoll};
 use tracing::{info, warn};
 
 use crate::config::DnsError;
@@ -24,7 +24,7 @@ where
 
     while refresh_rx.recv().await.is_some() {
         tokio::time::sleep(REFRESH_DEBOUNCE).await;
-        while refresh_rx.try_recv().is_ok() {}
+        while matches!(refresh_rx.try_recv(), SubscriptionPoll::Item(())) {}
         match store.load_routing_state().await {
             Ok(state) => {
                 let next = project_dns(&state);

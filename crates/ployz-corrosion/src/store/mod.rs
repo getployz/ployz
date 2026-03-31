@@ -4,9 +4,9 @@ use async_trait::async_trait;
 use corro_api_types::{ExecResult, Statement};
 use ployz_config::corrosion as corrosion_config;
 use ployz_store_api::{
-    DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore, InviteStore,
+    ClusterStore, DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore, InviteStore,
     MachineEventSubscription, MachineStore, RoutingInvalidationSubscription, RoutingStore,
-    SyncProbe, SyncStatus,
+    SubscriptionPoll, SyncProbe, SyncStatus,
 };
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
@@ -16,7 +16,7 @@ use ployz_types::model::{
 use ployz_types::spec::Namespace;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use tokio::sync::mpsc;
+use tokio::sync::{OnceCell, mpsc};
 use tracing::info;
 
 mod shared;
@@ -30,6 +30,7 @@ pub struct CorrosionStore {
     client: CorrClient,
     admin: Option<AdminClient>,
     gossip_addr: SocketAddr,
+    schema_ready: OnceCell<()>,
 }
 
 impl CorrosionStore {
@@ -40,6 +41,7 @@ impl CorrosionStore {
             client,
             admin: admin_path.map(AdminClient::new),
             gossip_addr: SocketAddr::new(api_addr.ip(), corrosion_config::DEFAULT_GOSSIP_PORT),
+            schema_ready: OnceCell::new(),
         }
     }
 
@@ -114,6 +116,53 @@ impl CorrosionStore {
     ) -> Result<(RoutingState, mpsc::Receiver<RoutingState>)> {
         workflows::routing_state::subscribe_routing_state_inner(&self.client).await
     }
+
+    async fn ensure_schema(&self) -> Result<()> {
+        self.schema_ready
+            .get_or_try_init(|| async {
+                let res = self
+                    .client
+                    .schema(&[Statement::Simple(SCHEMA_SQL.to_string())])
+                    .await
+                    .map_err(|e| Error::operation("schema", e.to_string()))?;
+                if let Some(ExecResult::Error { error }) = res.results.first() {
+                    return Err(Error::operation("schema", error.clone()));
+                }
+                Ok(())
+            })
+            .await
+            .map(|_| ())
+    }
+}
+
+struct MachineEventReceiver {
+    inner: mpsc::Receiver<ployz_types::model::MachineEvent>,
+}
+
+#[async_trait]
+impl ployz_store_api::MachineEventReceiver for MachineEventReceiver {
+    async fn recv(&mut self) -> Option<ployz_types::model::MachineEvent> {
+        self.inner.recv().await
+    }
+}
+
+struct RoutingRefreshReceiver {
+    inner: mpsc::Receiver<()>,
+}
+
+#[async_trait]
+impl ployz_store_api::RoutingInvalidationReceiver for RoutingRefreshReceiver {
+    async fn recv(&mut self) -> Option<()> {
+        self.inner.recv().await
+    }
+
+    fn try_recv(&mut self) -> SubscriptionPoll<()> {
+        match self.inner.try_recv() {
+            Ok(()) => SubscriptionPoll::Item(()),
+            Err(mpsc::error::TryRecvError::Empty) => SubscriptionPoll::Empty,
+            Err(mpsc::error::TryRecvError::Disconnected) => SubscriptionPoll::Closed,
+        }
+    }
 }
 
 #[async_trait]
@@ -155,43 +204,40 @@ impl SyncProbe for CorrosionStore {
 
 #[async_trait]
 impl MachineStore for CorrosionStore {
-    async fn init(&self) -> Result<()> {
-        let res = self
-            .client
-            .schema(&[Statement::Simple(SCHEMA_SQL.to_string())])
-            .await
-            .map_err(|e| Error::operation("schema", e.to_string()))?;
-        if let Some(ExecResult::Error { error }) = res.results.first() {
-            return Err(Error::operation("schema", error.clone()));
-        }
-        Ok(())
-    }
-
     async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
+        self.ensure_schema().await?;
         tables::machines::list_machines(&self.client).await
     }
 
     async fn upsert_self_machine(&self, record: &MachineRecord) -> Result<()> {
+        self.ensure_schema().await?;
         tables::machines::upsert_self_machine(&self.client, record).await
     }
 
     async fn delete_machine(&self, id: &MachineId) -> Result<()> {
+        self.ensure_schema().await?;
         tables::machines::delete_machine(&self.client, id).await
     }
 
     async fn subscribe_machines(&self) -> Result<(Vec<MachineRecord>, MachineEventSubscription)> {
+        self.ensure_schema().await?;
         let (snapshot, receiver) = tables::machines::subscribe_machines(&self.client).await?;
-        Ok((snapshot, MachineEventSubscription::new(receiver)))
+        Ok((
+            snapshot,
+            MachineEventSubscription::new(Box::new(MachineEventReceiver { inner: receiver })),
+        ))
     }
 }
 
 #[async_trait]
 impl InviteStore for CorrosionStore {
     async fn create_invite(&self, invite: &InviteRecord) -> Result<()> {
+        self.ensure_schema().await?;
         tables::invites::create_invite(&self.client, invite).await
     }
 
     async fn consume_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<()> {
+        self.ensure_schema().await?;
         tables::invites::consume_invite(&self.client, invite_id, now_unix_secs).await
     }
 }
@@ -199,13 +245,17 @@ impl InviteStore for CorrosionStore {
 #[async_trait]
 impl RoutingStore for CorrosionStore {
     async fn load_routing_state(&self) -> Result<RoutingState> {
+        self.ensure_schema().await?;
         workflows::routing_state::load_routing_state(&self.client).await
     }
 
     async fn subscribe_routing_invalidations(&self) -> Result<RoutingInvalidationSubscription> {
+        self.ensure_schema().await?;
         let receiver =
             workflows::routing_state::subscribe_routing_invalidations(&self.client).await?;
-        Ok(RoutingInvalidationSubscription::new(receiver))
+        Ok(RoutingInvalidationSubscription::new(Box::new(
+            RoutingRefreshReceiver { inner: receiver },
+        )))
     }
 }
 
@@ -215,6 +265,7 @@ impl DeployReadStore for CorrosionStore {
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<ServiceRevisionRecord>> {
+        self.ensure_schema().await?;
         tables::service_revisions::list_service_revisions(&self.client, namespace).await
     }
 
@@ -222,6 +273,7 @@ impl DeployReadStore for CorrosionStore {
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<ServiceReleaseRecord>> {
+        self.ensure_schema().await?;
         tables::service_releases::list_service_releases(&self.client, namespace).await
     }
 
@@ -229,10 +281,12 @@ impl DeployReadStore for CorrosionStore {
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<InstanceStatusRecord>> {
+        self.ensure_schema().await?;
         tables::instance_status::list_instance_status(&self.client, namespace).await
     }
 
     async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
+        self.ensure_schema().await?;
         tables::deploys::get_deploy(&self.client, deploy_id).await
     }
 }
@@ -240,26 +294,32 @@ impl DeployReadStore for CorrosionStore {
 #[async_trait]
 impl DeployWriteStore for CorrosionStore {
     async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
+        self.ensure_schema().await?;
         tables::service_revisions::upsert_service_revision(&self.client, record).await
     }
 
     async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> Result<()> {
+        self.ensure_schema().await?;
         tables::service_releases::upsert_service_release(&self.client, record).await
     }
 
     async fn delete_service_release(&self, namespace: &Namespace, service: &str) -> Result<()> {
+        self.ensure_schema().await?;
         tables::service_releases::delete_service_release(&self.client, namespace, service).await
     }
 
     async fn upsert_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
+        self.ensure_schema().await?;
         tables::instance_status::upsert_instance_status(&self.client, record).await
     }
 
     async fn delete_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
+        self.ensure_schema().await?;
         tables::instance_status::delete_instance_status(&self.client, instance_id).await
     }
 
     async fn upsert_deploy(&self, record: &DeployRecord) -> Result<()> {
+        self.ensure_schema().await?;
         tables::deploys::upsert_deploy(&self.client, record).await
     }
 }
@@ -267,6 +327,9 @@ impl DeployWriteStore for CorrosionStore {
 #[async_trait]
 impl DeployCommitStore for CorrosionStore {
     async fn apply_deploy_commit(&self, commit: &DeployCommit) -> Result<()> {
+        self.ensure_schema().await?;
         workflows::deploy_commit::apply_deploy_commit(&self.client, commit).await
     }
 }
+
+impl ClusterStore for CorrosionStore {}

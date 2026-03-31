@@ -1,12 +1,12 @@
 use std::future::Future;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use ipnet::Ipv4Net;
-use ployz_types::Result;
-use ployz_types::error::Error;
 use ployz_types::model::{MachineRecord, OverlayIp, PublicKey};
 use tokio::time::Instant;
+
+use crate::Result;
 
 pub trait MeshNetwork: Send + Sync {
     fn up(&self) -> impl Future<Output = Result<()>> + Send + '_;
@@ -114,32 +114,13 @@ pub trait WireguardBackend: Send + Sync {
 #[derive(Clone)]
 pub struct WireguardDriver {
     backend: Arc<dyn WireguardBackend>,
-    memory: Option<Arc<MemoryWireGuard>>,
 }
 
 impl WireguardDriver {
-    #[must_use]
-    pub fn memory() -> Self {
-        Self::memory_with(Arc::new(MemoryWireGuard::new()))
-    }
-
-    #[must_use]
-    pub fn memory_with(memory: Arc<MemoryWireGuard>) -> Self {
-        Self {
-            backend: Arc::new(MemoryWireguardBackend {
-                memory: Arc::clone(&memory),
-            }),
-            memory: Some(memory),
-        }
-    }
-
     #[doc(hidden)]
     #[must_use]
     pub fn from_backend(backend: Arc<dyn WireguardBackend>) -> Self {
-        Self {
-            backend,
-            memory: None,
-        }
+        Self { backend }
     }
 
     #[must_use]
@@ -158,11 +139,6 @@ impl WireguardDriver {
             Some(ifname) if self.mode() == WireguardBackendMode::Host => ifname.to_string(),
             Some(_) | None => bridge_ifname.to_string(),
         }
-    }
-
-    #[must_use]
-    pub fn memory_backend(&self) -> Option<Arc<MemoryWireGuard>> {
-        self.memory.as_ref().map(Arc::clone)
     }
 }
 
@@ -195,37 +171,6 @@ impl WireGuardDevice for WireguardDriver {
 
     async fn set_peer_endpoint(&self, key: &PublicKey, endpoint: &str) -> Result<()> {
         self.backend.set_peer_endpoint(key, endpoint).await
-    }
-}
-
-struct MemoryWireguardBackend {
-    memory: Arc<MemoryWireGuard>,
-}
-
-#[async_trait]
-impl WireguardBackend for MemoryWireguardBackend {
-    fn mode(&self) -> WireguardBackendMode {
-        WireguardBackendMode::Memory
-    }
-
-    async fn up(&self) -> Result<()> {
-        self.memory.up().await
-    }
-
-    async fn down(&self) -> Result<()> {
-        self.memory.down().await
-    }
-
-    async fn set_peers(&self, peers: &[MachineRecord]) -> Result<()> {
-        self.memory.set_peers(peers).await
-    }
-
-    async fn read_peers(&self) -> Result<Vec<DevicePeer>> {
-        self.memory.read_peers().await
-    }
-
-    async fn set_peer_endpoint(&self, key: &PublicKey, endpoint: &str) -> Result<()> {
-        self.memory.set_peer_endpoint(key, endpoint).await
     }
 }
 
@@ -275,150 +220,4 @@ impl ContainerNetwork {
     pub fn container_v4(&self) -> std::net::Ipv4Addr {
         self.backend.container_v4()
     }
-}
-
-#[derive(Clone, Default)]
-pub struct StaticEndpointDiscovery {
-    endpoints: Arc<Vec<String>>,
-}
-
-impl StaticEndpointDiscovery {
-    #[must_use]
-    pub fn new(endpoints: Vec<String>) -> Self {
-        Self {
-            endpoints: Arc::new(endpoints),
-        }
-    }
-
-    #[must_use]
-    pub fn empty() -> Self {
-        Self::new(Vec::new())
-    }
-}
-
-#[async_trait]
-impl EndpointDiscovery for StaticEndpointDiscovery {
-    async fn detect_endpoints(&self, _listen_port: u16) -> Result<Vec<String>> {
-        Ok(self.endpoints.as_ref().clone())
-    }
-}
-
-pub struct MemoryWireGuard {
-    inner: Mutex<WgInner>,
-}
-
-struct WgInner {
-    is_up: bool,
-    peers: Vec<MachineRecord>,
-    device_peers: Vec<DevicePeer>,
-    set_peers_count: usize,
-    fail_up: bool,
-    fail_down: bool,
-}
-
-impl Default for MemoryWireGuard {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl MemoryWireGuard {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            inner: Mutex::new(WgInner {
-                is_up: false,
-                peers: Vec::new(),
-                device_peers: Vec::new(),
-                set_peers_count: 0,
-                fail_up: false,
-                fail_down: false,
-            }),
-        }
-    }
-
-    fn lock_inner(&self) -> MutexGuard<'_, WgInner> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    pub fn set_fail_up(&self, mode: ObserveMode) {
-        self.lock_inner().fail_up = matches!(mode, ObserveMode::Enabled);
-    }
-
-    pub fn set_fail_down(&self, mode: ObserveMode) {
-        self.lock_inner().fail_down = matches!(mode, ObserveMode::Enabled);
-    }
-
-    pub fn is_up(&self) -> bool {
-        self.lock_inner().is_up
-    }
-
-    pub fn set_peers_count(&self) -> usize {
-        self.lock_inner().set_peers_count
-    }
-
-    pub fn current_peers(&self) -> Vec<MachineRecord> {
-        self.lock_inner().peers.clone()
-    }
-
-    pub fn set_device_peers(&self, peers: Vec<DevicePeer>) {
-        self.lock_inner().device_peers = peers;
-    }
-}
-
-impl MeshNetwork for MemoryWireGuard {
-    async fn up(&self) -> Result<()> {
-        let mut inner = self.lock_inner();
-        if inner.fail_up {
-            return Err(Error::operation("wireguard up", "injected failure"));
-        }
-        inner.is_up = true;
-        Ok(())
-    }
-
-    async fn down(&self) -> Result<()> {
-        let mut inner = self.lock_inner();
-        if inner.fail_down {
-            return Err(Error::operation("wireguard down", "injected failure"));
-        }
-        inner.is_up = false;
-        Ok(())
-    }
-
-    async fn set_peers(&self, peers: &[MachineRecord]) -> Result<()> {
-        let mut inner = self.lock_inner();
-        inner.peers = peers.to_vec();
-        inner.set_peers_count += 1;
-        Ok(())
-    }
-}
-
-impl WireGuardDevice for MemoryWireGuard {
-    async fn read_peers(&self) -> Result<Vec<DevicePeer>> {
-        Ok(self.lock_inner().device_peers.clone())
-    }
-
-    async fn set_peer_endpoint<'a>(&'a self, key: &'a PublicKey, endpoint: &'a str) -> Result<()> {
-        let mut inner = self.lock_inner();
-        for peer in &mut inner.device_peers {
-            if peer.public_key == *key {
-                peer.endpoint = Some(endpoint.to_string());
-            }
-        }
-        Ok(())
-    }
-}
-
-#[must_use]
-pub fn machine_ip(subnet: &Ipv4Net) -> std::net::Ipv4Addr {
-    let start = u32::from(subnet.network());
-    std::net::Ipv4Addr::from(start + 1)
-}
-
-#[must_use]
-pub fn container_ip(subnet: &Ipv4Net) -> std::net::Ipv4Addr {
-    let start = u32::from(subnet.network());
-    std::net::Ipv4Addr::from(start + 2)
 }

@@ -381,11 +381,13 @@ mod tests {
     use crate::daemon::store::StoreDriver;
     use crate::mesh_state::network::NetworkConfig;
     use ployz_orchestrator::Mesh;
-    use ployz_runtime_api::Identity;
-    use ployz_runtime_api::{
-        DevicePeer, MemoryServiceRuntime, MemoryWireGuard, StaticEndpointDiscovery, WireguardDriver,
+    use ployz_runtime_api::DevicePeer;
+    use ployz_store_api::MachineStore;
+    use ployz_test_support::{
+        MemoryServiceRuntime, MemoryStore, MemoryWireGuard, StaticEndpointDiscovery,
+        memory_wireguard_driver,
     };
-    use ployz_store_api::{MachineStore, memory::MemoryStore};
+    use ployz_types::model::Identity;
     use ployz_types::model::{MachineId, MachineStatus, OverlayIp, Participation, PublicKey};
     use std::net::Ipv6Addr;
     use std::path::PathBuf;
@@ -533,7 +535,7 @@ mod tests {
             .expect("upsert self");
 
         let mesh = Mesh::new(
-            WireguardDriver::memory_with(network.clone()),
+            memory_wireguard_driver(network.clone()),
             store.clone(),
             store.clone(),
             service,
@@ -558,7 +560,7 @@ mod tests {
         state.active = Some(ActiveMesh {
             config,
             mesh,
-            store: StoreDriver::memory_with(store.clone()),
+            store: StoreDriver::from_store(store.clone()),
             remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
@@ -601,7 +603,7 @@ mod tests {
         let service = Arc::new(MemoryServiceRuntime::new());
         let network = Arc::new(MemoryWireGuard::new());
         let mesh = Mesh::new(
-            WireguardDriver::memory_with(network),
+            memory_wireguard_driver(network),
             store.clone(),
             store.clone(),
             service,
@@ -615,7 +617,7 @@ mod tests {
         ActiveMesh {
             config,
             mesh,
-            store: StoreDriver::memory_with(store),
+            store: StoreDriver::from_store(store),
             remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),

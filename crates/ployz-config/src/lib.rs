@@ -1,4 +1,5 @@
 pub mod corrosion;
+pub mod identity;
 
 use directories::{BaseDirs, ProjectDirs};
 use figment::Figment;
@@ -6,6 +7,8 @@ use figment::providers::{Env, Format, Serialized, Toml};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+
+pub use identity::{IdentityConfigError, load_identity, load_or_generate_identity, save_identity};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Os {

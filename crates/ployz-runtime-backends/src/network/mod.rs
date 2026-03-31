@@ -3,15 +3,17 @@ pub mod docker_bridge;
 use async_trait::async_trait;
 use docker_bridge::DockerBridgeNetwork;
 use ipnet::Ipv4Net;
-use ployz_runtime_api::{ContainerNetwork, ContainerNetworkBackend, DisconnectMode};
-use ployz_types::Result;
+use ployz_runtime_api::{
+    ContainerNetwork, ContainerNetworkBackend, DisconnectMode, Result as RuntimeResult,
+    RuntimeError,
+};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 pub async fn docker_bridge_network(
     mesh_name: &str,
     subnet_v4: Ipv4Net,
-) -> Result<ContainerNetwork> {
+) -> RuntimeResult<ContainerNetwork> {
     let network = DockerBridgeNetwork::new(mesh_name, subnet_v4).await?;
     Ok(ContainerNetwork::from_backend(Arc::new(
         DockerBridgeBackend { inner: network },
@@ -24,24 +26,33 @@ struct DockerBridgeBackend {
 
 #[async_trait]
 impl ContainerNetworkBackend for DockerBridgeBackend {
-    async fn ensure(&self) -> Result<()> {
-        self.inner.ensure().await
+    async fn ensure(&self) -> RuntimeResult<()> {
+        self.inner.ensure().await.map_err(RuntimeError::from)
     }
 
-    async fn connect(&self, container: &str, ipv4: Option<Ipv4Addr>) -> Result<()> {
-        self.inner.connect(container, ipv4).await
+    async fn connect(&self, container: &str, ipv4: Option<Ipv4Addr>) -> RuntimeResult<()> {
+        self.inner
+            .connect(container, ipv4)
+            .await
+            .map_err(RuntimeError::from)
     }
 
-    async fn disconnect(&self, container: &str, mode: DisconnectMode) -> Result<()> {
-        self.inner.disconnect(container, mode).await
+    async fn disconnect(&self, container: &str, mode: DisconnectMode) -> RuntimeResult<()> {
+        self.inner
+            .disconnect(container, mode)
+            .await
+            .map_err(RuntimeError::from)
     }
 
-    async fn remove(&self) -> Result<()> {
-        self.inner.remove().await
+    async fn remove(&self) -> RuntimeResult<()> {
+        self.inner.remove().await.map_err(RuntimeError::from)
     }
 
-    async fn resolve_bridge_ifname(&self) -> Result<String> {
-        self.inner.resolve_bridge_ifname().await
+    async fn resolve_bridge_ifname(&self) -> RuntimeResult<String> {
+        self.inner
+            .resolve_bridge_ifname()
+            .await
+            .map_err(RuntimeError::from)
     }
 
     fn container_v4(&self) -> Ipv4Addr {

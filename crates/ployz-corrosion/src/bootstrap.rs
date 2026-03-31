@@ -1,8 +1,6 @@
-use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 
 use ployz_config::corrosion as corrosion_config;
-use ployz_store_api::BootstrapStateReader;
 use ployz_types::error::Error;
 use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
 
@@ -124,14 +122,13 @@ fn corrosion_bootstrap_from_db(
         .collect())
 }
 
-#[async_trait]
-impl BootstrapStateReader for CorrosionBootstrapState {
-    async fn seed_machine_records(&self) -> ployz_types::Result<Vec<MachineRecord>> {
+impl CorrosionBootstrapState {
+    pub async fn seed_machine_records(&self) -> ployz_types::Result<Vec<MachineRecord>> {
         peer_records_from_db(&self.network_dir)
             .map_err(|error| Error::operation("seed_machine_records", error))
     }
 
-    async fn bootstrap_addrs(
+    pub async fn bootstrap_addrs(
         &self,
         local_machine_id: &MachineId,
     ) -> ployz_types::Result<Vec<String>> {
@@ -144,7 +141,6 @@ impl BootstrapStateReader for CorrosionBootstrapState {
 mod tests {
     use super::CorrosionBootstrapState;
     use ployz_config::corrosion as corrosion_config;
-    use ployz_store_api::BootstrapStateReader;
     use ployz_types::model::MachineId;
     use std::fs;
     use std::path::Path;

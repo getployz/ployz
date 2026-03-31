@@ -24,6 +24,7 @@ uuid = { workspace = true }
 libc = { workspace = true }
 
 [dev-dependencies]
+ployz-test-support = { path = "../ployz-test-support" }
 ployz-runtime-backends = { path = "../ployz-runtime-backends" }
 
 [lints]

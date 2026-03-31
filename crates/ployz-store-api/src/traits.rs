@@ -5,17 +5,28 @@ use ployz_types::model::{
     MachineId, MachineRecord, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
 };
 use ployz_types::spec::Namespace;
-use tokio::sync::mpsc;
 
 pub type MachineSubscription = (Vec<MachineRecord>, MachineEventSubscription);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubscriptionPoll<T> {
+    Item(T),
+    Empty,
+    Closed,
+}
+
+#[async_trait]
+pub trait MachineEventReceiver: Send {
+    async fn recv(&mut self) -> Option<MachineEvent>;
+}
+
 pub struct MachineEventSubscription {
-    inner: mpsc::Receiver<MachineEvent>,
+    inner: Box<dyn MachineEventReceiver>,
 }
 
 impl MachineEventSubscription {
     #[must_use]
-    pub fn new(inner: mpsc::Receiver<MachineEvent>) -> Self {
+    pub fn new(inner: Box<dyn MachineEventReceiver>) -> Self {
         Self { inner }
     }
 
@@ -24,13 +35,20 @@ impl MachineEventSubscription {
     }
 }
 
+#[async_trait]
+pub trait RoutingInvalidationReceiver: Send {
+    async fn recv(&mut self) -> Option<()>;
+
+    fn try_recv(&mut self) -> SubscriptionPoll<()>;
+}
+
 pub struct RoutingInvalidationSubscription {
-    inner: mpsc::Receiver<()>,
+    inner: Box<dyn RoutingInvalidationReceiver>,
 }
 
 impl RoutingInvalidationSubscription {
     #[must_use]
-    pub fn new(inner: mpsc::Receiver<()>) -> Self {
+    pub fn new(inner: Box<dyn RoutingInvalidationReceiver>) -> Self {
         Self { inner }
     }
 
@@ -38,17 +56,13 @@ impl RoutingInvalidationSubscription {
         self.inner.recv().await
     }
 
-    pub fn try_recv(&mut self) -> std::result::Result<(), mpsc::error::TryRecvError> {
+    pub fn try_recv(&mut self) -> SubscriptionPoll<()> {
         self.inner.try_recv()
     }
 }
 
 #[async_trait]
 pub trait MachineStore: Send + Sync {
-    async fn init(&self) -> Result<()> {
-        Ok(())
-    }
-
     async fn list_machines(&self) -> Result<Vec<MachineRecord>>;
 
     async fn upsert_self_machine(&self, record: &MachineRecord) -> Result<()>;
@@ -134,9 +148,14 @@ pub trait SyncProbe: Send + Sync {
     }
 }
 
-#[async_trait]
-pub trait BootstrapStateReader: Send + Sync {
-    async fn seed_machine_records(&self) -> Result<Vec<MachineRecord>>;
-
-    async fn bootstrap_addrs(&self, local_machine_id: &MachineId) -> Result<Vec<String>>;
+pub trait ClusterStore:
+    MachineStore
+    + InviteStore
+    + DeployReadStore
+    + DeployWriteStore
+    + DeployCommitStore
+    + SyncProbe
+    + Send
+    + Sync
+{
 }

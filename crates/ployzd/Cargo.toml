@@ -32,6 +32,7 @@ ployz-runtime-api = { path = "../ployz-runtime-api" }
 ployz-runtime-backends = { path = "../ployz-runtime-backends" }
 ployz-sdk = { path = "../ployz-sdk" }
 ployz-store-api = { path = "../ployz-store-api" }
+ployz-test-support = { path = "../ployz-test-support" }
 ployz-types = { path = "../ployz-types" }
 ployz-gateway = { path = "../ployz-gateway" }
 ployz-dns = { path = "../ployz-dns" }

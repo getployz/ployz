@@ -101,17 +101,6 @@ impl MeshStartTx {
             )
             .await
             .map_err(|error| StartMeshError::NetworkDriver(error.to_string()))?;
-        let db_records = components
-            .bootstrap_state
-            .seed_machine_records()
-            .await
-            .unwrap_or_else(|error| {
-                tracing::warn!(
-                    ?error,
-                    "failed to load corrosion bootstrap peers, continuing without db seeds"
-                );
-                Vec::new()
-            });
 
         let listen_port = DEFAULT_LISTEN_PORT;
         let self_endpoints = components
@@ -125,7 +114,7 @@ impl MeshStartTx {
             &self.config,
             plan.bootstrap.as_ref(),
             self_endpoints,
-            &db_records,
+            &components.bootstrap_seed_records,
         )
         .await;
 
@@ -466,8 +455,7 @@ impl DaemonState {
         let network_dir = self.network_dir(&net_config.name.0);
         let fallback_bootstrap_addrs = self
             .runtime_profile
-            .build_bootstrap_state_reader(&network_dir)
-            .bootstrap_addrs(&self.identity.machine_id)
+            .load_bootstrap_addrs(&network_dir, &self.identity.machine_id)
             .await
             .map_err(|error| StartMeshError::BootstrapResolve(error.to_string()))?;
         let bootstrap_addrs = resolve_bootstrap_addrs(
@@ -537,7 +525,7 @@ mod tests {
 
     use super::*;
     use ployz_config::{RuntimeTarget, ServiceMode};
-    use ployz_runtime_api::Identity;
+    use ployz_types::model::Identity;
     use ployz_types::model::{MachineId, NetworkName};
 
     #[tokio::test]

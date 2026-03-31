@@ -1,11 +1,11 @@
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use derive_more::Display;
 use ipnet::Ipv4Net;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fmt::{self, Write as _};
+use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use strum::EnumString;
+use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 
 use crate::spec::Namespace;
 
@@ -36,19 +36,6 @@ impl AsRef<str> for NetworkId {
     }
 }
 
-impl NetworkId {
-    #[must_use]
-    pub fn random() -> Self {
-        let mut bytes = [0u8; 16];
-        rand::fill(&mut bytes);
-        let mut value = String::with_capacity(32);
-        for b in &bytes {
-            let _ = write!(&mut value, "{b:02x}");
-        }
-        Self(value)
-    }
-}
-
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PublicKey(pub [u8; 32]);
 
@@ -60,7 +47,7 @@ impl fmt::Debug for PublicKey {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrivateKey(pub [u8; 32]);
 
 impl fmt::Debug for PrivateKey {
@@ -70,15 +57,38 @@ impl fmt::Debug for PrivateKey {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Identity {
+    pub machine_id: MachineId,
+    pub private_key: PrivateKey,
+    pub public_key: PublicKey,
+}
+
+impl Identity {
+    fn derive_public_key(private_key: &PrivateKey) -> PublicKey {
+        let secret = StaticSecret::from(private_key.0);
+        let public = X25519PublicKey::from(&secret);
+        PublicKey(public.to_bytes())
+    }
+
+    #[must_use]
+    pub fn generate(machine_id: MachineId, key_bytes: [u8; 32]) -> Self {
+        let private_key = PrivateKey(key_bytes);
+        let public_key = Self::derive_public_key(&private_key);
+        Self {
+            machine_id,
+            private_key,
+            public_key,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
 #[display("{_0}")]
 pub struct OverlayIp(pub Ipv6Addr);
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString, Default,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
 pub enum MachineStatus {
-    #[default]
     #[display("unknown")]
     #[strum(serialize = "unknown", serialize = "")]
     Unknown,
@@ -90,11 +100,8 @@ pub enum MachineStatus {
     Down,
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString, Default,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
 pub enum Participation {
-    #[default]
     #[display("disabled")]
     #[strum(serialize = "disabled")]
     Disabled,
@@ -407,28 +414,7 @@ pub struct DeployApplyResult {
     pub events: Vec<DeployEvent>,
 }
 
-pub const JOIN_RESPONSE_PREFIX: &str = "PLOYZ_JOIN_RESPONSE:";
-
 impl JoinResponse {
-    pub fn encode(&self) -> Result<String, String> {
-        let json = serde_json::to_string(self).map_err(|e| format!("serialize: {e}"))?;
-        Ok(format!(
-            "{}{}",
-            JOIN_RESPONSE_PREFIX,
-            URL_SAFE_NO_PAD.encode(json.as_bytes())
-        ))
-    }
-
-    pub fn decode(s: &str) -> Result<Self, String> {
-        let payload = s
-            .strip_prefix(JOIN_RESPONSE_PREFIX)
-            .ok_or_else(|| format!("missing prefix '{JOIN_RESPONSE_PREFIX}'"))?;
-        let bytes = URL_SAFE_NO_PAD
-            .decode(payload)
-            .map_err(|e| format!("base64 decode: {e}"))?;
-        serde_json::from_slice(&bytes).map_err(|e| format!("json decode: {e}"))
-    }
-
     #[must_use]
     pub fn into_seed_machine_record(self) -> MachineRecord {
         MachineRecord {
@@ -479,27 +465,6 @@ mod tests {
     }
 
     #[test]
-    fn join_response_encode_decode_roundtrip() {
-        let resp = JoinResponse {
-            machine_id: MachineId("joiner-1".into()),
-            public_key: PublicKey([0xab; 32]),
-            overlay_ip: OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1)),
-            subnet: Some("10.42.1.0/24".parse().unwrap()),
-            endpoints: vec!["1.2.3.4:51820".into()],
-        };
-
-        let encoded = resp.encode().unwrap();
-        assert!(encoded.starts_with(JOIN_RESPONSE_PREFIX));
-
-        let decoded = JoinResponse::decode(&encoded).unwrap();
-        assert_eq!(decoded.machine_id, resp.machine_id);
-        assert_eq!(decoded.public_key, resp.public_key);
-        assert_eq!(decoded.overlay_ip, resp.overlay_ip);
-        assert_eq!(decoded.subnet, resp.subnet);
-        assert_eq!(decoded.endpoints, resp.endpoints);
-    }
-
-    #[test]
     fn join_response_into_seed_machine_record() {
         let resp = JoinResponse {
             machine_id: MachineId("joiner-1".into()),
@@ -516,6 +481,13 @@ mod tests {
     #[test]
     fn machine_status_display_is_explicit() {
         assert_eq!(MachineStatus::Unknown.to_string(), "unknown");
+    }
+
+    #[test]
+    fn identity_generate_derives_public_key() {
+        let identity = Identity::generate(MachineId("founder".into()), [7; 32]);
+        assert_eq!(identity.machine_id.0, "founder");
+        assert_ne!(identity.public_key.0, [0; 32]);
     }
 
     #[test]

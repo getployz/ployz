@@ -1,10 +1,11 @@
 use async_trait::async_trait;
-use ployz_types::Result;
 use ployz_types::model::{
     DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineRecord, SlotId,
 };
 use ployz_types::spec::Namespace;
 use serde::{Deserialize, Serialize};
+
+use crate::Result;
 
 #[async_trait]
 pub trait DeploySessionFactory: Send + Sync {

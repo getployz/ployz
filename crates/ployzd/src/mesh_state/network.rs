@@ -54,7 +54,7 @@ impl NetworkConfig {
     ) -> Self {
         let overlay_ip = management_ip_from_key(public_key);
         Self {
-            id: NetworkId::random(),
+            id: random_network_id(),
             name,
             overlay_ip,
             cluster_cidr: cluster_cidr.to_string(),
@@ -108,6 +108,17 @@ impl NetworkConfig {
         }
         Ok(())
     }
+}
+
+fn random_network_id() -> NetworkId {
+    let mut bytes = [0u8; 16];
+    rand::fill(&mut bytes);
+    let mut value = String::with_capacity(32);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(&mut value, "{byte:02x}");
+    }
+    NetworkId(value)
 }
 
 #[cfg(test)]

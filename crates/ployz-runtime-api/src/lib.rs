@@ -4,19 +4,16 @@
 //! backend-specific process, network, or transport implementations upward.
 
 mod deploy;
-mod identity;
 mod network;
 
 use async_trait::async_trait;
 use thiserror::Error;
 
 pub use deploy::{DeployFrame, DeploySession, DeploySessionFactory, StartCandidateRequest};
-pub use identity::{Identity, IdentityError};
 pub use network::{
     AttachedDataplane, ContainerNetwork, ContainerNetworkBackend, DataplaneFactory, DevicePeer,
-    DisconnectMode, EndpointDiscovery, MemoryWireGuard, MeshDataplane, MeshNetwork, ObserveMode,
-    StaticEndpointDiscovery, WireGuardDevice, WireguardBackend, WireguardBackendMode,
-    WireguardDriver, container_ip, machine_ip,
+    DisconnectMode, EndpointDiscovery, MeshDataplane, MeshNetwork, ObserveMode, WireGuardDevice,
+    WireguardBackend, WireguardBackendMode, WireguardDriver,
 };
 
 /// Result type used by runtime and service lifecycle contracts.
@@ -103,114 +100,5 @@ pub struct NoopRuntimeHandle;
 impl RuntimeHandle for NoopRuntimeHandle {
     async fn shutdown(self: Box<Self>) -> Result<()> {
         Ok(())
-    }
-}
-
-/// No-op runtime used in tests or modes without a real backing service.
-pub struct NoopServiceRuntime;
-
-#[async_trait]
-impl ServiceRuntime for NoopServiceRuntime {
-    async fn start(&self) -> Result<()> {
-        Ok(())
-    }
-
-    async fn stop(&self) -> Result<()> {
-        Ok(())
-    }
-
-    async fn healthy(&self) -> bool {
-        true
-    }
-}
-
-/// In-memory test runtime that can simulate lifecycle failures.
-pub struct MemoryServiceRuntime {
-    started: std::sync::atomic::AtomicBool,
-    healthy: std::sync::atomic::AtomicBool,
-    fail_start: std::sync::atomic::AtomicBool,
-    fail_stop: std::sync::atomic::AtomicBool,
-}
-
-impl Default for MemoryServiceRuntime {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Toggle used by [`MemoryServiceRuntime`] to inject runtime failures.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToggleState {
-    Enabled,
-    Disabled,
-}
-
-/// Health state used by [`MemoryServiceRuntime`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ServiceHealth {
-    Healthy,
-    Unhealthy,
-}
-
-impl MemoryServiceRuntime {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            started: std::sync::atomic::AtomicBool::new(false),
-            healthy: std::sync::atomic::AtomicBool::new(true),
-            fail_start: std::sync::atomic::AtomicBool::new(false),
-            fail_stop: std::sync::atomic::AtomicBool::new(false),
-        }
-    }
-
-    pub fn set_healthy(&self, health: ServiceHealth) {
-        self.healthy.store(
-            matches!(health, ServiceHealth::Healthy),
-            std::sync::atomic::Ordering::SeqCst,
-        );
-    }
-
-    pub fn set_fail_start(&self, state: ToggleState) {
-        self.fail_start.store(
-            matches!(state, ToggleState::Enabled),
-            std::sync::atomic::Ordering::SeqCst,
-        );
-    }
-
-    pub fn set_fail_stop(&self, state: ToggleState) {
-        self.fail_stop.store(
-            matches!(state, ToggleState::Enabled),
-            std::sync::atomic::Ordering::SeqCst,
-        );
-    }
-
-    #[must_use]
-    pub fn is_started(&self) -> bool {
-        self.started.load(std::sync::atomic::Ordering::SeqCst)
-    }
-}
-
-#[async_trait]
-impl ServiceRuntime for MemoryServiceRuntime {
-    async fn start(&self) -> Result<()> {
-        if self.fail_start.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(RuntimeError::operation("service start", "injected failure"));
-        }
-        self.started
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        Ok(())
-    }
-
-    async fn stop(&self) -> Result<()> {
-        if self.fail_stop.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(RuntimeError::operation("service stop", "injected failure"));
-        }
-        self.started
-            .store(false, std::sync::atomic::Ordering::SeqCst);
-        Ok(())
-    }
-
-    async fn healthy(&self) -> bool {
-        self.healthy.load(std::sync::atomic::Ordering::SeqCst)
     }
 }

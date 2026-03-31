@@ -1,8 +1,7 @@
 use super::invite::InviteClaims;
 use super::network::NetworkConfig;
 use base64::Engine as _;
-use ployz_runtime_api::Identity;
-use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
+use ployz_types::model::{Identity, MachineId, MachineRecord, OverlayIp, PublicKey};
 use serde::{Deserialize, Serialize};
 use std::net::Ipv6Addr;
 use std::path::Path;
@@ -185,8 +184,7 @@ mod tests {
     use super::super::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
     use super::*;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use ployz_runtime_api::Identity;
-    use ployz_types::model::{NetworkId, NetworkName};
+    use ployz_types::model::{Identity, NetworkId, NetworkName};
 
     fn temp_network_dir(name: &str) -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!(

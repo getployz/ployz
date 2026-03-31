@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use crate::daemon::store::StoreDriver;
 use ployz_runtime_api::{
-    DeployFrame, Result as RuntimeResult, RuntimeHandle, StartCandidateRequest,
+    DeployFrame, Result as RuntimeResult, RuntimeError, RuntimeHandle, StartCandidateRequest,
 };
 use ployz_runtime_backends::deploy::local::{
     LocalDeployRuntime, ManagedInstance, StartCandidate, now_unix_secs,
@@ -601,10 +601,16 @@ impl ployz_runtime_api::DeploySession for TcpDeploySession {
         &self.machine_id
     }
 
-    async fn inspect_namespace(&mut self) -> Result<Vec<InstanceStatusRecord>> {
-        let response = self.send_and_recv(&DeployFrame::InspectNamespace).await?;
+    async fn inspect_namespace(&mut self) -> RuntimeResult<Vec<InstanceStatusRecord>> {
+        let response = self
+            .send_and_recv(&DeployFrame::InspectNamespace)
+            .await
+            .map_err(RuntimeError::from)?;
         let DeployFrame::NamespaceSnapshot { instances } = response else {
-            return Err(unexpected_response("inspect_namespace", &response));
+            return Err(RuntimeError::from(unexpected_response(
+                "inspect_namespace",
+                &response,
+            )));
         };
         Ok(instances)
     }
@@ -612,7 +618,7 @@ impl ployz_runtime_api::DeploySession for TcpDeploySession {
     async fn start_candidate(
         &mut self,
         req: StartCandidateRequest,
-    ) -> Result<InstanceStatusRecord> {
+    ) -> RuntimeResult<InstanceStatusRecord> {
         let response = self
             .send_and_recv(&DeployFrame::StartCandidate {
                 service: req.service,
@@ -622,26 +628,41 @@ impl ployz_runtime_api::DeploySession for TcpDeploySession {
             })
             .await?;
         let DeployFrame::CandidateStarted { status } = response else {
-            return Err(unexpected_response("start_candidate", &response));
+            return Err(RuntimeError::from(unexpected_response(
+                "start_candidate",
+                &response,
+            )));
         };
         Ok(*status)
     }
 
-    async fn drain_instance(&mut self, instance_id: &InstanceId) -> Result<()> {
+    async fn drain_instance(&mut self, instance_id: &InstanceId) -> RuntimeResult<()> {
         let frame = DeployFrame::DrainInstance {
             instance_id: instance_id.0.clone(),
         };
-        expect_ack("drain_instance", self.send_and_recv(&frame).await?)
+        expect_ack(
+            "drain_instance",
+            self.send_and_recv(&frame)
+                .await
+                .map_err(RuntimeError::from)?,
+        )
+        .map_err(RuntimeError::from)
     }
 
-    async fn remove_instance(&mut self, instance_id: &InstanceId) -> Result<()> {
+    async fn remove_instance(&mut self, instance_id: &InstanceId) -> RuntimeResult<()> {
         let frame = DeployFrame::RemoveInstance {
             instance_id: instance_id.0.clone(),
         };
-        expect_ack("remove_instance", self.send_and_recv(&frame).await?)
+        expect_ack(
+            "remove_instance",
+            self.send_and_recv(&frame)
+                .await
+                .map_err(RuntimeError::from)?,
+        )
+        .map_err(RuntimeError::from)
     }
 
-    async fn close(mut self: Box<Self>) -> Result<()> {
+    async fn close(mut self: Box<Self>) -> RuntimeResult<()> {
         let _ = self.send_and_recv(&DeployFrame::Close).await;
         Ok(())
     }

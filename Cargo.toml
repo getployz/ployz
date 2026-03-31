@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/ployz-test-support",
     "crates/ployz-config",
     "crates/ployz-api",
     "crates/ployz-types",
@@ -18,6 +19,7 @@ members = [
 ]
 exclude = ["ebpf"]
 default-members = [
+    "crates/ployz-test-support",
     "crates/ployz-config",
     "crates/ployz-api",
     "crates/ployz-types",

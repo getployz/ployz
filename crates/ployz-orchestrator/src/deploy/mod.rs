@@ -198,7 +198,8 @@ pub async fn apply(
         };
         let (session, instances) = session_factory
             .open(machine, namespace, &deploy_id, local_machine_id)
-            .await?;
+            .await
+            .map_err(|error| Error::operation("deploy_apply", error.to_string()))?;
         events.push(DeployEvent {
             step: "lock".into(),
             message: format!(
@@ -308,7 +309,8 @@ pub async fn apply(
                             instance_id,
                             spec_json: spec_json.clone(),
                         })
-                        .await?;
+                        .await
+                        .map_err(|error| Error::operation("deploy_apply", error.to_string()))?;
                     deploy_write.upsert_instance_status(&status).await?;
                     status.instance_id
                 };
@@ -542,8 +544,10 @@ mod tests {
         OverlayIp, Participation, PublicKey, ServiceReleaseSlot,
     };
     use async_trait::async_trait;
+    use ployz_runtime_api::Result as RuntimeResult;
     use ployz_runtime_api::{DeploySession, DeploySessionFactory, StartCandidateRequest};
-    use ployz_store_api::{DeployReadStore, MachineStore, memory::MemoryStore};
+    use ployz_store_api::{DeployReadStore, MachineStore};
+    use ployz_test_support::MemoryStore;
     use ployz_types::spec::{
         ContainerSpec, Namespace, NetworkMode, PullPolicy, Resources, RestartPolicy,
         RolloutStrategy,
@@ -837,7 +841,7 @@ mod tests {
             _namespace: &Namespace,
             _deploy_id: &DeployId,
             _coordinator_id: &MachineId,
-        ) -> ployz_types::Result<(
+        ) -> RuntimeResult<(
             Box<dyn DeploySession>,
             Vec<crate::model::InstanceStatusRecord>,
         )> {
@@ -884,14 +888,14 @@ mod tests {
 
         async fn inspect_namespace(
             &mut self,
-        ) -> ployz_types::Result<Vec<crate::model::InstanceStatusRecord>> {
+        ) -> RuntimeResult<Vec<crate::model::InstanceStatusRecord>> {
             Ok(Vec::new())
         }
 
         async fn start_candidate(
             &mut self,
             request: StartCandidateRequest,
-        ) -> ployz_types::Result<crate::model::InstanceStatusRecord> {
+        ) -> RuntimeResult<crate::model::InstanceStatusRecord> {
             let spec: ServiceSpec =
                 serde_json::from_str(&request.spec_json).expect("valid spec json in test");
             let revision_hash = spec.revision_hash().expect("revision hash");
@@ -916,15 +920,15 @@ mod tests {
             })
         }
 
-        async fn drain_instance(&mut self, _instance_id: &InstanceId) -> ployz_types::Result<()> {
+        async fn drain_instance(&mut self, _instance_id: &InstanceId) -> RuntimeResult<()> {
             Ok(())
         }
 
-        async fn remove_instance(&mut self, _instance_id: &InstanceId) -> ployz_types::Result<()> {
+        async fn remove_instance(&mut self, _instance_id: &InstanceId) -> RuntimeResult<()> {
             Ok(())
         }
 
-        async fn close(self: Box<Self>) -> ployz_types::Result<()> {
+        async fn close(self: Box<Self>) -> RuntimeResult<()> {
             Ok(())
         }
     }
