@@ -481,12 +481,12 @@ mod tests {
                     routing: ServiceRoutingPolicy::Split {
                         allocations: vec![
                             ployz_types::model::ServiceTrafficAllocation {
-                                revision_hash: stable_hash.clone(),
+                                revision_hash: stable_hash,
                                 percent: 90,
                                 label: Some(String::from("stable")),
                             },
                             ployz_types::model::ServiceTrafficAllocation {
-                                revision_hash: canary_hash.clone(),
+                                revision_hash: canary_hash,
                                 percent: 10,
                                 label: Some(String::from("canary")),
                             },

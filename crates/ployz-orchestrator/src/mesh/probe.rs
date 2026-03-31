@@ -3,6 +3,8 @@ use futures_util::stream::{FuturesUnordered, StreamExt};
 use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, SocketAddr, TcpListener as StdTcpListener};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -14,6 +16,7 @@ pub(crate) const MESH_PROBE_PORT: u16 = 51821;
 const PROBE_REQUEST: &[u8; 4] = b"PLZ?";
 const PROBE_RESPONSE: &[u8; 4] = b"OK!!";
 pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(750);
+const PROBE_BIND_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TcpProbeStatus {
@@ -43,40 +46,152 @@ impl TcpProbeResult {
     }
 }
 
-pub(crate) async fn run_probe_listener_task(cancel: CancellationToken) {
-    let mut listeners = Vec::new();
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProbeListenerFamily {
+    Ipv4,
+    Ipv6,
+}
 
-    match bind_v4(MESH_PROBE_PORT).await {
-        Ok(listener) => listeners.push(listener),
-        Err(error) => warn!(
-            ?error,
-            port = MESH_PROBE_PORT,
-            "failed to bind IPv4 mesh probe listener"
-        ),
-    }
-    match bind_v6(MESH_PROBE_PORT).await {
-        Ok(listener) => listeners.push(listener),
-        Err(error) => warn!(
-            ?error,
-            port = MESH_PROBE_PORT,
-            "failed to bind IPv6 mesh probe listener"
-        ),
+impl ProbeListenerFamily {
+    #[must_use]
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Ipv4 => "ipv4",
+            Self::Ipv6 => "ipv6",
+        }
     }
 
-    if listeners.is_empty() {
-        warn!(
-            port = MESH_PROBE_PORT,
-            "mesh probe listener disabled because no sockets could bind"
+    #[must_use]
+    pub(crate) fn for_overlay_ip(_overlay_ip: OverlayIp) -> Self {
+        Self::Ipv6
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ProbeListenerReadiness {
+    required_family: AtomicU8,
+    ipv4_ready: AtomicBool,
+    ipv6_ready: AtomicBool,
+    required_ready_initialized: AtomicBool,
+    required_ready_last: AtomicBool,
+}
+
+impl ProbeListenerReadiness {
+    const REQUIRED_NONE: u8 = 0;
+    const REQUIRED_IPV4: u8 = 1;
+    const REQUIRED_IPV6: u8 = 2;
+
+    #[must_use]
+    pub(crate) fn new(required_family: Option<ProbeListenerFamily>) -> Self {
+        let readiness = Self {
+            required_family: AtomicU8::new(Self::encode_required_family(required_family)),
+            ipv4_ready: AtomicBool::new(false),
+            ipv6_ready: AtomicBool::new(false),
+            required_ready_initialized: AtomicBool::new(false),
+            required_ready_last: AtomicBool::new(false),
+        };
+        readiness.log_required_family_ready_change();
+        readiness
+    }
+
+    pub(crate) fn set_required_family(&self, required_family: Option<ProbeListenerFamily>) {
+        self.required_family.store(
+            Self::encode_required_family(required_family),
+            Ordering::SeqCst,
         );
-        return;
+        self.log_required_family_ready_change();
     }
 
-    info!(port = MESH_PROBE_PORT, "mesh probe listener started");
-    let mut tasks = Vec::with_capacity(listeners.len());
-    for listener in listeners {
-        let listener_cancel = cancel.clone();
+    pub(crate) fn set_family_ready(&self, family: ProbeListenerFamily, ready: bool) {
+        match family {
+            ProbeListenerFamily::Ipv4 => self.ipv4_ready.store(ready, Ordering::SeqCst),
+            ProbeListenerFamily::Ipv6 => self.ipv6_ready.store(ready, Ordering::SeqCst),
+        }
+        self.log_required_family_ready_change();
+    }
+
+    pub(crate) fn clear_bound_families(&self) {
+        self.ipv4_ready.store(false, Ordering::SeqCst);
+        self.ipv6_ready.store(false, Ordering::SeqCst);
+        self.log_required_family_ready_change();
+    }
+
+    #[must_use]
+    pub(crate) fn required_family(&self) -> Option<ProbeListenerFamily> {
+        Self::decode_required_family(self.required_family.load(Ordering::SeqCst))
+    }
+
+    #[must_use]
+    pub(crate) fn family_ready(&self, family: ProbeListenerFamily) -> bool {
+        match family {
+            ProbeListenerFamily::Ipv4 => self.ipv4_ready.load(Ordering::SeqCst),
+            ProbeListenerFamily::Ipv6 => self.ipv6_ready.load(Ordering::SeqCst),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn local_probe_ready(&self) -> bool {
+        match self.required_family() {
+            Some(required_family) => self.family_ready(required_family),
+            None => true,
+        }
+    }
+
+    #[must_use]
+    fn encode_required_family(required_family: Option<ProbeListenerFamily>) -> u8 {
+        match required_family {
+            Some(ProbeListenerFamily::Ipv4) => Self::REQUIRED_IPV4,
+            Some(ProbeListenerFamily::Ipv6) => Self::REQUIRED_IPV6,
+            None => Self::REQUIRED_NONE,
+        }
+    }
+
+    #[must_use]
+    fn decode_required_family(encoded: u8) -> Option<ProbeListenerFamily> {
+        match encoded {
+            Self::REQUIRED_IPV4 => Some(ProbeListenerFamily::Ipv4),
+            Self::REQUIRED_IPV6 => Some(ProbeListenerFamily::Ipv6),
+            Self::REQUIRED_NONE => None,
+            _ => None,
+        }
+    }
+
+    fn log_required_family_ready_change(&self) {
+        let required_family = self.required_family();
+        let ready = self.local_probe_ready();
+        let initialized = self.required_ready_initialized.swap(true, Ordering::SeqCst);
+        let previous_ready = self.required_ready_last.swap(ready, Ordering::SeqCst);
+        if initialized && previous_ready == ready {
+            return;
+        }
+
+        info!(
+            required_family = required_family.map(ProbeListenerFamily::as_str),
+            required_family_ready = ready,
+            ipv4_ready = self.family_ready(ProbeListenerFamily::Ipv4),
+            ipv6_ready = self.family_ready(ProbeListenerFamily::Ipv6),
+            "mesh probe listener readiness changed"
+        );
+    }
+}
+
+pub(crate) async fn run_probe_listener_task(
+    cancel: CancellationToken,
+    readiness: Arc<ProbeListenerReadiness>,
+) {
+    readiness.clear_bound_families();
+    info!(
+        port = MESH_PROBE_PORT,
+        required_family = readiness.required_family().map(ProbeListenerFamily::as_str),
+        "mesh probe listener supervisor started"
+    );
+
+    let mut tasks = Vec::with_capacity(2);
+    for family in [ProbeListenerFamily::Ipv4, ProbeListenerFamily::Ipv6] {
+        let family_cancel = cancel.clone();
+        let family_readiness = Arc::clone(&readiness);
         tasks.push(tokio::spawn(async move {
-            serve_listener(listener, listener_cancel).await;
+            run_family_listener_task(family, family_cancel, family_readiness).await;
         }));
     }
 
@@ -84,6 +199,7 @@ pub(crate) async fn run_probe_listener_task(cancel: CancellationToken) {
     for task in tasks {
         let _ = task.await;
     }
+    readiness.clear_bound_families();
     info!(port = MESH_PROBE_PORT, "mesh probe listener stopped");
 }
 
@@ -212,6 +328,80 @@ async fn handle_probe_connection(stream: &mut TcpStream) -> io::Result<()> {
     stream.flush().await
 }
 
+async fn run_family_listener_task(
+    family: ProbeListenerFamily,
+    cancel: CancellationToken,
+    readiness: Arc<ProbeListenerReadiness>,
+) {
+    let mut bind_failures = 0_u32;
+
+    loop {
+        let required_family = readiness.required_family();
+        match bind_listener(family, MESH_PROBE_PORT).await {
+            Ok(listener) => {
+                readiness.set_family_ready(family, true);
+                if bind_failures == 0 {
+                    info!(
+                        family = family.as_str(),
+                        port = MESH_PROBE_PORT,
+                        "mesh probe listener bound"
+                    );
+                } else {
+                    info!(
+                        family = family.as_str(),
+                        port = MESH_PROBE_PORT,
+                        bind_failures,
+                        "mesh probe listener bound after retry"
+                    );
+                }
+                serve_listener(listener, cancel.clone()).await;
+                readiness.set_family_ready(family, false);
+                info!(
+                    family = family.as_str(),
+                    port = MESH_PROBE_PORT,
+                    "mesh probe listener unbound"
+                );
+                break;
+            }
+            Err(error) => {
+                readiness.set_family_ready(family, false);
+                bind_failures = bind_failures.saturating_add(1);
+                let is_required = required_family == Some(family);
+                if is_required || bind_failures == 1 {
+                    warn!(
+                        ?error,
+                        family = family.as_str(),
+                        port = MESH_PROBE_PORT,
+                        bind_failures,
+                        required_family = required_family.map(ProbeListenerFamily::as_str),
+                        "failed to bind mesh probe listener"
+                    );
+                } else {
+                    debug!(
+                        ?error,
+                        family = family.as_str(),
+                        port = MESH_PROBE_PORT,
+                        bind_failures,
+                        required_family = required_family.map(ProbeListenerFamily::as_str),
+                        "mesh probe listener bind still failing"
+                    );
+                }
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    _ = tokio::time::sleep(PROBE_BIND_RETRY_INTERVAL) => {}
+                }
+            }
+        }
+    }
+}
+
+async fn bind_listener(family: ProbeListenerFamily, port: u16) -> io::Result<TcpListener> {
+    match family {
+        ProbeListenerFamily::Ipv4 => bind_v4(port).await,
+        ProbeListenerFamily::Ipv6 => bind_v6(port).await,
+    }
+}
+
 async fn bind_v4(port: u16) -> io::Result<TcpListener> {
     TcpListener::bind(SocketAddr::new(IpAddr::from([0, 0, 0, 0]), port)).await
 }
@@ -301,6 +491,17 @@ async fn bind_v6_only_listener(port: u16) -> io::Result<TcpListener> {
 }
 
 #[cfg(test)]
+pub(crate) fn probe_port_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::{Mutex, OnceLock};
+
+    static PROBE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    PROBE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("lock probe port")
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -340,5 +541,75 @@ mod tests {
         let v6 = bind_v6(port).await.expect("bind IPv6 listener");
 
         assert_eq!(v6.local_addr().expect("v6 addr").port(), port);
+    }
+
+    #[tokio::test]
+    async fn required_ipv6_probe_readiness_retries_until_ipv6_bind_succeeds() {
+        let _port_guard = probe_port_test_lock();
+        let blocking_listener = bind_v6_only_listener(MESH_PROBE_PORT).expect("block IPv6 bind");
+        let readiness = Arc::new(ProbeListenerReadiness::new(Some(ProbeListenerFamily::Ipv6)));
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let task_readiness = Arc::clone(&readiness);
+        let task = tokio::spawn(async move {
+            run_probe_listener_task(task_cancel, task_readiness).await;
+        });
+
+        wait_until(Duration::from_secs(2), || {
+            readiness.family_ready(ProbeListenerFamily::Ipv4)
+        })
+        .await;
+        assert!(!readiness.local_probe_ready());
+        assert!(!readiness.family_ready(ProbeListenerFamily::Ipv6));
+
+        drop(blocking_listener);
+
+        wait_until(Duration::from_secs(3), || readiness.local_probe_ready()).await;
+        assert!(readiness.family_ready(ProbeListenerFamily::Ipv6));
+
+        cancel.cancel();
+        let _ = task.await;
+    }
+
+    #[tokio::test]
+    async fn non_required_probe_family_recovers_after_becoming_required() {
+        let _port_guard = probe_port_test_lock();
+        let blocking_listener = bind_v6_only_listener(MESH_PROBE_PORT).expect("block IPv6 bind");
+        let readiness = Arc::new(ProbeListenerReadiness::new(Some(ProbeListenerFamily::Ipv4)));
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let task_readiness = Arc::clone(&readiness);
+        let task = tokio::spawn(async move {
+            run_probe_listener_task(task_cancel, task_readiness).await;
+        });
+
+        wait_until(Duration::from_secs(2), || {
+            readiness.family_ready(ProbeListenerFamily::Ipv4)
+        })
+        .await;
+        assert!(readiness.local_probe_ready());
+        assert!(!readiness.family_ready(ProbeListenerFamily::Ipv6));
+
+        readiness.set_required_family(Some(ProbeListenerFamily::Ipv6));
+        wait_until(Duration::from_secs(1), || !readiness.local_probe_ready()).await;
+
+        drop(blocking_listener);
+
+        wait_until(Duration::from_secs(3), || readiness.local_probe_ready()).await;
+        assert!(readiness.family_ready(ProbeListenerFamily::Ipv6));
+
+        cancel.cancel();
+        let _ = task.await;
+    }
+
+    async fn wait_until(timeout: Duration, mut check: impl FnMut() -> bool) {
+        let started = Instant::now();
+        while started.elapsed() < timeout {
+            if check() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("condition did not become true within {timeout:?}");
     }
 }

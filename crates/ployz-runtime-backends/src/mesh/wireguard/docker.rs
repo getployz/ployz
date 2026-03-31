@@ -20,7 +20,6 @@ use crate::error::{Error, Result};
 use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
 use crate::model::{MachineRecord, OverlayIp, PrivateKey, PublicKey};
 
-
 use super::PERSISTENT_KEEPALIVE_SECS;
 use super::bridge::{OutboundForward, OverlayBridge};
 use super::config::{
@@ -451,13 +450,8 @@ pub(super) async fn docker_graceful_remove(
     container_name: &str,
     grace_secs: i32,
 ) -> Result<()> {
-    let stop_opts = StopContainerOptionsBuilder::default()
-        .t(grace_secs)
-        .build();
-    match docker
-        .stop_container(container_name, Some(stop_opts))
-        .await
-    {
+    let stop_opts = StopContainerOptionsBuilder::default().t(grace_secs).build();
+    match docker.stop_container(container_name, Some(stop_opts)).await {
         Ok(()) => {}
         Err(bollard::errors::Error::DockerResponseServerError {
             status_code: 304 | 404,

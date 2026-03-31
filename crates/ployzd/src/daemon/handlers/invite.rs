@@ -3,7 +3,6 @@ use crate::mesh_state::invite::{
 };
 use crate::mesh_state::network::NetworkConfig;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use ployz_store_api::InviteStore;
 use ployz_types::Error;
 use ployz_types::model::InviteRecord;
 use ployz_types::time::now_unix_secs;
@@ -81,7 +80,7 @@ impl DaemonState {
             expires_at: invite.expires_at,
         };
 
-        match active.store.create_invite(&record).await {
+        match active.store.invite().create_invite(&record).await {
             Ok(()) => self.ok(format!(
                 "invite imported\n  network: {}\n  invite:  {}",
                 invite.network_name, record.id
@@ -109,7 +108,6 @@ impl DaemonState {
         let active = self
             .active
             .as_ref()
-            .map(|active| active)
             .ok_or_else(|| "no running network".to_string())?;
 
         let endpoints = active
@@ -146,6 +144,7 @@ impl DaemonState {
 
         active
             .store
+            .invite()
             .create_invite(&record)
             .await
             .map_err(|e| format!("store invite: {e}"))?;

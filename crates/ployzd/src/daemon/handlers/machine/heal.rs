@@ -5,7 +5,6 @@ use ipnet::Ipv4Net;
 use ployz_orchestrator::Phase;
 use ployz_orchestrator::mesh::tasks::ParticipationCommand;
 use ployz_runtime_api::RestartableWorkload;
-use ployz_store_api::MachineStore;
 use ployz_types::model::{MachineId, MachineRecord, MachineStatus, Participation};
 use ployz_types::time::now_unix_secs;
 
@@ -37,7 +36,7 @@ impl DaemonState {
             return;
         }
 
-        let machines = match active.store.list_machines().await {
+        let machines = match active.store.machine().list_machines().await {
             Ok(machines) => machines,
             Err(err) => {
                 tracing::warn!(error = %err, "local subnet heal: failed to list machines");
@@ -64,12 +63,23 @@ impl DaemonState {
             pending.network_subnet == active_subnet && pending.target_subnet != active_subnet
         });
 
-        if duplicate_groups.is_empty() && !healing_in_progress {
+        if should_clear_local_participation_override(
+            duplicate_groups.is_empty(),
+            healing_in_progress,
+            active.mesh.local_probe_ready(),
+        ) {
             if let Err(err) = self.set_local_participation_override(None).await {
                 tracing::warn!(error = %err, "local subnet heal: failed to clear participation override");
             }
             self.pending_subnet_heal = None;
             self.last_subnet_heal_attempt = None;
+            return;
+        }
+        if duplicate_groups.is_empty() && !healing_in_progress {
+            tracing::info!(
+                machine_id = %self.identity.machine_id,
+                "local subnet heal: waiting for local probe readiness before clearing participation override"
+            );
             return;
         }
 
@@ -289,6 +299,7 @@ impl DaemonState {
 
         active
             .store
+            .machine()
             .upsert_self_machine(&record)
             .await
             .map_err(|err| format!("reserve local subnet claim: {err}"))?;
@@ -345,6 +356,7 @@ impl DaemonState {
         record.subnet = Some(config.subnet);
         active
             .store
+            .machine()
             .upsert_self_machine(&record)
             .await
             .map_err(|err| format!("update healed local machine record: {err}"))?;
@@ -391,12 +403,8 @@ impl DaemonState {
             .stop_local_workloads_for_subnet_heal(network_name)
             .await?;
 
-        if let Err(error) = self
-            .restart_active_runtime_for_subnet_heal(network_name)
-            .await
-        {
-            return Err(error);
-        }
+        self.restart_active_runtime_for_subnet_heal(network_name)
+            .await?;
 
         self.start_local_workloads_after_subnet_heal(network_name, &workloads)
             .await
@@ -426,6 +434,7 @@ impl DaemonState {
         };
         active
             .store
+            .machine()
             .upsert_self_machine(&record)
             .await
             .map_err(|err| format!("mark local machine down before subnet heal: {err}"))
@@ -616,4 +625,13 @@ fn allocate_replacement_subnet(
         ployz_orchestrator::ipam::Ipam::with_allocated(cluster, subnet_prefix_len, allocated);
     ipam.allocate()
         .ok_or_else(|| "no available subnets for local heal".into())
+}
+
+#[must_use]
+pub(super) fn should_clear_local_participation_override(
+    duplicate_groups_empty: bool,
+    healing_in_progress: bool,
+    local_probe_ready: bool,
+) -> bool {
+    duplicate_groups_empty && !healing_in_progress && local_probe_ready
 }

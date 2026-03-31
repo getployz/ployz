@@ -47,7 +47,8 @@ impl DaemonState {
         };
 
         let machine_id = MachineId(id.to_string());
-        let record = match find_machine_record(&active.store, &machine_id).await {
+        let machine_store = active.store.machine();
+        let record = match find_machine_record(machine_store.as_ref(), &machine_id).await {
             Ok(Some(record)) => record,
             Ok(None) => {
                 return self.err("MACHINE_NOT_FOUND", format!("machine '{id}' not found"));
@@ -67,7 +68,7 @@ impl DaemonState {
             );
         }
 
-        match active.store.delete_machine(&machine_id).await {
+        match active.store.machine().delete_machine(&machine_id).await {
             Ok(()) => self.ok_with_payload(
                 format!("machine '{id}' removed"),
                 Some(DaemonPayload::MachineRemove(MachineRemovePayload {
@@ -86,6 +87,7 @@ impl DaemonState {
             .ok_or_else(|| "no running network".to_string())?;
         let machines = active
             .store
+            .machine()
             .list_machines()
             .await
             .map_err(|err| format!("failed to list machines: {err}"))?;
@@ -105,7 +107,7 @@ impl DaemonState {
 }
 
 pub(super) async fn find_machine_record(
-    store: &StoreDriver,
+    store: &dyn MachineStore,
     machine_id: &MachineId,
 ) -> Result<Option<MachineRecord>, String> {
     let machines = store
@@ -119,6 +121,7 @@ pub(super) async fn find_machine_record(
 
 pub(super) async fn machine_list_report(store: StoreDriver) -> Result<MachineListReport, String> {
     let machines = store
+        .machine()
         .list_machines()
         .await
         .map_err(|err| format!("failed to list machines: {err}"))?;

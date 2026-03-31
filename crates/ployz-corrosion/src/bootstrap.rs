@@ -158,11 +158,7 @@ mod tests {
         std::env::temp_dir().join(format!("ployz-corrosion-bootstrap-{label}-{nanos}"))
     }
 
-    fn write_db(
-        network_dir: &Path,
-        schema_sql: &str,
-        rows_sql: &[&str],
-    ) -> rusqlite::Result<()> {
+    fn write_db(network_dir: &Path, schema_sql: &str, rows_sql: &[&str]) -> rusqlite::Result<()> {
         fs::create_dir_all(network_dir).expect("create network dir");
         let db_path = corrosion_config::Paths::new(network_dir).db;
         let db_dir = db_path.parent().expect("db path parent");
@@ -180,12 +176,20 @@ mod tests {
         let network_dir = temp_network_dir("missing-db");
         let reader = CorrosionBootstrapState::new(&network_dir);
 
-        assert!(reader.seed_machine_records().await.expect("seed records").is_empty());
-        assert!(reader
-            .bootstrap_addrs(&MachineId("self".into()))
-            .await
-            .expect("bootstrap addrs")
-            .is_empty());
+        assert!(
+            reader
+                .seed_machine_records()
+                .await
+                .expect("seed records")
+                .is_empty()
+        );
+        assert!(
+            reader
+                .bootstrap_addrs(&MachineId("self".into()))
+                .await
+                .expect("bootstrap addrs")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -195,12 +199,20 @@ mod tests {
             .expect("write sqlite db");
         let reader = CorrosionBootstrapState::new(&network_dir);
 
-        assert!(reader.seed_machine_records().await.expect("seed records").is_empty());
-        assert!(reader
-            .bootstrap_addrs(&MachineId("self".into()))
-            .await
-            .expect("bootstrap addrs")
-            .is_empty());
+        assert!(
+            reader
+                .seed_machine_records()
+                .await
+                .expect("seed records")
+                .is_empty()
+        );
+        assert!(
+            reader
+                .bootstrap_addrs(&MachineId("self".into()))
+                .await
+                .expect("bootstrap addrs")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -238,7 +250,13 @@ mod tests {
         .expect("write sqlite db");
         let reader = CorrosionBootstrapState::new(&network_dir);
 
-        assert!(reader.seed_machine_records().await.expect("seed records").is_empty());
+        assert!(
+            reader
+                .seed_machine_records()
+                .await
+                .expect("seed records")
+                .is_empty()
+        );
     }
 
     #[tokio::test]

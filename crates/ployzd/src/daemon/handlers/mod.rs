@@ -142,7 +142,10 @@ impl DaemonState {
 mod tests {
     use super::RequestLane;
     use crate::daemon::DaemonState;
-    use ployz_api::{DaemonRequest, DebugTickTask};
+    use ployz_api::{
+        BootstrapWaitMode, DaemonRequest, DebugTickTask, DeployOptions, MachineAddOptions,
+        MachineInstallOptions, MachineRemoveMode, MeshReadyOutput,
+    };
 
     #[test]
     fn debug_tick_routes_to_exclusive_lane() {
@@ -151,5 +154,90 @@ mod tests {
             repeat: 1,
         });
         assert_eq!(lane, RequestLane::Exclusive);
+    }
+
+    #[test]
+    fn shared_requests_route_to_shared_lane() {
+        let requests = [
+            DaemonRequest::Status,
+            DaemonRequest::Doctor,
+            DaemonRequest::DeployPreview {
+                manifest_json: "{}".into(),
+                options: DeployOptions::default(),
+            },
+            DaemonRequest::DeployApply {
+                manifest_json: "{}".into(),
+                options: DeployOptions::default(),
+            },
+            DaemonRequest::DeployExport {
+                namespace: "prod".into(),
+            },
+            DaemonRequest::MeshList,
+            DaemonRequest::MeshStatus {
+                network: "alpha".into(),
+            },
+            DaemonRequest::MeshReady {
+                output: MeshReadyOutput::Json,
+            },
+            DaemonRequest::MeshCreate {
+                network: "alpha".into(),
+            },
+            DaemonRequest::MachineList,
+            DaemonRequest::MachineInit {
+                target: "root@host".into(),
+                network: "alpha".into(),
+                install: MachineInstallOptions::default(),
+            },
+            DaemonRequest::MachineAdd {
+                targets: vec!["root@host".into()],
+                options: MachineAddOptions::default(),
+            },
+            DaemonRequest::MachineRemove {
+                id: "machine-1".into(),
+                mode: MachineRemoveMode::DisabledOnly,
+            },
+            DaemonRequest::MachineOperationList,
+            DaemonRequest::MachineOperationGet { id: "op-1".into() },
+            DaemonRequest::MachineInviteCreate { ttl_secs: 300 },
+            DaemonRequest::MachineInviteImport {
+                token: "token".into(),
+            },
+            DaemonRequest::MeshSelfRecord,
+            DaemonRequest::MeshAccept {
+                response: "ok".into(),
+            },
+        ];
+
+        for request in requests {
+            assert_eq!(DaemonState::request_lane(&request), RequestLane::Shared);
+        }
+    }
+
+    #[test]
+    fn exclusive_requests_route_to_exclusive_lane() {
+        let requests = [
+            DaemonRequest::DebugTick {
+                task: DebugTickTask::PeerSync,
+                repeat: 1,
+            },
+            DaemonRequest::MeshJoin {
+                token: "join-token".into(),
+            },
+            DaemonRequest::MeshInit {
+                network: "alpha".into(),
+            },
+            DaemonRequest::MeshUp {
+                network: "alpha".into(),
+                bootstrap_wait: BootstrapWaitMode::Wait,
+            },
+            DaemonRequest::MeshDown,
+            DaemonRequest::MeshDestroy {
+                network: "alpha".into(),
+            },
+        ];
+
+        for request in requests {
+            assert_eq!(DaemonState::request_lane(&request), RequestLane::Exclusive);
+        }
     }
 }

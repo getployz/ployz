@@ -68,7 +68,10 @@ pub fn eval_spec_change(
         fields.push(ChangedField::Cmd);
     }
 
-    if !entrypoint_equal(observed.entrypoint.as_ref(), desired.entrypoint.as_ref()) {
+    if !entrypoint_equal(
+        observed.entrypoint.as_deref(),
+        desired.entrypoint.as_deref(),
+    ) {
         fields.push(ChangedField::Entrypoint);
     }
 
@@ -185,7 +188,7 @@ pub fn parent_id_matches(observed: &ObservedContainer, desired_parent_id: Option
     }
 }
 
-fn entrypoint_equal(observed: Option<&Vec<String>>, desired: Option<&Vec<String>>) -> bool {
+fn entrypoint_equal(observed: Option<&[String]>, desired: Option<&[String]>) -> bool {
     match desired {
         None => true,
         Some(desired) => observed == Some(desired),

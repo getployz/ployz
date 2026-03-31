@@ -33,7 +33,10 @@ where
                 info!(service_count, "dns snapshot refreshed");
             }
             Err(err) => {
-                warn!(?err, "failed to refresh dns snapshot; keeping previous state");
+                warn!(
+                    ?err,
+                    "failed to refresh dns snapshot; keeping previous state"
+                );
             }
         }
     }

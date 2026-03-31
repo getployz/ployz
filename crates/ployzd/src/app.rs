@@ -200,3 +200,79 @@ async fn shutdown_active_mesh(state: &Arc<RwLock<DaemonState>>) {
         let _ = mesh.detach().await;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_api::DaemonRequest;
+    use ployz_runtime_api::Identity;
+    use ployz_types::model::MachineId;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::oneshot;
+
+    #[tokio::test]
+    async fn resume_active_network_clears_marker_when_resume_fails() {
+        let data_dir = unique_temp_dir("ployz-app-resume");
+        let identity = Identity::generate(MachineId("founder".into()), [7; 32]);
+        let state = Arc::new(RwLock::new(DaemonState::new_for_tests(
+            &data_dir,
+            identity,
+            runtime_config(),
+        )));
+        {
+            let state_guard = state.read().await;
+            state_guard
+                .write_active_marker("missing-network")
+                .expect("write marker");
+        }
+
+        resume_active_network(&state).await;
+
+        let state_guard = state.read().await;
+        assert_eq!(state_guard.read_active_marker(), None);
+    }
+
+    #[tokio::test]
+    async fn spawn_command_task_routes_shared_requests_through_read_handler() {
+        let data_dir = unique_temp_dir("ployz-app-shared");
+        let identity = Identity::generate(MachineId("founder".into()), [8; 32]);
+        let state = Arc::new(RwLock::new(DaemonState::new_for_tests(
+            &data_dir,
+            identity,
+            runtime_config(),
+        )));
+        let cancel = CancellationToken::new();
+        let (reply, response_rx) = oneshot::channel();
+
+        spawn_command_task(
+            state,
+            cancel,
+            IncomingCommand {
+                request: DaemonRequest::Status,
+                reply,
+            },
+        );
+
+        let response = response_rx.await.expect("receive daemon response");
+        assert!(response.ok);
+        assert_eq!(response.code, "OK");
+    }
+
+    fn runtime_config() -> DaemonRuntimeConfig {
+        DaemonRuntimeConfig {
+            cluster_cidr: "10.210.0.0/16".into(),
+            subnet_prefix_len: 24,
+            remote_control_port: 4317,
+            gateway_listen_addr: "127.0.0.1:8080".into(),
+            gateway_threads: 1,
+        }
+    }
+
+    fn unique_temp_dir(label: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{label}-{}-{nanos}", std::process::id()))
+    }
+}

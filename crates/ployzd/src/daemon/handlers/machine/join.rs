@@ -10,7 +10,6 @@ use ployz_api::{
 use ployz_orchestrator::ipam::Ipam;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_sdk::DaemonClient;
-use ployz_store_api::{InviteStore, MachineStore};
 use ployz_types::model::{MachineId, MachineRecord};
 use ployz_types::time::now_unix_secs;
 use tokio::task::JoinSet;
@@ -284,6 +283,7 @@ impl DaemonState {
             .ok_or_else(|| "no running network".to_string())?;
         let machines = active
             .store
+            .machine()
             .list_machines()
             .await
             .map_err(|err| format!("failed to list machines for subnet allocation: {err}"))?;
@@ -457,6 +457,7 @@ async fn run_machine_add_target(
     );
     if let Err(err) = context
         .store
+        .invite()
         .consume_invite(&invite_id, now_unix_secs())
         .await
     {
@@ -572,7 +573,7 @@ async fn wait_for_remote_ready(target: &str, ssh_options: &SshOptions) -> Result
                 }
                 tracing::debug!(%target, attempt, ?payload, "remote mesh not ready yet");
                 format!("mesh reported not ready yet: {response_message}")
-            },
+            }
             Ok(Err(err)) => {
                 tracing::debug!(%target, attempt, error = %err, "remote readiness rpc failed");
                 err

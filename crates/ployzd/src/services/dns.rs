@@ -1,64 +1,30 @@
+use crate::services::managed::ManagedServiceHandle;
 use crate::services::supervisor::{ServiceSupervision, SidecarHandle, SidecarSpec};
 use async_trait::async_trait;
-use ployz_dns::{DnsConfig, DnsError};
-use ployz_runtime_api::RuntimeHandle;
-
-// ---------------------------------------------------------------------------
-// DnsHandle — supervision wrapper
-// ---------------------------------------------------------------------------
-
-enum DnsHandleInner {
-    Noop,
-    Sidecar(Box<SidecarHandle>),
-}
+use ployz_dns::DnsConfig;
+use ployz_runtime_api::{Result as RuntimeResult, RuntimeError, RuntimeHandle};
 
 pub struct DnsHandle {
-    inner: DnsHandleInner,
+    inner: ManagedServiceHandle,
 }
 
 impl DnsHandle {
     #[must_use]
     pub fn noop() -> Self {
         Self {
-            inner: DnsHandleInner::Noop,
-        }
-    }
-
-    pub async fn shutdown(&mut self) -> Result<(), DnsError> {
-        match &mut self.inner {
-            DnsHandleInner::Noop => Ok(()),
-            DnsHandleInner::Sidecar(handle) => handle
-                .shutdown()
-                .await
-                .map_err(|e| DnsError::Process(e.to_string())),
-        }
-    }
-
-    /// Detach from a running DNS service without stopping it.
-    /// Docker and systemd services keep running so the daemon can restart.
-    pub async fn detach(&mut self) -> Result<(), DnsError> {
-        match &mut self.inner {
-            DnsHandleInner::Noop => Ok(()),
-            DnsHandleInner::Sidecar(handle) => handle
-                .detach()
-                .await
-                .map_err(|e| DnsError::Process(e.to_string())),
+            inner: ManagedServiceHandle::noop(),
         }
     }
 }
 
 #[async_trait]
 impl RuntimeHandle for DnsHandle {
-    async fn shutdown(mut self: Box<Self>) -> Result<(), String> {
-        DnsHandle::shutdown(&mut self)
-            .await
-            .map_err(|error| error.to_string())
+    async fn shutdown(mut self: Box<Self>) -> RuntimeResult<()> {
+        self.inner.shutdown("dns").await
     }
 
-    async fn detach(mut self: Box<Self>) -> Result<(), String> {
-        DnsHandle::detach(&mut self)
-            .await
-            .map_err(|error| error.to_string())
+    async fn detach(mut self: Box<Self>) -> RuntimeResult<()> {
+        self.inner.detach("dns").await
     }
 }
 
@@ -66,7 +32,7 @@ pub async fn start_managed_dns(
     supervision: Option<ServiceSupervision>,
     config: DnsConfig,
     image: &str,
-) -> Result<DnsHandle, DnsError> {
+) -> RuntimeResult<DnsHandle> {
     let Some(supervision) = supervision else {
         return Ok(DnsHandle::noop());
     };
@@ -75,9 +41,9 @@ pub async fn start_managed_dns(
     SidecarHandle::ensure(supervision, spec)
         .await
         .map(|handle| DnsHandle {
-            inner: DnsHandleInner::Sidecar(Box::new(handle)),
+            inner: ManagedServiceHandle::sidecar(handle),
         })
-        .map_err(|e| DnsError::Process(e.to_string()))
+        .map_err(|error| RuntimeError::operation("start dns", error.to_string()))
 }
 
 fn build_dns_sidecar_spec(config: &DnsConfig, image: &str) -> SidecarSpec {

@@ -262,7 +262,6 @@ pub fn find_installer_script() -> Result<PathBuf, String> {
             .map(|dir| dir.join("ployz.sh"))
             .unwrap_or_else(|_| PathBuf::from("ployz.sh")),
         workspace_root
-            .clone()
             .map(|root| root.join("ployz.sh"))
             .unwrap_or_else(|| PathBuf::from("ployz.sh")),
         PathBuf::from("/usr/local/bin/ployz.sh"),

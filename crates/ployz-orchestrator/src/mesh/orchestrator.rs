@@ -1,6 +1,6 @@
 use crate::error::Error as PortError;
 use crate::mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
-use crate::mesh::probe::run_probe_listener_task;
+use crate::mesh::probe::{ProbeListenerFamily, ProbeListenerReadiness, run_probe_listener_task};
 use crate::mesh::tasks::{
     HeartbeatCommand, ParticipationCommand, PeerSyncCommand, SelfLivenessCommand,
     SelfRecordMutation, TaskSet, TaskSetError, apply_self_record_mutation, run_ebpf_sync_task,
@@ -75,10 +75,13 @@ pub struct Mesh {
     dataplane: Option<Arc<dyn MeshDataplane>>,
     wg_ifindex: u32,
     heartbeat_started: Arc<AtomicBool>,
+    probe_readiness: Arc<ProbeListenerReadiness>,
 }
 
 impl Mesh {
     #[must_use]
+    // Constructor wiring spans all runtime seams needed to bring a mesh online.
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         network: WireguardDriver,
         store: Arc<dyn MachineStore>,
@@ -90,6 +93,11 @@ impl Mesh {
         machine_id: MachineId,
         listen_port: u16,
     ) -> Self {
+        let probe_required_family = if network.runs_probe_listener() {
+            Some(ProbeListenerFamily::Ipv6)
+        } else {
+            None
+        };
         Self {
             phase: Phase::Stopped,
             network,
@@ -117,6 +125,7 @@ impl Mesh {
             dataplane: None,
             wg_ifindex: 0,
             heartbeat_started: Arc::new(AtomicBool::new(false)),
+            probe_readiness: Arc::new(ProbeListenerReadiness::new(probe_required_family)),
         }
     }
 
@@ -173,6 +182,11 @@ impl Mesh {
         self.participation_tx.clone()
     }
 
+    #[must_use]
+    pub fn local_probe_ready(&self) -> bool {
+        self.probe_readiness.local_probe_ready()
+    }
+
     pub async fn authoritative_self_record(&self) -> Option<MachineRecord> {
         let authoritative_self = self.authoritative_self.as_ref()?.clone();
         Some(authoritative_self.read().await.clone())
@@ -182,18 +196,28 @@ impl Mesh {
         &self,
         update: impl FnOnce(&mut MachineRecord),
     ) -> Option<MachineRecord> {
-        let current = self.authoritative_self_record().await?;
-        let mut next = current;
-        update(&mut next);
         if let Some(self_record_tx) = &self.self_record_tx {
+            let mut next = self.authoritative_self_record().await?;
+            update(&mut next);
+            self.sync_required_probe_family(next.overlay_ip);
             return apply_self_record_mutation(self_record_tx, SelfRecordMutation::Replace(next))
                 .await;
         }
 
         let authoritative_self = self.authoritative_self.as_ref()?.clone();
         let mut record = authoritative_self.write().await;
-        *record = next;
+        update(&mut record);
+        self.sync_required_probe_family(record.overlay_ip);
         Some(record.clone())
+    }
+
+    fn sync_required_probe_family(&self, overlay_ip: crate::model::OverlayIp) {
+        let required_family = if self.network.runs_probe_listener() {
+            Some(ProbeListenerFamily::for_overlay_ip(overlay_ip))
+        } else {
+            None
+        };
+        self.probe_readiness.set_required_family(required_family);
     }
 
     pub async fn ready_status(&self) -> MeshReadyStatus {
@@ -304,10 +328,12 @@ impl Mesh {
         }
 
         // 4. Start store service
-        self.store_runtime
-            .start()
-            .await
-            .map_err(|error| MeshError::Port(PortError::operation("store runtime start", error)))?;
+        self.store_runtime.start().await.map_err(|error| {
+            MeshError::Port(PortError::operation(
+                "store runtime start",
+                error.to_string(),
+            ))
+        })?;
         self.wait_service_ready().await?;
         self.wait_store_init().await?;
 
@@ -345,7 +371,11 @@ impl Mesh {
             .cloned()
             .collect();
         if self.network.runs_probe_listener() {
-            task_set.spawn(run_probe_listener_task(cancel.clone()));
+            self.probe_readiness.clear_bound_families();
+            task_set.spawn(run_probe_listener_task(
+                cancel.clone(),
+                Arc::clone(&self.probe_readiness),
+            ));
         }
         task_set.spawn(run_peer_sync_task(
             snapshot,
@@ -392,14 +422,17 @@ impl Mesh {
                 })?;
             self.authoritative_self = Some(Arc::new(RwLock::new(authoritative)));
         }
-        // Safe to unwrap: we just ensured `authoritative_self` is `Some` above.
-        let authoritative_self = self.authoritative_self.clone().expect("set above");
+        let authoritative_self =
+            self.authoritative_self
+                .clone()
+                .ok_or(TaskSetError::InternalState(
+                    "authoritative self record missing after initialization",
+                ))?;
+        self.sync_required_probe_family(authoritative_self.read().await.overlay_ip);
 
-        // Safe to unwrap: `start_peer_sync_task` always sets `self.tasks` before we get here.
-        let task_set = self
-            .tasks
-            .as_mut()
-            .expect("tasks set by start_peer_sync_task");
+        let task_set = self.tasks.as_mut().ok_or(TaskSetError::InternalState(
+            "task set missing before background task spawn",
+        ))?;
 
         let (self_record_tx, self_record_rx) = mpsc::channel(64);
         self.self_record_tx = Some(self_record_tx.clone());
@@ -437,6 +470,7 @@ impl Mesh {
             authoritative_self.clone(),
             Arc::clone(&self.store),
             self.network.clone(),
+            Arc::clone(&self.probe_readiness),
             self_record_tx,
             participation_rx,
             cancel.clone(),
@@ -502,6 +536,7 @@ impl Mesh {
             warn!(?error, "task stop failed during runtime stop");
             first_err.get_or_insert(error.into());
         }
+        self.probe_readiness.clear_bound_families();
 
         if let Some(dp) = self.dataplane.take()
             && let Err(error) = dp.detach().await
@@ -516,7 +551,7 @@ impl Mesh {
             warn!(?error, "service stop failed during runtime stop");
             first_err.get_or_insert(MeshError::Port(PortError::operation(
                 "store runtime stop",
-                error,
+                error.to_string(),
             )));
         }
 

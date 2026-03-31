@@ -31,6 +31,7 @@ Options:
   --git-url URL          Git repository URL for --source git
   --git-ref REF          Git ref for --source git
   --payload-dir PATH     Payload directory for --source payload
+  --ensure-docker        Install and start Docker on Linux when missing
   --no-daemon-install    Skip `ployz daemon install`
 EOF
 }
@@ -229,6 +230,110 @@ download_file() {
     return
   fi
   die "curl or wget is required to download ${url}"
+}
+
+run_with_optional_sudo() {
+  if [[ ${EUID} -eq 0 ]]; then
+    "$@"
+    return
+  fi
+
+  if command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
+    return
+  fi
+
+  die "this operation requires root or sudo: $*"
+}
+
+docker_current_user_ready() {
+  command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1
+}
+
+docker_daemon_ready() {
+  if ! command -v docker >/dev/null 2>&1; then
+    return 1
+  fi
+
+  if docker info >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if [[ ${EUID} -eq 0 ]]; then
+    return 1
+  fi
+
+  if command -v sudo >/dev/null 2>&1; then
+    sudo docker info >/dev/null 2>&1
+    return
+  fi
+
+  return 1
+}
+
+wait_for_docker_daemon() {
+  local attempts=${1:-20}
+  local sleep_seconds=${2:-1}
+  local attempt
+
+  for (( attempt=1; attempt<=attempts; attempt++ )); do
+    if docker_daemon_ready; then
+      return 0
+    fi
+    sleep "${sleep_seconds}"
+  done
+
+  return 1
+}
+
+ensure_docker() {
+  case "$(current_os)" in
+    linux) ;;
+    darwin)
+      die "--ensure-docker is not supported on macOS; install OrbStack first: https://orbstack.dev/"
+      ;;
+    *)
+      die "--ensure-docker is only supported on Linux"
+      ;;
+  esac
+
+  if docker_current_user_ready; then
+    info "Docker is already installed and running"
+    return
+  fi
+
+  if ! command -v docker >/dev/null 2>&1; then
+    local installer
+
+    step "Installing Docker"
+    installer="$(mktemp)"
+    trap 'rm -f -- "${installer}"' RETURN
+    download_file "https://get.docker.com" "${installer}"
+    chmod 0755 "${installer}"
+    run_with_optional_sudo sh "${installer}"
+    rm -f -- "${installer}"
+    trap - RETURN
+  fi
+
+  if command -v systemctl >/dev/null 2>&1; then
+    step "Starting Docker with systemd"
+    run_with_optional_sudo systemctl enable --now docker
+  elif command -v service >/dev/null 2>&1; then
+    step "Starting Docker with service"
+    run_with_optional_sudo service docker start
+  fi
+
+  step "Waiting for Docker daemon"
+  if ! wait_for_docker_daemon 20 1; then
+    die "Docker is not ready. Check 'sudo docker info' and your Docker service status."
+  fi
+
+  if docker_current_user_ready; then
+    info "Docker is ready"
+    return
+  fi
+
+  die "Docker is installed and the daemon is running, but this shell cannot access it yet. Start a new shell or session so docker group membership takes effect, then rerun this command."
 }
 
 # --- Payload validation ---
@@ -537,6 +642,7 @@ main() {
       local git_url="https://github.com/${PLOYZ_REPO}.git"
       local git_ref=""
       local payload_dir=""
+      local ensure_docker_install=0
       local no_daemon_install=0
       local work_dir resolved_runtime resolved_service_mode resolved_payload manifest
 
@@ -569,6 +675,10 @@ main() {
           --payload-dir)
             payload_dir=${2:-}
             shift 2
+            ;;
+          --ensure-docker)
+            ensure_docker_install=1
+            shift
             ;;
           --no-daemon-install)
             no_daemon_install=1
@@ -613,6 +723,10 @@ main() {
       info "OS: $(current_os), Arch: $(current_arch)"
       info "Runtime: ${resolved_runtime}, Service mode: ${resolved_service_mode}"
       info "Source: ${source}$([ "${source}" = "release" ] && printf ", version: ${version}" || true)"
+
+      if [[ ${ensure_docker_install} -eq 1 ]]; then
+        ensure_docker
+      fi
 
       work_dir="$(mktemp -d)"
       trap "rm -rf -- \"${work_dir}\"" EXIT

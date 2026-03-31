@@ -142,7 +142,9 @@ async fn export_namespace_manifest<T: Transport>(
     DaemonClient::new(transport)
         .deploy_export_manifest(namespace)
         .await
-        .map_err(|error| CliError::Serialize(format!("failed to export namespace manifest: {error}")))
+        .map_err(|error| {
+            CliError::Serialize(format!("failed to export namespace manifest: {error}"))
+        })
 }
 
 pub(crate) fn upsert_service_in_manifest(manifest: &mut DeployManifest, spec: ServiceSpec) {
