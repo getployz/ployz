@@ -4,16 +4,80 @@ on:
   push:
     branches:
       - main
-      - "feat/**"
+    paths:
+      - ".github/workflows/hostexec-e2e.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".corrosion-version"
+      - "ployz.sh"
+      - "Dockerfile.e2e-node"
+      - "crates/**"
+      - "scripts/**"
+      - "packaging/**"
+      - "ebpf/**"
   pull_request:
+    paths:
+      - ".github/workflows/hostexec-e2e.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".corrosion-version"
+      - "ployz.sh"
+      - "Dockerfile.e2e-node"
+      - "crates/**"
+      - "scripts/**"
+      - "packaging/**"
+      - "ebpf/**"
   workflow_dispatch:
 
 env:
   IMAGE: ghcr.io/getployz/ployz-e2e-node
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      run_e2e: ${{ steps.detect.outputs.run_e2e }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - id: detect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CURRENT_SHA: ${{ github.sha }}
+        run: |
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            echo "run_e2e=true" >> "${GITHUB_OUTPUT}"
+            echo "workflow_dispatch requested hostexec e2e"
+            exit 0
+          fi
+
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            base_ref="${PR_BASE_SHA}"
+            head_ref="${PR_HEAD_SHA}"
+          else
+            base_ref="${PUSH_BEFORE}"
+            head_ref="${CURRENT_SHA}"
+          fi
+
+          result="$(
+            bash scripts/should-run-hostexec-e2e.sh \
+              --base-ref "${base_ref}" \
+              --head-ref "${head_ref}"
+          )"
+          echo "run_e2e=${result}" >> "${GITHUB_OUTPUT}"
+
   hostexec-e2e:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
+    needs: changes
+    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false) && needs.changes.outputs.run_e2e == 'true'
     strategy:
       fail-fast: true
       matrix:
@@ -70,8 +134,10 @@ jobs:
           if-no-files-found: ignore
 
   manifest:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
-    needs: hostexec-e2e
+    needs:
+      - changes
+      - hostexec-e2e
+    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false) && needs.changes.outputs.run_e2e == 'true'
     runs-on: ubuntu-latest
     permissions:
       packages: write
