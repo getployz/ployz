@@ -1,8 +1,10 @@
 [package]
 name = "ployz-ebpf"
-version.workspace = true
+version = "0.2.2"
 edition = "2024"
 publish = false
+
+[workspace]
 
 [[bin]]
 name = "ployz-ebpf-tc"

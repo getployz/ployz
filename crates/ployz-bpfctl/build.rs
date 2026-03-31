@@ -5,13 +5,17 @@ use std::process::Command;
 fn main() {
     let manifest_dir =
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let repo_dir = manifest_dir.join("../..");
     let ebpf_dir = manifest_dir.join("../../ebpf");
     println!("cargo:rerun-if-changed={}", ebpf_dir.display());
+    println!("cargo:rerun-if-changed={}", repo_dir.join("Cargo.toml").display());
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS");
     if target_os != "linux" {
         return;
     }
+
+    assert_version_sync(&repo_dir, &ebpf_dir);
 
     let target_endian = env::var("CARGO_CFG_TARGET_ENDIAN").expect("CARGO_CFG_TARGET_ENDIAN");
     let ebpf_target = match target_endian.as_str() {
@@ -47,6 +51,7 @@ fn main() {
             "ployz-ebpf",
             "-Z",
             "build-std=core",
+            "--locked",
             "--bins",
             "--release",
             "--target",
@@ -80,4 +85,49 @@ fn copy_binary(src: &Path, dst: &Path) {
             dst.display()
         )
     });
+}
+
+fn assert_version_sync(repo_dir: &Path, ebpf_dir: &Path) {
+    let root_version = read_workspace_version(&repo_dir.join("Cargo.toml"));
+    let ebpf_version = read_package_version(&ebpf_dir.join("Cargo.toml"));
+    assert_eq!(
+        root_version, ebpf_version,
+        "ebpf/Cargo.toml version ({ebpf_version}) must match root workspace version ({root_version})"
+    );
+}
+
+fn read_workspace_version(path: &Path) -> String {
+    let manifest = std::fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+    read_manifest_value(&manifest, "workspace.package", "version")
+        .unwrap_or_else(|| panic!("workspace.package.version missing in {}", path.display()))
+}
+
+fn read_package_version(path: &Path) -> String {
+    let manifest = std::fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+    read_manifest_value(&manifest, "package", "version")
+        .unwrap_or_else(|| panic!("package.version missing in {}", path.display()))
+}
+
+fn read_manifest_value(manifest: &str, section: &str, key: &str) -> Option<String> {
+    let header = format!("[{section}]");
+    let prefix = format!("{key} = \"");
+    let mut in_section = false;
+
+    for line in manifest.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_section = trimmed == header;
+            continue;
+        }
+        if !in_section || !trimmed.starts_with(&prefix) {
+            continue;
+        }
+
+        let value = trimmed.strip_prefix(&prefix)?.strip_suffix('"')?;
+        return Some(value.to_string());
+    }
+
+    None
 }
