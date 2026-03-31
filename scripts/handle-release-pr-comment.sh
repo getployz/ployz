@@ -85,12 +85,12 @@ if [[ "${pr_state}" != "open" || "${pr_head_ref}" != "${RELEASE_BRANCH}" || "${p
 fi
 
 case "${author_association}" in
-  OWNER|COLLABORATOR)
+  OWNER|MEMBER|COLLABORATOR)
     ;;
   *)
   reply_and_exit \
     "${pr_number}" \
-    "Permission denied. Release commands require owner or collaborator access." \
+    "Permission denied. Release commands require owner, member, or collaborator access." \
     0
     ;;
 esac
