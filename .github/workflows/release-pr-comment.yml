@@ -1,0 +1,35 @@
+name: Handle release PR comment
+
+on:
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: release-pr-comment-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  handle-comment:
+    if: github.event.issue.pull_request != null
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Configure git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Handle release command comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/handle-release-pr-comment.sh
