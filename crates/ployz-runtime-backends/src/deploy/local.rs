@@ -30,6 +30,7 @@ pub struct ManagedInstance {
 }
 
 impl ManagedInstance {
+    #[must_use]
     pub fn to_status_record(
         &self,
         namespace: &Namespace,

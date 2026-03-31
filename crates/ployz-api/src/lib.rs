@@ -162,6 +162,8 @@ pub enum DaemonRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum DaemonPayload {
+    Status(StatusPayload),
+    MeshStatus(MeshStatusPayload),
     MachineList(MachineListPayload),
     MachineAdd(MachineAddPayload),
     MachineRemove(MachineRemovePayload),
@@ -169,6 +171,27 @@ pub enum DaemonPayload {
     MeshSelfRecord(MeshSelfRecordPayload),
     MachineOperationList(MachineOperationListPayload),
     MachineOperation(MachineOperationPayload),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusPayload {
+    pub protocol_version: u32,
+    pub daemon_version: String,
+    pub machine_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_network_name: Option<String>,
+    pub phase: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeshStatusPayload {
+    pub network_name: String,
+    pub network_id: String,
+    pub overlay: String,
+    pub state: String,
+    pub exists: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

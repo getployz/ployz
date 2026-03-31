@@ -533,6 +533,7 @@ fn parse_duration(value: &str) -> Result<Duration, String> {
     ))
 }
 
+#[must_use]
 pub fn stable_hash_hex(bytes: &[u8]) -> String {
     const OFFSET: u64 = 0xcbf29ce484222325;
     const PRIME: u64 = 0x00000100000001b3;

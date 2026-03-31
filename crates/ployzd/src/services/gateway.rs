@@ -1,67 +1,33 @@
 use std::path::PathBuf;
 
 use crate::mesh_state::network::NetworkConfig;
+use crate::services::managed::ManagedServiceHandle;
 use crate::services::supervisor::{ServiceSupervision, SidecarHandle, SidecarSpec};
 use async_trait::async_trait;
 use ployz_gateway::{GatewayConfig, GatewayError};
-use ployz_runtime_api::RuntimeHandle;
-
-// ---------------------------------------------------------------------------
-// GatewayHandle — supervision wrapper
-// ---------------------------------------------------------------------------
-
-enum GatewayHandleInner {
-    Noop,
-    Sidecar(Box<SidecarHandle>),
-}
+use ployz_runtime_api::{Result as RuntimeResult, RuntimeError, RuntimeHandle};
 
 pub struct GatewayHandle {
-    inner: GatewayHandleInner,
+    inner: ManagedServiceHandle,
 }
 
 impl GatewayHandle {
     #[must_use]
     pub fn noop() -> Self {
         Self {
-            inner: GatewayHandleInner::Noop,
-        }
-    }
-
-    pub async fn shutdown(&mut self) -> Result<(), GatewayError> {
-        match &mut self.inner {
-            GatewayHandleInner::Noop => Ok(()),
-            GatewayHandleInner::Sidecar(handle) => handle
-                .shutdown()
-                .await
-                .map_err(|e| GatewayError::Process(e.to_string())),
-        }
-    }
-
-    /// Detach from a running gateway without stopping it.
-    /// Docker and systemd containers keep running so the daemon can restart.
-    pub async fn detach(&mut self) -> Result<(), GatewayError> {
-        match &mut self.inner {
-            GatewayHandleInner::Noop => Ok(()),
-            GatewayHandleInner::Sidecar(handle) => handle
-                .detach()
-                .await
-                .map_err(|e| GatewayError::Process(e.to_string())),
+            inner: ManagedServiceHandle::noop(),
         }
     }
 }
 
 #[async_trait]
 impl RuntimeHandle for GatewayHandle {
-    async fn shutdown(mut self: Box<Self>) -> Result<(), String> {
-        GatewayHandle::shutdown(&mut self)
-            .await
-            .map_err(|error| error.to_string())
+    async fn shutdown(mut self: Box<Self>) -> RuntimeResult<()> {
+        self.inner.shutdown("gateway").await
     }
 
-    async fn detach(mut self: Box<Self>) -> Result<(), String> {
-        GatewayHandle::detach(&mut self)
-            .await
-            .map_err(|error| error.to_string())
+    async fn detach(mut self: Box<Self>) -> RuntimeResult<()> {
+        self.inner.detach("gateway").await
     }
 }
 
@@ -69,21 +35,22 @@ pub async fn start_managed_gateway(
     supervision: Option<ServiceSupervision>,
     config: GatewayConfig,
     image: &str,
-) -> Result<GatewayHandle, GatewayError> {
+) -> RuntimeResult<GatewayHandle> {
     let Some(supervision) = supervision else {
         return Ok(GatewayHandle::noop());
     };
 
     let paths = GatewayPaths::for_config(&config);
-    write_pingora_config(&paths, config.threads)?;
+    write_pingora_config(&paths, config.threads)
+        .map_err(|error| RuntimeError::operation("write gateway config", error.to_string()))?;
 
     let spec = build_gateway_sidecar_spec(&config, &paths, image);
     SidecarHandle::ensure(supervision, spec)
         .await
         .map(|handle| GatewayHandle {
-            inner: GatewayHandleInner::Sidecar(Box::new(handle)),
+            inner: ManagedServiceHandle::sidecar(handle),
         })
-        .map_err(|e| GatewayError::Process(e.to_string()))
+        .map_err(|error| RuntimeError::operation("start gateway", error.to_string()))
 }
 
 fn build_gateway_sidecar_spec(
@@ -160,7 +127,10 @@ impl GatewayPaths {
     }
 }
 
-fn write_pingora_config(paths: &GatewayPaths, threads: usize) -> Result<(), GatewayError> {
+fn write_pingora_config(
+    paths: &GatewayPaths,
+    threads: usize,
+) -> std::result::Result<(), GatewayError> {
     std::fs::create_dir_all(&paths.gateway_dir)
         .map_err(|err| GatewayError::Process(format!("create gateway dir: {err}")))?;
     let contents = format!(

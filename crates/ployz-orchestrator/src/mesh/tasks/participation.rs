@@ -1,5 +1,7 @@
 use crate::machine_liveness::machine_is_fresh;
-use crate::mesh::probe::{TcpProbeResult, TcpProbeStatus, probe_overlay_ips_parallel};
+use crate::mesh::probe::{
+    ProbeListenerReadiness, TcpProbeResult, TcpProbeStatus, probe_overlay_ips_parallel,
+};
 use crate::mesh::tasks::{SelfRecordMutation, apply_self_record_mutation};
 use crate::model::{MachineId, MachineRecord, Participation};
 use ployz_runtime_api::{WireGuardDevice, WireguardDriver};
@@ -36,15 +38,16 @@ pub enum ParticipationCommand {
 struct RequiredPeerHealth {
     required_peer_ids: Vec<String>,
     unhealthy_required_peer_ids: Vec<String>,
+    local_probe_ready: bool,
 }
 
 impl RequiredPeerHealth {
-    fn healthy(&self) -> bool {
-        self.unhealthy_required_peer_ids.is_empty()
+    fn fully_healthy(&self) -> bool {
+        self.unhealthy_required_peer_ids.is_empty() && self.local_probe_ready
     }
 
     fn sample(&self) -> PeerHealthSample {
-        if self.healthy() {
+        if self.fully_healthy() {
             PeerHealthSample::Healthy
         } else {
             PeerHealthSample::Unhealthy
@@ -52,11 +55,14 @@ impl RequiredPeerHealth {
     }
 }
 
+// Task wiring needs the full mesh state bundle at startup.
+#[expect(clippy::too_many_arguments)]
 pub(crate) async fn run_participation_task(
     machine_id: MachineId,
     authoritative_self: Arc<RwLock<MachineRecord>>,
     store: Arc<dyn MachineStore>,
     network: WireguardDriver,
+    probe_readiness: Arc<ProbeListenerReadiness>,
     self_record_tx: mpsc::Sender<crate::mesh::tasks::self_record::SelfRecordCommand>,
     mut commands: mpsc::Receiver<ParticipationCommand>,
     cancel: CancellationToken,
@@ -76,6 +82,7 @@ pub(crate) async fn run_participation_task(
                     &authoritative_self,
                     &store,
                     &network,
+                    &probe_readiness,
                     &self_record_tx,
                     &mut state,
                 ).await;
@@ -88,6 +95,7 @@ pub(crate) async fn run_participation_task(
                             &authoritative_self,
                             &store,
                             &network,
+                            &probe_readiness,
                             &self_record_tx,
                             &mut state,
                         ).await;
@@ -100,6 +108,7 @@ pub(crate) async fn run_participation_task(
                             &authoritative_self,
                             &store,
                             &network,
+                            &probe_readiness,
                             &self_record_tx,
                             &mut state,
                         ).await;
@@ -116,6 +125,7 @@ async fn participation_once(
     authoritative_self: &Arc<RwLock<MachineRecord>>,
     store: &Arc<dyn MachineStore>,
     network: &WireguardDriver,
+    probe_readiness: &Arc<ProbeListenerReadiness>,
     self_record_tx: &mpsc::Sender<crate::mesh::tasks::self_record::SelfRecordCommand>,
     state: &mut ParticipationState,
 ) {
@@ -130,12 +140,12 @@ async fn participation_once(
     let now = crate::time::now_unix_secs();
     let required_peers = required_peers_for_participation(&machines, machine_id, now);
     let current = authoritative_self.read().await.clone();
-    let peer_health = required_peers_health(network, &required_peers).await;
+    let peer_health = required_peers_health(network, &required_peers, probe_readiness).await;
     update_hysteresis(state, peer_health.sample());
 
     let next = state
         .forced_participation
-        .unwrap_or_else(|| match current.participation {
+        .unwrap_or(match current.participation {
             Participation::Disabled => {
                 if state.consecutive_good_samples >= PARTICIPATION_HYSTERESIS_SAMPLES {
                     Participation::Enabled
@@ -162,9 +172,10 @@ async fn participation_once(
             bad_samples = state.consecutive_bad_samples,
             required_peers = ?peer_health.required_peer_ids,
             unhealthy_required_peers = ?peer_health.unhealthy_required_peer_ids,
+            local_probe_ready = peer_health.local_probe_ready,
             "participation changed"
         );
-    } else if !peer_health.healthy() {
+    } else if !peer_health.fully_healthy() {
         debug!(
             machine_id = %machine_id,
             participation = %current.participation,
@@ -172,6 +183,7 @@ async fn participation_once(
             bad_samples = state.consecutive_bad_samples,
             required_peers = ?peer_health.required_peer_ids,
             unhealthy_required_peers = ?peer_health.unhealthy_required_peer_ids,
+            local_probe_ready = peer_health.local_probe_ready,
             "participation waiting on required peers"
         );
     }
@@ -230,7 +242,9 @@ fn update_hysteresis(state: &mut ParticipationState, sample: PeerHealthSample) {
 async fn required_peers_health(
     network: &WireguardDriver,
     required_peers: &[MachineRecord],
+    probe_readiness: &Arc<ProbeListenerReadiness>,
 ) -> RequiredPeerHealth {
+    let local_probe_ready = probe_readiness.local_probe_ready();
     let required_peer_ids = required_peers
         .iter()
         .map(|peer| peer.id.0.clone())
@@ -239,6 +253,7 @@ async fn required_peers_health(
         return RequiredPeerHealth {
             required_peer_ids,
             unhealthy_required_peer_ids: Vec::new(),
+            local_probe_ready,
         };
     }
 
@@ -250,6 +265,7 @@ async fn required_peers_health(
         return RequiredPeerHealth {
             required_peer_ids: required_peer_ids.clone(),
             unhealthy_required_peer_ids: required_peer_ids,
+            local_probe_ready,
         };
     }
 
@@ -269,6 +285,7 @@ async fn required_peers_health(
     RequiredPeerHealth {
         required_peer_ids,
         unhealthy_required_peer_ids,
+        local_probe_ready,
     }
 }
 
@@ -287,14 +304,14 @@ fn required_peer_is_healthy(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mesh::probe::run_probe_listener_task;
+    use crate::mesh::probe::{ProbeListenerFamily, probe_port_test_lock, run_probe_listener_task};
     use crate::mesh::tasks::run_self_record_writer_task;
     use crate::model::{MachineStatus, OverlayIp, PublicKey};
     use ployz_runtime_api::{DevicePeer, MemoryServiceRuntime, MemoryWireGuard, WireguardDriver};
     use ployz_store_api::memory::MemoryStore;
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::sync::MutexGuard;
     use tokio::sync::RwLock;
 
     fn test_machine(
@@ -330,6 +347,7 @@ mod tests {
         mpsc::Sender<crate::mesh::tasks::self_record::SelfRecordCommand>,
         MachineId,
         PublicKey,
+        Arc<ProbeListenerReadiness>,
         CancellationToken,
         tokio::task::JoinHandle<()>,
     ) {
@@ -353,6 +371,7 @@ mod tests {
 
         let authoritative_self = Arc::new(RwLock::new(self_record));
         let (self_record_tx, self_record_rx) = mpsc::channel(8);
+        let probe_readiness = Arc::new(ProbeListenerReadiness::new(None));
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();
         let writer_authoritative_self = authoritative_self.clone();
@@ -375,6 +394,7 @@ mod tests {
             self_record_tx,
             self_id,
             peer_key,
+            probe_readiness,
             cancel,
             writer_handle,
         )
@@ -454,6 +474,7 @@ mod tests {
             self_record_tx,
             self_id,
             peer_key,
+            probe_readiness,
             cancel,
             writer_handle,
         ) = test_runtime(Participation::Disabled, Participation::Enabled).await;
@@ -473,6 +494,7 @@ mod tests {
                 &authoritative_self,
                 &machine_store,
                 &network_driver,
+                &probe_readiness,
                 &self_record_tx,
                 &mut state,
             )
@@ -501,6 +523,7 @@ mod tests {
             self_record_tx,
             self_id,
             peer_key,
+            probe_readiness,
             cancel,
             writer_handle,
         ) = test_runtime(Participation::Draining, Participation::Enabled).await;
@@ -520,6 +543,7 @@ mod tests {
                 &authoritative_self,
                 &machine_store,
                 &network_driver,
+                &probe_readiness,
                 &self_record_tx,
                 &mut state,
             )
@@ -538,6 +562,125 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn participation_does_not_promote_when_local_probe_is_not_ready() {
+        let (_probe_guard, probe_cancel, probe_task) = start_test_probe_listener();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let (
+            store,
+            _service,
+            network,
+            authoritative_self,
+            self_record_tx,
+            self_id,
+            peer_key,
+            _default_probe_readiness,
+            cancel,
+            writer_handle,
+        ) = test_runtime(Participation::Disabled, Participation::Enabled).await;
+        network.set_device_peers(vec![DevicePeer {
+            public_key: peer_key,
+            endpoint: Some("127.0.0.1:51820".into()),
+            last_handshake: Some(tokio::time::Instant::now()),
+        }]);
+
+        let probe_readiness =
+            Arc::new(ProbeListenerReadiness::new(Some(ProbeListenerFamily::Ipv6)));
+        let mut state = ParticipationState::default();
+        let network_driver = WireguardDriver::memory_with(network);
+        let machine_store: Arc<dyn MachineStore> = store.clone();
+
+        for _ in 0..3 {
+            participation_once(
+                &self_id,
+                &authoritative_self,
+                &machine_store,
+                &network_driver,
+                &probe_readiness,
+                &self_record_tx,
+                &mut state,
+            )
+            .await;
+        }
+
+        cancel.cancel();
+        writer_handle.await.expect("writer exits");
+
+        let machines = store.list_machines().await.expect("list machines");
+        let self_record = machines
+            .into_iter()
+            .find(|machine| machine.id == self_id)
+            .expect("self record");
+        assert_eq!(self_record.participation, Participation::Disabled);
+        stop_test_probe_listener(probe_cancel, probe_task).await;
+    }
+
+    #[tokio::test]
+    async fn participation_demotes_enabled_when_local_probe_readiness_is_lost() {
+        let (_probe_guard, probe_cancel, probe_task) = start_test_probe_listener();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let (
+            store,
+            _service,
+            network,
+            authoritative_self,
+            self_record_tx,
+            self_id,
+            peer_key,
+            _default_probe_readiness,
+            cancel,
+            writer_handle,
+        ) = test_runtime(Participation::Enabled, Participation::Enabled).await;
+        network.set_device_peers(vec![DevicePeer {
+            public_key: peer_key,
+            endpoint: Some("127.0.0.1:51820".into()),
+            last_handshake: Some(tokio::time::Instant::now()),
+        }]);
+
+        let probe_readiness =
+            Arc::new(ProbeListenerReadiness::new(Some(ProbeListenerFamily::Ipv6)));
+        probe_readiness.set_family_ready(ProbeListenerFamily::Ipv6, true);
+        let mut state = ParticipationState::default();
+        let network_driver = WireguardDriver::memory_with(network);
+        let machine_store: Arc<dyn MachineStore> = store.clone();
+
+        participation_once(
+            &self_id,
+            &authoritative_self,
+            &machine_store,
+            &network_driver,
+            &probe_readiness,
+            &self_record_tx,
+            &mut state,
+        )
+        .await;
+
+        probe_readiness.set_family_ready(ProbeListenerFamily::Ipv6, false);
+        for _ in 0..3 {
+            participation_once(
+                &self_id,
+                &authoritative_self,
+                &machine_store,
+                &network_driver,
+                &probe_readiness,
+                &self_record_tx,
+                &mut state,
+            )
+            .await;
+        }
+
+        cancel.cancel();
+        writer_handle.await.expect("writer exits");
+
+        let machines = store.list_machines().await.expect("list machines");
+        let self_record = machines
+            .into_iter()
+            .find(|machine| machine.id == self_id)
+            .expect("self record");
+        assert_eq!(self_record.participation, Participation::Disabled);
+        stop_test_probe_listener(probe_cancel, probe_task).await;
+    }
+
+    #[tokio::test]
     async fn forced_disabled_override_blocks_reenable() {
         let (_probe_guard, probe_cancel, probe_task) = start_test_probe_listener();
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -549,6 +692,7 @@ mod tests {
             self_record_tx,
             self_id,
             peer_key,
+            probe_readiness,
             cancel,
             writer_handle,
         ) = test_runtime(Participation::Disabled, Participation::Enabled).await;
@@ -571,6 +715,7 @@ mod tests {
                 &authoritative_self,
                 &machine_store,
                 &network_driver,
+                &probe_readiness,
                 &self_record_tx,
                 &mut state,
             )
@@ -594,15 +739,12 @@ mod tests {
         CancellationToken,
         tokio::task::JoinHandle<()>,
     ) {
-        static PROBE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let probe_guard = PROBE_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("lock probe listener");
+        let probe_guard = probe_port_test_lock();
         let probe_cancel = CancellationToken::new();
         let task_cancel = probe_cancel.clone();
+        let probe_readiness = Arc::new(ProbeListenerReadiness::new(None));
         let probe_task = tokio::spawn(async move {
-            run_probe_listener_task(task_cancel).await;
+            run_probe_listener_task(task_cancel, probe_readiness).await;
         });
         (probe_guard, probe_cancel, probe_task)
     }

@@ -33,6 +33,8 @@ use tracing::warn;
 pub enum TaskSetError {
     #[error("task subscribe failed: {0}")]
     Subscribe(Error),
+    #[error("internal task state error: {0}")]
+    InternalState(&'static str),
     #[error("task panicked: {0}")]
     Join(#[from] tokio::task::JoinError),
 }

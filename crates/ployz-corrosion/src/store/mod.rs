@@ -1,5 +1,6 @@
 use crate::admin::AdminClient;
 use crate::client::{CorrClient, Transport};
+use async_trait::async_trait;
 use corro_api_types::{ExecResult, Statement};
 use ployz_config::corrosion as corrosion_config;
 use ployz_store_api::{
@@ -7,7 +8,6 @@ use ployz_store_api::{
     MachineEventSubscription, MachineStore, RoutingInvalidationSubscription, RoutingStore,
     SyncProbe, SyncStatus,
 };
-use async_trait::async_trait;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
@@ -52,15 +52,17 @@ impl CorrosionStore {
         let network_dir = ployz_config::network_dir(data_dir, network);
         let admin_path = corrosion_config::Paths::new(&network_dir).admin;
         let network_path = ployz_config::network_config_path(data_dir, network);
-        let raw = tokio::fs::read_to_string(&network_path).await.map_err(|e| {
-            Error::operation(
-                "connect_for_network",
-                format!(
-                    "reading network config from {}: {e}",
-                    network_path.display()
-                ),
-            )
-        })?;
+        let raw = tokio::fs::read_to_string(&network_path)
+            .await
+            .map_err(|e| {
+                Error::operation(
+                    "connect_for_network",
+                    format!(
+                        "reading network config from {}: {e}",
+                        network_path.display()
+                    ),
+                )
+            })?;
 
         #[derive(serde::Deserialize)]
         struct NetworkConfigMinimal {
@@ -237,7 +239,6 @@ impl DeployReadStore for CorrosionStore {
 
 #[async_trait]
 impl DeployWriteStore for CorrosionStore {
-
     async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
         tables::service_revisions::upsert_service_revision(&self.client, record).await
     }

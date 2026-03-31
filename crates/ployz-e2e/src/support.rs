@@ -69,7 +69,11 @@ pub(crate) fn daemon_mesh_ready_in_container(container_name: &str) -> Result<Mes
     let client = DaemonClient::new(transport);
     runtime
         .block_on(async { client.mesh_ready().await })
-        .map_err(|error| Error::Io(format!("probe mesh readiness in '{container_name}': {error}")))
+        .map_err(|error| {
+            Error::Io(format!(
+                "probe mesh readiness in '{container_name}': {error}"
+            ))
+        })
 }
 
 pub(crate) fn docker_outer<const N: usize>(args: [&str; N]) -> Result<CommandOutput> {

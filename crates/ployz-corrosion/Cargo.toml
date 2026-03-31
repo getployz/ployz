@@ -30,9 +30,5 @@ ipnet = { workspace = true }
 strum = { workspace = true }
 rusqlite = "0.38"
 
-[lints.clippy]
-indexing_slicing = "warn"
-fallible_impl_from = "warn"
-wildcard_enum_match_arm = "warn"
-fn_params_excessive_bools = "warn"
-must_use_candidate = "warn"
+[lints]
+workspace = true

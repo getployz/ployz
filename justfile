@@ -18,6 +18,10 @@ build-release:
 test:
     cargo test
 
+check-ebpf:
+    ./scripts/check-ebpf-version.sh
+    rustup run nightly cargo build --manifest-path ebpf/Cargo.toml --package ployz-ebpf -Z build-std=core --locked --bins --release --target bpfel-unknown-none
+
 bootstrap-linux *args:
     ./scripts/bootstrap-linux.sh {{args}}
 

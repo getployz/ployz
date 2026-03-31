@@ -58,19 +58,19 @@ pub(crate) async fn run_self_record_writer_task(
             }
             Some(command) = commands.recv() => {
                 let SelfRecordCommand { mutation, done } = command;
-                let mut next = current.clone();
-                apply_mutation(&mut next, mutation);
-                if next == current {
-                    let _ = done.send(Some(next));
+                let previous = current.clone();
+                apply_mutation(&mut current, mutation);
+                if current == previous {
+                    let _ = done.send(Some(current.clone()));
                     continue;
                 }
-                match store.upsert_self_machine(&next).await {
+                match store.upsert_self_machine(&current).await {
                     Ok(()) => {
-                        *authoritative_self.write().await = next.clone();
-                        current = next.clone();
-                        let _ = done.send(Some(next));
+                        *authoritative_self.write().await = current.clone();
+                        let _ = done.send(Some(current.clone()));
                     }
                     Err(error) => {
+                        current = previous;
                         warn!(?error, "self record update failed");
                         let _ = done.send(None);
                     }

@@ -2,7 +2,7 @@ use super::labels::build_system_labels;
 use super::{ContainerEngine, EnsureAction, PullPolicy, RuntimeContainerSpec};
 use async_trait::async_trait;
 use ployz_config::corrosion as corrosion_config;
-use ployz_runtime_api::ServiceRuntime;
+use ployz_runtime_api::{Result as RuntimeResult, RuntimeError, ServiceRuntime};
 use ployz_types::Result;
 use ployz_types::model::OverlayIp;
 use std::fs::OpenOptions;
@@ -20,7 +20,7 @@ const CORROSION_LOG_PATH_ENV: &str = "PLOYZ_CORROSION_LOG_PATH";
 const CORROSION_RUST_LOG_ENV: &str = "PLOYZ_CORROSION_RUST_LOG";
 const SCHEMA_SQL: &str = include_str!("../../../ployz-corrosion/src/schema.sql");
 
-fn which_corrosion() -> std::result::Result<PathBuf, String> {
+fn which_corrosion() -> RuntimeResult<PathBuf> {
     let candidates = ["/usr/local/bin/corrosion", "/usr/bin/corrosion"];
     for path in candidates {
         let candidate = PathBuf::from(path);
@@ -28,7 +28,8 @@ fn which_corrosion() -> std::result::Result<PathBuf, String> {
             return Ok(candidate);
         }
     }
-    Err(String::from(
+    Err(RuntimeError::operation(
+        "find corrosion binary",
         "corrosion binary not found (expected at /usr/local/bin/corrosion)",
     ))
 }
@@ -39,7 +40,7 @@ pub async fn docker_corrosion_runtime(
     bootstrap: &[String],
     network_id: &str,
     image: &str,
-) -> std::result::Result<Arc<dyn ServiceRuntime>, String> {
+) -> RuntimeResult<Arc<dyn ServiceRuntime>> {
     let paths = corrosion_config::Paths::new(network_dir);
     let gossip_addr = SocketAddr::new(
         IpAddr::V6(overlay_ip.0),
@@ -62,11 +63,11 @@ pub async fn docker_corrosion_runtime(
         bootstrap,
         Some(network_id),
     )
-    .map_err(|error| format!("write corrosion config: {error}"))?;
+    .map_err(|error| RuntimeError::operation("write corrosion config", error.to_string()))?;
 
     let config_host = paths.config.to_string_lossy().into_owned();
     let schema_host = paths.schema.to_string_lossy().into_owned();
-    let service = DockerCorrosion::new("ployz-corrosion", image)
+    let service = DockerCorrosion::builder("ployz-corrosion", image)
         .cmd(vec![
             "agent".into(),
             "-c".into(),
@@ -78,7 +79,7 @@ pub async fn docker_corrosion_runtime(
         .network_mode("container:ployz-networking")
         .build()
         .await
-        .map_err(|error| format!("docker service: {error}"))?;
+        .map_err(|error| RuntimeError::operation("docker service", error.to_string()))?;
 
     Ok(Arc::new(service))
 }
@@ -88,7 +89,7 @@ pub fn host_corrosion_runtime(
     network_dir: &Path,
     bootstrap: &[String],
     network_id: &str,
-) -> std::result::Result<Arc<dyn ServiceRuntime>, String> {
+) -> RuntimeResult<Arc<dyn ServiceRuntime>> {
     let paths = corrosion_config::Paths::new(network_dir);
     let gossip_addr = SocketAddr::new(
         IpAddr::V6(overlay_ip.0),
@@ -105,9 +106,12 @@ pub fn host_corrosion_runtime(
         bootstrap,
         Some(network_id),
     )
-    .map_err(|error| format!("write corrosion config: {error}"))?;
+    .map_err(|error| RuntimeError::operation("write corrosion config", error.to_string()))?;
 
-    Ok(Arc::new(HostCorrosion::new(which_corrosion()?, &paths.config)))
+    Ok(Arc::new(HostCorrosion::new(
+        which_corrosion()?,
+        &paths.config,
+    )))
 }
 
 struct HostCorrosion {
@@ -147,7 +151,7 @@ fn configured_log_path(default_log_path: &Path) -> Option<PathBuf> {
 
 #[async_trait]
 impl ServiceRuntime for HostCorrosion {
-    async fn start(&self) -> std::result::Result<(), String> {
+    async fn start(&self) -> RuntimeResult<()> {
         let mut guard = self.child.lock().await;
 
         if let Some(child) = &mut *guard {
@@ -176,21 +180,19 @@ impl ServiceRuntime for HostCorrosion {
                     .append(true)
                     .open(&log_path)
                     .map_err(|error| {
-                        ployz_types::Error::operation(
+                        RuntimeError::operation(
                             "corrosion start",
                             format!("failed to open log file {}: {error}", log_path.display()),
                         )
-                        .to_string()
                     })?;
                 let stdout_log = log_file.try_clone().map_err(|error| {
-                    ployz_types::Error::operation(
+                    RuntimeError::operation(
                         "corrosion start",
                         format!(
                             "failed to clone log file handle {}: {error}",
                             log_path.display()
                         ),
                     )
-                    .to_string()
                 })?;
                 command
                     .stdout(Stdio::from(stdout_log))
@@ -207,11 +209,10 @@ impl ServiceRuntime for HostCorrosion {
         }
 
         let child = command.spawn().map_err(|error| {
-            ployz_types::Error::operation(
+            RuntimeError::operation(
                 "corrosion start",
                 format!("failed to spawn {}: {error}", self.binary.display()),
             )
-            .to_string()
         })?;
 
         info!(
@@ -225,7 +226,7 @@ impl ServiceRuntime for HostCorrosion {
         Ok(())
     }
 
-    async fn stop(&self) -> std::result::Result<(), String> {
+    async fn stop(&self) -> RuntimeResult<()> {
         let mut guard = self.child.lock().await;
         let Some(child) = &mut *guard else {
             return Ok(());
@@ -257,18 +258,16 @@ impl ServiceRuntime for HostCorrosion {
         }
 
         child.kill().await.map_err(|error| {
-            ployz_types::Error::operation(
+            RuntimeError::operation(
                 "corrosion stop",
                 format!("failed to kill pid {pid:?}: {error}"),
             )
-            .to_string()
         })?;
         let status = child.wait().await.map_err(|error| {
-            ployz_types::Error::operation(
+            RuntimeError::operation(
                 "corrosion stop",
                 format!("failed to wait pid {pid:?}: {error}"),
             )
-            .to_string()
         })?;
 
         info!(?pid, %status, "corrosion stopped (killed)");
@@ -337,7 +336,7 @@ impl DockerCorrosionBuilder {
 }
 
 impl DockerCorrosion {
-    fn new(container_name: &str, image: &str) -> DockerCorrosionBuilder {
+    fn builder(container_name: &str, image: &str) -> DockerCorrosionBuilder {
         DockerCorrosionBuilder {
             container_name: container_name.to_string(),
             image: image.to_string(),
@@ -390,12 +389,12 @@ impl DockerCorrosion {
 
 #[async_trait]
 impl ServiceRuntime for DockerCorrosion {
-    async fn start(&self) -> std::result::Result<(), String> {
+    async fn start(&self) -> RuntimeResult<()> {
         let result = self
             .engine
             .ensure(&self.to_runtime_spec())
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(RuntimeError::from)?;
 
         match &result.action {
             EnsureAction::Adopted => {
@@ -415,11 +414,11 @@ impl ServiceRuntime for DockerCorrosion {
         Ok(())
     }
 
-    async fn stop(&self) -> std::result::Result<(), String> {
+    async fn stop(&self) -> RuntimeResult<()> {
         self.engine
             .remove(&self.container_name, STOP_GRACE_PERIOD)
             .await
-            .map_err(|error| error.to_string())
+            .map_err(RuntimeError::from)
     }
 
     async fn healthy(&self) -> bool {

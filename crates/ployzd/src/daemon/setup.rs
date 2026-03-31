@@ -100,17 +100,17 @@ impl MeshStartTx {
                 &self.config.id.0,
             )
             .await
-            .map_err(StartMeshError::NetworkDriver)?;
+            .map_err(|error| StartMeshError::NetworkDriver(error.to_string()))?;
         let db_records = components
             .bootstrap_state
             .seed_machine_records()
             .await
             .unwrap_or_else(|error| {
-            tracing::warn!(
-                ?error,
-                "failed to load corrosion bootstrap peers, continuing without db seeds"
-            );
-            Vec::new()
+                tracing::warn!(
+                    ?error,
+                    "failed to load corrosion bootstrap peers, continuing without db seeds"
+                );
+                Vec::new()
             });
 
         let listen_port = DEFAULT_LISTEN_PORT;
@@ -187,7 +187,7 @@ impl MeshStartTx {
             .map(|h| Box::new(h) as Box<dyn RuntimeHandle>)
             .map_err(|error| StartMeshError::RemoteControl {
                 bind: plan.remote_control_bind_addr,
-                error,
+                error: error.to_string(),
             })?;
 
         self.remote_control = handle;
@@ -205,7 +205,7 @@ impl MeshStartTx {
             .start_gateway(plan.gateway_config.clone())
             .await
             .map(|h| Box::new(h) as Box<dyn RuntimeHandle>)
-            .map_err(StartMeshError::Gateway)?;
+            .map_err(|error| StartMeshError::Gateway(error.to_string()))?;
         self.gateway = handle;
         Ok(())
     }
@@ -221,7 +221,7 @@ impl MeshStartTx {
             .start_dns(plan.dns_config.clone())
             .await
             .map(|h| Box::new(h) as Box<dyn RuntimeHandle>)
-            .map_err(StartMeshError::Dns)?;
+            .map_err(|error| StartMeshError::Dns(error.to_string()))?;
         self.dns = handle;
         Ok(())
     }
@@ -303,7 +303,9 @@ impl DaemonState {
         bootstrap: Option<BootstrapInfo>,
         options: MeshStartOptions,
     ) -> Result<MeshStartSummary, StartMeshError> {
-        let plan = self.plan_mesh_start(&net_config, bootstrap, options).await?;
+        let plan = self
+            .plan_mesh_start(&net_config, bootstrap, options)
+            .await?;
         tracing::info!(
             ?self.runtime_target,
             ?self.service_mode,
@@ -462,12 +464,12 @@ impl DaemonState {
         _options: MeshStartOptions,
     ) -> Result<StartPlan, StartMeshError> {
         let network_dir = self.network_dir(&net_config.name.0);
-        let fallback_bootstrap_addrs =
-            self.runtime_profile
-                .build_bootstrap_state_reader(&network_dir)
-                .bootstrap_addrs(&self.identity.machine_id)
-                .await
-                .map_err(|error| StartMeshError::BootstrapResolve(error.to_string()))?;
+        let fallback_bootstrap_addrs = self
+            .runtime_profile
+            .build_bootstrap_state_reader(&network_dir)
+            .bootstrap_addrs(&self.identity.machine_id)
+            .await
+            .map_err(|error| StartMeshError::BootstrapResolve(error.to_string()))?;
         let bootstrap_addrs = resolve_bootstrap_addrs(
             &bootstrap,
             corrosion_config::DEFAULT_GOSSIP_PORT,
@@ -499,7 +501,9 @@ impl DaemonState {
             remote_control_bind_addr,
             gateway_config,
             dns_config,
-            overlay_network_name: self.runtime_profile.overlay_network_name(&net_config.name.0),
+            overlay_network_name: self
+                .runtime_profile
+                .overlay_network_name(&net_config.name.0),
         })
     }
 

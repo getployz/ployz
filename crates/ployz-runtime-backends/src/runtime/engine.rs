@@ -104,7 +104,7 @@ impl ContainerEngine {
                     container_name: spec.container_name.clone(),
                     action: EnsureAction::Adopted,
                     ip_address: obs.ip_address,
-                    networks: obs.networks.clone(),
+                    networks: obs.networks,
                 })
             }
             SpecChange::Missing => {

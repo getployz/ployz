@@ -2,11 +2,12 @@ use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use crate::daemon::store::StoreDriver;
-use ployz_runtime_api::{DeployFrame, RuntimeHandle, StartCandidateRequest};
+use ployz_runtime_api::{
+    DeployFrame, Result as RuntimeResult, RuntimeHandle, StartCandidateRequest,
+};
 use ployz_runtime_backends::deploy::local::{
     LocalDeployRuntime, ManagedInstance, StartCandidate, now_unix_secs,
 };
-use ployz_store_api::{DeployReadStore, DeployWriteStore};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
@@ -25,7 +26,9 @@ async fn adopt_instances(
     runtime: &LocalDeployRuntime,
     namespace: &Namespace,
 ) -> Result<()> {
-    let existing = store.list_instance_status(namespace).await?;
+    let deploy_read = store.deploy_read();
+    let deploy_write = store.deploy_write();
+    let existing = deploy_read.list_instance_status(namespace).await?;
     let known: BTreeSet<String> = existing
         .iter()
         .map(|record| record.instance_id.0.clone())
@@ -41,7 +44,7 @@ async fn adopt_instances(
             DrainState::None,
             None,
         );
-        store.upsert_instance_status(&record).await?;
+        deploy_write.upsert_instance_status(&record).await?;
     }
     Ok(())
 }
@@ -62,7 +65,8 @@ async fn list_local_instance_status(
     namespace: &Namespace,
     local_machine_id: &MachineId,
 ) -> Result<Vec<InstanceStatusRecord>> {
-    Ok(store
+    let deploy_read = store.deploy_read();
+    Ok(deploy_read
         .list_instance_status(namespace)
         .await?
         .into_iter()
@@ -92,7 +96,7 @@ impl RemoteControlHandle {
 
 #[async_trait::async_trait]
 impl RuntimeHandle for RemoteControlHandle {
-    async fn shutdown(self: Box<Self>) -> std::result::Result<(), String> {
+    async fn shutdown(self: Box<Self>) -> RuntimeResult<()> {
         RemoteControlHandle::shutdown(*self).await;
         Ok(())
     }
@@ -217,7 +221,10 @@ impl DeployAgent {
             DrainState::None,
             None,
         );
-        self.store.upsert_instance_status(&status).await?;
+        self.store
+            .deploy_write()
+            .upsert_instance_status(&status)
+            .await?;
         Ok(status)
     }
 
@@ -239,7 +246,10 @@ impl DeployAgent {
         status.ready = false;
         status.drain_state = DrainState::Requested;
         status.updated_at = now_unix_secs();
-        self.store.upsert_instance_status(&status).await?;
+        self.store
+            .deploy_write()
+            .upsert_instance_status(&status)
+            .await?;
         Ok(())
     }
 
@@ -259,6 +269,7 @@ impl DeployAgent {
             .remove_instance(&status.instance_id, &session.namespace, &status.service)
             .await?;
         self.store
+            .deploy_write()
             .delete_instance_status(&status.instance_id)
             .await?;
         Ok(())

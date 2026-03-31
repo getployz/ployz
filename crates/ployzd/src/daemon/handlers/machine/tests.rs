@@ -1,18 +1,17 @@
-use super::heal::plan_local_subnet_heal;
+use super::heal::{plan_local_subnet_heal, should_clear_local_participation_override};
 use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
 use crate::daemon::ActiveMesh;
 use crate::daemon::DaemonRuntimeConfig;
 use crate::daemon::DaemonState;
 use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock};
+use crate::daemon::store::StoreDriver;
 use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
 use ipnet::Ipv4Net;
-use crate::daemon::store::StoreDriver;
 use ployz_api::{DaemonPayload, DaemonResponse, MachineAddOptions, MeshSelfRecordPayload};
 use ployz_orchestrator::Mesh;
 use ployz_runtime_api::Identity;
 use ployz_runtime_api::{
-    MemoryServiceRuntime, MemoryWireGuard, ServiceHealth, StaticEndpointDiscovery,
-    WireguardDriver,
+    MemoryServiceRuntime, MemoryWireGuard, ServiceHealth, StaticEndpointDiscovery, WireguardDriver,
 };
 use ployz_store_api::MachineStore;
 use ployz_store_api::memory::MemoryStore;
@@ -232,6 +231,18 @@ fn plan_local_subnet_heal_is_noop_after_subnet_changes() {
     .expect("plan should succeed");
 
     assert!(plan.is_none());
+}
+
+#[test]
+fn local_subnet_heal_keeps_override_until_probe_is_ready() {
+    assert!(!should_clear_local_participation_override(
+        true, false, false
+    ));
+    assert!(should_clear_local_participation_override(true, false, true));
+    assert!(!should_clear_local_participation_override(
+        false, false, true
+    ));
+    assert!(!should_clear_local_participation_override(true, true, true));
 }
 
 #[tokio::test]

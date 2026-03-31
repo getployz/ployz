@@ -48,12 +48,8 @@ impl DataplaneFactory for DefaultDataplaneFactory {
         #[cfg(not(feature = "ebpf-native"))]
         {
             let dataplane = Arc::new(
-                EbpfDataplane::attach_container(
-                    &self.container_name,
-                    &bridge_ifname,
-                    &wg_ifname,
-                )
-                .await?,
+                EbpfDataplane::attach_container(&self.container_name, &bridge_ifname, &wg_ifname)
+                    .await?,
             );
             Ok(AttachedDataplane {
                 dataplane,

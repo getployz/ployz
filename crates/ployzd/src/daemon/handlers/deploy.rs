@@ -34,14 +34,23 @@ impl DaemonState {
     ) -> DaemonResponse {
         let manifest = match decode_manifest(manifest_json) {
             Ok(manifest) => manifest,
-            Err(response) => return response,
+            Err(response) => return *response,
         };
         let active = match &self.active {
             Some(active) => active,
             None => return self.err("NO_MESH", "no mesh is running"),
         };
+        let deploy_read = active.store.deploy_read();
+        let machine_store = active.store.machine();
 
-        match preview(&active.store, &self.identity.machine_id, &manifest).await {
+        match preview(
+            deploy_read.as_ref(),
+            machine_store.as_ref(),
+            &self.identity.machine_id,
+            &manifest,
+        )
+        .await
+        {
             Ok(plan) => match serde_json::to_string_pretty(&plan) {
                 Ok(json) => self.ok(json),
                 Err(err) => self.err("ENCODE_PREVIEW", format!("encode preview: {err}")),
@@ -57,12 +66,16 @@ impl DaemonState {
     ) -> DaemonResponse {
         let manifest = match decode_manifest(manifest_json) {
             Ok(manifest) => manifest,
-            Err(response) => return response,
+            Err(response) => return *response,
         };
         let active = match &self.active {
             Some(active) => active,
             None => return self.err("NO_MESH", "no mesh is running"),
         };
+        let deploy_read = active.store.deploy_read();
+        let deploy_write = active.store.deploy_write();
+        let deploy_commit = active.store.deploy_commit();
+        let machine_store = active.store.machine();
 
         let agent = Arc::new(DeployAgent::new(
             active.store.clone(),
@@ -78,7 +91,10 @@ impl DaemonState {
         );
 
         match apply(
-            &active.store,
+            deploy_read.as_ref(),
+            deploy_write.as_ref(),
+            deploy_commit.as_ref(),
+            machine_store.as_ref(),
             &factory,
             &self.identity.machine_id,
             &manifest,
@@ -99,7 +115,8 @@ impl DaemonState {
             None => return self.err("NO_MESH", "no mesh is running"),
         };
         let namespace = Namespace(namespace.to_string());
-        let manifest = match export_manifest(&active.store, &namespace).await {
+        let deploy_read = active.store.deploy_read();
+        let manifest = match export_manifest(deploy_read.as_ref(), &namespace).await {
             Ok(manifest) => manifest,
             Err(err) => return self.err("DEPLOY_EXPORT_FAILED", format!("{err}")),
         };
@@ -110,31 +127,29 @@ impl DaemonState {
     }
 }
 
-fn decode_manifest(manifest_json: &str) -> Result<DeployManifest, DaemonResponse> {
-    let manifest: DeployManifest =
-        serde_json::from_str(manifest_json).map_err(|err| DaemonResponse {
+fn decode_manifest(manifest_json: &str) -> Result<DeployManifest, Box<DaemonResponse>> {
+    let manifest: DeployManifest = serde_json::from_str(manifest_json).map_err(|err| {
+        Box::new(DaemonResponse {
             ok: false,
             code: "INVALID_MANIFEST".into(),
             message: format!("invalid deploy manifest: {err}"),
             payload: None,
-        })?;
+        })
+    })?;
 
     if manifest.services.is_empty() {
-        return Err(DaemonResponse {
+        return Err(Box::new(DaemonResponse {
             ok: false,
             code: "INVALID_MANIFEST".into(),
             message: "deploy manifest must contain at least one service".into(),
             payload: None,
-        });
+        }));
     }
 
     Ok(manifest)
 }
 
-async fn export_manifest<S>(
-    store: &S,
-    namespace: &Namespace,
-) -> ployz_types::Result<DeployManifest>
+async fn export_manifest<S>(store: &S, namespace: &Namespace) -> ployz_types::Result<DeployManifest>
 where
     S: DeployReadStore + ?Sized,
 {

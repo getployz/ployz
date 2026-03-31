@@ -1,7 +1,6 @@
 use crate::daemon::{ActiveMesh, DaemonState};
 use ployz_orchestrator::machine_liveness::{MachineLiveness, machine_liveness};
 use ployz_orchestrator::mesh::{DevicePeer, WireGuardDevice};
-use ployz_store_api::MachineStore;
 use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
 use ployz_types::time::now_unix_secs;
 use std::collections::HashMap;
@@ -27,7 +26,7 @@ impl DaemonState {
             return self.err("NO_RUNNING_NETWORK", "no mesh running");
         };
 
-        let machines = match active.store.list_machines().await {
+        let machines = match active.store.machine().list_machines().await {
             Ok(machines) => machines,
             Err(err) => return self.err("LIST_FAILED", format!("failed to list machines: {err}")),
         };
@@ -379,15 +378,14 @@ mod tests {
     use super::*;
     use crate::daemon::ActiveMesh;
     use crate::daemon::DaemonRuntimeConfig;
+    use crate::daemon::store::StoreDriver;
     use crate::mesh_state::network::NetworkConfig;
     use ployz_orchestrator::Mesh;
     use ployz_runtime_api::Identity;
     use ployz_runtime_api::{
-        DevicePeer, MemoryServiceRuntime, MemoryWireGuard, StaticEndpointDiscovery,
-        WireguardDriver,
+        DevicePeer, MemoryServiceRuntime, MemoryWireGuard, StaticEndpointDiscovery, WireguardDriver,
     };
-    use crate::daemon::store::StoreDriver;
-    use ployz_store_api::memory::MemoryStore;
+    use ployz_store_api::{MachineStore, memory::MemoryStore};
     use ployz_types::model::{MachineId, MachineStatus, OverlayIp, Participation, PublicKey};
     use std::net::Ipv6Addr;
     use std::path::PathBuf;

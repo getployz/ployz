@@ -1,7 +1,7 @@
 use crate::{
-    BootstrapStateReader, DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore, InviteStore,
-    MachineEventSubscription, MachineStore,
-    RoutingInvalidationSubscription, RoutingStore, SyncProbe, SyncStatus,
+    BootstrapStateReader, DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore,
+    InviteStore, MachineEventSubscription, MachineStore, RoutingInvalidationSubscription,
+    RoutingStore, SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::error::{Error, Result};
@@ -315,10 +315,9 @@ impl DeployCommitStore for MemoryStore {
             );
         }
 
-        inner.deploys.insert(
-            commit.deploy.deploy_id.clone(),
-            commit.deploy.clone(),
-        );
+        inner
+            .deploys
+            .insert(commit.deploy.deploy_id.clone(), commit.deploy.clone());
         Self::broadcast_routing_refresh(&mut inner);
         Ok(())
     }

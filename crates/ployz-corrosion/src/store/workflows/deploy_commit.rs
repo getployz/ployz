@@ -27,7 +27,10 @@ fn build_commit_statements(commit: &DeployCommit) -> Result<Vec<Statement>> {
     let mut statements = Vec::new();
 
     for service in &touched {
-        statements.push(service_releases::delete_statement(&commit.namespace, service));
+        statements.push(service_releases::delete_statement(
+            &commit.namespace,
+            service,
+        ));
     }
 
     for release in &commit.releases {

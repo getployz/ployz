@@ -49,6 +49,7 @@ pub(crate) struct ScenarioRun {
     nodes: Vec<Node>,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) enum CleanupReason {
     Success,
     Failure,
@@ -245,7 +246,7 @@ impl ScenarioRun {
     }
 
     pub(crate) fn wait_mesh_ready_name(&self, node_name: &str) -> Result<()> {
-        self.wait_mesh_ready_default(self.node(node_name)?)
+        Self::wait_mesh_ready_default(self.node(node_name)?)
     }
 
     pub(crate) fn machine_add(&self, controller_name: &str, target_name: &str) -> Result<()> {
@@ -283,8 +284,8 @@ impl ScenarioRun {
         Ok(())
     }
 
-    pub(crate) fn wait_mesh_ready_default(&self, node: &Node) -> Result<()> {
-        self.wait_mesh_ready(node, READY_WAIT_TIMEOUT)
+    pub(crate) fn wait_mesh_ready_default(node: &Node) -> Result<()> {
+        Self::wait_mesh_ready(node, READY_WAIT_TIMEOUT)
     }
 
     pub(crate) fn wait_all_machine_states(
@@ -823,7 +824,7 @@ impl ScenarioRun {
         })
     }
 
-    fn wait_mesh_ready(&self, node: &Node, timeout: Duration) -> Result<()> {
+    fn wait_mesh_ready(node: &Node, timeout: Duration) -> Result<()> {
         wait_until(timeout, || {
             let Ok(payload) = daemon_mesh_ready_in_container(&node.container_name) else {
                 return Ok(false);

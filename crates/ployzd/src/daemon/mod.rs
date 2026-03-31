@@ -1,8 +1,8 @@
 pub(crate) mod deploy_control;
 pub mod handlers;
 mod setup;
-pub(crate) mod store;
 pub mod ssh;
+pub(crate) mod store;
 
 use std::path::{Path, PathBuf};
 

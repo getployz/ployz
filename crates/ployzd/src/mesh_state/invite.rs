@@ -63,7 +63,7 @@ pub fn issue_invite_token(
     let issuer_verify_key = URL_SAFE_NO_PAD.encode(signing_key.verifying_key().to_bytes());
 
     let claims = InviteClaims {
-        invite_id: invite_id.clone(),
+        invite_id,
         network_id: network.id.clone(),
         network_name: network.name.0.clone(),
         issued_by: identity.machine_id.0.clone(),

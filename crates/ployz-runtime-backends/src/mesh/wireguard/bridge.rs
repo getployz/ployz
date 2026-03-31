@@ -359,7 +359,11 @@ async fn bridge_event_loop(config: BridgeEventLoopConfig) -> std::io::Result<()>
                                 socket.close();
                             }
                             Ok(n) => {
-                                let _ = socket.send_slice(&buf[..n]);
+                                let Some(payload) = buf.get(..n) else {
+                                    socket.abort();
+                                    continue;
+                                };
+                                let _ = socket.send_slice(payload);
                             }
                             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                             Err(e) => {
@@ -374,7 +378,11 @@ async fn bridge_event_loop(config: BridgeEventLoopConfig) -> std::io::Result<()>
                         let mut buf = [0u8; 4096];
                         match socket.recv_slice(&mut buf) {
                             Ok(n) if n > 0 => {
-                                match relay.stream.try_write(&buf[..n]) {
+                                let Some(payload) = buf.get(..n) else {
+                                    socket.abort();
+                                    continue;
+                                };
+                                match relay.stream.try_write(payload) {
                                     Ok(_) => {}
                                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                                         // Data will be retried next poll
@@ -448,7 +456,9 @@ async fn bridge_event_loop(config: BridgeEventLoopConfig) -> std::io::Result<()>
                 }
 
                 diag.mark_recv_packet();
-                let packet = &udp_recv_buf[..n];
+                let Some(packet) = udp_recv_buf.get(..n) else {
+                    continue;
+                };
 
                 let mut decode_buf = vec![0u8; MAX_WG_PACKET];
                 match tunn.decapsulate(None, packet, &mut decode_buf) {
@@ -580,7 +590,9 @@ async fn bridge_event_loop(config: BridgeEventLoopConfig) -> std::io::Result<()>
 
 fn ipv6_to_smoltcp(addr: Ipv6Addr) -> IpAddress {
     let [s0, s1, s2, s3, s4, s5, s6, s7] = addr.segments();
-    IpAddress::Ipv6(smoltcp::wire::Ipv6Address::new(s0, s1, s2, s3, s4, s5, s6, s7))
+    IpAddress::Ipv6(smoltcp::wire::Ipv6Address::new(
+        s0, s1, s2, s3, s4, s5, s6, s7,
+    ))
 }
 
 /// Accept a connection from any of the listeners, racing all of them.

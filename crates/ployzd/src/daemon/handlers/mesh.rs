@@ -12,7 +12,9 @@ use ployz_types::time::now_unix_secs;
 use tracing::warn;
 
 use crate::daemon::setup::MeshStartOptions;
-use ployz_api::{DaemonPayload, DaemonResponse, MeshReadyPayload, MeshSelfRecordPayload};
+use ployz_api::{
+    DaemonPayload, DaemonResponse, MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload,
+};
 
 #[cfg(test)]
 use super::super::DaemonRuntimeConfig;
@@ -61,9 +63,15 @@ impl DaemonState {
     pub(crate) fn handle_mesh_status(&self, network: &str) -> DaemonResponse {
         let config_path = NetworkConfig::path(&self.data_dir, network);
         if !config_path.exists() {
-            return self.err(
-                "NETWORK_NOT_FOUND",
-                format!("network '{network}' does not exist"),
+            return self.ok_with_payload(
+                format!("network: {network}\nstate:   missing"),
+                Some(DaemonPayload::MeshStatus(MeshStatusPayload {
+                    network_name: network.to_string(),
+                    network_id: String::new(),
+                    overlay: String::new(),
+                    state: "missing".into(),
+                    exists: false,
+                })),
             );
         }
 
@@ -79,10 +87,19 @@ impl DaemonState {
             .as_ref()
             .is_some_and(|a| a.config.name.0 == network);
         let state = if running { "running" } else { "created" };
-        self.ok(format!(
-            "network: {}\noverlay: {}\nstate:   {}",
-            config.name, config.overlay_ip, state
-        ))
+        self.ok_with_payload(
+            format!(
+                "network: {}\noverlay: {}\nstate:   {}",
+                config.name, config.overlay_ip, state
+            ),
+            Some(DaemonPayload::MeshStatus(MeshStatusPayload {
+                network_name: config.name.0.clone(),
+                network_id: config.id.0.clone(),
+                overlay: config.overlay_ip.0.to_string(),
+                state: state.into(),
+                exists: true,
+            })),
+        )
     }
 
     pub(crate) async fn handle_mesh_ready(
@@ -502,14 +519,15 @@ fn mesh_ready_payload(value: MeshReadyStatus) -> MeshReadyPayload {
 mod tests {
     use super::*;
     use crate::daemon::ActiveMesh;
+    use crate::daemon::store::StoreDriver;
     use crate::mesh_state::invite::{InviteTokenContext, issue_invite_token};
     use crate::mesh_state::network::NetworkConfig;
+    use ployz_api::DaemonPayload;
     use ployz_orchestrator::Mesh;
     use ployz_runtime_api::Identity;
     use ployz_runtime_api::{
         MemoryServiceRuntime, MemoryWireGuard, StaticEndpointDiscovery, WireguardDriver,
     };
-    use crate::daemon::store::StoreDriver;
     use ployz_store_api::MachineStore;
     use ployz_store_api::memory::MemoryStore;
     use ployz_types::model::{MachineId, OverlayIp, PublicKey};
@@ -603,6 +621,71 @@ mod tests {
         if let Some(active) = state.active.as_mut() {
             active.mesh.destroy().await.expect("destroy mesh");
         }
+    }
+
+    #[test]
+    fn mesh_status_returns_missing_payload_when_network_does_not_exist() {
+        let state = DaemonState::new_for_tests(
+            &unique_temp_dir("ployz-mesh-status-missing"),
+            Identity::generate(MachineId("founder".into()), [1; 32]),
+            DaemonRuntimeConfig {
+                cluster_cidr: "10.210.0.0/16".into(),
+                subnet_prefix_len: 24,
+                remote_control_port: 4317,
+                gateway_listen_addr: "127.0.0.1:0".into(),
+                gateway_threads: 1,
+            },
+        );
+
+        let response = state.handle_mesh_status("missing-net");
+        assert!(response.ok, "{}", response.message);
+        assert_eq!(response.code, "OK");
+        assert!(response.message.contains("state:   missing"));
+
+        let Some(DaemonPayload::MeshStatus(payload)) = response.payload else {
+            panic!("expected mesh status payload");
+        };
+        assert_eq!(payload.network_name, "missing-net");
+        assert_eq!(payload.network_id, "");
+        assert_eq!(payload.overlay, "");
+        assert_eq!(payload.state, "missing");
+        assert!(!payload.exists);
+    }
+
+    #[test]
+    fn mesh_status_returns_present_payload_when_network_exists() {
+        let data_dir = unique_temp_dir("ployz-mesh-status-present");
+        let identity = Identity::generate(MachineId("founder".into()), [1; 32]);
+        let config = NetworkConfig::new(
+            ployz_types::model::NetworkName("alpha".into()),
+            &identity.public_key,
+            "10.210.0.0/16",
+            "10.210.0.0/24".parse().expect("valid subnet"),
+        );
+        let config_path = NetworkConfig::path(&data_dir, &config.name.0);
+        config.save(&config_path).expect("save network config");
+
+        let state = DaemonState::new_for_tests(
+            &data_dir,
+            identity,
+            DaemonRuntimeConfig {
+                cluster_cidr: "10.210.0.0/16".into(),
+                subnet_prefix_len: 24,
+                remote_control_port: 4317,
+                gateway_listen_addr: "127.0.0.1:0".into(),
+                gateway_threads: 1,
+            },
+        );
+
+        let response = state.handle_mesh_status("alpha");
+        assert!(response.ok, "{}", response.message);
+
+        let Some(DaemonPayload::MeshStatus(payload)) = response.payload else {
+            panic!("expected mesh status payload");
+        };
+        assert_eq!(payload.network_name, "alpha");
+        assert_eq!(payload.state, "created");
+        assert!(payload.exists);
     }
 
     async fn make_active_state() -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {

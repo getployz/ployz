@@ -5,7 +5,8 @@ use crate::network::docker_bridge_network;
 use async_trait::async_trait;
 use ployz_runtime_api::{
     ContainerNetwork, DataplaneFactory, DevicePeer, EndpointDiscovery, Identity, MeshNetwork,
-    WireGuardDevice, WireguardBackend, WireguardBackendMode, WireguardDriver,
+    Result as RuntimeResult, RuntimeError, WireGuardDevice, WireguardBackend, WireguardBackendMode,
+    WireguardDriver,
 };
 use ployz_types::Result;
 use ployz_types::model::{MachineRecord, OverlayIp, PublicKey};
@@ -27,7 +28,7 @@ pub async fn docker(
     exposed_tcp_ports: &[u16],
     bridged_api_port: u16,
     image: &str,
-) -> std::result::Result<WireguardDriver, String> {
+) -> RuntimeResult<WireguardDriver> {
     let overlay_api = SocketAddr::new(IpAddr::V6(overlay_ip.0), bridged_api_port);
     let local_api = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), bridged_api_port);
 
@@ -45,7 +46,7 @@ pub async fn docker(
     let wireguard = builder
         .build()
         .await
-        .map_err(|error| format!("docker wireguard: {error}"))?;
+        .map_err(|error| RuntimeError::operation("docker wireguard", error.to_string()))?;
 
     Ok(WireguardDriver::from_backend(Arc::new(
         DockerWireguardBackend {
@@ -54,6 +55,8 @@ pub async fn docker(
     )))
 }
 
+// Docker mesh startup resolves several runtime seams in one place.
+#[expect(clippy::too_many_arguments)]
 pub async fn docker_components(
     identity: &Identity,
     overlay_ip: OverlayIp,
@@ -63,7 +66,7 @@ pub async fn docker_components(
     exposed_tcp_ports: &[u16],
     bridged_api_port: u16,
     image: &str,
-) -> std::result::Result<ConcreteMeshComponents, String> {
+) -> RuntimeResult<ConcreteMeshComponents> {
     let network = docker(
         identity,
         overlay_ip,
@@ -76,7 +79,7 @@ pub async fn docker_components(
     let container_network = Some(
         docker_bridge_network(network_name, subnet)
             .await
-            .map_err(|error| error.to_string())?,
+            .map_err(RuntimeError::from)?,
     );
     Ok(ConcreteMeshComponents {
         network,
@@ -91,16 +94,16 @@ pub fn host(
     overlay_ip: OverlayIp,
     network_name: &str,
     subnet: ipnet::Ipv4Net,
-) -> std::result::Result<WireguardDriver, String> {
+) -> RuntimeResult<WireguardDriver> {
     let ifname = format!("plz-{network_name}");
     #[cfg(target_os = "linux")]
     let wireguard =
         HostWireGuard::kernel(&ifname, identity.private_key.clone(), overlay_ip, subnet)
-            .map_err(|error| format!("host wireguard: {error}"))?;
+            .map_err(|error| RuntimeError::operation("host wireguard", error.to_string()))?;
     #[cfg(not(target_os = "linux"))]
     let wireguard =
         HostWireGuard::userspace(&ifname, identity.private_key.clone(), overlay_ip, subnet)
-            .map_err(|error| format!("host wireguard: {error}"))?;
+            .map_err(|error| RuntimeError::operation("host wireguard", error.to_string()))?;
 
     Ok(WireguardDriver::from_backend(Arc::new(
         HostWireguardBackend {
@@ -114,12 +117,12 @@ pub async fn host_components(
     overlay_ip: OverlayIp,
     network_name: &str,
     subnet: ipnet::Ipv4Net,
-) -> std::result::Result<ConcreteMeshComponents, String> {
+) -> RuntimeResult<ConcreteMeshComponents> {
     let network = host(identity, overlay_ip, network_name, subnet)?;
     let container_network = Some(
         docker_bridge_network(network_name, subnet)
             .await
-            .map_err(|error| error.to_string())?,
+            .map_err(RuntimeError::from)?,
     );
     Ok(ConcreteMeshComponents {
         network,

@@ -3,9 +3,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::built_in_images::{BuiltInImage, BuiltInImages};
-use crate::daemon::store::StoreDriver;
 use crate::daemon::deploy_control::NamespaceLockManager;
 use crate::daemon::deploy_control::remote::{RemoteControlHandle, start_remote_control_listener};
+use crate::daemon::store::StoreDriver;
 use crate::services::dns::{DnsHandle, start_managed_dns};
 use crate::services::gateway::{GatewayHandle, start_managed_gateway};
 use crate::services::supervisor::ServiceSupervision;
@@ -16,9 +16,9 @@ use ployz_dns::DnsConfig;
 use ployz_gateway::GatewayConfig;
 use ployz_runtime_api::Identity;
 use ployz_runtime_api::{
-    ContainerNetwork, DataplaneFactory, DisconnectMode, EndpointDiscovery,
-    MemoryServiceRuntime, RestartableWorkload, ServiceRuntime, StaticEndpointDiscovery,
-    WireguardDriver,
+    ContainerNetwork, DataplaneFactory, DisconnectMode, EndpointDiscovery, MemoryServiceRuntime,
+    RestartableWorkload, Result as RuntimeResult, RuntimeError, ServiceRuntime,
+    StaticEndpointDiscovery, WireguardDriver,
 };
 use ployz_runtime_backends::mesh::driver as mesh_backends;
 use ployz_runtime_backends::network::docker_bridge_network;
@@ -136,6 +136,8 @@ impl RuntimeProfile {
         }
     }
 
+    // Startup assembly needs the full runtime wiring input in one place.
+    #[expect(clippy::too_many_arguments)]
     pub(crate) async fn build_mesh_components(
         &self,
         identity: &Identity,
@@ -146,7 +148,7 @@ impl RuntimeProfile {
         exposed_tcp_ports: &[u16],
         bootstrap: &[String],
         network_id: &str,
-    ) -> Result<MeshRuntimeComponents, String> {
+    ) -> RuntimeResult<MeshRuntimeComponents> {
         let mesh_components = match self.execution_backend {
             ExecutionBackend::Memory => {
                 let store = Arc::new(MemoryStore::new());
@@ -172,10 +174,8 @@ impl RuntimeProfile {
                     self.built_in_images.resolve(BuiltInImage::Networking),
                 )
                 .await?;
-                let api_addr = SocketAddr::new(
-                    IpAddr::V6(overlay_ip.0),
-                    corrosion_config::DEFAULT_API_PORT,
-                );
+                let api_addr =
+                    SocketAddr::new(IpAddr::V6(overlay_ip.0), corrosion_config::DEFAULT_API_PORT);
                 let local_api = SocketAddr::new(
                     IpAddr::V4(Ipv4Addr::LOCALHOST),
                     corrosion_config::DEFAULT_API_PORT,
@@ -205,18 +205,12 @@ impl RuntimeProfile {
                 }
             }
             ExecutionBackend::Host => {
-                let mesh = mesh_backends::host_components(
-                    identity,
-                    overlay_ip,
-                    network_name,
-                    subnet,
-                )
-                .await?;
+                let mesh =
+                    mesh_backends::host_components(identity, overlay_ip, network_name, subnet)
+                        .await?;
                 let paths = corrosion_config::Paths::new(network_dir);
-                let api_addr = SocketAddr::new(
-                    IpAddr::V6(overlay_ip.0),
-                    corrosion_config::DEFAULT_API_PORT,
-                );
+                let api_addr =
+                    SocketAddr::new(IpAddr::V6(overlay_ip.0), corrosion_config::DEFAULT_API_PORT);
                 let store = Arc::new(CorrosionStore::new(
                     api_addr,
                     Transport::Direct,
@@ -266,7 +260,7 @@ impl RuntimeProfile {
         machine_id: MachineId,
         overlay_network_name: Option<String>,
         overlay_dns_server: Option<Ipv4Addr>,
-    ) -> Result<RemoteControlHandle, String> {
+    ) -> RuntimeResult<RemoteControlHandle> {
         if self.is_memory_test() {
             return Ok(RemoteControlHandle::noop());
         }
@@ -279,30 +273,28 @@ impl RuntimeProfile {
             overlay_dns_server,
         )
         .await
-        .map_err(|error| error.to_string())
+        .map_err(RuntimeError::from)
     }
 
     pub(crate) async fn start_gateway(
         &self,
         config: GatewayConfig,
-    ) -> Result<GatewayHandle, String> {
+    ) -> RuntimeResult<GatewayHandle> {
         start_managed_gateway(
             self.sidecar_supervision,
             config,
             self.built_in_images.resolve(BuiltInImage::Gateway),
         )
         .await
-        .map_err(|error| error.to_string())
     }
 
-    pub(crate) async fn start_dns(&self, config: DnsConfig) -> Result<DnsHandle, String> {
+    pub(crate) async fn start_dns(&self, config: DnsConfig) -> RuntimeResult<DnsHandle> {
         start_managed_dns(
             self.sidecar_supervision,
             config,
             self.built_in_images.resolve(BuiltInImage::Dns),
         )
         .await
-        .map_err(|error| error.to_string())
     }
 
     pub(crate) async fn stop_local_workloads_for_subnet_heal(
