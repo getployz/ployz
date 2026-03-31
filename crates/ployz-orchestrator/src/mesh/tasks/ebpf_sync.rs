@@ -1,5 +1,5 @@
-use crate::mesh::MeshDataplane;
 use crate::model::{MachineEvent, MachineId, MachineRecord};
+use ployz_runtime_api::MeshDataplane;
 use ployz_store_api::MachineEventSubscription;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;

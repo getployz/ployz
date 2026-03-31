@@ -1,30 +1,37 @@
-use crate::services::managed::ManagedServiceHandle;
-use crate::services::supervisor::{ServiceSupervision, SidecarHandle, SidecarSpec};
 use async_trait::async_trait;
 use ployz_dns::DnsConfig;
 use ployz_runtime_api::{Result as RuntimeResult, RuntimeError, RuntimeHandle};
+use ployz_runtime_backends::sidecar::{ServiceSupervision, SidecarHandle, SidecarSpec};
 
 pub struct DnsHandle {
-    inner: ManagedServiceHandle,
+    inner: Option<SidecarHandle>,
 }
 
 impl DnsHandle {
     #[must_use]
     pub fn noop() -> Self {
-        Self {
-            inner: ManagedServiceHandle::noop(),
-        }
+        Self { inner: None }
     }
 }
 
 #[async_trait]
 impl RuntimeHandle for DnsHandle {
     async fn shutdown(mut self: Box<Self>) -> RuntimeResult<()> {
-        self.inner.shutdown("dns").await
+        let Some(handle) = self.inner.as_mut() else {
+            return Ok(());
+        };
+        handle.shutdown().await.map_err(|error| {
+            RuntimeError::operation("managed service shutdown", format!("dns: {error}"))
+        })
     }
 
     async fn detach(mut self: Box<Self>) -> RuntimeResult<()> {
-        self.inner.detach("dns").await
+        let Some(handle) = self.inner.as_mut() else {
+            return Ok(());
+        };
+        handle.detach().await.map_err(|error| {
+            RuntimeError::operation("managed service detach", format!("dns: {error}"))
+        })
     }
 }
 
@@ -41,7 +48,7 @@ pub async fn start_managed_dns(
     SidecarHandle::ensure(supervision, spec)
         .await
         .map(|handle| DnsHandle {
-            inner: ManagedServiceHandle::sidecar(handle),
+            inner: Some(handle),
         })
         .map_err(|error| RuntimeError::operation("start dns", error.to_string()))
 }

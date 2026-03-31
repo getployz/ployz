@@ -1,10 +1,10 @@
 use crate::mesh::peer::{PEER_DOWN_INTERVAL, PeerStatus, WireGuardPeer};
 use crate::mesh::probe::{TcpProbeResult, TcpProbeStatus};
-use crate::mesh::{DevicePeer, MeshNetwork};
 use crate::model::{
     MachineEvent, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
 };
 use ipnet::Ipv4Net;
+use ployz_runtime_api::{DevicePeer, MeshNetwork};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::time::Duration;

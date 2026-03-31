@@ -194,46 +194,41 @@ pub async fn run_dns_server(
 }
 
 // ---------------------------------------------------------------------------
-// Standalone process entry point
+// Caller-owned startup
 // ---------------------------------------------------------------------------
 
-pub fn run_dns_process_with_store<S>(config: DnsConfig, store: S) -> Result<(), DnsError>
+fn parse_listen_addrs(config: &DnsConfig) -> Result<Vec<SocketAddr>, DnsError> {
+    let mut listen_addrs = vec![config.overlay_listen_addr.parse().map_err(|err| {
+        DnsError::Config(format!(
+            "invalid overlay listen addr '{}': {err}",
+            config.overlay_listen_addr
+        ))
+    })?];
+    if let Some(bridge_listen_addr) = &config.bridge_listen_addr {
+        listen_addrs.push(bridge_listen_addr.parse().map_err(|err| {
+            DnsError::Config(format!(
+                "invalid bridge listen addr '{}': {err}",
+                bridge_listen_addr
+            ))
+        })?);
+    }
+    listen_addrs.sort();
+    listen_addrs.dedup();
+    Ok(listen_addrs)
+}
+
+pub async fn run_dns_with_store<S>(config: DnsConfig, store: S) -> Result<(), DnsError>
 where
     S: ployz_store_api::RoutingStore + Send + Sync + 'static,
 {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|err| DnsError::Runtime(err.to_string()))?;
+    let state = store
+        .load_routing_state()
+        .await
+        .map_err(|err| DnsError::Store(err.to_string()))?;
+    let shared = SharedDnsSnapshot::new(project_dns(&state));
+    tokio::spawn(crate::sync::run_sync_loop(store, shared.clone()));
 
-    runtime.block_on(async {
-        let state = store
-            .load_routing_state()
-            .await
-            .map_err(|err| DnsError::Store(err.to_string()))?;
-        let initial_snapshot = project_dns(&state);
-        let shared = SharedDnsSnapshot::new(initial_snapshot);
-
-        tokio::spawn(crate::sync::run_sync_loop(store, shared.clone()));
-
-        let mut listen_addrs = vec![config.overlay_listen_addr.parse().map_err(|err| {
-            DnsError::Config(format!(
-                "invalid overlay listen addr '{}': {err}",
-                config.overlay_listen_addr
-            ))
-        })?];
-        if let Some(bridge_listen_addr) = &config.bridge_listen_addr {
-            listen_addrs.push(bridge_listen_addr.parse().map_err(|err| {
-                DnsError::Config(format!(
-                    "invalid bridge listen addr '{}': {err}",
-                    bridge_listen_addr
-                ))
-            })?);
-        }
-        listen_addrs.sort();
-        listen_addrs.dedup();
-
-        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
-        run_dns_server(&listen_addrs, shared, shutdown_rx).await
-    })
+    let listen_addrs = parse_listen_addrs(&config)?;
+    let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+    run_dns_server(&listen_addrs, shared, shutdown_rx).await
 }

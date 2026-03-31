@@ -11,6 +11,9 @@ fn daemon_capabilities() -> Vec<String> {
         "mesh-ready-payload-v1".into(),
         "mesh-self-record-payload-v1".into(),
         "machine-list-payload-v1".into(),
+        "deploy-preview-payload-v1".into(),
+        "deploy-apply-payload-v1".into(),
+        "deploy-export-payload-v1".into(),
         "machine-operation-payload-v1".into(),
     ]
 }

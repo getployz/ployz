@@ -1,12 +1,15 @@
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use ployz_runtime_api::{
     DeploySession, DeploySessionFactory, Result, RuntimeError, StartCandidateRequest,
 };
+use ployz_store_api::{DeployReadStore, DeployWriteStore};
 use ployz_types::model::{DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineRecord};
 use ployz_types::spec::Namespace;
 
-use super::remote::{DeployAgent, SessionState, TcpDeploySession};
+use super::locks::NamespaceLockManager;
+use super::remote::{DeployAgent, DeployStoreHandle, SessionState, TcpDeploySession};
 
 pub struct InProcessDeploySession {
     agent: Arc<DeployAgent>,
@@ -71,7 +74,7 @@ pub struct DefaultDeploySessionFactory {
 
 impl DefaultDeploySessionFactory {
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         agent: Arc<DeployAgent>,
         local_machine_id: MachineId,
         remote_control_port: u16,
@@ -81,6 +84,26 @@ impl DefaultDeploySessionFactory {
             local_machine_id,
             remote_control_port,
         }
+    }
+
+    #[must_use]
+    pub fn for_local_machine(
+        deploy_read: Arc<dyn DeployReadStore>,
+        deploy_write: Arc<dyn DeployWriteStore>,
+        namespace_locks: NamespaceLockManager,
+        local_machine_id: MachineId,
+        overlay_network_name: Option<String>,
+        overlay_dns_server: Option<Ipv4Addr>,
+        remote_control_port: u16,
+    ) -> Self {
+        let agent = Arc::new(DeployAgent::new(
+            DeployStoreHandle::new(deploy_read, deploy_write),
+            namespace_locks,
+            local_machine_id.clone(),
+            overlay_network_name,
+            overlay_dns_server,
+        ));
+        Self::new(agent, local_machine_id, remote_control_port)
     }
 }
 

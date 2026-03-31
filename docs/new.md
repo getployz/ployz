@@ -18,6 +18,12 @@ Target End State
 - ployz-gateway / ployz-dns - thin edge services over abstract routing-store input
 - ployz-e2e - test harness over typed daemon interactions
 - ebpf-common / ebpf / ployz-bpfctl - one coherent dataplane slice
+Current Boundary Checkpoint
+- `ployz-orchestrator` now owns deploy preview/apply/export policy and the split mesh lifecycle modules.
+- `ployz-runtime-backends` now owns remote deploy transport/session wiring and sidecar supervision.
+- `ployzd` is down to composition, request handling, config/path resolution, and process entry.
+- `ployz-gateway` and `ployz-dns` expose caller-owned async startup.
+- `ployz-e2e` is split into explicit harness modules and uses typed daemon checks for scenario correctness.
 Crates To Delete Or Collapse
 - Delete ployz-store-corrosion if possible; it is mostly an extra assembly layer.
 - Delete ployz-state as a crate if possible; its pure pieces should move either:

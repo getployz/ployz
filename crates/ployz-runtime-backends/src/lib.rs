@@ -7,3 +7,4 @@ pub mod deploy;
 pub mod mesh;
 pub mod network;
 pub mod runtime;
+pub mod sidecar;

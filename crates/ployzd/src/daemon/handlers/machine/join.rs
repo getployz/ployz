@@ -3,9 +3,8 @@ use std::path::{Path, PathBuf};
 use crate::mesh_state::invite::parse_and_verify_invite_token;
 use ipnet::Ipv4Net;
 use ployz_api::{
-    DaemonPayload, DaemonRequest, DaemonResponse, InstallRuntimeTarget, InstallServiceMode,
-    InstallSource, MachineAddOptions, MachineInstallOptions, MeshReadyPayload,
-    MeshSelfRecordPayload,
+    DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MachineInstallOptions,
+    MeshReadyPayload, MeshSelfRecordPayload,
 };
 use ployz_orchestrator::ipam::Ipam;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
@@ -824,35 +823,17 @@ fn local_ployz_path() -> Result<PathBuf, String> {
 
 fn install_script_args(install: &MachineInstallOptions) -> String {
     let mut args = vec!["install".to_string()];
-    if let Some(runtime_target) = install.runtime_target {
+    if let Some(runtime_target) = &install.runtime_target {
         args.push("--runtime".into());
-        args.push(
-            match runtime_target {
-                InstallRuntimeTarget::Docker => "docker",
-                InstallRuntimeTarget::Host => "host",
-            }
-            .into(),
-        );
+        args.push(shell_quote(runtime_target));
     }
-    if let Some(service_mode) = install.service_mode {
+    if let Some(service_mode) = &install.service_mode {
         args.push("--service-mode".into());
-        args.push(
-            match service_mode {
-                InstallServiceMode::User => "user",
-                InstallServiceMode::System => "system",
-            }
-            .into(),
-        );
+        args.push(shell_quote(service_mode));
     }
     if let Some(source) = &install.source {
         args.push("--source".into());
-        args.push(
-            match source {
-                InstallSource::Release => "release",
-                InstallSource::Git => "git",
-            }
-            .into(),
-        );
+        args.push(shell_quote(source));
     }
     if let Some(version) = &install.version {
         args.push("--version".into());

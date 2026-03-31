@@ -1,8 +1,5 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use ployz_api::{
-    DebugTickTask as ProtocolDebugTickTask, InstallRuntimeTarget as ApiInstallRuntimeTarget,
-    InstallServiceMode as ApiInstallServiceMode, InstallSource as MachineInstallSource,
-};
+use ployz_api::DebugTickTask as ProtocolDebugTickTask;
 use ployz_config::{RuntimeTarget, ServiceMode};
 use std::path::PathBuf;
 
@@ -50,33 +47,6 @@ impl From<ServiceModeArg> for ServiceMode {
     }
 }
 
-impl From<InstallSourceArg> for MachineInstallSource {
-    fn from(value: InstallSourceArg) -> Self {
-        match value {
-            InstallSourceArg::Release => MachineInstallSource::Release,
-            InstallSourceArg::Git => MachineInstallSource::Git,
-        }
-    }
-}
-
-impl From<RuntimeTargetArg> for ApiInstallRuntimeTarget {
-    fn from(value: RuntimeTargetArg) -> Self {
-        match value {
-            RuntimeTargetArg::Docker => ApiInstallRuntimeTarget::Docker,
-            RuntimeTargetArg::Host => ApiInstallRuntimeTarget::Host,
-        }
-    }
-}
-
-impl From<ServiceModeArg> for ApiInstallServiceMode {
-    fn from(value: ServiceModeArg) -> Self {
-        match value {
-            ServiceModeArg::User => ApiInstallServiceMode::User,
-            ServiceModeArg::System => ApiInstallServiceMode::System,
-        }
-    }
-}
-
 impl From<DebugTickTaskArg> for ProtocolDebugTickTask {
     fn from(value: DebugTickTaskArg) -> Self {
         match value {
@@ -84,6 +54,36 @@ impl From<DebugTickTaskArg> for ProtocolDebugTickTask {
             DebugTickTaskArg::Heartbeat => ProtocolDebugTickTask::Heartbeat,
             DebugTickTaskArg::Heal => ProtocolDebugTickTask::Heal,
             DebugTickTaskArg::All => ProtocolDebugTickTask::All,
+        }
+    }
+}
+
+impl RuntimeTargetArg {
+    #[must_use]
+    pub(crate) fn as_protocol_str(self) -> &'static str {
+        match self {
+            Self::Docker => "docker",
+            Self::Host => "host",
+        }
+    }
+}
+
+impl ServiceModeArg {
+    #[must_use]
+    pub(crate) fn as_protocol_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::System => "system",
+        }
+    }
+}
+
+impl InstallSourceArg {
+    #[must_use]
+    pub(crate) fn as_protocol_str(self) -> &'static str {
+        match self {
+            Self::Release => "release",
+            Self::Git => "git",
         }
     }
 }

@@ -398,9 +398,7 @@ async fn machine_remove_refuses_enabled_without_force() {
         .await
         .expect("upsert peer");
 
-    let response = state
-        .handle_machine_remove("peer-1", ployz_api::MachineRemoveMode::DisabledOnly)
-        .await;
+    let response = state.handle_machine_remove("peer-1", false).await;
     assert!(!response.ok);
     assert!(response.message.contains("must be disabled"));
 }
@@ -419,9 +417,7 @@ async fn machine_remove_deletes_disabled_record() {
         .await
         .expect("upsert peer");
 
-    let response = state
-        .handle_machine_remove("peer-1", ployz_api::MachineRemoveMode::DisabledOnly)
-        .await;
+    let response = state.handle_machine_remove("peer-1", false).await;
     assert!(response.ok, "{}", response.message);
 
     let machines = store.list_machines().await.expect("list machines");

@@ -3,17 +3,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::built_in_images::{BuiltInImage, BuiltInImages};
-use crate::daemon::deploy_control::NamespaceLockManager;
-use crate::daemon::deploy_control::remote::{RemoteControlHandle, start_remote_control_listener};
 use crate::daemon::store::StoreDriver;
-use crate::services::dns::{DnsHandle, start_managed_dns};
-use crate::services::gateway::{GatewayHandle, start_managed_gateway};
-use crate::services::supervisor::ServiceSupervision;
 use ipnet::Ipv4Net;
 use ployz_config::{RuntimeTarget, ServiceMode, corrosion as corrosion_config};
-use ployz_corrosion::{CorrosionBootstrapState, CorrosionStore, Transport};
-use ployz_dns::DnsConfig;
-use ployz_gateway::GatewayConfig;
+use ployz_corrosion::{
+    CorrosionBootstrapState, CorrosionStore, Transport, docker_corrosion_runtime,
+    host_corrosion_runtime,
+};
 use ployz_runtime_api::{
     ContainerNetwork, DataplaneFactory, DisconnectMode, EndpointDiscovery, RestartableWorkload,
     Result as RuntimeResult, RuntimeError, ServiceRuntime, WireguardDriver,
@@ -22,9 +18,9 @@ use ployz_runtime_backends::mesh::driver as mesh_backends;
 use ployz_runtime_backends::network::docker_bridge_network;
 use ployz_runtime_backends::runtime::{
     ContainerEngine,
-    corrosion::{docker_corrosion_runtime, host_corrosion_runtime},
     labels::{LABEL_KIND, LABEL_MACHINE, LABEL_MANAGED},
 };
+use ployz_runtime_backends::sidecar::ServiceSupervision;
 use ployz_test_support::{
     MemoryServiceRuntime, MemoryStore, MemoryWireGuard, StaticEndpointDiscovery,
     memory_wireguard_driver,
@@ -49,8 +45,6 @@ pub(crate) enum ControlPlaneBinding {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct RuntimeProfile {
     execution_backend: ExecutionBackend,
-    runtime_target: RuntimeTarget,
-    service_mode: ServiceMode,
     control_plane_binding: ControlPlaneBinding,
     sidecar_supervision: Option<ServiceSupervision>,
     built_in_images: BuiltInImages,
@@ -76,16 +70,12 @@ impl RuntimeProfile {
         match runtime_target {
             RuntimeTarget::Docker => Self {
                 execution_backend: ExecutionBackend::Docker,
-                runtime_target,
-                service_mode,
                 control_plane_binding: ControlPlaneBinding::Loopback,
                 sidecar_supervision: Some(ServiceSupervision::DockerContainer),
                 built_in_images,
             },
             RuntimeTarget::Host => Self {
                 execution_backend: ExecutionBackend::Host,
-                runtime_target,
-                service_mode,
                 control_plane_binding: ControlPlaneBinding::Overlay,
                 sidecar_supervision: Some(match service_mode {
                     ServiceMode::User => ServiceSupervision::ChildProcess,
@@ -103,8 +93,6 @@ impl RuntimeProfile {
             BuiltInImages::load(None).expect("embedded built-in images manifest should parse");
         Self {
             execution_backend: ExecutionBackend::Memory,
-            runtime_target: RuntimeTarget::Host,
-            service_mode: ServiceMode::User,
             control_plane_binding: ControlPlaneBinding::Loopback,
             sidecar_supervision: None,
             built_in_images,
@@ -122,6 +110,16 @@ impl RuntimeProfile {
             return None;
         }
         Some(format!("ployz-{network_name}"))
+    }
+
+    #[must_use]
+    pub(crate) fn sidecar_supervision(&self) -> Option<ServiceSupervision> {
+        self.sidecar_supervision
+    }
+
+    #[must_use]
+    pub(crate) fn resolve_built_in_image(&self, image: BuiltInImage) -> &str {
+        self.built_in_images.resolve(image)
     }
 
     pub(crate) async fn load_bootstrap_addrs(
@@ -275,51 +273,6 @@ impl RuntimeProfile {
                 SocketAddr::new(IpAddr::V6(overlay_ip.0), remote_control_port)
             }
         }
-    }
-
-    pub(crate) async fn start_remote_control(
-        &self,
-        bind_addr: SocketAddr,
-        store: StoreDriver,
-        namespace_locks: NamespaceLockManager,
-        machine_id: MachineId,
-        overlay_network_name: Option<String>,
-        overlay_dns_server: Option<Ipv4Addr>,
-    ) -> RuntimeResult<RemoteControlHandle> {
-        if self.is_memory_test() {
-            return Ok(RemoteControlHandle::noop());
-        }
-        start_remote_control_listener(
-            bind_addr,
-            store,
-            namespace_locks,
-            machine_id,
-            overlay_network_name,
-            overlay_dns_server,
-        )
-        .await
-        .map_err(RuntimeError::from)
-    }
-
-    pub(crate) async fn start_gateway(
-        &self,
-        config: GatewayConfig,
-    ) -> RuntimeResult<GatewayHandle> {
-        start_managed_gateway(
-            self.sidecar_supervision,
-            config,
-            self.built_in_images.resolve(BuiltInImage::Gateway),
-        )
-        .await
-    }
-
-    pub(crate) async fn start_dns(&self, config: DnsConfig) -> RuntimeResult<DnsHandle> {
-        start_managed_dns(
-            self.sidecar_supervision,
-            config,
-            self.built_in_images.resolve(BuiltInImage::Dns),
-        )
-        .await
     }
 
     pub(crate) async fn stop_local_workloads_for_subnet_heal(

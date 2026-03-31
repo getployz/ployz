@@ -106,22 +106,33 @@ Docker containers carry identity as labels (`ployz.config-hash`, `ployz.parent-c
 Systemd units are compared by unit file content. Host user mode always spawns fresh child
 processes and makes no persistence guarantees.
 
-## Module Organization
+## Crate Ownership
 
-Code is organized by domain, not by adapter pattern. WireGuard implementations live under
-the mesh domain because mesh owns the overlay lifecycle. Store backends live under the
-store domain because store owns distributed state. Runtime selection happens at the daemon
-composition root; core domains receive explicit backends rather than matching on a public
-mode enum.
+The workspace is organized around a small kernel plus concrete backends:
 
-The key domains:
+- **`ployz-types`** — pure model/spec/value types
+- **`ployz-store-api`** — durable store seam
+- **`ployz-runtime-api`** — runtime/network/dataplane/deploy-session seam
+- **`ployz-orchestrator`** — deploy policy, manifest export, mesh lifecycle, readiness, join/bootstrap coordination
+- **`ployz-corrosion`** — Corrosion-backed store/runtime helpers
+- **`ployz-runtime-backends`** — concrete Docker/WireGuard/network/dataplane implementations, plus sidecar supervision and remote deploy transport
+- **`ployzd`** — composition root, request handling, CLI/process entry
+- **`ployz-gateway` / `ployz-dns`** — edge services over abstract routing-store inputs
+- **`ployz-e2e`** — typed daemon-facing test harness
+
+Runtime selection still happens at the daemon composition root, but policy lives below it.
+`ployzd` chooses implementations; it does not own deploy policy or backend lifecycle logic.
+
+## Internal Modules
+
+Within those crates, code stays organized by domain rather than adapter buckets:
+
 - **mesh** — WireGuard overlay lifecycle, phase state machine, background sync loops
-- **store** — distributed state (Corrosion backends, memory backend, bootstrap, network config)
+- **store** — distributed state backends and cluster records
 - **network** — non-WireGuard networking (Docker bridge, eBPF classifiers, endpoint discovery)
-- **services** — long-lived sidecar management (supervisor lifecycle, gateway, DNS)
-- **deploy** — workload deployment (preview/apply coordination, container CRUD, remote sessions)
-- **daemon** — request handling, mesh startup orchestration
-- **node** — machine identity
+- **deploy** — preview/apply policy in orchestrator, concrete remote session transport in runtime backends
+- **services** — thin gateway/DNS adapters in `ployzd`, concrete sidecar supervision in runtime backends
+- **daemon** — request handling and mesh startup orchestration
 - **transport** — Unix socket listener
 
 ## Future: macOS Host Access

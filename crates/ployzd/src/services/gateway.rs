@@ -1,33 +1,40 @@
 use std::path::PathBuf;
 
 use crate::mesh_state::network::NetworkConfig;
-use crate::services::managed::ManagedServiceHandle;
-use crate::services::supervisor::{ServiceSupervision, SidecarHandle, SidecarSpec};
 use async_trait::async_trait;
 use ployz_gateway::{GatewayConfig, GatewayError};
 use ployz_runtime_api::{Result as RuntimeResult, RuntimeError, RuntimeHandle};
+use ployz_runtime_backends::sidecar::{ServiceSupervision, SidecarHandle, SidecarSpec};
 
 pub struct GatewayHandle {
-    inner: ManagedServiceHandle,
+    inner: Option<SidecarHandle>,
 }
 
 impl GatewayHandle {
     #[must_use]
     pub fn noop() -> Self {
-        Self {
-            inner: ManagedServiceHandle::noop(),
-        }
+        Self { inner: None }
     }
 }
 
 #[async_trait]
 impl RuntimeHandle for GatewayHandle {
     async fn shutdown(mut self: Box<Self>) -> RuntimeResult<()> {
-        self.inner.shutdown("gateway").await
+        let Some(handle) = self.inner.as_mut() else {
+            return Ok(());
+        };
+        handle.shutdown().await.map_err(|error| {
+            RuntimeError::operation("managed service shutdown", format!("gateway: {error}"))
+        })
     }
 
     async fn detach(mut self: Box<Self>) -> RuntimeResult<()> {
-        self.inner.detach("gateway").await
+        let Some(handle) = self.inner.as_mut() else {
+            return Ok(());
+        };
+        handle.detach().await.map_err(|error| {
+            RuntimeError::operation("managed service detach", format!("gateway: {error}"))
+        })
     }
 }
 
@@ -48,7 +55,7 @@ pub async fn start_managed_gateway(
     SidecarHandle::ensure(supervision, spec)
         .await
         .map(|handle| GatewayHandle {
-            inner: ManagedServiceHandle::sidecar(handle),
+            inner: Some(handle),
         })
         .map_err(|error| RuntimeError::operation("start gateway", error.to_string()))
 }
@@ -63,15 +70,13 @@ fn build_gateway_sidecar_spec(
 
     #[cfg(target_os = "linux")]
     let systemd_extra = {
-        let pid_file =
-            crate::services::supervisor::systemd_quote(&paths.pid_file.display().to_string());
-        let pingora_config =
-            crate::services::supervisor::systemd_quote(&paths.pingora_config.display().to_string());
+        let pid_file = quote_systemd_arg(&paths.pid_file.display().to_string());
+        let pingora_config = quote_systemd_arg(&paths.pingora_config.display().to_string());
         // The gateway stays attached to the invoking process for normal startup,
         // so the systemd unit must be `Type=simple`. Reload still uses Pingora's
         // upgrade path and keeps the PID file/socket metadata available.
-        let binary = crate::services::supervisor::find_binary("ployz-gateway")
-            .map(|b| crate::services::supervisor::systemd_quote(&b.display().to_string()))
+        let binary = find_gateway_binary()
+            .map(|binary| quote_systemd_arg(&binary.display().to_string()))
             .unwrap_or_default();
         format!(
             "PIDFile={pid_file}\nExecReload=/bin/kill -QUIT $MAINPID\nExecReload={binary} -u -d -c {pingora_config}\nExecStop=/bin/kill -TERM $MAINPID\n"
@@ -141,4 +146,28 @@ fn write_pingora_config(
     std::fs::write(&paths.pingora_config, contents)
         .map_err(|err| GatewayError::Process(format!("write gateway config: {err}")))?;
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn find_gateway_binary() -> std::result::Result<std::path::PathBuf, GatewayError> {
+    let current_exe = std::env::current_exe()
+        .map_err(|err| GatewayError::Process(format!("current_exe failed: {err}")))?;
+    let candidates = [
+        current_exe.with_file_name("ployz-gateway"),
+        PathBuf::from("/usr/local/bin/ployz-gateway"),
+        PathBuf::from("/usr/bin/ployz-gateway"),
+    ];
+    for candidate in candidates {
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(GatewayError::Process(
+        "ployz-gateway binary not found".into(),
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn quote_systemd_arg(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }

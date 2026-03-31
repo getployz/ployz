@@ -1,6 +1,6 @@
 use crate::daemon::{ActiveMesh, DaemonState};
 use ployz_orchestrator::machine_liveness::{MachineLiveness, machine_liveness};
-use ployz_orchestrator::mesh::{DevicePeer, WireGuardDevice};
+use ployz_runtime_api::{DevicePeer, WireGuardDevice};
 use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
 use ployz_types::time::now_unix_secs;
 use std::collections::HashMap;

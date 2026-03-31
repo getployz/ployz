@@ -10,14 +10,12 @@ pub(crate) use cli::{
     DeployServiceArgs, InstallSourceArg, MachineAction, MachineInviteAction,
     MachineOperationAction, MeshAction, RuntimeTargetArg, ServiceModeArg,
 };
+use cli_io::render_mesh_ready_payload;
 use cli_io::{cmd_rpc_stdio, render_response, request_daemon};
 #[cfg(test)]
 use ployz_api::DaemonRequest;
 #[cfg(test)]
-use ployz_api::{
-    DebugTickTask as ProtocolDebugTickTask, InstallRuntimeTarget as ApiInstallRuntimeTarget,
-    InstallServiceMode as ApiInstallServiceMode,
-};
+use ployz_api::DebugTickTask as ProtocolDebugTickTask;
 use ployz_config::{RuntimeTarget, ServiceMode, load_client_config, load_daemon_config};
 use ployz_sdk::UnixSocketTransport;
 #[cfg(test)]
@@ -106,11 +104,21 @@ async fn run() -> Result<i32> {
             if let Command::RpcStdio = other {
                 return cmd_rpc_stdio(&socket).await;
             }
+            let mesh_ready_json = matches!(
+                &other,
+                Command::Mesh {
+                    action: MeshAction::Ready { json: true }
+                }
+            );
             let transport = UnixSocketTransport::new(socket.clone());
             let request = build_request(other, &transport, &socket).await?;
             let response = request_daemon(&transport, &socket, request).await?;
 
-            render_response(cli.json, cli.plain, cli.quiet, &response)?;
+            if mesh_ready_json && !cli.json {
+                render_mesh_ready_payload(&response)?;
+            } else {
+                render_response(cli.json, cli.plain, cli.quiet, &response)?;
+            }
             if response.ok { Ok(0) } else { Ok(1) }
         }
     }
@@ -261,15 +269,15 @@ mod tests {
             options
                 .install
                 .as_ref()
-                .and_then(|install| install.runtime_target),
-            Some(ApiInstallRuntimeTarget::Host)
+                .and_then(|install| install.runtime_target.as_deref()),
+            Some("host")
         );
         assert_eq!(
             options
                 .install
                 .as_ref()
-                .and_then(|install| install.service_mode),
-            Some(ApiInstallServiceMode::User)
+                .and_then(|install| install.service_mode.as_deref()),
+            Some("user")
         );
 
         std::fs::remove_file(path).expect("remove identity");

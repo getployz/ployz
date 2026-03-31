@@ -1,8 +1,9 @@
 use crate::transport::Transport;
 use ployz_api::{
-    DaemonPayload, DaemonRequest, DaemonResponse, MachineListPayload, MeshReadyOutput,
+    DaemonPayload, DaemonRequest, DaemonResponse, DeployOptions, MachineListPayload,
     MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload, StatusPayload,
 };
+use ployz_types::model::{DeployApplyResult, DeployPreview};
 use ployz_types::spec::DeployManifest;
 
 pub struct DaemonClient<T> {
@@ -47,6 +48,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MeshReady(_)
             | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::DeployPreview(_)
+            | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_) => None,
@@ -67,6 +70,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MeshReady(_)
             | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::DeployPreview(_)
+            | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_) => None,
@@ -83,6 +88,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MeshReady(_)
             | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::DeployPreview(_)
+            | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_) => None,
@@ -90,11 +97,7 @@ impl<T: Transport> DaemonClient<T> {
     }
 
     pub async fn mesh_ready(&self) -> std::io::Result<MeshReadyPayload> {
-        let response = self
-            .request_ok(DaemonRequest::MeshReady {
-                output: MeshReadyOutput::Json,
-            })
-            .await?;
+        let response = self.request_ok(DaemonRequest::MeshReady).await?;
         extract_payload(response, "mesh ready", |payload| match payload {
             DaemonPayload::MeshReady(payload) => Some(payload),
             DaemonPayload::Status(_)
@@ -103,6 +106,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::DeployPreview(_)
+            | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_) => None,
@@ -119,6 +124,64 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MeshReady(_)
+            | DaemonPayload::DeployPreview(_)
+            | DaemonPayload::DeployApply(_)
+            | DaemonPayload::DeployExport(_)
+            | DaemonPayload::MachineOperationList(_)
+            | DaemonPayload::MachineOperation(_) => None,
+        })
+    }
+
+    pub async fn deploy_preview(
+        &self,
+        manifest: &DeployManifest,
+        options: DeployOptions,
+    ) -> std::io::Result<DeployPreview> {
+        let manifest_json = encode_manifest(manifest, "deploy preview manifest")?;
+        let response = self
+            .request_ok(DaemonRequest::DeployPreview {
+                manifest_json,
+                options,
+            })
+            .await?;
+        extract_payload(response, "deploy preview", |payload| match payload {
+            DaemonPayload::DeployPreview(payload) => Some(payload.preview),
+            DaemonPayload::Status(_)
+            | DaemonPayload::MeshStatus(_)
+            | DaemonPayload::MachineList(_)
+            | DaemonPayload::MachineAdd(_)
+            | DaemonPayload::MachineRemove(_)
+            | DaemonPayload::MeshReady(_)
+            | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::DeployApply(_)
+            | DaemonPayload::DeployExport(_)
+            | DaemonPayload::MachineOperationList(_)
+            | DaemonPayload::MachineOperation(_) => None,
+        })
+    }
+
+    pub async fn deploy_apply(
+        &self,
+        manifest: &DeployManifest,
+        options: DeployOptions,
+    ) -> std::io::Result<DeployApplyResult> {
+        let manifest_json = encode_manifest(manifest, "deploy apply manifest")?;
+        let response = self
+            .request_ok(DaemonRequest::DeployApply {
+                manifest_json,
+                options,
+            })
+            .await?;
+        extract_payload(response, "deploy apply", |payload| match payload {
+            DaemonPayload::DeployApply(payload) => Some(payload.result),
+            DaemonPayload::Status(_)
+            | DaemonPayload::MeshStatus(_)
+            | DaemonPayload::MachineList(_)
+            | DaemonPayload::MachineAdd(_)
+            | DaemonPayload::MachineRemove(_)
+            | DaemonPayload::MeshReady(_)
+            | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployExport(_)
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_) => None,
@@ -140,6 +203,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MeshReady(_)
             | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::DeployPreview(_)
+            | DaemonPayload::DeployApply(_)
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_) => None,
         })
@@ -166,15 +231,63 @@ fn extract_payload<T>(
     })
 }
 
+fn encode_manifest(manifest: &DeployManifest, label: &str) -> std::io::Result<String> {
+    serde_json::to_string(manifest).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("failed to encode {label}: {error}"),
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_api::{DeployApplyPayload, DeployPreviewPayload};
+    use ployz_types::model::{DeployId, DeployState};
+    use ployz_types::spec::{
+        ContainerSpec, DeployManifest, Namespace, NetworkMode, Placement, PullPolicy, Resources,
+        RestartPolicy, RolloutStrategy, ServiceSpec,
+    };
     use std::future::{Future, ready};
     use std::sync::Mutex;
 
     struct StaticTransport {
         response: DaemonResponse,
         requests: Mutex<Vec<DaemonRequest>>,
+    }
+
+    fn deploy_manifest() -> DeployManifest {
+        DeployManifest {
+            namespace: Namespace("prod".into()),
+            services: vec![ServiceSpec {
+                name: "api".into(),
+                placement: Placement::Global,
+                template: ContainerSpec {
+                    image: "nginx:latest".into(),
+                    command: None,
+                    entrypoint: None,
+                    env: std::collections::BTreeMap::new(),
+                    volumes: Vec::new(),
+                    cap_add: Vec::new(),
+                    cap_drop: Vec::new(),
+                    privileged: false,
+                    user: None,
+                    pull_policy: PullPolicy::IfNotPresent,
+                    resources: Resources::empty(),
+                    sysctls: std::collections::BTreeMap::new(),
+                },
+                network: NetworkMode::Overlay,
+                service_ports: Vec::new(),
+                publish: Vec::new(),
+                routes: Vec::new(),
+                readiness: None,
+                rollout: RolloutStrategy::Recreate,
+                labels: std::collections::BTreeMap::new(),
+                stop_grace_period: None,
+                restart: RestartPolicy::UnlessStopped,
+            }],
+        }
     }
 
     impl StaticTransport {
@@ -314,5 +427,99 @@ mod tests {
             .expect_err("missing deploy export payload should fail");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("missing deploy export payload"));
+    }
+
+    #[tokio::test]
+    async fn deploy_preview_extracts_payload() {
+        let manifest = deploy_manifest();
+        let preview = DeployPreview {
+            namespace: manifest.namespace.clone(),
+            manifest_hash: "hash-1".into(),
+            participants: Vec::new(),
+            services: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let transport = StaticTransport::new(DaemonResponse {
+            ok: true,
+            code: "OK".into(),
+            message: "deploy preview".into(),
+            payload: Some(DaemonPayload::DeployPreview(DeployPreviewPayload {
+                preview: preview.clone(),
+            })),
+        });
+        let client = DaemonClient::new(&transport);
+
+        let payload = client
+            .deploy_preview(&manifest, DeployOptions::default())
+            .await
+            .expect("deploy preview payload");
+        assert_eq!(payload, preview);
+
+        let request = transport.pop_request();
+        let DaemonRequest::DeployPreview { manifest_json, .. } = request else {
+            panic!("unexpected request: {request:?}");
+        };
+        let encoded: DeployManifest =
+            serde_json::from_str(&manifest_json).expect("preview request manifest json");
+        assert_eq!(encoded.namespace, manifest.namespace);
+    }
+
+    #[tokio::test]
+    async fn deploy_apply_extracts_payload() {
+        let manifest = deploy_manifest();
+        let result = DeployApplyResult {
+            deploy_id: DeployId("deploy-1".into()),
+            preview: DeployPreview {
+                namespace: manifest.namespace.clone(),
+                manifest_hash: "hash-1".into(),
+                participants: Vec::new(),
+                services: Vec::new(),
+                warnings: Vec::new(),
+            },
+            state: DeployState::Committed,
+            events: Vec::new(),
+        };
+        let transport = StaticTransport::new(DaemonResponse {
+            ok: true,
+            code: "OK".into(),
+            message: "deploy apply".into(),
+            payload: Some(DaemonPayload::DeployApply(DeployApplyPayload {
+                result: result.clone(),
+            })),
+        });
+        let client = DaemonClient::new(&transport);
+
+        let payload = client
+            .deploy_apply(&manifest, DeployOptions::default())
+            .await
+            .expect("deploy apply payload");
+        assert_eq!(payload, result);
+
+        let request = transport.pop_request();
+        let DaemonRequest::DeployApply { manifest_json, .. } = request else {
+            panic!("unexpected request: {request:?}");
+        };
+        let encoded: DeployManifest =
+            serde_json::from_str(&manifest_json).expect("apply request manifest json");
+        assert_eq!(encoded.namespace, manifest.namespace);
+    }
+
+    #[tokio::test]
+    async fn deploy_preview_errors_on_missing_payload() {
+        let transport = StaticTransport::new(DaemonResponse {
+            ok: true,
+            code: "OK".into(),
+            message: "deploy preview".into(),
+            payload: None,
+        });
+        let client = DaemonClient::new(&transport);
+        let manifest = deploy_manifest();
+
+        let error = client
+            .deploy_preview(&manifest, DeployOptions::default())
+            .await
+            .expect_err("missing deploy preview payload should fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("missing deploy preview payload"));
     }
 }

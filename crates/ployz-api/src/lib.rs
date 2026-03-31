@@ -1,5 +1,7 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use ployz_types::model::{JoinResponse, MachineId, MachineRecord};
+use ployz_types::model::{
+    DeployApplyResult, DeployPreview, JoinResponse, MachineId, MachineRecord,
+};
 use ployz_types::spec::DeployManifest;
 use serde::{Deserialize, Serialize};
 
@@ -41,35 +43,14 @@ pub struct MachineAddOptions {
     pub install: Option<MachineInstallOptions>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum InstallRuntimeTarget {
-    Docker,
-    Host,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum InstallServiceMode {
-    User,
-    System,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum InstallSource {
-    Release,
-    Git,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MachineInstallOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime_target: Option<InstallRuntimeTarget>,
+    pub runtime_target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub service_mode: Option<InstallServiceMode>,
+    pub service_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<InstallSource>,
+    pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -87,27 +68,6 @@ pub enum DebugTickTask {
     All,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum MeshReadyOutput {
-    Text,
-    Json,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum BootstrapWaitMode {
-    Wait,
-    Skip,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum MachineRemoveMode {
-    DisabledOnly,
-    Force,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonRequest {
     Status,
@@ -123,9 +83,7 @@ pub enum DaemonRequest {
     MeshJoin {
         token: String,
     },
-    MeshReady {
-        output: MeshReadyOutput,
-    },
+    MeshReady,
     MeshCreate {
         network: String,
     },
@@ -134,7 +92,7 @@ pub enum DaemonRequest {
     },
     MeshUp {
         network: String,
-        bootstrap_wait: BootstrapWaitMode,
+        allow_disconnected_bootstrap: bool,
     },
     MeshDown,
     MeshDestroy {
@@ -152,7 +110,7 @@ pub enum DaemonRequest {
     },
     MachineRemove {
         id: String,
-        mode: MachineRemoveMode,
+        force: bool,
     },
     MachineOperationList,
     MachineOperationGet {
@@ -191,6 +149,8 @@ pub enum DaemonPayload {
     MachineRemove(MachineRemovePayload),
     MeshReady(MeshReadyPayload),
     MeshSelfRecord(MeshSelfRecordPayload),
+    DeployPreview(DeployPreviewPayload),
+    DeployApply(DeployApplyPayload),
     DeployExport(DeployExportPayload),
     MachineOperationList(MachineOperationListPayload),
     MachineOperation(MachineOperationPayload),
@@ -232,9 +192,7 @@ pub struct MachineListRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subnet: Option<String>,
     pub last_heartbeat: u64,
-    pub heartbeat_display: String,
     pub created_at: u64,
-    pub created_display: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -262,7 +220,7 @@ pub struct MachineAwaitingSelfPublication {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineRemovePayload {
     pub id: String,
-    pub mode: MachineRemoveMode,
+    pub force: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -278,6 +236,16 @@ pub struct MeshReadyPayload {
 pub struct MeshSelfRecordPayload {
     pub encoded: String,
     pub record: MachineRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeployPreviewPayload {
+    pub preview: DeployPreview,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeployApplyPayload {
+    pub result: DeployApplyResult,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
