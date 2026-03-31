@@ -149,21 +149,33 @@ if [[ -n "${SET_VERSION}" || -n "${BUMP_VERSION}" ]]; then
 elif remote_release_branch_exists; then
   git fetch --force origin "${RELEASE_BRANCH}"
   EXISTING_RELEASE_REF="origin/${RELEASE_BRANCH}"
-  if ! git diff --quiet "${main_ref}" "${EXISTING_RELEASE_REF}" -- "${RELEASE_FILES[@]}"; then
-    preserve_release_files=1
-    target_version="$(read_version_from_ref "${EXISTING_RELEASE_REF}")"
-  else
-    release_version="$(read_version_from_ref "${EXISTING_RELEASE_REF}")"
-    if [[ "${release_version}" != "${main_version}" ]]; then
-      target_version="${release_version}"
+  if [[ -n "${release_pr_number}" ]]; then
+    if ! git diff --quiet "${main_ref}" "${EXISTING_RELEASE_REF}" -- "${RELEASE_FILES[@]}"; then
+      preserve_release_files=1
+      target_version="$(read_version_from_ref "${EXISTING_RELEASE_REF}")"
+    else
+      release_version="$(read_version_from_ref "${EXISTING_RELEASE_REF}")"
+      if [[ "${release_version}" != "${main_version}" ]]; then
+        target_version="${release_version}"
+      fi
     fi
+  else
+    target_version="$(
+      bash "${ROOT_DIR}/scripts/update-workspace-version.sh" \
+        --root "${ROOT_DIR}" \
+        --bump "${DEFAULT_BUMP}"
+    )"
   fi
 
   git checkout -B "${RELEASE_BRANCH}" "${main_ref}"
 
-  if [[ "${preserve_release_files}" == "1" ]]; then
+  if [[ -n "${release_pr_number}" && "${preserve_release_files}" == "1" ]]; then
     git checkout "${EXISTING_RELEASE_REF}" -- "${RELEASE_FILES[@]}"
-  elif [[ -n "${target_version}" ]]; then
+  elif [[ -n "${release_pr_number}" && -n "${target_version}" && "${target_version}" != "${main_version}" ]]; then
+    bash "${ROOT_DIR}/scripts/update-workspace-version.sh" \
+      --root "${ROOT_DIR}" \
+      --set "${target_version}" >/dev/null
+  elif [[ -z "${release_pr_number}" ]]; then
     bash "${ROOT_DIR}/scripts/update-workspace-version.sh" \
       --root "${ROOT_DIR}" \
       --set "${target_version}" >/dev/null
