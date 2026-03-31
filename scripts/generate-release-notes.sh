@@ -88,7 +88,8 @@ ${generated_body}
 
 ## Maintainer Notes
 
-- Edit \`Cargo.toml\`, \`Cargo.lock\`, \`ebpf/Cargo.toml\`, and \`ebpf/Cargo.lock\` in this PR if you want a non-patch release.
+- Comment \`/release set X.Y.Z\` or \`/release patch|minor|major\` on this PR to change the release version.
+- Direct edits to \`Cargo.toml\`, \`Cargo.lock\`, \`ebpf/Cargo.toml\`, and \`ebpf/Cargo.lock\` on this PR still work.
 - Merging this PR on \`main\` will create tag \`${TAG_NAME}\` automatically and trigger the publish workflow.
 EOF
     ;;
