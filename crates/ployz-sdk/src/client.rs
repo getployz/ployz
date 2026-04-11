@@ -286,6 +286,7 @@ mod tests {
                 labels: std::collections::BTreeMap::new(),
                 stop_grace_period: None,
                 restart: RestartPolicy::UnlessStopped,
+                pre_deploy: None,
             }],
         }
     }

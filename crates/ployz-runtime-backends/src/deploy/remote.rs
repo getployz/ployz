@@ -3,7 +3,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use ployz_runtime_api::{
-    DeployFrame, Result as RuntimeResult, RuntimeError, RuntimeHandle, StartCandidateRequest,
+    DeployFrame, PreDeployHookRequest, Result as RuntimeResult, RuntimeError, RuntimeHandle,
+    StartCandidateRequest,
 };
 use ployz_store_api::{DeployReadStore, DeployWriteStore};
 use ployz_types::error::{Error, Result};
@@ -238,6 +239,49 @@ impl DeployAgent {
         Ok(status)
     }
 
+    pub(crate) async fn run_pre_deploy_hook(
+        &self,
+        session: &SessionState,
+        service: &str,
+        instance_id: &InstanceId,
+        spec_json: &str,
+    ) -> Result<()> {
+        let spec: ServiceSpec = serde_json::from_str(spec_json).map_err(|error| {
+            Error::operation("run_pre_deploy_hook", format!("decode spec: {error}"))
+        })?;
+        if spec.name != service {
+            return Err(Error::operation(
+                "run_pre_deploy_hook",
+                format!(
+                    "spec service '{}' did not match request service '{}'",
+                    spec.name, service
+                ),
+            ));
+        }
+        let revision_hash = spec
+            .revision_hash()
+            .map_err(|error| Error::operation("run_pre_deploy_hook", error))?;
+        let runtime = self.new_runtime()?;
+        let hook_slot = SlotId(format!("predeploy-{}", session.deploy_id.0));
+        let instance = runtime
+            .start_candidate(StartCandidate {
+                namespace: &session.namespace,
+                spec: &spec,
+                deploy_id: session.deploy_id(),
+                instance_id,
+                slot_id: &hook_slot,
+                machine_id: &self.local_machine_id,
+                revision_hash: &revision_hash,
+            })
+            .await?;
+        runtime
+            .wait_for_container_exit_success(
+                &instance.docker_container_id,
+                std::time::Duration::from_secs(1800),
+            )
+            .await
+    }
+
     pub(crate) async fn drain_instance(
         &self,
         session: &SessionState,
@@ -468,6 +512,18 @@ async fn handle_session_frame_inner(
                 status: Box::new(status),
             })
         }
+        DeployFrame::RunPreDeployHook {
+            service,
+            instance_id,
+            spec_json,
+        } => {
+            agent
+                .run_pre_deploy_hook(session, &service, &InstanceId(instance_id), &spec_json)
+                .await?;
+            Ok(DeployFrame::Ack {
+                message: "pre_deploy hook completed".into(),
+            })
+        }
         DeployFrame::DrainInstance { instance_id } => {
             agent
                 .drain_instance(session, &InstanceId(instance_id))
@@ -598,6 +654,7 @@ impl TcpDeploySession {
             DeployFrame::Open { .. }
             | DeployFrame::InspectNamespace
             | DeployFrame::StartCandidate { .. }
+            | DeployFrame::RunPreDeployHook { .. }
             | DeployFrame::DrainInstance { .. }
             | DeployFrame::RemoveInstance { .. }
             | DeployFrame::Close
@@ -648,6 +705,18 @@ impl ployz_runtime_api::DeploySession for TcpDeploySession {
             )));
         };
         Ok(*status)
+    }
+
+    async fn run_pre_deploy_hook(&mut self, req: PreDeployHookRequest) -> RuntimeResult<()> {
+        let response = self
+            .send_and_recv(&DeployFrame::RunPreDeployHook {
+                service: req.service,
+                instance_id: req.instance_id.0,
+                spec_json: req.spec_json,
+            })
+            .await
+            .map_err(RuntimeError::from)?;
+        expect_ack("run_pre_deploy_hook", response).map_err(RuntimeError::from)
     }
 
     async fn drain_instance(&mut self, instance_id: &InstanceId) -> RuntimeResult<()> {

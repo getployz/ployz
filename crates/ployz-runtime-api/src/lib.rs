@@ -9,7 +9,9 @@ mod network;
 use async_trait::async_trait;
 use thiserror::Error;
 
-pub use deploy::{DeployFrame, DeploySession, DeploySessionFactory, StartCandidateRequest};
+pub use deploy::{
+    DeployFrame, DeploySession, DeploySessionFactory, PreDeployHookRequest, StartCandidateRequest,
+};
 pub use network::{
     AttachedDataplane, ContainerNetwork, ContainerNetworkBackend, DataplaneFactory, DevicePeer,
     DisconnectMode, EndpointDiscovery, MeshDataplane, MeshNetwork, ObserveMode, WireGuardDevice,

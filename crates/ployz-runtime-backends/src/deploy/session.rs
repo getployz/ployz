@@ -2,7 +2,8 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use ployz_runtime_api::{
-    DeploySession, DeploySessionFactory, Result, RuntimeError, StartCandidateRequest,
+    DeploySession, DeploySessionFactory, PreDeployHookRequest, Result, RuntimeError,
+    StartCandidateRequest,
 };
 use ployz_store_api::{DeployReadStore, DeployWriteStore};
 use ployz_types::model::{DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineRecord};
@@ -43,6 +44,13 @@ impl DeploySession for InProcessDeploySession {
                 self.state.deploy_id(),
                 &req.spec_json,
             )
+            .await
+            .map_err(RuntimeError::from)
+    }
+
+    async fn run_pre_deploy_hook(&mut self, req: PreDeployHookRequest) -> Result<()> {
+        self.agent
+            .run_pre_deploy_hook(&self.state, &req.service, &req.instance_id, &req.spec_json)
             .await
             .map_err(RuntimeError::from)
     }

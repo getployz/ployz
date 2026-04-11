@@ -3,6 +3,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 use bollard::models::{PortBinding, PortMap};
+use tokio::time::sleep;
 
 use crate::error::{Error, Result};
 use crate::model::{
@@ -265,6 +266,50 @@ impl LocalDeployRuntime {
                     ),
                 )
             })
+    }
+
+    pub async fn wait_for_container_exit_success(
+        &self,
+        container_id: &str,
+        timeout: Duration,
+    ) -> Result<()> {
+        let started = std::time::Instant::now();
+        loop {
+            let inspect = self
+                .engine
+                .docker()
+                .inspect_container(container_id, None)
+                .await
+                .map_err(|error| Error::operation("wait_for_container_exit", error.to_string()))?;
+            let Some(state) = inspect.state else {
+                return Err(Error::operation(
+                    "wait_for_container_exit",
+                    format!("container '{container_id}' has no runtime state"),
+                ));
+            };
+
+            if state.running == Some(false) {
+                let exit_code = state.exit_code.unwrap_or(-1);
+                if exit_code == 0 {
+                    return Ok(());
+                }
+                return Err(Error::operation(
+                    "wait_for_container_exit",
+                    format!("container '{container_id}' exited with code {exit_code}"),
+                ));
+            }
+
+            if started.elapsed() >= timeout {
+                return Err(Error::operation(
+                    "wait_for_container_exit",
+                    format!(
+                        "container '{container_id}' did not exit within {:?}",
+                        timeout
+                    ),
+                ));
+            }
+            sleep(Duration::from_millis(250)).await;
+        }
     }
 
     pub async fn remove_instance(
