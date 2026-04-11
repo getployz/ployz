@@ -20,7 +20,9 @@ mod tests {
     };
     use async_trait::async_trait;
     use ployz_runtime_api::Result as RuntimeResult;
-    use ployz_runtime_api::{DeploySession, DeploySessionFactory, StartCandidateRequest};
+    use ployz_runtime_api::{
+        DeploySession, DeploySessionFactory, PreDeployHookRequest, StartCandidateRequest,
+    };
     use ployz_store_api::{DeployReadStore, MachineStore};
     use ployz_test_support::MemoryStore;
     use ployz_types::spec::{
@@ -115,6 +117,7 @@ mod tests {
             labels: BTreeMap::new(),
             stop_grace_period: None,
             restart: RestartPolicy::UnlessStopped,
+            pre_deploy: None,
         };
         let machines = vec![MachineId("machine-a".into()), MachineId("machine-b".into())];
         let current_slots = [ServiceReleaseSlot {
@@ -291,6 +294,7 @@ mod tests {
             labels: BTreeMap::new(),
             stop_grace_period: None,
             restart: RestartPolicy::UnlessStopped,
+            pre_deploy: None,
         }
     }
 
@@ -397,6 +401,13 @@ mod tests {
         }
 
         async fn drain_instance(&mut self, _instance_id: &InstanceId) -> RuntimeResult<()> {
+            Ok(())
+        }
+
+        async fn run_pre_deploy_hook(
+            &mut self,
+            _request: PreDeployHookRequest,
+        ) -> RuntimeResult<()> {
             Ok(())
         }
 

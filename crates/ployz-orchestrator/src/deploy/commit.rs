@@ -7,11 +7,11 @@ use crate::model::{
     InstanceId, MachineId, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot,
     ServiceRevisionRecord, ServiceRoutingPolicy,
 };
-use ployz_runtime_api::{DeploySessionFactory, StartCandidateRequest};
+use ployz_runtime_api::{DeploySessionFactory, PreDeployHookRequest, StartCandidateRequest};
 use ployz_store_api::{
     DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore, MachineStore,
 };
-use ployz_types::spec::DeployManifest;
+use ployz_types::spec::{DeployManifest, RestartPolicy, ServiceSpec};
 use ployz_types::time::now_unix_secs;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -75,6 +75,43 @@ pub async fn apply(
         let mut committed_slots = Vec::new();
 
         for spec in &manifest.services {
+            if let Some(pre_deploy) = &spec.pre_deploy {
+                let hook_instance_id = InstanceId(Uuid::new_v4().to_string());
+                events.push(DeployEvent {
+                    step: "pre_deploy".into(),
+                    message: format!(
+                        "running pre_deploy hook for '{}' as instance {} on {}",
+                        spec.name, hook_instance_id, local_machine_id
+                    ),
+                });
+                let Some(session) = sessions.get_mut(local_machine_id) else {
+                    return Err(Error::operation(
+                        "deploy_apply",
+                        format!(
+                            "no session available for local machine '{}'",
+                            local_machine_id
+                        ),
+                    ));
+                };
+                let hook_spec =
+                    build_pre_deploy_hook_service_spec(spec, pre_deploy.command.clone());
+                let hook_spec_json = hook_spec
+                    .canonical_revision_json()
+                    .map_err(|error| Error::operation("deploy_apply", error))?;
+                session
+                    .run_pre_deploy_hook(PreDeployHookRequest {
+                        service: spec.name.clone(),
+                        instance_id: hook_instance_id,
+                        spec_json: hook_spec_json,
+                    })
+                    .await
+                    .map_err(|error| Error::operation("deploy_apply", error.to_string()))?;
+                events.push(DeployEvent {
+                    step: "pre_deploy".into(),
+                    message: format!("pre_deploy hook completed for '{}'", spec.name),
+                });
+            }
+
             let revision_hash = spec
                 .revision_hash()
                 .map_err(|error| Error::operation("deploy_apply", error))?;
@@ -222,6 +259,16 @@ pub async fn apply(
 
     close_sessions(sessions).await;
     result
+}
+
+fn build_pre_deploy_hook_service_spec(service: &ServiceSpec, command: Vec<String>) -> ServiceSpec {
+    let mut hook_spec = service.clone();
+    hook_spec.template.command = Some(command);
+    hook_spec.template.entrypoint = None;
+    hook_spec.readiness = None;
+    hook_spec.pre_deploy = None;
+    hook_spec.restart = RestartPolicy::No;
+    hook_spec
 }
 
 fn current_slots_by_service_from_releases(

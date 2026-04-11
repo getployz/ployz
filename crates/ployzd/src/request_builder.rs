@@ -456,6 +456,7 @@ pub(crate) fn build_service_spec(args: ServiceSpecArgs<'_>) -> ServiceSpec {
         labels: BTreeMap::new(),
         stop_grace_period: None,
         restart: parse_restart_policy(restart),
+        pre_deploy: None,
     }
 }
 

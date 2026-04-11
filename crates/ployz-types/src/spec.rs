@@ -91,6 +91,13 @@ pub struct ServiceSpec {
     pub stop_grace_period: Option<String>,
     #[serde(default = "RestartPolicy::unless_stopped")]
     pub restart: RestartPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_deploy: Option<PreDeployHook>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreDeployHook {
+    pub command: Vec<String>,
 }
 
 impl ServiceSpec {
@@ -184,6 +191,15 @@ impl ServiceSpec {
                 }
             }
             readiness.validate(&self.name)?;
+        }
+
+        if let Some(pre_deploy) = &self.pre_deploy
+            && pre_deploy.command.is_empty()
+        {
+            return Err(format!(
+                "service '{}' pre_deploy hook must define at least one command argument",
+                self.name
+            ));
         }
 
         match self.rollout {
@@ -606,6 +622,7 @@ mod tests {
             labels: BTreeMap::from([("env".into(), "prod".into())]),
             stop_grace_period: Some("10s".into()),
             restart: RestartPolicy::UnlessStopped,
+            pre_deploy: None,
         }
     }
 

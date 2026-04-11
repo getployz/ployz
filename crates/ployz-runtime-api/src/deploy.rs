@@ -29,6 +29,8 @@ pub trait DeploySession: Send {
         request: StartCandidateRequest,
     ) -> Result<InstanceStatusRecord>;
 
+    async fn run_pre_deploy_hook(&mut self, request: PreDeployHookRequest) -> Result<()>;
+
     async fn drain_instance(&mut self, instance_id: &InstanceId) -> Result<()>;
 
     async fn remove_instance(&mut self, instance_id: &InstanceId) -> Result<()>;
@@ -44,6 +46,13 @@ pub struct StartCandidateRequest {
     pub spec_json: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct PreDeployHookRequest {
+    pub service: String,
+    pub instance_id: InstanceId,
+    pub spec_json: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DeployFrame {
     Open {
@@ -55,6 +64,11 @@ pub enum DeployFrame {
     StartCandidate {
         service: String,
         slot_id: String,
+        instance_id: String,
+        spec_json: String,
+    },
+    RunPreDeployHook {
+        service: String,
         instance_id: String,
         spec_json: String,
     },
@@ -116,6 +130,28 @@ mod tests {
         assert_eq!(service, "api");
         assert_eq!(slot_id, "slot-1");
         assert_eq!(instance_id, "inst-1");
+        assert_eq!(spec_json, "{\"name\":\"api\"}");
+    }
+
+    #[test]
+    fn run_pre_deploy_hook_roundtrip() {
+        let frame = DeployFrame::RunPreDeployHook {
+            service: String::from("api"),
+            instance_id: String::from("inst-hook-1"),
+            spec_json: String::from("{\"name\":\"api\"}"),
+        };
+        let json = serde_json::to_string(&frame).expect("serialize frame");
+        let decoded: DeployFrame = serde_json::from_str(&json).expect("deserialize frame");
+        let DeployFrame::RunPreDeployHook {
+            service,
+            instance_id,
+            spec_json,
+        } = decoded
+        else {
+            panic!("unexpected frame");
+        };
+        assert_eq!(service, "api");
+        assert_eq!(instance_id, "inst-hook-1");
         assert_eq!(spec_json, "{\"name\":\"api\"}");
     }
 }
