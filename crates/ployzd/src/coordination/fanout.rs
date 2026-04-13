@@ -19,9 +19,11 @@ pub(crate) struct FanOutTarget {
 /// Result of a fanned-out prepare operation.
 pub(crate) struct FanOutPrepareResult {
     /// True when every responding peer accepted (no explicit denials).
-    /// Offline peers (timeout / connection refused) are excluded from this check.
-    /// Empty `targets` or all-offline is trivially true (single-machine cluster).
     pub(crate) all_online_accepted: bool,
+    /// True when enough cluster members accepted to form a quorum.
+    /// Quorum = cluster_size / 2 + 1 (including self, which is counted as +1 by the
+    /// caller before invoking fanout). A single-node cluster trivially meets quorum.
+    pub(crate) quorum_met: bool,
     /// Targets that accepted, paired with their payload (carries the prepare token).
     pub(crate) accepted: Vec<(FanOutTarget, CoordinationPreparePayload)>,
     /// Targets that responded with `accepted: false` — real conflict.
@@ -37,19 +39,26 @@ fn client(overlay_ip: OverlayIp, rpc_port: u16) -> DaemonClient<TcpTransport> {
 
 /// Fan out a `CoordinationPrepare` to all `targets` in parallel.
 ///
-/// Returns immediately once all tasks complete or time out.
+/// `cluster_size` is the total number of known cluster members including the caller
+/// (self). Quorum requires `cluster_size / 2 + 1` acceptances including self. The
+/// caller must count itself as one acceptance before checking `quorum_met`.
+///
 /// Peers that are unreachable (timeout or connection refused) are recorded in
-/// `offline` but do **not** block the operation — only explicit `accepted: false`
-/// responses (in `denied`) cause `all_online_accepted` to be false.
+/// `offline`. Only explicit `accepted: false` responses set `all_online_accepted`
+/// to false.
 pub(crate) async fn fanout_prepare(
     targets: &[FanOutTarget],
     rpc_port: u16,
     request: CoordinationPrepareRequest,
     deadline: Duration,
+    cluster_size: usize,
 ) -> FanOutPrepareResult {
+    let quorum_size = cluster_size / 2 + 1;
+
     if targets.is_empty() {
         return FanOutPrepareResult {
             all_online_accepted: true,
+            quorum_met: 1 >= quorum_size, // self counts as 1
             accepted: Vec::new(),
             denied: Vec::new(),
             offline: Vec::new(),
@@ -95,8 +104,12 @@ pub(crate) async fn fanout_prepare(
     }
 
     let all_online_accepted = denied.is_empty();
+    // +1 for self (caller already prepared locally before invoking fanout).
+    let online_accepted_count = accepted.len() + 1;
+    let quorum_met = online_accepted_count >= quorum_size;
     FanOutPrepareResult {
         all_online_accepted,
+        quorum_met,
         accepted,
         denied,
         offline,
@@ -292,14 +305,17 @@ mod tests {
 
     #[tokio::test]
     async fn fanout_prepare_empty_targets_returns_all_online_accepted() {
+        // Single-node cluster: cluster_size=1, no peers.
         let result = fanout_prepare(
             &[],
             9999,
             sample_request(),
             Duration::from_secs(1),
+            1,
         )
         .await;
         assert!(result.all_online_accepted);
+        assert!(result.quorum_met);
         assert!(result.accepted.is_empty());
         assert!(result.denied.is_empty());
         assert!(result.offline.is_empty());
@@ -310,10 +326,18 @@ mod tests {
         let addr = spawn_mock(accepted_prepare_response("tok-abc")).await;
         let targets = vec![target_for(addr)];
 
-        let result = fanout_prepare(&targets, addr.port(), sample_request(), Duration::from_secs(2))
-            .await;
+        // 2-node cluster: self + 1 peer, quorum = 2. Both accept.
+        let result = fanout_prepare(
+            &targets,
+            addr.port(),
+            sample_request(),
+            Duration::from_secs(2),
+            2,
+        )
+        .await;
 
         assert!(result.all_online_accepted);
+        assert!(result.quorum_met);
         assert_eq!(result.accepted.len(), 1);
         assert!(result.denied.is_empty());
         assert!(result.offline.is_empty());
@@ -326,10 +350,17 @@ mod tests {
         let addr = spawn_mock(denied_prepare_response("key already prepared")).await;
         let targets = vec![target_for(addr)];
 
-        let result = fanout_prepare(&targets, addr.port(), sample_request(), Duration::from_secs(2))
-            .await;
+        let result = fanout_prepare(
+            &targets,
+            addr.port(),
+            sample_request(),
+            Duration::from_secs(2),
+            2,
+        )
+        .await;
 
         assert!(!result.all_online_accepted);
+        assert!(!result.quorum_met); // denied peer doesn't count toward quorum
         assert!(result.accepted.is_empty());
         assert_eq!(result.denied.len(), 1);
         assert!(result.offline.is_empty());
@@ -353,19 +384,74 @@ mod tests {
         });
 
         let targets = vec![target_for(addr)];
+        // 2-node cluster: self + 1 peer. Peer is offline, quorum = 2, only self = 1.
         let result = fanout_prepare(
             &targets,
             addr.port(),
             sample_request(),
             Duration::from_millis(100),
+            2,
         )
         .await;
 
-        // Offline does NOT block — all_online_accepted is still true.
         assert!(result.all_online_accepted);
+        assert!(!result.quorum_met); // self alone (1) < quorum (2)
         assert!(result.accepted.is_empty());
         assert!(result.denied.is_empty());
         assert_eq!(result.offline.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn fanout_prepare_quorum_met_with_majority_in_three_node_cluster() {
+        // 3-node cluster: self + 2 peers. One peer accepts, one offline. quorum = 2.
+        let addr_ok = spawn_mock(accepted_prepare_response("tok-ok")).await;
+        let rpc_port = addr_ok.port();
+
+        // Offline peer: a non-routable IPv6 address where nothing listens on rpc_port.
+        let offline_target = FanOutTarget {
+            machine_id: MachineId("m-offline".into()),
+            overlay_ip: OverlayIp("fd00::dead".parse().expect("valid ipv6")),
+        };
+
+        let targets = vec![target_for(addr_ok), offline_target];
+        let result = fanout_prepare(
+            &targets,
+            rpc_port,
+            sample_request(),
+            Duration::from_millis(500),
+            3,
+        )
+        .await;
+
+        assert!(result.all_online_accepted); // no denials
+        assert!(result.quorum_met); // self(1) + 1 accepted = 2 >= quorum(2)
+        assert_eq!(result.accepted.len(), 1);
+        assert!(result.denied.is_empty());
+        assert_eq!(result.offline.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn fanout_prepare_quorum_not_met_when_all_peers_offline() {
+        // Offline peer: a non-routable IPv6 address where nothing listens.
+        let offline_target = FanOutTarget {
+            machine_id: MachineId("m-offline".into()),
+            overlay_ip: OverlayIp("fd00::dead".parse().expect("valid ipv6")),
+        };
+
+        let targets = vec![offline_target];
+        // 3-node cluster: self + 2 peers (only 1 target), peer is offline.
+        // quorum = 2, only self = 1.
+        let result = fanout_prepare(
+            &targets,
+            9999,
+            sample_request(),
+            Duration::from_millis(500),
+            3,
+        )
+        .await;
+
+        assert!(result.all_online_accepted); // offline != denied
+        assert!(!result.quorum_met); // self(1) + 0 = 1 < quorum(2)
     }
 
     #[tokio::test]

@@ -64,7 +64,6 @@ pub struct MachineInstallOptions {
 pub enum DebugTickTask {
     PeerSync,
     Heartbeat,
-    Heal,
     All,
 }
 

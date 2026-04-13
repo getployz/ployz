@@ -175,7 +175,7 @@ impl CoordinationLedger {
 
         if prepared.owner_id != owner_id
             || prepared.nonce != nonce
-            || prepared.operation != operation
+            || operation_key(&prepared.operation) != operation_key(&operation)
         {
             return CoordinationCommitPayload {
                 committed: false,

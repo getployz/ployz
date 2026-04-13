@@ -150,6 +150,8 @@ impl DaemonState {
         }
 
         // Fan-out prepare to all planned participants.
+        // Deploy locks require all participants to accept (not quorum-based),
+        // so we pass cluster_size = 1 to make quorum trivially met.
         let fanout_result = fanout_prepare(
             &peers,
             rpc_port,
@@ -160,6 +162,7 @@ impl DaemonState {
                 operation: lock_op.clone(),
             },
             Duration::from_secs(10),
+            1, // deploy uses all_online_accepted, not quorum
         )
         .await;
 

@@ -25,7 +25,6 @@ pub(crate) enum InstallSourceArg {
 pub(crate) enum DebugTickTaskArg {
     PeerSync,
     Heartbeat,
-    Heal,
     All,
 }
 
@@ -52,7 +51,6 @@ impl From<DebugTickTaskArg> for ProtocolDebugTickTask {
         match value {
             DebugTickTaskArg::PeerSync => ProtocolDebugTickTask::PeerSync,
             DebugTickTaskArg::Heartbeat => ProtocolDebugTickTask::Heartbeat,
-            DebugTickTaskArg::Heal => ProtocolDebugTickTask::Heal,
             DebugTickTaskArg::All => ProtocolDebugTickTask::All,
         }
     }

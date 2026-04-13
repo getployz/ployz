@@ -32,7 +32,7 @@ pub(crate) struct Cli {
 pub(crate) enum Scenario {
     SingleNodeInit,
     MachineAddBasic,
-    SplitBrainConcurrentAddSubnetHeal,
+    QuorumSubnetCoordination,
     WireguardReconnect,
     DeploySmoke,
 }
@@ -41,7 +41,7 @@ impl Scenario {
     const ALL: [Self; 5] = [
         Self::SingleNodeInit,
         Self::MachineAddBasic,
-        Self::SplitBrainConcurrentAddSubnetHeal,
+        Self::QuorumSubnetCoordination,
         Self::WireguardReconnect,
         Self::DeploySmoke,
     ];
@@ -57,8 +57,8 @@ impl Scenario {
             Self::SingleNodeInit | Self::DeploySmoke => &["founder"],
             Self::MachineAddBasic => &["founder", "joiner"],
             Self::WireguardReconnect => &["founder", "peer"],
-            Self::SplitBrainConcurrentAddSubnetHeal => &[
-                "founder", "peer", "joiner1", "joiner2", "joiner3", "joiner4", "joiner5", "joiner6",
+            Self::QuorumSubnetCoordination => &[
+                "founder", "peer1", "peer2", "joiner1", "joiner2",
             ],
         }
     }
@@ -68,7 +68,7 @@ impl Scenario {
         match self {
             Self::SingleNodeInit => "single_node_init",
             Self::MachineAddBasic => "machine_add_basic",
-            Self::SplitBrainConcurrentAddSubnetHeal => "split_brain_concurrent_add_subnet_heal",
+            Self::QuorumSubnetCoordination => "quorum_subnet_coordination",
             Self::WireguardReconnect => "wireguard_reconnect",
             Self::DeploySmoke => "deploy_smoke",
         }

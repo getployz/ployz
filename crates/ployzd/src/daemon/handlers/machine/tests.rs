@@ -1,4 +1,4 @@
-use super::heal::{plan_local_subnet_heal, should_clear_local_participation_override};
+use super::join::hash_machine_id;
 use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
 use crate::daemon::ActiveMesh;
 use crate::daemon::DaemonRuntimeConfig;
@@ -11,9 +11,10 @@ use ployz_api::{
     DaemonPayload, DaemonResponse, MachineAddOptions, MeshSelfRecordPayload, encode_join_response,
 };
 use ployz_orchestrator::Mesh;
+use ployz_orchestrator::ipam::Ipam;
 use ployz_store_api::MachineStore;
 use ployz_test_support::{
-    MemoryServiceRuntime, MemoryStore, MemoryWireGuard, ServiceHealth, StaticEndpointDiscovery,
+    MemoryServiceRuntime, MemoryStore, MemoryWireGuard, StaticEndpointDiscovery,
     memory_wireguard_driver,
 };
 use ployz_types::model::{
@@ -121,132 +122,6 @@ async fn allocate_machine_subnets_returns_unique_values() {
     assert!(!subnets.contains(&"10.210.1.0/24".parse().expect("valid subnet")));
 }
 
-#[test]
-fn plan_local_subnet_heal_reassigns_losing_machine() {
-    let machines = vec![
-        test_machine_record(
-            "alpha",
-            "10.210.0.0/24",
-            Participation::Enabled,
-            0,
-            PublicKey([2; 32]),
-        ),
-        test_machine_record(
-            "beta",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            0,
-            PublicKey([3; 32]),
-        ),
-        test_machine_record(
-            "gamma",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            0,
-            PublicKey([4; 32]),
-        ),
-    ];
-
-    let plan = plan_local_subnet_heal(
-        &machines,
-        &MachineId("gamma".into()),
-        DEFAULT_CLUSTER_CIDR,
-        24,
-    )
-    .expect("plan should succeed")
-    .expect("gamma should heal");
-
-    assert_eq!(plan.current_subnet, "10.210.1.0/24".parse().expect("valid"));
-    assert_eq!(plan.winner_machine_id, MachineId("beta".into()));
-    assert_eq!(plan.target_subnet, "10.210.2.0/24".parse().expect("valid"));
-}
-
-#[test]
-fn plan_local_subnet_heal_keeps_winner_in_place() {
-    let machines = vec![
-        test_machine_record(
-            "alpha",
-            "10.210.0.0/24",
-            Participation::Enabled,
-            0,
-            PublicKey([2; 32]),
-        ),
-        test_machine_record(
-            "beta",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            0,
-            PublicKey([3; 32]),
-        ),
-        test_machine_record(
-            "gamma",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            0,
-            PublicKey([4; 32]),
-        ),
-    ];
-
-    let plan = plan_local_subnet_heal(
-        &machines,
-        &MachineId("beta".into()),
-        DEFAULT_CLUSTER_CIDR,
-        24,
-    )
-    .expect("plan should succeed");
-
-    assert!(plan.is_none());
-}
-
-#[test]
-fn plan_local_subnet_heal_is_noop_after_subnet_changes() {
-    let machines = vec![
-        test_machine_record(
-            "alpha",
-            "10.210.0.0/24",
-            Participation::Enabled,
-            0,
-            PublicKey([2; 32]),
-        ),
-        test_machine_record(
-            "beta",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            0,
-            PublicKey([3; 32]),
-        ),
-        test_machine_record(
-            "gamma",
-            "10.210.2.0/24",
-            Participation::Enabled,
-            0,
-            PublicKey([4; 32]),
-        ),
-    ];
-
-    let plan = plan_local_subnet_heal(
-        &machines,
-        &MachineId("gamma".into()),
-        DEFAULT_CLUSTER_CIDR,
-        24,
-    )
-    .expect("plan should succeed");
-
-    assert!(plan.is_none());
-}
-
-#[test]
-fn local_subnet_heal_keeps_override_until_probe_is_ready() {
-    assert!(!should_clear_local_participation_override(
-        true, false, false
-    ));
-    assert!(should_clear_local_participation_override(true, false, true));
-    assert!(!should_clear_local_participation_override(
-        false, false, true
-    ));
-    assert!(!should_clear_local_participation_override(true, true, true));
-}
-
 #[tokio::test]
 async fn machine_add_succeeds_when_peer_unreachable_at_rpc_time() {
     let _guard = test_ssh_env_lock().lock().await;
@@ -255,18 +130,31 @@ async fn machine_add_succeeds_when_peer_unreachable_at_rpc_time() {
         .upsert_self_machine(&test_machine_record(
             "stale-peer",
             "10.210.1.0/24",
-            Participation::Enabled,
+            Participation::Disabled,
             0,
             PublicKey([3; 32]),
         ))
         .await
         .expect("upsert stale peer");
 
+    // Predict the subnet that seed-based IPAM will allocate for founder.
+    let allocated: Vec<Ipv4Net> = store
+        .list_machines()
+        .await
+        .expect("list machines")
+        .iter()
+        .filter_map(|m| m.subnet)
+        .collect();
+    let seed = hash_machine_id(&state.identity.machine_id);
+    let cluster: Ipv4Net = DEFAULT_CLUSTER_CIDR.parse().expect("valid cluster cidr");
+    let mut ipam = Ipam::with_allocated_and_seed(cluster, 24, allocated.into_iter(), seed);
+    let expected_subnet = ipam.allocate().expect("at least one subnet available");
+
     let join_response = JoinResponse {
         machine_id: MachineId("joiner-1".into()),
         public_key: PublicKey([4; 32]),
         overlay_ip: "fd00::4".parse().map(OverlayIp).expect("valid overlay"),
-        subnet: Some("10.210.2.0/24".parse().expect("valid subnet")),
+        subnet: Some(expected_subnet),
         endpoints: vec!["203.0.113.10:51820".into()],
     };
     let encoded = encode_join_response(&join_response).expect("encode join response");
@@ -323,11 +211,24 @@ async fn machine_add_accepts_running_joiner_before_full_sync() {
     let _guard = test_ssh_env_lock().lock().await;
     let (mut state, store, network) = make_state(MeshStartMode::Started).await;
 
+    // Predict the subnet that seed-based IPAM will allocate for founder.
+    let allocated: Vec<Ipv4Net> = store
+        .list_machines()
+        .await
+        .expect("list machines")
+        .iter()
+        .filter_map(|m| m.subnet)
+        .collect();
+    let seed = hash_machine_id(&state.identity.machine_id);
+    let cluster: Ipv4Net = DEFAULT_CLUSTER_CIDR.parse().expect("valid cluster cidr");
+    let mut ipam = Ipam::with_allocated_and_seed(cluster, 24, allocated.into_iter(), seed);
+    let expected_subnet = ipam.allocate().expect("at least one subnet available");
+
     let join_response = JoinResponse {
         machine_id: MachineId("joiner-2".into()),
         public_key: PublicKey([5; 32]),
         overlay_ip: "fd00::5".parse().map(OverlayIp).expect("valid overlay"),
-        subnet: Some("10.210.1.0/24".parse().expect("valid subnet")),
+        subnet: Some(expected_subnet),
         endpoints: vec!["203.0.113.11:51820".into()],
     };
     let encoded = encode_join_response(&join_response).expect("encode join response");
@@ -417,190 +318,6 @@ async fn machine_remove_deletes_disabled_record() {
 
     let machines = store.list_machines().await.expect("list machines");
     assert!(!machines.into_iter().any(|machine| machine.id.0 == "peer-1"));
-}
-
-#[tokio::test]
-async fn memory_mode_local_subnet_heal_updates_local_config_and_store() {
-    let store = Arc::new(MemoryStore::new());
-    store
-        .upsert_self_machine(&test_machine_record(
-            "founder",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            0,
-            PublicKey([2; 32]),
-        ))
-        .await
-        .expect("upsert founder");
-    store
-        .upsert_self_machine(&test_machine_record(
-            "peer",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            0,
-            PublicKey([3; 32]),
-        ))
-        .await
-        .expect("upsert peer");
-
-    let (mut state, _service) = make_state_with_store(
-        Identity::generate(MachineId("peer".into()), [3; 32]),
-        "10.210.1.0/24",
-        store.clone(),
-    )
-    .await;
-    state
-        .active
-        .as_mut()
-        .expect("active mesh")
-        .mesh
-        .up()
-        .await
-        .expect("mesh up");
-
-    state.heal_local_subnet_conflict_if_needed().await;
-
-    let Some(pending) = state.pending_subnet_heal else {
-        panic!("expected pending heal after first pass");
-    };
-    let initial_config = NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha"))
-        .expect("load config after reservation");
-    assert_eq!(
-        initial_config.subnet,
-        "10.210.1.0/24".parse().expect("valid")
-    );
-    let reserved_peer = store
-        .list_machines()
-        .await
-        .expect("list machines after reservation")
-        .into_iter()
-        .find(|machine| machine.id.0 == "peer")
-        .expect("peer present after reservation");
-    assert_eq!(reserved_peer.subnet, Some(pending.target_subnet));
-    assert_eq!(reserved_peer.participation, Participation::Disabled);
-
-    state.pending_subnet_heal = Some(crate::daemon::PendingSubnetHeal {
-        planned_at: pending.planned_at.saturating_sub(20),
-        ..pending
-    });
-    state.heal_local_subnet_conflict_if_needed().await;
-
-    let healed_config = NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha"))
-        .expect("load healed config");
-    assert_eq!(
-        healed_config.subnet,
-        "10.210.0.0/24".parse().expect("valid")
-    );
-    let machines = store.list_machines().await.expect("list machines");
-    let peer = machines
-        .into_iter()
-        .find(|machine| machine.id.0 == "peer")
-        .expect("peer present");
-    assert_eq!(peer.subnet, Some("10.210.0.0/24".parse().expect("valid")));
-    assert_eq!(
-        state
-            .active
-            .as_ref()
-            .map(|active| active.config.subnet)
-            .expect("active config present"),
-        "10.210.0.0/24".parse().expect("valid")
-    );
-
-    teardown_state(&mut state).await;
-}
-
-#[tokio::test]
-async fn local_subnet_heal_skips_when_store_unhealthy() {
-    let store = Arc::new(MemoryStore::new());
-    store
-        .upsert_self_machine(&test_machine_record(
-            "founder",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            0,
-            PublicKey([2; 32]),
-        ))
-        .await
-        .expect("upsert founder");
-    store
-        .upsert_self_machine(&test_machine_record(
-            "peer",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            0,
-            PublicKey([3; 32]),
-        ))
-        .await
-        .expect("upsert peer");
-
-    let (mut state, service) = make_state_with_store(
-        Identity::generate(MachineId("peer".into()), [3; 32]),
-        "10.210.1.0/24",
-        store,
-    )
-    .await;
-    state
-        .active
-        .as_mut()
-        .expect("active mesh")
-        .mesh
-        .up()
-        .await
-        .expect("mesh up");
-
-    service.set_healthy(ServiceHealth::Unhealthy);
-
-    state.heal_local_subnet_conflict_if_needed().await;
-
-    let healed_config =
-        NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha")).expect("load config");
-    assert_eq!(
-        healed_config.subnet,
-        "10.210.1.0/24".parse().expect("valid")
-    );
-
-    teardown_state(&mut state).await;
-}
-
-#[tokio::test]
-async fn local_subnet_heal_skips_when_mesh_not_running() {
-    let store = Arc::new(MemoryStore::new());
-    store
-        .upsert_self_machine(&test_machine_record(
-            "founder",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            0,
-            PublicKey([2; 32]),
-        ))
-        .await
-        .expect("upsert founder");
-    store
-        .upsert_self_machine(&test_machine_record(
-            "peer",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            0,
-            PublicKey([3; 32]),
-        ))
-        .await
-        .expect("upsert peer");
-
-    let (mut state, _service) = make_state_with_store(
-        Identity::generate(MachineId("peer".into()), [3; 32]),
-        "10.210.1.0/24",
-        store,
-    )
-    .await;
-
-    state.heal_local_subnet_conflict_if_needed().await;
-
-    let healed_config =
-        NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha")).expect("load config");
-    assert_eq!(
-        healed_config.subnet,
-        "10.210.1.0/24".parse().expect("valid")
-    );
 }
 
 #[tokio::test]
@@ -706,59 +423,6 @@ async fn make_state(
     });
 
     (state, store, network)
-}
-
-async fn make_state_with_store(
-    identity: Identity,
-    subnet: &str,
-    store: Arc<MemoryStore>,
-) -> (DaemonState, Arc<MemoryServiceRuntime>) {
-    let subnet: Ipv4Net = subnet.parse().expect("valid subnet");
-    let data_dir = unique_temp_dir("ployz-machine-heal-state");
-    let config = NetworkConfig::new(
-        ployz_types::model::NetworkName("alpha".into()),
-        &identity.public_key,
-        DEFAULT_CLUSTER_CIDR,
-        subnet,
-    );
-    config
-        .save(&NetworkConfig::path(&data_dir, "alpha"))
-        .expect("save config");
-
-    let service = Arc::new(MemoryServiceRuntime::new());
-    let mesh = Mesh::new(
-        memory_wireguard_driver(Arc::new(MemoryWireGuard::new())),
-        store.clone(),
-        store.clone(),
-        service.clone(),
-        None,
-        Arc::new(StaticEndpointDiscovery::empty()),
-        None,
-        identity.machine_id.clone(),
-        51820,
-    );
-
-    let mut state = DaemonState::new_for_tests(
-        &data_dir,
-        identity,
-        DaemonRuntimeConfig {
-            cluster_cidr: DEFAULT_CLUSTER_CIDR.into(),
-            subnet_prefix_len: 24,
-            remote_control_port: 4317,
-            coordination_rpc_port: 0,
-            gateway_listen_addr: "127.0.0.1:0".into(),
-            gateway_threads: 1,
-        },
-    );
-    state.active = Some(ActiveMesh {
-        config,
-        mesh,
-        store: StoreDriver::from_store(store),
-        remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-        gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-        dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-    });
-    (state, service)
 }
 
 async fn teardown_state(state: &mut DaemonState) {
