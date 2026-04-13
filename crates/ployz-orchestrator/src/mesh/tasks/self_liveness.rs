@@ -7,8 +7,6 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-const SELF_LIVENESS_INTERVAL: Duration = Duration::from_secs(5);
-
 #[derive(Debug)]
 pub enum SelfLivenessCommand {
     TickNow { done: oneshot::Sender<()> },
@@ -20,9 +18,10 @@ pub(crate) async fn run_self_liveness_task(
     self_record_tx: mpsc::Sender<crate::mesh::tasks::self_record::SelfRecordCommand>,
     mut commands: mpsc::Receiver<SelfLivenessCommand>,
     cancel: CancellationToken,
+    tick_interval: Duration,
 ) {
     started.store(true, Ordering::SeqCst);
-    let mut interval = tokio::time::interval(SELF_LIVENESS_INTERVAL);
+    let mut interval = tokio::time::interval(tick_interval);
 
     loop {
         tokio::select! {
@@ -132,6 +131,7 @@ mod tests {
                 self_record_tx,
                 command_rx,
                 task_cancel,
+                Duration::from_secs(60),
             )
             .await;
         });

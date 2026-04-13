@@ -479,7 +479,6 @@ impl DaemonState {
         let fallback_bootstrap_addrs = self
             .runtime_profile
             .load_bootstrap_addrs(&network_dir, &self.identity.machine_id)
-            .await
             .map_err(|error| StartMeshError::BootstrapResolve(error.to_string()))?;
         let bootstrap_addrs = resolve_bootstrap_addrs(
             &bootstrap,
@@ -604,8 +603,11 @@ mod tests {
         let state = make_state(RuntimeTarget::Host, ServiceMode::User, "0.0.0.0:80");
         let config = make_network_config(&state, "alpha");
         let network_dir = state.network_dir(&config.name.0);
-        let db_path = ployz_config::corrosion::Paths::new(&network_dir).db;
-        fs::create_dir_all(&db_path).expect("create invalid db path");
+        // Write an invalid bootstrap-peers.json so load_bootstrap_peer_records fails.
+        fs::create_dir_all(&network_dir).expect("create network dir");
+        let peers_path =
+            crate::mesh_state::bootstrap::bootstrap_peers_path(&network_dir);
+        fs::write(&peers_path, "not valid json").expect("write invalid peers file");
 
         let error = match state
             .plan_mesh_start(&config, None, MeshStartOptions::default())

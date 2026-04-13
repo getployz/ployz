@@ -8,8 +8,6 @@ use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-const PEER_SYNC_INTERVAL: Duration = Duration::from_secs(5);
-
 #[derive(Debug)]
 pub enum PeerSyncCommand {
     UpsertTransient(MachineRecord),
@@ -25,6 +23,7 @@ pub(crate) async fn run_peer_sync_task(
     network: WireguardDriver,
     local_machine_id: MachineId,
     cancel: CancellationToken,
+    tick_interval: Duration,
 ) {
     let mut state = PeerStateMap::new();
     let now = Instant::now();
@@ -38,7 +37,7 @@ pub(crate) async fn run_peer_sync_task(
     state.seed_from_device_peers(&device_peers, now);
     rank_pending_peers(&mut state).await;
     sync_peers(&state, &network, &local_machine_id).await;
-    let mut interval = tokio::time::interval(PEER_SYNC_INTERVAL);
+    let mut interval = tokio::time::interval(tick_interval);
 
     loop {
         tokio::select! {
@@ -288,6 +287,7 @@ mod tests {
                 driver,
                 local_machine_id,
                 task_cancel,
+                Duration::from_secs(60),
             )
             .await;
         });
@@ -325,6 +325,7 @@ mod tests {
                 driver,
                 local_machine_id,
                 task_cancel,
+                Duration::from_secs(60),
             )
             .await;
         });

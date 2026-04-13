@@ -3,7 +3,7 @@ use crate::mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
 use crate::mesh::probe::{ProbeListenerFamily, ProbeListenerReadiness};
 use crate::mesh::tasks::{
     HeartbeatCommand, ParticipationCommand, PeerSyncCommand, SelfLivenessCommand, TaskSet,
-    TaskSetError,
+    TaskSetError, TaskTimingConfig,
 };
 use crate::model::{MachineId, MachineRecord};
 use ployz_runtime_api::{
@@ -74,6 +74,7 @@ pub struct Mesh {
     wg_ifindex: u32,
     heartbeat_started: Arc<AtomicBool>,
     probe_readiness: Arc<ProbeListenerReadiness>,
+    task_timing: TaskTimingConfig,
 }
 
 impl Mesh {
@@ -123,6 +124,7 @@ impl Mesh {
             wg_ifindex: 0,
             heartbeat_started: Arc::new(AtomicBool::new(false)),
             probe_readiness: Arc::new(ProbeListenerReadiness::new(probe_required_family)),
+            task_timing: TaskTimingConfig::production(),
         }
     }
 
@@ -148,6 +150,12 @@ impl Mesh {
         self.container_network
             .as_ref()
             .map(ContainerNetwork::container_v4)
+    }
+
+    #[must_use]
+    pub fn with_task_timing(mut self, config: TaskTimingConfig) -> Self {
+        self.task_timing = config;
+        self
     }
 
     #[must_use]

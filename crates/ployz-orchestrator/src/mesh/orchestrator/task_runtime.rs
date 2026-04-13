@@ -43,6 +43,7 @@ impl Mesh {
             self.network.clone(),
             self.machine_id.clone(),
             cancel.clone(),
+            self.task_timing.peer_sync_interval,
         ));
 
         self.peer_sync_tx = Some(peer_sync_tx);
@@ -119,6 +120,7 @@ impl Mesh {
             self_record_tx.clone(),
             self_liveness_rx,
             cancel.clone(),
+            self.task_timing.self_liveness_interval,
         ));
 
         let (participation_tx, participation_rx) = mpsc::channel(16);
@@ -132,6 +134,7 @@ impl Mesh {
             self_record_tx,
             participation_rx,
             cancel.clone(),
+            self.task_timing.participation_interval,
         ));
 
         let (heartbeat_tx, heartbeat_rx) = mpsc::channel(16);

@@ -28,9 +28,6 @@ pin-project-lite = "0.2"
 uuid = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
-ipnet = { workspace = true }
-strum = { workspace = true }
-rusqlite = "0.38"
 libc = { workspace = true }
 
 [lints]
