@@ -10,7 +10,6 @@ use ployz_api::{
     MeshSelfRecordPayload,
 };
 use ployz_orchestrator::ipam::Ipam;
-use ployz_orchestrator::machine_liveness::machine_is_fresh;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_sdk::DaemonClient;
 use ployz_types::model::{MachineId, MachineRecord, Participation};
@@ -156,15 +155,6 @@ impl DaemonState {
             }
         };
 
-        let warnings = match self.degraded_mesh_warnings().await {
-            Ok(warnings) => warnings,
-            Err(err) => return self.err("LIST_FAILED", err),
-        };
-        tracing::info!(
-            warning_count = warnings.len(),
-            "machine add degraded-mesh check complete"
-        );
-
         let allocated_subnets = match self
             .allocate_machine_subnets_with_coordination(targets)
             .await
@@ -178,7 +168,7 @@ impl DaemonState {
         );
 
         let operation_store = self.machine_operation_store();
-        let mut report = MachineAddReport::with_warnings(warnings);
+        let mut report = MachineAddReport::default();
         let mut tasks = JoinSet::new();
 
         for (target, allocated_subnet) in targets.iter().cloned().zip(allocated_subnets) {
@@ -335,7 +325,9 @@ impl DaemonState {
         let mut ipam = Ipam::with_allocated(cluster, self.subnet_prefix_len, allocated);
         let mut subnets = Vec::with_capacity(targets.len());
 
-        // Online peers that must all agree on each subnet claim.
+        // Target all participating peers — RPC reachability at call time determines
+        // who is online. Offline peers (timeout / connection refused) are skipped;
+        // only explicit denials abort the candidate and trigger a retry.
         let now = now_unix_secs();
         let self_id = &self.identity.machine_id;
         let peers: Vec<FanOutTarget> = machines
@@ -346,7 +338,6 @@ impl DaemonState {
                         m.participation,
                         Participation::Enabled | Participation::Draining
                     )
-                    && machine_is_fresh(m, now)
             })
             .map(|m| FanOutTarget {
                 machine_id: m.id.clone(),
@@ -411,7 +402,7 @@ impl DaemonState {
                 )
                 .await;
 
-                if !fanout_result.all_accepted {
+                if !fanout_result.all_online_accepted {
                     // A peer denied or timed out — abort everywhere and try the next candidate.
                     let abort_op = CoordinationOperation::SubnetClaimAbort {
                         machine_id: target.clone(),

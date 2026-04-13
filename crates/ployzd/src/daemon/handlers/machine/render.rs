@@ -1,7 +1,6 @@
 use chrono::DateTime;
 use ployz_orchestrator::machine_liveness::{MachineLiveness, machine_liveness};
 use ployz_types::model::{MachineRecord, MachineStatus, Participation};
-use ployz_types::time::now_unix_secs;
 
 use super::types::{MachineAddReport, MachineListReport};
 
@@ -137,20 +136,6 @@ pub(super) fn format_timestamp(ts: u64) -> String {
     DateTime::from_timestamp(ts as i64, 0)
         .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
         .unwrap_or_else(|| "—".into())
-}
-
-pub(super) fn degraded_mesh_warning(machine: &MachineRecord) -> String {
-    let now = now_unix_secs();
-    let role = match machine.participation {
-        Participation::Disabled => "disabled",
-        Participation::Enabled => "enabled",
-        Participation::Draining => "draining",
-    };
-    let heartbeat = format_heartbeat(machine.last_heartbeat, now);
-    format!(
-        "warning: {role} peer '{}' has a stale heartbeat ({heartbeat})",
-        machine.id
-    )
 }
 
 fn push_summary_section(lines: &mut Vec<String>, label: &str, values: &[String]) {

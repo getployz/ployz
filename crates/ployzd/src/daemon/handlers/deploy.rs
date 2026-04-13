@@ -167,7 +167,7 @@ impl DaemonState {
         )
         .await;
 
-        if !fanout_result.all_accepted {
+        if !fanout_result.all_online_accepted {
             let abort_req = CoordinationAbortRequest {
                 owner_id: owner_id.clone(),
                 nonce: nonce.clone(),

@@ -18,14 +18,16 @@ pub(crate) struct FanOutTarget {
 
 /// Result of a fanned-out prepare operation.
 pub(crate) struct FanOutPrepareResult {
-    /// True when every target responded with `accepted: true`.
-    /// Empty `targets` is always all-accepted (single-machine cluster).
-    pub(crate) all_accepted: bool,
+    /// True when every responding peer accepted (no explicit denials).
+    /// Offline peers (timeout / connection refused) are excluded from this check.
+    /// Empty `targets` or all-offline is trivially true (single-machine cluster).
+    pub(crate) all_online_accepted: bool,
     /// Targets that accepted, paired with their payload (carries the prepare token).
     pub(crate) accepted: Vec<(FanOutTarget, CoordinationPreparePayload)>,
-    /// Targets that timed out, refused the connection, or returned `accepted: false`.
-    #[allow(dead_code)]
-    pub(crate) failed: Vec<MachineId>,
+    /// Targets that responded with `accepted: false` — real conflict.
+    pub(crate) denied: Vec<MachineId>,
+    /// Targets that timed out or refused the connection — not reachable right now.
+    pub(crate) offline: Vec<MachineId>,
 }
 
 fn client(overlay_ip: OverlayIp, rpc_port: u16) -> DaemonClient<TcpTransport> {
@@ -36,6 +38,9 @@ fn client(overlay_ip: OverlayIp, rpc_port: u16) -> DaemonClient<TcpTransport> {
 /// Fan out a `CoordinationPrepare` to all `targets` in parallel.
 ///
 /// Returns immediately once all tasks complete or time out.
+/// Peers that are unreachable (timeout or connection refused) are recorded in
+/// `offline` but do **not** block the operation — only explicit `accepted: false`
+/// responses (in `denied`) cause `all_online_accepted` to be false.
 pub(crate) async fn fanout_prepare(
     targets: &[FanOutTarget],
     rpc_port: u16,
@@ -44,47 +49,57 @@ pub(crate) async fn fanout_prepare(
 ) -> FanOutPrepareResult {
     if targets.is_empty() {
         return FanOutPrepareResult {
-            all_accepted: true,
+            all_online_accepted: true,
             accepted: Vec::new(),
-            failed: Vec::new(),
+            denied: Vec::new(),
+            offline: Vec::new(),
         };
     }
 
-    let mut set: JoinSet<(FanOutTarget, Result<CoordinationPreparePayload, ()>)> = JoinSet::new();
+    // Each task returns (target, Ok(payload)) if the peer responded or (target, Err(is_offline))
+    // where is_offline=true means unreachable, false means responded but denied.
+    let mut set: JoinSet<(FanOutTarget, Result<CoordinationPreparePayload, bool>)> =
+        JoinSet::new();
     for target in targets {
         let t = target.clone();
         let c = client(t.overlay_ip, rpc_port);
         let req = request.clone();
         set.spawn(async move {
-            let result = tokio::time::timeout(deadline, c.coordination_prepare(req)).await;
-            match result {
+            match tokio::time::timeout(deadline, c.coordination_prepare(req)).await {
                 Ok(Ok(payload)) => (t, Ok(payload)),
-                _ => (t, Err(())),
+                Ok(Err(_io_err)) => (t, Err(true)),  // connection refused / IO → offline
+                Err(_timeout) => (t, Err(true)),     // deadline exceeded → offline
             }
         });
     }
 
     let mut accepted = Vec::new();
-    let mut failed = Vec::new();
+    let mut denied = Vec::new();
+    let mut offline = Vec::new();
     while let Some(join_result) = set.join_next().await {
         match join_result {
             Ok((target, Ok(payload))) if payload.accepted => {
                 accepted.push((target, payload));
             }
-            Ok((target, _)) => {
-                failed.push(target.machine_id);
+            Ok((target, Ok(_payload))) => {
+                // Responded but accepted: false — real conflict.
+                denied.push(target.machine_id);
+            }
+            Ok((target, Err(_is_offline))) => {
+                offline.push(target.machine_id);
             }
             Err(_join_err) => {
-                // Task panicked — we lose the machine_id but the failure still counts.
+                // Task panicked — machine_id is lost but it counts as offline.
             }
         }
     }
 
-    let all_accepted = failed.is_empty() && accepted.len() == targets.len();
+    let all_online_accepted = denied.is_empty();
     FanOutPrepareResult {
-        all_accepted,
+        all_online_accepted,
         accepted,
-        failed,
+        denied,
+        offline,
     }
 }
 
@@ -276,7 +291,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fanout_prepare_empty_targets_returns_all_accepted() {
+    async fn fanout_prepare_empty_targets_returns_all_online_accepted() {
         let result = fanout_prepare(
             &[],
             9999,
@@ -284,9 +299,10 @@ mod tests {
             Duration::from_secs(1),
         )
         .await;
-        assert!(result.all_accepted);
+        assert!(result.all_online_accepted);
         assert!(result.accepted.is_empty());
-        assert!(result.failed.is_empty());
+        assert!(result.denied.is_empty());
+        assert!(result.offline.is_empty());
     }
 
     #[tokio::test]
@@ -297,34 +313,35 @@ mod tests {
         let result = fanout_prepare(&targets, addr.port(), sample_request(), Duration::from_secs(2))
             .await;
 
-        assert!(result.all_accepted);
+        assert!(result.all_online_accepted);
         assert_eq!(result.accepted.len(), 1);
-        assert!(result.failed.is_empty());
+        assert!(result.denied.is_empty());
+        assert!(result.offline.is_empty());
         let (_, payload) = &result.accepted[0];
         assert_eq!(payload.prepare_token.as_deref(), Some("tok-abc"));
     }
 
     #[tokio::test]
-    async fn fanout_prepare_single_target_denied() {
+    async fn fanout_prepare_single_target_denied_blocks() {
         let addr = spawn_mock(denied_prepare_response("key already prepared")).await;
         let targets = vec![target_for(addr)];
 
         let result = fanout_prepare(&targets, addr.port(), sample_request(), Duration::from_secs(2))
             .await;
 
-        assert!(!result.all_accepted);
+        assert!(!result.all_online_accepted);
         assert!(result.accepted.is_empty());
-        assert_eq!(result.failed.len(), 1);
+        assert_eq!(result.denied.len(), 1);
+        assert!(result.offline.is_empty());
     }
 
     #[tokio::test]
-    async fn fanout_prepare_timeout_counts_as_failed() {
-        // A mock that never responds.
+    async fn fanout_prepare_timeout_counts_as_offline_not_denied() {
+        // A mock that accepts connections but never writes back.
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind silent listener");
         let addr = listener.local_addr().expect("local addr");
-        // Accept but never write back.
         tokio::spawn(async move {
             loop {
                 let Ok((_stream, _)) = listener.accept().await else {
@@ -344,9 +361,11 @@ mod tests {
         )
         .await;
 
-        assert!(!result.all_accepted);
+        // Offline does NOT block — all_online_accepted is still true.
+        assert!(result.all_online_accepted);
         assert!(result.accepted.is_empty());
-        assert_eq!(result.failed.len(), 1);
+        assert!(result.denied.is_empty());
+        assert_eq!(result.offline.len(), 1);
     }
 
     #[tokio::test]
