@@ -92,6 +92,30 @@ async fn handle_tcp_connection(
     let request: DaemonRequest = serde_json::from_str(&line)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
+    // The TCP RPC port is exclusively for coordination RPCs. Reject all other
+    // request types so that the network-exposed port cannot invoke privileged
+    // administrative operations (deploy, machine management, mesh mutations).
+    let is_coordination = matches!(
+        request,
+        DaemonRequest::CoordinationPrepare { .. }
+            | DaemonRequest::CoordinationRenew { .. }
+            | DaemonRequest::CoordinationCommit { .. }
+            | DaemonRequest::CoordinationAbort { .. }
+    );
+    if !is_coordination {
+        let response = DaemonResponse {
+            ok: false,
+            code: "FORBIDDEN".into(),
+            message: "TCP RPC endpoint only accepts coordination requests".into(),
+            payload: None,
+        };
+        let mut resp_line = serde_json::to_string(&response)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        resp_line.push('\n');
+        writer.write_all(resp_line.as_bytes()).await?;
+        return Ok(());
+    }
+
     let (reply_tx, reply_rx) = oneshot::channel();
     let cmd = IncomingCommand {
         request,

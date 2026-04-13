@@ -79,7 +79,7 @@ pub async fn run_daemon(
         }
     });
 
-    let tcp_addr = std::net::SocketAddr::from(([0, 0, 0, 0], coordination_rpc_port));
+    let tcp_addr = std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, coordination_rpc_port));
     let tcp_listener_cancel = cancel.clone();
     let tcp_command_tx = command_tx.clone();
     let tcp_listener_handle = tokio::spawn(async move {
