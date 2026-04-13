@@ -322,7 +322,8 @@ impl DaemonState {
             .parse()
             .map_err(|err| format!("invalid cluster CIDR '{}': {err}", self.cluster_cidr))?;
         let allocated = machines.iter().filter_map(|machine| machine.subnet);
-        let mut ipam = Ipam::with_allocated(cluster, self.subnet_prefix_len, allocated);
+        let seed = hash_machine_id(&self.identity.machine_id);
+        let mut ipam = Ipam::with_allocated_and_seed(cluster, self.subnet_prefix_len, allocated, seed);
         let mut subnets = Vec::with_capacity(targets.len());
 
         // Target all participating peers — RPC reachability at call time determines
@@ -386,6 +387,7 @@ impl DaemonState {
                 };
 
                 // Fan-out prepare to all online peers.
+                let cluster_size = peers.len() + 1; // +1 for self
                 let fanout_result = fanout_prepare(
                     &peers,
                     rpc_port,
@@ -399,11 +401,12 @@ impl DaemonState {
                         },
                     },
                     Duration::from_secs(10),
+                    cluster_size,
                 )
                 .await;
 
-                if !fanout_result.all_online_accepted {
-                    // A peer denied or timed out — abort everywhere and try the next candidate.
+                if !fanout_result.all_online_accepted || !fanout_result.quorum_met {
+                    // Abort everywhere — either a peer denied or quorum was not reached.
                     let abort_op = CoordinationOperation::SubnetClaimAbort {
                         machine_id: target.clone(),
                         subnet: candidate.to_string(),
@@ -424,6 +427,11 @@ impl DaemonState {
                         operation: abort_op,
                     })
                     .await;
+                    if !fanout_result.quorum_met {
+                        return Err(format!(
+                            "subnet allocation requires quorum; not enough cluster members reachable for target '{target}'"
+                        ));
+                    }
                     continue;
                 }
 
@@ -435,13 +443,13 @@ impl DaemonState {
                     }
                 }
 
-                // Local commit — operation must match what was prepared.
+                // Local commit.
                 let commit = self
                     .handle_coordination_commit(CoordinationCommitRequest {
                         owner_id: owner_id.clone(),
                         nonce: nonce.clone(),
                         prepare_tokens: prepare_tokens.clone(),
-                        operation: CoordinationOperation::SubnetClaimPrepare {
+                        operation: CoordinationOperation::SubnetClaimCommit {
                             machine_id: target.clone(),
                             subnet: candidate.to_string(),
                         },
@@ -484,7 +492,7 @@ impl DaemonState {
                     continue;
                 }
 
-                // Fan-out commit to all accepted peers — same operation as prepare.
+                // Fan-out commit to all accepted peers.
                 fanout_commit(
                     &accepted_targets(&fanout_result.accepted),
                     rpc_port,
@@ -492,7 +500,7 @@ impl DaemonState {
                         owner_id,
                         nonce,
                         prepare_tokens,
-                        operation: CoordinationOperation::SubnetClaimPrepare {
+                        operation: CoordinationOperation::SubnetClaimCommit {
                             machine_id: target.clone(),
                             subnet: candidate.to_string(),
                         },
@@ -1070,4 +1078,16 @@ fn install_script_args(install: &MachineInstallOptions) -> String {
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+/// Derive a deterministic seed from a machine_id for IPAM offset.
+///
+/// Different coordinators get different seeds so that concurrent IPAM
+/// allocations from the same snapshot start scanning from different
+/// positions, reducing coordination collisions.
+pub(crate) fn hash_machine_id(machine_id: &MachineId) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    machine_id.0.hash(&mut hasher);
+    hasher.finish()
 }

@@ -6,6 +6,7 @@ pub struct Ipam {
     cluster: Ipv4Net,
     prefix_len: u8,
     allocated: HashSet<Ipv4Net>,
+    seed_offset: u64,
 }
 
 impl Ipam {
@@ -15,6 +16,7 @@ impl Ipam {
             cluster,
             prefix_len,
             allocated: HashSet::new(),
+            seed_offset: 0,
         }
     }
 
@@ -28,6 +30,27 @@ impl Ipam {
             cluster,
             prefix_len,
             allocated: allocated.into_iter().collect(),
+            seed_offset: 0,
+        }
+    }
+
+    /// Creates an IPAM allocator with a seed-based starting offset.
+    ///
+    /// Different coordinators use different seeds (derived from their machine_id)
+    /// so that concurrent allocations from the same snapshot start scanning from
+    /// different positions, reducing coordination collisions.
+    #[must_use]
+    pub fn with_allocated_and_seed(
+        cluster: Ipv4Net,
+        prefix_len: u8,
+        allocated: impl IntoIterator<Item = Ipv4Net>,
+        seed: u64,
+    ) -> Self {
+        Self {
+            cluster,
+            prefix_len,
+            allocated: allocated.into_iter().collect(),
+            seed_offset: seed,
         }
     }
 
@@ -35,9 +58,20 @@ impl Ipam {
         let cluster_start = u32::from(self.cluster.network());
         let cluster_end = u32::from(self.cluster.broadcast());
         let step = 1u32 << (32 - self.prefix_len);
+        let pool_size = (cluster_end - cluster_start + 1) / step;
+        if pool_size == 0 {
+            return None;
+        }
 
-        let mut addr = cluster_start;
-        while addr < cluster_end {
+        let start_index = if self.seed_offset > 0 {
+            (self.seed_offset % u64::from(pool_size)) as u32
+        } else {
+            0
+        };
+
+        for i in 0..pool_size {
+            let index = (start_index + i) % pool_size;
+            let addr = cluster_start + index * step;
             let network = Ipv4Addr::from(addr);
             if let Ok(subnet) = Ipv4Net::new(network, self.prefix_len)
                 && !self.allocated.contains(&subnet)
@@ -45,7 +79,6 @@ impl Ipam {
                 self.allocated.insert(subnet);
                 return Some(subnet);
             }
-            addr += step;
         }
 
         None
@@ -213,5 +246,44 @@ mod tests {
         let s2 = ipam.allocate().expect("subnet 2");
         assert_eq!(s1.to_string(), "10.210.0.0/22");
         assert_eq!(s2.to_string(), "10.210.4.0/22");
+    }
+
+    #[test]
+    fn seed_offset_starts_from_different_position() {
+        let mut ipam_a = Ipam::with_allocated_and_seed(cluster(), 24, [], 0);
+        let mut ipam_b = Ipam::with_allocated_and_seed(cluster(), 24, [], 5);
+        let a1 = ipam_a.allocate().expect("a1");
+        let b1 = ipam_b.allocate().expect("b1");
+        assert_ne!(a1, b1, "different seeds should produce different first allocations");
+        assert_eq!(a1.to_string(), "10.210.0.0/24");
+        assert_eq!(b1.to_string(), "10.210.5.0/24");
+    }
+
+    #[test]
+    fn seed_offset_wraps_around_pool() {
+        // Pool has 256 subnets (/16 cluster with /24 prefix). Seed 255 starts near the end.
+        let mut ipam = Ipam::with_allocated_and_seed(cluster(), 24, [], 255);
+        let s1 = ipam.allocate().expect("subnet 1");
+        let s2 = ipam.allocate().expect("subnet 2");
+        assert_eq!(s1.to_string(), "10.210.255.0/24");
+        assert_eq!(s2.to_string(), "10.210.0.0/24"); // wraps around
+    }
+
+    #[test]
+    fn seed_offset_skips_allocated() {
+        let existing: Ipv4Net = "10.210.5.0/24".parse().expect("valid subnet");
+        let mut ipam = Ipam::with_allocated_and_seed(cluster(), 24, [existing], 5);
+        let s1 = ipam.allocate().expect("subnet 1");
+        assert_eq!(s1.to_string(), "10.210.6.0/24"); // skips the allocated one
+    }
+
+    #[test]
+    fn seed_zero_behaves_like_unseeded() {
+        let mut ipam_seeded = Ipam::with_allocated_and_seed(cluster(), 24, [], 0);
+        let mut ipam_plain = Ipam::new(cluster(), 24);
+        assert_eq!(
+            ipam_seeded.allocate().expect("seeded"),
+            ipam_plain.allocate().expect("plain"),
+        );
     }
 }

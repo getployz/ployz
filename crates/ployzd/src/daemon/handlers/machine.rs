@@ -1,4 +1,3 @@
-mod heal;
 mod join;
 mod list;
 mod operations;

@@ -102,6 +102,28 @@ impl ScenarioRun {
         self.machine_add_many(controller_name, &[target_name])
     }
 
+    pub(crate) fn expect_machine_add_fails(
+        &self,
+        controller_name: &str,
+        target_name: &str,
+    ) -> Result<()> {
+        let controller = self.node(controller_name)?;
+        let command = self.machine_add_command(&[target_name])?;
+        let output = self.ssh_run(controller, &command)?;
+        if output.status.success() {
+            return Err(Error::Message(format!(
+                "expected machine add to fail on '{controller_name}' for target '{target_name}', but it succeeded"
+            )));
+        }
+        let combined = format!("{}\n{}", output.stdout, output.stderr);
+        if !combined.contains("quorum") {
+            return Err(Error::Message(format!(
+                "machine add failed on '{controller_name}' but not due to quorum: {combined}"
+            )));
+        }
+        Ok(())
+    }
+
     pub(crate) fn machine_add_many(
         &self,
         controller_name: &str,
