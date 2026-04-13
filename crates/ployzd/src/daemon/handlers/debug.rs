@@ -124,6 +124,7 @@ mod tests {
                 cluster_cidr: DEFAULT_CLUSTER_CIDR.into(),
                 subnet_prefix_len: 24,
                 remote_control_port: 4317,
+                coordination_rpc_port: 0,
                 gateway_listen_addr: "127.0.0.1:0".into(),
                 gateway_threads: 1,
             },

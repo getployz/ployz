@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use crate::built_in_images::BuiltInImages;
 use crate::daemon::handlers::RequestLane;
 use crate::daemon::{ActiveMesh, DaemonRuntimeConfig, DaemonState};
-use crate::ipc::listener::{IncomingCommand, serve};
+use crate::ipc::listener::{IncomingCommand, serve, serve_tcp};
 
 const SUBNET_HEAL_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(5);
 
@@ -68,11 +68,23 @@ pub async fn run_daemon(
     let cancel = CancellationToken::new();
     let (command_tx, mut command_rx) = mpsc::channel::<IncomingCommand>(32);
 
+    let coordination_rpc_port = runtime.coordination_rpc_port;
+
     let listener_cancel = cancel.clone();
     let socket_owned = socket_path.to_owned();
+    let unix_command_tx = command_tx.clone();
     let listener_handle = tokio::spawn(async move {
-        if let Err(error) = serve(&socket_owned, command_tx, listener_cancel).await {
+        if let Err(error) = serve(&socket_owned, unix_command_tx, listener_cancel).await {
             tracing::error!(?error, "socket listener failed");
+        }
+    });
+
+    let tcp_addr = std::net::SocketAddr::from(([0, 0, 0, 0], coordination_rpc_port));
+    let tcp_listener_cancel = cancel.clone();
+    let tcp_command_tx = command_tx.clone();
+    let tcp_listener_handle = tokio::spawn(async move {
+        if let Err(error) = serve_tcp(tcp_addr, tcp_command_tx, tcp_listener_cancel).await {
+            tracing::error!(?error, "tcp rpc listener failed");
         }
     });
 
@@ -112,6 +124,7 @@ pub async fn run_daemon(
 
     shutdown_active_mesh(&state).await;
     listener_handle.await.ok();
+    tcp_listener_handle.await.ok();
     tracing::info!("daemon stopped");
     Ok(())
 }
@@ -265,6 +278,7 @@ mod tests {
             cluster_cidr: "10.210.0.0/16".into(),
             subnet_prefix_len: 24,
             remote_control_port: 4317,
+            coordination_rpc_port: 0,
             gateway_listen_addr: "127.0.0.1:8080".into(),
             gateway_threads: 1,
         }

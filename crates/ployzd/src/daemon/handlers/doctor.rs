@@ -553,6 +553,7 @@ mod tests {
                 cluster_cidr: String::from("10.210.0.0/16"),
                 subnet_prefix_len: 24,
                 remote_control_port: 4317,
+                coordination_rpc_port: 0,
                 gateway_listen_addr: String::from("127.0.0.1:0"),
                 gateway_threads: 1,
             },

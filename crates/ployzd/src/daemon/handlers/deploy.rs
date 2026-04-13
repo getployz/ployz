@@ -1,12 +1,18 @@
+use std::collections::HashMap;
+use std::time::Duration;
+
+use crate::coordination::fanout::{accepted_targets, fanout_abort, fanout_commit, fanout_prepare, FanOutTarget};
 use crate::daemon::DaemonState;
 use ployz_api::{
-    DaemonPayload, DaemonResponse, DeployApplyPayload, DeployExportPayload, DeployOptions,
-    DeployPreviewPayload,
+    CoordinationAbortRequest, CoordinationCommitRequest, CoordinationLockKey,
+    CoordinationOperation, CoordinationPrepareRequest, DaemonPayload, DaemonResponse,
+    DeployApplyPayload, DeployExportPayload, DeployOptions, DeployPreviewPayload,
 };
 use ployz_config::RuntimeTarget;
 use ployz_orchestrator::deploy::{apply, export_manifest, preview};
 use ployz_runtime_backends::deploy::DefaultDeploySessionFactory;
 use ployz_types::spec::{DeployManifest, Namespace};
+use ployz_types::time::now_unix_secs;
 
 impl DaemonState {
     fn overlay_network_name(&self) -> Option<String> {
@@ -79,6 +85,116 @@ impl DaemonState {
         let deploy_commit = active.store.deploy_commit();
         let machine_store = active.store.machine();
 
+        // Run a preview to determine which machines will participate, so we
+        // can fan-out the namespace lock to only those machines.
+        let initial_preview = match preview(
+            deploy_read.as_ref(),
+            machine_store.as_ref(),
+            &self.identity.machine_id,
+            &manifest,
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(err) => return self.err("DEPLOY_PREVIEW_FAILED", format!("{err}")),
+        };
+
+        // Build fan-out targets from the planned participants (excluding self).
+        let machines = match machine_store.list_machines().await {
+            Ok(m) => m,
+            Err(err) => {
+                return self.err(
+                    "DEPLOY_APPLY_FAILED",
+                    format!("failed to list machines for namespace lock: {err}"),
+                )
+            }
+        };
+        let self_id = &self.identity.machine_id;
+        let machine_map: HashMap<_, _> = machines
+            .into_iter()
+            .map(|m| (m.id.clone(), m))
+            .collect();
+        let peers: Vec<FanOutTarget> = initial_preview
+            .participants
+            .iter()
+            .filter(|id| *id != self_id)
+            .filter_map(|id| {
+                machine_map.get(id).map(|m| FanOutTarget {
+                    machine_id: m.id.clone(),
+                    overlay_ip: m.overlay_ip,
+                })
+            })
+            .collect();
+
+        let rpc_port = self.coordination_rpc_port;
+        let owner_id = self.identity.machine_id.0.clone();
+        let nonce = format!("deploy:{}:{}", owner_id, now_unix_secs());
+        let namespace_str = manifest.namespace.0.clone();
+        let lock_op = CoordinationOperation::LockAcquire {
+            key: CoordinationLockKey::DeployNamespace {
+                namespace: namespace_str.clone(),
+            },
+        };
+
+        // Local prepare.
+        let local_prepare = self
+            .handle_coordination_prepare(CoordinationPrepareRequest {
+                owner_id: owner_id.clone(),
+                nonce: nonce.clone(),
+                lease_ttl_secs: 120,
+                operation: lock_op.clone(),
+            })
+            .await;
+        if !local_prepare.ok {
+            return self.err("DEPLOY_LOCKED", local_prepare.message);
+        }
+        let local_token = match local_prepare.payload {
+            Some(DaemonPayload::CoordinationPrepare(ref p)) => p.prepare_token.clone(),
+            _ => None,
+        };
+
+        // Fan-out prepare to all planned participants.
+        let fanout_result = fanout_prepare(
+            &peers,
+            rpc_port,
+            CoordinationPrepareRequest {
+                owner_id: owner_id.clone(),
+                nonce: nonce.clone(),
+                lease_ttl_secs: 120,
+                operation: lock_op.clone(),
+            },
+            Duration::from_secs(10),
+        )
+        .await;
+
+        if !fanout_result.all_accepted {
+            let abort_req = CoordinationAbortRequest {
+                owner_id: owner_id.clone(),
+                nonce: nonce.clone(),
+                operation: lock_op.clone(),
+            };
+            self.handle_coordination_abort(abort_req.clone()).await;
+            fanout_abort(&accepted_targets(&fanout_result.accepted), rpc_port, abort_req).await;
+            return self.err(
+                "DEPLOY_LOCKED",
+                format!(
+                    "deploy namespace '{}' is locked on a participant",
+                    namespace_str
+                ),
+            );
+        }
+
+        // Collect prepare tokens from local + accepted peers.
+        let mut prepare_tokens: Vec<String> = Vec::new();
+        if let Some(token) = local_token {
+            prepare_tokens.push(token);
+        }
+        for (_, payload) in &fanout_result.accepted {
+            if let Some(token) = &payload.prepare_token {
+                prepare_tokens.push(token.clone());
+            }
+        }
+
         let factory = DefaultDeploySessionFactory::for_local_machine(
             active.store.deploy_read(),
             active.store.deploy_write(),
@@ -89,7 +205,7 @@ impl DaemonState {
             self.remote_control_port,
         );
 
-        match apply(
+        let apply_result = apply(
             deploy_read.as_ref(),
             deploy_write.as_ref(),
             deploy_commit.as_ref(),
@@ -98,16 +214,47 @@ impl DaemonState {
             &self.identity.machine_id,
             &manifest,
         )
-        .await
-        {
-            Ok(result) => match serde_json::to_string_pretty(&result) {
-                Ok(json) => self.ok_with_payload(
-                    json,
-                    Some(DaemonPayload::DeployApply(DeployApplyPayload { result })),
-                ),
-                Err(err) => self.err("ENCODE_DEPLOY", format!("encode deploy result: {err}")),
-            },
-            Err(err) => self.err("DEPLOY_APPLY_FAILED", format!("{err}")),
+        .await;
+
+        match apply_result {
+            Ok(result) => {
+                // Commit the namespace lock everywhere.
+                let commit_req = CoordinationCommitRequest {
+                    owner_id: owner_id.clone(),
+                    nonce: nonce.clone(),
+                    prepare_tokens,
+                    operation: lock_op,
+                };
+                self.handle_coordination_commit(commit_req.clone()).await;
+                fanout_commit(
+                    &accepted_targets(&fanout_result.accepted),
+                    rpc_port,
+                    commit_req,
+                    Duration::from_secs(10),
+                )
+                .await;
+
+                match serde_json::to_string_pretty(&result) {
+                    Ok(json) => self.ok_with_payload(
+                        json,
+                        Some(DaemonPayload::DeployApply(DeployApplyPayload { result })),
+                    ),
+                    Err(err) => self.err("ENCODE_DEPLOY", format!("encode deploy result: {err}")),
+                }
+            }
+            Err(err) => {
+                // Abort the namespace lock everywhere.
+                let abort_req = CoordinationAbortRequest {
+                    owner_id,
+                    nonce,
+                    operation: lock_op,
+                };
+                self.handle_coordination_abort(abort_req.clone()).await;
+                fanout_abort(&accepted_targets(&fanout_result.accepted), rpc_port, abort_req)
+                    .await;
+
+                self.err("DEPLOY_APPLY_FAILED", format!("{err}"))
+            }
         }
     }
 

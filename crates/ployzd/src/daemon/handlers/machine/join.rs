@@ -1,17 +1,19 @@
 use std::path::{Path, PathBuf};
 
+use crate::coordination::fanout::{FanOutTarget, accepted_targets, fanout_abort, fanout_commit, fanout_prepare};
 use crate::mesh_state::invite::parse_and_verify_invite_token;
 use ipnet::Ipv4Net;
 use ployz_api::{
-    CoordinationCommitPayload, CoordinationCommitRequest, CoordinationOperation,
-    CoordinationPreparePayload, CoordinationPrepareRequest, DaemonPayload, DaemonRequest,
-    DaemonResponse, MachineAddOptions, MachineInstallOptions, MeshReadyPayload,
+    CoordinationAbortRequest, CoordinationCommitPayload, CoordinationCommitRequest,
+    CoordinationOperation, CoordinationPreparePayload, CoordinationPrepareRequest, DaemonPayload,
+    DaemonRequest, DaemonResponse, MachineAddOptions, MachineInstallOptions, MeshReadyPayload,
     MeshSelfRecordPayload,
 };
 use ployz_orchestrator::ipam::Ipam;
+use ployz_orchestrator::machine_liveness::machine_is_fresh;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_sdk::DaemonClient;
-use ployz_types::model::{MachineId, MachineRecord};
+use ployz_types::model::{MachineId, MachineRecord, Participation};
 use ployz_types::time::now_unix_secs;
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, sleep, timeout};
@@ -333,7 +335,26 @@ impl DaemonState {
         let mut ipam = Ipam::with_allocated(cluster, self.subnet_prefix_len, allocated);
         let mut subnets = Vec::with_capacity(targets.len());
 
+        // Online peers that must all agree on each subnet claim.
         let now = now_unix_secs();
+        let self_id = &self.identity.machine_id;
+        let peers: Vec<FanOutTarget> = machines
+            .iter()
+            .filter(|m| {
+                &m.id != self_id
+                    && matches!(
+                        m.participation,
+                        Participation::Enabled | Participation::Draining
+                    )
+                    && machine_is_fresh(m, now)
+            })
+            .map(|m| FanOutTarget {
+                machine_id: m.id.clone(),
+                overlay_ip: m.overlay_ip,
+            })
+            .collect();
+        let rpc_port = self.coordination_rpc_port;
+
         for target in targets {
             let mut selected = None;
             loop {
@@ -344,9 +365,12 @@ impl DaemonState {
                     "machine-add:{}:{target}:{}",
                     self.identity.machine_id.0, now
                 );
+                let owner_id = self.identity.machine_id.0.clone();
+
+                // Local prepare first.
                 let prepare = self
                     .handle_coordination_prepare(CoordinationPrepareRequest {
-                        owner_id: self.identity.machine_id.0.clone(),
+                        owner_id: owner_id.clone(),
                         nonce: nonce.clone(),
                         lease_ttl_secs: 30,
                         operation: CoordinationOperation::SubnetClaimPrepare {
@@ -356,25 +380,77 @@ impl DaemonState {
                     })
                     .await;
                 let Some(DaemonPayload::CoordinationPrepare(CoordinationPreparePayload {
-                    accepted,
+                    accepted: local_accepted,
                     prepare_token,
                     ..
                 })) = prepare.payload
                 else {
                     continue;
                 };
-                if !prepare.ok || !accepted {
+                if !prepare.ok || !local_accepted {
                     continue;
                 }
-                let Some(prepare_token) = prepare_token else {
+                let Some(local_token) = prepare_token else {
                     continue;
                 };
+
+                // Fan-out prepare to all online peers.
+                let fanout_result = fanout_prepare(
+                    &peers,
+                    rpc_port,
+                    CoordinationPrepareRequest {
+                        owner_id: owner_id.clone(),
+                        nonce: nonce.clone(),
+                        lease_ttl_secs: 30,
+                        operation: CoordinationOperation::SubnetClaimPrepare {
+                            machine_id: target.clone(),
+                            subnet: candidate.to_string(),
+                        },
+                    },
+                    Duration::from_secs(10),
+                )
+                .await;
+
+                if !fanout_result.all_accepted {
+                    // A peer denied or timed out — abort everywhere and try the next candidate.
+                    let abort_op = CoordinationOperation::SubnetClaimAbort {
+                        machine_id: target.clone(),
+                        subnet: candidate.to_string(),
+                    };
+                    fanout_abort(
+                        &accepted_targets(&fanout_result.accepted),
+                        rpc_port,
+                        CoordinationAbortRequest {
+                            owner_id: owner_id.clone(),
+                            nonce: nonce.clone(),
+                            operation: abort_op.clone(),
+                        },
+                    )
+                    .await;
+                    self.handle_coordination_abort(CoordinationAbortRequest {
+                        owner_id,
+                        nonce,
+                        operation: abort_op,
+                    })
+                    .await;
+                    continue;
+                }
+
+                // Collect tokens from local + peers for the commit.
+                let mut prepare_tokens = vec![local_token];
+                for (_, payload) in &fanout_result.accepted {
+                    if let Some(token) = &payload.prepare_token {
+                        prepare_tokens.push(token.clone());
+                    }
+                }
+
+                // Local commit — operation must match what was prepared.
                 let commit = self
                     .handle_coordination_commit(CoordinationCommitRequest {
-                        owner_id: self.identity.machine_id.0.clone(),
-                        nonce,
-                        prepare_tokens: vec![prepare_token],
-                        operation: CoordinationOperation::SubnetClaimCommit {
+                        owner_id: owner_id.clone(),
+                        nonce: nonce.clone(),
+                        prepare_tokens: prepare_tokens.clone(),
+                        operation: CoordinationOperation::SubnetClaimPrepare {
                             machine_id: target.clone(),
                             subnet: candidate.to_string(),
                         },
@@ -385,11 +461,55 @@ impl DaemonState {
                     ..
                 })) = commit.payload
                 else {
+                    fanout_abort(
+                        &accepted_targets(&fanout_result.accepted),
+                        rpc_port,
+                        CoordinationAbortRequest {
+                            owner_id,
+                            nonce,
+                            operation: CoordinationOperation::SubnetClaimAbort {
+                                machine_id: target.clone(),
+                                subnet: candidate.to_string(),
+                            },
+                        },
+                    )
+                    .await;
                     continue;
                 };
                 if !commit.ok || !committed {
+                    fanout_abort(
+                        &accepted_targets(&fanout_result.accepted),
+                        rpc_port,
+                        CoordinationAbortRequest {
+                            owner_id,
+                            nonce,
+                            operation: CoordinationOperation::SubnetClaimAbort {
+                                machine_id: target.clone(),
+                                subnet: candidate.to_string(),
+                            },
+                        },
+                    )
+                    .await;
                     continue;
                 }
+
+                // Fan-out commit to all accepted peers — same operation as prepare.
+                fanout_commit(
+                    &accepted_targets(&fanout_result.accepted),
+                    rpc_port,
+                    CoordinationCommitRequest {
+                        owner_id,
+                        nonce,
+                        prepare_tokens,
+                        operation: CoordinationOperation::SubnetClaimPrepare {
+                            machine_id: target.clone(),
+                            subnet: candidate.to_string(),
+                        },
+                    },
+                    Duration::from_secs(10),
+                )
+                .await;
+
                 selected = Some(candidate);
                 break;
             }
@@ -902,12 +1022,20 @@ fn local_ployz_version() -> Result<String, String> {
 fn local_ployz_path() -> Result<PathBuf, String> {
     let current_exe =
         std::env::current_exe().map_err(|error| format!("current_exe failed: {error}"))?;
+    // In test environments the test binary lives in target/debug/deps/ while
+    // the actual ployz binary is one level up at target/debug/.
+    let grandparent_candidate = current_exe
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|gp| gp.join("ployz"))
+        .unwrap_or_else(|| PathBuf::from("ployz"));
     let candidates = [
         current_exe.with_file_name("ployz"),
         current_exe
             .parent()
             .map(|parent| parent.join("ployz"))
             .unwrap_or_else(|| PathBuf::from("ployz")),
+        grandparent_candidate,
         PathBuf::from("/usr/local/bin/ployz"),
         PathBuf::from("/usr/bin/ployz"),
     ];

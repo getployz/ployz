@@ -7,4 +7,4 @@ mod client;
 pub mod transport;
 
 pub use client::DaemonClient;
-pub use transport::{StdioTransport, Transport, UnixSocketTransport};
+pub use transport::{StdioTransport, TcpTransport, Transport, UnixSocketTransport};
