@@ -1,5 +1,6 @@
 mod app;
 mod built_in_images;
+mod coordination;
 mod daemon;
 mod install;
 mod ipc;

@@ -1,10 +1,12 @@
 mod stdio;
+mod tcp;
 mod unix;
 
 use ployz_api::{DaemonRequest, DaemonResponse};
 use std::future::Future;
 
 pub use stdio::StdioTransport;
+pub use tcp::TcpTransport;
 pub use unix::UnixSocketTransport;
 
 pub trait Transport: Send + Sync {

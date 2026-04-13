@@ -34,6 +34,7 @@ pub struct DaemonRuntimeConfig {
     pub cluster_cidr: String,
     pub subnet_prefix_len: u8,
     pub remote_control_port: u16,
+    pub coordination_rpc_port: u16,
     pub gateway_listen_addr: String,
     pub gateway_threads: usize,
 }
@@ -61,6 +62,7 @@ pub struct DaemonState {
     pub cluster_cidr: String,
     pub subnet_prefix_len: u8,
     pub remote_control_port: u16,
+    pub coordination_rpc_port: u16,
     pub gateway_listen_addr: String,
     pub gateway_threads: usize,
     pub active: Option<ActiveMesh>,
@@ -122,6 +124,7 @@ impl DaemonState {
             cluster_cidr,
             subnet_prefix_len,
             remote_control_port,
+            coordination_rpc_port,
             gateway_listen_addr,
             gateway_threads,
         } = runtime;
@@ -134,6 +137,7 @@ impl DaemonState {
             cluster_cidr,
             subnet_prefix_len,
             remote_control_port,
+            coordination_rpc_port,
             gateway_listen_addr,
             gateway_threads,
             active: None,

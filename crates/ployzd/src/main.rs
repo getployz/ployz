@@ -82,6 +82,7 @@ async fn run() -> Result<i32> {
                     cluster_cidr: cfg.cluster_cidr,
                     subnet_prefix_len: cfg.subnet_prefix_len,
                     remote_control_port: cfg.remote_control_port,
+                    coordination_rpc_port: cfg.coordination_rpc_port,
                     gateway_listen_addr: cfg.gateway_listen_addr,
                     gateway_threads: cfg.gateway_threads,
                 },

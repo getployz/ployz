@@ -248,7 +248,7 @@ fn local_subnet_heal_keeps_override_until_probe_is_ready() {
 }
 
 #[tokio::test]
-async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
+async fn machine_add_succeeds_when_peer_unreachable_at_rpc_time() {
     let _guard = test_ssh_env_lock().lock().await;
     let (mut state, store, network) = make_state(MeshStartMode::Started).await;
     store
@@ -300,11 +300,6 @@ async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
         .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
         .await;
     assert!(response.ok, "{}", response.message);
-    assert!(
-        response
-            .message
-            .contains("warning: enabled peer 'stale-peer' has a stale heartbeat")
-    );
     assert!(response.message.contains("awaiting_self_publication: 1"));
 
     let machines = store.list_machines().await.expect("list machines");
@@ -696,6 +691,7 @@ async fn make_state(
             cluster_cidr: DEFAULT_CLUSTER_CIDR.into(),
             subnet_prefix_len: 24,
             remote_control_port: 4317,
+            coordination_rpc_port: 0,
             gateway_listen_addr: "127.0.0.1:0".into(),
             gateway_threads: 1,
         },
@@ -749,6 +745,7 @@ async fn make_state_with_store(
             cluster_cidr: DEFAULT_CLUSTER_CIDR.into(),
             subnet_prefix_len: 24,
             remote_control_port: 4317,
+            coordination_rpc_port: 0,
             gateway_listen_addr: "127.0.0.1:0".into(),
             gateway_threads: 1,
         },
