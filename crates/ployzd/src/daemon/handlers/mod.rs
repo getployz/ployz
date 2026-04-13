@@ -1,3 +1,4 @@
+pub(crate) mod coordination;
 mod debug;
 mod deploy;
 mod doctor;
@@ -46,6 +47,7 @@ impl DaemonState {
             | DaemonRequest::MeshSelfRecord
             | DaemonRequest::MeshAccept { .. }
             | DaemonRequest::CoordinationPrepare { .. }
+            | DaemonRequest::CoordinationRenew { .. }
             | DaemonRequest::CoordinationCommit { .. }
             | DaemonRequest::CoordinationAbort { .. } => RequestLane::Shared,
         }
@@ -102,12 +104,18 @@ impl DaemonState {
             }
             DaemonRequest::MeshSelfRecord => self.handle_mesh_self_record().await,
             DaemonRequest::MeshAccept { response } => self.handle_mesh_accept(&response).await,
-            DaemonRequest::CoordinationPrepare { .. }
-            | DaemonRequest::CoordinationCommit { .. }
-            | DaemonRequest::CoordinationAbort { .. } => self.err(
-                "NOT_IMPLEMENTED",
-                "coordination RPC is not implemented on this daemon yet",
-            ),
+            DaemonRequest::CoordinationPrepare { request } => {
+                self.handle_coordination_prepare(request).await
+            }
+            DaemonRequest::CoordinationRenew { request } => {
+                self.handle_coordination_renew(request).await
+            }
+            DaemonRequest::CoordinationCommit { request } => {
+                self.handle_coordination_commit(request).await
+            }
+            DaemonRequest::CoordinationAbort { request } => {
+                self.handle_coordination_abort(request).await
+            }
         }
     }
 
@@ -145,6 +153,7 @@ impl DaemonState {
             | DaemonRequest::MeshSelfRecord
             | DaemonRequest::MeshAccept { .. }
             | DaemonRequest::CoordinationPrepare { .. }
+            | DaemonRequest::CoordinationRenew { .. }
             | DaemonRequest::CoordinationCommit { .. }
             | DaemonRequest::CoordinationAbort { .. } => {
                 self.err("INTERNAL", "shared request routed to exclusive handler")
@@ -159,8 +168,8 @@ mod tests {
     use crate::daemon::DaemonState;
     use ployz_api::{
         CoordinationAbortRequest, CoordinationCommitRequest, CoordinationOperation,
-        CoordinationPrepareRequest, DaemonRequest, DebugTickTask, DeployOptions,
-        MachineAddOptions, MachineInstallOptions,
+        CoordinationPrepareRequest, CoordinationRenewRequest, DaemonRequest, DebugTickTask,
+        DeployOptions, MachineAddOptions, MachineInstallOptions,
     };
 
     #[test]
@@ -222,7 +231,18 @@ mod tests {
             },
             DaemonRequest::CoordinationPrepare {
                 request: CoordinationPrepareRequest {
-                    term: 1,
+                    owner_id: "founder-a".into(),
+                    nonce: "n1".into(),
+                    lease_ttl_secs: 30,
+                    operation: CoordinationOperation::MembershipPrepare {
+                        machine_id: "m1".into(),
+                        proposed_subnet: Some("10.210.1.0/24".into()),
+                    },
+                },
+            },
+            DaemonRequest::CoordinationRenew {
+                request: CoordinationRenewRequest {
+                    owner_id: "founder-a".into(),
                     nonce: "n1".into(),
                     lease_ttl_secs: 30,
                     operation: CoordinationOperation::MembershipPrepare {
@@ -233,7 +253,7 @@ mod tests {
             },
             DaemonRequest::CoordinationCommit {
                 request: CoordinationCommitRequest {
-                    term: 1,
+                    owner_id: "founder-a".into(),
                     nonce: "n1".into(),
                     prepare_tokens: vec!["token".into()],
                     operation: CoordinationOperation::MembershipCommit {
@@ -244,7 +264,7 @@ mod tests {
             },
             DaemonRequest::CoordinationAbort {
                 request: CoordinationAbortRequest {
-                    term: 1,
+                    owner_id: "founder-a".into(),
                     nonce: "n1".into(),
                     operation: CoordinationOperation::MembershipAbort {
                         machine_id: "m1".into(),

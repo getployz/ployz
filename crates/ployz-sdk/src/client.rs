@@ -1,7 +1,9 @@
 use crate::transport::Transport;
 use ployz_api::{
-    DaemonPayload, DaemonRequest, DaemonResponse, DeployOptions, MachineListPayload,
-    MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload, StatusPayload,
+    CoordinationAbortRequest, CoordinationCommitPayload, CoordinationCommitRequest,
+    CoordinationPreparePayload, CoordinationPrepareRequest, CoordinationRenewPayload,
+    CoordinationRenewRequest, DaemonPayload, DaemonRequest, DaemonResponse, DeployOptions,
+    MachineListPayload, MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload, StatusPayload,
 };
 use ployz_types::model::{DeployApplyResult, DeployPreview};
 use ployz_types::spec::DeployManifest;
@@ -54,6 +56,7 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
+            | DaemonPayload::CoordinationRenew(_)
             | DaemonPayload::CoordinationCommit(_) => None,
         })
     }
@@ -78,6 +81,7 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
+            | DaemonPayload::CoordinationRenew(_)
             | DaemonPayload::CoordinationCommit(_) => None,
         })
     }
@@ -98,6 +102,7 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
+            | DaemonPayload::CoordinationRenew(_)
             | DaemonPayload::CoordinationCommit(_) => None,
         })
     }
@@ -118,6 +123,7 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
+            | DaemonPayload::CoordinationRenew(_)
             | DaemonPayload::CoordinationCommit(_) => None,
         })
     }
@@ -138,6 +144,7 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
+            | DaemonPayload::CoordinationRenew(_)
             | DaemonPayload::CoordinationCommit(_) => None,
         })
     }
@@ -168,6 +175,7 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
+            | DaemonPayload::CoordinationRenew(_)
             | DaemonPayload::CoordinationCommit(_) => None,
         })
     }
@@ -198,6 +206,7 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
+            | DaemonPayload::CoordinationRenew(_)
             | DaemonPayload::CoordinationCommit(_) => None,
         })
     }
@@ -222,8 +231,102 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
+            | DaemonPayload::CoordinationRenew(_)
             | DaemonPayload::CoordinationCommit(_) => None,
         })
+    }
+
+    pub async fn coordination_prepare(
+        &self,
+        request: CoordinationPrepareRequest,
+    ) -> std::io::Result<CoordinationPreparePayload> {
+        let response = self
+            .request(DaemonRequest::CoordinationPrepare {
+                request: request.clone(),
+            })
+            .await?;
+        extract_payload_or_error(response, "coordination prepare", |payload| match payload {
+            DaemonPayload::CoordinationPrepare(payload) => Some(payload),
+            DaemonPayload::Status(_)
+            | DaemonPayload::MeshStatus(_)
+            | DaemonPayload::MachineList(_)
+            | DaemonPayload::MachineAdd(_)
+            | DaemonPayload::MachineRemove(_)
+            | DaemonPayload::MeshReady(_)
+            | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::DeployPreview(_)
+            | DaemonPayload::DeployApply(_)
+            | DaemonPayload::DeployExport(_)
+            | DaemonPayload::MachineOperationList(_)
+            | DaemonPayload::MachineOperation(_)
+            | DaemonPayload::CoordinationRenew(_)
+            | DaemonPayload::CoordinationCommit(_) => None,
+        })
+    }
+
+    pub async fn coordination_commit(
+        &self,
+        request: CoordinationCommitRequest,
+    ) -> std::io::Result<CoordinationCommitPayload> {
+        let response = self
+            .request(DaemonRequest::CoordinationCommit {
+                request: request.clone(),
+            })
+            .await?;
+        extract_payload_or_error(response, "coordination commit", |payload| match payload {
+            DaemonPayload::CoordinationCommit(payload) => Some(payload),
+            DaemonPayload::Status(_)
+            | DaemonPayload::MeshStatus(_)
+            | DaemonPayload::MachineList(_)
+            | DaemonPayload::MachineAdd(_)
+            | DaemonPayload::MachineRemove(_)
+            | DaemonPayload::MeshReady(_)
+            | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::DeployPreview(_)
+            | DaemonPayload::DeployApply(_)
+            | DaemonPayload::DeployExport(_)
+            | DaemonPayload::MachineOperationList(_)
+            | DaemonPayload::MachineOperation(_)
+            | DaemonPayload::CoordinationPrepare(_)
+            | DaemonPayload::CoordinationRenew(_) => None,
+        })
+    }
+
+    pub async fn coordination_renew(
+        &self,
+        request: CoordinationRenewRequest,
+    ) -> std::io::Result<CoordinationRenewPayload> {
+        let response = self
+            .request(DaemonRequest::CoordinationRenew {
+                request: request.clone(),
+            })
+            .await?;
+        extract_payload_or_error(response, "coordination renew", |payload| match payload {
+            DaemonPayload::CoordinationRenew(payload) => Some(payload),
+            DaemonPayload::Status(_)
+            | DaemonPayload::MeshStatus(_)
+            | DaemonPayload::MachineList(_)
+            | DaemonPayload::MachineAdd(_)
+            | DaemonPayload::MachineRemove(_)
+            | DaemonPayload::MeshReady(_)
+            | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::DeployPreview(_)
+            | DaemonPayload::DeployApply(_)
+            | DaemonPayload::DeployExport(_)
+            | DaemonPayload::MachineOperationList(_)
+            | DaemonPayload::MachineOperation(_)
+            | DaemonPayload::CoordinationPrepare(_)
+            | DaemonPayload::CoordinationCommit(_) => None,
+        })
+    }
+
+    pub async fn coordination_abort(
+        &self,
+        request: CoordinationAbortRequest,
+    ) -> std::io::Result<()> {
+        self.request_ok(DaemonRequest::CoordinationAbort { request })
+            .await
+            .map(|_| ())
     }
 }
 
@@ -245,6 +348,32 @@ fn extract_payload<T>(
             format!("unexpected payload for {expected}"),
         )
     })
+}
+
+fn extract_payload_or_error<T>(
+    response: DaemonResponse,
+    expected: &str,
+    extract: impl FnOnce(DaemonPayload) -> Option<T>,
+) -> std::io::Result<T> {
+    if response.ok {
+        return extract_payload(response, expected, extract);
+    }
+
+    let Some(payload) = response.payload else {
+        return Err(std::io::Error::other(format!(
+            "daemon error [{}]: {}",
+            response.code, response.message
+        )));
+    };
+
+    if let Some(value) = extract(payload) {
+        return Ok(value);
+    }
+
+    Err(std::io::Error::other(format!(
+        "daemon error [{}]: {}",
+        response.code, response.message
+    )))
 }
 
 fn encode_manifest(manifest: &DeployManifest, label: &str) -> std::io::Result<String> {

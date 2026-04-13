@@ -3,8 +3,10 @@ use std::path::{Path, PathBuf};
 use crate::mesh_state::invite::parse_and_verify_invite_token;
 use ipnet::Ipv4Net;
 use ployz_api::{
-    DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MachineInstallOptions,
-    MeshReadyPayload, MeshSelfRecordPayload,
+    CoordinationCommitPayload, CoordinationCommitRequest, CoordinationOperation,
+    CoordinationPreparePayload, CoordinationPrepareRequest, DaemonPayload, DaemonRequest,
+    DaemonResponse, MachineAddOptions, MachineInstallOptions, MeshReadyPayload,
+    MeshSelfRecordPayload,
 };
 use ployz_orchestrator::ipam::Ipam;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
@@ -161,7 +163,10 @@ impl DaemonState {
             "machine add degraded-mesh check complete"
         );
 
-        let allocated_subnets = match self.allocate_machine_subnets(targets.len()).await {
+        let allocated_subnets = match self
+            .allocate_machine_subnets_with_coordination(targets)
+            .await
+        {
             Ok(subnets) => subnets,
             Err(err) => return self.err("SUBNET_EXHAUSTION", err),
         };
@@ -302,6 +307,99 @@ impl DaemonState {
             subnets.push(subnet);
         }
 
+        Ok(subnets)
+    }
+
+    pub(crate) async fn allocate_machine_subnets_with_coordination(
+        &self,
+        targets: &[String],
+    ) -> Result<Vec<Ipv4Net>, String> {
+        let active = self
+            .active
+            .as_ref()
+            .ok_or_else(|| "no running network".to_string())?;
+        let machines = active
+            .store
+            .machine()
+            .list_machines()
+            .await
+            .map_err(|err| format!("failed to list machines for subnet allocation: {err}"))?;
+
+        let cluster: Ipv4Net = self
+            .cluster_cidr
+            .parse()
+            .map_err(|err| format!("invalid cluster CIDR '{}': {err}", self.cluster_cidr))?;
+        let allocated = machines.iter().filter_map(|machine| machine.subnet);
+        let mut ipam = Ipam::with_allocated(cluster, self.subnet_prefix_len, allocated);
+        let mut subnets = Vec::with_capacity(targets.len());
+
+        let now = now_unix_secs();
+        for target in targets {
+            let mut selected = None;
+            loop {
+                let Some(candidate) = ipam.allocate() else {
+                    break;
+                };
+                let nonce = format!(
+                    "machine-add:{}:{target}:{}",
+                    self.identity.machine_id.0, now
+                );
+                let prepare = self
+                    .handle_coordination_prepare(CoordinationPrepareRequest {
+                        owner_id: self.identity.machine_id.0.clone(),
+                        nonce: nonce.clone(),
+                        lease_ttl_secs: 30,
+                        operation: CoordinationOperation::SubnetClaimPrepare {
+                            machine_id: target.clone(),
+                            subnet: candidate.to_string(),
+                        },
+                    })
+                    .await;
+                let Some(DaemonPayload::CoordinationPrepare(CoordinationPreparePayload {
+                    accepted,
+                    prepare_token,
+                    ..
+                })) = prepare.payload
+                else {
+                    continue;
+                };
+                if !prepare.ok || !accepted {
+                    continue;
+                }
+                let Some(prepare_token) = prepare_token else {
+                    continue;
+                };
+                let commit = self
+                    .handle_coordination_commit(CoordinationCommitRequest {
+                        owner_id: self.identity.machine_id.0.clone(),
+                        nonce,
+                        prepare_tokens: vec![prepare_token],
+                        operation: CoordinationOperation::SubnetClaimCommit {
+                            machine_id: target.clone(),
+                            subnet: candidate.to_string(),
+                        },
+                    })
+                    .await;
+                let Some(DaemonPayload::CoordinationCommit(CoordinationCommitPayload {
+                    committed,
+                    ..
+                })) = commit.payload
+                else {
+                    continue;
+                };
+                if !commit.ok || !committed {
+                    continue;
+                }
+                selected = Some(candidate);
+                break;
+            }
+            let Some(subnet) = selected else {
+                return Err(format!(
+                    "no available coordinated subnets for target '{target}'"
+                ));
+            };
+            subnets.push(subnet);
+        }
         Ok(subnets)
     }
 }

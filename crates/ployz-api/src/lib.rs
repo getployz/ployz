@@ -129,6 +129,9 @@ pub enum DaemonRequest {
     CoordinationPrepare {
         request: CoordinationPrepareRequest,
     },
+    CoordinationRenew {
+        request: CoordinationRenewRequest,
+    },
     CoordinationCommit {
         request: CoordinationCommitRequest,
     },
@@ -159,6 +162,7 @@ pub enum DaemonPayload {
     MeshReady(MeshReadyPayload),
     MeshSelfRecord(MeshSelfRecordPayload),
     CoordinationPrepare(CoordinationPreparePayload),
+    CoordinationRenew(CoordinationRenewPayload),
     CoordinationCommit(CoordinationCommitPayload),
     DeployPreview(DeployPreviewPayload),
     DeployApply(DeployApplyPayload),
@@ -252,16 +256,27 @@ pub struct MeshSelfRecordPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CoordinationLockKey {
-    DeployNamespace { namespace: String },
-    MembershipMachine { machine_id: String },
-    SubnetClaim { subnet: String },
-    MachineOperation { machine_id: String, operation: String },
+    DeployNamespace {
+        namespace: String,
+    },
+    MembershipMachine {
+        machine_id: String,
+    },
+    SubnetClaim {
+        subnet: String,
+    },
+    MachineOperation {
+        machine_id: String,
+        operation: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CoordinationOperation {
-    LockAcquire { key: CoordinationLockKey },
+    LockAcquire {
+        key: CoordinationLockKey,
+    },
     MembershipPrepare {
         machine_id: String,
         proposed_subnet: Option<String>,
@@ -270,15 +285,26 @@ pub enum CoordinationOperation {
         machine_id: String,
         committed_subnet: Option<String>,
     },
-    MembershipAbort { machine_id: String },
-    SubnetClaimPrepare { machine_id: String, subnet: String },
-    SubnetClaimCommit { machine_id: String, subnet: String },
-    SubnetClaimAbort { machine_id: String, subnet: String },
+    MembershipAbort {
+        machine_id: String,
+    },
+    SubnetClaimPrepare {
+        machine_id: String,
+        subnet: String,
+    },
+    SubnetClaimCommit {
+        machine_id: String,
+        subnet: String,
+    },
+    SubnetClaimAbort {
+        machine_id: String,
+        subnet: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CoordinationPrepareRequest {
-    pub term: u64,
+    pub owner_id: String,
     pub nonce: String,
     pub lease_ttl_secs: u64,
     pub operation: CoordinationOperation,
@@ -294,8 +320,23 @@ pub struct CoordinationPreparePayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CoordinationRenewRequest {
+    pub owner_id: String,
+    pub nonce: String,
+    pub lease_ttl_secs: u64,
+    pub operation: CoordinationOperation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CoordinationRenewPayload {
+    pub renewed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CoordinationCommitRequest {
-    pub term: u64,
+    pub owner_id: String,
     pub nonce: String,
     pub prepare_tokens: Vec<String>,
     pub operation: CoordinationOperation,
@@ -310,7 +351,7 @@ pub struct CoordinationCommitPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CoordinationAbortRequest {
-    pub term: u64,
+    pub owner_id: String,
     pub nonce: String,
     pub operation: CoordinationOperation,
 }
