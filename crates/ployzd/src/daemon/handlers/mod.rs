@@ -44,7 +44,10 @@ impl DaemonState {
             | DaemonRequest::MachineInviteCreate { .. }
             | DaemonRequest::MachineInviteImport { .. }
             | DaemonRequest::MeshSelfRecord
-            | DaemonRequest::MeshAccept { .. } => RequestLane::Shared,
+            | DaemonRequest::MeshAccept { .. }
+            | DaemonRequest::CoordinationPrepare { .. }
+            | DaemonRequest::CoordinationCommit { .. }
+            | DaemonRequest::CoordinationAbort { .. } => RequestLane::Shared,
         }
     }
 
@@ -99,6 +102,12 @@ impl DaemonState {
             }
             DaemonRequest::MeshSelfRecord => self.handle_mesh_self_record().await,
             DaemonRequest::MeshAccept { response } => self.handle_mesh_accept(&response).await,
+            DaemonRequest::CoordinationPrepare { .. }
+            | DaemonRequest::CoordinationCommit { .. }
+            | DaemonRequest::CoordinationAbort { .. } => self.err(
+                "NOT_IMPLEMENTED",
+                "coordination RPC is not implemented on this daemon yet",
+            ),
         }
     }
 
@@ -134,7 +143,10 @@ impl DaemonState {
             | DaemonRequest::MachineInviteCreate { .. }
             | DaemonRequest::MachineInviteImport { .. }
             | DaemonRequest::MeshSelfRecord
-            | DaemonRequest::MeshAccept { .. } => {
+            | DaemonRequest::MeshAccept { .. }
+            | DaemonRequest::CoordinationPrepare { .. }
+            | DaemonRequest::CoordinationCommit { .. }
+            | DaemonRequest::CoordinationAbort { .. } => {
                 self.err("INTERNAL", "shared request routed to exclusive handler")
             }
         }
@@ -146,7 +158,9 @@ mod tests {
     use super::RequestLane;
     use crate::daemon::DaemonState;
     use ployz_api::{
-        DaemonRequest, DebugTickTask, DeployOptions, MachineAddOptions, MachineInstallOptions,
+        CoordinationAbortRequest, CoordinationCommitRequest, CoordinationOperation,
+        CoordinationPrepareRequest, DaemonRequest, DebugTickTask, DeployOptions,
+        MachineAddOptions, MachineInstallOptions,
     };
 
     #[test]
@@ -205,6 +219,37 @@ mod tests {
             DaemonRequest::MeshSelfRecord,
             DaemonRequest::MeshAccept {
                 response: "ok".into(),
+            },
+            DaemonRequest::CoordinationPrepare {
+                request: CoordinationPrepareRequest {
+                    term: 1,
+                    nonce: "n1".into(),
+                    lease_ttl_secs: 30,
+                    operation: CoordinationOperation::MembershipPrepare {
+                        machine_id: "m1".into(),
+                        proposed_subnet: Some("10.210.1.0/24".into()),
+                    },
+                },
+            },
+            DaemonRequest::CoordinationCommit {
+                request: CoordinationCommitRequest {
+                    term: 1,
+                    nonce: "n1".into(),
+                    prepare_tokens: vec!["token".into()],
+                    operation: CoordinationOperation::MembershipCommit {
+                        machine_id: "m1".into(),
+                        committed_subnet: Some("10.210.1.0/24".into()),
+                    },
+                },
+            },
+            DaemonRequest::CoordinationAbort {
+                request: CoordinationAbortRequest {
+                    term: 1,
+                    nonce: "n1".into(),
+                    operation: CoordinationOperation::MembershipAbort {
+                        machine_id: "m1".into(),
+                    },
+                },
             },
         ];
 

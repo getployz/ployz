@@ -52,7 +52,9 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
             | DaemonPayload::MachineOperationList(_)
-            | DaemonPayload::MachineOperation(_) => None,
+            | DaemonPayload::MachineOperation(_)
+            | DaemonPayload::CoordinationPrepare(_)
+            | DaemonPayload::CoordinationCommit(_) => None,
         })
     }
 
@@ -74,7 +76,9 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
             | DaemonPayload::MachineOperationList(_)
-            | DaemonPayload::MachineOperation(_) => None,
+            | DaemonPayload::MachineOperation(_)
+            | DaemonPayload::CoordinationPrepare(_)
+            | DaemonPayload::CoordinationCommit(_) => None,
         })
     }
 
@@ -92,7 +96,9 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
             | DaemonPayload::MachineOperationList(_)
-            | DaemonPayload::MachineOperation(_) => None,
+            | DaemonPayload::MachineOperation(_)
+            | DaemonPayload::CoordinationPrepare(_)
+            | DaemonPayload::CoordinationCommit(_) => None,
         })
     }
 
@@ -110,7 +116,9 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
             | DaemonPayload::MachineOperationList(_)
-            | DaemonPayload::MachineOperation(_) => None,
+            | DaemonPayload::MachineOperation(_)
+            | DaemonPayload::CoordinationPrepare(_)
+            | DaemonPayload::CoordinationCommit(_) => None,
         })
     }
 
@@ -128,7 +136,9 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
             | DaemonPayload::MachineOperationList(_)
-            | DaemonPayload::MachineOperation(_) => None,
+            | DaemonPayload::MachineOperation(_)
+            | DaemonPayload::CoordinationPrepare(_)
+            | DaemonPayload::CoordinationCommit(_) => None,
         })
     }
 
@@ -156,7 +166,9 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
             | DaemonPayload::MachineOperationList(_)
-            | DaemonPayload::MachineOperation(_) => None,
+            | DaemonPayload::MachineOperation(_)
+            | DaemonPayload::CoordinationPrepare(_)
+            | DaemonPayload::CoordinationCommit(_) => None,
         })
     }
 
@@ -184,7 +196,9 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployExport(_)
             | DaemonPayload::MachineOperationList(_)
-            | DaemonPayload::MachineOperation(_) => None,
+            | DaemonPayload::MachineOperation(_)
+            | DaemonPayload::CoordinationPrepare(_)
+            | DaemonPayload::CoordinationCommit(_) => None,
         })
     }
 
@@ -206,7 +220,9 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
             | DaemonPayload::MachineOperationList(_)
-            | DaemonPayload::MachineOperation(_) => None,
+            | DaemonPayload::MachineOperation(_)
+            | DaemonPayload::CoordinationPrepare(_)
+            | DaemonPayload::CoordinationCommit(_) => None,
         })
     }
 }
