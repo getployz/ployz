@@ -1,18 +1,30 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use crate::coordination::fanout::{accepted_targets, fanout_abort, fanout_prepare, FanOutTarget};
+use crate::coordination::fanout::{
+    FanOutTarget, accepted_targets, fanout_abort, fanout_prepare, fanout_renew,
+};
 use crate::daemon::DaemonState;
 use ployz_api::{
     CoordinationAbortRequest, CoordinationLockKey, CoordinationOperation,
-    CoordinationPrepareRequest, DaemonPayload, DaemonResponse, DeployApplyPayload,
-    DeployExportPayload, DeployOptions, DeployPreviewPayload,
+    CoordinationPrepareRequest, CoordinationRenewRequest, DaemonPayload, DaemonResponse,
+    DeployApplyPayload, DeployExportPayload, DeployOptions, DeployPreviewPayload,
 };
 use ployz_config::RuntimeTarget;
 use ployz_orchestrator::deploy::{apply, export_manifest, preview};
 use ployz_runtime_backends::deploy::DefaultDeploySessionFactory;
 use ployz_types::spec::{DeployManifest, Namespace};
-use ployz_types::time::now_unix_secs;
+
+const DEPLOY_LOCK_TTL_SECS: u64 = 120;
+const DEPLOY_RENEW_INTERVAL: Duration = Duration::from_secs(30);
+const DEPLOY_RENEW_DEADLINE: Duration = Duration::from_secs(5);
+static DEPLOY_NONCE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn deploy_nonce(owner_id: &str) -> String {
+    let sequence = DEPLOY_NONCE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("deploy:{owner_id}:{sequence}")
+}
 
 impl DaemonState {
     fn overlay_network_name(&self) -> Option<String> {
@@ -106,14 +118,11 @@ impl DaemonState {
                 return self.err(
                     "DEPLOY_APPLY_FAILED",
                     format!("failed to list machines for namespace lock: {err}"),
-                )
+                );
             }
         };
         let self_id = &self.identity.machine_id;
-        let machine_map: HashMap<_, _> = machines
-            .into_iter()
-            .map(|m| (m.id.clone(), m))
-            .collect();
+        let machine_map: HashMap<_, _> = machines.into_iter().map(|m| (m.id.clone(), m)).collect();
         let peers: Vec<FanOutTarget> = initial_preview
             .participants
             .iter()
@@ -128,7 +137,7 @@ impl DaemonState {
 
         let rpc_port = self.coordination_rpc_port;
         let owner_id = self.identity.machine_id.0.clone();
-        let nonce = format!("deploy:{}:{}", owner_id, now_unix_secs());
+        let nonce = deploy_nonce(&owner_id);
         let namespace_str = manifest.namespace.0.clone();
         let lock_op = CoordinationOperation::LockAcquire {
             key: CoordinationLockKey::DeployNamespace {
@@ -141,7 +150,7 @@ impl DaemonState {
             .handle_coordination_prepare(CoordinationPrepareRequest {
                 owner_id: owner_id.clone(),
                 nonce: nonce.clone(),
-                lease_ttl_secs: 120,
+                lease_ttl_secs: DEPLOY_LOCK_TTL_SECS,
                 operation: lock_op.clone(),
             })
             .await;
@@ -156,7 +165,7 @@ impl DaemonState {
             CoordinationPrepareRequest {
                 owner_id: owner_id.clone(),
                 nonce: nonce.clone(),
-                lease_ttl_secs: 120,
+                lease_ttl_secs: DEPLOY_LOCK_TTL_SECS,
                 operation: lock_op.clone(),
             },
             Duration::from_secs(10),
@@ -170,7 +179,12 @@ impl DaemonState {
                 operation: lock_op.clone(),
             };
             self.handle_coordination_abort(abort_req.clone()).await;
-            fanout_abort(&accepted_targets(&fanout_result.accepted), rpc_port, abort_req).await;
+            fanout_abort(
+                &accepted_targets(&fanout_result.accepted),
+                rpc_port,
+                abort_req,
+            )
+            .await;
             return self.err(
                 "DEPLOY_LOCKED",
                 format!(
@@ -179,6 +193,11 @@ impl DaemonState {
                 ),
             );
         }
+
+        let renew_owner = owner_id.clone();
+        let renew_nonce = nonce.clone();
+        let renew_op = lock_op.clone();
+        let renew_peers = accepted_targets(&fanout_result.accepted);
 
         let factory = DefaultDeploySessionFactory::for_local_machine(
             active.store.deploy_read(),
@@ -190,7 +209,7 @@ impl DaemonState {
             self.remote_control_port,
         );
 
-        let apply_result = apply(
+        let apply_future = apply(
             deploy_read.as_ref(),
             deploy_write.as_ref(),
             deploy_commit.as_ref(),
@@ -198,8 +217,45 @@ impl DaemonState {
             &factory,
             &self.identity.machine_id,
             &manifest,
-        )
-        .await;
+        );
+        tokio::pin!(apply_future);
+        let mut renew_interval = tokio::time::interval(DEPLOY_RENEW_INTERVAL);
+        renew_interval.tick().await;
+        let apply_result = loop {
+            tokio::select! {
+                result = &mut apply_future => break result,
+                _ = renew_interval.tick() => {
+                    let local_response = self
+                        .handle_coordination_renew(CoordinationRenewRequest {
+                            owner_id: renew_owner.clone(),
+                            nonce: renew_nonce.clone(),
+                            lease_ttl_secs: DEPLOY_LOCK_TTL_SECS,
+                            operation: renew_op.clone(),
+                        })
+                        .await;
+                    let local_renewed = local_response.ok;
+                    let peers_renewed = fanout_renew(
+                        &renew_peers,
+                        rpc_port,
+                        CoordinationRenewRequest {
+                            owner_id: renew_owner.clone(),
+                            nonce: renew_nonce.clone(),
+                            lease_ttl_secs: DEPLOY_LOCK_TTL_SECS,
+                            operation: renew_op.clone(),
+                        },
+                        DEPLOY_RENEW_DEADLINE,
+                    )
+                    .await;
+                    if !local_renewed || !peers_renewed {
+                        tracing::warn!(
+                            owner_id = %renew_owner,
+                            nonce = %renew_nonce,
+                            "deploy coordination lock renew failed for one or more participants"
+                        );
+                    }
+                }
+            }
+        };
 
         // Release the namespace lock on all peers regardless of outcome.
         // Using abort (not commit) so the lock key does not enter committed_by_key:

@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use ployz_api::{
     CoordinationAbortRequest, CoordinationCommitRequest, CoordinationPreparePayload,
-    CoordinationPrepareRequest,
+    CoordinationPrepareRequest, CoordinationRenewRequest,
 };
 use ployz_sdk::{DaemonClient, TcpTransport};
 use ployz_types::model::{MachineId, OverlayIp};
@@ -58,8 +58,7 @@ pub(crate) async fn fanout_prepare(
 
     // Each task returns (target, Ok(payload)) if the peer responded or (target, Err(is_offline))
     // where is_offline=true means unreachable, false means responded but denied.
-    let mut set: JoinSet<(FanOutTarget, Result<CoordinationPreparePayload, bool>)> =
-        JoinSet::new();
+    let mut set: JoinSet<(FanOutTarget, Result<CoordinationPreparePayload, bool>)> = JoinSet::new();
     for target in targets {
         let t = target.clone();
         let c = client(t.overlay_ip, rpc_port);
@@ -67,8 +66,8 @@ pub(crate) async fn fanout_prepare(
         set.spawn(async move {
             match tokio::time::timeout(deadline, c.coordination_prepare(req)).await {
                 Ok(Ok(payload)) => (t, Ok(payload)),
-                Ok(Err(_io_err)) => (t, Err(true)),  // connection refused / IO → offline
-                Err(_timeout) => (t, Err(true)),     // deadline exceeded → offline
+                Ok(Err(_io_err)) => (t, Err(true)), // connection refused / IO → offline
+                Err(_timeout) => (t, Err(true)),    // deadline exceeded → offline
             }
         });
     }
@@ -171,6 +170,47 @@ pub(crate) async fn fanout_abort(
     while set.join_next().await.is_some() {}
 }
 
+/// Fan out a `CoordinationRenew` to all `targets` in parallel.
+///
+/// Returns `true` when every target successfully renewed.
+pub(crate) async fn fanout_renew(
+    targets: &[FanOutTarget],
+    rpc_port: u16,
+    request: CoordinationRenewRequest,
+    deadline: Duration,
+) -> bool {
+    if targets.is_empty() {
+        return true;
+    }
+
+    let mut set: JoinSet<bool> = JoinSet::new();
+    for target in targets {
+        let c = client(target.overlay_ip, rpc_port);
+        let req = request.clone();
+        set.spawn(async move {
+            matches!(
+                tokio::time::timeout(deadline, c.coordination_renew(req)).await,
+                Ok(Ok(payload)) if payload.renewed
+            )
+        });
+    }
+
+    let mut all_renewed = true;
+    while let Some(join_result) = set.join_next().await {
+        match join_result {
+            Ok(renewed) => {
+                if !renewed {
+                    all_renewed = false;
+                }
+            }
+            Err(_) => {
+                all_renewed = false;
+            }
+        }
+    }
+    all_renewed
+}
+
 /// Build fan-out targets from an accepted prepare result (for abort-on-failure paths).
 pub(crate) fn accepted_targets(
     accepted: &[(FanOutTarget, CoordinationPreparePayload)],
@@ -185,7 +225,6 @@ mod tests {
         CoordinationCommitPayload, CoordinationLockKey, CoordinationOperation, DaemonPayload,
         DaemonResponse,
     };
-    use std::net::Ipv6Addr;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;
 
@@ -207,8 +246,7 @@ mod tests {
                     let mut buf = BufReader::new(reader);
                     let mut line = String::new();
                     let _ = buf.read_line(&mut line).await;
-                    let mut encoded =
-                        serde_json::to_string(&response).expect("encode response");
+                    let mut encoded = serde_json::to_string(&response).expect("encode response");
                     encoded.push('\n');
                     let _ = writer.write_all(encoded.as_bytes()).await;
                 });
@@ -292,13 +330,7 @@ mod tests {
 
     #[tokio::test]
     async fn fanout_prepare_empty_targets_returns_all_online_accepted() {
-        let result = fanout_prepare(
-            &[],
-            9999,
-            sample_request(),
-            Duration::from_secs(1),
-        )
-        .await;
+        let result = fanout_prepare(&[], 9999, sample_request(), Duration::from_secs(1)).await;
         assert!(result.all_online_accepted);
         assert!(result.accepted.is_empty());
         assert!(result.denied.is_empty());
@@ -310,8 +342,13 @@ mod tests {
         let addr = spawn_mock(accepted_prepare_response("tok-abc")).await;
         let targets = vec![target_for(addr)];
 
-        let result = fanout_prepare(&targets, addr.port(), sample_request(), Duration::from_secs(2))
-            .await;
+        let result = fanout_prepare(
+            &targets,
+            addr.port(),
+            sample_request(),
+            Duration::from_secs(2),
+        )
+        .await;
 
         assert!(result.all_online_accepted);
         assert_eq!(result.accepted.len(), 1);
@@ -326,8 +363,13 @@ mod tests {
         let addr = spawn_mock(denied_prepare_response("key already prepared")).await;
         let targets = vec![target_for(addr)];
 
-        let result = fanout_prepare(&targets, addr.port(), sample_request(), Duration::from_secs(2))
-            .await;
+        let result = fanout_prepare(
+            &targets,
+            addr.port(),
+            sample_request(),
+            Duration::from_secs(2),
+        )
+        .await;
 
         assert!(!result.all_online_accepted);
         assert!(result.accepted.is_empty());

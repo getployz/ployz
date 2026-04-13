@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use crate::coordination::fanout::{FanOutTarget, accepted_targets, fanout_abort, fanout_commit, fanout_prepare};
+use crate::coordination::fanout::{
+    FanOutTarget, accepted_targets, fanout_abort, fanout_commit, fanout_prepare,
+};
 use crate::mesh_state::invite::parse_and_verify_invite_token;
 use ipnet::Ipv4Net;
 use ployz_api::{
@@ -485,7 +487,7 @@ impl DaemonState {
                 }
 
                 // Fan-out commit to all accepted peers — same operation as prepare.
-                fanout_commit(
+                let all_peers_committed = fanout_commit(
                     &accepted_targets(&fanout_result.accepted),
                     rpc_port,
                     CoordinationCommitRequest {
@@ -500,6 +502,11 @@ impl DaemonState {
                     Duration::from_secs(10),
                 )
                 .await;
+                if !all_peers_committed {
+                    return Err(format!(
+                        "failed to commit coordinated subnet claim for target '{target}' on all peers"
+                    ));
+                }
 
                 selected = Some(candidate);
                 break;
