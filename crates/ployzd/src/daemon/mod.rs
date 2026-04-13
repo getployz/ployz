@@ -4,6 +4,7 @@ pub mod ssh;
 pub(crate) mod store;
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use self::store::StoreDriver;
 use crate::built_in_images::BuiltInImages;
@@ -16,6 +17,8 @@ use ployz_orchestrator::Mesh;
 use ployz_runtime_api::RuntimeHandle;
 use ployz_runtime_backends::deploy::NamespaceLockManager;
 use ployz_types::model::Identity;
+
+use self::handlers::coordination::CoordinationLedger;
 
 pub struct ActiveMesh {
     pub config: NetworkConfig,
@@ -62,6 +65,7 @@ pub struct DaemonState {
     pub gateway_threads: usize,
     pub active: Option<ActiveMesh>,
     pub namespace_locks: NamespaceLockManager,
+    pub(crate) coordination_ledger: Mutex<CoordinationLedger>,
     pub(crate) pending_subnet_heal: Option<PendingSubnetHeal>,
     pub(crate) last_subnet_heal_attempt: Option<SubnetHealAttempt>,
 }
@@ -134,6 +138,7 @@ impl DaemonState {
             gateway_threads,
             active: None,
             namespace_locks: NamespaceLockManager::default(),
+            coordination_ledger: Mutex::new(CoordinationLedger::default()),
             pending_subnet_heal: None,
             last_subnet_heal_attempt: None,
         }

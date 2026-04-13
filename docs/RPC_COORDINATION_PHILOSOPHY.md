@@ -18,9 +18,10 @@ This document defines the design intent so future changes stay consistent.
      allocations, routing/deploy records), not heartbeat-style chatter.
 3. **One coordination system for all mutation classes**
    - Membership, subnet/IP allocation, and deploy namespace locking should all
-     use the same term/lease/idempotency model.
-4. **Term fencing and idempotency are mandatory**
-   - Every prepare/commit operation must carry a term and nonce.
+     use the same lease/nonce/idempotency model.
+4. **Lease ownership and idempotency are mandatory**
+   - Every prepare/renew/commit operation must carry a nonce scoped to the
+     operation owner.
    - Replays must be safe and deterministic.
 5. **No hidden eventual-heal magic in background tasks**
    - Prefer synchronous deny/allow results with explicit retries.
@@ -62,12 +63,13 @@ The design should isolate these tails through:
 
 Subnet/IP allocation should be proposal-based with race safety:
 
-1. proposer submits `Prepare(subnet, machine, term, nonce)`
+1. proposer submits `Prepare(subnet, machine, nonce, ttl)`
 2. responders `Allow` or `Deny(conflict)`
-3. proposer commits only after quorum allows
-4. commit persists one durable claim
+3. proposer renews while the operation is active
+4. proposer commits only after quorum allows
+5. commit persists one durable claim in domain state
 
-This prevents dual-winner races through quorum intersection and term fencing.
+This prevents dual-winner races through quorum intersection and lease expiry.
 
 ## Uniform lock model
 
@@ -76,7 +78,8 @@ membership and subnet claims:
 
 - typed lock keys,
 - lease TTL,
-- term/nonce,
+- renew,
+- owner nonce,
 - explicit acquire/commit/release semantics.
 
 This keeps future work obvious and avoids ad-hoc lock implementations.
