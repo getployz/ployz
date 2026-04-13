@@ -175,7 +175,7 @@ impl CoordinationLedger {
 
         if prepared.owner_id != owner_id
             || prepared.nonce != nonce
-            || prepared.operation != operation
+            || !commit_matches_prepared_operation(&prepared.operation, &operation)
         {
             return CoordinationCommitPayload {
                 committed: false,
@@ -439,6 +439,59 @@ fn operation_key(operation: &CoordinationOperation) -> String {
     }
 }
 
+fn commit_matches_prepared_operation(
+    prepared: &CoordinationOperation,
+    commit: &CoordinationOperation,
+) -> bool {
+    match (prepared, commit) {
+        (
+            CoordinationOperation::LockAcquire { key: prepared_key },
+            CoordinationOperation::LockAcquire { key: commit_key },
+        ) => prepared_key == commit_key,
+        (
+            CoordinationOperation::MembershipPrepare {
+                machine_id: prepared_machine_id,
+                proposed_subnet,
+            },
+            CoordinationOperation::MembershipCommit {
+                machine_id: commit_machine_id,
+                committed_subnet,
+            },
+        ) => prepared_machine_id == commit_machine_id && proposed_subnet == committed_subnet,
+        (
+            CoordinationOperation::MembershipCommit {
+                machine_id: prepared_machine_id,
+                committed_subnet: prepared_subnet,
+            },
+            CoordinationOperation::MembershipCommit {
+                machine_id: commit_machine_id,
+                committed_subnet: commit_subnet,
+            },
+        ) => prepared_machine_id == commit_machine_id && prepared_subnet == commit_subnet,
+        (
+            CoordinationOperation::SubnetClaimPrepare {
+                machine_id: prepared_machine_id,
+                subnet: prepared_subnet,
+            },
+            CoordinationOperation::SubnetClaimCommit {
+                machine_id: commit_machine_id,
+                subnet: commit_subnet,
+            },
+        ) => prepared_machine_id == commit_machine_id && prepared_subnet == commit_subnet,
+        (
+            CoordinationOperation::SubnetClaimCommit {
+                machine_id: prepared_machine_id,
+                subnet: prepared_subnet,
+            },
+            CoordinationOperation::SubnetClaimCommit {
+                machine_id: commit_machine_id,
+                subnet: commit_subnet,
+            },
+        ) => prepared_machine_id == commit_machine_id && prepared_subnet == commit_subnet,
+        _ => false,
+    }
+}
+
 fn now_unix_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -602,5 +655,76 @@ mod tests {
             panic!("renewed record missing");
         };
         assert_eq!(record.expires_at, 52);
+    }
+
+    #[test]
+    fn commit_rejects_subnet_claim_with_different_machine_id() {
+        let mut ledger = CoordinationLedger::default();
+        let prepare_operation = CoordinationOperation::SubnetClaimPrepare {
+            machine_id: "m-prepare".into(),
+            subnet: "10.210.9.0/24".into(),
+        };
+        let prepare = ledger.prepare(
+            CoordinationPrepareRequest {
+                owner_id: "founder-a".into(),
+                nonce: "nonce-1".into(),
+                lease_ttl_secs: 20,
+                operation: prepare_operation,
+            },
+            100,
+        );
+        assert!(prepare.accepted);
+        let Some(token) = prepare.prepare_token else {
+            panic!("prepare token missing");
+        };
+
+        let commit = ledger.commit(
+            CoordinationCommitRequest {
+                owner_id: "founder-a".into(),
+                nonce: "nonce-1".into(),
+                prepare_tokens: vec![token],
+                operation: CoordinationOperation::SubnetClaimCommit {
+                    machine_id: "m-other".into(),
+                    subnet: "10.210.9.0/24".into(),
+                },
+            },
+            101,
+        );
+        assert!(!commit.committed);
+    }
+
+    #[test]
+    fn commit_accepts_membership_prepare_to_commit_with_same_identity() {
+        let mut ledger = CoordinationLedger::default();
+        let prepare = ledger.prepare(
+            CoordinationPrepareRequest {
+                owner_id: "founder-a".into(),
+                nonce: "nonce-membership".into(),
+                lease_ttl_secs: 20,
+                operation: CoordinationOperation::MembershipPrepare {
+                    machine_id: "m1".into(),
+                    proposed_subnet: Some("10.210.20.0/24".into()),
+                },
+            },
+            200,
+        );
+        assert!(prepare.accepted);
+        let Some(token) = prepare.prepare_token else {
+            panic!("prepare token missing");
+        };
+
+        let commit = ledger.commit(
+            CoordinationCommitRequest {
+                owner_id: "founder-a".into(),
+                nonce: "nonce-membership".into(),
+                prepare_tokens: vec![token],
+                operation: CoordinationOperation::MembershipCommit {
+                    machine_id: "m1".into(),
+                    committed_subnet: Some("10.210.20.0/24".into()),
+                },
+            },
+            201,
+        );
+        assert!(commit.committed);
     }
 }

@@ -18,14 +18,11 @@ impl DaemonState {
             let result = match task {
                 DebugTickTask::PeerSync => self.debug_tick_peer_sync().await,
                 DebugTickTask::Heartbeat => self.debug_tick_heartbeat().await,
-                DebugTickTask::Heal => self.debug_tick_heal().await,
                 DebugTickTask::All => {
                     if let Err(error) = self.debug_tick_peer_sync().await {
                         Err(error)
-                    } else if let Err(error) = self.debug_tick_heartbeat().await {
-                        Err(error)
                     } else {
-                        self.debug_tick_heal().await
+                        self.debug_tick_heartbeat().await
                     }
                 }
             };
@@ -92,17 +89,12 @@ impl DaemonState {
         Ok(())
     }
 
-    async fn debug_tick_heal(&mut self) -> Result<(), (&'static str, String)> {
-        self.heal_local_subnet_conflict_if_needed().await;
-        Ok(())
-    }
 }
 
 fn format_debug_tick_task(task: DebugTickTask) -> &'static str {
     match task {
         DebugTickTask::PeerSync => "peer-sync",
         DebugTickTask::Heartbeat => "heartbeat",
-        DebugTickTask::Heal => "heal",
         DebugTickTask::All => "all",
     }
 }

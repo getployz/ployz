@@ -22,7 +22,10 @@ const OPERATIONS_DIR_NAME: &str = "machine-operations";
 pub(super) enum MachineOperationKind {
     Init,
     Add,
-    Heal,
+    /// Legacy records on disk may contain "heal". We deserialize them but
+    /// never create new operations of this kind.
+    #[serde(alias = "heal")]
+    LegacyHeal,
 }
 
 impl MachineOperationKind {
@@ -31,7 +34,7 @@ impl MachineOperationKind {
         match self {
             Self::Init => "init",
             Self::Add => "add",
-            Self::Heal => "heal",
+            Self::LegacyHeal => "heal",
         }
     }
 }
@@ -341,7 +344,7 @@ impl DaemonState {
         record: &MachineOperationRecord,
     ) -> Result<Option<String>, String> {
         match record.kind {
-            MachineOperationKind::Init | MachineOperationKind::Heal => Ok(None),
+            MachineOperationKind::Init | MachineOperationKind::LegacyHeal => Ok(None),
             MachineOperationKind::Add => self.reconcile_machine_add_operation(record).await,
         }
     }
