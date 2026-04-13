@@ -1,0 +1,82 @@
+# RPC Coordination Philosophy
+
+## Why this exists
+
+Ployz is moving toward an RPC-first coordination model for cluster mutations.
+The goal is to remove flappy background loops and replace them with explicit,
+transactional operations that either succeed or fail clearly.
+
+This document defines the design intent so future changes stay consistent.
+
+## Core principles
+
+1. **Operation-time truth over periodic reconciliation**
+   - Critical control-plane decisions should happen in explicit request/response
+     workflows, not asynchronous polling loops.
+2. **Durable state is committed intent, not liveness pulses**
+   - The replicated store should hold committed cluster intent (membership,
+     allocations, routing/deploy records), not heartbeat-style chatter.
+3. **One coordination system for all mutation classes**
+   - Membership, subnet/IP allocation, and deploy namespace locking should all
+     use the same term/lease/idempotency model.
+4. **Term fencing and idempotency are mandatory**
+   - Every prepare/commit operation must carry a term and nonce.
+   - Replays must be safe and deterministic.
+5. **No hidden eventual-heal magic in background tasks**
+   - Prefer synchronous deny/allow results with explicit retries.
+
+## Latency expectations (theoretical)
+
+These values are planning estimates for global deployments and are not measured
+benchmarks.
+
+For a quorum-based two-phase operation (prepare + commit), total latency is
+approximately:
+
+- `max_rtt_to_quorum + processing` (prepare)
+- `max_rtt_to_quorum + processing` (commit)
+
+Typical global ranges:
+
+- p50: ~220-380ms
+- p95: ~450-900ms
+- p99 tail in stressed scenarios: ~1.1-1.8s
+
+### N+1 tail scenarios
+
+Tail spikes typically come from one extra slow component:
+
+- one overloaded coordinator,
+- one transoceanic route with jitter,
+- one retransmit in the commit phase,
+- one lease refresh path delayed by GC/scheduler pauses.
+
+The design should isolate these tails through:
+
+- parallel quorum RPC fanout,
+- strict operation deadlines,
+- idempotent retry semantics,
+- bounded backoff.
+
+## Allocation policy
+
+Subnet/IP allocation should be proposal-based with race safety:
+
+1. proposer submits `Prepare(subnet, machine, term, nonce)`
+2. responders `Allow` or `Deny(conflict)`
+3. proposer commits only after quorum allows
+4. commit persists one durable claim
+
+This prevents dual-winner races through quorum intersection and term fencing.
+
+## Uniform lock model
+
+Deploy namespace locks should use the same coordination primitives as
+membership and subnet claims:
+
+- typed lock keys,
+- lease TTL,
+- term/nonce,
+- explicit acquire/commit/release semantics.
+
+This keeps future work obvious and avoids ad-hoc lock implementations.

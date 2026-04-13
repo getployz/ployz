@@ -126,6 +126,15 @@ pub enum DaemonRequest {
     MeshAccept {
         response: String,
     },
+    CoordinationPrepare {
+        request: CoordinationPrepareRequest,
+    },
+    CoordinationCommit {
+        request: CoordinationCommitRequest,
+    },
+    CoordinationAbort {
+        request: CoordinationAbortRequest,
+    },
     DeployPreview {
         manifest_json: String,
         options: DeployOptions,
@@ -149,6 +158,8 @@ pub enum DaemonPayload {
     MachineRemove(MachineRemovePayload),
     MeshReady(MeshReadyPayload),
     MeshSelfRecord(MeshSelfRecordPayload),
+    CoordinationPrepare(CoordinationPreparePayload),
+    CoordinationCommit(CoordinationCommitPayload),
     DeployPreview(DeployPreviewPayload),
     DeployApply(DeployApplyPayload),
     DeployExport(DeployExportPayload),
@@ -236,6 +247,72 @@ pub struct MeshReadyPayload {
 pub struct MeshSelfRecordPayload {
     pub encoded: String,
     pub record: MachineRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CoordinationLockKey {
+    DeployNamespace { namespace: String },
+    MembershipMachine { machine_id: String },
+    SubnetClaim { subnet: String },
+    MachineOperation { machine_id: String, operation: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CoordinationOperation {
+    LockAcquire { key: CoordinationLockKey },
+    MembershipPrepare {
+        machine_id: String,
+        proposed_subnet: Option<String>,
+    },
+    MembershipCommit {
+        machine_id: String,
+        committed_subnet: Option<String>,
+    },
+    MembershipAbort { machine_id: String },
+    SubnetClaimPrepare { machine_id: String, subnet: String },
+    SubnetClaimCommit { machine_id: String, subnet: String },
+    SubnetClaimAbort { machine_id: String, subnet: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CoordinationPrepareRequest {
+    pub term: u64,
+    pub nonce: String,
+    pub lease_ttl_secs: u64,
+    pub operation: CoordinationOperation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CoordinationPreparePayload {
+    pub accepted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepare_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CoordinationCommitRequest {
+    pub term: u64,
+    pub nonce: String,
+    pub prepare_tokens: Vec<String>,
+    pub operation: CoordinationOperation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CoordinationCommitPayload {
+    pub committed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CoordinationAbortRequest {
+    pub term: u64,
+    pub nonce: String,
+    pub operation: CoordinationOperation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
