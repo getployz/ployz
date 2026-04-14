@@ -193,8 +193,9 @@ jobs:
         run: |
           tag="${{ needs.validate-tag.outputs.version }}"
           previous_tag="$(
-            git tag --list 'v*' --sort=-version:refname \
-              | awk -v current="${tag}" '$0 != current { print; exit }'
+            gh release list --exclude-drafts --exclude-pre-releases --limit 50 \
+              --json tagName \
+              --jq "[.[] | select(.tagName | test(\"^v\")) | select(.tagName != \"${tag}\") | .tagName][0] // empty"
           )"
           notes_file="$(mktemp)"
           notes_args=(--tag "${tag}")
