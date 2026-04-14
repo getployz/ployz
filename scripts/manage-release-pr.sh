@@ -27,7 +27,7 @@ EOF
 latest_release_tag() {
   gh release list \
     --repo "${REPO}" \
-    --exclude-drafts --exclude-pre-releases --limit 1 \
+    --exclude-drafts --exclude-pre-releases --limit 100 \
     --json tagName \
     --jq '[.[] | select(.tagName | test("^v")) | .tagName][0] // empty'
 }
