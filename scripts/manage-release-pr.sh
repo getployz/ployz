@@ -25,7 +25,11 @@ EOF
 }
 
 latest_release_tag() {
-  git tag --list 'v*' --sort=-version:refname | head -n 1
+  gh release list \
+    --repo "${REPO}" \
+    --exclude-drafts --exclude-pre-releases --limit 1 \
+    --json tagName \
+    --jq '[.[] | select(.tagName | test("^v")) | .tagName][0] // empty'
 }
 
 read_version_from_ref() {
