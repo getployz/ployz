@@ -168,7 +168,7 @@ impl ployz_store_api::RoutingInvalidationReceiver for RoutingRefreshReceiver {
 #[async_trait]
 impl SyncProbe for CorrosionStore {
     async fn sync_status(&self) -> Result<SyncStatus> {
-        let active_remote_members = self.check_remote_membership().await;
+        let active_remote_members = self.check_remote_membership().await?;
         if active_remote_members < 1 {
             return Ok(SyncStatus::Disconnected);
         }
@@ -195,15 +195,15 @@ impl CorrosionStore {
     /// Check how many active remote members exist, using the admin socket
     /// with a fallback to the health API member count when the admin
     /// socket is unavailable or fails.
-    async fn check_remote_membership(&self) -> usize {
+    async fn check_remote_membership(&self) -> Result<usize> {
         if let Some(admin) = &self.admin {
             match admin.cluster_membership_states_latest().await {
                 Ok(states) => {
-                    return states
+                    return Ok(states
                         .iter()
                         .filter(|state| state.addr != self.gossip_addr)
                         .filter(|state| state.state.is_active())
-                        .count();
+                        .count());
                 }
                 Err(e) => {
                     tracing::warn!(?e, "admin membership check failed, falling back to health API");
@@ -213,10 +213,16 @@ impl CorrosionStore {
 
         // Fallback: the health API reports total member count over HTTP/2 (TCP),
         // which avoids the QUIC transport stuckness that can affect the admin socket.
-        match self.client.health().await {
-            Ok(h) if h.members > 1 => (h.members - 1) as usize,
-            _ => 0,
-        }
+        let health = self
+            .client
+            .health()
+            .await
+            .map_err(|e| Error::operation("check_remote_membership", format!("health request: {e}")))?;
+        Ok(if health.members > 1 {
+            (health.members - 1) as usize
+        } else {
+            0
+        })
     }
 }
 
