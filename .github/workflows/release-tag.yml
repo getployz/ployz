@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: create-release-tag
@@ -25,6 +26,13 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Create matching release tag when version changes
+        id: tag
         env:
           GITHUB_EVENT_BEFORE: ${{ github.event.before }}
         run: bash scripts/create-release-tag.sh
+
+      - name: Dispatch release workflow
+        if: steps.tag.outputs.tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run release.yml --ref "${{ steps.tag.outputs.tag }}"
