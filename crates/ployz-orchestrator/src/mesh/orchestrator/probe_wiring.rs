@@ -64,7 +64,7 @@ impl Mesh {
     }
 
     pub(crate) async fn wait_store_init(&self) -> Result<()> {
-        let timeout = Duration::from_secs(30);
+        let timeout = Duration::from_secs(60);
         let query_ok = poll_until(
             timeout,
             Duration::from_millis(100),
