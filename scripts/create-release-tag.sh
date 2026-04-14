@@ -69,3 +69,7 @@ fi
 
 git tag -a "${current_tag}" -m "release: ${current_tag}" "${CURRENT_SHA}"
 git push origin "${current_tag}"
+
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  echo "tag=${current_tag}" >> "${GITHUB_OUTPUT}"
+fi
