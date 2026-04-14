@@ -6,9 +6,9 @@ use crate::built_in_images::{BuiltInImage, BuiltInImages};
 use crate::daemon::store::StoreDriver;
 use ipnet::Ipv4Net;
 use ployz_config::{RuntimeTarget, ServiceMode, corrosion as corrosion_config};
+use crate::mesh_state::bootstrap::load_bootstrap_peer_records;
 use ployz_corrosion::{
-    CorrosionBootstrapState, CorrosionStore, Transport, docker_corrosion_runtime,
-    host_corrosion_runtime,
+    CorrosionStore, Transport, docker_corrosion_runtime, host_corrosion_runtime,
 };
 use ployz_runtime_api::{
     ContainerNetwork, DataplaneFactory, EndpointDiscovery,
@@ -115,7 +115,7 @@ impl RuntimeProfile {
         self.built_in_images.resolve(image)
     }
 
-    pub(crate) async fn load_bootstrap_addrs(
+    pub(crate) fn load_bootstrap_addrs(
         &self,
         network_dir: &Path,
         local_machine_id: &MachineId,
@@ -123,31 +123,39 @@ impl RuntimeProfile {
         match self.execution_backend {
             ExecutionBackend::Memory => Ok(Vec::new()),
             ExecutionBackend::Docker | ExecutionBackend::Host => {
-                CorrosionBootstrapState::new(network_dir)
-                    .bootstrap_addrs(local_machine_id)
-                    .await
-                    .map_err(RuntimeError::from)
+                let peers = load_bootstrap_peer_records(network_dir).map_err(|error| {
+                    RuntimeError::operation("load_bootstrap_addrs", error)
+                })?;
+                Ok(peers
+                    .into_iter()
+                    .filter(|peer| peer.machine_id != *local_machine_id)
+                    .map(|peer| {
+                        format!(
+                            "[{}]:{}",
+                            peer.overlay_ip.0,
+                            ployz_config::corrosion::DEFAULT_GOSSIP_PORT
+                        )
+                    })
+                    .collect())
             }
         }
     }
 
-    pub(crate) async fn load_bootstrap_seed_records(
-        &self,
-        network_dir: &Path,
-    ) -> Vec<MachineRecord> {
+    pub(crate) fn load_bootstrap_seed_records(&self, network_dir: &Path) -> Vec<MachineRecord> {
         match self.execution_backend {
             ExecutionBackend::Memory => Vec::new(),
             ExecutionBackend::Docker | ExecutionBackend::Host => {
-                CorrosionBootstrapState::new(network_dir)
-                    .seed_machine_records()
-                    .await
+                load_bootstrap_peer_records(network_dir)
                     .unwrap_or_else(|error| {
                         tracing::warn!(
                             ?error,
-                            "failed to load corrosion bootstrap peers, continuing without db seeds"
+                            "failed to load bootstrap peers, continuing without seeds"
                         );
                         Vec::new()
                     })
+                    .into_iter()
+                    .map(|peer| peer.into_machine_record())
+                    .collect()
             }
         }
     }
@@ -206,7 +214,7 @@ impl RuntimeProfile {
                 MeshRuntimeComponents {
                     network: mesh.network,
                     store: StoreDriver::from_store(store),
-                    bootstrap_seed_records: self.load_bootstrap_seed_records(network_dir).await,
+                    bootstrap_seed_records: self.load_bootstrap_seed_records(network_dir),
                     store_runtime: docker_corrosion_runtime(
                         overlay_ip,
                         network_dir,
@@ -235,7 +243,7 @@ impl RuntimeProfile {
                 MeshRuntimeComponents {
                     network: mesh.network,
                     store: StoreDriver::from_store(store),
-                    bootstrap_seed_records: self.load_bootstrap_seed_records(network_dir).await,
+                    bootstrap_seed_records: self.load_bootstrap_seed_records(network_dir),
                     store_runtime: host_corrosion_runtime(
                         overlay_ip,
                         network_dir,

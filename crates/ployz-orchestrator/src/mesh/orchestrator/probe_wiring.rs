@@ -25,6 +25,26 @@ impl Mesh {
         Ok(())
     }
 
+    pub(crate) async fn wait_for_handshake_extended(&self) -> Result<()> {
+        poll_until(
+            Duration::from_secs(20),
+            Duration::from_millis(500),
+            Duration::from_secs(1),
+            || async { self.network.has_remote_handshake().await },
+        )
+        .await
+        .then_some(())
+        .ok_or_else(|| {
+            MeshError::Port(PortError::operation(
+                "handshake wait",
+                "no WG handshake after extended retry — cannot start store on broken tunnel"
+                    .to_string(),
+            ))
+        })?;
+        info!("WG remote handshake confirmed on extended retry");
+        Ok(())
+    }
+
     pub(crate) async fn wait_service_ready(&self) -> Result<()> {
         let timeout = self.service_ready_timeout;
         let ok = poll_until(
@@ -86,10 +106,12 @@ impl Mesh {
         let interval = self.bootstrap_interval;
         let connection_timeout = self.connection_timeout;
         let sync_probe = Arc::clone(&self.sync_probe);
+        let store_runtime = Arc::clone(&self.store_runtime);
 
         let result: std::result::Result<bool, String> =
             tokio::time::timeout(connection_timeout, async {
                 let mut consecutive_errors = 0u32;
+                let mut restarted = false;
                 loop {
                     match sync_probe.sync_status().await {
                         Ok(SyncStatus::Disconnected) => {
@@ -100,12 +122,19 @@ impl Mesh {
                             consecutive_errors += 1;
                             if consecutive_errors <= 3 {
                                 warn!(?e, "sync probe failed during bootstrap");
-                            } else if consecutive_errors == 4 {
+                            } else if consecutive_errors == 4 && !restarted {
                                 warn!(
                                     ?e,
                                     consecutive_errors,
-                                    "sync probe keeps failing — corrosion transport may be stuck"
+                                    "sync probe stuck, restarting store runtime"
                                 );
+                                let _ = store_runtime.stop().await;
+                                tokio::time::sleep(Duration::from_secs(1)).await;
+                                if let Err(restart_err) = store_runtime.start().await {
+                                    warn!(?restart_err, "store runtime restart failed");
+                                }
+                                restarted = true;
+                                consecutive_errors = 0;
                             }
                         }
                     }
@@ -120,15 +149,11 @@ impl Mesh {
         if !connected {
             let reason = match result {
                 Ok(_) => {
-                    "corrosion gossip could not reach any remote peer within the timeout. \
-                     The gossip transport (QUIC) may be stuck — try restarting the mesh on both nodes"
+                    "corrosion gossip could not reach any remote peer within the timeout"
                         .to_string()
                 }
                 Err(e) => {
-                    format!(
-                        "corrosion API never became healthy: {e}. \
-                         The gossip transport (QUIC) may be stuck — try restarting the mesh on both nodes"
-                    )
+                    format!("corrosion API never became healthy: {e}")
                 }
             };
             return Err(TransitionError::BootstrapTimeout { reason }.into());

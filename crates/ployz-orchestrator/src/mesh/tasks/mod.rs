@@ -24,10 +24,29 @@ pub(crate) use self_record::run_self_record_writer_task;
 pub(crate) use subnet_claim_monitor::run_subnet_claim_monitor_task;
 
 use crate::error::Error;
+use std::time::Duration;
 use thiserror::Error;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
+
+#[derive(Debug, Clone)]
+pub struct TaskTimingConfig {
+    pub self_liveness_interval: Duration,
+    pub participation_interval: Duration,
+    pub peer_sync_interval: Duration,
+}
+
+impl TaskTimingConfig {
+    #[must_use]
+    pub fn production() -> Self {
+        Self {
+            self_liveness_interval: Duration::from_secs(5),
+            participation_interval: Duration::from_secs(5),
+            peer_sync_interval: Duration::from_secs(5),
+        }
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum TaskSetError {

@@ -1,5 +1,6 @@
 use ployz_orchestrator::mesh::tasks::{HeartbeatCommand, PeerSyncCommand};
 use ployz_orchestrator::{Mesh, Phase};
+use ployz_runtime_api::DevicePeer;
 use ployz_store_api::{MachineStore, SyncStatus};
 use ployz_test_support::{
     MemoryServiceRuntime, MemoryStore, MemoryWireGuard, StaticEndpointDiscovery, ToggleState,
@@ -12,6 +13,7 @@ use std::net::Ipv6Addr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::oneshot;
+use tokio::time::Instant;
 
 fn test_record(id: &str, key_byte: u8) -> MachineRecord {
     MachineRecord {
@@ -135,6 +137,13 @@ async fn joiner_seed_peer_requires_sync_for_ready() {
     store.upsert_self_machine(&joiner_record).await.unwrap();
     store.set_sync_status(SyncStatus::Disconnected);
 
+    // Simulate a working WG tunnel so the handshake gate passes.
+    wg.set_device_peers(vec![DevicePeer {
+        public_key: founder_record.public_key.clone(),
+        endpoint: Some(founder_record.endpoints[0].clone()),
+        last_handshake: Some(Instant::now()),
+    }]);
+
     let mut mesh = Mesh::new(
         memory_wireguard_driver(wg),
         store.clone(),
@@ -171,6 +180,13 @@ async fn joiner_retains_founder_peer_across_peer_sync_handoff() {
     let founder_record = test_record("founder", 1);
     let joiner_record = test_record("joiner", 2);
     store.upsert_self_machine(&joiner_record).await.unwrap();
+
+    // Simulate a working WG tunnel so the handshake gate passes.
+    wg.set_device_peers(vec![DevicePeer {
+        public_key: founder_record.public_key.clone(),
+        endpoint: Some(founder_record.endpoints[0].clone()),
+        last_handshake: Some(Instant::now()),
+    }]);
 
     let mut mesh = Mesh::new(
         memory_wireguard_driver(wg.clone()),
@@ -286,6 +302,13 @@ async fn bootstrap_connection_timeout() {
     // Store returns Disconnected forever.
     store.set_sync_status(SyncStatus::Disconnected);
 
+    // Simulate a working WG tunnel so the handshake gate passes.
+    wg.set_device_peers(vec![DevicePeer {
+        public_key: founder_record.public_key.clone(),
+        endpoint: Some(founder_record.endpoints[0].clone()),
+        last_handshake: Some(Instant::now()),
+    }]);
+
     let mut mesh = Mesh::new(
         memory_wireguard_driver(wg),
         store.clone(),
@@ -319,6 +342,13 @@ async fn bootstrap_proceeds_on_membership() {
     store.upsert_self_machine(&founder_record).await.unwrap();
 
     store.set_sync_status(SyncStatus::Disconnected);
+
+    // Simulate a working WG tunnel so the handshake gate passes.
+    wg.set_device_peers(vec![DevicePeer {
+        public_key: founder_record.public_key.clone(),
+        endpoint: Some(founder_record.endpoints[0].clone()),
+        last_handshake: Some(Instant::now()),
+    }]);
 
     let s = store.clone();
     tokio::spawn(async move {

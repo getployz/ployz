@@ -53,7 +53,8 @@ impl Mesh {
                 warn!(?e, "pre-start peer sync failed");
             }
             if self.wait_for_handshake().await.is_err() {
-                warn!("no WG handshake within timeout, continuing anyway");
+                warn!("no WG handshake on first attempt, retrying with extended timeout");
+                self.wait_for_handshake_extended().await?;
             }
         }
 

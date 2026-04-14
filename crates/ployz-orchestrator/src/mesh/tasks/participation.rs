@@ -13,7 +13,6 @@ use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-const PARTICIPATION_INTERVAL: Duration = Duration::from_secs(5);
 const PARTICIPATION_HYSTERESIS_SAMPLES: u8 = 3;
 
 #[derive(Debug, Default)]
@@ -66,8 +65,9 @@ pub(crate) async fn run_participation_task(
     self_record_tx: mpsc::Sender<crate::mesh::tasks::self_record::SelfRecordCommand>,
     mut commands: mpsc::Receiver<ParticipationCommand>,
     cancel: CancellationToken,
+    tick_interval: Duration,
 ) {
-    let mut interval = tokio::time::interval(PARTICIPATION_INTERVAL);
+    let mut interval = tokio::time::interval(tick_interval);
     let mut state = ParticipationState::default();
 
     loop {
