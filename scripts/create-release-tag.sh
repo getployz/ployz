@@ -17,9 +17,12 @@ if [[ -n "${BEFORE_SHA}" && "${BEFORE_SHA}" != "${ALL_ZERO_SHA}" ]]; then
   # Detect release-branch merges — these always proceed to tag logic even if
   # Cargo.toml is unchanged, so a failed release can be re-triggered by
   # re-merging the release PR.
+  # Only match the canonical GitHub merge-commit format where the head branch
+  # itself starts with "release/" (e.g. release/next), not branches that merely
+  # contain "release/" in a deeper path segment like feature/release-fix.
   merge_subject="$(git log -1 --format='%s' "${CURRENT_SHA}" 2>/dev/null || true)"
   is_release_merge=0
-  if [[ "${merge_subject}" =~ release/ ]]; then
+  if [[ "${merge_subject}" =~ ^Merge\ pull\ request\ \#[0-9]+\ from\ [^/]+/release/ ]]; then
     is_release_merge=1
   fi
 
