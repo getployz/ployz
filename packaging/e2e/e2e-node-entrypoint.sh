@@ -14,15 +14,10 @@ chmod 600 /root/.ssh/authorized_keys
 
 install -d -m 755 /run/sshd /var/lib/ployz
 rm -f /var/run/docker.sock /run/docker.sock /run/docker.pid
-# On arm64 GitHub Actions runners the kernel does not support overlayfs inside
-# containers (even on tmpfs), causing "docker create" to fail with EINVAL.
-# Fall back to the vfs storage driver on aarch64 which copies layers instead
-# of using overlay mounts.
-e2e_storage_driver="overlay2"
-if [[ "$(uname -m)" == "aarch64" ]]; then
-  e2e_storage_driver="vfs"
-fi
-/usr/local/bin/e2e-dind.sh dockerd --host=unix:///var/run/docker.sock --storage-driver="${e2e_storage_driver}" >/var/log/dockerd.log 2>&1 &
+# The inner dockerd inherits the outer container's overlayfs filesystem.
+# Overlayfs-on-overlayfs is not supported and fails with EINVAL on
+# "docker create". Use vfs which copies layers instead of overlay mounts.
+/usr/local/bin/e2e-dind.sh dockerd --host=unix:///var/run/docker.sock --storage-driver=vfs >/var/log/dockerd.log 2>&1 &
 
 for _ in $(seq 1 100); do
   if docker info >/dev/null 2>&1; then
