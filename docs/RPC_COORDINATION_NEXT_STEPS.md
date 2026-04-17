@@ -1,262 +1,223 @@
 # RPC Coordination: Next Steps
 
-## Context
+## Model
 
-The coordination ledger (prepare/commit/renew/abort with quorum fanout) is
-fully implemented and used by machine join and deploy namespace locking. But
-the rest of the system still runs on legacy patterns: heartbeat timestamps for
-liveness, a `MachineLiveness::Fresh/Stale/Down` classifier, a participation
-task with hysteresis-based TCP probing, and periodic background loops that poll
-rather than react.
+Each node owns its own state. When another node needs to know something, it
+asks.
 
-The RPC philosophy doc says: "no hidden eventual-heal magic in background
-tasks" and "operation-time truth over periodic reconciliation." The code does
-not yet live up to that. This plan replaces the legacy liveness and
-participation infrastructure with coordination-lease-based presence, and
-removes the background loops that exist only because the old model required
-them.
+Liveness, reachability, and "ready to accept work" are not replicated, not
+written to the store, and not inferred from timestamps. They are a single RPC
+call to the node itself, answered from in-process memory.
+
+The store holds committed intent — membership, subnet allocations, routing and
+deploy records. It does not hold liveness pulses.
+
+Mutations continue to use the existing coordination primitives: prepare, renew,
+commit, abort, with quorum fanout and lease/nonce idempotency. Leases belong to
+transactional intent, not to "is this node alive?"
+
+## Why this is better
+
+- **Fresh by construction.** Every answer comes from the authority at the
+  moment of the question. No clock skew, no replication lag, no stale
+  timestamps, no arbitrary `STALE_*_SECS` constants.
+- **Partition-correct by construction.** If you cannot reach a node, that is
+  its status from your vantage point for this decision. No hysteresis required.
+- **One question, one answer.** Reviewers do not chase liveness through the
+  store or across background tasks.
+- **Less code.** Three background tasks, a classifier enum, a three-state
+  participation machine, and a handful of constants are deleted outright.
+
+## Trade-off to own
+
+Decision-time RPC cost. Deploy planning, `doctor`, and `machine list` fan out a
+`NodeStatus` call with a short deadline. Bounded, parallel, infrequent. Hot
+paths (routing, connection handling) do not pre-check liveness — they try, and
+a failure is the answer.
 
 ---
 
-## Phase 1: Presence Leases — Replace Heartbeat Timestamps
+## Phase 1: `NodeStatus` RPC
 
-**Problem:** Liveness is currently determined by each machine publishing a
-`last_heartbeat` timestamp to the replicated store every 5 seconds. Other
-machines classify peers as `Fresh` (heartbeat within 30s), `Stale` (older), or
-`Down` (explicit). This is fragile:
-
-- Depends on clock accuracy across machines
-- Store replication lag can make a live machine appear stale
-- The 30s `STALE_HEARTBEAT_SECS` constant is arbitrary
-- Different nodes can disagree on whether a peer is "fresh"
-
-**Replace with:** Each machine holds a **presence lease** in the coordination
-ledger of every peer. The coordination `prepare` with same owner/nonce already
-acts as lease renewal (see `coordination.rs` lines 92-109). Lease expiry is
-deterministic — no timestamp age guessing.
-
-### Changes
+Introduce a single RPC that returns the node's view of itself, served from
+in-process state. Zero store reads.
 
 **`crates/ployz-api/src/lib.rs`:**
-- Add `CoordinationOperation::PresenceLease { machine_id: String }` variant
-- Add `CoordinationLockKey::Presence { machine_id: String }` variant
 
-**`crates/ployzd/src/daemon/handlers/coordination.rs`:**
-- Add `key_tag` and `operation_key` arms for the new variants
+```rust
+pub struct NodeStatusPayload {
+    pub machine_id: MachineId,
+    pub phase: Phase,
+    pub ready: bool,
+    pub subnet_claim: Option<Subnet>,
+    pub workloads: WorkloadSummary,
+    pub version: String,
+}
+```
 
-**`crates/ployzd/src/coordination/fanout.rs`:**
-- Add `fanout_presence_renew()` — fan out a prepare with the same nonce to all
-  known peers. Uses the existing re-prepare-extends-lease behavior. Best-effort
-  (offline peers just miss the update — their local ledger expires the lease).
+No timestamp. The fact that the node responded is the freshness signal.
 
-**`crates/ployz-orchestrator/src/mesh/tasks/self_liveness.rs`:**
-- Replace `publish_liveness()` (which writes `last_heartbeat` to the store)
-  with `renew_presence_lease()` — calls `fanout_presence_renew()` to all peers.
-  Same 5s interval initially, but the signal is now a coordination lease, not a
-  store timestamp.
+**`crates/ployzd/src/daemon/handlers/node_status.rs` (new):** serves the
+payload from the orchestrator's in-memory state.
 
-**`crates/ployzd/src/daemon/handlers/coordination.rs`:**
-- Add `CoordinationLedger::is_presence_active(machine_id) -> bool` — checks
-  whether a given machine has a non-expired presence lease in the local ledger.
-  This replaces `machine_is_fresh()`.
+**`crates/ployz-sdk`:** add `DaemonClient::node_status()`.
 
-### What this kills
+**`crates/ployzd/src/rpc/node_status_fanout.rs` (new):** mirrors
+`fanout_prepare` in shape — takes `&[FanOutTarget]` and a deadline, returns
+`Vec<(MachineId, Result<NodeStatusPayload, Offline>)>` in parallel.
 
-- `last_heartbeat` field becomes vestigial (kept for backward compat but no
-  longer the source of truth for liveness)
-- `STALE_HEARTBEAT_SECS` constant — replaced by the lease TTL
-- Clock-skew sensitivity — lease expiry is relative to local time of receipt,
-  not a timestamp written by a remote machine
+## Phase 2: Rewrite consumers to pull
 
----
+**`crates/ployz-orchestrator/src/deploy/planning.rs`:**
 
-## Phase 2: Kill MachineLiveness and Freshness
+- `deployable_machines` becomes async. Fans out `NodeStatus` to peers with a
+  bounded deadline.
+- Eligible = responded with `ready == true` within the deadline.
+- Quorum: if fewer than `cluster_size / 2 + 1` replies including self, return
+  `QuorumLost` with the list of unreachable peers.
+- Delete the `machine_is_fresh` filter and the `Participation::Enabled`
+  filter. Readiness is expressed once, by the node itself.
 
-**Problem:** `machine_liveness.rs` exports `MachineLiveness::Fresh/Stale/Down`
-and `machine_is_fresh()`. These are consumed by:
+**`crates/ployzd/src/daemon/handlers/doctor.rs`:**
 
-- `deploy/planning.rs:167` — filters deployable machines
-- `participation.rs:214` — filters required peers
-- `doctor.rs:233` — renders peer health
-- `machine/render.rs:109` — renders machine list
+- `build_participation_rows` becomes `build_node_rows`. Fans out `NodeStatus`
+  at command time. Renders `reachable: yes/no` and each node's self-reported
+  phase.
+- Overlay probe stays — that is data-plane diagnostics, a different question.
 
-All of these ask the same question: "is this machine present in the cluster
-right now?" The answer should come from the coordination ledger, not from
-heartbeat timestamp arithmetic.
+**`crates/ployzd/src/daemon/handlers/machine/render.rs`:**
 
-### Changes
+- `format_liveness` deleted. A single column sourced from the live fanout:
+  `present` / `absent`.
+- `format_heartbeat` deleted.
 
-**`crates/ployz-orchestrator/src/machine_liveness.rs`:**
-- Replace `machine_is_fresh()` with a new query: `machine_is_present()` that
-  checks the coordination ledger for an active presence lease.
-- Remove `MachineLiveness` enum, `STALE_HEARTBEAT_SECS`, and the timestamp
-  comparison logic.
+## Phase 3: Delete
 
-**Consumers:**
-- `deploy/planning.rs` — `deployable_machines()` filters on
-  `machine_is_present()` instead of `machine_is_fresh()`
-- `doctor.rs` — renders presence status from ledger
-- `machine/render.rs` — renders "present" / "absent" instead of
-  "fresh" / "stale" / "down"
+Whole files go:
 
-### What this kills
+- `crates/ployz-orchestrator/src/machine_liveness.rs`
+- `crates/ployz-orchestrator/src/mesh/tasks/self_liveness.rs`
+- `crates/ployz-orchestrator/src/mesh/tasks/heartbeat.rs`
+- `crates/ployz-orchestrator/src/mesh/tasks/participation.rs`
 
-- `MachineLiveness` enum
-- `STALE_HEARTBEAT_SECS` constant
-- `machine_liveness()` function
-- `machine_is_fresh()` function
-- All heartbeat-age arithmetic
+Fields and types go:
 
----
+- `MachineRecord::last_heartbeat`
+- `MachineLiveness` enum, `STALE_HEARTBEAT_SECS`, `machine_liveness()`,
+  `machine_is_fresh()`
+- `Participation` enum — the three-state hysteresis was machinery in service
+  of a question the node now answers itself. Its remaining callers in
+  `deploy/mod.rs`, `self_record.rs`, and `lifecycle.rs` either drop the filter
+  or fold into `NodeStatus.ready`.
+- `SelfRecordMutation::RefreshLiveness`
+- `SelfLivenessCommand`, `HeartbeatCommand`, `ParticipationCommand`
+- `PARTICIPATION_HYSTERESIS_SAMPLES`
+- `MeshReadyStatus.heartbeat_started`, `MeshReadyPayload.heartbeat_started`
 
-## Phase 3: Kill the Participation Task
+The mesh task directory shrinks from eight tasks to five: `self_record`,
+`peer_sync`, `endpoint_refresh`, `subnet_claim_monitor`, `ebpf_sync`. All five
+are either event-driven or reconcile node-owned kernel state (WireGuard, eBPF,
+endpoints). None pulse liveness.
 
-**Problem:** The participation task (`participation.rs`) runs a 5s loop that:
-1. Lists all machines from the store
-2. Filters "required peers" by freshness
-3. TCP-probes every required peer's overlay IP
-4. Applies 3-sample hysteresis to toggle `Participation::Enabled/Disabled`
+## Phase 4: Dead coordination code
 
-This exists because the old model had no way to know if a peer was actually
-reachable without probing it. With presence leases, reachability is already
-answered — if a peer's presence lease is active, it is reachable (it renewed
-its lease via coordination RPC through the overlay network).
-
-### Changes
-
-**Remove the participation task entirely:**
-- `crates/ployz-orchestrator/src/mesh/tasks/participation.rs` — delete
-- `crates/ployz-orchestrator/src/mesh/tasks/mod.rs` — remove exports
-- `crates/ployz-orchestrator/src/mesh/orchestrator/task_runtime.rs` — stop
-  spawning `run_participation_task`
-
-**Remove the heartbeat coordinator:**
-- `crates/ployz-orchestrator/src/mesh/tasks/heartbeat.rs` — delete (it only
-  existed to fan out ticks to self_liveness + participation)
-
-**Simplify `Participation` enum:**
-- The three-state `Enabled/Disabled/Draining` model was driven by the
-  participation task. With presence leases:
-  - A machine is eligible for deploys if it holds active presence leases for a
-    quorum of peers (already answered by the coordination ledger).
-  - `Draining` is replaced by aborting the presence lease and letting it expire.
-- `deploy/planning.rs:deployable_machines()` filters on presence instead of
-  `Participation::Enabled && machine_is_fresh()`.
-
-**What this kills:**
-- `participation.rs` (entire file)
-- `heartbeat.rs` (entire file)
-- `ParticipationCommand` / `HeartbeatCommand` types
-- `ParticipationState` / hysteresis logic
-- `PARTICIPATION_HYSTERESIS_SAMPLES` constant
-- TCP overlay probing for participation (probing remains for `peer_sync`
-  endpoint ranking and `doctor` diagnostics)
-- `heartbeat_started` flag in readiness checks
-
-**Readiness impact:** `MeshReadyStatus.heartbeat_started` (readiness.rs:43)
-needs to change. Readiness becomes: `phase == Running && store_healthy &&
-sync_connected && presence_lease_held`.
-
----
-
-## Phase 4: Remove Dead Coordination Code
-
-**Why:** While adding presence leases, clean up the unused coordination types
-that were never wired in.
-
-### Changes
-
-**`crates/ployz-api/src/lib.rs`:**
-- Remove `CoordinationLockKey::MembershipMachine` and `MachineOperation`
+- Remove `CoordinationLockKey::MembershipMachine` and `MachineOperation`.
 - Remove `CoordinationOperation::MembershipPrepare`, `MembershipCommit`,
-  `MembershipAbort`
+  `MembershipAbort`.
+- Keep `CoordinationRenewRequest` — used by subnet claims and deploy locks.
 
-**`crates/ployzd/src/daemon/handlers/coordination.rs`:**
-- Remove corresponding `key_tag`, `operation_key`, and
-  `commit_matches_prepared_operation` arms
-- Remove tests that exercise removed operations
+## Phase 5: Update the philosophy doc
 
-**Keep `CoordinationRenewRequest`** — presence lease renewal could use it as
-an alternative to re-prepare (both work, renew is semantically cleaner).
+Add a **Current status** section to `RPC_COORDINATION_PHILOSOPHY.md`:
 
----
-
-## Phase 5: E2E Test Speed
-
-With participation killed and liveness driven by coordination leases, e2e
-tests no longer depend on background task intervals for convergence. But the
-test infrastructure itself has unnecessary latency.
-
-### Changes
-
-**`crates/ployz-e2e/src/support.rs`:**
-- Reduce `POLL_INTERVAL` from `Duration::from_secs(2)` to
-  `Duration::from_millis(500)`
-
-**`crates/ployz-e2e/src/daemon_probes.rs`:**
-- Reduce settled-state consecutive match threshold from 3 to 2
-
-**`crates/ployz-orchestrator/src/mesh/tasks/mod.rs`:**
-- Add `TaskTimingConfig::fast()` (1s intervals) for test environments
-
-**`crates/ployzd/src/daemon/setup.rs`:**
-- Read `PLOYZ_TASK_TIMING=fast` env var to apply fast timing in e2e containers
+- **Liveness:** pulled at decision time via `NodeStatus`. No replication, no
+  leases for liveness.
+- **Mutations:** `SubnetClaim*` and `LockAcquire(DeployNamespace)` use quorum
+  prepare/commit with lease/nonce idempotency.
+- **Background tasks still running:** reconcile node-local kernel state or
+  subscribe to store events. None exist to push liveness outward.
 
 ---
 
-## Phase 6: Update RPC Coordination Philosophy Doc
+## Readiness
 
-### Changes to `docs/RPC_COORDINATION_PHILOSOPHY.md`
+A node's readiness is a single Boolean it computes from its own state:
 
-Add a **Current status** section:
+```
+self_ready = phase == Running
+          && store_healthy
+          && sync_connected
+          && self_record_published
+          && overlay_interface_up
+```
 
-- **Coordination primitives in use:** `SubnetClaimPrepare/Commit/Abort` with
-  quorum fanout for machine join. `LockAcquire` with `DeployNamespace` for
-  deploy locking. `PresenceLease` with periodic renewal for cluster presence.
-- **Replaced by RPC coordination:** Heartbeat timestamps (`last_heartbeat`),
-  `MachineLiveness::Fresh/Stale/Down`, `STALE_HEARTBEAT_SECS`, participation
-  task with TCP probe hysteresis.
-- **Kept as periodic tasks:** Presence lease renewal (5s, but through
-  coordination RPC, not store writes). Peer sync WireGuard kernel reads (no
-  kernel event API). Endpoint refresh (30m external discovery). eBPF sync and
-  subnet claim monitor (already event-driven via store subscriptions).
+It appears in `NodeStatus.ready`. `MeshReadyPayload` becomes
+`{ ready, phase, store_healthy, sync_connected, self_record_published }`.
+
+## Bootstrap
+
+A newly joining node answers `NodeStatus` as soon as its RPC listener is up,
+with `ready: false` until its self-record is published and the overlay is
+live. It needs no peer ledger state to become queryable, which removes the
+chicken-and-egg problem from the prior plan.
+
+## Failure modes
+
+- **Peer unreachable at decision time.** Counts as not-eligible for that
+  decision. No global state mutation. A subsequent deploy re-fans-out and
+  re-evaluates.
+- **Self-fence.** A node that cannot reach its dependencies reports
+  `ready: false` in its own `NodeStatus`. No external supervisor required.
+- **Quorum loss during deploy planning.** Returns `QuorumLost` with the list
+  of unreachable peers. Operator retries or removes peers explicitly.
 
 ---
 
 ## Verification
 
-### Phase 1 (presence leases):
+**Phase 1 — `NodeStatus` RPC:**
+
 ```bash
 cargo build --workspace
-cargo test -p ployzd -- coordination
-cargo test -p ployzd -- fanout
+cargo test -p ployzd -- node_status
+cargo test -p ployz-sdk -- node_status
 ```
 
-### Phase 2 (kill freshness):
+**Phase 2 — rewrite consumers:**
+
 ```bash
-cargo build --workspace
-cargo test -p ployz-orchestrator -- machine_liveness
-cargo test -p ployzd -- deploy
+cargo test -p ployz-orchestrator -- deploy::planning
 cargo test -p ployzd -- doctor
+cargo test -p ployzd -- machine::render
 ```
 
-### Phase 3 (kill participation):
+**Phase 3 — deletions:**
+
 ```bash
 cargo build --workspace
-cargo test -p ployz-orchestrator
-cargo test -p ployzd -- handlers
-# E2E: verify machines still converge and deploys work
+cargo test --workspace
+```
+
+**Phase 4 — dead coordination code:**
+
+```bash
+cargo test -p ployzd -- coordination
+```
+
+**E2E coverage to add (beyond happy path):**
+
+- Deploy while one of three peers is partitioned: expect `QuorumLost` or
+  correct exclusion depending on cluster size.
+- Peer returns mid-session: a re-run produces a consistent plan with no stale
+  liveness state anywhere.
+- Churn: peer joins, deploys, leaves, rejoins; no background reconciler
+  required to converge.
+
+Existing e2e suites that must continue to pass:
+
+```bash
 cargo test -p ployz-e2e -- single_node_init
 cargo test -p ployz-e2e -- machine_add_basic
 cargo test -p ployz-e2e -- quorum_subnet_coordination
 cargo test -p ployz-e2e -- deploy_smoke
 ```
-
-### Phase 4 (dead code):
-```bash
-cargo build --workspace
-cargo test -p ployzd -- coordination
-```
-
-### Phase 5 (e2e speed):
-Compare wall-clock times before/after across all e2e scenarios.
