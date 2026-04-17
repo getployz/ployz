@@ -10,7 +10,8 @@ written to the store, and not inferred from timestamps. They are a single RPC
 call to the node itself, answered from in-process memory.
 
 The store holds committed intent — membership, subnet allocations, routing and
-deploy records. It does not hold liveness pulses.
+deploy records, and operator-set drain state. It does not hold liveness
+pulses.
 
 Mutations continue to use the existing coordination primitives: prepare, renew,
 commit, abort, with quorum fanout and lease/nonce idempotency. Leases belong to
@@ -25,8 +26,8 @@ transactional intent, not to "is this node alive?"
   its status from your vantage point for this decision. No hysteresis required.
 - **One question, one answer.** Reviewers do not chase liveness through the
   store or across background tasks.
-- **Less code.** Three background tasks, a classifier enum, a three-state
-  participation machine, and a handful of constants are deleted outright.
+- **Less code.** Three background tasks, a classifier enum, and a handful of
+  constants are deleted outright.
 
 ## Trade-off to own
 
@@ -40,22 +41,32 @@ a failure is the answer.
 ## Phase 1: `NodeStatus` RPC
 
 Introduce a single RPC that returns the node's view of itself, served from
-in-process state. Zero store reads.
+in-process state. Zero store reads on the hot path (drain is mirrored into
+memory from a store subscription).
 
 **`crates/ployz-api/src/lib.rs`:**
 
 ```rust
 pub struct NodeStatusPayload {
     pub machine_id: MachineId,
+    pub boot_id: BootId,
     pub phase: Phase,
     pub ready: bool,
+    pub draining: bool,
     pub subnet_claim: Option<Subnet>,
     pub workloads: WorkloadSummary,
     pub version: String,
 }
 ```
 
-No timestamp. The fact that the node responded is the freshness signal.
+- No timestamp. The fact that the node responded is the freshness signal.
+- `boot_id` is a monotonic generation marker assigned once at daemon start
+  (UUID or nanos-since-epoch at boot). It does not encode time; it only needs
+  to differ between process lifetimes. Its consumer is deploy apply — see
+  [Failure modes](#failure-modes).
+- `ready` means "healthy and able to accept work." `draining` is operator
+  intent, orthogonal. A node can be `ready: true, draining: true` — working
+  fine, but the operator has asked for it to be taken out of rotation.
 
 **`crates/ployzd/src/daemon/handlers/node_status.rs` (new):** serves the
 payload from the orchestrator's in-memory state.
@@ -63,32 +74,57 @@ payload from the orchestrator's in-memory state.
 **`crates/ployz-sdk`:** add `DaemonClient::node_status()`.
 
 **`crates/ployzd/src/rpc/node_status_fanout.rs` (new):** mirrors
-`fanout_prepare` in shape — takes `&[FanOutTarget]` and a deadline, returns
-`Vec<(MachineId, Result<NodeStatusPayload, Offline>)>` in parallel.
+`fanout_prepare` in shape. Parallel, deadline-bounded.
+
+```rust
+pub enum NodeStatusResult {
+    Ok(NodeStatusPayload),
+    Offline,                                   // timeout or connection refused
+    InvalidIdentity { reported: MachineId },   // target said it was someone else
+}
+
+pub async fn fanout_node_status(
+    targets: &[FanOutTarget],
+    deadline: Duration,
+) -> Vec<(MachineId, NodeStatusResult)>;
+```
+
+The fanout helper compares each target's expected `machine_id` against the
+payload's `machine_id` and surfaces mismatch as a distinct `InvalidIdentity`
+result. This catches overlay-IP reuse, stale fanout target lists, and
+cross-wired peers before they can feed a planning decision.
 
 ## Phase 2: Rewrite consumers to pull
 
 **`crates/ployz-orchestrator/src/deploy/planning.rs`:**
 
-- `deployable_machines` becomes async. Fans out `NodeStatus` to peers with a
-  bounded deadline.
-- Eligible = responded with `ready == true` within the deadline.
-- Quorum: if fewer than `cluster_size / 2 + 1` replies including self, return
-  `QuorumLost` with the list of unreachable peers.
-- Delete the `machine_is_fresh` filter and the `Participation::Enabled`
-  filter. Readiness is expressed once, by the node itself.
+Split the quorum rule by operation class. Preview is advisory and tolerates
+partial availability; apply mutates and enforces strict quorum.
+
+- **Eligibility predicate (both):** responded within the deadline with
+  `ready == true && draining == false` and matching `machine_id`.
+- **`preview`:** best-effort. Compute the plan against eligible peers.
+  Unreachable peers, `InvalidIdentity` results, and draining peers land in
+  `DeployPreview.warnings`. Never returns `QuorumLost`. Preserves "can I see
+  the plan?" during a transient partition.
+- **`apply`:** strict. If eligible peers + self do not meet
+  `cluster_size / 2 + 1`, return
+  `QuorumLost { unreachable, drained, invalid_identity }`. No changes made.
+
+Delete the `machine_is_fresh` filter. Delete the `Participation::Enabled`
+filter — `ready && !draining` replaces it.
 
 **`crates/ployzd/src/daemon/handlers/doctor.rs`:**
 
 - `build_participation_rows` becomes `build_node_rows`. Fans out `NodeStatus`
-  at command time. Renders `reachable: yes/no` and each node's self-reported
-  phase.
+  at command time. Renders `reachable`, `ready`, `draining`, and each node's
+  self-reported phase.
 - Overlay probe stays — that is data-plane diagnostics, a different question.
 
 **`crates/ployzd/src/daemon/handlers/machine/render.rs`:**
 
-- `format_liveness` deleted. A single column sourced from the live fanout:
-  `present` / `absent`.
+- `format_liveness` deleted. Columns sourced from the live fanout: `present /
+  absent`, plus an explicit `draining` column when applicable.
 - `format_heartbeat` deleted.
 
 ## Phase 3: Delete
@@ -105,14 +141,26 @@ Fields and types go:
 - `MachineRecord::last_heartbeat`
 - `MachineLiveness` enum, `STALE_HEARTBEAT_SECS`, `machine_liveness()`,
   `machine_is_fresh()`
-- `Participation` enum — the three-state hysteresis was machinery in service
-  of a question the node now answers itself. Its remaining callers in
-  `deploy/mod.rs`, `self_record.rs`, and `lifecycle.rs` either drop the filter
-  or fold into `NodeStatus.ready`.
 - `SelfRecordMutation::RefreshLiveness`
 - `SelfLivenessCommand`, `HeartbeatCommand`, `ParticipationCommand`
 - `PARTICIPATION_HYSTERESIS_SAMPLES`
 - `MeshReadyStatus.heartbeat_started`, `MeshReadyPayload.heartbeat_started`
+
+**`Participation` is reshaped, not deleted.** The three-state
+`Enabled/Draining/Disabled` enum existed to drive hysteresis-based automatic
+disablement — that behavior goes. Operator drain is a real, distinct piece of
+committed intent and stays:
+
+- Replace the enum with `MachineRecord::drain: bool`.
+- Set via an explicit `machine drain <id>` / `machine undrain <id>` command
+  that writes to the store.
+- Each node subscribes to changes on its own record and mirrors `drain` into
+  in-memory state that `NodeStatus` reads.
+- `deployable_machines` filters on `ready && !draining` where both come from
+  the live `NodeStatus` fanout.
+
+This keeps operator intent as durable committed state (aligned with the
+philosophy doc) and separates it cleanly from liveness.
 
 The mesh task directory shrinks from eight tasks to five: `self_record`,
 `peer_sync`, `endpoint_refresh`, `subnet_claim_monitor`, `ebpf_sync`. All five
@@ -132,16 +180,18 @@ Add a **Current status** section to `RPC_COORDINATION_PHILOSOPHY.md`:
 
 - **Liveness:** pulled at decision time via `NodeStatus`. No replication, no
   leases for liveness.
+- **Operator intent (drain):** durable in the store, mirrored into each
+  node's in-memory state, exposed on `NodeStatus.draining`.
 - **Mutations:** `SubnetClaim*` and `LockAcquire(DeployNamespace)` use quorum
   prepare/commit with lease/nonce idempotency.
 - **Background tasks still running:** reconcile node-local kernel state or
-  subscribe to store events. None exist to push liveness outward.
+  subscribe to store events. None push liveness outward.
 
 ---
 
 ## Readiness
 
-A node's readiness is a single Boolean it computes from its own state:
+A node's `ready` is a single Boolean it computes from its own state:
 
 ```
 self_ready = phase == Running
@@ -151,7 +201,8 @@ self_ready = phase == Running
           && overlay_interface_up
 ```
 
-It appears in `NodeStatus.ready`. `MeshReadyPayload` becomes
+It appears in `NodeStatus.ready`. `draining` is separate — it reflects
+operator intent, not health. `MeshReadyPayload` becomes
 `{ ready, phase, store_healthy, sync_connected, self_record_published }`.
 
 ## Bootstrap
@@ -164,12 +215,21 @@ chicken-and-egg problem from the prior plan.
 ## Failure modes
 
 - **Peer unreachable at decision time.** Counts as not-eligible for that
-  decision. No global state mutation. A subsequent deploy re-fans-out and
-  re-evaluates.
-- **Self-fence.** A node that cannot reach its dependencies reports
+  decision. No global state mutation. A subsequent operation re-fans-out.
+- **`InvalidIdentity`.** Target answered but reported a different
+  `machine_id`. Treated as not-eligible and surfaced in warnings/logs.
+  Usually means overlay-IP reuse, a stale target list, or a mis-routed RPC.
+- **Self-fence.** A node that cannot satisfy its readiness predicate reports
   `ready: false` in its own `NodeStatus`. No external supervisor required.
-- **Quorum loss during deploy planning.** Returns `QuorumLost` with the list
-  of unreachable peers. Operator retries or removes peers explicitly.
+- **Quorum loss during deploy apply.** Returns `QuorumLost` with unreachable,
+  drained, and invalid-identity peers. Operator retries or removes peers
+  explicitly. Preview never returns `QuorumLost`; it degrades into a plan
+  plus warnings.
+- **Peer restart mid-operation (ABA).** Deploy apply is two-phase: prepare
+  across the quorum, then commit. A peer that restarts between phases has
+  lost its in-memory prepare tokens. Record each peer's `boot_id` in the
+  prepare result; verify at commit that `boot_id` is unchanged. Mismatch
+  aborts the apply with `BootIdMismatch`.
 
 ---
 
@@ -206,10 +266,16 @@ cargo test -p ployzd -- coordination
 
 **E2E coverage to add (beyond happy path):**
 
-- Deploy while one of three peers is partitioned: expect `QuorumLost` or
-  correct exclusion depending on cluster size.
-- Peer returns mid-session: a re-run produces a consistent plan with no stale
-  liveness state anywhere.
+- Preview with one peer partitioned: returns a plan with a warning naming
+  the unreachable peer. Does not fail.
+- Apply with one of three peers partitioned: `QuorumLost` with the peer
+  listed. No state changes.
+- Apply where a peer restarts between prepare and commit: aborts with
+  `BootIdMismatch`. No partial deploy.
+- Operator drain: drained peer is excluded from planning; comes back after
+  undrain with no stale flag anywhere.
+- Cross-wired identity: inject a peer whose `NodeStatus` reports the wrong
+  `machine_id` — treated as `InvalidIdentity`, not eligible.
 - Churn: peer joins, deploys, leaves, rejoins; no background reconciler
   required to converge.
 
