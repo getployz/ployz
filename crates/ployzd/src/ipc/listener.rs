@@ -101,6 +101,7 @@ async fn handle_tcp_connection(
             | DaemonRequest::CoordinationRenew { .. }
             | DaemonRequest::CoordinationCommit { .. }
             | DaemonRequest::CoordinationAbort { .. }
+            | DaemonRequest::NodeStatus
     );
     if !is_coordination {
         let response = DaemonResponse {

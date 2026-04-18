@@ -156,14 +156,11 @@ pub async fn preview(
 
 pub(crate) fn deployable_machines(
     machines: &[crate::model::MachineRecord],
-    local_machine_id: &MachineId,
+    _local_machine_id: &MachineId,
 ) -> Vec<MachineId> {
     let mut candidates: Vec<MachineId> =
         machines.iter().map(|machine| machine.id.clone()).collect();
     candidates.sort_by(|left, right| left.0.cmp(&right.0));
-    if candidates.is_empty() {
-        return vec![local_machine_id.clone()];
-    }
     candidates
 }
 
@@ -172,11 +169,7 @@ pub(crate) fn desired_slots(
     machines: &[MachineId],
     current_slots: Option<&[ServiceReleaseSlot]>,
 ) -> Result<Vec<DesiredSlot>> {
-    let candidates = if machines.is_empty() {
-        vec![MachineId("local".into())]
-    } else {
-        machines.to_vec()
-    };
+    let candidates = machines.to_vec();
     if candidates.is_empty() {
         return Err(Error::operation(
             "desired_slots",

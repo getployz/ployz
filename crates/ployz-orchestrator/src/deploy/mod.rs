@@ -56,10 +56,10 @@ mod tests {
     }
 
     #[test]
-    fn deployable_machines_falls_back_to_local_when_store_is_empty() {
+    fn deployable_machines_returns_empty_when_store_is_empty() {
         let machines = vec![];
         let deployable = deployable_machines(&machines, &MachineId("local".into()));
-        assert_eq!(deployable, vec![MachineId("local".into())]);
+        assert!(deployable.is_empty());
     }
 
     #[test]
@@ -104,6 +104,15 @@ mod tests {
         assert_eq!(desired.len(), 1);
         assert_eq!(desired[0].slot_id, crate::model::SlotId("slot-0001".into()));
         assert_eq!(desired[0].machine_id, MachineId("machine-b".into()));
+    }
+
+    #[test]
+    fn desired_slots_errors_when_no_candidate_machines() {
+        let spec = test_service_spec("api", "nginx:latest");
+        let error = desired_slots(&spec, &[], None).expect_err("expected no-machine error");
+        assert!(
+            format!("{error}").contains("slot placement requires at least one candidate machine")
+        );
     }
 
     #[tokio::test]

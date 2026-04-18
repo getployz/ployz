@@ -125,6 +125,21 @@ impl DaemonState {
         record.updated_at = ployz_types::time::now_unix_secs();
         match active.store.machine().upsert_self_machine(&record).await {
             Ok(()) => {
+                if machine_id == self.identity.machine_id {
+                    let updated = active
+                        .mesh
+                        .update_authoritative_self_record(|self_record| {
+                            self_record.drain = drain;
+                            self_record.updated_at = record.updated_at;
+                        })
+                        .await;
+                    if updated.is_none() {
+                        return self.err(
+                            "UPDATE_FAILED",
+                            "failed to update local machine drain state in authoritative mesh record",
+                        );
+                    }
+                }
                 let status = if drain { "drained" } else { "undrained" };
                 self.ok_with_payload(
                     format!("machine '{id}' marked {status}"),
@@ -211,7 +226,7 @@ pub(super) async fn machine_list_report(
                         Some(NodeStatusResult::Ok(status)) => Some(status.draining),
                         Some(NodeStatusResult::Offline)
                         | Some(NodeStatusResult::InvalidIdentity { .. })
-                        | None => None,
+                        | None => Some(machine.drain),
                     }
                 },
                 phase: if machine.id == *local_machine_id {

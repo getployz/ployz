@@ -282,7 +282,7 @@ fn build_node_rows(
                 | Some(NodeStatusResult::InvalidIdentity { .. })
                 | None => (false, None, None, None),
             };
-            let required = !machine.drain && draining != Some(true);
+            let required = !machine.drain;
             let handshake_state = handshake_by_key
                 .get(&machine.public_key)
                 .copied()
