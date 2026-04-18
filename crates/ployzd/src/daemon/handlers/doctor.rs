@@ -171,8 +171,8 @@ fn append_peer_section(lines: &mut Vec<String>, rows: &[&NodeRow], cause: CauseD
         .iter()
         .map(|row| row.store_status().len())
         .max()
-        .unwrap_or("store=enabled/fresh".len())
-        .max("store=enabled/fresh".len());
+        .unwrap_or("node=present/ready/not-draining/running".len())
+        .max("node=present/ready/not-draining/running".len());
     let w_wg = rows
         .iter()
         .map(|row| row.wg_status().len())

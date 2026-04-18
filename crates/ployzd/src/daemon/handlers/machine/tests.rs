@@ -327,6 +327,58 @@ async fn machine_remove_deletes_disabled_record() {
 }
 
 #[tokio::test]
+async fn machine_drain_marks_machine_draining() {
+    let (state, store, _) = make_state(MeshStartMode::Stopped).await;
+    store
+        .upsert_self_machine(&test_machine_record(
+            "peer-1",
+            "10.210.1.0/24",
+            false,
+            PublicKey([2; 32]),
+        ))
+        .await
+        .expect("upsert peer");
+
+    let response = state.handle_machine_set_drain("peer-1", true).await;
+    assert!(response.ok, "{}", response.message);
+
+    let machines = store.list_machines().await.expect("list machines");
+    let Some(peer) = machines
+        .into_iter()
+        .find(|machine| machine.id.0 == "peer-1")
+    else {
+        panic!("peer not found");
+    };
+    assert!(peer.drain);
+}
+
+#[tokio::test]
+async fn machine_undrain_marks_machine_active() {
+    let (state, store, _) = make_state(MeshStartMode::Stopped).await;
+    store
+        .upsert_self_machine(&test_machine_record(
+            "peer-1",
+            "10.210.1.0/24",
+            true,
+            PublicKey([2; 32]),
+        ))
+        .await
+        .expect("upsert peer");
+
+    let response = state.handle_machine_set_drain("peer-1", false).await;
+    assert!(response.ok, "{}", response.message);
+
+    let machines = store.list_machines().await.expect("list machines");
+    let Some(peer) = machines
+        .into_iter()
+        .find(|machine| machine.id.0 == "peer-1")
+    else {
+        panic!("peer not found");
+    };
+    assert!(!peer.drain);
+}
+
+#[tokio::test]
 async fn interrupted_machine_add_is_marked_interrupted_on_startup() {
     let (state, _, _) = make_state(MeshStartMode::Stopped).await;
     let store = state.machine_operation_store();

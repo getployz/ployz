@@ -112,6 +112,12 @@ pub enum DaemonRequest {
         id: String,
         force: bool,
     },
+    MachineDrain {
+        id: String,
+    },
+    MachineUndrain {
+        id: String,
+    },
     MachineOperationList,
     MachineOperationGet {
         id: String,
@@ -160,6 +166,7 @@ pub enum DaemonPayload {
     MachineList(MachineListPayload),
     MachineAdd(MachineAddPayload),
     MachineRemove(MachineRemovePayload),
+    MachineDrain(MachineDrainPayload),
     MeshReady(MeshReadyPayload),
     MeshSelfRecord(MeshSelfRecordPayload),
     CoordinationPrepare(CoordinationPreparePayload),
@@ -247,6 +254,12 @@ pub struct MachineAwaitingSelfPublication {
 pub struct MachineRemovePayload {
     pub id: String,
     pub force: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MachineDrainPayload {
+    pub id: String,
+    pub draining: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

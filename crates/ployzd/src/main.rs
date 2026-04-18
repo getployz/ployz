@@ -307,4 +307,28 @@ mod tests {
         assert_eq!(task, ProtocolDebugTickTask::All);
         assert_eq!(repeat, 1);
     }
+
+    #[test]
+    fn build_machine_drain_request() {
+        let request = build_machine_request(MachineAction::Drain {
+            id: String::from("peer-1"),
+        })
+        .expect("machine drain request");
+        let DaemonRequest::MachineDrain { id } = request else {
+            panic!("expected machine drain request");
+        };
+        assert_eq!(id, "peer-1");
+    }
+
+    #[test]
+    fn build_machine_undrain_request() {
+        let request = build_machine_request(MachineAction::Undrain {
+            id: String::from("peer-1"),
+        })
+        .expect("machine undrain request");
+        let DaemonRequest::MachineUndrain { id } = request else {
+            panic!("expected machine undrain request");
+        };
+        assert_eq!(id, "peer-1");
+    }
 }

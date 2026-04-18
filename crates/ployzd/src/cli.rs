@@ -337,6 +337,12 @@ pub(crate) enum MachineAction {
         #[arg(long)]
         force: bool,
     },
+    Drain {
+        id: String,
+    },
+    Undrain {
+        id: String,
+    },
     Invite {
         #[command(subcommand)]
         action: MachineInviteAction,

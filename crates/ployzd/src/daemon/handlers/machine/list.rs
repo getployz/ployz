@@ -1,7 +1,7 @@
 use crate::coordination::fanout::{FanOutTarget, NodeStatusResult, fanout_node_status};
 use crate::daemon::DaemonState;
 use crate::daemon::store::StoreDriver;
-use ployz_api::{DaemonPayload, DaemonResponse, MachineRemovePayload};
+use ployz_api::{DaemonPayload, DaemonResponse, MachineDrainPayload, MachineRemovePayload};
 use ployz_store_api::MachineStore;
 use ployz_types::model::{MachineId, MachineRecord};
 use std::collections::HashMap;
@@ -89,6 +89,52 @@ impl DaemonState {
                 })),
             ),
             Err(err) => self.err("DELETE_FAILED", format!("failed to remove machine: {err}")),
+        }
+    }
+
+    pub(crate) async fn handle_machine_set_drain(&self, id: &str, drain: bool) -> DaemonResponse {
+        let active = match self.active.as_ref() {
+            Some(active) => active,
+            None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
+        };
+
+        let machine_id = MachineId(id.to_string());
+        let machine_store = active.store.machine();
+        let mut record = match find_machine_record(machine_store.as_ref(), &machine_id).await {
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                return self.err("MACHINE_NOT_FOUND", format!("machine '{id}' not found"));
+            }
+            Err(err) => {
+                return self.err("LIST_FAILED", format!("failed to read machines: {err}"));
+            }
+        };
+
+        if record.drain == drain {
+            let status = if drain { "drained" } else { "undrained" };
+            return self.ok_with_payload(
+                format!("machine '{id}' already {status}"),
+                Some(DaemonPayload::MachineDrain(MachineDrainPayload {
+                    id: id.to_string(),
+                    draining: drain,
+                })),
+            );
+        }
+
+        record.drain = drain;
+        record.updated_at = ployz_types::time::now_unix_secs();
+        match active.store.machine().upsert_self_machine(&record).await {
+            Ok(()) => {
+                let status = if drain { "drained" } else { "undrained" };
+                self.ok_with_payload(
+                    format!("machine '{id}' marked {status}"),
+                    Some(DaemonPayload::MachineDrain(MachineDrainPayload {
+                        id: id.to_string(),
+                        draining: drain,
+                    })),
+                )
+            }
+            Err(err) => self.err("UPDATE_FAILED", format!("failed to update machine: {err}")),
         }
     }
 }
