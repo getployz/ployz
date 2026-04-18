@@ -5,11 +5,10 @@ use crate::mesh_state::invite::{InviteClaims, parse_and_verify_invite_token};
 use crate::mesh_state::network::NetworkConfig;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ployz_api::{
-    DaemonPayload, DaemonResponse, MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload,
-    NodeStatusPayload, decode_join_response, encode_join_response,
+    DaemonPayload, DaemonResponse, MeshSelfRecordPayload, MeshStatusPayload, NodeStatusPayload,
+    decode_join_response, encode_join_response,
 };
 use ployz_orchestrator::ipam::Ipam;
-use ployz_orchestrator::mesh::orchestrator::MeshReadyStatus;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_types::model::{JoinResponse, NetworkName};
 use ployz_types::time::now_unix_secs;
@@ -101,23 +100,6 @@ impl DaemonState {
                 exists: true,
             })),
         )
-    }
-
-    pub(crate) async fn handle_mesh_ready(&self) -> DaemonResponse {
-        let active = match self.active.as_ref() {
-            Some(active) => active,
-            None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
-        };
-
-        let status = mesh_ready_payload(active.mesh.ready_status().await);
-        self.ok_with_payload(format!(
-            "ready:                  {}\nphase:                  {}\nstore healthy:          {}\nsync connected:         {}\nself record published:  {}",
-            status.ready,
-            status.phase,
-            status.store_healthy,
-            status.sync_connected,
-            status.self_record_published,
-        ), Some(DaemonPayload::MeshReady(status)))
     }
 
     pub(crate) async fn handle_node_status(&self) -> DaemonResponse {
@@ -518,16 +500,6 @@ impl DaemonState {
             peer_overlay_ip,
             peer_endpoints: invite.issuer_endpoints.clone(),
         })
-    }
-}
-
-fn mesh_ready_payload(value: MeshReadyStatus) -> MeshReadyPayload {
-    MeshReadyPayload {
-        ready: value.ready,
-        phase: value.phase.to_string(),
-        store_healthy: value.store_healthy,
-        sync_connected: value.sync_connected,
-        self_record_published: value.self_record_published,
     }
 }
 

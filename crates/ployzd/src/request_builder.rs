@@ -170,8 +170,7 @@ fn build_mesh_request(action: MeshAction) -> Result<DaemonRequest> {
         MeshAction::Join { token, token_stdin } => Ok(DaemonRequest::MeshJoin {
             token: string_arg_or_stdin("mesh join token", "--token-stdin", token, token_stdin)?,
         }),
-        // Compatibility RPC kept for now; `NodeStatus` is the canonical per-node status contract.
-        MeshAction::Ready { json: _ } => Ok(DaemonRequest::MeshReady),
+        MeshAction::Ready { json: _ } => Ok(DaemonRequest::NodeStatus),
         MeshAction::Create { network } => Ok(DaemonRequest::MeshCreate { network }),
         MeshAction::Init {
             network,

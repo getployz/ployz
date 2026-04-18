@@ -3,8 +3,8 @@ use ployz_api::{
     CoordinationAbortRequest, CoordinationCommitPayload, CoordinationCommitRequest,
     CoordinationPreparePayload, CoordinationPrepareRequest, CoordinationRenewPayload,
     CoordinationRenewRequest, DaemonPayload, DaemonRequest, DaemonResponse, DeployOptions,
-    MachineDrainPayload, MachineListPayload, MeshReadyPayload, MeshSelfRecordPayload,
-    MeshStatusPayload, NodeStatusPayload, StatusPayload,
+    MachineDrainPayload, MachineListPayload, MeshSelfRecordPayload, MeshStatusPayload,
+    NodeStatusPayload, StatusPayload,
 };
 use ployz_types::model::{DeployApplyResult, DeployPreview};
 use ployz_types::spec::DeployManifest;
@@ -51,7 +51,6 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MachineDrain(_)
-            | DaemonPayload::MeshReady(_)
             | DaemonPayload::MeshSelfRecord(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
@@ -78,7 +77,6 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MachineDrain(_)
-            | DaemonPayload::MeshReady(_)
             | DaemonPayload::MeshSelfRecord(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
@@ -101,7 +99,6 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MachineDrain(_)
-            | DaemonPayload::MeshReady(_)
             | DaemonPayload::MeshSelfRecord(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
@@ -124,7 +121,6 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MachineDrain(_)
-            | DaemonPayload::MeshReady(_)
             | DaemonPayload::MeshSelfRecord(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
@@ -149,7 +145,6 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineList(_)
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
-            | DaemonPayload::MeshReady(_)
             | DaemonPayload::MeshSelfRecord(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
@@ -174,31 +169,6 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineList(_)
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
-            | DaemonPayload::MeshReady(_)
-            | DaemonPayload::MeshSelfRecord(_)
-            | DaemonPayload::DeployPreview(_)
-            | DaemonPayload::DeployApply(_)
-            | DaemonPayload::DeployExport(_)
-            | DaemonPayload::MachineOperationList(_)
-            | DaemonPayload::MachineOperation(_)
-            | DaemonPayload::CoordinationPrepare(_)
-            | DaemonPayload::CoordinationRenew(_)
-            | DaemonPayload::CoordinationCommit(_) => None,
-        })
-    }
-
-    #[deprecated(note = "Prefer `node_status()` for node readiness/drain state.")]
-    pub async fn mesh_ready(&self) -> std::io::Result<MeshReadyPayload> {
-        let response = self.request_ok(DaemonRequest::MeshReady).await?;
-        extract_payload(response, "mesh ready", |payload| match payload {
-            DaemonPayload::MeshReady(payload) => Some(payload),
-            DaemonPayload::Status(_)
-            | DaemonPayload::NodeStatus(_)
-            | DaemonPayload::MeshStatus(_)
-            | DaemonPayload::MachineList(_)
-            | DaemonPayload::MachineAdd(_)
-            | DaemonPayload::MachineRemove(_)
-            | DaemonPayload::MachineDrain(_)
             | DaemonPayload::MeshSelfRecord(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
@@ -222,7 +192,6 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MachineDrain(_)
-            | DaemonPayload::MeshReady(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
@@ -255,7 +224,6 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MachineDrain(_)
-            | DaemonPayload::MeshReady(_)
             | DaemonPayload::MeshSelfRecord(_)
             | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
@@ -288,7 +256,6 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MachineDrain(_)
-            | DaemonPayload::MeshReady(_)
             | DaemonPayload::MeshSelfRecord(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployExport(_)
@@ -315,7 +282,6 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MachineDrain(_)
-            | DaemonPayload::MeshReady(_)
             | DaemonPayload::MeshSelfRecord(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
@@ -345,7 +311,6 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MachineDrain(_)
-            | DaemonPayload::MeshReady(_)
             | DaemonPayload::MeshSelfRecord(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
@@ -375,7 +340,6 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MachineDrain(_)
-            | DaemonPayload::MeshReady(_)
             | DaemonPayload::MeshSelfRecord(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
@@ -405,7 +369,6 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MachineDrain(_)
-            | DaemonPayload::MeshReady(_)
             | DaemonPayload::MeshSelfRecord(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)

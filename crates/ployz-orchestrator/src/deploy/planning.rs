@@ -156,11 +156,14 @@ pub async fn preview(
 
 pub(crate) fn deployable_machines(
     machines: &[crate::model::MachineRecord],
-    _local_machine_id: &MachineId,
+    local_machine_id: &MachineId,
 ) -> Vec<MachineId> {
     let mut candidates: Vec<MachineId> =
         machines.iter().map(|machine| machine.id.clone()).collect();
     candidates.sort_by(|left, right| left.0.cmp(&right.0));
+    if candidates.is_empty() {
+        return vec![local_machine_id.clone()];
+    }
     candidates
 }
 

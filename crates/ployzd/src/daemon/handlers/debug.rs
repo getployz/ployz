@@ -17,20 +17,7 @@ impl DaemonState {
         for _ in 0..repeat {
             let result = match task {
                 DebugTickTask::PeerSync => self.debug_tick_peer_sync().await,
-                DebugTickTask::Heartbeat => Err((
-                    "TASK_NOT_SUPPORTED",
-                    "heartbeat task has been removed".into(),
-                )),
-                DebugTickTask::All => {
-                    if let Err(error) = self.debug_tick_peer_sync().await {
-                        Err(error)
-                    } else {
-                        Err((
-                            "TASK_NOT_SUPPORTED",
-                            "heartbeat task has been removed".into(),
-                        ))
-                    }
-                }
+                DebugTickTask::All => self.debug_tick_peer_sync().await,
             };
             if let Err((code, message)) = result {
                 return self.err(code, message);
@@ -73,7 +60,6 @@ impl DaemonState {
 fn format_debug_tick_task(task: DebugTickTask) -> &'static str {
     match task {
         DebugTickTask::PeerSync => "peer-sync",
-        DebugTickTask::Heartbeat => "heartbeat",
         DebugTickTask::All => "all",
     }
 }

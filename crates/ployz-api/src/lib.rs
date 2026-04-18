@@ -63,7 +63,6 @@ pub struct MachineInstallOptions {
 #[serde(rename_all = "kebab-case")]
 pub enum DebugTickTask {
     PeerSync,
-    Heartbeat,
     All,
 }
 
@@ -83,7 +82,6 @@ pub enum DaemonRequest {
     MeshJoin {
         token: String,
     },
-    MeshReady,
     MeshCreate {
         network: String,
     },
@@ -167,7 +165,6 @@ pub enum DaemonPayload {
     MachineAdd(MachineAddPayload),
     MachineRemove(MachineRemovePayload),
     MachineDrain(MachineDrainPayload),
-    MeshReady(MeshReadyPayload),
     MeshSelfRecord(MeshSelfRecordPayload),
     CoordinationPrepare(CoordinationPreparePayload),
     CoordinationRenew(CoordinationRenewPayload),
@@ -260,15 +257,6 @@ pub struct MachineRemovePayload {
 pub struct MachineDrainPayload {
     pub id: String,
     pub draining: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MeshReadyPayload {
-    pub ready: bool,
-    pub phase: String,
-    pub store_healthy: bool,
-    pub sync_connected: bool,
-    pub self_record_published: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -38,16 +38,7 @@ impl Mesh {
         } else {
             true
         };
-        let self_record_published = self
-            .store
-            .list_machines()
-            .await
-            .map(|machines| {
-                machines
-                    .into_iter()
-                    .any(|machine| machine.id == self.machine_id)
-            })
-            .unwrap_or(false);
+        let self_record_published = self.authoritative_self_record().await.is_some();
         let ready =
             phase == Phase::Running && store_healthy && sync_connected && self_record_published;
 

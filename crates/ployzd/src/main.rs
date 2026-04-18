@@ -10,7 +10,6 @@ pub(crate) use cli::{
     DeployServiceArgs, InstallSourceArg, MachineAction, MachineInviteAction,
     MachineOperationAction, MeshAction, RuntimeTargetArg, ServiceModeArg,
 };
-use cli_io::render_mesh_ready_payload;
 use cli_io::{cmd_rpc_stdio, render_response, request_daemon};
 #[cfg(test)]
 use ployz_api::DaemonRequest;
@@ -105,21 +104,11 @@ async fn run() -> Result<i32> {
             if let Command::RpcStdio = other {
                 return cmd_rpc_stdio(&socket).await;
             }
-            let mesh_ready_json = matches!(
-                &other,
-                Command::Mesh {
-                    action: MeshAction::Ready { json: true }
-                }
-            );
             let transport = UnixSocketTransport::new(socket.clone());
             let request = build_request(other, &transport, &socket).await?;
             let response = request_daemon(&transport, &socket, request).await?;
 
-            if mesh_ready_json && !cli.json {
-                render_mesh_ready_payload(&response)?;
-            } else {
-                render_response(cli.json, cli.plain, cli.quiet, &response)?;
-            }
+            render_response(cli.json, cli.plain, cli.quiet, &response)?;
             if response.ok { Ok(0) } else { Ok(1) }
         }
     }

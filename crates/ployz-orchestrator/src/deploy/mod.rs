@@ -56,10 +56,10 @@ mod tests {
     }
 
     #[test]
-    fn deployable_machines_returns_empty_when_store_is_empty() {
+    fn deployable_machines_falls_back_to_local_when_store_is_empty() {
         let machines = vec![];
         let deployable = deployable_machines(&machines, &MachineId("local".into()));
-        assert!(deployable.is_empty());
+        assert_eq!(deployable, vec![MachineId("local".into())]);
     }
 
     #[test]

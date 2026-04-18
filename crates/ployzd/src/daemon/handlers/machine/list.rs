@@ -227,6 +227,7 @@ pub(super) async fn machine_list_report(
                         Some(NodeStatusResult::Offline)
                         | Some(NodeStatusResult::InvalidIdentity { .. })
                         | None => Some(machine.drain),
+                        | None => Some(machine.drain),
                     }
                 },
                 phase: if machine.id == *local_machine_id {
