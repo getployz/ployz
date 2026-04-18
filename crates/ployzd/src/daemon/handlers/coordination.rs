@@ -410,25 +410,13 @@ impl DaemonState {
 fn key_tag(key: &CoordinationLockKey) -> String {
     match key {
         CoordinationLockKey::DeployNamespace { namespace } => format!("deploy:{namespace}"),
-        CoordinationLockKey::MembershipMachine { machine_id } => format!("machine:{machine_id}"),
         CoordinationLockKey::SubnetClaim { subnet } => format!("subnet:{subnet}"),
-        CoordinationLockKey::MachineOperation {
-            machine_id,
-            operation,
-        } => format!("machine-op:{machine_id}:{operation}"),
     }
 }
 
 fn operation_key(operation: &CoordinationOperation) -> String {
     match operation {
         CoordinationOperation::LockAcquire { key } => key_tag(key),
-        CoordinationOperation::MembershipPrepare { machine_id, .. }
-        | CoordinationOperation::MembershipCommit { machine_id, .. }
-        | CoordinationOperation::MembershipAbort { machine_id } => {
-            key_tag(&CoordinationLockKey::MembershipMachine {
-                machine_id: machine_id.clone(),
-            })
-        }
         CoordinationOperation::SubnetClaimPrepare { subnet, .. }
         | CoordinationOperation::SubnetClaimCommit { subnet, .. }
         | CoordinationOperation::SubnetClaimAbort { subnet, .. } => {
@@ -448,26 +436,6 @@ fn commit_matches_prepared_operation(
             CoordinationOperation::LockAcquire { key: prepared_key },
             CoordinationOperation::LockAcquire { key: commit_key },
         ) => prepared_key == commit_key,
-        (
-            CoordinationOperation::MembershipPrepare {
-                machine_id: prepared_machine_id,
-                proposed_subnet,
-            },
-            CoordinationOperation::MembershipCommit {
-                machine_id: commit_machine_id,
-                committed_subnet,
-            },
-        ) => prepared_machine_id == commit_machine_id && proposed_subnet == committed_subnet,
-        (
-            CoordinationOperation::MembershipCommit {
-                machine_id: prepared_machine_id,
-                committed_subnet: prepared_subnet,
-            },
-            CoordinationOperation::MembershipCommit {
-                machine_id: commit_machine_id,
-                committed_subnet: commit_subnet,
-            },
-        ) => prepared_machine_id == commit_machine_id && prepared_subnet == commit_subnet,
         (
             CoordinationOperation::SubnetClaimPrepare {
                 machine_id: prepared_machine_id,
@@ -544,9 +512,9 @@ mod tests {
     #[test]
     fn prepare_renews_lease_for_same_nonce() {
         let mut ledger = CoordinationLedger::default();
-        let operation = CoordinationOperation::MembershipPrepare {
+        let operation = CoordinationOperation::SubnetClaimPrepare {
             machine_id: "m1".into(),
-            proposed_subnet: Some("10.210.1.0/24".into()),
+            subnet: "10.210.1.0/24".into(),
         };
         let accepted = ledger.prepare(
             CoordinationPrepareRequest {
@@ -694,16 +662,16 @@ mod tests {
     }
 
     #[test]
-    fn commit_accepts_membership_prepare_to_commit_with_same_identity() {
+    fn commit_accepts_subnet_claim_prepare_to_commit_with_same_identity() {
         let mut ledger = CoordinationLedger::default();
         let prepare = ledger.prepare(
             CoordinationPrepareRequest {
                 owner_id: "founder-a".into(),
-                nonce: "nonce-membership".into(),
+                nonce: "nonce-subnet".into(),
                 lease_ttl_secs: 20,
-                operation: CoordinationOperation::MembershipPrepare {
+                operation: CoordinationOperation::SubnetClaimPrepare {
                     machine_id: "m1".into(),
-                    proposed_subnet: Some("10.210.20.0/24".into()),
+                    subnet: "10.210.20.0/24".into(),
                 },
             },
             200,
@@ -716,11 +684,11 @@ mod tests {
         let commit = ledger.commit(
             CoordinationCommitRequest {
                 owner_id: "founder-a".into(),
-                nonce: "nonce-membership".into(),
+                nonce: "nonce-subnet".into(),
                 prepare_tokens: vec![token],
-                operation: CoordinationOperation::MembershipCommit {
+                operation: CoordinationOperation::SubnetClaimCommit {
                     machine_id: "m1".into(),
-                    committed_subnet: Some("10.210.20.0/24".into()),
+                    subnet: "10.210.20.0/24".into(),
                 },
             },
             201,

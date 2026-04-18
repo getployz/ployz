@@ -290,15 +290,8 @@ pub enum CoordinationLockKey {
     DeployNamespace {
         namespace: String,
     },
-    MembershipMachine {
-        machine_id: String,
-    },
     SubnetClaim {
         subnet: String,
-    },
-    MachineOperation {
-        machine_id: String,
-        operation: String,
     },
 }
 
@@ -307,17 +300,6 @@ pub enum CoordinationLockKey {
 pub enum CoordinationOperation {
     LockAcquire {
         key: CoordinationLockKey,
-    },
-    MembershipPrepare {
-        machine_id: String,
-        proposed_subnet: Option<String>,
-    },
-    MembershipCommit {
-        machine_id: String,
-        committed_subnet: Option<String>,
-    },
-    MembershipAbort {
-        machine_id: String,
     },
     SubnetClaimPrepare {
         machine_id: String,
