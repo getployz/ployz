@@ -1,10 +1,12 @@
 use crate::error::{Error, Result};
 use crate::runner::scenario_run::ScenarioRun;
 use crate::support::{
-    daemon_machine_list_in_container, daemon_mesh_ready_in_container, wait_until,
+    daemon_machine_list_in_container, daemon_mesh_ready_in_container,
+    daemon_node_status_in_container, wait_until,
 };
 use ployz_api::MachineListPayload;
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use super::environment::{CONTAINER_WAIT_TIMEOUT, READY_WAIT_TIMEOUT, STATE_WAIT_TIMEOUT};
@@ -69,22 +71,19 @@ impl ScenarioRun {
     ) -> Result<()> {
         let node = self.node(node_name)?;
         let expected_count = expected_states.len();
-        let expected_labels = expected_states
-            .iter()
-            .map(|(machine_id, state)| format!("{machine_id}:{state}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let mut last_snapshot: Option<Vec<MachineRow>> = None;
+        let mut settle_snapshot: Option<Vec<MachineRow>> = None;
+        let mut latest_observed: Option<Vec<MachineRow>> = None;
         let mut consecutive_matches: u8 = 0;
 
-        wait_until(STATE_WAIT_TIMEOUT, || {
+        let wait_result = wait_until(STATE_WAIT_TIMEOUT, || {
             let Ok(payload) = daemon_machine_list_in_container(&node.container_name) else {
                 return Ok(false);
             };
             let snapshot = machine_rows(&payload);
+            latest_observed = Some(snapshot.clone());
             if snapshot.len() != expected_count {
                 consecutive_matches = 0;
-                last_snapshot = None;
+                settle_snapshot = None;
                 return Ok(false);
             }
             if !expected_states.iter().all(|(machine_id, expected_state)| {
@@ -95,23 +94,26 @@ impl ScenarioRun {
                 })
             }) {
                 consecutive_matches = 0;
-                last_snapshot = None;
+                settle_snapshot = None;
                 return Ok(false);
             }
 
-            if last_snapshot.as_ref() == Some(&snapshot) {
+            if settle_snapshot.as_ref() == Some(&snapshot) {
                 consecutive_matches = consecutive_matches.saturating_add(1);
             } else {
                 consecutive_matches = 1;
-                last_snapshot = Some(snapshot);
+                settle_snapshot = Some(snapshot);
             }
 
             Ok(consecutive_matches >= 3)
-        })
-        .map_err(|error| {
-            Error::Message(format!(
-                "machine state did not settle on {} for [{}]: {error}",
-                node.name, expected_labels
+        });
+
+        wait_result.map_err(|error| {
+            Error::Message(self.settle_timeout_report(
+                &node.name,
+                expected_states,
+                latest_observed.as_deref(),
+                &error.to_string(),
             ))
         })
     }
@@ -125,24 +127,21 @@ impl ScenarioRun {
     ) -> Result<()> {
         let node = self.node(node_name)?;
         let expected_count = expected_states.len();
-        let expected_labels = expected_states
-            .iter()
-            .map(|(machine_id, state)| format!("{machine_id}:{state}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let mut last_snapshot: Option<Vec<MachineRow>> = None;
+        let mut settle_snapshot: Option<Vec<MachineRow>> = None;
+        let mut latest_observed: Option<Vec<MachineRow>> = None;
         let mut consecutive_matches: u8 = 0;
 
-        wait_until(STATE_WAIT_TIMEOUT, || {
+        let wait_result = wait_until(STATE_WAIT_TIMEOUT, || {
             self.tick_nodes(tick_nodes, repeat)?;
 
             let Ok(payload) = daemon_machine_list_in_container(&node.container_name) else {
                 return Ok(false);
             };
             let snapshot = machine_rows(&payload);
+            latest_observed = Some(snapshot.clone());
             if snapshot.len() != expected_count {
                 consecutive_matches = 0;
-                last_snapshot = None;
+                settle_snapshot = None;
                 return Ok(false);
             }
             if !expected_states.iter().all(|(machine_id, expected_state)| {
@@ -153,25 +152,89 @@ impl ScenarioRun {
                 })
             }) {
                 consecutive_matches = 0;
-                last_snapshot = None;
+                settle_snapshot = None;
                 return Ok(false);
             }
 
-            if last_snapshot.as_ref() == Some(&snapshot) {
+            if settle_snapshot.as_ref() == Some(&snapshot) {
                 consecutive_matches = consecutive_matches.saturating_add(1);
             } else {
                 consecutive_matches = 1;
-                last_snapshot = Some(snapshot);
+                settle_snapshot = Some(snapshot);
             }
 
             Ok(consecutive_matches >= 3)
-        })
-        .map_err(|error| {
-            Error::Message(format!(
-                "machine state did not settle on {} for [{}]: {error}",
-                node.name, expected_labels
+        });
+
+        wait_result.map_err(|error| {
+            Error::Message(self.settle_timeout_report(
+                &node.name,
+                expected_states,
+                latest_observed.as_deref(),
+                &error.to_string(),
             ))
         })
+    }
+
+    fn settle_timeout_report(
+        &self,
+        observer: &str,
+        expected_states: &[(&str, &str)],
+        snapshot: Option<&[MachineRow]>,
+        error: &str,
+    ) -> String {
+        let expected_labels = expected_states
+            .iter()
+            .map(|(machine_id, state)| format!("{machine_id}:{state}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut report = format!(
+            "machine state did not settle on {observer} for [{expected_labels}]: {error}"
+        );
+
+        let Some(snapshot) = snapshot else {
+            let _ = write!(report, "\n  (no machine list snapshot was ever observed)");
+            return report;
+        };
+
+        let _ = write!(report, "\n  observed snapshot ({} rows):", snapshot.len());
+        if snapshot.is_empty() {
+            let _ = write!(report, " (empty)");
+        }
+        for row in snapshot {
+            let _ = write!(
+                report,
+                "\n    - {} drain={} liveness={} subnet={}",
+                row.id, row.drain, row.liveness, row.subnet,
+            );
+        }
+
+        let expected_ids: BTreeMap<&str, &str> = expected_states
+            .iter()
+            .map(|(id, state)| (*id, *state))
+            .collect();
+        for row in snapshot {
+            let expected_state = expected_ids.get(row.id.as_str()).copied();
+            let matches_expected =
+                expected_state.is_some_and(|state| row_matches_state(row, state));
+            if matches_expected {
+                continue;
+            }
+            if row.liveness == "fresh" {
+                continue;
+            }
+            let Ok(peer_node) = self.node(&row.id) else {
+                let _ = write!(
+                    report,
+                    "\n  {}: no e2e-managed container — cannot probe mesh readiness",
+                    row.id
+                );
+                continue;
+            };
+            append_readiness_diagnostics(&mut report, &row.id, peer_node);
+        }
+
+        report
     }
 
     pub(crate) fn assert_unique_machine_subnets(&self, node_name: &str) -> Result<()> {
@@ -295,6 +358,37 @@ impl MachineRow {
 
 fn machine_rows(payload: &MachineListPayload) -> Vec<MachineRow> {
     payload.rows.iter().map(MachineRow::from_payload).collect()
+}
+
+fn append_readiness_diagnostics(report: &mut String, row_id: &str, peer_node: &Node) {
+    match daemon_node_status_in_container(&peer_node.container_name) {
+        Ok(payload) => {
+            let _ = write!(
+                report,
+                "\n  {row_id} self-report: phase={} ready={} draining={}",
+                payload.phase, payload.ready, payload.draining,
+            );
+        }
+        Err(error) => {
+            let _ = write!(report, "\n  {row_id} self-report: unavailable ({error})");
+        }
+    }
+    match daemon_mesh_ready_in_container(&peer_node.container_name) {
+        Ok(payload) => {
+            let _ = write!(
+                report,
+                "\n  {row_id} mesh-ready gates: ready={} phase={} store_healthy={} sync_connected={} self_record_published={}",
+                payload.ready,
+                payload.phase,
+                payload.store_healthy,
+                payload.sync_connected,
+                payload.self_record_published,
+            );
+        }
+        Err(error) => {
+            let _ = write!(report, "\n  {row_id} mesh-ready gates: unavailable ({error})");
+        }
+    }
 }
 
 fn row_matches_state(row: &MachineRow, expected_state: &str) -> bool {

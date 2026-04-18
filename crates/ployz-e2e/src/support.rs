@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use ployz_api::{MachineListPayload, MeshReadyPayload};
+use ployz_api::{MachineListPayload, MeshReadyPayload, NodeStatusPayload};
 use ployz_sdk::{DaemonClient, StdioTransport};
 use std::net::TcpListener;
 use std::process::{Command, ExitStatus};
@@ -53,6 +53,25 @@ pub(crate) fn daemon_machine_list_in_container(container_name: &str) -> Result<M
     runtime
         .block_on(async { client.machine_list().await })
         .map_err(|error| Error::Io(format!("load machine list in '{container_name}': {error}")))
+}
+
+pub(crate) fn daemon_node_status_in_container(
+    container_name: &str,
+) -> Result<NodeStatusPayload> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Error::Io(format!("build node status runtime: {error}")))?;
+    let transport = StdioTransport::new("docker")
+        .arg("exec")
+        .arg("-i")
+        .arg(container_name)
+        .arg("ployzd")
+        .arg("rpc-stdio");
+    let client = DaemonClient::new(transport);
+    runtime
+        .block_on(async { client.node_status().await })
+        .map_err(|error| Error::Io(format!("probe node status in '{container_name}': {error}")))
 }
 
 pub(crate) fn daemon_mesh_ready_in_container(container_name: &str) -> Result<MeshReadyPayload> {
