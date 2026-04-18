@@ -2,6 +2,7 @@ mod ebpf_sync;
 mod endpoint_refresh;
 mod peer_sync;
 mod self_drain_watcher;
+mod self_mark_up;
 mod self_record;
 mod subnet_claim_monitor;
 
@@ -10,6 +11,7 @@ pub(crate) use endpoint_refresh::run_endpoint_refresh_task;
 pub use peer_sync::PeerSyncCommand;
 pub(crate) use peer_sync::run_peer_sync_task;
 pub(crate) use self_drain_watcher::run_self_drain_watcher_task;
+pub(crate) use self_mark_up::run_self_mark_up_task;
 pub(crate) use self_record::SelfRecordCommand;
 pub(crate) use self_record::SelfRecordMutation;
 pub(crate) use self_record::apply_self_record_mutation;

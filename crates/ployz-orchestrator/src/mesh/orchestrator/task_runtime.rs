@@ -3,7 +3,8 @@ use crate::mesh::probe::run_probe_listener_task;
 use crate::mesh::tasks::TaskSetError;
 use crate::mesh::tasks::{
     run_ebpf_sync_task, run_endpoint_refresh_task, run_peer_sync_task,
-    run_self_drain_watcher_task, run_self_record_writer_task, run_subnet_claim_monitor_task,
+    run_self_drain_watcher_task, run_self_mark_up_task, run_self_record_writer_task,
+    run_subnet_claim_monitor_task,
 };
 use tokio::sync::mpsc;
 
@@ -110,12 +111,12 @@ impl Mesh {
         ));
 
         let bridge_ip = self.network.bridge_ip().await;
-        let now = crate::time::now_unix_secs();
-        let _ = crate::mesh::tasks::apply_self_record_mutation(
-            &self_record_tx,
-            crate::mesh::tasks::SelfRecordMutation::MarkUp { now, bridge_ip },
-        )
-        .await;
+        task_set.spawn(run_self_mark_up_task(
+            self_record_tx.clone(),
+            bridge_ip,
+            crate::time::now_unix_secs,
+            cancel.clone(),
+        ));
 
         let (drain_snapshot, drain_events) = self
             .store

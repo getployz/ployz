@@ -23,8 +23,8 @@ pub(crate) enum SelfRecordMutation {
 
 #[derive(Debug)]
 pub(crate) struct SelfRecordCommand {
-    mutation: SelfRecordMutation,
-    done: oneshot::Sender<Option<MachineRecord>>,
+    pub(super) mutation: SelfRecordMutation,
+    pub(super) done: oneshot::Sender<Option<MachineRecord>>,
 }
 
 pub(crate) async fn apply_self_record_mutation(
