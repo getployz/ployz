@@ -55,11 +55,11 @@ pub(crate) fn daemon_machine_list_in_container(container_name: &str) -> Result<M
         .map_err(|error| Error::Io(format!("load machine list in '{container_name}': {error}")))
 }
 
-pub(crate) fn daemon_mesh_ready_in_container(container_name: &str) -> Result<NodeStatusPayload> {
+pub(crate) fn daemon_node_status_in_container(container_name: &str) -> Result<NodeStatusPayload> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|error| Error::Io(format!("build mesh ready runtime: {error}")))?;
+        .map_err(|error| Error::Io(format!("build node status runtime: {error}")))?;
     let transport = StdioTransport::new("docker")
         .arg("exec")
         .arg("-i")
@@ -69,11 +69,7 @@ pub(crate) fn daemon_mesh_ready_in_container(container_name: &str) -> Result<Nod
     let client = DaemonClient::new(transport);
     runtime
         .block_on(async { client.node_status().await })
-        .map_err(|error| {
-            Error::Io(format!(
-                "probe mesh readiness in '{container_name}': {error}"
-            ))
-        })
+        .map_err(|error| Error::Io(format!("probe node status in '{container_name}': {error}")))
 }
 
 pub(crate) fn docker_outer<const N: usize>(args: [&str; N]) -> Result<CommandOutput> {
