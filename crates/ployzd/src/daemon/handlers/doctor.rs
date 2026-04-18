@@ -104,23 +104,23 @@ fn render_doctor_report(
     node_status_by_machine: &HashMap<MachineId, NodeStatusResult>,
 ) -> String {
     let handshake_by_key = handshake_state_map(device_peers);
-    let peer_rows = build_participation_rows(
+    let peer_rows = build_node_rows(
         machines,
         &local_record.id,
         &handshake_by_key,
         overlay_probe_by_ip,
         node_status_by_machine,
     );
-    let blocking_peers: Vec<&ParticipationRow> = peer_rows
+    let blocking_peers: Vec<&NodeRow> = peer_rows
         .iter()
         .filter(|row| row.required)
         .filter(|row| !row.probe_reachable())
         .collect();
-    let all_peers: Vec<&ParticipationRow> = peer_rows.iter().collect();
+    let all_peers: Vec<&NodeRow> = peer_rows.iter().collect();
 
     let mut lines = Vec::new();
     lines.push(format!(
-        "participation: {}",
+        "node-health: {}",
         if blocking_peers.is_empty() {
             "healthy"
         } else {
@@ -160,7 +160,7 @@ enum CauseDisplay {
     Omit,
 }
 
-fn append_peer_section(lines: &mut Vec<String>, rows: &[&ParticipationRow], cause: CauseDisplay) {
+fn append_peer_section(lines: &mut Vec<String>, rows: &[&NodeRow], cause: CauseDisplay) {
     let w_id = rows
         .iter()
         .map(|row| row.id.len())
@@ -202,7 +202,7 @@ fn append_peer_section(lines: &mut Vec<String>, rows: &[&ParticipationRow], caus
 }
 
 #[derive(Debug, Clone)]
-struct ParticipationRow {
+struct NodeRow {
     id: String,
     reachable: bool,
     ready: Option<bool>,
@@ -213,7 +213,7 @@ struct ParticipationRow {
     probe: ProbeState,
 }
 
-impl ParticipationRow {
+impl NodeRow {
     fn store_status(&self) -> String {
         let reachable = if self.reachable { "present" } else { "absent" };
         let ready = self
@@ -259,14 +259,14 @@ impl ParticipationRow {
     }
 }
 
-fn build_participation_rows(
+fn build_node_rows(
     machines: &[MachineRecord],
     local_machine_id: &MachineId,
     handshake_by_key: &HashMap<PublicKey, HandshakeState>,
     overlay_probe_by_ip: &HashMap<OverlayIp, ProbeState>,
     node_status_by_machine: &HashMap<MachineId, NodeStatusResult>,
-) -> Vec<ParticipationRow> {
-    let mut rows: Vec<ParticipationRow> = machines
+) -> Vec<NodeRow> {
+    let mut rows: Vec<NodeRow> = machines
         .iter()
         .filter(|machine| machine.id != *local_machine_id)
         .map(|machine| {
@@ -287,7 +287,7 @@ fn build_participation_rows(
                 .get(&machine.public_key)
                 .copied()
                 .unwrap_or(HandshakeState::Absent);
-            ParticipationRow {
+            NodeRow {
                 id: machine.id.0.clone(),
                 reachable,
                 ready,
@@ -443,7 +443,6 @@ mod tests {
     };
     use ployz_types::model::Identity;
     use ployz_types::model::{MachineId, MachineStatus, OverlayIp, PublicKey};
-    use ployz_types::time::now_unix_secs;
     use std::net::Ipv6Addr;
     use std::path::PathBuf;
     use std::sync::{Arc, OnceLock};
@@ -458,7 +457,6 @@ mod tests {
     async fn doctor_reports_missing_required_peer_handshake() {
         let _probe_guard = lock_test_probe_port().await;
         let (state, store, network) = make_state().await;
-        let now = now_unix_secs();
         let peer_key = PublicKey([2; 32]);
         let stale_key = PublicKey([3; 32]);
 
@@ -479,7 +477,7 @@ mod tests {
 
         let response = state.handle_doctor().await;
         assert!(response.ok, "{}", response.message);
-        assert!(response.message.contains("participation: blocked"));
+        assert!(response.message.contains("node-health: blocked"));
         assert!(response.message.contains("blocking peers:"));
         assert!(response.message.lines().any(|line| {
             line.contains("peer")
@@ -501,7 +499,6 @@ mod tests {
     async fn doctor_reports_healthy_when_overlay_probe_is_reachable() {
         let (_probe_guard, probe_cancel, probe_task) = start_test_probe_listener().await;
         let (state, store, network) = make_state().await;
-        let now = now_unix_secs();
         let peer_key = PublicKey([2; 32]);
 
         store
@@ -517,7 +514,7 @@ mod tests {
 
         let response = state.handle_doctor().await;
         assert!(response.ok, "{}", response.message);
-        assert!(response.message.contains("participation: healthy"));
+        assert!(response.message.contains("node-health: healthy"));
         assert!(!response.message.contains("blocking peers:"));
         assert!(response.message.contains("all peers:"));
         assert!(response.message.lines().any(|line| {
@@ -531,7 +528,6 @@ mod tests {
 
     #[tokio::test]
     async fn doctor_treats_overlay_probe_as_second_health_signal() {
-        let now = now_unix_secs();
         let local_record = test_machine_record("joiner5", false, PublicKey([1; 32]));
         let peer_record = test_machine_record("peer", false, PublicKey([2; 32]));
         let machines = vec![local_record.clone(), peer_record.clone()];
@@ -560,7 +556,7 @@ mod tests {
             &node_status_by_machine,
         );
 
-        assert!(report.contains("participation: healthy"));
+        assert!(report.contains("node-health: healthy"));
         assert!(report.contains("wg=absent"));
         assert!(report.contains("probe=reachable"));
     }

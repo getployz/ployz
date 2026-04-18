@@ -17,13 +17,13 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
 
     run.log_progress("tick all nodes");
     run.tick_nodes(&["founder", "peer1", "peer2"], 3)?;
-    run.log_progress("wait all three enabled");
+    run.log_progress("wait all three active");
     run.wait_for_settled_machine_states_with_ticks(
         "founder",
         &[
-            ("founder", "enabled"),
-            ("peer1", "enabled"),
-            ("peer2", "enabled"),
+            ("founder", "active"),
+            ("peer1", "active"),
+            ("peer2", "active"),
         ],
         &["founder", "peer1", "peer2"],
         3,
@@ -69,15 +69,15 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
     run.log_progress("assert unique subnets (invariant — no healing needed)");
     run.assert_unique_machine_subnets("founder")?;
 
-    run.log_progress("wait all nodes enabled");
+    run.log_progress("wait all nodes active");
     run.wait_for_settled_machine_states_with_ticks(
         "founder",
         &[
-            ("founder", "enabled"),
-            ("peer1", "enabled"),
-            ("peer2", "enabled"),
-            ("joiner1", "enabled"),
-            ("joiner2", "enabled"),
+            ("founder", "active"),
+            ("peer1", "active"),
+            ("peer2", "active"),
+            ("joiner1", "active"),
+            ("joiner2", "active"),
         ],
         all_nodes,
         3,

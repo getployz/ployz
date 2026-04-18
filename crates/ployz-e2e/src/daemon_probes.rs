@@ -87,7 +87,11 @@ impl ScenarioRun {
             if !expected_states.iter().all(|(machine_id, expected_state)| {
                 snapshot.iter().any(|row| {
                     row.id == *machine_id
-                        && row.participation == *expected_state
+                        && if *expected_state == "draining" {
+                            row.draining
+                        } else {
+                            !row.draining
+                        }
                         && row.subnet != "—"
                 })
             }) {
@@ -145,7 +149,11 @@ impl ScenarioRun {
             if !expected_states.iter().all(|(machine_id, expected_state)| {
                 snapshot.iter().any(|row| {
                     row.id == *machine_id
-                        && row.participation == *expected_state
+                        && if *expected_state == "draining" {
+                            row.draining
+                        } else {
+                            !row.draining
+                        }
                         && row.subnet != "—"
                 })
             }) {
@@ -274,7 +282,7 @@ impl ScenarioRun {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MachineRow {
     id: String,
-    participation: String,
+    draining: bool,
     subnet: String,
 }
 
@@ -282,7 +290,7 @@ impl MachineRow {
     fn from_payload(row: &ployz_api::MachineListRow) -> Self {
         Self {
             id: row.id.clone(),
-            participation: row.participation.clone(),
+            draining: row.draining,
             subnet: row.subnet.clone().unwrap_or_else(|| "—".into()),
         }
     }
@@ -295,7 +303,11 @@ fn machine_rows(payload: &MachineListPayload) -> Vec<MachineRow> {
 fn machine_state(payload: &MachineListPayload, machine_id: &str) -> Option<String> {
     payload.rows.iter().find_map(|row| {
         if row.id == machine_id {
-            return Some(row.participation.clone());
+            return Some(if row.draining {
+                String::from("draining")
+            } else {
+                String::from("active")
+            });
         }
         None
     })
