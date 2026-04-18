@@ -214,12 +214,10 @@ pub struct MachineListPayload {
 pub struct MachineListRow {
     pub id: String,
     pub status: String,
-    pub participation: String,
-    pub liveness: String,
+    pub draining: bool,
     pub overlay_ip: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subnet: Option<String>,
-    pub last_heartbeat: u64,
     pub created_at: u64,
 }
 

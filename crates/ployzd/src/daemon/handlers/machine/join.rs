@@ -14,7 +14,7 @@ use ployz_api::{
 use ployz_orchestrator::ipam::Ipam;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_sdk::DaemonClient;
-use ployz_types::model::{MachineId, MachineRecord, Participation};
+use ployz_types::model::{MachineId, MachineRecord};
 use ployz_types::time::now_unix_secs;
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, sleep, timeout};
@@ -336,13 +336,7 @@ impl DaemonState {
         let self_id = &self.identity.machine_id;
         let peers: Vec<FanOutTarget> = machines
             .iter()
-            .filter(|m| {
-                &m.id != self_id
-                    && matches!(
-                        m.participation,
-                        Participation::Enabled | Participation::Draining
-                    )
-            })
+            .filter(|m| &m.id != self_id && !m.drain)
             .map(|m| FanOutTarget {
                 machine_id: m.id.clone(),
                 overlay_ip: m.overlay_ip,

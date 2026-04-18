@@ -7,7 +7,7 @@ use ployz_test_support::{
     memory_wireguard_driver,
 };
 use ployz_types::model::{
-    JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
+    JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, PublicKey,
 };
 use std::net::Ipv6Addr;
 use std::sync::Arc;
@@ -23,8 +23,7 @@ fn test_record(id: &str, key_byte: u8) -> MachineRecord {
         bridge_ip: None,
         endpoints: vec![format!("10.0.0.{key_byte}:51820")],
         status: MachineStatus::Unknown,
-        participation: Participation::Disabled,
-        last_heartbeat: 0,
+        drain: false,
         created_at: 0,
         updated_at: 0,
         labels: std::collections::BTreeMap::new(),
@@ -108,7 +107,7 @@ async fn startup_reaches_running_single_node() {
         .authoritative_self_record()
         .await
         .expect("self record should exist");
-    assert_eq!(self_record.participation, Participation::Disabled);
+    assert!(!self_record.drain);
 }
 
 #[tokio::test]

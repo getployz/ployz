@@ -17,7 +17,7 @@ use ployz_orchestrator::deploy::{apply, export_manifest, preview};
 use ployz_runtime_backends::deploy::DefaultDeploySessionFactory;
 use ployz_store_api::{MachineStore, MachineSubscription};
 use ployz_types::Result as TypesResult;
-use ployz_types::model::{MachineId, Participation};
+use ployz_types::model::MachineId;
 use ployz_types::spec::{DeployManifest, Namespace};
 use ployz_types::time::now_unix_secs;
 use std::sync::Arc;
@@ -373,7 +373,7 @@ impl DaemonState {
             .mesh
             .authoritative_self_record()
             .await
-            .is_some_and(|record| record.participation == Participation::Draining);
+            .is_some_and(|record| record.drain);
 
         let mut eligible = BTreeSet::new();
         let mut unreachable = Vec::new();

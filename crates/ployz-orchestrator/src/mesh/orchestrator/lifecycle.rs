@@ -142,18 +142,16 @@ impl Mesh {
     pub async fn destroy(&mut self) -> Result<()> {
         self.apply(PhaseEvent::DestroyRequested)?;
 
-        let now = crate::time::now_unix_secs();
         if self
             .update_authoritative_self_record(|record| {
                 record.status = MachineStatus::Down;
-                record.last_heartbeat = now;
-                record.updated_at = now;
+                record.updated_at = crate::time::now_unix_secs();
             })
             .await
             .is_none()
             && self.authoritative_self_record().await.is_some()
         {
-            warn!(timestamp = now, "failed to set status=down on destroy");
+            warn!("failed to set status=down on destroy");
         }
 
         let first_err = self.stop_runtime(RuntimeStoreMode::Stop).await;

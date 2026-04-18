@@ -3,15 +3,11 @@ use crate::daemon::DaemonState;
 use crate::daemon::store::StoreDriver;
 use ployz_api::{DaemonPayload, DaemonResponse, MachineRemovePayload};
 use ployz_store_api::MachineStore;
-use ployz_types::model::{MachineId, MachineRecord, Participation};
-use ployz_types::time::now_unix_secs;
+use ployz_types::model::{MachineId, MachineRecord};
 use std::collections::HashMap;
 use std::time::Duration;
 
-use super::render::{
-    format_heartbeat, format_liveness, format_participation, format_status, format_timestamp,
-    render_machine_list_report,
-};
+use super::render::{format_status, format_timestamp, render_machine_list_report};
 use super::types::{MachineListReport, MachineListReportRow};
 
 impl DaemonState {
@@ -25,7 +21,7 @@ impl DaemonState {
             .mesh
             .authoritative_self_record()
             .await
-            .is_some_and(|record| record.participation == Participation::Draining);
+            .is_some_and(|record| record.drain);
         let local_status = LocalNodeStatus {
             ready: local_ready.ready,
             phase: local_ready.phase.to_string(),
@@ -74,12 +70,12 @@ impl DaemonState {
             }
         };
 
-        if !force && record.participation != Participation::Disabled {
+        if !force && !record.drain {
             return self.err(
-                "MACHINE_NOT_DISABLED",
+                "MACHINE_NOT_DRAINED",
                 format!(
-                    "machine '{id}' must be disabled before removal (current participation: {})",
-                    record.participation
+                    "machine '{id}' must be drained before removal (current draining: {})",
+                    record.drain
                 ),
             );
         }
@@ -121,7 +117,6 @@ pub(super) async fn machine_list_report(
         .list_machines()
         .await
         .map_err(|err| format!("failed to list machines: {err}"))?;
-    let now = now_unix_secs();
     let targets: Vec<FanOutTarget> = machines
         .iter()
         .filter(|machine| machine.id != *local_machine_id)
@@ -142,16 +137,12 @@ pub(super) async fn machine_list_report(
             .map(|machine| MachineListReportRow {
                 id: machine.id.0.clone(),
                 status: format_status(machine),
-                participation: format_participation(machine),
-                liveness: format_liveness(machine, now),
                 overlay: machine.overlay_ip.0.to_string(),
                 subnet: machine.subnet,
                 subnet_display: machine
                     .subnet
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| "—".into()),
-                last_heartbeat: machine.last_heartbeat,
-                heartbeat_display: format_heartbeat(machine.last_heartbeat, now),
                 reachable: machine.id == *local_machine_id
                     || matches!(
                         status_by_machine.get(&machine.id),

@@ -9,7 +9,6 @@ pub(crate) use ployz_types::time;
 
 pub mod deploy;
 pub mod ipam;
-pub mod machine_liveness;
 pub mod mesh;
 
 pub use mesh::orchestrator::{Mesh, MeshError};

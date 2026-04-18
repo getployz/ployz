@@ -11,7 +11,7 @@ use ployz_api::{
 use ployz_orchestrator::ipam::Ipam;
 use ployz_orchestrator::mesh::orchestrator::MeshReadyStatus;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
-use ployz_types::model::{JoinResponse, NetworkName, Participation};
+use ployz_types::model::{JoinResponse, NetworkName};
 use ployz_types::time::now_unix_secs;
 use tracing::warn;
 
@@ -127,9 +127,7 @@ impl DaemonState {
         };
         let ready = active.mesh.ready_status().await;
         let self_record = active.mesh.authoritative_self_record().await;
-        let draining = self_record
-            .as_ref()
-            .is_some_and(|record| record.participation == Participation::Draining);
+        let draining = self_record.as_ref().is_some_and(|record| record.drain);
         let payload = NodeStatusPayload {
             machine_id: self.identity.machine_id.0.clone(),
             boot_id: self.boot_id.clone(),
@@ -726,8 +724,7 @@ mod tests {
                 bridge_ip: None,
                 endpoints: vec!["127.0.0.1:51820".into()],
                 status: ployz_types::model::MachineStatus::Unknown,
-                participation: ployz_types::model::Participation::Disabled,
-                last_heartbeat: 0,
+                drain: false,
                 created_at: 0,
                 updated_at: 0,
                 labels: std::collections::BTreeMap::new(),

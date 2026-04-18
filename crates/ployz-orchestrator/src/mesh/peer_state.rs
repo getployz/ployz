@@ -1,8 +1,6 @@
 use crate::mesh::peer::{PEER_DOWN_INTERVAL, PeerStatus, WireGuardPeer};
 use crate::mesh::probe::{TcpProbeResult, TcpProbeStatus};
-use crate::model::{
-    MachineEvent, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
-};
+use crate::model::{MachineEvent, MachineId, MachineRecord, MachineStatus, OverlayIp, PublicKey};
 use ipnet::Ipv4Net;
 use ployz_runtime_api::{DevicePeer, MeshNetwork};
 use std::cmp::Ordering;
@@ -489,8 +487,7 @@ fn peer_state_to_planned_record(ps: &PeerState) -> MachineRecord {
         bridge_ip: ps.bridge_ip,
         endpoints: ps.planned_endpoints(),
         status: MachineStatus::Unknown,
-        participation: Participation::Disabled,
-        last_heartbeat: 0,
+        drain: false,
         created_at: 0,
         updated_at: 0,
         labels: std::collections::BTreeMap::new(),
@@ -533,8 +530,7 @@ mod tests {
             bridge_ip: None,
             endpoints: endpoints.into_iter().map(String::from).collect(),
             status: MachineStatus::Unknown,
-            participation: Participation::Disabled,
-            last_heartbeat: 0,
+            drain: false,
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),
@@ -553,8 +549,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec!["a:1".into(), "b:2".into(), "c:3".into()],
             status: MachineStatus::Unknown,
-            participation: Participation::Disabled,
-            last_heartbeat: 0,
+            drain: false,
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),

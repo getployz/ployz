@@ -1,7 +1,7 @@
 use crate::coordination::fanout::{FanOutTarget, NodeStatusResult, fanout_node_status};
 use crate::daemon::{ActiveMesh, DaemonState};
 use ployz_runtime_api::{DevicePeer, WireGuardDevice};
-use ployz_types::model::{MachineId, MachineRecord, OverlayIp, Participation, PublicKey};
+use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io;
@@ -60,7 +60,7 @@ impl DaemonState {
             .mesh
             .authoritative_self_record()
             .await
-            .is_some_and(|record| record.participation == Participation::Draining);
+            .is_some_and(|record| record.drain);
         let targets: Vec<FanOutTarget> = machines
             .iter()
             .filter(|machine| machine.id != self.identity.machine_id)
@@ -282,8 +282,7 @@ fn build_participation_rows(
                 | Some(NodeStatusResult::InvalidIdentity { .. })
                 | None => (false, None, None, None),
             };
-            let required =
-                machine.participation == Participation::Enabled && draining != Some(true);
+            let required = !machine.drain && draining != Some(true);
             let handshake_state = handshake_by_key
                 .get(&machine.public_key)
                 .copied()
@@ -443,7 +442,7 @@ mod tests {
         memory_wireguard_driver,
     };
     use ployz_types::model::Identity;
-    use ployz_types::model::{MachineId, MachineStatus, OverlayIp, Participation, PublicKey};
+    use ployz_types::model::{MachineId, MachineStatus, OverlayIp, PublicKey};
     use ployz_types::time::now_unix_secs;
     use std::net::Ipv6Addr;
     use std::path::PathBuf;
@@ -464,21 +463,11 @@ mod tests {
         let stale_key = PublicKey([3; 32]);
 
         store
-            .upsert_self_machine(&test_machine_record(
-                "peer",
-                Participation::Enabled,
-                now,
-                peer_key.clone(),
-            ))
+            .upsert_self_machine(&test_machine_record("peer", false, peer_key.clone()))
             .await
             .expect("upsert peer");
         store
-            .upsert_self_machine(&test_machine_record(
-                "stale-peer",
-                Participation::Enabled,
-                now.saturating_sub(31),
-                stale_key.clone(),
-            ))
+            .upsert_self_machine(&test_machine_record("stale-peer", false, stale_key.clone()))
             .await
             .expect("upsert stale peer");
 
@@ -516,12 +505,7 @@ mod tests {
         let peer_key = PublicKey([2; 32]);
 
         store
-            .upsert_self_machine(&test_machine_record(
-                "peer",
-                Participation::Enabled,
-                now,
-                peer_key.clone(),
-            ))
+            .upsert_self_machine(&test_machine_record("peer", false, peer_key.clone()))
             .await
             .expect("upsert peer");
 
@@ -548,10 +532,8 @@ mod tests {
     #[tokio::test]
     async fn doctor_treats_overlay_probe_as_second_health_signal() {
         let now = now_unix_secs();
-        let local_record =
-            test_machine_record("joiner5", Participation::Disabled, now, PublicKey([1; 32]));
-        let peer_record =
-            test_machine_record("peer", Participation::Enabled, now, PublicKey([2; 32]));
+        let local_record = test_machine_record("joiner5", false, PublicKey([1; 32]));
+        let peer_record = test_machine_record("peer", false, PublicKey([2; 32]));
         let machines = vec![local_record.clone(), peer_record.clone()];
         let overlay_probe_by_ip = HashMap::from([(peer_record.overlay_ip, ProbeState::Reachable)]);
         let node_status_by_machine = HashMap::from([(
@@ -598,8 +580,7 @@ mod tests {
         store
             .upsert_self_machine(&test_machine_record(
                 "joiner5",
-                Participation::Disabled,
-                now_unix_secs(),
+                false,
                 identity.public_key.clone(),
             ))
             .await
@@ -641,12 +622,7 @@ mod tests {
         (state, store, network)
     }
 
-    fn test_machine_record(
-        id: &str,
-        participation: Participation,
-        last_heartbeat: u64,
-        public_key: PublicKey,
-    ) -> MachineRecord {
+    fn test_machine_record(id: &str, drain: bool, public_key: PublicKey) -> MachineRecord {
         MachineRecord {
             id: MachineId(String::from(id)),
             public_key,
@@ -655,8 +631,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec![String::from("127.0.0.1:51820")],
             status: MachineStatus::Up,
-            participation,
-            last_heartbeat,
+            drain,
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),
