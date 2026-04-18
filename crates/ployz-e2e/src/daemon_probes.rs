@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::runner::scenario_run::ScenarioRun;
 use crate::support::{
-    daemon_machine_list_in_container, daemon_mesh_ready_in_container, wait_until,
+    daemon_machine_list_in_container, daemon_node_status_in_container, wait_until,
 };
 use ployz_api::MachineListPayload;
 use std::collections::BTreeMap;
@@ -11,17 +11,17 @@ use super::environment::{CONTAINER_WAIT_TIMEOUT, READY_WAIT_TIMEOUT, STATE_WAIT_
 use super::nodes::Node;
 
 impl ScenarioRun {
-    pub(crate) fn wait_mesh_ready_name(&self, node_name: &str) -> Result<()> {
-        Self::wait_mesh_ready_default(self.node(node_name)?)
+    pub(crate) fn wait_node_ready_name(&self, node_name: &str) -> Result<()> {
+        Self::wait_node_ready_default(self.node(node_name)?)
     }
 
-    pub(crate) fn wait_mesh_ready_default(node: &Node) -> Result<()> {
-        Self::wait_mesh_ready(node, READY_WAIT_TIMEOUT)
+    pub(crate) fn wait_node_ready_default(node: &Node) -> Result<()> {
+        Self::wait_node_ready(node, READY_WAIT_TIMEOUT)
     }
 
-    fn wait_mesh_ready(node: &Node, timeout: Duration) -> Result<()> {
+    fn wait_node_ready(node: &Node, timeout: Duration) -> Result<()> {
         wait_until(timeout, || {
-            let Ok(payload) = daemon_mesh_ready_in_container(&node.container_name) else {
+            let Ok(payload) = daemon_node_status_in_container(&node.container_name) else {
                 return Ok(false);
             };
             Ok(payload.ready)

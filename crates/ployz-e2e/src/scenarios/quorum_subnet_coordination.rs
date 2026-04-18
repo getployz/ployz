@@ -7,8 +7,8 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
     // Phase 1: Setup a 3-node cluster
     run.log_progress("mesh init founder");
     run.mesh_init("founder", "alpha")?;
-    run.log_progress("wait founder mesh ready");
-    run.wait_mesh_ready_name("founder")?;
+    run.log_progress("wait founder node ready");
+    run.wait_node_ready_name("founder")?;
 
     run.log_progress("add peer1 from founder");
     run.machine_add("founder", "peer1")?;

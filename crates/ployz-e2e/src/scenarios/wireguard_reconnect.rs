@@ -12,15 +12,15 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
 
     run.log_progress("mesh init founder");
     run.mesh_init("founder", "alpha")?;
-    run.log_progress("wait founder mesh ready");
-    run.wait_mesh_ready_name("founder")?;
+    run.log_progress("wait founder node ready");
+    run.wait_node_ready_name("founder")?;
 
     run.log_progress("add peer from founder");
     run.machine_add("founder", "peer")?;
     run.log_progress("wait founder+peer active");
     run.wait_for_settled_machine_states("founder", &[("founder", "active"), ("peer", "active")])?;
-    run.log_progress("wait peer mesh ready");
-    run.wait_mesh_ready_name("peer")?;
+    run.log_progress("wait peer node ready");
+    run.wait_node_ready_name("peer")?;
 
     run.log_progress("wait initial peer connectivity");
     wait_for_doctor_peer_status(run, "founder", "peer", "healthy", "reachable")?;
