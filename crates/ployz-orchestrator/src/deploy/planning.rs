@@ -160,19 +160,19 @@ pub(crate) fn deployable_machines(
     local_machine_id: &MachineId,
     live_machines: &BTreeSet<MachineId>,
 ) -> Vec<MachineId> {
-    let mut enabled: Vec<MachineId> = machines
+    let mut eligible: Vec<MachineId> = machines
         .iter()
-        .filter(|machine| machine.participation == crate::model::Participation::Enabled)
+        .filter(|machine| !machine.drain)
         .filter(|machine| {
             machine.id == *local_machine_id || live_machines.contains(&machine.id)
         })
         .map(|machine| machine.id.clone())
         .collect();
-    enabled.sort_by(|left, right| left.0.cmp(&right.0));
-    if enabled.is_empty() {
+    eligible.sort_by(|left, right| left.0.cmp(&right.0));
+    if eligible.is_empty() {
         return vec![local_machine_id.clone()];
     }
-    enabled
+    eligible
 }
 
 pub(crate) fn desired_slots(

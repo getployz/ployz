@@ -3,7 +3,6 @@ use crate::daemon::{ActiveMesh, DaemonState};
 use crate::peers::fanout::{LiveStatus, fanout_node_status, live_status_map};
 use ployz_runtime_api::{DevicePeer, WireGuardDevice};
 use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
-use ployz_types::time::now_unix_secs;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io;
@@ -13,7 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::Instant;
 
-use super::machine::render::{format_heartbeat, format_live_status};
+use super::machine::render::{format_drain, format_live_status};
 
 const PARTICIPATION_HANDSHAKE_FRESHNESS_WINDOW: Duration = Duration::from_secs(30);
 const PARTICIPATION_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
@@ -58,7 +57,6 @@ impl DaemonState {
         let Some(active) = self.active.as_ref() else {
             return self.err("NO_RUNNING_NETWORK", "no mesh running");
         };
-        let now = now_unix_secs();
         let local_record = match machines
             .iter()
             .find(|machine| machine.id == self.identity.machine_id)
@@ -92,7 +90,6 @@ impl DaemonState {
             &device_peers,
             &overlay_probe_by_ip,
             live_map,
-            now,
         ))
     }
 
@@ -119,7 +116,6 @@ fn render_doctor_report(
     device_peers: &[DevicePeer],
     overlay_probe_by_ip: &HashMap<OverlayIp, ProbeState>,
     live_map: &HashMap<MachineId, LiveStatus>,
-    now: u64,
 ) -> String {
     let handshake_by_key = handshake_state_map(device_peers);
     let peer_rows = build_participation_rows(
@@ -161,12 +157,11 @@ fn render_doctor_report(
         .unwrap_or(LiveStatus::Live);
     lines.push(String::new());
     lines.push(format!(
-        "local: machine={} network={} store={}/{} heartbeat={}",
+        "local: machine={} network={} drain={} liveness={}",
         local_record.id,
         active.config.name,
-        local_record.participation,
+        format_drain(local_record.drain),
         format_live_status(local_live),
-        format_heartbeat(local_record.last_heartbeat, now)
     ));
 
     lines.join("\n")
@@ -189,8 +184,8 @@ fn append_peer_section(lines: &mut Vec<String>, rows: &[&ParticipationRow], caus
         .iter()
         .map(|row| row.store_status().len())
         .max()
-        .unwrap_or("store=enabled/fresh".len())
-        .max("store=enabled/fresh".len());
+        .unwrap_or("store=drain:no/fresh".len())
+        .max("store=drain:no/fresh".len());
     let w_wg = rows
         .iter()
         .map(|row| row.wg_status().len())
@@ -222,7 +217,7 @@ fn append_peer_section(lines: &mut Vec<String>, rows: &[&ParticipationRow], caus
 #[derive(Debug, Clone)]
 struct ParticipationRow {
     id: String,
-    participation: String,
+    drain: &'static str,
     liveness: String,
     required: bool,
     handshake: HandshakeState,
@@ -231,7 +226,7 @@ struct ParticipationRow {
 
 impl ParticipationRow {
     fn store_status(&self) -> String {
-        format!("store={}/{}", self.participation, self.liveness)
+        format!("store=drain:{}/{}", self.drain, self.liveness)
     }
 
     fn wg_status(&self) -> String {
@@ -280,14 +275,14 @@ fn build_participation_rows(
                 .get(&machine.id)
                 .copied()
                 .unwrap_or(LiveStatus::Offline);
-            let required = live == LiveStatus::Live;
+            let required = !machine.drain && live == LiveStatus::Live;
             let handshake_state = handshake_by_key
                 .get(&machine.public_key)
                 .copied()
                 .unwrap_or(HandshakeState::Absent);
             ParticipationRow {
                 id: machine.id.0.clone(),
-                participation: machine.participation.to_string(),
+                drain: if machine.drain { "yes" } else { "no" },
                 liveness: format_live_status(live).to_string(),
                 required,
                 handshake: handshake_state,
@@ -438,7 +433,7 @@ mod tests {
         memory_wireguard_driver,
     };
     use ployz_types::model::Identity;
-    use ployz_types::model::{MachineId, MachineStatus, OverlayIp, Participation, PublicKey};
+    use ployz_types::model::{MachineId, MachineStatus, OverlayIp, PublicKey};
     use std::net::Ipv6Addr;
     use std::path::PathBuf;
     use std::sync::{Arc, OnceLock};
@@ -453,24 +448,17 @@ mod tests {
     async fn doctor_reports_missing_required_peer_handshake() {
         let _probe_guard = lock_test_probe_port().await;
         let (state, store, network) = make_state().await;
-        let now = now_unix_secs();
         let peer_key = PublicKey([2; 32]);
         let stale_key = PublicKey([3; 32]);
 
         store
-            .upsert_self_machine(&test_machine_record(
-                "peer",
-                Participation::Enabled,
-                now,
-                peer_key.clone(),
-            ))
+            .upsert_self_machine(&test_machine_record("peer", false, peer_key.clone()))
             .await
             .expect("upsert peer");
         store
             .upsert_self_machine(&test_machine_record(
                 "stale-peer",
-                Participation::Enabled,
-                now.saturating_sub(31),
+                false,
                 stale_key.clone(),
             ))
             .await
@@ -493,7 +481,7 @@ mod tests {
         assert!(response.message.contains("blocking peers:"));
         assert!(response.message.lines().any(|line| {
             line.contains("peer")
-                && line.contains("store=enabled/fresh")
+                && line.contains("store=drain:no/fresh")
                 && line.contains("wg=absent")
                 && line.contains("probe=unreachable")
                 && line.contains("cause=no direct peer configured and overlay probe failed")
@@ -501,7 +489,7 @@ mod tests {
         assert!(response.message.contains("all peers:"));
         assert!(response.message.lines().any(|line| {
             line.contains("stale-peer")
-                && line.contains("store=enabled/stale")
+                && line.contains("store=drain:no/stale")
                 && line.contains("wg=stale")
                 && line.contains("probe=unreachable")
         }));
@@ -511,16 +499,10 @@ mod tests {
     async fn doctor_reports_healthy_when_overlay_probe_is_reachable() {
         let (_probe_guard, probe_cancel, probe_task) = start_test_probe_listener().await;
         let (state, store, network) = make_state().await;
-        let now = now_unix_secs();
         let peer_key = PublicKey([2; 32]);
 
         store
-            .upsert_self_machine(&test_machine_record(
-                "peer",
-                Participation::Enabled,
-                now,
-                peer_key.clone(),
-            ))
+            .upsert_self_machine(&test_machine_record("peer", false, peer_key.clone()))
             .await
             .expect("upsert peer");
 
@@ -541,7 +523,7 @@ mod tests {
         assert!(response.message.contains("all peers:"));
         assert!(response.message.lines().any(|line| {
             line.contains("peer")
-                && line.contains("store=enabled/fresh")
+                && line.contains("store=drain:no/fresh")
                 && line.contains("wg=fresh")
                 && line.contains("probe=reachable")
         }));
@@ -550,11 +532,8 @@ mod tests {
 
     #[tokio::test]
     async fn doctor_treats_overlay_probe_as_second_health_signal() {
-        let now = now_unix_secs();
-        let local_record =
-            test_machine_record("joiner5", Participation::Disabled, now, PublicKey([1; 32]));
-        let peer_record =
-            test_machine_record("peer", Participation::Enabled, now, PublicKey([2; 32]));
+        let local_record = test_machine_record("joiner5", false, PublicKey([1; 32]));
+        let peer_record = test_machine_record("peer", false, PublicKey([2; 32]));
         let machines = vec![local_record.clone(), peer_record.clone()];
         let overlay_probe_by_ip = HashMap::from([(peer_record.overlay_ip, ProbeState::Reachable)]);
         let live_map = HashMap::from([
@@ -568,7 +547,6 @@ mod tests {
             &[],
             &overlay_probe_by_ip,
             &live_map,
-            now,
         );
 
         assert!(report.contains("participation: healthy"));
@@ -591,8 +569,7 @@ mod tests {
         store
             .upsert_self_machine(&test_machine_record(
                 "joiner5",
-                Participation::Disabled,
-                now_unix_secs(),
+                false,
                 identity.public_key.clone(),
             ))
             .await
@@ -634,12 +611,7 @@ mod tests {
         (state, store, network)
     }
 
-    fn test_machine_record(
-        id: &str,
-        participation: Participation,
-        last_heartbeat: u64,
-        public_key: PublicKey,
-    ) -> MachineRecord {
+    fn test_machine_record(id: &str, drain: bool, public_key: PublicKey) -> MachineRecord {
         MachineRecord {
             id: MachineId(String::from(id)),
             public_key,
@@ -648,8 +620,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec![String::from("127.0.0.1:51820")],
             status: MachineStatus::Up,
-            participation,
-            last_heartbeat,
+            drain,
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),

@@ -15,9 +15,12 @@ pub struct MeshNodeStatus {
 impl Mesh {
     pub async fn node_status(&self) -> MeshNodeStatus {
         let readiness = self.ready_status().await;
-        let subnet = match self.authoritative_self.as_ref() {
-            Some(handle) => handle.read().await.subnet,
-            None => None,
+        let (subnet, draining) = match self.authoritative_self.as_ref() {
+            Some(handle) => {
+                let record = handle.read().await;
+                (record.subnet, record.drain)
+            }
+            None => (None, false),
         };
 
         MeshNodeStatus {
@@ -25,7 +28,7 @@ impl Mesh {
             boot_id: self.boot_id,
             phase: readiness.phase,
             ready: readiness.ready,
-            draining: false,
+            draining,
             subnet,
             slot_count: 0,
         }

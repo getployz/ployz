@@ -1,4 +1,4 @@
-use crate::model::{MachineRecord, OverlayIp, Participation};
+use crate::model::{MachineRecord, OverlayIp};
 use ployz_store_api::MachineStore;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -8,15 +8,15 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub(crate) enum SelfRecordMutation {
-    RefreshLiveness {
+    MarkUp {
         now: u64,
         bridge_ip: Option<OverlayIp>,
     },
     SetEndpoints {
         endpoints: Vec<String>,
     },
-    SetParticipation {
-        participation: Participation,
+    SetDrain {
+        drain: bool,
     },
     Replace(MachineRecord),
 }
@@ -82,12 +82,11 @@ pub(crate) async fn run_self_record_writer_task(
 
 fn apply_mutation(record: &mut MachineRecord, mutation: SelfRecordMutation) {
     match mutation {
-        SelfRecordMutation::RefreshLiveness { now, bridge_ip } => {
+        SelfRecordMutation::MarkUp { now, bridge_ip } => {
             record.status = crate::model::MachineStatus::Up;
             if record.created_at == 0 {
                 record.created_at = now;
             }
-            record.last_heartbeat = now;
             record.updated_at = now;
             if let Some(bridge_ip) = bridge_ip {
                 record.bridge_ip = Some(bridge_ip);
@@ -96,8 +95,8 @@ fn apply_mutation(record: &mut MachineRecord, mutation: SelfRecordMutation) {
         SelfRecordMutation::SetEndpoints { endpoints } => {
             record.endpoints = endpoints;
         }
-        SelfRecordMutation::SetParticipation { participation } => {
-            record.participation = participation;
+        SelfRecordMutation::SetDrain { drain } => {
+            record.drain = drain;
         }
         SelfRecordMutation::Replace(next) => {
             *record = next;
@@ -122,8 +121,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec!["127.0.0.1:51820".into()],
             status: MachineStatus::Unknown,
-            participation: Participation::Disabled,
-            last_heartbeat: 0,
+            drain: false,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -131,7 +129,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn writer_preserves_endpoints_when_liveness_updates() {
+    async fn writer_preserves_endpoints_when_marked_up() {
         let authoritative_self = Arc::new(RwLock::new(test_record()));
         let store = Arc::new(MemoryStore::new());
         let (tx, rx) = mpsc::channel(8);
@@ -152,7 +150,7 @@ mod tests {
         .await;
         let _ = apply_self_record_mutation(
             &tx,
-            SelfRecordMutation::RefreshLiveness {
+            SelfRecordMutation::MarkUp {
                 now: 123,
                 bridge_ip: None,
             },
@@ -165,11 +163,11 @@ mod tests {
         let record = authoritative_self.read().await.clone();
         assert_eq!(record.endpoints, endpoints);
         assert_eq!(record.status, MachineStatus::Up);
-        assert_eq!(record.last_heartbeat, 123);
+        assert_eq!(record.updated_at, 123);
     }
 
     #[tokio::test]
-    async fn writer_preserves_liveness_fields_when_participation_changes() {
+    async fn writer_toggles_drain() {
         let authoritative_self = Arc::new(RwLock::new(test_record()));
         let store = Arc::new(MemoryStore::new());
         let (tx, rx) = mpsc::channel(8);
@@ -180,28 +178,12 @@ mod tests {
             run_self_record_writer_task(writer_authoritative_self, store, rx, task_cancel).await;
         });
 
-        let _ = apply_self_record_mutation(
-            &tx,
-            SelfRecordMutation::RefreshLiveness {
-                now: 123,
-                bridge_ip: None,
-            },
-        )
-        .await;
-        let _ = apply_self_record_mutation(
-            &tx,
-            SelfRecordMutation::SetParticipation {
-                participation: Participation::Enabled,
-            },
-        )
-        .await;
+        let _ = apply_self_record_mutation(&tx, SelfRecordMutation::SetDrain { drain: true }).await;
 
         cancel.cancel();
         handle.await.expect("writer exits");
 
         let record = authoritative_self.read().await.clone();
-        assert_eq!(record.participation, Participation::Enabled);
-        assert_eq!(record.last_heartbeat, 123);
-        assert_eq!(record.updated_at, 123);
+        assert!(record.drain);
     }
 }

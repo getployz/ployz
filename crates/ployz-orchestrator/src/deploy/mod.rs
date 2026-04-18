@@ -16,7 +16,7 @@ mod tests {
     use super::*;
     use crate::model::{
         DeployId, DeployState, DrainState, InstanceId, InstancePhase, MachineId, MachineRecord,
-        MachineStatus, OverlayIp, Participation, PublicKey, ServiceReleaseSlot,
+        MachineStatus, OverlayIp, PublicKey, ServiceReleaseSlot,
     };
     use async_trait::async_trait;
     use ployz_runtime_api::Result as RuntimeResult;
@@ -39,38 +39,33 @@ mod tests {
     }
 
     #[test]
-    fn deployable_machines_excludes_offline_and_non_enabled_peers() {
+    fn deployable_machines_excludes_offline_and_draining_peers() {
         let machines = vec![
-            test_machine("live-enabled", Participation::Enabled, MachineStatus::Up),
-            test_machine("offline-enabled", Participation::Enabled, MachineStatus::Up),
-            test_machine("draining-live", Participation::Draining, MachineStatus::Up),
-            test_machine("disabled-live", Participation::Disabled, MachineStatus::Up),
+            test_machine("live-active", false, MachineStatus::Up),
+            test_machine("offline-active", false, MachineStatus::Up),
+            test_machine("draining-live", true, MachineStatus::Up),
         ];
 
-        let live = live_set(&["live-enabled", "draining-live", "disabled-live", "local"]);
+        let live = live_set(&["live-active", "draining-live", "local"]);
         let deployable = deployable_machines(&machines, &MachineId("local".into()), &live);
-        assert_eq!(deployable, vec![MachineId("live-enabled".into())]);
+        assert_eq!(deployable, vec![MachineId("live-active".into())]);
     }
 
     #[test]
-    fn deployable_machines_falls_back_to_local_when_no_peers_are_live_and_enabled() {
+    fn deployable_machines_falls_back_to_local_when_no_peers_are_live_and_active() {
         let machines = vec![
-            test_machine("offline-enabled", Participation::Enabled, MachineStatus::Up),
-            test_machine("disabled-live", Participation::Disabled, MachineStatus::Up),
+            test_machine("offline-active", false, MachineStatus::Up),
+            test_machine("draining-live", true, MachineStatus::Up),
         ];
 
-        let live = live_set(&["disabled-live"]);
+        let live = live_set(&["draining-live"]);
         let deployable = deployable_machines(&machines, &MachineId("local".into()), &live);
         assert_eq!(deployable, vec![MachineId("local".into())]);
     }
 
     #[test]
-    fn deployable_machines_includes_local_when_enabled_even_if_not_in_live_set() {
-        let machines = vec![test_machine(
-            "local",
-            Participation::Enabled,
-            MachineStatus::Up,
-        )];
+    fn deployable_machines_includes_local_when_active_even_if_not_in_live_set() {
+        let machines = vec![test_machine("local", false, MachineStatus::Up)];
         let live = BTreeSet::new();
         let deployable = deployable_machines(&machines, &MachineId("local".into()), &live);
         assert_eq!(deployable, vec![MachineId("local".into())]);
@@ -227,11 +222,7 @@ mod tests {
         );
     }
 
-    fn test_machine(
-        id: &str,
-        participation: Participation,
-        status: MachineStatus,
-    ) -> MachineRecord {
+    fn test_machine(id: &str, drain: bool, status: MachineStatus) -> MachineRecord {
         MachineRecord {
             id: MachineId(id.into()),
             public_key: PublicKey([7; 32]),
@@ -240,8 +231,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec!["127.0.0.1:51820".into()],
             status,
-            participation,
-            last_heartbeat: now_unix_secs(),
+            drain,
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),
@@ -249,7 +239,7 @@ mod tests {
     }
 
     fn live_machine(id: &str) -> MachineRecord {
-        test_machine(id, Participation::Enabled, MachineStatus::Up)
+        test_machine(id, false, MachineStatus::Up)
     }
 
     fn test_manifest(image: &str) -> DeployManifest {

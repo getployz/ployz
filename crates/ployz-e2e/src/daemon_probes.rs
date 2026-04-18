@@ -48,7 +48,10 @@ impl ScenarioRun {
                 return Ok(false);
             };
             Ok(machine_ids.iter().all(|machine_id| {
-                machine_state(&payload, machine_id).as_deref() == Some(expected_state)
+                payload
+                    .rows
+                    .iter()
+                    .any(|row| row.id == *machine_id && row_matches_state(&MachineRow::from_payload(row), expected_state))
             }))
         })
         .map_err(|error| {
@@ -87,7 +90,7 @@ impl ScenarioRun {
             if !expected_states.iter().all(|(machine_id, expected_state)| {
                 snapshot.iter().any(|row| {
                     row.id == *machine_id
-                        && row.participation == *expected_state
+                        && row_matches_state(row, expected_state)
                         && row.subnet != "—"
                 })
             }) {
@@ -145,7 +148,7 @@ impl ScenarioRun {
             if !expected_states.iter().all(|(machine_id, expected_state)| {
                 snapshot.iter().any(|row| {
                     row.id == *machine_id
-                        && row.participation == *expected_state
+                        && row_matches_state(row, expected_state)
                         && row.subnet != "—"
                 })
             }) {
@@ -274,7 +277,8 @@ impl ScenarioRun {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MachineRow {
     id: String,
-    participation: String,
+    drain: bool,
+    liveness: String,
     subnet: String,
 }
 
@@ -282,7 +286,8 @@ impl MachineRow {
     fn from_payload(row: &ployz_api::MachineListRow) -> Self {
         Self {
             id: row.id.clone(),
-            participation: row.participation.clone(),
+            drain: row.drain,
+            liveness: row.liveness.clone(),
             subnet: row.subnet.clone().unwrap_or_else(|| "—".into()),
         }
     }
@@ -292,11 +297,12 @@ fn machine_rows(payload: &MachineListPayload) -> Vec<MachineRow> {
     payload.rows.iter().map(MachineRow::from_payload).collect()
 }
 
-fn machine_state(payload: &MachineListPayload, machine_id: &str) -> Option<String> {
-    payload.rows.iter().find_map(|row| {
-        if row.id == machine_id {
-            return Some(row.participation.clone());
-        }
-        None
-    })
+fn row_matches_state(row: &MachineRow, expected_state: &str) -> bool {
+    match expected_state {
+        "enabled" => !row.drain && row.liveness == "fresh",
+        "draining" => row.drain,
+        "down" => row.liveness == "down",
+        "fresh" | "stale" | "mismatch" => row.liveness == expected_state,
+        other => other == row.liveness,
+    }
 }

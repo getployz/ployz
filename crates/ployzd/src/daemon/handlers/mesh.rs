@@ -110,14 +110,17 @@ impl DaemonState {
         };
 
         let status = mesh_ready_payload(active.mesh.ready_status().await);
-        self.ok_with_payload(format!(
-            "ready:            {}\nphase:            {}\nstore healthy:    {}\nsync connected:   {}\nheartbeat ready:  {}",
-            status.ready,
-            status.phase,
-            status.store_healthy,
-            status.sync_connected,
-            status.heartbeat_started,
-        ), Some(DaemonPayload::MeshReady(status)))
+        self.ok_with_payload(
+            format!(
+                "ready:                  {}\nphase:                  {}\nstore healthy:          {}\nsync connected:         {}\nself record published:  {}",
+                status.ready,
+                status.phase,
+                status.store_healthy,
+                status.sync_connected,
+                status.self_record_published,
+            ),
+            Some(DaemonPayload::MeshReady(status)),
+        )
     }
 
     pub(crate) async fn handle_mesh_join(&mut self, token: &str) -> DaemonResponse {
@@ -499,7 +502,7 @@ fn mesh_ready_payload(value: MeshReadyStatus) -> MeshReadyPayload {
         phase: value.phase.to_string(),
         store_healthy: value.store_healthy,
         sync_connected: value.sync_connected,
-        heartbeat_started: value.heartbeat_started,
+        self_record_published: value.self_record_published,
     }
 }
 
@@ -696,8 +699,7 @@ mod tests {
                 bridge_ip: None,
                 endpoints: vec!["127.0.0.1:51820".into()],
                 status: ployz_types::model::MachineStatus::Unknown,
-                participation: ployz_types::model::Participation::Disabled,
-                last_heartbeat: 0,
+                drain: false,
                 created_at: 0,
                 updated_at: 0,
                 labels: std::collections::BTreeMap::new(),

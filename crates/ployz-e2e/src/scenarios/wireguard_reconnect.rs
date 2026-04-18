@@ -96,7 +96,7 @@ fn doctor_report_matches(
     report.lines().any(|line| {
         let trimmed = line.trim_start();
         trimmed.starts_with(peer_name)
-            && trimmed.contains("store=enabled/fresh")
+            && trimmed.contains("store=drain:no/fresh")
             && trimmed.contains(&format!("probe={probe_status}"))
     })
 }

@@ -24,7 +24,6 @@ pub(crate) enum InstallSourceArg {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub(crate) enum DebugTickTaskArg {
     PeerSync,
-    Heartbeat,
     All,
 }
 
@@ -50,7 +49,6 @@ impl From<DebugTickTaskArg> for ProtocolDebugTickTask {
     fn from(value: DebugTickTaskArg) -> Self {
         match value {
             DebugTickTaskArg::PeerSync => ProtocolDebugTickTask::PeerSync,
-            DebugTickTaskArg::Heartbeat => ProtocolDebugTickTask::Heartbeat,
             DebugTickTaskArg::All => ProtocolDebugTickTask::All,
         }
     }

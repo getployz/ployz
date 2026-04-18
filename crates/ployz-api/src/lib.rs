@@ -63,7 +63,6 @@ pub struct MachineInstallOptions {
 #[serde(rename_all = "kebab-case")]
 pub enum DebugTickTask {
     PeerSync,
-    Heartbeat,
     All,
 }
 
@@ -112,6 +111,12 @@ pub enum DaemonRequest {
         id: String,
         force: bool,
     },
+    MachineDrain {
+        id: String,
+    },
+    MachineUndrain {
+        id: String,
+    },
     MachineOperationList,
     MachineOperationGet {
         id: String,
@@ -159,6 +164,7 @@ pub enum DaemonPayload {
     MachineList(MachineListPayload),
     MachineAdd(MachineAddPayload),
     MachineRemove(MachineRemovePayload),
+    MachineDrain(MachineDrainPayload),
     MeshReady(MeshReadyPayload),
     NodeStatus(NodeStatusPayload),
     MeshSelfRecord(MeshSelfRecordPayload),
@@ -202,12 +208,11 @@ pub struct MachineListPayload {
 pub struct MachineListRow {
     pub id: String,
     pub status: String,
-    pub participation: String,
+    pub drain: bool,
     pub liveness: String,
     pub overlay_ip: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subnet: Option<String>,
-    pub last_heartbeat: u64,
     pub created_at: u64,
 }
 
@@ -240,12 +245,18 @@ pub struct MachineRemovePayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MachineDrainPayload {
+    pub id: String,
+    pub drain: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeshReadyPayload {
     pub ready: bool,
     pub phase: String,
     pub store_healthy: bool,
     pub sync_connected: bool,
-    pub heartbeat_started: bool,
+    pub self_record_published: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

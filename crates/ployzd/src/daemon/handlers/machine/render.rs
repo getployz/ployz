@@ -1,5 +1,5 @@
 use chrono::DateTime;
-use ployz_types::model::{MachineRecord, MachineStatus, Participation};
+use ployz_types::model::{MachineRecord, MachineStatus};
 
 use crate::peers::fanout::LiveStatus;
 
@@ -27,20 +27,7 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
         .max()
         .unwrap_or(0)
         .max(6);
-    let w_hb = report
-        .rows
-        .iter()
-        .map(|row| row.heartbeat_display.len())
-        .max()
-        .unwrap_or(0)
-        .max(9);
-    let w_part = report
-        .rows
-        .iter()
-        .map(|row| row.participation.len())
-        .max()
-        .unwrap_or(0)
-        .max("PARTICIPATION".len());
+    let w_drain = "DRAIN".len();
     let w_live = report
         .rows
         .iter()
@@ -51,19 +38,18 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
 
     let mut lines = Vec::with_capacity(report.rows.len() + 1);
     lines.push(format!(
-        "{:<w_id$}  {:<6}  {:<w_part$}  {:<w_live$}  {:<w_ov$}  {:<w_sub$}  {:<w_hb$}  {}",
-        "ID", "STATUS", "PARTICIPATION", "LIVENESS", "OVERLAY IP", "SUBNET", "HEARTBEAT", "CREATED",
+        "{:<w_id$}  {:<6}  {:<w_drain$}  {:<w_live$}  {:<w_ov$}  {:<w_sub$}  {}",
+        "ID", "STATUS", "DRAIN", "LIVENESS", "OVERLAY IP", "SUBNET", "CREATED",
     ));
     for row in &report.rows {
         lines.push(format!(
-            "{:<w_id$}  {:<6}  {:<w_part$}  {:<w_live$}  {:<w_ov$}  {:<w_sub$}  {:<w_hb$}  {}",
+            "{:<w_id$}  {:<6}  {:<w_drain$}  {:<w_live$}  {:<w_ov$}  {:<w_sub$}  {}",
             row.id,
             row.status,
-            row.participation,
+            row.drain_display,
             row.liveness,
             row.overlay,
             row.subnet_display,
-            row.heartbeat_display,
             row.created_display,
         ));
     }
@@ -98,32 +84,12 @@ pub(super) fn format_status(machine: &MachineRecord) -> &'static str {
     }
 }
 
-pub(super) fn format_participation(machine: &MachineRecord) -> &'static str {
-    match machine.participation {
-        Participation::Enabled => "enabled",
-        Participation::Draining => "draining",
-        Participation::Disabled => "disabled",
-    }
+pub(crate) fn format_drain(drain: bool) -> &'static str {
+    if drain { "draining" } else { "—" }
 }
 
 pub(crate) fn format_live_status(status: LiveStatus) -> &'static str {
     status.as_str()
-}
-
-pub(crate) fn format_heartbeat(ts: u64, now: u64) -> String {
-    if ts == 0 {
-        return "never".into();
-    }
-    let ago = now.saturating_sub(ts);
-    if ago < 60 {
-        format!("{ago}s ago")
-    } else if ago < 3600 {
-        format!("{}m ago", ago / 60)
-    } else if ago < 86400 {
-        format!("{}h ago", ago / 3600)
-    } else {
-        format!("{}d ago", ago / 86400)
-    }
 }
 
 pub(super) fn format_timestamp(ts: u64) -> String {

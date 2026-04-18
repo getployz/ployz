@@ -28,16 +28,16 @@
 
 -- Central registry of all machines in the mesh. Each machine has a WireGuard
 -- keypair, an overlay IP, a subnet allocation, and advertised endpoints for
--- peer connectivity. Participation (enabled/disabled/draining) controls whether
--- a machine receives workloads. Machines join as disabled and are promoted after
--- enough healthy heartbeats accumulate.
+-- peer connectivity. `drain` is a persistent operator-set intent to stop placing
+-- workloads on the machine. Liveness is no longer stored here -- it is derived
+-- by pulling NodeStatus from each peer at observation time.
 --
 -- Why these columns are shaped this way:
 -- - machine_id stays independent because it is the row identity, delete target,
 --   and stable lookup key.
 -- - Every other machine field must publish together: public_key, overlay_ip,
---   subnet, bridge_ip, endpoints, status, participation, heartbeats, labels,
---   and timestamps are not independently meaningful to consumers.
+--   subnet, bridge_ip, endpoints, status, drain, labels, and timestamps are not
+--   independently meaningful to consumers.
 CREATE TABLE IF NOT EXISTS machines (
     machine_id TEXT NOT NULL PRIMARY KEY,
     payload_json TEXT NOT NULL DEFAULT '' CHECK (payload_json = '' OR json_valid(payload_json))

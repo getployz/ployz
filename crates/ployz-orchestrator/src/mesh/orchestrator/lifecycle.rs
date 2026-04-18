@@ -146,7 +146,6 @@ impl Mesh {
         if self
             .update_authoritative_self_record(|record| {
                 record.status = MachineStatus::Down;
-                record.last_heartbeat = now;
                 record.updated_at = now;
             })
             .await

@@ -100,19 +100,6 @@ pub enum MachineStatus {
     Down,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
-pub enum Participation {
-    #[display("disabled")]
-    #[strum(serialize = "disabled")]
-    Disabled,
-    #[display("enabled")]
-    #[strum(serialize = "enabled")]
-    Enabled,
-    #[display("draining")]
-    #[strum(serialize = "draining")]
-    Draining,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MachineRecord {
     pub id: MachineId,
@@ -122,8 +109,8 @@ pub struct MachineRecord {
     pub bridge_ip: Option<OverlayIp>,
     pub endpoints: Vec<String>,
     pub status: MachineStatus,
-    pub participation: Participation,
-    pub last_heartbeat: u64,
+    #[serde(default)]
+    pub drain: bool,
     pub created_at: u64,
     pub updated_at: u64,
     pub labels: BTreeMap<String, String>,
@@ -131,9 +118,6 @@ pub struct MachineRecord {
 
 impl MachineRecord {
     /// Create a minimal seed record for bootstrap/peer-discovery purposes.
-    ///
-    /// Control-plane fields (`status`, `participation`, timestamps, `labels`)
-    /// are zeroed — the real values arrive once the store is online.
     #[must_use]
     pub fn seed(
         id: MachineId,
@@ -150,8 +134,7 @@ impl MachineRecord {
             bridge_ip: None,
             endpoints,
             status: MachineStatus::Unknown,
-            participation: Participation::Disabled,
-            last_heartbeat: 0,
+            drain: false,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -425,8 +408,7 @@ impl JoinResponse {
             bridge_ip: None,
             endpoints: self.endpoints,
             status: MachineStatus::Unknown,
-            participation: Participation::Disabled,
-            last_heartbeat: 0,
+            drain: false,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -499,17 +481,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn participation_display_is_explicit() {
-        assert_eq!(Participation::Disabled.to_string(), "disabled");
-    }
-
-    #[test]
-    fn participation_from_str_rejects_legacy_empty_string() {
-        assert!(Participation::from_str("").is_err());
-        assert_eq!(
-            Participation::from_str("disabled"),
-            Ok(Participation::Disabled)
-        );
-    }
 }

@@ -59,7 +59,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::CoordinationPrepare(_)
             | DaemonPayload::CoordinationRenew(_)
             | DaemonPayload::CoordinationCommit(_)
-            | DaemonPayload::NodeStatus(_) => None,
+            | DaemonPayload::NodeStatus(_)
+            | DaemonPayload::MachineDrain(_) => None,
         })
     }
 
@@ -85,7 +86,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::CoordinationPrepare(_)
             | DaemonPayload::CoordinationRenew(_)
             | DaemonPayload::CoordinationCommit(_)
-            | DaemonPayload::NodeStatus(_) => None,
+            | DaemonPayload::NodeStatus(_)
+            | DaemonPayload::MachineDrain(_) => None,
         })
     }
 
@@ -107,7 +109,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::CoordinationPrepare(_)
             | DaemonPayload::CoordinationRenew(_)
             | DaemonPayload::CoordinationCommit(_)
-            | DaemonPayload::NodeStatus(_) => None,
+            | DaemonPayload::NodeStatus(_)
+            | DaemonPayload::MachineDrain(_) => None,
         })
     }
 
@@ -129,7 +132,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::CoordinationPrepare(_)
             | DaemonPayload::CoordinationRenew(_)
             | DaemonPayload::CoordinationCommit(_)
-            | DaemonPayload::NodeStatus(_) => None,
+            | DaemonPayload::NodeStatus(_)
+            | DaemonPayload::MachineDrain(_) => None,
         })
     }
 
@@ -151,7 +155,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
             | DaemonPayload::CoordinationRenew(_)
-            | DaemonPayload::CoordinationCommit(_) => None,
+            | DaemonPayload::CoordinationCommit(_)
+            | DaemonPayload::MachineDrain(_) => None,
         })
     }
 
@@ -173,7 +178,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::CoordinationPrepare(_)
             | DaemonPayload::CoordinationRenew(_)
             | DaemonPayload::CoordinationCommit(_)
-            | DaemonPayload::NodeStatus(_) => None,
+            | DaemonPayload::NodeStatus(_)
+            | DaemonPayload::MachineDrain(_) => None,
         })
     }
 
@@ -205,7 +211,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::CoordinationPrepare(_)
             | DaemonPayload::CoordinationRenew(_)
             | DaemonPayload::CoordinationCommit(_)
-            | DaemonPayload::NodeStatus(_) => None,
+            | DaemonPayload::NodeStatus(_)
+            | DaemonPayload::MachineDrain(_) => None,
         })
     }
 
@@ -237,7 +244,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::CoordinationPrepare(_)
             | DaemonPayload::CoordinationRenew(_)
             | DaemonPayload::CoordinationCommit(_)
-            | DaemonPayload::NodeStatus(_) => None,
+            | DaemonPayload::NodeStatus(_)
+            | DaemonPayload::MachineDrain(_) => None,
         })
     }
 
@@ -263,7 +271,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::CoordinationPrepare(_)
             | DaemonPayload::CoordinationRenew(_)
             | DaemonPayload::CoordinationCommit(_)
-            | DaemonPayload::NodeStatus(_) => None,
+            | DaemonPayload::NodeStatus(_)
+            | DaemonPayload::MachineDrain(_) => None,
         })
     }
 
@@ -292,7 +301,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationRenew(_)
             | DaemonPayload::CoordinationCommit(_)
-            | DaemonPayload::NodeStatus(_) => None,
+            | DaemonPayload::NodeStatus(_)
+            | DaemonPayload::MachineDrain(_) => None,
         })
     }
 
@@ -321,7 +331,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
             | DaemonPayload::CoordinationRenew(_)
-            | DaemonPayload::NodeStatus(_) => None,
+            | DaemonPayload::NodeStatus(_)
+            | DaemonPayload::MachineDrain(_) => None,
         })
     }
 
@@ -350,7 +361,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
             | DaemonPayload::CoordinationCommit(_)
-            | DaemonPayload::NodeStatus(_) => None,
+            | DaemonPayload::NodeStatus(_)
+            | DaemonPayload::MachineDrain(_) => None,
         })
     }
 

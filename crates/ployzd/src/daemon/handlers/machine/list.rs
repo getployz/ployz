@@ -5,14 +5,12 @@ use crate::coordination::fanout::FanOutTarget;
 use crate::daemon::DaemonState;
 use crate::daemon::store::StoreDriver;
 use crate::peers::fanout::{LiveStatus, fanout_node_status, live_status_map};
-use ployz_api::{DaemonPayload, DaemonResponse, MachineRemovePayload};
+use ployz_api::{DaemonPayload, DaemonResponse, MachineDrainPayload, MachineRemovePayload};
 use ployz_store_api::MachineStore;
-use ployz_types::model::{MachineId, MachineRecord, Participation};
-use ployz_types::time::now_unix_secs;
+use ployz_types::model::{MachineId, MachineRecord};
 
 use super::render::{
-    format_heartbeat, format_live_status, format_participation, format_status, format_timestamp,
-    render_machine_list_report,
+    format_drain, format_live_status, format_status, format_timestamp, render_machine_list_report,
 };
 use super::types::{MachineListReport, MachineListReportRow};
 
@@ -80,13 +78,10 @@ impl DaemonState {
             }
         };
 
-        if !force && record.participation != Participation::Disabled {
+        if !force && !record.drain {
             return self.err(
-                "MACHINE_NOT_DISABLED",
-                format!(
-                    "machine '{id}' must be disabled before removal (current participation: {})",
-                    record.participation
-                ),
+                "MACHINE_NOT_DRAINED",
+                format!("machine '{id}' must be drained before removal (pass --force to override)"),
             );
         }
 
@@ -100,6 +95,59 @@ impl DaemonState {
             ),
             Err(err) => self.err("DELETE_FAILED", format!("failed to remove machine: {err}")),
         }
+    }
+
+    pub(crate) async fn handle_machine_drain(&self, id: &str, drain: bool) -> DaemonResponse {
+        let active = match self.active.as_ref() {
+            Some(active) => active,
+            None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
+        };
+
+        let machine_id = MachineId(id.to_string());
+        let machine_store = active.store.machine();
+        let mut record = match find_machine_record(machine_store.as_ref(), &machine_id).await {
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                return self.err("MACHINE_NOT_FOUND", format!("machine '{id}' not found"));
+            }
+            Err(err) => {
+                return self.err("LIST_FAILED", format!("failed to read machines: {err}"));
+            }
+        };
+
+        if record.drain == drain {
+            return self.ok_with_payload(
+                format!("machine '{id}' drain already {drain}"),
+                Some(DaemonPayload::MachineDrain(MachineDrainPayload {
+                    id: id.to_string(),
+                    drain,
+                })),
+            );
+        }
+
+        let is_self = machine_id == self.identity.machine_id;
+        if is_self {
+            if active.mesh.apply_self_drain(drain).await.is_none() {
+                return self.err(
+                    "DRAIN_FAILED",
+                    "self record writer unavailable or mutation failed".to_string(),
+                );
+            }
+        } else {
+            record.drain = drain;
+            if let Err(err) = machine_store.upsert_self_machine(&record).await {
+                return self.err("DRAIN_FAILED", format!("failed to persist drain: {err}"));
+            }
+        }
+
+        let verb = if drain { "drained" } else { "undrained" };
+        self.ok_with_payload(
+            format!("machine '{id}' {verb}"),
+            Some(DaemonPayload::MachineDrain(MachineDrainPayload {
+                id: id.to_string(),
+                drain,
+            })),
+        )
     }
 }
 
@@ -125,7 +173,6 @@ pub(super) async fn machine_list_report(
         .list_machines()
         .await
         .map_err(|err| format!("failed to list machines: {err}"))?;
-    let now = now_unix_secs();
 
     Ok(MachineListReport {
         rows: machines
@@ -138,7 +185,8 @@ pub(super) async fn machine_list_report(
                 MachineListReportRow {
                     id: machine.id.0.clone(),
                     status: format_status(machine),
-                    participation: format_participation(machine),
+                    drain: machine.drain,
+                    drain_display: format_drain(machine.drain),
                     liveness: format_live_status(live),
                     overlay: machine.overlay_ip.0.to_string(),
                     subnet: machine.subnet,
@@ -146,8 +194,6 @@ pub(super) async fn machine_list_report(
                         .subnet
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| "—".into()),
-                    last_heartbeat: machine.last_heartbeat,
-                    heartbeat_display: format_heartbeat(machine.last_heartbeat, now),
                     created_at: machine.created_at,
                     created_display: format_timestamp(machine.created_at),
                 }

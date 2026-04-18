@@ -42,6 +42,8 @@ impl DaemonState {
             | DaemonRequest::MachineInit { .. }
             | DaemonRequest::MachineAdd { .. }
             | DaemonRequest::MachineRemove { .. }
+            | DaemonRequest::MachineDrain { .. }
+            | DaemonRequest::MachineUndrain { .. }
             | DaemonRequest::MachineOperationList
             | DaemonRequest::MachineOperationGet { .. }
             | DaemonRequest::MachineInviteCreate { .. }
@@ -95,6 +97,8 @@ impl DaemonState {
             DaemonRequest::MachineRemove { id, force } => {
                 self.handle_machine_remove(&id, force).await
             }
+            DaemonRequest::MachineDrain { id } => self.handle_machine_drain(&id, true).await,
+            DaemonRequest::MachineUndrain { id } => self.handle_machine_drain(&id, false).await,
             DaemonRequest::MachineOperationList => self.handle_machine_operation_list().await,
             DaemonRequest::MachineOperationGet { id } => {
                 self.handle_machine_operation_get(&id).await
@@ -150,6 +154,8 @@ impl DaemonState {
             | DaemonRequest::MachineInit { .. }
             | DaemonRequest::MachineAdd { .. }
             | DaemonRequest::MachineRemove { .. }
+            | DaemonRequest::MachineDrain { .. }
+            | DaemonRequest::MachineUndrain { .. }
             | DaemonRequest::MachineOperationList
             | DaemonRequest::MachineOperationGet { .. }
             | DaemonRequest::MachineInviteCreate { .. }

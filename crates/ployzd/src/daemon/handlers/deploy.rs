@@ -12,7 +12,7 @@ use ployz_api::{
 use ployz_config::RuntimeTarget;
 use ployz_orchestrator::deploy::{apply, export_manifest, preview};
 use ployz_runtime_backends::deploy::DefaultDeploySessionFactory;
-use ployz_types::model::{MachineId, MachineRecord, Participation};
+use ployz_types::model::{MachineId, MachineRecord};
 use ployz_types::spec::{DeployManifest, Namespace};
 use ployz_types::time::now_unix_secs;
 
@@ -21,7 +21,7 @@ const NODE_STATUS_FANOUT_DEADLINE: Duration = Duration::from_secs(5);
 struct LiveSurvey {
     live_machines: BTreeSet<MachineId>,
     warnings: Vec<String>,
-    enabled_peer_count: usize,
+    eligible_peer_count: usize,
     live_peer_count: usize,
 }
 
@@ -30,10 +30,10 @@ fn survey_live_machines(
     local_machine_id: &MachineId,
     items: Vec<NodeStatusFanoutItem>,
 ) -> LiveSurvey {
-    let enabled_peer_count = machines
+    let eligible_peer_count = machines
         .iter()
         .filter(|m| m.id != *local_machine_id)
-        .filter(|m| m.participation == Participation::Enabled)
+        .filter(|m| !m.drain)
         .count();
 
     let mut live_machines = BTreeSet::new();
@@ -44,7 +44,12 @@ fn survey_live_machines(
     for item in items {
         match item.result {
             NodeStatusResult::Ok(payload) => {
-                if payload.ready {
+                if payload.draining {
+                    warnings.push(format!(
+                        "peer '{}' is draining; skipping",
+                        item.expected
+                    ));
+                } else if payload.ready {
                     live_machines.insert(item.expected.clone());
                     live_peer_count += 1;
                 } else {
@@ -69,19 +74,19 @@ fn survey_live_machines(
     LiveSurvey {
         live_machines,
         warnings,
-        enabled_peer_count,
+        eligible_peer_count,
         live_peer_count,
     }
 }
 
-fn enabled_peer_targets(
+fn eligible_peer_targets(
     machines: &[MachineRecord],
     local_machine_id: &MachineId,
 ) -> Vec<FanOutTarget> {
     machines
         .iter()
         .filter(|m| m.id != *local_machine_id)
-        .filter(|m| m.participation == Participation::Enabled)
+        .filter(|m| !m.drain)
         .map(|m| FanOutTarget {
             machine_id: m.id.clone(),
             overlay_ip: m.overlay_ip,
@@ -131,7 +136,7 @@ impl DaemonState {
             }
         };
         let self_id = &self.identity.machine_id;
-        let peer_targets = enabled_peer_targets(&machines, self_id);
+        let peer_targets = eligible_peer_targets(&machines, self_id);
         let items = fanout_node_status(
             &peer_targets,
             self.coordination_rpc_port,
@@ -193,7 +198,7 @@ impl DaemonState {
             }
         };
         let self_id = &self.identity.machine_id;
-        let peer_targets = enabled_peer_targets(&machines, self_id);
+        let peer_targets = eligible_peer_targets(&machines, self_id);
         let items = fanout_node_status(
             &peer_targets,
             self.coordination_rpc_port,
@@ -205,7 +210,7 @@ impl DaemonState {
         // Apply enforces strict quorum: enough enabled peers must respond to
         // NodeStatus, plus self. Preview returned warnings for the same peers;
         // apply converts that signal into a hard failure before mutating state.
-        let cluster_size = survey.enabled_peer_count + 1;
+        let cluster_size = survey.eligible_peer_count + 1;
         let required = cluster_size / 2 + 1;
         let live_total = survey.live_peer_count + 1;
         if live_total < required {

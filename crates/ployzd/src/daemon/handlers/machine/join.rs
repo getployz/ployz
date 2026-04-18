@@ -12,7 +12,7 @@ use ployz_api::{
 use ployz_orchestrator::ipam::Ipam;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_sdk::DaemonClient;
-use ployz_types::model::{MachineId, MachineRecord, Participation};
+use ployz_types::model::{MachineId, MachineRecord};
 use ployz_types::time::now_unix_secs;
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, sleep, timeout};
@@ -333,13 +333,8 @@ impl DaemonState {
         let self_id = &self.identity.machine_id;
         let peers: Vec<FanOutTarget> = machines
             .iter()
-            .filter(|m| {
-                &m.id != self_id
-                    && matches!(
-                        m.participation,
-                        Participation::Enabled | Participation::Draining
-                    )
-            })
+            .filter(|m| &m.id != self_id)
+            .filter(|m| !m.drain)
             .map(|m| FanOutTarget {
                 machine_id: m.id.clone(),
                 overlay_ip: m.overlay_ip,
@@ -776,12 +771,12 @@ async fn wait_for_remote_ready(target: &str, ssh_options: &SshOptions) -> Result
         {
             Ok(Ok(payload)) => {
                 let response_message = format!(
-                    "ready={}, phase={}, store_healthy={}, sync_connected={}, heartbeat_started={}",
+                    "ready={}, phase={}, store_healthy={}, sync_connected={}, self_record_published={}",
                     payload.ready,
                     payload.phase,
                     payload.store_healthy,
                     payload.sync_connected,
-                    payload.heartbeat_started
+                    payload.self_record_published
                 );
                 if remote_join_ready(&payload) {
                     tracing::debug!(%target, attempt, "remote mesh ready confirmed");
@@ -835,7 +830,7 @@ async fn remote_self_record(
 
 fn remote_join_ready(payload: &MeshReadyPayload) -> bool {
     payload.ready
-        || (payload.phase == "running" && payload.store_healthy && payload.heartbeat_started)
+        || (payload.phase == "running" && payload.store_healthy && payload.self_record_published)
 }
 
 async fn remote_rpc(
