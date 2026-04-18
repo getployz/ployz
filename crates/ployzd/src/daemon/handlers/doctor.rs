@@ -1,7 +1,7 @@
 use crate::coordination::fanout::{FanOutTarget, NodeStatusResult, fanout_node_status};
 use crate::daemon::{ActiveMesh, DaemonState};
 use ployz_runtime_api::{DevicePeer, WireGuardDevice};
-use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
+use ployz_types::model::{MachineId, MachineRecord, OverlayIp, Participation, PublicKey};
 use ployz_types::time::now_unix_secs;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -272,7 +272,8 @@ fn build_participation_rows(
                 | Some(NodeStatusResult::InvalidIdentity { .. })
                 | None => (false, None, None, None),
             };
-            let required = reachable && ready == Some(true) && draining == Some(false);
+            let required =
+                machine.participation == Participation::Enabled && draining != Some(true);
             let handshake_state = handshake_by_key
                 .get(&machine.public_key)
                 .copied()
@@ -482,7 +483,7 @@ mod tests {
         assert!(response.message.contains("blocking peers:"));
         assert!(response.message.lines().any(|line| {
             line.contains("peer")
-                && line.contains("store=enabled/fresh")
+                && line.contains("node=absent/unknown/unknown/unknown")
                 && line.contains("wg=absent")
                 && line.contains("probe=unreachable")
                 && line.contains("cause=no direct peer configured and overlay probe failed")
@@ -490,7 +491,7 @@ mod tests {
         assert!(response.message.contains("all peers:"));
         assert!(response.message.lines().any(|line| {
             line.contains("stale-peer")
-                && line.contains("store=enabled/stale")
+                && line.contains("node=absent/unknown/unknown/unknown")
                 && line.contains("wg=stale")
                 && line.contains("probe=unreachable")
         }));

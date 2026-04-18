@@ -1,4 +1,5 @@
 use super::join::hash_machine_id;
+use super::list::{LocalNodeStatus, machine_list_report};
 use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
 use crate::daemon::ActiveMesh;
 use crate::daemon::DaemonRuntimeConfig;
@@ -89,6 +90,29 @@ async fn machine_list_json_payload_contains_rows() {
     };
     assert_eq!(payload.rows.len(), 1);
     assert_eq!(payload.rows[0].id, "founder");
+}
+
+#[tokio::test]
+async fn machine_list_report_uses_local_mesh_readiness() {
+    let (_state, store, _) = make_state(MeshStartMode::Stopped).await;
+    let report = machine_list_report(
+        StoreDriver::memory_with(store),
+        &MachineId("founder".into()),
+        0,
+        &LocalNodeStatus {
+            ready: false,
+            phase: "starting".into(),
+            draining: true,
+        },
+    )
+    .await
+    .expect("machine list report");
+    let Some(local) = report.rows.into_iter().find(|row| row.id == "founder") else {
+        panic!("missing founder row");
+    };
+    assert_eq!(local.ready, Some(false));
+    assert_eq!(local.phase.as_deref(), Some("starting"));
+    assert_eq!(local.draining, Some(true));
 }
 
 #[tokio::test]

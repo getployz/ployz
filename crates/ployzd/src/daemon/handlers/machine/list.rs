@@ -20,11 +20,23 @@ impl DaemonState {
             Some(active) => active,
             None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
         };
+        let local_ready = active.mesh.ready_status().await;
+        let local_draining = active
+            .mesh
+            .authoritative_self_record()
+            .await
+            .is_some_and(|record| record.participation == Participation::Draining);
+        let local_status = LocalNodeStatus {
+            ready: local_ready.ready,
+            phase: local_ready.phase.to_string(),
+            draining: local_draining,
+        };
 
         let report = match machine_list_report(
             active.store.clone(),
             &self.identity.machine_id,
             self.coordination_rpc_port,
+            &local_status,
         )
         .await
         {
@@ -102,6 +114,7 @@ pub(super) async fn machine_list_report(
     store: StoreDriver,
     local_machine_id: &MachineId,
     rpc_port: u16,
+    local_status: &LocalNodeStatus,
 ) -> Result<MachineListReport, String> {
     let machines = store
         .machine()
@@ -145,7 +158,7 @@ pub(super) async fn machine_list_report(
                         Some(NodeStatusResult::Ok(_))
                     ),
                 ready: if machine.id == *local_machine_id {
-                    Some(true)
+                    Some(local_status.ready)
                 } else {
                     match status_by_machine.get(&machine.id) {
                         Some(NodeStatusResult::Ok(status)) => Some(status.ready),
@@ -155,7 +168,7 @@ pub(super) async fn machine_list_report(
                     }
                 },
                 draining: if machine.id == *local_machine_id {
-                    Some(machine.participation == Participation::Draining)
+                    Some(local_status.draining)
                 } else {
                     match status_by_machine.get(&machine.id) {
                         Some(NodeStatusResult::Ok(status)) => Some(status.draining),
@@ -165,7 +178,7 @@ pub(super) async fn machine_list_report(
                     }
                 },
                 phase: if machine.id == *local_machine_id {
-                    Some("running".to_string())
+                    Some(local_status.phase.clone())
                 } else {
                     match status_by_machine.get(&machine.id) {
                         Some(NodeStatusResult::Ok(status)) => Some(status.phase.clone()),
@@ -179,4 +192,10 @@ pub(super) async fn machine_list_report(
             })
             .collect(),
     })
+}
+
+pub(super) struct LocalNodeStatus {
+    pub ready: bool,
+    pub phase: String,
+    pub draining: bool,
 }
