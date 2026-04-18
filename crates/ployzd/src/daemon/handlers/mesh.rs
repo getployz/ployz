@@ -111,12 +111,12 @@ impl DaemonState {
 
         let status = mesh_ready_payload(active.mesh.ready_status().await);
         self.ok_with_payload(format!(
-            "ready:            {}\nphase:            {}\nstore healthy:    {}\nsync connected:   {}\nheartbeat ready:  {}",
+            "ready:                  {}\nphase:                  {}\nstore healthy:          {}\nsync connected:         {}\nself record published:  {}",
             status.ready,
             status.phase,
             status.store_healthy,
             status.sync_connected,
-            status.heartbeat_started,
+            status.self_record_published,
         ), Some(DaemonPayload::MeshReady(status)))
     }
 
@@ -529,7 +529,7 @@ fn mesh_ready_payload(value: MeshReadyStatus) -> MeshReadyPayload {
         phase: value.phase.to_string(),
         store_healthy: value.store_healthy,
         sync_connected: value.sync_connected,
-        heartbeat_started: value.heartbeat_started,
+        self_record_published: value.self_record_published,
     }
 }
 

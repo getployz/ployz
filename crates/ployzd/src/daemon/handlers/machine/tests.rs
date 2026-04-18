@@ -52,10 +52,10 @@ async fn machine_list_shows_disabled_explicitly() {
 
     let response = state.handle_machine_list().await;
     assert!(response.ok);
-    assert!(response.message.contains("LIVENESS"));
+    assert!(response.message.contains("PRESENCE"));
     assert!(response.message.contains("peer-disabled"));
     assert!(response.message.contains("disabled"));
-    assert!(response.message.contains("stale"));
+    assert!(response.message.contains("absent"));
 }
 
 #[tokio::test]
@@ -180,7 +180,7 @@ async fn machine_add_succeeds_when_peer_unreachable_at_rpc_time() {
     let _ready_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_READY_RESPONSE",
         Some(
-            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":true,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":true,\"heartbeat_started\":true}}".into(),
+            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":true,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":true,\"self_record_published\":true}}".into(),
         ),
     );
 
@@ -254,7 +254,7 @@ async fn machine_add_accepts_running_joiner_before_full_sync() {
     let _ready_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_READY_RESPONSE",
         Some(
-            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":false,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":false,\"heartbeat_started\":true}}".into(),
+            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":false,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":false,\"self_record_published\":true}}".into(),
         ),
     );
 

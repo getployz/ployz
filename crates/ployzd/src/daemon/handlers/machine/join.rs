@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use crate::coordination::fanout::{FanOutTarget, accepted_targets, fanout_abort, fanout_commit, fanout_prepare};
+use crate::coordination::fanout::{
+    FanOutTarget, accepted_targets, fanout_abort, fanout_commit, fanout_prepare,
+};
 use crate::mesh_state::invite::parse_and_verify_invite_token;
 use ipnet::Ipv4Net;
 use ployz_api::{
@@ -323,7 +325,8 @@ impl DaemonState {
             .map_err(|err| format!("invalid cluster CIDR '{}': {err}", self.cluster_cidr))?;
         let allocated = machines.iter().filter_map(|machine| machine.subnet);
         let seed = hash_machine_id(&self.identity.machine_id);
-        let mut ipam = Ipam::with_allocated_and_seed(cluster, self.subnet_prefix_len, allocated, seed);
+        let mut ipam =
+            Ipam::with_allocated_and_seed(cluster, self.subnet_prefix_len, allocated, seed);
         let mut subnets = Vec::with_capacity(targets.len());
 
         // Target all participating peers — RPC reachability at call time determines
@@ -776,12 +779,12 @@ async fn wait_for_remote_ready(target: &str, ssh_options: &SshOptions) -> Result
         {
             Ok(Ok(payload)) => {
                 let response_message = format!(
-                    "ready={}, phase={}, store_healthy={}, sync_connected={}, heartbeat_started={}",
+                    "ready={}, phase={}, store_healthy={}, sync_connected={}, self_record_published={}",
                     payload.ready,
                     payload.phase,
                     payload.store_healthy,
                     payload.sync_connected,
-                    payload.heartbeat_started
+                    payload.self_record_published
                 );
                 if remote_join_ready(&payload) {
                     tracing::debug!(%target, attempt, "remote mesh ready confirmed");
@@ -835,7 +838,7 @@ async fn remote_self_record(
 
 fn remote_join_ready(payload: &MeshReadyPayload) -> bool {
     payload.ready
-        || (payload.phase == "running" && payload.store_healthy && payload.heartbeat_started)
+        || (payload.phase == "running" && payload.store_healthy && payload.self_record_published)
 }
 
 async fn remote_rpc(

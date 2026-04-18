@@ -257,7 +257,7 @@ pub struct MeshReadyPayload {
     pub phase: String,
     pub store_healthy: bool,
     pub sync_connected: bool,
-    pub heartbeat_started: bool,
+    pub self_record_published: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
