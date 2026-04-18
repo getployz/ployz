@@ -17,8 +17,10 @@ This document defines the design intent so future changes stay consistent.
    - The replicated store should hold committed cluster intent (membership,
      allocations, routing/deploy records), not heartbeat-style chatter.
 3. **One coordination system for all mutation classes**
-   - Membership, subnet/IP allocation, and deploy namespace locking should all
-     use the same lease/nonce/idempotency model.
+   - Subnet/IP allocation and deploy namespace locking share the same
+     lease/nonce/idempotency model. Membership writes are plain upserts and
+     do not take coordination locks — operator intent lives in the record
+     itself (see `drain` below).
 4. **Lease ownership and idempotency are mandatory**
    - Every prepare/renew/commit operation must carry a nonce scoped to the
      operation owner.
@@ -73,8 +75,7 @@ This prevents dual-winner races through quorum intersection and lease expiry.
 
 ## Uniform lock model
 
-Deploy namespace locks should use the same coordination primitives as
-membership and subnet claims:
+Deploy namespace locks share coordination primitives with subnet claims:
 
 - typed lock keys,
 - lease TTL,
@@ -83,3 +84,15 @@ membership and subnet claims:
 - explicit acquire/commit/release semantics.
 
 This keeps future work obvious and avoids ad-hoc lock implementations.
+
+## Current status
+
+- **Liveness:** pulled at decision time via `NodeStatus`. No replication, no
+  leases for liveness.
+- **Operator intent (drain):** durable in the store, mirrored into each
+  node's in-memory state, exposed on `NodeStatus.draining`.
+- **Mutations:** `SubnetClaim*` and `LockAcquire(DeployNamespace)` use quorum
+  prepare/commit with lease/nonce idempotency.
+- **Background tasks still running:** reconcile node-local kernel state
+  (WireGuard, eBPF, endpoints) or subscribe to store events. None push
+  liveness outward.
