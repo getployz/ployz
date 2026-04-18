@@ -33,6 +33,44 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
         .max()
         .unwrap_or(0)
         .max(9);
+    let w_present = report
+        .rows
+        .iter()
+        .map(|row| if row.reachable { "present" } else { "absent" }.len())
+        .max()
+        .unwrap_or(0)
+        .max("PRESENCE".len());
+    let w_ready = report
+        .rows
+        .iter()
+        .map(|row| {
+            row.ready
+                .map(|ready| if ready { "ready" } else { "not-ready" })
+                .unwrap_or("unknown")
+                .len()
+        })
+        .max()
+        .unwrap_or(0)
+        .max("READY".len());
+    let w_draining = report
+        .rows
+        .iter()
+        .map(|row| {
+            row.draining
+                .map(|draining| if draining { "draining" } else { "no" })
+                .unwrap_or("unknown")
+                .len()
+        })
+        .max()
+        .unwrap_or(0)
+        .max("DRAINING".len());
+    let w_phase = report
+        .rows
+        .iter()
+        .map(|row| row.phase.as_deref().unwrap_or("unknown").len())
+        .max()
+        .unwrap_or(0)
+        .max("PHASE".len());
     let w_part = report
         .rows
         .iter()
@@ -40,26 +78,31 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
         .max()
         .unwrap_or(0)
         .max("PARTICIPATION".len());
-    let w_live = report
-        .rows
-        .iter()
-        .map(|row| row.liveness.len())
-        .max()
-        .unwrap_or(0)
-        .max("LIVENESS".len());
-
     let mut lines = Vec::with_capacity(report.rows.len() + 1);
     lines.push(format!(
-        "{:<w_id$}  {:<6}  {:<w_part$}  {:<w_live$}  {:<w_ov$}  {:<w_sub$}  {:<w_hb$}  {}",
-        "ID", "STATUS", "PARTICIPATION", "LIVENESS", "OVERLAY IP", "SUBNET", "HEARTBEAT", "CREATED",
+        "{:<w_id$}  {:<6}  {:<w_part$}  {:<w_present$}  {:<w_ready$}  {:<w_draining$}  {:<w_phase$}  {:<w_ov$}  {:<w_sub$}  {:<w_hb$}  {}",
+        "ID", "STATUS", "PARTICIPATION", "PRESENCE", "READY", "DRAINING", "PHASE", "OVERLAY IP", "SUBNET", "HEARTBEAT", "CREATED",
     ));
     for row in &report.rows {
+        let present = if row.reachable { "present" } else { "absent" };
+        let ready = row
+            .ready
+            .map(|value| if value { "ready" } else { "not-ready" })
+            .unwrap_or("unknown");
+        let draining = row
+            .draining
+            .map(|value| if value { "draining" } else { "no" })
+            .unwrap_or("unknown");
+        let phase = row.phase.as_deref().unwrap_or("unknown");
         lines.push(format!(
-            "{:<w_id$}  {:<6}  {:<w_part$}  {:<w_live$}  {:<w_ov$}  {:<w_sub$}  {:<w_hb$}  {}",
+            "{:<w_id$}  {:<6}  {:<w_part$}  {:<w_present$}  {:<w_ready$}  {:<w_draining$}  {:<w_phase$}  {:<w_ov$}  {:<w_sub$}  {:<w_hb$}  {}",
             row.id,
             row.status,
             row.participation,
-            row.liveness,
+            present,
+            ready,
+            draining,
+            phase,
             row.overlay,
             row.subnet_display,
             row.heartbeat_display,

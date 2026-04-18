@@ -187,6 +187,10 @@ pub(super) struct MachineListReportRow {
     pub subnet_display: String,
     pub last_heartbeat: u64,
     pub heartbeat_display: String,
+    pub reachable: bool,
+    pub ready: Option<bool>,
+    pub draining: Option<bool>,
+    pub phase: Option<String>,
     pub created_at: u64,
     pub created_display: String,
 }
@@ -206,4 +210,3 @@ impl MachineListReportRow {
         }
     }
 }
-

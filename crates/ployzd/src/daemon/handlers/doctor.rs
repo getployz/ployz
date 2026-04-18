@@ -1,5 +1,5 @@
+use crate::coordination::fanout::{FanOutTarget, NodeStatusResult, fanout_node_status};
 use crate::daemon::{ActiveMesh, DaemonState};
-use ployz_orchestrator::machine_liveness::{MachineLiveness, machine_liveness};
 use ployz_runtime_api::{DevicePeer, WireGuardDevice};
 use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
 use ployz_types::time::now_unix_secs;
@@ -59,6 +59,22 @@ impl DaemonState {
         };
         let overlay_probe_by_ip =
             probe_overlay_health(machines.as_slice(), &self.identity.machine_id).await;
+        let targets: Vec<FanOutTarget> = machines
+            .iter()
+            .filter(|machine| machine.id != self.identity.machine_id)
+            .map(|machine| FanOutTarget {
+                machine_id: machine.id.clone(),
+                overlay_ip: machine.overlay_ip,
+            })
+            .collect();
+        let node_status_by_machine: HashMap<MachineId, NodeStatusResult> = fanout_node_status(
+            &targets,
+            self.coordination_rpc_port,
+            Duration::from_millis(750),
+        )
+        .await
+        .into_iter()
+        .collect();
 
         self.ok(render_doctor_report(
             active,
@@ -66,6 +82,7 @@ impl DaemonState {
             local_record,
             &device_peers,
             &overlay_probe_by_ip,
+            &node_status_by_machine,
             now,
         ))
     }
@@ -77,6 +94,7 @@ fn render_doctor_report(
     local_record: &MachineRecord,
     device_peers: &[DevicePeer],
     overlay_probe_by_ip: &HashMap<OverlayIp, ProbeState>,
+    node_status_by_machine: &HashMap<MachineId, NodeStatusResult>,
     now: u64,
 ) -> String {
     let handshake_by_key = handshake_state_map(device_peers);
@@ -85,7 +103,7 @@ fn render_doctor_report(
         &local_record.id,
         &handshake_by_key,
         overlay_probe_by_ip,
-        now,
+        node_status_by_machine,
     );
     let blocking_peers: Vec<&ParticipationRow> = peer_rows
         .iter()
@@ -176,8 +194,10 @@ fn append_peer_section(lines: &mut Vec<String>, rows: &[&ParticipationRow], caus
 #[derive(Debug, Clone)]
 struct ParticipationRow {
     id: String,
-    participation: String,
-    liveness: String,
+    reachable: bool,
+    ready: Option<bool>,
+    draining: Option<bool>,
+    phase: Option<String>,
     required: bool,
     handshake: HandshakeState,
     probe: ProbeState,
@@ -185,7 +205,17 @@ struct ParticipationRow {
 
 impl ParticipationRow {
     fn store_status(&self) -> String {
-        format!("store={}/{}", self.participation, self.liveness)
+        let reachable = if self.reachable { "present" } else { "absent" };
+        let ready = self
+            .ready
+            .map(|value| if value { "ready" } else { "not-ready" })
+            .unwrap_or("unknown");
+        let draining = self
+            .draining
+            .map(|value| if value { "draining" } else { "not-draining" })
+            .unwrap_or("unknown");
+        let phase = self.phase.as_deref().unwrap_or("unknown");
+        format!("node={reachable}/{ready}/{draining}/{phase}")
     }
 
     fn wg_status(&self) -> String {
@@ -224,21 +254,35 @@ fn build_participation_rows(
     local_machine_id: &MachineId,
     handshake_by_key: &HashMap<PublicKey, HandshakeState>,
     overlay_probe_by_ip: &HashMap<OverlayIp, ProbeState>,
-    now: u64,
+    node_status_by_machine: &HashMap<MachineId, NodeStatusResult>,
 ) -> Vec<ParticipationRow> {
     let mut rows: Vec<ParticipationRow> = machines
         .iter()
         .filter(|machine| machine.id != *local_machine_id)
         .map(|machine| {
-            let required = machine_liveness(machine, now) == MachineLiveness::Fresh;
+            let (reachable, ready, draining, phase) = match node_status_by_machine.get(&machine.id)
+            {
+                Some(NodeStatusResult::Ok(status)) => (
+                    true,
+                    Some(status.ready),
+                    Some(status.draining),
+                    Some(status.phase.clone()),
+                ),
+                Some(NodeStatusResult::Offline)
+                | Some(NodeStatusResult::InvalidIdentity { .. })
+                | None => (false, None, None, None),
+            };
+            let required = reachable && ready == Some(true) && draining == Some(false);
             let handshake_state = handshake_by_key
                 .get(&machine.public_key)
                 .copied()
                 .unwrap_or(HandshakeState::Absent);
             ParticipationRow {
                 id: machine.id.0.clone(),
-                participation: machine.participation.to_string(),
-                liveness: format_liveness(machine, now).to_string(),
+                reachable,
+                ready,
+                draining,
+                phase,
                 required,
                 handshake: handshake_state,
                 probe: overlay_probe_by_ip
@@ -482,7 +526,7 @@ mod tests {
         assert!(response.message.contains("all peers:"));
         assert!(response.message.lines().any(|line| {
             line.contains("peer")
-                && line.contains("store=enabled/fresh")
+                && line.contains("node=absent/unknown/unknown/unknown")
                 && line.contains("wg=fresh")
                 && line.contains("probe=reachable")
         }));
@@ -498,12 +542,25 @@ mod tests {
             test_machine_record("peer", Participation::Enabled, now, PublicKey([2; 32]));
         let machines = vec![local_record.clone(), peer_record.clone()];
         let overlay_probe_by_ip = HashMap::from([(peer_record.overlay_ip, ProbeState::Reachable)]);
+        let node_status_by_machine = HashMap::from([(
+            peer_record.id.clone(),
+            NodeStatusResult::Ok(ployz_api::NodeStatusPayload {
+                machine_id: peer_record.id.0.clone(),
+                boot_id: String::from("boot"),
+                phase: String::from("running"),
+                ready: true,
+                draining: false,
+                subnet_claim: peer_record.subnet.map(|subnet| subnet.to_string()),
+                version: String::from("test"),
+            }),
+        )]);
         let report = render_doctor_report(
             &test_active_mesh(),
             machines.as_slice(),
             &local_record,
             &[],
             &overlay_probe_by_ip,
+            &node_status_by_machine,
             now,
         );
 

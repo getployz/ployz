@@ -1,9 +1,12 @@
+use crate::coordination::fanout::{FanOutTarget, NodeStatusResult, fanout_node_status};
 use crate::daemon::DaemonState;
 use crate::daemon::store::StoreDriver;
 use ployz_api::{DaemonPayload, DaemonResponse, MachineRemovePayload};
 use ployz_store_api::MachineStore;
 use ployz_types::model::{MachineId, MachineRecord, Participation};
 use ployz_types::time::now_unix_secs;
+use std::collections::HashMap;
+use std::time::Duration;
 
 use super::render::{
     format_heartbeat, format_liveness, format_participation, format_status, format_timestamp,
@@ -18,7 +21,13 @@ impl DaemonState {
             None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
         };
 
-        let report = match machine_list_report(active.store.clone()).await {
+        let report = match machine_list_report(
+            active.store.clone(),
+            &self.identity.machine_id,
+            self.coordination_rpc_port,
+        )
+        .await
+        {
             Ok(report) => report,
             Err(err) => return self.err("LIST_FAILED", err),
         };
@@ -89,13 +98,30 @@ pub(super) async fn find_machine_record(
         .find(|machine| machine.id == *machine_id))
 }
 
-pub(super) async fn machine_list_report(store: StoreDriver) -> Result<MachineListReport, String> {
+pub(super) async fn machine_list_report(
+    store: StoreDriver,
+    local_machine_id: &MachineId,
+    rpc_port: u16,
+) -> Result<MachineListReport, String> {
     let machines = store
         .machine()
         .list_machines()
         .await
         .map_err(|err| format!("failed to list machines: {err}"))?;
     let now = now_unix_secs();
+    let targets: Vec<FanOutTarget> = machines
+        .iter()
+        .filter(|machine| machine.id != *local_machine_id)
+        .map(|machine| FanOutTarget {
+            machine_id: machine.id.clone(),
+            overlay_ip: machine.overlay_ip,
+        })
+        .collect();
+    let status_by_machine: HashMap<MachineId, NodeStatusResult> =
+        fanout_node_status(&targets, rpc_port, Duration::from_millis(750))
+            .await
+            .into_iter()
+            .collect();
 
     Ok(MachineListReport {
         rows: machines
@@ -113,6 +139,41 @@ pub(super) async fn machine_list_report(store: StoreDriver) -> Result<MachineLis
                     .unwrap_or_else(|| "—".into()),
                 last_heartbeat: machine.last_heartbeat,
                 heartbeat_display: format_heartbeat(machine.last_heartbeat, now),
+                reachable: machine.id == *local_machine_id
+                    || matches!(
+                        status_by_machine.get(&machine.id),
+                        Some(NodeStatusResult::Ok(_))
+                    ),
+                ready: if machine.id == *local_machine_id {
+                    Some(true)
+                } else {
+                    match status_by_machine.get(&machine.id) {
+                        Some(NodeStatusResult::Ok(status)) => Some(status.ready),
+                        Some(NodeStatusResult::Offline)
+                        | Some(NodeStatusResult::InvalidIdentity { .. })
+                        | None => None,
+                    }
+                },
+                draining: if machine.id == *local_machine_id {
+                    Some(machine.participation == Participation::Draining)
+                } else {
+                    match status_by_machine.get(&machine.id) {
+                        Some(NodeStatusResult::Ok(status)) => Some(status.draining),
+                        Some(NodeStatusResult::Offline)
+                        | Some(NodeStatusResult::InvalidIdentity { .. })
+                        | None => None,
+                    }
+                },
+                phase: if machine.id == *local_machine_id {
+                    Some("running".to_string())
+                } else {
+                    match status_by_machine.get(&machine.id) {
+                        Some(NodeStatusResult::Ok(status)) => Some(status.phase.clone()),
+                        Some(NodeStatusResult::Offline)
+                        | Some(NodeStatusResult::InvalidIdentity { .. })
+                        | None => None,
+                    }
+                },
                 created_at: machine.created_at,
                 created_display: format_timestamp(machine.created_at),
             })

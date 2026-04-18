@@ -3,7 +3,8 @@ use ployz_api::{
     CoordinationAbortRequest, CoordinationCommitPayload, CoordinationCommitRequest,
     CoordinationPreparePayload, CoordinationPrepareRequest, CoordinationRenewPayload,
     CoordinationRenewRequest, DaemonPayload, DaemonRequest, DaemonResponse, DeployOptions,
-    MachineListPayload, MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload, StatusPayload,
+    MachineListPayload, MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload,
+    NodeStatusPayload, StatusPayload,
 };
 use ployz_types::model::{DeployApplyResult, DeployPreview};
 use ployz_types::spec::DeployManifest;
@@ -45,6 +46,7 @@ impl<T: Transport> DaemonClient<T> {
         extract_payload(response, "status", |payload| match payload {
             DaemonPayload::Status(payload) => Some(payload),
             DaemonPayload::MeshStatus(_)
+            | DaemonPayload::NodeStatus(_)
             | DaemonPayload::MachineList(_)
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
@@ -70,6 +72,29 @@ impl<T: Transport> DaemonClient<T> {
         extract_payload(response, "mesh status", |payload| match payload {
             DaemonPayload::MeshStatus(payload) => Some(payload),
             DaemonPayload::Status(_)
+            | DaemonPayload::NodeStatus(_)
+            | DaemonPayload::MachineList(_)
+            | DaemonPayload::MachineAdd(_)
+            | DaemonPayload::MachineRemove(_)
+            | DaemonPayload::MeshReady(_)
+            | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::DeployPreview(_)
+            | DaemonPayload::DeployApply(_)
+            | DaemonPayload::DeployExport(_)
+            | DaemonPayload::MachineOperationList(_)
+            | DaemonPayload::MachineOperation(_)
+            | DaemonPayload::CoordinationPrepare(_)
+            | DaemonPayload::CoordinationRenew(_)
+            | DaemonPayload::CoordinationCommit(_) => None,
+        })
+    }
+
+    pub async fn node_status(&self) -> std::io::Result<NodeStatusPayload> {
+        let response = self.request_ok(DaemonRequest::NodeStatus).await?;
+        extract_payload(response, "node status", |payload| match payload {
+            DaemonPayload::NodeStatus(payload) => Some(payload),
+            DaemonPayload::Status(_)
+            | DaemonPayload::MeshStatus(_)
             | DaemonPayload::MachineList(_)
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
@@ -91,6 +116,7 @@ impl<T: Transport> DaemonClient<T> {
         extract_payload(response, "machine list", |payload| match payload {
             DaemonPayload::MachineList(payload) => Some(payload),
             DaemonPayload::Status(_)
+            | DaemonPayload::NodeStatus(_)
             | DaemonPayload::MeshStatus(_)
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
@@ -112,6 +138,7 @@ impl<T: Transport> DaemonClient<T> {
         extract_payload(response, "mesh ready", |payload| match payload {
             DaemonPayload::MeshReady(payload) => Some(payload),
             DaemonPayload::Status(_)
+            | DaemonPayload::NodeStatus(_)
             | DaemonPayload::MeshStatus(_)
             | DaemonPayload::MachineList(_)
             | DaemonPayload::MachineAdd(_)
@@ -133,6 +160,7 @@ impl<T: Transport> DaemonClient<T> {
         extract_payload(response, "mesh self record", |payload| match payload {
             DaemonPayload::MeshSelfRecord(payload) => Some(payload),
             DaemonPayload::Status(_)
+            | DaemonPayload::NodeStatus(_)
             | DaemonPayload::MeshStatus(_)
             | DaemonPayload::MachineList(_)
             | DaemonPayload::MachineAdd(_)
@@ -164,6 +192,7 @@ impl<T: Transport> DaemonClient<T> {
         extract_payload(response, "deploy preview", |payload| match payload {
             DaemonPayload::DeployPreview(payload) => Some(payload.preview),
             DaemonPayload::Status(_)
+            | DaemonPayload::NodeStatus(_)
             | DaemonPayload::MeshStatus(_)
             | DaemonPayload::MachineList(_)
             | DaemonPayload::MachineAdd(_)
@@ -195,6 +224,7 @@ impl<T: Transport> DaemonClient<T> {
         extract_payload(response, "deploy apply", |payload| match payload {
             DaemonPayload::DeployApply(payload) => Some(payload.result),
             DaemonPayload::Status(_)
+            | DaemonPayload::NodeStatus(_)
             | DaemonPayload::MeshStatus(_)
             | DaemonPayload::MachineList(_)
             | DaemonPayload::MachineAdd(_)
@@ -220,6 +250,7 @@ impl<T: Transport> DaemonClient<T> {
         extract_payload(response, "deploy export", |payload| match payload {
             DaemonPayload::DeployExport(payload) => Some(payload.manifest),
             DaemonPayload::Status(_)
+            | DaemonPayload::NodeStatus(_)
             | DaemonPayload::MeshStatus(_)
             | DaemonPayload::MachineList(_)
             | DaemonPayload::MachineAdd(_)
@@ -248,6 +279,7 @@ impl<T: Transport> DaemonClient<T> {
         extract_payload_or_error(response, "coordination prepare", |payload| match payload {
             DaemonPayload::CoordinationPrepare(payload) => Some(payload),
             DaemonPayload::Status(_)
+            | DaemonPayload::NodeStatus(_)
             | DaemonPayload::MeshStatus(_)
             | DaemonPayload::MachineList(_)
             | DaemonPayload::MachineAdd(_)
@@ -276,6 +308,7 @@ impl<T: Transport> DaemonClient<T> {
         extract_payload_or_error(response, "coordination commit", |payload| match payload {
             DaemonPayload::CoordinationCommit(payload) => Some(payload),
             DaemonPayload::Status(_)
+            | DaemonPayload::NodeStatus(_)
             | DaemonPayload::MeshStatus(_)
             | DaemonPayload::MachineList(_)
             | DaemonPayload::MachineAdd(_)
@@ -304,6 +337,7 @@ impl<T: Transport> DaemonClient<T> {
         extract_payload_or_error(response, "coordination renew", |payload| match payload {
             DaemonPayload::CoordinationRenew(payload) => Some(payload),
             DaemonPayload::Status(_)
+            | DaemonPayload::NodeStatus(_)
             | DaemonPayload::MeshStatus(_)
             | DaemonPayload::MachineList(_)
             | DaemonPayload::MachineAdd(_)

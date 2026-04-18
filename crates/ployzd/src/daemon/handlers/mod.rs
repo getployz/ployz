@@ -34,6 +34,7 @@ impl DaemonState {
             | DaemonRequest::DeployExport { .. }
             | DaemonRequest::MeshList
             | DaemonRequest::MeshStatus { .. }
+            | DaemonRequest::NodeStatus
             | DaemonRequest::MeshReady
             | DaemonRequest::MeshCreate { .. }
             | DaemonRequest::MachineList
@@ -78,6 +79,7 @@ impl DaemonState {
             }
             DaemonRequest::MeshList => self.handle_mesh_list(),
             DaemonRequest::MeshStatus { network } => self.handle_mesh_status(&network),
+            DaemonRequest::NodeStatus => self.handle_node_status().await,
             DaemonRequest::MeshReady => self.handle_mesh_ready().await,
             DaemonRequest::MeshCreate { network } => self.handle_mesh_create(&network),
             DaemonRequest::MachineList => self.handle_machine_list().await,
@@ -140,6 +142,7 @@ impl DaemonState {
             | DaemonRequest::DeployExport { .. }
             | DaemonRequest::MeshList
             | DaemonRequest::MeshStatus { .. }
+            | DaemonRequest::NodeStatus
             | DaemonRequest::MeshReady
             | DaemonRequest::MeshCreate { .. }
             | DaemonRequest::MachineList
@@ -201,6 +204,7 @@ mod tests {
             DaemonRequest::MeshStatus {
                 network: "alpha".into(),
             },
+            DaemonRequest::NodeStatus,
             DaemonRequest::MeshReady,
             DaemonRequest::MeshCreate {
                 network: "alpha".into(),
