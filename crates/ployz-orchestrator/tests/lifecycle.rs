@@ -1,4 +1,4 @@
-use ployz_orchestrator::mesh::tasks::{HeartbeatCommand, PeerSyncCommand};
+use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_orchestrator::{Mesh, Phase};
 use ployz_runtime_api::DevicePeer;
 use ployz_store_api::{MachineStore, SyncStatus};
@@ -7,12 +7,11 @@ use ployz_test_support::{
     memory_wireguard_driver,
 };
 use ployz_types::model::{
-    JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
+    JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, PublicKey,
 };
 use std::net::Ipv6Addr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::oneshot;
 use tokio::time::Instant;
 
 fn test_record(id: &str, key_byte: u8) -> MachineRecord {
@@ -24,8 +23,7 @@ fn test_record(id: &str, key_byte: u8) -> MachineRecord {
         bridge_ip: None,
         endpoints: vec![format!("10.0.0.{key_byte}:51820")],
         status: MachineStatus::Unknown,
-        participation: Participation::Disabled,
-        last_heartbeat: 0,
+        drain: false,
         created_at: 0,
         updated_at: 0,
         labels: std::collections::BTreeMap::new(),
@@ -105,25 +103,11 @@ async fn startup_reaches_running_single_node() {
         "single-node founder should not wait for remote sync"
     );
 
-    let heartbeat_tx = mesh
-        .heartbeat_sender()
-        .expect("heartbeat coordinator should be running");
-    for _ in 0..3 {
-        let (done_tx, done_rx) = oneshot::channel();
-        heartbeat_tx
-            .send(HeartbeatCommand::TickNow { done: done_tx })
-            .await
-            .expect("manual heartbeat tick should send");
-        done_rx
-            .await
-            .expect("manual heartbeat tick should acknowledge");
-    }
-
     let self_record = mesh
         .authoritative_self_record()
         .await
         .expect("self record should exist");
-    assert_eq!(self_record.participation, Participation::Enabled);
+    assert!(!self_record.drain);
 }
 
 #[tokio::test]

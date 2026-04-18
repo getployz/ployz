@@ -83,3 +83,17 @@ membership and subnet claims:
 - explicit acquire/commit/release semantics.
 
 This keeps future work obvious and avoids ad-hoc lock implementations.
+
+## Current status
+
+- **Liveness/readiness source:** pulled at decision time via `NodeStatus`.
+  We do not persist heartbeat freshness in durable state.
+- **Operator intent:** persisted as durable `MachineRecord.drain` and surfaced
+  through `NodeStatus.draining`.
+- **Mutations:** subnet claims and deploy namespace locks use quorum
+  prepare/renew/commit semantics with owner+nonce idempotency.
+- **Background tasks:** focused on reconciliation/subscription work
+  (`self_record`, `peer_sync`, endpoint and subnet monitors, eBPF sync) rather
+  than liveness pulse publication.
+- **MeshReady compatibility:** retained as a compatibility RPC for now while
+  `NodeStatus` is the canonical per-node health/readiness contract.

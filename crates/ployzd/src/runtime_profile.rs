@@ -4,15 +4,15 @@ use std::sync::Arc;
 
 use crate::built_in_images::{BuiltInImage, BuiltInImages};
 use crate::daemon::store::StoreDriver;
+use crate::mesh_state::bootstrap::load_bootstrap_peer_records;
 use ipnet::Ipv4Net;
 use ployz_config::{RuntimeTarget, ServiceMode, corrosion as corrosion_config};
-use crate::mesh_state::bootstrap::load_bootstrap_peer_records;
 use ployz_corrosion::{
     CorrosionStore, Transport, docker_corrosion_runtime, host_corrosion_runtime,
 };
 use ployz_runtime_api::{
-    ContainerNetwork, DataplaneFactory, EndpointDiscovery,
-    Result as RuntimeResult, RuntimeError, ServiceRuntime, WireguardDriver,
+    ContainerNetwork, DataplaneFactory, EndpointDiscovery, Result as RuntimeResult, RuntimeError,
+    ServiceRuntime, WireguardDriver,
 };
 use ployz_runtime_backends::mesh::driver as mesh_backends;
 use ployz_runtime_backends::sidecar::ServiceSupervision;
@@ -123,9 +123,8 @@ impl RuntimeProfile {
         match self.execution_backend {
             ExecutionBackend::Memory => Ok(Vec::new()),
             ExecutionBackend::Docker | ExecutionBackend::Host => {
-                let peers = load_bootstrap_peer_records(network_dir).map_err(|error| {
-                    RuntimeError::operation("load_bootstrap_addrs", error)
-                })?;
+                let peers = load_bootstrap_peer_records(network_dir)
+                    .map_err(|error| RuntimeError::operation("load_bootstrap_addrs", error))?;
                 Ok(peers
                     .into_iter()
                     .filter(|peer| peer.machine_id != *local_machine_id)
@@ -275,5 +274,4 @@ impl RuntimeProfile {
             }
         }
     }
-
 }

@@ -1,4 +1,5 @@
 use super::join::hash_machine_id;
+use super::list::{LocalNodeStatus, machine_list_report};
 use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
 use crate::daemon::ActiveMesh;
 use crate::daemon::DaemonRuntimeConfig;
@@ -18,10 +19,8 @@ use ployz_test_support::{
     memory_wireguard_driver,
 };
 use ployz_types::model::{
-    Identity, JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation,
-    PublicKey,
+    Identity, JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, PublicKey,
 };
-use ployz_types::time::now_unix_secs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -38,13 +37,7 @@ enum MeshStartMode {
 #[tokio::test]
 async fn machine_list_shows_disabled_explicitly() {
     let (state, store, _) = make_state(MeshStartMode::Stopped).await;
-    let disabled = test_machine_record(
-        "peer-disabled",
-        "10.210.1.0/24",
-        Participation::Disabled,
-        0,
-        PublicKey([2; 32]),
-    );
+    let disabled = test_machine_record("peer-disabled", "10.210.1.0/24", true, PublicKey([2; 32]));
     store
         .upsert_self_machine(&disabled)
         .await
@@ -52,22 +45,16 @@ async fn machine_list_shows_disabled_explicitly() {
 
     let response = state.handle_machine_list().await;
     assert!(response.ok);
-    assert!(response.message.contains("LIVENESS"));
+    assert!(response.message.contains("PRESENCE"));
     assert!(response.message.contains("peer-disabled"));
-    assert!(response.message.contains("disabled"));
-    assert!(response.message.contains("stale"));
+    assert!(response.message.contains("draining"));
+    assert!(response.message.contains("absent"));
 }
 
 #[tokio::test]
 async fn machine_list_shows_down_liveness() {
     let (state, store, _) = make_state(MeshStartMode::Stopped).await;
-    let mut down = test_machine_record(
-        "peer-down",
-        "10.210.1.0/24",
-        Participation::Enabled,
-        now_unix_secs(),
-        PublicKey([2; 32]),
-    );
+    let mut down = test_machine_record("peer-down", "10.210.1.0/24", false, PublicKey([2; 32]));
     down.status = MachineStatus::Down;
     store
         .upsert_self_machine(&down)
@@ -92,14 +79,36 @@ async fn machine_list_json_payload_contains_rows() {
 }
 
 #[tokio::test]
+async fn machine_list_report_uses_local_mesh_readiness() {
+    let (_state, store, _) = make_state(MeshStartMode::Stopped).await;
+    let report = machine_list_report(
+        StoreDriver::memory_with(store),
+        &MachineId("founder".into()),
+        0,
+        &LocalNodeStatus {
+            ready: false,
+            phase: "starting".into(),
+            draining: true,
+        },
+    )
+    .await
+    .expect("machine list report");
+    let Some(local) = report.rows.into_iter().find(|row| row.id == "founder") else {
+        panic!("missing founder row");
+    };
+    assert_eq!(local.ready, Some(false));
+    assert_eq!(local.phase.as_deref(), Some("starting"));
+    assert_eq!(local.draining, Some(true));
+}
+
+#[tokio::test]
 async fn allocate_machine_subnets_returns_unique_values() {
     let (state, store, _) = make_state(MeshStartMode::Stopped).await;
     store
         .upsert_self_machine(&test_machine_record(
             "peer-1",
             "10.210.1.0/24",
-            Participation::Enabled,
-            0,
+            false,
             PublicKey([2; 32]),
         ))
         .await
@@ -130,8 +139,7 @@ async fn machine_add_succeeds_when_peer_unreachable_at_rpc_time() {
         .upsert_self_machine(&test_machine_record(
             "stale-peer",
             "10.210.1.0/24",
-            Participation::Disabled,
-            0,
+            true,
             PublicKey([3; 32]),
         ))
         .await
@@ -178,9 +186,9 @@ async fn machine_add_succeeds_when_peer_unreachable_at_rpc_time() {
         Some(self_record_response.into()),
     );
     let _ready_guard = TestSshEnvGuard::set(
-        "PLOYZ_TEST_READY_RESPONSE",
+        "PLOYZ_TEST_NODE_STATUS_RESPONSE",
         Some(
-            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":true,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":true,\"heartbeat_started\":true}}".into(),
+            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"node-status\",\"machine_id\":\"joiner-1\",\"boot_id\":\"boot-1\",\"phase\":\"running\",\"ready\":true,\"draining\":false,\"version\":\"test-version\"}}".into(),
         ),
     );
 
@@ -252,9 +260,9 @@ async fn machine_add_accepts_running_joiner_before_full_sync() {
         Some(self_record_response.into()),
     );
     let _ready_guard = TestSshEnvGuard::set(
-        "PLOYZ_TEST_READY_RESPONSE",
+        "PLOYZ_TEST_NODE_STATUS_RESPONSE",
         Some(
-            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":false,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":false,\"heartbeat_started\":true}}".into(),
+            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"node-status\",\"machine_id\":\"joiner-2\",\"boot_id\":\"boot-2\",\"phase\":\"running\",\"ready\":false,\"draining\":false,\"version\":\"test-version\"}}".into(),
         ),
     );
 
@@ -287,8 +295,7 @@ async fn machine_remove_refuses_enabled_without_force() {
         .upsert_self_machine(&test_machine_record(
             "peer-1",
             "10.210.1.0/24",
-            Participation::Enabled,
-            10,
+            false,
             PublicKey([2; 32]),
         ))
         .await
@@ -296,7 +303,7 @@ async fn machine_remove_refuses_enabled_without_force() {
 
     let response = state.handle_machine_remove("peer-1", false).await;
     assert!(!response.ok);
-    assert!(response.message.contains("must be disabled"));
+    assert!(response.message.contains("must be drained"));
 }
 
 #[tokio::test]
@@ -306,8 +313,7 @@ async fn machine_remove_deletes_disabled_record() {
         .upsert_self_machine(&test_machine_record(
             "peer-1",
             "10.210.1.0/24",
-            Participation::Disabled,
-            10,
+            true,
             PublicKey([2; 32]),
         ))
         .await
@@ -318,6 +324,58 @@ async fn machine_remove_deletes_disabled_record() {
 
     let machines = store.list_machines().await.expect("list machines");
     assert!(!machines.into_iter().any(|machine| machine.id.0 == "peer-1"));
+}
+
+#[tokio::test]
+async fn machine_drain_marks_machine_draining() {
+    let (state, store, _) = make_state(MeshStartMode::Stopped).await;
+    store
+        .upsert_self_machine(&test_machine_record(
+            "peer-1",
+            "10.210.1.0/24",
+            false,
+            PublicKey([2; 32]),
+        ))
+        .await
+        .expect("upsert peer");
+
+    let response = state.handle_machine_set_drain("peer-1", true).await;
+    assert!(response.ok, "{}", response.message);
+
+    let machines = store.list_machines().await.expect("list machines");
+    let Some(peer) = machines
+        .into_iter()
+        .find(|machine| machine.id.0 == "peer-1")
+    else {
+        panic!("peer not found");
+    };
+    assert!(peer.drain);
+}
+
+#[tokio::test]
+async fn machine_undrain_marks_machine_active() {
+    let (state, store, _) = make_state(MeshStartMode::Stopped).await;
+    store
+        .upsert_self_machine(&test_machine_record(
+            "peer-1",
+            "10.210.1.0/24",
+            true,
+            PublicKey([2; 32]),
+        ))
+        .await
+        .expect("upsert peer");
+
+    let response = state.handle_machine_set_drain("peer-1", false).await;
+    assert!(response.ok, "{}", response.message);
+
+    let machines = store.list_machines().await.expect("list machines");
+    let Some(peer) = machines
+        .into_iter()
+        .find(|machine| machine.id.0 == "peer-1")
+    else {
+        panic!("peer not found");
+    };
+    assert!(!peer.drain);
 }
 
 #[tokio::test]
@@ -377,8 +435,7 @@ async fn make_state(
     let founder_record = test_machine_record(
         "founder",
         "10.210.0.0/24",
-        Participation::Disabled,
-        0,
+        false,
         identity.public_key.clone(),
     );
     store
@@ -435,8 +492,7 @@ async fn teardown_state(state: &mut DaemonState) {
 fn test_machine_record(
     id: &str,
     subnet: &str,
-    participation: Participation,
-    last_heartbeat: u64,
+    drain: bool,
     public_key: PublicKey,
 ) -> MachineRecord {
     MachineRecord {
@@ -450,8 +506,7 @@ fn test_machine_record(
         bridge_ip: None,
         endpoints: vec!["127.0.0.1:51820".into()],
         status: MachineStatus::Unknown,
-        participation,
-        last_heartbeat,
+        drain,
         created_at: 0,
         updated_at: 0,
         labels: std::collections::BTreeMap::new(),
@@ -470,7 +525,7 @@ fn write_fake_ssh(dir: &PathBuf) -> PathBuf {
     let script = dir.join("ssh");
     std::fs::write(
         &script,
-        "#!/bin/sh\nfor arg in \"$@\"; do\n  command=\"$arg\"\ndone\nif [ \"$command\" = 'set -eu; \"$HOME/.local/bin/ployz\" rpc-stdio' ]; then\n  req=$(cat)\n  case \"$req\" in\n    *'\"MeshJoin\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"joined\",\"payload\":null}'\n      ;;\n    *'\"MeshInit\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"init\",\"payload\":null}'\n      ;;\n    *'\"MeshDestroy\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"destroyed\",\"payload\":null}'\n      ;;\n    *'\"MeshDown\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"down\",\"payload\":null}'\n      ;;\n    *'\"MeshSelfRecord\"'*)\n      printf '%s' \"$PLOYZ_TEST_SELF_RECORD_RESPONSE\"\n      ;;\n    *'\"MeshReady\"'*)\n      printf '%s' \"$PLOYZ_TEST_READY_RESPONSE\"\n      ;;\n    *)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"ok\",\"payload\":null}'\n      ;;\n  esac\n  exit 0\nfi\ncase \"$command\" in\n  *'--version'*)\n    printf 'ployz test-version'\n    exit 0\n    ;;\n  *'status >/dev/null'*)\n    exit 0\n    ;;\n  *'bash -s -- install'*)\n    cat >/dev/null\n    exit 0\n    ;;\n  *)\n    exit 0\n    ;;\nesac\n",
+        "#!/bin/sh\nfor arg in \"$@\"; do\n  command=\"$arg\"\ndone\nif [ \"$command\" = 'set -eu; \"$HOME/.local/bin/ployz\" rpc-stdio' ]; then\n  req=$(cat)\n  case \"$req\" in\n    *'\"MeshJoin\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"joined\",\"payload\":null}'\n      ;;\n    *'\"MeshInit\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"init\",\"payload\":null}'\n      ;;\n    *'\"MeshDestroy\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"destroyed\",\"payload\":null}'\n      ;;\n    *'\"MeshDown\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"down\",\"payload\":null}'\n      ;;\n    *'\"MeshSelfRecord\"'*)\n      printf '%s' \"$PLOYZ_TEST_SELF_RECORD_RESPONSE\"\n      ;;\n    *'\"NodeStatus\"'*)\n      printf '%s' \"$PLOYZ_TEST_NODE_STATUS_RESPONSE\"\n      ;;\n    *)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"ok\",\"payload\":null}'\n      ;;\n  esac\n  exit 0\nfi\ncase \"$command\" in\n  *'--version'*)\n    printf 'ployz test-version'\n    exit 0\n    ;;\n  *'status >/dev/null'*)\n    exit 0\n    ;;\n  *'bash -s -- install'*)\n    cat >/dev/null\n    exit 0\n    ;;\n  *)\n    exit 0\n    ;;\nesac\n",
     )
     .expect("write fake ssh");
 

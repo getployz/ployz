@@ -63,7 +63,6 @@ pub struct MachineInstallOptions {
 #[serde(rename_all = "kebab-case")]
 pub enum DebugTickTask {
     PeerSync,
-    Heartbeat,
     All,
 }
 
@@ -79,10 +78,10 @@ pub enum DaemonRequest {
     MeshStatus {
         network: String,
     },
+    NodeStatus,
     MeshJoin {
         token: String,
     },
-    MeshReady,
     MeshCreate {
         network: String,
     },
@@ -110,6 +109,12 @@ pub enum DaemonRequest {
     MachineRemove {
         id: String,
         force: bool,
+    },
+    MachineDrain {
+        id: String,
+    },
+    MachineUndrain {
+        id: String,
     },
     MachineOperationList,
     MachineOperationGet {
@@ -155,10 +160,11 @@ pub enum DaemonRequest {
 pub enum DaemonPayload {
     Status(StatusPayload),
     MeshStatus(MeshStatusPayload),
+    NodeStatus(NodeStatusPayload),
     MachineList(MachineListPayload),
     MachineAdd(MachineAddPayload),
     MachineRemove(MachineRemovePayload),
-    MeshReady(MeshReadyPayload),
+    MachineDrain(MachineDrainPayload),
     MeshSelfRecord(MeshSelfRecordPayload),
     CoordinationPrepare(CoordinationPreparePayload),
     CoordinationRenew(CoordinationRenewPayload),
@@ -192,6 +198,18 @@ pub struct MeshStatusPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeStatusPayload {
+    pub machine_id: String,
+    pub boot_id: String,
+    pub phase: String,
+    pub ready: bool,
+    pub draining: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subnet_claim: Option<String>,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineListPayload {
     pub rows: Vec<MachineListRow>,
 }
@@ -200,12 +218,10 @@ pub struct MachineListPayload {
 pub struct MachineListRow {
     pub id: String,
     pub status: String,
-    pub participation: String,
-    pub liveness: String,
+    pub draining: bool,
     pub overlay_ip: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subnet: Option<String>,
-    pub last_heartbeat: u64,
     pub created_at: u64,
 }
 
@@ -238,12 +254,9 @@ pub struct MachineRemovePayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MeshReadyPayload {
-    pub ready: bool,
-    pub phase: String,
-    pub store_healthy: bool,
-    pub sync_connected: bool,
-    pub heartbeat_started: bool,
+pub struct MachineDrainPayload {
+    pub id: String,
+    pub draining: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -255,50 +268,17 @@ pub struct MeshSelfRecordPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CoordinationLockKey {
-    DeployNamespace {
-        namespace: String,
-    },
-    MembershipMachine {
-        machine_id: String,
-    },
-    SubnetClaim {
-        subnet: String,
-    },
-    MachineOperation {
-        machine_id: String,
-        operation: String,
-    },
+    DeployNamespace { namespace: String },
+    SubnetClaim { subnet: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CoordinationOperation {
-    LockAcquire {
-        key: CoordinationLockKey,
-    },
-    MembershipPrepare {
-        machine_id: String,
-        proposed_subnet: Option<String>,
-    },
-    MembershipCommit {
-        machine_id: String,
-        committed_subnet: Option<String>,
-    },
-    MembershipAbort {
-        machine_id: String,
-    },
-    SubnetClaimPrepare {
-        machine_id: String,
-        subnet: String,
-    },
-    SubnetClaimCommit {
-        machine_id: String,
-        subnet: String,
-    },
-    SubnetClaimAbort {
-        machine_id: String,
-        subnet: String,
-    },
+    LockAcquire { key: CoordinationLockKey },
+    SubnetClaimPrepare { machine_id: String, subnet: String },
+    SubnetClaimCommit { machine_id: String, subnet: String },
+    SubnetClaimAbort { machine_id: String, subnet: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

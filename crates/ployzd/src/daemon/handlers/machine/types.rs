@@ -180,13 +180,13 @@ impl MachineListReport {
 pub(super) struct MachineListReportRow {
     pub id: String,
     pub status: &'static str,
-    pub participation: &'static str,
-    pub liveness: &'static str,
     pub overlay: String,
     pub subnet: Option<Ipv4Net>,
     pub subnet_display: String,
-    pub last_heartbeat: u64,
-    pub heartbeat_display: String,
+    pub reachable: bool,
+    pub ready: Option<bool>,
+    pub draining: Option<bool>,
+    pub phase: Option<String>,
     pub created_at: u64,
     pub created_display: String,
 }
@@ -197,13 +197,10 @@ impl MachineListReportRow {
         MachineListRow {
             id: self.id.clone(),
             status: self.status.into(),
-            participation: self.participation.into(),
-            liveness: self.liveness.into(),
+            draining: self.draining.unwrap_or(false),
             overlay_ip: self.overlay.clone(),
             subnet: self.subnet.map(|subnet| subnet.to_string()),
-            last_heartbeat: self.last_heartbeat,
             created_at: self.created_at,
         }
     }
 }
-

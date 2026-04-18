@@ -17,8 +17,8 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
 
     run.log_progress("add peer from founder");
     run.machine_add("founder", "peer")?;
-    run.log_progress("wait founder+peer enabled");
-    run.wait_for_settled_machine_states("founder", &[("founder", "enabled"), ("peer", "enabled")])?;
+    run.log_progress("wait founder+peer active");
+    run.wait_for_settled_machine_states("founder", &[("founder", "active"), ("peer", "active")])?;
     run.log_progress("wait peer mesh ready");
     run.wait_mesh_ready_name("peer")?;
 
@@ -38,10 +38,10 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
     run.clear_partition_rules()?;
     run.log_progress("tick healed nodes");
     run.tick_nodes(&nodes, 3)?;
-    run.log_progress("wait founder+peer enabled again");
+    run.log_progress("wait founder+peer active again");
     run.wait_for_settled_machine_states_with_ticks(
         "founder",
-        &[("founder", "enabled"), ("peer", "enabled")],
+        &[("founder", "active"), ("peer", "active")],
         &nodes,
         3,
     )?;
@@ -56,7 +56,7 @@ fn wait_for_doctor_peer_status(
     run: &ScenarioRun,
     node_name: &str,
     peer_name: &str,
-    participation: &str,
+    health: &str,
     probe_status: &str,
 ) -> Result<()> {
     let mut last_report = String::new();
@@ -72,31 +72,26 @@ fn wait_for_doctor_peer_status(
         Ok(doctor_report_matches(
             &last_report,
             peer_name,
-            participation,
+            health,
             probe_status,
         ))
     })
     .map_err(|error| {
         Error::Message(format!(
-            "doctor on {node_name} did not report peer '{peer_name}' as participation={participation} probe={probe_status}: {error}\nlast report:\n{last_report}"
+            "doctor on {node_name} did not report peer '{peer_name}' as node-health={health} probe={probe_status}: {error}\nlast report:\n{last_report}"
         ))
     })
 }
 
-fn doctor_report_matches(
-    report: &str,
-    peer_name: &str,
-    participation: &str,
-    probe_status: &str,
-) -> bool {
-    if !report.contains(&format!("participation: {participation}")) {
+fn doctor_report_matches(report: &str, peer_name: &str, health: &str, probe_status: &str) -> bool {
+    if !report.contains(&format!("node-health: {health}")) {
         return false;
     }
 
     report.lines().any(|line| {
         let trimmed = line.trim_start();
         trimmed.starts_with(peer_name)
-            && trimmed.contains("store=enabled/fresh")
+            && trimmed.contains("node=")
             && trimmed.contains(&format!("probe={probe_status}"))
     })
 }

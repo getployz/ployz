@@ -1,6 +1,5 @@
 use super::*;
 use ployz_store_api::SyncStatus;
-use std::sync::atomic::Ordering;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MeshReadyStatus {
@@ -8,7 +7,7 @@ pub struct MeshReadyStatus {
     pub phase: Phase,
     pub store_healthy: bool,
     pub sync_connected: bool,
-    pub heartbeat_started: bool,
+    pub self_record_published: bool,
 }
 
 impl Mesh {
@@ -39,15 +38,16 @@ impl Mesh {
         } else {
             true
         };
-        let heartbeat_started = self.heartbeat_started.load(Ordering::SeqCst);
-        let ready = phase == Phase::Running && store_healthy && sync_connected && heartbeat_started;
+        let self_record_published = self.authoritative_self_record().await.is_some();
+        let ready =
+            phase == Phase::Running && store_healthy && sync_connected && self_record_published;
 
         MeshReadyStatus {
             ready,
             phase,
             store_healthy,
             sync_connected,
-            heartbeat_started,
+            self_record_published,
         }
     }
 

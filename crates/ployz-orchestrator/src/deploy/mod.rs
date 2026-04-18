@@ -16,7 +16,7 @@ mod tests {
     use super::*;
     use crate::model::{
         DeployId, DeployState, DrainState, InstanceId, InstancePhase, MachineId, MachineRecord,
-        MachineStatus, OverlayIp, Participation, PublicKey, ServiceReleaseSlot,
+        MachineStatus, OverlayIp, PublicKey, ServiceReleaseSlot,
     };
     use async_trait::async_trait;
     use ployz_runtime_api::Result as RuntimeResult;
@@ -35,57 +35,30 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     #[test]
-    fn deployable_machines_excludes_stale_and_down_peers() {
-        let now = 100;
+    fn deployable_machines_uses_all_store_candidates() {
         let machines = vec![
-            test_machine(
-                "fresh-enabled",
-                Participation::Enabled,
-                MachineStatus::Up,
-                90,
-            ),
-            test_machine(
-                "stale-enabled",
-                Participation::Enabled,
-                MachineStatus::Up,
-                69,
-            ),
-            test_machine(
-                "down-enabled",
-                Participation::Enabled,
-                MachineStatus::Down,
-                100,
-            ),
-            test_machine(
-                "draining-fresh",
-                Participation::Draining,
-                MachineStatus::Up,
-                100,
-            ),
+            test_machine("fresh-enabled", MachineStatus::Up, false),
+            test_machine("stale-enabled", MachineStatus::Up, false),
+            test_machine("down-enabled", MachineStatus::Down, false),
+            test_machine("draining-fresh", MachineStatus::Up, true),
         ];
 
-        let deployable = deployable_machines(&machines, &MachineId("local".into()), now);
-        assert_eq!(deployable, vec![MachineId("fresh-enabled".into())]);
+        let deployable = deployable_machines(&machines, &MachineId("local".into()));
+        assert_eq!(
+            deployable,
+            vec![
+                MachineId("down-enabled".into()),
+                MachineId("draining-fresh".into()),
+                MachineId("fresh-enabled".into()),
+                MachineId("stale-enabled".into()),
+            ]
+        );
     }
 
     #[test]
-    fn deployable_machines_falls_back_to_local_when_none_are_fresh_enabled() {
-        let machines = vec![
-            test_machine(
-                "stale-enabled",
-                Participation::Enabled,
-                MachineStatus::Up,
-                10,
-            ),
-            test_machine(
-                "down-enabled",
-                Participation::Enabled,
-                MachineStatus::Down,
-                100,
-            ),
-        ];
-
-        let deployable = deployable_machines(&machines, &MachineId("local".into()), 100);
+    fn deployable_machines_falls_back_to_local_when_store_is_empty() {
+        let machines = vec![];
+        let deployable = deployable_machines(&machines, &MachineId("local".into()));
         assert_eq!(deployable, vec![MachineId("local".into())]);
     }
 
@@ -229,12 +202,7 @@ mod tests {
         );
     }
 
-    fn test_machine(
-        id: &str,
-        participation: Participation,
-        status: MachineStatus,
-        last_heartbeat: u64,
-    ) -> MachineRecord {
+    fn test_machine(id: &str, status: MachineStatus, drain: bool) -> MachineRecord {
         MachineRecord {
             id: MachineId(id.into()),
             public_key: PublicKey([7; 32]),
@@ -243,8 +211,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec!["127.0.0.1:51820".into()],
             status,
-            participation,
-            last_heartbeat,
+            drain,
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),
@@ -252,12 +219,9 @@ mod tests {
     }
 
     fn live_machine(id: &str) -> MachineRecord {
-        test_machine(
-            id,
-            Participation::Enabled,
-            MachineStatus::Up,
-            now_unix_secs(),
-        )
+        let mut machine = test_machine(id, MachineStatus::Up, false);
+        machine.updated_at = now_unix_secs();
+        machine
     }
 
     fn test_manifest(image: &str) -> DeployManifest {

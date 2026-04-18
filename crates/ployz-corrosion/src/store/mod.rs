@@ -206,18 +206,19 @@ impl CorrosionStore {
                         .count());
                 }
                 Err(e) => {
-                    tracing::warn!(?e, "admin membership check failed, falling back to health API");
+                    tracing::warn!(
+                        ?e,
+                        "admin membership check failed, falling back to health API"
+                    );
                 }
             }
         }
 
         // Fallback: the health API reports total member count over HTTP/2 (TCP),
         // which avoids the QUIC transport stuckness that can affect the admin socket.
-        let health = self
-            .client
-            .health()
-            .await
-            .map_err(|e| Error::operation("check_remote_membership", format!("health request: {e}")))?;
+        let health = self.client.health().await.map_err(|e| {
+            Error::operation("check_remote_membership", format!("health request: {e}"))
+        })?;
         Ok(if health.members > 1 {
             (health.members - 1) as usize
         } else {

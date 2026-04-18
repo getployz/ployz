@@ -5,11 +5,10 @@ use crate::mesh_state::invite::{InviteClaims, parse_and_verify_invite_token};
 use crate::mesh_state::network::NetworkConfig;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ployz_api::{
-    DaemonPayload, DaemonResponse, MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload,
+    DaemonPayload, DaemonResponse, MeshSelfRecordPayload, MeshStatusPayload, NodeStatusPayload,
     decode_join_response, encode_join_response,
 };
 use ployz_orchestrator::ipam::Ipam;
-use ployz_orchestrator::mesh::orchestrator::MeshReadyStatus;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_types::model::{JoinResponse, NetworkName};
 use ployz_types::time::now_unix_secs;
@@ -103,21 +102,32 @@ impl DaemonState {
         )
     }
 
-    pub(crate) async fn handle_mesh_ready(&self) -> DaemonResponse {
+    pub(crate) async fn handle_node_status(&self) -> DaemonResponse {
         let active = match self.active.as_ref() {
             Some(active) => active,
             None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
         };
+        let ready = active.mesh.ready_status().await;
+        let self_record = active.mesh.authoritative_self_record().await;
+        let draining = self_record.as_ref().is_some_and(|record| record.drain);
+        let payload = NodeStatusPayload {
+            machine_id: self.identity.machine_id.0.clone(),
+            boot_id: self.boot_id.clone(),
+            phase: ready.phase.to_string(),
+            ready: ready.ready,
+            draining,
+            subnet_claim: self_record
+                .and_then(|record| record.subnet.map(|subnet| subnet.to_string())),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        };
 
-        let status = mesh_ready_payload(active.mesh.ready_status().await);
-        self.ok_with_payload(format!(
-            "ready:            {}\nphase:            {}\nstore healthy:    {}\nsync connected:   {}\nheartbeat ready:  {}",
-            status.ready,
-            status.phase,
-            status.store_healthy,
-            status.sync_connected,
-            status.heartbeat_started,
-        ), Some(DaemonPayload::MeshReady(status)))
+        self.ok_with_payload(
+            format!(
+                "machine id:  {}\nboot id:     {}\nphase:       {}\nready:       {}\ndraining:    {}",
+                payload.machine_id, payload.boot_id, payload.phase, payload.ready, payload.draining
+            ),
+            Some(DaemonPayload::NodeStatus(payload)),
+        )
     }
 
     pub(crate) async fn handle_mesh_join(&mut self, token: &str) -> DaemonResponse {
@@ -493,16 +503,6 @@ impl DaemonState {
     }
 }
 
-fn mesh_ready_payload(value: MeshReadyStatus) -> MeshReadyPayload {
-    MeshReadyPayload {
-        ready: value.ready,
-        phase: value.phase.to_string(),
-        store_healthy: value.store_healthy,
-        sync_connected: value.sync_connected,
-        heartbeat_started: value.heartbeat_started,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -696,8 +696,7 @@ mod tests {
                 bridge_ip: None,
                 endpoints: vec!["127.0.0.1:51820".into()],
                 status: ployz_types::model::MachineStatus::Unknown,
-                participation: ployz_types::model::Participation::Disabled,
-                last_heartbeat: 0,
+                drain: false,
                 created_at: 0,
                 updated_at: 0,
                 labels: std::collections::BTreeMap::new(),

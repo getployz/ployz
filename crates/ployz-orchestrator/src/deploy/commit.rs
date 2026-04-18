@@ -69,7 +69,7 @@ pub async fn apply(
         let current_slots_by_service = current_slots_by_service_from_releases(
             &deploy_read.list_service_releases(namespace).await?,
         );
-        let desired_machines = deployable_machines(&machines, local_machine_id, now_unix_secs());
+        let desired_machines = deployable_machines(&machines, local_machine_id);
         let mut removed_services = Vec::new();
         let mut committed_releases = Vec::new();
         let mut committed_slots = Vec::new();

@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use ployz_api::{MachineListPayload, MeshReadyPayload};
+use ployz_api::{MachineListPayload, NodeStatusPayload};
 use ployz_sdk::{DaemonClient, StdioTransport};
 use std::net::TcpListener;
 use std::process::{Command, ExitStatus};
@@ -55,7 +55,7 @@ pub(crate) fn daemon_machine_list_in_container(container_name: &str) -> Result<M
         .map_err(|error| Error::Io(format!("load machine list in '{container_name}': {error}")))
 }
 
-pub(crate) fn daemon_mesh_ready_in_container(container_name: &str) -> Result<MeshReadyPayload> {
+pub(crate) fn daemon_mesh_ready_in_container(container_name: &str) -> Result<NodeStatusPayload> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -68,7 +68,7 @@ pub(crate) fn daemon_mesh_ready_in_container(container_name: &str) -> Result<Mes
         .arg("rpc-stdio");
     let client = DaemonClient::new(transport);
     runtime
-        .block_on(async { client.mesh_ready().await })
+        .block_on(async { client.node_status().await })
         .map_err(|error| {
             Error::Io(format!(
                 "probe mesh readiness in '{container_name}': {error}"

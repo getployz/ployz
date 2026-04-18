@@ -1,12 +1,10 @@
 use crate::error::{Error, Result};
-use crate::machine_liveness::machine_is_fresh;
 use crate::model::{
     DeployChangeKind, DeployPreview, MachineId, ServicePlan, ServiceReleaseRecord,
     ServiceReleaseSlot, SlotId, SlotPlan,
 };
 use ployz_store_api::{DeployReadStore, MachineStore};
 use ployz_types::spec::{DeployManifest, Placement, ServiceSpec, stable_hash_hex};
-use ployz_types::time::now_unix_secs;
 use std::collections::{BTreeSet, HashMap};
 
 #[derive(Debug, Clone)]
@@ -28,7 +26,7 @@ pub async fn preview(
 
     let current_releases = deploy_read.list_service_releases(namespace).await?;
     let machines = machine_store.list_machines().await?;
-    let desired_machines = deployable_machines(&machines, local_machine_id, now_unix_secs());
+    let desired_machines = deployable_machines(&machines, local_machine_id);
     let current_release_map: HashMap<String, ServiceReleaseRecord> = current_releases
         .into_iter()
         .map(|record| (record.service.clone(), record))
@@ -159,19 +157,14 @@ pub async fn preview(
 pub(crate) fn deployable_machines(
     machines: &[crate::model::MachineRecord],
     local_machine_id: &MachineId,
-    now: u64,
 ) -> Vec<MachineId> {
-    let mut enabled: Vec<MachineId> = machines
-        .iter()
-        .filter(|machine| machine.participation == crate::model::Participation::Enabled)
-        .filter(|machine| machine_is_fresh(machine, now))
-        .map(|machine| machine.id.clone())
-        .collect();
-    enabled.sort_by(|left, right| left.0.cmp(&right.0));
-    if enabled.is_empty() {
+    let mut candidates: Vec<MachineId> =
+        machines.iter().map(|machine| machine.id.clone()).collect();
+    candidates.sort_by(|left, right| left.0.cmp(&right.0));
+    if candidates.is_empty() {
         return vec![local_machine_id.clone()];
     }
-    enabled
+    candidates
 }
 
 pub(crate) fn desired_slots(

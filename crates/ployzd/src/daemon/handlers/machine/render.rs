@@ -1,6 +1,5 @@
 use chrono::DateTime;
-use ployz_orchestrator::machine_liveness::{MachineLiveness, machine_liveness};
-use ployz_types::model::{MachineRecord, MachineStatus, Participation};
+use ployz_types::model::{MachineRecord, MachineStatus};
 
 use super::types::{MachineAddReport, MachineListReport};
 
@@ -26,43 +25,70 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
         .max()
         .unwrap_or(0)
         .max(6);
-    let w_hb = report
+    let w_present = report
         .rows
         .iter()
-        .map(|row| row.heartbeat_display.len())
+        .map(|row| if row.reachable { "present" } else { "absent" }.len())
         .max()
         .unwrap_or(0)
-        .max(9);
-    let w_part = report
+        .max("PRESENCE".len());
+    let w_ready = report
         .rows
         .iter()
-        .map(|row| row.participation.len())
+        .map(|row| {
+            row.ready
+                .map(|ready| if ready { "ready" } else { "not-ready" })
+                .unwrap_or("unknown")
+                .len()
+        })
         .max()
         .unwrap_or(0)
-        .max("PARTICIPATION".len());
-    let w_live = report
+        .max("READY".len());
+    let w_draining = report
         .rows
         .iter()
-        .map(|row| row.liveness.len())
+        .map(|row| {
+            row.draining
+                .map(|draining| if draining { "draining" } else { "no" })
+                .unwrap_or("unknown")
+                .len()
+        })
         .max()
         .unwrap_or(0)
-        .max("LIVENESS".len());
-
+        .max("DRAINING".len());
+    let w_phase = report
+        .rows
+        .iter()
+        .map(|row| row.phase.as_deref().unwrap_or("unknown").len())
+        .max()
+        .unwrap_or(0)
+        .max("PHASE".len());
     let mut lines = Vec::with_capacity(report.rows.len() + 1);
     lines.push(format!(
-        "{:<w_id$}  {:<6}  {:<w_part$}  {:<w_live$}  {:<w_ov$}  {:<w_sub$}  {:<w_hb$}  {}",
-        "ID", "STATUS", "PARTICIPATION", "LIVENESS", "OVERLAY IP", "SUBNET", "HEARTBEAT", "CREATED",
+        "{:<w_id$}  {:<6}  {:<w_present$}  {:<w_ready$}  {:<w_draining$}  {:<w_phase$}  {:<w_ov$}  {:<w_sub$}  {}",
+        "ID", "STATUS", "PRESENCE", "READY", "DRAINING", "PHASE", "OVERLAY IP", "SUBNET", "CREATED",
     ));
     for row in &report.rows {
+        let present = if row.reachable { "present" } else { "absent" };
+        let ready = row
+            .ready
+            .map(|value| if value { "ready" } else { "not-ready" })
+            .unwrap_or("unknown");
+        let draining = row
+            .draining
+            .map(|value| if value { "draining" } else { "no" })
+            .unwrap_or("unknown");
+        let phase = row.phase.as_deref().unwrap_or("unknown");
         lines.push(format!(
-            "{:<w_id$}  {:<6}  {:<w_part$}  {:<w_live$}  {:<w_ov$}  {:<w_sub$}  {:<w_hb$}  {}",
+            "{:<w_id$}  {:<6}  {:<w_present$}  {:<w_ready$}  {:<w_draining$}  {:<w_phase$}  {:<w_ov$}  {:<w_sub$}  {}",
             row.id,
             row.status,
-            row.participation,
-            row.liveness,
+            present,
+            ready,
+            draining,
+            phase,
             row.overlay,
             row.subnet_display,
-            row.heartbeat_display,
             row.created_display,
         ));
     }
@@ -94,38 +120,6 @@ pub(super) fn format_status(machine: &MachineRecord) -> &'static str {
         MachineStatus::Up => "up",
         MachineStatus::Down => "down",
         MachineStatus::Unknown => "—",
-    }
-}
-
-pub(super) fn format_participation(machine: &MachineRecord) -> &'static str {
-    match machine.participation {
-        Participation::Enabled => "enabled",
-        Participation::Draining => "draining",
-        Participation::Disabled => "disabled",
-    }
-}
-
-pub(crate) fn format_liveness(machine: &MachineRecord, now: u64) -> &'static str {
-    match machine_liveness(machine, now) {
-        MachineLiveness::Fresh => "fresh",
-        MachineLiveness::Stale => "stale",
-        MachineLiveness::Down => "down",
-    }
-}
-
-pub(crate) fn format_heartbeat(ts: u64, now: u64) -> String {
-    if ts == 0 {
-        return "never".into();
-    }
-    let ago = now.saturating_sub(ts);
-    if ago < 60 {
-        format!("{ago}s ago")
-    } else if ago < 3600 {
-        format!("{}m ago", ago / 60)
-    } else if ago < 86400 {
-        format!("{}h ago", ago / 3600)
-    } else {
-        format!("{}d ago", ago / 86400)
     }
 }
 

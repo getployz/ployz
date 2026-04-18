@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use ployz_api::{
     CoordinationAbortRequest, CoordinationCommitRequest, CoordinationPreparePayload,
-    CoordinationPrepareRequest,
+    CoordinationPrepareRequest, NodeStatusPayload,
 };
 use ployz_sdk::{DaemonClient, TcpTransport};
 use ployz_types::model::{MachineId, OverlayIp};
@@ -14,6 +14,12 @@ use tokio::task::JoinSet;
 pub(crate) struct FanOutTarget {
     pub(crate) machine_id: MachineId,
     pub(crate) overlay_ip: OverlayIp,
+}
+
+pub(crate) enum NodeStatusResult {
+    Ok(NodeStatusPayload),
+    Offline,
+    InvalidIdentity { reported: MachineId },
 }
 
 /// Result of a fanned-out prepare operation.
@@ -67,8 +73,7 @@ pub(crate) async fn fanout_prepare(
 
     // Each task returns (target, Ok(payload)) if the peer responded or (target, Err(is_offline))
     // where is_offline=true means unreachable, false means responded but denied.
-    let mut set: JoinSet<(FanOutTarget, Result<CoordinationPreparePayload, bool>)> =
-        JoinSet::new();
+    let mut set: JoinSet<(FanOutTarget, Result<CoordinationPreparePayload, bool>)> = JoinSet::new();
     for target in targets {
         let t = target.clone();
         let c = client(t.overlay_ip, rpc_port);
@@ -76,8 +81,8 @@ pub(crate) async fn fanout_prepare(
         set.spawn(async move {
             match tokio::time::timeout(deadline, c.coordination_prepare(req)).await {
                 Ok(Ok(payload)) => (t, Ok(payload)),
-                Ok(Err(_io_err)) => (t, Err(true)),  // connection refused / IO → offline
-                Err(_timeout) => (t, Err(true)),     // deadline exceeded → offline
+                Ok(Err(_io_err)) => (t, Err(true)), // connection refused / IO → offline
+                Err(_timeout) => (t, Err(true)),    // deadline exceeded → offline
             }
         });
     }
@@ -191,6 +196,46 @@ pub(crate) fn accepted_targets(
     accepted.iter().map(|(t, _)| t.clone()).collect()
 }
 
+pub(crate) async fn fanout_node_status(
+    targets: &[FanOutTarget],
+    rpc_port: u16,
+    deadline: Duration,
+) -> Vec<(MachineId, NodeStatusResult)> {
+    if targets.is_empty() {
+        return Vec::new();
+    }
+
+    let mut set: JoinSet<(MachineId, NodeStatusResult)> = JoinSet::new();
+    for target in targets {
+        let expected = target.machine_id.clone();
+        let c = client(target.overlay_ip, rpc_port);
+        set.spawn(async move {
+            let outcome = match tokio::time::timeout(deadline, c.node_status()).await {
+                Ok(Ok(payload)) => {
+                    if payload.machine_id == expected.0 {
+                        NodeStatusResult::Ok(payload)
+                    } else {
+                        NodeStatusResult::InvalidIdentity {
+                            reported: MachineId(payload.machine_id),
+                        }
+                    }
+                }
+                Ok(Err(_)) | Err(_) => NodeStatusResult::Offline,
+            };
+            (expected, outcome)
+        });
+    }
+
+    let mut results = Vec::new();
+    while let Some(join_result) = set.join_next().await {
+        if let Ok(value) = join_result {
+            results.push(value);
+        }
+    }
+    results.sort_by(|(left, _), (right, _)| left.0.cmp(&right.0));
+    results
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,8 +265,7 @@ mod tests {
                     let mut buf = BufReader::new(reader);
                     let mut line = String::new();
                     let _ = buf.read_line(&mut line).await;
-                    let mut encoded =
-                        serde_json::to_string(&response).expect("encode response");
+                    let mut encoded = serde_json::to_string(&response).expect("encode response");
                     encoded.push('\n');
                     let _ = writer.write_all(encoded.as_bytes()).await;
                 });
@@ -306,14 +350,7 @@ mod tests {
     #[tokio::test]
     async fn fanout_prepare_empty_targets_returns_all_online_accepted() {
         // Single-node cluster: cluster_size=1, no peers.
-        let result = fanout_prepare(
-            &[],
-            9999,
-            sample_request(),
-            Duration::from_secs(1),
-            1,
-        )
-        .await;
+        let result = fanout_prepare(&[], 9999, sample_request(), Duration::from_secs(1), 1).await;
         assert!(result.all_online_accepted);
         assert!(result.quorum_met);
         assert!(result.accepted.is_empty());

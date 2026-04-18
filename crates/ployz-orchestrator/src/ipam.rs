@@ -254,7 +254,10 @@ mod tests {
         let mut ipam_b = Ipam::with_allocated_and_seed(cluster(), 24, [], 5);
         let a1 = ipam_a.allocate().expect("a1");
         let b1 = ipam_b.allocate().expect("b1");
-        assert_ne!(a1, b1, "different seeds should produce different first allocations");
+        assert_ne!(
+            a1, b1,
+            "different seeds should produce different first allocations"
+        );
         assert_eq!(a1.to_string(), "10.210.0.0/24");
         assert_eq!(b1.to_string(), "10.210.5.0/24");
     }
