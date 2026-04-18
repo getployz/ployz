@@ -202,9 +202,9 @@ async fn machine_add_succeeds_when_peer_unreachable_at_rpc_time() {
         Some(self_record_response.into()),
     );
     let _ready_guard = TestSshEnvGuard::set(
-        "PLOYZ_TEST_READY_RESPONSE",
+        "PLOYZ_TEST_NODE_STATUS_RESPONSE",
         Some(
-            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":true,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":true,\"self_record_published\":true}}".into(),
+            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"node-status\",\"machine_id\":\"joiner-1\",\"boot_id\":\"boot-1\",\"phase\":\"running\",\"ready\":true,\"draining\":false,\"version\":\"test-version\"}}".into(),
         ),
     );
 
@@ -276,9 +276,9 @@ async fn machine_add_accepts_running_joiner_before_full_sync() {
         Some(self_record_response.into()),
     );
     let _ready_guard = TestSshEnvGuard::set(
-        "PLOYZ_TEST_READY_RESPONSE",
+        "PLOYZ_TEST_NODE_STATUS_RESPONSE",
         Some(
-            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":false,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":false,\"self_record_published\":true}}".into(),
+            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"node-status\",\"machine_id\":\"joiner-2\",\"boot_id\":\"boot-2\",\"phase\":\"running\",\"ready\":false,\"draining\":false,\"version\":\"test-version\"}}".into(),
         ),
     );
 
@@ -494,7 +494,7 @@ fn write_fake_ssh(dir: &PathBuf) -> PathBuf {
     let script = dir.join("ssh");
     std::fs::write(
         &script,
-        "#!/bin/sh\nfor arg in \"$@\"; do\n  command=\"$arg\"\ndone\nif [ \"$command\" = 'set -eu; \"$HOME/.local/bin/ployz\" rpc-stdio' ]; then\n  req=$(cat)\n  case \"$req\" in\n    *'\"MeshJoin\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"joined\",\"payload\":null}'\n      ;;\n    *'\"MeshInit\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"init\",\"payload\":null}'\n      ;;\n    *'\"MeshDestroy\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"destroyed\",\"payload\":null}'\n      ;;\n    *'\"MeshDown\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"down\",\"payload\":null}'\n      ;;\n    *'\"MeshSelfRecord\"'*)\n      printf '%s' \"$PLOYZ_TEST_SELF_RECORD_RESPONSE\"\n      ;;\n    *'\"MeshReady\"'*)\n      printf '%s' \"$PLOYZ_TEST_READY_RESPONSE\"\n      ;;\n    *)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"ok\",\"payload\":null}'\n      ;;\n  esac\n  exit 0\nfi\ncase \"$command\" in\n  *'--version'*)\n    printf 'ployz test-version'\n    exit 0\n    ;;\n  *'status >/dev/null'*)\n    exit 0\n    ;;\n  *'bash -s -- install'*)\n    cat >/dev/null\n    exit 0\n    ;;\n  *)\n    exit 0\n    ;;\nesac\n",
+        "#!/bin/sh\nfor arg in \"$@\"; do\n  command=\"$arg\"\ndone\nif [ \"$command\" = 'set -eu; \"$HOME/.local/bin/ployz\" rpc-stdio' ]; then\n  req=$(cat)\n  case \"$req\" in\n    *'\"MeshJoin\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"joined\",\"payload\":null}'\n      ;;\n    *'\"MeshInit\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"init\",\"payload\":null}'\n      ;;\n    *'\"MeshDestroy\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"destroyed\",\"payload\":null}'\n      ;;\n    *'\"MeshDown\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"down\",\"payload\":null}'\n      ;;\n    *'\"MeshSelfRecord\"'*)\n      printf '%s' \"$PLOYZ_TEST_SELF_RECORD_RESPONSE\"\n      ;;\n    *'\"NodeStatus\"'*)\n      printf '%s' \"$PLOYZ_TEST_NODE_STATUS_RESPONSE\"\n      ;;\n    *)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"ok\",\"payload\":null}'\n      ;;\n  esac\n  exit 0\nfi\ncase \"$command\" in\n  *'--version'*)\n    printf 'ployz test-version'\n    exit 0\n    ;;\n  *'status >/dev/null'*)\n    exit 0\n    ;;\n  *'bash -s -- install'*)\n    cat >/dev/null\n    exit 0\n    ;;\n  *)\n    exit 0\n    ;;\nesac\n",
     )
     .expect("write fake ssh");
 

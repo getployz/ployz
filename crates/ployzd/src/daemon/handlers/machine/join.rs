@@ -8,8 +8,8 @@ use ipnet::Ipv4Net;
 use ployz_api::{
     CoordinationAbortRequest, CoordinationCommitPayload, CoordinationCommitRequest,
     CoordinationOperation, CoordinationPreparePayload, CoordinationPrepareRequest, DaemonPayload,
-    DaemonRequest, DaemonResponse, MachineAddOptions, MachineInstallOptions, MeshReadyPayload,
-    MeshSelfRecordPayload,
+    DaemonRequest, DaemonResponse, MachineAddOptions, MachineInstallOptions, MeshSelfRecordPayload,
+    NodeStatusPayload,
 };
 use ployz_orchestrator::ipam::Ipam;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
@@ -773,25 +773,26 @@ async fn wait_for_remote_ready(target: &str, ssh_options: &SshOptions) -> Result
         attempt += 1;
         let last_error = match timeout(
             REMOTE_READY_RPC_TIMEOUT,
-            remote_mesh_ready(target, ssh_options),
+            remote_node_status(target, ssh_options),
         )
         .await
         {
             Ok(Ok(payload)) => {
                 let response_message = format!(
-                    "ready={}, phase={}, store_healthy={}, sync_connected={}, self_record_published={}",
+                    "ready={}, phase={}, draining={}, machine_id={}, boot_id={}, version={}",
                     payload.ready,
                     payload.phase,
-                    payload.store_healthy,
-                    payload.sync_connected,
-                    payload.self_record_published
+                    payload.draining,
+                    payload.machine_id,
+                    payload.boot_id,
+                    payload.version,
                 );
                 if remote_join_ready(&payload) {
-                    tracing::debug!(%target, attempt, "remote mesh ready confirmed");
+                    tracing::debug!(%target, attempt, "remote node status confirmed ready");
                     return Ok(());
                 }
-                tracing::debug!(%target, attempt, ?payload, "remote mesh not ready yet");
-                format!("mesh reported not ready yet: {response_message}")
+                tracing::debug!(%target, attempt, ?payload, "remote node not ready yet");
+                format!("node status reported not ready yet: {response_message}")
             }
             Ok(Err(err)) => {
                 tracing::debug!(%target, attempt, error = %err, "remote readiness rpc failed");
@@ -809,7 +810,7 @@ async fn wait_for_remote_ready(target: &str, ssh_options: &SshOptions) -> Result
 
         if Instant::now() >= deadline {
             return Err(format!(
-                "timed out waiting for remote mesh readiness after {:?}: {last_error}",
+                "timed out waiting for remote node readiness after {:?}: {last_error}",
                 REMOTE_READY_TIMEOUT,
             ));
         }
@@ -836,9 +837,8 @@ async fn remote_self_record(
         })
 }
 
-fn remote_join_ready(payload: &MeshReadyPayload) -> bool {
-    payload.ready
-        || (payload.phase == "running" && payload.store_healthy && payload.self_record_published)
+fn remote_join_ready(payload: &NodeStatusPayload) -> bool {
+    payload.ready || (payload.phase == "running" && !payload.draining)
 }
 
 async fn remote_rpc(
@@ -856,13 +856,13 @@ async fn remote_rpc(
     })
 }
 
-async fn remote_mesh_ready(
+async fn remote_node_status(
     target: &str,
     ssh_options: &SshOptions,
-) -> Result<MeshReadyPayload, String> {
+) -> Result<NodeStatusPayload, String> {
     let transport = ssh_stdio_transport(target, REMOTE_RPC_COMMAND, ssh_options);
     let client = DaemonClient::new(transport);
-    client.mesh_ready().await.map_err(|error| {
+    client.node_status().await.map_err(|error| {
         format!(
             "remote rpc via '{}' failed: {error}",
             client.transport().command_display()
