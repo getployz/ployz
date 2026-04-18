@@ -5,6 +5,7 @@ pub(crate) mod store;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use self::store::StoreDriver;
 use crate::built_in_images::BuiltInImages;
@@ -41,6 +42,7 @@ pub struct DaemonRuntimeConfig {
 pub struct DaemonState {
     pub data_dir: PathBuf,
     pub identity: Identity,
+    pub boot_id: String,
     pub runtime_target: RuntimeTarget,
     pub service_mode: ServiceMode,
     pub(crate) runtime_profile: RuntimeProfile,
@@ -114,6 +116,7 @@ impl DaemonState {
         Self {
             data_dir: data_dir.to_path_buf(),
             identity,
+            boot_id: create_boot_id(),
             runtime_target,
             service_mode,
             runtime_profile,
@@ -186,5 +189,12 @@ impl DaemonState {
             message: message.into(),
             payload,
         }
+    }
+}
+
+fn create_boot_id() -> String {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => format!("boot-{}", duration.as_nanos()),
+        Err(_) => "boot-0".to_string(),
     }
 }

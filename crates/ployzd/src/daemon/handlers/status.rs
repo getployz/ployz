@@ -8,6 +8,7 @@ fn daemon_capabilities() -> Vec<String> {
     vec![
         "status-payload-v1".into(),
         "mesh-status-payload-v1".into(),
+        "node-status-payload-v1".into(),
         "mesh-ready-payload-v1".into(),
         "mesh-self-record-payload-v1".into(),
         "machine-list-payload-v1".into(),

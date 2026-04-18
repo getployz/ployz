@@ -5,6 +5,7 @@ mod doctor;
 mod invite;
 pub(crate) mod machine;
 mod mesh;
+mod node_status;
 mod status;
 
 use ployz_api::{DaemonRequest, DaemonResponse};
@@ -29,6 +30,7 @@ impl DaemonState {
             | DaemonRequest::MeshDestroy { .. } => RequestLane::Exclusive,
             DaemonRequest::Status
             | DaemonRequest::Doctor
+            | DaemonRequest::NodeStatus
             | DaemonRequest::DeployPreview { .. }
             | DaemonRequest::DeployApply { .. }
             | DaemonRequest::DeployExport { .. }
@@ -57,6 +59,7 @@ impl DaemonState {
         match req {
             DaemonRequest::Status => self.handle_status(),
             DaemonRequest::Doctor => self.handle_doctor().await,
+            DaemonRequest::NodeStatus => self.handle_node_status().await,
             DaemonRequest::DebugTick { .. }
             | DaemonRequest::MeshJoin { .. }
             | DaemonRequest::MeshInit { .. }
@@ -135,6 +138,7 @@ impl DaemonState {
             DaemonRequest::MeshDestroy { network } => self.handle_mesh_destroy(&network).await,
             DaemonRequest::Status
             | DaemonRequest::Doctor
+            | DaemonRequest::NodeStatus
             | DaemonRequest::DeployPreview { .. }
             | DaemonRequest::DeployApply { .. }
             | DaemonRequest::DeployExport { .. }
@@ -186,6 +190,7 @@ mod tests {
         let requests = [
             DaemonRequest::Status,
             DaemonRequest::Doctor,
+            DaemonRequest::NodeStatus,
             DaemonRequest::DeployPreview {
                 manifest_json: "{}".into(),
                 options: DeployOptions::default(),

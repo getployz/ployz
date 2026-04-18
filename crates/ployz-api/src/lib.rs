@@ -79,6 +79,7 @@ pub enum DaemonRequest {
     MeshStatus {
         network: String,
     },
+    NodeStatus,
     MeshJoin {
         token: String,
     },
@@ -155,6 +156,7 @@ pub enum DaemonRequest {
 pub enum DaemonPayload {
     Status(StatusPayload),
     MeshStatus(MeshStatusPayload),
+    NodeStatus(NodeStatusPayload),
     MachineList(MachineListPayload),
     MachineAdd(MachineAddPayload),
     MachineRemove(MachineRemovePayload),
@@ -189,6 +191,18 @@ pub struct MeshStatusPayload {
     pub overlay: String,
     pub state: String,
     pub exists: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeStatusPayload {
+    pub machine_id: MachineId,
+    pub boot_id: String,
+    pub phase: String,
+    pub ready: bool,
+    pub draining: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subnet_claim: Option<String>,
+    pub version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
