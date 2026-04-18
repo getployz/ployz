@@ -2,7 +2,6 @@ use crate::coordination::fanout::{FanOutTarget, NodeStatusResult, fanout_node_st
 use crate::daemon::{ActiveMesh, DaemonState};
 use ployz_runtime_api::{DevicePeer, WireGuardDevice};
 use ployz_types::model::{MachineId, MachineRecord, OverlayIp, Participation, PublicKey};
-use ployz_types::time::now_unix_secs;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io;
@@ -11,8 +10,6 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::Instant;
-
-use super::machine::render::{format_heartbeat, format_liveness};
 
 const PARTICIPATION_HANDSHAKE_FRESHNESS_WINDOW: Duration = Duration::from_secs(30);
 const PARTICIPATION_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
@@ -31,7 +28,6 @@ impl DaemonState {
             Err(err) => return self.err("LIST_FAILED", format!("failed to list machines: {err}")),
         };
 
-        let now = now_unix_secs();
         let local_record = match machines
             .iter()
             .find(|machine| machine.id == self.identity.machine_id)
@@ -59,6 +55,12 @@ impl DaemonState {
         };
         let overlay_probe_by_ip =
             probe_overlay_health(machines.as_slice(), &self.identity.machine_id).await;
+        let local_ready_status = active.mesh.ready_status().await;
+        let local_draining = active
+            .mesh
+            .authoritative_self_record()
+            .await
+            .is_some_and(|record| record.participation == Participation::Draining);
         let targets: Vec<FanOutTarget> = machines
             .iter()
             .filter(|machine| machine.id != self.identity.machine_id)
@@ -80,10 +82,12 @@ impl DaemonState {
             active,
             &machines,
             local_record,
+            local_ready_status.ready,
+            &local_ready_status.phase.to_string(),
+            local_draining,
             &device_peers,
             &overlay_probe_by_ip,
             &node_status_by_machine,
-            now,
         ))
     }
 }
@@ -92,10 +96,12 @@ fn render_doctor_report(
     active: &ActiveMesh,
     machines: &[MachineRecord],
     local_record: &MachineRecord,
+    local_ready: bool,
+    local_phase: &str,
+    local_draining: bool,
     device_peers: &[DevicePeer],
     overlay_probe_by_ip: &HashMap<OverlayIp, ProbeState>,
     node_status_by_machine: &HashMap<MachineId, NodeStatusResult>,
-    now: u64,
 ) -> String {
     let handshake_by_key = handshake_state_map(device_peers);
     let peer_rows = build_participation_rows(
@@ -133,12 +139,16 @@ fn render_doctor_report(
     }
     lines.push(String::new());
     lines.push(format!(
-        "local: machine={} network={} store={}/{} heartbeat={}",
+        "local: machine={} network={} node=present/{}/{}/{}",
         local_record.id,
         active.config.name,
-        local_record.participation,
-        format_liveness(local_record, now),
-        format_heartbeat(local_record.last_heartbeat, now)
+        if local_ready { "ready" } else { "not-ready" },
+        if local_draining {
+            "draining"
+        } else {
+            "not-draining"
+        },
+        local_phase,
     ));
 
     lines.join("\n")
@@ -432,6 +442,7 @@ mod tests {
         MemoryServiceRuntime, MemoryStore, MemoryWireGuard, StaticEndpointDiscovery,
         memory_wireguard_driver,
     };
+    use ployz_types::time::now_unix_secs;
     use ployz_types::model::Identity;
     use ployz_types::model::{MachineId, MachineStatus, OverlayIp, Participation, PublicKey};
     use std::net::Ipv6Addr;
@@ -559,10 +570,12 @@ mod tests {
             &test_active_mesh(),
             machines.as_slice(),
             &local_record,
+            true,
+            "running",
+            false,
             &[],
             &overlay_probe_by_ip,
             &node_status_by_machine,
-            now,
         );
 
         assert!(report.contains("participation: healthy"));

@@ -26,13 +26,6 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
         .max()
         .unwrap_or(0)
         .max(6);
-    let w_hb = report
-        .rows
-        .iter()
-        .map(|row| row.heartbeat_display.len())
-        .max()
-        .unwrap_or(0)
-        .max(9);
     let w_present = report
         .rows
         .iter()
@@ -80,8 +73,8 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
         .max("PARTICIPATION".len());
     let mut lines = Vec::with_capacity(report.rows.len() + 1);
     lines.push(format!(
-        "{:<w_id$}  {:<6}  {:<w_part$}  {:<w_present$}  {:<w_ready$}  {:<w_draining$}  {:<w_phase$}  {:<w_ov$}  {:<w_sub$}  {:<w_hb$}  {}",
-        "ID", "STATUS", "PARTICIPATION", "PRESENCE", "READY", "DRAINING", "PHASE", "OVERLAY IP", "SUBNET", "HEARTBEAT", "CREATED",
+        "{:<w_id$}  {:<6}  {:<w_part$}  {:<w_present$}  {:<w_ready$}  {:<w_draining$}  {:<w_phase$}  {:<w_ov$}  {:<w_sub$}  {}",
+        "ID", "STATUS", "PARTICIPATION", "PRESENCE", "READY", "DRAINING", "PHASE", "OVERLAY IP", "SUBNET", "CREATED",
     ));
     for row in &report.rows {
         let present = if row.reachable { "present" } else { "absent" };
@@ -95,7 +88,7 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
             .unwrap_or("unknown");
         let phase = row.phase.as_deref().unwrap_or("unknown");
         lines.push(format!(
-            "{:<w_id$}  {:<6}  {:<w_part$}  {:<w_present$}  {:<w_ready$}  {:<w_draining$}  {:<w_phase$}  {:<w_ov$}  {:<w_sub$}  {:<w_hb$}  {}",
+            "{:<w_id$}  {:<6}  {:<w_part$}  {:<w_present$}  {:<w_ready$}  {:<w_draining$}  {:<w_phase$}  {:<w_ov$}  {:<w_sub$}  {}",
             row.id,
             row.status,
             row.participation,
@@ -105,7 +98,6 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
             phase,
             row.overlay,
             row.subnet_display,
-            row.heartbeat_display,
             row.created_display,
         ));
     }
