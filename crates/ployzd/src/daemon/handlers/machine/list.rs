@@ -1,15 +1,22 @@
+use std::collections::HashMap;
+use std::time::Duration;
+
+use crate::coordination::fanout::FanOutTarget;
 use crate::daemon::DaemonState;
 use crate::daemon::store::StoreDriver;
+use crate::peers::fanout::{LiveStatus, fanout_node_status, live_status_map};
 use ployz_api::{DaemonPayload, DaemonResponse, MachineRemovePayload};
 use ployz_store_api::MachineStore;
 use ployz_types::model::{MachineId, MachineRecord, Participation};
 use ployz_types::time::now_unix_secs;
 
 use super::render::{
-    format_heartbeat, format_liveness, format_participation, format_status, format_timestamp,
+    format_heartbeat, format_live_status, format_participation, format_status, format_timestamp,
     render_machine_list_report,
 };
 use super::types::{MachineListReport, MachineListReportRow};
+
+const NODE_STATUS_FANOUT_DEADLINE: Duration = Duration::from_secs(5);
 
 impl DaemonState {
     pub(crate) async fn handle_machine_list(&self) -> DaemonResponse {
@@ -18,7 +25,27 @@ impl DaemonState {
             None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
         };
 
-        let report = match machine_list_report(active.store.clone()).await {
+        let self_id = self.identity.machine_id.clone();
+        let rpc_port = self.coordination_rpc_port;
+        let machines = match active.store.machine().list_machines().await {
+            Ok(m) => m,
+            Err(err) => {
+                return self.err("LIST_FAILED", format!("failed to list machines: {err}"));
+            }
+        };
+        let targets: Vec<FanOutTarget> = machines
+            .iter()
+            .filter(|m| m.id != self_id)
+            .map(|m| FanOutTarget {
+                machine_id: m.id.clone(),
+                overlay_ip: m.overlay_ip,
+            })
+            .collect();
+        let items = fanout_node_status(&targets, rpc_port, NODE_STATUS_FANOUT_DEADLINE).await;
+        let mut live_map = live_status_map(&items);
+        live_map.insert(self_id.clone(), LiveStatus::Live);
+
+        let report = match machine_list_report(active.store.clone(), &live_map).await {
             Ok(report) => report,
             Err(err) => return self.err("LIST_FAILED", err),
         };
@@ -89,7 +116,10 @@ pub(super) async fn find_machine_record(
         .find(|machine| machine.id == *machine_id))
 }
 
-pub(super) async fn machine_list_report(store: StoreDriver) -> Result<MachineListReport, String> {
+pub(super) async fn machine_list_report(
+    store: StoreDriver,
+    live_map: &HashMap<MachineId, LiveStatus>,
+) -> Result<MachineListReport, String> {
     let machines = store
         .machine()
         .list_machines()
@@ -100,21 +130,27 @@ pub(super) async fn machine_list_report(store: StoreDriver) -> Result<MachineLis
     Ok(MachineListReport {
         rows: machines
             .iter()
-            .map(|machine| MachineListReportRow {
-                id: machine.id.0.clone(),
-                status: format_status(machine),
-                participation: format_participation(machine),
-                liveness: format_liveness(machine, now),
-                overlay: machine.overlay_ip.0.to_string(),
-                subnet: machine.subnet,
-                subnet_display: machine
-                    .subnet
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| "—".into()),
-                last_heartbeat: machine.last_heartbeat,
-                heartbeat_display: format_heartbeat(machine.last_heartbeat, now),
-                created_at: machine.created_at,
-                created_display: format_timestamp(machine.created_at),
+            .map(|machine| {
+                let live = live_map
+                    .get(&machine.id)
+                    .copied()
+                    .unwrap_or(LiveStatus::Offline);
+                MachineListReportRow {
+                    id: machine.id.0.clone(),
+                    status: format_status(machine),
+                    participation: format_participation(machine),
+                    liveness: format_live_status(live),
+                    overlay: machine.overlay_ip.0.to_string(),
+                    subnet: machine.subnet,
+                    subnet_display: machine
+                        .subnet
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "—".into()),
+                    last_heartbeat: machine.last_heartbeat,
+                    heartbeat_display: format_heartbeat(machine.last_heartbeat, now),
+                    created_at: machine.created_at,
+                    created_display: format_timestamp(machine.created_at),
+                }
             })
             .collect(),
     })

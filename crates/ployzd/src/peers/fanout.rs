@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
@@ -19,6 +20,44 @@ pub(crate) enum NodeStatusResult {
 pub(crate) struct NodeStatusFanoutItem {
     pub(crate) expected: MachineId,
     pub(crate) result: NodeStatusResult,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LiveStatus {
+    Live,
+    Starting,
+    Offline,
+    Mismatch,
+}
+
+impl LiveStatus {
+    #[must_use]
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Live => "fresh",
+            Self::Starting => "stale",
+            Self::Offline => "down",
+            Self::Mismatch => "mismatch",
+        }
+    }
+
+    #[must_use]
+    fn from_result(result: &NodeStatusResult) -> Self {
+        match result {
+            NodeStatusResult::Ok(payload) if payload.ready => Self::Live,
+            NodeStatusResult::Ok(_) => Self::Starting,
+            NodeStatusResult::Offline => Self::Offline,
+            NodeStatusResult::InvalidIdentity { .. } => Self::Mismatch,
+        }
+    }
+}
+
+#[must_use]
+pub(crate) fn live_status_map(items: &[NodeStatusFanoutItem]) -> HashMap<MachineId, LiveStatus> {
+    items
+        .iter()
+        .map(|item| (item.expected.clone(), LiveStatus::from_result(&item.result)))
+        .collect()
 }
 
 fn client(overlay_ip: ployz_types::model::OverlayIp, rpc_port: u16) -> DaemonClient<TcpTransport> {

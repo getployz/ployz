@@ -13,7 +13,7 @@ use ployz_store_api::{
 };
 use ployz_types::spec::{DeployManifest, RestartPolicy, ServiceSpec};
 use ployz_types::time::now_unix_secs;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use uuid::Uuid;
 
 pub async fn apply(
@@ -24,11 +24,13 @@ pub async fn apply(
     session_factory: &dyn DeploySessionFactory,
     local_machine_id: &MachineId,
     manifest: &DeployManifest,
+    live_machines: &BTreeSet<MachineId>,
 ) -> Result<DeployApplyResult> {
     let namespace = &manifest.namespace;
     let deploy_id = DeployId(Uuid::new_v4().to_string());
     let started_at = now_unix_secs();
-    let initial_preview = preview(deploy_read, machine_store, local_machine_id, manifest).await?;
+    let initial_preview =
+        preview(deploy_read, machine_store, local_machine_id, manifest, live_machines).await?;
     let machines = machine_store.list_machines().await?;
     let machine_map: HashMap<MachineId, crate::model::MachineRecord> = machines
         .iter()
@@ -48,7 +50,14 @@ pub async fn apply(
     .await?;
 
     let result = async {
-        let final_preview = preview(deploy_read, machine_store, local_machine_id, manifest).await?;
+        let final_preview = preview(
+            deploy_read,
+            machine_store,
+            local_machine_id,
+            manifest,
+            live_machines,
+        )
+        .await?;
         ensure_participants_stable(&initial_preview, &final_preview)?;
 
         let mut deploy_record = DeployRecord {
@@ -69,7 +78,7 @@ pub async fn apply(
         let current_slots_by_service = current_slots_by_service_from_releases(
             &deploy_read.list_service_releases(namespace).await?,
         );
-        let desired_machines = deployable_machines(&machines, local_machine_id, now_unix_secs());
+        let desired_machines = deployable_machines(&machines, local_machine_id, live_machines);
         let mut removed_services = Vec::new();
         let mut committed_releases = Vec::new();
         let mut committed_slots = Vec::new();

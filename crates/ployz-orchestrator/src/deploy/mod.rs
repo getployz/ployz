@@ -30,62 +30,49 @@ mod tests {
         RestartPolicy, RolloutStrategy, ServiceSpec,
     };
     use ployz_types::time::now_unix_secs;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::net::Ipv6Addr;
     use std::sync::{Arc, Mutex};
 
-    #[test]
-    fn deployable_machines_excludes_stale_and_down_peers() {
-        let now = 100;
-        let machines = vec![
-            test_machine(
-                "fresh-enabled",
-                Participation::Enabled,
-                MachineStatus::Up,
-                90,
-            ),
-            test_machine(
-                "stale-enabled",
-                Participation::Enabled,
-                MachineStatus::Up,
-                69,
-            ),
-            test_machine(
-                "down-enabled",
-                Participation::Enabled,
-                MachineStatus::Down,
-                100,
-            ),
-            test_machine(
-                "draining-fresh",
-                Participation::Draining,
-                MachineStatus::Up,
-                100,
-            ),
-        ];
-
-        let deployable = deployable_machines(&machines, &MachineId("local".into()), now);
-        assert_eq!(deployable, vec![MachineId("fresh-enabled".into())]);
+    fn live_set(ids: &[&str]) -> BTreeSet<MachineId> {
+        ids.iter().map(|id| MachineId((*id).into())).collect()
     }
 
     #[test]
-    fn deployable_machines_falls_back_to_local_when_none_are_fresh_enabled() {
+    fn deployable_machines_excludes_offline_and_non_enabled_peers() {
         let machines = vec![
-            test_machine(
-                "stale-enabled",
-                Participation::Enabled,
-                MachineStatus::Up,
-                10,
-            ),
-            test_machine(
-                "down-enabled",
-                Participation::Enabled,
-                MachineStatus::Down,
-                100,
-            ),
+            test_machine("live-enabled", Participation::Enabled, MachineStatus::Up),
+            test_machine("offline-enabled", Participation::Enabled, MachineStatus::Up),
+            test_machine("draining-live", Participation::Draining, MachineStatus::Up),
+            test_machine("disabled-live", Participation::Disabled, MachineStatus::Up),
         ];
 
-        let deployable = deployable_machines(&machines, &MachineId("local".into()), 100);
+        let live = live_set(&["live-enabled", "draining-live", "disabled-live", "local"]);
+        let deployable = deployable_machines(&machines, &MachineId("local".into()), &live);
+        assert_eq!(deployable, vec![MachineId("live-enabled".into())]);
+    }
+
+    #[test]
+    fn deployable_machines_falls_back_to_local_when_no_peers_are_live_and_enabled() {
+        let machines = vec![
+            test_machine("offline-enabled", Participation::Enabled, MachineStatus::Up),
+            test_machine("disabled-live", Participation::Disabled, MachineStatus::Up),
+        ];
+
+        let live = live_set(&["disabled-live"]);
+        let deployable = deployable_machines(&machines, &MachineId("local".into()), &live);
+        assert_eq!(deployable, vec![MachineId("local".into())]);
+    }
+
+    #[test]
+    fn deployable_machines_includes_local_when_enabled_even_if_not_in_live_set() {
+        let machines = vec![test_machine(
+            "local",
+            Participation::Enabled,
+            MachineStatus::Up,
+        )];
+        let live = BTreeSet::new();
+        let deployable = deployable_machines(&machines, &MachineId("local".into()), &live);
         assert_eq!(deployable, vec![MachineId("local".into())]);
     }
 
@@ -149,9 +136,16 @@ mod tests {
             ],
         };
 
-        let error = preview(store.as_ref(), store.as_ref(), &local_machine.id, &manifest)
-            .await
-            .expect_err("preview should reject duplicate service names");
+        let live = live_set(&[local_machine.id.0.as_str()]);
+        let error = preview(
+            store.as_ref(),
+            store.as_ref(),
+            &local_machine.id,
+            &manifest,
+            &live,
+        )
+        .await
+        .expect_err("preview should reject duplicate service names");
 
         assert!(error.to_string().contains("duplicate service 'api'"));
     }
@@ -166,6 +160,7 @@ mod tests {
             .expect("seed local machine");
         let manifest = test_manifest("nginx:1.27");
         let session_factory = TestDeploySessionFactory::default();
+        let live = live_set(&[local_machine.id.0.as_str()]);
 
         let result = apply(
             store.as_ref(),
@@ -175,6 +170,7 @@ mod tests {
             &session_factory,
             &local_machine.id,
             &manifest,
+            &live,
         )
         .await
         .expect("apply should succeed");
@@ -209,6 +205,7 @@ mod tests {
             Arc::clone(&store),
             live_machine("peer-2"),
         );
+        let live = live_set(&[local_machine.id.0.as_str(), "peer-2"]);
 
         let error = apply(
             store.as_ref(),
@@ -218,6 +215,7 @@ mod tests {
             &session_factory,
             &local_machine.id,
             &manifest,
+            &live,
         )
         .await
         .expect_err("apply should fail after participant drift");
@@ -233,7 +231,6 @@ mod tests {
         id: &str,
         participation: Participation,
         status: MachineStatus,
-        last_heartbeat: u64,
     ) -> MachineRecord {
         MachineRecord {
             id: MachineId(id.into()),
@@ -244,7 +241,7 @@ mod tests {
             endpoints: vec!["127.0.0.1:51820".into()],
             status,
             participation,
-            last_heartbeat,
+            last_heartbeat: now_unix_secs(),
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),
@@ -252,12 +249,7 @@ mod tests {
     }
 
     fn live_machine(id: &str) -> MachineRecord {
-        test_machine(
-            id,
-            Participation::Enabled,
-            MachineStatus::Up,
-            now_unix_secs(),
-        )
+        test_machine(id, Participation::Enabled, MachineStatus::Up)
     }
 
     fn test_manifest(image: &str) -> DeployManifest {

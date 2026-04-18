@@ -55,7 +55,8 @@ async fn machine_list_shows_disabled_explicitly() {
     assert!(response.message.contains("LIVENESS"));
     assert!(response.message.contains("peer-disabled"));
     assert!(response.message.contains("disabled"));
-    assert!(response.message.contains("stale"));
+    // Pull-model: peer with no NodeStatus responder reports as "down".
+    assert!(response.message.contains("down"));
 }
 
 #[tokio::test]

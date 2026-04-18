@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
-use crate::coordination::fanout::{accepted_targets, fanout_abort, fanout_prepare, FanOutTarget};
+use crate::coordination::fanout::{FanOutTarget, accepted_targets, fanout_abort, fanout_prepare};
 use crate::daemon::DaemonState;
+use crate::peers::fanout::{NodeStatusFanoutItem, NodeStatusResult, fanout_node_status};
 use ployz_api::{
     CoordinationAbortRequest, CoordinationLockKey, CoordinationOperation,
     CoordinationPrepareRequest, DaemonPayload, DaemonResponse, DeployApplyPayload,
@@ -11,8 +12,82 @@ use ployz_api::{
 use ployz_config::RuntimeTarget;
 use ployz_orchestrator::deploy::{apply, export_manifest, preview};
 use ployz_runtime_backends::deploy::DefaultDeploySessionFactory;
+use ployz_types::model::{MachineId, MachineRecord, Participation};
 use ployz_types::spec::{DeployManifest, Namespace};
 use ployz_types::time::now_unix_secs;
+
+const NODE_STATUS_FANOUT_DEADLINE: Duration = Duration::from_secs(5);
+
+struct LiveSurvey {
+    live_machines: BTreeSet<MachineId>,
+    warnings: Vec<String>,
+    enabled_peer_count: usize,
+    live_peer_count: usize,
+}
+
+fn survey_live_machines(
+    machines: &[MachineRecord],
+    local_machine_id: &MachineId,
+    items: Vec<NodeStatusFanoutItem>,
+) -> LiveSurvey {
+    let enabled_peer_count = machines
+        .iter()
+        .filter(|m| m.id != *local_machine_id)
+        .filter(|m| m.participation == Participation::Enabled)
+        .count();
+
+    let mut live_machines = BTreeSet::new();
+    live_machines.insert(local_machine_id.clone());
+
+    let mut warnings = Vec::new();
+    let mut live_peer_count = 0usize;
+    for item in items {
+        match item.result {
+            NodeStatusResult::Ok(payload) => {
+                if payload.ready {
+                    live_machines.insert(item.expected.clone());
+                    live_peer_count += 1;
+                } else {
+                    warnings.push(format!(
+                        "peer '{}' is reachable but not ready (phase {})",
+                        item.expected, payload.phase
+                    ));
+                }
+            }
+            NodeStatusResult::Offline => {
+                warnings.push(format!("peer '{}' did not respond to NodeStatus", item.expected));
+            }
+            NodeStatusResult::InvalidIdentity { reported } => {
+                warnings.push(format!(
+                    "peer '{}' reported identity '{}'; skipping",
+                    item.expected, reported
+                ));
+            }
+        }
+    }
+
+    LiveSurvey {
+        live_machines,
+        warnings,
+        enabled_peer_count,
+        live_peer_count,
+    }
+}
+
+fn enabled_peer_targets(
+    machines: &[MachineRecord],
+    local_machine_id: &MachineId,
+) -> Vec<FanOutTarget> {
+    machines
+        .iter()
+        .filter(|m| m.id != *local_machine_id)
+        .filter(|m| m.participation == Participation::Enabled)
+        .map(|m| FanOutTarget {
+            machine_id: m.id.clone(),
+            overlay_ip: m.overlay_ip,
+        })
+        .collect()
+}
 
 impl DaemonState {
     fn overlay_network_name(&self) -> Option<String> {
@@ -46,23 +121,46 @@ impl DaemonState {
         let deploy_read = active.store.deploy_read();
         let machine_store = active.store.machine();
 
+        let machines = match machine_store.list_machines().await {
+            Ok(m) => m,
+            Err(err) => {
+                return self.err(
+                    "DEPLOY_PREVIEW_FAILED",
+                    format!("failed to list machines: {err}"),
+                );
+            }
+        };
+        let self_id = &self.identity.machine_id;
+        let peer_targets = enabled_peer_targets(&machines, self_id);
+        let items = fanout_node_status(
+            &peer_targets,
+            self.coordination_rpc_port,
+            NODE_STATUS_FANOUT_DEADLINE,
+        )
+        .await;
+        let survey = survey_live_machines(&machines, self_id, items);
+
         match preview(
             deploy_read.as_ref(),
             machine_store.as_ref(),
-            &self.identity.machine_id,
+            self_id,
             &manifest,
+            &survey.live_machines,
         )
         .await
         {
-            Ok(plan) => match serde_json::to_string_pretty(&plan) {
-                Ok(json) => self.ok_with_payload(
-                    json,
-                    Some(DaemonPayload::DeployPreview(DeployPreviewPayload {
-                        preview: plan,
-                    })),
-                ),
-                Err(err) => self.err("ENCODE_PREVIEW", format!("encode preview: {err}")),
-            },
+            Ok(mut plan) => {
+                plan.warnings.extend(survey.warnings);
+                match serde_json::to_string_pretty(&plan) {
+                    Ok(json) => self.ok_with_payload(
+                        json,
+                        Some(DaemonPayload::DeployPreview(DeployPreviewPayload {
+                            preview: plan,
+                        })),
+                    ),
+                    Err(err) => self.err("ENCODE_PREVIEW", format!("encode preview: {err}")),
+                }
+            }
             Err(err) => self.err("DEPLOY_PREVIEW_FAILED", format!("{err}")),
         }
     }
@@ -85,13 +183,44 @@ impl DaemonState {
         let deploy_commit = active.store.deploy_commit();
         let machine_store = active.store.machine();
 
-        // Run a preview to determine which machines will participate, so we
-        // can fan-out the namespace lock to only those machines.
+        let machines = match machine_store.list_machines().await {
+            Ok(m) => m,
+            Err(err) => {
+                return self.err(
+                    "DEPLOY_APPLY_FAILED",
+                    format!("failed to list machines: {err}"),
+                );
+            }
+        };
+        let self_id = &self.identity.machine_id;
+        let peer_targets = enabled_peer_targets(&machines, self_id);
+        let items = fanout_node_status(
+            &peer_targets,
+            self.coordination_rpc_port,
+            NODE_STATUS_FANOUT_DEADLINE,
+        )
+        .await;
+        let survey = survey_live_machines(&machines, self_id, items);
+
+        // Apply enforces strict quorum: enough enabled peers must respond to
+        // NodeStatus, plus self. Preview returned warnings for the same peers;
+        // apply converts that signal into a hard failure before mutating state.
+        let cluster_size = survey.enabled_peer_count + 1;
+        let required = cluster_size / 2 + 1;
+        let live_total = survey.live_peer_count + 1;
+        if live_total < required {
+            let msg = format!(
+                "quorum lost: {live_total} of {cluster_size} enabled machines reachable (need {required})"
+            );
+            return self.err("QUORUM_LOST", msg);
+        }
+
         let initial_preview = match preview(
             deploy_read.as_ref(),
             machine_store.as_ref(),
-            &self.identity.machine_id,
+            self_id,
             &manifest,
+            &survey.live_machines,
         )
         .await
         {
@@ -100,19 +229,9 @@ impl DaemonState {
         };
 
         // Build fan-out targets from the planned participants (excluding self).
-        let machines = match machine_store.list_machines().await {
-            Ok(m) => m,
-            Err(err) => {
-                return self.err(
-                    "DEPLOY_APPLY_FAILED",
-                    format!("failed to list machines for namespace lock: {err}"),
-                )
-            }
-        };
-        let self_id = &self.identity.machine_id;
         let machine_map: HashMap<_, _> = machines
-            .into_iter()
-            .map(|m| (m.id.clone(), m))
+            .iter()
+            .map(|m| (m.id.clone(), m.clone()))
             .collect();
         let peers: Vec<FanOutTarget> = initial_preview
             .participants
@@ -199,8 +318,9 @@ impl DaemonState {
             deploy_commit.as_ref(),
             machine_store.as_ref(),
             &factory,
-            &self.identity.machine_id,
+            self_id,
             &manifest,
+            &survey.live_machines,
         )
         .await;
 

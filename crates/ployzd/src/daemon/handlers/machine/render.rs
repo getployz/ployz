@@ -1,6 +1,7 @@
 use chrono::DateTime;
-use ployz_orchestrator::machine_liveness::{MachineLiveness, machine_liveness};
 use ployz_types::model::{MachineRecord, MachineStatus, Participation};
+
+use crate::peers::fanout::LiveStatus;
 
 use super::types::{MachineAddReport, MachineListReport};
 
@@ -105,12 +106,8 @@ pub(super) fn format_participation(machine: &MachineRecord) -> &'static str {
     }
 }
 
-pub(crate) fn format_liveness(machine: &MachineRecord, now: u64) -> &'static str {
-    match machine_liveness(machine, now) {
-        MachineLiveness::Fresh => "fresh",
-        MachineLiveness::Stale => "stale",
-        MachineLiveness::Down => "down",
-    }
+pub(crate) fn format_live_status(status: LiveStatus) -> &'static str {
+    status.as_str()
 }
 
 pub(crate) fn format_heartbeat(ts: u64, now: u64) -> String {
