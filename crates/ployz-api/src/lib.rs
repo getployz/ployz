@@ -269,50 +269,17 @@ pub struct MeshSelfRecordPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CoordinationLockKey {
-    DeployNamespace {
-        namespace: String,
-    },
-    MembershipMachine {
-        machine_id: String,
-    },
-    SubnetClaim {
-        subnet: String,
-    },
-    MachineOperation {
-        machine_id: String,
-        operation: String,
-    },
+    DeployNamespace { namespace: String },
+    SubnetClaim { subnet: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CoordinationOperation {
-    LockAcquire {
-        key: CoordinationLockKey,
-    },
-    MembershipPrepare {
-        machine_id: String,
-        proposed_subnet: Option<String>,
-    },
-    MembershipCommit {
-        machine_id: String,
-        committed_subnet: Option<String>,
-    },
-    MembershipAbort {
-        machine_id: String,
-    },
-    SubnetClaimPrepare {
-        machine_id: String,
-        subnet: String,
-    },
-    SubnetClaimCommit {
-        machine_id: String,
-        subnet: String,
-    },
-    SubnetClaimAbort {
-        machine_id: String,
-        subnet: String,
-    },
+    LockAcquire { key: CoordinationLockKey },
+    SubnetClaimPrepare { machine_id: String, subnet: String },
+    SubnetClaimCommit { machine_id: String, subnet: String },
+    SubnetClaimAbort { machine_id: String, subnet: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

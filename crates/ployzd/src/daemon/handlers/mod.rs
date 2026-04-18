@@ -238,9 +238,9 @@ mod tests {
                     owner_id: "founder-a".into(),
                     nonce: "n1".into(),
                     lease_ttl_secs: 30,
-                    operation: CoordinationOperation::MembershipPrepare {
+                    operation: CoordinationOperation::SubnetClaimPrepare {
                         machine_id: "m1".into(),
-                        proposed_subnet: Some("10.210.1.0/24".into()),
+                        subnet: "10.210.1.0/24".into(),
                     },
                 },
             },
@@ -249,9 +249,9 @@ mod tests {
                     owner_id: "founder-a".into(),
                     nonce: "n1".into(),
                     lease_ttl_secs: 30,
-                    operation: CoordinationOperation::MembershipPrepare {
+                    operation: CoordinationOperation::SubnetClaimPrepare {
                         machine_id: "m1".into(),
-                        proposed_subnet: Some("10.210.1.0/24".into()),
+                        subnet: "10.210.1.0/24".into(),
                     },
                 },
             },
@@ -260,9 +260,9 @@ mod tests {
                     owner_id: "founder-a".into(),
                     nonce: "n1".into(),
                     prepare_tokens: vec!["token".into()],
-                    operation: CoordinationOperation::MembershipCommit {
+                    operation: CoordinationOperation::SubnetClaimCommit {
                         machine_id: "m1".into(),
-                        committed_subnet: Some("10.210.1.0/24".into()),
+                        subnet: "10.210.1.0/24".into(),
                     },
                 },
             },
@@ -270,8 +270,9 @@ mod tests {
                 request: CoordinationAbortRequest {
                     owner_id: "founder-a".into(),
                     nonce: "n1".into(),
-                    operation: CoordinationOperation::MembershipAbort {
+                    operation: CoordinationOperation::SubnetClaimAbort {
                         machine_id: "m1".into(),
+                        subnet: "10.210.1.0/24".into(),
                     },
                 },
             },
