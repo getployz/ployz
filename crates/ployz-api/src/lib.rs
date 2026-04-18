@@ -83,6 +83,7 @@ pub enum DaemonRequest {
         token: String,
     },
     MeshReady,
+    NodeStatus,
     MeshCreate {
         network: String,
     },
@@ -159,6 +160,7 @@ pub enum DaemonPayload {
     MachineAdd(MachineAddPayload),
     MachineRemove(MachineRemovePayload),
     MeshReady(MeshReadyPayload),
+    NodeStatus(NodeStatusPayload),
     MeshSelfRecord(MeshSelfRecordPayload),
     CoordinationPrepare(CoordinationPreparePayload),
     CoordinationRenew(CoordinationRenewPayload),
@@ -250,6 +252,25 @@ pub struct MeshReadyPayload {
 pub struct MeshSelfRecordPayload {
     pub encoded: String,
     pub record: MachineRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeStatusPayload {
+    pub machine_id: String,
+    pub boot_id: String,
+    pub phase: String,
+    pub ready: bool,
+    pub draining: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subnet: Option<String>,
+    pub workloads: WorkloadSummary,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkloadSummary {
+    #[serde(default)]
+    pub slots: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

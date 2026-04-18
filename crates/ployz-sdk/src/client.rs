@@ -3,7 +3,8 @@ use ployz_api::{
     CoordinationAbortRequest, CoordinationCommitPayload, CoordinationCommitRequest,
     CoordinationPreparePayload, CoordinationPrepareRequest, CoordinationRenewPayload,
     CoordinationRenewRequest, DaemonPayload, DaemonRequest, DaemonResponse, DeployOptions,
-    MachineListPayload, MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload, StatusPayload,
+    MachineListPayload, MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload,
+    NodeStatusPayload, StatusPayload,
 };
 use ployz_types::model::{DeployApplyResult, DeployPreview};
 use ployz_types::spec::DeployManifest;
@@ -57,7 +58,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
             | DaemonPayload::CoordinationRenew(_)
-            | DaemonPayload::CoordinationCommit(_) => None,
+            | DaemonPayload::CoordinationCommit(_)
+            | DaemonPayload::NodeStatus(_) => None,
         })
     }
 
@@ -82,7 +84,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
             | DaemonPayload::CoordinationRenew(_)
-            | DaemonPayload::CoordinationCommit(_) => None,
+            | DaemonPayload::CoordinationCommit(_)
+            | DaemonPayload::NodeStatus(_) => None,
         })
     }
 
@@ -103,7 +106,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
             | DaemonPayload::CoordinationRenew(_)
-            | DaemonPayload::CoordinationCommit(_) => None,
+            | DaemonPayload::CoordinationCommit(_)
+            | DaemonPayload::NodeStatus(_) => None,
         })
     }
 
@@ -116,6 +120,29 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineList(_)
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
+            | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::DeployPreview(_)
+            | DaemonPayload::DeployApply(_)
+            | DaemonPayload::DeployExport(_)
+            | DaemonPayload::MachineOperationList(_)
+            | DaemonPayload::MachineOperation(_)
+            | DaemonPayload::CoordinationPrepare(_)
+            | DaemonPayload::CoordinationRenew(_)
+            | DaemonPayload::CoordinationCommit(_)
+            | DaemonPayload::NodeStatus(_) => None,
+        })
+    }
+
+    pub async fn node_status(&self) -> std::io::Result<NodeStatusPayload> {
+        let response = self.request_ok(DaemonRequest::NodeStatus).await?;
+        extract_payload(response, "node status", |payload| match payload {
+            DaemonPayload::NodeStatus(payload) => Some(payload),
+            DaemonPayload::Status(_)
+            | DaemonPayload::MeshStatus(_)
+            | DaemonPayload::MachineList(_)
+            | DaemonPayload::MachineAdd(_)
+            | DaemonPayload::MachineRemove(_)
+            | DaemonPayload::MeshReady(_)
             | DaemonPayload::MeshSelfRecord(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
@@ -145,7 +172,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
             | DaemonPayload::CoordinationRenew(_)
-            | DaemonPayload::CoordinationCommit(_) => None,
+            | DaemonPayload::CoordinationCommit(_)
+            | DaemonPayload::NodeStatus(_) => None,
         })
     }
 
@@ -176,7 +204,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
             | DaemonPayload::CoordinationRenew(_)
-            | DaemonPayload::CoordinationCommit(_) => None,
+            | DaemonPayload::CoordinationCommit(_)
+            | DaemonPayload::NodeStatus(_) => None,
         })
     }
 
@@ -207,7 +236,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
             | DaemonPayload::CoordinationRenew(_)
-            | DaemonPayload::CoordinationCommit(_) => None,
+            | DaemonPayload::CoordinationCommit(_)
+            | DaemonPayload::NodeStatus(_) => None,
         })
     }
 
@@ -232,7 +262,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
             | DaemonPayload::CoordinationRenew(_)
-            | DaemonPayload::CoordinationCommit(_) => None,
+            | DaemonPayload::CoordinationCommit(_)
+            | DaemonPayload::NodeStatus(_) => None,
         })
     }
 
@@ -260,7 +291,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationRenew(_)
-            | DaemonPayload::CoordinationCommit(_) => None,
+            | DaemonPayload::CoordinationCommit(_)
+            | DaemonPayload::NodeStatus(_) => None,
         })
     }
 
@@ -288,7 +320,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
-            | DaemonPayload::CoordinationRenew(_) => None,
+            | DaemonPayload::CoordinationRenew(_)
+            | DaemonPayload::NodeStatus(_) => None,
         })
     }
 
@@ -316,7 +349,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
-            | DaemonPayload::CoordinationCommit(_) => None,
+            | DaemonPayload::CoordinationCommit(_)
+            | DaemonPayload::NodeStatus(_) => None,
         })
     }
 

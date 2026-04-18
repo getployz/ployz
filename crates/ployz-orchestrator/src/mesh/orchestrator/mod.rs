@@ -17,13 +17,16 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::{RwLock, mpsc};
+use uuid::Uuid;
 
 mod lifecycle;
+mod node_status;
 mod probe_wiring;
 mod readiness;
 mod self_record;
 mod task_runtime;
 
+pub use node_status::MeshNodeStatus;
 pub use readiness::MeshReadyStatus;
 
 pub type Result<T> = std::result::Result<T, MeshError>;
@@ -75,6 +78,7 @@ pub struct Mesh {
     heartbeat_started: Arc<AtomicBool>,
     probe_readiness: Arc<ProbeListenerReadiness>,
     task_timing: TaskTimingConfig,
+    boot_id: Uuid,
 }
 
 impl Mesh {
@@ -125,6 +129,7 @@ impl Mesh {
             heartbeat_started: Arc::new(AtomicBool::new(false)),
             probe_readiness: Arc::new(ProbeListenerReadiness::new(probe_required_family)),
             task_timing: TaskTimingConfig::production(),
+            boot_id: Uuid::new_v4(),
         }
     }
 
@@ -170,6 +175,16 @@ impl Mesh {
     #[must_use]
     pub fn phase(&self) -> Phase {
         self.phase
+    }
+
+    #[must_use]
+    pub fn machine_id(&self) -> &MachineId {
+        &self.machine_id
+    }
+
+    #[must_use]
+    pub fn boot_id(&self) -> Uuid {
+        self.boot_id
     }
 
     #[must_use]

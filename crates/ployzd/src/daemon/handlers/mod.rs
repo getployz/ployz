@@ -5,6 +5,7 @@ mod doctor;
 mod invite;
 pub(crate) mod machine;
 mod mesh;
+mod node_status;
 mod status;
 
 use ployz_api::{DaemonRequest, DaemonResponse};
@@ -35,6 +36,7 @@ impl DaemonState {
             | DaemonRequest::MeshList
             | DaemonRequest::MeshStatus { .. }
             | DaemonRequest::MeshReady
+            | DaemonRequest::NodeStatus
             | DaemonRequest::MeshCreate { .. }
             | DaemonRequest::MachineList
             | DaemonRequest::MachineInit { .. }
@@ -79,6 +81,7 @@ impl DaemonState {
             DaemonRequest::MeshList => self.handle_mesh_list(),
             DaemonRequest::MeshStatus { network } => self.handle_mesh_status(&network),
             DaemonRequest::MeshReady => self.handle_mesh_ready().await,
+            DaemonRequest::NodeStatus => self.handle_node_status().await,
             DaemonRequest::MeshCreate { network } => self.handle_mesh_create(&network),
             DaemonRequest::MachineList => self.handle_machine_list().await,
             DaemonRequest::MachineInit {
@@ -141,6 +144,7 @@ impl DaemonState {
             | DaemonRequest::MeshList
             | DaemonRequest::MeshStatus { .. }
             | DaemonRequest::MeshReady
+            | DaemonRequest::NodeStatus
             | DaemonRequest::MeshCreate { .. }
             | DaemonRequest::MachineList
             | DaemonRequest::MachineInit { .. }
@@ -202,6 +206,7 @@ mod tests {
                 network: "alpha".into(),
             },
             DaemonRequest::MeshReady,
+            DaemonRequest::NodeStatus,
             DaemonRequest::MeshCreate {
                 network: "alpha".into(),
             },
