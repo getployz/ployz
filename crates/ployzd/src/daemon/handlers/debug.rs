@@ -1,5 +1,5 @@
 use ployz_api::{DaemonResponse, DebugTickTask};
-use ployz_orchestrator::mesh::tasks::{HeartbeatCommand, PeerSyncCommand};
+use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use tokio::sync::oneshot;
 
 use crate::daemon::DaemonState;
@@ -17,12 +17,18 @@ impl DaemonState {
         for _ in 0..repeat {
             let result = match task {
                 DebugTickTask::PeerSync => self.debug_tick_peer_sync().await,
-                DebugTickTask::Heartbeat => self.debug_tick_heartbeat().await,
+                DebugTickTask::Heartbeat => Err((
+                    "TASK_NOT_SUPPORTED",
+                    "heartbeat task has been removed".into(),
+                )),
                 DebugTickTask::All => {
                     if let Err(error) = self.debug_tick_peer_sync().await {
                         Err(error)
                     } else {
-                        self.debug_tick_heartbeat().await
+                        Err((
+                            "TASK_NOT_SUPPORTED",
+                            "heartbeat task has been removed".into(),
+                        ))
                     }
                 }
             };
@@ -62,33 +68,6 @@ impl DaemonState {
         })?;
         Ok(())
     }
-
-    async fn debug_tick_heartbeat(&mut self) -> Result<(), (&'static str, String)> {
-        let Some(active) = self.active.as_ref() else {
-            return Err(("NO_RUNNING_NETWORK", "no mesh running".into()));
-        };
-        let Some(heartbeat_tx) = active.mesh.heartbeat_sender() else {
-            return Err(("TASK_NOT_RUNNING", "heartbeat task is not running".into()));
-        };
-        let (done_tx, done_rx) = oneshot::channel();
-        heartbeat_tx
-            .send(HeartbeatCommand::TickNow { done: done_tx })
-            .await
-            .map_err(|error| {
-                (
-                    "DEBUG_TICK_FAILED",
-                    format!("heartbeat tick send failed: {error}"),
-                )
-            })?;
-        done_rx.await.map_err(|error| {
-            (
-                "DEBUG_TICK_FAILED",
-                format!("heartbeat tick ack failed: {error}"),
-            )
-        })?;
-        Ok(())
-    }
-
 }
 
 fn format_debug_tick_task(task: DebugTickTask) -> &'static str {

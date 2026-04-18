@@ -57,9 +57,7 @@ impl Scenario {
             Self::SingleNodeInit | Self::DeploySmoke => &["founder"],
             Self::MachineAddBasic => &["founder", "joiner"],
             Self::WireguardReconnect => &["founder", "peer"],
-            Self::QuorumSubnetCoordination => &[
-                "founder", "peer1", "peer2", "joiner1", "joiner2",
-            ],
+            Self::QuorumSubnetCoordination => &["founder", "peer1", "peer2", "joiner1", "joiner2"],
         }
     }
 

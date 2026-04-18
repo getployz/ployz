@@ -442,9 +442,9 @@ mod tests {
         MemoryServiceRuntime, MemoryStore, MemoryWireGuard, StaticEndpointDiscovery,
         memory_wireguard_driver,
     };
-    use ployz_types::time::now_unix_secs;
     use ployz_types::model::Identity;
     use ployz_types::model::{MachineId, MachineStatus, OverlayIp, Participation, PublicKey};
+    use ployz_types::time::now_unix_secs;
     use std::net::Ipv6Addr;
     use std::path::PathBuf;
     use std::sync::{Arc, OnceLock};
