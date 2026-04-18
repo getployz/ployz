@@ -35,8 +35,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     #[test]
-    fn deployable_machines_excludes_stale_and_down_peers() {
-        let now = 100;
+    fn deployable_machines_uses_all_store_candidates() {
         let machines = vec![
             test_machine(
                 "fresh-enabled",
@@ -64,28 +63,22 @@ mod tests {
             ),
         ];
 
-        let deployable = deployable_machines(&machines, &MachineId("local".into()), now);
-        assert_eq!(deployable, vec![MachineId("fresh-enabled".into())]);
+        let deployable = deployable_machines(&machines, &MachineId("local".into()));
+        assert_eq!(
+            deployable,
+            vec![
+                MachineId("down-enabled".into()),
+                MachineId("draining-fresh".into()),
+                MachineId("fresh-enabled".into()),
+                MachineId("stale-enabled".into()),
+            ]
+        );
     }
 
     #[test]
-    fn deployable_machines_falls_back_to_local_when_none_are_fresh_enabled() {
-        let machines = vec![
-            test_machine(
-                "stale-enabled",
-                Participation::Enabled,
-                MachineStatus::Up,
-                10,
-            ),
-            test_machine(
-                "down-enabled",
-                Participation::Enabled,
-                MachineStatus::Down,
-                100,
-            ),
-        ];
-
-        let deployable = deployable_machines(&machines, &MachineId("local".into()), 100);
+    fn deployable_machines_falls_back_to_local_when_store_is_empty() {
+        let machines = vec![];
+        let deployable = deployable_machines(&machines, &MachineId("local".into()));
         assert_eq!(deployable, vec![MachineId("local".into())]);
     }
 
