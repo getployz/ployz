@@ -541,6 +541,7 @@ mod tests {
                 ready: true,
                 draining: false,
                 subnet_claim: peer_record.subnet.map(|subnet| subnet.to_string()),
+                workloads: ployz_api::WorkloadSummary::default(),
                 version: String::from("test"),
             }),
         )]);
@@ -591,6 +592,7 @@ mod tests {
             Arc::new(StaticEndpointDiscovery::empty()),
             None,
             identity.machine_id.clone(),
+            String::from("boot-test"),
             51820,
         );
 
@@ -654,6 +656,7 @@ mod tests {
             Arc::new(StaticEndpointDiscovery::empty()),
             None,
             identity.machine_id,
+            String::from("boot-test"),
             51820,
         );
 

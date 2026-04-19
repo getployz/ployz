@@ -15,11 +15,13 @@ use thiserror::Error;
 use tokio::sync::{RwLock, mpsc};
 
 mod lifecycle;
+mod node_status;
 mod probe_wiring;
 mod readiness;
 mod self_record;
 mod task_runtime;
 
+pub use node_status::MeshNodeStatus;
 pub use readiness::MeshReadyStatus;
 
 pub type Result<T> = std::result::Result<T, MeshError>;
@@ -59,6 +61,7 @@ pub struct Mesh {
     connection_timeout: Duration,
     service_ready_timeout: Duration,
     machine_id: MachineId,
+    boot_id: String,
     listen_port: u16,
     seed_records: Vec<MachineRecord>,
     authoritative_self: Option<Arc<RwLock<MachineRecord>>>,
@@ -81,6 +84,7 @@ impl Mesh {
         endpoint_discovery: Arc<dyn EndpointDiscovery>,
         dataplane_factory: Option<Arc<dyn DataplaneFactory>>,
         machine_id: MachineId,
+        boot_id: String,
         listen_port: u16,
     ) -> Self {
         let probe_required_family = if network.runs_probe_listener() {
@@ -105,6 +109,7 @@ impl Mesh {
             connection_timeout: Duration::from_secs(30),
             service_ready_timeout: Duration::from_secs(15),
             machine_id,
+            boot_id,
             listen_port,
             seed_records: Vec::new(),
             authoritative_self: None,

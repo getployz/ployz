@@ -7,7 +7,7 @@ use ployz_test_support::{
     memory_wireguard_driver,
 };
 use ployz_types::model::{
-    JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, PublicKey,
+    DrainState, JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, PublicKey,
 };
 use std::net::Ipv6Addr;
 use std::sync::Arc;
@@ -23,7 +23,7 @@ fn test_record(id: &str, key_byte: u8) -> MachineRecord {
         bridge_ip: None,
         endpoints: vec![format!("10.0.0.{key_byte}:51820")],
         status: MachineStatus::Unknown,
-        drain: false,
+        drain_state: DrainState::Active,
         created_at: 0,
         updated_at: 0,
         labels: std::collections::BTreeMap::new(),
@@ -45,6 +45,7 @@ fn make_mesh(
         Arc::new(StaticEndpointDiscovery::empty()),
         None,
         MachineId(machine_id.into()),
+        String::from("boot-test"),
         51820,
     )
     .with_bootstrap_timing(Duration::from_millis(10), Duration::from_secs(5))
@@ -137,6 +138,7 @@ async fn joiner_seed_peer_requires_sync_for_ready() {
         Arc::new(StaticEndpointDiscovery::empty()),
         None,
         joiner_record.id.clone(),
+        String::from("boot-test"),
         51820,
     )
     .with_seed_records(vec![founder_record])
@@ -181,6 +183,7 @@ async fn joiner_retains_founder_peer_across_peer_sync_handoff() {
         Arc::new(StaticEndpointDiscovery::empty()),
         None,
         joiner_record.id.clone(),
+        String::from("boot-test"),
         51820,
     )
     .with_seed_records(vec![founder_record.clone(), joiner_record.clone()])
@@ -302,6 +305,7 @@ async fn bootstrap_connection_timeout() {
         Arc::new(StaticEndpointDiscovery::empty()),
         None,
         joiner_record.id.clone(),
+        String::from("boot-test"),
         51820,
     )
     .with_seed_records(vec![founder_record])
@@ -350,6 +354,7 @@ async fn bootstrap_proceeds_on_membership() {
         Arc::new(StaticEndpointDiscovery::empty()),
         None,
         joiner_record.id.clone(),
+        String::from("boot-test"),
         51820,
     )
     .with_seed_records(vec![founder_record])

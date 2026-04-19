@@ -131,6 +131,7 @@ impl MeshStartTx {
             components.endpoint_discovery,
             components.dataplane_factory,
             state.identity.machine_id.clone(),
+            state.boot_id.clone(),
             listen_port,
         )
         .with_seed_records(seed_records)

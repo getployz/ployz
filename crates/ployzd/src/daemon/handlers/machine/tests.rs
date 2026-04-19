@@ -452,6 +452,7 @@ async fn make_state(
         Arc::new(StaticEndpointDiscovery::empty()),
         None,
         identity.machine_id.clone(),
+        String::from("boot-test"),
         51820,
     );
     if matches!(start_mode, MeshStartMode::Started) {

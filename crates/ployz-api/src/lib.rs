@@ -206,7 +206,15 @@ pub struct NodeStatusPayload {
     pub draining: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subnet_claim: Option<String>,
+    #[serde(default)]
+    pub workloads: WorkloadSummary,
     pub version: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkloadSummary {
+    #[serde(default)]
+    pub slots: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

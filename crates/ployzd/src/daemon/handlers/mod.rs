@@ -5,6 +5,7 @@ mod doctor;
 mod invite;
 pub(crate) mod machine;
 mod mesh;
+mod node_status;
 mod status;
 
 use ployz_api::{DaemonRequest, DaemonResponse};

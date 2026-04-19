@@ -19,7 +19,10 @@ pub(crate) struct FanOutTarget {
 pub(crate) enum NodeStatusResult {
     Ok(NodeStatusPayload),
     Offline,
-    InvalidIdentity { reported: MachineId },
+    InvalidIdentity {
+        reported: MachineId,
+        boot_id: String,
+    },
 }
 
 /// Result of a fanned-out prepare operation.
@@ -217,6 +220,7 @@ pub(crate) async fn fanout_node_status(
                     } else {
                         NodeStatusResult::InvalidIdentity {
                             reported: MachineId(payload.machine_id),
+                            boot_id: payload.boot_id,
                         }
                     }
                 }

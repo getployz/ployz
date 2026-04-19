@@ -5,8 +5,8 @@ use crate::mesh_state::invite::{InviteClaims, parse_and_verify_invite_token};
 use crate::mesh_state::network::NetworkConfig;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ployz_api::{
-    DaemonPayload, DaemonResponse, MeshSelfRecordPayload, MeshStatusPayload, NodeStatusPayload,
-    decode_join_response, encode_join_response,
+    DaemonPayload, DaemonResponse, MeshSelfRecordPayload, MeshStatusPayload, decode_join_response,
+    encode_join_response,
 };
 use ployz_orchestrator::ipam::Ipam;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
@@ -99,34 +99,6 @@ impl DaemonState {
                 state: state.into(),
                 exists: true,
             })),
-        )
-    }
-
-    pub(crate) async fn handle_node_status(&self) -> DaemonResponse {
-        let active = match self.active.as_ref() {
-            Some(active) => active,
-            None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
-        };
-        let ready = active.mesh.ready_status().await;
-        let self_record = active.mesh.authoritative_self_record().await;
-        let draining = self_record.as_ref().is_some_and(|record| record.drain);
-        let payload = NodeStatusPayload {
-            machine_id: self.identity.machine_id.0.clone(),
-            boot_id: self.boot_id.clone(),
-            phase: ready.phase.to_string(),
-            ready: ready.ready,
-            draining,
-            subnet_claim: self_record
-                .and_then(|record| record.subnet.map(|subnet| subnet.to_string())),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        };
-
-        self.ok_with_payload(
-            format!(
-                "machine id:  {}\nboot id:     {}\nphase:       {}\nready:       {}\ndraining:    {}",
-                payload.machine_id, payload.boot_id, payload.phase, payload.ready, payload.draining
-            ),
-            Some(DaemonPayload::NodeStatus(payload)),
         )
     }
 
@@ -714,6 +686,7 @@ mod tests {
             Arc::new(StaticEndpointDiscovery::empty()),
             None,
             identity.machine_id.clone(),
+            String::from("boot-test"),
             51820,
         );
         mesh.up().await.expect("mesh up");
