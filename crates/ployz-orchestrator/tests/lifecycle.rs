@@ -108,7 +108,7 @@ async fn startup_reaches_running_single_node() {
         .authoritative_self_record()
         .await
         .expect("self record should exist");
-    assert!(!self_record.drain);
+    assert_eq!(self_record.drain_state, DrainState::Active);
 }
 
 #[tokio::test]

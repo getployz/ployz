@@ -1,7 +1,7 @@
 use crate::coordination::fanout::{FanOutTarget, NodeStatusResult, fanout_node_status};
 use crate::daemon::{ActiveMesh, DaemonState};
 use ployz_runtime_api::{DevicePeer, WireGuardDevice};
-use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
+use ployz_types::model::{DrainState, MachineId, MachineRecord, OverlayIp, Phase, PublicKey};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io;
@@ -10,6 +10,8 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::Instant;
+
+use super::mesh::{LocalPeerStatus, resolve_peer};
 
 const PARTICIPATION_HANDSHAKE_FRESHNESS_WINDOW: Duration = Duration::from_secs(30);
 const PARTICIPATION_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
@@ -60,7 +62,8 @@ impl DaemonState {
             .mesh
             .authoritative_self_record()
             .await
-            .is_some_and(|record| record.drain);
+            .map(|record| record.drain_state)
+            .unwrap_or(local_record.drain_state);
         let targets: Vec<FanOutTarget> = machines
             .iter()
             .filter(|machine| machine.id != self.identity.machine_id)
@@ -82,9 +85,11 @@ impl DaemonState {
             active,
             &machines,
             local_record,
-            local_ready_status.ready,
-            &local_ready_status.phase.to_string(),
-            local_draining,
+            LocalPeerStatus {
+                ready: local_ready_status.ready,
+                phase: local_ready_status.phase,
+                drain_state: local_draining,
+            },
             &device_peers,
             &overlay_probe_by_ip,
             &node_status_by_machine,
@@ -96,9 +101,7 @@ fn render_doctor_report(
     active: &ActiveMesh,
     machines: &[MachineRecord],
     local_record: &MachineRecord,
-    local_ready: bool,
-    local_phase: &str,
-    local_draining: bool,
+    local_status: LocalPeerStatus,
     device_peers: &[DevicePeer],
     overlay_probe_by_ip: &HashMap<OverlayIp, ProbeState>,
     node_status_by_machine: &HashMap<MachineId, NodeStatusResult>,
@@ -114,7 +117,7 @@ fn render_doctor_report(
     let blocking_peers: Vec<&NodeRow> = peer_rows
         .iter()
         .filter(|row| row.required)
-        .filter(|row| !row.probe_reachable())
+        .filter(|row| !row.healthy())
         .collect();
     let all_peers: Vec<&NodeRow> = peer_rows.iter().collect();
 
@@ -142,13 +145,13 @@ fn render_doctor_report(
         "local: machine={} network={} node=present/{}/{}/{}",
         local_record.id,
         active.config.name,
-        if local_ready { "ready" } else { "not-ready" },
-        if local_draining {
-            "draining"
+        if local_status.ready {
+            "ready"
         } else {
-            "not-draining"
+            "not-ready"
         },
-        local_phase,
+        format_drain_state(local_status.drain_state),
+        local_status.phase,
     ));
 
     lines.join("\n")
@@ -206,8 +209,8 @@ struct NodeRow {
     id: String,
     reachable: bool,
     ready: Option<bool>,
-    draining: Option<bool>,
-    phase: Option<String>,
+    drain_state: Option<DrainState>,
+    phase: Option<Phase>,
     required: bool,
     handshake: HandshakeState,
     probe: ProbeState,
@@ -221,10 +224,13 @@ impl NodeRow {
             .map(|value| if value { "ready" } else { "not-ready" })
             .unwrap_or("unknown");
         let draining = self
-            .draining
-            .map(|value| if value { "draining" } else { "not-draining" })
+            .drain_state
+            .map(format_drain_state)
             .unwrap_or("unknown");
-        let phase = self.phase.as_deref().unwrap_or("unknown");
+        let phase = self
+            .phase
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".into());
         format!("node={reachable}/{ready}/{draining}/{phase}")
     }
 
@@ -240,7 +246,18 @@ impl NodeRow {
         self.probe == ProbeState::Reachable
     }
 
+    fn control_plane_ready(&self) -> bool {
+        self.reachable && self.ready == Some(true) && self.phase == Some(Phase::Running)
+    }
+
+    fn healthy(&self) -> bool {
+        self.probe_reachable() && self.control_plane_ready()
+    }
+
     fn cause(&self) -> &'static str {
+        if self.probe == ProbeState::Reachable && !self.control_plane_ready() {
+            return "node responded but is not ready for control-plane work";
+        }
         match (self.handshake, self.probe) {
             (_, ProbeState::Reachable) => "healthy via overlay probe",
             (HandshakeState::Absent, ProbeState::Unreachable) => {
@@ -270,29 +287,28 @@ fn build_node_rows(
         .iter()
         .filter(|machine| machine.id != *local_machine_id)
         .map(|machine| {
-            let (reachable, ready, draining, phase) = match node_status_by_machine.get(&machine.id)
-            {
-                Some(NodeStatusResult::Ok(status)) => (
-                    true,
-                    Some(status.ready),
-                    Some(status.draining),
-                    Some(status.phase.clone()),
-                ),
-                Some(NodeStatusResult::Offline)
-                | Some(NodeStatusResult::InvalidIdentity { .. })
-                | None => (false, None, None, None),
-            };
-            let required = !machine.drain && draining != Some(true);
+            let peer = resolve_peer(
+                &machine.id,
+                local_machine_id,
+                LocalPeerStatus {
+                    ready: false,
+                    phase: Phase::Stopped,
+                    drain_state: DrainState::Active,
+                },
+                node_status_by_machine,
+            );
+            let required = !machine.drain_state.is_drained()
+                && peer.drain_state() != Some(DrainState::Drained);
             let handshake_state = handshake_by_key
                 .get(&machine.public_key)
                 .copied()
                 .unwrap_or(HandshakeState::Absent);
             NodeRow {
                 id: machine.id.0.clone(),
-                reachable,
-                ready,
-                draining,
-                phase,
+                reachable: peer.reachable(),
+                ready: peer.ready(),
+                drain_state: peer.drain_state(),
+                phase: peer.phase(),
                 required,
                 handshake: handshake_state,
                 probe: overlay_probe_by_ip
@@ -338,6 +354,13 @@ impl HandshakeState {
             Self::None => "none",
             Self::Absent => "absent",
         }
+    }
+}
+
+fn format_drain_state(drain_state: DrainState) -> &'static str {
+    match drain_state {
+        DrainState::Active => "active",
+        DrainState::Drained => "drained",
     }
 }
 
@@ -496,7 +519,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn doctor_reports_healthy_when_overlay_probe_is_reachable() {
+    async fn doctor_blocks_when_overlay_probe_is_reachable_but_node_status_is_unknown() {
         let (_probe_guard, probe_cancel, probe_task) = start_test_probe_listener().await;
         let (state, store, network) = make_state().await;
         let peer_key = PublicKey([2; 32]);
@@ -514,14 +537,15 @@ mod tests {
 
         let response = state.handle_doctor().await;
         assert!(response.ok, "{}", response.message);
-        assert!(response.message.contains("node-health: healthy"));
-        assert!(!response.message.contains("blocking peers:"));
+        assert!(response.message.contains("node-health: blocked"));
+        assert!(response.message.contains("blocking peers:"));
         assert!(response.message.contains("all peers:"));
         assert!(response.message.lines().any(|line| {
             line.contains("peer")
                 && line.contains("node=absent/unknown/unknown/unknown")
                 && line.contains("wg=fresh")
                 && line.contains("probe=reachable")
+                && line.contains("cause=node responded but is not ready for control-plane work")
         }));
         stop_test_probe_listener(probe_cancel, probe_task).await;
     }
@@ -537,9 +561,9 @@ mod tests {
             NodeStatusResult::Ok(ployz_api::NodeStatusPayload {
                 machine_id: peer_record.id.0.clone(),
                 boot_id: String::from("boot"),
-                phase: String::from("running"),
+                phase: Phase::Running,
                 ready: true,
-                draining: false,
+                drain_state: DrainState::Active,
                 subnet_claim: peer_record.subnet.map(|subnet| subnet.to_string()),
                 workloads: ployz_api::WorkloadSummary::default(),
                 version: String::from("test"),
@@ -549,9 +573,11 @@ mod tests {
             &test_active_mesh(),
             machines.as_slice(),
             &local_record,
-            true,
-            "running",
-            false,
+            LocalPeerStatus {
+                ready: true,
+                phase: Phase::Running,
+                drain_state: DrainState::Active,
+            },
             &[],
             &overlay_probe_by_ip,
             &node_status_by_machine,
@@ -629,7 +655,11 @@ mod tests {
             bridge_ip: None,
             endpoints: vec![String::from("127.0.0.1:51820")],
             status: MachineStatus::Up,
-            drain,
+            drain_state: if drain {
+                DrainState::Drained
+            } else {
+                DrainState::Active
+            },
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),

@@ -15,8 +15,8 @@ pub(crate) use planning::{deployable_machines, desired_slots};
 mod tests {
     use super::*;
     use crate::model::{
-        DeployId, DeployState, DrainState, InstanceId, InstancePhase, MachineId, MachineRecord,
-        MachineStatus, OverlayIp, PublicKey, ServiceReleaseSlot,
+        DeployId, DeployState, DrainState, InstanceDrainState, InstanceId, InstancePhase,
+        MachineId, MachineRecord, MachineStatus, OverlayIp, PublicKey, ServiceReleaseSlot,
     };
     use async_trait::async_trait;
     use ployz_runtime_api::Result as RuntimeResult;
@@ -220,7 +220,11 @@ mod tests {
             bridge_ip: None,
             endpoints: vec!["127.0.0.1:51820".into()],
             status,
-            drain,
+            drain_state: if drain {
+                DrainState::Drained
+            } else {
+                DrainState::Active
+            },
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),
@@ -366,7 +370,7 @@ mod tests {
                 backend_ports: BTreeMap::new(),
                 phase: InstancePhase::Ready,
                 ready: true,
-                drain_state: DrainState::None,
+                drain_state: InstanceDrainState::None,
                 error: None,
                 started_at: now_unix_secs(),
                 updated_at: now_unix_secs(),

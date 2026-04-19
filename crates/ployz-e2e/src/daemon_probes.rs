@@ -4,6 +4,7 @@ use crate::support::{
     daemon_machine_list_in_container, daemon_node_status_in_container, wait_until,
 };
 use ployz_api::MachineListPayload;
+use ployz_types::model::DrainState;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::time::Duration;
@@ -117,9 +118,7 @@ impl ScenarioRun {
             ))
         });
 
-        if let Err(error) = wait_result {
-            return Err(error);
-        }
+        wait_result?;
         let _ = expected_labels;
         Ok(())
     }
@@ -185,9 +184,7 @@ impl ScenarioRun {
             ))
         });
 
-        if let Err(error) = wait_result {
-            return Err(error);
-        }
+        wait_result?;
         let _ = expected_labels;
         Ok(())
     }
@@ -360,7 +357,7 @@ impl MachineRow {
     fn from_payload(row: &ployz_api::MachineListRow) -> Self {
         Self {
             id: row.id.clone(),
-            draining: row.draining,
+            draining: row.drain_state.is_some_and(DrainState::is_drained),
             subnet: row.subnet.clone().unwrap_or_else(|| "—".into()),
         }
     }
@@ -375,10 +372,10 @@ fn append_readiness_diagnostics(report: &mut String, row_id: &str, peer_node: &N
         Ok(payload) => {
             let _ = write!(
                 report,
-                "\n  {row_id} self-report: phase={} ready={} draining={} boot_id={} subnet_claim={} slots={}",
+                "\n  {row_id} self-report: phase={} ready={} drain_state={} boot_id={} subnet_claim={} slots={}",
                 payload.phase,
                 payload.ready,
-                payload.draining,
+                payload.drain_state,
                 payload.boot_id,
                 payload.subnet_claim.as_deref().unwrap_or("none"),
                 payload.workloads.slots,
@@ -393,7 +390,7 @@ fn append_readiness_diagnostics(report: &mut String, row_id: &str, peer_node: &N
 fn machine_state(payload: &MachineListPayload, machine_id: &str) -> Option<String> {
     payload.rows.iter().find_map(|row| {
         if row.id == machine_id {
-            return Some(if row.draining {
+            return Some(if row.drain_state.is_some_and(DrainState::is_drained) {
                 String::from("draining")
             } else {
                 String::from("active")

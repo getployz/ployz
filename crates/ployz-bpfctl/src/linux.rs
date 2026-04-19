@@ -4,6 +4,7 @@ use aya::programs::{SchedClassifier, TcAttachType};
 use ployz_ebpf_common::{RouteEntry, RouteKey};
 use std::ffi::CString;
 use std::net::Ipv4Addr;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 // Wrapper types to satisfy orphan rules for Pod impl
@@ -18,15 +19,7 @@ unsafe impl aya::Pod for PodRouteKey {}
 unsafe impl aya::Pod for PodRouteEntry {}
 
 const PIN_PATH: &str = "/sys/fs/bpf/ployz";
-
-macro_rules! include_bytes_aligned {
-    ($path:expr) => {{
-        #[repr(C, align(8))]
-        struct Aligned<Bytes: ?Sized>(Bytes);
-        static ALIGNED: &Aligned<[u8]> = &Aligned(*include_bytes!($path));
-        &ALIGNED.0
-    }};
-}
+const DEFAULT_EBPF_OBJECT_PATH: &str = "/usr/local/lib/ployz/ployz-ebpf-tc";
 
 pub(crate) fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -82,7 +75,7 @@ fn cmd_attach(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     ensure_bpffs();
 
-    let bytecode = include_bytes_aligned!(concat!(env!("OUT_DIR"), "/ployz-ebpf-tc"));
+    let bytecode = std::fs::read(ebpf_object_path())?;
     let mut bpf = Ebpf::load(bytecode)?;
 
     let _ = aya::programs::tc::qdisc_add_clsact(bridge);
@@ -115,6 +108,13 @@ fn cmd_attach(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("attached TC classifiers to {bridge}");
     Ok(())
+}
+
+fn ebpf_object_path() -> PathBuf {
+    match std::env::var_os("PLOYZ_EBPF_OBJECT") {
+        Some(path) if !path.is_empty() => PathBuf::from(path),
+        _ => PathBuf::from(DEFAULT_EBPF_OBJECT_PATH),
+    }
 }
 
 /// detach <bridge-ifname>

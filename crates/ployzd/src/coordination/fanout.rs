@@ -247,7 +247,6 @@ mod tests {
         CoordinationCommitPayload, CoordinationLockKey, CoordinationOperation, DaemonPayload,
         DaemonResponse,
     };
-    use std::net::Ipv6Addr;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;
 

@@ -18,6 +18,7 @@ use ployz_test_support::{
     MemoryServiceRuntime, MemoryStore, MemoryWireGuard, StaticEndpointDiscovery,
     memory_wireguard_driver,
 };
+use ployz_types::model::{DrainState, Phase};
 use ployz_types::model::{
     Identity, JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, PublicKey,
 };
@@ -47,7 +48,7 @@ async fn machine_list_shows_disabled_explicitly() {
     assert!(response.ok);
     assert!(response.message.contains("PRESENCE"));
     assert!(response.message.contains("peer-disabled"));
-    assert!(response.message.contains("draining"));
+    assert!(response.message.contains("drained"));
     assert!(response.message.contains("absent"));
 }
 
@@ -87,8 +88,8 @@ async fn machine_list_report_uses_local_mesh_readiness() {
         0,
         &LocalNodeStatus {
             ready: false,
-            phase: "starting".into(),
-            draining: true,
+            phase: Phase::Starting,
+            drain_state: DrainState::Drained,
         },
     )
     .await
@@ -97,8 +98,8 @@ async fn machine_list_report_uses_local_mesh_readiness() {
         panic!("missing founder row");
     };
     assert_eq!(local.ready, Some(false));
-    assert_eq!(local.phase.as_deref(), Some("starting"));
-    assert_eq!(local.draining, Some(true));
+    assert_eq!(local.phase, Some(Phase::Starting));
+    assert_eq!(local.drain_state, Some(DrainState::Drained));
 }
 
 #[tokio::test]
@@ -188,7 +189,7 @@ async fn machine_add_succeeds_when_peer_unreachable_at_rpc_time() {
     let _ready_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_NODE_STATUS_RESPONSE",
         Some(
-            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"node-status\",\"machine_id\":\"joiner-1\",\"boot_id\":\"boot-1\",\"phase\":\"running\",\"ready\":true,\"draining\":false,\"version\":\"test-version\"}}".into(),
+            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"node-status\",\"machine_id\":\"joiner-1\",\"boot_id\":\"boot-1\",\"phase\":\"running\",\"ready\":true,\"drain_state\":\"active\",\"version\":\"test-version\"}}".into(),
         ),
     );
 
@@ -215,7 +216,7 @@ async fn machine_add_succeeds_when_peer_unreachable_at_rpc_time() {
 }
 
 #[tokio::test]
-async fn machine_add_accepts_running_joiner_before_full_sync() {
+async fn machine_add_rejects_joiner_that_reports_not_ready() {
     let _guard = test_ssh_env_lock().lock().await;
     let (mut state, store, network) = make_state(MeshStartMode::Started).await;
 
@@ -262,15 +263,15 @@ async fn machine_add_accepts_running_joiner_before_full_sync() {
     let _ready_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_NODE_STATUS_RESPONSE",
         Some(
-            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"node-status\",\"machine_id\":\"joiner-2\",\"boot_id\":\"boot-2\",\"phase\":\"running\",\"ready\":false,\"draining\":false,\"version\":\"test-version\"}}".into(),
+            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"node-status\",\"machine_id\":\"joiner-2\",\"boot_id\":\"boot-2\",\"phase\":\"running\",\"ready\":false,\"drain_state\":\"active\",\"version\":\"test-version\"}}".into(),
         ),
     );
 
     let response = state
         .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
         .await;
-    assert!(response.ok, "{}", response.message);
-    assert!(response.message.contains("awaiting_self_publication: 1"));
+    assert!(!response.ok, "{}", response.message);
+    assert!(response.message.contains("failed_ready: 1"));
 
     let machines = store.list_machines().await.expect("list machines");
     assert!(
@@ -279,7 +280,7 @@ async fn machine_add_accepts_running_joiner_before_full_sync() {
             .any(|machine| machine.id.0 == "joiner-2")
     );
     assert!(
-        network
+        !network
             .current_peers()
             .into_iter()
             .any(|machine| machine.id.0 == "joiner-2")
@@ -327,55 +328,46 @@ async fn machine_remove_deletes_disabled_record() {
 }
 
 #[tokio::test]
-async fn machine_drain_marks_machine_draining() {
+async fn machine_drain_marks_local_machine_draining() {
     let (state, store, _) = make_state(MeshStartMode::Stopped).await;
-    store
-        .upsert_self_machine(&test_machine_record(
-            "peer-1",
-            "10.210.1.0/24",
-            false,
-            PublicKey([2; 32]),
-        ))
-        .await
-        .expect("upsert peer");
 
-    let response = state.handle_machine_set_drain("peer-1", true).await;
+    let response = state.handle_machine_set_drain("founder", true).await;
     assert!(response.ok, "{}", response.message);
 
     let machines = store.list_machines().await.expect("list machines");
     let Some(peer) = machines
         .into_iter()
-        .find(|machine| machine.id.0 == "peer-1")
+        .find(|machine| machine.id.0 == "founder")
     else {
-        panic!("peer not found");
+        panic!("founder not found");
     };
-    assert!(peer.drain);
+    assert_eq!(peer.drain_state, DrainState::Drained);
 }
 
 #[tokio::test]
-async fn machine_undrain_marks_machine_active() {
+async fn machine_undrain_marks_local_machine_active() {
     let (state, store, _) = make_state(MeshStartMode::Stopped).await;
     store
         .upsert_self_machine(&test_machine_record(
-            "peer-1",
+            "founder",
             "10.210.1.0/24",
             true,
-            PublicKey([2; 32]),
+            PublicKey([1; 32]),
         ))
         .await
-        .expect("upsert peer");
+        .expect("upsert founder");
 
-    let response = state.handle_machine_set_drain("peer-1", false).await;
+    let response = state.handle_machine_set_drain("founder", false).await;
     assert!(response.ok, "{}", response.message);
 
     let machines = store.list_machines().await.expect("list machines");
     let Some(peer) = machines
         .into_iter()
-        .find(|machine| machine.id.0 == "peer-1")
+        .find(|machine| machine.id.0 == "founder")
     else {
-        panic!("peer not found");
+        panic!("founder not found");
     };
-    assert!(!peer.drain);
+    assert_eq!(peer.drain_state, DrainState::Active);
 }
 
 #[tokio::test]
@@ -507,7 +499,11 @@ fn test_machine_record(
         bridge_ip: None,
         endpoints: vec!["127.0.0.1:51820".into()],
         status: MachineStatus::Unknown,
-        drain,
+        drain_state: if drain {
+            DrainState::Drained
+        } else {
+            DrainState::Active
+        },
         created_at: 0,
         updated_at: 0,
         labels: std::collections::BTreeMap::new(),

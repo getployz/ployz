@@ -214,7 +214,7 @@ mod tests {
     use super::{into_machine_event, parse_machine_row};
     use corro_api_types::{ChangeId, RowId, TypedQueryEvent, sqlite::ChangeType};
     use ployz_types::model::{
-        MachineEvent, MachineId, MachineRecord, MachineStatus, OverlayIp, PublicKey,
+        DrainState, MachineEvent, MachineId, MachineRecord, MachineStatus, OverlayIp, PublicKey,
     };
     use std::collections::{BTreeMap, HashMap};
     use std::net::Ipv6Addr;
@@ -230,7 +230,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec![String::from("127.0.0.1:51820")],
             status: MachineStatus::Up,
-            drain: false,
+            drain_state: DrainState::Active,
             created_at: 100,
             updated_at: 200,
             labels,

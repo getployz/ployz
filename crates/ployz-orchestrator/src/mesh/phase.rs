@@ -1,28 +1,6 @@
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Phase {
-    Stopped,
-    Starting,
-    Provisioning,
-    Bootstrapping,
-    Running,
-    Stopping,
-}
-
-impl std::fmt::Display for Phase {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            Self::Stopped => "stopped",
-            Self::Starting => "starting",
-            Self::Provisioning => "provisioning",
-            Self::Bootstrapping => "bootstrapping",
-            Self::Running => "running",
-            Self::Stopping => "stopping",
-        };
-        f.write_str(s)
-    }
-}
+pub use ployz_types::model::Phase;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhaseEvent {

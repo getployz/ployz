@@ -118,7 +118,7 @@ async fn rank_pending_peers(state: &mut PeerStateMap) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{MachineEvent, MachineStatus, OverlayIp, PublicKey};
+    use crate::model::{DrainState, MachineEvent, MachineStatus, OverlayIp, PublicKey};
     use ployz_runtime_api::DevicePeer;
     use ployz_test_support::{MemoryWireGuard, memory_wireguard_driver};
     use std::net::Ipv6Addr;
@@ -146,7 +146,7 @@ mod tests {
             bridge_ip: None,
             endpoints: endpoints.into_iter().map(String::from).collect(),
             status: MachineStatus::Unknown,
-            drain: false,
+            drain_state: DrainState::Active,
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),

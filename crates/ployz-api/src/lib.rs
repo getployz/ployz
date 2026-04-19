@@ -1,6 +1,6 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ployz_types::model::{
-    DeployApplyResult, DeployPreview, JoinResponse, MachineId, MachineRecord,
+    DeployApplyResult, DeployPreview, DrainState, JoinResponse, MachineId, MachineRecord, Phase,
 };
 use ployz_types::spec::DeployManifest;
 use serde::{Deserialize, Serialize};
@@ -201,9 +201,9 @@ pub struct MeshStatusPayload {
 pub struct NodeStatusPayload {
     pub machine_id: String,
     pub boot_id: String,
-    pub phase: String,
+    pub phase: Phase,
     pub ready: bool,
-    pub draining: bool,
+    pub drain_state: DrainState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subnet_claim: Option<String>,
     #[serde(default)]
@@ -226,7 +226,13 @@ pub struct MachineListPayload {
 pub struct MachineListRow {
     pub id: String,
     pub status: String,
-    pub draining: bool,
+    pub reachable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ready: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drain_state: Option<DrainState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<Phase>,
     pub overlay_ip: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subnet: Option<String>,
@@ -264,7 +270,7 @@ pub struct MachineRemovePayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineDrainPayload {
     pub id: String,
-    pub draining: bool,
+    pub drain_state: DrainState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -17,10 +17,12 @@ use ployz_orchestrator::deploy::{apply, export_manifest, preview};
 use ployz_runtime_backends::deploy::DefaultDeploySessionFactory;
 use ployz_store_api::{MachineStore, MachineSubscription};
 use ployz_types::Result as TypesResult;
-use ployz_types::model::MachineId;
+use ployz_types::model::{DrainState, MachineId, Phase};
 use ployz_types::spec::{DeployManifest, Namespace};
 use ployz_types::time::now_unix_secs;
 use std::sync::Arc;
+
+use super::mesh::{LocalPeerStatus, PeerView, resolve_peer};
 
 const NODE_STATUS_DEADLINE: Duration = Duration::from_millis(750);
 
@@ -369,21 +371,32 @@ impl DaemonState {
     ) -> Result<DeployNodeSelection, String> {
         let self_machine_id = self.identity.machine_id.clone();
         let self_ready = active.mesh.ready_status().await.ready;
-        let self_draining = active
+        let self_drain_state = active
             .mesh
             .authoritative_self_record()
             .await
-            .is_some_and(|record| record.drain);
+            .map(|record| record.drain_state)
+            .or_else(|| {
+                machines
+                    .iter()
+                    .find(|machine| machine.id == self_machine_id)
+                    .map(|machine| machine.drain_state)
+            })
+            .unwrap_or(DrainState::Active);
+        let local_status = LocalPeerStatus {
+            ready: self_ready,
+            phase: if self_ready {
+                Phase::Running
+            } else {
+                active.mesh.ready_status().await.phase
+            },
+            drain_state: self_drain_state,
+        };
 
         let mut eligible = BTreeSet::new();
         let mut unreachable = Vec::new();
         let mut drained = Vec::new();
         let mut invalid_identity = Vec::new();
-        if self_ready && !self_draining {
-            eligible.insert(self_machine_id.clone());
-        } else if self_draining {
-            drained.push(self_machine_id.clone());
-        }
 
         let targets: Vec<FanOutTarget> = machines
             .iter()
@@ -399,25 +412,23 @@ impl DaemonState {
             .collect::<HashMap<MachineId, NodeStatusResult>>();
 
         for machine in machines {
-            if machine.id == self_machine_id {
-                continue;
-            }
-            let Some(status) = fanout.get(&machine.id) else {
-                unreachable.push(machine.id.clone());
-                continue;
-            };
-            match status {
-                NodeStatusResult::Ok(payload) => {
-                    if payload.draining {
+            let peer = resolve_peer(&machine.id, &self_machine_id, local_status, &fanout);
+            match peer {
+                PeerView::Local(_) | PeerView::Live(_) => {
+                    let Some(drain_state) = peer.drain_state() else {
+                        continue;
+                    };
+                    let Some(ready) = peer.ready() else {
+                        continue;
+                    };
+                    if drain_state.is_drained() {
                         drained.push(machine.id.clone());
-                    } else if payload.ready {
+                    } else if ready {
                         eligible.insert(machine.id.clone());
                     }
                 }
-                NodeStatusResult::Offline => unreachable.push(machine.id.clone()),
-                NodeStatusResult::InvalidIdentity { .. } => {
-                    invalid_identity.push(machine.id.clone());
-                }
+                PeerView::Unreachable => unreachable.push(machine.id.clone()),
+                PeerView::Mismatch { .. } => invalid_identity.push(machine.id.clone()),
             }
         }
 

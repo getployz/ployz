@@ -2,8 +2,8 @@ use super::*;
 use crate::mesh::probe::run_probe_listener_task;
 use crate::mesh::tasks::TaskSetError;
 use crate::mesh::tasks::{
-    run_ebpf_sync_task, run_endpoint_refresh_task, run_peer_sync_task, run_self_record_writer_task,
-    run_subnet_claim_monitor_task,
+    SelfRecordMutation, apply_self_record_mutation, run_ebpf_sync_task, run_endpoint_refresh_task,
+    run_peer_sync_task, run_self_record_writer_task, run_subnet_claim_monitor_task,
 };
 use tokio::sync::mpsc;
 
@@ -99,6 +99,19 @@ impl Mesh {
             self_record_rx,
             cancel.clone(),
         ));
+        let initial_self_record = authoritative_self.read().await.clone();
+        let published = apply_self_record_mutation(
+            &self_record_tx,
+            SelfRecordMutation::Replace(initial_self_record),
+        )
+        .await;
+        if published.is_none() {
+            return Err(TaskSetError::Subscribe(crate::error::Error::operation(
+                "self machine record",
+                "initial self record publish failed".to_string(),
+            ))
+            .into());
+        }
 
         task_set.spawn(run_endpoint_refresh_task(
             self.machine_id.clone(),

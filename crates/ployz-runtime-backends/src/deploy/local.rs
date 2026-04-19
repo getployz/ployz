@@ -7,7 +7,8 @@ use tokio::time::sleep;
 
 use crate::error::{Error, Result};
 use crate::model::{
-    DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, SlotId,
+    DeployId, InstanceDrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
+    SlotId,
 };
 use crate::runtime::labels::{self, WorkloadMeta, build_workload_labels, extract_workload_labels};
 use crate::runtime::{ContainerEngine, Probe, RuntimeContainerSpec};
@@ -37,7 +38,7 @@ impl ManagedInstance {
         namespace: &Namespace,
         phase: InstancePhase,
         ready: bool,
-        drain_state: DrainState,
+        drain_state: InstanceDrainState,
         error: Option<String>,
     ) -> InstanceStatusRecord {
         InstanceStatusRecord {

@@ -336,7 +336,7 @@ impl DaemonState {
         let self_id = &self.identity.machine_id;
         let peers: Vec<FanOutTarget> = machines
             .iter()
-            .filter(|m| &m.id != self_id && !m.drain)
+            .filter(|m| &m.id != self_id && !m.drain_state.is_drained())
             .map(|m| FanOutTarget {
                 machine_id: m.id.clone(),
                 overlay_ip: m.overlay_ip,
@@ -773,10 +773,10 @@ async fn wait_for_remote_ready(target: &str, ssh_options: &SshOptions) -> Result
         {
             Ok(Ok(payload)) => {
                 let response_message = format!(
-                    "ready={}, phase={}, draining={}, machine_id={}, boot_id={}, version={}",
+                    "ready={}, phase={}, drain_state={}, machine_id={}, boot_id={}, version={}",
                     payload.ready,
                     payload.phase,
-                    payload.draining,
+                    payload.drain_state,
                     payload.machine_id,
                     payload.boot_id,
                     payload.version,
@@ -832,7 +832,7 @@ async fn remote_self_record(
 }
 
 fn remote_join_ready(payload: &NodeStatusPayload) -> bool {
-    payload.ready || (payload.phase == "running" && !payload.draining)
+    payload.ready
 }
 
 async fn remote_rpc(

@@ -13,17 +13,11 @@ pub struct MeshReadyStatus {
 impl Mesh {
     pub async fn ready_status(&self) -> MeshReadyStatus {
         let phase = self.phase;
+        let store_snapshot = self.store.list_machines().await.ok();
         let store_healthy = self.store_runtime.healthy().await;
-        let has_remote_store_peer = self
-            .store
-            .list_machines()
-            .await
-            .map(|machines| {
-                machines
-                    .into_iter()
-                    .any(|machine| machine.id != self.machine_id)
-            })
-            .unwrap_or(false);
+        let has_remote_store_peer = store_snapshot
+            .as_ref()
+            .is_some_and(|machines| machines.iter().any(|machine| machine.id != self.machine_id));
         let has_remote_seed_peer = self
             .seed_records
             .iter()
@@ -38,7 +32,9 @@ impl Mesh {
         } else {
             true
         };
-        let self_record_published = self.authoritative_self_record().await.is_some();
+        let self_record_published = store_snapshot
+            .as_ref()
+            .is_some_and(|machines| machines.iter().any(|machine| machine.id == self.machine_id));
         let ready =
             phase == Phase::Running && store_healthy && sync_connected && self_record_published;
 

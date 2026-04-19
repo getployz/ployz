@@ -6,7 +6,7 @@ use ployz_api::{
     MachineListRow,
 };
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
-use ployz_types::model::MachineId;
+use ployz_types::model::{DrainState, MachineId, Phase};
 use std::fmt;
 use std::str::FromStr;
 use tokio::sync::mpsc;
@@ -185,8 +185,8 @@ pub(super) struct MachineListReportRow {
     pub subnet_display: String,
     pub reachable: bool,
     pub ready: Option<bool>,
-    pub draining: Option<bool>,
-    pub phase: Option<String>,
+    pub drain_state: Option<DrainState>,
+    pub phase: Option<Phase>,
     pub created_at: u64,
     pub created_display: String,
 }
@@ -197,7 +197,10 @@ impl MachineListReportRow {
         MachineListRow {
             id: self.id.clone(),
             status: self.status.into(),
-            draining: self.draining.unwrap_or(false),
+            reachable: self.reachable,
+            ready: self.ready,
+            drain_state: self.drain_state,
+            phase: self.phase,
             overlay_ip: self.overlay.clone(),
             subnet: self.subnet.map(|subnet| subnet.to_string()),
             created_at: self.created_at,

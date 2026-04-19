@@ -4,21 +4,102 @@ use crate::mesh_state::bootstrap::{
 use crate::mesh_state::invite::{InviteClaims, parse_and_verify_invite_token};
 use crate::mesh_state::network::NetworkConfig;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use ployz_api::NodeStatusPayload;
 use ployz_api::{
     DaemonPayload, DaemonResponse, MeshSelfRecordPayload, MeshStatusPayload, decode_join_response,
     encode_join_response,
 };
 use ployz_orchestrator::ipam::Ipam;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
-use ployz_types::model::{JoinResponse, NetworkName};
+use ployz_types::model::{DrainState, JoinResponse, MachineId, NetworkName, Phase};
 use ployz_types::time::now_unix_secs;
+use std::collections::HashMap;
 use tracing::warn;
 
+use crate::coordination::fanout::NodeStatusResult;
 use crate::daemon::setup::MeshStartOptions;
 
 #[cfg(test)]
 use super::super::DaemonRuntimeConfig;
 use super::super::DaemonState;
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct LocalPeerStatus {
+    pub ready: bool,
+    pub phase: Phase,
+    pub drain_state: DrainState,
+}
+
+pub(super) enum PeerView<'a> {
+    Local(LocalPeerStatus),
+    Live(&'a NodeStatusPayload),
+    Unreachable,
+    Mismatch {
+        _reported: &'a MachineId,
+        _boot_id: &'a str,
+    },
+}
+
+impl PeerView<'_> {
+    #[must_use]
+    pub(super) fn reachable(&self) -> bool {
+        match self {
+            Self::Local(_) | Self::Live(_) => true,
+            Self::Unreachable | Self::Mismatch { .. } => false,
+        }
+    }
+
+    #[must_use]
+    pub(super) fn ready(&self) -> Option<bool> {
+        match self {
+            Self::Local(status) => Some(status.ready),
+            Self::Live(status) => Some(status.ready),
+            Self::Unreachable | Self::Mismatch { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub(super) fn phase(&self) -> Option<Phase> {
+        match self {
+            Self::Local(status) => Some(status.phase),
+            Self::Live(status) => Some(status.phase),
+            Self::Unreachable | Self::Mismatch { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub(super) fn drain_state(&self) -> Option<DrainState> {
+        match self {
+            Self::Local(status) => Some(status.drain_state),
+            Self::Live(status) => Some(status.drain_state),
+            Self::Unreachable | Self::Mismatch { .. } => None,
+        }
+    }
+}
+
+pub(super) fn resolve_peer<'a>(
+    machine_id: &MachineId,
+    local_machine_id: &MachineId,
+    local_status: LocalPeerStatus,
+    node_status_by_machine: &'a HashMap<MachineId, NodeStatusResult>,
+) -> PeerView<'a> {
+    if machine_id == local_machine_id {
+        return PeerView::Local(local_status);
+    }
+
+    let Some(status) = node_status_by_machine.get(machine_id) else {
+        return PeerView::Unreachable;
+    };
+
+    match status {
+        NodeStatusResult::Ok(status) => PeerView::Live(status),
+        NodeStatusResult::Offline => PeerView::Unreachable,
+        NodeStatusResult::InvalidIdentity { reported, boot_id } => PeerView::Mismatch {
+            _reported: reported,
+            _boot_id: boot_id,
+        },
+    }
+}
 
 impl DaemonState {
     pub(crate) fn handle_mesh_list(&self) -> DaemonResponse {
@@ -668,7 +749,7 @@ mod tests {
                 bridge_ip: None,
                 endpoints: vec!["127.0.0.1:51820".into()],
                 status: ployz_types::model::MachineStatus::Unknown,
-                drain: false,
+                drain_state: ployz_types::model::DrainState::Active,
                 created_at: 0,
                 updated_at: 0,
                 labels: std::collections::BTreeMap::new(),

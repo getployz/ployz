@@ -196,6 +196,7 @@ pub(crate) fn desired_slots(
                         .iter()
                         .find(|slot| slot.slot_id == slot_id)
                         .map(|slot| slot.machine_id.clone())
+                        .filter(|machine_id| candidates.contains(machine_id))
                 }) {
                     machine_id
                 } else {

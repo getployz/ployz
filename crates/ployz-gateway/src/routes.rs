@@ -309,7 +309,7 @@ fn is_routable_instance(
         && allowed_revision_hashes.contains(&instance.revision_hash)
         && instance.ready
         && instance.phase == InstancePhase::Ready
-        && instance.drain_state == ployz_types::model::DrainState::None
+        && instance.drain_state == ployz_types::model::InstanceDrainState::None
         && instance.error.is_none()
 }
 
@@ -403,7 +403,7 @@ fn normalize_path_prefix(path_prefix: &str) -> String {
 mod tests {
     use super::*;
     use ployz_types::model::{
-        DeployId, DrainState, InstanceStatusRecord, ServiceRelease, ServiceReleaseRecord,
+        DeployId, InstanceDrainState, InstanceStatusRecord, ServiceRelease, ServiceReleaseRecord,
         ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy, SlotId,
     };
     use ployz_types::spec::{
@@ -436,7 +436,7 @@ mod tests {
                     "slot-1",
                     "inst-ready",
                     true,
-                    DrainState::None,
+                    InstanceDrainState::None,
                     &current,
                 ),
                 instance_record(
@@ -445,7 +445,7 @@ mod tests {
                     "slot-2",
                     "inst-draining",
                     true,
-                    DrainState::Requested,
+                    InstanceDrainState::Requested,
                     &current,
                 ),
             ],
@@ -507,7 +507,7 @@ mod tests {
                     "slot-stable",
                     "inst-stable",
                     true,
-                    DrainState::None,
+                    InstanceDrainState::None,
                     &stable,
                 ),
                 instance_record(
@@ -516,7 +516,7 @@ mod tests {
                     "slot-canary",
                     "inst-canary",
                     true,
-                    DrainState::None,
+                    InstanceDrainState::None,
                     &canary,
                 ),
             ],
@@ -627,7 +627,7 @@ mod tests {
                 "slot-1",
                 "inst-db",
                 true,
-                DrainState::None,
+                InstanceDrainState::None,
                 &spec,
             )],
         })
@@ -734,7 +734,7 @@ mod tests {
         slot_id: &str,
         instance_id: &str,
         ready: bool,
-        drain_state: DrainState,
+        drain_state: InstanceDrainState,
         spec: &ServiceSpec,
     ) -> InstanceStatusRecord {
         InstanceStatusRecord {

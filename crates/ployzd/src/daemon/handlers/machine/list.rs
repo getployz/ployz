@@ -2,11 +2,14 @@ use crate::coordination::fanout::{FanOutTarget, NodeStatusResult, fanout_node_st
 use crate::daemon::DaemonState;
 use crate::daemon::store::StoreDriver;
 use ployz_api::{DaemonPayload, DaemonResponse, MachineDrainPayload, MachineRemovePayload};
+use ployz_sdk::{DaemonClient, TcpTransport};
 use ployz_store_api::MachineStore;
-use ployz_types::model::{MachineId, MachineRecord};
+use ployz_types::model::{DrainState, MachineId, MachineRecord, Phase};
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
+use super::super::mesh::{LocalPeerStatus, resolve_peer};
 use super::render::{format_status, format_timestamp, render_machine_list_report};
 use super::types::{MachineListReport, MachineListReportRow};
 
@@ -16,16 +19,35 @@ impl DaemonState {
             Some(active) => active,
             None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
         };
+        let local_record =
+            match find_machine_record(active.store.machine().as_ref(), &self.identity.machine_id)
+                .await
+            {
+                Ok(Some(record)) => record,
+                Ok(None) => {
+                    return self.err(
+                        "SELF_RECORD_MISSING",
+                        format!(
+                            "local machine '{}' is not published in the store",
+                            self.identity.machine_id
+                        ),
+                    );
+                }
+                Err(err) => {
+                    return self.err("LIST_FAILED", format!("failed to read machines: {err}"));
+                }
+            };
         let local_ready = active.mesh.ready_status().await;
         let local_draining = active
             .mesh
             .authoritative_self_record()
             .await
-            .is_some_and(|record| record.drain);
+            .map(|record| record.drain_state)
+            .unwrap_or(local_record.drain_state);
         let local_status = LocalNodeStatus {
             ready: local_ready.ready,
-            phase: local_ready.phase.to_string(),
-            draining: local_draining,
+            phase: local_ready.phase,
+            drain_state: local_draining,
         };
 
         let report = match machine_list_report(
@@ -70,12 +92,12 @@ impl DaemonState {
             }
         };
 
-        if !force && !record.drain {
+        if !force && !record.drain_state.is_drained() {
             return self.err(
                 "MACHINE_NOT_DRAINED",
                 format!(
-                    "machine '{id}' must be drained before removal (current draining: {})",
-                    record.drain
+                    "machine '{id}' must be drained before removal (current drain state: {})",
+                    record.drain_state
                 ),
             );
         }
@@ -100,7 +122,7 @@ impl DaemonState {
 
         let machine_id = MachineId(id.to_string());
         let machine_store = active.store.machine();
-        let mut record = match find_machine_record(machine_store.as_ref(), &machine_id).await {
+        let record = match find_machine_record(machine_store.as_ref(), &machine_id).await {
             Ok(Some(record)) => record,
             Ok(None) => {
                 return self.err("MACHINE_NOT_FOUND", format!("machine '{id}' not found"));
@@ -110,26 +132,55 @@ impl DaemonState {
             }
         };
 
-        if record.drain == drain {
-            let status = if drain { "drained" } else { "undrained" };
+        let next_drain_state = if drain {
+            DrainState::Drained
+        } else {
+            DrainState::Active
+        };
+
+        if machine_id != self.identity.machine_id {
+            return match forward_machine_drain(&record, self.coordination_rpc_port, drain).await {
+                Ok(payload) => {
+                    let status = if payload.drain_state.is_drained() {
+                        "drained"
+                    } else {
+                        "active"
+                    };
+                    self.ok_with_payload(
+                        format!("machine '{id}' marked {status}"),
+                        Some(DaemonPayload::MachineDrain(payload)),
+                    )
+                }
+                Err(err) => self.err("UPDATE_FAILED", err),
+            };
+        }
+
+        let mut record = record;
+
+        if record.drain_state == next_drain_state {
+            let status = if next_drain_state.is_drained() {
+                "drained"
+            } else {
+                "active"
+            };
             return self.ok_with_payload(
                 format!("machine '{id}' already {status}"),
                 Some(DaemonPayload::MachineDrain(MachineDrainPayload {
                     id: id.to_string(),
-                    draining: drain,
+                    drain_state: next_drain_state,
                 })),
             );
         }
 
-        record.drain = drain;
+        record.drain_state = next_drain_state;
         record.updated_at = ployz_types::time::now_unix_secs();
         match active.store.machine().upsert_self_machine(&record).await {
             Ok(()) => {
-                if machine_id == self.identity.machine_id {
+                if active.mesh.authoritative_self_record().await.is_some() {
                     let updated = active
                         .mesh
                         .update_authoritative_self_record(|self_record| {
-                            self_record.drain = drain;
+                            self_record.drain_state = next_drain_state;
                             self_record.updated_at = record.updated_at;
                         })
                         .await;
@@ -140,12 +191,16 @@ impl DaemonState {
                         );
                     }
                 }
-                let status = if drain { "drained" } else { "undrained" };
+                let status = if next_drain_state.is_drained() {
+                    "drained"
+                } else {
+                    "active"
+                };
                 self.ok_with_payload(
                     format!("machine '{id}' marked {status}"),
                     Some(DaemonPayload::MachineDrain(MachineDrainPayload {
                         id: id.to_string(),
-                        draining: drain,
+                        drain_state: next_drain_state,
                     })),
                 )
             }
@@ -195,52 +250,33 @@ pub(super) async fn machine_list_report(
     Ok(MachineListReport {
         rows: machines
             .iter()
-            .map(|machine| MachineListReportRow {
-                id: machine.id.0.clone(),
-                status: format_status(machine),
-                overlay: machine.overlay_ip.0.to_string(),
-                subnet: machine.subnet,
-                subnet_display: machine
-                    .subnet
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| "—".into()),
-                reachable: machine.id == *local_machine_id
-                    || matches!(
-                        status_by_machine.get(&machine.id),
-                        Some(NodeStatusResult::Ok(_))
-                    ),
-                ready: if machine.id == *local_machine_id {
-                    Some(local_status.ready)
-                } else {
-                    match status_by_machine.get(&machine.id) {
-                        Some(NodeStatusResult::Ok(status)) => Some(status.ready),
-                        Some(NodeStatusResult::Offline)
-                        | Some(NodeStatusResult::InvalidIdentity { .. })
-                        | None => None,
-                    }
-                },
-                draining: if machine.id == *local_machine_id {
-                    Some(local_status.draining)
-                } else {
-                    match status_by_machine.get(&machine.id) {
-                        Some(NodeStatusResult::Ok(status)) => Some(status.draining),
-                        Some(NodeStatusResult::Offline)
-                        | Some(NodeStatusResult::InvalidIdentity { .. })
-                        | None => Some(machine.drain),
-                    }
-                },
-                phase: if machine.id == *local_machine_id {
-                    Some(local_status.phase.clone())
-                } else {
-                    match status_by_machine.get(&machine.id) {
-                        Some(NodeStatusResult::Ok(status)) => Some(status.phase.clone()),
-                        Some(NodeStatusResult::Offline)
-                        | Some(NodeStatusResult::InvalidIdentity { .. })
-                        | None => None,
-                    }
-                },
-                created_at: machine.created_at,
-                created_display: format_timestamp(machine.created_at),
+            .map(|machine| {
+                let peer = resolve_peer(
+                    &machine.id,
+                    local_machine_id,
+                    LocalPeerStatus {
+                        ready: local_status.ready,
+                        phase: local_status.phase,
+                        drain_state: local_status.drain_state,
+                    },
+                    &status_by_machine,
+                );
+                MachineListReportRow {
+                    id: machine.id.0.clone(),
+                    status: format_status(machine),
+                    overlay: machine.overlay_ip.0.to_string(),
+                    subnet: machine.subnet,
+                    subnet_display: machine
+                        .subnet
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "—".into()),
+                    reachable: peer.reachable(),
+                    ready: peer.ready(),
+                    drain_state: peer.drain_state().or(Some(machine.drain_state)),
+                    phase: peer.phase(),
+                    created_at: machine.created_at,
+                    created_display: format_timestamp(machine.created_at),
+                }
             })
             .collect(),
     })
@@ -248,6 +284,25 @@ pub(super) async fn machine_list_report(
 
 pub(super) struct LocalNodeStatus {
     pub ready: bool,
-    pub phase: String,
-    pub draining: bool,
+    pub phase: Phase,
+    pub drain_state: DrainState,
+}
+
+fn client(machine: &MachineRecord, rpc_port: u16) -> DaemonClient<TcpTransport> {
+    let addr = SocketAddr::new(IpAddr::V6(machine.overlay_ip.0), rpc_port);
+    DaemonClient::new(TcpTransport::new(addr))
+}
+
+async fn forward_machine_drain(
+    machine: &MachineRecord,
+    rpc_port: u16,
+    drain: bool,
+) -> Result<MachineDrainPayload, String> {
+    let client = client(machine, rpc_port);
+    let result = if drain {
+        client.machine_drain(&machine.id.0).await
+    } else {
+        client.machine_undrain(&machine.id.0).await
+    };
+    result.map_err(|err| format!("failed to update machine '{}': {err}", machine.id))
 }

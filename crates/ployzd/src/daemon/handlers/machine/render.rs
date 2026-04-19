@@ -1,5 +1,5 @@
 use chrono::DateTime;
-use ployz_types::model::{MachineRecord, MachineStatus};
+use ployz_types::model::{DrainState, MachineRecord, MachineStatus};
 
 use super::types::{MachineAddReport, MachineListReport};
 
@@ -48,8 +48,8 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
         .rows
         .iter()
         .map(|row| {
-            row.draining
-                .map(|draining| if draining { "draining" } else { "no" })
+            row.drain_state
+                .map(format_drain_state)
                 .unwrap_or("unknown")
                 .len()
         })
@@ -59,7 +59,10 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
     let w_phase = report
         .rows
         .iter()
-        .map(|row| row.phase.as_deref().unwrap_or("unknown").len())
+        .map(|row| {
+            row.phase
+                .map_or("unknown".len(), |phase| phase.to_string().len())
+        })
         .max()
         .unwrap_or(0)
         .max("PHASE".len());
@@ -74,11 +77,11 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
             .ready
             .map(|value| if value { "ready" } else { "not-ready" })
             .unwrap_or("unknown");
-        let draining = row
-            .draining
-            .map(|value| if value { "draining" } else { "no" })
-            .unwrap_or("unknown");
-        let phase = row.phase.as_deref().unwrap_or("unknown");
+        let draining = row.drain_state.map(format_drain_state).unwrap_or("unknown");
+        let phase = row
+            .phase
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".into());
         lines.push(format!(
             "{:<w_id$}  {:<6}  {:<w_present$}  {:<w_ready$}  {:<w_draining$}  {:<w_phase$}  {:<w_ov$}  {:<w_sub$}  {}",
             row.id,
@@ -130,6 +133,13 @@ pub(super) fn format_timestamp(ts: u64) -> String {
     DateTime::from_timestamp(ts as i64, 0)
         .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
         .unwrap_or_else(|| "—".into())
+}
+
+fn format_drain_state(drain_state: DrainState) -> &'static str {
+    match drain_state {
+        DrainState::Active => "active",
+        DrainState::Drained => "drained",
+    }
 }
 
 fn push_summary_section(lines: &mut Vec<String>, label: &str, values: &[String]) {

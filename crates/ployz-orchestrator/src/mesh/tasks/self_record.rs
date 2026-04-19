@@ -1,4 +1,4 @@
-use crate::model::{MachineRecord, OverlayIp};
+use crate::model::{DrainState, MachineRecord, OverlayIp};
 use ployz_store_api::MachineStore;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -16,7 +16,7 @@ pub(crate) enum SelfRecordMutation {
         endpoints: Vec<String>,
     },
     SetDrain {
-        drain: bool,
+        drain_state: DrainState,
     },
     Replace(MachineRecord),
 }
@@ -95,8 +95,8 @@ fn apply_mutation(record: &mut MachineRecord, mutation: SelfRecordMutation) {
         SelfRecordMutation::SetEndpoints { endpoints } => {
             record.endpoints = endpoints;
         }
-        SelfRecordMutation::SetDrain { drain } => {
-            record.drain = drain;
+        SelfRecordMutation::SetDrain { drain_state } => {
+            record.drain_state = drain_state;
         }
         SelfRecordMutation::Replace(next) => {
             *record = next;
@@ -121,7 +121,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec!["127.0.0.1:51820".into()],
             status: MachineStatus::Unknown,
-            drain: false,
+            drain_state: DrainState::Active,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -185,13 +185,19 @@ mod tests {
             },
         )
         .await;
-        let _ = apply_self_record_mutation(&tx, SelfRecordMutation::SetDrain { drain: true }).await;
+        let _ = apply_self_record_mutation(
+            &tx,
+            SelfRecordMutation::SetDrain {
+                drain_state: DrainState::Drained,
+            },
+        )
+        .await;
 
         cancel.cancel();
         handle.await.expect("writer exits");
 
         let record = authoritative_self.read().await.clone();
-        assert!(record.drain);
+        assert_eq!(record.drain_state, DrainState::Drained);
         assert_eq!(record.updated_at, 123);
     }
 }
