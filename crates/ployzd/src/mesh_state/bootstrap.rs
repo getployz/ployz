@@ -174,6 +174,8 @@ pub async fn build_seed_records(
         Some(net_config.subnet),
         endpoints,
     );
+    let mut self_record = self_record;
+    self_record.admitted = bootstrap.is_none();
     upsert_machine(&mut seed_records, self_record);
 
     seed_records
