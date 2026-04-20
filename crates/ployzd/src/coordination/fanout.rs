@@ -1,3 +1,18 @@
+//! Quorum fanout for coordination RPCs.
+//!
+//! Failure-mode rules:
+//! - Unresolved peers (connect/request timeout, connection refused) count as
+//!   `offline` — never as implicit accept.
+//! - Quorum is satisfied only by explicit `accepted: true` responses from live
+//!   peers. Unresolved peers are absent, not maybe-accepting.
+//! - On prepare failure, only peers in `accepted` receive abort RPCs. Peers
+//!   whose prepare response was *lost* (they server-side accepted but we
+//!   didn't see the response) are cleaned up by the lease TTL — that TTL is
+//!   the primary backstop for this race, not an afterthought. If you shorten
+//!   it, you lose the guarantee.
+//!
+//! See `AGENTS.md` → "RPC Timeouts and Fail-Fast" for the project-wide rules.
+
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
