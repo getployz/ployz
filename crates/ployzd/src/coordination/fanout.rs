@@ -1,19 +1,45 @@
+//! Quorum fanout for coordination RPCs.
+//!
+//! Failure-mode rules:
+//! - Unresolved peers (connect/request timeout, connection refused) count as
+//!   `offline` — never as implicit accept.
+//! - Quorum is satisfied only by explicit `accepted: true` responses from live
+//!   peers. Unresolved peers are absent, not maybe-accepting.
+//! - On prepare failure, only peers in `accepted` receive abort RPCs. Peers
+//!   whose prepare response was *lost* (they server-side accepted but we
+//!   didn't see the response) are cleaned up by the lease TTL — that TTL is
+//!   the primary backstop for this race, not an afterthought. If you shorten
+//!   it, you lose the guarantee.
+//!
+//! See `AGENTS.md` → "RPC Timeouts and Fail-Fast" for the project-wide rules.
+
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use ployz_api::{
     CoordinationAbortRequest, CoordinationCommitRequest, CoordinationPreparePayload,
-    CoordinationPrepareRequest,
+    CoordinationPrepareRequest, NodeStatusPayload,
 };
 use ployz_sdk::{DaemonClient, TcpTransport};
 use ployz_types::model::{MachineId, OverlayIp};
 use tokio::task::JoinSet;
+
+const RPC_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// A peer daemon to fan a coordination request out to.
 #[derive(Clone)]
 pub(crate) struct FanOutTarget {
     pub(crate) machine_id: MachineId,
     pub(crate) overlay_ip: OverlayIp,
+}
+
+pub(crate) enum NodeStatusResult {
+    Ok(NodeStatusPayload),
+    Offline,
+    InvalidIdentity {
+        reported: MachineId,
+        boot_id: String,
+    },
 }
 
 /// Result of a fanned-out prepare operation.
@@ -32,9 +58,13 @@ pub(crate) struct FanOutPrepareResult {
     pub(crate) offline: Vec<MachineId>,
 }
 
-fn client(overlay_ip: OverlayIp, rpc_port: u16) -> DaemonClient<TcpTransport> {
+fn client(
+    overlay_ip: OverlayIp,
+    rpc_port: u16,
+    request_timeout: Duration,
+) -> DaemonClient<TcpTransport> {
     let addr = SocketAddr::new(IpAddr::V6(overlay_ip.0), rpc_port);
-    DaemonClient::new(TcpTransport::new(addr))
+    DaemonClient::new(TcpTransport::new(addr).with_timeouts(RPC_CONNECT_TIMEOUT, request_timeout))
 }
 
 /// Fan out a `CoordinationPrepare` to all `targets` in parallel.
@@ -67,17 +97,15 @@ pub(crate) async fn fanout_prepare(
 
     // Each task returns (target, Ok(payload)) if the peer responded or (target, Err(is_offline))
     // where is_offline=true means unreachable, false means responded but denied.
-    let mut set: JoinSet<(FanOutTarget, Result<CoordinationPreparePayload, bool>)> =
-        JoinSet::new();
+    let mut set: JoinSet<(FanOutTarget, Result<CoordinationPreparePayload, bool>)> = JoinSet::new();
     for target in targets {
         let t = target.clone();
-        let c = client(t.overlay_ip, rpc_port);
+        let c = client(t.overlay_ip, rpc_port, deadline);
         let req = request.clone();
         set.spawn(async move {
-            match tokio::time::timeout(deadline, c.coordination_prepare(req)).await {
-                Ok(Ok(payload)) => (t, Ok(payload)),
-                Ok(Err(_io_err)) => (t, Err(true)),  // connection refused / IO → offline
-                Err(_timeout) => (t, Err(true)),     // deadline exceeded → offline
+            match c.coordination_prepare(req).await {
+                Ok(payload) => (t, Ok(payload)),
+                Err(_io_err) => (t, Err(true)), // connection refused / IO → offline
             }
         });
     }
@@ -131,13 +159,10 @@ pub(crate) async fn fanout_commit(
 
     let mut set: JoinSet<bool> = JoinSet::new();
     for target in targets {
-        let c = client(target.overlay_ip, rpc_port);
+        let c = client(target.overlay_ip, rpc_port, deadline);
         let req = request.clone();
         set.spawn(async move {
-            matches!(
-                tokio::time::timeout(deadline, c.coordination_commit(req)).await,
-                Ok(Ok(payload)) if payload.committed
-            )
+            matches!(c.coordination_commit(req).await, Ok(payload) if payload.committed)
         });
     }
 
@@ -174,10 +199,10 @@ pub(crate) async fn fanout_abort(
 
     let mut set: JoinSet<()> = JoinSet::new();
     for target in targets {
-        let c = client(target.overlay_ip, rpc_port);
+        let c = client(target.overlay_ip, rpc_port, ABORT_DEADLINE);
         let req = request.clone();
         set.spawn(async move {
-            let _ = tokio::time::timeout(ABORT_DEADLINE, c.coordination_abort(req)).await;
+            let _ = c.coordination_abort(req).await;
         });
     }
 
@@ -191,6 +216,47 @@ pub(crate) fn accepted_targets(
     accepted.iter().map(|(t, _)| t.clone()).collect()
 }
 
+pub(crate) async fn fanout_node_status(
+    targets: &[FanOutTarget],
+    rpc_port: u16,
+    deadline: Duration,
+) -> Vec<(MachineId, NodeStatusResult)> {
+    if targets.is_empty() {
+        return Vec::new();
+    }
+
+    let mut set: JoinSet<(MachineId, NodeStatusResult)> = JoinSet::new();
+    for target in targets {
+        let expected = target.machine_id.clone();
+        let c = client(target.overlay_ip, rpc_port, deadline);
+        set.spawn(async move {
+            let outcome = match c.node_status().await {
+                Ok(payload) => {
+                    if payload.machine_id == expected.0 {
+                        NodeStatusResult::Ok(payload)
+                    } else {
+                        NodeStatusResult::InvalidIdentity {
+                            reported: MachineId(payload.machine_id),
+                            boot_id: payload.boot_id,
+                        }
+                    }
+                }
+                Err(_) => NodeStatusResult::Offline,
+            };
+            (expected, outcome)
+        });
+    }
+
+    let mut results = Vec::new();
+    while let Some(join_result) = set.join_next().await {
+        if let Ok(value) = join_result {
+            results.push(value);
+        }
+    }
+    results.sort_by(|(left, _), (right, _)| left.0.cmp(&right.0));
+    results
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,7 +264,6 @@ mod tests {
         CoordinationCommitPayload, CoordinationLockKey, CoordinationOperation, DaemonPayload,
         DaemonResponse,
     };
-    use std::net::Ipv6Addr;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;
 
@@ -220,8 +285,7 @@ mod tests {
                     let mut buf = BufReader::new(reader);
                     let mut line = String::new();
                     let _ = buf.read_line(&mut line).await;
-                    let mut encoded =
-                        serde_json::to_string(&response).expect("encode response");
+                    let mut encoded = serde_json::to_string(&response).expect("encode response");
                     encoded.push('\n');
                     let _ = writer.write_all(encoded.as_bytes()).await;
                 });
@@ -306,14 +370,7 @@ mod tests {
     #[tokio::test]
     async fn fanout_prepare_empty_targets_returns_all_online_accepted() {
         // Single-node cluster: cluster_size=1, no peers.
-        let result = fanout_prepare(
-            &[],
-            9999,
-            sample_request(),
-            Duration::from_secs(1),
-            1,
-        )
-        .await;
+        let result = fanout_prepare(&[], 9999, sample_request(), Duration::from_secs(1), 1).await;
         assert!(result.all_online_accepted);
         assert!(result.quorum_met);
         assert!(result.accepted.is_empty());

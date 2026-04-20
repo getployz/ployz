@@ -131,6 +131,7 @@ impl MeshStartTx {
             components.endpoint_discovery,
             components.dataplane_factory,
             state.identity.machine_id.clone(),
+            state.boot_id.clone(),
             listen_port,
         )
         .with_seed_records(seed_records)
@@ -482,8 +483,7 @@ mod tests {
         let network_dir = state.network_dir(&config.name.0);
         // Write an invalid bootstrap-peers.json so load_bootstrap_peer_records fails.
         fs::create_dir_all(&network_dir).expect("create network dir");
-        let peers_path =
-            crate::mesh_state::bootstrap::bootstrap_peers_path(&network_dir);
+        let peers_path = crate::mesh_state::bootstrap::bootstrap_peers_path(&network_dir);
         fs::write(&peers_path, "not valid json").expect("write invalid peers file");
 
         let error = match state

@@ -9,7 +9,7 @@ use ployz_runtime_api::{
 use ployz_store_api::{DeployReadStore, DeployWriteStore};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
-    DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
+    DeployId, InstanceDrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
     MachineRecord, SlotId,
 };
 use ployz_types::spec::{Namespace, ServiceSpec};
@@ -59,7 +59,7 @@ async fn adopt_instances(
             namespace,
             InstancePhase::Ready,
             true,
-            DrainState::None,
+            InstanceDrainState::None,
             None,
         );
         store.deploy_write.upsert_instance_status(&record).await?;
@@ -72,7 +72,7 @@ fn build_instance_status_record(
     instance: &ManagedInstance,
     phase: InstancePhase,
     ready: bool,
-    drain_state: DrainState,
+    drain_state: InstanceDrainState,
     error: Option<String>,
 ) -> InstanceStatusRecord {
     instance.to_status_record(namespace, phase, ready, drain_state, error)
@@ -229,7 +229,7 @@ impl DeployAgent {
             &instance,
             InstancePhase::Ready,
             true,
-            DrainState::None,
+            InstanceDrainState::None,
             None,
         );
         self.store
@@ -298,7 +298,7 @@ impl DeployAgent {
         }
         status.phase = InstancePhase::Draining;
         status.ready = false;
-        status.drain_state = DrainState::Requested;
+        status.drain_state = InstanceDrainState::Requested;
         status.updated_at = now_unix_secs();
         self.store
             .deploy_write

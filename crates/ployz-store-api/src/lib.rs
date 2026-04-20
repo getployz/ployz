@@ -8,6 +8,6 @@ mod traits;
 pub use traits::{
     ClusterStore, DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore, InviteStore,
     MachineEventReceiver, MachineEventSubscription, MachineStore, MachineSubscription,
-    RoutingInvalidationReceiver, RoutingInvalidationSubscription, RoutingStore, SubscriptionPoll,
-    SyncProbe, SyncStatus,
+    MembershipCommitStore, RoutingInvalidationReceiver, RoutingInvalidationSubscription,
+    RoutingStore, SubscriptionPoll, SyncProbe, SyncStatus,
 };

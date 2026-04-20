@@ -5,7 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_DIR="${ROOT_DIR}"
 OUTPUT_DIR=""
 TARGET_PLATFORM=""
-BUILDER_IMAGE="${PLOYZ_PAYLOAD_BUILDER_IMAGE:-rust:1-bookworm}"
+DEFAULT_BUILDER_IMAGE="ployz-payload-builder:bookworm"
+BUILDER_IMAGE="${PLOYZ_PAYLOAD_BUILDER_IMAGE:-${DEFAULT_BUILDER_IMAGE}}"
+BUILDER_DOCKERFILE="${PLOYZ_PAYLOAD_BUILDER_DOCKERFILE:-${ROOT_DIR}/packaging/e2e/payload-builder.Dockerfile}"
 BUILD_PROFILE="${PLOYZ_PAYLOAD_BUILD_PROFILE:-release}"
 
 usage() {
@@ -64,7 +66,7 @@ build_linux_payload_in_docker() {
   local target_platform=$3
   local build_profile=$4
   local repo_abs output_parent_abs output_name target_cache_dir owner_uid owner_gid
-  local cache_suffix cargo_registry_volume cargo_git_volume target_volume
+  local cache_suffix cargo_registry_volume cargo_git_volume target_volume corrosion_cache_volume
 
   repo_abs="$(cd "${repo_dir}" && pwd)"
   output_parent_abs="$(output_dir_parent "${output_dir}")"
@@ -76,6 +78,9 @@ build_linux_payload_in_docker() {
   cargo_registry_volume="ployz-payload-${cache_suffix}-cargo-registry"
   cargo_git_volume="ployz-payload-${cache_suffix}-cargo-git"
   target_volume="ployz-payload-${cache_suffix}-target"
+  corrosion_cache_volume="ployz-payload-corrosion-${target_platform//\//-}"
+
+  ensure_builder_image
 
   docker run --rm \
     --platform "${target_platform}" \
@@ -87,9 +92,11 @@ build_linux_payload_in_docker() {
     -e CARGO_TARGET_DIR="${target_cache_dir}" \
     -e PLOYZ_PAYLOAD_OWNER_UID="${owner_uid}" \
     -e PLOYZ_PAYLOAD_OWNER_GID="${owner_gid}" \
+    -e PLOYZ_PAYLOAD_CORROSION_CACHE_DIR=/corrosion-cache \
     -v "${cargo_registry_volume}:/cargo/registry" \
     -v "${cargo_git_volume}:/cargo/git" \
     -v "${target_volume}:${target_cache_dir}" \
+    -v "${corrosion_cache_volume}:/corrosion-cache" \
     -v "${repo_abs}:/repo" \
     -v "${output_parent_abs}:/out" \
     -w /repo \
@@ -97,19 +104,32 @@ build_linux_payload_in_docker() {
     bash -c "
       set -euo pipefail
       export PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-      apt-get update >/dev/null
-      apt-get install -y --no-install-recommends cmake pkg-config >/dev/null
-      rm -rf /var/lib/apt/lists/*
       bash /repo/scripts/build-install-payload.sh \
         --repo /repo \
         --output /out/${output_name} \
         --target-platform ${target_platform} \
         --profile ${build_profile}
       chown -R \"${owner_uid}:${owner_gid}\" /out/${output_name}
-      if [[ -d /repo/ebpf/target ]]; then
-        chown -R \"${owner_uid}:${owner_gid}\" /repo/ebpf/target
+      if [[ -d /repo/ebpf/target/bpfel-unknown-none/release ]]; then
+        chown -R \"${owner_uid}:${owner_gid}\" /repo/ebpf/target/bpfel-unknown-none/release
       fi
     "
+}
+
+ensure_builder_image() {
+  if docker image inspect "${BUILDER_IMAGE}" >/dev/null 2>&1; then
+    return
+  fi
+
+  if [[ "${BUILDER_IMAGE}" != "${DEFAULT_BUILDER_IMAGE}" ]]; then
+    printf 'builder image not found: %s\n' "${BUILDER_IMAGE}" >&2
+    exit 1
+  fi
+
+  docker build \
+    -f "${BUILDER_DOCKERFILE}" \
+    -t "${BUILDER_IMAGE}" \
+    "${ROOT_DIR}/packaging/e2e"
 }
 
 download() {
@@ -129,7 +149,7 @@ download() {
 
 install_corrosion() {
   local output_dir=$1
-  local version asset tmp_dir
+  local version asset tmp_dir cache_dir cache_archive cache_binary
   version="$(tr -d '[:space:]' < "${REPO_DIR}/.corrosion-version")"
   case "$(uname -s):$(uname -m)" in
     Darwin:arm64)
@@ -149,6 +169,25 @@ install_corrosion() {
       exit 1
       ;;
   esac
+
+  cache_dir="${PLOYZ_PAYLOAD_CORROSION_CACHE_DIR:-}"
+  if [[ -n "${cache_dir}" ]]; then
+    mkdir -p "${cache_dir}"
+    cache_archive="${cache_dir}/${version}-${asset}"
+    cache_binary="${cache_dir}/${version}-${asset%.tar.gz}"
+    if [[ ! -f "${cache_archive}" ]]; then
+      download "https://github.com/getployz/corrosion/releases/download/${version}/${asset}" "${cache_archive}"
+    fi
+    if [[ ! -x "${cache_binary}" ]]; then
+      tmp_dir="$(mktemp -d)"
+      trap 'rm -rf "${tmp_dir}"' RETURN
+      tar -xzf "${cache_archive}" -C "${tmp_dir}"
+      install -m 0755 "${tmp_dir}/corrosion" "${cache_binary}"
+    fi
+    install -m 0755 "${cache_binary}" "${output_dir}/bin/corrosion"
+    printf 'CORROSION_VERSION=%s\n' "${version}" > "${output_dir}/metadata.env"
+    return
+  fi
 
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "${tmp_dir}"' RETURN

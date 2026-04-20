@@ -9,4 +9,5 @@ mod nodes;
 #[path = "scenario_run.rs"]
 mod scenario_run;
 
+pub(crate) use environment::{SharedPayload, prepare_shared_payload};
 pub(crate) use scenario_run::{CleanupReason, ScenarioRun};

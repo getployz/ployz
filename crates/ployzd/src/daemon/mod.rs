@@ -4,7 +4,8 @@ pub mod ssh;
 pub(crate) mod store;
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use self::store::StoreDriver;
 use crate::built_in_images::BuiltInImages;
@@ -41,6 +42,7 @@ pub struct DaemonRuntimeConfig {
 pub struct DaemonState {
     pub data_dir: PathBuf,
     pub identity: Identity,
+    pub boot_id: String,
     pub runtime_target: RuntimeTarget,
     pub service_mode: ServiceMode,
     pub(crate) runtime_profile: RuntimeProfile,
@@ -52,7 +54,8 @@ pub struct DaemonState {
     pub gateway_threads: usize,
     pub active: Option<ActiveMesh>,
     pub namespace_locks: NamespaceLockManager,
-    pub(crate) coordination_ledger: Mutex<CoordinationLedger>,
+    pub(crate) coordination_ledger: Arc<Mutex<CoordinationLedger>>,
+    pub(crate) self_down_tx: Option<tokio::sync::mpsc::Sender<String>>,
 }
 
 impl DaemonState {
@@ -114,6 +117,7 @@ impl DaemonState {
         Self {
             data_dir: data_dir.to_path_buf(),
             identity,
+            boot_id: new_boot_id(),
             runtime_target,
             service_mode,
             runtime_profile,
@@ -125,7 +129,8 @@ impl DaemonState {
             gateway_threads,
             active: None,
             namespace_locks: NamespaceLockManager::default(),
-            coordination_ledger: Mutex::new(CoordinationLedger::default()),
+            coordination_ledger: Arc::new(Mutex::new(CoordinationLedger::default())),
+            self_down_tx: None,
         }
     }
 
@@ -187,4 +192,11 @@ impl DaemonState {
             payload,
         }
     }
+}
+
+fn new_boot_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    format!("boot-{}-{nanos}", std::process::id())
 }

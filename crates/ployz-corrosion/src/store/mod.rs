@@ -5,8 +5,8 @@ use corro_api_types::{ExecResult, Statement};
 use ployz_config::corrosion as corrosion_config;
 use ployz_store_api::{
     ClusterStore, DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore, InviteStore,
-    MachineEventSubscription, MachineStore, RoutingInvalidationSubscription, RoutingStore,
-    SubscriptionPoll, SyncProbe, SyncStatus,
+    MachineEventSubscription, MachineStore, MembershipCommitStore, RoutingInvalidationSubscription,
+    RoutingStore, SubscriptionPoll, SyncProbe, SyncStatus,
 };
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
@@ -206,18 +206,19 @@ impl CorrosionStore {
                         .count());
                 }
                 Err(e) => {
-                    tracing::warn!(?e, "admin membership check failed, falling back to health API");
+                    tracing::warn!(
+                        ?e,
+                        "admin membership check failed, falling back to health API"
+                    );
                 }
             }
         }
 
         // Fallback: the health API reports total member count over HTTP/2 (TCP),
         // which avoids the QUIC transport stuckness that can affect the admin socket.
-        let health = self
-            .client
-            .health()
-            .await
-            .map_err(|e| Error::operation("check_remote_membership", format!("health request: {e}")))?;
+        let health = self.client.health().await.map_err(|e| {
+            Error::operation("check_remote_membership", format!("health request: {e}"))
+        })?;
         Ok(if health.members > 1 {
             (health.members - 1) as usize
         } else {
@@ -353,6 +354,25 @@ impl DeployCommitStore for CorrosionStore {
     async fn apply_deploy_commit(&self, commit: &DeployCommit) -> Result<()> {
         self.ensure_schema().await?;
         workflows::deploy_commit::apply_deploy_commit(&self.client, commit).await
+    }
+}
+
+#[async_trait]
+impl MembershipCommitStore for CorrosionStore {
+    async fn commit_membership(
+        &self,
+        record: &MachineRecord,
+        invite_id: &str,
+        now_unix_secs: u64,
+    ) -> Result<()> {
+        self.ensure_schema().await?;
+        workflows::membership_commit::commit_membership(
+            &self.client,
+            record,
+            invite_id,
+            now_unix_secs,
+        )
+        .await
     }
 }
 

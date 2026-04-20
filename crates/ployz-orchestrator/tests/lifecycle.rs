@@ -1,4 +1,4 @@
-use ployz_orchestrator::mesh::tasks::{HeartbeatCommand, PeerSyncCommand};
+use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_orchestrator::{Mesh, Phase};
 use ployz_runtime_api::DevicePeer;
 use ployz_store_api::{MachineStore, SyncStatus};
@@ -7,12 +7,11 @@ use ployz_test_support::{
     memory_wireguard_driver,
 };
 use ployz_types::model::{
-    JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
+    DrainState, JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, PublicKey,
 };
 use std::net::Ipv6Addr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::oneshot;
 use tokio::time::Instant;
 
 fn test_record(id: &str, key_byte: u8) -> MachineRecord {
@@ -24,8 +23,8 @@ fn test_record(id: &str, key_byte: u8) -> MachineRecord {
         bridge_ip: None,
         endpoints: vec![format!("10.0.0.{key_byte}:51820")],
         status: MachineStatus::Unknown,
-        participation: Participation::Disabled,
-        last_heartbeat: 0,
+        admitted: true,
+        drain_state: DrainState::Active,
         created_at: 0,
         updated_at: 0,
         labels: std::collections::BTreeMap::new(),
@@ -47,6 +46,7 @@ fn make_mesh(
         Arc::new(StaticEndpointDiscovery::empty()),
         None,
         MachineId(machine_id.into()),
+        String::from("boot-test"),
         51820,
     )
     .with_bootstrap_timing(Duration::from_millis(10), Duration::from_secs(5))
@@ -100,34 +100,16 @@ async fn startup_reaches_running_single_node() {
     .await
     .expect("single-node founder should become ready within the timeout");
     assert!(ready.ready, "single-node founder should report ready");
-    assert!(
-        ready.sync_connected,
-        "single-node founder should not wait for remote sync"
-    );
-
-    let heartbeat_tx = mesh
-        .heartbeat_sender()
-        .expect("heartbeat coordinator should be running");
-    for _ in 0..3 {
-        let (done_tx, done_rx) = oneshot::channel();
-        heartbeat_tx
-            .send(HeartbeatCommand::TickNow { done: done_tx })
-            .await
-            .expect("manual heartbeat tick should send");
-        done_rx
-            .await
-            .expect("manual heartbeat tick should acknowledge");
-    }
 
     let self_record = mesh
         .authoritative_self_record()
         .await
         .expect("self record should exist");
-    assert_eq!(self_record.participation, Participation::Enabled);
+    assert_eq!(self_record.drain_state, DrainState::Active);
 }
 
 #[tokio::test]
-async fn joiner_seed_peer_requires_sync_for_ready() {
+async fn joiner_seed_peer_reports_ready_once_running() {
     let wg = Arc::new(MemoryWireGuard::new());
     let svc = Arc::new(MemoryServiceRuntime::new());
     let store = Arc::new(MemoryStore::new());
@@ -153,6 +135,7 @@ async fn joiner_seed_peer_requires_sync_for_ready() {
         Arc::new(StaticEndpointDiscovery::empty()),
         None,
         joiner_record.id.clone(),
+        String::from("boot-test"),
         51820,
     )
     .with_seed_records(vec![founder_record])
@@ -162,12 +145,8 @@ async fn joiner_seed_peer_requires_sync_for_ready() {
 
     let ready = mesh.ready_status().await;
     assert!(
-        !ready.sync_connected,
-        "joiner with only a bootstrap seed peer should not report sync connected"
-    );
-    assert!(
-        !ready.ready,
-        "joiner with only a bootstrap seed peer should not report ready"
+        ready.ready,
+        "joiner should report ready once startup reaches running"
     );
 }
 
@@ -197,6 +176,7 @@ async fn joiner_retains_founder_peer_across_peer_sync_handoff() {
         Arc::new(StaticEndpointDiscovery::empty()),
         None,
         joiner_record.id.clone(),
+        String::from("boot-test"),
         51820,
     )
     .with_seed_records(vec![founder_record.clone(), joiner_record.clone()])
@@ -318,6 +298,7 @@ async fn bootstrap_connection_timeout() {
         Arc::new(StaticEndpointDiscovery::empty()),
         None,
         joiner_record.id.clone(),
+        String::from("boot-test"),
         51820,
     )
     .with_seed_records(vec![founder_record])
@@ -366,6 +347,7 @@ async fn bootstrap_proceeds_on_membership() {
         Arc::new(StaticEndpointDiscovery::empty()),
         None,
         joiner_record.id.clone(),
+        String::from("boot-test"),
         51820,
     )
     .with_seed_records(vec![founder_record])

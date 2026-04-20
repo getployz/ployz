@@ -80,6 +80,16 @@ pub trait InviteStore: Send + Sync {
 }
 
 #[async_trait]
+pub trait MembershipCommitStore: Send + Sync {
+    async fn commit_membership(
+        &self,
+        record: &MachineRecord,
+        invite_id: &str,
+        now_unix_secs: u64,
+    ) -> Result<()>;
+}
+
+#[async_trait]
 pub trait RoutingStore: Send + Sync {
     async fn load_routing_state(&self) -> Result<RoutingState>;
 
@@ -151,6 +161,7 @@ pub trait SyncProbe: Send + Sync {
 pub trait ClusterStore:
     MachineStore
     + InviteStore
+    + MembershipCommitStore
     + DeployReadStore
     + DeployWriteStore
     + DeployCommitStore

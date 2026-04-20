@@ -174,6 +174,8 @@ pub async fn build_seed_records(
         Some(net_config.subnet),
         endpoints,
     );
+    let mut self_record = self_record;
+    self_record.admitted = bootstrap.is_none();
     upsert_machine(&mut seed_records, self_record);
 
     seed_records
@@ -210,6 +212,7 @@ mod tests {
             issuer_wg_public_key: Some(URL_SAFE_NO_PAD.encode([7u8; 32])),
             issuer_subnet: Some("10.210.0.0/24".into()),
             allocated_subnet: "10.210.1.0/24".into(),
+            challenge_nonce: "challenge".into(),
         }
     }
 

@@ -1,5 +1,8 @@
 use super::join::hash_machine_id;
+use super::list::{LocalNodeStatus, machine_list_report};
 use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
+use super::render::render_machine_list_report;
+use super::types::{MachineListReport, MachineListReportRow};
 use crate::daemon::ActiveMesh;
 use crate::daemon::DaemonRuntimeConfig;
 use crate::daemon::DaemonState;
@@ -7,9 +10,7 @@ use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock
 use crate::daemon::store::StoreDriver;
 use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
 use ipnet::Ipv4Net;
-use ployz_api::{
-    DaemonPayload, DaemonResponse, MachineAddOptions, MeshSelfRecordPayload, encode_join_response,
-};
+use ployz_api::{DaemonPayload, MachineAddOptions, MachinePeerState, encode_join_response};
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::ipam::Ipam;
 use ployz_store_api::MachineStore;
@@ -17,11 +18,10 @@ use ployz_test_support::{
     MemoryServiceRuntime, MemoryStore, MemoryWireGuard, StaticEndpointDiscovery,
     memory_wireguard_driver,
 };
+use ployz_types::model::{DrainState, Phase};
 use ployz_types::model::{
-    Identity, JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation,
-    PublicKey,
+    Identity, JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, PublicKey,
 };
-use ployz_types::time::now_unix_secs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -38,13 +38,7 @@ enum MeshStartMode {
 #[tokio::test]
 async fn machine_list_shows_disabled_explicitly() {
     let (state, store, _) = make_state(MeshStartMode::Stopped).await;
-    let disabled = test_machine_record(
-        "peer-disabled",
-        "10.210.1.0/24",
-        Participation::Disabled,
-        0,
-        PublicKey([2; 32]),
-    );
+    let disabled = test_machine_record("peer-disabled", "10.210.1.0/24", true, PublicKey([2; 32]));
     store
         .upsert_self_machine(&disabled)
         .await
@@ -52,22 +46,16 @@ async fn machine_list_shows_disabled_explicitly() {
 
     let response = state.handle_machine_list().await;
     assert!(response.ok);
-    assert!(response.message.contains("LIVENESS"));
+    assert!(response.message.contains("OBSERVED"));
     assert!(response.message.contains("peer-disabled"));
-    assert!(response.message.contains("disabled"));
-    assert!(response.message.contains("stale"));
+    assert!(response.message.contains("drained"));
+    assert!(response.message.contains("absent"));
 }
 
 #[tokio::test]
 async fn machine_list_shows_down_liveness() {
     let (state, store, _) = make_state(MeshStartMode::Stopped).await;
-    let mut down = test_machine_record(
-        "peer-down",
-        "10.210.1.0/24",
-        Participation::Enabled,
-        now_unix_secs(),
-        PublicKey([2; 32]),
-    );
+    let mut down = test_machine_record("peer-down", "10.210.1.0/24", false, PublicKey([2; 32]));
     down.status = MachineStatus::Down;
     store
         .upsert_self_machine(&down)
@@ -89,6 +77,71 @@ async fn machine_list_json_payload_contains_rows() {
     };
     assert_eq!(payload.rows.len(), 1);
     assert_eq!(payload.rows[0].id, "founder");
+    assert_eq!(payload.rows[0].peer_state, MachinePeerState::Local);
+}
+
+#[tokio::test]
+async fn machine_list_report_uses_local_mesh_readiness() {
+    let (_state, store, _) = make_state(MeshStartMode::Stopped).await;
+    let local_record = test_machine_record("founder", "10.210.0.0/24", false, PublicKey([1; 32]));
+    let report = machine_list_report(
+        StoreDriver::memory_with(store),
+        &MachineId("founder".into()),
+        0,
+        &local_record,
+        &LocalNodeStatus {
+            ready: false,
+            phase: Phase::Starting,
+            drain_state: DrainState::Drained,
+        },
+    )
+    .await
+    .expect("machine list report");
+    let Some(local) = report.rows.into_iter().find(|row| row.id == "founder") else {
+        panic!("missing founder row");
+    };
+    assert_eq!(local.ready, Some(false));
+    assert_eq!(local.phase, Some(Phase::Starting));
+    assert_eq!(local.drain_state, Some(DrainState::Drained));
+    assert_eq!(local.peer_state, MachinePeerState::Local);
+}
+
+#[test]
+fn machine_list_render_and_payload_show_identity_mismatch() {
+    let report = MachineListReport {
+        rows: vec![MachineListReportRow {
+            id: String::from("peer"),
+            status: "up",
+            admitted: true,
+            overlay: String::from("fd00::2"),
+            subnet: None,
+            subnet_display: String::from("—"),
+            peer_state: MachinePeerState::IdentityMismatch,
+            reachable: true,
+            ready: None,
+            drain_state: Some(DrainState::Active),
+            phase: None,
+            reported_machine_id: Some(String::from("someone-else")),
+            reported_boot_id: Some(String::from("boot-2")),
+            created_at: 0,
+            created_display: String::from("—"),
+        }],
+    };
+
+    let rendered = render_machine_list_report(&report);
+    assert!(rendered.contains("OBSERVED"));
+    assert!(rendered.contains("identity-mismatch"));
+
+    let payload = report.payload();
+    assert_eq!(
+        payload.rows[0].peer_state,
+        MachinePeerState::IdentityMismatch
+    );
+    assert_eq!(
+        payload.rows[0].reported_machine_id.as_deref(),
+        Some("someone-else")
+    );
+    assert_eq!(payload.rows[0].reported_boot_id.as_deref(), Some("boot-2"));
 }
 
 #[tokio::test]
@@ -98,8 +151,7 @@ async fn allocate_machine_subnets_returns_unique_values() {
         .upsert_self_machine(&test_machine_record(
             "peer-1",
             "10.210.1.0/24",
-            Participation::Enabled,
-            0,
+            false,
             PublicKey([2; 32]),
         ))
         .await
@@ -130,8 +182,7 @@ async fn machine_add_succeeds_when_peer_unreachable_at_rpc_time() {
         .upsert_self_machine(&test_machine_record(
             "stale-peer",
             "10.210.1.0/24",
-            Participation::Disabled,
-            0,
+            true,
             PublicKey([3; 32]),
         ))
         .await
@@ -163,36 +214,31 @@ async fn machine_add_succeeds_when_peer_unreachable_at_rpc_time() {
     std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
     let fake_ssh = write_fake_ssh(&ssh_dir);
     let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
-    let self_record_response = serde_json::to_string(&DaemonResponse {
-        ok: true,
-        code: "OK".into(),
-        message: encoded.clone(),
-        payload: Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
-            encoded,
-            record: join_response.clone().into_seed_machine_record(),
-        })),
-    })
-    .expect("encode self-record response");
-    let _join_guard = TestSshEnvGuard::set(
-        "PLOYZ_TEST_SELF_RECORD_RESPONSE",
-        Some(self_record_response.into()),
+    let attestor_env = attestor_env_for_joiner(&join_response, [9; 32], &encoded);
+    let _attestor_bin_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_ATTESTOR_BIN",
+        Some(attestor_env.bin_path.into()),
     );
-    let _ready_guard = TestSshEnvGuard::set(
-        "PLOYZ_TEST_READY_RESPONSE",
-        Some(
-            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":true,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":true,\"heartbeat_started\":true}}".into(),
-        ),
+    let _attestor_seed_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_ATTESTOR_SEED",
+        Some(attestor_env.seed_hex.into()),
     );
+    let _attestor_record_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_ATTESTOR_RECORD",
+        Some(attestor_env.record_json.into()),
+    );
+    let _attestor_encoded_guard =
+        TestSshEnvGuard::set("PLOYZ_TEST_ATTESTOR_ENCODED", Some(encoded.into()));
 
     let response = state
         .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
         .await;
     assert!(response.ok, "{}", response.message);
-    assert!(response.message.contains("awaiting_self_publication: 1"));
+    assert!(response.message.contains("added: 1"));
 
     let machines = store.list_machines().await.expect("list machines");
     assert!(
-        !machines
+        machines
             .into_iter()
             .any(|machine| machine.id.0 == "joiner-1")
     );
@@ -207,7 +253,7 @@ async fn machine_add_succeeds_when_peer_unreachable_at_rpc_time() {
 }
 
 #[tokio::test]
-async fn machine_add_accepts_running_joiner_before_full_sync() {
+async fn machine_add_accepts_joiner_that_is_running_but_not_ready() {
     let _guard = test_ssh_env_lock().lock().await;
     let (mut state, store, network) = make_state(MeshStartMode::Started).await;
 
@@ -237,36 +283,31 @@ async fn machine_add_accepts_running_joiner_before_full_sync() {
     std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
     let fake_ssh = write_fake_ssh(&ssh_dir);
     let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
-    let self_record_response = serde_json::to_string(&DaemonResponse {
-        ok: true,
-        code: "OK".into(),
-        message: encoded.clone(),
-        payload: Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
-            encoded,
-            record: join_response.clone().into_seed_machine_record(),
-        })),
-    })
-    .expect("encode self-record response");
-    let _join_guard = TestSshEnvGuard::set(
-        "PLOYZ_TEST_SELF_RECORD_RESPONSE",
-        Some(self_record_response.into()),
+    let attestor_env = attestor_env_for_joiner(&join_response, [10; 32], &encoded);
+    let _attestor_bin_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_ATTESTOR_BIN",
+        Some(attestor_env.bin_path.into()),
     );
-    let _ready_guard = TestSshEnvGuard::set(
-        "PLOYZ_TEST_READY_RESPONSE",
-        Some(
-            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":false,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":false,\"heartbeat_started\":true}}".into(),
-        ),
+    let _attestor_seed_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_ATTESTOR_SEED",
+        Some(attestor_env.seed_hex.into()),
     );
+    let _attestor_record_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_ATTESTOR_RECORD",
+        Some(attestor_env.record_json.into()),
+    );
+    let _attestor_encoded_guard =
+        TestSshEnvGuard::set("PLOYZ_TEST_ATTESTOR_ENCODED", Some(encoded.into()));
 
     let response = state
         .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
         .await;
     assert!(response.ok, "{}", response.message);
-    assert!(response.message.contains("awaiting_self_publication: 1"));
+    assert!(response.message.contains("added: 1"));
 
     let machines = store.list_machines().await.expect("list machines");
     assert!(
-        !machines
+        machines
             .into_iter()
             .any(|machine| machine.id.0 == "joiner-2")
     );
@@ -287,8 +328,7 @@ async fn machine_remove_refuses_enabled_without_force() {
         .upsert_self_machine(&test_machine_record(
             "peer-1",
             "10.210.1.0/24",
-            Participation::Enabled,
-            10,
+            false,
             PublicKey([2; 32]),
         ))
         .await
@@ -296,7 +336,7 @@ async fn machine_remove_refuses_enabled_without_force() {
 
     let response = state.handle_machine_remove("peer-1", false).await;
     assert!(!response.ok);
-    assert!(response.message.contains("must be disabled"));
+    assert!(response.message.contains("must be drained"));
 }
 
 #[tokio::test]
@@ -306,8 +346,7 @@ async fn machine_remove_deletes_disabled_record() {
         .upsert_self_machine(&test_machine_record(
             "peer-1",
             "10.210.1.0/24",
-            Participation::Disabled,
-            10,
+            true,
             PublicKey([2; 32]),
         ))
         .await
@@ -318,6 +357,53 @@ async fn machine_remove_deletes_disabled_record() {
 
     let machines = store.list_machines().await.expect("list machines");
     assert!(!machines.into_iter().any(|machine| machine.id.0 == "peer-1"));
+}
+
+#[tokio::test]
+async fn machine_drain_marks_local_machine_draining() {
+    let (mut state, store, _) = make_state(MeshStartMode::Started).await;
+
+    let response = state.handle_machine_set_drain("founder", true).await;
+    assert!(response.ok, "{}", response.message);
+
+    let machines = store.list_machines().await.expect("list machines");
+    let Some(peer) = machines
+        .into_iter()
+        .find(|machine| machine.id.0 == "founder")
+    else {
+        panic!("founder not found");
+    };
+    assert_eq!(peer.drain_state, DrainState::Drained);
+
+    teardown_state(&mut state).await;
+}
+
+#[tokio::test]
+async fn machine_undrain_marks_local_machine_active() {
+    let (mut state, store, _) = make_state(MeshStartMode::Started).await;
+    store
+        .upsert_self_machine(&test_machine_record(
+            "founder",
+            "10.210.1.0/24",
+            true,
+            PublicKey([1; 32]),
+        ))
+        .await
+        .expect("upsert founder");
+
+    let response = state.handle_machine_set_drain("founder", false).await;
+    assert!(response.ok, "{}", response.message);
+
+    let machines = store.list_machines().await.expect("list machines");
+    let Some(peer) = machines
+        .into_iter()
+        .find(|machine| machine.id.0 == "founder")
+    else {
+        panic!("founder not found");
+    };
+    assert_eq!(peer.drain_state, DrainState::Active);
+
+    teardown_state(&mut state).await;
 }
 
 #[tokio::test]
@@ -377,8 +463,7 @@ async fn make_state(
     let founder_record = test_machine_record(
         "founder",
         "10.210.0.0/24",
-        Participation::Disabled,
-        0,
+        false,
         identity.public_key.clone(),
     );
     store
@@ -395,6 +480,7 @@ async fn make_state(
         Arc::new(StaticEndpointDiscovery::empty()),
         None,
         identity.machine_id.clone(),
+        String::from("boot-test"),
         51820,
     );
     if matches!(start_mode, MeshStartMode::Started) {
@@ -435,8 +521,7 @@ async fn teardown_state(state: &mut DaemonState) {
 fn test_machine_record(
     id: &str,
     subnet: &str,
-    participation: Participation,
-    last_heartbeat: u64,
+    drain: bool,
     public_key: PublicKey,
 ) -> MachineRecord {
     MachineRecord {
@@ -450,8 +535,12 @@ fn test_machine_record(
         bridge_ip: None,
         endpoints: vec!["127.0.0.1:51820".into()],
         status: MachineStatus::Unknown,
-        participation,
-        last_heartbeat,
+        admitted: true,
+        drain_state: if drain {
+            DrainState::Drained
+        } else {
+            DrainState::Active
+        },
         created_at: 0,
         updated_at: 0,
         labels: std::collections::BTreeMap::new(),
@@ -470,7 +559,7 @@ fn write_fake_ssh(dir: &PathBuf) -> PathBuf {
     let script = dir.join("ssh");
     std::fs::write(
         &script,
-        "#!/bin/sh\nfor arg in \"$@\"; do\n  command=\"$arg\"\ndone\nif [ \"$command\" = 'set -eu; \"$HOME/.local/bin/ployz\" rpc-stdio' ]; then\n  req=$(cat)\n  case \"$req\" in\n    *'\"MeshJoin\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"joined\",\"payload\":null}'\n      ;;\n    *'\"MeshInit\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"init\",\"payload\":null}'\n      ;;\n    *'\"MeshDestroy\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"destroyed\",\"payload\":null}'\n      ;;\n    *'\"MeshDown\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"down\",\"payload\":null}'\n      ;;\n    *'\"MeshSelfRecord\"'*)\n      printf '%s' \"$PLOYZ_TEST_SELF_RECORD_RESPONSE\"\n      ;;\n    *'\"MeshReady\"'*)\n      printf '%s' \"$PLOYZ_TEST_READY_RESPONSE\"\n      ;;\n    *)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"ok\",\"payload\":null}'\n      ;;\n  esac\n  exit 0\nfi\ncase \"$command\" in\n  *'--version'*)\n    printf 'ployz test-version'\n    exit 0\n    ;;\n  *'status >/dev/null'*)\n    exit 0\n    ;;\n  *'bash -s -- install'*)\n    cat >/dev/null\n    exit 0\n    ;;\n  *)\n    exit 0\n    ;;\nesac\n",
+        "#!/bin/sh\nfor arg in \"$@\"; do\n  command=\"$arg\"\ndone\nif [ \"$command\" = 'set -eu; \"$HOME/.local/bin/ployz\" rpc-stdio' ]; then\n  req=$(cat)\n  case \"$req\" in\n    *'\"MeshJoin\"'*)\n      printf '%s' \"$req\" | \"$PLOYZ_TEST_ATTESTOR_BIN\"\n      ;;\n    *'\"WaitNodePhase\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"running\",\"payload\":{\"kind\":\"node-status\",\"machine_id\":\"joiner\",\"boot_id\":\"boot-test\",\"phase\":\"running\",\"ready\":true,\"drain_state\":\"active\",\"workloads\":{\"slots\":0},\"version\":\"test\"}}'\n      ;;\n    *'\"MeshInit\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"init\",\"payload\":null}'\n      ;;\n    *'\"MeshDestroy\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"destroyed\",\"payload\":null}'\n      ;;\n    *'\"MeshDown\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"down\",\"payload\":null}'\n      ;;\n    *)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"ok\",\"payload\":null}'\n      ;;\n  esac\n  exit 0\nfi\ncase \"$command\" in\n  *'--version'*)\n    printf 'ployz test-version'\n    exit 0\n    ;;\n  *'status >/dev/null'*)\n    exit 0\n    ;;\n  *'bash -s -- install'*)\n    cat >/dev/null\n    exit 0\n    ;;\n  *)\n    exit 0\n    ;;\nesac\n",
     )
     .expect("write fake ssh");
 
@@ -484,4 +573,58 @@ fn write_fake_ssh(dir: &PathBuf) -> PathBuf {
     }
 
     script
+}
+
+struct AttestorEnv {
+    bin_path: String,
+    seed_hex: String,
+    record_json: String,
+}
+
+fn attestor_env_for_joiner(
+    join_response: &JoinResponse,
+    seed: [u8; 32],
+    _encoded: &str,
+) -> AttestorEnv {
+    let bin_path = find_attestor_bin()
+        .to_str()
+        .expect("attestor bin path utf-8")
+        .to_string();
+    let seed_hex = hex_encode(&seed);
+    let record = join_response.clone().into_seed_machine_record();
+    let record_json = serde_json::to_string(&record).expect("encode record");
+    AttestorEnv {
+        bin_path,
+        seed_hex,
+        record_json,
+    }
+}
+
+fn find_attestor_bin() -> PathBuf {
+    let current_exe = std::env::current_exe().expect("current_exe");
+    let candidates = [
+        current_exe.with_file_name("ployz-test-attestor"),
+        current_exe
+            .parent()
+            .and_then(|parent| parent.parent())
+            .map(|grandparent| grandparent.join("ployz-test-attestor"))
+            .unwrap_or_else(|| PathBuf::from("ployz-test-attestor")),
+    ];
+    for candidate in candidates {
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    panic!(
+        "ployz-test-attestor binary not found next to test binary; \
+         run `cargo build --bin ployz-test-attestor -p ployzd` before running tests"
+    );
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }

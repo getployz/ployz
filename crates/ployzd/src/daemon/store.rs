@@ -1,6 +1,6 @@
 use ployz_store_api::{
     ClusterStore, DeployCommitStore, DeployReadStore, DeployWriteStore, InviteStore, MachineStore,
-    SyncProbe,
+    MembershipCommitStore, SyncProbe,
 };
 use ployz_test_support::MemoryStore;
 use std::sync::Arc;
@@ -9,6 +9,7 @@ use std::sync::Arc;
 pub(crate) struct StoreDriver {
     machine: Arc<dyn MachineStore>,
     invite: Arc<dyn InviteStore>,
+    membership: Arc<dyn MembershipCommitStore>,
     deploy_read: Arc<dyn DeployReadStore>,
     deploy_write: Arc<dyn DeployWriteStore>,
     deploy_commit: Arc<dyn DeployCommitStore>,
@@ -21,6 +22,7 @@ impl StoreDriver {
         Self {
             machine: Arc::clone(&store) as Arc<dyn MachineStore>,
             invite: Arc::clone(&store) as Arc<dyn InviteStore>,
+            membership: Arc::clone(&store) as Arc<dyn MembershipCommitStore>,
             deploy_read: Arc::clone(&store) as Arc<dyn DeployReadStore>,
             deploy_write: Arc::clone(&store) as Arc<dyn DeployWriteStore>,
             deploy_commit: Arc::clone(&store) as Arc<dyn DeployCommitStore>,
@@ -36,6 +38,7 @@ impl StoreDriver {
         Self {
             machine: Arc::clone(&store) as Arc<dyn MachineStore>,
             invite: Arc::clone(&store) as Arc<dyn InviteStore>,
+            membership: Arc::clone(&store) as Arc<dyn MembershipCommitStore>,
             deploy_read: Arc::clone(&store) as Arc<dyn DeployReadStore>,
             deploy_write: Arc::clone(&store) as Arc<dyn DeployWriteStore>,
             deploy_commit: Arc::clone(&store) as Arc<dyn DeployCommitStore>,
@@ -56,6 +59,11 @@ impl StoreDriver {
     #[must_use]
     pub(crate) fn invite(&self) -> Arc<dyn InviteStore> {
         Arc::clone(&self.invite)
+    }
+
+    #[must_use]
+    pub(crate) fn membership(&self) -> Arc<dyn MembershipCommitStore> {
+        Arc::clone(&self.membership)
     }
 
     pub(crate) fn deploy_read(&self) -> Arc<dyn DeployReadStore> {

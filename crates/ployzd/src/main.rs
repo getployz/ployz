@@ -10,7 +10,6 @@ pub(crate) use cli::{
     DeployServiceArgs, InstallSourceArg, MachineAction, MachineInviteAction,
     MachineOperationAction, MeshAction, RuntimeTargetArg, ServiceModeArg,
 };
-use cli_io::render_mesh_ready_payload;
 use cli_io::{cmd_rpc_stdio, render_response, request_daemon};
 #[cfg(test)]
 use ployz_api::DaemonRequest;
@@ -105,21 +104,11 @@ async fn run() -> Result<i32> {
             if let Command::RpcStdio = other {
                 return cmd_rpc_stdio(&socket).await;
             }
-            let mesh_ready_json = matches!(
-                &other,
-                Command::Mesh {
-                    action: MeshAction::Ready { json: true }
-                }
-            );
             let transport = UnixSocketTransport::new(socket.clone());
             let request = build_request(other, &transport, &socket).await?;
             let response = request_daemon(&transport, &socket, request).await?;
 
-            if mesh_ready_json && !cli.json {
-                render_mesh_ready_payload(&response)?;
-            } else {
-                render_response(cli.json, cli.plain, cli.quiet, &response)?;
-            }
+            render_response(cli.json, cli.plain, cli.quiet, &response)?;
             if response.ok { Ok(0) } else { Ok(1) }
         }
     }
@@ -306,5 +295,29 @@ mod tests {
         };
         assert_eq!(task, ProtocolDebugTickTask::All);
         assert_eq!(repeat, 1);
+    }
+
+    #[test]
+    fn build_machine_drain_request() {
+        let request = build_machine_request(MachineAction::Drain {
+            id: String::from("peer-1"),
+        })
+        .expect("machine drain request");
+        let DaemonRequest::MachineDrain { id } = request else {
+            panic!("expected machine drain request");
+        };
+        assert_eq!(id, "peer-1");
+    }
+
+    #[test]
+    fn build_machine_undrain_request() {
+        let request = build_machine_request(MachineAction::Undrain {
+            id: String::from("peer-1"),
+        })
+        .expect("machine undrain request");
+        let DaemonRequest::MachineUndrain { id } = request else {
+            panic!("expected machine undrain request");
+        };
+        assert_eq!(id, "peer-1");
     }
 }

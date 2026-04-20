@@ -2,11 +2,9 @@ use super::*;
 use crate::mesh::probe::run_probe_listener_task;
 use crate::mesh::tasks::TaskSetError;
 use crate::mesh::tasks::{
-    run_ebpf_sync_task, run_endpoint_refresh_task, run_heartbeat_task, run_participation_task,
-    run_peer_sync_task, run_self_liveness_task, run_self_record_writer_task,
-    run_subnet_claim_monitor_task,
+    SelfRecordMutation, apply_self_record_mutation, run_ebpf_sync_task, run_endpoint_refresh_task,
+    run_peer_sync_task, run_self_record_writer_task, run_subnet_claim_monitor_task,
 };
-use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
 
 impl Mesh {
@@ -101,6 +99,19 @@ impl Mesh {
             self_record_rx,
             cancel.clone(),
         ));
+        let initial_self_record = authoritative_self.read().await.clone();
+        let published = apply_self_record_mutation(
+            &self_record_tx,
+            SelfRecordMutation::Replace(initial_self_record),
+        )
+        .await;
+        if published.is_none() {
+            return Err(TaskSetError::Subscribe(crate::error::Error::operation(
+                "self machine record",
+                "initial self record publish failed".to_string(),
+            ))
+            .into());
+        }
 
         task_set.spawn(run_endpoint_refresh_task(
             self.machine_id.clone(),
@@ -108,41 +119,6 @@ impl Mesh {
             self.endpoint_discovery.clone(),
             authoritative_self.clone(),
             self_record_tx.clone(),
-            cancel.clone(),
-        ));
-
-        self.heartbeat_started.store(false, Ordering::SeqCst);
-        let (self_liveness_tx, self_liveness_rx) = mpsc::channel(16);
-        self.self_liveness_tx = Some(self_liveness_tx.clone());
-        task_set.spawn(run_self_liveness_task(
-            self.network.clone(),
-            self.heartbeat_started.clone(),
-            self_record_tx.clone(),
-            self_liveness_rx,
-            cancel.clone(),
-            self.task_timing.self_liveness_interval,
-        ));
-
-        let (participation_tx, participation_rx) = mpsc::channel(16);
-        self.participation_tx = Some(participation_tx.clone());
-        task_set.spawn(run_participation_task(
-            self.machine_id.clone(),
-            authoritative_self.clone(),
-            Arc::clone(&self.store),
-            self.network.clone(),
-            Arc::clone(&self.probe_readiness),
-            self_record_tx,
-            participation_rx,
-            cancel.clone(),
-            self.task_timing.participation_interval,
-        ));
-
-        let (heartbeat_tx, heartbeat_rx) = mpsc::channel(16);
-        self.heartbeat_tx = Some(heartbeat_tx);
-        task_set.spawn(run_heartbeat_task(
-            self_liveness_tx,
-            participation_tx,
-            heartbeat_rx,
             cancel.clone(),
         ));
 
@@ -178,11 +154,7 @@ impl Mesh {
 
     pub(crate) fn clear_task_channels(&mut self) {
         self.peer_sync_tx = None;
-        self.heartbeat_tx = None;
-        self.self_liveness_tx = None;
-        self.participation_tx = None;
         self.self_record_tx = None;
         self.task_cancel = None;
-        self.heartbeat_started.store(false, Ordering::SeqCst);
     }
 }

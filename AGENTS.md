@@ -32,3 +32,13 @@
 - Never `.unwrap()` on Option state — use `let Some(x) = opt else { return err }`
 - Add `#[must_use]` on all builder methods returning `Self`
 - Prefer enums over boolean parameters
+
+# RPC Timeouts and Fail-Fast
+
+- Transport owns timeouts. No stacked deadlines at call sites.
+- Split connect from request: connect = reachability, request = progress.
+- LAN defaults: 500ms connect, 2s request. Long-poll RPCs override via `with_timeouts`.
+- Timeout means "offline now," never "wait longer."
+- Quorum counts explicit live accepts only. Unresolved peers are absent.
+- Lease/lock TTLs backstop response-lost prepares — document that wherever a TTL is set.
+- Log connect failures and request failures distinctly.

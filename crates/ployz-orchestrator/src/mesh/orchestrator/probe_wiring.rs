@@ -148,10 +148,8 @@ impl Mesh {
 
         if !connected {
             let reason = match result {
-                Ok(_) => {
-                    "corrosion gossip could not reach any remote peer within the timeout"
-                        .to_string()
-                }
+                Ok(_) => "corrosion gossip could not reach any remote peer within the timeout"
+                    .to_string(),
                 Err(e) => {
                     format!("corrosion API never became healthy: {e}")
                 }

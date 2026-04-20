@@ -1,10 +1,10 @@
 use crate::deploy::cleanup::cleanup_stale_instances;
-use crate::deploy::planning::{deployable_machines, desired_slots, preview};
+use crate::deploy::planning::{deployable_machines, desired_slots, preview_with_candidates};
 use crate::deploy::sessions::{close_sessions, ensure_participants_stable, open_sessions};
 use crate::error::{Error, Result};
 use crate::model::{
     DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployRecord, DeployState,
-    InstanceId, MachineId, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot,
+    InstanceId, MachineId, MachineRecord, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot,
     ServiceRevisionRecord, ServiceRoutingPolicy,
 };
 use ployz_runtime_api::{DeploySessionFactory, PreDeployHookRequest, StartCandidateRequest};
@@ -25,11 +25,63 @@ pub async fn apply(
     local_machine_id: &MachineId,
     manifest: &DeployManifest,
 ) -> Result<DeployApplyResult> {
+    let machines = machine_store.list_machines().await?;
+    let candidate_machines = deployable_machines(&machines, local_machine_id);
+    apply_inner(
+        deploy_read,
+        deploy_write,
+        deploy_commit,
+        &machines,
+        candidate_machines.as_slice(),
+        Some(machine_store),
+        session_factory,
+        local_machine_id,
+        manifest,
+    )
+    .await
+}
+
+pub async fn apply_with_candidates(
+    deploy_read: &dyn DeployReadStore,
+    deploy_write: &dyn DeployWriteStore,
+    deploy_commit: &dyn DeployCommitStore,
+    machines: &[MachineRecord],
+    candidate_machines: &[MachineId],
+    session_factory: &dyn DeploySessionFactory,
+    local_machine_id: &MachineId,
+    manifest: &DeployManifest,
+) -> Result<DeployApplyResult> {
+    apply_inner(
+        deploy_read,
+        deploy_write,
+        deploy_commit,
+        machines,
+        candidate_machines,
+        None,
+        session_factory,
+        local_machine_id,
+        manifest,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_inner(
+    deploy_read: &dyn DeployReadStore,
+    deploy_write: &dyn DeployWriteStore,
+    deploy_commit: &dyn DeployCommitStore,
+    machines: &[MachineRecord],
+    candidate_machines: &[MachineId],
+    drift_store: Option<&dyn MachineStore>,
+    session_factory: &dyn DeploySessionFactory,
+    local_machine_id: &MachineId,
+    manifest: &DeployManifest,
+) -> Result<DeployApplyResult> {
     let namespace = &manifest.namespace;
     let deploy_id = DeployId(Uuid::new_v4().to_string());
     let started_at = now_unix_secs();
-    let initial_preview = preview(deploy_read, machine_store, local_machine_id, manifest).await?;
-    let machines = machine_store.list_machines().await?;
+    let initial_preview =
+        preview_with_candidates(deploy_read, machines, candidate_machines, manifest).await?;
     let machine_map: HashMap<MachineId, crate::model::MachineRecord> = machines
         .iter()
         .map(|machine| (machine.id.clone(), machine.clone()))
@@ -48,7 +100,22 @@ pub async fn apply(
     .await?;
 
     let result = async {
-        let final_preview = preview(deploy_read, machine_store, local_machine_id, manifest).await?;
+        let final_preview = match drift_store {
+            Some(store) => {
+                let refreshed = store.list_machines().await?;
+                let refreshed_candidates = deployable_machines(&refreshed, local_machine_id);
+                preview_with_candidates(
+                    deploy_read,
+                    &refreshed,
+                    refreshed_candidates.as_slice(),
+                    manifest,
+                )
+                .await?
+            }
+            None => {
+                preview_with_candidates(deploy_read, machines, candidate_machines, manifest).await?
+            }
+        };
         ensure_participants_stable(&initial_preview, &final_preview)?;
 
         let mut deploy_record = DeployRecord {
@@ -69,7 +136,7 @@ pub async fn apply(
         let current_slots_by_service = current_slots_by_service_from_releases(
             &deploy_read.list_service_releases(namespace).await?,
         );
-        let desired_machines = deployable_machines(&machines, local_machine_id, now_unix_secs());
+        let desired_machines = candidate_machines.to_vec();
         let mut removed_services = Vec::new();
         let mut committed_releases = Vec::new();
         let mut committed_slots = Vec::new();

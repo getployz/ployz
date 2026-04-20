@@ -1,7 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
-use crate::coordination::fanout::{accepted_targets, fanout_abort, fanout_prepare, FanOutTarget};
+use crate::coordination::fanout::{
+    FanOutTarget, NodeStatusResult, accepted_targets, fanout_abort, fanout_node_status,
+    fanout_prepare,
+};
 use crate::daemon::DaemonState;
 use ployz_api::{
     CoordinationAbortRequest, CoordinationLockKey, CoordinationOperation,
@@ -9,10 +12,22 @@ use ployz_api::{
     DeployExportPayload, DeployOptions, DeployPreviewPayload,
 };
 use ployz_config::RuntimeTarget;
-use ployz_orchestrator::deploy::{apply, export_manifest, preview};
+use ployz_orchestrator::deploy::{apply_with_candidates, export_manifest, preview_with_candidates};
 use ployz_runtime_backends::deploy::DefaultDeploySessionFactory;
+use ployz_types::model::{DrainState, MachineId};
 use ployz_types::spec::{DeployManifest, Namespace};
 use ployz_types::time::now_unix_secs;
+
+use super::mesh::{LocalPeerStatus, NodeView, resolve_peer, with_local_machine_record};
+
+const NODE_STATUS_DEADLINE: Duration = Duration::from_millis(750);
+
+struct DeployNodeSelection {
+    eligible: BTreeSet<MachineId>,
+    unreachable: Vec<MachineId>,
+    drained: Vec<MachineId>,
+    invalid_identity: Vec<MachineId>,
+}
 
 impl DaemonState {
     fn overlay_network_name(&self) -> Option<String> {
@@ -45,24 +60,57 @@ impl DaemonState {
         };
         let deploy_read = active.store.deploy_read();
         let machine_store = active.store.machine();
-
-        match preview(
+        let authoritative_self = active.mesh.authoritative_self_record().await;
+        let Some(local_record) = authoritative_self else {
+            return self.err(
+                "DEPLOY_PREVIEW_FAILED",
+                "local authoritative mesh record missing for deploy preview",
+            );
+        };
+        let machines = match machine_store.list_machines().await {
+            Ok(machines) => machines,
+            Err(err) => {
+                return self.err(
+                    "DEPLOY_PREVIEW_FAILED",
+                    format!("failed to list machines for node eligibility: {err}"),
+                );
+            }
+        };
+        let machines = with_local_machine_record(machines, &local_record);
+        let selection = self
+            .select_deploy_nodes(active, &machines)
+            .await
+            .map_err(|err| {
+                self.err(
+                    "DEPLOY_PREVIEW_FAILED",
+                    format!("failed to collect node status for deploy preview: {err}"),
+                )
+            });
+        let selection = match selection {
+            Ok(selection) => selection,
+            Err(response) => return response,
+        };
+        let candidate_machines = eligible_machine_ids(&selection);
+        match preview_with_candidates(
             deploy_read.as_ref(),
-            machine_store.as_ref(),
-            &self.identity.machine_id,
+            &machines,
+            candidate_machines.as_slice(),
             &manifest,
         )
         .await
         {
-            Ok(plan) => match serde_json::to_string_pretty(&plan) {
-                Ok(json) => self.ok_with_payload(
-                    json,
-                    Some(DaemonPayload::DeployPreview(DeployPreviewPayload {
-                        preview: plan,
-                    })),
-                ),
-                Err(err) => self.err("ENCODE_PREVIEW", format!("encode preview: {err}")),
-            },
+            Ok(mut plan) => {
+                plan.warnings.extend(selection.preview_warnings());
+                match serde_json::to_string_pretty(&plan) {
+                    Ok(json) => self.ok_with_payload(
+                        json,
+                        Some(DaemonPayload::DeployPreview(DeployPreviewPayload {
+                            preview: plan,
+                        })),
+                    ),
+                    Err(err) => self.err("ENCODE_PREVIEW", format!("encode preview: {err}")),
+                }
+            }
             Err(err) => self.err("DEPLOY_PREVIEW_FAILED", format!("{err}")),
         }
     }
@@ -84,13 +132,54 @@ impl DaemonState {
         let deploy_write = active.store.deploy_write();
         let deploy_commit = active.store.deploy_commit();
         let machine_store = active.store.machine();
+        let authoritative_self = active.mesh.authoritative_self_record().await;
+        let Some(local_record) = authoritative_self else {
+            return self.err(
+                "DEPLOY_APPLY_FAILED",
+                "local authoritative mesh record missing for deploy apply",
+            );
+        };
+        let machines = match machine_store.list_machines().await {
+            Ok(machines) => machines,
+            Err(err) => {
+                return self.err(
+                    "DEPLOY_APPLY_FAILED",
+                    format!("failed to list machines for node eligibility: {err}"),
+                );
+            }
+        };
+        let machines = with_local_machine_record(machines, &local_record);
+        let selection = match self.select_deploy_nodes(active, &machines).await {
+            Ok(selection) => selection,
+            Err(err) => {
+                return self.err(
+                    "DEPLOY_APPLY_FAILED",
+                    format!("failed to collect node status for deploy apply: {err}"),
+                );
+            }
+        };
+        let cluster_size = machines.len();
+        let quorum_size = cluster_size / 2 + 1;
+        if selection.eligible.len() < quorum_size {
+            return self.err(
+                "DEPLOY_QUORUM_LOST",
+                format!(
+                    "apply requires quorum ({quorum_size}/{cluster_size}); eligible={} unreachable=[{}] drained=[{}] invalid_identity=[{}]",
+                    selection.eligible.len(),
+                    format_machine_ids(&selection.unreachable),
+                    format_machine_ids(&selection.drained),
+                    format_machine_ids(&selection.invalid_identity),
+                ),
+            );
+        }
+        let candidate_machines = eligible_machine_ids(&selection);
 
         // Run a preview to determine which machines will participate, so we
         // can fan-out the namespace lock to only those machines.
-        let initial_preview = match preview(
+        let initial_preview = match preview_with_candidates(
             deploy_read.as_ref(),
-            machine_store.as_ref(),
-            &self.identity.machine_id,
+            &machines,
+            candidate_machines.as_slice(),
             &manifest,
         )
         .await
@@ -100,19 +189,11 @@ impl DaemonState {
         };
 
         // Build fan-out targets from the planned participants (excluding self).
-        let machines = match machine_store.list_machines().await {
-            Ok(m) => m,
-            Err(err) => {
-                return self.err(
-                    "DEPLOY_APPLY_FAILED",
-                    format!("failed to list machines for namespace lock: {err}"),
-                )
-            }
-        };
         let self_id = &self.identity.machine_id;
         let machine_map: HashMap<_, _> = machines
-            .into_iter()
-            .map(|m| (m.id.clone(), m))
+            .iter()
+            .cloned()
+            .map(|machine| (machine.id.clone(), machine))
             .collect();
         let peers: Vec<FanOutTarget> = initial_preview
             .participants
@@ -173,7 +254,12 @@ impl DaemonState {
                 operation: lock_op.clone(),
             };
             self.handle_coordination_abort(abort_req.clone()).await;
-            fanout_abort(&accepted_targets(&fanout_result.accepted), rpc_port, abort_req).await;
+            fanout_abort(
+                &accepted_targets(&fanout_result.accepted),
+                rpc_port,
+                abort_req,
+            )
+            .await;
             return self.err(
                 "DEPLOY_LOCKED",
                 format!(
@@ -193,11 +279,12 @@ impl DaemonState {
             self.remote_control_port,
         );
 
-        let apply_result = apply(
+        let apply_result = apply_with_candidates(
             deploy_read.as_ref(),
             deploy_write.as_ref(),
             deploy_commit.as_ref(),
-            machine_store.as_ref(),
+            &machines,
+            candidate_machines.as_slice(),
             &factory,
             &self.identity.machine_id,
             &manifest,
@@ -254,6 +341,165 @@ impl DaemonState {
             ),
             Err(err) => self.err("ENCODE_MANIFEST", format!("encode manifest: {err}")),
         }
+    }
+
+    async fn select_deploy_nodes(
+        &self,
+        active: &crate::daemon::ActiveMesh,
+        machines: &[ployz_types::model::MachineRecord],
+    ) -> Result<DeployNodeSelection, String> {
+        let self_machine_id = self.identity.machine_id.clone();
+        let self_ready = active.mesh.ready_status().await.ready;
+        let self_phase = active.mesh.ready_status().await.phase;
+        let self_drain_state = active
+            .mesh
+            .authoritative_self_record()
+            .await
+            .map(|record| record.drain_state)
+            .or_else(|| {
+                machines
+                    .iter()
+                    .find(|machine| machine.id == self_machine_id)
+                    .map(|machine| machine.drain_state)
+            })
+            .unwrap_or(DrainState::Active);
+        let local_status = LocalPeerStatus {
+            ready: self_ready,
+            phase: self_phase,
+            drain_state: self_drain_state,
+        };
+
+        let mut eligible = BTreeSet::new();
+        let mut unreachable = Vec::new();
+        let mut drained = Vec::new();
+        let mut invalid_identity = Vec::new();
+
+        let targets: Vec<FanOutTarget> = machines
+            .iter()
+            .filter(|machine| machine.id != self_machine_id)
+            .map(|machine| FanOutTarget {
+                machine_id: machine.id.clone(),
+                overlay_ip: machine.overlay_ip,
+            })
+            .collect();
+        let fanout = fanout_node_status(&targets, self.coordination_rpc_port, NODE_STATUS_DEADLINE)
+            .await
+            .into_iter()
+            .collect::<HashMap<MachineId, NodeStatusResult>>();
+
+        for machine in machines {
+            let view = NodeView::new(
+                machine,
+                resolve_peer(&machine.id, &self_machine_id, local_status, &fanout),
+            );
+            if view.peer_state() == ployz_api::MachinePeerState::IdentityMismatch {
+                invalid_identity.push(machine.id.clone());
+                continue;
+            }
+            if !view.reachable() {
+                unreachable.push(machine.id.clone());
+                continue;
+            }
+            if view.drain_state().is_drained() {
+                drained.push(machine.id.clone());
+                continue;
+            }
+            if view.is_deploy_eligible() {
+                eligible.insert(machine.id.clone());
+            }
+        }
+
+        Ok(DeployNodeSelection {
+            eligible,
+            unreachable,
+            drained,
+            invalid_identity,
+        })
+    }
+}
+
+fn eligible_machine_ids(selection: &DeployNodeSelection) -> Vec<MachineId> {
+    let mut ids: Vec<MachineId> = selection.eligible.iter().cloned().collect();
+    ids.sort();
+    ids
+}
+
+impl DeployNodeSelection {
+    fn preview_warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if !self.unreachable.is_empty() {
+            warnings.push(format!(
+                "unreachable peers were excluded from planning: {}",
+                format_machine_ids(&self.unreachable)
+            ));
+        }
+        if !self.drained.is_empty() {
+            warnings.push(format!(
+                "drained peers were excluded from planning: {}",
+                format_machine_ids(&self.drained)
+            ));
+        }
+        if !self.invalid_identity.is_empty() {
+            warnings.push(format!(
+                "invalid identity peers were excluded from planning: {}",
+                format_machine_ids(&self.invalid_identity)
+            ));
+        }
+        warnings
+    }
+}
+
+fn format_machine_ids(machine_ids: &[MachineId]) -> String {
+    let mut ids: Vec<&str> = machine_ids
+        .iter()
+        .map(|machine_id| machine_id.0.as_str())
+        .collect();
+    ids.sort_unstable();
+    ids.join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DeployNodeSelection, format_machine_ids};
+    use ployz_types::model::MachineId;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn format_machine_ids_sorts_output() {
+        let ids = vec![
+            MachineId("peer-b".into()),
+            MachineId("peer-a".into()),
+            MachineId("peer-c".into()),
+        ];
+
+        let rendered = format_machine_ids(&ids);
+        assert_eq!(rendered, "peer-a, peer-b, peer-c");
+    }
+
+    #[test]
+    fn preview_warnings_include_all_excluded_sets() {
+        let selection = DeployNodeSelection {
+            eligible: BTreeSet::new(),
+            unreachable: vec![MachineId("peer-2".into())],
+            drained: vec![MachineId("peer-3".into())],
+            invalid_identity: vec![MachineId("peer-4".into())],
+        };
+
+        let warnings = selection.preview_warnings();
+        assert_eq!(warnings.len(), 3);
+        assert!(
+            warnings
+                .iter()
+                .any(|line| line.contains("unreachable peers were excluded from planning: peer-2"))
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|line| line.contains("drained peers were excluded from planning: peer-3"))
+        );
+        assert!(warnings.iter().any(|line| {
+            line.contains("invalid identity peers were excluded from planning: peer-4")
+        }));
     }
 }
 

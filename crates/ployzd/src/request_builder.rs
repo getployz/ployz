@@ -170,7 +170,7 @@ fn build_mesh_request(action: MeshAction) -> Result<DaemonRequest> {
         MeshAction::Join { token, token_stdin } => Ok(DaemonRequest::MeshJoin {
             token: string_arg_or_stdin("mesh join token", "--token-stdin", token, token_stdin)?,
         }),
-        MeshAction::Ready { json: _ } => Ok(DaemonRequest::MeshReady),
+        MeshAction::Ready { json: _ } => Ok(DaemonRequest::NodeStatus),
         MeshAction::Create { network } => Ok(DaemonRequest::MeshCreate { network }),
         MeshAction::Init {
             network,
@@ -258,6 +258,9 @@ pub(crate) fn build_machine_request(action: MachineAction) -> Result<DaemonReque
             Ok(DaemonRequest::MachineAdd { targets, options })
         }
         MachineAction::Rm { id, force } => Ok(DaemonRequest::MachineRemove { id, force }),
+        MachineAction::Admit { id } => Ok(DaemonRequest::MachineAdmit { id }),
+        MachineAction::Drain { id } => Ok(DaemonRequest::MachineDrain { id }),
+        MachineAction::Undrain { id } => Ok(DaemonRequest::MachineUndrain { id }),
         MachineAction::Invite { action } => match action {
             MachineInviteAction::Create { ttl_secs } => {
                 Ok(DaemonRequest::MachineInviteCreate { ttl_secs })

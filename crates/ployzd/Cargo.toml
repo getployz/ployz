@@ -20,6 +20,10 @@ path = "src/bin/ployz-gateway.rs"
 name = "ployz-dns"
 path = "src/bin/ployz-dns.rs"
 
+[[bin]]
+name = "ployz-test-attestor"
+path = "src/bin/ployz-test-attestor.rs"
+
 [features]
 ebpf-native = ["ployz-runtime-backends/ebpf-native"]
 

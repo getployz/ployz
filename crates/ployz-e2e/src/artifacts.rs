@@ -123,8 +123,8 @@ impl ScenarioRun {
         for node in &self.nodes {
             let _ = writeln!(
                 &mut metadata,
-                "node={} container={} ssh_port={} ip={}",
-                node.name, node.container_name, node.ssh_port, node.outer_ip
+                "node={} container={} ssh_port={} rpc_port={} ip={}",
+                node.name, node.container_name, node.ssh_port, node.rpc_port, node.outer_ip
             );
         }
         fs::write(self.root_dir.join("metadata.env"), metadata).map_err(|error| {

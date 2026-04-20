@@ -1,6 +1,6 @@
 use chrono::DateTime;
-use ployz_orchestrator::machine_liveness::{MachineLiveness, machine_liveness};
-use ployz_types::model::{MachineRecord, MachineStatus, Participation};
+use ployz_api::MachinePeerState;
+use ployz_types::model::{DrainState, MachineRecord, MachineStatus};
 
 use super::types::{MachineAddReport, MachineListReport};
 
@@ -26,43 +26,82 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
         .max()
         .unwrap_or(0)
         .max(6);
-    let w_hb = report
+    let w_observed = report
         .rows
         .iter()
-        .map(|row| row.heartbeat_display.len())
+        .map(|row| format_peer_state(row.peer_state).len())
         .max()
         .unwrap_or(0)
-        .max(9);
-    let w_part = report
+        .max("OBSERVED".len());
+    let w_admission = report
         .rows
         .iter()
-        .map(|row| row.participation.len())
+        .map(|row| if row.admitted { "admitted" } else { "pending" }.len())
         .max()
         .unwrap_or(0)
-        .max("PARTICIPATION".len());
-    let w_live = report
+        .max("ADMISSION".len());
+    let w_ready = report
         .rows
         .iter()
-        .map(|row| row.liveness.len())
+        .map(|row| {
+            row.ready
+                .map(|ready| if ready { "ready" } else { "not-ready" })
+                .unwrap_or("unknown")
+                .len()
+        })
         .max()
         .unwrap_or(0)
-        .max("LIVENESS".len());
-
+        .max("READY".len());
+    let w_drain_state = report
+        .rows
+        .iter()
+        .map(|row| {
+            row.drain_state
+                .map(format_drain_state)
+                .unwrap_or("unknown")
+                .len()
+        })
+        .max()
+        .unwrap_or(0)
+        .max("DRAIN STATE".len());
+    let w_phase = report
+        .rows
+        .iter()
+        .map(|row| {
+            row.phase
+                .map_or("unknown".len(), |phase| phase.to_string().len())
+        })
+        .max()
+        .unwrap_or(0)
+        .max("PHASE".len());
     let mut lines = Vec::with_capacity(report.rows.len() + 1);
     lines.push(format!(
-        "{:<w_id$}  {:<6}  {:<w_part$}  {:<w_live$}  {:<w_ov$}  {:<w_sub$}  {:<w_hb$}  {}",
-        "ID", "STATUS", "PARTICIPATION", "LIVENESS", "OVERLAY IP", "SUBNET", "HEARTBEAT", "CREATED",
+        "{:<w_id$}  {:<6}  {:<w_observed$}  {:<w_admission$}  {:<w_ready$}  {:<w_drain_state$}  {:<w_phase$}  {:<w_ov$}  {:<w_sub$}  {}",
+        "ID", "STATUS", "OBSERVED", "ADMISSION", "READY", "DRAIN STATE", "PHASE", "OVERLAY IP", "SUBNET", "CREATED",
     ));
     for row in &report.rows {
+        let observed = format_peer_state(row.peer_state);
+        let admission = if row.admitted { "admitted" } else { "pending" };
+        let ready = row
+            .ready
+            .map(|value| if value { "ready" } else { "not-ready" })
+            .unwrap_or("unknown");
+        let drain_state = row.drain_state.map(format_drain_state).unwrap_or("unknown");
+        let phase = row
+            .phase
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".into());
         lines.push(format!(
-            "{:<w_id$}  {:<6}  {:<w_part$}  {:<w_live$}  {:<w_ov$}  {:<w_sub$}  {:<w_hb$}  {}",
+            "{:<w_id$}  {:<6}  {:<w_observed$}  {:<w_admission$}  {:<w_ready$}  {:<w_drain_state$}  {:<w_phase$}  {:<w_ov$}  {:<w_sub$}  {}",
             row.id,
             row.status,
-            row.participation,
-            row.liveness,
+            observed,
+            admission,
+            ready,
+            drain_state,
+            phase,
             row.overlay,
             row.subnet_display,
-            row.heartbeat_display,
             row.created_display,
         ));
     }
@@ -77,15 +116,12 @@ pub(super) fn render_machine_add_report(report: &MachineAddReport) -> String {
     }
 
     lines.push("machine add summary".into());
-    push_summary_section(
-        &mut lines,
-        "awaiting_self_publication",
-        &report.awaiting_self_publication,
-    );
+    push_summary_section(&mut lines, "added", &report.added);
     push_summary_section(&mut lines, "failed_preflight", &report.failed_preflight);
     push_summary_section(&mut lines, "failed_join", &report.failed_join);
     push_summary_section(&mut lines, "failed_self_record", &report.failed_self_record);
-    push_summary_section(&mut lines, "failed_ready", &report.failed_ready);
+    push_summary_section(&mut lines, "failed_verify", &report.failed_verify);
+    push_summary_section(&mut lines, "failed_admit", &report.failed_admit);
     lines.join("\n")
 }
 
@@ -97,38 +133,6 @@ pub(super) fn format_status(machine: &MachineRecord) -> &'static str {
     }
 }
 
-pub(super) fn format_participation(machine: &MachineRecord) -> &'static str {
-    match machine.participation {
-        Participation::Enabled => "enabled",
-        Participation::Draining => "draining",
-        Participation::Disabled => "disabled",
-    }
-}
-
-pub(crate) fn format_liveness(machine: &MachineRecord, now: u64) -> &'static str {
-    match machine_liveness(machine, now) {
-        MachineLiveness::Fresh => "fresh",
-        MachineLiveness::Stale => "stale",
-        MachineLiveness::Down => "down",
-    }
-}
-
-pub(crate) fn format_heartbeat(ts: u64, now: u64) -> String {
-    if ts == 0 {
-        return "never".into();
-    }
-    let ago = now.saturating_sub(ts);
-    if ago < 60 {
-        format!("{ago}s ago")
-    } else if ago < 3600 {
-        format!("{}m ago", ago / 60)
-    } else if ago < 86400 {
-        format!("{}h ago", ago / 3600)
-    } else {
-        format!("{}d ago", ago / 86400)
-    }
-}
-
 pub(super) fn format_timestamp(ts: u64) -> String {
     if ts == 0 {
         return "—".into();
@@ -136,6 +140,22 @@ pub(super) fn format_timestamp(ts: u64) -> String {
     DateTime::from_timestamp(ts as i64, 0)
         .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
         .unwrap_or_else(|| "—".into())
+}
+
+fn format_drain_state(drain_state: DrainState) -> &'static str {
+    match drain_state {
+        DrainState::Active => "active",
+        DrainState::Drained => "drained",
+    }
+}
+
+fn format_peer_state(peer_state: MachinePeerState) -> &'static str {
+    match peer_state {
+        MachinePeerState::Local => "local",
+        MachinePeerState::Live => "present",
+        MachinePeerState::Unreachable => "absent",
+        MachinePeerState::IdentityMismatch => "identity-mismatch",
+    }
 }
 
 fn push_summary_section(lines: &mut Vec<String>, label: &str, values: &[String]) {

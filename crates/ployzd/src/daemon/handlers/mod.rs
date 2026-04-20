@@ -5,6 +5,7 @@ mod doctor;
 mod invite;
 pub(crate) mod machine;
 mod mesh;
+mod node_status;
 mod status;
 
 use ployz_api::{DaemonRequest, DaemonResponse};
@@ -34,12 +35,17 @@ impl DaemonState {
             | DaemonRequest::DeployExport { .. }
             | DaemonRequest::MeshList
             | DaemonRequest::MeshStatus { .. }
-            | DaemonRequest::MeshReady
+            | DaemonRequest::NodeStatus
+            | DaemonRequest::PeerHealth { .. }
+            | DaemonRequest::WaitNodePhase { .. }
             | DaemonRequest::MeshCreate { .. }
             | DaemonRequest::MachineList
             | DaemonRequest::MachineInit { .. }
             | DaemonRequest::MachineAdd { .. }
             | DaemonRequest::MachineRemove { .. }
+            | DaemonRequest::MachineAdmit { .. }
+            | DaemonRequest::MachineDrain { .. }
+            | DaemonRequest::MachineUndrain { .. }
             | DaemonRequest::MachineOperationList
             | DaemonRequest::MachineOperationGet { .. }
             | DaemonRequest::MachineInviteCreate { .. }
@@ -78,7 +84,11 @@ impl DaemonState {
             }
             DaemonRequest::MeshList => self.handle_mesh_list(),
             DaemonRequest::MeshStatus { network } => self.handle_mesh_status(&network),
-            DaemonRequest::MeshReady => self.handle_mesh_ready().await,
+            DaemonRequest::NodeStatus => self.handle_node_status().await,
+            DaemonRequest::PeerHealth { machine_id } => self.handle_peer_health(&machine_id).await,
+            DaemonRequest::WaitNodePhase { phase, timeout_ms } => {
+                self.handle_wait_node_phase(phase, timeout_ms).await
+            }
             DaemonRequest::MeshCreate { network } => self.handle_mesh_create(&network),
             DaemonRequest::MachineList => self.handle_machine_list().await,
             DaemonRequest::MachineInit {
@@ -92,6 +102,9 @@ impl DaemonState {
             DaemonRequest::MachineRemove { id, force } => {
                 self.handle_machine_remove(&id, force).await
             }
+            DaemonRequest::MachineAdmit { id } => self.handle_machine_admit(&id).await,
+            DaemonRequest::MachineDrain { id } => self.handle_machine_set_drain(&id, true).await,
+            DaemonRequest::MachineUndrain { id } => self.handle_machine_set_drain(&id, false).await,
             DaemonRequest::MachineOperationList => self.handle_machine_operation_list().await,
             DaemonRequest::MachineOperationGet { id } => {
                 self.handle_machine_operation_get(&id).await
@@ -140,12 +153,17 @@ impl DaemonState {
             | DaemonRequest::DeployExport { .. }
             | DaemonRequest::MeshList
             | DaemonRequest::MeshStatus { .. }
-            | DaemonRequest::MeshReady
+            | DaemonRequest::NodeStatus
+            | DaemonRequest::PeerHealth { .. }
+            | DaemonRequest::WaitNodePhase { .. }
             | DaemonRequest::MeshCreate { .. }
             | DaemonRequest::MachineList
             | DaemonRequest::MachineInit { .. }
             | DaemonRequest::MachineAdd { .. }
             | DaemonRequest::MachineRemove { .. }
+            | DaemonRequest::MachineAdmit { .. }
+            | DaemonRequest::MachineDrain { .. }
+            | DaemonRequest::MachineUndrain { .. }
             | DaemonRequest::MachineOperationList
             | DaemonRequest::MachineOperationGet { .. }
             | DaemonRequest::MachineInviteCreate { .. }
@@ -201,7 +219,11 @@ mod tests {
             DaemonRequest::MeshStatus {
                 network: "alpha".into(),
             },
-            DaemonRequest::MeshReady,
+            DaemonRequest::NodeStatus,
+            DaemonRequest::WaitNodePhase {
+                phase: ployz_types::model::Phase::Running,
+                timeout_ms: 1_000,
+            },
             DaemonRequest::MeshCreate {
                 network: "alpha".into(),
             },
@@ -219,6 +241,12 @@ mod tests {
                 id: "machine-1".into(),
                 force: false,
             },
+            DaemonRequest::MachineDrain {
+                id: "machine-1".into(),
+            },
+            DaemonRequest::MachineUndrain {
+                id: "machine-1".into(),
+            },
             DaemonRequest::MachineOperationList,
             DaemonRequest::MachineOperationGet { id: "op-1".into() },
             DaemonRequest::MachineInviteCreate { ttl_secs: 300 },
@@ -234,9 +262,9 @@ mod tests {
                     owner_id: "founder-a".into(),
                     nonce: "n1".into(),
                     lease_ttl_secs: 30,
-                    operation: CoordinationOperation::MembershipPrepare {
+                    operation: CoordinationOperation::SubnetClaimPrepare {
                         machine_id: "m1".into(),
-                        proposed_subnet: Some("10.210.1.0/24".into()),
+                        subnet: "10.210.1.0/24".into(),
                     },
                 },
             },
@@ -245,9 +273,9 @@ mod tests {
                     owner_id: "founder-a".into(),
                     nonce: "n1".into(),
                     lease_ttl_secs: 30,
-                    operation: CoordinationOperation::MembershipPrepare {
+                    operation: CoordinationOperation::SubnetClaimPrepare {
                         machine_id: "m1".into(),
-                        proposed_subnet: Some("10.210.1.0/24".into()),
+                        subnet: "10.210.1.0/24".into(),
                     },
                 },
             },
@@ -256,9 +284,9 @@ mod tests {
                     owner_id: "founder-a".into(),
                     nonce: "n1".into(),
                     prepare_tokens: vec!["token".into()],
-                    operation: CoordinationOperation::MembershipCommit {
+                    operation: CoordinationOperation::SubnetClaimCommit {
                         machine_id: "m1".into(),
-                        committed_subnet: Some("10.210.1.0/24".into()),
+                        subnet: "10.210.1.0/24".into(),
                     },
                 },
             },
@@ -266,8 +294,9 @@ mod tests {
                 request: CoordinationAbortRequest {
                     owner_id: "founder-a".into(),
                     nonce: "n1".into(),
-                    operation: CoordinationOperation::MembershipAbort {
+                    operation: CoordinationOperation::SubnetClaimAbort {
                         machine_id: "m1".into(),
+                        subnet: "10.210.1.0/24".into(),
                     },
                 },
             },

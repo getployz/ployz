@@ -22,6 +22,7 @@ pub struct InviteClaims {
     #[serde(default)]
     pub issuer_subnet: Option<String>,
     pub allocated_subnet: String,
+    pub challenge_nonce: String,
 }
 
 pub struct InviteTokenContext {
@@ -58,6 +59,10 @@ pub fn issue_invite_token(
     rand::fill(&mut invite_id_bytes);
     let invite_id = hex_string(invite_id_bytes);
 
+    let mut challenge_bytes = [0u8; 32];
+    rand::fill(&mut challenge_bytes);
+    let challenge_nonce = hex_string_32(challenge_bytes);
+
     let signing_key = SigningKey::from_bytes(&identity.private_key.0);
     let issuer_verify_key = URL_SAFE_NO_PAD.encode(signing_key.verifying_key().to_bytes());
 
@@ -74,6 +79,7 @@ pub fn issue_invite_token(
         issuer_wg_public_key,
         issuer_subnet,
         allocated_subnet,
+        challenge_nonce,
     };
 
     let claims_json =
@@ -124,6 +130,15 @@ pub fn parse_and_verify_invite_token(encoded: &str) -> Result<InviteClaims, Stri
 
 fn hex_string(bytes: [u8; 16]) -> String {
     let mut value = String::with_capacity(32);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(&mut value, "{byte:02x}");
+    }
+    value
+}
+
+fn hex_string_32(bytes: [u8; 32]) -> String {
+    let mut value = String::with_capacity(64);
     for byte in bytes {
         use std::fmt::Write as _;
         let _ = write!(&mut value, "{byte:02x}");

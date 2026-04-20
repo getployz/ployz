@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, RwLock};
 
-use ployz_types::model::{DrainState, InstancePhase, RoutingState};
+use ployz_types::model::{InstanceDrainState, InstancePhase, RoutingState};
 use ployz_types::spec::Namespace;
 
 // ---------------------------------------------------------------------------
@@ -87,7 +87,7 @@ pub fn project_dns(state: &RoutingState) -> DnsSnapshot {
         if instance.phase != InstancePhase::Ready || !instance.ready {
             continue;
         }
-        if instance.drain_state != DrainState::None {
+        if instance.drain_state != InstanceDrainState::None {
             continue;
         }
         let Some(overlay_ip) = instance.overlay_ip else {
@@ -150,7 +150,7 @@ mod tests {
             backend_ports: BTreeMap::new(),
             phase: InstancePhase::Ready,
             ready: true,
-            drain_state: DrainState::None,
+            drain_state: InstanceDrainState::None,
             error: None,
             started_at: 0,
             updated_at: 0,
@@ -214,7 +214,7 @@ mod tests {
     fn project_skips_draining() {
         let ip = Ipv4Addr::new(10, 42, 1, 10);
         let mut instance = ready_instance("prod", "web", Some(ip));
-        instance.drain_state = DrainState::Requested;
+        instance.drain_state = InstanceDrainState::Requested;
 
         let mut state = empty_routing_state();
         state.instances.push(instance);

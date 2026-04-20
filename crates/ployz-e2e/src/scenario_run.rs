@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
-use super::environment::{ImageMetadata, image_metadata};
+use super::environment::SharedPayload;
 use super::nodes::Node;
 
 #[derive(Debug, Clone)]
@@ -35,6 +35,7 @@ impl ScenarioRun {
     pub(crate) fn new(
         scenario: Scenario,
         image: &str,
+        shared_payload: &SharedPayload,
         artifacts_root: &Path,
         keep_failed: bool,
     ) -> Result<Self> {
@@ -45,7 +46,6 @@ impl ScenarioRun {
         let run_id = format!("{}-{timestamp}-{}", scenario.as_str(), Uuid::new_v4());
         let root_dir = artifacts_root.join(&run_id);
         let key_dir = root_dir.join("keys");
-        let payload_dir = root_dir.join("payload");
 
         fs::create_dir_all(&key_dir).map_err(|error| {
             Error::Io(format!("create key dir '{}': {error}", key_dir.display()))
@@ -53,17 +53,13 @@ impl ScenarioRun {
 
         let private_key_path = key_dir.join("id_ed25519");
         let public_key_path = key_dir.join("id_ed25519.pub");
-        let ImageMetadata {
-            id: image_id,
-            platform: image_platform,
-        } = image_metadata(image)?;
         let run = Self {
             scenario,
             image: image.to_string(),
-            image_id,
-            image_platform,
+            image_id: shared_payload.image_id.clone(),
+            image_platform: shared_payload.image_platform.clone(),
             root_dir,
-            payload_dir,
+            payload_dir: shared_payload.payload_dir.clone(),
             outer_network: format!("ployz-e2e-net-{run_id}"),
             private_key_path,
             public_key_path,
@@ -71,7 +67,6 @@ impl ScenarioRun {
             keep_failed,
             nodes: Vec::new(),
         };
-        run.ensure_payload()?;
         run.write_metadata()?;
         Ok(run)
     }

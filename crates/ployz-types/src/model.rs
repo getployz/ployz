@@ -101,16 +101,54 @@ pub enum MachineStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
-pub enum Participation {
-    #[display("disabled")]
-    #[strum(serialize = "disabled")]
-    Disabled,
-    #[display("enabled")]
-    #[strum(serialize = "enabled")]
-    Enabled,
-    #[display("draining")]
-    #[strum(serialize = "draining")]
-    Draining,
+#[serde(rename_all = "kebab-case")]
+pub enum Phase {
+    #[display("stopped")]
+    #[strum(serialize = "stopped")]
+    Stopped,
+    #[display("starting")]
+    #[strum(serialize = "starting")]
+    Starting,
+    #[display("provisioning")]
+    #[strum(serialize = "provisioning")]
+    Provisioning,
+    #[display("bootstrapping")]
+    #[strum(serialize = "bootstrapping")]
+    Bootstrapping,
+    #[display("running")]
+    #[strum(serialize = "running")]
+    Running,
+    #[display("stopping")]
+    #[strum(serialize = "stopping")]
+    Stopping,
+}
+
+/// Operator intent for a machine's participation in placement.
+///
+/// `Active` means the machine accepts new workload placement. `Drained` means
+/// the operator has asked it to stop receiving new placements (existing
+/// workloads may still run until removed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Display, EnumString)]
+#[serde(rename_all = "kebab-case")]
+pub enum DrainState {
+    #[display("active")]
+    #[strum(serialize = "active")]
+    Active,
+    #[display("drained")]
+    #[strum(serialize = "drained")]
+    Drained,
+}
+
+impl DrainState {
+    #[must_use]
+    pub fn is_drained(self) -> bool {
+        let Self::Drained = self else { return false };
+        true
+    }
+}
+
+const fn default_machine_admitted() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,8 +160,9 @@ pub struct MachineRecord {
     pub bridge_ip: Option<OverlayIp>,
     pub endpoints: Vec<String>,
     pub status: MachineStatus,
-    pub participation: Participation,
-    pub last_heartbeat: u64,
+    #[serde(default = "default_machine_admitted")]
+    pub admitted: bool,
+    pub drain_state: DrainState,
     pub created_at: u64,
     pub updated_at: u64,
     pub labels: BTreeMap<String, String>,
@@ -132,7 +171,7 @@ pub struct MachineRecord {
 impl MachineRecord {
     /// Create a minimal seed record for bootstrap/peer-discovery purposes.
     ///
-    /// Control-plane fields (`status`, `participation`, timestamps, `labels`)
+    /// Control-plane fields (`status`, `drain_state`, timestamps, `labels`)
     /// are zeroed — the real values arrive once the store is online.
     #[must_use]
     pub fn seed(
@@ -150,8 +189,8 @@ impl MachineRecord {
             bridge_ip: None,
             endpoints,
             status: MachineStatus::Unknown,
-            participation: Participation::Disabled,
-            last_heartbeat: 0,
+            admitted: false,
+            drain_state: DrainState::Active,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -169,6 +208,11 @@ impl MachineRecord {
             cidrs.push(format!("{}/128", bridge_ip.0));
         }
         cidrs
+    }
+
+    #[must_use]
+    pub fn accepts_new_placement(&self) -> bool {
+        self.admitted && !self.drain_state.is_drained()
     }
 }
 
@@ -298,7 +342,7 @@ pub enum InstancePhase {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
-pub enum DrainState {
+pub enum InstanceDrainState {
     #[display("none")]
     #[strum(serialize = "none")]
     None,
@@ -324,7 +368,7 @@ pub struct InstanceStatusRecord {
     pub backend_ports: BTreeMap<String, u16>,
     pub phase: InstancePhase,
     pub ready: bool,
-    pub drain_state: DrainState,
+    pub drain_state: InstanceDrainState,
     pub error: Option<String>,
     pub started_at: u64,
     pub updated_at: u64,
@@ -425,8 +469,8 @@ impl JoinResponse {
             bridge_ip: None,
             endpoints: self.endpoints,
             status: MachineStatus::Unknown,
-            participation: Participation::Disabled,
-            last_heartbeat: 0,
+            admitted: false,
+            drain_state: DrainState::Active,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -496,20 +540,6 @@ mod tests {
         assert_eq!(
             MachineStatus::from_str("unknown"),
             Ok(MachineStatus::Unknown)
-        );
-    }
-
-    #[test]
-    fn participation_display_is_explicit() {
-        assert_eq!(Participation::Disabled.to_string(), "disabled");
-    }
-
-    #[test]
-    fn participation_from_str_rejects_legacy_empty_string() {
-        assert!(Participation::from_str("").is_err());
-        assert_eq!(
-            Participation::from_str("disabled"),
-            Ok(Participation::Disabled)
         );
     }
 }

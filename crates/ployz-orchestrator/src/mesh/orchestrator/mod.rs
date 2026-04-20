@@ -1,10 +1,7 @@
 use crate::error::Error as PortError;
 use crate::mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
 use crate::mesh::probe::{ProbeListenerFamily, ProbeListenerReadiness};
-use crate::mesh::tasks::{
-    HeartbeatCommand, ParticipationCommand, PeerSyncCommand, SelfLivenessCommand, TaskSet,
-    TaskSetError, TaskTimingConfig,
-};
+use crate::mesh::tasks::{PeerSyncCommand, TaskSet, TaskSetError, TaskTimingConfig};
 use crate::model::{MachineId, MachineRecord};
 use ployz_runtime_api::{
     ContainerNetwork, DataplaneFactory, EndpointDiscovery, MeshDataplane, MeshNetwork,
@@ -13,17 +10,18 @@ use ployz_runtime_api::{
 use ployz_store_api::{MachineStore, SyncProbe};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::{RwLock, mpsc};
 
 mod lifecycle;
+mod node_status;
 mod probe_wiring;
 mod readiness;
 mod self_record;
 mod task_runtime;
 
+pub use node_status::MeshNodeStatus;
 pub use readiness::MeshReadyStatus;
 
 pub type Result<T> = std::result::Result<T, MeshError>;
@@ -58,21 +56,18 @@ pub struct Mesh {
     tasks: Option<TaskSet>,
     task_cancel: Option<tokio_util::sync::CancellationToken>,
     peer_sync_tx: Option<mpsc::Sender<PeerSyncCommand>>,
-    heartbeat_tx: Option<mpsc::Sender<HeartbeatCommand>>,
-    self_liveness_tx: Option<mpsc::Sender<SelfLivenessCommand>>,
-    participation_tx: Option<mpsc::Sender<ParticipationCommand>>,
     self_record_tx: Option<mpsc::Sender<crate::mesh::tasks::SelfRecordCommand>>,
     bootstrap_interval: Duration,
     connection_timeout: Duration,
     service_ready_timeout: Duration,
     machine_id: MachineId,
+    boot_id: String,
     listen_port: u16,
     seed_records: Vec<MachineRecord>,
     authoritative_self: Option<Arc<RwLock<MachineRecord>>>,
     allow_disconnected_bootstrap: bool,
     dataplane: Option<Arc<dyn MeshDataplane>>,
     wg_ifindex: u32,
-    heartbeat_started: Arc<AtomicBool>,
     probe_readiness: Arc<ProbeListenerReadiness>,
     task_timing: TaskTimingConfig,
 }
@@ -89,6 +84,7 @@ impl Mesh {
         endpoint_discovery: Arc<dyn EndpointDiscovery>,
         dataplane_factory: Option<Arc<dyn DataplaneFactory>>,
         machine_id: MachineId,
+        boot_id: String,
         listen_port: u16,
     ) -> Self {
         let probe_required_family = if network.runs_probe_listener() {
@@ -108,21 +104,18 @@ impl Mesh {
             tasks: None,
             task_cancel: None,
             peer_sync_tx: None,
-            heartbeat_tx: None,
-            self_liveness_tx: None,
-            participation_tx: None,
             self_record_tx: None,
             bootstrap_interval: Duration::from_millis(500),
             connection_timeout: Duration::from_secs(30),
             service_ready_timeout: Duration::from_secs(15),
             machine_id,
+            boot_id,
             listen_port,
             seed_records: Vec::new(),
             authoritative_self: None,
             allow_disconnected_bootstrap: false,
             dataplane: None,
             wg_ifindex: 0,
-            heartbeat_started: Arc::new(AtomicBool::new(false)),
             probe_readiness: Arc::new(ProbeListenerReadiness::new(probe_required_family)),
             task_timing: TaskTimingConfig::production(),
         }
@@ -175,16 +168,6 @@ impl Mesh {
     #[must_use]
     pub fn peer_sync_sender(&self) -> Option<mpsc::Sender<PeerSyncCommand>> {
         self.peer_sync_tx.clone()
-    }
-
-    #[must_use]
-    pub fn heartbeat_sender(&self) -> Option<mpsc::Sender<HeartbeatCommand>> {
-        self.heartbeat_tx.clone()
-    }
-
-    #[must_use]
-    pub fn participation_sender(&self) -> Option<mpsc::Sender<ParticipationCommand>> {
-        self.participation_tx.clone()
     }
 
     #[must_use]
