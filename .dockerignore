@@ -9,7 +9,6 @@ ebpf/target
 docs
 examples
 lab
-scripts
 !ebpf/target/
 !ebpf/target/bpfel-unknown-none/
 !ebpf/target/bpfel-unknown-none/release/
