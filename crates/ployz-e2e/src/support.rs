@@ -9,6 +9,9 @@ use std::process::{Command, ExitStatus};
 use std::thread;
 use std::time::{Duration, Instant};
 
+const RPC_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
+const RPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+const WAIT_NODE_PHASE_RPC_GRACE: Duration = Duration::from_secs(1);
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 #[derive(Debug)]
@@ -69,7 +72,11 @@ pub(crate) fn daemon_wait_node_phase(
         .enable_all()
         .build()
         .map_err(|error| Error::Io(format!("build wait node phase runtime: {error}")))?;
-    let client = daemon_client(rpc_port);
+    let client = daemon_client_with_timeouts(
+        rpc_port,
+        RPC_CONNECT_TIMEOUT,
+        timeout + WAIT_NODE_PHASE_RPC_GRACE,
+    );
     runtime
         .block_on(async { client.wait_node_phase(phase, timeout_ms).await })
         .map_err(|error| {
@@ -159,8 +166,16 @@ pub(crate) fn pick_free_port() -> Result<u16> {
 }
 
 fn daemon_client(rpc_port: u16) -> DaemonClient<TcpTransport> {
+    daemon_client_with_timeouts(rpc_port, RPC_CONNECT_TIMEOUT, RPC_REQUEST_TIMEOUT)
+}
+
+fn daemon_client_with_timeouts(
+    rpc_port: u16,
+    connect_timeout: Duration,
+    request_timeout: Duration,
+) -> DaemonClient<TcpTransport> {
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, rpc_port));
-    DaemonClient::new(TcpTransport::new(addr))
+    DaemonClient::new(TcpTransport::new(addr).with_timeouts(connect_timeout, request_timeout))
 }
 
 #[cfg(unix)]

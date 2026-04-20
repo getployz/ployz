@@ -13,6 +13,7 @@ use ployz_api::{
 };
 use ployz_orchestrator::ipam::Ipam;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
+use ployz_runtime_api::WireGuardDevice;
 use ployz_sdk::{DaemonClient, TcpTransport};
 use ployz_store_api::MachineStore;
 use ployz_types::model::{MachineId, MachineRecord, Phase};
@@ -25,6 +26,7 @@ use crate::daemon::DaemonState;
 use crate::daemon::ssh::{
     EphemeralSshIdentityFile, SshOptions, run_ssh, run_ssh_with_stdin, ssh_stdio_transport,
 };
+use std::collections::HashSet;
 
 use super::operations::{
     MachineOperationArtifacts, MachineOperationKind, MachineOperationRecord,
@@ -36,8 +38,10 @@ use super::types::{
 };
 
 const INVITE_TTL_SECS: u64 = 600;
+const RPC_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const REMOTE_CLEANUP_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 const REMOTE_JOIN_VERIFY_TIMEOUT: Duration = Duration::from_secs(60);
+const WAIT_NODE_PHASE_RPC_GRACE: Duration = Duration::from_secs(1);
 const REMOTE_STATUS_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" status >/dev/null";
 const REMOTE_PLOYZ_VERSION_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" --version";
 const REMOTE_RPC_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" rpc-stdio";
@@ -280,16 +284,16 @@ impl DaemonState {
 
         let machine_id = MachineId(id.to_string());
         let machine_store = active.store.machine();
-        let record = match super::list::find_machine_record(machine_store.as_ref(), &machine_id).await
-        {
-            Ok(Some(record)) => record,
-            Ok(None) => {
-                return self.err("MACHINE_NOT_FOUND", format!("machine '{id}' not found"));
-            }
-            Err(err) => {
-                return self.err("LIST_FAILED", format!("failed to read machines: {err}"));
-            }
-        };
+        let record =
+            match super::list::find_machine_record(machine_store.as_ref(), &machine_id).await {
+                Ok(Some(record)) => record,
+                Ok(None) => {
+                    return self.err("MACHINE_NOT_FOUND", format!("machine '{id}' not found"));
+                }
+                Err(err) => {
+                    return self.err("LIST_FAILED", format!("failed to read machines: {err}"));
+                }
+            };
 
         if record.admitted {
             return self.ok(format!("machine '{id}' already admitted"));
@@ -329,7 +333,6 @@ impl DaemonState {
             .list_machines()
             .await
             .map_err(|err| format!("failed to list machines for subnet allocation: {err}"))?;
-
         let cluster: Ipv4Net = self
             .cluster_cidr
             .parse()
@@ -362,6 +365,15 @@ impl DaemonState {
             .list_machines()
             .await
             .map_err(|err| format!("failed to list machines for subnet allocation: {err}"))?;
+        let configured_peer_keys: HashSet<_> = active
+            .mesh
+            .network
+            .read_peers()
+            .await
+            .map_err(|err| format!("failed to read configured mesh peers for quorum: {err}"))?
+            .into_iter()
+            .map(|peer| peer.public_key)
+            .collect();
 
         let cluster: Ipv4Net = self
             .cluster_cidr
@@ -378,9 +390,31 @@ impl DaemonState {
         // only explicit denials abort the candidate and trigger a retry.
         let now = now_unix_secs();
         let self_id = &self.identity.machine_id;
-        let peers: Vec<FanOutTarget> = machines
+        let local_authoritative_self = active.mesh.authoritative_self_record().await;
+        let admitted_machines: Vec<&MachineRecord> = machines
             .iter()
-            .filter(|machine| &machine.id != self_id && machine.accepts_new_placement())
+            .filter(|machine| machine.admitted)
+            .filter(|machine| {
+                machine.id == *self_id || configured_peer_keys.contains(&machine.public_key)
+            })
+            .collect();
+        let local_self_missing = local_authoritative_self.as_ref().is_some_and(|record| {
+            record.admitted
+                && admitted_machines
+                    .iter()
+                    .all(|machine| machine.id != *self_id)
+        });
+        let known_cluster_size = admitted_machines.len() + usize::from(local_self_missing);
+        let configured_cluster_size = configured_peer_keys.len() + 1;
+        if known_cluster_size < configured_cluster_size {
+            return Err(format!(
+                "cluster membership view incomplete for quorum: known_cluster_size={known_cluster_size} configured_cluster_size={configured_cluster_size}"
+            ));
+        }
+
+        let peers: Vec<FanOutTarget> = admitted_machines
+            .into_iter()
+            .filter(|machine| &machine.id != self_id)
             .map(|m| FanOutTarget {
                 machine_id: m.id.clone(),
                 overlay_ip: m.overlay_ip,
@@ -405,6 +439,8 @@ impl DaemonState {
                     .handle_coordination_prepare(CoordinationPrepareRequest {
                         owner_id: owner_id.clone(),
                         nonce: nonce.clone(),
+                        // TTL is the backstop for accepted-but-timed-out prepares; don't shorten
+                        // below connect+request budget × 10 without revisiting retry behavior.
                         lease_ttl_secs: 30,
                         operation: CoordinationOperation::SubnetClaimPrepare {
                             machine_id: target.clone(),
@@ -741,7 +777,9 @@ async fn run_machine_add_target(
     let _ = operation_store.update_stage(&mut operation, stage.to_string());
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: remote verified");
 
-    if let Err(err) = admit_machine_membership(context.machine_store.as_ref(), &registered_record).await {
+    if let Err(err) =
+        admit_machine_membership(context.machine_store.as_ref(), &registered_record).await
+    {
         tracing::warn!(
             %target,
             joiner_id = %machine_id,
@@ -812,7 +850,12 @@ async fn admit_machine_membership(
     let mut admitted = match super::list::find_machine_record(machine_store, &record.id).await {
         Ok(Some(current)) => current,
         Ok(None) => record.clone(),
-        Err(err) => return Err(format!("failed to load machine '{}' before admit: {err}", record.id)),
+        Err(err) => {
+            return Err(format!(
+                "failed to load machine '{}' before admit: {err}",
+                record.id
+            ));
+        }
     };
     admitted.admitted = true;
     admitted.updated_at = now_unix_secs();
@@ -829,7 +872,11 @@ async fn wait_for_remote_machine_phase(
 ) -> Result<(), String> {
     let timeout_ms = u64::try_from(REMOTE_JOIN_VERIFY_TIMEOUT.as_millis())
         .map_err(|error| format!("convert join verify timeout: {error}"))?;
-    let client = remote_overlay_client(record, rpc_port);
+    let client = remote_overlay_client(
+        record,
+        rpc_port,
+        REMOTE_JOIN_VERIFY_TIMEOUT + WAIT_NODE_PHASE_RPC_GRACE,
+    );
     client
         .wait_node_phase(phase, timeout_ms)
         .await
@@ -902,8 +949,7 @@ async fn rollback_machine_add_target(
     let mut errors = Vec::new();
     if matches!(
         stage,
-        MachineAddStage::TransientPeerInstalled
-            | MachineAddStage::Finalized
+        MachineAddStage::TransientPeerInstalled | MachineAddStage::Finalized
     ) && let Some(joiner_id) = joiner_id
         && let Err(err) = remove_transient_peer(&context.peer_sync_tx, joiner_id).await
     {
@@ -942,9 +988,13 @@ async fn remote_join_and_read_self_record(
     Ok((payload.record, payload.attestation))
 }
 
-fn remote_overlay_client(record: &MachineRecord, rpc_port: u16) -> DaemonClient<TcpTransport> {
+fn remote_overlay_client(
+    record: &MachineRecord,
+    rpc_port: u16,
+    request_timeout: Duration,
+) -> DaemonClient<TcpTransport> {
     let addr = SocketAddr::new(IpAddr::V6(record.overlay_ip.0), rpc_port);
-    DaemonClient::new(TcpTransport::new(addr))
+    DaemonClient::new(TcpTransport::new(addr).with_timeouts(RPC_CONNECT_TIMEOUT, request_timeout))
 }
 
 fn format_machine_ids(machine_ids: &[MachineId]) -> String {

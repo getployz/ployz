@@ -9,6 +9,8 @@ use ployz_sdk::{DaemonClient, TcpTransport};
 use ployz_types::model::{MachineId, OverlayIp};
 use tokio::task::JoinSet;
 
+const RPC_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
+
 /// A peer daemon to fan a coordination request out to.
 #[derive(Clone)]
 pub(crate) struct FanOutTarget {
@@ -41,9 +43,13 @@ pub(crate) struct FanOutPrepareResult {
     pub(crate) offline: Vec<MachineId>,
 }
 
-fn client(overlay_ip: OverlayIp, rpc_port: u16) -> DaemonClient<TcpTransport> {
+fn client(
+    overlay_ip: OverlayIp,
+    rpc_port: u16,
+    request_timeout: Duration,
+) -> DaemonClient<TcpTransport> {
     let addr = SocketAddr::new(IpAddr::V6(overlay_ip.0), rpc_port);
-    DaemonClient::new(TcpTransport::new(addr))
+    DaemonClient::new(TcpTransport::new(addr).with_timeouts(RPC_CONNECT_TIMEOUT, request_timeout))
 }
 
 /// Fan out a `CoordinationPrepare` to all `targets` in parallel.
@@ -79,13 +85,12 @@ pub(crate) async fn fanout_prepare(
     let mut set: JoinSet<(FanOutTarget, Result<CoordinationPreparePayload, bool>)> = JoinSet::new();
     for target in targets {
         let t = target.clone();
-        let c = client(t.overlay_ip, rpc_port);
+        let c = client(t.overlay_ip, rpc_port, deadline);
         let req = request.clone();
         set.spawn(async move {
-            match tokio::time::timeout(deadline, c.coordination_prepare(req)).await {
-                Ok(Ok(payload)) => (t, Ok(payload)),
-                Ok(Err(_io_err)) => (t, Err(true)), // connection refused / IO → offline
-                Err(_timeout) => (t, Err(true)),    // deadline exceeded → offline
+            match c.coordination_prepare(req).await {
+                Ok(payload) => (t, Ok(payload)),
+                Err(_io_err) => (t, Err(true)), // connection refused / IO → offline
             }
         });
     }
@@ -139,13 +144,10 @@ pub(crate) async fn fanout_commit(
 
     let mut set: JoinSet<bool> = JoinSet::new();
     for target in targets {
-        let c = client(target.overlay_ip, rpc_port);
+        let c = client(target.overlay_ip, rpc_port, deadline);
         let req = request.clone();
         set.spawn(async move {
-            matches!(
-                tokio::time::timeout(deadline, c.coordination_commit(req)).await,
-                Ok(Ok(payload)) if payload.committed
-            )
+            matches!(c.coordination_commit(req).await, Ok(payload) if payload.committed)
         });
     }
 
@@ -182,10 +184,10 @@ pub(crate) async fn fanout_abort(
 
     let mut set: JoinSet<()> = JoinSet::new();
     for target in targets {
-        let c = client(target.overlay_ip, rpc_port);
+        let c = client(target.overlay_ip, rpc_port, ABORT_DEADLINE);
         let req = request.clone();
         set.spawn(async move {
-            let _ = tokio::time::timeout(ABORT_DEADLINE, c.coordination_abort(req)).await;
+            let _ = c.coordination_abort(req).await;
         });
     }
 
@@ -211,10 +213,10 @@ pub(crate) async fn fanout_node_status(
     let mut set: JoinSet<(MachineId, NodeStatusResult)> = JoinSet::new();
     for target in targets {
         let expected = target.machine_id.clone();
-        let c = client(target.overlay_ip, rpc_port);
+        let c = client(target.overlay_ip, rpc_port, deadline);
         set.spawn(async move {
-            let outcome = match tokio::time::timeout(deadline, c.node_status()).await {
-                Ok(Ok(payload)) => {
+            let outcome = match c.node_status().await {
+                Ok(payload) => {
                     if payload.machine_id == expected.0 {
                         NodeStatusResult::Ok(payload)
                     } else {
@@ -224,7 +226,7 @@ pub(crate) async fn fanout_node_status(
                         }
                     }
                 }
-                Ok(Err(_)) | Err(_) => NodeStatusResult::Offline,
+                Err(_) => NodeStatusResult::Offline,
             };
             (expected, outcome)
         });
