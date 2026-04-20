@@ -36,6 +36,8 @@ impl DaemonState {
             | DaemonRequest::MeshList
             | DaemonRequest::MeshStatus { .. }
             | DaemonRequest::NodeStatus
+            | DaemonRequest::PeerHealth { .. }
+            | DaemonRequest::WaitNodePhase { .. }
             | DaemonRequest::MeshCreate { .. }
             | DaemonRequest::MachineList
             | DaemonRequest::MachineInit { .. }
@@ -82,6 +84,10 @@ impl DaemonState {
             DaemonRequest::MeshList => self.handle_mesh_list(),
             DaemonRequest::MeshStatus { network } => self.handle_mesh_status(&network),
             DaemonRequest::NodeStatus => self.handle_node_status().await,
+            DaemonRequest::PeerHealth { machine_id } => self.handle_peer_health(&machine_id).await,
+            DaemonRequest::WaitNodePhase { phase, timeout_ms } => {
+                self.handle_wait_node_phase(phase, timeout_ms).await
+            }
             DaemonRequest::MeshCreate { network } => self.handle_mesh_create(&network),
             DaemonRequest::MachineList => self.handle_machine_list().await,
             DaemonRequest::MachineInit {
@@ -146,6 +152,8 @@ impl DaemonState {
             | DaemonRequest::MeshList
             | DaemonRequest::MeshStatus { .. }
             | DaemonRequest::NodeStatus
+            | DaemonRequest::PeerHealth { .. }
+            | DaemonRequest::WaitNodePhase { .. }
             | DaemonRequest::MeshCreate { .. }
             | DaemonRequest::MachineList
             | DaemonRequest::MachineInit { .. }
@@ -209,6 +217,10 @@ mod tests {
                 network: "alpha".into(),
             },
             DaemonRequest::NodeStatus,
+            DaemonRequest::WaitNodePhase {
+                phase: ployz_types::model::Phase::Running,
+                timeout_ms: 1_000,
+            },
             DaemonRequest::MeshCreate {
                 network: "alpha".into(),
             },

@@ -10,10 +10,7 @@ use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock
 use crate::daemon::store::StoreDriver;
 use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
 use ipnet::Ipv4Net;
-use ployz_api::{
-    DaemonPayload, DaemonResponse, MachineAddOptions, MachinePeerState, MeshSelfRecordPayload,
-    encode_join_response,
-};
+use ployz_api::{DaemonPayload, MachineAddOptions, MachinePeerState, encode_join_response};
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::ipam::Ipam;
 use ployz_store_api::MachineStore;
@@ -86,10 +83,12 @@ async fn machine_list_json_payload_contains_rows() {
 #[tokio::test]
 async fn machine_list_report_uses_local_mesh_readiness() {
     let (_state, store, _) = make_state(MeshStartMode::Stopped).await;
+    let local_record = test_machine_record("founder", "10.210.0.0/24", false, PublicKey([1; 32]));
     let report = machine_list_report(
         StoreDriver::memory_with(store),
         &MachineId("founder".into()),
         0,
+        &local_record,
         &LocalNodeStatus {
             ready: false,
             phase: Phase::Starting,
@@ -214,36 +213,31 @@ async fn machine_add_succeeds_when_peer_unreachable_at_rpc_time() {
     std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
     let fake_ssh = write_fake_ssh(&ssh_dir);
     let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
-    let self_record_response = serde_json::to_string(&DaemonResponse {
-        ok: true,
-        code: "OK".into(),
-        message: encoded.clone(),
-        payload: Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
-            encoded,
-            record: join_response.clone().into_seed_machine_record(),
-        })),
-    })
-    .expect("encode self-record response");
-    let _join_guard = TestSshEnvGuard::set(
-        "PLOYZ_TEST_SELF_RECORD_RESPONSE",
-        Some(self_record_response.into()),
+    let attestor_env = attestor_env_for_joiner(&join_response, [9; 32], &encoded);
+    let _attestor_bin_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_ATTESTOR_BIN",
+        Some(attestor_env.bin_path.into()),
     );
-    let _ready_guard = TestSshEnvGuard::set(
-        "PLOYZ_TEST_NODE_STATUS_RESPONSE",
-        Some(
-            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"node-status\",\"machine_id\":\"joiner-1\",\"boot_id\":\"boot-1\",\"phase\":\"running\",\"ready\":true,\"drain_state\":\"active\",\"version\":\"test-version\"}}".into(),
-        ),
+    let _attestor_seed_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_ATTESTOR_SEED",
+        Some(attestor_env.seed_hex.into()),
     );
+    let _attestor_record_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_ATTESTOR_RECORD",
+        Some(attestor_env.record_json.into()),
+    );
+    let _attestor_encoded_guard =
+        TestSshEnvGuard::set("PLOYZ_TEST_ATTESTOR_ENCODED", Some(encoded.into()));
 
     let response = state
         .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
         .await;
     assert!(response.ok, "{}", response.message);
-    assert!(response.message.contains("awaiting_self_publication: 1"));
+    assert!(response.message.contains("added: 1"));
 
     let machines = store.list_machines().await.expect("list machines");
     assert!(
-        !machines
+        machines
             .into_iter()
             .any(|machine| machine.id.0 == "joiner-1")
     );
@@ -258,7 +252,7 @@ async fn machine_add_succeeds_when_peer_unreachable_at_rpc_time() {
 }
 
 #[tokio::test]
-async fn machine_add_rejects_joiner_that_reports_not_ready() {
+async fn machine_add_accepts_joiner_that_is_running_but_not_ready() {
     let _guard = test_ssh_env_lock().lock().await;
     let (mut state, store, network) = make_state(MeshStartMode::Started).await;
 
@@ -288,41 +282,36 @@ async fn machine_add_rejects_joiner_that_reports_not_ready() {
     std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
     let fake_ssh = write_fake_ssh(&ssh_dir);
     let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
-    let self_record_response = serde_json::to_string(&DaemonResponse {
-        ok: true,
-        code: "OK".into(),
-        message: encoded.clone(),
-        payload: Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
-            encoded,
-            record: join_response.clone().into_seed_machine_record(),
-        })),
-    })
-    .expect("encode self-record response");
-    let _join_guard = TestSshEnvGuard::set(
-        "PLOYZ_TEST_SELF_RECORD_RESPONSE",
-        Some(self_record_response.into()),
+    let attestor_env = attestor_env_for_joiner(&join_response, [10; 32], &encoded);
+    let _attestor_bin_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_ATTESTOR_BIN",
+        Some(attestor_env.bin_path.into()),
     );
-    let _ready_guard = TestSshEnvGuard::set(
-        "PLOYZ_TEST_NODE_STATUS_RESPONSE",
-        Some(
-            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"node-status\",\"machine_id\":\"joiner-2\",\"boot_id\":\"boot-2\",\"phase\":\"running\",\"ready\":false,\"drain_state\":\"active\",\"version\":\"test-version\"}}".into(),
-        ),
+    let _attestor_seed_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_ATTESTOR_SEED",
+        Some(attestor_env.seed_hex.into()),
     );
+    let _attestor_record_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_ATTESTOR_RECORD",
+        Some(attestor_env.record_json.into()),
+    );
+    let _attestor_encoded_guard =
+        TestSshEnvGuard::set("PLOYZ_TEST_ATTESTOR_ENCODED", Some(encoded.into()));
 
     let response = state
         .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
         .await;
-    assert!(!response.ok, "{}", response.message);
-    assert!(response.message.contains("failed_ready: 1"));
+    assert!(response.ok, "{}", response.message);
+    assert!(response.message.contains("added: 1"));
 
     let machines = store.list_machines().await.expect("list machines");
     assert!(
-        !machines
+        machines
             .into_iter()
             .any(|machine| machine.id.0 == "joiner-2")
     );
     assert!(
-        !network
+        network
             .current_peers()
             .into_iter()
             .any(|machine| machine.id.0 == "joiner-2")
@@ -371,7 +360,7 @@ async fn machine_remove_deletes_disabled_record() {
 
 #[tokio::test]
 async fn machine_drain_marks_local_machine_draining() {
-    let (state, store, _) = make_state(MeshStartMode::Stopped).await;
+    let (mut state, store, _) = make_state(MeshStartMode::Started).await;
 
     let response = state.handle_machine_set_drain("founder", true).await;
     assert!(response.ok, "{}", response.message);
@@ -384,11 +373,13 @@ async fn machine_drain_marks_local_machine_draining() {
         panic!("founder not found");
     };
     assert_eq!(peer.drain_state, DrainState::Drained);
+
+    teardown_state(&mut state).await;
 }
 
 #[tokio::test]
 async fn machine_undrain_marks_local_machine_active() {
-    let (state, store, _) = make_state(MeshStartMode::Stopped).await;
+    let (mut state, store, _) = make_state(MeshStartMode::Started).await;
     store
         .upsert_self_machine(&test_machine_record(
             "founder",
@@ -410,6 +401,8 @@ async fn machine_undrain_marks_local_machine_active() {
         panic!("founder not found");
     };
     assert_eq!(peer.drain_state, DrainState::Active);
+
+    teardown_state(&mut state).await;
 }
 
 #[tokio::test]
@@ -564,7 +557,7 @@ fn write_fake_ssh(dir: &PathBuf) -> PathBuf {
     let script = dir.join("ssh");
     std::fs::write(
         &script,
-        "#!/bin/sh\nfor arg in \"$@\"; do\n  command=\"$arg\"\ndone\nif [ \"$command\" = 'set -eu; \"$HOME/.local/bin/ployz\" rpc-stdio' ]; then\n  req=$(cat)\n  case \"$req\" in\n    *'\"MeshJoin\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"joined\",\"payload\":null}'\n      ;;\n    *'\"MeshInit\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"init\",\"payload\":null}'\n      ;;\n    *'\"MeshDestroy\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"destroyed\",\"payload\":null}'\n      ;;\n    *'\"MeshDown\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"down\",\"payload\":null}'\n      ;;\n    *'\"MeshSelfRecord\"'*)\n      printf '%s' \"$PLOYZ_TEST_SELF_RECORD_RESPONSE\"\n      ;;\n    *'\"NodeStatus\"'*)\n      printf '%s' \"$PLOYZ_TEST_NODE_STATUS_RESPONSE\"\n      ;;\n    *)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"ok\",\"payload\":null}'\n      ;;\n  esac\n  exit 0\nfi\ncase \"$command\" in\n  *'--version'*)\n    printf 'ployz test-version'\n    exit 0\n    ;;\n  *'status >/dev/null'*)\n    exit 0\n    ;;\n  *'bash -s -- install'*)\n    cat >/dev/null\n    exit 0\n    ;;\n  *)\n    exit 0\n    ;;\nesac\n",
+        "#!/bin/sh\nfor arg in \"$@\"; do\n  command=\"$arg\"\ndone\nif [ \"$command\" = 'set -eu; \"$HOME/.local/bin/ployz\" rpc-stdio' ]; then\n  req=$(cat)\n  case \"$req\" in\n    *'\"MeshJoin\"'*)\n      printf '%s' \"$req\" | \"$PLOYZ_TEST_ATTESTOR_BIN\"\n      ;;\n    *'\"MeshInit\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"init\",\"payload\":null}'\n      ;;\n    *'\"MeshDestroy\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"destroyed\",\"payload\":null}'\n      ;;\n    *'\"MeshDown\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"down\",\"payload\":null}'\n      ;;\n    *)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"ok\",\"payload\":null}'\n      ;;\n  esac\n  exit 0\nfi\ncase \"$command\" in\n  *'--version'*)\n    printf 'ployz test-version'\n    exit 0\n    ;;\n  *'status >/dev/null'*)\n    exit 0\n    ;;\n  *'bash -s -- install'*)\n    cat >/dev/null\n    exit 0\n    ;;\n  *)\n    exit 0\n    ;;\nesac\n",
     )
     .expect("write fake ssh");
 
@@ -578,4 +571,58 @@ fn write_fake_ssh(dir: &PathBuf) -> PathBuf {
     }
 
     script
+}
+
+struct AttestorEnv {
+    bin_path: String,
+    seed_hex: String,
+    record_json: String,
+}
+
+fn attestor_env_for_joiner(
+    join_response: &JoinResponse,
+    seed: [u8; 32],
+    _encoded: &str,
+) -> AttestorEnv {
+    let bin_path = find_attestor_bin()
+        .to_str()
+        .expect("attestor bin path utf-8")
+        .to_string();
+    let seed_hex = hex_encode(&seed);
+    let record = join_response.clone().into_seed_machine_record();
+    let record_json = serde_json::to_string(&record).expect("encode record");
+    AttestorEnv {
+        bin_path,
+        seed_hex,
+        record_json,
+    }
+}
+
+fn find_attestor_bin() -> PathBuf {
+    let current_exe = std::env::current_exe().expect("current_exe");
+    let candidates = [
+        current_exe.with_file_name("ployz-test-attestor"),
+        current_exe
+            .parent()
+            .and_then(|parent| parent.parent())
+            .map(|grandparent| grandparent.join("ployz-test-attestor"))
+            .unwrap_or_else(|| PathBuf::from("ployz-test-attestor")),
+    ];
+    for candidate in candidates {
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    panic!(
+        "ployz-test-attestor binary not found next to test binary; \
+         run `cargo build --bin ployz-test-attestor -p ployzd` before running tests"
+    );
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }

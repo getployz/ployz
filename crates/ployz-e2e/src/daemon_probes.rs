@@ -1,10 +1,10 @@
 use crate::error::{Error, Result};
 use crate::runner::scenario_run::ScenarioRun;
 use crate::support::{
-    daemon_machine_list_in_container, daemon_node_status_in_container, wait_until,
+    daemon_machine_list, daemon_node_status, daemon_peer_health, daemon_wait_node_phase, wait_until,
 };
-use ployz_api::MachineListPayload;
-use ployz_types::model::DrainState;
+use ployz_api::{MachineListPayload, PeerHealthPayload, PeerProbeStatus};
+use ployz_types::model::{DrainState, Phase};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::time::Duration;
@@ -22,16 +22,70 @@ impl ScenarioRun {
     }
 
     fn wait_node_ready(node: &Node, timeout: Duration) -> Result<()> {
+        daemon_wait_node_phase(node.rpc_port, Phase::Running, timeout)
+            .map(|_| ())
+            .map_err(|error| {
+                Error::Message(format!(
+                    "mesh did not become ready on {}: {error}",
+                    node.name
+                ))
+            })
+    }
+
+    pub(crate) fn wait_peer_health_name(
+        &self,
+        observer_name: &str,
+        peer_name: &str,
+        expected_healthy: bool,
+        expected_probe: PeerProbeStatus,
+        timeout: Duration,
+    ) -> Result<()> {
+        let node = self.node(observer_name)?;
+        let mut last_payload: Option<PeerHealthPayload> = None;
+        let mut last_error: Option<String> = None;
         wait_until(timeout, || {
-            let Ok(payload) = daemon_node_status_in_container(&node.container_name) else {
-                return Ok(false);
+            let payload = match daemon_peer_health(node.rpc_port, peer_name) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    last_error = Some(error.to_string());
+                    return Ok(false);
+                }
             };
-            Ok(payload.ready)
+            last_error = None;
+            last_payload = Some(payload.clone());
+            Ok(payload.healthy == expected_healthy && payload.probe == expected_probe)
         })
         .map_err(|error| {
+            let observed = match (&last_payload, &last_error) {
+                (
+                    Some(PeerHealthPayload {
+                        healthy,
+                        probe,
+                        control_plane_ready,
+                        ..
+                    }),
+                    _,
+                ) => format!(
+                    " last observed: healthy={} probe={} control_plane_ready={}",
+                    healthy,
+                    match probe {
+                        PeerProbeStatus::Reachable => "reachable",
+                        PeerProbeStatus::Unreachable => "unreachable",
+                    },
+                    control_plane_ready
+                ),
+                (None, Some(last_error)) => format!(" last error: {last_error}"),
+                (None, None) => String::from(" no peer-health payload observed"),
+            };
             Error::Message(format!(
-                "mesh did not become ready on {}: {error}",
-                node.name
+                "peer '{peer_name}' on {} did not reach healthy={} probe={}: {error}.{}",
+                node.name,
+                expected_healthy,
+                match expected_probe {
+                    PeerProbeStatus::Reachable => "reachable",
+                    PeerProbeStatus::Unreachable => "unreachable",
+                },
+                observed
             ))
         })
     }
@@ -46,7 +100,7 @@ impl ScenarioRun {
         let joined_ids = machine_ids.join(", ");
 
         wait_until(STATE_WAIT_TIMEOUT, || {
-            let Ok(payload) = daemon_machine_list_in_container(&node.container_name) else {
+            let Ok(payload) = daemon_machine_list(node.rpc_port) else {
                 return Ok(false);
             };
             Ok(machine_ids.iter().all(|machine_id| {
@@ -78,7 +132,7 @@ impl ScenarioRun {
         let mut consecutive_matches: u8 = 0;
 
         let wait_result = wait_until(STATE_WAIT_TIMEOUT, || {
-            let Ok(payload) = daemon_machine_list_in_container(&node.container_name) else {
+            let Ok(payload) = daemon_machine_list(node.rpc_port) else {
                 return Ok(false);
             };
             let snapshot = machine_rows(&payload);
@@ -144,7 +198,7 @@ impl ScenarioRun {
         let wait_result = wait_until(STATE_WAIT_TIMEOUT, || {
             self.tick_nodes(tick_nodes, repeat)?;
 
-            let Ok(payload) = daemon_machine_list_in_container(&node.container_name) else {
+            let Ok(payload) = daemon_machine_list(node.rpc_port) else {
                 return Ok(false);
             };
             let snapshot = machine_rows(&payload);
@@ -250,7 +304,7 @@ impl ScenarioRun {
 
     pub(crate) fn assert_unique_machine_subnets(&self, node_name: &str) -> Result<()> {
         let node = self.node(node_name)?;
-        let payload = daemon_machine_list_in_container(&node.container_name)?;
+        let payload = daemon_machine_list(node.rpc_port)?;
         let mut seen: BTreeMap<String, String> = BTreeMap::new();
 
         for prefix in machine_rows(&payload) {
@@ -323,7 +377,7 @@ fn machine_rows(payload: &MachineListPayload) -> Vec<MachineRow> {
 }
 
 fn append_readiness_diagnostics(report: &mut String, row_id: &str, peer_node: &Node) {
-    match daemon_node_status_in_container(&peer_node.container_name) {
+    match daemon_node_status(peer_node.rpc_port) {
         Ok(payload) => {
             let _ = write!(
                 report,

@@ -1,6 +1,6 @@
 use crate::coordination::fanout::{FanOutTarget, NodeStatusResult, fanout_node_status};
 use crate::daemon::{ActiveMesh, DaemonState};
-use ployz_api::MachinePeerState;
+use ployz_api::{MachinePeerState, PeerHealthPayload, PeerProbeStatus};
 use ployz_runtime_api::{DevicePeer, WireGuardDevice};
 use ployz_types::model::{DrainState, MachineId, MachineRecord, OverlayIp, Phase, PublicKey};
 use std::collections::HashMap;
@@ -31,20 +31,24 @@ impl DaemonState {
             Err(err) => return self.err("LIST_FAILED", format!("failed to list machines: {err}")),
         };
 
+        let authoritative_self = active.mesh.authoritative_self_record().await;
         let local_record = match machines
             .iter()
             .find(|machine| machine.id == self.identity.machine_id)
         {
             Some(record) => record,
-            None => {
-                return self.err(
-                    "SELF_RECORD_MISSING",
-                    format!(
-                        "local machine '{}' is not published in the store",
-                        self.identity.machine_id
-                    ),
-                );
-            }
+            None => match authoritative_self.as_ref() {
+                Some(record) => record,
+                None => {
+                    return self.err(
+                        "SELF_RECORD_MISSING",
+                        format!(
+                            "local machine '{}' is not available in the mesh or store",
+                            self.identity.machine_id
+                        ),
+                    );
+                }
+            },
         };
 
         let device_peers = match active.mesh.network.read_peers().await {
@@ -59,10 +63,8 @@ impl DaemonState {
         let overlay_probe_by_ip =
             probe_overlay_health(machines.as_slice(), &self.identity.machine_id).await;
         let local_ready_status = active.mesh.ready_status().await;
-        let local_draining = active
-            .mesh
-            .authoritative_self_record()
-            .await
+        let local_draining = authoritative_self
+            .as_ref()
             .map(|record| record.drain_state)
             .unwrap_or(local_record.drain_state);
         let targets: Vec<FanOutTarget> = machines
@@ -95,6 +97,74 @@ impl DaemonState {
             &overlay_probe_by_ip,
             &node_status_by_machine,
         ))
+    }
+
+    pub(crate) async fn handle_peer_health(&self, machine_id: &str) -> ployz_api::DaemonResponse {
+        let Some(active) = self.active.as_ref() else {
+            return self.err("NO_RUNNING_NETWORK", "no mesh running");
+        };
+
+        let machines = match active.store.machine().list_machines().await {
+            Ok(machines) => machines,
+            Err(err) => return self.err("LIST_FAILED", format!("failed to list machines: {err}")),
+        };
+        let Some(machine) = machines.iter().find(|machine| machine.id.0 == machine_id) else {
+            return self.err(
+                "PEER_NOT_FOUND",
+                format!("machine '{machine_id}' not found"),
+            );
+        };
+        if machine.id == self.identity.machine_id {
+            return self.err(
+                "INVALID_ARGUMENT",
+                "peer health requires a remote machine id, not the local machine",
+            );
+        }
+
+        let device_peers = match active.mesh.network.read_peers().await {
+            Ok(peers) => peers,
+            Err(err) => {
+                return self.err(
+                    "WIREGUARD_READ_FAILED",
+                    format!("failed to read local wireguard peers: {err}"),
+                );
+            }
+        };
+        let handshake_by_key = handshake_state_map(&device_peers);
+        let overlay_probe = probe_overlay_health_for_machine(machine).await;
+        let node_status = fanout_node_status(
+            &[FanOutTarget {
+                machine_id: machine.id.clone(),
+                overlay_ip: machine.overlay_ip,
+            }],
+            self.coordination_rpc_port,
+            Duration::from_millis(750),
+        )
+        .await
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+        let row = build_node_row(
+            machine,
+            &self.identity.machine_id,
+            &handshake_by_key,
+            overlay_probe,
+            &node_status,
+        );
+        let payload = PeerHealthPayload {
+            machine_id: row.id.clone(),
+            peer_state: row.peer_state,
+            probe: if row.probe_reachable() {
+                PeerProbeStatus::Reachable
+            } else {
+                PeerProbeStatus::Unreachable
+            },
+            control_plane_ready: row.control_plane_ready(),
+            healthy: row.healthy(),
+        };
+        self.ok_with_payload(
+            format!("peer '{}' health loaded", machine_id),
+            Some(ployz_api::DaemonPayload::PeerHealth(payload)),
+        )
     }
 }
 
@@ -296,43 +366,60 @@ fn build_node_rows(
         .iter()
         .filter(|machine| machine.id != *local_machine_id)
         .map(|machine| {
-            let peer = resolve_peer(
-                &machine.id,
-                local_machine_id,
-                LocalPeerStatus {
-                    ready: false,
-                    phase: Phase::Stopped,
-                    drain_state: DrainState::Active,
-                },
-                node_status_by_machine,
-            );
-            let required = !machine.drain_state.is_drained()
-                && peer.drain_state() != Some(DrainState::Drained);
-            let handshake_state = handshake_by_key
-                .get(&machine.public_key)
+            let overlay_probe = overlay_probe_by_ip
+                .get(&machine.overlay_ip)
                 .copied()
-                .unwrap_or(HandshakeState::Absent);
-            NodeRow {
-                id: machine.id.0.clone(),
-                peer_state: peer.peer_state(),
-                reachable: peer.reachable(),
-                ready: peer.ready(),
-                drain_state: peer.drain_state(),
-                phase: peer.phase(),
-                reported_machine_id: peer.reported_machine_id().map(ToString::to_string),
-                reported_boot_id: peer.reported_boot_id().map(|boot_id| boot_id.to_string()),
-                required,
-                handshake: handshake_state,
-                probe: overlay_probe_by_ip
-                    .get(&machine.overlay_ip)
-                    .copied()
-                    .unwrap_or(ProbeState::Unreachable),
-            }
+                .unwrap_or(ProbeState::Unreachable);
+            build_node_row(
+                machine,
+                local_machine_id,
+                handshake_by_key,
+                overlay_probe,
+                node_status_by_machine,
+            )
         })
         .collect();
 
     rows.sort_by(|left, right| left.id.cmp(&right.id));
     rows
+}
+
+fn build_node_row(
+    machine: &MachineRecord,
+    local_machine_id: &MachineId,
+    handshake_by_key: &HashMap<PublicKey, HandshakeState>,
+    overlay_probe: ProbeState,
+    node_status_by_machine: &HashMap<MachineId, NodeStatusResult>,
+) -> NodeRow {
+    let peer = resolve_peer(
+        &machine.id,
+        local_machine_id,
+        LocalPeerStatus {
+            ready: false,
+            phase: Phase::Stopped,
+            drain_state: DrainState::Active,
+        },
+        node_status_by_machine,
+    );
+    let required =
+        !machine.drain_state.is_drained() && peer.drain_state() != Some(DrainState::Drained);
+    let handshake_state = handshake_by_key
+        .get(&machine.public_key)
+        .copied()
+        .unwrap_or(HandshakeState::Absent);
+    NodeRow {
+        id: machine.id.0.clone(),
+        peer_state: peer.peer_state(),
+        reachable: peer.reachable(),
+        ready: peer.ready(),
+        drain_state: peer.drain_state(),
+        phase: peer.phase(),
+        reported_machine_id: peer.reported_machine_id().map(ToString::to_string),
+        reported_boot_id: peer.reported_boot_id().map(|boot_id| boot_id.to_string()),
+        required,
+        handshake: handshake_state,
+        probe: overlay_probe,
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -437,6 +524,18 @@ async fn probe_overlay_health(
         results.insert(ip, state);
     }
     results
+}
+
+async fn probe_overlay_health_for_machine(machine: &MachineRecord) -> ProbeState {
+    let result = tokio::time::timeout(
+        PARTICIPATION_PROBE_TIMEOUT,
+        probe_overlay_ip(machine.overlay_ip),
+    )
+    .await;
+    match result {
+        Ok(Some(())) => ProbeState::Reachable,
+        Ok(None) | Err(_) => ProbeState::Unreachable,
+    }
 }
 
 async fn probe_overlay_ip(overlay_ip: OverlayIp) -> Option<()> {

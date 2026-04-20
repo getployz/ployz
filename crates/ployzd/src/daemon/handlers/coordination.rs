@@ -130,7 +130,7 @@ impl CoordinationLedger {
         &mut self,
         request: CoordinationCommitRequest,
         now: u64,
-    ) -> CoordinationCommitPayload {
+    ) -> (CoordinationCommitPayload, Option<CoordinationOperation>) {
         let CoordinationCommitRequest {
             owner_id,
             nonce,
@@ -138,16 +138,22 @@ impl CoordinationLedger {
             operation,
         } = request;
         if nonce.is_empty() {
-            return CoordinationCommitPayload {
-                committed: false,
-                reason: Some("nonce must not be empty".into()),
-            };
+            return (
+                CoordinationCommitPayload {
+                    committed: false,
+                    reason: Some("nonce must not be empty".into()),
+                },
+                None,
+            );
         }
         if owner_id.is_empty() {
-            return CoordinationCommitPayload {
-                committed: false,
-                reason: Some("owner_id must not be empty".into()),
-            };
+            return (
+                CoordinationCommitPayload {
+                    committed: false,
+                    reason: Some("owner_id must not be empty".into()),
+                },
+                None,
+            );
         }
 
         let key = operation_key(&operation);
@@ -155,51 +161,70 @@ impl CoordinationLedger {
 
         if let Some(existing) = self.committed_by_key.get(&key) {
             if existing.owner_id == owner_id && existing.nonce == nonce {
-                return CoordinationCommitPayload {
-                    committed: true,
-                    reason: None,
-                };
+                return (
+                    CoordinationCommitPayload {
+                        committed: true,
+                        reason: None,
+                    },
+                    None,
+                );
             }
-            return CoordinationCommitPayload {
-                committed: false,
-                reason: Some("key already committed by a different operation".into()),
-            };
+            return (
+                CoordinationCommitPayload {
+                    committed: false,
+                    reason: Some("key already committed by a different operation".into()),
+                },
+                None,
+            );
         }
 
         let Some(prepared) = self.prepared_by_key.get(&key) else {
-            return CoordinationCommitPayload {
-                committed: false,
-                reason: Some("missing prepare for key".into()),
-            };
+            return (
+                CoordinationCommitPayload {
+                    committed: false,
+                    reason: Some("missing prepare for key".into()),
+                },
+                None,
+            );
         };
 
         if prepared.owner_id != owner_id
             || prepared.nonce != nonce
             || !commit_matches_prepared_operation(&prepared.operation, &operation)
         {
-            return CoordinationCommitPayload {
-                committed: false,
-                reason: Some("prepare does not match commit request".into()),
-            };
+            return (
+                CoordinationCommitPayload {
+                    committed: false,
+                    reason: Some("prepare does not match commit request".into()),
+                },
+                None,
+            );
         }
 
         if prepare_tokens.is_empty() {
-            return CoordinationCommitPayload {
-                committed: false,
-                reason: Some("prepare_tokens must include the key prepare token".into()),
-            };
+            return (
+                CoordinationCommitPayload {
+                    committed: false,
+                    reason: Some("prepare_tokens must include the key prepare token".into()),
+                },
+                None,
+            );
         }
 
         if !prepare_tokens
             .iter()
             .any(|token| token == &prepared.prepare_token)
         {
-            return CoordinationCommitPayload {
-                committed: false,
-                reason: Some("prepare token did not match key prepare".into()),
-            };
+            return (
+                CoordinationCommitPayload {
+                    committed: false,
+                    reason: Some("prepare token did not match key prepare".into()),
+                },
+                None,
+            );
         }
 
+        let prepared_operation = prepared.operation.clone();
         let record = CommittedRecord {
             owner_id,
             nonce,
@@ -214,10 +239,13 @@ impl CoordinationLedger {
         }
         self.committed_by_key.insert(key, record);
 
-        CoordinationCommitPayload {
-            committed: true,
-            reason: None,
-        }
+        (
+            CoordinationCommitPayload {
+                committed: true,
+                reason: None,
+            },
+            Some(prepared_operation),
+        )
     }
 
     fn abort(&mut self, request: CoordinationAbortRequest, now: u64) {
@@ -319,54 +347,50 @@ impl DaemonState {
         &self,
         request: CoordinationPrepareRequest,
     ) -> DaemonResponse {
-        let now = now_unix_secs();
-        let payload = match self.coordination_ledger.lock() {
-            Ok(mut ledger) => ledger.prepare(request, now),
-            Err(err) => return self.err("COORDINATION_LOCK_POISONED", format!("{err}")),
-        };
-
-        if !payload.accepted {
-            return self.err_with_payload(
-                "COORDINATION_DENIED",
-                payload
-                    .reason
-                    .clone()
-                    .unwrap_or_else(|| "coordination denied".into()),
+        match local_coordination_prepare(&self.coordination_ledger, request) {
+            Ok(payload) => self.ok_with_payload(
+                "coordination prepare accepted",
                 Some(DaemonPayload::CoordinationPrepare(payload)),
-            );
+            ),
+            Err(LocalCoordinationError::Denied {
+                code,
+                message,
+                payload,
+            }) => self.err_with_payload(
+                code,
+                message,
+                Some(DaemonPayload::CoordinationPrepare(payload)),
+            ),
+            Err(LocalCoordinationError::Lock(reason)) => {
+                self.err("COORDINATION_LOCK_POISONED", reason)
+            }
         }
-
-        self.ok_with_payload(
-            "coordination prepare accepted",
-            Some(DaemonPayload::CoordinationPrepare(payload)),
-        )
     }
 
     pub(crate) async fn handle_coordination_commit(
         &self,
         request: CoordinationCommitRequest,
     ) -> DaemonResponse {
-        let now = now_unix_secs();
-        let payload = match self.coordination_ledger.lock() {
-            Ok(mut ledger) => ledger.commit(request, now),
-            Err(err) => return self.err("COORDINATION_LOCK_POISONED", format!("{err}")),
-        };
-
-        if !payload.committed {
-            return self.err_with_payload(
-                "COORDINATION_COMMIT_DENIED",
-                payload
-                    .reason
-                    .clone()
-                    .unwrap_or_else(|| "coordination commit denied".into()),
+        let membership_store = self.active.as_ref().map(|active| active.store.membership());
+        match local_coordination_commit(&self.coordination_ledger, membership_store, request).await
+        {
+            Ok(payload) => self.ok_with_payload(
+                "coordination commit accepted",
                 Some(DaemonPayload::CoordinationCommit(payload)),
-            );
+            ),
+            Err(LocalCoordinationCommitError::Denied {
+                code,
+                message,
+                payload,
+            }) => self.err_with_payload(
+                code,
+                message,
+                Some(DaemonPayload::CoordinationCommit(payload)),
+            ),
+            Err(LocalCoordinationCommitError::Lock(reason)) => {
+                self.err("COORDINATION_LOCK_POISONED", reason)
+            }
         }
-
-        self.ok_with_payload(
-            "coordination commit accepted",
-            Some(DaemonPayload::CoordinationCommit(payload)),
-        )
     }
 
     pub(crate) async fn handle_coordination_renew(
@@ -411,6 +435,7 @@ fn key_tag(key: &CoordinationLockKey) -> String {
     match key {
         CoordinationLockKey::DeployNamespace { namespace } => format!("deploy:{namespace}"),
         CoordinationLockKey::SubnetClaim { subnet } => format!("subnet:{subnet}"),
+        CoordinationLockKey::Membership { machine_id } => format!("membership:{machine_id}"),
     }
 }
 
@@ -422,6 +447,13 @@ fn operation_key(operation: &CoordinationOperation) -> String {
         | CoordinationOperation::SubnetClaimAbort { subnet, .. } => {
             key_tag(&CoordinationLockKey::SubnetClaim {
                 subnet: subnet.clone(),
+            })
+        }
+        CoordinationOperation::MembershipPrepare { machine_id, .. }
+        | CoordinationOperation::MembershipCommit { machine_id, .. }
+        | CoordinationOperation::MembershipAbort { machine_id, .. } => {
+            key_tag(&CoordinationLockKey::Membership {
+                machine_id: machine_id.clone(),
             })
         }
     }
@@ -456,7 +488,27 @@ fn commit_matches_prepared_operation(
                 subnet: commit_subnet,
             },
         ) => prepared_machine_id == commit_machine_id && prepared_subnet == commit_subnet,
-        _ => false,
+        (
+            CoordinationOperation::MembershipPrepare {
+                machine_id: prepared_machine_id,
+                invite_id: prepared_invite_id,
+                ..
+            },
+            CoordinationOperation::MembershipCommit {
+                machine_id: commit_machine_id,
+                invite_id: commit_invite_id,
+            },
+        ) => prepared_machine_id == commit_machine_id && prepared_invite_id == commit_invite_id,
+        (
+            CoordinationOperation::LockAcquire { .. }
+            | CoordinationOperation::SubnetClaimPrepare { .. }
+            | CoordinationOperation::SubnetClaimCommit { .. }
+            | CoordinationOperation::SubnetClaimAbort { .. }
+            | CoordinationOperation::MembershipPrepare { .. }
+            | CoordinationOperation::MembershipCommit { .. }
+            | CoordinationOperation::MembershipAbort { .. },
+            _,
+        ) => false,
     }
 }
 
@@ -465,6 +517,135 @@ fn now_unix_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .expect("current time should be after unix epoch")
         .as_secs()
+}
+
+pub(crate) enum LocalCoordinationError {
+    Denied {
+        code: &'static str,
+        message: String,
+        payload: CoordinationPreparePayload,
+    },
+    Lock(String),
+}
+
+pub(crate) fn local_coordination_prepare(
+    ledger: &std::sync::Mutex<CoordinationLedger>,
+    request: CoordinationPrepareRequest,
+) -> Result<CoordinationPreparePayload, LocalCoordinationError> {
+    if let CoordinationOperation::MembershipPrepare {
+        machine_id,
+        invite_id,
+        record,
+        attestation,
+    } = &request.operation
+    {
+        if record.id.0 != *machine_id {
+            return Err(LocalCoordinationError::Denied {
+                code: "COORDINATION_DENIED",
+                message: "membership prepare: record machine_id mismatch".to_string(),
+                payload: CoordinationPreparePayload {
+                    accepted: false,
+                    reason: Some("record machine_id mismatch".into()),
+                    prepare_token: None,
+                },
+            });
+        }
+        if let Err(reason) = super::mesh::verify_membership_attestation(
+            record,
+            invite_id,
+            &attestation.challenge_nonce,
+            attestation,
+        ) {
+            return Err(LocalCoordinationError::Denied {
+                code: "COORDINATION_DENIED",
+                message: format!("membership attestation rejected: {reason}"),
+                payload: CoordinationPreparePayload {
+                    accepted: false,
+                    reason: Some(reason),
+                    prepare_token: None,
+                },
+            });
+        }
+    }
+
+    let now = now_unix_secs();
+    let payload = match ledger.lock() {
+        Ok(mut ledger) => ledger.prepare(request, now),
+        Err(err) => return Err(LocalCoordinationError::Lock(err.to_string())),
+    };
+
+    if !payload.accepted {
+        let reason = payload
+            .reason
+            .clone()
+            .unwrap_or_else(|| "coordination denied".into());
+        return Err(LocalCoordinationError::Denied {
+            code: "COORDINATION_DENIED",
+            message: reason,
+            payload,
+        });
+    }
+    Ok(payload)
+}
+
+pub(crate) enum LocalCoordinationCommitError {
+    Denied {
+        code: &'static str,
+        message: String,
+        payload: CoordinationCommitPayload,
+    },
+    Lock(String),
+}
+
+pub(crate) async fn local_coordination_commit(
+    ledger: &std::sync::Mutex<CoordinationLedger>,
+    membership_store: Option<std::sync::Arc<dyn ployz_store_api::MembershipCommitStore>>,
+    request: CoordinationCommitRequest,
+) -> Result<CoordinationCommitPayload, LocalCoordinationCommitError> {
+    let now = now_unix_secs();
+    let (payload, prepared_op) = match ledger.lock() {
+        Ok(mut ledger) => ledger.commit(request, now),
+        Err(err) => return Err(LocalCoordinationCommitError::Lock(err.to_string())),
+    };
+
+    if !payload.committed {
+        let reason = payload
+            .reason
+            .clone()
+            .unwrap_or_else(|| "coordination commit denied".into());
+        return Err(LocalCoordinationCommitError::Denied {
+            code: "COORDINATION_COMMIT_DENIED",
+            message: reason,
+            payload,
+        });
+    }
+
+    if let Some(CoordinationOperation::MembershipPrepare {
+        invite_id, record, ..
+    }) = prepared_op
+    {
+        let Some(store) = membership_store else {
+            return Err(LocalCoordinationCommitError::Denied {
+                code: "MEMBERSHIP_COMMIT_FAILED",
+                message: "no active mesh available to apply membership commit".to_string(),
+                payload: CoordinationCommitPayload {
+                    committed: false,
+                    reason: Some("no active mesh".into()),
+                },
+            });
+        };
+        if let Err(error) = store.commit_membership(&record, &invite_id, now).await {
+            return Err(LocalCoordinationCommitError::Denied {
+                code: "MEMBERSHIP_COMMIT_FAILED",
+                message: format!("failed to apply membership commit: {error}"),
+                payload: CoordinationCommitPayload {
+                    committed: false,
+                    reason: Some(format!("apply membership failed: {error}")),
+                },
+            });
+        }
+    }
+    Ok(payload)
 }
 
 #[cfg(test)]
@@ -506,7 +687,7 @@ mod tests {
             },
             101,
         );
-        assert!(commit.committed);
+        assert!(commit.0.committed);
     }
 
     #[test]
@@ -658,7 +839,7 @@ mod tests {
             },
             101,
         );
-        assert!(!commit.committed);
+        assert!(!commit.0.committed);
     }
 
     #[test]
@@ -693,6 +874,6 @@ mod tests {
             },
             201,
         );
-        assert!(commit.committed);
+        assert!(commit.0.committed);
     }
 }

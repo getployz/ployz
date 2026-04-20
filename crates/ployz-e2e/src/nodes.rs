@@ -12,8 +12,11 @@ pub(crate) struct Node {
     pub(crate) name: String,
     pub(crate) container_name: String,
     pub(crate) ssh_port: u16,
+    pub(crate) rpc_port: u16,
     pub(crate) outer_ip: String,
 }
+
+const DAEMON_TCP_RPC_PORT_IN_CONTAINER: u16 = 9317;
 
 impl ScenarioRun {
     pub(crate) fn node(&self, name: &str) -> Result<&Node> {
@@ -233,6 +236,7 @@ impl ScenarioRun {
     pub(crate) fn start_nodes(&mut self, names: &[&str]) -> Result<()> {
         for name in names {
             let ssh_port = pick_free_port()?;
+            let rpc_port = pick_free_port()?;
             let container_name = format!("ployz-e2e-{}-{name}", self.scenario.as_str());
             let _ = docker_outer(["rm", "-f", container_name.as_str()]);
 
@@ -245,6 +249,7 @@ impl ScenarioRun {
             );
             let payload_mount = format!("{}:/e2e-payload:ro", self.payload_dir.to_string_lossy());
             let ssh_mapping = format!("{ssh_port}:22");
+            let rpc_mapping = format!("{rpc_port}:{DAEMON_TCP_RPC_PORT_IN_CONTAINER}");
             let authorized_key = format!("PLOYZ_E2E_SSH_AUTHORIZED_KEY={}", self.public_key);
             let image_name = format!("PLOYZ_E2E_IMAGE={}", self.image);
             let image_id = format!("PLOYZ_E2E_IMAGE_ID={}", self.image_id);
@@ -269,6 +274,8 @@ impl ScenarioRun {
                 self.outer_network.clone(),
                 "-p".to_string(),
                 ssh_mapping,
+                "-p".to_string(),
+                rpc_mapping,
                 "-e".to_string(),
                 authorized_key,
                 "-e".to_string(),
@@ -321,6 +328,7 @@ impl ScenarioRun {
                 name: (*name).to_string(),
                 container_name,
                 ssh_port,
+                rpc_port,
                 outer_ip,
             };
             self.nodes.push(node);

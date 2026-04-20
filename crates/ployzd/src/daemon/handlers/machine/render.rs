@@ -107,15 +107,12 @@ pub(super) fn render_machine_add_report(report: &MachineAddReport) -> String {
     }
 
     lines.push("machine add summary".into());
-    push_summary_section(
-        &mut lines,
-        "awaiting_self_publication",
-        &report.awaiting_self_publication,
-    );
+    push_summary_section(&mut lines, "added", &report.added);
     push_summary_section(&mut lines, "failed_preflight", &report.failed_preflight);
     push_summary_section(&mut lines, "failed_join", &report.failed_join);
     push_summary_section(&mut lines, "failed_self_record", &report.failed_self_record);
     push_summary_section(&mut lines, "failed_ready", &report.failed_ready);
+    push_summary_section(&mut lines, "failed_finalize", &report.failed_finalize);
     lines.join("\n")
 }
 

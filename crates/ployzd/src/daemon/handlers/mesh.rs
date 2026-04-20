@@ -4,14 +4,14 @@ use crate::mesh_state::bootstrap::{
 use crate::mesh_state::invite::{InviteClaims, parse_and_verify_invite_token};
 use crate::mesh_state::network::NetworkConfig;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use ed25519_dalek::{Signer, SigningKey};
 use ployz_api::{
-    DaemonPayload, DaemonResponse, MeshSelfRecordPayload, MeshStatusPayload, decode_join_response,
-    encode_join_response,
+    DaemonPayload, DaemonResponse, MembershipAttestation, MeshJoinPayload, MeshSelfRecordPayload,
+    MeshStatusPayload, encode_join_response,
 };
 use ployz_api::{MachinePeerState, NodeStatusPayload};
 use ployz_orchestrator::ipam::Ipam;
-use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
-use ployz_types::model::{DrainState, JoinResponse, MachineId, NetworkName, Phase};
+use ployz_types::model::{DrainState, JoinResponse, MachineId, MachineRecord, NetworkName, Phase};
 use ployz_types::time::now_unix_secs;
 use std::collections::HashMap;
 use tracing::warn;
@@ -38,6 +38,11 @@ pub(super) enum PeerView<'a> {
         reported: &'a MachineId,
         boot_id: &'a str,
     },
+}
+
+pub(super) struct NodeView<'a> {
+    record: &'a MachineRecord,
+    peer: PeerView<'a>,
 }
 
 impl PeerView<'_> {
@@ -103,6 +108,65 @@ impl PeerView<'_> {
     }
 }
 
+impl<'a> NodeView<'a> {
+    #[must_use]
+    pub(super) fn new(record: &'a MachineRecord, peer: PeerView<'a>) -> Self {
+        Self { record, peer }
+    }
+
+    #[must_use]
+    pub(super) fn peer_state(&self) -> MachinePeerState {
+        self.peer.peer_state()
+    }
+
+    #[must_use]
+    pub(super) fn reachable(&self) -> bool {
+        self.peer.reachable()
+    }
+
+    #[must_use]
+    pub(super) fn ready(&self) -> Option<bool> {
+        self.peer.ready()
+    }
+
+    #[must_use]
+    pub(super) fn phase(&self) -> Option<Phase> {
+        self.peer.phase()
+    }
+
+    #[must_use]
+    pub(super) fn drain_state(&self) -> DrainState {
+        self.peer.drain_state().unwrap_or(self.record.drain_state)
+    }
+
+    #[must_use]
+    pub(super) fn reported_machine_id(&self) -> Option<&MachineId> {
+        self.peer.reported_machine_id()
+    }
+
+    #[must_use]
+    pub(super) fn reported_boot_id(&self) -> Option<&str> {
+        self.peer.reported_boot_id()
+    }
+
+    #[must_use]
+    pub(super) fn is_running(&self) -> bool {
+        self.phase() == Some(Phase::Running)
+    }
+
+    #[must_use]
+    pub(super) fn is_join_usable(&self) -> bool {
+        matches!(&self.peer, PeerView::Local(_) | PeerView::Live(_))
+            && self.is_running()
+            && !self.drain_state().is_drained()
+    }
+
+    #[must_use]
+    pub(super) fn is_deploy_eligible(&self) -> bool {
+        self.is_join_usable()
+    }
+}
+
 pub(super) fn resolve_peer<'a>(
     machine_id: &MachineId,
     local_machine_id: &MachineId,
@@ -124,6 +188,17 @@ pub(super) fn resolve_peer<'a>(
             PeerView::Mismatch { reported, boot_id }
         }
     }
+}
+
+#[must_use]
+pub(super) fn with_local_machine_record(
+    mut machines: Vec<MachineRecord>,
+    local_record: &MachineRecord,
+) -> Vec<MachineRecord> {
+    if machines.iter().all(|machine| machine.id != local_record.id) {
+        machines.push(local_record.clone());
+    }
+    machines
 }
 
 impl DaemonState {
@@ -291,7 +366,40 @@ impl DaemonState {
             }
         }
 
-        self.ok(format!("joined and started network '{network}'"))
+        let Some(active) = self.active.as_ref() else {
+            return self.err(
+                "NETWORK_START_FAILED",
+                format!("network '{network}' started without an active mesh"),
+            );
+        };
+        let self_record = match mesh_self_record_payload(active, &self.identity).await {
+            Ok(payload) => payload,
+            Err(response) => return response,
+        };
+        let attestation = sign_membership_attestation(
+            &self.identity,
+            &invite.invite_id,
+            &invite.challenge_nonce,
+            &self.identity.machine_id.0,
+        );
+        let payload = MeshJoinPayload {
+            encoded: self_record.encoded,
+            record: self_record.record,
+            attestation,
+        };
+
+        if let Some(self_down_tx) = self.self_down_tx.clone() {
+            spawn_join_watchdog(
+                active.store.machine(),
+                self.identity.machine_id.clone(),
+                self_down_tx,
+            );
+        }
+
+        self.ok_with_payload(
+            format!("joined and started network '{network}'"),
+            Some(DaemonPayload::MeshJoin(payload)),
+        )
     }
 
     pub(crate) fn handle_mesh_create(&self, network: &str) -> DaemonResponse {
@@ -495,69 +603,22 @@ impl DaemonState {
             Some(a) => a,
             None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
         };
-
-        let endpoints = match active.mesh.detect_endpoints().await {
-            Ok(endpoints) => endpoints,
-            Err(error) => {
-                return self.err(
-                    "ENDPOINT_DISCOVERY_FAILED",
-                    format!("failed to detect mesh endpoints: {error}"),
-                );
-            }
+        let payload = match mesh_self_record_payload(active, &self.identity).await {
+            Ok(payload) => payload,
+            Err(response) => return response,
         };
-        let resp = JoinResponse {
-            machine_id: self.identity.machine_id.clone(),
-            public_key: self.identity.public_key.clone(),
-            overlay_ip: active.config.overlay_ip,
-            subnet: Some(active.config.subnet),
-            endpoints,
-        };
-
-        match encode_join_response(&resp) {
-            Ok(encoded) => self.ok_with_payload(
-                encoded.clone(),
-                Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
-                    encoded,
-                    record: resp.into_seed_machine_record(),
-                })),
-            ),
-            Err(e) => self.err(
-                "ENCODE_FAILED",
-                format!("failed to encode self-record: {e}"),
-            ),
-        }
+        self.ok_with_payload(
+            payload.encoded.clone(),
+            Some(DaemonPayload::MeshSelfRecord(payload)),
+        )
     }
 
     pub(crate) async fn handle_mesh_accept(&self, response: &str) -> DaemonResponse {
-        let active = match self.active.as_ref() {
-            Some(a) => a,
-            None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
-        };
-
-        let join_resp = match decode_join_response(response) {
-            Ok(r) => r,
-            Err(e) => return self.err("INVALID_JOIN_RESPONSE", format!("decode failed: {e}")),
-        };
-
-        let Some(peer_sync_tx) = active.mesh.peer_sync_sender() else {
-            return self.err("PEER_SYNC_UNAVAILABLE", "peer sync task is not running");
-        };
-
-        let record = join_resp.into_seed_machine_record();
-        let machine_id = record.id.clone();
-        match peer_sync_tx
-            .send(PeerSyncCommand::UpsertTransient(record))
-            .await
-        {
-            Ok(()) => self.ok(format!(
-                "accepted transient peer '{}' (awaiting self-publication)",
-                machine_id
-            )),
-            Err(e) => self.err(
-                "PEER_SYNC_UNAVAILABLE",
-                format!("failed to install transient peer: {e}"),
-            ),
-        }
+        let _ = response;
+        self.err(
+            "UNSUPPORTED",
+            "mesh accept is obsolete; use `machine add` so membership is committed explicitly",
+        )
     }
 
     fn extract_bootstrap(invite: &InviteClaims) -> Option<BootstrapInfo> {
@@ -581,6 +642,152 @@ impl DaemonState {
     }
 }
 
+pub(crate) fn membership_attestation_message(
+    invite_id: &str,
+    challenge_nonce: &str,
+    machine_id: &str,
+) -> Vec<u8> {
+    let mut buf =
+        Vec::with_capacity(invite_id.len() + challenge_nonce.len() + machine_id.len() + 2);
+    buf.extend_from_slice(invite_id.as_bytes());
+    buf.push(0);
+    buf.extend_from_slice(challenge_nonce.as_bytes());
+    buf.push(0);
+    buf.extend_from_slice(machine_id.as_bytes());
+    buf
+}
+
+pub(crate) fn sign_membership_attestation(
+    identity: &ployz_types::model::Identity,
+    invite_id: &str,
+    challenge_nonce: &str,
+    machine_id: &str,
+) -> MembershipAttestation {
+    let signing_key = SigningKey::from_bytes(&identity.private_key.0);
+    let verify_key = signing_key.verifying_key();
+    let message = membership_attestation_message(invite_id, challenge_nonce, machine_id);
+    let signature = signing_key.sign(&message);
+    MembershipAttestation {
+        challenge_nonce: challenge_nonce.to_string(),
+        ed25519_public_key: URL_SAFE_NO_PAD.encode(verify_key.to_bytes()),
+        signature: URL_SAFE_NO_PAD.encode(signature.to_bytes()),
+    }
+}
+
+pub(crate) fn verify_membership_attestation(
+    record: &MachineRecord,
+    invite_id: &str,
+    challenge_nonce: &str,
+    attestation: &MembershipAttestation,
+) -> Result<(), String> {
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+    if attestation.challenge_nonce != challenge_nonce {
+        return Err("membership challenge nonce mismatch".to_string());
+    }
+
+    let key_bytes = URL_SAFE_NO_PAD
+        .decode(&attestation.ed25519_public_key)
+        .map_err(|error| format!("decode attestation ed25519 key: {error}"))?;
+    let key_arr: [u8; 32] = key_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| "invalid ed25519 key length".to_string())?;
+    let verify_key = VerifyingKey::from_bytes(&key_arr)
+        .map_err(|error| format!("parse attestation ed25519 key: {error}"))?;
+
+    let sig_bytes = URL_SAFE_NO_PAD
+        .decode(&attestation.signature)
+        .map_err(|error| format!("decode attestation signature: {error}"))?;
+    let sig_arr: [u8; 64] = sig_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| "invalid attestation signature length".to_string())?;
+    let signature = Signature::from_bytes(&sig_arr);
+
+    let message = membership_attestation_message(invite_id, challenge_nonce, &record.id.0);
+    verify_key
+        .verify(&message, &signature)
+        .map_err(|error| format!("verify attestation: {error}"))
+}
+
+const JOIN_WATCHDOG_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+const JOIN_WATCHDOG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn spawn_join_watchdog(
+    store: std::sync::Arc<dyn ployz_store_api::MachineStore>,
+    self_id: MachineId,
+    self_down_tx: tokio::sync::mpsc::Sender<String>,
+) {
+    tokio::spawn(async move {
+        let start = std::time::Instant::now();
+        loop {
+            tokio::time::sleep(JOIN_WATCHDOG_POLL_INTERVAL).await;
+            match store.list_machines().await {
+                Ok(machines) => {
+                    if machines.iter().any(|machine| machine.id == self_id) {
+                        tracing::info!(
+                            machine_id = %self_id,
+                            elapsed_ms = start.elapsed().as_millis(),
+                            "join watchdog: self-record observed, exiting"
+                        );
+                        return;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        ?error,
+                        machine_id = %self_id,
+                        "join watchdog: store list_machines failed"
+                    );
+                }
+            }
+            if start.elapsed() >= JOIN_WATCHDOG_TIMEOUT {
+                let reason = format!(
+                    "joiner '{}' did not observe self-record within {:?}; tearing down mesh",
+                    self_id.0, JOIN_WATCHDOG_TIMEOUT
+                );
+                tracing::warn!(%reason, "join watchdog: timeout reached");
+                let _ = self_down_tx.send(reason).await;
+                return;
+            }
+        }
+    });
+}
+
+async fn mesh_self_record_payload(
+    active: &crate::daemon::ActiveMesh,
+    identity: &ployz_types::model::Identity,
+) -> Result<MeshSelfRecordPayload, DaemonResponse> {
+    let endpoints = active
+        .mesh
+        .detect_endpoints()
+        .await
+        .map_err(|error| DaemonResponse {
+            ok: false,
+            code: "ENDPOINT_DISCOVERY_FAILED".into(),
+            message: format!("failed to detect mesh endpoints: {error}"),
+            payload: None,
+        })?;
+    let response = JoinResponse {
+        machine_id: identity.machine_id.clone(),
+        public_key: identity.public_key.clone(),
+        overlay_ip: active.config.overlay_ip,
+        subnet: Some(active.config.subnet),
+        endpoints,
+    };
+    let encoded = encode_join_response(&response).map_err(|error| DaemonResponse {
+        ok: false,
+        code: "ENCODE_FAILED".into(),
+        message: format!("failed to encode self-record: {error}"),
+        payload: None,
+    })?;
+    Ok(MeshSelfRecordPayload {
+        encoded,
+        record: response.into_seed_machine_record(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,6 +808,25 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn membership_attestation_rejects_wrong_challenge_nonce() {
+        let identity = Identity::generate(MachineId("joiner".into()), [9; 32]);
+        let record = JoinResponse {
+            machine_id: identity.machine_id.clone(),
+            public_key: identity.public_key.clone(),
+            overlay_ip: "fd00::9".parse().map(OverlayIp).expect("valid overlay"),
+            subnet: Some("10.210.9.0/24".parse().expect("valid subnet")),
+            endpoints: vec![String::from("203.0.113.9:51820")],
+        }
+        .into_seed_machine_record();
+        let attestation =
+            sign_membership_attestation(&identity, "invite-1", "challenge-a", &record.id.0);
+
+        let error = verify_membership_attestation(&record, "invite-1", "challenge-b", &attestation)
+            .expect_err("mismatched challenge must fail");
+        assert!(error.contains("challenge nonce mismatch"));
+    }
 
     #[tokio::test]
     async fn mesh_join_uses_founder_allocated_subnet_exactly() {
@@ -658,8 +884,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mesh_accept_installs_transient_peer_without_store_write() {
-        let (mut state, store, network) = make_active_state().await;
+    async fn mesh_accept_is_rejected() {
+        let (mut state, _store, _network) = make_active_state().await;
         let response = JoinResponse {
             machine_id: MachineId("joiner".into()),
             public_key: PublicKey([2; 32]),
@@ -670,19 +896,9 @@ mod tests {
         let response = encode_join_response(&response).expect("encode join response");
 
         let result = state.handle_mesh_accept(&response).await;
-        assert!(result.ok, "{}", result.message);
-        assert!(result.message.contains("awaiting self-publication"));
-
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let machines = store.list_machines().await.expect("list machines");
-        assert!(!machines.into_iter().any(|machine| machine.id.0 == "joiner"));
-        assert!(
-            network
-                .current_peers()
-                .into_iter()
-                .any(|machine| machine.id.0 == "joiner")
-        );
+        assert!(!result.ok);
+        assert_eq!(result.code, "UNSUPPORTED");
+        assert!(result.message.contains("machine add"));
 
         if let Some(active) = state.active.as_mut() {
             active.mesh.destroy().await.expect("destroy mesh");

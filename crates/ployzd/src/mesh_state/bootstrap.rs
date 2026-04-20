@@ -210,6 +210,7 @@ mod tests {
             issuer_wg_public_key: Some(URL_SAFE_NO_PAD.encode([7u8; 32])),
             issuer_subnet: Some("10.210.0.0/24".into()),
             allocated_subnet: "10.210.1.0/24".into(),
+            challenge_nonce: "challenge".into(),
         }
     }
 

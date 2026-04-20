@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use crate::model::MachineRecord;
 use crate::model::{
     DeployChangeKind, DeployPreview, MachineId, ServicePlan, ServiceReleaseRecord,
     ServiceReleaseSlot, SlotId, SlotPlan,
@@ -19,14 +20,47 @@ pub async fn preview(
     local_machine_id: &MachineId,
     manifest: &DeployManifest,
 ) -> Result<DeployPreview> {
+    let machines = machine_store.list_machines().await?;
+    let desired_machines = deployable_machines(&machines, local_machine_id);
+    preview_with_candidates(
+        deploy_read,
+        &machines,
+        desired_machines.as_slice(),
+        manifest,
+    )
+    .await
+}
+
+pub async fn preview_with_candidates(
+    deploy_read: &dyn DeployReadStore,
+    machines: &[MachineRecord],
+    candidate_machine_ids: &[MachineId],
+    manifest: &DeployManifest,
+) -> Result<DeployPreview> {
     manifest
         .validate()
         .map_err(|error| Error::operation("deploy_preview", error))?;
     let namespace = &manifest.namespace;
+    let known_machine_ids: BTreeSet<&MachineId> =
+        machines.iter().map(|machine| &machine.id).collect();
+    let unknown_candidates: Vec<&MachineId> = candidate_machine_ids
+        .iter()
+        .filter(|machine_id| !known_machine_ids.contains(machine_id))
+        .collect();
+    if !unknown_candidates.is_empty() {
+        let unknown = unknown_candidates
+            .into_iter()
+            .map(|machine_id| machine_id.0.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(Error::operation(
+            "deploy_preview",
+            format!("candidate machines were not present in the machine snapshot: {unknown}"),
+        ));
+    }
 
     let current_releases = deploy_read.list_service_releases(namespace).await?;
-    let machines = machine_store.list_machines().await?;
-    let desired_machines = deployable_machines(&machines, local_machine_id);
+    let desired_machines = candidate_machine_ids.to_vec();
     let current_release_map: HashMap<String, ServiceReleaseRecord> = current_releases
         .into_iter()
         .map(|record| (record.service.clone(), record))
@@ -156,14 +190,11 @@ pub async fn preview(
 
 pub(crate) fn deployable_machines(
     machines: &[crate::model::MachineRecord],
-    local_machine_id: &MachineId,
+    _local_machine_id: &MachineId,
 ) -> Vec<MachineId> {
     let mut candidates: Vec<MachineId> =
         machines.iter().map(|machine| machine.id.clone()).collect();
     candidates.sort_by(|left, right| left.0.cmp(&right.0));
-    if candidates.is_empty() {
-        return vec![local_machine_id.clone()];
-    }
     candidates
 }
 

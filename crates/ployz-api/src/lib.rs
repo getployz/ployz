@@ -79,6 +79,13 @@ pub enum DaemonRequest {
         network: String,
     },
     NodeStatus,
+    PeerHealth {
+        machine_id: String,
+    },
+    WaitNodePhase {
+        phase: Phase,
+        timeout_ms: u64,
+    },
     MeshJoin {
         token: String,
     },
@@ -161,11 +168,13 @@ pub enum DaemonPayload {
     Status(StatusPayload),
     MeshStatus(MeshStatusPayload),
     NodeStatus(NodeStatusPayload),
+    PeerHealth(PeerHealthPayload),
     MachineList(MachineListPayload),
     MachineAdd(MachineAddPayload),
     MachineRemove(MachineRemovePayload),
     MachineDrain(MachineDrainPayload),
     MeshSelfRecord(MeshSelfRecordPayload),
+    MeshJoin(MeshJoinPayload),
     CoordinationPrepare(CoordinationPreparePayload),
     CoordinationRenew(CoordinationRenewPayload),
     CoordinationCommit(CoordinationCommitPayload),
@@ -209,6 +218,22 @@ pub struct NodeStatusPayload {
     #[serde(default)]
     pub workloads: WorkloadSummary,
     pub version: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PeerProbeStatus {
+    Reachable,
+    Unreachable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerHealthPayload {
+    pub machine_id: String,
+    pub peer_state: MachinePeerState,
+    pub probe: PeerProbeStatus,
+    pub control_plane_ready: bool,
+    pub healthy: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -258,8 +283,6 @@ pub struct MachineAddPayload {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub awaiting_self_publication: Vec<MachineAwaitingSelfPublication>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed_preflight: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed_join: Vec<String>,
@@ -267,12 +290,8 @@ pub struct MachineAddPayload {
     pub failed_self_record: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed_ready: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MachineAwaitingSelfPublication {
-    pub target: String,
-    pub joiner_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_finalize: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -293,20 +312,60 @@ pub struct MeshSelfRecordPayload {
     pub record: MachineRecord,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeshJoinPayload {
+    pub encoded: String,
+    pub record: MachineRecord,
+    pub attestation: MembershipAttestation,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CoordinationLockKey {
     DeployNamespace { namespace: String },
     SubnetClaim { subnet: String },
+    Membership { machine_id: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MembershipAttestation {
+    pub challenge_nonce: String,
+    pub ed25519_public_key: String,
+    pub signature: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CoordinationOperation {
-    LockAcquire { key: CoordinationLockKey },
-    SubnetClaimPrepare { machine_id: String, subnet: String },
-    SubnetClaimCommit { machine_id: String, subnet: String },
-    SubnetClaimAbort { machine_id: String, subnet: String },
+    LockAcquire {
+        key: CoordinationLockKey,
+    },
+    SubnetClaimPrepare {
+        machine_id: String,
+        subnet: String,
+    },
+    SubnetClaimCommit {
+        machine_id: String,
+        subnet: String,
+    },
+    SubnetClaimAbort {
+        machine_id: String,
+        subnet: String,
+    },
+    MembershipPrepare {
+        machine_id: String,
+        invite_id: String,
+        record: MachineRecord,
+        attestation: MembershipAttestation,
+    },
+    MembershipCommit {
+        machine_id: String,
+        invite_id: String,
+    },
+    MembershipAbort {
+        machine_id: String,
+        invite_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

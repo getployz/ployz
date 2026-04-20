@@ -5,8 +5,8 @@ use corro_api_types::{ExecResult, Statement};
 use ployz_config::corrosion as corrosion_config;
 use ployz_store_api::{
     ClusterStore, DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore, InviteStore,
-    MachineEventSubscription, MachineStore, RoutingInvalidationSubscription, RoutingStore,
-    SubscriptionPoll, SyncProbe, SyncStatus,
+    MachineEventSubscription, MachineStore, MembershipCommitStore, RoutingInvalidationSubscription,
+    RoutingStore, SubscriptionPoll, SyncProbe, SyncStatus,
 };
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
@@ -354,6 +354,25 @@ impl DeployCommitStore for CorrosionStore {
     async fn apply_deploy_commit(&self, commit: &DeployCommit) -> Result<()> {
         self.ensure_schema().await?;
         workflows::deploy_commit::apply_deploy_commit(&self.client, commit).await
+    }
+}
+
+#[async_trait]
+impl MembershipCommitStore for CorrosionStore {
+    async fn commit_membership(
+        &self,
+        record: &MachineRecord,
+        invite_id: &str,
+        now_unix_secs: u64,
+    ) -> Result<()> {
+        self.ensure_schema().await?;
+        workflows::membership_commit::commit_membership(
+            &self.client,
+            record,
+            invite_id,
+            now_unix_secs,
+        )
+        .await
     }
 }
 

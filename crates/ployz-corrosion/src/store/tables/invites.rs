@@ -25,15 +25,19 @@ pub(crate) async fn create_invite(client: &CorrClient, invite: &InviteRecord) ->
     }
 }
 
+pub(crate) fn consume_statement(invite_id: &str, now_unix_secs: u64) -> Statement {
+    Statement::WithParams(
+        "DELETE FROM invites WHERE invite_id = ? AND payload_json <> '' AND json_extract(payload_json, '$.expires_at') >= ?".to_string(),
+        vec![invite_id.to_string().into(), (now_unix_secs as i64).into()],
+    )
+}
+
 pub(crate) async fn consume_invite(
     client: &CorrClient,
     invite_id: &str,
     now_unix_secs: u64,
 ) -> Result<()> {
-    let stmt = Statement::WithParams(
-        "DELETE FROM invites WHERE invite_id = ? AND payload_json <> '' AND json_extract(payload_json, '$.expires_at') >= ?".to_string(),
-        vec![invite_id.to_string().into(), (now_unix_secs as i64).into()],
-    );
+    let stmt = consume_statement(invite_id, now_unix_secs);
     let res = client
         .execute(&[stmt], None)
         .await

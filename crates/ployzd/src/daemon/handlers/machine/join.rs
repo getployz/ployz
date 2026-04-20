@@ -3,13 +3,13 @@ use std::path::{Path, PathBuf};
 use crate::coordination::fanout::{
     FanOutTarget, accepted_targets, fanout_abort, fanout_commit, fanout_prepare,
 };
-use crate::mesh_state::invite::parse_and_verify_invite_token;
+use crate::daemon::handlers::mesh;
+use crate::mesh_state::invite::{InviteClaims, parse_and_verify_invite_token};
 use ipnet::Ipv4Net;
 use ployz_api::{
     CoordinationAbortRequest, CoordinationCommitPayload, CoordinationCommitRequest,
     CoordinationOperation, CoordinationPreparePayload, CoordinationPrepareRequest, DaemonPayload,
-    DaemonRequest, DaemonResponse, MachineAddOptions, MachineInstallOptions, MeshSelfRecordPayload,
-    NodeStatusPayload,
+    DaemonRequest, DaemonResponse, MachineAddOptions, MachineInstallOptions, MembershipAttestation,
 };
 use ployz_orchestrator::ipam::Ipam;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
@@ -17,7 +17,7 @@ use ployz_sdk::DaemonClient;
 use ployz_types::model::{MachineId, MachineRecord};
 use ployz_types::time::now_unix_secs;
 use tokio::task::JoinSet;
-use tokio::time::{Duration, Instant, sleep, timeout};
+use tokio::time::{Duration, timeout};
 
 use crate::daemon::DaemonState;
 use crate::daemon::ssh::{
@@ -34,9 +34,6 @@ use super::types::{
 };
 
 const INVITE_TTL_SECS: u64 = 600;
-const REMOTE_READY_TIMEOUT: Duration = Duration::from_secs(30);
-const REMOTE_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
-const REMOTE_READY_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 const REMOTE_CLEANUP_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 const REMOTE_STATUS_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" status >/dev/null";
 const REMOTE_PLOYZ_VERSION_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" --version";
@@ -142,10 +139,10 @@ impl DaemonState {
                     active.config.clone(),
                     MachineAddContext {
                         network_name: active.config.name.0.clone(),
-                        store: active.store.clone(),
                         peer_sync_tx,
                         ssh_options,
                         install: options.install.clone().unwrap_or_default(),
+                        membership_store: active.store.membership(),
                     },
                 )
             }
@@ -240,7 +237,7 @@ impl DaemonState {
                     target,
                     allocated_subnet,
                     token,
-                    invite.invite_id,
+                    invite,
                 )
                 .await
             });
@@ -539,10 +536,12 @@ async fn run_machine_add_target(
     target: String,
     allocated_subnet: Ipv4Net,
     token: String,
-    invite_id: String,
+    invite: InviteClaims,
 ) -> MachineAddTargetResult {
     let mut stage;
     let mut joiner_id = None;
+    let invite_id = invite.invite_id;
+    let challenge_nonce = invite.challenge_nonce;
 
     tracing::info!(%target, "machine add target: bootstrap starting");
     if let Err(err) =
@@ -563,49 +562,24 @@ async fn run_machine_add_target(
     tracing::info!(%target, "machine add target: bootstrap complete");
 
     tracing::info!(%target, "machine add target: remote join starting");
-    match remote_rpc_expect_ok(
-        &target,
-        DaemonRequest::MeshJoin { token },
-        &context.ssh_options,
-    )
-    .await
-    {
-        Ok(()) => {}
-        Err(err) if err.contains("already exists") || err.contains("already running") => {
-            tracing::info!(target, "remote already joined, continuing to self-record");
-        }
-        Err(err) => {
-            let _ = operation_store.update_status(
-                &mut operation,
-                MachineOperationStatus::Failed,
-                Some(err.clone()),
-            );
-            return MachineAddTargetResult::Failed {
-                target,
-                failure: MachineAddFailure::Join { reason: err },
-            };
-        }
-    }
+    let (record, attestation) =
+        match remote_join_and_read_self_record(&target, token, &context.ssh_options).await {
+            Ok(result) => result,
+            Err(err) => {
+                let _ = operation_store.update_status(
+                    &mut operation,
+                    MachineOperationStatus::Failed,
+                    Some(err.clone()),
+                );
+                return MachineAddTargetResult::Failed {
+                    target,
+                    failure: MachineAddFailure::Join { reason: err },
+                };
+            }
+        };
     stage = MachineAddStage::Joined;
     let _ = operation_store.update_stage(&mut operation, stage.to_string());
     tracing::info!(%target, "machine add target: remote join complete");
-
-    tracing::info!(%target, "machine add target: self-record starting");
-    let record = match remote_self_record(&target, &context.ssh_options).await {
-        Ok(record) => record,
-        Err(err) => {
-            let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
-            let _ = operation_store.update_status(
-                &mut operation,
-                MachineOperationStatus::Failed,
-                Some(err.clone()),
-            );
-            return MachineAddTargetResult::Failed {
-                target,
-                failure: MachineAddFailure::SelfRecord { reason: err },
-            };
-        }
-    };
     stage = MachineAddStage::SelfRecorded;
     let _ = operation_store.update_stage(&mut operation, stage.to_string());
     tracing::info!(%target, "machine add target: self-record complete");
@@ -635,7 +609,7 @@ async fn run_machine_add_target(
     let _ = operation_store.save(&operation);
     joiner_id = Some(machine_id.clone());
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: transient peer install starting");
-    if let Err(err) = upsert_transient_peer(&context.peer_sync_tx, record).await {
+    if let Err(err) = upsert_transient_peer(&context.peer_sync_tx, record.clone()).await {
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
             &mut operation,
@@ -651,13 +625,31 @@ async fn run_machine_add_target(
     let _ = operation_store.update_stage(&mut operation, stage.to_string());
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: transient peer installed");
 
-    tracing::info!(%target, joiner_id = %machine_id, "machine add target: waiting for remote ready");
-    if let Err(err) = wait_for_remote_ready(&target, &context.ssh_options).await {
+    stage = MachineAddStage::Ready;
+    let _ = operation_store.update_stage(&mut operation, stage.to_string());
+    tracing::info!(%target, joiner_id = %machine_id, "machine add target: remote ready");
+
+    tracing::info!(
+        %target,
+        joiner_id = %machine_id,
+        invite_id,
+        "machine add target: finalizing membership"
+    );
+    if let Err(err) = commit_machine_add_membership(
+        &context,
+        &invite_id,
+        &challenge_nonce,
+        &record,
+        &attestation,
+    )
+    .await
+    {
         tracing::warn!(
             %target,
             joiner_id = %machine_id,
+            invite_id,
             error = %err,
-            "machine add target: remote ready failed"
+            "machine add target: membership finalization failed"
         );
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
@@ -667,39 +659,8 @@ async fn run_machine_add_target(
         );
         return MachineAddTargetResult::Failed {
             target,
-            failure: MachineAddFailure::Ready { reason: err },
+            failure: MachineAddFailure::Finalize { reason: err },
         };
-    }
-    stage = MachineAddStage::Ready;
-    let _ = operation_store.update_stage(&mut operation, stage.to_string());
-    tracing::info!(%target, joiner_id = %machine_id, "machine add target: remote ready");
-
-    tracing::info!(
-        %target,
-        joiner_id = %machine_id,
-        invite_id,
-        "machine add target: finalizing invite"
-    );
-    if let Err(err) = context
-        .store
-        .invite()
-        .consume_invite(&invite_id, now_unix_secs())
-        .await
-    {
-        tracing::warn!(
-            %target,
-            joiner_id = %machine_id,
-            invite_id,
-            error = %err,
-            "machine add target: invite finalization failed"
-        );
-    } else {
-        tracing::info!(
-            %target,
-            joiner_id = %machine_id,
-            invite_id,
-            "machine add target: invite finalized"
-        );
     }
 
     let _ = operation_store.update_stage(&mut operation, MachineAddStage::Finalized.to_string());
@@ -707,12 +668,35 @@ async fn run_machine_add_target(
     tracing::info!(
         %target,
         joiner_id = %machine_id,
-        "machine add target: awaiting self-publication"
+        invite_id,
+        "machine add target: membership finalized"
     );
-    MachineAddTargetResult::AwaitingSelfPublication {
+    MachineAddTargetResult::Added {
         target,
         joiner_id: machine_id,
     }
+}
+
+async fn commit_machine_add_membership(
+    context: &MachineAddContext,
+    invite_id: &str,
+    challenge_nonce: &str,
+    record: &MachineRecord,
+    attestation: &MembershipAttestation,
+) -> Result<(), String> {
+    if let Err(reason) =
+        mesh::verify_membership_attestation(record, invite_id, challenge_nonce, attestation)
+    {
+        return Err(format!("membership attestation rejected: {reason}"));
+    }
+
+    let now = now_unix_secs();
+    context
+        .membership_store
+        .commit_membership(record, invite_id, now)
+        .await
+        .map_err(|error| format!("failed to commit membership: {error}"))?;
+    Ok(())
 }
 
 async fn upsert_transient_peer(
@@ -771,80 +755,19 @@ async fn rollback_machine_add_target(
     Err(errors.join("; "))
 }
 
-async fn wait_for_remote_ready(target: &str, ssh_options: &SshOptions) -> Result<(), String> {
-    let deadline = Instant::now() + REMOTE_READY_TIMEOUT;
-    let mut attempt: u32 = 0;
-
-    loop {
-        attempt += 1;
-        let last_error = match timeout(
-            REMOTE_READY_RPC_TIMEOUT,
-            remote_node_status(target, ssh_options),
-        )
-        .await
-        {
-            Ok(Ok(payload)) => {
-                let response_message = format!(
-                    "ready={}, phase={}, drain_state={}, machine_id={}, boot_id={}, version={}",
-                    payload.ready,
-                    payload.phase,
-                    payload.drain_state,
-                    payload.machine_id,
-                    payload.boot_id,
-                    payload.version,
-                );
-                if remote_join_ready(&payload) {
-                    tracing::debug!(%target, attempt, "remote node status confirmed ready");
-                    return Ok(());
-                }
-                tracing::debug!(%target, attempt, ?payload, "remote node not ready yet");
-                format!("node status reported not ready yet: {response_message}")
-            }
-            Ok(Err(err)) => {
-                tracing::debug!(%target, attempt, error = %err, "remote readiness rpc failed");
-                err
-            }
-            Err(_) => {
-                let err = format!(
-                    "rpc readiness probe exceeded {:?}",
-                    REMOTE_READY_RPC_TIMEOUT
-                );
-                tracing::debug!(%target, attempt, error = %err, "remote readiness rpc timed out");
-                err
-            }
-        };
-
-        if Instant::now() >= deadline {
-            return Err(format!(
-                "timed out waiting for remote node readiness after {:?}: {last_error}",
-                REMOTE_READY_TIMEOUT,
-            ));
-        }
-
-        sleep(REMOTE_READY_POLL_INTERVAL).await;
-    }
-}
-
-async fn remote_self_record(
+async fn remote_join_and_read_self_record(
     target: &str,
+    token: String,
     ssh_options: &SshOptions,
-) -> Result<MachineRecord, String> {
-    let transport = ssh_stdio_transport(target, REMOTE_RPC_COMMAND, ssh_options);
-    let client = DaemonClient::new(transport);
-    client
-        .mesh_self_record()
-        .await
-        .map(|MeshSelfRecordPayload { record, .. }| record)
-        .map_err(|error| {
-            format!(
-                "remote rpc via '{}' failed: {error}",
-                client.transport().command_display()
-            )
-        })
-}
-
-fn remote_join_ready(payload: &NodeStatusPayload) -> bool {
-    payload.ready
+) -> Result<(MachineRecord, MembershipAttestation), String> {
+    let response = remote_rpc(target, DaemonRequest::MeshJoin { token }, ssh_options).await?;
+    if !response.ok {
+        return Err(remote_response_error(&response));
+    }
+    let Some(DaemonPayload::MeshJoin(payload)) = response.payload else {
+        return Err("remote join did not include mesh-join payload".into());
+    };
+    Ok((payload.record, payload.attestation))
 }
 
 fn format_machine_ids(machine_ids: &[MachineId]) -> String {
@@ -863,20 +786,6 @@ async fn remote_rpc(
     client.request(request).await.map_err(|err| {
         format!(
             "remote rpc via '{}' failed: {err}",
-            client.transport().command_display()
-        )
-    })
-}
-
-async fn remote_node_status(
-    target: &str,
-    ssh_options: &SshOptions,
-) -> Result<NodeStatusPayload, String> {
-    let transport = ssh_stdio_transport(target, REMOTE_RPC_COMMAND, ssh_options);
-    let client = DaemonClient::new(transport);
-    client.node_status().await.map_err(|error| {
-        format!(
-            "remote rpc via '{}' failed: {error}",
             client.transport().command_display()
         )
     })

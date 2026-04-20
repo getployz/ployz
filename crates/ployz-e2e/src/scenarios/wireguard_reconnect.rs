@@ -1,9 +1,9 @@
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::runner::ScenarioRun;
-use crate::support::wait_until;
+use ployz_api::PeerProbeStatus;
 use std::time::Duration;
 
-const DOCTOR_WAIT_TIMEOUT: Duration = Duration::from_secs(180);
+const PEER_HEALTH_WAIT_TIMEOUT: Duration = Duration::from_secs(45);
 
 pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
     let founder_side = ["founder"];
@@ -23,16 +23,26 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
     run.wait_node_ready_name("peer")?;
 
     run.log_progress("wait initial peer connectivity");
-    wait_for_doctor_peer_status(run, "founder", "peer", "healthy", "reachable")?;
-    wait_for_doctor_peer_status(run, "peer", "founder", "healthy", "reachable")?;
+    run.wait_peer_health_name(
+        "founder",
+        "peer",
+        true,
+        PeerProbeStatus::Reachable,
+        PEER_HEALTH_WAIT_TIMEOUT,
+    )?;
 
     run.log_progress("install partition");
     run.partition_groups(&founder_side, &peer_side)?;
     run.log_progress("tick partitioned nodes");
     run.tick_nodes(&nodes, 3)?;
     run.log_progress("wait peer connectivity to drop");
-    wait_for_doctor_peer_status(run, "founder", "peer", "blocked", "unreachable")?;
-    wait_for_doctor_peer_status(run, "peer", "founder", "blocked", "unreachable")?;
+    run.wait_peer_health_name(
+        "founder",
+        "peer",
+        false,
+        PeerProbeStatus::Unreachable,
+        PEER_HEALTH_WAIT_TIMEOUT,
+    )?;
 
     run.log_progress("clear partition");
     run.clear_partition_rules()?;
@@ -46,52 +56,13 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
         3,
     )?;
     run.log_progress("wait peer connectivity to reconnect");
-    wait_for_doctor_peer_status(run, "founder", "peer", "healthy", "reachable")?;
-    wait_for_doctor_peer_status(run, "peer", "founder", "healthy", "reachable")?;
+    run.wait_peer_health_name(
+        "founder",
+        "peer",
+        true,
+        PeerProbeStatus::Reachable,
+        PEER_HEALTH_WAIT_TIMEOUT,
+    )?;
     run.log_progress("scenario complete");
     Ok(())
-}
-
-fn wait_for_doctor_peer_status(
-    run: &ScenarioRun,
-    node_name: &str,
-    peer_name: &str,
-    health: &str,
-    probe_status: &str,
-) -> Result<()> {
-    let mut last_report = String::new();
-
-    wait_until(DOCTOR_WAIT_TIMEOUT, || {
-        let output = run.ssh_run_name(node_name, "ployzd doctor")?;
-        if !output.status.success() {
-            last_report = output.combined();
-            return Ok(false);
-        }
-
-        last_report = output.stdout;
-        Ok(doctor_report_matches(
-            &last_report,
-            peer_name,
-            health,
-            probe_status,
-        ))
-    })
-    .map_err(|error| {
-        Error::Message(format!(
-            "doctor on {node_name} did not report peer '{peer_name}' as node-health={health} probe={probe_status}: {error}\nlast report:\n{last_report}"
-        ))
-    })
-}
-
-fn doctor_report_matches(report: &str, peer_name: &str, health: &str, probe_status: &str) -> bool {
-    if !report.contains(&format!("node-health: {health}")) {
-        return false;
-    }
-
-    report.lines().any(|line| {
-        let trimmed = line.trim_start();
-        trimmed.starts_with(peer_name)
-            && trimmed.contains("node=")
-            && trimmed.contains(&format!("probe={probe_status}"))
-    })
 }

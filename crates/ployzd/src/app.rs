@@ -106,6 +106,27 @@ pub async fn run_daemon(
         runtime,
     )));
 
+    let (self_down_tx, mut self_down_rx) = mpsc::channel::<String>(4);
+    {
+        let mut guard = state.write().await;
+        guard.self_down_tx = Some(self_down_tx);
+    }
+    let self_down_state = Arc::clone(&state);
+    tokio::spawn(async move {
+        while let Some(reason) = self_down_rx.recv().await {
+            tracing::warn!(%reason, "join watchdog: triggering mesh_down");
+            let mut guard = self_down_state.write().await;
+            let response = guard.handle_mesh_down().await;
+            if !response.ok {
+                tracing::warn!(
+                    code = %response.code,
+                    message = %response.message,
+                    "join watchdog: mesh_down returned error"
+                );
+            }
+        }
+    });
+
     resume_active_network(&state).await;
     reconcile_startup_operations(&state).await;
 

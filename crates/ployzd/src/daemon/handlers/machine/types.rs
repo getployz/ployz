@@ -1,23 +1,23 @@
 use crate::daemon::ssh::SshOptions;
-use crate::daemon::store::StoreDriver;
 use ipnet::Ipv4Net;
 use ployz_api::{
-    MachineAddPayload, MachineAwaitingSelfPublication, MachineInstallOptions, MachineListPayload,
-    MachineListRow, MachinePeerState,
+    MachineAddPayload, MachineInstallOptions, MachineListPayload, MachineListRow, MachinePeerState,
 };
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
+use ployz_store_api::MembershipCommitStore;
 use ployz_types::model::{DrainState, MachineId, Phase};
 use std::fmt;
 use std::str::FromStr;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 #[derive(Clone)]
 pub(super) struct MachineAddContext {
     pub network_name: String,
-    pub store: StoreDriver,
     pub peer_sync_tx: mpsc::Sender<PeerSyncCommand>,
     pub ssh_options: SshOptions,
     pub install: MachineInstallOptions,
+    pub membership_store: Arc<dyn MembershipCommitStore>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,7 +68,7 @@ pub(super) enum MachineAddFailure {
     Preflight { reason: String },
     Join { reason: String },
     SelfRecord { reason: String },
-    Ready { reason: String },
+    Finalize { reason: String },
 }
 
 impl MachineAddFailure {
@@ -78,14 +78,14 @@ impl MachineAddFailure {
             Self::Preflight { reason }
             | Self::Join { reason }
             | Self::SelfRecord { reason }
-            | Self::Ready { reason } => reason,
+            | Self::Finalize { reason } => reason,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum MachineAddTargetResult {
-    AwaitingSelfPublication {
+    Added {
         target: String,
         joiner_id: MachineId,
     },
@@ -98,24 +98,19 @@ pub(super) enum MachineAddTargetResult {
 #[derive(Debug, Clone, Default)]
 pub(super) struct MachineAddReport {
     pub warnings: Vec<String>,
-    pub awaiting_self_publication: Vec<String>,
+    pub added: Vec<String>,
     pub failed_preflight: Vec<String>,
     pub failed_join: Vec<String>,
     pub failed_self_record: Vec<String>,
     pub failed_ready: Vec<String>,
-    awaiting_payload: Vec<MachineAwaitingSelfPublication>,
+    pub failed_finalize: Vec<String>,
 }
 
 impl MachineAddReport {
     pub(super) fn push(&mut self, outcome: MachineAddTargetResult) {
         match outcome {
-            MachineAddTargetResult::AwaitingSelfPublication { target, joiner_id } => {
-                self.awaiting_payload.push(MachineAwaitingSelfPublication {
-                    target: target.clone(),
-                    joiner_id: joiner_id.0.clone(),
-                });
-                self.awaiting_self_publication
-                    .push(format!("{target} -> {}", joiner_id.0));
+            MachineAddTargetResult::Added { target, joiner_id } => {
+                self.added.push(format!("{target} -> {}", joiner_id.0));
             }
             MachineAddTargetResult::Failed { target, failure } => {
                 let line = format!("{target}: {}", failure.reason());
@@ -123,7 +118,7 @@ impl MachineAddReport {
                     MachineAddFailure::Preflight { .. } => self.failed_preflight.push(line),
                     MachineAddFailure::Join { .. } => self.failed_join.push(line),
                     MachineAddFailure::SelfRecord { .. } => self.failed_self_record.push(line),
-                    MachineAddFailure::Ready { .. } => self.failed_ready.push(line),
+                    MachineAddFailure::Finalize { .. } => self.failed_finalize.push(line),
                 }
             }
         }
@@ -134,18 +129,18 @@ impl MachineAddReport {
         !self.failed_preflight.is_empty()
             || !self.failed_join.is_empty()
             || !self.failed_self_record.is_empty()
-            || !self.failed_ready.is_empty()
+            || !self.failed_finalize.is_empty()
     }
 
     #[must_use]
     pub(super) fn payload(&self) -> MachineAddPayload {
         MachineAddPayload {
             warnings: self.warnings.clone(),
-            awaiting_self_publication: self.awaiting_payload.clone(),
             failed_preflight: self.failed_preflight.clone(),
             failed_join: self.failed_join.clone(),
             failed_self_record: self.failed_self_record.clone(),
             failed_ready: self.failed_ready.clone(),
+            failed_finalize: self.failed_finalize.clone(),
         }
     }
 }

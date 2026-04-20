@@ -21,15 +21,19 @@ pub(crate) async fn list_machines(client: &CorrClient) -> Result<Vec<MachineReco
         .collect()
 }
 
-pub(crate) async fn upsert_self_machine(client: &CorrClient, record: &MachineRecord) -> Result<()> {
+pub(crate) fn upsert_statement(record: &MachineRecord) -> Result<Statement> {
     let payload_json = serde_json::to_string(record)
         .map_err(|e| Error::operation("upsert_self_machine", format!("serialize: {e}")))?;
-    let stmt = Statement::WithParams(
+    Ok(Statement::WithParams(
         "INSERT INTO machines (machine_id, payload_json) VALUES (?, ?) \
          ON CONFLICT(machine_id) DO UPDATE SET payload_json=excluded.payload_json"
             .to_string(),
         vec![record.id.0.clone().into(), payload_json.into()],
-    );
+    ))
+}
+
+pub(crate) async fn upsert_self_machine(client: &CorrClient, record: &MachineRecord) -> Result<()> {
+    let stmt = upsert_statement(record)?;
     exec_one(client, &[stmt], "upsert_self_machine").await
 }
 

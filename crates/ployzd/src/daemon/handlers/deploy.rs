@@ -6,23 +6,19 @@ use crate::coordination::fanout::{
     fanout_prepare,
 };
 use crate::daemon::DaemonState;
-use async_trait::async_trait;
 use ployz_api::{
     CoordinationAbortRequest, CoordinationLockKey, CoordinationOperation,
     CoordinationPrepareRequest, DaemonPayload, DaemonResponse, DeployApplyPayload,
     DeployExportPayload, DeployOptions, DeployPreviewPayload,
 };
 use ployz_config::RuntimeTarget;
-use ployz_orchestrator::deploy::{apply, export_manifest, preview};
+use ployz_orchestrator::deploy::{apply_with_candidates, export_manifest, preview_with_candidates};
 use ployz_runtime_backends::deploy::DefaultDeploySessionFactory;
-use ployz_store_api::{MachineStore, MachineSubscription};
-use ployz_types::Result as TypesResult;
-use ployz_types::model::{DrainState, MachineId, Phase};
+use ployz_types::model::{DrainState, MachineId};
 use ployz_types::spec::{DeployManifest, Namespace};
 use ployz_types::time::now_unix_secs;
-use std::sync::Arc;
 
-use super::mesh::{LocalPeerStatus, PeerView, resolve_peer};
+use super::mesh::{LocalPeerStatus, NodeView, resolve_peer, with_local_machine_record};
 
 const NODE_STATUS_DEADLINE: Duration = Duration::from_millis(750);
 
@@ -31,37 +27,6 @@ struct DeployNodeSelection {
     unreachable: Vec<MachineId>,
     drained: Vec<MachineId>,
     invalid_identity: Vec<MachineId>,
-}
-
-struct EligibleMachineStore {
-    inner: Arc<dyn MachineStore>,
-    eligible: BTreeSet<MachineId>,
-}
-
-#[async_trait]
-impl MachineStore for EligibleMachineStore {
-    async fn list_machines(&self) -> TypesResult<Vec<ployz_types::model::MachineRecord>> {
-        let machines = self.inner.list_machines().await?;
-        Ok(machines
-            .into_iter()
-            .filter(|machine| self.eligible.contains(&machine.id))
-            .collect())
-    }
-
-    async fn upsert_self_machine(
-        &self,
-        record: &ployz_types::model::MachineRecord,
-    ) -> TypesResult<()> {
-        self.inner.upsert_self_machine(record).await
-    }
-
-    async fn delete_machine(&self, id: &MachineId) -> TypesResult<()> {
-        self.inner.delete_machine(id).await
-    }
-
-    async fn subscribe_machines(&self) -> TypesResult<MachineSubscription> {
-        self.inner.subscribe_machines().await
-    }
 }
 
 impl DaemonState {
@@ -95,6 +60,13 @@ impl DaemonState {
         };
         let deploy_read = active.store.deploy_read();
         let machine_store = active.store.machine();
+        let authoritative_self = active.mesh.authoritative_self_record().await;
+        let Some(local_record) = authoritative_self else {
+            return self.err(
+                "DEPLOY_PREVIEW_FAILED",
+                "local authoritative mesh record missing for deploy preview",
+            );
+        };
         let machines = match machine_store.list_machines().await {
             Ok(machines) => machines,
             Err(err) => {
@@ -104,6 +76,7 @@ impl DaemonState {
                 );
             }
         };
+        let machines = with_local_machine_record(machines, &local_record);
         let selection = self
             .select_deploy_nodes(active, &machines)
             .await
@@ -117,15 +90,11 @@ impl DaemonState {
             Ok(selection) => selection,
             Err(response) => return response,
         };
-        let filtered_machine_store = EligibleMachineStore {
-            inner: Arc::clone(&machine_store),
-            eligible: selection.eligible.clone(),
-        };
-
-        match preview(
+        let candidate_machines = eligible_machine_ids(&selection);
+        match preview_with_candidates(
             deploy_read.as_ref(),
-            &filtered_machine_store,
-            &self.identity.machine_id,
+            &machines,
+            candidate_machines.as_slice(),
             &manifest,
         )
         .await
@@ -163,6 +132,13 @@ impl DaemonState {
         let deploy_write = active.store.deploy_write();
         let deploy_commit = active.store.deploy_commit();
         let machine_store = active.store.machine();
+        let authoritative_self = active.mesh.authoritative_self_record().await;
+        let Some(local_record) = authoritative_self else {
+            return self.err(
+                "DEPLOY_APPLY_FAILED",
+                "local authoritative mesh record missing for deploy apply",
+            );
+        };
         let machines = match machine_store.list_machines().await {
             Ok(machines) => machines,
             Err(err) => {
@@ -172,6 +148,7 @@ impl DaemonState {
                 );
             }
         };
+        let machines = with_local_machine_record(machines, &local_record);
         let selection = match self.select_deploy_nodes(active, &machines).await {
             Ok(selection) => selection,
             Err(err) => {
@@ -195,17 +172,14 @@ impl DaemonState {
                 ),
             );
         }
-        let filtered_machine_store = EligibleMachineStore {
-            inner: Arc::clone(&machine_store),
-            eligible: selection.eligible.clone(),
-        };
+        let candidate_machines = eligible_machine_ids(&selection);
 
         // Run a preview to determine which machines will participate, so we
         // can fan-out the namespace lock to only those machines.
-        let initial_preview = match preview(
+        let initial_preview = match preview_with_candidates(
             deploy_read.as_ref(),
-            &filtered_machine_store,
-            &self.identity.machine_id,
+            &machines,
+            candidate_machines.as_slice(),
             &manifest,
         )
         .await
@@ -216,7 +190,11 @@ impl DaemonState {
 
         // Build fan-out targets from the planned participants (excluding self).
         let self_id = &self.identity.machine_id;
-        let machine_map: HashMap<_, _> = machines.into_iter().map(|m| (m.id.clone(), m)).collect();
+        let machine_map: HashMap<_, _> = machines
+            .iter()
+            .cloned()
+            .map(|machine| (machine.id.clone(), machine))
+            .collect();
         let peers: Vec<FanOutTarget> = initial_preview
             .participants
             .iter()
@@ -301,11 +279,12 @@ impl DaemonState {
             self.remote_control_port,
         );
 
-        let apply_result = apply(
+        let apply_result = apply_with_candidates(
             deploy_read.as_ref(),
             deploy_write.as_ref(),
             deploy_commit.as_ref(),
-            &filtered_machine_store,
+            &machines,
+            candidate_machines.as_slice(),
             &factory,
             &self.identity.machine_id,
             &manifest,
@@ -371,6 +350,7 @@ impl DaemonState {
     ) -> Result<DeployNodeSelection, String> {
         let self_machine_id = self.identity.machine_id.clone();
         let self_ready = active.mesh.ready_status().await.ready;
+        let self_phase = active.mesh.ready_status().await.phase;
         let self_drain_state = active
             .mesh
             .authoritative_self_record()
@@ -385,11 +365,7 @@ impl DaemonState {
             .unwrap_or(DrainState::Active);
         let local_status = LocalPeerStatus {
             ready: self_ready,
-            phase: if self_ready {
-                Phase::Running
-            } else {
-                active.mesh.ready_status().await.phase
-            },
+            phase: self_phase,
             drain_state: self_drain_state,
         };
 
@@ -412,23 +388,24 @@ impl DaemonState {
             .collect::<HashMap<MachineId, NodeStatusResult>>();
 
         for machine in machines {
-            let peer = resolve_peer(&machine.id, &self_machine_id, local_status, &fanout);
-            match peer {
-                PeerView::Local(_) | PeerView::Live(_) => {
-                    let Some(drain_state) = peer.drain_state() else {
-                        continue;
-                    };
-                    let Some(ready) = peer.ready() else {
-                        continue;
-                    };
-                    if drain_state.is_drained() {
-                        drained.push(machine.id.clone());
-                    } else if ready {
-                        eligible.insert(machine.id.clone());
-                    }
-                }
-                PeerView::Unreachable => unreachable.push(machine.id.clone()),
-                PeerView::Mismatch { .. } => invalid_identity.push(machine.id.clone()),
+            let view = NodeView::new(
+                machine,
+                resolve_peer(&machine.id, &self_machine_id, local_status, &fanout),
+            );
+            if view.peer_state() == ployz_api::MachinePeerState::IdentityMismatch {
+                invalid_identity.push(machine.id.clone());
+                continue;
+            }
+            if !view.reachable() {
+                unreachable.push(machine.id.clone());
+                continue;
+            }
+            if view.drain_state().is_drained() {
+                drained.push(machine.id.clone());
+                continue;
+            }
+            if view.is_deploy_eligible() {
+                eligible.insert(machine.id.clone());
             }
         }
 
@@ -439,6 +416,12 @@ impl DaemonState {
             invalid_identity,
         })
     }
+}
+
+fn eligible_machine_ids(selection: &DeployNodeSelection) -> Vec<MachineId> {
+    let mut ids: Vec<MachineId> = selection.eligible.iter().cloned().collect();
+    ids.sort();
+    ids
 }
 
 impl DeployNodeSelection {

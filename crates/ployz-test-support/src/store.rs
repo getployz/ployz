@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use ployz_store_api::{
     ClusterStore, DeployCommit, DeployCommitStore, DeployReadStore, DeployWriteStore, InviteStore,
-    MachineEventSubscription, MachineStore, RoutingInvalidationSubscription, RoutingStore,
-    SubscriptionPoll, SyncProbe, SyncStatus,
+    MachineEventSubscription, MachineStore, MembershipCommitStore, RoutingInvalidationSubscription,
+    RoutingStore, SubscriptionPoll, SyncProbe, SyncStatus,
 };
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
@@ -218,6 +218,42 @@ impl InviteStore for MemoryStore {
         }
 
         inner.invites.remove(invite_id);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl MembershipCommitStore for MemoryStore {
+    async fn commit_membership(
+        &self,
+        record: &MachineRecord,
+        invite_id: &str,
+        now_unix_secs: u64,
+    ) -> Result<()> {
+        let mut inner = self.lock_inner();
+        let invite = inner.invites.get(invite_id).ok_or_else(|| {
+            Error::operation(
+                "invite_not_found",
+                format!("invite '{invite_id}' not found"),
+            )
+        })?;
+        if now_unix_secs > invite.expires_at {
+            return Err(Error::operation(
+                "invite_expired",
+                format!("invite '{invite_id}' is expired"),
+            ));
+        }
+
+        let is_update = inner.machines.contains_key(&record.id);
+        inner.machines.insert(record.id.clone(), record.clone());
+        inner.invites.remove(invite_id);
+
+        let event = if is_update {
+            MachineEvent::Updated(record.clone())
+        } else {
+            MachineEvent::Added(record.clone())
+        };
+        Self::broadcast_machine(&mut inner, event);
         Ok(())
     }
 }

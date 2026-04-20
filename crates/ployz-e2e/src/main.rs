@@ -7,7 +7,7 @@ mod support;
 use clap::Parser;
 use cli::Cli;
 use error::{Error, Result};
-use runner::{CleanupReason, ScenarioRun};
+use runner::{CleanupReason, ScenarioRun, SharedPayload, prepare_shared_payload};
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
@@ -35,18 +35,30 @@ fn run() -> Result<()> {
         cli.scenario.clone()
     };
     let artifacts_dir = resolve_artifacts_dir(&cli.artifacts_dir)?;
+    let shared_payload = prepare_shared_payload(&cli.image, &artifacts_dir)?;
 
     if cli.parallel && scenarios.len() > 1 {
-        return run_parallel(&cli, scenarios, &artifacts_dir);
+        return run_parallel(&cli, &shared_payload, scenarios, &artifacts_dir);
     }
 
-    run_serial(&cli, scenarios, &artifacts_dir)
+    run_serial(&cli, &shared_payload, scenarios, &artifacts_dir)
 }
 
-fn run_serial(cli: &Cli, scenarios: Vec<cli::Scenario>, artifacts_dir: &Path) -> Result<()> {
+fn run_serial(
+    cli: &Cli,
+    shared_payload: &SharedPayload,
+    scenarios: Vec<cli::Scenario>,
+    artifacts_dir: &Path,
+) -> Result<()> {
     let mut failures = Vec::new();
     for scenario in scenarios {
-        match run_single_scenario(scenario, &cli.image, artifacts_dir, cli.keep_failed) {
+        match run_single_scenario(
+            scenario,
+            &cli.image,
+            shared_payload,
+            artifacts_dir,
+            cli.keep_failed,
+        ) {
             Ok(()) => {}
             Err(error) => {
                 if cli.fail_fast {
@@ -60,14 +72,26 @@ fn run_serial(cli: &Cli, scenarios: Vec<cli::Scenario>, artifacts_dir: &Path) ->
     summarize_failures(failures)
 }
 
-fn run_parallel(cli: &Cli, scenarios: Vec<cli::Scenario>, artifacts_dir: &Path) -> Result<()> {
+fn run_parallel(
+    cli: &Cli,
+    shared_payload: &SharedPayload,
+    scenarios: Vec<cli::Scenario>,
+    artifacts_dir: &Path,
+) -> Result<()> {
     let mut handles = Vec::with_capacity(scenarios.len());
     for scenario in scenarios {
         let image = cli.image.clone();
         let artifacts_dir = artifacts_dir.to_path_buf();
+        let shared_payload = shared_payload.clone();
         let keep_failed = cli.keep_failed;
         handles.push(thread::spawn(move || {
-            let result = run_single_scenario(scenario, &image, &artifacts_dir, keep_failed);
+            let result = run_single_scenario(
+                scenario,
+                &image,
+                &shared_payload,
+                &artifacts_dir,
+                keep_failed,
+            );
             (scenario, result)
         }));
     }
@@ -88,10 +112,11 @@ fn run_parallel(cli: &Cli, scenarios: Vec<cli::Scenario>, artifacts_dir: &Path) 
 fn run_single_scenario(
     scenario: cli::Scenario,
     image: &str,
+    shared_payload: &SharedPayload,
     artifacts_dir: &Path,
     keep_failed: bool,
 ) -> Result<()> {
-    let mut run = ScenarioRun::new(scenario, image, artifacts_dir, keep_failed)?;
+    let mut run = ScenarioRun::new(scenario, image, shared_payload, artifacts_dir, keep_failed)?;
     match run.execute() {
         Ok(()) => {
             println!("PASS {}", scenario.as_str());

@@ -4,9 +4,9 @@ use ployz_api::{
     CoordinationPreparePayload, CoordinationPrepareRequest, CoordinationRenewPayload,
     CoordinationRenewRequest, DaemonPayload, DaemonRequest, DaemonResponse, DeployOptions,
     MachineDrainPayload, MachineListPayload, MeshSelfRecordPayload, MeshStatusPayload,
-    NodeStatusPayload, StatusPayload,
+    NodeStatusPayload, PeerHealthPayload, StatusPayload,
 };
-use ployz_types::model::{DeployApplyResult, DeployPreview};
+use ployz_types::model::{DeployApplyResult, DeployPreview, Phase};
 use ployz_types::spec::DeployManifest;
 
 pub struct DaemonClient<T> {
@@ -52,6 +52,7 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MachineDrain(_)
             | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::MeshJoin(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
@@ -59,7 +60,8 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
             | DaemonPayload::CoordinationRenew(_)
-            | DaemonPayload::CoordinationCommit(_) => None,
+            | DaemonPayload::CoordinationCommit(_)
+            | DaemonPayload::PeerHealth(_) => None,
         })
     }
 
@@ -78,6 +80,32 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MachineDrain(_)
             | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::MeshJoin(_)
+            | DaemonPayload::DeployPreview(_)
+            | DaemonPayload::DeployApply(_)
+            | DaemonPayload::DeployExport(_)
+            | DaemonPayload::MachineOperationList(_)
+            | DaemonPayload::MachineOperation(_)
+            | DaemonPayload::CoordinationPrepare(_)
+            | DaemonPayload::CoordinationRenew(_)
+            | DaemonPayload::CoordinationCommit(_)
+            | DaemonPayload::PeerHealth(_) => None,
+        })
+    }
+
+    pub async fn node_status(&self) -> std::io::Result<NodeStatusPayload> {
+        let response = self.request_ok(DaemonRequest::NodeStatus).await?;
+        extract_payload(response, "node status", |payload| match payload {
+            DaemonPayload::NodeStatus(payload) => Some(payload),
+            DaemonPayload::Status(_)
+            | DaemonPayload::MeshStatus(_)
+            | DaemonPayload::PeerHealth(_)
+            | DaemonPayload::MachineList(_)
+            | DaemonPayload::MachineAdd(_)
+            | DaemonPayload::MachineRemove(_)
+            | DaemonPayload::MachineDrain(_)
+            | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::MeshJoin(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
@@ -89,17 +117,53 @@ impl<T: Transport> DaemonClient<T> {
         })
     }
 
-    pub async fn node_status(&self) -> std::io::Result<NodeStatusPayload> {
-        let response = self.request_ok(DaemonRequest::NodeStatus).await?;
-        extract_payload(response, "node status", |payload| match payload {
-            DaemonPayload::NodeStatus(payload) => Some(payload),
+    pub async fn peer_health(&self, machine_id: &str) -> std::io::Result<PeerHealthPayload> {
+        let response = self
+            .request_ok(DaemonRequest::PeerHealth {
+                machine_id: machine_id.to_string(),
+            })
+            .await?;
+        extract_payload(response, "peer health", |payload| match payload {
+            DaemonPayload::PeerHealth(payload) => Some(payload),
             DaemonPayload::Status(_)
             | DaemonPayload::MeshStatus(_)
+            | DaemonPayload::NodeStatus(_)
             | DaemonPayload::MachineList(_)
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MachineDrain(_)
             | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::MeshJoin(_)
+            | DaemonPayload::DeployPreview(_)
+            | DaemonPayload::DeployApply(_)
+            | DaemonPayload::DeployExport(_)
+            | DaemonPayload::MachineOperationList(_)
+            | DaemonPayload::MachineOperation(_)
+            | DaemonPayload::CoordinationPrepare(_)
+            | DaemonPayload::CoordinationRenew(_)
+            | DaemonPayload::CoordinationCommit(_) => None,
+        })
+    }
+
+    pub async fn wait_node_phase(
+        &self,
+        phase: Phase,
+        timeout_ms: u64,
+    ) -> std::io::Result<NodeStatusPayload> {
+        let response = self
+            .request_ok(DaemonRequest::WaitNodePhase { phase, timeout_ms })
+            .await?;
+        extract_payload(response, "wait node phase", |payload| match payload {
+            DaemonPayload::NodeStatus(payload) => Some(payload),
+            DaemonPayload::Status(_)
+            | DaemonPayload::MeshStatus(_)
+            | DaemonPayload::PeerHealth(_)
+            | DaemonPayload::MachineList(_)
+            | DaemonPayload::MachineAdd(_)
+            | DaemonPayload::MachineRemove(_)
+            | DaemonPayload::MachineDrain(_)
+            | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::MeshJoin(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
@@ -118,10 +182,12 @@ impl<T: Transport> DaemonClient<T> {
             DaemonPayload::Status(_)
             | DaemonPayload::NodeStatus(_)
             | DaemonPayload::MeshStatus(_)
+            | DaemonPayload::PeerHealth(_)
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MachineDrain(_)
             | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::MeshJoin(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
@@ -142,10 +208,12 @@ impl<T: Transport> DaemonClient<T> {
             DaemonPayload::Status(_)
             | DaemonPayload::NodeStatus(_)
             | DaemonPayload::MeshStatus(_)
+            | DaemonPayload::PeerHealth(_)
             | DaemonPayload::MachineList(_)
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::MeshJoin(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
@@ -166,10 +234,12 @@ impl<T: Transport> DaemonClient<T> {
             DaemonPayload::Status(_)
             | DaemonPayload::NodeStatus(_)
             | DaemonPayload::MeshStatus(_)
+            | DaemonPayload::PeerHealth(_)
             | DaemonPayload::MachineList(_)
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::MeshJoin(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
@@ -188,10 +258,12 @@ impl<T: Transport> DaemonClient<T> {
             DaemonPayload::Status(_)
             | DaemonPayload::NodeStatus(_)
             | DaemonPayload::MeshStatus(_)
+            | DaemonPayload::PeerHealth(_)
             | DaemonPayload::MachineList(_)
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MachineDrain(_)
+            | DaemonPayload::MeshJoin(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
@@ -220,11 +292,13 @@ impl<T: Transport> DaemonClient<T> {
             DaemonPayload::Status(_)
             | DaemonPayload::NodeStatus(_)
             | DaemonPayload::MeshStatus(_)
+            | DaemonPayload::PeerHealth(_)
             | DaemonPayload::MachineList(_)
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MachineDrain(_)
             | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::MeshJoin(_)
             | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
             | DaemonPayload::MachineOperationList(_)
@@ -252,11 +326,13 @@ impl<T: Transport> DaemonClient<T> {
             DaemonPayload::Status(_)
             | DaemonPayload::NodeStatus(_)
             | DaemonPayload::MeshStatus(_)
+            | DaemonPayload::PeerHealth(_)
             | DaemonPayload::MachineList(_)
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MachineDrain(_)
             | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::MeshJoin(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployExport(_)
             | DaemonPayload::MachineOperationList(_)
@@ -278,11 +354,13 @@ impl<T: Transport> DaemonClient<T> {
             DaemonPayload::Status(_)
             | DaemonPayload::NodeStatus(_)
             | DaemonPayload::MeshStatus(_)
+            | DaemonPayload::PeerHealth(_)
             | DaemonPayload::MachineList(_)
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MachineDrain(_)
             | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::MeshJoin(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
             | DaemonPayload::MachineOperationList(_)
@@ -307,11 +385,13 @@ impl<T: Transport> DaemonClient<T> {
             DaemonPayload::Status(_)
             | DaemonPayload::NodeStatus(_)
             | DaemonPayload::MeshStatus(_)
+            | DaemonPayload::PeerHealth(_)
             | DaemonPayload::MachineList(_)
             | DaemonPayload::MachineAdd(_)
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MachineDrain(_)
             | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::MeshJoin(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
@@ -341,13 +421,15 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MachineDrain(_)
             | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::MeshJoin(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
-            | DaemonPayload::CoordinationRenew(_) => None,
+            | DaemonPayload::CoordinationRenew(_)
+            | DaemonPayload::PeerHealth(_) => None,
         })
     }
 
@@ -370,13 +452,15 @@ impl<T: Transport> DaemonClient<T> {
             | DaemonPayload::MachineRemove(_)
             | DaemonPayload::MachineDrain(_)
             | DaemonPayload::MeshSelfRecord(_)
+            | DaemonPayload::MeshJoin(_)
             | DaemonPayload::DeployPreview(_)
             | DaemonPayload::DeployApply(_)
             | DaemonPayload::DeployExport(_)
             | DaemonPayload::MachineOperationList(_)
             | DaemonPayload::MachineOperation(_)
             | DaemonPayload::CoordinationPrepare(_)
-            | DaemonPayload::CoordinationCommit(_) => None,
+            | DaemonPayload::CoordinationCommit(_)
+            | DaemonPayload::PeerHealth(_) => None,
         })
     }
 

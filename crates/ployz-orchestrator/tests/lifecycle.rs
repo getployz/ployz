@@ -99,10 +99,6 @@ async fn startup_reaches_running_single_node() {
     .await
     .expect("single-node founder should become ready within the timeout");
     assert!(ready.ready, "single-node founder should report ready");
-    assert!(
-        ready.sync_connected,
-        "single-node founder should not wait for remote sync"
-    );
 
     let self_record = mesh
         .authoritative_self_record()
@@ -112,7 +108,7 @@ async fn startup_reaches_running_single_node() {
 }
 
 #[tokio::test]
-async fn joiner_seed_peer_requires_sync_for_ready() {
+async fn joiner_seed_peer_reports_ready_once_running() {
     let wg = Arc::new(MemoryWireGuard::new());
     let svc = Arc::new(MemoryServiceRuntime::new());
     let store = Arc::new(MemoryStore::new());
@@ -148,12 +144,8 @@ async fn joiner_seed_peer_requires_sync_for_ready() {
 
     let ready = mesh.ready_status().await;
     assert!(
-        !ready.sync_connected,
-        "joiner with only a bootstrap seed peer should not report sync connected"
-    );
-    assert!(
-        !ready.ready,
-        "joiner with only a bootstrap seed peer should not report ready"
+        ready.ready,
+        "joiner should report ready once startup reaches running"
     );
 }
 
