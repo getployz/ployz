@@ -7,6 +7,74 @@ TARGET_COMMITISH=""
 PREVIOUS_TAG=""
 MODE="release"
 
+generate_notes_body() {
+  local api_args
+
+  api_args=(
+    "repos/${REPO}/releases/generate-notes"
+    -X POST
+    -f "tag_name=${TAG_NAME}"
+  )
+
+  if [[ -n "${TARGET_COMMITISH}" ]]; then
+    api_args+=(-f "target_commitish=${TARGET_COMMITISH}")
+  fi
+
+  if [[ -n "${PREVIOUS_TAG}" ]]; then
+    api_args+=(-f "previous_tag_name=${PREVIOUS_TAG}")
+  fi
+
+  gh api "${api_args[@]}" --jq '.body'
+}
+
+notes_include_changes() {
+  local body=$1
+
+  [[ "${body}" == *"## What's Changed"* ]]
+}
+
+manual_release_notes() {
+  local compare_head compare_head_api compare_commits pr_rows
+
+  if [[ -z "${PREVIOUS_TAG}" ]]; then
+    return 1
+  fi
+
+  compare_head="${TARGET_COMMITISH:-${TAG_NAME}}"
+  compare_head_api="${compare_head//\//%2F}"
+  compare_commits="$(
+    gh api "repos/${REPO}/compare/${PREVIOUS_TAG}...${compare_head_api}" \
+      --jq '.commits.[].sha' 2>/dev/null || true
+  )"
+
+  if [[ -z "${compare_commits}" ]]; then
+    return 1
+  fi
+
+  pr_rows="$(
+    while IFS= read -r sha; do
+      [[ -n "${sha}" ]] || continue
+      gh api \
+        -H "Accept: application/vnd.github+json" \
+        "repos/${REPO}/commits/${sha}/pulls" \
+        --jq '.[] | [.number, .title, .user.login, .html_url] | @tsv' 2>/dev/null || true
+    done <<< "${compare_commits}"
+  )"
+
+  if [[ -z "${pr_rows}" ]]; then
+    return 1
+  fi
+
+  {
+    printf "## What's Changed\n"
+    printf '%s\n' "${pr_rows}" \
+      | sort -t "$(printf '\t')" -k1,1n \
+      | awk -F '\t' '!seen[$1]++ { printf "* %s by @%s in %s\n", $2, $3, $4 }'
+    printf '\n\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
+      "${REPO}" "${PREVIOUS_TAG}" "${compare_head}"
+  }
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -52,24 +120,27 @@ if [[ -z "${REPO}" || -z "${TAG_NAME}" ]]; then
   exit 1
 fi
 
-api_args=(
-  "repos/${REPO}/releases/generate-notes"
-  -X POST
-  -f "tag_name=${TAG_NAME}"
-)
-
-if [[ -n "${TARGET_COMMITISH}" ]]; then
-  api_args+=(-f "target_commitish=${TARGET_COMMITISH}")
-fi
-
-if [[ -n "${PREVIOUS_TAG}" ]]; then
-  api_args+=(-f "previous_tag_name=${PREVIOUS_TAG}")
-fi
-
-generated_body="$(gh api "${api_args[@]}" --jq '.body')"
+generated_body=""
+for attempt in 1 2 3; do
+  generated_body="$(generate_notes_body)"
+  if notes_include_changes "${generated_body}"; then
+    break
+  fi
+  if [[ -z "${PREVIOUS_TAG}" || "${attempt}" == "3" ]]; then
+    break
+  fi
+  sleep 5
+done
 
 if [[ -z "${generated_body}" ]]; then
   generated_body="No generated notes were returned."
+fi
+
+if ! notes_include_changes "${generated_body}"; then
+  manual_body="$(manual_release_notes || true)"
+  if [[ -n "${manual_body}" ]]; then
+    generated_body="${manual_body}"
+  fi
 fi
 
 case "${MODE}" in
