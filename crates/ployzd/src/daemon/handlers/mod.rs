@@ -43,6 +43,7 @@ impl DaemonState {
             | DaemonRequest::MachineInit { .. }
             | DaemonRequest::MachineAdd { .. }
             | DaemonRequest::MachineRemove { .. }
+            | DaemonRequest::MachineAdmit { .. }
             | DaemonRequest::MachineDrain { .. }
             | DaemonRequest::MachineUndrain { .. }
             | DaemonRequest::MachineOperationList
@@ -101,6 +102,7 @@ impl DaemonState {
             DaemonRequest::MachineRemove { id, force } => {
                 self.handle_machine_remove(&id, force).await
             }
+            DaemonRequest::MachineAdmit { id } => self.handle_machine_admit(&id).await,
             DaemonRequest::MachineDrain { id } => self.handle_machine_set_drain(&id, true).await,
             DaemonRequest::MachineUndrain { id } => self.handle_machine_set_drain(&id, false).await,
             DaemonRequest::MachineOperationList => self.handle_machine_operation_list().await,
@@ -159,6 +161,7 @@ impl DaemonState {
             | DaemonRequest::MachineInit { .. }
             | DaemonRequest::MachineAdd { .. }
             | DaemonRequest::MachineRemove { .. }
+            | DaemonRequest::MachineAdmit { .. }
             | DaemonRequest::MachineDrain { .. }
             | DaemonRequest::MachineUndrain { .. }
             | DaemonRequest::MachineOperationList

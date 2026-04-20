@@ -358,6 +358,7 @@ impl ScenarioRun {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MachineRow {
     id: String,
+    admitted: bool,
     drain_state: Option<DrainState>,
     subnet: String,
 }
@@ -366,6 +367,7 @@ impl MachineRow {
     fn from_payload(row: &ployz_api::MachineListRow) -> Self {
         Self {
             id: row.id.clone(),
+            admitted: row.admitted,
             drain_state: row.drain_state,
             subnet: row.subnet.clone().unwrap_or_else(|| "—".into()),
         }
@@ -399,7 +401,9 @@ fn append_readiness_diagnostics(report: &mut String, row_id: &str, peer_node: &N
 fn machine_state(payload: &MachineListPayload, machine_id: &str) -> Option<String> {
     payload.rows.iter().find_map(|row| {
         if row.id == machine_id {
-            return Some(if row.drain_state.is_some_and(DrainState::is_drained) {
+            return Some(if !row.admitted {
+                String::from("pending")
+            } else if row.drain_state.is_some_and(DrainState::is_drained) {
                 String::from("drained")
             } else {
                 String::from("active")
@@ -411,8 +415,9 @@ fn machine_state(payload: &MachineListPayload, machine_id: &str) -> Option<Strin
 
 fn row_matches_state(row: &MachineRow, expected_state: &str) -> bool {
     match expected_state {
+        "pending" => !row.admitted,
         "drained" => row.drain_state.is_some_and(DrainState::is_drained),
-        "active" => !row.drain_state.is_some_and(DrainState::is_drained),
+        "active" => row.admitted && !row.drain_state.is_some_and(DrainState::is_drained),
         _ => false,
     }
 }

@@ -33,6 +33,13 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
         .max()
         .unwrap_or(0)
         .max("OBSERVED".len());
+    let w_admission = report
+        .rows
+        .iter()
+        .map(|row| if row.admitted { "admitted" } else { "pending" }.len())
+        .max()
+        .unwrap_or(0)
+        .max("ADMISSION".len());
     let w_ready = report
         .rows
         .iter()
@@ -69,11 +76,12 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
         .max("PHASE".len());
     let mut lines = Vec::with_capacity(report.rows.len() + 1);
     lines.push(format!(
-        "{:<w_id$}  {:<6}  {:<w_observed$}  {:<w_ready$}  {:<w_drain_state$}  {:<w_phase$}  {:<w_ov$}  {:<w_sub$}  {}",
-        "ID", "STATUS", "OBSERVED", "READY", "DRAIN STATE", "PHASE", "OVERLAY IP", "SUBNET", "CREATED",
+        "{:<w_id$}  {:<6}  {:<w_observed$}  {:<w_admission$}  {:<w_ready$}  {:<w_drain_state$}  {:<w_phase$}  {:<w_ov$}  {:<w_sub$}  {}",
+        "ID", "STATUS", "OBSERVED", "ADMISSION", "READY", "DRAIN STATE", "PHASE", "OVERLAY IP", "SUBNET", "CREATED",
     ));
     for row in &report.rows {
         let observed = format_peer_state(row.peer_state);
+        let admission = if row.admitted { "admitted" } else { "pending" };
         let ready = row
             .ready
             .map(|value| if value { "ready" } else { "not-ready" })
@@ -84,10 +92,11 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
             .map(|value| value.to_string())
             .unwrap_or_else(|| "unknown".into());
         lines.push(format!(
-            "{:<w_id$}  {:<6}  {:<w_observed$}  {:<w_ready$}  {:<w_drain_state$}  {:<w_phase$}  {:<w_ov$}  {:<w_sub$}  {}",
+            "{:<w_id$}  {:<6}  {:<w_observed$}  {:<w_admission$}  {:<w_ready$}  {:<w_drain_state$}  {:<w_phase$}  {:<w_ov$}  {:<w_sub$}  {}",
             row.id,
             row.status,
             observed,
+            admission,
             ready,
             drain_state,
             phase,
@@ -111,8 +120,8 @@ pub(super) fn render_machine_add_report(report: &MachineAddReport) -> String {
     push_summary_section(&mut lines, "failed_preflight", &report.failed_preflight);
     push_summary_section(&mut lines, "failed_join", &report.failed_join);
     push_summary_section(&mut lines, "failed_self_record", &report.failed_self_record);
-    push_summary_section(&mut lines, "failed_ready", &report.failed_ready);
-    push_summary_section(&mut lines, "failed_finalize", &report.failed_finalize);
+    push_summary_section(&mut lines, "failed_verify", &report.failed_verify);
+    push_summary_section(&mut lines, "failed_admit", &report.failed_admit);
     lines.join("\n")
 }
 

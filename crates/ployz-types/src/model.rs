@@ -147,6 +147,10 @@ impl DrainState {
     }
 }
 
+const fn default_machine_admitted() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MachineRecord {
     pub id: MachineId,
@@ -156,6 +160,8 @@ pub struct MachineRecord {
     pub bridge_ip: Option<OverlayIp>,
     pub endpoints: Vec<String>,
     pub status: MachineStatus,
+    #[serde(default = "default_machine_admitted")]
+    pub admitted: bool,
     pub drain_state: DrainState,
     pub created_at: u64,
     pub updated_at: u64,
@@ -183,6 +189,7 @@ impl MachineRecord {
             bridge_ip: None,
             endpoints,
             status: MachineStatus::Unknown,
+            admitted: false,
             drain_state: DrainState::Active,
             created_at: 0,
             updated_at: 0,
@@ -201,6 +208,11 @@ impl MachineRecord {
             cidrs.push(format!("{}/128", bridge_ip.0));
         }
         cidrs
+    }
+
+    #[must_use]
+    pub fn accepts_new_placement(&self) -> bool {
+        self.admitted && !self.drain_state.is_drained()
     }
 }
 
@@ -457,6 +469,7 @@ impl JoinResponse {
             bridge_ip: None,
             endpoints: self.endpoints,
             status: MachineStatus::Unknown,
+            admitted: false,
             drain_state: DrainState::Active,
             created_at: 0,
             updated_at: 0,

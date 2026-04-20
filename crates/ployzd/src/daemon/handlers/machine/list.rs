@@ -276,6 +276,7 @@ pub(super) async fn machine_list_report(
                 MachineListReportRow {
                     id: machine.id.0.clone(),
                     status: format_status(machine),
+                    admitted: machine.admitted,
                     overlay: machine.overlay_ip.0.to_string(),
                     subnet: machine.subnet,
                     subnet_display: machine

@@ -117,6 +117,9 @@ pub enum DaemonRequest {
         id: String,
         force: bool,
     },
+    MachineAdmit {
+        id: String,
+    },
     MachineDrain {
         id: String,
     },
@@ -260,6 +263,7 @@ pub enum MachinePeerState {
 pub struct MachineListRow {
     pub id: String,
     pub status: String,
+    pub admitted: bool,
     pub peer_state: MachinePeerState,
     pub reachable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -289,9 +293,9 @@ pub struct MachineAddPayload {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed_self_record: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub failed_ready: Vec<String>,
+    pub failed_verify: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub failed_finalize: Vec<String>,
+    pub failed_admit: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

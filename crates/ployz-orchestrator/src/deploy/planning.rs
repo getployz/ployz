@@ -192,8 +192,11 @@ pub(crate) fn deployable_machines(
     machines: &[crate::model::MachineRecord],
     _local_machine_id: &MachineId,
 ) -> Vec<MachineId> {
-    let mut candidates: Vec<MachineId> =
-        machines.iter().map(|machine| machine.id.clone()).collect();
+    let mut candidates: Vec<MachineId> = machines
+        .iter()
+        .filter(|machine| machine.accepts_new_placement())
+        .map(|machine| machine.id.clone())
+        .collect();
     candidates.sort_by(|left, right| left.0.cmp(&right.0));
     candidates
 }

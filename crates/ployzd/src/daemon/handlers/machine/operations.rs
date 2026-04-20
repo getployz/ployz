@@ -354,7 +354,20 @@ impl DaemonState {
         record: &MachineOperationRecord,
     ) -> Result<Option<String>, String> {
         let mut notes = Vec::new();
-        if let Some(machine_id) = &record.artifacts.machine_id {
+        let add_stage = match record.stage.parse::<MachineAddStage>() {
+            Ok(stage) => stage,
+            Err(err) => {
+                notes.push(format!("remote cleanup skipped: {err}"));
+                return Ok(Some(notes.join("; ")));
+            }
+        };
+        if matches!(
+            add_stage,
+            MachineAddStage::Joined
+                | MachineAddStage::SelfRecorded
+                | MachineAddStage::TransientPeerInstalled
+        ) && let Some(machine_id) = &record.artifacts.machine_id
+        {
             let Some(active) = self.active.as_ref() else {
                 notes.push("transient peer cleanup skipped: no running network".into());
                 return Ok(Some(notes.join("; ")));
@@ -369,21 +382,11 @@ impl DaemonState {
                 notes.push(format!("transient peer '{}' removed", machine_id.0));
             }
         }
-
-        let add_stage = match record.stage.parse::<MachineAddStage>() {
-            Ok(stage) => stage,
-            Err(err) => {
-                notes.push(format!("remote cleanup skipped: {err}"));
-                return Ok(Some(notes.join("; ")));
-            }
-        };
         if !matches!(
             add_stage,
             MachineAddStage::Joined
                 | MachineAddStage::SelfRecorded
                 | MachineAddStage::TransientPeerInstalled
-                | MachineAddStage::Ready
-                | MachineAddStage::Finalized
         ) {
             return Ok((!notes.is_empty()).then_some(notes.join("; ")));
         }

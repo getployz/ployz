@@ -23,6 +23,7 @@ fn test_record(id: &str, key_byte: u8) -> MachineRecord {
         bridge_ip: None,
         endpoints: vec![format!("10.0.0.{key_byte}:51820")],
         status: MachineStatus::Unknown,
+        admitted: true,
         drain_state: DrainState::Active,
         created_at: 0,
         updated_at: 0,

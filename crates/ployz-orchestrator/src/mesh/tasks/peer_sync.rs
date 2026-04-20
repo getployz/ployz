@@ -146,6 +146,7 @@ mod tests {
             bridge_ip: None,
             endpoints: endpoints.into_iter().map(String::from).collect(),
             status: MachineStatus::Unknown,
+            admitted: true,
             drain_state: DrainState::Active,
             created_at: 0,
             updated_at: 0,

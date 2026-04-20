@@ -4,7 +4,7 @@ use ployz_api::{
     MachineAddPayload, MachineInstallOptions, MachineListPayload, MachineListRow, MachinePeerState,
 };
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
-use ployz_store_api::MembershipCommitStore;
+use ployz_store_api::{MachineStore, MembershipCommitStore};
 use ployz_types::model::{DrainState, MachineId, Phase};
 use std::fmt;
 use std::str::FromStr;
@@ -17,7 +17,9 @@ pub(super) struct MachineAddContext {
     pub peer_sync_tx: mpsc::Sender<PeerSyncCommand>,
     pub ssh_options: SshOptions,
     pub install: MachineInstallOptions,
+    pub machine_store: Arc<dyn MachineStore>,
     pub membership_store: Arc<dyn MembershipCommitStore>,
+    pub rpc_port: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,7 +29,9 @@ pub(super) enum MachineAddStage {
     Joined,
     SelfRecorded,
     TransientPeerInstalled,
-    Ready,
+    Registered,
+    Verified,
+    Admitted,
     Finalized,
 }
 
@@ -39,7 +43,9 @@ impl fmt::Display for MachineAddStage {
             Self::Joined => "joined",
             Self::SelfRecorded => "self-recorded",
             Self::TransientPeerInstalled => "transient-peer-installed",
-            Self::Ready => "ready",
+            Self::Registered => "registered",
+            Self::Verified => "verified",
+            Self::Admitted => "admitted",
             Self::Finalized => "finalized",
         };
         f.write_str(value)
@@ -56,7 +62,9 @@ impl FromStr for MachineAddStage {
             "joined" => Ok(Self::Joined),
             "self-recorded" => Ok(Self::SelfRecorded),
             "transient-peer-installed" => Ok(Self::TransientPeerInstalled),
-            "ready" => Ok(Self::Ready),
+            "registered" => Ok(Self::Registered),
+            "verified" => Ok(Self::Verified),
+            "admitted" => Ok(Self::Admitted),
             "finalized" => Ok(Self::Finalized),
             _ => Err(format!("unknown machine add stage '{value}'")),
         }
@@ -68,7 +76,8 @@ pub(super) enum MachineAddFailure {
     Preflight { reason: String },
     Join { reason: String },
     SelfRecord { reason: String },
-    Finalize { reason: String },
+    Verify { reason: String },
+    Admit { reason: String },
 }
 
 impl MachineAddFailure {
@@ -78,7 +87,8 @@ impl MachineAddFailure {
             Self::Preflight { reason }
             | Self::Join { reason }
             | Self::SelfRecord { reason }
-            | Self::Finalize { reason } => reason,
+            | Self::Verify { reason }
+            | Self::Admit { reason } => reason,
         }
     }
 }
@@ -102,8 +112,8 @@ pub(super) struct MachineAddReport {
     pub failed_preflight: Vec<String>,
     pub failed_join: Vec<String>,
     pub failed_self_record: Vec<String>,
-    pub failed_ready: Vec<String>,
-    pub failed_finalize: Vec<String>,
+    pub failed_verify: Vec<String>,
+    pub failed_admit: Vec<String>,
 }
 
 impl MachineAddReport {
@@ -118,7 +128,8 @@ impl MachineAddReport {
                     MachineAddFailure::Preflight { .. } => self.failed_preflight.push(line),
                     MachineAddFailure::Join { .. } => self.failed_join.push(line),
                     MachineAddFailure::SelfRecord { .. } => self.failed_self_record.push(line),
-                    MachineAddFailure::Finalize { .. } => self.failed_finalize.push(line),
+                    MachineAddFailure::Verify { .. } => self.failed_verify.push(line),
+                    MachineAddFailure::Admit { .. } => self.failed_admit.push(line),
                 }
             }
         }
@@ -129,7 +140,8 @@ impl MachineAddReport {
         !self.failed_preflight.is_empty()
             || !self.failed_join.is_empty()
             || !self.failed_self_record.is_empty()
-            || !self.failed_finalize.is_empty()
+            || !self.failed_verify.is_empty()
+            || !self.failed_admit.is_empty()
     }
 
     #[must_use]
@@ -139,8 +151,8 @@ impl MachineAddReport {
             failed_preflight: self.failed_preflight.clone(),
             failed_join: self.failed_join.clone(),
             failed_self_record: self.failed_self_record.clone(),
-            failed_ready: self.failed_ready.clone(),
-            failed_finalize: self.failed_finalize.clone(),
+            failed_verify: self.failed_verify.clone(),
+            failed_admit: self.failed_admit.clone(),
         }
     }
 }
@@ -167,6 +179,7 @@ impl MachineListReport {
 pub(super) struct MachineListReportRow {
     pub id: String,
     pub status: &'static str,
+    pub admitted: bool,
     pub overlay: String,
     pub subnet: Option<Ipv4Net>,
     pub subnet_display: String,
@@ -187,6 +200,7 @@ impl MachineListReportRow {
         MachineListRow {
             id: self.id.clone(),
             status: self.status.into(),
+            admitted: self.admitted,
             peer_state: self.peer_state,
             reachable: self.reachable,
             ready: self.ready,

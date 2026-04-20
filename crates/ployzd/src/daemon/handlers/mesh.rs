@@ -140,6 +140,11 @@ impl<'a> NodeView<'a> {
     }
 
     #[must_use]
+    pub(super) fn admitted(&self) -> bool {
+        self.record.admitted
+    }
+
+    #[must_use]
     pub(super) fn reported_machine_id(&self) -> Option<&MachineId> {
         self.peer.reported_machine_id()
     }
@@ -163,7 +168,7 @@ impl<'a> NodeView<'a> {
 
     #[must_use]
     pub(super) fn is_deploy_eligible(&self) -> bool {
-        self.is_join_usable()
+        self.admitted() && self.is_join_usable()
     }
 }
 
@@ -990,6 +995,7 @@ mod tests {
                 bridge_ip: None,
                 endpoints: vec!["127.0.0.1:51820".into()],
                 status: ployz_types::model::MachineStatus::Unknown,
+                admitted: true,
                 drain_state: ployz_types::model::DrainState::Active,
                 created_at: 0,
                 updated_at: 0,

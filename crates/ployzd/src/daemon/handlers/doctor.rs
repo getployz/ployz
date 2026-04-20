@@ -806,6 +806,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec![String::from("127.0.0.1:51820")],
             status: MachineStatus::Up,
+            admitted: true,
             drain_state: if drain {
                 DrainState::Drained
             } else {

@@ -13,9 +13,11 @@ use ployz_api::{
 };
 use ployz_orchestrator::ipam::Ipam;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
-use ployz_sdk::DaemonClient;
-use ployz_types::model::{MachineId, MachineRecord};
+use ployz_sdk::{DaemonClient, TcpTransport};
+use ployz_store_api::MachineStore;
+use ployz_types::model::{MachineId, MachineRecord, Phase};
 use ployz_types::time::now_unix_secs;
+use std::net::{IpAddr, SocketAddr};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, timeout};
 
@@ -35,6 +37,7 @@ use super::types::{
 
 const INVITE_TTL_SECS: u64 = 600;
 const REMOTE_CLEANUP_RPC_TIMEOUT: Duration = Duration::from_secs(10);
+const REMOTE_JOIN_VERIFY_TIMEOUT: Duration = Duration::from_secs(60);
 const REMOTE_STATUS_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" status >/dev/null";
 const REMOTE_PLOYZ_VERSION_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" --version";
 const REMOTE_RPC_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" rpc-stdio";
@@ -142,7 +145,9 @@ impl DaemonState {
                         peer_sync_tx,
                         ssh_options,
                         install: options.install.clone().unwrap_or_default(),
+                        machine_store: active.store.machine(),
                         membership_store: active.store.membership(),
+                        rpc_port: self.coordination_rpc_port,
                     },
                 )
             }
@@ -268,6 +273,48 @@ impl DaemonState {
         self.ok_with_payload(message, Some(DaemonPayload::MachineAdd(payload)))
     }
 
+    pub(crate) async fn handle_machine_admit(&self, id: &str) -> DaemonResponse {
+        let Some(active) = self.active.as_ref() else {
+            return self.err("NO_RUNNING_NETWORK", "no mesh running");
+        };
+
+        let machine_id = MachineId(id.to_string());
+        let machine_store = active.store.machine();
+        let record = match super::list::find_machine_record(machine_store.as_ref(), &machine_id).await
+        {
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                return self.err("MACHINE_NOT_FOUND", format!("machine '{id}' not found"));
+            }
+            Err(err) => {
+                return self.err("LIST_FAILED", format!("failed to read machines: {err}"));
+            }
+        };
+
+        if record.admitted {
+            return self.ok(format!("machine '{id}' already admitted"));
+        }
+
+        if machine_id == self.identity.machine_id {
+            let phase = active.mesh.ready_status().await.phase;
+            if phase != Phase::Running {
+                return self.err(
+                    "MACHINE_NOT_RUNNING",
+                    format!("local machine '{id}' is in phase '{phase}'"),
+                );
+            }
+        } else if let Err(err) =
+            wait_for_remote_machine_phase(&record, self.coordination_rpc_port, Phase::Running).await
+        {
+            return self.err("MACHINE_NOT_RUNNING", err);
+        }
+
+        match admit_machine_membership(machine_store.as_ref(), &record).await {
+            Ok(()) => self.ok(format!("machine '{id}' admitted")),
+            Err(err) => self.err("ADMIT_FAILED", err),
+        }
+    }
+
     pub(crate) async fn allocate_machine_subnets(
         &self,
         count: usize,
@@ -333,7 +380,7 @@ impl DaemonState {
         let self_id = &self.identity.machine_id;
         let peers: Vec<FanOutTarget> = machines
             .iter()
-            .filter(|m| &m.id != self_id && !m.drain_state.is_drained())
+            .filter(|machine| &machine.id != self_id && machine.accepts_new_placement())
             .map(|m| FanOutTarget {
                 machine_id: m.id.clone(),
                 overlay_ip: m.overlay_ip,
@@ -625,17 +672,13 @@ async fn run_machine_add_target(
     let _ = operation_store.update_stage(&mut operation, stage.to_string());
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: transient peer installed");
 
-    stage = MachineAddStage::Ready;
-    let _ = operation_store.update_stage(&mut operation, stage.to_string());
-    tracing::info!(%target, joiner_id = %machine_id, "machine add target: remote ready");
-
     tracing::info!(
         %target,
         joiner_id = %machine_id,
         invite_id,
-        "machine add target: finalizing membership"
+        "machine add target: registering pending membership"
     );
-    if let Err(err) = commit_machine_add_membership(
+    let registered_record = match commit_machine_add_membership(
         &context,
         &invite_id,
         &challenge_nonce,
@@ -644,14 +687,46 @@ async fn run_machine_add_target(
     )
     .await
     {
+        Ok(record) => record,
+        Err(err) => {
+            tracing::warn!(
+                %target,
+                joiner_id = %machine_id,
+                invite_id,
+                error = %err,
+                "machine add target: pending membership registration failed"
+            );
+            let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
+            let _ = operation_store.update_status(
+                &mut operation,
+                MachineOperationStatus::Failed,
+                Some(err.clone()),
+            );
+            return MachineAddTargetResult::Failed {
+                target,
+                failure: MachineAddFailure::Admit { reason: err },
+            };
+        }
+    };
+    stage = MachineAddStage::Registered;
+    let _ = operation_store.update_stage(&mut operation, stage.to_string());
+    tracing::info!(
+        %target,
+        joiner_id = %machine_id,
+        invite_id,
+        "machine add target: pending membership registered"
+    );
+
+    if let Err(err) =
+        verify_machine_add_target_phase(&context, &target, &registered_record, Phase::Running).await
+    {
         tracing::warn!(
             %target,
             joiner_id = %machine_id,
             invite_id,
             error = %err,
-            "machine add target: membership finalization failed"
+            "machine add target: remote verify failed"
         );
-        let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
             &mut operation,
             MachineOperationStatus::Failed,
@@ -659,9 +734,34 @@ async fn run_machine_add_target(
         );
         return MachineAddTargetResult::Failed {
             target,
-            failure: MachineAddFailure::Finalize { reason: err },
+            failure: MachineAddFailure::Verify { reason: err },
         };
     }
+    stage = MachineAddStage::Verified;
+    let _ = operation_store.update_stage(&mut operation, stage.to_string());
+    tracing::info!(%target, joiner_id = %machine_id, "machine add target: remote verified");
+
+    if let Err(err) = admit_machine_membership(context.machine_store.as_ref(), &registered_record).await {
+        tracing::warn!(
+            %target,
+            joiner_id = %machine_id,
+            invite_id,
+            error = %err,
+            "machine add target: admission write failed"
+        );
+        let _ = operation_store.update_status(
+            &mut operation,
+            MachineOperationStatus::Failed,
+            Some(err.clone()),
+        );
+        return MachineAddTargetResult::Failed {
+            target,
+            failure: MachineAddFailure::Admit { reason: err },
+        };
+    }
+    stage = MachineAddStage::Admitted;
+    let _ = operation_store.update_stage(&mut operation, stage.to_string());
+    tracing::info!(%target, joiner_id = %machine_id, "machine add target: machine admitted");
 
     let _ = operation_store.update_stage(&mut operation, MachineAddStage::Finalized.to_string());
     let _ = operation_store.update_status(&mut operation, MachineOperationStatus::Succeeded, None);
@@ -683,7 +783,7 @@ async fn commit_machine_add_membership(
     challenge_nonce: &str,
     record: &MachineRecord,
     attestation: &MembershipAttestation,
-) -> Result<(), String> {
+) -> Result<MachineRecord, String> {
     if let Err(reason) =
         mesh::verify_membership_attestation(record, invite_id, challenge_nonce, attestation)
     {
@@ -691,12 +791,86 @@ async fn commit_machine_add_membership(
     }
 
     let now = now_unix_secs();
+    let mut registered = record.clone();
+    registered.admitted = false;
+    if registered.created_at == 0 {
+        registered.created_at = now;
+    }
+    registered.updated_at = now;
     context
         .membership_store
-        .commit_membership(record, invite_id, now)
+        .commit_membership(&registered, invite_id, now)
         .await
         .map_err(|error| format!("failed to commit membership: {error}"))?;
-    Ok(())
+    Ok(registered)
+}
+
+async fn admit_machine_membership(
+    machine_store: &dyn MachineStore,
+    record: &MachineRecord,
+) -> Result<(), String> {
+    let mut admitted = match super::list::find_machine_record(machine_store, &record.id).await {
+        Ok(Some(current)) => current,
+        Ok(None) => record.clone(),
+        Err(err) => return Err(format!("failed to load machine '{}' before admit: {err}", record.id)),
+    };
+    admitted.admitted = true;
+    admitted.updated_at = now_unix_secs();
+    machine_store
+        .upsert_self_machine(&admitted)
+        .await
+        .map_err(|error| format!("failed to admit machine '{}': {error}", admitted.id))
+}
+
+async fn wait_for_remote_machine_phase(
+    record: &MachineRecord,
+    rpc_port: u16,
+    phase: Phase,
+) -> Result<(), String> {
+    let timeout_ms = u64::try_from(REMOTE_JOIN_VERIFY_TIMEOUT.as_millis())
+        .map_err(|error| format!("convert join verify timeout: {error}"))?;
+    let client = remote_overlay_client(record, rpc_port);
+    client
+        .wait_node_phase(phase, timeout_ms)
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            format!(
+                "wait for machine '{}' to reach phase '{}': {error}",
+                record.id, phase
+            )
+        })
+}
+
+async fn verify_machine_add_target_phase(
+    context: &MachineAddContext,
+    #[cfg(test)] target: &str,
+    #[cfg(not(test))] _target: &str,
+    record: &MachineRecord,
+    phase: Phase,
+) -> Result<(), String> {
+    #[cfg(test)]
+    if context.rpc_port == 0 {
+        let timeout_ms = u64::try_from(REMOTE_JOIN_VERIFY_TIMEOUT.as_millis())
+            .map_err(|error| format!("convert join verify timeout: {error}"))?;
+        let response = remote_rpc(
+            target,
+            DaemonRequest::WaitNodePhase { phase, timeout_ms },
+            &context.ssh_options,
+        )
+        .await?;
+        if !response.ok {
+            return Err(remote_response_error(&response));
+        }
+        return match response.payload {
+            Some(DaemonPayload::NodeStatus(_)) => Ok(()),
+            _ => Err(String::from(
+                "remote wait-node-phase test probe did not include node-status payload",
+            )),
+        };
+    }
+
+    wait_for_remote_machine_phase(record, context.rpc_port, phase).await
 }
 
 async fn upsert_transient_peer(
@@ -729,7 +903,6 @@ async fn rollback_machine_add_target(
     if matches!(
         stage,
         MachineAddStage::TransientPeerInstalled
-            | MachineAddStage::Ready
             | MachineAddStage::Finalized
     ) && let Some(joiner_id) = joiner_id
         && let Err(err) = remove_transient_peer(&context.peer_sync_tx, joiner_id).await
@@ -741,7 +914,6 @@ async fn rollback_machine_add_target(
         MachineAddStage::Joined
             | MachineAddStage::SelfRecorded
             | MachineAddStage::TransientPeerInstalled
-            | MachineAddStage::Ready
             | MachineAddStage::Finalized
     ) && let Err(err) =
         best_effort_remote_cleanup(target, &context.network_name, &context.ssh_options).await
@@ -768,6 +940,11 @@ async fn remote_join_and_read_self_record(
         return Err("remote join did not include mesh-join payload".into());
     };
     Ok((payload.record, payload.attestation))
+}
+
+fn remote_overlay_client(record: &MachineRecord, rpc_port: u16) -> DaemonClient<TcpTransport> {
+    let addr = SocketAddr::new(IpAddr::V6(record.overlay_ip.0), rpc_port);
+    DaemonClient::new(TcpTransport::new(addr))
 }
 
 fn format_machine_ids(machine_ids: &[MachineId]) -> String {

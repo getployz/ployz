@@ -258,6 +258,7 @@ pub(crate) fn build_machine_request(action: MachineAction) -> Result<DaemonReque
             Ok(DaemonRequest::MachineAdd { targets, options })
         }
         MachineAction::Rm { id, force } => Ok(DaemonRequest::MachineRemove { id, force }),
+        MachineAction::Admit { id } => Ok(DaemonRequest::MachineAdmit { id }),
         MachineAction::Drain { id } => Ok(DaemonRequest::MachineDrain { id }),
         MachineAction::Undrain { id } => Ok(DaemonRequest::MachineUndrain { id }),
         MachineAction::Invite { action } => match action {

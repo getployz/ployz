@@ -335,6 +335,9 @@ pub(crate) enum MachineAction {
         #[arg(long)]
         force: bool,
     },
+    Admit {
+        id: String,
+    },
     Drain {
         id: String,
     },

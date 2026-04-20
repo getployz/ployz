@@ -48,7 +48,6 @@ mod tests {
             deployable,
             vec![
                 MachineId("down-enabled".into()),
-                MachineId("draining-fresh".into()),
                 MachineId("fresh-enabled".into()),
                 MachineId("stale-enabled".into()),
             ]
@@ -220,6 +219,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec!["127.0.0.1:51820".into()],
             status,
+            admitted: true,
             drain_state: if drain {
                 DrainState::Drained
             } else {

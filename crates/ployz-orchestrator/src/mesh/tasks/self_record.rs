@@ -55,6 +55,7 @@ pub(crate) async fn run_self_record_writer_task(
                     let _ = done.send(Some(current.clone()));
                     continue;
                 }
+                preserve_founder_owned_fields(&mut current, store.as_ref()).await;
                 match store.upsert_self_machine(&current).await {
                     Ok(()) => {
                         *authoritative_self.write().await = current.clone();
@@ -82,6 +83,20 @@ fn apply_mutation(record: &mut MachineRecord, mutation: SelfRecordMutation) {
     }
 }
 
+async fn preserve_founder_owned_fields(record: &mut MachineRecord, store: &dyn MachineStore) {
+    let durable = match store.list_machines().await {
+        Ok(machines) => machines.into_iter().find(|machine| machine.id == record.id),
+        Err(error) => {
+            warn!(?error, machine_id = %record.id, "self record writer: failed to read durable machine snapshot");
+            None
+        }
+    };
+    let Some(durable) = durable else {
+        return;
+    };
+    record.admitted = durable.admitted;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,6 +114,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec!["127.0.0.1:51820".into()],
             status: MachineStatus::Unknown,
+            admitted: true,
             drain_state: DrainState::Active,
             created_at: 0,
             updated_at: 0,
@@ -159,5 +175,48 @@ mod tests {
         assert_eq!(record.drain_state, DrainState::Drained);
         assert_eq!(record.updated_at, 123);
         assert_eq!(record.status, MachineStatus::Up);
+    }
+
+    #[tokio::test]
+    async fn writer_preserves_durable_admitted_flag() {
+        let authoritative_self = Arc::new(RwLock::new(test_record()));
+        let store = Arc::new(MemoryStore::new());
+        let mut durable = test_record();
+        durable.admitted = true;
+        store
+            .upsert_self_machine(&durable)
+            .await
+            .expect("seed durable self record");
+        let (tx, rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let writer_authoritative_self = authoritative_self.clone();
+        let writer_store = store.clone();
+        let handle = tokio::spawn(async move {
+            run_self_record_writer_task(writer_authoritative_self, writer_store, rx, task_cancel)
+                .await;
+        });
+
+        let _ = apply_self_record_mutation(
+            &tx,
+            SelfRecordMutation::SetEndpoints {
+                endpoints: vec!["10.0.0.1:51820".into()],
+            },
+        )
+        .await;
+
+        cancel.cancel();
+        handle.await.expect("writer exits");
+
+        let record = authoritative_self.read().await.clone();
+        assert!(record.admitted);
+        let stored = store
+            .list_machines()
+            .await
+            .expect("list machines")
+            .into_iter()
+            .find(|machine| machine.id == record.id)
+            .expect("stored self record");
+        assert!(stored.admitted);
     }
 }
