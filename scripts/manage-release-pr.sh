@@ -32,6 +32,56 @@ latest_release_tag() {
     --jq '[.[] | select(.tagName | test("^v")) | .tagName][0] // empty'
 }
 
+release_version_from_tag() {
+  local tag=$1
+
+  if [[ -z "${tag}" ]]; then
+    printf '\n'
+    return 0
+  fi
+
+  if [[ ! "${tag}" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+    printf 'expected release tag vX.Y.Z, got %s\n' "${tag}" >&2
+    exit 1
+  fi
+
+  printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
+bump_semver() {
+  local version=$1
+  local level=$2
+  local major minor patch
+
+  if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    printf 'expected semantic version X.Y.Z, got %s\n' "${version}" >&2
+    exit 1
+  fi
+
+  IFS='.' read -r major minor patch <<< "${version}"
+
+  case "${level}" in
+    patch)
+      patch=$((patch + 1))
+      ;;
+    minor)
+      minor=$((minor + 1))
+      patch=0
+      ;;
+    major)
+      major=$((major + 1))
+      minor=0
+      patch=0
+      ;;
+    *)
+      printf 'unknown bump level: %s\n' "${level}" >&2
+      exit 1
+      ;;
+  esac
+
+  printf '%s.%s.%s\n' "${major}" "${minor}" "${patch}"
+}
+
 read_version_from_ref() {
   local ref=$1
   local manifest_path
@@ -116,9 +166,11 @@ git fetch --force --tags origin "${BASE_BRANCH}"
 previous_tag="$(latest_release_tag)"
 main_ref="origin/${BASE_BRANCH}"
 main_version="$(read_version_from_ref "${main_ref}")"
+latest_release_version="$(release_version_from_tag "${previous_tag}")"
 release_pr_number="${PR_NUMBER}"
 target_version=""
 preserve_release_files=0
+existing_release_sha=""
 changed=0
 
 if [[ -z "${release_pr_number}" ]]; then
@@ -133,6 +185,7 @@ if [[ -n "${SET_VERSION}" || -n "${BUMP_VERSION}" ]]; then
 
   git fetch --force origin "${RELEASE_BRANCH}"
   EXISTING_RELEASE_REF="origin/${RELEASE_BRANCH}"
+  existing_release_sha="$(git rev-parse "${EXISTING_RELEASE_REF}")"
   git checkout -B "${RELEASE_BRANCH}" "${EXISTING_RELEASE_REF}"
 
   if [[ -n "${SET_VERSION}" ]]; then
@@ -144,15 +197,22 @@ if [[ -n "${SET_VERSION}" || -n "${BUMP_VERSION}" ]]; then
         --set "${target_version}" >/dev/null
     fi
   else
-    target_version="$(
+    bump_base_version="${latest_release_version}"
+    if [[ -z "${bump_base_version}" ]]; then
+      bump_base_version="${main_version}"
+    fi
+    target_version="$(bump_semver "${bump_base_version}" "${BUMP_VERSION}")"
+    current_release_version="$(current_workspace_version)"
+    if [[ "${current_release_version}" != "${target_version}" ]]; then
       bash "${ROOT_DIR}/scripts/update-workspace-version.sh" \
         --root "${ROOT_DIR}" \
-        --bump "${BUMP_VERSION}"
-    )"
+        --set "${target_version}" >/dev/null
+    fi
   fi
 elif remote_release_branch_exists; then
   git fetch --force origin "${RELEASE_BRANCH}"
   EXISTING_RELEASE_REF="origin/${RELEASE_BRANCH}"
+  existing_release_sha="$(git rev-parse "${EXISTING_RELEASE_REF}")"
   if [[ -n "${release_pr_number}" ]]; then
     if ! git diff --quiet "${main_ref}" "${EXISTING_RELEASE_REF}" -- "${RELEASE_FILES[@]}"; then
       preserve_release_files=1
@@ -206,6 +266,10 @@ fi
 if ! git diff --quiet -- "${RELEASE_FILES[@]}"; then
   git add "${RELEASE_FILES[@]}"
   git commit -m "release: v${target_version}"
+fi
+
+final_release_sha="$(git rev-parse HEAD)"
+if [[ -z "${existing_release_sha}" || "${existing_release_sha}" != "${final_release_sha}" ]]; then
   git push --force-with-lease origin "${RELEASE_BRANCH}"
   changed=1
 fi

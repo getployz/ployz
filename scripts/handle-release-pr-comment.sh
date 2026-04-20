@@ -42,10 +42,6 @@ require_event_context() {
   fi
 }
 
-current_release_version() {
-  bash "${ROOT_DIR}/scripts/read-workspace-version.sh"
-}
-
 remote_release_version() {
   local manifest_path
 
@@ -120,7 +116,10 @@ if ! output="$(bash "${ROOT_DIR}/scripts/manage-release-pr.sh" "${manage_args[@]
   reply_and_exit "${pr_number}" "Release command failed: ${error_message}" 1
 fi
 
-after_version="$(current_release_version)"
+after_version="$(printf '%s\n' "${output}" | sed -n 's/^version=//p' | tail -n 1)"
+if [[ -z "${after_version}" ]]; then
+  reply_and_exit "${pr_number}" "Release command failed: missing target version output." 1
+fi
 
 if [[ "${before_version}" == "${after_version}" ]]; then
   reply_and_exit "${pr_number}" "Release PR already targets v${after_version}." 0
