@@ -150,8 +150,16 @@ jobs:
       - name: Build E2E runner
         run: cargo build -p ployz-e2e
 
+      - name: Cache corrosion release tarball
+        uses: actions/cache@v4
+        with:
+          path: .cache/corrosion
+          key: ${{ runner.os }}-${{ matrix.suffix }}-corrosion-${{ hashFiles('.corrosion-version') }}
+
       - name: Run HostExec E2E suite
-        run: cargo run -p ployz-e2e -- --image ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.suffix }} --artifacts-dir e2e-artifacts --parallel
+        env:
+          PLOYZ_PAYLOAD_CORROSION_CACHE_DIR: ${{ github.workspace }}/.cache/corrosion
+        run: cargo run -p ployz-e2e -- --image ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.suffix }} --artifacts-dir e2e-artifacts --parallel --junit-path e2e-artifacts/junit.xml
 
       - name: Upload HostExec E2E artifacts
         if: always()
