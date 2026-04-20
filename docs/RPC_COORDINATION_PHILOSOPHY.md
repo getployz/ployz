@@ -88,8 +88,8 @@ This keeps future work obvious and avoids ad-hoc lock implementations.
 
 - **Liveness/readiness source:** pulled at decision time via `NodeStatus`.
   We do not persist heartbeat freshness in durable state.
-- **Operator intent:** persisted as durable `MachineRecord.drain` and surfaced
-  through `NodeStatus.draining`.
+- **Operator intent:** persisted as durable `MachineRecord.drain_state` and surfaced
+  through `NodeStatus.drain_state`.
 - **Mutations:** subnet claims and deploy namespace locks use quorum
   prepare/renew/commit semantics with owner+nonce idempotency.
 - **Background tasks:** focused on reconciliation/subscription work

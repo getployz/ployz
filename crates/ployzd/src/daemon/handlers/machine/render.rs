@@ -1,4 +1,5 @@
 use chrono::DateTime;
+use ployz_api::MachinePeerState;
 use ployz_types::model::{DrainState, MachineRecord, MachineStatus};
 
 use super::types::{MachineAddReport, MachineListReport};
@@ -25,13 +26,13 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
         .max()
         .unwrap_or(0)
         .max(6);
-    let w_present = report
+    let w_observed = report
         .rows
         .iter()
-        .map(|row| if row.reachable { "present" } else { "absent" }.len())
+        .map(|row| format_peer_state(row.peer_state).len())
         .max()
         .unwrap_or(0)
-        .max("PRESENCE".len());
+        .max("OBSERVED".len());
     let w_ready = report
         .rows
         .iter()
@@ -44,7 +45,7 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
         .max()
         .unwrap_or(0)
         .max("READY".len());
-    let w_draining = report
+    let w_drain_state = report
         .rows
         .iter()
         .map(|row| {
@@ -55,7 +56,7 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
         })
         .max()
         .unwrap_or(0)
-        .max("DRAINING".len());
+        .max("DRAIN STATE".len());
     let w_phase = report
         .rows
         .iter()
@@ -68,27 +69,27 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
         .max("PHASE".len());
     let mut lines = Vec::with_capacity(report.rows.len() + 1);
     lines.push(format!(
-        "{:<w_id$}  {:<6}  {:<w_present$}  {:<w_ready$}  {:<w_draining$}  {:<w_phase$}  {:<w_ov$}  {:<w_sub$}  {}",
-        "ID", "STATUS", "PRESENCE", "READY", "DRAINING", "PHASE", "OVERLAY IP", "SUBNET", "CREATED",
+        "{:<w_id$}  {:<6}  {:<w_observed$}  {:<w_ready$}  {:<w_drain_state$}  {:<w_phase$}  {:<w_ov$}  {:<w_sub$}  {}",
+        "ID", "STATUS", "OBSERVED", "READY", "DRAIN STATE", "PHASE", "OVERLAY IP", "SUBNET", "CREATED",
     ));
     for row in &report.rows {
-        let present = if row.reachable { "present" } else { "absent" };
+        let observed = format_peer_state(row.peer_state);
         let ready = row
             .ready
             .map(|value| if value { "ready" } else { "not-ready" })
             .unwrap_or("unknown");
-        let draining = row.drain_state.map(format_drain_state).unwrap_or("unknown");
+        let drain_state = row.drain_state.map(format_drain_state).unwrap_or("unknown");
         let phase = row
             .phase
             .map(|value| value.to_string())
             .unwrap_or_else(|| "unknown".into());
         lines.push(format!(
-            "{:<w_id$}  {:<6}  {:<w_present$}  {:<w_ready$}  {:<w_draining$}  {:<w_phase$}  {:<w_ov$}  {:<w_sub$}  {}",
+            "{:<w_id$}  {:<6}  {:<w_observed$}  {:<w_ready$}  {:<w_drain_state$}  {:<w_phase$}  {:<w_ov$}  {:<w_sub$}  {}",
             row.id,
             row.status,
-            present,
+            observed,
             ready,
-            draining,
+            drain_state,
             phase,
             row.overlay,
             row.subnet_display,
@@ -139,6 +140,15 @@ fn format_drain_state(drain_state: DrainState) -> &'static str {
     match drain_state {
         DrainState::Active => "active",
         DrainState::Drained => "drained",
+    }
+}
+
+fn format_peer_state(peer_state: MachinePeerState) -> &'static str {
+    match peer_state {
+        MachinePeerState::Local => "local",
+        MachinePeerState::Live => "present",
+        MachinePeerState::Unreachable => "absent",
+        MachinePeerState::IdentityMismatch => "identity-mismatch",
     }
 }
 

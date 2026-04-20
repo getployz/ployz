@@ -222,10 +222,20 @@ pub struct MachineListPayload {
     pub rows: Vec<MachineListRow>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MachinePeerState {
+    Local,
+    Live,
+    Unreachable,
+    IdentityMismatch,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineListRow {
     pub id: String,
     pub status: String,
+    pub peer_state: MachinePeerState,
     pub reachable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ready: Option<bool>,
@@ -233,6 +243,10 @@ pub struct MachineListRow {
     pub drain_state: Option<DrainState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<Phase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_machine_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_boot_id: Option<String>,
     pub overlay_ip: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subnet: Option<String>,

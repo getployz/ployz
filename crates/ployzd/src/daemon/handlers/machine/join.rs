@@ -402,6 +402,16 @@ impl DaemonState {
                 )
                 .await;
 
+                if !fanout_result.denied.is_empty() || !fanout_result.offline.is_empty() {
+                    tracing::debug!(
+                        target = %target,
+                        candidate = %candidate,
+                        denied = ?fanout_result.denied,
+                        offline = ?fanout_result.offline,
+                        "machine add subnet prepare fanout returned non-accepting peers"
+                    );
+                }
+
                 if !fanout_result.all_online_accepted || !fanout_result.quorum_met {
                     // Abort everywhere — either a peer denied or quorum was not reached.
                     let abort_op = CoordinationOperation::SubnetClaimAbort {
@@ -426,7 +436,9 @@ impl DaemonState {
                     .await;
                     if !fanout_result.quorum_met {
                         return Err(format!(
-                            "subnet allocation requires quorum; not enough cluster members reachable for target '{target}'"
+                            "subnet allocation requires quorum for target '{target}'; denied=[{}] offline=[{}]",
+                            format_machine_ids(&fanout_result.denied),
+                            format_machine_ids(&fanout_result.offline),
                         ));
                     }
                     continue;
@@ -833,6 +845,12 @@ async fn remote_self_record(
 
 fn remote_join_ready(payload: &NodeStatusPayload) -> bool {
     payload.ready
+}
+
+fn format_machine_ids(machine_ids: &[MachineId]) -> String {
+    let mut ids: Vec<String> = machine_ids.iter().map(ToString::to_string).collect();
+    ids.sort();
+    ids.join(", ")
 }
 
 async fn remote_rpc(

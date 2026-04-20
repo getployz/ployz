@@ -3,7 +3,7 @@ use crate::daemon::store::StoreDriver;
 use ipnet::Ipv4Net;
 use ployz_api::{
     MachineAddPayload, MachineAwaitingSelfPublication, MachineInstallOptions, MachineListPayload,
-    MachineListRow,
+    MachineListRow, MachinePeerState,
 };
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_types::model::{DrainState, MachineId, Phase};
@@ -107,14 +107,6 @@ pub(super) struct MachineAddReport {
 }
 
 impl MachineAddReport {
-    #[must_use]
-    pub(super) fn with_warnings(warnings: Vec<String>) -> Self {
-        Self {
-            warnings,
-            ..Self::default()
-        }
-    }
-
     pub(super) fn push(&mut self, outcome: MachineAddTargetResult) {
         match outcome {
             MachineAddTargetResult::AwaitingSelfPublication { target, joiner_id } => {
@@ -183,10 +175,13 @@ pub(super) struct MachineListReportRow {
     pub overlay: String,
     pub subnet: Option<Ipv4Net>,
     pub subnet_display: String,
+    pub peer_state: MachinePeerState,
     pub reachable: bool,
     pub ready: Option<bool>,
     pub drain_state: Option<DrainState>,
     pub phase: Option<Phase>,
+    pub reported_machine_id: Option<String>,
+    pub reported_boot_id: Option<String>,
     pub created_at: u64,
     pub created_display: String,
 }
@@ -197,10 +192,13 @@ impl MachineListReportRow {
         MachineListRow {
             id: self.id.clone(),
             status: self.status.into(),
+            peer_state: self.peer_state,
             reachable: self.reachable,
             ready: self.ready,
             drain_state: self.drain_state,
             phase: self.phase,
+            reported_machine_id: self.reported_machine_id.clone(),
+            reported_boot_id: self.reported_boot_id.clone(),
             overlay_ip: self.overlay.clone(),
             subnet: self.subnet.map(|subnet| subnet.to_string()),
             created_at: self.created_at,

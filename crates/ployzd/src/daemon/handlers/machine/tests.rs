@@ -1,6 +1,8 @@
 use super::join::hash_machine_id;
 use super::list::{LocalNodeStatus, machine_list_report};
 use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
+use super::render::render_machine_list_report;
+use super::types::{MachineListReport, MachineListReportRow};
 use crate::daemon::ActiveMesh;
 use crate::daemon::DaemonRuntimeConfig;
 use crate::daemon::DaemonState;
@@ -9,7 +11,8 @@ use crate::daemon::store::StoreDriver;
 use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
 use ipnet::Ipv4Net;
 use ployz_api::{
-    DaemonPayload, DaemonResponse, MachineAddOptions, MeshSelfRecordPayload, encode_join_response,
+    DaemonPayload, DaemonResponse, MachineAddOptions, MachinePeerState, MeshSelfRecordPayload,
+    encode_join_response,
 };
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::ipam::Ipam;
@@ -46,7 +49,7 @@ async fn machine_list_shows_disabled_explicitly() {
 
     let response = state.handle_machine_list().await;
     assert!(response.ok);
-    assert!(response.message.contains("PRESENCE"));
+    assert!(response.message.contains("OBSERVED"));
     assert!(response.message.contains("peer-disabled"));
     assert!(response.message.contains("drained"));
     assert!(response.message.contains("absent"));
@@ -77,6 +80,7 @@ async fn machine_list_json_payload_contains_rows() {
     };
     assert_eq!(payload.rows.len(), 1);
     assert_eq!(payload.rows[0].id, "founder");
+    assert_eq!(payload.rows[0].peer_state, MachinePeerState::Local);
 }
 
 #[tokio::test]
@@ -100,6 +104,44 @@ async fn machine_list_report_uses_local_mesh_readiness() {
     assert_eq!(local.ready, Some(false));
     assert_eq!(local.phase, Some(Phase::Starting));
     assert_eq!(local.drain_state, Some(DrainState::Drained));
+    assert_eq!(local.peer_state, MachinePeerState::Local);
+}
+
+#[test]
+fn machine_list_render_and_payload_show_identity_mismatch() {
+    let report = MachineListReport {
+        rows: vec![MachineListReportRow {
+            id: String::from("peer"),
+            status: "up",
+            overlay: String::from("fd00::2"),
+            subnet: None,
+            subnet_display: String::from("—"),
+            peer_state: MachinePeerState::IdentityMismatch,
+            reachable: true,
+            ready: None,
+            drain_state: Some(DrainState::Active),
+            phase: None,
+            reported_machine_id: Some(String::from("someone-else")),
+            reported_boot_id: Some(String::from("boot-2")),
+            created_at: 0,
+            created_display: String::from("—"),
+        }],
+    };
+
+    let rendered = render_machine_list_report(&report);
+    assert!(rendered.contains("OBSERVED"));
+    assert!(rendered.contains("identity-mismatch"));
+
+    let payload = report.payload();
+    assert_eq!(
+        payload.rows[0].peer_state,
+        MachinePeerState::IdentityMismatch
+    );
+    assert_eq!(
+        payload.rows[0].reported_machine_id.as_deref(),
+        Some("someone-else")
+    );
+    assert_eq!(payload.rows[0].reported_boot_id.as_deref(), Some("boot-2"));
 }
 
 #[tokio::test]

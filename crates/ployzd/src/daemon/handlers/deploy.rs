@@ -452,7 +452,7 @@ impl DeployNodeSelection {
         }
         if !self.drained.is_empty() {
             warnings.push(format!(
-                "draining peers were excluded from planning: {}",
+                "drained peers were excluded from planning: {}",
                 format_machine_ids(&self.drained)
             ));
         }
@@ -512,7 +512,7 @@ mod tests {
         assert!(
             warnings
                 .iter()
-                .any(|line| line.contains("draining peers were excluded from planning: peer-3"))
+                .any(|line| line.contains("drained peers were excluded from planning: peer-3"))
         );
         assert!(warnings.iter().any(|line| {
             line.contains("invalid identity peers were excluded from planning: peer-4")

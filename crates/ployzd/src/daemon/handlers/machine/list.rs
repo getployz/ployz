@@ -270,10 +270,13 @@ pub(super) async fn machine_list_report(
                         .subnet
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| "—".into()),
+                    peer_state: peer.peer_state(),
                     reachable: peer.reachable(),
                     ready: peer.ready(),
                     drain_state: peer.drain_state().or(Some(machine.drain_state)),
                     phase: peer.phase(),
+                    reported_machine_id: peer.reported_machine_id().map(ToString::to_string),
+                    reported_boot_id: peer.reported_boot_id().map(ToOwned::to_owned),
                     created_at: machine.created_at,
                     created_display: format_timestamp(machine.created_at),
                 }

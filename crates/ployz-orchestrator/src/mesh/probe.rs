@@ -225,39 +225,9 @@ pub(crate) async fn probe_endpoints_parallel(
     results
 }
 
-pub(crate) async fn probe_overlay_ips_parallel(
-    overlay_ips: &[OverlayIp],
-) -> HashMap<OverlayIp, TcpProbeResult> {
-    let mut probes = FuturesUnordered::new();
-    for overlay_ip in overlay_ips {
-        let overlay_ip = *overlay_ip;
-        probes.push(async move {
-            let result = match probe_overlay_ip(overlay_ip, PROBE_TIMEOUT).await {
-                Some(rtt) => TcpProbeResult::reachable(rtt),
-                None => TcpProbeResult::unreachable(),
-            };
-            (overlay_ip, result)
-        });
-    }
-
-    let mut results = HashMap::with_capacity(overlay_ips.len());
-    while let Some((overlay_ip, result)) = probes.next().await {
-        results.insert(overlay_ip, result);
-    }
-    results
-}
-
 async fn probe_endpoint(endpoint: &str, timeout: Duration) -> Option<Duration> {
     let addr = probe_socket_addr(endpoint)?;
     probe_addr(addr, timeout).await
-}
-
-async fn probe_overlay_ip(overlay_ip: OverlayIp, timeout: Duration) -> Option<Duration> {
-    probe_addr(
-        SocketAddr::new(IpAddr::from(overlay_ip.0), MESH_PROBE_PORT),
-        timeout,
-    )
-    .await
 }
 
 async fn probe_addr(addr: SocketAddr, timeout: Duration) -> Option<Duration> {

@@ -75,11 +75,7 @@ pub async fn docker_components(
         image,
     )
     .await?;
-    let container_network = Some(
-        docker_bridge_network(network_name, subnet)
-            .await
-            .map_err(RuntimeError::from)?,
-    );
+    let container_network = Some(docker_bridge_network(network_name, subnet).await?);
     Ok(ConcreteMeshComponents {
         network,
         container_network,
@@ -118,11 +114,7 @@ pub async fn host_components(
     subnet: ipnet::Ipv4Net,
 ) -> RuntimeResult<ConcreteMeshComponents> {
     let network = host(identity, overlay_ip, network_name, subnet)?;
-    let container_network = Some(
-        docker_bridge_network(network_name, subnet)
-            .await
-            .map_err(RuntimeError::from)?,
-    );
+    let container_network = Some(docker_bridge_network(network_name, subnet).await?);
     Ok(ConcreteMeshComponents {
         network,
         container_network,

@@ -4,11 +4,11 @@ use crate::mesh_state::bootstrap::{
 use crate::mesh_state::invite::{InviteClaims, parse_and_verify_invite_token};
 use crate::mesh_state::network::NetworkConfig;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use ployz_api::NodeStatusPayload;
 use ployz_api::{
     DaemonPayload, DaemonResponse, MeshSelfRecordPayload, MeshStatusPayload, decode_join_response,
     encode_join_response,
 };
+use ployz_api::{MachinePeerState, NodeStatusPayload};
 use ployz_orchestrator::ipam::Ipam;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_types::model::{DrainState, JoinResponse, MachineId, NetworkName, Phase};
@@ -35,17 +35,27 @@ pub(super) enum PeerView<'a> {
     Live(&'a NodeStatusPayload),
     Unreachable,
     Mismatch {
-        _reported: &'a MachineId,
-        _boot_id: &'a str,
+        reported: &'a MachineId,
+        boot_id: &'a str,
     },
 }
 
 impl PeerView<'_> {
     #[must_use]
+    pub(super) fn peer_state(&self) -> MachinePeerState {
+        match self {
+            Self::Local(_) => MachinePeerState::Local,
+            Self::Live(_) => MachinePeerState::Live,
+            Self::Unreachable => MachinePeerState::Unreachable,
+            Self::Mismatch { .. } => MachinePeerState::IdentityMismatch,
+        }
+    }
+
+    #[must_use]
     pub(super) fn reachable(&self) -> bool {
         match self {
-            Self::Local(_) | Self::Live(_) => true,
-            Self::Unreachable | Self::Mismatch { .. } => false,
+            Self::Local(_) | Self::Live(_) | Self::Mismatch { .. } => true,
+            Self::Unreachable => false,
         }
     }
 
@@ -75,6 +85,22 @@ impl PeerView<'_> {
             Self::Unreachable | Self::Mismatch { .. } => None,
         }
     }
+
+    #[must_use]
+    pub(super) fn reported_machine_id(&self) -> Option<&MachineId> {
+        match self {
+            Self::Mismatch { reported, .. } => Some(reported),
+            Self::Local(_) | Self::Live(_) | Self::Unreachable => None,
+        }
+    }
+
+    #[must_use]
+    pub(super) fn reported_boot_id(&self) -> Option<&str> {
+        match self {
+            Self::Mismatch { boot_id, .. } => Some(boot_id),
+            Self::Local(_) | Self::Live(_) | Self::Unreachable => None,
+        }
+    }
 }
 
 pub(super) fn resolve_peer<'a>(
@@ -94,10 +120,9 @@ pub(super) fn resolve_peer<'a>(
     match status {
         NodeStatusResult::Ok(status) => PeerView::Live(status),
         NodeStatusResult::Offline => PeerView::Unreachable,
-        NodeStatusResult::InvalidIdentity { reported, boot_id } => PeerView::Mismatch {
-            _reported: reported,
-            _boot_id: boot_id,
-        },
+        NodeStatusResult::InvalidIdentity { reported, boot_id } => {
+            PeerView::Mismatch { reported, boot_id }
+        }
     }
 }
 

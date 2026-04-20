@@ -52,7 +52,7 @@ pub struct NodeStatusPayload {
     pub boot_id: BootId,
     pub phase: Phase,
     pub ready: bool,
-    pub draining: bool,
+    pub drain_state: DrainState,
     pub subnet_claim: Option<Subnet>,
     pub workloads: WorkloadSummary,
     pub version: String,
@@ -64,9 +64,9 @@ pub struct NodeStatusPayload {
   (UUID or nanos-since-epoch at boot). It does not encode time; it only needs
   to differ between process lifetimes. Its consumer is deploy apply — see
   [Failure modes](#failure-modes).
-- `ready` means "healthy and able to accept work." `draining` is operator
-  intent, orthogonal. A node can be `ready: true, draining: true` — working
-  fine, but the operator has asked for it to be taken out of rotation.
+- `ready` means "healthy and able to accept work." `drain_state` is operator
+  intent, orthogonal. A node can be `ready: true, drain_state: drained` —
+  working fine, but the operator has asked for it to be taken out of rotation.
 
 **`crates/ployzd/src/daemon/handlers/node_status.rs` (new):** serves the
 payload from the orchestrator's in-memory state.
@@ -80,7 +80,7 @@ payload from the orchestrator's in-memory state.
 pub enum NodeStatusResult {
     Ok(NodeStatusPayload),
     Offline,                                   // timeout or connection refused
-    InvalidIdentity { reported: MachineId },   // target said it was someone else
+    InvalidIdentity { reported: MachineId, boot_id: String }, // target said it was someone else
 }
 
 pub async fn fanout_node_status(
@@ -102,9 +102,9 @@ Split the quorum rule by operation class. Preview is advisory and tolerates
 partial availability; apply mutates and enforces strict quorum.
 
 - **Eligibility predicate (both):** responded within the deadline with
-  `ready == true && draining == false` and matching `machine_id`.
+  `ready == true && drain_state == active` and matching `machine_id`.
 - **`preview`:** best-effort. Compute the plan against eligible peers.
-  Unreachable peers, `InvalidIdentity` results, and draining peers land in
+  Unreachable peers, `InvalidIdentity` results, and drained peers land in
   `DeployPreview.warnings`. Never returns `QuorumLost`. Preserves "can I see
   the plan?" during a transient partition.
 - **`apply`:** strict. If eligible peers + self do not meet
@@ -112,19 +112,20 @@ partial availability; apply mutates and enforces strict quorum.
   `QuorumLost { unreachable, drained, invalid_identity }`. No changes made.
 
 Delete the `machine_is_fresh` filter. Delete the `Participation::Enabled`
-filter — `ready && !draining` replaces it.
+filter — `ready && drain_state == active` replaces it.
 
 **`crates/ployzd/src/daemon/handlers/doctor.rs`:**
 
 - `build_participation_rows` becomes `build_node_rows`. Fans out `NodeStatus`
-  at command time. Renders `reachable`, `ready`, `draining`, and each node's
-  self-reported phase.
+  at command time. Renders peer observation state, `ready`, `drain_state`, and
+  each node's self-reported phase.
 - Overlay probe stays — that is data-plane diagnostics, a different question.
 
 **`crates/ployzd/src/daemon/handlers/machine/render.rs`:**
 
 - `format_liveness` deleted. Columns sourced from the live fanout: `present /
-  absent`, plus an explicit `draining` column when applicable.
+  absent / identity-mismatch`, plus an explicit `drain_state` column when
+  applicable.
 - `format_heartbeat` deleted.
 
 ## Phase 3: Delete
@@ -151,12 +152,12 @@ Fields and types go:
 disablement — that behavior goes. Operator drain is a real, distinct piece of
 committed intent and stays:
 
-- Replace the enum with `MachineRecord::drain: bool`.
+- Replace the enum with `MachineRecord::drain_state: DrainState`.
 - Set via an explicit `machine drain <id>` / `machine undrain <id>` command
   that writes to the store.
-- Each node subscribes to changes on its own record and mirrors `drain` into
+- Each node subscribes to changes on its own record and mirrors `drain_state` into
   in-memory state that `NodeStatus` reads.
-- `deployable_machines` filters on `ready && !draining` where both come from
+- `deployable_machines` filters on `ready && drain_state == active` where both come from
   the live `NodeStatus` fanout.
 
 This keeps operator intent as durable committed state (aligned with the
@@ -181,7 +182,7 @@ Add a **Current status** section to `RPC_COORDINATION_PHILOSOPHY.md`:
 - **Liveness:** pulled at decision time via `NodeStatus`. No replication, no
   leases for liveness.
 - **Operator intent (drain):** durable in the store, mirrored into each
-  node's in-memory state, exposed on `NodeStatus.draining`.
+  node's in-memory state, exposed on `NodeStatus.drain_state`.
 - **Mutations:** `SubnetClaim*` and `LockAcquire(DeployNamespace)` use quorum
   prepare/commit with lease/nonce idempotency.
 - **Background tasks still running:** reconcile node-local kernel state or
@@ -201,7 +202,7 @@ self_ready = phase == Running
           && overlay_interface_up
 ```
 
-It appears in `NodeStatus.ready`. `draining` is separate — it reflects
+It appears in `NodeStatus.ready`. `drain_state` is separate — it reflects
 operator intent, not health. `MeshReadyPayload` becomes
 `{ ready, phase, store_healthy, sync_connected, self_record_published }`.
 

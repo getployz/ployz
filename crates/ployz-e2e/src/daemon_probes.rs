@@ -216,8 +216,10 @@ impl ScenarioRun {
         for row in snapshot {
             let _ = write!(
                 report,
-                "\n    - {} draining={} subnet={}",
-                row.id, row.draining, row.subnet,
+                "\n    - {} drain_state={} subnet={}",
+                row.id,
+                format_optional_drain_state(row.drain_state),
+                row.subnet,
             );
         }
 
@@ -266,53 +268,6 @@ impl ScenarioRun {
         Ok(())
     }
 
-    pub(crate) fn wait_for_unique_machine_subnets_with_ticks(
-        &self,
-        node_name: &str,
-        tick_nodes: &[&str],
-        repeat: u32,
-    ) -> Result<()> {
-        wait_until(STATE_WAIT_TIMEOUT, || {
-            self.tick_nodes(tick_nodes, repeat)?;
-            match self.assert_unique_machine_subnets(node_name) {
-                Ok(()) => Ok(true),
-                Err(_) => Ok(false),
-            }
-        })
-        .map_err(|error| {
-            Error::Message(format!(
-                "machine subnets did not become unique on {node_name}: {error}"
-            ))
-        })
-    }
-
-    pub(crate) fn wait_for_machine_ids_with_subnets(
-        &self,
-        node_name: &str,
-        machine_ids: &[&str],
-    ) -> Result<()> {
-        let node = self.node(node_name)?;
-        let joined_ids = machine_ids.join(", ");
-
-        wait_until(STATE_WAIT_TIMEOUT, || {
-            let Ok(payload) = daemon_machine_list_in_container(&node.container_name) else {
-                return Ok(false);
-            };
-            let snapshot = machine_rows(&payload);
-            Ok(machine_ids.iter().all(|machine_id| {
-                snapshot
-                    .iter()
-                    .any(|row| row.id == *machine_id && row.subnet != "—")
-            }))
-        })
-        .map_err(|error| {
-            Error::Message(format!(
-                "machines '{joined_ids}' did not appear with subnets on {}: {error}",
-                node.name
-            ))
-        })
-    }
-
     pub(crate) fn wait_service_container_name(
         &self,
         node_name: &str,
@@ -349,7 +304,7 @@ impl ScenarioRun {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MachineRow {
     id: String,
-    draining: bool,
+    drain_state: Option<DrainState>,
     subnet: String,
 }
 
@@ -357,7 +312,7 @@ impl MachineRow {
     fn from_payload(row: &ployz_api::MachineListRow) -> Self {
         Self {
             id: row.id.clone(),
-            draining: row.drain_state.is_some_and(DrainState::is_drained),
+            drain_state: row.drain_state,
             subnet: row.subnet.clone().unwrap_or_else(|| "—".into()),
         }
     }
@@ -391,7 +346,7 @@ fn machine_state(payload: &MachineListPayload, machine_id: &str) -> Option<Strin
     payload.rows.iter().find_map(|row| {
         if row.id == machine_id {
             return Some(if row.drain_state.is_some_and(DrainState::is_drained) {
-                String::from("draining")
+                String::from("drained")
             } else {
                 String::from("active")
             });
@@ -402,8 +357,16 @@ fn machine_state(payload: &MachineListPayload, machine_id: &str) -> Option<Strin
 
 fn row_matches_state(row: &MachineRow, expected_state: &str) -> bool {
     match expected_state {
-        "draining" => row.draining,
-        "active" => !row.draining,
+        "drained" => row.drain_state.is_some_and(DrainState::is_drained),
+        "active" => !row.drain_state.is_some_and(DrainState::is_drained),
         _ => false,
+    }
+}
+
+fn format_optional_drain_state(drain_state: Option<DrainState>) -> &'static str {
+    match drain_state {
+        Some(DrainState::Active) => "active",
+        Some(DrainState::Drained) => "drained",
+        None => "unknown",
     }
 }
