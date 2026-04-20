@@ -39,6 +39,8 @@ jobs:
       contents: read
     outputs:
       run_e2e: ${{ steps.detect.outputs.run_e2e }}
+      matrix: ${{ steps.matrix.outputs.value }}
+      multi_arch: ${{ steps.matrix.outputs.multi_arch }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -75,19 +77,28 @@ jobs:
           )"
           echo "run_e2e=${result}" >> "${GITHUB_OUTPUT}"
 
+      - id: matrix
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          amd64='{"runner":"ubuntu-latest","platform":"linux/amd64","suffix":"amd64"}'
+          arm64='{"runner":"ubuntu-24.04-arm","platform":"linux/arm64","suffix":"arm64"}'
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]] \
+             || { [[ "${EVENT_NAME}" == "push" ]] && [[ "${REF}" == "refs/heads/main" ]]; }; then
+            echo "value={\"include\":[${amd64},${arm64}]}" >> "${GITHUB_OUTPUT}"
+            echo "multi_arch=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "value={\"include\":[${amd64}]}" >> "${GITHUB_OUTPUT}"
+            echo "multi_arch=false" >> "${GITHUB_OUTPUT}"
+          fi
+
   hostexec-e2e:
     needs: changes
     if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false) && needs.changes.outputs.run_e2e == 'true'
     strategy:
       fail-fast: true
-      matrix:
-        include:
-          - runner: ubuntu-latest
-            platform: linux/amd64
-            suffix: amd64
-          - runner: ubuntu-24.04-arm
-            platform: linux/arm64
-            suffix: arm64
+      matrix: ${{ fromJson(needs.changes.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -98,6 +109,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Cache eBPF toolchain and bytecode
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/bpf-linker
+            ebpf/target
+          key: ${{ runner.os }}-${{ matrix.suffix }}-ebpf-${{ hashFiles('scripts/build-ebpf-bytecode.sh', 'ebpf/Cargo.lock', 'ebpf/src/**', 'crates/ebpf-common/**') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.suffix }}-ebpf-
 
       - name: Build eBPF bytecode for payloads
         env:
@@ -120,6 +141,8 @@ jobs:
           platforms: ${{ matrix.platform }}
           push: true
           tags: ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.suffix }}
+          cache-from: type=gha,scope=e2e-node-${{ matrix.suffix }}
+          cache-to: type=gha,scope=e2e-node-${{ matrix.suffix }},mode=max
 
       - name: Pull node image tag under test
         run: docker pull ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.suffix }}
@@ -127,8 +150,16 @@ jobs:
       - name: Build E2E runner
         run: cargo build -p ployz-e2e
 
+      - name: Cache corrosion release tarball
+        uses: actions/cache@v4
+        with:
+          path: .cache/corrosion
+          key: ${{ runner.os }}-${{ matrix.suffix }}-corrosion-${{ hashFiles('.corrosion-version') }}
+
       - name: Run HostExec E2E suite
-        run: cargo run -p ployz-e2e -- --image ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.suffix }} --artifacts-dir e2e-artifacts --parallel
+        env:
+          PLOYZ_PAYLOAD_CORROSION_CACHE_DIR: ${{ github.workspace }}/.cache/corrosion
+        run: cargo run -p ployz-e2e -- --image ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.suffix }} --artifacts-dir e2e-artifacts --parallel --junit-path e2e-artifacts/junit.xml
 
       - name: Upload HostExec E2E artifacts
         if: always()
@@ -142,7 +173,7 @@ jobs:
     needs:
       - changes
       - hostexec-e2e
-    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false) && needs.changes.outputs.run_e2e == 'true'
+    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false) && needs.changes.outputs.run_e2e == 'true' && needs.changes.outputs.multi_arch == 'true'
     runs-on: ubuntu-latest
     permissions:
       packages: write

@@ -1,5 +1,6 @@
 mod cli;
 mod error;
+mod junit;
 mod runner;
 mod scenarios;
 mod support;
@@ -7,6 +8,7 @@ mod support;
 use clap::Parser;
 use cli::Cli;
 use error::{Error, Result};
+use junit::ScenarioOutcome;
 use runner::{CleanupReason, ScenarioRun, SharedPayload, prepare_shared_payload};
 use std::env;
 use std::fmt::Write as _;
@@ -14,6 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::thread;
+use std::time::Instant;
 
 fn main() {
     if let Err(error) = run() {
@@ -37,11 +40,21 @@ fn run() -> Result<()> {
     let artifacts_dir = resolve_artifacts_dir(&cli.artifacts_dir)?;
     let shared_payload = prepare_shared_payload(&cli.image, &artifacts_dir)?;
 
-    if cli.parallel && scenarios.len() > 1 {
-        return run_parallel(&cli, &shared_payload, scenarios, &artifacts_dir);
+    let outcomes = if cli.parallel && scenarios.len() > 1 {
+        run_parallel(&cli, &shared_payload, scenarios, &artifacts_dir)?
+    } else {
+        run_serial(&cli, &shared_payload, scenarios, &artifacts_dir)?
+    };
+
+    if let Some(path) = &cli.junit_path {
+        junit::write(path, &outcomes)?;
     }
 
-    run_serial(&cli, &shared_payload, scenarios, &artifacts_dir)
+    let failures: Vec<(cli::Scenario, String)> = outcomes
+        .iter()
+        .filter_map(|o| o.failure.as_ref().map(|e| (o.scenario, e.clone())))
+        .collect();
+    summarize_failures(failures)
 }
 
 fn run_serial(
@@ -49,27 +62,23 @@ fn run_serial(
     shared_payload: &SharedPayload,
     scenarios: Vec<cli::Scenario>,
     artifacts_dir: &Path,
-) -> Result<()> {
-    let mut failures = Vec::new();
+) -> Result<Vec<ScenarioOutcome>> {
+    let mut outcomes = Vec::with_capacity(scenarios.len());
     for scenario in scenarios {
-        match run_single_scenario(
+        let outcome = run_single_scenario(
             scenario,
             &cli.image,
             shared_payload,
             artifacts_dir,
             cli.keep_failed,
-        ) {
-            Ok(()) => {}
-            Err(error) => {
-                if cli.fail_fast {
-                    return Err(Error::Message(format!("{}: {error}", scenario.as_str())));
-                }
-                failures.push((scenario, error));
-            }
+        );
+        let failed = outcome.failure.is_some();
+        outcomes.push(outcome);
+        if failed && cli.fail_fast {
+            break;
         }
     }
-
-    summarize_failures(failures)
+    Ok(outcomes)
 }
 
 fn run_parallel(
@@ -77,7 +86,7 @@ fn run_parallel(
     shared_payload: &SharedPayload,
     scenarios: Vec<cli::Scenario>,
     artifacts_dir: &Path,
-) -> Result<()> {
+) -> Result<Vec<ScenarioOutcome>> {
     let mut handles = Vec::with_capacity(scenarios.len());
     for scenario in scenarios {
         let image = cli.image.clone();
@@ -85,28 +94,25 @@ fn run_parallel(
         let shared_payload = shared_payload.clone();
         let keep_failed = cli.keep_failed;
         handles.push(thread::spawn(move || {
-            let result = run_single_scenario(
+            run_single_scenario(
                 scenario,
                 &image,
                 &shared_payload,
                 &artifacts_dir,
                 keep_failed,
-            );
-            (scenario, result)
+            )
         }));
     }
 
-    let mut failures = Vec::new();
+    let mut outcomes = Vec::with_capacity(handles.len());
     for handle in handles {
-        let (scenario, result) = handle
+        let outcome = handle
             .join()
             .map_err(|_| Error::Message("parallel e2e worker panicked".into()))?;
-        if let Err(error) = result {
-            failures.push((scenario, error));
-        }
+        outcomes.push(outcome);
     }
 
-    summarize_failures(failures)
+    Ok(outcomes)
 }
 
 fn run_single_scenario(
@@ -115,24 +121,35 @@ fn run_single_scenario(
     shared_payload: &SharedPayload,
     artifacts_dir: &Path,
     keep_failed: bool,
-) -> Result<()> {
-    let mut run = ScenarioRun::new(scenario, image, shared_payload, artifacts_dir, keep_failed)?;
-    match run.execute() {
-        Ok(()) => {
-            println!("PASS {}", scenario.as_str());
-            run.cleanup(CleanupReason::Success);
-            Ok(())
-        }
+) -> ScenarioOutcome {
+    let started = Instant::now();
+    let failure = match ScenarioRun::new(scenario, image, shared_payload, artifacts_dir, keep_failed) {
+        Ok(mut run) => match run.execute() {
+            Ok(()) => {
+                println!("PASS {}", scenario.as_str());
+                run.cleanup(CleanupReason::Success);
+                None
+            }
+            Err(error) => {
+                eprintln!("FAIL {}: {error}", scenario.as_str());
+                let _ = run.collect_failure_artifacts();
+                run.cleanup(CleanupReason::Failure);
+                Some(error.to_string())
+            }
+        },
         Err(error) => {
             eprintln!("FAIL {}: {error}", scenario.as_str());
-            let _ = run.collect_failure_artifacts();
-            run.cleanup(CleanupReason::Failure);
-            Err(error)
+            Some(error.to_string())
         }
+    };
+    ScenarioOutcome {
+        scenario,
+        duration: started.elapsed(),
+        failure,
     }
 }
 
-fn summarize_failures(failures: Vec<(cli::Scenario, Error)>) -> Result<()> {
+fn summarize_failures(failures: Vec<(cli::Scenario, String)>) -> Result<()> {
     if failures.is_empty() {
         return Ok(());
     }

@@ -26,6 +26,9 @@ pub(crate) struct Cli {
 
     #[arg(long)]
     pub(crate) parallel: bool,
+
+    #[arg(long, value_name = "PATH")]
+    pub(crate) junit_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
