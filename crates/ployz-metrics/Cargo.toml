@@ -9,6 +9,7 @@ name = "ployz_metrics"
 path = "src/lib.rs"
 
 [dependencies]
+httparse = "1.10"
 prometheus = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "net"] }
 

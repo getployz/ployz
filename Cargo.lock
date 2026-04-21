@@ -2824,6 +2824,7 @@ dependencies = [
 name = "ployz-metrics"
 version = "0.1.0"
 dependencies = [
+ "httparse",
  "prometheus",
  "tokio",
 ]
