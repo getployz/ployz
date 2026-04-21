@@ -1,11 +1,13 @@
 use std::io;
 use std::net::SocketAddr;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use httparse::{Request, Status};
 use prometheus::{Encoder, IntGaugeVec, Opts, TextEncoder};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::timeout;
 
 static BUILD_INFO: OnceLock<IntGaugeVec> = OnceLock::new();
 
@@ -62,11 +64,19 @@ pub async fn spawn_metrics_listener(listen_addr: &str) -> io::Result<SocketAddr>
 
 async fn serve_connection(mut stream: TcpStream) -> io::Result<()> {
     const MAX_REQUEST_BYTES: usize = 8192;
+    const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
     let mut request_bytes = Vec::with_capacity(1024);
 
     loop {
         let mut read_buffer = [0_u8; 1024];
-        let bytes_read = stream.read(&mut read_buffer).await?;
+        let read_result = timeout(HEADER_READ_TIMEOUT, stream.read(&mut read_buffer)).await;
+        let bytes_read = match read_result {
+            Ok(value) => value?,
+            Err(_) => {
+                return write_response(&mut stream, 408, "Request Timeout", b"request timeout")
+                    .await;
+            }
+        };
         if bytes_read == 0 {
             break;
         }
