@@ -50,6 +50,7 @@ where
             Ok(next_snapshot) => {
                 let http_routes = next_snapshot.http_routes.len();
                 let tcp_routes = next_snapshot.tcp_routes.len();
+                crate::metrics::update_route_counts(&next_snapshot);
                 snapshot.replace(next_snapshot);
                 info!(http_routes, tcp_routes, "gateway snapshot refreshed");
             }
