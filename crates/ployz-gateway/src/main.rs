@@ -1,5 +1,6 @@
 fn main() -> Result<(), ployz_gateway::GatewayError> {
     tracing_subscriber::fmt::init();
+    ployz_metrics::set_build_info("ployz-gateway", env!("CARGO_PKG_VERSION"));
     let config = ployz_gateway::GatewayConfig::from_env()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
