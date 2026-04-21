@@ -2,6 +2,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::OnceLock;
 
+use httparse::{Request, Status};
 use prometheus::{Encoder, IntGaugeVec, Opts, TextEncoder};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -60,25 +61,55 @@ pub async fn spawn_metrics_listener(listen_addr: &str) -> io::Result<SocketAddr>
 }
 
 async fn serve_connection(mut stream: TcpStream) -> io::Result<()> {
-    let mut buffer = [0_u8; 4096];
-    let bytes_read = stream.read(&mut buffer).await?;
-    let request = String::from_utf8_lossy(&buffer[..bytes_read]);
-    let Some(request_line) = request.lines().next() else {
-        return write_response(&mut stream, 400, "Bad Request", b"bad request").await;
-    };
+    const MAX_REQUEST_BYTES: usize = 8192;
+    let mut request_bytes = Vec::with_capacity(1024);
 
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or_default();
-    let path = parts.next().unwrap_or_default();
-    let status = match (method, path) {
-        ("GET", "/") | ("GET", "/metrics") => {
-            let body = gather_metrics()?;
-            return write_ok_response(&mut stream, &body).await;
+    loop {
+        let mut read_buffer = [0_u8; 1024];
+        let bytes_read = stream.read(&mut read_buffer).await?;
+        if bytes_read == 0 {
+            break;
         }
-        ("GET", _) => (404, "Not Found", b"not found".as_slice()),
-        _ => (405, "Method Not Allowed", b"method not allowed".as_slice()),
-    };
-    write_response(&mut stream, status.0, status.1, status.2).await
+        request_bytes.extend_from_slice(&read_buffer[..bytes_read]);
+        if request_bytes.len() >= MAX_REQUEST_BYTES {
+            return write_response(
+                &mut stream,
+                431,
+                "Request Header Fields Too Large",
+                b"request too large",
+            )
+            .await;
+        }
+
+        let mut headers = [httparse::EMPTY_HEADER; 16];
+        let mut request = Request::new(&mut headers);
+        let parse_status = request.parse(&request_bytes);
+        match parse_status {
+            Ok(Status::Complete(_)) => {
+                let Some(method) = request.method else {
+                    return write_response(&mut stream, 400, "Bad Request", b"bad request").await;
+                };
+                let Some(path) = request.path else {
+                    return write_response(&mut stream, 400, "Bad Request", b"bad request").await;
+                };
+                let status = match (method, path) {
+                    ("GET", "/") | ("GET", "/metrics") => {
+                        let body = gather_metrics()?;
+                        return write_ok_response(&mut stream, &body).await;
+                    }
+                    ("GET", _) => (404, "Not Found", b"not found".as_slice()),
+                    _ => (405, "Method Not Allowed", b"method not allowed".as_slice()),
+                };
+                return write_response(&mut stream, status.0, status.1, status.2).await;
+            }
+            Ok(Status::Partial) => continue,
+            Err(_) => {
+                return write_response(&mut stream, 400, "Bad Request", b"bad request").await;
+            }
+        }
+    }
+
+    write_response(&mut stream, 400, "Bad Request", b"bad request").await
 }
 
 async fn write_ok_response(stream: &mut TcpStream, body: &[u8]) -> io::Result<()> {
@@ -91,6 +122,76 @@ async fn write_ok_response(stream: &mut TcpStream, body: &[u8]) -> io::Result<()
     stream.write_all(headers.as_bytes()).await?;
     stream.write_all(body).await?;
     stream.shutdown().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::serve_connection;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    async fn send_request_in_chunks(chunks: &[&[u8]]) -> Vec<u8> {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have address");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept should succeed");
+            serve_connection(stream)
+                .await
+                .expect("serve should succeed");
+        });
+
+        let mut client = TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        for chunk in chunks {
+            client
+                .write_all(chunk)
+                .await
+                .expect("chunk should write successfully");
+        }
+        client.shutdown().await.expect("shutdown should succeed");
+
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("response should read");
+        server.await.expect("server task should finish");
+        response
+    }
+
+    #[tokio::test]
+    async fn metrics_route_handles_fragmented_request_line() {
+        let response = send_request_in_chunks(&[
+            b"GET /met",
+            b"rics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        ])
+        .await;
+
+        let response_text = String::from_utf8_lossy(&response);
+        assert!(
+            response_text.starts_with("HTTP/1.1 200 OK"),
+            "unexpected response: {response_text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn metrics_route_handles_fragmented_headers() {
+        let response = send_request_in_chunks(&[
+            b"GET /metrics HTTP/1.1\r\nHost: local",
+            b"host\r\nConnection: close",
+            b"\r\n\r\n",
+        ])
+        .await;
+
+        let response_text = String::from_utf8_lossy(&response);
+        assert!(
+            response_text.starts_with("HTTP/1.1 200 OK"),
+            "unexpected response: {response_text}"
+        );
+    }
 }
 
 async fn write_response(
