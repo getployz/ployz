@@ -14,6 +14,8 @@ pub(crate) const MESH_PROBE_PORT: u16 = 51821;
 const PROBE_REQUEST: &[u8; 4] = b"PLZ?";
 const PROBE_RESPONSE: &[u8; 4] = b"OK!!";
 pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(750);
+const PROBE_LISTENER_BIND_RETRY_DELAY: Duration = Duration::from_millis(100);
+const PROBE_LISTENER_BIND_RETRY_ATTEMPTS: u8 = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TcpProbeStatus {
@@ -54,7 +56,7 @@ pub(crate) async fn run_probe_listener_task(cancel: CancellationToken) {
             "failed to bind IPv4 mesh probe listener"
         ),
     }
-    match bind_v6(MESH_PROBE_PORT).await {
+    match bind_v6_with_retry(MESH_PROBE_PORT).await {
         Ok(listener) => listeners.push(listener),
         Err(error) => warn!(
             ?error,
@@ -220,6 +222,23 @@ async fn bind_v6(port: u16) -> io::Result<TcpListener> {
     bind_v6_only_listener(port)
 }
 
+async fn bind_v6_with_retry(port: u16) -> io::Result<TcpListener> {
+    for attempt in 0..PROBE_LISTENER_BIND_RETRY_ATTEMPTS {
+        match bind_v6(port).await {
+            Ok(listener) => return Ok(listener),
+            Err(error) if error.kind() == io::ErrorKind::AddrInUse => {
+                if attempt + 1 == PROBE_LISTENER_BIND_RETRY_ATTEMPTS {
+                    return Err(error);
+                }
+                tokio::time::sleep(PROBE_LISTENER_BIND_RETRY_DELAY).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(io::Error::other("probe listener bind retry exhausted"))
+}
+
 #[cfg(unix)]
 fn bind_v6_only_listener(port: u16) -> io::Result<TcpListener> {
     use std::mem::{size_of, zeroed};
@@ -340,5 +359,22 @@ mod tests {
         let v6 = bind_v6(port).await.expect("bind IPv6 listener");
 
         assert_eq!(v6.local_addr().expect("v6 addr").port(), port);
+    }
+
+    #[tokio::test]
+    async fn v6_probe_listener_retries_addr_in_use_during_restart() {
+        let blocker = bind_v6(0).await.expect("bind initial IPv6 listener");
+        let port = blocker.local_addr().expect("blocker addr").port();
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(blocker);
+        });
+
+        let listener = bind_v6_with_retry(port)
+            .await
+            .expect("bind retried IPv6 listener");
+
+        assert_eq!(listener.local_addr().expect("listener addr").port(), port);
+        release.await.expect("release blocker");
     }
 }
