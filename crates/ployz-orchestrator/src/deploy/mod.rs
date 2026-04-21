@@ -600,6 +600,8 @@ mod tests {
                 cap_drop: Vec::new(),
                 privileged: false,
                 user: None,
+                stop_grace_period: None,
+                pid_mode: None,
                 pull_policy: PullPolicy::IfNotPresent,
                 resources: Resources::empty(),
                 sysctls: BTreeMap::new(),
@@ -611,7 +613,6 @@ mod tests {
             readiness: None,
             rollout: RolloutStrategy::Recreate,
             labels: BTreeMap::new(),
-            stop_grace_period: None,
             restart: RestartPolicy::UnlessStopped,
         };
         let machines = vec![MachineId("machine-a".into()), MachineId("machine-b".into())];
