@@ -102,10 +102,7 @@ impl CliError {
     pub(crate) fn exit_code(&self) -> i32 {
         match self {
             Self::Usage(_) | Self::Config(_) => 2,
-            Self::Io(_)
-            | Self::Serialize(_)
-            | Self::Daemon { .. }
-            | Self::Transport { .. } => 1,
+            Self::Io(_) | Self::Serialize(_) | Self::Daemon { .. } | Self::Transport { .. } => 1,
         }
     }
 

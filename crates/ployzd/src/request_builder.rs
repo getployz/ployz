@@ -433,6 +433,8 @@ pub(crate) fn build_service_spec(
             cap_drop: vec![],
             privileged: false,
             user: None,
+            stop_grace_period: None,
+            pid_mode: None,
             pull_policy: if pull {
                 PullPolicy::Always
             } else {
@@ -448,7 +450,6 @@ pub(crate) fn build_service_spec(
         readiness: None,
         rollout: RolloutStrategy::Recreate,
         labels: BTreeMap::new(),
-        stop_grace_period: None,
         restart: match restart {
             "always" => RestartPolicy::Always,
             "on-failure" => RestartPolicy::OnFailure,
