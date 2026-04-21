@@ -82,6 +82,9 @@ async fn run() -> Result<i32> {
                 cfg.remote_control_port,
                 cfg.gateway_listen_addr,
                 cfg.gateway_threads,
+                cfg.daemon_metrics_listen_addr,
+                cfg.dns_metrics_listen_addr,
+                cfg.gateway_metrics_listen_addr,
             )
             .await
             .map_err(CliError::Io)?;

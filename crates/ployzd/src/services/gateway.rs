@@ -127,13 +127,65 @@ fn build_gateway_sidecar_spec(
                 config.listen_addr.clone(),
             ),
             ("PLOYZ_GATEWAY_THREADS".into(), config.threads.to_string()),
-        ],
+        ]
+        .into_iter()
+        .chain(config.metrics_listen_addr.iter().map(|listen_addr| {
+            (
+                "PLOYZ_GATEWAY_METRICS_LISTEN_ADDR".into(),
+                listen_addr.clone(),
+            )
+        }))
+        .collect(),
         binds: vec![
             format!("{data_dir_str}:{data_dir_str}"),
             format!("{gateway_dir_str}:{gateway_dir_str}"),
         ],
         network_container: Some("ployz-networking".to_string()),
         systemd_extra,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GatewayPaths, build_gateway_sidecar_spec};
+    use ployz_gateway::GatewayConfig;
+    use std::path::Path;
+
+    #[test]
+    fn sidecar_spec_includes_metrics_env_when_configured() {
+        let config = GatewayConfig::for_network(
+            Path::new("/tmp/ployz"),
+            "alpha",
+            "0.0.0.0:80".into(),
+            2,
+            Some("127.0.0.1:9180".into()),
+        );
+        let paths = GatewayPaths::for_config(&config);
+
+        let spec = build_gateway_sidecar_spec(&config, &paths, "ployz-gateway:latest");
+        assert!(spec.env.iter().any(|(key, value)| {
+            key == "PLOYZ_GATEWAY_METRICS_LISTEN_ADDR" && value == "127.0.0.1:9180"
+        }));
+    }
+
+    #[test]
+    fn sidecar_spec_omits_metrics_env_by_default() {
+        let config = GatewayConfig::for_network(
+            Path::new("/tmp/ployz"),
+            "alpha",
+            "0.0.0.0:80".into(),
+            2,
+            None,
+        );
+        let paths = GatewayPaths::for_config(&config);
+
+        let spec = build_gateway_sidecar_spec(&config, &paths, "ployz-gateway:latest");
+        assert!(
+            !spec
+                .env
+                .iter()
+                .any(|(key, _)| key == "PLOYZ_GATEWAY_METRICS_LISTEN_ADDR")
+        );
     }
 }
 

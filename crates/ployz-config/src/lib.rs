@@ -49,6 +49,12 @@ pub struct DaemonConfig {
     pub socket: String,
     #[serde(default)]
     pub builtin_images_manifest: Option<PathBuf>,
+    #[serde(default)]
+    pub daemon_metrics_listen_addr: Option<String>,
+    #[serde(default)]
+    pub dns_metrics_listen_addr: Option<String>,
+    #[serde(default)]
+    pub gateway_metrics_listen_addr: Option<String>,
     #[serde(default = "default_cluster_cidr")]
     pub cluster_cidr: String,
     #[serde(default = "default_subnet_prefix_len")]
@@ -87,6 +93,12 @@ struct RuntimeDefaults {
     socket: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     builtin_images_manifest: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    daemon_metrics_listen_addr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dns_metrics_listen_addr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gateway_metrics_listen_addr: Option<String>,
     cluster_cidr: String,
     subnet_prefix_len: u8,
     remote_control_port: u16,
@@ -108,6 +120,12 @@ struct DaemonOverrides {
     socket: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     builtin_images_manifest: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    daemon_metrics_listen_addr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dns_metrics_listen_addr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gateway_metrics_listen_addr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cluster_cidr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -206,6 +224,9 @@ pub fn load_daemon_config(
         data_dir: cli_data_dir,
         socket: cli_socket,
         builtin_images_manifest: None,
+        daemon_metrics_listen_addr: None,
+        dns_metrics_listen_addr: None,
+        gateway_metrics_listen_addr: None,
         cluster_cidr: None,
         subnet_prefix_len: None,
         remote_control_port: cli_remote_control_port,
@@ -224,6 +245,9 @@ fn build_figment(cli_config_path: Option<PathBuf>, context: &HostPathsContext) -
         data_dir: default_data_dir(context),
         socket: default_socket_path(context),
         builtin_images_manifest: None,
+        daemon_metrics_listen_addr: None,
+        dns_metrics_listen_addr: None,
+        gateway_metrics_listen_addr: None,
         cluster_cidr: default_cluster_cidr(),
         subnet_prefix_len: default_subnet_prefix_len(),
         remote_control_port: default_remote_control_port(),
@@ -279,6 +303,37 @@ mod tests {
 
         unsafe {
             std::env::remove_var("PLOYZ_BUILTIN_IMAGES_MANIFEST");
+        }
+    }
+
+    #[test]
+    fn daemon_config_reads_metrics_listen_addrs_from_env() {
+        unsafe {
+            std::env::set_var("PLOYZ_DAEMON_METRICS_LISTEN_ADDR", "127.0.0.1:9100");
+            std::env::set_var("PLOYZ_DNS_METRICS_LISTEN_ADDR", "127.0.0.1:9101");
+            std::env::set_var("PLOYZ_GATEWAY_METRICS_LISTEN_ADDR", "127.0.0.1:9102");
+        }
+
+        let loaded = load_daemon_config(None, None, None, None, &context(Os::Darwin, false))
+            .expect("daemon config should load");
+
+        assert_eq!(
+            loaded.daemon_metrics_listen_addr.as_deref(),
+            Some("127.0.0.1:9100")
+        );
+        assert_eq!(
+            loaded.dns_metrics_listen_addr.as_deref(),
+            Some("127.0.0.1:9101")
+        );
+        assert_eq!(
+            loaded.gateway_metrics_listen_addr.as_deref(),
+            Some("127.0.0.1:9102")
+        );
+
+        unsafe {
+            std::env::remove_var("PLOYZ_DAEMON_METRICS_LISTEN_ADDR");
+            std::env::remove_var("PLOYZ_DNS_METRICS_LISTEN_ADDR");
+            std::env::remove_var("PLOYZ_GATEWAY_METRICS_LISTEN_ADDR");
         }
     }
 }
