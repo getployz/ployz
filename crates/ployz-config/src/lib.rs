@@ -259,10 +259,7 @@ mod tests {
     use super::*;
 
     fn context(os: Os, is_root: bool) -> HostPathsContext {
-        HostPathsContext {
-            os,
-            is_root,
-        }
+        HostPathsContext { os, is_root }
     }
 
     #[test]
