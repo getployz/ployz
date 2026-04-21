@@ -1,8 +1,8 @@
-use async_trait::async_trait;
 use crate::{
     DeployStore, InviteStore, MachineStore, RoutingInvalidationSubscription, RoutingStore,
     StoreRuntimeControl, SyncProbe, SyncStatus,
 };
+use async_trait::async_trait;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
