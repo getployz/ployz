@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 ployz-config = { path = "../ployz-config" }
 ployz-corrosion = { path = "../ployz-corrosion" }
+ployz-metrics = { path = "../ployz-metrics" }
 ployz-store-api = { path = "../ployz-store-api" }
 ployz-types = { path = "../ployz-types" }
 serde = { workspace = true }
@@ -24,6 +25,7 @@ tokio = { workspace = true }
 # TODO: remove when upstream pingora drops async_trait
 async-trait = { workspace = true }
 http = { workspace = true }
+prometheus = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

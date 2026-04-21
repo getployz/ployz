@@ -1,4 +1,5 @@
 mod config;
+mod metrics;
 mod proxy;
 pub mod routes;
 mod server;
