@@ -48,6 +48,8 @@ pub struct DaemonState {
     pub remote_control_port: u16,
     pub gateway_listen_addr: String,
     pub gateway_threads: usize,
+    pub dns_metrics_listen_addr: Option<String>,
+    pub gateway_metrics_listen_addr: Option<String>,
     pub active: Option<ActiveMesh>,
     pub namespace_locks: NamespaceLockManager,
     pub(crate) pending_subnet_heal: Option<PendingSubnetHeal>,
@@ -68,6 +70,8 @@ impl DaemonState {
         remote_control_port: u16,
         gateway_listen_addr: String,
         gateway_threads: usize,
+        dns_metrics_listen_addr: Option<String>,
+        gateway_metrics_listen_addr: Option<String>,
     ) -> Self {
         let runtime_profile =
             RuntimeProfile::from_runtime(runtime_target, service_mode, built_in_images);
@@ -82,6 +86,8 @@ impl DaemonState {
             remote_control_port,
             gateway_listen_addr,
             gateway_threads,
+            dns_metrics_listen_addr,
+            gateway_metrics_listen_addr,
         )
     }
 
@@ -108,6 +114,8 @@ impl DaemonState {
             remote_control_port,
             gateway_listen_addr,
             gateway_threads,
+            None,
+            None,
         )
     }
 
@@ -124,6 +132,8 @@ impl DaemonState {
         remote_control_port: u16,
         gateway_listen_addr: String,
         gateway_threads: usize,
+        dns_metrics_listen_addr: Option<String>,
+        gateway_metrics_listen_addr: Option<String>,
     ) -> Self {
         Self {
             data_dir: data_dir.to_path_buf(),
@@ -136,6 +146,8 @@ impl DaemonState {
             remote_control_port,
             gateway_listen_addr,
             gateway_threads,
+            dns_metrics_listen_addr,
+            gateway_metrics_listen_addr,
             active: None,
             namespace_locks: NamespaceLockManager::default(),
             pending_subnet_heal: None,

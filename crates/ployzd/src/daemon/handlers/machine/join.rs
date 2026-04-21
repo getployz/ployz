@@ -7,8 +7,8 @@ use ployz_api::{
     InstallSource, MachineAddOptions, MachineInstallOptions, MeshReadyPayload,
     MeshSelfRecordPayload,
 };
-use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_orchestrator::ipam::Ipam;
+use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_sdk::Transport;
 use ployz_store_api::{InviteStore, MachineStore};
 use ployz_types::model::{JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineRecord};
