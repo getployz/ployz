@@ -2,16 +2,17 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use bollard::Docker;
-use bollard::models::{ContainerCreateBody, HostConfig};
+use bollard::models::{ContainerCreateBody, ContainerStatsResponse, HostConfig};
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, CreateImageOptionsBuilder, ListContainersOptionsBuilder,
-    RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
+    RemoveContainerOptionsBuilder, StatsOptionsBuilder, StopContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
 use ployz_types::{Error, Result};
 use tracing::{info, warn};
 
 use super::diff::{ChangedField, SpecChange, eval_spec_change, parent_id_matches};
+use super::labels::{LABEL_KIND, LABEL_MANAGED, extract_workload_labels};
 use super::probe::ProbeRunner;
 use super::spec::{ObservedContainer, observe};
 use super::{PullPolicy, RuntimeContainerSpec, parse_docker_image_ref};
@@ -27,6 +28,17 @@ pub struct EnsureResult {
     pub action: EnsureAction,
     pub ip_address: Option<std::net::IpAddr>,
     pub networks: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkloadResourceSnapshot {
+    pub namespace: String,
+    pub service: String,
+    pub instance_id: String,
+    pub machine_id: String,
+    pub cpu_total_seconds: f64,
+    pub memory_usage_bytes: u64,
+    pub memory_limit_bytes: u64,
 }
 
 #[derive(Debug)]
@@ -252,6 +264,21 @@ impl ContainerEngine {
         Ok(result)
     }
 
+    pub async fn list_workload_resource_snapshots(&self) -> Result<Vec<WorkloadResourceSnapshot>> {
+        let observed = self
+            .list_by_labels(&[(LABEL_MANAGED, "true"), (LABEL_KIND, "workload")])
+            .await?;
+
+        let mut snapshots = Vec::new();
+        for container in observed {
+            let Some(snapshot) = self.workload_resource_snapshot(&container).await? else {
+                continue;
+            };
+            snapshots.push(snapshot);
+        }
+        Ok(snapshots)
+    }
+
     pub async fn pull_image(&self, image: &str, policy: PullPolicy) -> Result<()> {
         match policy {
             PullPolicy::Never => return Ok(()),
@@ -398,6 +425,37 @@ impl ContainerEngine {
             warn!(?e, name = %container_name, "failed to remove existing container");
         }
     }
+
+    async fn workload_resource_snapshot(
+        &self,
+        container: &ObservedContainer,
+    ) -> Result<Option<WorkloadResourceSnapshot>> {
+        if !container.running {
+            return Ok(None);
+        }
+
+        let options = StatsOptionsBuilder::default()
+            .stream(false)
+            .one_shot(true)
+            .build();
+        let mut stats_stream = self.docker.stats(&container.container_id, Some(options));
+
+        let stats_result = stats_stream.next().await;
+        let Some(stats_result) = stats_result else {
+            return Ok(None);
+        };
+        match stats_result {
+            Ok(stats) => Ok(workload_resource_snapshot(container, &stats)),
+            Err(error) => {
+                warn!(
+                    ?error,
+                    container = %container.container_name,
+                    "failed to fetch workload stats"
+                );
+                Ok(None)
+            }
+        }
+    }
 }
 
 fn none_if_empty<T: Clone>(v: &[T]) -> Option<Vec<T>> {
@@ -406,4 +464,152 @@ fn none_if_empty<T: Clone>(v: &[T]) -> Option<Vec<T>> {
 
 fn none_if_empty_map<K: Clone, V: Clone>(m: &HashMap<K, V>) -> Option<HashMap<K, V>> {
     if m.is_empty() { None } else { Some(m.clone()) }
+}
+
+fn workload_resource_snapshot(
+    container: &ObservedContainer,
+    stats: &ContainerStatsResponse,
+) -> Option<WorkloadResourceSnapshot> {
+    if container.labels.get(LABEL_MANAGED).map(String::as_str) != Some("true") {
+        return None;
+    }
+    if container.labels.get(LABEL_KIND).map(String::as_str) != Some("workload") {
+        return None;
+    }
+    let labels = extract_workload_labels(&container.labels)?;
+    let cpu_total_nanos = stats
+        .cpu_stats
+        .as_ref()
+        .and_then(|cpu| cpu.cpu_usage.as_ref())
+        .and_then(|cpu_usage| cpu_usage.total_usage)
+        .unwrap_or(0);
+    let memory_usage_bytes = stats
+        .memory_stats
+        .as_ref()
+        .and_then(|memory| memory.usage)
+        .unwrap_or(0);
+    let memory_limit_bytes = stats
+        .memory_stats
+        .as_ref()
+        .and_then(|memory| memory.limit)
+        .unwrap_or(0);
+
+    Some(WorkloadResourceSnapshot {
+        namespace: labels.namespace,
+        service: labels.service,
+        instance_id: labels.instance_id,
+        machine_id: labels.machine_id,
+        cpu_total_seconds: cpu_total_nanos as f64 / 1_000_000_000.0,
+        memory_usage_bytes,
+        memory_limit_bytes,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::{ObservedContainer, WorkloadResourceSnapshot, workload_resource_snapshot};
+    use crate::runtime::labels::{
+        LABEL_INSTANCE, LABEL_KIND, LABEL_MACHINE, LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE,
+    };
+    use bollard::models::{
+        ContainerCpuStats, ContainerCpuUsage, ContainerMemoryStats, ContainerStatsResponse,
+    };
+
+    #[test]
+    fn workload_resource_snapshot_reads_cpu_and_memory_stats() {
+        let container = observed_workload_container();
+        let snapshot = workload_resource_snapshot(
+            &container,
+            &ContainerStatsResponse {
+                cpu_stats: Some(ContainerCpuStats {
+                    cpu_usage: Some(ContainerCpuUsage {
+                        total_usage: Some(2_500_000_000),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                memory_stats: Some(ContainerMemoryStats {
+                    usage: Some(512),
+                    limit: Some(2048),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .expect("snapshot should be produced");
+
+        assert_eq!(
+            snapshot,
+            WorkloadResourceSnapshot {
+                namespace: "ns".into(),
+                service: "web".into(),
+                instance_id: "web-1".into(),
+                machine_id: "machine-a".into(),
+                cpu_total_seconds: 2.5,
+                memory_usage_bytes: 512,
+                memory_limit_bytes: 2048,
+            }
+        );
+    }
+
+    #[test]
+    fn workload_resource_snapshot_ignores_unlabeled_containers() {
+        let mut container = observed_workload_container();
+        container.labels.remove(LABEL_NAMESPACE);
+
+        let snapshot = workload_resource_snapshot(&container, &ContainerStatsResponse::default());
+        assert!(snapshot.is_none());
+    }
+
+    #[test]
+    fn workload_resource_snapshot_ignores_non_workload_containers() {
+        let mut container = observed_workload_container();
+        container.labels.insert(LABEL_KIND.into(), "system".into());
+
+        let snapshot = workload_resource_snapshot(&container, &ContainerStatsResponse::default());
+        assert!(snapshot.is_none());
+    }
+
+    fn observed_workload_container() -> ObservedContainer {
+        let mut labels = HashMap::new();
+        labels.insert(LABEL_MANAGED.into(), "true".into());
+        labels.insert(LABEL_KIND.into(), "workload".into());
+        labels.insert(LABEL_NAMESPACE.into(), "ns".into());
+        labels.insert(LABEL_SERVICE.into(), "web".into());
+        labels.insert(LABEL_INSTANCE.into(), "web-1".into());
+        labels.insert(LABEL_MACHINE.into(), "machine-a".into());
+        labels.insert("dev.ployz.slot".into(), "slot-1".into());
+        labels.insert("dev.ployz.revision".into(), "rev-1".into());
+        labels.insert("dev.ployz.deploy".into(), "deploy-1".into());
+
+        ObservedContainer {
+            container_id: "container-1".into(),
+            container_name: "ployz-ns-web-1".into(),
+            running: true,
+            image: "busybox".into(),
+            cmd: None,
+            entrypoint: None,
+            env: Vec::new(),
+            labels,
+            binds: Vec::new(),
+            tmpfs: HashMap::new(),
+            dns_servers: Vec::new(),
+            network_mode: None,
+            port_bindings: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            user: None,
+            restart_policy: None,
+            memory_bytes: None,
+            nano_cpus: None,
+            sysctls: HashMap::new(),
+            stop_timeout: None,
+            pid_mode: None,
+            ip_address: None,
+            networks: HashMap::new(),
+        }
+    }
 }

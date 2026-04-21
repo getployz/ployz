@@ -30,6 +30,7 @@ pub struct DnsConfig {
     pub network: String,
     pub overlay_listen_addr: String,
     pub bridge_listen_addr: Option<String>,
+    pub metrics_listen_addr: Option<String>,
 }
 
 impl DnsConfig {
@@ -39,6 +40,7 @@ impl DnsConfig {
         network: &str,
         overlay_ip: OverlayIp,
         bridge_listen_addr: Option<String>,
+        metrics_listen_addr: Option<String>,
     ) -> Self {
         let OverlayIp(ip) = overlay_ip;
         Self {
@@ -46,6 +48,7 @@ impl DnsConfig {
             network: network.to_string(),
             overlay_listen_addr: format!("[{ip}]:53"),
             bridge_listen_addr,
+            metrics_listen_addr,
         }
     }
 
@@ -88,12 +91,22 @@ impl DnsConfig {
             }
             Err(_) => None,
         };
+        let metrics_listen_addr = match std::env::var("PLOYZ_DNS_METRICS_LISTEN_ADDR") {
+            Ok(address) if !address.trim().is_empty() => Some(address),
+            Ok(_) => {
+                return Err(DnsError::Config(
+                    "PLOYZ_DNS_METRICS_LISTEN_ADDR was set but empty".into(),
+                ));
+            }
+            Err(_) => None,
+        };
 
         Ok(Self {
             data_dir,
             network,
             overlay_listen_addr,
             bridge_listen_addr,
+            metrics_listen_addr,
         })
     }
 }
@@ -138,11 +151,16 @@ mod tests {
             "default",
             OverlayIp(Ipv6Addr::LOCALHOST),
             Some("0.0.0.0:53".into()),
+            Some("127.0.0.1:9153".into()),
         );
 
         assert_eq!(config.network, "default");
         assert_eq!(config.overlay_listen_addr, "[::1]:53");
         assert_eq!(config.bridge_listen_addr.as_deref(), Some("0.0.0.0:53"));
+        assert_eq!(
+            config.metrics_listen_addr.as_deref(),
+            Some("127.0.0.1:9153")
+        );
     }
 
     #[test]
@@ -152,8 +170,33 @@ mod tests {
             "default",
             OverlayIp(Ipv6Addr::LOCALHOST),
             None,
+            None,
         );
 
         assert_eq!(config.bridge_listen_addr, None);
+        assert_eq!(config.metrics_listen_addr, None);
+    }
+
+    #[test]
+    fn from_env_reads_metrics_listener() {
+        unsafe {
+            std::env::set_var("PLOYZ_DNS_DATA_DIR", "/tmp/ployz-dns");
+            std::env::set_var("PLOYZ_DNS_NETWORK", "alpha");
+            std::env::set_var("PLOYZ_DNS_OVERLAY_LISTEN_ADDR", "[::1]:53");
+            std::env::set_var("PLOYZ_DNS_METRICS_LISTEN_ADDR", "127.0.0.1:9153");
+        }
+
+        let config = DnsConfig::from_env().expect("dns config should load");
+        assert_eq!(
+            config.metrics_listen_addr.as_deref(),
+            Some("127.0.0.1:9153")
+        );
+
+        unsafe {
+            std::env::remove_var("PLOYZ_DNS_DATA_DIR");
+            std::env::remove_var("PLOYZ_DNS_NETWORK");
+            std::env::remove_var("PLOYZ_DNS_OVERLAY_LISTEN_ADDR");
+            std::env::remove_var("PLOYZ_DNS_METRICS_LISTEN_ADDR");
+        }
     }
 }

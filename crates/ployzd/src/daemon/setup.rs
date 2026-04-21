@@ -338,12 +338,14 @@ impl DaemonState {
             &net_config.name.0,
             self.gateway_listen_addr.clone(),
             self.gateway_threads,
+            self.gateway_metrics_listen_addr.clone(),
         );
         let dns_config = DnsConfig::for_network(
             &self.data_dir,
             &net_config.name.0,
             net_config.overlay_ip,
             dns_bridge_listen_addr,
+            self.dns_metrics_listen_addr.clone(),
         );
 
         let new_gateway = self
@@ -436,12 +438,14 @@ impl DaemonState {
             &net_config.name.0,
             self.gateway_listen_addr.clone(),
             self.gateway_threads,
+            self.gateway_metrics_listen_addr.clone(),
         );
         let dns_config = DnsConfig::for_network(
             &self.data_dir,
             &net_config.name.0,
             net_config.overlay_ip,
             self.dns_bridge_listen_addr(),
+            self.dns_metrics_listen_addr.clone(),
         );
 
         Ok(StartPlan {
@@ -600,6 +604,8 @@ mod tests {
             4317,
             gateway_listen_addr.into(),
             1,
+            None,
+            None,
         )
     }
 
