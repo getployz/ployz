@@ -580,6 +580,50 @@ mod tests {
         stop_test_probe_listener(probe_cancel, probe_task).await;
     }
 
+    #[tokio::test]
+    async fn forced_enabled_override_blocks_self_disable() {
+        let (
+            store,
+            service,
+            network,
+            authoritative_self,
+            self_record_tx,
+            self_id,
+            _peer_key,
+            cancel,
+            writer_handle,
+        ) = test_runtime(Participation::Enabled, Participation::Enabled).await;
+
+        let mut state = ParticipationState {
+            forced_participation: Some(Participation::Enabled),
+            ..ParticipationState::default()
+        };
+        let store_driver = StoreDriver::memory_with(store.clone(), service);
+        let network_driver = WireguardDriver::memory_with(network);
+
+        for _ in 0..3 {
+            participation_once(
+                &self_id,
+                &authoritative_self,
+                &store_driver,
+                &network_driver,
+                &self_record_tx,
+                &mut state,
+            )
+            .await;
+        }
+
+        cancel.cancel();
+        writer_handle.await.expect("writer exits");
+
+        let machines = store.list_machines().await.expect("list machines");
+        let self_record = machines
+            .into_iter()
+            .find(|machine| machine.id == self_id)
+            .expect("self record");
+        assert_eq!(self_record.participation, Participation::Enabled);
+    }
+
     fn start_test_probe_listener() -> (
         MutexGuard<'static, ()>,
         CancellationToken,
