@@ -32,3 +32,7 @@
 - Never `.unwrap()` on Option state — use `let Some(x) = opt else { return err }`
 - Add `#[must_use]` on all builder methods returning `Self`
 - Prefer enums over boolean parameters
+
+# Test Discipline
+
+- Before enabling parallel CI for changed E2E paths, rerun the affected scenarios repeatedly and fix ordering/idempotency bugs instead of adding sleeps or longer timeouts.

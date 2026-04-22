@@ -173,18 +173,31 @@ pub async fn build_seed_records(
     }
 
     let endpoints = detect_endpoints(listen_port).await;
-    let mut self_record = MachineRecord::seed(
-        identity.machine_id.clone(),
-        identity.public_key.clone(),
-        net_config.overlay_ip,
-        net_config.subnet,
-        endpoints,
-    );
-    self_record.participation = match net_config.subnet {
-        Some(_) => Participation::Enabled,
-        None => Participation::Disabled,
-    };
-    self_record.control_target = self_control_target;
+    let mut self_record = seed_records
+        .iter()
+        .find(|machine| machine.id == identity.machine_id)
+        .cloned()
+        .unwrap_or_else(|| {
+            let mut record = MachineRecord::seed(
+                identity.machine_id.clone(),
+                identity.public_key.clone(),
+                net_config.overlay_ip,
+                net_config.subnet,
+                endpoints.clone(),
+            );
+            record.participation = match net_config.subnet {
+                Some(_) => Participation::Enabled,
+                None => Participation::Disabled,
+            };
+            record
+        });
+    self_record.public_key = identity.public_key.clone();
+    self_record.overlay_ip = net_config.overlay_ip;
+    self_record.subnet = net_config.subnet;
+    self_record.endpoints = endpoints;
+    if self_control_target.is_some() {
+        self_record.control_target = self_control_target;
+    }
     upsert_machine(&mut seed_records, self_record);
 
     seed_records
@@ -291,5 +304,52 @@ mod tests {
                 .iter()
                 .any(|machine| machine.id == identity.machine_id)
         );
+    }
+
+    #[tokio::test]
+    async fn build_seed_records_preserves_existing_self_participation() {
+        let network_dir = temp_network_dir("self-participation");
+        let identity = Identity::generate(MachineId("joiner".into()), [4; 32]);
+        let net_config = NetworkConfig::new(
+            NetworkName("alpha".into()),
+            &identity.public_key,
+            DEFAULT_CLUSTER_CIDR,
+            "10.210.1.0/24".parse().expect("valid subnet"),
+        );
+        let mut existing_self = MachineRecord::seed(
+            identity.machine_id.clone(),
+            identity.public_key.clone(),
+            net_config.overlay_ip,
+            net_config.subnet,
+            vec!["persisted:51820".into()],
+        );
+        existing_self.participation = Participation::Draining;
+        existing_self.status = ployz_types::model::MachineStatus::Up;
+        existing_self.created_at = 42;
+        existing_self.updated_at = 77;
+        existing_self.control_target = Some("persisted-target".into());
+        existing_self.labels.insert("role".into(), "db".into());
+
+        let seed_records = build_seed_records(
+            &network_dir,
+            &identity,
+            &net_config,
+            None,
+            None,
+            51820,
+            &[existing_self.clone()],
+        )
+        .await;
+
+        let self_record = seed_records
+            .into_iter()
+            .find(|machine| machine.id == identity.machine_id)
+            .expect("self record");
+        assert_eq!(self_record.participation, Participation::Draining);
+        assert_eq!(self_record.status, existing_self.status);
+        assert_eq!(self_record.created_at, existing_self.created_at);
+        assert_eq!(self_record.updated_at, existing_self.updated_at);
+        assert_eq!(self_record.control_target, existing_self.control_target);
+        assert_eq!(self_record.labels, existing_self.labels);
     }
 }
