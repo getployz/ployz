@@ -12,7 +12,7 @@ use ployz_api::{
 use ployz_types::model::MachineId;
 use ployz_types::time::now_unix_secs;
 
-use super::join::{best_effort_remote_cleanup, remove_transient_peer};
+use super::join::rollback::{best_effort_remote_cleanup, remove_transient_peer};
 use super::types::MachineAddStage;
 
 const OPERATIONS_DIR_NAME: &str = "machine-operations";
