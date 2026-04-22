@@ -18,7 +18,7 @@ pub(crate) async fn run_subnet_claim_monitor_task(
     if !previous_duplicates.is_empty() {
         warn!(
             ?previous_duplicates,
-            "duplicate machine subnet claims detected"
+            "subnet claim invariant violation detected"
         );
     }
 
@@ -42,11 +42,11 @@ pub(crate) async fn run_subnet_claim_monitor_task(
                     duplicate_subnet_claims(&machines.values().cloned().collect::<Vec<_>>());
                 if next_duplicates != previous_duplicates {
                     if next_duplicates.is_empty() {
-                        info!("duplicate machine subnet claims resolved");
+                        info!("subnet claim invariant restored");
                     } else {
                         warn!(
                             ?next_duplicates,
-                            "duplicate machine subnet claims detected"
+                            "subnet claim invariant violation detected"
                         );
                     }
                     previous_duplicates = next_duplicates;
@@ -95,6 +95,7 @@ mod tests {
             public_key: PublicKey([1; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             subnet,
+            control_target: None,
             bridge_ip: None,
             endpoints: vec![],
             status: MachineStatus::Unknown,

@@ -49,7 +49,7 @@ pub fn host(
     identity: &Identity,
     overlay_ip: OverlayIp,
     network_name: &str,
-    subnet: ipnet::Ipv4Net,
+    subnet: Option<ipnet::Ipv4Net>,
 ) -> std::result::Result<WireguardDriver, String> {
     let ifname = format!("plz-{network_name}");
     #[cfg(target_os = "linux")]

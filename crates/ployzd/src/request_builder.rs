@@ -252,10 +252,19 @@ pub(crate) fn build_machine_request(action: MachineAction) -> Result<DaemonReque
             };
             Ok(DaemonRequest::MachineAdd { targets, options })
         }
+        MachineAction::Enable { target } => Ok(DaemonRequest::MachineEnable { target }),
+        MachineAction::Drain { target } => Ok(DaemonRequest::MachineDrain { target }),
+        MachineAction::Disable { target, force } => {
+            Ok(DaemonRequest::MachineDisable { target, force })
+        }
         MachineAction::Rm { id, force } => Ok(DaemonRequest::MachineRemove { id, force }),
         MachineAction::Invite { action } => match action {
             MachineInviteAction::Create { ttl_secs } => {
                 Ok(DaemonRequest::MachineInviteCreate { ttl_secs })
+            }
+            MachineInviteAction::List => Ok(DaemonRequest::MachineInviteList),
+            MachineInviteAction::Revoke { invite_id } => {
+                Ok(DaemonRequest::MachineInviteRevoke { invite_id })
             }
             MachineInviteAction::Import { token } => {
                 Ok(DaemonRequest::MachineInviteImport { token })

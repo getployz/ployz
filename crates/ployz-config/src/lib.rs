@@ -61,6 +61,8 @@ pub struct DaemonConfig {
     pub subnet_prefix_len: u8,
     #[serde(default = "default_remote_control_port")]
     pub remote_control_port: u16,
+    #[serde(default)]
+    pub peer_control_target: Option<String>,
     #[serde(default = "default_gateway_listen_addr")]
     pub gateway_listen_addr: String,
     #[serde(default = "default_gateway_threads")]
@@ -102,6 +104,8 @@ struct RuntimeDefaults {
     cluster_cidr: String,
     subnet_prefix_len: u8,
     remote_control_port: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    peer_control_target: Option<String>,
     gateway_listen_addr: String,
     gateway_threads: usize,
 }
@@ -132,6 +136,8 @@ struct DaemonOverrides {
     subnet_prefix_len: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     remote_control_port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    peer_control_target: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     gateway_listen_addr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -230,6 +236,7 @@ pub fn load_daemon_config(
         cluster_cidr: None,
         subnet_prefix_len: None,
         remote_control_port: cli_remote_control_port,
+        peer_control_target: None,
         gateway_listen_addr: None,
         gateway_threads: None,
     };
@@ -251,6 +258,7 @@ fn build_figment(cli_config_path: Option<PathBuf>, context: &HostPathsContext) -
         cluster_cidr: default_cluster_cidr(),
         subnet_prefix_len: default_subnet_prefix_len(),
         remote_control_port: default_remote_control_port(),
+        peer_control_target: None,
         gateway_listen_addr: default_gateway_listen_addr(),
         gateway_threads: default_gateway_threads(),
     };
