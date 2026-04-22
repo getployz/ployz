@@ -37,11 +37,25 @@ pub trait InviteStore: Send + Sync {
         invite: &'a InviteRecord,
     ) -> impl Future<Output = Result<()>> + Send + 'a;
 
-    fn consume_invite<'a>(
+    fn get_invite<'a>(
+        &'a self,
+        invite_id: &'a str,
+    ) -> impl Future<Output = Result<Option<InviteRecord>>> + Send + 'a;
+
+    fn list_invites(&self) -> impl Future<Output = Result<Vec<InviteRecord>>> + Send + '_;
+
+    fn redeem_invite<'a>(
+        &'a self,
+        invite_id: &'a str,
+        machine_id: &'a MachineId,
+        now_unix_secs: u64,
+    ) -> impl Future<Output = Result<InviteRecord>> + Send + 'a;
+
+    fn revoke_invite<'a>(
         &'a self,
         invite_id: &'a str,
         now_unix_secs: u64,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
+    ) -> impl Future<Output = Result<InviteRecord>> + Send + 'a;
 }
 
 pub trait RoutingStore: Send + Sync {

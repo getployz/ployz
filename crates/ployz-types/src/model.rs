@@ -111,6 +111,8 @@ pub struct MachineRecord {
     pub id: MachineId,
     pub public_key: PublicKey,
     pub overlay_ip: OverlayIp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_target: Option<String>,
     pub subnet: Option<Ipv4Net>,
     pub bridge_ip: Option<OverlayIp>,
     pub endpoints: Vec<String>,
@@ -139,6 +141,7 @@ impl MachineRecord {
             id,
             public_key,
             overlay_ip,
+            control_target: None,
             subnet,
             bridge_ip: None,
             endpoints,
@@ -167,9 +170,18 @@ impl MachineRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InviteRecord {
-    pub id: String,
+    pub invite_id: String,
+    pub network_id: NetworkId,
+    pub issuer_machine_id: MachineId,
+    pub issuer_verify_key: String,
     pub expires_at: u64,
+    pub consumed_by: Option<MachineId>,
+    pub consumed_at: Option<u64>,
+    pub revoked_at: Option<u64>,
+    pub signature: String,
 }
+
+pub type InviteReservation = InviteRecord;
 
 #[derive(Debug, Clone)]
 pub enum MachineEvent {
@@ -435,6 +447,7 @@ impl JoinResponse {
             id: self.machine_id,
             public_key: self.public_key,
             overlay_ip: self.overlay_ip,
+            control_target: None,
             subnet: self.subnet,
             bridge_ip: None,
             endpoints: self.endpoints,

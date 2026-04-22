@@ -80,37 +80,6 @@ async fn machine_list_json_payload_contains_rows() {
     assert_eq!(payload.rows[0].id, "founder");
 }
 
-#[tokio::test]
-async fn allocate_machine_subnets_returns_unique_values() {
-    let (state, store, _) = make_state(false).await;
-    store
-        .upsert_self_machine(&test_machine_record(
-            "peer-1",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            0,
-            PublicKey([2; 32]),
-        ))
-        .await
-        .expect("upsert existing peer");
-
-    let subnets = state
-        .allocate_machine_subnets(3)
-        .await
-        .expect("allocate subnets");
-
-    assert_eq!(subnets.len(), 3);
-    assert_eq!(
-        subnets
-            .iter()
-            .map(ToString::to_string)
-            .collect::<std::collections::HashSet<_>>()
-            .len(),
-        3
-    );
-    assert!(!subnets.contains(&"10.210.1.0/24".parse().expect("valid subnet")));
-}
-
 #[test]
 fn plan_local_subnet_heal_reassigns_losing_machine() {
     let machines = vec![
@@ -409,6 +378,137 @@ async fn machine_remove_deletes_disabled_record() {
 }
 
 #[tokio::test]
+async fn mesh_standby_clears_subnet_and_marks_disabled() {
+    let (mut state, store, _) = make_state(true).await;
+    let response = state.handle_mesh_standby(true).await;
+    assert!(response.ok, "{}", response.message);
+
+    let local = store
+        .list_machines()
+        .await
+        .expect("list machines")
+        .into_iter()
+        .find(|machine| machine.id == state.identity.machine_id)
+        .expect("local machine present");
+    assert_eq!(local.participation, Participation::Disabled);
+    assert_eq!(local.subnet, None);
+    assert_eq!(local.status, MachineStatus::Up);
+    assert_eq!(
+        state.active.as_ref().expect("active mesh").config.subnet,
+        None
+    );
+}
+
+#[tokio::test]
+async fn mesh_standby_auto_drains_when_no_local_workloads_exist() {
+    let (mut state, store, _) = make_state(true).await;
+    {
+        let active = state.active.as_mut().expect("active mesh");
+        let Some(mut record) = active
+            .mesh
+            .update_authoritative_self_record(|record| {
+                record.participation = Participation::Enabled;
+                record.status = MachineStatus::Up;
+                record.subnet = Some("10.210.0.0/24".parse().expect("valid subnet"));
+            })
+            .await
+        else {
+            panic!("self record missing");
+        };
+        record.participation = Participation::Enabled;
+        record.status = MachineStatus::Up;
+        record.subnet = Some("10.210.0.0/24".parse().expect("valid subnet"));
+        active
+            .mesh
+            .store
+            .upsert_self_machine(&record)
+            .await
+            .expect("persist enabled self");
+    }
+
+    let response = state.handle_mesh_standby(false).await;
+    assert!(response.ok, "{}", response.message);
+
+    let local = store
+        .list_machines()
+        .await
+        .expect("list machines")
+        .into_iter()
+        .find(|machine| machine.id == state.identity.machine_id)
+        .expect("local machine present");
+    assert_eq!(local.participation, Participation::Disabled);
+    assert_eq!(local.subnet, None);
+}
+
+#[tokio::test]
+async fn reserve_machine_subnet_clears_local_hold_when_quorum_denies() {
+    let _guard = test_ssh_env_lock().lock().await;
+    let (mut state, store, _) = make_state(true).await;
+    state.cluster_cidr = "10.210.0.0/22".into();
+    store
+        .upsert_self_machine(&test_machine_record(
+            "peer-quorum",
+            "10.210.1.0/24",
+            Participation::Enabled,
+            now_unix_secs(),
+            PublicKey([6; 32]),
+        ))
+        .await
+        .expect("upsert quorum peer");
+
+    let ssh_dir = unique_temp_dir("ployz-fake-ssh-quorum-deny");
+    std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
+    let fake_ssh = write_fake_ssh(&ssh_dir);
+    let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
+    let _deny_prepare_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_COORD_PREPARE_DENY_TARGETS",
+        Some("peer-quorum".into()),
+    );
+
+    let result = state
+        .reserve_machine_subnet(&MachineId("joiner".into()))
+        .await;
+    assert!(result.is_err());
+    assert!(
+        state
+            .reservations
+            .active_subnets(now_unix_secs())
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn mesh_promote_restores_subnet_and_enabled_participation() {
+    let (mut state, store, _) = make_state(true).await;
+    let standby_response = state.handle_mesh_standby(true).await;
+    assert!(standby_response.ok, "{}", standby_response.message);
+
+    let response = state
+        .handle_mesh_promote("10.210.2.0/24".parse().expect("valid subnet"))
+        .await;
+    assert!(response.ok, "{}", response.message);
+
+    let local = store
+        .list_machines()
+        .await
+        .expect("list machines")
+        .into_iter()
+        .find(|machine| machine.id == state.identity.machine_id)
+        .expect("local machine present");
+    assert_eq!(local.participation, Participation::Enabled);
+    assert_eq!(
+        local.subnet,
+        Some("10.210.2.0/24".parse().expect("valid subnet"))
+    );
+    assert_eq!(local.status, MachineStatus::Up);
+    assert_eq!(
+        state.active.as_ref().expect("active mesh").config.subnet,
+        Some("10.210.2.0/24".parse().expect("valid subnet"))
+    );
+}
+
+#[tokio::test]
 async fn memory_mode_local_subnet_heal_updates_local_config_and_store() {
     let store = Arc::new(MemoryStore::new());
     store
@@ -456,7 +556,7 @@ async fn memory_mode_local_subnet_heal_updates_local_config_and_store() {
         .expect("load config after reservation");
     assert_eq!(
         initial_config.subnet,
-        "10.210.1.0/24".parse().expect("valid")
+        Some("10.210.1.0/24".parse().expect("valid"))
     );
     let reserved_peer = store
         .list_machines()
@@ -478,7 +578,7 @@ async fn memory_mode_local_subnet_heal_updates_local_config_and_store() {
         .expect("load healed config");
     assert_eq!(
         healed_config.subnet,
-        "10.210.0.0/24".parse().expect("valid")
+        Some("10.210.0.0/24".parse().expect("valid"))
     );
     let machines = store.list_machines().await.expect("list machines");
     let peer = machines
@@ -492,7 +592,7 @@ async fn memory_mode_local_subnet_heal_updates_local_config_and_store() {
             .as_ref()
             .map(|active| active.config.subnet)
             .expect("active config present"),
-        "10.210.0.0/24".parse().expect("valid")
+        Some("10.210.0.0/24".parse().expect("valid"))
     );
 
     teardown_state(&mut state).await;
@@ -553,7 +653,7 @@ async fn local_subnet_heal_skips_when_store_unhealthy() {
         NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha")).expect("load config");
     assert_eq!(
         healed_config.subnet,
-        "10.210.1.0/24".parse().expect("valid")
+        Some("10.210.1.0/24".parse().expect("valid"))
     );
 
     teardown_state(&mut state).await;
@@ -596,7 +696,7 @@ async fn local_subnet_heal_skips_when_mesh_not_running() {
         NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha")).expect("load config");
     assert_eq!(
         healed_config.subnet,
-        "10.210.1.0/24".parse().expect("valid")
+        Some("10.210.1.0/24".parse().expect("valid"))
     );
 }
 
@@ -642,12 +742,16 @@ async fn interrupted_machine_add_is_marked_interrupted_on_startup() {
 async fn make_state(start_mesh: bool) -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {
     let identity = Identity::generate(MachineId("founder".into()), [1; 32]);
     let founder_subnet: Ipv4Net = "10.210.0.0/24".parse().expect("valid subnet");
+    let data_dir = unique_temp_dir("ployz-machine-state");
     let config = NetworkConfig::new(
         ployz_types::model::NetworkName("alpha".into()),
         &identity.public_key,
         DEFAULT_CLUSTER_CIDR,
         founder_subnet,
     );
+    config
+        .save(&NetworkConfig::path(&data_dir, "alpha"))
+        .expect("save config");
 
     let store = Arc::new(MemoryStore::new());
     let service = Arc::new(MemoryService::new());
@@ -676,7 +780,7 @@ async fn make_state(start_mesh: bool) -> (DaemonState, Arc<MemoryStore>, Arc<Mem
     }
 
     let mut state = DaemonState::new_for_tests(
-        &unique_temp_dir("ployz-machine-state"),
+        &data_dir,
         identity,
         DEFAULT_CLUSTER_CIDR.into(),
         24,
@@ -688,6 +792,7 @@ async fn make_state(start_mesh: bool) -> (DaemonState, Arc<MemoryStore>, Arc<Mem
         config,
         mesh,
         remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+        peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
     });
@@ -733,6 +838,7 @@ async fn make_state_with_store(
         config,
         mesh,
         remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+        peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
     });
@@ -760,6 +866,7 @@ fn test_machine_record(
             .parse()
             .map(OverlayIp)
             .expect("valid overlay"),
+        control_target: Some(id.into()),
         subnet: Some(subnet.parse().expect("valid subnet")),
         bridge_ip: None,
         endpoints: vec!["127.0.0.1:51820".into()],
@@ -784,7 +891,7 @@ fn write_fake_ssh(dir: &PathBuf) -> PathBuf {
     let script = dir.join("ssh");
     std::fs::write(
         &script,
-        "#!/bin/sh\nfor arg in \"$@\"; do\n  command=\"$arg\"\ndone\nif [ \"$command\" = 'set -eu; \"$HOME/.local/bin/ployz\" rpc-stdio' ]; then\n  req=$(cat)\n  case \"$req\" in\n    *'\"MeshJoin\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"joined\",\"payload\":null}'\n      ;;\n    *'\"MeshInit\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"init\",\"payload\":null}'\n      ;;\n    *'\"MeshDestroy\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"destroyed\",\"payload\":null}'\n      ;;\n    *'\"MeshDown\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"down\",\"payload\":null}'\n      ;;\n    *'\"MeshSelfRecord\"'*)\n      printf '%s' \"$PLOYZ_TEST_SELF_RECORD_RESPONSE\"\n      ;;\n    *'\"MeshReady\"'*)\n      printf '%s' \"$PLOYZ_TEST_READY_RESPONSE\"\n      ;;\n    *)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"ok\",\"payload\":null}'\n      ;;\n  esac\n  exit 0\nfi\ncase \"$command\" in\n  *'--version'*)\n    printf 'ployz test-version'\n    exit 0\n    ;;\n  *'status >/dev/null'*)\n    exit 0\n    ;;\n  *'bash -s -- install'*)\n    cat >/dev/null\n    exit 0\n    ;;\n  *)\n    exit 0\n    ;;\nesac\n",
+        "#!/bin/sh\nprev=''\nfor arg in \"$@\"; do\n  target=\"$prev\"\n  command=\"$arg\"\n  prev=\"$arg\"\ndone\nif [ \"$command\" = 'set -eu; \"$HOME/.local/bin/ployz\" rpc-stdio' ]; then\n  req=$(cat)\n  case \"$req\" in\n    *'\"Coord\"'*)\n      case \"$req\" in\n        *'\"Prepare\"'*)\n          case \",$PLOYZ_TEST_COORD_PREPARE_DENY_TARGETS,\" in\n            *\",$target,\"*) printf '{\"ok\":false,\"code\":\"COORDINATION_DENIED\",\"message\":\"denied\",\"payload\":null}' ;;\n            *) printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"allow\",\"payload\":null}' ;;\n          esac\n          ;;\n        *'\"Release\"'*)\n          case \",$PLOYZ_TEST_COORD_RELEASE_DENY_TARGETS,\" in\n            *\",$target,\"*) printf '{\"ok\":false,\"code\":\"COORDINATION_DENIED\",\"message\":\"denied\",\"payload\":null}' ;;\n            *) printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"allow\",\"payload\":null}' ;;\n          esac\n          ;;\n        *)\n          printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"ack\",\"payload\":null}'\n          ;;\n      esac\n      ;;\n    *'\"MeshBootstrap\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"bootstrapped\",\"payload\":null}'\n      ;;\n    *'\"MeshJoin\"'*)\n      printf '{\"ok\":false,\"code\":\"UNSUPPORTED\",\"message\":\"unsupported\",\"payload\":null}'\n      ;;\n    *'\"MeshInit\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"init\",\"payload\":null}'\n      ;;\n    *'\"MeshDestroy\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"destroyed\",\"payload\":null}'\n      ;;\n    *'\"MeshDown\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"down\",\"payload\":null}'\n      ;;\n    *'\"MeshSelfRecord\"'*)\n      printf '%s' \"$PLOYZ_TEST_SELF_RECORD_RESPONSE\"\n      ;;\n    *'\"MeshReady\"'*)\n      printf '%s' \"$PLOYZ_TEST_READY_RESPONSE\"\n      ;;\n    *)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"ok\",\"payload\":null}'\n      ;;\n  esac\n  exit 0\nfi\ncase \"$command\" in\n  *'--version'*)\n    printf 'ployz test-version'\n    exit 0\n    ;;\n  *'status >/dev/null'*)\n    exit 0\n    ;;\n  *'bash -s -- install'*)\n    cat >/dev/null\n    exit 0\n    ;;\n  *)\n    exit 0\n    ;;\nesac\n",
     )
     .expect("write fake ssh");
 

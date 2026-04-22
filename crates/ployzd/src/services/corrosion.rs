@@ -186,8 +186,29 @@ where
         self.store.create_invite(invite).await
     }
 
-    async fn consume_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<()> {
-        self.store.consume_invite(invite_id, now_unix_secs).await
+    async fn get_invite(&self, invite_id: &str) -> Result<Option<InviteRecord>> {
+        self.store.get_invite(invite_id).await
+    }
+
+    async fn list_invites(&self) -> Result<Vec<InviteRecord>> {
+        self.store.list_invites().await
+    }
+
+    async fn redeem_invite(
+        &self,
+        invite_id: &str,
+        machine_id: &MachineId,
+        now_unix_secs: u64,
+    ) -> Result<InviteRecord> {
+        self.store.redeem_invite(invite_id, machine_id, now_unix_secs).await
+    }
+
+    async fn revoke_invite(
+        &self,
+        invite_id: &str,
+        now_unix_secs: u64,
+    ) -> Result<InviteRecord> {
+        self.store.revoke_invite(invite_id, now_unix_secs).await
     }
 
     async fn load_routing_state(&self) -> Result<RoutingState> {

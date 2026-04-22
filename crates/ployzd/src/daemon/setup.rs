@@ -17,11 +17,14 @@ use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_runtime_api::{NoopRuntimeHandle, RuntimeHandle};
 
 use super::{ActiveMesh, DaemonState};
+use crate::ipc::peer_listener;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MeshStartOptions {
     pub allow_disconnected_bootstrap: bool,
 }
+
+const PEER_RPC_PORT_OFFSET: u16 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeshStartSummary {
@@ -54,8 +57,9 @@ struct StartPlan {
     bootstrap_addrs: Vec<String>,
     gateway_port: u16,
     remote_control_bind_addr: SocketAddr,
-    gateway_config: GatewayConfig,
-    dns_config: DnsConfig,
+    peer_control_bind_addr: SocketAddr,
+    gateway_config: Option<GatewayConfig>,
+    dns_config: Option<DnsConfig>,
     overlay_network_name: Option<String>,
 }
 
@@ -63,6 +67,7 @@ struct MeshStartTx {
     config: NetworkConfig,
     mesh: Option<Mesh>,
     remote_control: Box<dyn RuntimeHandle>,
+    peer_control: Box<dyn RuntimeHandle>,
     gateway: Box<dyn RuntimeHandle>,
     dns: Box<dyn RuntimeHandle>,
 }
@@ -73,6 +78,7 @@ impl MeshStartTx {
             config,
             mesh: None,
             remote_control: Box::new(NoopRuntimeHandle),
+            peer_control: Box::new(NoopRuntimeHandle),
             gateway: Box::new(NoopRuntimeHandle),
             dns: Box::new(NoopRuntimeHandle),
         }
@@ -111,6 +117,7 @@ impl MeshStartTx {
             &plan.network_dir,
             &state.identity,
             &self.config,
+            state.peer_control_target.clone(),
             plan.bootstrap.as_ref(),
             listen_port,
             &db_records,
@@ -176,8 +183,11 @@ impl MeshStartTx {
         state: &DaemonState,
         plan: &StartPlan,
     ) -> Result<(), StartMeshError> {
+        let Some(config) = plan.gateway_config.clone() else {
+            return Ok(());
+        };
         let handle = state
-            .start_runtime_gateway(plan.gateway_config.clone())
+            .start_runtime_gateway(config)
             .await
             .map_err(StartMeshError::Gateway)?;
         self.gateway = handle;
@@ -190,11 +200,39 @@ impl MeshStartTx {
         state: &DaemonState,
         plan: &StartPlan,
     ) -> Result<(), StartMeshError> {
+        let Some(config) = plan.dns_config.clone() else {
+            return Ok(());
+        };
         let handle = state
-            .start_runtime_dns(plan.dns_config.clone())
+            .start_runtime_dns(config)
             .await
             .map_err(StartMeshError::Dns)?;
         self.dns = handle;
+        Ok(())
+    }
+
+    async fn start_peer_control(
+        &mut self,
+        state: &DaemonState,
+        plan: &StartPlan,
+    ) -> Result<(), StartMeshError> {
+        if state.runtime_is_memory_test() {
+            self.peer_control = Box::new(peer_listener::PeerListenerHandle::noop());
+            return Ok(());
+        }
+        let Some(command_tx) = state.command_tx.clone() else {
+            return Err(StartMeshError::RemoteControl {
+                bind: plan.peer_control_bind_addr,
+                error: "daemon command channel unavailable".into(),
+            });
+        };
+        let handle = peer_listener::serve(plan.peer_control_bind_addr, command_tx)
+            .await
+            .map_err(|error| StartMeshError::RemoteControl {
+                bind: plan.peer_control_bind_addr,
+                error: error.to_string(),
+            })?;
+        self.peer_control = Box::new(handle);
         Ok(())
     }
 
@@ -211,6 +249,7 @@ impl MeshStartTx {
         };
         let remote_control =
             std::mem::replace(&mut self.remote_control, Box::new(NoopRuntimeHandle));
+        let peer_control = std::mem::replace(&mut self.peer_control, Box::new(NoopRuntimeHandle));
         let gateway = std::mem::replace(&mut self.gateway, Box::new(NoopRuntimeHandle));
         let dns = std::mem::replace(&mut self.dns, Box::new(NoopRuntimeHandle));
 
@@ -218,6 +257,7 @@ impl MeshStartTx {
             config: self.config.clone(),
             mesh,
             remote_control,
+            peer_control,
             gateway,
             dns,
         });
@@ -238,6 +278,8 @@ impl MeshStartTx {
         let remote_control =
             std::mem::replace(&mut self.remote_control, Box::new(NoopRuntimeHandle));
         let _ = remote_control.shutdown().await;
+        let peer_control = std::mem::replace(&mut self.peer_control, Box::new(NoopRuntimeHandle));
+        let _ = peer_control.shutdown().await;
 
         if let Some(mut mesh) = self.mesh.take()
             && let Err(error) = mesh.detach().await
@@ -285,6 +327,11 @@ impl DaemonState {
             return Err(error);
         }
 
+        if let Err(error) = tx.start_peer_control(self, &plan).await {
+            tx.rollback_startup().await;
+            return Err(error);
+        }
+
         if let Err(error) = tx.start_gateway(self, &plan).await {
             tx.rollback_startup().await;
             return Err(error);
@@ -307,12 +354,22 @@ impl DaemonState {
         &mut self,
         network: &str,
     ) -> Result<(), String> {
+        self.restart_active_runtime_from_config(network).await
+    }
+
+    pub async fn restart_active_runtime_from_config(
+        &mut self,
+        network: &str,
+    ) -> Result<(), String> {
         let config_path = NetworkConfig::path(&self.data_dir, network);
         let net_config = NetworkConfig::load(&config_path)
             .map_err(|error| format!("load network config: {error}"))?;
         let gateway_port =
             Self::gateway_port(&self.gateway_listen_addr).map_err(|error| error.to_string())?;
-        let exposed_tcp_ports = [gateway_port];
+        let exposed_tcp_ports: Vec<u16> = match net_config.subnet {
+            Some(_) => vec![gateway_port],
+            None => Vec::new(),
+        };
         let network_dir = self.network_dir(&net_config.name.0);
         let dns_bridge_listen_addr = self.dns_bridge_listen_addr();
 
@@ -333,35 +390,41 @@ impl DaemonState {
             .await
             .map_err(|error| format!("runtime components failed: {error}"))?;
 
-        let gateway_config = GatewayConfig::for_network(
-            &self.data_dir,
-            &net_config.name.0,
-            self.gateway_listen_addr.clone(),
-            self.gateway_threads,
-        );
-        let dns_config = DnsConfig::for_network(
-            &self.data_dir,
-            &net_config.name.0,
-            net_config.overlay_ip,
-            dns_bridge_listen_addr,
-        );
-
-        let new_gateway = self
-            .start_runtime_gateway(gateway_config)
-            .await
-            .map_err(|error| format!("gateway start failed: {error}"))?;
-        let new_dns = match self.start_runtime_dns(dns_config).await {
-            Ok(handle) => handle,
-            Err(error) => {
-                let gateway = new_gateway;
-                if let Err(shutdown_error) = gateway.shutdown().await {
-                    tracing::warn!(
-                        ?shutdown_error,
-                        "subnet heal: gateway rollback failed after dns start error"
-                    );
+        let new_gateway: Box<dyn RuntimeHandle> = if net_config.subnet.is_some() {
+            let gateway_config = GatewayConfig::for_network(
+                &self.data_dir,
+                &net_config.name.0,
+                self.gateway_listen_addr.clone(),
+                self.gateway_threads,
+            );
+            self.start_runtime_gateway(gateway_config)
+                .await
+                .map_err(|error| format!("gateway start failed: {error}"))?
+        } else {
+            Box::new(NoopRuntimeHandle)
+        };
+        let new_dns: Box<dyn RuntimeHandle> = if net_config.subnet.is_some() {
+            let dns_config = DnsConfig::for_network(
+                &self.data_dir,
+                &net_config.name.0,
+                net_config.overlay_ip,
+                dns_bridge_listen_addr,
+            );
+            match self.start_runtime_dns(dns_config).await {
+                Ok(handle) => handle,
+                Err(error) => {
+                    let gateway = new_gateway;
+                    if let Err(shutdown_error) = gateway.shutdown().await {
+                        tracing::warn!(
+                            ?shutdown_error,
+                            "runtime rollback failed after dns start error"
+                        );
+                    }
+                    return Err(format!("dns start failed: {error}"));
                 }
-                return Err(format!("dns start failed: {error}"));
             }
+        } else {
+            Box::new(NoopRuntimeHandle)
         };
 
         let Some(active) = self.active.as_mut() else {
@@ -388,7 +451,7 @@ impl DaemonState {
             .mesh
             .update_authoritative_self_record(|record| {
                 record.overlay_ip = net_config.overlay_ip;
-                record.subnet = Some(net_config.subnet);
+                record.subnet = net_config.subnet;
             })
             .await;
 
@@ -402,7 +465,7 @@ impl DaemonState {
             .mesh
             .update_authoritative_self_record(|record| {
                 record.overlay_ip = net_config.overlay_ip;
-                record.subnet = Some(net_config.subnet);
+                record.subnet = net_config.subnet;
             })
             .await;
         active.config = net_config;
@@ -431,18 +494,24 @@ impl DaemonState {
         let gateway_port = Self::gateway_port(&self.gateway_listen_addr)?;
         let remote_control_bind_addr =
             self.remote_control_bind_addr(self.remote_control_port, net_config.overlay_ip);
-        let gateway_config = GatewayConfig::for_network(
-            &self.data_dir,
-            &net_config.name.0,
-            self.gateway_listen_addr.clone(),
-            self.gateway_threads,
-        );
-        let dns_config = DnsConfig::for_network(
-            &self.data_dir,
-            &net_config.name.0,
-            net_config.overlay_ip,
-            self.dns_bridge_listen_addr(),
-        );
+        let peer_control_bind_addr =
+            SocketAddr::new(remote_control_bind_addr.ip(), self.peer_control_port()?);
+        let gateway_config = net_config.subnet.map(|_| {
+            GatewayConfig::for_network(
+                &self.data_dir,
+                &net_config.name.0,
+                self.gateway_listen_addr.clone(),
+                self.gateway_threads,
+            )
+        });
+        let dns_config = net_config.subnet.map(|_| {
+            DnsConfig::for_network(
+                &self.data_dir,
+                &net_config.name.0,
+                net_config.overlay_ip,
+                self.dns_bridge_listen_addr(),
+            )
+        });
 
         Ok(StartPlan {
             network_dir,
@@ -450,6 +519,7 @@ impl DaemonState {
             bootstrap_addrs,
             gateway_port,
             remote_control_bind_addr,
+            peer_control_bind_addr,
             gateway_config,
             dns_config,
             overlay_network_name: self.runtime_overlay_network_name(&net_config.name.0),
@@ -474,6 +544,17 @@ impl DaemonState {
         };
         port.parse::<u16>()
             .map_err(|_| StartMeshError::GatewayListenAddr(gateway_listen_addr.to_string()))
+    }
+
+    pub(crate) fn peer_control_port(&self) -> Result<u16, StartMeshError> {
+        self.remote_control_port
+            .checked_add(PEER_RPC_PORT_OFFSET)
+            .ok_or_else(|| {
+                StartMeshError::RemoteControl {
+                    bind: SocketAddr::from(([127, 0, 0, 1], self.remote_control_port)),
+                    error: "peer control port overflow".into(),
+                }
+            })
     }
 }
 
