@@ -125,11 +125,13 @@ async fn participation_once(
     let required_peers = required_peers_for_participation(&machines, machine_id, now);
     let current = authoritative_self.read().await.clone();
     let peer_health = required_peers_health(network, &required_peers).await;
-    update_hysteresis(state, peer_health.healthy());
-
-    let next = state
-        .forced_participation
-        .unwrap_or_else(|| match current.participation {
+    let next = if let Some(participation) = state.forced_participation {
+        state.consecutive_good_samples = 0;
+        state.consecutive_bad_samples = 0;
+        participation
+    } else {
+        update_hysteresis(state, peer_health.healthy());
+        match current.participation {
             Participation::Disabled => {
                 if state.consecutive_good_samples >= PARTICIPATION_HYSTERESIS_SAMPLES {
                     Participation::Enabled
@@ -145,7 +147,8 @@ async fn participation_once(
                 }
             }
             Participation::Draining => Participation::Draining,
-        });
+        }
+    };
 
     if next != current.participation {
         info!(
@@ -622,6 +625,63 @@ mod tests {
             .find(|machine| machine.id == self_id)
             .expect("self record");
         assert_eq!(self_record.participation, Participation::Enabled);
+    }
+
+    #[tokio::test]
+    async fn clearing_forced_enabled_override_restarts_hysteresis() {
+        let (
+            store,
+            service,
+            network,
+            authoritative_self,
+            self_record_tx,
+            self_id,
+            _peer_key,
+            cancel,
+            writer_handle,
+        ) = test_runtime(Participation::Enabled, Participation::Enabled).await;
+
+        let mut state = ParticipationState {
+            forced_participation: Some(Participation::Enabled),
+            ..ParticipationState::default()
+        };
+        let store_driver = StoreDriver::memory_with(store.clone(), service);
+        let network_driver = WireguardDriver::memory_with(network);
+
+        for _ in 0..3 {
+            participation_once(
+                &self_id,
+                &authoritative_self,
+                &store_driver,
+                &network_driver,
+                &self_record_tx,
+                &mut state,
+            )
+            .await;
+        }
+        assert_eq!(state.consecutive_bad_samples, 0);
+
+        state.forced_participation = None;
+        participation_once(
+            &self_id,
+            &authoritative_self,
+            &store_driver,
+            &network_driver,
+            &self_record_tx,
+            &mut state,
+        )
+        .await;
+
+        cancel.cancel();
+        writer_handle.await.expect("writer exits");
+
+        let machines = store.list_machines().await.expect("list machines");
+        let self_record = machines
+            .into_iter()
+            .find(|machine| machine.id == self_id)
+            .expect("self record");
+        assert_eq!(self_record.participation, Participation::Enabled);
+        assert!(state.consecutive_bad_samples < PARTICIPATION_HYSTERESIS_SAMPLES);
     }
 
     fn start_test_probe_listener() -> (
