@@ -7,4 +7,5 @@ ebpf/target/
 .idea/
 .lab/
 .e2e-artifacts/
+e2e-artifacts/
 lab/lab.env

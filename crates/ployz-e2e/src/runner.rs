@@ -1047,5 +1047,7 @@ fn parse_machine_row(line: &str) -> Option<MachineRow> {
 }
 
 fn machine_rows(machine_ls: &str) -> Vec<MachineRow> {
-    machine_ls.lines().filter_map(parse_machine_row).collect()
+    let mut rows: Vec<_> = machine_ls.lines().filter_map(parse_machine_row).collect();
+    rows.sort_by(|left, right| left.id.cmp(&right.id));
+    rows
 }
