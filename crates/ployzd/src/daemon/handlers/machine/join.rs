@@ -341,6 +341,39 @@ impl DaemonState {
             Err(err) => return self.err("SUBNET_RESERVATION_FAILED", err),
         };
 
+        if let Err(err) = self
+            .set_local_participation_override(Some(Participation::Enabled))
+            .await
+        {
+            let _ = release_reserved_subnet(&context, &subnet_claim).await;
+            return self.err(
+                "PARTICIPATION_OVERRIDE_FAILED",
+                format!("failed to hold founder participation: {err}"),
+            );
+        }
+
+        let result = self
+            .handle_machine_enable_remote(
+                &machine_id,
+                &record,
+                peer_rpc_port,
+                &context,
+                &subnet_claim,
+            )
+            .await;
+
+        let _ = self.set_local_participation_override(None).await;
+        result
+    }
+
+    async fn handle_machine_enable_remote(
+        &self,
+        machine_id: &MachineId,
+        record: &MachineRecord,
+        peer_rpc_port: u16,
+        context: &MachineAddContext,
+        subnet_claim: &BootstrapSubnetClaim,
+    ) -> DaemonResponse {
         if let Err(err) = overlay_rpc_expect_ok(
             record.overlay_ip,
             peer_rpc_port,
@@ -350,19 +383,19 @@ impl DaemonState {
         )
         .await
         {
-            let _ = release_reserved_subnet(&context, &subnet_claim).await;
+            let _ = release_reserved_subnet(context, subnet_claim).await;
             return self.err("REMOTE_ENABLE_FAILED", err);
         }
 
-        let remote_record = match overlay_self_record(&record, peer_rpc_port).await {
+        let remote_record = match overlay_self_record(record, peer_rpc_port).await {
             Ok(record) => record,
             Err(err) => {
-                let _ = release_reserved_subnet(&context, &subnet_claim).await;
+                let _ = release_reserved_subnet(context, subnet_claim).await;
                 return self.err("SELF_RECORD_FAILED", err);
             }
         };
-        if remote_record.id != machine_id {
-            let _ = release_reserved_subnet(&context, &subnet_claim).await;
+        if remote_record.id != *machine_id {
+            let _ = release_reserved_subnet(context, subnet_claim).await;
             return self.err(
                 "MACHINE_ID_MISMATCH",
                 format!(
@@ -373,12 +406,12 @@ impl DaemonState {
         }
 
         if let Err(err) = upsert_transient_peer(&context.peer_sync_tx, remote_record).await {
-            let _ = release_reserved_subnet(&context, &subnet_claim).await;
+            let _ = release_reserved_subnet(context, subnet_claim).await;
             return self.err("PEER_SYNC_UNAVAILABLE", err);
         }
 
-        if let Err(err) = wait_for_overlay_ready(&record, peer_rpc_port).await {
-            let _ = release_reserved_subnet(&context, &subnet_claim).await;
+        if let Err(err) = wait_for_overlay_ready(record, peer_rpc_port).await {
+            let _ = release_reserved_subnet(context, subnet_claim).await;
             return self.err("REMOTE_READY_FAILED", err);
         }
         if let Err(err) = overlay_rpc_expect_ok(
@@ -390,11 +423,11 @@ impl DaemonState {
         )
         .await
         {
-            let _ = release_reserved_subnet(&context, &subnet_claim).await;
+            let _ = release_reserved_subnet(context, subnet_claim).await;
             return self.err("REMOTE_ENABLE_FAILED", err);
         }
 
-        let _ = release_reserved_subnet(&context, &subnet_claim).await;
+        let _ = release_reserved_subnet(context, subnet_claim).await;
         self.ok(format!(
             "machine enabled\n  machine: {}\n  subnet:  {}",
             machine_id, subnet_claim.subnet
@@ -467,6 +500,15 @@ impl DaemonState {
             Ok(port) => port,
             Err(error) => return self.err("CONTROL_TRANSPORT_FAILED", error.to_string()),
         };
+        if let Err(err) = self
+            .set_local_participation_override(Some(Participation::Enabled))
+            .await
+        {
+            return self.err(
+                "PARTICIPATION_OVERRIDE_FAILED",
+                format!("failed to hold founder participation: {err}"),
+            );
+        }
         if let Err(err) = overlay_rpc_expect_ok(
             record.overlay_ip,
             peer_rpc_port,
@@ -474,9 +516,11 @@ impl DaemonState {
         )
         .await
         {
+            let _ = self.set_local_participation_override(None).await;
             return self.err("REMOTE_DISABLE_FAILED", err);
         }
 
+        let _ = self.set_local_participation_override(None).await;
         self.ok(format!("machine '{}' disabled", machine_id))
     }
 
