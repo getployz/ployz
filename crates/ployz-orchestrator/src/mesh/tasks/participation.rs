@@ -298,6 +298,7 @@ mod tests {
             public_key,
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             subnet: None,
+            control_target: None,
             bridge_ip: None,
             endpoints: vec!["127.0.0.1:51820".into()],
             status: MachineStatus::Unknown,

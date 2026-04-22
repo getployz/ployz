@@ -32,7 +32,7 @@ pub struct HostWireGuard {
     overlay_ip: OverlayIp,
     listen_port: u16,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    subnet: ipnet::Ipv4Net,
+    subnet: Option<ipnet::Ipv4Net>,
 }
 
 impl HostWireGuard {
@@ -41,7 +41,7 @@ impl HostWireGuard {
         ifname: &str,
         private_key: PrivateKey,
         overlay_ip: OverlayIp,
-        subnet: ipnet::Ipv4Net,
+        subnet: Option<ipnet::Ipv4Net>,
     ) -> Result<Self> {
         let api = WGApi::new(ifname.to_string())
             .map_err(|e| Error::operation("kernel wg init", e.to_string()))?;
@@ -59,7 +59,7 @@ impl HostWireGuard {
         ifname: &str,
         private_key: PrivateKey,
         overlay_ip: OverlayIp,
-        subnet: ipnet::Ipv4Net,
+        subnet: Option<ipnet::Ipv4Net>,
     ) -> Result<Self> {
         let api = WGApi::new(ifname.to_string())
             .map_err(|e| Error::operation("userspace wg init", e.to_string()))?;
@@ -320,7 +320,9 @@ impl MeshNetwork for HostWireGuard {
         // src so outbound overlay traffic has a routable return address.
         #[cfg(target_os = "linux")]
         {
-            let src_ip = self.subnet.hosts().next().map(|ip| ip.to_string());
+            let src_ip = self
+                .subnet
+                .and_then(|subnet| subnet.hosts().next().map(|ip| ip.to_string()));
             let desired_subnets: std::collections::HashSet<String> = peers
                 .iter()
                 .filter_map(|p| p.subnet.map(|s| s.to_string()))

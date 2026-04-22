@@ -1,18 +1,30 @@
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 
-use crate::mesh_state::invite::parse_and_verify_invite_token;
-use ipnet::Ipv4Net;
 use ployz_api::{
-    DaemonPayload, DaemonRequest, DaemonResponse, InstallRuntimeTarget, InstallServiceMode,
-    InstallSource, MachineAddOptions, MachineInstallOptions, MeshReadyPayload,
-    MeshSelfRecordPayload,
+    CoordOp, DaemonPayload, DaemonRequest, DaemonResponse, InstallRuntimeTarget,
+    InstallServiceMode, InstallSource, MachineAddOptions, MachineInstallOptions,
+    MeshBootstrapRequest, ResourceKey as ApiResourceKey,
+    MeshReadyPayload, MeshSelfRecordPayload,
+};
+use ployz_orchestrator::coordination::{
+    PrepareVote, Reservation, ReservationId, ResourceKey, Vote, quorum_prepare,
 };
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
-use ployz_orchestrator::ipam::Ipam;
+use ployz_orchestrator::ipam::pick_candidate_subnet;
+use ployz_orchestrator::machine_liveness::machine_is_fresh;
 use ployz_sdk::Transport;
 use ployz_store_api::{InviteStore, MachineStore};
-use ployz_types::model::{JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineRecord};
+use ployz_types::model::{
+    JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp,
+    Participation,
+};
 use ployz_types::time::now_unix_secs;
+use ipnet::Ipv4Net;
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, sleep, timeout};
 
@@ -35,9 +47,26 @@ const REMOTE_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const REMOTE_READY_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 const REMOTE_CLEANUP_RPC_TIMEOUT: Duration = Duration::from_secs(10);
+const PEER_RPC_TIMEOUT: Duration = Duration::from_secs(3);
 const REMOTE_STATUS_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" status >/dev/null";
 const REMOTE_PLOYZ_VERSION_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" --version";
 const REMOTE_RPC_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" rpc-stdio";
+const SUBNET_RESERVATION_TTL_SECS: u64 = 30;
+const MAX_SUBNET_ATTEMPTS: usize = 64;
+
+#[derive(Debug, Clone)]
+pub(super) struct BootstrapSubnetClaim {
+    reservation: Reservation,
+    subnet: Ipv4Net,
+    quorum_peers: Vec<CoordinationPeer>,
+    peer_rpc_port: u16,
+}
+
+#[derive(Debug, Clone)]
+struct CoordinationPeer {
+    machine_id: MachineId,
+    overlay_ip: OverlayIp,
+}
 
 impl DaemonState {
     pub(crate) async fn handle_machine_init(
@@ -139,7 +168,10 @@ impl DaemonState {
                     active.config.clone(),
                     MachineAddContext {
                         network_name: active.config.name.0.clone(),
+                        network_id: active.config.id.clone(),
+                        cluster_cidr: active.config.cluster_cidr.clone(),
                         store: active.mesh.store.clone(),
+                        reservations: self.reservations.clone(),
                         peer_sync_tx,
                         ssh_options,
                         install: options.install.clone().unwrap_or_default(),
@@ -163,48 +195,37 @@ impl DaemonState {
             "machine add degraded-mesh check complete"
         );
 
-        let allocated_subnets = match self.allocate_machine_subnets(targets.len()).await {
-            Ok(subnets) => subnets,
-            Err(err) => return self.err("SUBNET_EXHAUSTION", err),
-        };
-        tracing::info!(
-            allocated_count = allocated_subnets.len(),
-            "machine add subnet allocation complete"
-        );
-
         let operation_store = self.machine_operation_store();
         let mut report = MachineAddReport::with_warnings(warnings);
         let mut tasks = JoinSet::new();
 
-        for (target, allocated_subnet) in targets.iter().cloned().zip(allocated_subnets) {
-            tracing::info!(%target, %allocated_subnet, "machine add issuing invite token");
-            let token = match self
-                .do_issue_invite_token(&running, INVITE_TTL_SECS, allocated_subnet)
-                .await
+        for target in targets.iter().cloned() {
+            tracing::info!(%target, "machine add issuing invite token");
+            let (_token, invite) = match self.do_issue_invite_token(&running, INVITE_TTL_SECS).await
             {
-                Ok(token) => token,
+                Ok(value) => value,
                 Err(err) => {
                     report.push(MachineAddTargetResult::Failed {
                         target,
                         failure: MachineAddFailure::Preflight {
-                            reason: format!(
-                                "failed to issue invite token for subnet {allocated_subnet}: {err}"
-                            ),
+                            reason: format!("failed to issue invite token: {err}"),
                         },
                     });
                     continue;
                 }
             };
             tracing::info!(%target, "machine add invite token issued");
-            let invite = match parse_and_verify_invite_token(&token) {
-                Ok(invite) => invite,
+            let target_machine_id = MachineId(target.clone());
+            let subnet_claim = match self
+                .reserve_machine_subnet(&target_machine_id)
+                .await
+            {
+                Ok(claim) => claim,
                 Err(err) => {
                     report.push(MachineAddTargetResult::Failed {
                         target,
                         failure: MachineAddFailure::Preflight {
-                            reason: format!(
-                                "issued invite token could not be re-read for finalization: {err}"
-                            ),
+                            reason: format!("failed to reserve subnet: {err}"),
                         },
                     });
                     continue;
@@ -218,7 +239,7 @@ impl DaemonState {
                 MachineAddStage::Preflight.to_string(),
                 MachineOperationArtifacts {
                     invite_id: Some(invite.invite_id.clone()),
-                    allocated_subnet: Some(allocated_subnet.to_string()),
+                    allocated_subnet: Some(subnet_claim.subnet.to_string()),
                     uses_operation_identity: options.ssh_identity_private_key.is_some(),
                     ..MachineOperationArtifacts::default()
                 },
@@ -241,9 +262,8 @@ impl DaemonState {
                     task_operation_store,
                     operation,
                     target,
-                    allocated_subnet,
-                    token,
                     invite.invite_id,
+                    subnet_claim,
                 )
                 .await
             });
@@ -274,37 +294,261 @@ impl DaemonState {
         self.ok_with_payload(message, Some(DaemonPayload::MachineAdd(payload)))
     }
 
-    pub(crate) async fn allocate_machine_subnets(
+    pub(crate) async fn handle_machine_enable(&self, target: &str) -> DaemonResponse {
+        let active = match self.active.as_ref() {
+            Some(active) => active,
+            None => {
+                return self.err("NO_RUNNING_NETWORK", "machine enable requires a running network");
+            }
+        };
+        let machine_id = MachineId(target.to_string());
+        let Some(record) =
+            (match super::list::find_machine_record(&active.mesh.store, &machine_id).await {
+                Ok(record) => record,
+                Err(err) => return self.err("LIST_FAILED", err),
+            })
+        else {
+            return self.err("MACHINE_NOT_FOUND", format!("machine '{target}' not found"));
+        };
+        if record.participation != Participation::Disabled {
+            return self.err(
+                "MACHINE_NOT_DISABLED",
+                format!("machine '{target}' is not disabled"),
+            );
+        }
+        let peer_rpc_port = match self.peer_control_port() {
+            Ok(port) => port,
+            Err(error) => return self.err("CONTROL_TRANSPORT_FAILED", error.to_string()),
+        };
+
+        let context = MachineAddContext {
+            network_name: active.config.name.0.clone(),
+            network_id: active.config.id.clone(),
+            cluster_cidr: active.config.cluster_cidr.clone(),
+            store: active.mesh.store.clone(),
+            reservations: self.reservations.clone(),
+            peer_sync_tx: {
+                let Some(peer_sync_tx) = active.mesh.peer_sync_sender() else {
+                    return self.err("PEER_SYNC_UNAVAILABLE", "peer sync task is not running");
+                };
+                peer_sync_tx
+            },
+            ssh_options: SshOptions::default(),
+            install: MachineInstallOptions::default(),
+        };
+
+        let subnet_claim = match self
+            .reserve_machine_subnet(&machine_id)
+            .await
+        {
+            Ok(claim) => claim,
+            Err(err) => return self.err("SUBNET_RESERVATION_FAILED", err),
+        };
+
+        if let Err(err) =
+            overlay_rpc_expect_ok(record.overlay_ip, peer_rpc_port, DaemonRequest::MeshPromote {
+                assigned_subnet: subnet_claim.subnet,
+            })
+            .await
+        {
+            let _ = release_reserved_subnet(&context, &subnet_claim).await;
+            return self.err("REMOTE_ENABLE_FAILED", err);
+        }
+
+        let remote_record = match overlay_self_record(&record, peer_rpc_port).await {
+            Ok(record) => record,
+            Err(err) => {
+                let _ = release_reserved_subnet(&context, &subnet_claim).await;
+                return self.err("SELF_RECORD_FAILED", err);
+            }
+        };
+        if remote_record.id != machine_id {
+            let _ = release_reserved_subnet(&context, &subnet_claim).await;
+            return self.err(
+                "MACHINE_ID_MISMATCH",
+                format!(
+                    "remote machine id '{}' did not match enable target '{}'",
+                    remote_record.id, machine_id
+                ),
+            );
+        }
+
+        if let Err(err) = upsert_transient_peer(&context.peer_sync_tx, remote_record).await {
+            let _ = release_reserved_subnet(&context, &subnet_claim).await;
+            return self.err("PEER_SYNC_UNAVAILABLE", err);
+        }
+
+        if let Err(err) = wait_for_overlay_ready(&record, peer_rpc_port).await {
+            let _ = release_reserved_subnet(&context, &subnet_claim).await;
+            return self.err("REMOTE_READY_FAILED", err);
+        }
+
+        let _ = release_reserved_subnet(&context, &subnet_claim).await;
+        self.ok(format!(
+            "machine enabled\n  machine: {}\n  subnet:  {}",
+            machine_id, subnet_claim.subnet
+        ))
+    }
+
+    pub(crate) async fn handle_machine_drain(&self, target: &str) -> DaemonResponse {
+        let active = match self.active.as_ref() {
+            Some(active) => active,
+            None => {
+                return self.err("NO_RUNNING_NETWORK", "machine drain requires a running network");
+            }
+        };
+        let machine_id = MachineId(target.to_string());
+        let Some(record) =
+            (match super::list::find_machine_record(&active.mesh.store, &machine_id).await {
+                Ok(record) => record,
+                Err(err) => return self.err("LIST_FAILED", err),
+            })
+        else {
+            return self.err("MACHINE_NOT_FOUND", format!("machine '{target}' not found"));
+        };
+        if record.participation == Participation::Draining {
+            return self.ok(format!("machine '{}' already draining", machine_id));
+        }
+        let peer_rpc_port = match self.peer_control_port() {
+            Ok(port) => port,
+            Err(error) => return self.err("CONTROL_TRANSPORT_FAILED", error.to_string()),
+        };
+        if let Err(err) = overlay_rpc_expect_ok(
+            record.overlay_ip,
+            peer_rpc_port,
+            DaemonRequest::MeshSetParticipation {
+                participation: Participation::Draining,
+            },
+        )
+        .await
+        {
+            return self.err("REMOTE_DRAIN_FAILED", err);
+        }
+        self.ok(format!("machine '{}' draining", machine_id))
+    }
+
+    pub(crate) async fn handle_machine_disable(&self, target: &str, force: bool) -> DaemonResponse {
+        let active = match self.active.as_ref() {
+            Some(active) => active,
+            None => {
+                return self.err("NO_RUNNING_NETWORK", "machine disable requires a running network");
+            }
+        };
+        let machine_id = MachineId(target.to_string());
+        let Some(record) =
+            (match super::list::find_machine_record(&active.mesh.store, &machine_id).await {
+                Ok(record) => record,
+                Err(err) => return self.err("LIST_FAILED", err),
+            })
+        else {
+            return self.err("MACHINE_NOT_FOUND", format!("machine '{target}' not found"));
+        };
+        if record.participation == Participation::Disabled && record.subnet.is_none() {
+            return self.ok(format!("machine '{}' already disabled", machine_id));
+        }
+        let peer_rpc_port = match self.peer_control_port() {
+            Ok(port) => port,
+            Err(error) => return self.err("CONTROL_TRANSPORT_FAILED", error.to_string()),
+        };
+        if let Err(err) = overlay_rpc_expect_ok(
+            record.overlay_ip,
+            peer_rpc_port,
+            DaemonRequest::MeshStandby { force },
+        )
+        .await
+        {
+            return self.err("REMOTE_DISABLE_FAILED", err);
+        }
+
+        self.ok(format!("machine '{}' disabled", machine_id))
+    }
+
+    pub(super) async fn reserve_machine_subnet(
         &self,
-        count: usize,
-    ) -> Result<Vec<Ipv4Net>, String> {
+        owner: &MachineId,
+    ) -> Result<BootstrapSubnetClaim, String> {
         let active = self
             .active
             .as_ref()
             .ok_or_else(|| "no running network".to_string())?;
+        let peer_rpc_port = self
+            .peer_control_port()
+            .map_err(|error| error.to_string())?;
+        let cluster: Ipv4Net = self
+            .cluster_cidr
+            .parse()
+            .map_err(|err| format!("invalid cluster CIDR '{}': {err}", self.cluster_cidr))?;
+        let now = now_unix_secs();
         let machines = active
             .mesh
             .store
             .list_machines()
             .await
-            .map_err(|err| format!("failed to list machines for subnet allocation: {err}"))?;
+            .map_err(|err| format!("list machines for subnet reservation: {err}"))?;
+        let bias_seed = machine_bias_seed(owner);
 
-        let cluster: Ipv4Net = self
-            .cluster_cidr
-            .parse()
-            .map_err(|err| format!("invalid cluster CIDR '{}': {err}", self.cluster_cidr))?;
-        let allocated = machines.iter().filter_map(|machine| machine.subnet);
-        let mut ipam = Ipam::with_allocated(cluster, self.subnet_prefix_len, allocated);
-        let mut subnets = Vec::with_capacity(count);
+        let mut taken = machines
+            .iter()
+            .filter_map(|machine| machine.subnet)
+            .collect::<HashSet<_>>();
+        taken.extend(self.reservations.active_subnets(now).await);
+        let quorum_peers = coordination_peers(&machines, &self.identity.machine_id, now);
 
-        for _ in 0..count {
-            let Some(subnet) = ipam.allocate() else {
+        for _ in 0..MAX_SUBNET_ATTEMPTS {
+            let Some(candidate) =
+                pick_candidate_subnet(cluster, self.subnet_prefix_len, &taken, bias_seed)
+            else {
                 return Err("no available subnets".into());
             };
-            subnets.push(subnet);
+            let reservation = Reservation {
+                id: ReservationId::random(),
+                key: ResourceKey::Subnet(candidate),
+                owner: owner.clone(),
+                nonce: ReservationId::random().0,
+                expires_at: now.saturating_add(SUBNET_RESERVATION_TTL_SECS),
+            };
+            let committed_taken = machines.iter().any(|machine| machine.subnet == Some(candidate));
+            let local_vote = self
+                .reservations
+                .prepare(reservation.clone(), committed_taken, now)
+                .await;
+            match local_vote {
+                Vote::Allow => {}
+                Vote::Deny(_) => {
+                    taken.insert(candidate);
+                    continue;
+                }
+            }
+
+            // Subnet claims use quorum only for the pending reservation step. Durability still
+            // comes from the eventual MachineRecord self-publication on the target machine.
+            let decision = quorum_prepare(&quorum_peers, PrepareVote::Allow, |peer| {
+                let reservation = reservation.clone();
+                async move { remote_coord_prepare(&peer, &reservation, peer_rpc_port).await }
+            })
+            .await;
+            if decision.allowed {
+                return Ok(BootstrapSubnetClaim {
+                    reservation,
+                    subnet: candidate,
+                    quorum_peers,
+                    peer_rpc_port,
+                });
+            }
+            let _ = self
+                .reservations
+                .release(&reservation.key, &reservation.nonce, now_unix_secs())
+                .await;
+            if !decision.retry_could_succeed() {
+                return Err(format!(
+                    "failed to reach quorum for subnet reservation ({}/{})",
+                    decision.votes_for, decision.votes_total
+                ));
+            }
+            taken.insert(candidate);
         }
 
-        Ok(subnets)
+        Err("no available subnets".into())
     }
 }
 
@@ -313,9 +557,8 @@ async fn run_machine_add_target(
     operation_store: MachineOperationStore,
     mut operation: MachineOperationRecord,
     target: String,
-    allocated_subnet: Ipv4Net,
-    token: String,
     invite_id: String,
+    subnet_claim: BootstrapSubnetClaim,
 ) -> MachineAddTargetResult {
     let mut stage;
     let mut joiner_id = None;
@@ -341,16 +584,35 @@ async fn run_machine_add_target(
     tracing::info!(%target, "machine add target: remote join starting");
     match remote_rpc_expect_ok(
         &target,
-        DaemonRequest::MeshJoin { token },
+        DaemonRequest::MeshBootstrap {
+            request: match build_mesh_bootstrap_request(
+                &context,
+                subnet_claim.subnet,
+                Some(target.clone()),
+            )
+            .await {
+                Ok(request) => request,
+                Err(err) => {
+                    let _ = release_reserved_subnet(&context, &subnet_claim).await;
+                    let _ = operation_store.update_status(
+                        &mut operation,
+                        MachineOperationStatus::Failed,
+                        Some(err.clone()),
+                    );
+                    return MachineAddTargetResult::Failed {
+                        target,
+                        failure: MachineAddFailure::Join { reason: err },
+                    };
+                }
+            },
+        },
         &context.ssh_options,
     )
     .await
     {
         Ok(()) => {}
-        Err(err) if err.contains("already exists") || err.contains("already running") => {
-            tracing::info!(target, "remote already joined, continuing to self-record");
-        }
         Err(err) => {
+            let _ = release_reserved_subnet(&context, &subnet_claim).await;
             let _ = operation_store.update_status(
                 &mut operation,
                 MachineOperationStatus::Failed,
@@ -367,9 +629,10 @@ async fn run_machine_add_target(
     tracing::info!(%target, "machine add target: remote join complete");
 
     tracing::info!(%target, "machine add target: self-record starting");
-    let record = match remote_self_record(&target, &context.ssh_options).await {
+    let mut record = match remote_self_record(&target, &context.ssh_options).await {
         Ok(record) => record,
         Err(err) => {
+            let _ = release_reserved_subnet(&context, &subnet_claim).await;
             let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
             let _ = operation_store.update_status(
                 &mut operation,
@@ -382,36 +645,44 @@ async fn run_machine_add_target(
             };
         }
     };
+    record.control_target = Some(target.clone());
     stage = MachineAddStage::SelfRecorded;
     let _ = operation_store.update_stage(&mut operation, stage.to_string());
     tracing::info!(%target, "machine add target: self-record complete");
 
-    if record.subnet != Some(allocated_subnet) {
-        let actual_subnet = record
-            .subnet
-            .map(|subnet| subnet.to_string())
-            .unwrap_or_else(|| "—".into());
+    let machine_id = record.id.clone();
+    if let Err(err) = persist_machine_control_target(&context, &machine_id, &target).await {
+        let _ = release_reserved_subnet(&context, &subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
-        let reason = format!(
-            "joiner self-record subnet '{actual_subnet}' did not match allocated subnet '{allocated_subnet}'"
-        );
         let _ = operation_store.update_status(
             &mut operation,
             MachineOperationStatus::Failed,
-            Some(reason.clone()),
+            Some(err.clone()),
         );
         return MachineAddTargetResult::Failed {
             target,
-            failure: MachineAddFailure::SelfRecord { reason },
+            failure: MachineAddFailure::SelfRecord { reason: err },
         };
     }
-
-    let machine_id = record.id.clone();
     operation.artifacts.machine_id = Some(machine_id.clone());
     let _ = operation_store.save(&operation);
     joiner_id = Some(machine_id.clone());
+    if let Err(err) = consume_invite(&context, &invite_id, &machine_id).await {
+        let _ = release_reserved_subnet(&context, &subnet_claim).await;
+        let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
+        let _ = operation_store.update_status(
+            &mut operation,
+            MachineOperationStatus::Failed,
+            Some(err.clone()),
+        );
+        return MachineAddTargetResult::Failed {
+            target,
+            failure: MachineAddFailure::Join { reason: err },
+        };
+    }
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: transient peer install starting");
     if let Err(err) = upsert_transient_peer(&context.peer_sync_tx, record).await {
+        let _ = release_reserved_subnet(&context, &subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
             &mut operation,
@@ -429,6 +700,7 @@ async fn run_machine_add_target(
 
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: waiting for remote ready");
     if let Err(err) = wait_for_remote_ready(&target, &context.ssh_options).await {
+        let _ = release_reserved_subnet(&context, &subnet_claim).await;
         tracing::warn!(
             %target,
             joiner_id = %machine_id,
@@ -449,33 +721,7 @@ async fn run_machine_add_target(
     stage = MachineAddStage::Ready;
     let _ = operation_store.update_stage(&mut operation, stage.to_string());
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: remote ready");
-
-    tracing::info!(
-        %target,
-        joiner_id = %machine_id,
-        invite_id,
-        "machine add target: finalizing invite"
-    );
-    if let Err(err) = context
-        .store
-        .consume_invite(&invite_id, now_unix_secs())
-        .await
-    {
-        tracing::warn!(
-            %target,
-            joiner_id = %machine_id,
-            invite_id,
-            error = %err,
-            "machine add target: invite finalization failed"
-        );
-    } else {
-        tracing::info!(
-            %target,
-            joiner_id = %machine_id,
-            invite_id,
-            "machine add target: invite finalized"
-        );
-    }
+    let _ = release_reserved_subnet(&context, &subnet_claim).await;
 
     let _ = operation_store.update_stage(&mut operation, MachineAddStage::Finalized.to_string());
     let _ = operation_store.update_status(&mut operation, MachineOperationStatus::Succeeded, None);
@@ -498,6 +744,200 @@ async fn upsert_transient_peer(
         .send(PeerSyncCommand::UpsertTransient(record))
         .await
         .map_err(|err| format!("failed to install founder-local transient peer: {err}"))
+}
+
+async fn build_mesh_bootstrap_request(
+    context: &MachineAddContext,
+    assigned_subnet: Ipv4Net,
+    self_control_target: Option<String>,
+) -> Result<MeshBootstrapRequest, String> {
+    let bootstrap_peers = context
+        .store
+        .list_machines()
+        .await
+        .map_err(|err| format!("list machines for bootstrap: {err}"))?
+        .into_iter()
+        .filter(|machine| !machine.endpoints.is_empty())
+        .collect::<Vec<_>>();
+
+    Ok(MeshBootstrapRequest {
+        network_id: context.network_id.clone(),
+        network_name: context.network_name.clone(),
+        cluster_cidr: context.cluster_cidr.clone(),
+        assigned_subnet,
+        self_control_target,
+        bootstrap_peers,
+    })
+}
+
+async fn release_reserved_subnet(
+    context: &MachineAddContext,
+    subnet_claim: &BootstrapSubnetClaim,
+) -> Result<(), String> {
+    let now = now_unix_secs();
+    let local_vote = context
+        .reservations
+        .release(
+            &subnet_claim.reservation.key,
+            &subnet_claim.reservation.nonce,
+            now,
+        )
+        .await;
+    if let Vote::Deny(conflict) = local_vote {
+        tracing::warn!(
+            ?conflict,
+            subnet = %subnet_claim.subnet,
+            "subnet reservation release denied locally"
+        );
+    }
+    for peer in &subnet_claim.quorum_peers {
+        if let Err(err) =
+            remote_coord_release(peer, &subnet_claim.reservation, subnet_claim.peer_rpc_port).await
+        {
+            tracing::warn!(
+                peer = %peer.machine_id,
+                subnet = %subnet_claim.subnet,
+                error = %err,
+                "subnet reservation release fanout failed"
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn consume_invite(
+    context: &MachineAddContext,
+    invite_id: &str,
+    machine_id: &MachineId,
+) -> Result<(), String> {
+    context
+        .store
+        .redeem_invite(invite_id, machine_id, now_unix_secs())
+        .await
+        .map(|_| ())
+        .map_err(|err| format!("consume invite: {err}"))
+}
+
+fn machine_bias_seed(machine_id: &MachineId) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    machine_id.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn coordination_peers(machines: &[MachineRecord], self_id: &MachineId, now: u64) -> Vec<CoordinationPeer> {
+    machines
+        .iter()
+        .filter(|machine| machine.id != *self_id)
+        .filter(|machine| machine.status != MachineStatus::Down)
+        .filter(|machine| machine_is_fresh(machine, now))
+        .filter(|machine| match machine.participation {
+            Participation::Disabled => false,
+            Participation::Enabled | Participation::Draining => true,
+        })
+        .filter_map(|machine| {
+            Some(CoordinationPeer {
+                machine_id: machine.id.clone(),
+                overlay_ip: machine.overlay_ip,
+            })
+        })
+        .collect()
+}
+
+async fn remote_coord_prepare(
+    peer: &CoordinationPeer,
+    reservation: &Reservation,
+    peer_rpc_port: u16,
+) -> PrepareVote {
+    match overlay_rpc(
+        peer.overlay_ip,
+        peer_rpc_port,
+        DaemonRequest::Coord {
+            op: CoordOp::Prepare {
+                id: reservation.id.0.clone(),
+                key: api_resource_key(&reservation.key),
+                owner: reservation.owner.clone(),
+                nonce: reservation.nonce.clone(),
+                ttl_secs: reservation
+                    .expires_at
+                    .saturating_sub(now_unix_secs()),
+            },
+        },
+    )
+    .await
+    {
+        Ok(response) if response.ok => PrepareVote::Allow,
+        Ok(response) => {
+            tracing::warn!(
+                peer = %peer.machine_id,
+                code = %response.code,
+                message = %response.message,
+                "subnet reservation prepare denied by peer"
+            );
+            classify_remote_prepare_denial(&response.message)
+        }
+        Err(err) => {
+            tracing::warn!(peer = %peer.machine_id, error = %err, "subnet reservation prepare rpc failed");
+            PrepareVote::TerminalDeny
+        }
+    }
+}
+
+fn classify_remote_prepare_denial(message: &str) -> PrepareVote {
+    if message.contains("HeldBy") || message.contains("AlreadyCommitted") {
+        return PrepareVote::RetryableDeny;
+    }
+    PrepareVote::TerminalDeny
+}
+
+async fn remote_coord_release(
+    peer: &CoordinationPeer,
+    reservation: &Reservation,
+    peer_rpc_port: u16,
+) -> Result<(), String> {
+    let response = overlay_rpc(
+        peer.overlay_ip,
+        peer_rpc_port,
+        DaemonRequest::Coord {
+            op: CoordOp::Release {
+                id: reservation.id.0.clone(),
+                key: api_resource_key(&reservation.key),
+                nonce: reservation.nonce.clone(),
+            },
+        },
+    )
+    .await?;
+    if response.ok {
+        return Ok(());
+    }
+    Err(remote_response_error(&response))
+}
+
+async fn persist_machine_control_target(
+    context: &MachineAddContext,
+    machine_id: &MachineId,
+    control_target: &str,
+) -> Result<(), String> {
+    let Some(mut record) = super::list::find_machine_record(&context.store, machine_id).await? else {
+        tracing::info!(
+            machine_id = %machine_id,
+            control_target,
+            "machine record not visible in store yet; deferring control target persistence"
+        );
+        return Ok(());
+    };
+    record.control_target = Some(control_target.to_string());
+    context
+        .store
+        .upsert_self_machine(&record)
+        .await
+        .map_err(|err| format!("persist control target: {err}"))
+}
+
+fn api_resource_key(key: &ResourceKey) -> ApiResourceKey {
+    match key {
+        ResourceKey::Subnet(subnet) => ApiResourceKey::Subnet(*subnet),
+        ResourceKey::DeployNamespace(namespace) => ApiResourceKey::DeployNamespace(namespace.clone()),
+    }
 }
 
 pub(super) async fn remove_transient_peer(
@@ -643,6 +1083,107 @@ fn parse_remote_ready_payload(output: &str) -> Result<MeshReadyPayload, String> 
 fn remote_join_ready(payload: &MeshReadyPayload) -> bool {
     payload.ready
         || (payload.phase == "running" && payload.store_healthy && payload.heartbeat_started)
+}
+
+async fn overlay_rpc(
+    overlay_ip: OverlayIp,
+    peer_rpc_port: u16,
+    request: DaemonRequest,
+) -> Result<DaemonResponse, String> {
+    let address = SocketAddr::new(IpAddr::V6(overlay_ip.0), peer_rpc_port);
+    let stream = timeout(PEER_RPC_TIMEOUT, TcpStream::connect(address))
+        .await
+        .map_err(|_| format!("overlay rpc connect {address} timed out after {:?}", PEER_RPC_TIMEOUT))?
+        .map_err(|error| format!("overlay rpc connect {address}: {error}"))?;
+    let (reader, mut writer) = stream.into_split();
+    let mut line =
+        serde_json::to_string(&request).map_err(|error| format!("encode overlay rpc request: {error}"))?;
+    line.push('\n');
+    timeout(PEER_RPC_TIMEOUT, writer.write_all(line.as_bytes()))
+        .await
+        .map_err(|_| format!("overlay rpc write {address} timed out after {:?}", PEER_RPC_TIMEOUT))?
+        .map_err(|error| format!("overlay rpc write {address}: {error}"))?;
+    timeout(PEER_RPC_TIMEOUT, writer.shutdown())
+        .await
+        .map_err(|_| format!("overlay rpc shutdown {address} timed out after {:?}", PEER_RPC_TIMEOUT))?
+        .map_err(|error| format!("overlay rpc shutdown {address}: {error}"))?;
+
+    let mut response_line = String::new();
+    let mut reader = BufReader::new(reader);
+    timeout(PEER_RPC_TIMEOUT, reader.read_line(&mut response_line))
+        .await
+        .map_err(|_| format!("overlay rpc read {address} timed out after {:?}", PEER_RPC_TIMEOUT))?
+        .map_err(|error| format!("overlay rpc read {address}: {error}"))?;
+    serde_json::from_str(&response_line)
+        .map_err(|error| format!("decode overlay rpc response: {error}"))
+}
+
+async fn overlay_rpc_expect_ok(
+    overlay_ip: OverlayIp,
+    peer_rpc_port: u16,
+    request: DaemonRequest,
+) -> Result<(), String> {
+    let response = overlay_rpc(overlay_ip, peer_rpc_port, request).await?;
+    if response.ok {
+        return Ok(());
+    }
+    Err(remote_response_error(&response))
+}
+
+async fn overlay_self_record(
+    machine: &MachineRecord,
+    peer_rpc_port: u16,
+) -> Result<MachineRecord, String> {
+    let response = overlay_rpc(machine.overlay_ip, peer_rpc_port, DaemonRequest::MeshSelfRecord).await?;
+    if !response.ok {
+        return Err(remote_response_error(&response));
+    }
+    match response.payload {
+        Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload { record, .. })) => Ok(record),
+        Some(payload) => Err(format!("unexpected self-record payload: {payload:?}")),
+        None => decode_joiner_record(&response.message),
+    }
+}
+
+async fn wait_for_overlay_ready(machine: &MachineRecord, peer_rpc_port: u16) -> Result<(), String> {
+    let deadline = Instant::now() + REMOTE_READY_TIMEOUT;
+    let mut attempt: u32 = 0;
+
+    loop {
+        attempt += 1;
+        let last_error = match timeout(
+            REMOTE_READY_RPC_TIMEOUT,
+            overlay_rpc(
+                machine.overlay_ip,
+                peer_rpc_port,
+                DaemonRequest::MeshReady { json: false },
+            ),
+        )
+        .await
+        {
+            Ok(Ok(response)) => match mesh_ready_payload(&response) {
+                Ok(payload) => {
+                    if remote_join_ready(&payload) {
+                        tracing::debug!(machine = %machine.id, attempt, "overlay mesh ready confirmed");
+                        return Ok(());
+                    }
+                    format!("mesh reported not ready yet: {}", response.message)
+                }
+                Err(err) => err,
+            },
+            Ok(Err(err)) => err,
+            Err(_) => format!("overlay readiness probe exceeded {:?}", REMOTE_READY_RPC_TIMEOUT),
+        };
+
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timed out waiting for overlay mesh readiness after {:?}: {last_error}",
+                REMOTE_READY_TIMEOUT,
+            ));
+        }
+
+        sleep(REMOTE_READY_POLL_INTERVAL).await;
+    }
 }
 
 async fn remote_rpc(

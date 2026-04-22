@@ -18,6 +18,7 @@ fn test_record(id: &str, key_byte: u8) -> MachineRecord {
         public_key: PublicKey([key_byte; 32]),
         overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
         subnet: None,
+        control_target: None,
         bridge_ip: None,
         endpoints: vec![format!("10.0.0.{key_byte}:51820")],
         status: MachineStatus::Unknown,

@@ -2,54 +2,45 @@ use ipnet::Ipv4Net;
 use std::collections::HashSet;
 use std::net::Ipv4Addr;
 
-pub struct Ipam {
+#[must_use]
+pub fn pick_candidate_subnet(
     cluster: Ipv4Net,
     prefix_len: u8,
-    allocated: HashSet<Ipv4Net>,
-}
+    taken: &HashSet<Ipv4Net>,
+    bias_seed: u64,
+) -> Option<Ipv4Net> {
+    if prefix_len < cluster.prefix_len() {
+        return None;
+    }
 
-impl Ipam {
-    #[must_use]
-    pub fn new(cluster: Ipv4Net, prefix_len: u8) -> Self {
-        Self {
-            cluster,
-            prefix_len,
-            allocated: HashSet::new(),
+    let cluster_start = u32::from(cluster.network());
+    let cluster_end = u32::from(cluster.broadcast());
+    let step = 1u32 << (32 - prefix_len);
+
+    let mut candidates = Vec::new();
+    let mut addr = cluster_start;
+    while addr < cluster_end {
+        let network = Ipv4Addr::from(addr);
+        if let Ok(subnet) = Ipv4Net::new(network, prefix_len) {
+            candidates.push(subnet);
+        }
+        addr = addr.saturating_add(step);
+    }
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let start = (bias_seed as usize) % candidates.len();
+    for offset in 0..candidates.len() {
+        let index = (start + offset) % candidates.len();
+        let candidate = candidates[index];
+        if !taken.contains(&candidate) {
+            return Some(candidate);
         }
     }
 
-    #[must_use]
-    pub fn with_allocated(
-        cluster: Ipv4Net,
-        prefix_len: u8,
-        allocated: impl IntoIterator<Item = Ipv4Net>,
-    ) -> Self {
-        Self {
-            cluster,
-            prefix_len,
-            allocated: allocated.into_iter().collect(),
-        }
-    }
-
-    pub fn allocate(&mut self) -> Option<Ipv4Net> {
-        let cluster_start = u32::from(self.cluster.network());
-        let cluster_end = u32::from(self.cluster.broadcast());
-        let step = 1u32 << (32 - self.prefix_len);
-
-        let mut addr = cluster_start;
-        while addr < cluster_end {
-            let network = Ipv4Addr::from(addr);
-            if let Ok(subnet) = Ipv4Net::new(network, self.prefix_len)
-                && !self.allocated.contains(&subnet)
-            {
-                self.allocated.insert(subnet);
-                return Some(subnet);
-            }
-            addr += step;
-        }
-
-        None
-    }
+    None
 }
 
 #[must_use]
@@ -112,32 +103,32 @@ mod tests {
     }
 
     #[test]
-    fn allocates_first_subnet() {
-        let mut ipam = Ipam::new(cluster(), 24);
-        let subnet = ipam.allocate().expect("allocate subnet");
-        assert_eq!(
-            subnet,
-            "10.210.0.0/24".parse::<Ipv4Net>().expect("valid subnet")
+    fn picks_first_available_subnet() {
+        let subnet = pick_candidate_subnet(cluster(), 24, &HashSet::new(), 0).expect("candidate");
+        assert_eq!(subnet, "10.210.0.0/24".parse().expect("valid subnet"));
+    }
+
+    #[test]
+    fn skips_taken_subnets() {
+        let mut taken = HashSet::new();
+        taken.insert("10.210.0.0/24".parse().expect("valid subnet"));
+        let subnet = pick_candidate_subnet(cluster(), 24, &taken, 0).expect("candidate");
+        assert_eq!(subnet, "10.210.1.0/24".parse().expect("valid subnet"));
+    }
+
+    #[test]
+    fn bias_seed_rotates_candidate_scan() {
+        let subnet = pick_candidate_subnet(cluster(), 24, &HashSet::new(), 3).expect("candidate");
+        assert_eq!(subnet, "10.210.3.0/24".parse().expect("valid subnet"));
+    }
+
+    #[test]
+    fn exhaustion_returns_none() {
+        let mut taken = HashSet::new();
+        taken.insert("10.0.0.0/24".parse().expect("valid subnet"));
+        assert!(
+            pick_candidate_subnet("10.0.0.0/24".parse().expect("valid"), 24, &taken, 0).is_none()
         );
-    }
-
-    #[test]
-    fn allocates_sequential_subnets() {
-        let mut ipam = Ipam::new(cluster(), 24);
-        let s1 = ipam.allocate().expect("subnet 1");
-        let s2 = ipam.allocate().expect("subnet 2");
-        let s3 = ipam.allocate().expect("subnet 3");
-        assert_eq!(s1.to_string(), "10.210.0.0/24");
-        assert_eq!(s2.to_string(), "10.210.1.0/24");
-        assert_eq!(s3.to_string(), "10.210.2.0/24");
-    }
-
-    #[test]
-    fn skips_allocated_subnets() {
-        let existing: Ipv4Net = "10.210.0.0/24".parse().expect("valid subnet");
-        let mut ipam = Ipam::with_allocated(cluster(), 24, [existing]);
-        let subnet = ipam.allocate().expect("next subnet");
-        assert_eq!(subnet.to_string(), "10.210.1.0/24");
     }
 
     #[test]
@@ -150,14 +141,6 @@ mod tests {
     fn container_ip_is_dot_two() {
         let subnet: Ipv4Net = "10.210.5.0/24".parse().expect("valid subnet");
         assert_eq!(container_ip(&subnet), Ipv4Addr::new(10, 210, 5, 2));
-    }
-
-    #[test]
-    fn exhaustion_returns_none() {
-        let small: Ipv4Net = "10.0.0.0/24".parse().expect("valid small subnet");
-        let mut ipam = Ipam::new(small, 24);
-        assert!(ipam.allocate().is_some());
-        assert!(ipam.allocate().is_none());
     }
 
     #[test]
@@ -204,14 +187,5 @@ mod tests {
             assert!(ipam.allocate().is_some());
         }
         assert!(ipam.allocate().is_none());
-    }
-
-    #[test]
-    fn configurable_prefix_len_22() {
-        let mut ipam = Ipam::new(cluster(), 22);
-        let s1 = ipam.allocate().expect("subnet 1");
-        let s2 = ipam.allocate().expect("subnet 2");
-        assert_eq!(s1.to_string(), "10.210.0.0/22");
-        assert_eq!(s2.to_string(), "10.210.4.0/22");
     }
 }

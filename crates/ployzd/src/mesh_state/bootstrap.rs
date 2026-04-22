@@ -1,12 +1,13 @@
-use super::invite::InviteClaims;
 use super::network::NetworkConfig;
-use base64::Engine as _;
 use ployz_orchestrator::network::endpoints::detect_endpoints;
 use ployz_runtime_api::Identity;
 use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
 use serde::{Deserialize, Serialize};
 use std::net::Ipv6Addr;
 use std::path::Path;
+
+#[cfg(test)]
+use base64::Engine as _;
 
 const BOOTSTRAP_PEERS_FILE: &str = "bootstrap-peers.json";
 
@@ -38,7 +39,8 @@ impl BootstrapPeerRecord {
     }
 
     #[must_use]
-    pub fn from_invite(invite: &InviteClaims) -> Option<Self> {
+    #[cfg(test)]
+    pub fn from_invite(invite: &super::invite::InviteToken) -> Option<Self> {
         let overlay_str = invite.issuer_overlay_ip.as_deref()?;
         let public_key_b64 = invite.issuer_wg_public_key.as_deref()?;
         if invite.issuer_endpoints.is_empty() {
@@ -52,7 +54,7 @@ impl BootstrapPeerRecord {
         let overlay_ip = overlay_str.parse().ok()?;
 
         Some(Self {
-            machine_id: MachineId(invite.issued_by.clone()),
+            machine_id: invite.issuer_machine_id.clone(),
             public_key: PublicKey(public_key),
             overlay_ip: OverlayIp(overlay_ip),
             endpoints: invite.issuer_endpoints.clone(),
@@ -133,6 +135,7 @@ pub async fn build_seed_records(
     network_dir: &Path,
     identity: &Identity,
     net_config: &NetworkConfig,
+    self_control_target: Option<String>,
     bootstrap: Option<&BootstrapInfo>,
     listen_port: u16,
     extra_records: &[MachineRecord],
@@ -170,13 +173,14 @@ pub async fn build_seed_records(
     }
 
     let endpoints = detect_endpoints(listen_port).await;
-    let self_record = MachineRecord::seed(
+    let mut self_record = MachineRecord::seed(
         identity.machine_id.clone(),
         identity.public_key.clone(),
         net_config.overlay_ip,
-        Some(net_config.subnet),
+        net_config.subnet,
         endpoints,
     );
+    self_record.control_target = self_control_target;
     upsert_machine(&mut seed_records, self_record);
 
     seed_records
@@ -184,6 +188,7 @@ pub async fn build_seed_records(
 
 #[cfg(test)]
 mod tests {
+    use super::super::invite::InviteToken;
     use super::super::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
     use super::*;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -200,20 +205,18 @@ mod tests {
         root
     }
 
-    fn sample_invite() -> InviteClaims {
-        InviteClaims {
+    fn sample_invite() -> InviteToken {
+        InviteToken {
             invite_id: "invite".into(),
             network_id: NetworkId("network".into()),
             network_name: "alpha".into(),
-            issued_by: "founder".into(),
+            issuer_machine_id: MachineId("founder".into()),
             issuer_verify_key: "verify".into(),
             expires_at: 1,
-            nonce: "nonce".into(),
             issuer_endpoints: vec!["10.0.0.1:51820".into()],
             issuer_overlay_ip: Some("fd00::1".into()),
             issuer_wg_public_key: Some(URL_SAFE_NO_PAD.encode([7u8; 32])),
-            issuer_subnet: Some("10.210.0.0/24".into()),
-            allocated_subnet: "10.210.1.0/24".into(),
+            bootstrap_peers: Vec::new(),
         }
     }
 
@@ -266,6 +269,7 @@ mod tests {
             &network_dir,
             &identity,
             &net_config,
+            None,
             None,
             51820,
             &[db_founder.clone()],

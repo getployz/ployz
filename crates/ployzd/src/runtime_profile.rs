@@ -118,7 +118,7 @@ impl RuntimeProfile {
         overlay_ip: OverlayIp,
         network_dir: &Path,
         network_name: &str,
-        subnet: Ipv4Net,
+        subnet: Option<Ipv4Net>,
         exposed_tcp_ports: &[u16],
         bootstrap: &[String],
         network_id: &str,
@@ -157,13 +157,14 @@ impl RuntimeProfile {
             }
         };
 
-        let container_network = match self.execution_backend {
-            ExecutionBackend::Memory => None,
-            ExecutionBackend::Docker | ExecutionBackend::Host => Some(
+        let container_network = match (self.execution_backend, subnet) {
+            (ExecutionBackend::Memory, _) => None,
+            (ExecutionBackend::Docker | ExecutionBackend::Host, Some(subnet)) => Some(
                 docker_bridge_network(network_name, subnet)
                     .await
                     .map_err(|error| error.to_string())?,
             ),
+            (ExecutionBackend::Docker | ExecutionBackend::Host, None) => None,
         };
 
         Ok(MeshRuntimeComponents {
@@ -298,6 +299,25 @@ impl RuntimeProfile {
         }
 
         Ok(restartable)
+    }
+
+    pub(crate) async fn has_local_workloads(&self, machine_id: &MachineId) -> Result<bool, String> {
+        if self.is_memory_test() {
+            return Ok(false);
+        }
+
+        let engine = ContainerEngine::connect()
+            .await
+            .map_err(|err| format!("connect docker engine for workload inspection: {err}"))?;
+        let observed = engine
+            .list_by_labels(&[
+                (LABEL_MANAGED, "true"),
+                (LABEL_KIND, "workload"),
+                (LABEL_MACHINE, &machine_id.0),
+            ])
+            .await
+            .map_err(|err| format!("list local workloads: {err}"))?;
+        Ok(!observed.is_empty())
     }
 
     pub(crate) async fn start_local_workloads_after_subnet_heal(

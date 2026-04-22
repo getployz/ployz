@@ -1,3 +1,4 @@
+mod coordination;
 mod debug;
 mod deploy;
 mod doctor;
@@ -22,6 +23,10 @@ impl DaemonState {
         match req {
             DaemonRequest::DebugTick { .. }
             | DaemonRequest::MeshJoin { .. }
+            | DaemonRequest::MeshBootstrap { .. }
+            | DaemonRequest::MeshPromote { .. }
+            | DaemonRequest::MeshStandby { .. }
+            | DaemonRequest::MeshSetParticipation { .. }
             | DaemonRequest::MeshInit { .. }
             | DaemonRequest::MeshUp { .. }
             | DaemonRequest::MeshDown
@@ -38,11 +43,17 @@ impl DaemonState {
             | DaemonRequest::MachineList
             | DaemonRequest::MachineInit { .. }
             | DaemonRequest::MachineAdd { .. }
+            | DaemonRequest::MachineEnable { .. }
+            | DaemonRequest::MachineDrain { .. }
+            | DaemonRequest::MachineDisable { .. }
             | DaemonRequest::MachineRemove { .. }
             | DaemonRequest::MachineOperationList
             | DaemonRequest::MachineOperationGet { .. }
             | DaemonRequest::MachineInviteCreate { .. }
+            | DaemonRequest::MachineInviteRevoke { .. }
+            | DaemonRequest::MachineInviteList
             | DaemonRequest::MachineInviteImport { .. }
+            | DaemonRequest::Coord { .. }
             | DaemonRequest::MeshSelfRecord
             | DaemonRequest::MeshAccept { .. } => RequestLane::Shared,
         }
@@ -54,6 +65,10 @@ impl DaemonState {
             DaemonRequest::Doctor => self.handle_doctor().await,
             DaemonRequest::DebugTick { .. }
             | DaemonRequest::MeshJoin { .. }
+            | DaemonRequest::MeshBootstrap { .. }
+            | DaemonRequest::MeshPromote { .. }
+            | DaemonRequest::MeshStandby { .. }
+            | DaemonRequest::MeshSetParticipation { .. }
             | DaemonRequest::MeshInit { .. }
             | DaemonRequest::MeshUp { .. }
             | DaemonRequest::MeshDown
@@ -84,6 +99,11 @@ impl DaemonState {
             DaemonRequest::MachineAdd { targets, options } => {
                 self.handle_machine_add(&targets, &options).await
             }
+            DaemonRequest::MachineEnable { target } => self.handle_machine_enable(&target).await,
+            DaemonRequest::MachineDrain { target } => self.handle_machine_drain(&target).await,
+            DaemonRequest::MachineDisable { target, force } => {
+                self.handle_machine_disable(&target, force).await
+            }
             DaemonRequest::MachineRemove { id, force } => {
                 self.handle_machine_remove(&id, force).await
             }
@@ -94,9 +114,14 @@ impl DaemonState {
             DaemonRequest::MachineInviteCreate { ttl_secs } => {
                 self.handle_machine_invite_create(ttl_secs).await
             }
+            DaemonRequest::MachineInviteRevoke { invite_id } => {
+                self.handle_machine_invite_revoke(&invite_id).await
+            }
+            DaemonRequest::MachineInviteList => self.handle_machine_invite_list().await,
             DaemonRequest::MachineInviteImport { token } => {
                 self.handle_machine_invite_import(&token).await
             }
+            DaemonRequest::Coord { op } => self.handle_coord(op).await,
             DaemonRequest::MeshSelfRecord => self.handle_mesh_self_record().await,
             DaemonRequest::MeshAccept { response } => self.handle_mesh_accept(&response).await,
         }
@@ -106,6 +131,14 @@ impl DaemonState {
         match req {
             DaemonRequest::DebugTick { task, repeat } => self.handle_debug_tick(task, repeat).await,
             DaemonRequest::MeshJoin { token } => self.handle_mesh_join(&token).await,
+            DaemonRequest::MeshBootstrap { request } => self.handle_mesh_bootstrap(&request).await,
+            DaemonRequest::MeshPromote { assigned_subnet } => {
+                self.handle_mesh_promote(assigned_subnet).await
+            }
+            DaemonRequest::MeshStandby { force } => self.handle_mesh_standby(force).await,
+            DaemonRequest::MeshSetParticipation { participation } => {
+                self.handle_mesh_set_participation(participation).await
+            }
             DaemonRequest::MeshInit { network } => self.handle_mesh_init(&network).await,
             DaemonRequest::MeshUp {
                 network,
@@ -125,11 +158,17 @@ impl DaemonState {
             | DaemonRequest::MachineList
             | DaemonRequest::MachineInit { .. }
             | DaemonRequest::MachineAdd { .. }
+            | DaemonRequest::MachineEnable { .. }
+            | DaemonRequest::MachineDrain { .. }
+            | DaemonRequest::MachineDisable { .. }
             | DaemonRequest::MachineRemove { .. }
             | DaemonRequest::MachineOperationList
             | DaemonRequest::MachineOperationGet { .. }
             | DaemonRequest::MachineInviteCreate { .. }
+            | DaemonRequest::MachineInviteRevoke { .. }
+            | DaemonRequest::MachineInviteList
             | DaemonRequest::MachineInviteImport { .. }
+            | DaemonRequest::Coord { .. }
             | DaemonRequest::MeshSelfRecord
             | DaemonRequest::MeshAccept { .. } => {
                 self.err("INTERNAL", "shared request routed to exclusive handler")

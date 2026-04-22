@@ -57,7 +57,11 @@ impl DaemonState {
         }
 
         let duplicate_groups = duplicate_subnet_groups(&machines);
-        let active_subnet = active.config.subnet;
+        let Some(active_subnet) = active.config.subnet else {
+            self.pending_subnet_heal = None;
+            self.last_subnet_heal_attempt = None;
+            return;
+        };
         let current_conflict =
             local_duplicate_subnet_conflict(&machines, &self.identity.machine_id);
         let healing_in_progress = self.pending_subnet_heal.is_some_and(|pending| {
@@ -307,7 +311,7 @@ impl DaemonState {
         let config_path = NetworkConfig::path(&self.data_dir, &network_name);
         let mut config = NetworkConfig::load(&config_path)
             .map_err(|err| format!("load network config: {err}"))?;
-        config.subnet = plan.target_subnet;
+        config.subnet = Some(plan.target_subnet);
         config
             .save(&config_path)
             .map_err(|err| format!("save network config: {err}"))?;
@@ -328,6 +332,9 @@ impl DaemonState {
         let config_path = NetworkConfig::path(&self.data_dir, network_name);
         let config = NetworkConfig::load(&config_path)
             .map_err(|err| format!("load network config: {err}"))?;
+        let Some(config_subnet) = config.subnet else {
+            return Err("local network config missing subnet".into());
+        };
         let Some(active) = self.active.as_mut() else {
             return Err("no running network".into());
         };
@@ -336,14 +343,14 @@ impl DaemonState {
         let Some(mut record) = active
             .mesh
             .update_authoritative_self_record(|record| {
-                record.subnet = Some(config.subnet);
+                record.subnet = Some(config_subnet);
                 record.updated_at = now_unix_secs();
             })
             .await
         else {
             return Err("local authoritative self record missing".into());
         };
-        record.subnet = Some(config.subnet);
+        record.subnet = Some(config_subnet);
         active
             .mesh
             .store
@@ -438,11 +445,14 @@ impl DaemonState {
         &self,
         network_name: &str,
     ) -> Result<Vec<RestartableWorkload>, String> {
-        let target_subnet = self
+        let Some(target_subnet) = self
             .active
             .as_ref()
             .map(|active| active.config.subnet)
-            .ok_or_else(|| "no running network".to_string())?;
+            .ok_or_else(|| "no running network".to_string())?
+        else {
+            return Err("active network has no workload subnet".into());
+        };
         self.stop_runtime_local_workloads_for_subnet_heal(
                 &self.identity.machine_id,
                 network_name,
@@ -456,11 +466,14 @@ impl DaemonState {
         network_name: &str,
         workloads: &[RestartableWorkload],
     ) -> Result<(), String> {
-        let target_subnet = self
+        let Some(target_subnet) = self
             .active
             .as_ref()
             .map(|active| active.config.subnet)
-            .ok_or_else(|| "no running network".to_string())?;
+            .ok_or_else(|| "no running network".to_string())?
+        else {
+            return Err("active network has no workload subnet".into());
+        };
         self.start_runtime_local_workloads_after_subnet_heal(
             network_name,
             target_subnet,
@@ -616,9 +629,7 @@ fn allocate_replacement_subnet(
             return None;
         }
         machine.subnet
-    });
-    let mut ipam =
-        ployz_orchestrator::ipam::Ipam::with_allocated(cluster, subnet_prefix_len, allocated);
-    ipam.allocate()
+    }).collect::<std::collections::HashSet<_>>();
+    ployz_orchestrator::ipam::pick_candidate_subnet(cluster, subnet_prefix_len, &allocated, 0)
         .ok_or_else(|| "no available subnets for local heal".into())
 }
