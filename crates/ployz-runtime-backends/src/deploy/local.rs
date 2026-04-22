@@ -198,11 +198,11 @@ impl LocalDeployRuntime {
             memory_bytes: container.resources.memory_bytes.map(|v| v as i64),
             nano_cpus: container.resources.cpu_nano(),
             sysctls: container.sysctls.clone().into_iter().collect(),
-            stop_timeout: spec
+            stop_timeout: container
                 .stop_grace_period
                 .as_ref()
                 .and_then(|v| parse_duration_secs(v)),
-            pid_mode: None,
+            pid_mode: container.pid_mode.clone(),
         };
 
         let result = self.engine.ensure(&runtime_spec).await?;

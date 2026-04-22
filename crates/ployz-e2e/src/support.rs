@@ -38,8 +38,12 @@ impl Default for CommandOutput {
 }
 
 #[derive(Debug, Deserialize)]
-struct ReadyPayload {
-    ready: bool,
+pub(crate) struct ReadyPayload {
+    pub(crate) ready: bool,
+    #[serde(default)]
+    pub(crate) workload_subnet_present: bool,
+    #[serde(default)]
+    pub(crate) participation: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -48,8 +52,12 @@ struct ReadyEnvelope {
 }
 
 pub(crate) fn parse_ready(output: &str) -> Result<bool> {
+    Ok(parse_ready_payload(output)?.ready)
+}
+
+pub(crate) fn parse_ready_payload(output: &str) -> Result<ReadyPayload> {
     if let Ok(payload) = serde_json::from_str::<ReadyPayload>(output) {
-        return Ok(payload.ready);
+        return Ok(payload);
     }
 
     let envelope = serde_json::from_str::<ReadyEnvelope>(output).map_err(|error| {
@@ -57,12 +65,11 @@ pub(crate) fn parse_ready(output: &str) -> Result<bool> {
             "failed to parse readiness response envelope: {error}"
         ))
     })?;
-    let payload = serde_json::from_str::<ReadyPayload>(&envelope.message).map_err(|error| {
+    serde_json::from_str::<ReadyPayload>(&envelope.message).map_err(|error| {
         Error::Message(format!(
             "failed to parse readiness response message: {error}"
         ))
-    })?;
-    Ok(payload.ready)
+    })
 }
 
 pub(crate) fn docker_outer<const N: usize>(args: [&str; N]) -> Result<CommandOutput> {

@@ -4,13 +4,13 @@ use ployz_api::{
     MachineAddPayload, MachineAwaitingSelfPublication, MachineInstallOptions, MachineListPayload,
     MachineListRow,
 };
-use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_orchestrator::coordination::PendingReservations;
+use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_store_api::StoreDriver;
 use ployz_types::model::{MachineId, NetworkId};
-use std::sync::Arc;
 use std::fmt;
 use std::str::FromStr;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 #[derive(Clone)]

@@ -33,8 +33,7 @@ pub trait StoreBackend: Send + Sync {
         machine_id: &MachineId,
         now_unix_secs: u64,
     ) -> Result<InviteRecord>;
-    async fn revoke_invite(&self, invite_id: &str, now_unix_secs: u64)
-    -> Result<InviteRecord>;
+    async fn revoke_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<InviteRecord>;
 
     async fn load_routing_state(&self) -> Result<RoutingState>;
     async fn subscribe_routing_invalidations(&self) -> Result<RoutingInvalidationSubscription>;

@@ -201,11 +201,7 @@ impl InviteStore for CorrosionStore {
         tables::invites::redeem_invite(&self.client, invite_id, machine_id, now_unix_secs).await
     }
 
-    async fn revoke_invite(
-        &self,
-        invite_id: &str,
-        now_unix_secs: u64,
-    ) -> Result<InviteRecord> {
+    async fn revoke_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<InviteRecord> {
         tables::invites::revoke_invite(&self.client, invite_id, now_unix_secs).await
     }
 }

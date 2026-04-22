@@ -2,8 +2,8 @@ use crate::cli::Scenario;
 use crate::error::{Error, Result};
 use crate::scenarios;
 use crate::support::{
-    CommandOutput, docker_outer, docker_outer_raw, parse_ready, pick_free_port, run_command,
-    run_command_expect_ok, wait_until,
+    CommandOutput, docker_outer, docker_outer_raw, parse_ready, parse_ready_payload,
+    pick_free_port, run_command, run_command_expect_ok, wait_until,
 };
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -256,6 +256,28 @@ impl ScenarioRun {
         self.wait_mesh_ready_default(self.node(node_name)?)
     }
 
+    pub(crate) fn wait_mesh_standby_name(&self, node_name: &str) -> Result<()> {
+        let node = self.node(node_name)?;
+        wait_until(READY_WAIT_TIMEOUT, || {
+            let Ok(output) = self.ssh_run(node, "ployzd --plain mesh ready --json") else {
+                return Ok(false);
+            };
+            if !output.status.success() {
+                return Ok(false);
+            }
+            let payload = parse_ready_payload(output.stdout.trim())?;
+            Ok(payload.ready
+                && !payload.workload_subnet_present
+                && payload.participation == "disabled")
+        })
+        .map_err(|error| {
+            Error::Message(format!(
+                "mesh did not become standby-ready on {}: {error}",
+                node.name
+            ))
+        })
+    }
+
     pub(crate) fn wait_mesh_absent_name(&self, node_name: &str) -> Result<()> {
         let node = self.node(node_name)?;
         wait_until(READY_WAIT_TIMEOUT, || {
@@ -292,12 +314,18 @@ impl ScenarioRun {
     }
 
     pub(crate) fn machine_enable(&self, controller_name: &str, target_name: &str) -> Result<()> {
-        self.ssh_expect_ok_name(controller_name, &format!("ployzd machine enable {target_name}"))?;
+        self.ssh_expect_ok_name(
+            controller_name,
+            &format!("ployzd machine enable {target_name}"),
+        )?;
         Ok(())
     }
 
     pub(crate) fn machine_disable(&self, controller_name: &str, target_name: &str) -> Result<()> {
-        self.ssh_expect_ok_name(controller_name, &format!("ployzd machine disable {target_name}"))?;
+        self.ssh_expect_ok_name(
+            controller_name,
+            &format!("ployzd machine disable {target_name}"),
+        )?;
         Ok(())
     }
 

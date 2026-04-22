@@ -152,8 +152,19 @@ impl DaemonState {
         net_config.id = request.network_id.clone();
 
         let config_path = NetworkConfig::path(&self.data_dir, network);
+        if config_path.exists() {
+            return self.err(
+                "NETWORK_ALREADY_EXISTS",
+                format!(
+                    "network '{network}' already exists -- run `mesh up {network}` or `mesh destroy {network}`"
+                ),
+            );
+        }
         if let Err(error) = net_config.save(&config_path) {
-            return self.err("IO_ERROR", format!("failed to save network config: {error}"));
+            return self.err(
+                "IO_ERROR",
+                format!("failed to save network config: {error}"),
+            );
         }
 
         let network_dir = NetworkConfig::dir(&self.data_dir, network);
@@ -277,7 +288,7 @@ impl DaemonState {
             &std::collections::HashSet::new(),
             0,
         )
-            .ok_or_else(|| "no available subnets in cluster CIDR".to_string())?;
+        .ok_or_else(|| "no available subnets in cluster CIDR".to_string())?;
 
         let net_config = NetworkConfig::new(
             NetworkName(network.into()),
@@ -473,6 +484,22 @@ impl DaemonState {
         &mut self,
         participation: ployz_types::model::Participation,
     ) -> DaemonResponse {
+        let forced_participation = match participation {
+            ployz_types::model::Participation::Disabled => {
+                Some(ployz_types::model::Participation::Disabled)
+            }
+            ployz_types::model::Participation::Enabled
+            | ployz_types::model::Participation::Draining => None,
+        };
+        if let Err(error) = self
+            .set_local_participation_override(forced_participation)
+            .await
+        {
+            return self.err(
+                "PARTICIPATION_OVERRIDE_FAILED",
+                format!("failed to apply participation override: {error}"),
+            );
+        }
         let Some(active) = self.active.as_mut() else {
             return self.err("NO_RUNNING_NETWORK", "no mesh running");
         };
@@ -505,7 +532,10 @@ impl DaemonState {
             return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
         };
         if !force && self_record.participation != ployz_types::model::Participation::Draining {
-            let has_local_workloads = match self.runtime_has_local_workloads(&self.identity.machine_id).await {
+            let has_local_workloads = match self
+                .runtime_has_local_workloads(&self.identity.machine_id)
+                .await
+            {
                 Ok(value) => value,
                 Err(error) => {
                     return self.err(
@@ -521,18 +551,55 @@ impl DaemonState {
                 );
             }
         }
+        if let Err(error) = self
+            .set_local_participation_override(Some(ployz_types::model::Participation::Disabled))
+            .await
+        {
+            return self.err(
+                "PARTICIPATION_OVERRIDE_FAILED",
+                format!("failed to freeze standby participation: {error}"),
+            );
+        }
+        let now = ployz_types::time::now_unix_secs();
+        {
+            let Some(active) = self.active.as_ref() else {
+                let _ = self.set_local_participation_override(None).await;
+                return self.err("NO_RUNNING_NETWORK", "no mesh running");
+            };
+            let Some(record) = active
+                .mesh
+                .update_authoritative_self_record(|record| {
+                    record.participation = ployz_types::model::Participation::Disabled;
+                    record.updated_at = now;
+                })
+                .await
+            else {
+                let _ = self.set_local_participation_override(None).await;
+                return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
+            };
+            if let Err(error) = active.mesh.store.upsert_self_machine(&record).await {
+                let _ = self.set_local_participation_override(None).await;
+                return self.err(
+                    "STORE_UPDATE_FAILED",
+                    format!("failed to persist pre-standby participation: {error}"),
+                );
+            }
+        }
         let config_path = NetworkConfig::path(&self.data_dir, &network_name);
         let mut config = match NetworkConfig::load(&config_path) {
             Ok(config) => config,
             Err(error) => {
+                let _ = self.set_local_participation_override(None).await;
                 return self.err("IO_ERROR", format!("load network config: {error}"));
             }
         };
         config.subnet = None;
         if let Err(error) = config.save(&config_path) {
+            let _ = self.set_local_participation_override(None).await;
             return self.err("IO_ERROR", format!("save network config: {error}"));
         }
         if let Err(error) = self.restart_active_runtime_from_config(&network_name).await {
+            let _ = self.set_local_participation_override(None).await;
             return self.err(
                 "NETWORK_RESTART_FAILED",
                 format!("failed to enter standby: {error}"),
@@ -541,7 +608,6 @@ impl DaemonState {
         let Some(active) = self.active.as_mut() else {
             return self.err("NO_RUNNING_NETWORK", "no mesh running");
         };
-        let now = ployz_types::time::now_unix_secs();
         let Some(record) = active
             .mesh
             .update_authoritative_self_record(|record| {
@@ -564,7 +630,10 @@ impl DaemonState {
         }
     }
 
-    pub(crate) async fn handle_mesh_promote(&mut self, assigned_subnet: ipnet::Ipv4Net) -> DaemonResponse {
+    pub(crate) async fn handle_mesh_promote(
+        &mut self,
+        assigned_subnet: ipnet::Ipv4Net,
+    ) -> DaemonResponse {
         let Some(active) = self.active.as_ref() else {
             return self.err("NO_RUNNING_NETWORK", "no mesh running");
         };
@@ -593,7 +662,7 @@ impl DaemonState {
         let Some(record) = active
             .mesh
             .update_authoritative_self_record(|record| {
-                record.participation = ployz_types::model::Participation::Enabled;
+                record.participation = ployz_types::model::Participation::Disabled;
                 record.subnet = Some(assigned_subnet);
                 record.status = ployz_types::model::MachineStatus::Up;
                 record.updated_at = now;
@@ -604,14 +673,16 @@ impl DaemonState {
         };
         active.config.subnet = Some(assigned_subnet);
         match active.mesh.store.upsert_self_machine(&record).await {
-            Ok(()) => self.ok(format!("machine promoted with subnet {}", assigned_subnet)),
-            Err(error) => self.err(
-                "STORE_UPDATE_FAILED",
-                format!("failed to persist promoted machine: {error}"),
-            ),
+            Ok(()) => {}
+            Err(error) => {
+                return self.err(
+                    "STORE_UPDATE_FAILED",
+                    format!("failed to persist promoted machine: {error}"),
+                );
+            }
         }
+        self.ok(format!("machine promoted with subnet {}", assigned_subnet))
     }
-
 }
 
 fn bootstrap_info_from_record(record: &MachineRecord) -> BootstrapInfo {
@@ -641,6 +712,7 @@ mod tests {
     use crate::daemon::ActiveMesh;
     use crate::mesh_state::invite::issue_invite_token;
     use crate::mesh_state::network::NetworkConfig;
+    use ployz_api::MeshBootstrapRequest;
     use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
     use ployz_orchestrator::{Mesh, WireguardDriver};
     use ployz_runtime_api::Identity;
@@ -727,6 +799,47 @@ mod tests {
         if let Some(active) = state.active.as_mut() {
             active.mesh.destroy().await.expect("destroy mesh");
         }
+    }
+
+    #[tokio::test]
+    async fn mesh_bootstrap_refuses_to_overwrite_existing_network_config() {
+        let identity = Identity::generate(MachineId("joiner".into()), [9; 32]);
+        let data_dir = unique_temp_dir("ployz-bootstrap-guard");
+        let existing = NetworkConfig::new(
+            ployz_types::model::NetworkName("alpha".into()),
+            &identity.public_key,
+            "10.210.0.0/16",
+            "10.210.1.0/24".parse().expect("valid subnet"),
+        );
+        let config_path = NetworkConfig::path(&data_dir, "alpha");
+        existing.save(&config_path).expect("save existing config");
+
+        let mut state = DaemonState::new_for_tests(
+            &data_dir,
+            identity,
+            "10.210.0.0/16".into(),
+            24,
+            4317,
+            "127.0.0.1:0".into(),
+            1,
+        );
+
+        let response = state
+            .handle_mesh_bootstrap(&MeshBootstrapRequest {
+                network_id: ployz_types::model::NetworkId("net-new".into()),
+                network_name: "alpha".into(),
+                cluster_cidr: "10.210.0.0/16".into(),
+                assigned_subnet: "10.210.2.0/24".parse().expect("valid subnet"),
+                self_control_target: None,
+                bootstrap_peers: Vec::new(),
+            })
+            .await;
+        assert!(!response.ok);
+        assert_eq!(response.code, "NETWORK_ALREADY_EXISTS");
+
+        let persisted = NetworkConfig::load(&config_path).expect("load existing config");
+        assert_eq!(persisted.id, existing.id);
+        assert_eq!(persisted.subnet, existing.subnet);
     }
 
     async fn make_active_state() -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {

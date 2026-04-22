@@ -126,7 +126,9 @@ impl InviteStore for StoreDriver {
         async move { self.backend.get_invite(invite_id).await }
     }
 
-    fn list_invites(&self) -> impl std::future::Future<Output = Result<Vec<InviteRecord>>> + Send + '_ {
+    fn list_invites(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<InviteRecord>>> + Send + '_ {
         async move { self.backend.list_invites().await }
     }
 
@@ -314,11 +316,7 @@ impl StoreBackend for MemoryStoreBackend {
             .await
     }
 
-    async fn revoke_invite(
-        &self,
-        invite_id: &str,
-        now_unix_secs: u64,
-    ) -> Result<InviteRecord> {
+    async fn revoke_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<InviteRecord> {
         self.store.revoke_invite(invite_id, now_unix_secs).await
     }
 

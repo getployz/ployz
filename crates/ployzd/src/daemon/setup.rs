@@ -91,7 +91,10 @@ impl MeshStartTx {
         plan: &StartPlan,
         options: MeshStartOptions,
     ) -> Result<(), StartMeshError> {
-        let exposed_tcp_ports = [plan.gateway_port];
+        let exposed_tcp_ports = match self.config.subnet {
+            Some(_) => vec![plan.gateway_port],
+            None => Vec::new(),
+        };
         let db_records = peer_records_from_db(&plan.network_dir).unwrap_or_else(|error| {
             tracing::warn!(
                 ?error,
@@ -396,6 +399,7 @@ impl DaemonState {
                 &net_config.name.0,
                 self.gateway_listen_addr.clone(),
                 self.gateway_threads,
+                self.gateway_metrics_listen_addr.clone(),
             );
             self.start_runtime_gateway(gateway_config)
                 .await
@@ -409,6 +413,7 @@ impl DaemonState {
                 &net_config.name.0,
                 net_config.overlay_ip,
                 dns_bridge_listen_addr,
+                self.dns_metrics_listen_addr.clone(),
             );
             match self.start_runtime_dns(dns_config).await {
                 Ok(handle) => handle,
@@ -502,6 +507,7 @@ impl DaemonState {
                 &net_config.name.0,
                 self.gateway_listen_addr.clone(),
                 self.gateway_threads,
+                self.gateway_metrics_listen_addr.clone(),
             )
         });
         let dns_config = net_config.subnet.map(|_| {
@@ -510,6 +516,7 @@ impl DaemonState {
                 &net_config.name.0,
                 net_config.overlay_ip,
                 self.dns_bridge_listen_addr(),
+                self.dns_metrics_listen_addr.clone(),
             )
         });
 
@@ -549,11 +556,9 @@ impl DaemonState {
     pub(crate) fn peer_control_port(&self) -> Result<u16, StartMeshError> {
         self.remote_control_port
             .checked_add(PEER_RPC_PORT_OFFSET)
-            .ok_or_else(|| {
-                StartMeshError::RemoteControl {
-                    bind: SocketAddr::from(([127, 0, 0, 1], self.remote_control_port)),
-                    error: "peer control port overflow".into(),
-                }
+            .ok_or_else(|| StartMeshError::RemoteControl {
+                bind: SocketAddr::from(([127, 0, 0, 1], self.remote_control_port)),
+                error: "peer control port overflow".into(),
             })
     }
 }
@@ -681,6 +686,8 @@ mod tests {
             4317,
             gateway_listen_addr.into(),
             1,
+            None,
+            None,
         )
     }
 

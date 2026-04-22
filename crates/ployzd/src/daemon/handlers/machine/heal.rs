@@ -361,7 +361,7 @@ impl DaemonState {
         self.set_local_participation_override(None).await
     }
 
-    async fn set_local_participation_override(
+    pub(crate) async fn set_local_participation_override(
         &self,
         participation: Option<Participation>,
     ) -> Result<(), String> {
@@ -454,11 +454,11 @@ impl DaemonState {
             return Err("active network has no workload subnet".into());
         };
         self.stop_runtime_local_workloads_for_subnet_heal(
-                &self.identity.machine_id,
-                network_name,
-                target_subnet,
-            )
-            .await
+            &self.identity.machine_id,
+            network_name,
+            target_subnet,
+        )
+        .await
     }
 
     async fn start_local_workloads_after_subnet_heal(
@@ -474,11 +474,7 @@ impl DaemonState {
         else {
             return Err("active network has no workload subnet".into());
         };
-        self.start_runtime_local_workloads_after_subnet_heal(
-            network_name,
-            target_subnet,
-            workloads,
-        )
+        self.start_runtime_local_workloads_after_subnet_heal(network_name, target_subnet, workloads)
             .await
     }
 }
@@ -624,12 +620,15 @@ fn allocate_replacement_subnet(
     let cluster: Ipv4Net = cluster_cidr
         .parse()
         .map_err(|err| format!("invalid cluster CIDR '{cluster_cidr}': {err}"))?;
-    let allocated = machines.iter().filter_map(|machine| {
-        if machine.id == *local_machine_id {
-            return None;
-        }
-        machine.subnet
-    }).collect::<std::collections::HashSet<_>>();
+    let allocated = machines
+        .iter()
+        .filter_map(|machine| {
+            if machine.id == *local_machine_id {
+                return None;
+            }
+            machine.subnet
+        })
+        .collect::<std::collections::HashSet<_>>();
     ployz_orchestrator::ipam::pick_candidate_subnet(cluster, subnet_prefix_len, &allocated, 0)
         .ok_or_else(|| "no available subnets for local heal".into())
 }
