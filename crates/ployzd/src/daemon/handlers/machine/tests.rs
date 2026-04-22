@@ -5,7 +5,9 @@ use crate::daemon::DaemonState;
 use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock};
 use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
 use ipnet::Ipv4Net;
-use ployz_api::{DaemonPayload, DaemonResponse, MachineAddOptions, MeshSelfRecordPayload};
+use ployz_api::{
+    DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MeshSelfRecordPayload,
+};
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::mesh::driver::WireguardDriver;
 use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
@@ -20,6 +22,9 @@ use ployz_types::time::now_unix_secs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -553,6 +558,109 @@ async fn mesh_promote_restores_subnet_before_enable_finalization() {
 }
 
 #[tokio::test]
+async fn machine_enable_rolls_back_remote_promote_when_self_record_fails() {
+    let listener = TcpListener::bind("[::1]:0")
+        .await
+        .expect("bind overlay listener");
+    let peer_rpc_port = listener.local_addr().expect("listener addr").port();
+    let remote_control_port = peer_rpc_port
+        .checked_sub(1)
+        .expect("peer rpc port has preceding remote control port");
+    let (mut state, store, _) = make_state_with_remote_port(true, remote_control_port).await;
+
+    let mut peer = test_machine_record(
+        "peer",
+        "10.210.1.0/24",
+        Participation::Disabled,
+        now_unix_secs(),
+        PublicKey([7; 32]),
+    );
+    peer.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
+    peer.subnet = None;
+    peer.status = MachineStatus::Up;
+    store.upsert_self_machine(&peer).await.expect("upsert peer");
+
+    let seen_requests = Arc::new(Mutex::new(Vec::<String>::new()));
+    let server_seen_requests = Arc::clone(&seen_requests);
+    let server = tokio::spawn(async move {
+        for _ in 0..3 {
+            let (stream, _) = listener.accept().await.expect("accept overlay rpc");
+            let (reader, mut writer) = stream.into_split();
+            let mut buf = BufReader::new(reader);
+            let mut line = String::new();
+            buf.read_line(&mut line).await.expect("read request");
+            let request: DaemonRequest =
+                serde_json::from_str(&line).expect("decode daemon request");
+            let (label, response) = match request {
+                DaemonRequest::MeshPromote { .. } => (
+                    "promote",
+                    DaemonResponse {
+                        ok: true,
+                        code: "OK".into(),
+                        message: "promoted".into(),
+                        payload: None,
+                    },
+                ),
+                DaemonRequest::MeshSelfRecord => (
+                    "self_record",
+                    DaemonResponse {
+                        ok: false,
+                        code: "BROKEN_SELF_RECORD".into(),
+                        message: "self record unavailable".into(),
+                        payload: None,
+                    },
+                ),
+                DaemonRequest::MeshStandby { force } => {
+                    assert!(force);
+                    (
+                        "standby",
+                        DaemonResponse {
+                            ok: true,
+                            code: "OK".into(),
+                            message: "standby".into(),
+                            payload: None,
+                        },
+                    )
+                }
+                other => panic!("unexpected daemon request: {other:?}"),
+            };
+            server_seen_requests.lock().await.push(label.into());
+            let mut response_line = serde_json::to_string(&response).expect("encode response");
+            response_line.push('\n');
+            writer
+                .write_all(response_line.as_bytes())
+                .await
+                .expect("write response");
+            writer.shutdown().await.expect("shutdown writer");
+        }
+    });
+
+    let response = state.handle_machine_enable("peer").await;
+    assert!(!response.ok, "{}", response.message);
+    assert_eq!(response.code, "SELF_RECORD_FAILED");
+    assert!(
+        state
+            .reservations
+            .active_subnets(now_unix_secs())
+            .await
+            .is_empty()
+    );
+
+    server.await.expect("overlay server exit");
+    let seen_requests = seen_requests.lock().await.clone();
+    assert_eq!(
+        seen_requests,
+        vec![
+            "promote".to_string(),
+            "self_record".to_string(),
+            "standby".to_string()
+        ]
+    );
+
+    teardown_state(&mut state).await;
+}
+
+#[tokio::test]
 async fn memory_mode_local_subnet_heal_updates_local_config_and_store() {
     let store = Arc::new(MemoryStore::new());
     store
@@ -784,6 +892,13 @@ async fn interrupted_machine_add_is_marked_interrupted_on_startup() {
 }
 
 async fn make_state(start_mesh: bool) -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {
+    make_state_with_remote_port(start_mesh, 4317).await
+}
+
+async fn make_state_with_remote_port(
+    start_mesh: bool,
+    remote_control_port: u16,
+) -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {
     let identity = Identity::generate(MachineId("founder".into()), [1; 32]);
     let founder_subnet: Ipv4Net = "10.210.0.0/24".parse().expect("valid subnet");
     let data_dir = unique_temp_dir("ployz-machine-state");
@@ -828,7 +943,7 @@ async fn make_state(start_mesh: bool) -> (DaemonState, Arc<MemoryStore>, Arc<Mem
         identity,
         DEFAULT_CLUSTER_CIDR.into(),
         24,
-        4317,
+        remote_control_port,
         "127.0.0.1:0".into(),
         1,
     );
