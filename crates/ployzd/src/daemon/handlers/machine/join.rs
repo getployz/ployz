@@ -13,7 +13,7 @@ use ployz_orchestrator::coordination::{
 use ployz_orchestrator::ipam::pick_candidate_subnet;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_sdk::Transport;
-use ployz_store_api::{InviteStore, MachineStore};
+use ployz_store_api::{InviteStore, MachineStore, StoreDriver};
 use ployz_types::model::{
     JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineRecord, OverlayIp, Participation,
 };
@@ -45,6 +45,8 @@ const REMOTE_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const REMOTE_READY_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 const REMOTE_CLEANUP_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 const PEER_RPC_TIMEOUT: Duration = Duration::from_secs(3);
+const MACHINE_STATE_SYNC_TIMEOUT: Duration = Duration::from_secs(20);
+const MACHINE_STATE_SYNC_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const REMOTE_STATUS_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" status >/dev/null";
 const REMOTE_PLOYZ_VERSION_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" --version";
 const REMOTE_RPC_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" rpc-stdio";
@@ -59,10 +61,33 @@ pub(super) struct BootstrapSubnetClaim {
     peer_rpc_port: u16,
 }
 
+impl BootstrapSubnetClaim {
+    #[must_use]
+    pub(super) fn subnet(&self) -> Ipv4Net {
+        self.subnet
+    }
+
+    #[must_use]
+    pub(super) fn reservation_key(&self) -> &ResourceKey {
+        &self.reservation.key
+    }
+
+    #[must_use]
+    pub(super) fn reservation_nonce(&self) -> &str {
+        &self.reservation.nonce
+    }
+}
+
 #[derive(Debug, Clone)]
 struct CoordinationPeer {
     machine_id: MachineId,
     overlay_ip: OverlayIp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExpectedSubnetState {
+    Present,
+    Absent,
 }
 
 impl DaemonState {
@@ -240,6 +265,14 @@ impl DaemonState {
             ) {
                 Ok(operation) => operation,
                 Err(err) => {
+                    if let Err(release_err) = release_reserved_subnet(&context, &subnet_claim).await
+                    {
+                        tracing::warn!(
+                            target = %target,
+                            error = %release_err,
+                            "machine add: failed to release reserved subnet after operation start failure"
+                        );
+                    }
                     report.push(MachineAddTargetResult::Failed {
                         target,
                         failure: MachineAddFailure::Preflight { reason: err },
@@ -359,6 +392,22 @@ impl DaemonState {
                 &subnet_claim,
             )
             .await;
+
+        let result = if result.ok {
+            match wait_for_machine_projection(
+                &active.mesh.store,
+                &machine_id,
+                Participation::Enabled,
+                ExpectedSubnetState::Present,
+            )
+            .await
+            {
+                Ok(()) => result,
+                Err(err) => self.err("MACHINE_ENABLE_SYNC_FAILED", err),
+            }
+        } else {
+            result
+        };
 
         let _ = self.set_local_participation_override(None).await;
         result
@@ -521,8 +570,20 @@ impl DaemonState {
             return self.err("REMOTE_DISABLE_FAILED", err);
         }
 
+        let response = match wait_for_machine_projection(
+            &active.mesh.store,
+            &machine_id,
+            Participation::Disabled,
+            ExpectedSubnetState::Absent,
+        )
+        .await
+        {
+            Ok(()) => self.ok(format!("machine '{}' disabled", machine_id)),
+            Err(err) => self.err("MACHINE_DISABLE_SYNC_FAILED", err),
+        };
+
         let _ = self.set_local_participation_override(None).await;
-        self.ok(format!("machine '{}' disabled", machine_id))
+        response
     }
 
     pub(super) async fn reserve_machine_subnet(
@@ -602,6 +663,8 @@ impl DaemonState {
             let _ = self
                 .reservations
                 .release(&reservation.key, &reservation.nonce, now_unix_secs())
+                .await;
+            release_remote_reservation_holds(&quorum_peers, &reservation, peer_rpc_port, candidate)
                 .await;
             if !decision.retry_could_succeed() {
                 return Err(format!(
@@ -711,6 +774,19 @@ async fn run_machine_add_target(
             };
         }
     };
+    if let Err(err) = validate_joined_machine_subnet(&record, subnet_claim.subnet) {
+        let _ = release_reserved_subnet(&context, &subnet_claim).await;
+        let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
+        let _ = operation_store.update_status(
+            &mut operation,
+            MachineOperationStatus::Failed,
+            Some(err.clone()),
+        );
+        return MachineAddTargetResult::Failed {
+            target,
+            failure: MachineAddFailure::SelfRecord { reason: err },
+        };
+    }
     record.control_target = Some(target.clone());
     stage = MachineAddStage::SelfRecorded;
     let _ = operation_store.update_stage(&mut operation, stage.to_string());
@@ -856,19 +932,32 @@ async fn release_reserved_subnet(
             "subnet reservation release denied locally"
         );
     }
-    for peer in &subnet_claim.quorum_peers {
-        if let Err(err) =
-            remote_coord_release(peer, &subnet_claim.reservation, subnet_claim.peer_rpc_port).await
-        {
+    release_remote_reservation_holds(
+        &subnet_claim.quorum_peers,
+        &subnet_claim.reservation,
+        subnet_claim.peer_rpc_port,
+        subnet_claim.subnet,
+    )
+    .await;
+    Ok(())
+}
+
+async fn release_remote_reservation_holds(
+    peers: &[CoordinationPeer],
+    reservation: &Reservation,
+    peer_rpc_port: u16,
+    subnet: Ipv4Net,
+) {
+    for peer in peers {
+        if let Err(err) = remote_coord_release(peer, reservation, peer_rpc_port).await {
             tracing::warn!(
                 peer = %peer.machine_id,
-                subnet = %subnet_claim.subnet,
+                subnet = %subnet,
                 error = %err,
                 "subnet reservation release fanout failed"
             );
         }
     }
-    Ok(())
 }
 
 async fn consume_invite(
@@ -890,10 +979,24 @@ fn machine_bias_seed(machine_id: &MachineId) -> u64 {
     hasher.finish()
 }
 
-fn coordination_peers(
-    machines: &[MachineRecord],
-    self_id: &MachineId,
-) -> Vec<CoordinationPeer> {
+fn validate_joined_machine_subnet(
+    record: &MachineRecord,
+    expected_subnet: Ipv4Net,
+) -> Result<(), String> {
+    match record.subnet {
+        Some(subnet) if subnet == expected_subnet => Ok(()),
+        Some(subnet) => Err(format!(
+            "remote machine '{}' reported subnet '{}' but founder reserved '{}'",
+            record.id, subnet, expected_subnet
+        )),
+        None => Err(format!(
+            "remote machine '{}' reported no subnet but founder reserved '{}'",
+            record.id, expected_subnet
+        )),
+    }
+}
+
+fn coordination_peers(machines: &[MachineRecord], self_id: &MachineId) -> Vec<CoordinationPeer> {
     machines
         .iter()
         .filter(|machine| machine.id != *self_id)
@@ -1303,6 +1406,54 @@ async fn wait_for_overlay_ready(machine: &MachineRecord, peer_rpc_port: u16) -> 
         }
 
         sleep(REMOTE_READY_POLL_INTERVAL).await;
+    }
+}
+
+async fn wait_for_machine_projection(
+    store: &StoreDriver,
+    machine_id: &MachineId,
+    expected_participation: Participation,
+    expected_subnet: ExpectedSubnetState,
+) -> Result<(), String> {
+    let deadline = Instant::now() + MACHINE_STATE_SYNC_TIMEOUT;
+
+    loop {
+        let Some(record) = super::list::find_machine_record(store, machine_id).await? else {
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "timed out waiting for machine '{}' to appear in local store",
+                    machine_id
+                ));
+            }
+            sleep(MACHINE_STATE_SYNC_POLL_INTERVAL).await;
+            continue;
+        };
+
+        let subnet_matches = match expected_subnet {
+            ExpectedSubnetState::Present => record.subnet.is_some(),
+            ExpectedSubnetState::Absent => record.subnet.is_none(),
+        };
+        if record.participation == expected_participation && subnet_matches {
+            return Ok(());
+        }
+
+        if Instant::now() >= deadline {
+            let expected_subnet = match expected_subnet {
+                ExpectedSubnetState::Present => "present",
+                ExpectedSubnetState::Absent => "absent",
+            };
+            let actual_subnet = if record.subnet.is_some() {
+                "present"
+            } else {
+                "absent"
+            };
+            return Err(format!(
+                "timed out waiting for machine '{}' to reach participation='{}' subnet={expected_subnet}; observed participation='{}' subnet={actual_subnet}",
+                machine_id, expected_participation, record.participation,
+            ));
+        }
+
+        sleep(MACHINE_STATE_SYNC_POLL_INTERVAL).await;
     }
 }
 

@@ -89,14 +89,19 @@ pub(crate) async fn run_participation_task(
                     }
                     ParticipationCommand::SetForced { participation, done } => {
                         state.forced_participation = participation;
-                        participation_once(
-                            &machine_id,
-                            &authoritative_self,
-                            &store,
-                            &network,
-                            &self_record_tx,
-                            &mut state,
-                        ).await;
+                        state.consecutive_good_samples = 0;
+                        state.consecutive_bad_samples = 0;
+                        if state.forced_participation.is_some() {
+                            participation_once(
+                                &machine_id,
+                                &authoritative_self,
+                                &store,
+                                &network,
+                                &self_record_tx,
+                                &mut state,
+                            )
+                            .await;
+                        }
                         let _ = done.send(());
                     }
                 }
@@ -662,15 +667,8 @@ mod tests {
         assert_eq!(state.consecutive_bad_samples, 0);
 
         state.forced_participation = None;
-        participation_once(
-            &self_id,
-            &authoritative_self,
-            &store_driver,
-            &network_driver,
-            &self_record_tx,
-            &mut state,
-        )
-        .await;
+        state.consecutive_good_samples = 0;
+        state.consecutive_bad_samples = 0;
 
         cancel.cancel();
         writer_handle.await.expect("writer exits");
@@ -681,7 +679,7 @@ mod tests {
             .find(|machine| machine.id == self_id)
             .expect("self record");
         assert_eq!(self_record.participation, Participation::Enabled);
-        assert!(state.consecutive_bad_samples < PARTICIPATION_HYSTERESIS_SAMPLES);
+        assert_eq!(state.consecutive_bad_samples, 0);
     }
 
     fn start_test_probe_listener() -> (

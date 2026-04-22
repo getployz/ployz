@@ -12,9 +12,9 @@ use ployz_orchestrator::Mesh;
 use ployz_orchestrator::mesh::driver::WireguardDriver;
 use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
 use ployz_runtime_api::Identity;
-use ployz_store_api::MachineStore;
 use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
+use ployz_store_api::{InviteStore, MachineStore};
 use ployz_types::model::{
     JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
 };
@@ -202,23 +202,76 @@ fn plan_local_subnet_heal_is_noop_after_subnet_changes() {
 #[tokio::test]
 async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
     let _guard = test_ssh_env_lock().lock().await;
-    let (mut state, store, network) = make_state(true).await;
+    let listener = TcpListener::bind("[::1]:0")
+        .await
+        .expect("bind overlay listener");
+    let peer_rpc_port = listener.local_addr().expect("listener addr").port();
+    let remote_control_port = peer_rpc_port
+        .checked_sub(1)
+        .expect("peer rpc port has preceding remote control port");
+    let (mut state, store, network) = make_state_with_remote_port(true, remote_control_port).await;
+    let mut stale_peer = test_machine_record(
+        "stale-peer",
+        "10.210.1.0/24",
+        Participation::Enabled,
+        0,
+        PublicKey([3; 32]),
+    );
+    stale_peer.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
+    stale_peer.status = MachineStatus::Up;
     store
-        .upsert_self_machine(&test_machine_record(
-            "stale-peer",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            0,
-            PublicKey([3; 32]),
-        ))
+        .upsert_self_machine(&stale_peer)
         .await
         .expect("upsert stale peer");
+
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (stream, _) = listener.accept().await.expect("accept overlay rpc");
+            let (reader, mut writer) = stream.into_split();
+            let mut buf = BufReader::new(reader);
+            let mut line = String::new();
+            buf.read_line(&mut line).await.expect("read request");
+            let request: DaemonRequest =
+                serde_json::from_str(&line).expect("decode daemon request");
+            match request {
+                DaemonRequest::Coord { .. } => {}
+                other => panic!("unexpected daemon request: {other:?}"),
+            }
+            let mut response_line = serde_json::to_string(&DaemonResponse {
+                ok: true,
+                code: "OK".into(),
+                message: "allow".into(),
+                payload: None,
+            })
+            .expect("encode response");
+            response_line.push('\n');
+            writer
+                .write_all(response_line.as_bytes())
+                .await
+                .expect("write response");
+            writer.shutdown().await.expect("shutdown writer");
+        }
+    });
+
+    let reserved = state
+        .reserve_machine_subnet(&MachineId("join-target".into()))
+        .await
+        .expect("reserve expected subnet");
+    let _ = state
+        .reservations
+        .release(
+            reserved.reservation_key(),
+            reserved.reservation_nonce(),
+            now_unix_secs(),
+        )
+        .await;
+    let expected_subnet = reserved.subnet();
 
     let join_response = JoinResponse {
         machine_id: MachineId("joiner-1".into()),
         public_key: PublicKey([4; 32]),
         overlay_ip: "fd00::4".parse().map(OverlayIp).expect("valid overlay"),
-        subnet: Some("10.210.2.0/24".parse().expect("valid subnet")),
+        subnet: Some(expected_subnet),
         endpoints: vec!["203.0.113.10:51820".into()],
     }
     .encode()
@@ -274,6 +327,7 @@ async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
             .into_iter()
             .any(|machine| machine.id.0 == "joiner-1")
     );
+    server.await.expect("overlay server exit");
 
     teardown_state(&mut state).await;
 }
@@ -283,11 +337,25 @@ async fn machine_add_accepts_running_joiner_before_full_sync() {
     let _guard = test_ssh_env_lock().lock().await;
     let (mut state, store, network) = make_state(true).await;
 
+    let reserved = state
+        .reserve_machine_subnet(&MachineId("join-target".into()))
+        .await
+        .expect("reserve expected subnet");
+    let _ = state
+        .reservations
+        .release(
+            reserved.reservation_key(),
+            reserved.reservation_nonce(),
+            now_unix_secs(),
+        )
+        .await;
+    let expected_subnet = reserved.subnet();
+
     let join_response = JoinResponse {
         machine_id: MachineId("joiner-2".into()),
         public_key: PublicKey([5; 32]),
         overlay_ip: "fd00::5".parse().map(OverlayIp).expect("valid overlay"),
-        subnet: Some("10.210.1.0/24".parse().expect("valid subnet")),
+        subnet: Some(expected_subnet),
         endpoints: vec!["203.0.113.11:51820".into()],
     }
     .encode()
@@ -338,6 +406,35 @@ async fn machine_add_accepts_running_joiner_before_full_sync() {
             .into_iter()
             .any(|machine| machine.id.0 == "joiner-2")
     );
+
+    teardown_state(&mut state).await;
+}
+
+#[tokio::test]
+async fn machine_add_releases_reserved_subnet_when_operation_start_fails() {
+    let (mut state, store, network) = make_state(true).await;
+    let broken_root = unique_temp_dir("ployz-machine-operations-file");
+    std::fs::write(&broken_root, b"not a directory").expect("write operations root file");
+    state.data_dir = broken_root;
+
+    let response = state
+        .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
+        .await;
+    assert!(!response.ok);
+    assert_eq!(response.code, "MACHINE_ADD_FAILED");
+    assert!(response.message.contains("create machine operations dir"));
+    assert!(
+        state
+            .reservations
+            .active_subnets(now_unix_secs())
+            .await
+            .is_empty()
+    );
+
+    let invites = store.list_invites().await.expect("list invites");
+    assert_eq!(invites.len(), 1);
+    assert!(invites[0].consumed_by.is_none());
+    assert!(network.current_peers().is_empty());
 
     teardown_state(&mut state).await;
 }
@@ -446,6 +543,21 @@ async fn mesh_standby_auto_drains_when_no_local_workloads_exist() {
 }
 
 #[tokio::test]
+async fn mesh_standby_restores_subnet_when_restart_fails() {
+    let (mut state, _, _) = make_state(true).await;
+    let config_path = NetworkConfig::path(&state.data_dir, "alpha");
+    let original_config = NetworkConfig::load(&config_path).expect("load original config");
+    state.gateway_listen_addr = "invalid".into();
+
+    let response = state.handle_mesh_standby(true).await;
+    assert!(!response.ok);
+    assert_eq!(response.code, "NETWORK_RESTART_FAILED");
+
+    let restored_config = NetworkConfig::load(&config_path).expect("load restored config");
+    assert_eq!(restored_config.subnet, original_config.subnet);
+}
+
+#[tokio::test]
 async fn reserve_machine_subnet_clears_local_hold_when_quorum_denies() {
     let _guard = test_ssh_env_lock().lock().await;
     let (mut state, store, _) = make_state(true).await;
@@ -484,6 +596,120 @@ async fn reserve_machine_subnet_clears_local_hold_when_quorum_denies() {
 }
 
 #[tokio::test]
+async fn reserve_machine_subnet_releases_peer_holds_when_quorum_denies() {
+    let listener = TcpListener::bind("[::1]:0")
+        .await
+        .expect("bind overlay listener");
+    let peer_rpc_port = listener.local_addr().expect("listener addr").port();
+    let remote_control_port = peer_rpc_port
+        .checked_sub(1)
+        .expect("peer rpc port has preceding remote control port");
+    let (mut state, store, _) = make_state_with_remote_port(true, remote_control_port).await;
+    state.cluster_cidr = "10.210.0.0/22".into();
+
+    for (name, key_seed) in [("peer-a", 11u8), ("peer-b", 12u8), ("peer-c", 13u8)] {
+        let mut peer = test_machine_record(
+            name,
+            "10.210.1.0/24",
+            Participation::Enabled,
+            now_unix_secs(),
+            PublicKey([key_seed; 32]),
+        );
+        peer.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
+        peer.subnet = None;
+        peer.status = MachineStatus::Up;
+        store
+            .upsert_self_machine(&peer)
+            .await
+            .expect("upsert quorum peer");
+    }
+
+    let seen_requests = Arc::new(Mutex::new(Vec::<String>::new()));
+    let server_seen_requests = Arc::clone(&seen_requests);
+    let server = tokio::spawn(async move {
+        for index in 0..6 {
+            let (stream, _) = listener.accept().await.expect("accept overlay rpc");
+            let (reader, mut writer) = stream.into_split();
+            let mut buf = BufReader::new(reader);
+            let mut line = String::new();
+            buf.read_line(&mut line).await.expect("read request");
+            let request: DaemonRequest =
+                serde_json::from_str(&line).expect("decode daemon request");
+            let (label, response) = match request {
+                DaemonRequest::Coord {
+                    op: ployz_api::CoordOp::Prepare { .. },
+                } => {
+                    let response = if index == 0 {
+                        DaemonResponse {
+                            ok: true,
+                            code: "OK".into(),
+                            message: "allow".into(),
+                            payload: None,
+                        }
+                    } else {
+                        DaemonResponse {
+                            ok: false,
+                            code: "COORDINATION_DENIED".into(),
+                            message: "denied".into(),
+                            payload: None,
+                        }
+                    };
+                    ("prepare", response)
+                }
+                DaemonRequest::Coord {
+                    op: ployz_api::CoordOp::Release { .. },
+                } => (
+                    "release",
+                    DaemonResponse {
+                        ok: true,
+                        code: "OK".into(),
+                        message: "released".into(),
+                        payload: None,
+                    },
+                ),
+                other => panic!("unexpected daemon request: {other:?}"),
+            };
+            server_seen_requests.lock().await.push(label.into());
+            let mut response_line = serde_json::to_string(&response).expect("encode response");
+            response_line.push('\n');
+            writer
+                .write_all(response_line.as_bytes())
+                .await
+                .expect("write response");
+            writer.shutdown().await.expect("shutdown writer");
+        }
+    });
+
+    let result = state
+        .reserve_machine_subnet(&MachineId("joiner".into()))
+        .await;
+    assert!(result.is_err());
+    assert!(
+        state
+            .reservations
+            .active_subnets(now_unix_secs())
+            .await
+            .is_empty()
+    );
+
+    server.await.expect("overlay server exit");
+    let seen_requests = seen_requests.lock().await.clone();
+    assert_eq!(
+        seen_requests,
+        vec![
+            "prepare".to_string(),
+            "prepare".to_string(),
+            "prepare".to_string(),
+            "release".to_string(),
+            "release".to_string(),
+            "release".to_string(),
+        ]
+    );
+
+    teardown_state(&mut state).await;
+}
+
+#[tokio::test]
 async fn machine_add_releases_reserved_subnet_when_remote_bootstrap_fails() {
     let _guard = test_ssh_env_lock().lock().await;
     let (state, _, _) = make_state(true).await;
@@ -500,6 +726,61 @@ async fn machine_add_releases_reserved_subnet_when_remote_bootstrap_fails() {
         .await;
     assert!(!response.ok, "{}", response.message);
     assert_eq!(response.code, "MACHINE_ADD_FAILED");
+    assert!(
+        state
+            .reservations
+            .active_subnets(now_unix_secs())
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn machine_add_rejects_remote_subnet_mismatch_before_invite_consume() {
+    let _guard = test_ssh_env_lock().lock().await;
+    let (state, store, _) = make_state(true).await;
+
+    let join_response = JoinResponse {
+        machine_id: MachineId("joiner-mismatch".into()),
+        public_key: PublicKey([14; 32]),
+        overlay_ip: "fd00::14".parse().map(OverlayIp).expect("valid overlay"),
+        subnet: Some("10.210.99.0/24".parse().expect("valid subnet")),
+        endpoints: vec!["203.0.113.14:51820".into()],
+    }
+    .encode()
+    .expect("encode join response");
+
+    let ssh_dir = unique_temp_dir("ployz-fake-ssh-mismatch");
+    std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
+    let fake_ssh = write_fake_ssh(&ssh_dir);
+    let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
+    let self_record_response = serde_json::to_string(&DaemonResponse {
+        ok: true,
+        code: "OK".into(),
+        message: join_response.clone(),
+        payload: Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
+            encoded: join_response.clone(),
+            record: JoinResponse::decode(&join_response)
+                .expect("decode join response")
+                .into_seed_machine_record(),
+        })),
+    })
+    .expect("encode self-record response");
+    let _join_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_SELF_RECORD_RESPONSE",
+        Some(self_record_response.into()),
+    );
+
+    let response = state
+        .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
+        .await;
+    assert!(!response.ok, "{}", response.message);
+    assert_eq!(response.code, "MACHINE_ADD_FAILED");
+    assert!(response.message.contains("founder reserved"));
+
+    let invites = store.list_invites().await.expect("list invites");
+    assert_eq!(invites.len(), 1);
+    assert_eq!(invites[0].consumed_by, None);
     assert!(
         state
             .reservations

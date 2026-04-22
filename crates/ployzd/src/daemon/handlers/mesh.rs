@@ -594,6 +594,7 @@ impl DaemonState {
                 return self.err("IO_ERROR", format!("load network config: {error}"));
             }
         };
+        let previous_subnet = config.subnet;
         config.subnet = None;
         if let Err(error) = config.save(&config_path) {
             let _ = self.set_local_participation_override(None).await;
@@ -601,9 +602,18 @@ impl DaemonState {
         }
         if let Err(error) = self.restart_active_runtime_from_config(&network_name).await {
             let _ = self.set_local_participation_override(None).await;
+            let rollback_error =
+                restore_network_config_subnet(&config_path, &mut config, previous_subnet).err();
             return self.err(
                 "NETWORK_RESTART_FAILED",
-                format!("failed to enter standby: {error}"),
+                match rollback_error {
+                    Some(rollback_error) => {
+                        format!(
+                            "failed to enter standby: {error}; failed to restore config: {rollback_error}"
+                        )
+                    }
+                    None => format!("failed to enter standby: {error}"),
+                },
             );
         }
         let Some(active) = self.active.as_mut() else {
