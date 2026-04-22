@@ -1,14 +1,11 @@
 use crate::daemon::DaemonState;
 use ployz_api::{DaemonPayload, DaemonResponse, MachineRemovePayload};
-use ployz_orchestrator::machine_liveness::{MachineLiveness, machine_liveness};
 use ployz_store_api::MachineStore;
 use ployz_store_api::StoreDriver;
 use ployz_types::model::{MachineId, MachineRecord, Participation};
-use ployz_types::time::now_unix_secs;
 
 use super::render::{
-    degraded_mesh_warning, format_heartbeat, format_liveness, format_participation, format_status,
-    format_timestamp, render_machine_list_report,
+    format_participation, format_status, format_timestamp, render_machine_list_report,
 };
 use super::types::{MachineListReport, MachineListReportRow};
 
@@ -74,31 +71,6 @@ impl DaemonState {
             Err(err) => self.err("DELETE_FAILED", format!("failed to remove machine: {err}")),
         }
     }
-
-    pub(super) async fn degraded_mesh_warnings(&self) -> Result<Vec<String>, String> {
-        let active = self
-            .active
-            .as_ref()
-            .ok_or_else(|| "no running network".to_string())?;
-        let machines = active
-            .mesh
-            .store
-            .list_machines()
-            .await
-            .map_err(|err| format!("failed to list machines: {err}"))?;
-        let now = now_unix_secs();
-
-        Ok(machines
-            .into_iter()
-            .filter(|machine| machine.id != self.identity.machine_id)
-            .filter(|machine| match machine.participation {
-                Participation::Disabled => false,
-                Participation::Enabled | Participation::Draining => true,
-            })
-            .filter(|machine| machine_liveness(machine, now) == MachineLiveness::Stale)
-            .map(|machine| degraded_mesh_warning(&machine))
-            .collect())
-    }
 }
 
 pub(super) async fn find_machine_record(
@@ -119,7 +91,6 @@ pub(super) async fn machine_list_report(store: StoreDriver) -> Result<MachineLis
         .list_machines()
         .await
         .map_err(|err| format!("failed to list machines: {err}"))?;
-    let now = now_unix_secs();
 
     Ok(MachineListReport {
         rows: machines
@@ -128,15 +99,12 @@ pub(super) async fn machine_list_report(store: StoreDriver) -> Result<MachineLis
                 id: machine.id.0.clone(),
                 status: format_status(machine),
                 participation: format_participation(machine),
-                liveness: format_liveness(machine, now),
                 overlay: machine.overlay_ip.0.to_string(),
                 subnet: machine.subnet,
                 subnet_display: machine
                     .subnet
                     .map(|subnet| subnet.to_string())
                     .unwrap_or_else(|| "—".into()),
-                last_heartbeat: machine.last_heartbeat,
-                heartbeat_display: format_heartbeat(machine.last_heartbeat, now),
                 created_at: machine.created_at,
                 created_display: format_timestamp(machine.created_at),
             })

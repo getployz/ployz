@@ -4,10 +4,9 @@ use crate::mesh::driver::{WireguardBackendMode, WireguardDriver};
 use crate::mesh::phase::{Phase, PhaseEvent, TransitionError, transition};
 use crate::mesh::probe::run_probe_listener_task;
 use crate::mesh::tasks::{
-    HeartbeatCommand, ParticipationCommand, PeerSyncCommand, SelfLivenessCommand,
-    SelfRecordMutation, TaskSet, TaskSetError, apply_self_record_mutation, run_ebpf_sync_task,
-    run_endpoint_refresh_task, run_heartbeat_task, run_participation_task, run_peer_sync_task,
-    run_self_liveness_task, run_self_record_writer_task, run_subnet_claim_monitor_task,
+    PeerSyncCommand, SelfRecordMutation, TaskSet, TaskSetError, apply_self_record_mutation,
+    run_ebpf_sync_task, run_endpoint_refresh_task, run_peer_sync_task, run_self_record_writer_task,
+    run_subnet_claim_monitor_task,
 };
 use crate::mesh::{MeshDataplane, MeshNetwork};
 use crate::model::{MachineId, MachineRecord, MachineStatus};
@@ -15,7 +14,6 @@ use ployz_store_api::StoreDriver;
 use ployz_store_api::{MachineStore, StoreRuntimeControl, SyncProbe, SyncStatus};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::{RwLock, mpsc};
@@ -39,7 +37,6 @@ pub struct MeshReadyStatus {
     pub phase: Phase,
     pub store_healthy: bool,
     pub sync_connected: bool,
-    pub heartbeat_started: bool,
 }
 
 pub struct Mesh {
@@ -50,9 +47,6 @@ pub struct Mesh {
     tasks: Option<TaskSet>,
     task_cancel: Option<tokio_util::sync::CancellationToken>,
     peer_sync_tx: Option<mpsc::Sender<PeerSyncCommand>>,
-    heartbeat_tx: Option<mpsc::Sender<HeartbeatCommand>>,
-    self_liveness_tx: Option<mpsc::Sender<SelfLivenessCommand>>,
-    participation_tx: Option<mpsc::Sender<ParticipationCommand>>,
     self_record_tx: Option<mpsc::Sender<crate::mesh::tasks::SelfRecordCommand>>,
     bootstrap_interval: Duration,
     connection_timeout: Duration,
@@ -64,7 +58,6 @@ pub struct Mesh {
     allow_disconnected_bootstrap: bool,
     dataplane: Option<Arc<dyn MeshDataplane>>,
     wg_ifindex: u32,
-    heartbeat_started: Arc<AtomicBool>,
 }
 
 impl Mesh {
@@ -84,9 +77,6 @@ impl Mesh {
             tasks: None,
             task_cancel: None,
             peer_sync_tx: None,
-            heartbeat_tx: None,
-            self_liveness_tx: None,
-            participation_tx: None,
             self_record_tx: None,
             bootstrap_interval: Duration::from_millis(500),
             connection_timeout: Duration::from_secs(30),
@@ -98,7 +88,6 @@ impl Mesh {
             allow_disconnected_bootstrap: false,
             dataplane: None,
             wg_ifindex: 0,
-            heartbeat_started: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -145,14 +134,11 @@ impl Mesh {
         self.peer_sync_tx.clone()
     }
 
-    #[must_use]
-    pub fn heartbeat_sender(&self) -> Option<mpsc::Sender<HeartbeatCommand>> {
-        self.heartbeat_tx.clone()
-    }
-
-    #[must_use]
-    pub fn participation_sender(&self) -> Option<mpsc::Sender<ParticipationCommand>> {
-        self.participation_tx.clone()
+    pub async fn publish_up_once(&self) -> Option<MachineRecord> {
+        let self_record_tx = self.self_record_tx.as_ref()?;
+        let bridge_ip = self.network.bridge_ip().await;
+        apply_self_record_mutation(self_record_tx, SelfRecordMutation::PublishUp { bridge_ip })
+            .await
     }
 
     pub async fn authoritative_self_record(&self) -> Option<MachineRecord> {
@@ -205,15 +191,13 @@ impl Mesh {
         } else {
             true
         };
-        let heartbeat_started = self.heartbeat_started.load(Ordering::SeqCst);
-        let ready = phase == Phase::Running && store_healthy && sync_connected && heartbeat_started;
+        let ready = phase == Phase::Running && store_healthy && sync_connected;
 
         MeshReadyStatus {
             ready,
             phase,
             store_healthy,
             sync_connected,
-            heartbeat_started,
         }
     }
 
@@ -420,38 +404,12 @@ impl Mesh {
             self_record_tx.clone(),
             cancel.clone(),
         ));
-
-        self.heartbeat_started.store(false, Ordering::SeqCst);
-        let (self_liveness_tx, self_liveness_rx) = mpsc::channel(16);
-        self.self_liveness_tx = Some(self_liveness_tx.clone());
-        task_set.spawn(run_self_liveness_task(
-            self.network.clone(),
-            self.heartbeat_started.clone(),
-            self_record_tx.clone(),
-            self_liveness_rx,
-            cancel.clone(),
-        ));
-
-        let (participation_tx, participation_rx) = mpsc::channel(16);
-        self.participation_tx = Some(participation_tx.clone());
-        task_set.spawn(run_participation_task(
-            self.machine_id.clone(),
-            authoritative_self.clone(),
-            self.store.clone(),
-            self.network.clone(),
-            self_record_tx,
-            participation_rx,
-            cancel.clone(),
-        ));
-
-        let (heartbeat_tx, heartbeat_rx) = mpsc::channel(16);
-        self.heartbeat_tx = Some(heartbeat_tx);
-        task_set.spawn(run_heartbeat_task(
-            self_liveness_tx,
-            participation_tx,
-            heartbeat_rx,
-            cancel.clone(),
-        ));
+        let bridge_ip = self.network.bridge_ip().await;
+        let _ = apply_self_record_mutation(
+            &self_record_tx,
+            SelfRecordMutation::PublishUp { bridge_ip },
+        )
+        .await;
 
         let (subnet_snapshot, subnet_events) = self
             .store
@@ -485,12 +443,8 @@ impl Mesh {
 
     fn clear_task_channels(&mut self) {
         self.peer_sync_tx = None;
-        self.heartbeat_tx = None;
-        self.self_liveness_tx = None;
-        self.participation_tx = None;
         self.self_record_tx = None;
         self.task_cancel = None;
-        self.heartbeat_started.store(false, Ordering::SeqCst);
     }
 
     async fn stop_runtime(&mut self, stop_store: bool) -> Option<MeshError> {
@@ -559,7 +513,6 @@ impl Mesh {
         if self
             .update_authoritative_self_record(|record| {
                 record.status = MachineStatus::Down;
-                record.last_heartbeat = now;
                 record.updated_at = now;
             })
             .await

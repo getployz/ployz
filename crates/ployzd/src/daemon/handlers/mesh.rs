@@ -6,7 +6,6 @@ use ployz_orchestrator::ipam::pick_candidate_subnet;
 use ployz_orchestrator::mesh::orchestrator::MeshReadyStatus;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_orchestrator::network::endpoints::detect_endpoints;
-use ployz_store_api::MachineStore;
 use ployz_types::model::{JoinResponse, MachineRecord, NetworkName};
 use std::path::Path;
 use tracing::warn;
@@ -106,12 +105,11 @@ impl DaemonState {
         }
 
         self.ok_with_payload(format!(
-            "ready:                   {}\nphase:                   {}\nstore healthy:           {}\nsync connected:          {}\nheartbeat ready:         {}\nparticipation:           {}\nworkload subnet present: {}",
+            "ready:                   {}\nphase:                   {}\nstore healthy:           {}\nsync connected:          {}\nparticipation:           {}\nworkload subnet present: {}",
             status.ready,
             status.phase,
             status.store_healthy,
             status.sync_connected,
-            status.heartbeat_started,
             status.participation,
             status.workload_subnet_present,
         ), Some(DaemonPayload::MeshReady(status)))
@@ -485,22 +483,6 @@ impl DaemonState {
         &mut self,
         participation: ployz_types::model::Participation,
     ) -> DaemonResponse {
-        let forced_participation = match participation {
-            ployz_types::model::Participation::Disabled => {
-                Some(ployz_types::model::Participation::Disabled)
-            }
-            ployz_types::model::Participation::Enabled
-            | ployz_types::model::Participation::Draining => None,
-        };
-        if let Err(error) = self
-            .set_local_participation_override(forced_participation)
-            .await
-        {
-            return self.err(
-                "PARTICIPATION_OVERRIDE_FAILED",
-                format!("failed to apply participation override: {error}"),
-            );
-        }
         let Some(active) = self.active.as_mut() else {
             return self.err("NO_RUNNING_NETWORK", "no mesh running");
         };
@@ -515,13 +497,7 @@ impl DaemonState {
         else {
             return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
         };
-        match active.mesh.store.upsert_self_machine(&record).await {
-            Ok(()) => self.ok(format!("participation set to {}", record.participation)),
-            Err(error) => self.err(
-                "STORE_UPDATE_FAILED",
-                format!("failed to persist participation: {error}"),
-            ),
-        }
+        self.ok(format!("participation set to {}", record.participation))
     }
 
     pub(crate) async fn handle_mesh_standby(&mut self, force: bool) -> DaemonResponse {
@@ -552,19 +528,9 @@ impl DaemonState {
                 );
             }
         }
-        if let Err(error) = self
-            .set_local_participation_override(Some(ployz_types::model::Participation::Disabled))
-            .await
-        {
-            return self.err(
-                "PARTICIPATION_OVERRIDE_FAILED",
-                format!("failed to freeze standby participation: {error}"),
-            );
-        }
         let now = ployz_types::time::now_unix_secs();
         {
             let Some(active) = self.active.as_ref() else {
-                let _ = self.set_local_participation_override(None).await;
                 return self.err("NO_RUNNING_NETWORK", "no mesh running");
             };
             let Some(record) = active
@@ -575,33 +541,23 @@ impl DaemonState {
                 })
                 .await
             else {
-                let _ = self.set_local_participation_override(None).await;
                 return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
             };
-            if let Err(error) = active.mesh.store.upsert_self_machine(&record).await {
-                let _ = self.set_local_participation_override(None).await;
-                return self.err(
-                    "STORE_UPDATE_FAILED",
-                    format!("failed to persist pre-standby participation: {error}"),
-                );
-            }
+            let _ = record;
         }
         let config_path = NetworkConfig::path(&self.data_dir, &network_name);
         let mut config = match NetworkConfig::load(&config_path) {
             Ok(config) => config,
             Err(error) => {
-                let _ = self.set_local_participation_override(None).await;
                 return self.err("IO_ERROR", format!("load network config: {error}"));
             }
         };
         let previous_subnet = config.subnet;
         config.subnet = None;
         if let Err(error) = config.save(&config_path) {
-            let _ = self.set_local_participation_override(None).await;
             return self.err("IO_ERROR", format!("save network config: {error}"));
         }
         if let Err(error) = self.restart_active_runtime_from_config(&network_name).await {
-            let _ = self.set_local_participation_override(None).await;
             let rollback_error =
                 restore_network_config_subnet(&config_path, &mut config, previous_subnet).err();
             return self.err(
@@ -632,13 +588,8 @@ impl DaemonState {
             return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
         };
         active.config.subnet = None;
-        match active.mesh.store.upsert_self_machine(&record).await {
-            Ok(()) => self.ok("machine entered standby"),
-            Err(error) => self.err(
-                "STORE_UPDATE_FAILED",
-                format!("failed to persist standby record: {error}"),
-            ),
-        }
+        let _ = record;
+        self.ok("machine entered standby")
     }
 
     pub(crate) async fn handle_mesh_promote(
@@ -693,15 +644,7 @@ impl DaemonState {
             return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
         };
         active.config.subnet = Some(assigned_subnet);
-        match active.mesh.store.upsert_self_machine(&record).await {
-            Ok(()) => {}
-            Err(error) => {
-                return self.err(
-                    "STORE_UPDATE_FAILED",
-                    format!("failed to persist promoted machine: {error}"),
-                );
-            }
-        }
+        let _ = record;
         self.ok(format!("machine promoted with subnet {}", assigned_subnet))
     }
 }
@@ -732,7 +675,6 @@ fn mesh_ready_payload(value: MeshReadyStatus, self_record: &MachineRecord) -> Me
         phase: value.phase.to_string(),
         store_healthy: value.store_healthy,
         sync_connected: value.sync_connected,
-        heartbeat_started: value.heartbeat_started,
         workload_subnet_present: self_record.subnet.is_some(),
         participation: self_record.participation.to_string(),
     }
@@ -918,7 +860,6 @@ mod tests {
                 endpoints: vec!["127.0.0.1:51820".into()],
                 status: ployz_types::model::MachineStatus::Unknown,
                 participation: ployz_types::model::Participation::Disabled,
-                last_heartbeat: 0,
                 created_at: 0,
                 updated_at: 0,
                 labels: std::collections::BTreeMap::new(),
