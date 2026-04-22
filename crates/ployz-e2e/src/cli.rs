@@ -23,6 +23,9 @@ pub(crate) struct Cli {
 
     #[arg(long)]
     pub(crate) fail_fast: bool,
+
+    #[arg(long)]
+    pub(crate) parallel: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

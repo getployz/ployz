@@ -8,6 +8,7 @@ use crate::support::{
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -24,6 +25,9 @@ const E2E_PAYLOAD_BUILD_PROFILE: &str = "debug";
 const CORROSION_LOG_PATH_ENV: &str = "PLOYZ_CORROSION_LOG_PATH";
 const CORROSION_RUST_LOG_ENV: &str = "PLOYZ_CORROSION_RUST_LOG";
 const PAYLOAD_STAMP_FILE: &str = ".payload-stamp";
+const PAYLOAD_LOCK_FILE: &str = ".payload.lock";
+const PAYLOAD_LOCK_TIMEOUT: Duration = Duration::from_secs(300);
+const PAYLOAD_LOCK_POLL: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Clone)]
 pub(crate) struct Node {
@@ -592,6 +596,11 @@ impl ScenarioRun {
             .and_then(Path::parent)
             .ok_or_else(|| Error::Message("failed to resolve repo root".into()))?
             .to_path_buf();
+        let artifacts_dir = self
+            .payload_dir
+            .parent()
+            .ok_or_else(|| Error::Message("payload dir has no parent".into()))?;
+        let _lock = acquire_payload_lock(artifacts_dir)?;
         let stamp = payload_stamp(&repo_root, &self.image_platform, E2E_PAYLOAD_BUILD_PROFILE)?;
         let stamp_path = self.payload_dir.join(PAYLOAD_STAMP_FILE);
         if let Ok(existing) = fs::read_to_string(&stamp_path)
@@ -898,6 +907,46 @@ hash_cmd() {
         ],
     )?;
     Ok(output.stdout.trim().to_string())
+}
+
+struct PayloadLock {
+    path: PathBuf,
+}
+
+impl Drop for PayloadLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn acquire_payload_lock(artifacts_dir: &Path) -> Result<PayloadLock> {
+    let lock_path = artifacts_dir.join(PAYLOAD_LOCK_FILE);
+    let deadline = std::time::Instant::now() + PAYLOAD_LOCK_TIMEOUT;
+
+    loop {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(_) => return Ok(PayloadLock { path: lock_path }),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(Error::Io(format!(
+                        "timed out waiting for payload lock '{}'",
+                        lock_path.display()
+                    )));
+                }
+                thread::sleep(PAYLOAD_LOCK_POLL);
+            }
+            Err(error) => {
+                return Err(Error::Io(format!(
+                    "create payload lock '{}': {error}",
+                    lock_path.display()
+                )));
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
