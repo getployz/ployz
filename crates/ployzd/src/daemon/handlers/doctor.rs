@@ -547,6 +547,7 @@ mod tests {
             config,
             mesh,
             remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         });
@@ -564,6 +565,7 @@ mod tests {
             id: MachineId(String::from(id)),
             public_key,
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+            control_target: None,
             subnet: Some("10.210.0.0/24".parse().expect("valid subnet")),
             bridge_ip: None,
             endpoints: vec![String::from("127.0.0.1:51820")],
@@ -599,6 +601,7 @@ mod tests {
             config,
             mesh,
             remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         }

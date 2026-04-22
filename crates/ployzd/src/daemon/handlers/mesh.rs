@@ -1,19 +1,20 @@
 use crate::mesh_state::bootstrap::{
     BootstrapInfo, BootstrapPeerRecord, write_bootstrap_peer_record,
 };
-use crate::mesh_state::invite::{InviteClaims, parse_and_verify_invite_token};
 use crate::mesh_state::network::NetworkConfig;
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use ployz_orchestrator::ipam::Ipam;
+use ployz_orchestrator::ipam::pick_candidate_subnet;
 use ployz_orchestrator::mesh::orchestrator::MeshReadyStatus;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_orchestrator::network::endpoints::detect_endpoints;
-use ployz_types::model::{JoinResponse, NetworkName};
-use ployz_types::time::now_unix_secs;
+use ployz_store_api::MachineStore;
+use ployz_types::model::{JoinResponse, MachineRecord, NetworkName};
+use std::path::Path;
 use tracing::warn;
 
 use crate::daemon::setup::MeshStartOptions;
-use ployz_api::{DaemonPayload, DaemonResponse, MeshReadyPayload, MeshSelfRecordPayload};
+use ployz_api::{
+    DaemonPayload, DaemonResponse, MeshBootstrapRequest, MeshReadyPayload, MeshSelfRecordPayload,
+};
 
 use super::super::DaemonState;
 
@@ -90,7 +91,10 @@ impl DaemonState {
             None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
         };
 
-        let status = mesh_ready_payload(active.mesh.ready_status().await);
+        let Some(self_record) = active.mesh.authoritative_self_record().await else {
+            return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
+        };
+        let status = mesh_ready_payload(active.mesh.ready_status().await, &self_record);
         if json {
             return match serde_json::to_string(&status) {
                 Ok(body) => self.ok_with_payload(body, Some(DaemonPayload::MeshReady(status))),
@@ -102,16 +106,29 @@ impl DaemonState {
         }
 
         self.ok_with_payload(format!(
-            "ready:            {}\nphase:            {}\nstore healthy:    {}\nsync connected:   {}\nheartbeat ready:  {}",
+            "ready:                   {}\nphase:                   {}\nstore healthy:           {}\nsync connected:          {}\nheartbeat ready:         {}\nparticipation:           {}\nworkload subnet present: {}",
             status.ready,
             status.phase,
             status.store_healthy,
             status.sync_connected,
             status.heartbeat_started,
+            status.participation,
+            status.workload_subnet_present,
         ), Some(DaemonPayload::MeshReady(status)))
     }
 
     pub(crate) async fn handle_mesh_join(&mut self, token: &str) -> DaemonResponse {
+        let _ = token;
+        self.err(
+            "UNSUPPORTED",
+            "standalone `mesh join` is not supported in founder-mediated mode",
+        )
+    }
+
+    pub(crate) async fn handle_mesh_bootstrap(
+        &mut self,
+        request: &MeshBootstrapRequest,
+    ) -> DaemonResponse {
         if let Some(active) = &self.active {
             return self.err(
                 "NETWORK_ALREADY_RUNNING",
@@ -122,79 +139,80 @@ impl DaemonState {
             );
         }
 
-        let invite = match parse_and_verify_invite_token(token) {
-            Ok(invite) => invite,
-            Err(err) => return self.err("INVALID_INVITE_TOKEN", err),
-        };
-
-        let now = now_unix_secs();
-        if now > invite.expires_at {
-            return self.err("INVITE_EXPIRED", "invite token has expired");
-        }
-
-        let network = invite.network_name.trim();
+        let network = request.network_name.trim();
         if network.is_empty() {
-            return self.err("INVALID_INVITE_TOKEN", "invite token network name is empty");
+            return self.err("INVALID_ARGUMENT", "bootstrap network name is empty");
         }
+
+        let mut net_config = NetworkConfig::new(
+            NetworkName(network.to_string()),
+            &self.identity.public_key,
+            &request.cluster_cidr,
+            request.assigned_subnet,
+        );
+        net_config.id = request.network_id.clone();
 
         let config_path = NetworkConfig::path(&self.data_dir, network);
         if config_path.exists() {
             return self.err(
                 "NETWORK_ALREADY_EXISTS",
-                format!("network '{network}' already exists -- destroy it first"),
+                format!(
+                    "network '{network}' already exists -- run `mesh up {network}` or `mesh destroy {network}`"
+                ),
             );
         }
-
-        let subnet = match invite.allocated_subnet.parse() {
-            Ok(subnet) => subnet,
-            Err(err) => {
-                return self.err(
-                    "INVALID_INVITE_TOKEN",
-                    format!("invite allocated subnet is invalid: {err}"),
-                );
-            }
-        };
-
-        let mut net_config = NetworkConfig::new(
-            NetworkName(network.to_string()),
-            &self.identity.public_key,
-            &self.cluster_cidr,
-            subnet,
-        );
-        net_config.id = invite.network_id.clone();
-
-        if let Err(e) = net_config.save(&config_path) {
-            return self.err("IO_ERROR", format!("failed to save network config: {e}"));
-        }
-
-        if let Some(bootstrap_peer) = BootstrapPeerRecord::from_invite(&invite)
-            && let Err(error) = write_bootstrap_peer_record(
-                &NetworkConfig::dir(&self.data_dir, network),
-                &bootstrap_peer,
-            )
-        {
+        if let Err(error) = net_config.save(&config_path) {
             return self.err(
                 "IO_ERROR",
-                format!("failed to persist bootstrap founder peer: {error}"),
+                format!("failed to save network config: {error}"),
             );
         }
 
-        let bootstrap = Self::extract_bootstrap(&invite);
+        let network_dir = NetworkConfig::dir(&self.data_dir, network);
+        for peer in &request.bootstrap_peers {
+            let peer_record = BootstrapPeerRecord {
+                machine_id: peer.id.clone(),
+                public_key: peer.public_key.clone(),
+                overlay_ip: peer.overlay_ip,
+                endpoints: peer.endpoints.clone(),
+            };
+            if let Err(error) = write_bootstrap_peer_record(&network_dir, &peer_record) {
+                return self.err(
+                    "IO_ERROR",
+                    format!("failed to persist bootstrap peer '{}': {error}", peer.id),
+                );
+            }
+        }
 
+        let bootstrap = request
+            .bootstrap_peers
+            .first()
+            .map(bootstrap_info_from_record);
         let options = MeshStartOptions {
             allow_disconnected_bootstrap: bootstrap.is_some(),
         };
         match self.start_mesh(net_config, bootstrap, options).await {
-            Ok(_) => {}
-            Err(e) => {
-                return self.err(
-                    "NETWORK_START_FAILED",
-                    format!("join failed to start mesh: {e}"),
-                );
+            Ok(_) => {
+                if let Some(active) = self.active.as_ref()
+                    && let Some(control_target) = request.self_control_target.clone()
+                {
+                    let _ = active
+                        .mesh
+                        .update_authoritative_self_record(|record| {
+                            record.control_target = Some(control_target);
+                        })
+                        .await;
+                }
+                self.ok(format!(
+                    "bootstrapped and started network '{}'",
+                    request.network_name
+                ))
             }
+            Err(error) => self.err(
+                "NETWORK_START_FAILED",
+                format!("bootstrap failed to start mesh: {error}"),
+            ),
         }
-
-        self.ok(format!("joined and started network '{network}'"))
     }
 
     pub(crate) fn handle_mesh_create(&self, network: &str) -> DaemonResponse {
@@ -265,10 +283,13 @@ impl DaemonState {
             .cluster_cidr
             .parse()
             .map_err(|e| format!("invalid cluster CIDR '{}': {e}", self.cluster_cidr))?;
-        let mut ipam = Ipam::new(cluster, self.subnet_prefix_len);
-        let subnet = ipam
-            .allocate()
-            .ok_or_else(|| "no available subnets in cluster CIDR".to_string())?;
+        let subnet = pick_candidate_subnet(
+            cluster,
+            self.subnet_prefix_len,
+            &std::collections::HashSet::new(),
+            0,
+        )
+        .ok_or_else(|| "no available subnets in cluster CIDR".to_string())?;
 
         let net_config = NetworkConfig::new(
             NetworkName(network.into()),
@@ -339,6 +360,7 @@ impl DaemonState {
             self.active = Some(active);
             return self.err("NETWORK_STOP_FAILED", format!("mesh down failed: {e}"));
         }
+        let _ = active.peer_control.shutdown().await;
         let _ = active.remote_control.shutdown().await;
         if let Err(e) = active.dns.shutdown().await {
             warn!(?e, "dns stop failed during mesh down");
@@ -373,6 +395,7 @@ impl DaemonState {
                 self.active = Some(active);
                 return self.err("NETWORK_DESTROY_FAILED", format!("destroy failed: {e}"));
             }
+            let _ = active.peer_control.shutdown().await;
             let _ = active.remote_control.shutdown().await;
             if let Err(e) = active.dns.shutdown().await {
                 warn!(?e, "dns stop failed during mesh destroy");
@@ -400,11 +423,14 @@ impl DaemonState {
         };
 
         let endpoints = detect_endpoints(51820).await;
+        let Some(self_record) = active.mesh.authoritative_self_record().await else {
+            return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
+        };
         let resp = JoinResponse {
             machine_id: self.identity.machine_id.clone(),
             public_key: self.identity.public_key.clone(),
             overlay_ip: active.config.overlay_ip,
-            subnet: Some(active.config.subnet),
+            subnet: self_record.subnet,
             endpoints,
         };
 
@@ -455,34 +481,260 @@ impl DaemonState {
         }
     }
 
-    fn extract_bootstrap(invite: &InviteClaims) -> Option<BootstrapInfo> {
-        let wg_key_b64 = invite.issuer_wg_public_key.as_deref()?;
-        let overlay_str = invite.issuer_overlay_ip.as_deref()?;
-
-        let key_bytes = URL_SAFE_NO_PAD.decode(wg_key_b64).ok()?;
-        let peer_wg_public_key: [u8; 32] = key_bytes.as_slice().try_into().ok()?;
-        let peer_overlay_ip: std::net::Ipv6Addr = overlay_str.parse().ok()?;
-
-        if invite.issuer_endpoints.is_empty() {
-            return None;
+    pub(crate) async fn handle_mesh_set_participation(
+        &mut self,
+        participation: ployz_types::model::Participation,
+    ) -> DaemonResponse {
+        let forced_participation = match participation {
+            ployz_types::model::Participation::Disabled => {
+                Some(ployz_types::model::Participation::Disabled)
+            }
+            ployz_types::model::Participation::Enabled
+            | ployz_types::model::Participation::Draining => None,
+        };
+        if let Err(error) = self
+            .set_local_participation_override(forced_participation)
+            .await
+        {
+            return self.err(
+                "PARTICIPATION_OVERRIDE_FAILED",
+                format!("failed to apply participation override: {error}"),
+            );
         }
+        let Some(active) = self.active.as_mut() else {
+            return self.err("NO_RUNNING_NETWORK", "no mesh running");
+        };
+        let now = ployz_types::time::now_unix_secs();
+        let Some(record) = active
+            .mesh
+            .update_authoritative_self_record(|record| {
+                record.participation = participation;
+                record.updated_at = now;
+            })
+            .await
+        else {
+            return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
+        };
+        match active.mesh.store.upsert_self_machine(&record).await {
+            Ok(()) => self.ok(format!("participation set to {}", record.participation)),
+            Err(error) => self.err(
+                "STORE_UPDATE_FAILED",
+                format!("failed to persist participation: {error}"),
+            ),
+        }
+    }
 
-        Some(BootstrapInfo {
-            peer_id: invite.issued_by.clone(),
-            peer_wg_public_key,
-            peer_overlay_ip,
-            peer_endpoints: invite.issuer_endpoints.clone(),
-        })
+    pub(crate) async fn handle_mesh_standby(&mut self, force: bool) -> DaemonResponse {
+        let Some(active) = self.active.as_ref() else {
+            return self.err("NO_RUNNING_NETWORK", "no mesh running");
+        };
+        let network_name = active.config.name.0.clone();
+        let Some(self_record) = active.mesh.authoritative_self_record().await else {
+            return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
+        };
+        if !force && self_record.participation != ployz_types::model::Participation::Draining {
+            let has_local_workloads = match self
+                .runtime_has_local_workloads(&self.identity.machine_id)
+                .await
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    return self.err(
+                        "WORKLOAD_INSPECTION_FAILED",
+                        format!("failed to inspect local workloads before standby: {error}"),
+                    );
+                }
+            };
+            if has_local_workloads {
+                return self.err(
+                    "MACHINE_NOT_DRAINED",
+                    "machine must be draining before standby; rerun with --force to bypass",
+                );
+            }
+        }
+        if let Err(error) = self
+            .set_local_participation_override(Some(ployz_types::model::Participation::Disabled))
+            .await
+        {
+            return self.err(
+                "PARTICIPATION_OVERRIDE_FAILED",
+                format!("failed to freeze standby participation: {error}"),
+            );
+        }
+        let now = ployz_types::time::now_unix_secs();
+        {
+            let Some(active) = self.active.as_ref() else {
+                let _ = self.set_local_participation_override(None).await;
+                return self.err("NO_RUNNING_NETWORK", "no mesh running");
+            };
+            let Some(record) = active
+                .mesh
+                .update_authoritative_self_record(|record| {
+                    record.participation = ployz_types::model::Participation::Disabled;
+                    record.updated_at = now;
+                })
+                .await
+            else {
+                let _ = self.set_local_participation_override(None).await;
+                return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
+            };
+            if let Err(error) = active.mesh.store.upsert_self_machine(&record).await {
+                let _ = self.set_local_participation_override(None).await;
+                return self.err(
+                    "STORE_UPDATE_FAILED",
+                    format!("failed to persist pre-standby participation: {error}"),
+                );
+            }
+        }
+        let config_path = NetworkConfig::path(&self.data_dir, &network_name);
+        let mut config = match NetworkConfig::load(&config_path) {
+            Ok(config) => config,
+            Err(error) => {
+                let _ = self.set_local_participation_override(None).await;
+                return self.err("IO_ERROR", format!("load network config: {error}"));
+            }
+        };
+        let previous_subnet = config.subnet;
+        config.subnet = None;
+        if let Err(error) = config.save(&config_path) {
+            let _ = self.set_local_participation_override(None).await;
+            return self.err("IO_ERROR", format!("save network config: {error}"));
+        }
+        if let Err(error) = self.restart_active_runtime_from_config(&network_name).await {
+            let _ = self.set_local_participation_override(None).await;
+            let rollback_error =
+                restore_network_config_subnet(&config_path, &mut config, previous_subnet).err();
+            return self.err(
+                "NETWORK_RESTART_FAILED",
+                match rollback_error {
+                    Some(rollback_error) => {
+                        format!(
+                            "failed to enter standby: {error}; failed to restore config: {rollback_error}"
+                        )
+                    }
+                    None => format!("failed to enter standby: {error}"),
+                },
+            );
+        }
+        let Some(active) = self.active.as_mut() else {
+            return self.err("NO_RUNNING_NETWORK", "no mesh running");
+        };
+        let Some(record) = active
+            .mesh
+            .update_authoritative_self_record(|record| {
+                record.participation = ployz_types::model::Participation::Disabled;
+                record.subnet = None;
+                record.status = ployz_types::model::MachineStatus::Up;
+                record.updated_at = now;
+            })
+            .await
+        else {
+            return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
+        };
+        active.config.subnet = None;
+        match active.mesh.store.upsert_self_machine(&record).await {
+            Ok(()) => self.ok("machine entered standby"),
+            Err(error) => self.err(
+                "STORE_UPDATE_FAILED",
+                format!("failed to persist standby record: {error}"),
+            ),
+        }
+    }
+
+    pub(crate) async fn handle_mesh_promote(
+        &mut self,
+        assigned_subnet: ipnet::Ipv4Net,
+    ) -> DaemonResponse {
+        let Some(active) = self.active.as_ref() else {
+            return self.err("NO_RUNNING_NETWORK", "no mesh running");
+        };
+        let network_name = active.config.name.0.clone();
+        let config_path = NetworkConfig::path(&self.data_dir, &network_name);
+        let mut config = match NetworkConfig::load(&config_path) {
+            Ok(config) => config,
+            Err(error) => {
+                return self.err("IO_ERROR", format!("load network config: {error}"));
+            }
+        };
+        let previous_subnet = config.subnet;
+        config.subnet = Some(assigned_subnet);
+        if let Err(error) = config.save(&config_path) {
+            return self.err("IO_ERROR", format!("save network config: {error}"));
+        }
+        if let Err(error) = self.restart_active_runtime_from_config(&network_name).await {
+            let rollback_error =
+                restore_network_config_subnet(&config_path, &mut config, previous_subnet).err();
+            return self.err(
+                "NETWORK_RESTART_FAILED",
+                match rollback_error {
+                    Some(rollback_error) => {
+                        format!(
+                            "failed to promote machine: {error}; failed to restore config: {rollback_error}"
+                        )
+                    }
+                    None => format!("failed to promote machine: {error}"),
+                },
+            );
+        }
+        let Some(active) = self.active.as_mut() else {
+            return self.err("NO_RUNNING_NETWORK", "no mesh running");
+        };
+        let now = ployz_types::time::now_unix_secs();
+        let Some(record) = active
+            .mesh
+            .update_authoritative_self_record(|record| {
+                record.participation = ployz_types::model::Participation::Disabled;
+                record.subnet = Some(assigned_subnet);
+                record.status = ployz_types::model::MachineStatus::Up;
+                record.updated_at = now;
+            })
+            .await
+        else {
+            return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
+        };
+        active.config.subnet = Some(assigned_subnet);
+        match active.mesh.store.upsert_self_machine(&record).await {
+            Ok(()) => {}
+            Err(error) => {
+                return self.err(
+                    "STORE_UPDATE_FAILED",
+                    format!("failed to persist promoted machine: {error}"),
+                );
+            }
+        }
+        self.ok(format!("machine promoted with subnet {}", assigned_subnet))
     }
 }
 
-fn mesh_ready_payload(value: MeshReadyStatus) -> MeshReadyPayload {
+fn restore_network_config_subnet(
+    config_path: &Path,
+    config: &mut NetworkConfig,
+    subnet: Option<ipnet::Ipv4Net>,
+) -> Result<(), String> {
+    config.subnet = subnet;
+    config
+        .save(config_path)
+        .map_err(|error| format!("restore network config: {error}"))
+}
+
+fn bootstrap_info_from_record(record: &MachineRecord) -> BootstrapInfo {
+    BootstrapInfo {
+        peer_id: record.id.0.clone(),
+        peer_wg_public_key: record.public_key.0,
+        peer_overlay_ip: record.overlay_ip.0,
+        peer_endpoints: record.endpoints.clone(),
+    }
+}
+
+fn mesh_ready_payload(value: MeshReadyStatus, self_record: &MachineRecord) -> MeshReadyPayload {
     MeshReadyPayload {
         ready: value.ready,
         phase: value.phase.to_string(),
         store_healthy: value.store_healthy,
         sync_connected: value.sync_connected,
         heartbeat_started: value.heartbeat_started,
+        workload_subnet_present: self_record.subnet.is_some(),
+        participation: self_record.participation.to_string(),
     }
 }
 
@@ -492,6 +744,7 @@ mod tests {
     use crate::daemon::ActiveMesh;
     use crate::mesh_state::invite::issue_invite_token;
     use crate::mesh_state::network::NetworkConfig;
+    use ployz_api::MeshBootstrapRequest;
     use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
     use ployz_orchestrator::{Mesh, WireguardDriver};
     use ployz_runtime_api::Identity;
@@ -505,13 +758,12 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[tokio::test]
-    async fn mesh_join_uses_founder_allocated_subnet_exactly() {
+    async fn mesh_join_is_unsupported_in_founder_mediated_mode() {
         let founder_identity =
             Identity::generate(ployz_types::model::MachineId("founder".into()), [7; 32]);
         let joiner_identity =
             Identity::generate(ployz_types::model::MachineId("joiner".into()), [8; 32]);
         let founder_subnet: ipnet::Ipv4Net = "10.210.0.0/24".parse().expect("valid subnet");
-        let allocated_subnet = "10.210.42.0/24";
         let network = NetworkConfig::new(
             ployz_types::model::NetworkName("alpha".into()),
             &founder_identity.public_key,
@@ -522,13 +774,13 @@ mod tests {
         let (token, _) = issue_invite_token(
             &founder_identity,
             &network,
+            "invite-1".into(),
             600,
             now_unix_secs(),
             Vec::new(),
             Some(network.overlay_ip.0.to_string()),
             Some("wg-public".into()),
-            Some(network.subnet.to_string()),
-            allocated_subnet.into(),
+            Vec::new(),
         )
         .expect("issue invite");
 
@@ -544,14 +796,8 @@ mod tests {
         );
 
         let response = state.handle_mesh_join(&token).await;
-        assert!(response.ok, "{}", response.message);
-
-        let active = state.active.as_ref().expect("mesh active");
-        assert_eq!(active.config.subnet.to_string(), allocated_subnet);
-
-        if let Some(active) = state.active.as_mut() {
-            active.mesh.destroy().await.expect("destroy mesh");
-        }
+        assert!(!response.ok);
+        assert_eq!(response.code, "UNSUPPORTED");
     }
 
     #[tokio::test]
@@ -587,6 +833,71 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn mesh_bootstrap_refuses_to_overwrite_existing_network_config() {
+        let identity = Identity::generate(MachineId("joiner".into()), [9; 32]);
+        let data_dir = unique_temp_dir("ployz-bootstrap-guard");
+        let existing = NetworkConfig::new(
+            ployz_types::model::NetworkName("alpha".into()),
+            &identity.public_key,
+            "10.210.0.0/16",
+            "10.210.1.0/24".parse().expect("valid subnet"),
+        );
+        let config_path = NetworkConfig::path(&data_dir, "alpha");
+        existing.save(&config_path).expect("save existing config");
+
+        let mut state = DaemonState::new_for_tests(
+            &data_dir,
+            identity,
+            "10.210.0.0/16".into(),
+            24,
+            4317,
+            "127.0.0.1:0".into(),
+            1,
+        );
+
+        let response = state
+            .handle_mesh_bootstrap(&MeshBootstrapRequest {
+                network_id: ployz_types::model::NetworkId("net-new".into()),
+                network_name: "alpha".into(),
+                cluster_cidr: "10.210.0.0/16".into(),
+                assigned_subnet: "10.210.2.0/24".parse().expect("valid subnet"),
+                self_control_target: None,
+                bootstrap_peers: Vec::new(),
+            })
+            .await;
+        assert!(!response.ok);
+        assert_eq!(response.code, "NETWORK_ALREADY_EXISTS");
+
+        let persisted = NetworkConfig::load(&config_path).expect("load existing config");
+        assert_eq!(persisted.id, existing.id);
+        assert_eq!(persisted.subnet, existing.subnet);
+    }
+
+    #[test]
+    fn restore_network_config_subnet_restores_previous_value() {
+        let identity = Identity::generate(MachineId("joiner".into()), [10; 32]);
+        let data_dir = unique_temp_dir("ployz-promote-rollback");
+        let config_path = NetworkConfig::path(&data_dir, "alpha");
+        let previous_subnet = Some("10.210.1.0/24".parse().expect("valid subnet"));
+        let mut config = NetworkConfig::new(
+            ployz_types::model::NetworkName("alpha".into()),
+            &identity.public_key,
+            "10.210.0.0/16",
+            previous_subnet.expect("subnet present"),
+        );
+        config.save(&config_path).expect("save initial config");
+
+        config.subnet = Some("10.210.2.0/24".parse().expect("valid subnet"));
+        config.save(&config_path).expect("save promoted config");
+
+        restore_network_config_subnet(&config_path, &mut config, previous_subnet)
+            .expect("restore subnet");
+
+        let persisted = NetworkConfig::load(&config_path).expect("load restored config");
+        assert_eq!(persisted.subnet, previous_subnet);
+    }
+
     async fn make_active_state() -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {
         let identity = Identity::generate(MachineId("founder".into()), [1; 32]);
         let config = NetworkConfig::new(
@@ -601,7 +912,8 @@ mod tests {
                 id: identity.machine_id.clone(),
                 public_key: identity.public_key.clone(),
                 overlay_ip: config.overlay_ip,
-                subnet: Some(config.subnet),
+                subnet: config.subnet,
+                control_target: None,
                 bridge_ip: None,
                 endpoints: vec!["127.0.0.1:51820".into()],
                 status: ployz_types::model::MachineStatus::Unknown,
@@ -636,6 +948,7 @@ mod tests {
             config,
             mesh,
             remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         });

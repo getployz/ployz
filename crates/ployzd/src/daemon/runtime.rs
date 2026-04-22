@@ -18,7 +18,7 @@ impl DaemonState {
         overlay_ip: OverlayIp,
         network_dir: &Path,
         network_name: &str,
-        subnet: Ipv4Net,
+        subnet: Option<Ipv4Net>,
         exposed_tcp_ports: &[u16],
         bootstrap: &[String],
         network_id: &str,
@@ -119,5 +119,12 @@ impl DaemonState {
         self.runtime_profile
             .start_local_workloads_after_subnet_heal(network_name, target_subnet, workloads)
             .await
+    }
+
+    pub(crate) async fn runtime_has_local_workloads(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<bool, String> {
+        self.runtime_profile.has_local_workloads(machine_id).await
     }
 }

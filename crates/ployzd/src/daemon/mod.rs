@@ -4,21 +4,26 @@ mod setup;
 pub mod ssh;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::built_in_images::BuiltInImages;
+use crate::ipc::listener::IncomingCommand;
 use crate::mesh_state::network::NetworkConfig;
 use crate::runtime_profile::RuntimeProfile;
 use ipnet::Ipv4Net;
 use ployz_api::{DaemonPayload, DaemonResponse};
 use ployz_config::{RuntimeTarget, ServiceMode};
 use ployz_orchestrator::Mesh;
+use ployz_orchestrator::coordination::PendingReservations;
 use ployz_runtime_api::Identity;
 use ployz_runtime_api::{NamespaceLockManager, RuntimeHandle};
+use tokio::sync::mpsc;
 
 pub struct ActiveMesh {
     pub config: NetworkConfig,
     pub mesh: Mesh,
     pub remote_control: Box<dyn RuntimeHandle>,
+    pub peer_control: Box<dyn RuntimeHandle>,
     pub gateway: Box<dyn RuntimeHandle>,
     pub dns: Box<dyn RuntimeHandle>,
 }
@@ -46,12 +51,15 @@ pub struct DaemonState {
     pub cluster_cidr: String,
     pub subnet_prefix_len: u8,
     pub remote_control_port: u16,
+    pub peer_control_target: Option<String>,
     pub gateway_listen_addr: String,
     pub gateway_threads: usize,
     pub dns_metrics_listen_addr: Option<String>,
     pub gateway_metrics_listen_addr: Option<String>,
     pub active: Option<ActiveMesh>,
     pub namespace_locks: NamespaceLockManager,
+    pub reservations: Arc<PendingReservations>,
+    pub command_tx: Option<mpsc::Sender<IncomingCommand>>,
     pub(crate) pending_subnet_heal: Option<PendingSubnetHeal>,
     pub(crate) last_subnet_heal_attempt: Option<SubnetHealAttempt>,
 }
@@ -144,12 +152,15 @@ impl DaemonState {
             cluster_cidr,
             subnet_prefix_len,
             remote_control_port,
+            peer_control_target: None,
             gateway_listen_addr,
             gateway_threads,
             dns_metrics_listen_addr,
             gateway_metrics_listen_addr,
             active: None,
             namespace_locks: NamespaceLockManager::default(),
+            reservations: Arc::new(PendingReservations::new()),
+            command_tx: None,
             pending_subnet_heal: None,
             last_subnet_heal_attempt: None,
         }
