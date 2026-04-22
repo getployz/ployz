@@ -10,9 +10,7 @@ use ployz_types::model::InviteRecord;
 use ployz_types::time::now_unix_secs;
 use x25519_dalek::StaticSecret;
 
-use ployz_api::{
-    DaemonPayload, DaemonResponse, MachineInviteInfo, MachineInviteListPayload,
-};
+use ployz_api::{DaemonPayload, DaemonResponse, MachineInviteInfo, MachineInviteListPayload};
 
 use super::super::DaemonState;
 
@@ -51,9 +49,17 @@ impl DaemonState {
             );
         };
 
-        match active.mesh.store.revoke_invite(invite_id, now_unix_secs()).await {
+        match active
+            .mesh
+            .store
+            .revoke_invite(invite_id, now_unix_secs())
+            .await
+        {
             Ok(_) => self.ok(format!("invite revoked\n  invite:  {invite_id}")),
-            Err(err) => self.err("INVITE_REVOKE_FAILED", format!("failed to revoke invite: {err}")),
+            Err(err) => self.err(
+                "INVITE_REVOKE_FAILED",
+                format!("failed to revoke invite: {err}"),
+            ),
         }
     }
 
@@ -67,7 +73,12 @@ impl DaemonState {
 
         let invites = match active.mesh.store.list_invites().await {
             Ok(invites) => invites,
-            Err(err) => return self.err("INVITE_LIST_FAILED", format!("failed to list invites: {err}")),
+            Err(err) => {
+                return self.err(
+                    "INVITE_LIST_FAILED",
+                    format!("failed to list invites: {err}"),
+                );
+            }
         };
 
         let now = now_unix_secs();
@@ -78,7 +89,10 @@ impl DaemonState {
                     invite_id: invite.invite_id.clone(),
                     expires_at: invite.expires_at,
                     status: invite_status(invite, now).to_string(),
-                    consumed_by: invite.consumed_by.as_ref().map(|machine_id| machine_id.0.clone()),
+                    consumed_by: invite
+                        .consumed_by
+                        .as_ref()
+                        .map(|machine_id| machine_id.0.clone()),
                 })
                 .collect(),
         };
@@ -212,8 +226,8 @@ fn issuer_verify_key(private_key: &[u8; 32]) -> String {
 fn sign_invite_record(private_key: &[u8; 32], invite: &InviteRecord) -> Result<String, String> {
     let mut unsigned = invite.clone();
     unsigned.signature.clear();
-    let payload = serde_json::to_vec(&unsigned)
-        .map_err(|error| format!("encode invite record: {error}"))?;
+    let payload =
+        serde_json::to_vec(&unsigned).map_err(|error| format!("encode invite record: {error}"))?;
     let signing_key = SigningKey::from_bytes(private_key);
     Ok(URL_SAFE_NO_PAD.encode(signing_key.sign(&payload).to_bytes()))
 }

@@ -87,8 +87,6 @@ pub struct ServiceSpec {
     pub rollout: RolloutStrategy,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub labels: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stop_grace_period: Option<String>,
     #[serde(default = "RestartPolicy::unless_stopped")]
     pub restart: RestartPolicy,
 }
@@ -111,6 +109,15 @@ impl ServiceSpec {
     pub fn validate(&self) -> Result<(), String> {
         if self.name.trim().is_empty() {
             return Err("service name cannot be empty".into());
+        }
+
+        if let Some(pid_mode) = &self.template.pid_mode {
+            if pid_mode.trim().is_empty() {
+                return Err(format!(
+                    "service '{}' template pid_mode cannot be empty",
+                    self.name
+                ));
+            }
         }
 
         match self.placement {
@@ -261,6 +268,10 @@ pub struct ContainerSpec {
     pub privileged: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_grace_period: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid_mode: Option<String>,
     #[serde(default = "PullPolicy::if_not_present")]
     pub pull_policy: PullPolicy,
     #[serde(default = "Resources::empty")]
@@ -572,6 +583,8 @@ mod tests {
                 cap_drop: vec![],
                 privileged: false,
                 user: None,
+                stop_grace_period: Some("10s".into()),
+                pid_mode: Some("host".into()),
                 pull_policy: PullPolicy::IfNotPresent,
                 resources: Resources {
                     cpu_millicores: Some(1000),
@@ -603,7 +616,6 @@ mod tests {
             }),
             rollout: RolloutStrategy::BlueGreen,
             labels: BTreeMap::from([("env".into(), "prod".into())]),
-            stop_grace_period: Some("10s".into()),
             restart: RestartPolicy::UnlessStopped,
         }
     }
@@ -714,7 +726,7 @@ mod tests {
             "name":"api",
             "namespace":"prod",
             "placement":{"replicated":{"count":2}},
-            "template":{"image":"myapp:latest","command":["serve"],"env":{"PORT":"8080"},"volumes":[],"cap_add":[],"cap_drop":[],"privileged":false,"pull_policy":"if_not_present","resources":{"cpu_millicores":1000,"memory_bytes":536870912},"sysctls":{}},
+            "template":{"image":"myapp:latest","command":["serve"],"env":{"PORT":"8080"},"volumes":[],"cap_add":[],"cap_drop":[],"privileged":false,"stop_grace_period":"10s","pull_policy":"if_not_present","resources":{"cpu_millicores":1000,"memory_bytes":536870912},"sysctls":{}},
             "network":"overlay",
             "service_ports":[{"name":"http","container_port":8080,"protocol":"tcp"}],
             "publish":[],
@@ -722,7 +734,6 @@ mod tests {
             "readiness":{"http":{"service_port":"http","path":"/ready"}},
             "rollout":"blue_green",
             "labels":{"env":"prod"},
-            "stop_grace_period":"10s",
             "restart":"unless-stopped"
         }"#;
 
@@ -755,5 +766,23 @@ mod tests {
                 start_period: Some("10s".into()),
             }
         );
+    }
+
+    #[test]
+    fn empty_pid_mode_is_rejected() {
+        let mut spec = sample_spec();
+        spec.template.pid_mode = Some("   ".into());
+        let error = spec.validate().expect_err("empty pid mode should fail");
+        assert!(error.contains("pid_mode"));
+    }
+
+    #[test]
+    fn pid_mode_roundtrips_in_template_json() {
+        let spec = sample_spec();
+        let json = serde_json::to_string(&spec).expect("serialize spec");
+        assert!(json.contains("\"pid_mode\":\"host\""));
+
+        let deserialized: ServiceSpec = serde_json::from_str(&json).expect("deserialize spec");
+        assert_eq!(deserialized.template.pid_mode.as_deref(), Some("host"));
     }
 }

@@ -1,18 +1,18 @@
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 
+use ipnet::Ipv4Net;
 use ployz_api::{
     CoordOp, DaemonPayload, DaemonRequest, DaemonResponse, InstallRuntimeTarget,
     InstallServiceMode, InstallSource, MachineAddOptions, MachineInstallOptions,
-    MeshBootstrapRequest, ResourceKey as ApiResourceKey,
-    MeshReadyPayload, MeshSelfRecordPayload,
+    MeshBootstrapRequest, MeshReadyPayload, MeshSelfRecordPayload, ResourceKey as ApiResourceKey,
 };
 use ployz_orchestrator::coordination::{
     PrepareVote, Reservation, ReservationId, ResourceKey, Vote, quorum_prepare,
 };
-use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_orchestrator::ipam::pick_candidate_subnet;
 use ployz_orchestrator::machine_liveness::machine_is_fresh;
+use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_sdk::Transport;
 use ployz_store_api::{InviteStore, MachineStore};
 use ployz_types::model::{
@@ -20,7 +20,6 @@ use ployz_types::model::{
     Participation,
 };
 use ployz_types::time::now_unix_secs;
-use ipnet::Ipv4Net;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -216,10 +215,7 @@ impl DaemonState {
             };
             tracing::info!(%target, "machine add invite token issued");
             let target_machine_id = MachineId(target.clone());
-            let subnet_claim = match self
-                .reserve_machine_subnet(&target_machine_id)
-                .await
-            {
+            let subnet_claim = match self.reserve_machine_subnet(&target_machine_id).await {
                 Ok(claim) => claim,
                 Err(err) => {
                     report.push(MachineAddTargetResult::Failed {
@@ -298,7 +294,10 @@ impl DaemonState {
         let active = match self.active.as_ref() {
             Some(active) => active,
             None => {
-                return self.err("NO_RUNNING_NETWORK", "machine enable requires a running network");
+                return self.err(
+                    "NO_RUNNING_NETWORK",
+                    "machine enable requires a running network",
+                );
             }
         };
         let machine_id = MachineId(target.to_string());
@@ -337,19 +336,19 @@ impl DaemonState {
             install: MachineInstallOptions::default(),
         };
 
-        let subnet_claim = match self
-            .reserve_machine_subnet(&machine_id)
-            .await
-        {
+        let subnet_claim = match self.reserve_machine_subnet(&machine_id).await {
             Ok(claim) => claim,
             Err(err) => return self.err("SUBNET_RESERVATION_FAILED", err),
         };
 
-        if let Err(err) =
-            overlay_rpc_expect_ok(record.overlay_ip, peer_rpc_port, DaemonRequest::MeshPromote {
+        if let Err(err) = overlay_rpc_expect_ok(
+            record.overlay_ip,
+            peer_rpc_port,
+            DaemonRequest::MeshPromote {
                 assigned_subnet: subnet_claim.subnet,
-            })
-            .await
+            },
+        )
+        .await
         {
             let _ = release_reserved_subnet(&context, &subnet_claim).await;
             return self.err("REMOTE_ENABLE_FAILED", err);
@@ -382,6 +381,18 @@ impl DaemonState {
             let _ = release_reserved_subnet(&context, &subnet_claim).await;
             return self.err("REMOTE_READY_FAILED", err);
         }
+        if let Err(err) = overlay_rpc_expect_ok(
+            record.overlay_ip,
+            peer_rpc_port,
+            DaemonRequest::MeshSetParticipation {
+                participation: Participation::Enabled,
+            },
+        )
+        .await
+        {
+            let _ = release_reserved_subnet(&context, &subnet_claim).await;
+            return self.err("REMOTE_ENABLE_FAILED", err);
+        }
 
         let _ = release_reserved_subnet(&context, &subnet_claim).await;
         self.ok(format!(
@@ -394,7 +405,10 @@ impl DaemonState {
         let active = match self.active.as_ref() {
             Some(active) => active,
             None => {
-                return self.err("NO_RUNNING_NETWORK", "machine drain requires a running network");
+                return self.err(
+                    "NO_RUNNING_NETWORK",
+                    "machine drain requires a running network",
+                );
             }
         };
         let machine_id = MachineId(target.to_string());
@@ -431,7 +445,10 @@ impl DaemonState {
         let active = match self.active.as_ref() {
             Some(active) => active,
             None => {
-                return self.err("NO_RUNNING_NETWORK", "machine disable requires a running network");
+                return self.err(
+                    "NO_RUNNING_NETWORK",
+                    "machine disable requires a running network",
+                );
             }
         };
         let machine_id = MachineId(target.to_string());
@@ -507,7 +524,9 @@ impl DaemonState {
                 nonce: ReservationId::random().0,
                 expires_at: now.saturating_add(SUBNET_RESERVATION_TTL_SECS),
             };
-            let committed_taken = machines.iter().any(|machine| machine.subnet == Some(candidate));
+            let committed_taken = machines
+                .iter()
+                .any(|machine| machine.subnet == Some(candidate));
             let local_vote = self
                 .reservations
                 .prepare(reservation.clone(), committed_taken, now)
@@ -567,6 +586,7 @@ async fn run_machine_add_target(
     if let Err(err) =
         bootstrap_remote_machine(&target, &context.install, &context.ssh_options).await
     {
+        let _ = release_reserved_subnet(&context, &subnet_claim).await;
         let _ = operation_store.update_status(
             &mut operation,
             MachineOperationStatus::Failed,
@@ -590,7 +610,8 @@ async fn run_machine_add_target(
                 subnet_claim.subnet,
                 Some(target.clone()),
             )
-            .await {
+            .await
+            {
                 Ok(request) => request,
                 Err(err) => {
                     let _ = release_reserved_subnet(&context, &subnet_claim).await;
@@ -824,7 +845,11 @@ fn machine_bias_seed(machine_id: &MachineId) -> u64 {
     hasher.finish()
 }
 
-fn coordination_peers(machines: &[MachineRecord], self_id: &MachineId, now: u64) -> Vec<CoordinationPeer> {
+fn coordination_peers(
+    machines: &[MachineRecord],
+    self_id: &MachineId,
+    now: u64,
+) -> Vec<CoordinationPeer> {
     machines
         .iter()
         .filter(|machine| machine.id != *self_id)
@@ -857,9 +882,7 @@ async fn remote_coord_prepare(
                 key: api_resource_key(&reservation.key),
                 owner: reservation.owner.clone(),
                 nonce: reservation.nonce.clone(),
-                ttl_secs: reservation
-                    .expires_at
-                    .saturating_sub(now_unix_secs()),
+                ttl_secs: reservation.expires_at.saturating_sub(now_unix_secs()),
             },
         },
     )
@@ -917,7 +940,8 @@ async fn persist_machine_control_target(
     machine_id: &MachineId,
     control_target: &str,
 ) -> Result<(), String> {
-    let Some(mut record) = super::list::find_machine_record(&context.store, machine_id).await? else {
+    let Some(mut record) = super::list::find_machine_record(&context.store, machine_id).await?
+    else {
         tracing::info!(
             machine_id = %machine_id,
             control_target,
@@ -936,7 +960,9 @@ async fn persist_machine_control_target(
 fn api_resource_key(key: &ResourceKey) -> ApiResourceKey {
     match key {
         ResourceKey::Subnet(subnet) => ApiResourceKey::Subnet(*subnet),
-        ResourceKey::DeployNamespace(namespace) => ApiResourceKey::DeployNamespace(namespace.clone()),
+        ResourceKey::DeployNamespace(namespace) => {
+            ApiResourceKey::DeployNamespace(namespace.clone())
+        }
     }
 }
 
@@ -1093,26 +1119,46 @@ async fn overlay_rpc(
     let address = SocketAddr::new(IpAddr::V6(overlay_ip.0), peer_rpc_port);
     let stream = timeout(PEER_RPC_TIMEOUT, TcpStream::connect(address))
         .await
-        .map_err(|_| format!("overlay rpc connect {address} timed out after {:?}", PEER_RPC_TIMEOUT))?
+        .map_err(|_| {
+            format!(
+                "overlay rpc connect {address} timed out after {:?}",
+                PEER_RPC_TIMEOUT
+            )
+        })?
         .map_err(|error| format!("overlay rpc connect {address}: {error}"))?;
     let (reader, mut writer) = stream.into_split();
-    let mut line =
-        serde_json::to_string(&request).map_err(|error| format!("encode overlay rpc request: {error}"))?;
+    let mut line = serde_json::to_string(&request)
+        .map_err(|error| format!("encode overlay rpc request: {error}"))?;
     line.push('\n');
     timeout(PEER_RPC_TIMEOUT, writer.write_all(line.as_bytes()))
         .await
-        .map_err(|_| format!("overlay rpc write {address} timed out after {:?}", PEER_RPC_TIMEOUT))?
+        .map_err(|_| {
+            format!(
+                "overlay rpc write {address} timed out after {:?}",
+                PEER_RPC_TIMEOUT
+            )
+        })?
         .map_err(|error| format!("overlay rpc write {address}: {error}"))?;
     timeout(PEER_RPC_TIMEOUT, writer.shutdown())
         .await
-        .map_err(|_| format!("overlay rpc shutdown {address} timed out after {:?}", PEER_RPC_TIMEOUT))?
+        .map_err(|_| {
+            format!(
+                "overlay rpc shutdown {address} timed out after {:?}",
+                PEER_RPC_TIMEOUT
+            )
+        })?
         .map_err(|error| format!("overlay rpc shutdown {address}: {error}"))?;
 
     let mut response_line = String::new();
     let mut reader = BufReader::new(reader);
     timeout(PEER_RPC_TIMEOUT, reader.read_line(&mut response_line))
         .await
-        .map_err(|_| format!("overlay rpc read {address} timed out after {:?}", PEER_RPC_TIMEOUT))?
+        .map_err(|_| {
+            format!(
+                "overlay rpc read {address} timed out after {:?}",
+                PEER_RPC_TIMEOUT
+            )
+        })?
         .map_err(|error| format!("overlay rpc read {address}: {error}"))?;
     serde_json::from_str(&response_line)
         .map_err(|error| format!("decode overlay rpc response: {error}"))
@@ -1134,7 +1180,12 @@ async fn overlay_self_record(
     machine: &MachineRecord,
     peer_rpc_port: u16,
 ) -> Result<MachineRecord, String> {
-    let response = overlay_rpc(machine.overlay_ip, peer_rpc_port, DaemonRequest::MeshSelfRecord).await?;
+    let response = overlay_rpc(
+        machine.overlay_ip,
+        peer_rpc_port,
+        DaemonRequest::MeshSelfRecord,
+    )
+    .await?;
     if !response.ok {
         return Err(remote_response_error(&response));
     }
@@ -1172,7 +1223,10 @@ async fn wait_for_overlay_ready(machine: &MachineRecord, peer_rpc_port: u16) -> 
                 Err(err) => err,
             },
             Ok(Err(err)) => err,
-            Err(_) => format!("overlay readiness probe exceeded {:?}", REMOTE_READY_RPC_TIMEOUT),
+            Err(_) => format!(
+                "overlay readiness probe exceeded {:?}",
+                REMOTE_READY_RPC_TIMEOUT
+            ),
         };
 
         if Instant::now() >= deadline {

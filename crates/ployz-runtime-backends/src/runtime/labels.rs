@@ -70,6 +70,7 @@ pub fn parse_key(labels: &HashMap<String, String>) -> Option<&str> {
 #[must_use]
 pub fn extract_workload_labels(labels: &HashMap<String, String>) -> Option<WorkloadLabels> {
     Some(WorkloadLabels {
+        namespace: labels.get(LABEL_NAMESPACE)?.clone(),
         instance_id: labels.get(LABEL_INSTANCE)?.clone(),
         service: labels.get(LABEL_SERVICE)?.clone(),
         slot_id: labels.get(LABEL_SLOT)?.clone(),
@@ -81,6 +82,7 @@ pub fn extract_workload_labels(labels: &HashMap<String, String>) -> Option<Workl
 
 /// Owned workload label values extracted from a container.
 pub struct WorkloadLabels {
+    pub namespace: String,
     pub instance_id: String,
     pub service: String,
     pub slot_id: String,

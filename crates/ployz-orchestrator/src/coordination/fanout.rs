@@ -55,14 +55,12 @@ mod tests {
 
     #[tokio::test]
     async fn quorum_prepare_requires_strict_majority() {
-        let peers = vec![
-            MachineId("peer-a".into()),
-            MachineId("peer-b".into()),
-        ];
+        let peers = vec![MachineId("peer-a".into()), MachineId("peer-b".into())];
 
-        let denied =
-            quorum_prepare(&peers, PrepareVote::Allow, |_| async { PrepareVote::TerminalDeny })
-                .await;
+        let denied = quorum_prepare(&peers, PrepareVote::Allow, |_| async {
+            PrepareVote::TerminalDeny
+        })
+        .await;
         assert!(!denied.allowed);
         assert_eq!(denied.votes_for, 1);
         assert_eq!(denied.votes_total, 3);
