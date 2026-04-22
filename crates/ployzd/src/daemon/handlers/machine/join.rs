@@ -390,27 +390,29 @@ impl DaemonState {
         let remote_record = match overlay_self_record(record, peer_rpc_port).await {
             Ok(record) => record,
             Err(err) => {
+                log_remote_enable_rollback(record, peer_rpc_port, &err).await;
                 let _ = release_reserved_subnet(context, subnet_claim).await;
                 return self.err("SELF_RECORD_FAILED", err);
             }
         };
         if remote_record.id != *machine_id {
-            let _ = release_reserved_subnet(context, subnet_claim).await;
-            return self.err(
-                "MACHINE_ID_MISMATCH",
-                format!(
-                    "remote machine id '{}' did not match enable target '{}'",
-                    remote_record.id, machine_id
-                ),
+            let mismatch = format!(
+                "remote machine id '{}' did not match enable target '{}'",
+                remote_record.id, machine_id
             );
+            log_remote_enable_rollback(record, peer_rpc_port, &mismatch).await;
+            let _ = release_reserved_subnet(context, subnet_claim).await;
+            return self.err("MACHINE_ID_MISMATCH", mismatch);
         }
 
         if let Err(err) = upsert_transient_peer(&context.peer_sync_tx, remote_record).await {
+            log_remote_enable_rollback(record, peer_rpc_port, &err).await;
             let _ = release_reserved_subnet(context, subnet_claim).await;
             return self.err("PEER_SYNC_UNAVAILABLE", err);
         }
 
         if let Err(err) = wait_for_overlay_ready(record, peer_rpc_port).await {
+            log_remote_enable_rollback(record, peer_rpc_port, &err).await;
             let _ = release_reserved_subnet(context, subnet_claim).await;
             return self.err("REMOTE_READY_FAILED", err);
         }
@@ -423,6 +425,7 @@ impl DaemonState {
         )
         .await
         {
+            log_remote_enable_rollback(record, peer_rpc_port, &err).await;
             let _ = release_reserved_subnet(context, subnet_claim).await;
             return self.err("REMOTE_ENABLE_FAILED", err);
         }
@@ -1218,6 +1221,30 @@ async fn overlay_rpc_expect_ok(
         return Ok(());
     }
     Err(remote_response_error(&response))
+}
+
+async fn rollback_remote_enable(overlay_ip: OverlayIp, peer_rpc_port: u16) -> Result<(), String> {
+    overlay_rpc_expect_ok(
+        overlay_ip,
+        peer_rpc_port,
+        DaemonRequest::MeshStandby { force: true },
+    )
+    .await
+}
+
+async fn log_remote_enable_rollback(
+    machine: &MachineRecord,
+    peer_rpc_port: u16,
+    original_error: &str,
+) {
+    if let Err(rollback_error) = rollback_remote_enable(machine.overlay_ip, peer_rpc_port).await {
+        tracing::warn!(
+            machine = %machine.id,
+            error = %rollback_error,
+            original_error,
+            "remote enable rollback failed"
+        );
+    }
 }
 
 async fn overlay_self_record(
