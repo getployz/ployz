@@ -11,13 +11,11 @@ use ployz_orchestrator::coordination::{
     PrepareVote, Reservation, ReservationId, ResourceKey, Vote, quorum_prepare,
 };
 use ployz_orchestrator::ipam::pick_candidate_subnet;
-use ployz_orchestrator::machine_liveness::machine_is_fresh;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_sdk::Transport;
 use ployz_store_api::{InviteStore, MachineStore};
 use ployz_types::model::{
-    JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp,
-    Participation,
+    JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineRecord, OverlayIp, Participation,
 };
 use ployz_types::time::now_unix_secs;
 use std::collections::HashSet;
@@ -556,7 +554,7 @@ impl DaemonState {
             .filter_map(|machine| machine.subnet)
             .collect::<HashSet<_>>();
         taken.extend(self.reservations.active_subnets(now).await);
-        let quorum_peers = coordination_peers(&machines, &self.identity.machine_id, now);
+        let quorum_peers = coordination_peers(&machines, &self.identity.machine_id);
 
         for _ in 0..MAX_SUBNET_ATTEMPTS {
             let Some(candidate) =
@@ -895,13 +893,10 @@ fn machine_bias_seed(machine_id: &MachineId) -> u64 {
 fn coordination_peers(
     machines: &[MachineRecord],
     self_id: &MachineId,
-    now: u64,
 ) -> Vec<CoordinationPeer> {
     machines
         .iter()
         .filter(|machine| machine.id != *self_id)
-        .filter(|machine| machine.status != MachineStatus::Down)
-        .filter(|machine| machine_is_fresh(machine, now))
         .filter(|machine| match machine.participation {
             Participation::Disabled => false,
             Participation::Enabled | Participation::Draining => true,
