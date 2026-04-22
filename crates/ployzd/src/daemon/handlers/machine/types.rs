@@ -33,6 +33,7 @@ pub(super) enum MachineAddStage {
     SelfRecorded,
     TransientPeerInstalled,
     Ready,
+    Enabled,
     Finalized,
 }
 
@@ -45,6 +46,7 @@ impl fmt::Display for MachineAddStage {
             Self::SelfRecorded => "self-recorded",
             Self::TransientPeerInstalled => "transient-peer-installed",
             Self::Ready => "ready",
+            Self::Enabled => "enabled",
             Self::Finalized => "finalized",
         };
         f.write_str(value)
@@ -62,6 +64,7 @@ impl FromStr for MachineAddStage {
             "self-recorded" => Ok(Self::SelfRecorded),
             "transient-peer-installed" => Ok(Self::TransientPeerInstalled),
             "ready" => Ok(Self::Ready),
+            "enabled" => Ok(Self::Enabled),
             "finalized" => Ok(Self::Finalized),
             _ => Err(format!("unknown machine add stage '{value}'")),
         }
@@ -74,6 +77,7 @@ pub(super) enum MachineAddFailure {
     Join { reason: String },
     SelfRecord { reason: String },
     Ready { reason: String },
+    Enable { reason: String },
 }
 
 impl MachineAddFailure {
@@ -83,7 +87,8 @@ impl MachineAddFailure {
             Self::Preflight { reason }
             | Self::Join { reason }
             | Self::SelfRecord { reason }
-            | Self::Ready { reason } => reason,
+            | Self::Ready { reason }
+            | Self::Enable { reason } => reason,
         }
     }
 }
@@ -108,6 +113,7 @@ pub(super) struct MachineAddReport {
     pub failed_join: Vec<String>,
     pub failed_self_record: Vec<String>,
     pub failed_ready: Vec<String>,
+    pub failed_enable: Vec<String>,
     awaiting_payload: Vec<MachineAwaitingSelfPublication>,
 }
 
@@ -137,6 +143,7 @@ impl MachineAddReport {
                     MachineAddFailure::Join { .. } => self.failed_join.push(line),
                     MachineAddFailure::SelfRecord { .. } => self.failed_self_record.push(line),
                     MachineAddFailure::Ready { .. } => self.failed_ready.push(line),
+                    MachineAddFailure::Enable { .. } => self.failed_enable.push(line),
                 }
             }
         }
@@ -148,6 +155,7 @@ impl MachineAddReport {
             || !self.failed_join.is_empty()
             || !self.failed_self_record.is_empty()
             || !self.failed_ready.is_empty()
+            || !self.failed_enable.is_empty()
     }
 
     #[must_use]
@@ -159,6 +167,7 @@ impl MachineAddReport {
             failed_join: self.failed_join.clone(),
             failed_self_record: self.failed_self_record.clone(),
             failed_ready: self.failed_ready.clone(),
+            failed_enable: self.failed_enable.clone(),
         }
     }
 }
