@@ -8,6 +8,7 @@ use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_orchestrator::network::endpoints::detect_endpoints;
 use ployz_store_api::MachineStore;
 use ployz_types::model::{JoinResponse, MachineRecord, NetworkName};
+use std::path::Path;
 use tracing::warn;
 
 use crate::daemon::setup::MeshStartOptions;
@@ -645,14 +646,24 @@ impl DaemonState {
                 return self.err("IO_ERROR", format!("load network config: {error}"));
             }
         };
+        let previous_subnet = config.subnet;
         config.subnet = Some(assigned_subnet);
         if let Err(error) = config.save(&config_path) {
             return self.err("IO_ERROR", format!("save network config: {error}"));
         }
         if let Err(error) = self.restart_active_runtime_from_config(&network_name).await {
+            let rollback_error =
+                restore_network_config_subnet(&config_path, &mut config, previous_subnet).err();
             return self.err(
                 "NETWORK_RESTART_FAILED",
-                format!("failed to promote machine: {error}"),
+                match rollback_error {
+                    Some(rollback_error) => {
+                        format!(
+                            "failed to promote machine: {error}; failed to restore config: {rollback_error}"
+                        )
+                    }
+                    None => format!("failed to promote machine: {error}"),
+                },
             );
         }
         let Some(active) = self.active.as_mut() else {
@@ -683,6 +694,17 @@ impl DaemonState {
         }
         self.ok(format!("machine promoted with subnet {}", assigned_subnet))
     }
+}
+
+fn restore_network_config_subnet(
+    config_path: &Path,
+    config: &mut NetworkConfig,
+    subnet: Option<ipnet::Ipv4Net>,
+) -> Result<(), String> {
+    config.subnet = subnet;
+    config
+        .save(config_path)
+        .map_err(|error| format!("restore network config: {error}"))
 }
 
 fn bootstrap_info_from_record(record: &MachineRecord) -> BootstrapInfo {
@@ -840,6 +862,30 @@ mod tests {
         let persisted = NetworkConfig::load(&config_path).expect("load existing config");
         assert_eq!(persisted.id, existing.id);
         assert_eq!(persisted.subnet, existing.subnet);
+    }
+
+    #[test]
+    fn restore_network_config_subnet_restores_previous_value() {
+        let identity = Identity::generate(MachineId("joiner".into()), [10; 32]);
+        let data_dir = unique_temp_dir("ployz-promote-rollback");
+        let config_path = NetworkConfig::path(&data_dir, "alpha");
+        let previous_subnet = Some("10.210.1.0/24".parse().expect("valid subnet"));
+        let mut config = NetworkConfig::new(
+            ployz_types::model::NetworkName("alpha".into()),
+            &identity.public_key,
+            "10.210.0.0/16",
+            previous_subnet.expect("subnet present"),
+        );
+        config.save(&config_path).expect("save initial config");
+
+        config.subnet = Some("10.210.2.0/24".parse().expect("valid subnet"));
+        config.save(&config_path).expect("save promoted config");
+
+        restore_network_config_subnet(&config_path, &mut config, previous_subnet)
+            .expect("restore subnet");
+
+        let persisted = NetworkConfig::load(&config_path).expect("load restored config");
+        assert_eq!(persisted.subnet, previous_subnet);
     }
 
     async fn make_active_state() -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {
