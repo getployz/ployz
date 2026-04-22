@@ -100,7 +100,6 @@ mod tests {
             endpoints: vec![],
             status: MachineStatus::Unknown,
             participation: Participation::Disabled,
-            last_heartbeat: 0,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),

@@ -10,34 +10,34 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-pub(crate) const MESH_PROBE_PORT: u16 = 51821;
+pub const MESH_PROBE_PORT: u16 = 51821;
 const PROBE_REQUEST: &[u8; 4] = b"PLZ?";
 const PROBE_RESPONSE: &[u8; 4] = b"OK!!";
-pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(750);
+pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 const PROBE_LISTENER_BIND_RETRY_DELAY: Duration = Duration::from_millis(100);
 const PROBE_LISTENER_BIND_RETRY_ATTEMPTS: u8 = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TcpProbeStatus {
+pub enum TcpProbeStatus {
     Reachable,
     Unreachable,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct TcpProbeResult {
-    pub(crate) status: TcpProbeStatus,
-    pub(crate) rtt: Option<Duration>,
+pub struct TcpProbeResult {
+    pub status: TcpProbeStatus,
+    pub rtt: Option<Duration>,
 }
 
 impl TcpProbeResult {
-    fn reachable(rtt: Duration) -> Self {
+    pub(crate) fn reachable(rtt: Duration) -> Self {
         Self {
             status: TcpProbeStatus::Reachable,
             rtt: Some(rtt),
         }
     }
 
-    fn unreachable() -> Self {
+    pub(crate) fn unreachable() -> Self {
         Self {
             status: TcpProbeStatus::Unreachable,
             rtt: None,
@@ -111,28 +111,6 @@ pub(crate) async fn probe_endpoints_parallel(
     results
 }
 
-pub(crate) async fn probe_overlay_ips_parallel(
-    overlay_ips: &[OverlayIp],
-) -> HashMap<OverlayIp, TcpProbeResult> {
-    let mut probes = FuturesUnordered::new();
-    for overlay_ip in overlay_ips {
-        let overlay_ip = *overlay_ip;
-        probes.push(async move {
-            let result = match probe_overlay_ip(overlay_ip, PROBE_TIMEOUT).await {
-                Some(rtt) => TcpProbeResult::reachable(rtt),
-                None => TcpProbeResult::unreachable(),
-            };
-            (overlay_ip, result)
-        });
-    }
-
-    let mut results = HashMap::with_capacity(overlay_ips.len());
-    while let Some((overlay_ip, result)) = probes.next().await {
-        results.insert(overlay_ip, result);
-    }
-    results
-}
-
 async fn probe_endpoint(endpoint: &str, timeout: Duration) -> Option<Duration> {
     let addr = probe_socket_addr(endpoint)?;
     probe_addr(addr, timeout).await
@@ -144,6 +122,16 @@ async fn probe_overlay_ip(overlay_ip: OverlayIp, timeout: Duration) -> Option<Du
         timeout,
     )
     .await
+}
+
+pub(crate) async fn probe_overlay_ip_with_timeout(
+    overlay_ip: OverlayIp,
+    timeout: Duration,
+) -> TcpProbeResult {
+    match probe_overlay_ip(overlay_ip, timeout).await {
+        Some(rtt) => TcpProbeResult::reachable(rtt),
+        None => TcpProbeResult::unreachable(),
+    }
 }
 
 async fn probe_addr(addr: SocketAddr, timeout: Duration) -> Option<Duration> {
