@@ -63,7 +63,7 @@ jobs:
         run: cargo build -p ployz-e2e
 
       - name: Run HostExec E2E suite
-        run: cargo run -p ployz-e2e -- --image ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.suffix }} --artifacts-dir e2e-artifacts --fail-fast
+        run: cargo run -p ployz-e2e -- --image ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.suffix }} --artifacts-dir e2e-artifacts --parallel --fail-fast
 
       - name: Upload HostExec E2E artifacts
         if: always()
