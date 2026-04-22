@@ -23,6 +23,24 @@
 - When in doubt, optimize for testable seams, narrow public surfaces, and
   moving policy out of binaries and adapters.
 
+# Operational Design Rules
+
+- Durable cluster state should represent operator intent and explicit lifecycle
+  events, not inferred liveness.
+- Prefer imperative transitions triggered by commands or concrete runtime events
+  over background self-healing or correction loops.
+- Mutating control-plane operations should fail fast and fail loudly when
+  required peers or preconditions are missing.
+- Reachability checks belong at decision time through direct probes, RPC, or
+  session establishment, not freshness timestamps.
+- Keep placement, participation, coordination, and diagnostic classification
+  policy centralized in orchestrator core helpers, not duplicated in daemon
+  handlers or UI shaping code.
+- Operator-facing surfaces should distinguish stored intent, explicit status,
+  and live observations rather than collapsing them into one derived field.
+- Background tasks may publish explicit events or observations, but they should
+  not silently rewrite cluster truth.
+
 # Defensive Rust Rules
 
 - Use slice patterns over indexing: `let [a, b] = slice else { ... }` not `slice[0]`
