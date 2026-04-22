@@ -14,7 +14,13 @@ chmod 600 /root/.ssh/authorized_keys
 
 install -d -m 755 /run/sshd /var/lib/ployz
 rm -f /var/run/docker.sock /run/docker.sock /run/docker.pid
-/usr/local/bin/e2e-dind.sh dockerd --host=unix:///var/run/docker.sock >/var/log/dockerd.log 2>&1 &
+docker_storage_driver="${PLOYZ_E2E_DOCKER_STORAGE_DRIVER:-vfs}"
+echo "ployz-e2e dockerd storage driver: ${docker_storage_driver}"
+/usr/local/bin/e2e-dind.sh \
+  dockerd \
+  --host=unix:///var/run/docker.sock \
+  --storage-driver="${docker_storage_driver}" \
+  >/var/log/dockerd.log 2>&1 &
 
 for _ in $(seq 1 100); do
   if docker info >/dev/null 2>&1; then
