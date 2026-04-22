@@ -36,7 +36,6 @@ async fn machine_list_shows_disabled_explicitly() {
         "peer-disabled",
         "10.210.1.0/24",
         Participation::Disabled,
-        0,
         PublicKey([2; 32]),
     );
     store
@@ -58,7 +57,6 @@ async fn machine_list_shows_down_liveness() {
         "peer-down",
         "10.210.1.0/24",
         Participation::Enabled,
-        now_unix_secs(),
         PublicKey([2; 32]),
     );
     down.status = MachineStatus::Down;
@@ -91,21 +89,18 @@ fn plan_local_subnet_heal_reassigns_losing_machine() {
             "alpha",
             "10.210.0.0/24",
             Participation::Enabled,
-            0,
             PublicKey([2; 32]),
         ),
         test_machine_record(
             "beta",
             "10.210.1.0/24",
             Participation::Enabled,
-            0,
             PublicKey([3; 32]),
         ),
         test_machine_record(
             "gamma",
             "10.210.1.0/24",
             Participation::Enabled,
-            0,
             PublicKey([4; 32]),
         ),
     ];
@@ -131,21 +126,18 @@ fn plan_local_subnet_heal_keeps_winner_in_place() {
             "alpha",
             "10.210.0.0/24",
             Participation::Enabled,
-            0,
             PublicKey([2; 32]),
         ),
         test_machine_record(
             "beta",
             "10.210.1.0/24",
             Participation::Enabled,
-            0,
             PublicKey([3; 32]),
         ),
         test_machine_record(
             "gamma",
             "10.210.1.0/24",
             Participation::Enabled,
-            0,
             PublicKey([4; 32]),
         ),
     ];
@@ -168,21 +160,18 @@ fn plan_local_subnet_heal_is_noop_after_subnet_changes() {
             "alpha",
             "10.210.0.0/24",
             Participation::Enabled,
-            0,
             PublicKey([2; 32]),
         ),
         test_machine_record(
             "beta",
             "10.210.1.0/24",
             Participation::Enabled,
-            0,
             PublicKey([3; 32]),
         ),
         test_machine_record(
             "gamma",
             "10.210.2.0/24",
             Participation::Enabled,
-            0,
             PublicKey([4; 32]),
         ),
     ];
@@ -213,7 +202,6 @@ async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
         "stale-peer",
         "10.210.1.0/24",
         Participation::Enabled,
-        0,
         PublicKey([3; 32]),
     );
     stale_peer.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
@@ -447,7 +435,6 @@ async fn machine_remove_refuses_enabled_without_force() {
             "peer-1",
             "10.210.1.0/24",
             Participation::Enabled,
-            10,
             PublicKey([2; 32]),
         ))
         .await
@@ -466,7 +453,6 @@ async fn machine_remove_deletes_disabled_record() {
             "peer-1",
             "10.210.1.0/24",
             Participation::Disabled,
-            10,
             PublicKey([2; 32]),
         ))
         .await
@@ -567,7 +553,6 @@ async fn reserve_machine_subnet_clears_local_hold_when_quorum_denies() {
             "peer-quorum",
             "10.210.1.0/24",
             Participation::Enabled,
-            now_unix_secs(),
             PublicKey([6; 32]),
         ))
         .await
@@ -612,7 +597,6 @@ async fn reserve_machine_subnet_releases_peer_holds_when_quorum_denies() {
             name,
             "10.210.1.0/24",
             Participation::Enabled,
-            now_unix_secs(),
             PublicKey([key_seed; 32]),
         );
         peer.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
@@ -853,7 +837,6 @@ async fn machine_enable_rolls_back_remote_promote_when_self_record_fails() {
         "peer",
         "10.210.1.0/24",
         Participation::Disabled,
-        now_unix_secs(),
         PublicKey([7; 32]),
     );
     peer.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
@@ -949,7 +932,6 @@ async fn memory_mode_local_subnet_heal_updates_local_config_and_store() {
             "founder",
             "10.210.1.0/24",
             Participation::Enabled,
-            0,
             PublicKey([2; 32]),
         ))
         .await
@@ -959,7 +941,6 @@ async fn memory_mode_local_subnet_heal_updates_local_config_and_store() {
             "peer",
             "10.210.1.0/24",
             Participation::Enabled,
-            0,
             PublicKey([3; 32]),
         ))
         .await
@@ -1039,7 +1020,6 @@ async fn local_subnet_heal_skips_when_store_unhealthy() {
             "founder",
             "10.210.1.0/24",
             Participation::Enabled,
-            0,
             PublicKey([2; 32]),
         ))
         .await
@@ -1049,7 +1029,6 @@ async fn local_subnet_heal_skips_when_store_unhealthy() {
             "peer",
             "10.210.1.0/24",
             Participation::Enabled,
-            0,
             PublicKey([3; 32]),
         ))
         .await
@@ -1100,7 +1079,6 @@ async fn local_subnet_heal_skips_when_mesh_not_running() {
             "founder",
             "10.210.1.0/24",
             Participation::Enabled,
-            0,
             PublicKey([2; 32]),
         ))
         .await
@@ -1110,7 +1088,6 @@ async fn local_subnet_heal_skips_when_mesh_not_running() {
             "peer",
             "10.210.1.0/24",
             Participation::Enabled,
-            0,
             PublicKey([3; 32]),
         ))
         .await
@@ -1200,7 +1177,6 @@ async fn make_state_with_remote_port(
         "founder",
         "10.210.0.0/24",
         Participation::Disabled,
-        0,
         identity.public_key.clone(),
     );
     store
@@ -1296,7 +1272,6 @@ fn test_machine_record(
     id: &str,
     subnet: &str,
     participation: Participation,
-    _last_heartbeat: u64,
     public_key: PublicKey,
 ) -> MachineRecord {
     MachineRecord {
