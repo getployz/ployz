@@ -47,15 +47,25 @@ output_dir_parent() {
 
 cache_key() {
   local repo_dir=$1
+  local cache_root
+  if cache_root="$(git -C "${repo_dir}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+    :
+  elif cache_root="$(git -C "${repo_dir}" rev-parse --git-common-dir 2>/dev/null)"; then
+    if [[ "${cache_root}" != /* ]]; then
+      cache_root="$(cd "${repo_dir}" && cd "${cache_root}" && pwd -P)"
+    fi
+  else
+    cache_root="$(cd "${repo_dir}" && pwd -P)"
+  fi
   if command -v shasum >/dev/null 2>&1; then
-    printf '%s' "${repo_dir}" | shasum -a 256 | awk '{print substr($1, 1, 12)}'
+    printf '%s' "${cache_root}" | shasum -a 256 | awk '{print substr($1, 1, 12)}'
     return
   fi
   if command -v sha256sum >/dev/null 2>&1; then
-    printf '%s' "${repo_dir}" | sha256sum | awk '{print substr($1, 1, 12)}'
+    printf '%s' "${cache_root}" | sha256sum | awk '{print substr($1, 1, 12)}'
     return
   fi
-  printf '%s' "$(basename "${repo_dir}")"
+  printf '%s' "$(basename "${cache_root}")"
 }
 
 build_linux_payload_in_docker() {

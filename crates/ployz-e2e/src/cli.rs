@@ -29,16 +29,20 @@ pub(crate) struct Cli {
 pub(crate) enum Scenario {
     SingleNodeInit,
     MachineAddBasic,
-    SplitBrainConcurrentAddSubnetHeal,
+    MachineDisableEnableCycle,
+    TwoNodeEqualSplitAddDenied,
+    ThreeNodeMajorityAddSucceeds,
     WireguardReconnect,
     DeploySmoke,
 }
 
 impl Scenario {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 7] = [
         Self::SingleNodeInit,
         Self::MachineAddBasic,
-        Self::SplitBrainConcurrentAddSubnetHeal,
+        Self::MachineDisableEnableCycle,
+        Self::TwoNodeEqualSplitAddDenied,
+        Self::ThreeNodeMajorityAddSucceeds,
         Self::WireguardReconnect,
         Self::DeploySmoke,
     ];
@@ -53,10 +57,12 @@ impl Scenario {
         match self {
             Self::SingleNodeInit | Self::DeploySmoke => &["founder"],
             Self::MachineAddBasic => &["founder", "joiner"],
+            Self::MachineDisableEnableCycle => &["founder", "peer"],
             Self::WireguardReconnect => &["founder", "peer"],
-            Self::SplitBrainConcurrentAddSubnetHeal => &[
-                "founder", "peer", "joiner1", "joiner2", "joiner3", "joiner4", "joiner5", "joiner6",
-            ],
+            Self::TwoNodeEqualSplitAddDenied => &["founder", "peer", "target1", "target2"],
+            Self::ThreeNodeMajorityAddSucceeds => {
+                &["founder", "peer1", "peer2", "target1", "target2"]
+            }
         }
     }
 
@@ -65,7 +71,9 @@ impl Scenario {
         match self {
             Self::SingleNodeInit => "single_node_init",
             Self::MachineAddBasic => "machine_add_basic",
-            Self::SplitBrainConcurrentAddSubnetHeal => "split_brain_concurrent_add_subnet_heal",
+            Self::MachineDisableEnableCycle => "machine_disable_enable_cycle",
+            Self::TwoNodeEqualSplitAddDenied => "two_node_equal_split_add_denied",
+            Self::ThreeNodeMajorityAddSucceeds => "three_node_majority_add_succeeds",
             Self::WireguardReconnect => "wireguard_reconnect",
             Self::DeploySmoke => "deploy_smoke",
         }

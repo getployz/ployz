@@ -638,6 +638,7 @@ mod tests {
             id: MachineId(id.into()),
             public_key: PublicKey([7; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+            control_target: None,
             subnet: None,
             bridge_ip: None,
             endpoints: vec!["127.0.0.1:51820".into()],

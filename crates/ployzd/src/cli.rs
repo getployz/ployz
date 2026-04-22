@@ -339,6 +339,17 @@ pub(crate) enum MachineAction {
         #[arg(required = true, num_args = 1..)]
         targets: Vec<String>,
     },
+    Enable {
+        target: String,
+    },
+    Drain {
+        target: String,
+    },
+    Disable {
+        target: String,
+        #[arg(long)]
+        force: bool,
+    },
     Rm {
         id: String,
         #[arg(long)]
@@ -360,6 +371,10 @@ pub(crate) enum MachineInviteAction {
     Create {
         #[arg(long, default_value_t = 600)]
         ttl_secs: u64,
+    },
+    List,
+    Revoke {
+        invite_id: String,
     },
     Import {
         #[arg(long)]
