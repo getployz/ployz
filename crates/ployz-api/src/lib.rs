@@ -272,6 +272,8 @@ pub struct MachineAddPayload {
     pub failed_self_record: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed_ready: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_enable: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

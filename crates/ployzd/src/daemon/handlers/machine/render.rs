@@ -69,6 +69,7 @@ pub(super) fn render_machine_add_report(report: &MachineAddReport) -> String {
     push_summary_section(&mut lines, "failed_join", &report.failed_join);
     push_summary_section(&mut lines, "failed_self_record", &report.failed_self_record);
     push_summary_section(&mut lines, "failed_ready", &report.failed_ready);
+    push_summary_section(&mut lines, "failed_enable", &report.failed_enable);
     lines.join("\n")
 }
 
