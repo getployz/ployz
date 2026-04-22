@@ -32,6 +32,7 @@ pub async fn run_daemon(
     cluster_cidr: String,
     subnet_prefix_len: u8,
     remote_control_port: u16,
+    peer_control_target: Option<String>,
     gateway_listen_addr: String,
     gateway_threads: usize,
     daemon_metrics_listen_addr: Option<String>,
@@ -47,6 +48,7 @@ pub async fn run_daemon(
         cluster_cidr,
         subnet_prefix_len,
         remote_control_port,
+        peer_control_target,
         gateway_listen_addr,
         gateway_threads,
         daemon_metrics_listen_addr,
@@ -68,6 +70,7 @@ async fn run_daemon_with_resource_metrics_source(
     cluster_cidr: String,
     subnet_prefix_len: u8,
     remote_control_port: u16,
+    peer_control_target: Option<String>,
     gateway_listen_addr: String,
     gateway_threads: usize,
     daemon_metrics_listen_addr: Option<String>,
@@ -84,6 +87,7 @@ async fn run_daemon_with_resource_metrics_source(
         cluster_cidr,
         subnet_prefix_len,
         remote_control_port,
+        peer_control_target,
         gateway_listen_addr,
         gateway_threads,
         daemon_metrics_listen_addr,
@@ -104,6 +108,7 @@ async fn run_daemon_inner(
     cluster_cidr: String,
     subnet_prefix_len: u8,
     remote_control_port: u16,
+    peer_control_target: Option<String>,
     gateway_listen_addr: String,
     gateway_threads: usize,
     daemon_metrics_listen_addr: Option<String>,
@@ -124,8 +129,9 @@ async fn run_daemon_inner(
 
     let listener_cancel = cancel.clone();
     let socket_owned = socket_path.to_owned();
+    let listener_command_tx = command_tx.clone();
     let listener_handle = tokio::spawn(async move {
-        if let Err(error) = serve(&socket_owned, command_tx, listener_cancel).await {
+        if let Err(error) = serve(&socket_owned, listener_command_tx, listener_cancel).await {
             tracing::error!(?error, "socket listener failed");
         }
     });
@@ -140,7 +146,7 @@ async fn run_daemon_inner(
         std::process::exit(1);
     });
 
-    let state = Arc::new(RwLock::new(DaemonState::new(
+    let mut daemon_state = DaemonState::new(
         data_dir,
         identity,
         runtime_target,
@@ -153,7 +159,10 @@ async fn run_daemon_inner(
         gateway_threads,
         dns_metrics_listen_addr,
         gateway_metrics_listen_addr,
-    )));
+    );
+    daemon_state.peer_control_target = peer_control_target;
+    daemon_state.command_tx = Some(command_tx.clone());
+    let state = Arc::new(RwLock::new(daemon_state));
 
     if let Some(metrics_listen_addr) = daemon_metrics_listen_addr.as_deref() {
         let metrics_addr = spawn_metrics_listener(metrics_listen_addr)
@@ -281,11 +290,13 @@ async fn shutdown_active_mesh(state: &Arc<RwLock<DaemonState>>) {
             config: _config,
             mut mesh,
             remote_control,
+            peer_control,
             gateway,
             dns,
         } = active;
         let _ = dns.detach().await;
         let _ = gateway.detach().await;
+        let _ = peer_control.shutdown().await;
         let _ = remote_control.shutdown().await;
         let _ = mesh.detach().await;
     }
@@ -327,6 +338,7 @@ mod tests {
                 "10.210.0.0/16".into(),
                 24,
                 4317,
+                None,
                 "127.0.0.1:8080".into(),
                 1,
                 Some(metrics_addr.to_string()),
@@ -412,6 +424,7 @@ mod tests {
                 "10.210.0.0/16".into(),
                 24,
                 4317,
+                None,
                 "127.0.0.1:8080".into(),
                 1,
                 Some(metrics_addr.to_string()),

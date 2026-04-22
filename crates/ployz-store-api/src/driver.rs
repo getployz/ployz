@@ -119,12 +119,38 @@ impl InviteStore for StoreDriver {
         async move { self.backend.create_invite(invite).await }
     }
 
-    fn consume_invite<'a>(
+    fn get_invite<'a>(
+        &'a self,
+        invite_id: &'a str,
+    ) -> impl std::future::Future<Output = Result<Option<InviteRecord>>> + Send + 'a {
+        async move { self.backend.get_invite(invite_id).await }
+    }
+
+    fn list_invites(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<InviteRecord>>> + Send + '_ {
+        async move { self.backend.list_invites().await }
+    }
+
+    fn redeem_invite<'a>(
+        &'a self,
+        invite_id: &'a str,
+        machine_id: &'a MachineId,
+        now_unix_secs: u64,
+    ) -> impl std::future::Future<Output = Result<InviteRecord>> + Send + 'a {
+        async move {
+            self.backend
+                .redeem_invite(invite_id, machine_id, now_unix_secs)
+                .await
+        }
+    }
+
+    fn revoke_invite<'a>(
         &'a self,
         invite_id: &'a str,
         now_unix_secs: u64,
-    ) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
-        async move { self.backend.consume_invite(invite_id, now_unix_secs).await }
+    ) -> impl std::future::Future<Output = Result<InviteRecord>> + Send + 'a {
+        async move { self.backend.revoke_invite(invite_id, now_unix_secs).await }
     }
 }
 
@@ -271,8 +297,27 @@ impl StoreBackend for MemoryStoreBackend {
         self.store.create_invite(invite).await
     }
 
-    async fn consume_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<()> {
-        self.store.consume_invite(invite_id, now_unix_secs).await
+    async fn get_invite(&self, invite_id: &str) -> Result<Option<InviteRecord>> {
+        self.store.get_invite(invite_id).await
+    }
+
+    async fn list_invites(&self) -> Result<Vec<InviteRecord>> {
+        self.store.list_invites().await
+    }
+
+    async fn redeem_invite(
+        &self,
+        invite_id: &str,
+        machine_id: &MachineId,
+        now_unix_secs: u64,
+    ) -> Result<InviteRecord> {
+        self.store
+            .redeem_invite(invite_id, machine_id, now_unix_secs)
+            .await
+    }
+
+    async fn revoke_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<InviteRecord> {
+        self.store.revoke_invite(invite_id, now_unix_secs).await
     }
 
     async fn load_routing_state(&self) -> Result<RoutingState> {

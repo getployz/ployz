@@ -2,12 +2,13 @@ use crate::cli::Scenario;
 use crate::error::{Error, Result};
 use crate::scenarios;
 use crate::support::{
-    CommandOutput, docker_outer, docker_outer_raw, parse_ready, pick_free_port, run_command,
-    run_command_expect_ok, wait_until,
+    CommandOutput, docker_outer, docker_outer_raw, parse_ready, parse_ready_payload,
+    pick_free_port, run_command, run_command_expect_ok, wait_until,
 };
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -23,6 +24,10 @@ const PARTITION_OUTPUT_CHAIN: &str = "PLOYZ_E2E_PARTITION_OUTPUT";
 const E2E_PAYLOAD_BUILD_PROFILE: &str = "debug";
 const CORROSION_LOG_PATH_ENV: &str = "PLOYZ_CORROSION_LOG_PATH";
 const CORROSION_RUST_LOG_ENV: &str = "PLOYZ_CORROSION_RUST_LOG";
+const PAYLOAD_STAMP_FILE: &str = ".payload-stamp";
+const PAYLOAD_LOCK_FILE: &str = ".payload.lock";
+const PAYLOAD_LOCK_TIMEOUT: Duration = Duration::from_secs(300);
+const PAYLOAD_LOCK_POLL: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Clone)]
 pub(crate) struct Node {
@@ -46,6 +51,19 @@ pub(crate) struct ScenarioRun {
     public_key: String,
     keep_failed: bool,
     nodes: Vec<Node>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SubnetExpectation {
+    Present,
+    Absent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MachineExpectation<'a> {
+    pub(crate) id: &'a str,
+    pub(crate) participation: &'a str,
+    pub(crate) subnet: SubnetExpectation,
 }
 
 impl ScenarioRun {
@@ -242,6 +260,48 @@ impl ScenarioRun {
         self.wait_mesh_ready_default(self.node(node_name)?)
     }
 
+    pub(crate) fn wait_mesh_standby_name(&self, node_name: &str) -> Result<()> {
+        let node = self.node(node_name)?;
+        wait_until(READY_WAIT_TIMEOUT, || {
+            let Ok(output) = self.ssh_run(node, "ployzd --plain mesh ready --json") else {
+                return Ok(false);
+            };
+            if !output.status.success() {
+                return Ok(false);
+            }
+            let payload = parse_ready_payload(output.stdout.trim())?;
+            Ok(payload.ready
+                && !payload.workload_subnet_present
+                && payload.participation == "disabled")
+        })
+        .map_err(|error| {
+            Error::Message(format!(
+                "mesh did not become standby-ready on {}: {error}",
+                node.name
+            ))
+        })
+    }
+
+    pub(crate) fn wait_mesh_absent_name(&self, node_name: &str) -> Result<()> {
+        let node = self.node(node_name)?;
+        wait_until(READY_WAIT_TIMEOUT, || {
+            let Ok(output) = self.ssh_run(node, "ployzd --plain mesh ready --json") else {
+                return Ok(false);
+            };
+            if output.status.success() {
+                return Ok(false);
+            }
+            let combined = output.combined();
+            Ok(combined.contains("NO_RUNNING_NETWORK") || combined.contains("no mesh running"))
+        })
+        .map_err(|error| {
+            Error::Message(format!(
+                "mesh did not become absent on {}: {error}",
+                node.name
+            ))
+        })
+    }
+
     pub(crate) fn machine_add(&self, controller_name: &str, target_name: &str) -> Result<()> {
         self.machine_add_many(controller_name, &[target_name])
     }
@@ -257,6 +317,22 @@ impl ScenarioRun {
         Ok(())
     }
 
+    pub(crate) fn machine_enable(&self, controller_name: &str, target_name: &str) -> Result<()> {
+        self.ssh_expect_ok_name(
+            controller_name,
+            &format!("ployzd machine enable {target_name}"),
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn machine_disable(&self, controller_name: &str, target_name: &str) -> Result<()> {
+        self.ssh_expect_ok_name(
+            controller_name,
+            &format!("ployzd machine disable {target_name}"),
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn machine_add_command(&self, target_names: &[&str]) -> Result<String> {
         let mut command = String::from("ployzd machine add --identity /e2e-keys/id_ed25519");
 
@@ -268,57 +344,26 @@ impl ScenarioRun {
         Ok(command)
     }
 
-    pub(crate) fn tick_nodes(&self, node_names: &[&str], repeat: u32) -> Result<()> {
-        let commands = node_names
-            .iter()
-            .map(|node_name| (*node_name, format!("ployzd debug tick --repeat {repeat}")))
-            .collect::<Vec<_>>();
-        self.ssh_expect_ok_concurrent(&commands)?;
-        Ok(())
-    }
-
     pub(crate) fn wait_mesh_ready_default(&self, node: &Node) -> Result<()> {
         self.wait_mesh_ready(node, READY_WAIT_TIMEOUT)
     }
 
-    pub(crate) fn wait_all_machine_states(
+    pub(crate) fn wait_machine_rows(
         &self,
         node_name: &str,
-        machine_ids: &[&str],
-        expected_state: &str,
+        expected_rows: &[MachineExpectation<'_>],
     ) -> Result<()> {
         let node = self.node(node_name)?;
-        let joined_ids = machine_ids.join(", ");
-
-        wait_until(STATE_WAIT_TIMEOUT, || {
-            let Ok(output) = self.ssh_run(node, "ployzd machine ls") else {
-                return Ok(false);
-            };
-            if !output.status.success() {
-                return Ok(false);
-            }
-            Ok(machine_ids.iter().all(|machine_id| {
-                machine_state(&output.stdout, machine_id).as_deref() == Some(expected_state)
-            }))
-        })
-        .map_err(|error| {
-            Error::Message(format!(
-                "machines '{joined_ids}' did not reach state '{expected_state}' on {}: {error}",
-                node.name
-            ))
-        })
-    }
-
-    pub(crate) fn wait_for_settled_machine_states(
-        &self,
-        node_name: &str,
-        expected_states: &[(&str, &str)],
-    ) -> Result<()> {
-        let node = self.node(node_name)?;
-        let expected_count = expected_states.len();
-        let expected_labels = expected_states
+        let expected_count = expected_rows.len();
+        let expected_labels = expected_rows
             .iter()
-            .map(|(machine_id, state)| format!("{machine_id}:{state}"))
+            .map(|expected| {
+                let subnet = match expected.subnet {
+                    SubnetExpectation::Present => "subnet=present",
+                    SubnetExpectation::Absent => "subnet=absent",
+                };
+                format!("{}:{}:{subnet}", expected.id, expected.participation)
+            })
             .collect::<Vec<_>>()
             .join(", ");
         let mut last_snapshot: Option<Vec<MachineRow>> = None;
@@ -338,75 +383,10 @@ impl ScenarioRun {
                 last_snapshot = None;
                 return Ok(false);
             }
-            if !expected_states.iter().all(|(machine_id, expected_state)| {
-                snapshot.iter().any(|row| {
-                    row.id == *machine_id
-                        && row.participation == *expected_state
-                        && row.subnet != "—"
-                })
-            }) {
-                consecutive_matches = 0;
-                last_snapshot = None;
-                return Ok(false);
-            }
-
-            if last_snapshot.as_ref() == Some(&snapshot) {
-                consecutive_matches = consecutive_matches.saturating_add(1);
-            } else {
-                consecutive_matches = 1;
-                last_snapshot = Some(snapshot);
-            }
-
-            Ok(consecutive_matches >= 3)
-        })
-        .map_err(|error| {
-            Error::Message(format!(
-                "machine state did not settle on {} for [{}]: {error}",
-                node.name, expected_labels
-            ))
-        })
-    }
-
-    pub(crate) fn wait_for_settled_machine_states_with_ticks(
-        &self,
-        node_name: &str,
-        expected_states: &[(&str, &str)],
-        tick_nodes: &[&str],
-        repeat: u32,
-    ) -> Result<()> {
-        let node = self.node(node_name)?;
-        let expected_count = expected_states.len();
-        let expected_labels = expected_states
-            .iter()
-            .map(|(machine_id, state)| format!("{machine_id}:{state}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let mut last_snapshot: Option<Vec<MachineRow>> = None;
-        let mut consecutive_matches: u8 = 0;
-
-        wait_until(STATE_WAIT_TIMEOUT, || {
-            self.tick_nodes(tick_nodes, repeat)?;
-
-            let Ok(output) = self.ssh_run(node, "ployzd machine ls") else {
-                return Ok(false);
-            };
-            if !output.status.success() {
-                return Ok(false);
-            }
-
-            let snapshot = machine_rows(&output.stdout);
-            if snapshot.len() != expected_count {
-                consecutive_matches = 0;
-                last_snapshot = None;
-                return Ok(false);
-            }
-            if !expected_states.iter().all(|(machine_id, expected_state)| {
-                snapshot.iter().any(|row| {
-                    row.id == *machine_id
-                        && row.participation == *expected_state
-                        && row.subnet != "—"
-                })
-            }) {
+            if !expected_rows
+                .iter()
+                .all(|expected| snapshot.iter().any(|row| row.matches(*expected)))
+            {
                 consecutive_matches = 0;
                 last_snapshot = None;
                 return Ok(false);
@@ -446,57 +426,6 @@ impl ScenarioRun {
         }
 
         Ok(())
-    }
-
-    pub(crate) fn wait_for_unique_machine_subnets_with_ticks(
-        &self,
-        node_name: &str,
-        tick_nodes: &[&str],
-        repeat: u32,
-    ) -> Result<()> {
-        wait_until(STATE_WAIT_TIMEOUT, || {
-            self.tick_nodes(tick_nodes, repeat)?;
-            match self.assert_unique_machine_subnets(node_name) {
-                Ok(()) => Ok(true),
-                Err(_) => Ok(false),
-            }
-        })
-        .map_err(|error| {
-            Error::Message(format!(
-                "machine subnets did not become unique on {node_name}: {error}"
-            ))
-        })
-    }
-
-    pub(crate) fn wait_for_machine_ids_with_subnets(
-        &self,
-        node_name: &str,
-        machine_ids: &[&str],
-    ) -> Result<()> {
-        let node = self.node(node_name)?;
-        let joined_ids = machine_ids.join(", ");
-
-        wait_until(STATE_WAIT_TIMEOUT, || {
-            let Ok(output) = self.ssh_run(node, "ployzd machine ls") else {
-                return Ok(false);
-            };
-            if !output.status.success() {
-                return Ok(false);
-            }
-
-            let snapshot = machine_rows(&output.stdout);
-            Ok(machine_ids.iter().all(|machine_id| {
-                snapshot
-                    .iter()
-                    .any(|row| row.id == *machine_id && row.subnet != "—")
-            }))
-        })
-        .map_err(|error| {
-            Error::Message(format!(
-                "machines '{joined_ids}' did not appear with subnets on {}: {error}",
-                node.name
-            ))
-        })
     }
 
     pub(crate) fn partition_groups(&self, left: &[&str], right: &[&str]) -> Result<()> {
@@ -553,7 +482,7 @@ impl ScenarioRun {
         self.ssh_expect_ok(self.node(node_name)?, script)
     }
 
-    pub(crate) fn ssh_expect_ok_concurrent(
+    pub(crate) fn ssh_run_concurrent(
         &self,
         commands: &[(&str, String)],
     ) -> Result<Vec<CommandOutput>> {
@@ -569,21 +498,13 @@ impl ScenarioRun {
         }
 
         let mut outputs = Vec::with_capacity(commands.len());
-        for ((node_name, script), handle) in commands.iter().zip(handles) {
+        for (node_name, handle) in commands.iter().map(|(node_name, _)| node_name).zip(handles) {
             let output = handle.join().map_err(|_| {
                 Error::Message(format!(
                     "concurrent ssh command panicked on node '{node_name}'"
                 ))
             })??;
-            if output.status.success() {
-                outputs.push(output);
-                continue;
-            }
-            return Err(Error::CommandFailed {
-                command: format!("ssh {node_name} -> {script}"),
-                stdout: output.stdout,
-                stderr: output.stderr,
-            });
+            outputs.push(output);
         }
 
         Ok(outputs)
@@ -670,6 +591,24 @@ impl ScenarioRun {
     }
 
     fn ensure_payload(&self) -> Result<()> {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| Error::Message("failed to resolve repo root".into()))?
+            .to_path_buf();
+        let artifacts_dir = self
+            .payload_dir
+            .parent()
+            .ok_or_else(|| Error::Message("payload dir has no parent".into()))?;
+        let _lock = acquire_payload_lock(artifacts_dir)?;
+        let stamp = payload_stamp(&repo_root, &self.image_platform, E2E_PAYLOAD_BUILD_PROFILE)?;
+        let stamp_path = self.payload_dir.join(PAYLOAD_STAMP_FILE);
+        if let Ok(existing) = fs::read_to_string(&stamp_path)
+            && existing == stamp
+        {
+            return Ok(());
+        }
+
         if self.payload_dir.exists() {
             fs::remove_dir_all(&self.payload_dir).map_err(|error| {
                 Error::Io(format!(
@@ -678,11 +617,6 @@ impl ScenarioRun {
                 ))
             })?;
         }
-        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(Path::parent)
-            .ok_or_else(|| Error::Message("failed to resolve repo root".into()))?
-            .to_path_buf();
         let script = repo_root.join("scripts/build-install-payload.sh");
         run_command_expect_ok(
             "bash",
@@ -696,6 +630,12 @@ impl ScenarioRun {
                 E2E_PAYLOAD_BUILD_PROFILE,
             ],
         )?;
+        fs::write(&stamp_path, stamp).map_err(|error| {
+            Error::Io(format!(
+                "write payload stamp '{}': {error}",
+                stamp_path.display()
+            ))
+        })?;
         Ok(())
     }
 
@@ -719,6 +659,7 @@ impl ScenarioRun {
             let image_id = format!("PLOYZ_E2E_IMAGE_ID={}", self.image_id);
             let scenario_name = format!("PLOYZ_E2E_SCENARIO={}", self.scenario.as_str());
             let node_name = format!("PLOYZ_E2E_NODE={name}");
+            let peer_control_target = format!("PLOYZ_PEER_CONTROL_TARGET={name}");
             let run_id = format!(
                 "PLOYZ_E2E_RUN_ID={}",
                 self.root_dir
@@ -748,6 +689,8 @@ impl ScenarioRun {
                 scenario_name,
                 "-e".to_string(),
                 node_name,
+                "-e".to_string(),
+                peer_control_target,
                 "-e".to_string(),
                 run_id,
             ];
@@ -917,6 +860,95 @@ impl ScenarioRun {
     }
 }
 
+fn payload_stamp(repo_root: &Path, target_platform: &str, build_profile: &str) -> Result<String> {
+    let script = r#"
+set -euo pipefail
+repo_root="$1"
+target_platform="$2"
+build_profile="$3"
+
+hash_cmd() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256
+    return
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum
+    return
+  fi
+  cksum
+}
+
+{
+  printf 'platform=%s\n' "$target_platform"
+  printf 'profile=%s\n' "$build_profile"
+  git -C "$repo_root" ls-files -z -- Cargo.toml Cargo.lock .corrosion-version ployz.sh crates scripts packaging \
+    | while IFS= read -r -d '' path; do
+        printf 'path=%s\n' "$path"
+        if [[ -f "$repo_root/$path" ]]; then
+          cat "$repo_root/$path"
+        else
+          printf '<missing>\n'
+        fi
+        printf '\n'
+      done
+} | hash_cmd | awk '{print $1}'
+"#;
+
+    let output = run_command_expect_ok(
+        "bash",
+        &[
+            "-lc",
+            script,
+            "--",
+            repo_root.to_string_lossy().as_ref(),
+            target_platform,
+            build_profile,
+        ],
+    )?;
+    Ok(output.stdout.trim().to_string())
+}
+
+struct PayloadLock {
+    path: PathBuf,
+}
+
+impl Drop for PayloadLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn acquire_payload_lock(artifacts_dir: &Path) -> Result<PayloadLock> {
+    let lock_path = artifacts_dir.join(PAYLOAD_LOCK_FILE);
+    let deadline = std::time::Instant::now() + PAYLOAD_LOCK_TIMEOUT;
+
+    loop {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(_) => return Ok(PayloadLock { path: lock_path }),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(Error::Io(format!(
+                        "timed out waiting for payload lock '{}'",
+                        lock_path.display()
+                    )));
+                }
+                thread::sleep(PAYLOAD_LOCK_POLL);
+            }
+            Err(error) => {
+                return Err(Error::Io(format!(
+                    "create payload lock '{}': {error}",
+                    lock_path.display()
+                )));
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 struct ImageMetadata {
     id: String,
@@ -947,18 +979,6 @@ fn image_metadata(image: &str) -> Result<ImageMetadata> {
         id: image_id.to_string(),
         platform: image_platform.to_string(),
     })
-}
-
-fn machine_state(machine_ls: &str, machine_id: &str) -> Option<String> {
-    machine_ls
-        .lines()
-        .filter_map(parse_machine_row)
-        .find_map(|row| {
-            if row.id == machine_id {
-                return Some(row.participation);
-            }
-            None
-        })
 }
 
 fn ssh_run_with_key(private_key_path: &Path, node: &Node, script: &str) -> Result<CommandOutput> {
@@ -996,6 +1016,18 @@ struct MachineRow {
     subnet: String,
 }
 
+impl MachineRow {
+    fn matches(&self, expected: MachineExpectation<'_>) -> bool {
+        if self.id != expected.id || self.participation != expected.participation {
+            return false;
+        }
+        match expected.subnet {
+            SubnetExpectation::Present => self.subnet != "—",
+            SubnetExpectation::Absent => self.subnet == "—",
+        }
+    }
+}
+
 fn parse_machine_row(line: &str) -> Option<MachineRow> {
     let mut fields = line.split_whitespace();
     let id = fields.next()?;
@@ -1015,5 +1047,7 @@ fn parse_machine_row(line: &str) -> Option<MachineRow> {
 }
 
 fn machine_rows(machine_ls: &str) -> Vec<MachineRow> {
-    machine_ls.lines().filter_map(parse_machine_row).collect()
+    let mut rows: Vec<_> = machine_ls.lines().filter_map(parse_machine_row).collect();
+    rows.sort_by(|left, right| left.id.cmp(&right.id));
+    rows
 }

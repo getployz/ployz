@@ -134,6 +134,7 @@ mod tests {
             public_key: key,
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             subnet: None,
+            control_target: None,
             bridge_ip: None,
             endpoints: endpoints.into_iter().map(String::from).collect(),
             status: MachineStatus::Unknown,

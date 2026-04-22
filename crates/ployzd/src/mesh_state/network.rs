@@ -41,7 +41,8 @@ pub struct NetworkConfig {
     pub name: NetworkName,
     pub overlay_ip: OverlayIp,
     pub cluster_cidr: String,
-    pub subnet: Ipv4Net,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subnet: Option<Ipv4Net>,
 }
 
 impl NetworkConfig {
@@ -58,7 +59,7 @@ impl NetworkConfig {
             name,
             overlay_ip,
             cluster_cidr: cluster_cidr.to_string(),
-            subnet,
+            subnet: Some(subnet),
         }
     }
 

@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::runner::ScenarioRun;
+use crate::runner::{MachineExpectation, ScenarioRun, SubnetExpectation};
 use crate::support::wait_until;
 use std::time::Duration;
 
@@ -8,7 +8,14 @@ const SERVICE_WAIT_TIMEOUT: Duration = Duration::from_secs(180);
 pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
     run.mesh_init("founder", "alpha")?;
     run.wait_mesh_ready_name("founder")?;
-    run.wait_for_settled_machine_states("founder", &[("founder", "enabled")])?;
+    run.wait_machine_rows(
+        "founder",
+        &[MachineExpectation {
+            id: "founder",
+            participation: "enabled",
+            subnet: SubnetExpectation::Present,
+        }],
+    )?;
     run.ssh_expect_ok_name(
         "founder",
         "ployzd deploy service web --namespace default --image nginx:1.27-alpine",

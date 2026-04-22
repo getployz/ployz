@@ -1,4 +1,7 @@
-use ployz_types::model::{InstanceStatusRecord, MachineId, MachineRecord};
+use ipnet::Ipv4Net;
+use ployz_types::model::{
+    InstanceStatusRecord, MachineId, MachineRecord, NetworkId, Participation,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -66,6 +69,64 @@ pub enum DebugTickTask {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ResourceKey {
+    Subnet(Ipv4Net),
+    DeployNamespace(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum VoteConflict {
+    HeldBy {
+        holder: MachineId,
+        reservation_id: String,
+    },
+    AlreadyCommitted,
+    OwnerMismatch,
+    Expired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Vote {
+    Allow,
+    Deny(VoteConflict),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CoordOutcome {
+    SubnetClaimed { subnet: Ipv4Net, owner: MachineId },
+    SubnetReleased { subnet: Ipv4Net, owner: MachineId },
+    DeployCommitted { deploy_id: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CoordOp {
+    Prepare {
+        id: String,
+        key: ResourceKey,
+        owner: MachineId,
+        nonce: String,
+        ttl_secs: u64,
+    },
+    Renew {
+        id: String,
+        key: ResourceKey,
+        nonce: String,
+        ttl_secs: u64,
+    },
+    Commit {
+        id: String,
+        key: ResourceKey,
+        nonce: String,
+        outcome: CoordOutcome,
+    },
+    Release {
+        id: String,
+        key: ResourceKey,
+        nonce: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonRequest {
     Status,
     Doctor,
@@ -107,6 +168,16 @@ pub enum DaemonRequest {
         targets: Vec<String>,
         options: MachineAddOptions,
     },
+    MachineEnable {
+        target: String,
+    },
+    MachineDrain {
+        target: String,
+    },
+    MachineDisable {
+        target: String,
+        force: bool,
+    },
     MachineRemove {
         id: String,
         force: bool,
@@ -118,8 +189,27 @@ pub enum DaemonRequest {
     MachineInviteCreate {
         ttl_secs: u64,
     },
+    MachineInviteRevoke {
+        invite_id: String,
+    },
+    MachineInviteList,
     MachineInviteImport {
         token: String,
+    },
+    MeshBootstrap {
+        request: MeshBootstrapRequest,
+    },
+    MeshPromote {
+        assigned_subnet: Ipv4Net,
+    },
+    MeshStandby {
+        force: bool,
+    },
+    MeshSetParticipation {
+        participation: Participation,
+    },
+    Coord {
+        op: CoordOp,
     },
     MeshSelfRecord,
     MeshAccept {
@@ -146,6 +236,7 @@ pub enum DaemonPayload {
     MachineRemove(MachineRemovePayload),
     MeshReady(MeshReadyPayload),
     MeshSelfRecord(MeshSelfRecordPayload),
+    MachineInviteList(MachineInviteListPayload),
     MachineOperationList(MachineOperationListPayload),
     MachineOperation(MachineOperationPayload),
 }
@@ -205,12 +296,42 @@ pub struct MeshReadyPayload {
     pub store_healthy: bool,
     pub sync_connected: bool,
     pub heartbeat_started: bool,
+    #[serde(default)]
+    pub workload_subnet_present: bool,
+    #[serde(default)]
+    pub participation: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeshSelfRecordPayload {
     pub encoded: String,
     pub record: MachineRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MachineInviteListPayload {
+    pub invites: Vec<MachineInviteInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MachineInviteInfo {
+    pub invite_id: String,
+    pub expires_at: u64,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumed_by: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeshBootstrapRequest {
+    pub network_id: NetworkId,
+    pub network_name: String,
+    pub cluster_cidr: String,
+    pub assigned_subnet: Ipv4Net,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_control_target: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bootstrap_peers: Vec<MachineRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
