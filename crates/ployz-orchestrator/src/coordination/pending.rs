@@ -97,7 +97,10 @@ mod tests {
         let pending = PendingReservations::new();
         let key = ResourceKey::DeployNamespace("ns-1".into());
         let candidate = reservation(key.clone(), "founder", "nonce-1", 10);
-        assert_eq!(pending.prepare(candidate.clone(), false, 0).await, Vote::Allow);
+        assert_eq!(
+            pending.prepare(candidate.clone(), false, 0).await,
+            Vote::Allow
+        );
         assert_eq!(pending.prepare(candidate, false, 0).await, Vote::Allow);
         assert!(matches!(
             pending

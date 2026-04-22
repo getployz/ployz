@@ -479,15 +479,64 @@ async fn reserve_machine_subnet_clears_local_hold_when_quorum_denies() {
 }
 
 #[tokio::test]
-async fn mesh_promote_restores_subnet_and_enabled_participation() {
+async fn machine_add_releases_reserved_subnet_when_remote_bootstrap_fails() {
+    let _guard = test_ssh_env_lock().lock().await;
+    let (state, _, _) = make_state(true).await;
+
+    let ssh_dir = unique_temp_dir("ployz-fake-ssh-bootstrap-fail");
+    std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
+    let fake_ssh = write_fake_ssh(&ssh_dir);
+    let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
+    let _status_fail_guard =
+        TestSshEnvGuard::set("PLOYZ_TEST_STATUS_FAIL_TARGETS", Some("join-target".into()));
+
+    let response = state
+        .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
+        .await;
+    assert!(!response.ok, "{}", response.message);
+    assert_eq!(response.code, "MACHINE_ADD_FAILED");
+    assert!(
+        state
+            .reservations
+            .active_subnets(now_unix_secs())
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn mesh_promote_restores_subnet_before_enable_finalization() {
     let (mut state, store, _) = make_state(true).await;
     let standby_response = state.handle_mesh_standby(true).await;
     assert!(standby_response.ok, "{}", standby_response.message);
 
-    let response = state
+    let promote_response = state
         .handle_mesh_promote("10.210.2.0/24".parse().expect("valid subnet"))
         .await;
-    assert!(response.ok, "{}", response.message);
+    assert!(promote_response.ok, "{}", promote_response.message);
+
+    let promoted = store
+        .list_machines()
+        .await
+        .expect("list machines")
+        .into_iter()
+        .find(|machine| machine.id == state.identity.machine_id)
+        .expect("local machine present");
+    assert_eq!(promoted.participation, Participation::Disabled);
+    assert_eq!(
+        promoted.subnet,
+        Some("10.210.2.0/24".parse().expect("valid subnet"))
+    );
+    assert_eq!(promoted.status, MachineStatus::Up);
+    assert_eq!(
+        state.active.as_ref().expect("active mesh").config.subnet,
+        Some("10.210.2.0/24".parse().expect("valid subnet"))
+    );
+
+    let enable_response = state
+        .handle_mesh_set_participation(Participation::Enabled)
+        .await;
+    assert!(enable_response.ok, "{}", enable_response.message);
 
     let local = store
         .list_machines()
@@ -499,11 +548,6 @@ async fn mesh_promote_restores_subnet_and_enabled_participation() {
     assert_eq!(local.participation, Participation::Enabled);
     assert_eq!(
         local.subnet,
-        Some("10.210.2.0/24".parse().expect("valid subnet"))
-    );
-    assert_eq!(local.status, MachineStatus::Up);
-    assert_eq!(
-        state.active.as_ref().expect("active mesh").config.subnet,
         Some("10.210.2.0/24".parse().expect("valid subnet"))
     );
 }
@@ -891,7 +935,7 @@ fn write_fake_ssh(dir: &PathBuf) -> PathBuf {
     let script = dir.join("ssh");
     std::fs::write(
         &script,
-        "#!/bin/sh\nprev=''\nfor arg in \"$@\"; do\n  target=\"$prev\"\n  command=\"$arg\"\n  prev=\"$arg\"\ndone\nif [ \"$command\" = 'set -eu; \"$HOME/.local/bin/ployz\" rpc-stdio' ]; then\n  req=$(cat)\n  case \"$req\" in\n    *'\"Coord\"'*)\n      case \"$req\" in\n        *'\"Prepare\"'*)\n          case \",$PLOYZ_TEST_COORD_PREPARE_DENY_TARGETS,\" in\n            *\",$target,\"*) printf '{\"ok\":false,\"code\":\"COORDINATION_DENIED\",\"message\":\"denied\",\"payload\":null}' ;;\n            *) printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"allow\",\"payload\":null}' ;;\n          esac\n          ;;\n        *'\"Release\"'*)\n          case \",$PLOYZ_TEST_COORD_RELEASE_DENY_TARGETS,\" in\n            *\",$target,\"*) printf '{\"ok\":false,\"code\":\"COORDINATION_DENIED\",\"message\":\"denied\",\"payload\":null}' ;;\n            *) printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"allow\",\"payload\":null}' ;;\n          esac\n          ;;\n        *)\n          printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"ack\",\"payload\":null}'\n          ;;\n      esac\n      ;;\n    *'\"MeshBootstrap\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"bootstrapped\",\"payload\":null}'\n      ;;\n    *'\"MeshJoin\"'*)\n      printf '{\"ok\":false,\"code\":\"UNSUPPORTED\",\"message\":\"unsupported\",\"payload\":null}'\n      ;;\n    *'\"MeshInit\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"init\",\"payload\":null}'\n      ;;\n    *'\"MeshDestroy\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"destroyed\",\"payload\":null}'\n      ;;\n    *'\"MeshDown\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"down\",\"payload\":null}'\n      ;;\n    *'\"MeshSelfRecord\"'*)\n      printf '%s' \"$PLOYZ_TEST_SELF_RECORD_RESPONSE\"\n      ;;\n    *'\"MeshReady\"'*)\n      printf '%s' \"$PLOYZ_TEST_READY_RESPONSE\"\n      ;;\n    *)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"ok\",\"payload\":null}'\n      ;;\n  esac\n  exit 0\nfi\ncase \"$command\" in\n  *'--version'*)\n    printf 'ployz test-version'\n    exit 0\n    ;;\n  *'status >/dev/null'*)\n    exit 0\n    ;;\n  *'bash -s -- install'*)\n    cat >/dev/null\n    exit 0\n    ;;\n  *)\n    exit 0\n    ;;\nesac\n",
+        "#!/bin/sh\nprev=''\nfor arg in \"$@\"; do\n  target=\"$prev\"\n  command=\"$arg\"\n  prev=\"$arg\"\ndone\nif [ \"$command\" = 'set -eu; \"$HOME/.local/bin/ployz\" rpc-stdio' ]; then\n  req=$(cat)\n  case \"$req\" in\n    *'\"Coord\"'*)\n      case \"$req\" in\n        *'\"Prepare\"'*)\n          case \",$PLOYZ_TEST_COORD_PREPARE_DENY_TARGETS,\" in\n            *\",$target,\"*) printf '{\"ok\":false,\"code\":\"COORDINATION_DENIED\",\"message\":\"denied\",\"payload\":null}' ;;\n            *) printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"allow\",\"payload\":null}' ;;\n          esac\n          ;;\n        *'\"Release\"'*)\n          case \",$PLOYZ_TEST_COORD_RELEASE_DENY_TARGETS,\" in\n            *\",$target,\"*) printf '{\"ok\":false,\"code\":\"COORDINATION_DENIED\",\"message\":\"denied\",\"payload\":null}' ;;\n            *) printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"allow\",\"payload\":null}' ;;\n          esac\n          ;;\n        *)\n          printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"ack\",\"payload\":null}'\n          ;;\n      esac\n      ;;\n    *'\"MeshBootstrap\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"bootstrapped\",\"payload\":null}'\n      ;;\n    *'\"MeshJoin\"'*)\n      printf '{\"ok\":false,\"code\":\"UNSUPPORTED\",\"message\":\"unsupported\",\"payload\":null}'\n      ;;\n    *'\"MeshInit\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"init\",\"payload\":null}'\n      ;;\n    *'\"MeshDestroy\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"destroyed\",\"payload\":null}'\n      ;;\n    *'\"MeshDown\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"down\",\"payload\":null}'\n      ;;\n    *'\"MeshSelfRecord\"'*)\n      printf '%s' \"$PLOYZ_TEST_SELF_RECORD_RESPONSE\"\n      ;;\n    *'\"MeshReady\"'*)\n      printf '%s' \"$PLOYZ_TEST_READY_RESPONSE\"\n      ;;\n    *)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"ok\",\"payload\":null}'\n      ;;\n  esac\n  exit 0\nfi\ncase \"$command\" in\n  *'--version'*)\n    printf 'ployz test-version'\n    exit 0\n    ;;\n  *'status >/dev/null'*)\n    case \",$PLOYZ_TEST_STATUS_FAIL_TARGETS,\" in\n      *\",$target,\"*) exit 1 ;;\n      *) exit 0 ;;\n    esac\n    ;;\n  *'bash -s -- install'*)\n    cat >/dev/null\n    exit 0\n    ;;\n  *)\n    exit 0\n    ;;\nesac\n",
     )
     .expect("write fake ssh");
 

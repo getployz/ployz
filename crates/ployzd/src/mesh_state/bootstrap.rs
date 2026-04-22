@@ -1,7 +1,7 @@
 use super::network::NetworkConfig;
 use ployz_orchestrator::network::endpoints::detect_endpoints;
 use ployz_runtime_api::Identity;
-use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
+use ployz_types::model::{MachineId, MachineRecord, OverlayIp, Participation, PublicKey};
 use serde::{Deserialize, Serialize};
 use std::net::Ipv6Addr;
 use std::path::Path;
@@ -180,6 +180,10 @@ pub async fn build_seed_records(
         net_config.subnet,
         endpoints,
     );
+    self_record.participation = match net_config.subnet {
+        Some(_) => Participation::Enabled,
+        None => Participation::Disabled,
+    };
     self_record.control_target = self_control_target;
     upsert_machine(&mut seed_records, self_record);
 

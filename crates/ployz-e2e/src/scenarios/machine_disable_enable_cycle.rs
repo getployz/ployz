@@ -39,7 +39,7 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
             },
         ],
     )?;
-    run.wait_mesh_absent_name("peer")?;
+    run.wait_mesh_standby_name("peer")?;
 
     run.machine_enable("founder", "peer")?;
     run.wait_machine_rows(

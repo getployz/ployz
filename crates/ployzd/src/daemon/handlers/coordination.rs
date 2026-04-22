@@ -77,7 +77,9 @@ impl DaemonState {
                     .list_machines()
                     .await
                     .map_err(|err| format!("list machines: {err}"))?;
-                Ok(machines.iter().any(|machine| machine.subnet == Some(*subnet)))
+                Ok(machines
+                    .iter()
+                    .any(|machine| machine.subnet == Some(*subnet)))
             }
             ResourceKey::DeployNamespace(_) => Ok(false),
         }
@@ -104,8 +106,8 @@ mod tests {
     use crate::daemon::{ActiveMesh, DaemonState};
     use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
     use ployz_orchestrator::Mesh;
-    use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
     use ployz_orchestrator::mesh::driver::WireguardDriver;
+    use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
     use ployz_runtime_api::Identity;
     use ployz_store_api::StoreDriver;
     use ployz_store_api::memory::{MemoryService, MemoryStore};
@@ -140,7 +142,10 @@ mod tests {
             .upsert_self_machine(&ployz_types::model::MachineRecord::seed(
                 MachineId("peer-1".into()),
                 PublicKey([2; 32]),
-                "fd00::2".parse().map(ployz_types::model::OverlayIp).expect("valid overlay"),
+                "fd00::2"
+                    .parse()
+                    .map(ployz_types::model::OverlayIp)
+                    .expect("valid overlay"),
                 Some("10.210.2.0/24".parse().expect("valid subnet")),
                 vec!["127.0.0.1:51820".into()],
             ))

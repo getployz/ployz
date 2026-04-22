@@ -93,17 +93,9 @@ pub enum Vote {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CoordOutcome {
-    SubnetClaimed {
-        subnet: Ipv4Net,
-        owner: MachineId,
-    },
-    SubnetReleased {
-        subnet: Ipv4Net,
-        owner: MachineId,
-    },
-    DeployCommitted {
-        deploy_id: String,
-    },
+    SubnetClaimed { subnet: Ipv4Net, owner: MachineId },
+    SubnetReleased { subnet: Ipv4Net, owner: MachineId },
+    DeployCommitted { deploy_id: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

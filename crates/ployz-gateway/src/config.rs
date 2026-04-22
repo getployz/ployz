@@ -33,6 +33,7 @@ pub struct GatewayConfig {
     pub network: String,
     pub listen_addr: String,
     pub threads: usize,
+    pub metrics_listen_addr: Option<String>,
 }
 
 impl GatewayConfig {
@@ -42,12 +43,14 @@ impl GatewayConfig {
         network: &str,
         listen_addr: String,
         threads: usize,
+        metrics_listen_addr: Option<String>,
     ) -> Self {
         Self {
             data_dir: data_dir.to_path_buf(),
             network: network.to_string(),
             listen_addr,
             threads,
+            metrics_listen_addr,
         }
     }
 
@@ -83,12 +86,22 @@ impl GatewayConfig {
             })?,
             Err(_) => DEFAULT_THREADS,
         };
+        let metrics_listen_addr = match std::env::var("PLOYZ_GATEWAY_METRICS_LISTEN_ADDR") {
+            Ok(address) if !address.trim().is_empty() => Some(address),
+            Ok(_) => {
+                return Err(GatewayError::Config(
+                    "PLOYZ_GATEWAY_METRICS_LISTEN_ADDR was set but empty".into(),
+                ));
+            }
+            Err(_) => None,
+        };
 
         Ok(Self {
             data_dir,
             network,
             listen_addr,
             threads,
+            metrics_listen_addr,
         })
     }
 }
@@ -116,5 +129,51 @@ fn current_user_is_root() -> bool {
     #[cfg(not(unix))]
     {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DEFAULT_LISTEN_ADDR, DEFAULT_THREADS, GatewayConfig};
+
+    #[test]
+    fn for_network_carries_metrics_listener() {
+        let config = GatewayConfig::for_network(
+            std::path::Path::new("/tmp/ployz"),
+            "alpha",
+            "0.0.0.0:80".into(),
+            2,
+            Some("127.0.0.1:9180".into()),
+        );
+
+        assert_eq!(
+            config.metrics_listen_addr.as_deref(),
+            Some("127.0.0.1:9180")
+        );
+    }
+
+    #[test]
+    fn from_env_reads_metrics_listener() {
+        unsafe {
+            std::env::set_var("PLOYZ_GATEWAY_DATA_DIR", "/tmp/ployz-gateway");
+            std::env::set_var("PLOYZ_GATEWAY_NETWORK", "alpha");
+            std::env::set_var("PLOYZ_GATEWAY_LISTEN_ADDR", DEFAULT_LISTEN_ADDR);
+            std::env::set_var("PLOYZ_GATEWAY_THREADS", DEFAULT_THREADS.to_string());
+            std::env::set_var("PLOYZ_GATEWAY_METRICS_LISTEN_ADDR", "127.0.0.1:9180");
+        }
+
+        let config = GatewayConfig::from_env().expect("gateway config should load");
+        assert_eq!(
+            config.metrics_listen_addr.as_deref(),
+            Some("127.0.0.1:9180")
+        );
+
+        unsafe {
+            std::env::remove_var("PLOYZ_GATEWAY_DATA_DIR");
+            std::env::remove_var("PLOYZ_GATEWAY_NETWORK");
+            std::env::remove_var("PLOYZ_GATEWAY_LISTEN_ADDR");
+            std::env::remove_var("PLOYZ_GATEWAY_THREADS");
+            std::env::remove_var("PLOYZ_GATEWAY_METRICS_LISTEN_ADDR");
+        }
     }
 }

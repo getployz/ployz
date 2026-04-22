@@ -4,6 +4,7 @@ mod daemon;
 mod install;
 mod ipc;
 mod mesh_state;
+mod metrics;
 mod platform;
 mod runtime_profile;
 mod services;
