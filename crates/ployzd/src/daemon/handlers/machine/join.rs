@@ -11,6 +11,7 @@ use ployz_orchestrator::coordination::{
     PrepareVote, Reservation, ReservationId, ResourceKey, Vote, quorum_prepare,
 };
 use ployz_orchestrator::ipam::pick_candidate_subnet;
+use ployz_orchestrator::machine_policy::coordination_peers as policy_coordination_peers;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_sdk::Transport;
 use ployz_store_api::{InviteStore, MachineStore, StoreDriver};
@@ -61,6 +62,7 @@ pub(super) struct BootstrapSubnetClaim {
     peer_rpc_port: u16,
 }
 
+#[cfg(test)]
 impl BootstrapSubnetClaim {
     #[must_use]
     pub(super) fn subnet(&self) -> Ipv4Net {
@@ -208,17 +210,8 @@ impl DaemonState {
             }
         };
 
-        let warnings = match self.degraded_mesh_warnings().await {
-            Ok(warnings) => warnings,
-            Err(err) => return self.err("LIST_FAILED", err),
-        };
-        tracing::info!(
-            warning_count = warnings.len(),
-            "machine add degraded-mesh check complete"
-        );
-
         let operation_store = self.machine_operation_store();
-        let mut report = MachineAddReport::with_warnings(warnings);
+        let mut report = MachineAddReport::with_warnings(Vec::new());
         let mut tasks = JoinSet::new();
 
         for target in targets.iter().cloned() {
@@ -372,17 +365,6 @@ impl DaemonState {
             Err(err) => return self.err("SUBNET_RESERVATION_FAILED", err),
         };
 
-        if let Err(err) = self
-            .set_local_participation_override(Some(Participation::Enabled))
-            .await
-        {
-            let _ = release_reserved_subnet(&context, &subnet_claim).await;
-            return self.err(
-                "PARTICIPATION_OVERRIDE_FAILED",
-                format!("failed to hold founder participation: {err}"),
-            );
-        }
-
         let result = self
             .handle_machine_enable_remote(
                 &machine_id,
@@ -409,7 +391,6 @@ impl DaemonState {
             result
         };
 
-        let _ = self.set_local_participation_override(None).await;
         result
     }
 
@@ -550,15 +531,6 @@ impl DaemonState {
             Ok(port) => port,
             Err(error) => return self.err("CONTROL_TRANSPORT_FAILED", error.to_string()),
         };
-        if let Err(err) = self
-            .set_local_participation_override(Some(Participation::Enabled))
-            .await
-        {
-            return self.err(
-                "PARTICIPATION_OVERRIDE_FAILED",
-                format!("failed to hold founder participation: {err}"),
-            );
-        }
         if let Err(err) = overlay_rpc_expect_ok(
             record.overlay_ip,
             peer_rpc_port,
@@ -566,7 +538,6 @@ impl DaemonState {
         )
         .await
         {
-            let _ = self.set_local_participation_override(None).await;
             return self.err("REMOTE_DISABLE_FAILED", err);
         }
 
@@ -582,7 +553,6 @@ impl DaemonState {
             Err(err) => self.err("MACHINE_DISABLE_SYNC_FAILED", err),
         };
 
-        let _ = self.set_local_participation_override(None).await;
         response
     }
 
@@ -997,18 +967,11 @@ fn validate_joined_machine_subnet(
 }
 
 fn coordination_peers(machines: &[MachineRecord], self_id: &MachineId) -> Vec<CoordinationPeer> {
-    machines
-        .iter()
-        .filter(|machine| machine.id != *self_id)
-        .filter(|machine| match machine.participation {
-            Participation::Disabled => false,
-            Participation::Enabled | Participation::Draining => true,
-        })
-        .filter_map(|machine| {
-            Some(CoordinationPeer {
-                machine_id: machine.id.clone(),
-                overlay_ip: machine.overlay_ip,
-            })
+    policy_coordination_peers(machines, self_id)
+        .into_iter()
+        .map(|machine| CoordinationPeer {
+            machine_id: machine.id.clone(),
+            overlay_ip: machine.overlay_ip,
         })
         .collect()
 }
@@ -1252,8 +1215,7 @@ fn parse_remote_ready_payload(output: &str) -> Result<MeshReadyPayload, String> 
 }
 
 fn remote_join_ready(payload: &MeshReadyPayload) -> bool {
-    payload.ready
-        || (payload.phase == "running" && payload.store_healthy && payload.heartbeat_started)
+    payload.ready || (payload.phase == "running" && payload.store_healthy && payload.sync_connected)
 }
 
 async fn overlay_rpc(

@@ -46,10 +46,9 @@ async fn machine_list_shows_disabled_explicitly() {
 
     let response = state.handle_machine_list().await;
     assert!(response.ok);
-    assert!(response.message.contains("LIVENESS"));
+    assert!(!response.message.contains("LIVENESS"));
     assert!(response.message.contains("peer-disabled"));
     assert!(response.message.contains("disabled"));
-    assert!(response.message.contains("stale"));
 }
 
 #[tokio::test]
@@ -300,7 +299,7 @@ async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
     let _ready_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_READY_RESPONSE",
         Some(
-            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":true,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":true,\"heartbeat_started\":true}}".into(),
+            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":true,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":true,\"workload_subnet_present\":true,\"participation\":\"enabled\"}}".into(),
         ),
     );
 
@@ -308,11 +307,6 @@ async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
         .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
         .await;
     assert!(response.ok, "{}", response.message);
-    assert!(
-        response
-            .message
-            .contains("warning: enabled peer 'stale-peer' has a stale heartbeat")
-    );
     assert!(response.message.contains("awaiting_self_publication: 1"));
 
     let machines = store.list_machines().await.expect("list machines");
@@ -333,7 +327,7 @@ async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
 }
 
 #[tokio::test]
-async fn machine_add_accepts_running_joiner_before_full_sync() {
+async fn machine_add_requires_sync_connected_for_running_joiner() {
     let _guard = test_ssh_env_lock().lock().await;
     let (mut state, store, network) = make_state(true).await;
 
@@ -384,15 +378,21 @@ async fn machine_add_accepts_running_joiner_before_full_sync() {
     let _ready_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_READY_RESPONSE",
         Some(
-            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":false,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":false,\"heartbeat_started\":true}}".into(),
+            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":false,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":false,\"workload_subnet_present\":true,\"participation\":\"enabled\"}}".into(),
         ),
     );
 
     let response = state
         .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
         .await;
-    assert!(response.ok, "{}", response.message);
-    assert!(response.message.contains("awaiting_self_publication: 1"));
+    assert!(!response.ok, "{}", response.message);
+    assert_eq!(response.code, "MACHINE_ADD_FAILED");
+    assert!(response.message.contains("failed_ready: 1"));
+    assert!(
+        response
+            .message
+            .contains("timed out waiting for remote mesh readiness")
+    );
 
     let machines = store.list_machines().await.expect("list machines");
     assert!(
@@ -401,7 +401,7 @@ async fn machine_add_accepts_running_joiner_before_full_sync() {
             .any(|machine| machine.id.0 == "joiner-2")
     );
     assert!(
-        network
+        !network
             .current_peers()
             .into_iter()
             .any(|machine| machine.id.0 == "joiner-2")
@@ -1296,7 +1296,7 @@ fn test_machine_record(
     id: &str,
     subnet: &str,
     participation: Participation,
-    last_heartbeat: u64,
+    _last_heartbeat: u64,
     public_key: PublicKey,
 ) -> MachineRecord {
     MachineRecord {
@@ -1312,7 +1312,6 @@ fn test_machine_record(
         endpoints: vec!["127.0.0.1:51820".into()],
         status: MachineStatus::Unknown,
         participation,
-        last_heartbeat,
         created_at: 0,
         updated_at: 0,
         labels: std::collections::BTreeMap::new(),
