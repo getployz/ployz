@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 use crate::built_in_images::BuiltInImages;
 use crate::daemon::handlers::RequestLane;
 use crate::daemon::{ActiveMesh, DaemonState};
+use crate::endpoint_maintenance::spawn_local_endpoint_maintenance;
 use crate::ipc::listener::{IncomingCommand, serve};
 use crate::metrics::{
     ContainerResourceMetricsSource, DockerContainerResourceMetricsSource,
@@ -161,6 +162,7 @@ async fn run_daemon_inner(
     daemon_state.peer_control_target = peer_control_target;
     daemon_state.command_tx = Some(command_tx.clone());
     let state = Arc::new(RwLock::new(daemon_state));
+    spawn_local_endpoint_maintenance(Arc::clone(&state), cancel.clone());
 
     if let Some(metrics_listen_addr) = daemon_metrics_listen_addr.as_deref() {
         let metrics_addr = spawn_metrics_listener(metrics_listen_addr)

@@ -1,7 +1,10 @@
 use crate::daemon::{ActiveMesh, DaemonState};
+use crate::endpoint_maintenance::local_endpoint_watch_supported;
 use ployz_orchestrator::machine_policy::{DiagnosticRole, diagnostic_role};
 use ployz_orchestrator::machine_reachability::{ReachabilityStatus, probe_overlay_ips};
+use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_orchestrator::mesh::{DevicePeer, WireGuardDevice};
+use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 use ployz_store_api::MachineStore;
 use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
 use std::collections::HashMap;
@@ -50,6 +53,7 @@ impl DaemonState {
         };
         let overlay_probe_by_ip =
             probe_overlay_health(machines.as_slice(), &self.identity.machine_id).await;
+        let detected_local_endpoints = detect_advertised_endpoints(DEFAULT_LISTEN_PORT).await;
 
         self.ok(render_doctor_report(
             active,
@@ -57,6 +61,8 @@ impl DaemonState {
             local_record,
             &device_peers,
             &overlay_probe_by_ip,
+            &detected_local_endpoints,
+            local_endpoint_watch_supported(),
         ))
     }
 }
@@ -67,6 +73,8 @@ fn render_doctor_report(
     local_record: &MachineRecord,
     device_peers: &[DevicePeer],
     overlay_probe_by_ip: &HashMap<OverlayIp, ProbeState>,
+    detected_local_endpoints: &[String],
+    endpoint_watch_supported: bool,
 ) -> String {
     let handshake_by_key = handshake_state_map(device_peers);
     let peer_rows = build_participation_rows(
@@ -109,6 +117,17 @@ fn render_doctor_report(
         format_participation(local_record),
         format_status(local_record),
     ));
+    if local_record.endpoints != detected_local_endpoints {
+        lines.push(format!(
+            "local endpoint drift: published={:?} detected={:?}",
+            local_record.endpoints, detected_local_endpoints
+        ));
+    }
+    if !endpoint_watch_supported {
+        lines.push(String::from(
+            "local endpoint watch: unsupported, relying on periodic local endpoint audit",
+        ));
+    }
 
     lines.join("\n")
 }
@@ -438,6 +457,8 @@ mod tests {
             &local_record,
             &[],
             &overlay_probe_by_ip,
+            &local_record.endpoints,
+            true,
         );
 
         assert!(report.contains("participation: healthy"));

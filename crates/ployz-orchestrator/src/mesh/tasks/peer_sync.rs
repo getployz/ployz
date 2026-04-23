@@ -1,4 +1,5 @@
 use crate::mesh::driver::WireguardDriver;
+use crate::mesh::tasks::EndpointSelectionMap;
 use crate::mesh::peer_state::{PeerStateMap, sync_peers};
 use crate::model::{MachineEvent, MachineId, MachineRecord};
 use tokio::sync::mpsc;
@@ -6,7 +7,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PeerSyncCommand {
     UpsertTransient(MachineRecord),
     RemoveTransient(MachineId),
@@ -19,6 +20,7 @@ pub(crate) async fn run_peer_sync_task(
     bootstrap_peers: Vec<MachineRecord>,
     network: WireguardDriver,
     local_machine_id: MachineId,
+    endpoint_selections: EndpointSelectionMap,
     cancel: CancellationToken,
 ) {
     let mut state = PeerStateMap::new();
@@ -29,7 +31,7 @@ pub(crate) async fn run_peer_sync_task(
             state.upsert_transient(record, now);
         }
     }
-    sync_peers(&state, &network, &local_machine_id).await;
+    sync_peers(&state, &network, &local_machine_id, &endpoint_selections).await;
 
     loop {
         tokio::select! {
@@ -40,7 +42,7 @@ pub(crate) async fn run_peer_sync_task(
             Some(event) = events.recv() => {
                 debug!(?event, "peer sync event");
                 state.apply_event(&event, Instant::now());
-                sync_peers(&state, &network, &local_machine_id).await;
+                sync_peers(&state, &network, &local_machine_id, &endpoint_selections).await;
             }
             Some(command) = commands.recv() => {
                 debug!(?command, "peer sync command");
@@ -50,7 +52,7 @@ pub(crate) async fn run_peer_sync_task(
                     }
                     PeerSyncCommand::RemoveTransient(id) => state.remove_transient(&id),
                 }
-                sync_peers(&state, &network, &local_machine_id).await;
+                sync_peers(&state, &network, &local_machine_id, &endpoint_selections).await;
             }
         }
     }
@@ -63,7 +65,9 @@ mod tests {
     use crate::mesh::wireguard::MemoryWireGuard;
     use crate::model::{MachineEvent, MachineStatus, OverlayIp, Participation, PublicKey};
     use std::net::Ipv6Addr;
+    use std::collections::HashMap;
     use std::sync::Arc;
+    use tokio::sync::RwLock;
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
@@ -108,6 +112,7 @@ mod tests {
                 bootstrap_peers,
                 driver,
                 local_machine_id,
+                Arc::new(RwLock::new(HashMap::new())),
                 task_cancel,
             )
             .await;

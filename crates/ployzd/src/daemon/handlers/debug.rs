@@ -1,5 +1,6 @@
 use ployz_api::{DaemonResponse, DebugTickTask};
 
+use crate::endpoint_maintenance::reconcile_local_endpoints_for_mesh;
 use crate::daemon::DaemonState;
 
 impl DaemonState {
@@ -15,10 +16,13 @@ impl DaemonState {
         for _ in 0..repeat {
             let result = match task {
                 DebugTickTask::PeerSync => self.debug_tick_peer_sync(),
+                DebugTickTask::Endpoints => self.debug_tick_endpoints().await,
                 DebugTickTask::Heartbeat => self.debug_tick_heartbeat().await,
                 DebugTickTask::Heal => self.debug_tick_heal().await,
                 DebugTickTask::All => {
                     if let Err(error) = self.debug_tick_heartbeat().await {
+                        Err(error)
+                    } else if let Err(error) = self.debug_tick_endpoints().await {
                         Err(error)
                     } else {
                         self.debug_tick_heal().await
@@ -53,6 +57,28 @@ impl DaemonState {
         Ok(())
     }
 
+    async fn debug_tick_endpoints(&mut self) -> Result<(), (&'static str, String)> {
+        let Some(active) = self.active.as_ref() else {
+            return Err(("NO_RUNNING_NETWORK", "no mesh running".into()));
+        };
+
+        reconcile_local_endpoints_for_mesh(&active.mesh)
+            .await
+            .map_err(|error| ("ENDPOINT_UPDATE_FAILED", error))?;
+
+        // Manual debug ticks are allowed to force a one-shot endpoint rotation
+        // pass so operators and tests do not have to wait through the normal
+        // down interval before trying the next declared candidate.
+        if !active.mesh.run_endpoint_maintenance_once(true).await {
+            return Err((
+                "TASK_NOT_RUNNING",
+                "endpoint maintainer task is not running".into(),
+            ));
+        }
+
+        Ok(())
+    }
+
     async fn debug_tick_heal(&mut self) -> Result<(), (&'static str, String)> {
         self.heal_local_subnet_conflict_if_needed().await;
         Ok(())
@@ -62,6 +88,7 @@ impl DaemonState {
 fn format_debug_tick_task(task: DebugTickTask) -> &'static str {
     match task {
         DebugTickTask::PeerSync => "peer-sync",
+        DebugTickTask::Endpoints => "endpoints",
         DebugTickTask::Heartbeat => "heartbeat",
         DebugTickTask::Heal => "heal",
         DebugTickTask::All => "all",
@@ -88,6 +115,23 @@ mod tests {
         );
 
         let response = state.handle_debug_tick(DebugTickTask::All, 1).await;
+        assert!(!response.ok);
+        assert_eq!(response.code, "NO_RUNNING_NETWORK");
+    }
+
+    #[tokio::test]
+    async fn endpoint_debug_tick_rejects_when_no_mesh_is_running() {
+        let mut state = DaemonState::new_for_tests(
+            &std::env::temp_dir().join("ployz-debug-tick-no-mesh-endpoints"),
+            Identity::generate(ployz_types::model::MachineId("self".into()), [1; 32]),
+            DEFAULT_CLUSTER_CIDR.into(),
+            24,
+            4317,
+            "127.0.0.1:0".into(),
+            1,
+        );
+
+        let response = state.handle_debug_tick(DebugTickTask::Endpoints, 1).await;
         assert!(!response.ok);
         assert_eq!(response.code, "NO_RUNNING_NETWORK");
     }

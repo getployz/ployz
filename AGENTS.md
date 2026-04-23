@@ -37,8 +37,15 @@
   policy centralized in orchestrator core helpers, not duplicated in daemon
   handlers or UI shaping code.
 - Keep steady-state runtimes boring: prefer one-shot startup/deploy
-  reconciliation and event-driven listeners over interval-driven control-plane
-  loops that poll, rank, rotate, or heal continuously.
+  reconciliation and explicit event handling over interval-driven
+  control-plane loops that continuously converge internal policy.
+- The real distinction is reconciliation vs observation:
+  periodic loops that keep re-deriving cluster policy from internal state are
+  bad; periodic checks that observe external reality because it cannot emit a
+  native event are acceptable.
+- Polling external reality is fine when it turns an external fact into an
+  explicit event or maintains narrow runtime truth such as transport endpoint
+  selection. It must not silently rewrite cluster policy or operator intent.
 - Operator-facing surfaces should distinguish stored intent, explicit status,
   and live observations rather than collapsing them into one derived field.
 - Background tasks may publish explicit events or observations, but they should

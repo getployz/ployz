@@ -1,7 +1,11 @@
+use std::collections::HashMap;
+
+use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
 use crate::mesh::MeshNetwork;
 use crate::model::{MachineId, MachineRecord, MachineStatus, Participation};
+use std::sync::Arc;
 
 use super::map::PeerStateMap;
 use super::peer::PeerState;
@@ -10,8 +14,10 @@ pub(crate) async fn sync_peers<N: MeshNetwork>(
     state: &PeerStateMap,
     network: &N,
     local_machine_id: &MachineId,
+    endpoint_selections: &Arc<RwLock<HashMap<MachineId, String>>>,
 ) {
-    let planned = plan_mesh_peers(state, local_machine_id);
+    let selections = endpoint_selections.read().await.clone();
+    let planned = plan_mesh_peers(state, local_machine_id, &selections);
     debug!(
         local_machine_id = %local_machine_id,
         peers = ?planned
@@ -25,7 +31,10 @@ pub(crate) async fn sync_peers<N: MeshNetwork>(
     }
 }
 
-fn peer_state_to_planned_record(ps: &PeerState) -> MachineRecord {
+fn peer_state_to_planned_record(
+    ps: &PeerState,
+    selected_endpoint: Option<&str>,
+) -> MachineRecord {
     MachineRecord {
         id: ps.id.clone(),
         public_key: ps.public_key.clone(),
@@ -33,7 +42,7 @@ fn peer_state_to_planned_record(ps: &PeerState) -> MachineRecord {
         control_target: None,
         subnet: ps.subnet,
         bridge_ip: ps.bridge_ip,
-        endpoints: ps.planned_endpoints(),
+        endpoints: ps.planned_endpoints(selected_endpoint),
         status: MachineStatus::Unknown,
         participation: Participation::Disabled,
         created_at: 0,
@@ -45,24 +54,16 @@ fn peer_state_to_planned_record(ps: &PeerState) -> MachineRecord {
 pub(super) fn plan_mesh_peers(
     state: &PeerStateMap,
     local_machine_id: &MachineId,
+    endpoint_selections: &HashMap<MachineId, String>,
 ) -> Vec<MachineRecord> {
-    let mut planned: Vec<MachineRecord> = state
-        .stored_peers
-        .values()
-        .filter(|ps| ps.id != *local_machine_id)
+    state
+        .effective_peers(local_machine_id)
         .filter(|ps| !ps.endpoints.is_empty())
-        .map(peer_state_to_planned_record)
-        .collect();
-
-    planned.extend(
-        state
-            .transient_peers
-            .values()
-            .filter(|ps| ps.id != *local_machine_id)
-            .filter(|ps| !state.stored_peers.contains_key(&ps.id))
-            .filter(|ps| !ps.endpoints.is_empty())
-            .map(peer_state_to_planned_record),
-    );
-
-    planned
+        .map(|peer| {
+            peer_state_to_planned_record(
+                peer,
+                endpoint_selections.get(&peer.id).map(String::as_str),
+            )
+        })
+        .collect()
 }

@@ -3,7 +3,7 @@ use crate::mesh_state::bootstrap::{BootstrapPeerRecord, write_bootstrap_peer_rec
 use crate::mesh_state::network::NetworkConfig;
 use ployz_api::{DaemonPayload, DaemonResponse, MeshBootstrapRequest, MeshSelfRecordPayload};
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
-use ployz_orchestrator::network::endpoints::detect_endpoints;
+use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 use ployz_types::model::{JoinResponse, NetworkName};
 
 use super::{DaemonState, bootstrap_info_from_record};
@@ -113,7 +113,7 @@ impl DaemonState {
             None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
         };
 
-        let endpoints = detect_endpoints(51820).await;
+        let endpoints = detect_advertised_endpoints(51820).await;
         let Some(self_record) = active.mesh.authoritative_self_record().await else {
             return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
         };
