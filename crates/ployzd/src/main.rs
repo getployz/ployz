@@ -4,6 +4,8 @@ mod request_builder;
 
 use clap::Parser;
 #[cfg(test)]
+use clap::CommandFactory;
+#[cfg(test)]
 pub(crate) use cli::DebugTickTaskArg;
 pub(crate) use cli::{
     Cli, CliError, Command, DebugAction, DeployAction, DeployCommand, DeployManifestArgs,
@@ -281,6 +283,18 @@ mod tests {
         let Command::Doctor = cli.command else {
             panic!("expected doctor command");
         };
+    }
+
+    #[test]
+    fn json_and_plain_flags_conflict() {
+        assert!(Cli::try_parse_from(["ployzd", "--json", "--plain", "doctor"]).is_err());
+    }
+
+    #[test]
+    fn help_mentions_json_and_plain_output_modes() {
+        let help = Cli::command().render_long_help().to_string();
+        assert!(help.contains("--json"));
+        assert!(help.contains("--plain"));
     }
 
     #[test]
