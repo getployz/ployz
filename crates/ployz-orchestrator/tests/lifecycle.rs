@@ -1,6 +1,6 @@
+use ployz_orchestrator::mesh::WireGuardDevice;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
-use ployz_orchestrator::mesh::WireGuardDevice;
 use ployz_orchestrator::{Mesh, Phase, WireguardDriver};
 use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
@@ -491,10 +491,8 @@ async fn manual_endpoint_maintenance_tick_rotates_down_peer_endpoint() {
     );
 
     let device_peers = wg.read_peers().await.unwrap();
-    assert_eq!(
-        device_peers[0].endpoint.as_deref(),
-        Some("198.51.100.11:51820")
-    );
+    let peer = device_peers.first().expect("one device peer present");
+    assert_eq!(peer.endpoint.as_deref(), Some("198.51.100.11:51820"));
 
     mesh.destroy().await.unwrap();
 }

@@ -111,13 +111,13 @@ impl ServiceSpec {
             return Err("service name cannot be empty".into());
         }
 
-        if let Some(pid_mode) = &self.template.pid_mode {
-            if pid_mode.trim().is_empty() {
-                return Err(format!(
-                    "service '{}' template pid_mode cannot be empty",
-                    self.name
-                ));
-            }
+        if let Some(pid_mode) = &self.template.pid_mode
+            && pid_mode.trim().is_empty()
+        {
+            return Err(format!(
+                "service '{}' template pid_mode cannot be empty",
+                self.name
+            ));
         }
 
         match self.placement {
@@ -544,6 +544,7 @@ fn parse_duration(value: &str) -> Result<Duration, String> {
     ))
 }
 
+#[must_use]
 pub fn stable_hash_hex(bytes: &[u8]) -> String {
     const OFFSET: u64 = 0xcbf29ce484222325;
     const PRIME: u64 = 0x00000100000001b3;

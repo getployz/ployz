@@ -14,7 +14,7 @@ impl Mesh {
         };
         let bridge_ifname = cn.resolve_bridge_ifname().await?;
 
-        #[cfg(feature = "ebpf-native")]
+        #[cfg(all(target_os = "linux", feature = "ebpf-native"))]
         {
             let wg_ifname = self.network.ebpf_attachment_ifname(&bridge_ifname);
             let wg_ifindex = resolve_ifindex(&wg_ifname)?;
@@ -23,7 +23,7 @@ impl Mesh {
             self.dataplane = Some(Arc::new(dp));
         }
 
-        #[cfg(not(feature = "ebpf-native"))]
+        #[cfg(not(all(target_os = "linux", feature = "ebpf-native")))]
         {
             let dp = crate::network::ebpf::EbpfDataplane::attach_container(
                 "ployz-networking",
@@ -39,7 +39,7 @@ impl Mesh {
     }
 }
 
-#[cfg(feature = "ebpf-native")]
+#[cfg(all(target_os = "linux", feature = "ebpf-native"))]
 fn resolve_ifindex(ifname: &str) -> std::result::Result<u32, PortError> {
     let c_name = std::ffi::CString::new(ifname)
         .map_err(|e| PortError::operation("if_nametoindex", e.to_string()))?;

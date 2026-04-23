@@ -52,6 +52,17 @@ pub(crate) struct MeshRuntimeComponents {
     pub(crate) container_network: Option<ployz_orchestrator::ContainerNetwork>,
 }
 
+pub(crate) struct MeshBuildRequest<'a> {
+    pub(crate) identity: &'a Identity,
+    pub(crate) overlay_ip: OverlayIp,
+    pub(crate) network_dir: &'a Path,
+    pub(crate) network_name: &'a str,
+    pub(crate) subnet: Option<Ipv4Net>,
+    pub(crate) exposed_tcp_ports: &'a [u16],
+    pub(crate) bootstrap: &'a [String],
+    pub(crate) network_id: &'a str,
+}
+
 impl RuntimeProfile {
     #[must_use]
     pub(crate) fn from_runtime(
@@ -112,15 +123,18 @@ impl RuntimeProfile {
 
     pub(crate) async fn build_mesh_components(
         &self,
-        identity: &Identity,
-        overlay_ip: OverlayIp,
-        network_dir: &Path,
-        network_name: &str,
-        subnet: Option<Ipv4Net>,
-        exposed_tcp_ports: &[u16],
-        bootstrap: &[String],
-        network_id: &str,
+        request: MeshBuildRequest<'_>,
     ) -> Result<MeshRuntimeComponents, String> {
+        let MeshBuildRequest {
+            identity,
+            overlay_ip,
+            network_dir,
+            network_name,
+            subnet,
+            exposed_tcp_ports,
+            bootstrap,
+            network_id,
+        } = request;
         let network = match self.execution_backend {
             ExecutionBackend::Memory => WireguardDriver::memory(),
             ExecutionBackend::Docker => {

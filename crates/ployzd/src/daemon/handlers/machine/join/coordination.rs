@@ -402,7 +402,11 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    fn machine_record(machine_id: &str, overlay_ip: &str, subnet: Option<Ipv4Net>) -> MachineRecord {
+    fn machine_record(
+        machine_id: &str,
+        overlay_ip: &str,
+        subnet: Option<Ipv4Net>,
+    ) -> MachineRecord {
         let record = MachineRecord::seed(
             MachineId(machine_id.into()),
             PublicKey([1; 32]),

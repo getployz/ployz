@@ -114,10 +114,7 @@ fn render_doctor_report(report: &DoctorPayload) -> String {
     let all_peers: Vec<&DoctorPeer> = report.peers.iter().collect();
 
     let mut lines = Vec::new();
-    lines.push(format!(
-        "participation: {}",
-        report.overall.participation
-    ));
+    lines.push(format!("participation: {}", report.overall.participation));
     if !blocking_peers.is_empty() {
         lines.push(String::new());
         lines.push(String::from("blocking peers:"));
@@ -241,10 +238,8 @@ fn build_participation_rows(
 ) -> Vec<DoctorPeer> {
     let mut rows: Vec<DoctorPeer> = machines
         .iter()
-        .map(|machine| {
-            let Some(role) = diagnostic_role(machine, local_machine_id) else {
-                return None;
-            };
+        .filter_map(|machine| {
+            let role = diagnostic_role(machine, local_machine_id)?;
             let handshake_state = handshake_by_key
                 .get(&machine.public_key)
                 .copied()
@@ -266,7 +261,6 @@ fn build_participation_rows(
                 cause_message: cause_message.to_string(),
             })
         })
-        .flatten()
         .collect();
 
     rows.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));

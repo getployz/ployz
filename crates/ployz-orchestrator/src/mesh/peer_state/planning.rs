@@ -31,10 +31,7 @@ pub(crate) async fn sync_peers<N: MeshNetwork>(
     }
 }
 
-fn peer_state_to_planned_record(
-    ps: &PeerState,
-    selected_endpoint: Option<&str>,
-) -> MachineRecord {
+fn peer_state_to_planned_record(ps: &PeerState, selected_endpoint: Option<&str>) -> MachineRecord {
     MachineRecord {
         id: ps.id.clone(),
         public_key: ps.public_key.clone(),

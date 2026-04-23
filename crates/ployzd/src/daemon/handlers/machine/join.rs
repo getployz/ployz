@@ -309,7 +309,7 @@ impl DaemonState {
             )
             .await;
 
-        let result = if result.ok {
+        if result.ok {
             match wait_for_machine_projection(
                 &active.mesh.store,
                 &machine_id,
@@ -323,9 +323,7 @@ impl DaemonState {
             }
         } else {
             result
-        };
-
-        result
+        }
     }
 
     async fn handle_machine_enable_remote(
@@ -477,7 +475,7 @@ impl DaemonState {
             return self.err("REMOTE_DISABLE_FAILED", err);
         }
 
-        let response = match wait_for_machine_projection(
+        match wait_for_machine_projection(
             &active.mesh.store,
             &machine_id,
             Participation::Disabled,
@@ -487,8 +485,6 @@ impl DaemonState {
         {
             Ok(()) => self.ok(format!("machine '{}' disabled", machine_id)),
             Err(err) => self.err("MACHINE_DISABLE_SYNC_FAILED", err),
-        };
-
-        response
+        }
     }
 }
