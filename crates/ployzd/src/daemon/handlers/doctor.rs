@@ -1,5 +1,6 @@
 use crate::daemon::{ActiveMesh, DaemonState};
 use crate::endpoint_maintenance::local_endpoint_watch_supported;
+use ployz_api::{DaemonPayload, DoctorLocal, DoctorOverall, DoctorPayload, DoctorPeer};
 use ployz_orchestrator::machine_policy::{DiagnosticRole, diagnostic_role};
 use ployz_orchestrator::machine_reachability::{ReachabilityStatus, probe_overlay_ips};
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
@@ -54,8 +55,7 @@ impl DaemonState {
         let overlay_probe_by_ip =
             probe_overlay_health(machines.as_slice(), &self.identity.machine_id).await;
         let detected_local_endpoints = detect_advertised_endpoints(DEFAULT_LISTEN_PORT).await;
-
-        self.ok(render_doctor_report(
+        let payload = build_doctor_payload(
             active,
             &machines,
             local_record,
@@ -63,11 +63,16 @@ impl DaemonState {
             &overlay_probe_by_ip,
             &detected_local_endpoints,
             local_endpoint_watch_supported(),
-        ))
+        );
+
+        self.ok_with_payload(
+            render_doctor_report(&payload),
+            Some(DaemonPayload::Doctor(payload)),
+        )
     }
 }
 
-fn render_doctor_report(
+fn build_doctor_payload(
     active: &ActiveMesh,
     machines: &[MachineRecord],
     local_record: &MachineRecord,
@@ -75,55 +80,69 @@ fn render_doctor_report(
     overlay_probe_by_ip: &HashMap<OverlayIp, ProbeState>,
     detected_local_endpoints: &[String],
     endpoint_watch_supported: bool,
-) -> String {
+) -> DoctorPayload {
     let handshake_by_key = handshake_state_map(device_peers);
-    let peer_rows = build_participation_rows(
+    let peers = build_participation_rows(
         machines,
         &local_record.id,
         &handshake_by_key,
         overlay_probe_by_ip,
     );
-    let blocking_peers: Vec<&ParticipationRow> = peer_rows
-        .iter()
-        .filter(|row| row.role == DiagnosticRole::Blocking)
-        .filter(|row| !row.probe_reachable())
-        .collect();
-    let all_peers: Vec<&ParticipationRow> = peer_rows.iter().collect();
+    DoctorPayload {
+        overall: DoctorOverall {
+            participation: if peers.iter().any(|row| row.blocking) {
+                String::from("blocked")
+            } else {
+                String::from("healthy")
+            },
+        },
+        local: DoctorLocal {
+            machine_id: local_record.id.0.clone(),
+            network: active.config.name.0.clone(),
+            participation: format_participation(local_record).to_string(),
+            status: format_status(local_record).to_string(),
+            published_endpoints: local_record.endpoints.clone(),
+            detected_endpoints: detected_local_endpoints.to_vec(),
+            endpoint_watch_supported,
+        },
+        peers,
+    }
+}
+
+fn render_doctor_report(report: &DoctorPayload) -> String {
+    let blocking_peers: Vec<&DoctorPeer> = report.peers.iter().filter(|row| row.blocking).collect();
+    let all_peers: Vec<&DoctorPeer> = report.peers.iter().collect();
 
     let mut lines = Vec::new();
     lines.push(format!(
         "participation: {}",
-        if blocking_peers.is_empty() {
-            "healthy"
-        } else {
-            "blocked"
-        }
+        report.overall.participation
     ));
     if !blocking_peers.is_empty() {
         lines.push(String::new());
         lines.push(String::from("blocking peers:"));
-        append_peer_section(&mut lines, &blocking_peers, false);
+        append_peer_section(&mut lines, blocking_peers.as_slice(), false);
     }
     if !all_peers.is_empty() {
         lines.push(String::new());
         lines.push(String::from("all peers:"));
-        append_peer_section(&mut lines, &all_peers, true);
+        append_peer_section(&mut lines, all_peers.as_slice(), true);
     }
     lines.push(String::new());
     lines.push(format!(
         "local: machine={} network={} participation={} status={}",
-        local_record.id,
-        active.config.name,
-        format_participation(local_record),
-        format_status(local_record),
+        report.local.machine_id,
+        report.local.network,
+        report.local.participation,
+        report.local.status,
     ));
-    if local_record.endpoints != detected_local_endpoints {
+    if report.local.published_endpoints != report.local.detected_endpoints {
         lines.push(format!(
             "local endpoint drift: published={:?} detected={:?}",
-            local_record.endpoints, detected_local_endpoints
+            report.local.published_endpoints, report.local.detected_endpoints
         ));
     }
-    if !endpoint_watch_supported {
+    if !report.local.endpoint_watch_supported {
         lines.push(String::from(
             "local endpoint watch: unsupported, relying on periodic local endpoint audit",
         ));
@@ -132,90 +151,85 @@ fn render_doctor_report(
     lines.join("\n")
 }
 
-fn append_peer_section(lines: &mut Vec<String>, rows: &[&ParticipationRow], include_cause: bool) {
+fn append_peer_section(lines: &mut Vec<String>, rows: &[&DoctorPeer], include_cause: bool) {
     let w_id = rows
         .iter()
-        .map(|row| row.id.len())
+        .map(|row| row.machine_id.len())
         .max()
         .unwrap_or(2)
         .max(2);
     let w_store = rows
         .iter()
-        .map(|row| row.store_status().len())
+        .map(|row| store_status_column(row).len())
         .max()
-        .unwrap_or("store=enabled/fresh".len())
-        .max("store=enabled/fresh".len());
+        .unwrap_or("store=enabled/up".len())
+        .max("store=enabled/up".len());
     let w_wg = rows
         .iter()
-        .map(|row| row.wg_status().len())
+        .map(|row| wg_status_column(row).len())
         .max()
         .unwrap_or("wg=fresh".len())
         .max("wg=fresh".len());
     let w_probe = rows
         .iter()
-        .map(|row| row.probe_status().len())
+        .map(|row| probe_status_column(row).len())
         .max()
         .unwrap_or("probe=unreachable".len())
         .max("probe=unreachable".len());
     for row in rows {
         let base = format!(
             "  {:<w_id$}  {:<w_store$}  {:<w_wg$}  {:<w_probe$}",
-            row.id,
-            row.store_status(),
-            row.wg_status(),
-            row.probe_status(),
+            row.machine_id,
+            store_status_column(row),
+            wg_status_column(row),
+            probe_status_column(row),
         );
         if include_cause {
             lines.push(base);
         } else {
-            lines.push(format!("{base}  cause={}", row.cause()));
+            lines.push(format!("{base}  cause={}", row.cause_message));
         }
     }
 }
 
-#[derive(Debug, Clone)]
-struct ParticipationRow {
-    id: String,
-    participation: String,
-    status: String,
-    role: DiagnosticRole,
-    handshake: HandshakeState,
-    probe: ProbeState,
+fn store_status_column(row: &DoctorPeer) -> String {
+    format!("store={}/{}", row.store_participation, row.store_status)
 }
 
-impl ParticipationRow {
-    fn store_status(&self) -> String {
-        format!("store={}/{}", self.participation, self.status)
-    }
+fn wg_status_column(row: &DoctorPeer) -> String {
+    format!("wg={}", row.wg_state)
+}
 
-    fn wg_status(&self) -> String {
-        format!("wg={}", self.handshake.as_str())
-    }
+fn probe_status_column(row: &DoctorPeer) -> String {
+    format!("probe={}", row.probe_state)
+}
 
-    fn probe_status(&self) -> String {
-        format!("probe={}", self.probe.as_str())
+fn diagnostic_role_name(role: DiagnosticRole) -> &'static str {
+    match role {
+        DiagnosticRole::Blocking => "blocking",
+        DiagnosticRole::Informational => "informational",
     }
+}
 
-    fn probe_reachable(&self) -> bool {
-        self.probe == ProbeState::Reachable
-    }
-
-    fn cause(&self) -> &'static str {
-        match (self.handshake, self.probe) {
-            (_, ProbeState::Reachable) => "healthy via overlay probe",
-            (HandshakeState::Absent, ProbeState::Unreachable) => {
-                "no direct peer configured and overlay probe failed"
-            }
-            (HandshakeState::None, ProbeState::Unreachable) => {
-                "direct peer exists but no handshake yet and overlay probe failed"
-            }
-            (HandshakeState::Stale, ProbeState::Unreachable) => {
-                "handshake older than 30s and overlay probe failed"
-            }
-            (HandshakeState::Fresh, ProbeState::Unreachable) => {
-                "overlay probe failed despite recent handshake"
-            }
-        }
+fn cause_parts(handshake: HandshakeState, probe: ProbeState) -> (&'static str, &'static str) {
+    match (handshake, probe) {
+        (_, ProbeState::Reachable) => ("overlay-probe-reachable", "healthy via overlay probe"),
+        (HandshakeState::Absent, ProbeState::Unreachable) => (
+            "no-direct-peer-and-probe-failed",
+            "no direct peer configured and overlay probe failed",
+        ),
+        (HandshakeState::None, ProbeState::Unreachable) => (
+            "no-handshake-yet-and-probe-failed",
+            "direct peer exists but no handshake yet and overlay probe failed",
+        ),
+        (HandshakeState::Stale, ProbeState::Unreachable) => (
+            "stale-handshake-and-probe-failed",
+            "handshake older than 30s and overlay probe failed",
+        ),
+        (HandshakeState::Fresh, ProbeState::Unreachable) => (
+            "fresh-handshake-and-probe-failed",
+            "overlay probe failed despite recent handshake",
+        ),
     }
 }
 
@@ -224,8 +238,8 @@ fn build_participation_rows(
     local_machine_id: &MachineId,
     handshake_by_key: &HashMap<PublicKey, HandshakeState>,
     overlay_probe_by_ip: &HashMap<OverlayIp, ProbeState>,
-) -> Vec<ParticipationRow> {
-    let mut rows: Vec<ParticipationRow> = machines
+) -> Vec<DoctorPeer> {
+    let mut rows: Vec<DoctorPeer> = machines
         .iter()
         .map(|machine| {
             let Some(role) = diagnostic_role(machine, local_machine_id) else {
@@ -235,22 +249,27 @@ fn build_participation_rows(
                 .get(&machine.public_key)
                 .copied()
                 .unwrap_or(HandshakeState::Absent);
-            Some(ParticipationRow {
-                id: machine.id.0.clone(),
-                participation: format_participation(machine).to_string(),
-                status: format_status(machine).to_string(),
-                role,
-                handshake: handshake_state,
-                probe: overlay_probe_by_ip
-                    .get(&machine.overlay_ip)
-                    .copied()
-                    .unwrap_or(ProbeState::Unreachable),
+            let probe = overlay_probe_by_ip
+                .get(&machine.overlay_ip)
+                .copied()
+                .unwrap_or(ProbeState::Unreachable);
+            let (cause_code, cause_message) = cause_parts(handshake_state, probe);
+            Some(DoctorPeer {
+                machine_id: machine.id.0.clone(),
+                role: diagnostic_role_name(role).to_string(),
+                blocking: role == DiagnosticRole::Blocking && probe == ProbeState::Unreachable,
+                store_participation: format_participation(machine).to_string(),
+                store_status: format_status(machine).to_string(),
+                wg_state: handshake_state.as_str().to_string(),
+                probe_state: probe.as_str().to_string(),
+                cause_code: cause_code.to_string(),
+                cause_message: cause_message.to_string(),
             })
         })
         .flatten()
         .collect();
 
-    rows.sort_by(|left, right| left.id.cmp(&right.id));
+    rows.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
     rows
 }
 
@@ -391,6 +410,25 @@ mod tests {
 
         let response = state.handle_doctor().await;
         assert!(response.ok, "{}", response.message);
+        let Some(DaemonPayload::Doctor(payload)) = response.payload.as_ref() else {
+            panic!("expected doctor payload");
+        };
+        assert_eq!(payload.overall.participation, "blocked");
+        assert!(payload.peers.iter().any(|peer| {
+            peer.machine_id == "peer"
+                && peer.blocking
+                && peer.role == "blocking"
+                && peer.store_participation == "enabled"
+                && peer.store_status == "up"
+                && peer.wg_state == "absent"
+                && peer.probe_state == "unreachable"
+                && peer.cause_code == "no-direct-peer-and-probe-failed"
+        }));
+        assert!(payload.peers.iter().any(|peer| {
+            peer.machine_id == "stale-peer"
+                && peer.wg_state == "stale"
+                && peer.probe_state == "unreachable"
+        }));
         assert!(response.message.contains("participation: blocked"));
         assert!(response.message.contains("blocking peers:"));
         assert!(response.message.lines().any(|line| {
@@ -432,6 +470,17 @@ mod tests {
 
         let response = state.handle_doctor().await;
         assert!(response.ok, "{}", response.message);
+        let Some(DaemonPayload::Doctor(payload)) = response.payload.as_ref() else {
+            panic!("expected doctor payload");
+        };
+        assert_eq!(payload.overall.participation, "healthy");
+        assert!(payload.peers.iter().any(|peer| {
+            peer.machine_id == "peer"
+                && !peer.blocking
+                && peer.wg_state == "fresh"
+                && peer.probe_state == "reachable"
+                && peer.cause_code == "overlay-probe-reachable"
+        }));
         assert!(response.message.contains("participation: healthy"));
         assert!(!response.message.contains("blocking peers:"));
         assert!(response.message.contains("all peers:"));
@@ -451,7 +500,7 @@ mod tests {
         let peer_record = test_machine_record("peer", Participation::Enabled, PublicKey([2; 32]));
         let machines = vec![local_record.clone(), peer_record.clone()];
         let overlay_probe_by_ip = HashMap::from([(peer_record.overlay_ip, ProbeState::Reachable)]);
-        let report = render_doctor_report(
+        let payload = build_doctor_payload(
             &test_active_mesh(),
             machines.as_slice(),
             &local_record,
@@ -460,7 +509,14 @@ mod tests {
             &local_record.endpoints,
             true,
         );
+        let report = render_doctor_report(&payload);
 
+        assert_eq!(payload.overall.participation, "healthy");
+        assert!(payload.peers.iter().any(|peer| {
+            peer.machine_id == "peer"
+                && peer.probe_state == "reachable"
+                && peer.cause_code == "overlay-probe-reachable"
+        }));
         assert!(report.contains("participation: healthy"));
         assert!(report.contains("wg=absent"));
         assert!(report.contains("probe=reachable"));

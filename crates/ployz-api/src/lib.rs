@@ -232,6 +232,7 @@ pub enum DaemonRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum DaemonPayload {
+    Doctor(DoctorPayload),
     MachineList(MachineListPayload),
     MachineAdd(MachineAddPayload),
     MachineRemove(MachineRemovePayload),
@@ -256,7 +257,42 @@ pub struct MachineListRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subnet: Option<String>,
     pub created_at: u64,
-    pub created_display: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DoctorPayload {
+    pub overall: DoctorOverall,
+    pub local: DoctorLocal,
+    pub peers: Vec<DoctorPeer>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DoctorOverall {
+    pub participation: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DoctorLocal {
+    pub machine_id: String,
+    pub network: String,
+    pub participation: String,
+    pub status: String,
+    pub published_endpoints: Vec<String>,
+    pub detected_endpoints: Vec<String>,
+    pub endpoint_watch_supported: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DoctorPeer {
+    pub machine_id: String,
+    pub role: String,
+    pub blocking: bool,
+    pub store_participation: String,
+    pub store_status: String,
+    pub wg_state: String,
+    pub probe_state: String,
+    pub cause_code: String,
+    pub cause_message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

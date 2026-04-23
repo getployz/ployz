@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::runner::{MachineExpectation, ScenarioRun, SubnetExpectation};
-use crate::support::wait_until;
+use crate::support::{DaemonJsonPayload, parse_daemon_json_response, wait_until};
 use std::time::Duration;
 
 const DOCTOR_WAIT_TIMEOUT: Duration = Duration::from_secs(180);
@@ -80,19 +80,14 @@ fn wait_for_doctor_peer_status(
     let mut last_report = String::new();
 
     wait_until(DOCTOR_WAIT_TIMEOUT, || {
-        let output = run.ssh_run_name(node_name, "ployzd doctor")?;
+        let output = run.ssh_run_name(node_name, "ployzd --json doctor")?;
         if !output.status.success() {
             last_report = output.combined();
             return Ok(false);
         }
 
         last_report = output.stdout;
-        Ok(doctor_report_matches(
-            &last_report,
-            peer_name,
-            participation,
-            probe_status,
-        ))
+        Ok(doctor_report_matches(&last_report, peer_name, participation, probe_status)?)
     })
     .map_err(|error| {
         Error::Message(format!(
@@ -106,15 +101,30 @@ fn doctor_report_matches(
     peer_name: &str,
     participation: &str,
     probe_status: &str,
-) -> bool {
-    if !report.contains(&format!("participation: {participation}")) {
-        return false;
+) -> Result<bool> {
+    let response = parse_daemon_json_response(report)?;
+    if !response.ok {
+        return Ok(false);
+    }
+    let Some(DaemonJsonPayload::Doctor(payload)) = response.payload else {
+        return Err(Error::Message(String::from(
+            "doctor response missing doctor payload",
+        )));
+    };
+    if payload.overall.participation != participation {
+        return Ok(false);
     }
 
-    report.lines().any(|line| {
-        let trimmed = line.trim_start();
-        trimmed.starts_with(peer_name)
-            && trimmed.contains("store=enabled/up")
-            && trimmed.contains(&format!("probe={probe_status}"))
-    })
+    Ok(payload.peers.iter().any(|peer| {
+        let blocking_matches = match participation {
+            "blocked" => peer.blocking,
+            "healthy" => !peer.blocking,
+            _ => false,
+        };
+        peer.machine_id == peer_name
+            && blocking_matches
+            && peer.store_participation == "enabled"
+            && peer.store_status == "up"
+            && peer.probe_state == probe_status
+    }))
 }
