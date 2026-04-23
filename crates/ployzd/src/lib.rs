@@ -1,6 +1,7 @@
 mod app;
 mod built_in_images;
 mod daemon;
+mod endpoint_maintenance;
 mod install;
 mod ipc;
 mod mesh_state;

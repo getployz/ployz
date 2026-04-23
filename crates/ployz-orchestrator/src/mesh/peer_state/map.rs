@@ -61,4 +61,19 @@ impl PeerStateMap {
     pub(crate) fn remove_transient(&mut self, id: &MachineId) {
         self.transient_peers.remove(id);
     }
+
+    pub(crate) fn effective_peers<'a>(
+        &'a self,
+        local_machine_id: &'a MachineId,
+    ) -> impl Iterator<Item = &'a PeerState> + 'a {
+        self.stored_peers
+            .values()
+            .filter(move |peer| peer.id != *local_machine_id)
+            .chain(
+                self.transient_peers
+                    .values()
+                    .filter(move |peer| peer.id != *local_machine_id)
+                    .filter(|peer| !self.stored_peers.contains_key(&peer.id)),
+            )
+    }
 }

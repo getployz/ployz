@@ -2844,6 +2844,7 @@ dependencies = [
  "ployz-store-api",
  "ployz-types",
  "rand 0.10.0",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

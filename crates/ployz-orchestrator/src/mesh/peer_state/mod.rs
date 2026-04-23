@@ -54,7 +54,11 @@ mod tests {
         };
         map.upsert_stored(&r, now);
 
-        let planned = super::planning::plan_mesh_peers(&map, &MachineId("self".into()));
+        let planned = super::planning::plan_mesh_peers(
+            &map,
+            &MachineId("self".into()),
+            &std::collections::HashMap::new(),
+        );
         assert_eq!(planned.len(), 1);
         assert_eq!(planned[0].endpoints, vec!["a:1", "b:2", "c:3"]);
     }

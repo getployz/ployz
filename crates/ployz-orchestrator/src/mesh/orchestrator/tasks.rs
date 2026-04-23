@@ -2,11 +2,13 @@ use std::sync::Arc;
 
 use ployz_store_api::MachineStore;
 use tokio::sync::{RwLock, mpsc};
+use tracing::warn;
 
-use crate::mesh::MeshNetwork;
+use crate::mesh::{MeshNetwork, WireGuardDevice};
 use crate::mesh::probe::run_probe_listener_task;
 use crate::mesh::tasks::{
-    SelfRecordMutation, TaskSetError, apply_self_record_mutation, run_ebpf_sync_task,
+    EndpointMaintainerCommand, SelfRecordMutation, TaskSetError, apply_self_record_mutation,
+    build_initial_endpoint_selections, run_ebpf_sync_task, run_endpoint_maintainer_task,
     run_peer_sync_task, run_self_record_writer_task, run_subnet_claim_monitor_task,
 };
 
@@ -23,7 +25,14 @@ impl Mesh {
             .subscribe_machines()
             .await
             .map_err(TaskSetError::Subscribe)?;
-        let (peer_sync_tx, peer_sync_rx) = mpsc::channel(64);
+        let (maint_snapshot, maint_events) = self
+            .store
+            .subscribe_machines()
+            .await
+            .map_err(TaskSetError::Subscribe)?;
+        let (peer_sync_tx, mut peer_sync_rx) = mpsc::channel::<crate::mesh::tasks::PeerSyncCommand>(64);
+        let (planner_tx, planner_rx) = mpsc::channel::<crate::mesh::tasks::PeerSyncCommand>(64);
+        let (endpoint_maintainer_tx, maint_rx) = mpsc::channel::<EndpointMaintainerCommand>(64);
         let (mut task_set, cancel) = crate::mesh::tasks::TaskSet::new();
         let bootstrap_peers: Vec<_> = self
             .seed_records
@@ -31,20 +40,77 @@ impl Mesh {
             .filter(|machine| machine.id != self.machine_id)
             .cloned()
             .collect();
+        let initial_device_peers = match self.network.read_peers().await {
+            Ok(peers) => peers,
+            Err(error) => {
+                warn!(?error, "failed to read initial wireguard peers for endpoint maintenance");
+                Vec::new()
+            }
+        };
+        let endpoint_selections = std::sync::Arc::new(RwLock::new(build_initial_endpoint_selections(
+            &snapshot,
+            &bootstrap_peers,
+            &self.machine_id,
+            &initial_device_peers,
+            tokio::time::Instant::now(),
+        )));
         if self.network.runs_probe_listener() {
             task_set.spawn(run_probe_listener_task(cancel.clone()));
         }
+        let planner_cancel = cancel.clone();
+        let endpoint_maintainer_cmd_tx = endpoint_maintainer_tx.clone();
+        task_set.spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = planner_cancel.cancelled() => break,
+                    Some(command) = peer_sync_rx.recv() => {
+                        if planner_tx.send(command.clone()).await.is_err() {
+                            break;
+                        }
+                        let maintainer_command = match command {
+                            crate::mesh::tasks::PeerSyncCommand::UpsertTransient(record) => {
+                                EndpointMaintainerCommand::UpsertTransient(record)
+                            }
+                            crate::mesh::tasks::PeerSyncCommand::RemoveTransient(id) => {
+                                EndpointMaintainerCommand::RemoveTransient(id)
+                            }
+                        };
+                        if endpoint_maintainer_cmd_tx.send(maintainer_command).await.is_err() {
+                            break;
+                        }
+                    }
+                    else => break,
+                }
+            }
+        });
         task_set.spawn(run_peer_sync_task(
             snapshot,
             events,
-            peer_sync_rx,
+            planner_rx,
             bootstrap_peers,
             self.network.clone(),
             self.machine_id.clone(),
+            endpoint_selections.clone(),
+            cancel.clone(),
+        ));
+        task_set.spawn(run_endpoint_maintainer_task(
+            maint_snapshot,
+            maint_events,
+            maint_rx,
+            self.seed_records
+                .iter()
+                .filter(|machine| machine.id != self.machine_id)
+                .cloned()
+                .collect(),
+            self.network.clone(),
+            self.machine_id.clone(),
+            endpoint_selections,
+            initial_device_peers,
             cancel.clone(),
         ));
 
         self.peer_sync_tx = Some(peer_sync_tx);
+        self.endpoint_maintainer_tx = Some(endpoint_maintainer_tx);
         self.task_cancel = Some(cancel);
         self.tasks = Some(task_set);
         Ok(())
