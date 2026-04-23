@@ -63,6 +63,7 @@ pub struct MachineInstallOptions {
 #[serde(rename_all = "kebab-case")]
 pub enum DebugTickTask {
     PeerSync,
+    Endpoints,
     Heartbeat,
     Heal,
     All,
@@ -251,12 +252,9 @@ pub struct MachineListRow {
     pub id: String,
     pub status: String,
     pub participation: String,
-    pub liveness: String,
     pub overlay_ip: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subnet: Option<String>,
-    pub last_heartbeat: u64,
-    pub heartbeat_display: String,
     pub created_at: u64,
     pub created_display: String,
 }
@@ -275,6 +273,8 @@ pub struct MachineAddPayload {
     pub failed_self_record: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed_ready: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_enable: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -295,7 +295,6 @@ pub struct MeshReadyPayload {
     pub phase: String,
     pub store_healthy: bool,
     pub sync_connected: bool,
-    pub heartbeat_started: bool,
     #[serde(default)]
     pub workload_subnet_present: bool,
     #[serde(default)]

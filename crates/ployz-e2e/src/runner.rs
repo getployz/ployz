@@ -1033,7 +1033,6 @@ fn parse_machine_row(line: &str) -> Option<MachineRow> {
     let id = fields.next()?;
     let _status = fields.next()?;
     let participation = fields.next()?;
-    let _liveness = fields.next()?;
     let _overlay = fields.next()?;
     let subnet = fields.next()?;
     if id == "ID" {
@@ -1050,4 +1049,20 @@ fn machine_rows(machine_ls: &str) -> Vec<MachineRow> {
     let mut rows: Vec<_> = machine_ls.lines().filter_map(parse_machine_row).collect();
     rows.sort_by(|left, right| left.id.cmp(&right.id));
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_machine_row_uses_current_machine_list_layout() {
+        let row = parse_machine_row(
+            "peer  up      disabled       fd00::2      —       2026-04-23 10:15",
+        )
+        .expect("machine row");
+        assert_eq!(row.id, "peer");
+        assert_eq!(row.participation, "disabled");
+        assert_eq!(row.subnet, "—");
+    }
 }

@@ -4,7 +4,7 @@ use crate::mesh_state::invite::{
 use crate::mesh_state::network::NetworkConfig;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signer, SigningKey};
-use ployz_orchestrator::network::endpoints::detect_endpoints;
+use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 use ployz_store_api::{InviteStore, MachineStore};
 use ployz_types::model::InviteRecord;
 use ployz_types::time::now_unix_secs;
@@ -142,7 +142,7 @@ impl DaemonState {
             .ok_or_else(|| "ttl overflow".to_string())?;
         let invite_id = random_hex_id();
 
-        let endpoints = detect_endpoints(51820).await;
+        let endpoints = detect_advertised_endpoints(51820).await;
         let overlay_ip = Some(network.overlay_ip.0.to_string());
 
         let wg_secret = StaticSecret::from(self.identity.private_key.0);

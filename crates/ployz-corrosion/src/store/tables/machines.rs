@@ -236,7 +236,6 @@ mod tests {
             endpoints: vec![String::from("127.0.0.1:51820")],
             status: MachineStatus::Up,
             participation: Participation::Enabled,
-            last_heartbeat: 123,
             created_at: 100,
             updated_at: 200,
             labels,

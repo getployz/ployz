@@ -3,7 +3,6 @@ use std::collections::BTreeMap;
 use crate::mesh_state::network::NetworkConfig;
 use ipnet::Ipv4Net;
 use ployz_orchestrator::Phase;
-use ployz_orchestrator::mesh::tasks::ParticipationCommand;
 use ployz_runtime_api::RestartableWorkload;
 use ployz_store_api::{MachineStore, StoreRuntimeControl};
 use ployz_types::model::{MachineId, MachineRecord, MachineStatus, Participation};
@@ -69,9 +68,6 @@ impl DaemonState {
         });
 
         if duplicate_groups.is_empty() && !healing_in_progress {
-            if let Err(err) = self.set_local_participation_override(None).await {
-                tracing::warn!(error = %err, "local subnet heal: failed to clear participation override");
-            }
             self.pending_subnet_heal = None;
             self.last_subnet_heal_attempt = None;
             return;
@@ -95,9 +91,6 @@ impl DaemonState {
             }
             _ => {
                 let Some(current_conflict) = current_conflict else {
-                    if let Err(err) = self.set_local_participation_override(None).await {
-                        tracing::warn!(error = %err, "local subnet heal: failed to clear participation override");
-                    }
                     self.pending_subnet_heal = None;
                     return;
                 };
@@ -290,16 +283,8 @@ impl DaemonState {
         else {
             return Err("local authoritative self record missing".into());
         };
-
-        active
-            .mesh
-            .store
-            .upsert_self_machine(&record)
-            .await
-            .map_err(|err| format!("reserve local subnet claim: {err}"))?;
-
-        self.set_local_participation_override(Some(Participation::Disabled))
-            .await
+        let _ = record;
+        Ok(())
     }
 
     async fn apply_local_subnet_heal(&mut self, plan: &LocalSubnetHealPlan) -> Result<(), String> {
@@ -340,7 +325,7 @@ impl DaemonState {
         };
 
         active.config = config.clone();
-        let Some(mut record) = active
+        let Some(record) = active
             .mesh
             .update_authoritative_self_record(|record| {
                 record.subnet = Some(config_subnet);
@@ -350,38 +335,20 @@ impl DaemonState {
         else {
             return Err("local authoritative self record missing".into());
         };
-        record.subnet = Some(config_subnet);
-        active
+        let _ = record;
+        let Some(record) = active
             .mesh
-            .store
-            .upsert_self_machine(&record)
-            .await
-            .map_err(|err| format!("update healed local machine record: {err}"))?;
-
-        self.set_local_participation_override(None).await
-    }
-
-    pub(crate) async fn set_local_participation_override(
-        &self,
-        participation: Option<Participation>,
-    ) -> Result<(), String> {
-        let Some(active) = self.active.as_ref() else {
-            return Err("no running network".into());
-        };
-        let Some(participation_tx) = active.mesh.participation_sender() else {
-            return Ok(());
-        };
-        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
-        participation_tx
-            .send(ParticipationCommand::SetForced {
-                participation,
-                done: done_tx,
+            .update_authoritative_self_record(|record| {
+                record.participation = Participation::Enabled;
+                record.status = MachineStatus::Up;
+                record.updated_at = now_unix_secs();
             })
             .await
-            .map_err(|err| format!("send participation override: {err}"))?;
-        done_rx
-            .await
-            .map_err(|err| format!("wait participation override ack: {err}"))
+        else {
+            return Err("local authoritative self record missing".into());
+        };
+        let _ = record;
+        Ok(())
     }
 
     async fn restart_active_mesh_for_subnet_heal(
@@ -407,6 +374,22 @@ impl DaemonState {
             return Err(error);
         }
 
+        let Some(active) = self.active.as_ref() else {
+            return Err("no running network".into());
+        };
+        let Some(record) = active
+            .mesh
+            .update_authoritative_self_record(|record| {
+                record.participation = Participation::Enabled;
+                record.status = MachineStatus::Up;
+                record.updated_at = now_unix_secs();
+            })
+            .await
+        else {
+            return Err("local authoritative self record missing".into());
+        };
+        let _ = record;
+
         self.start_local_workloads_after_subnet_heal(network_name, &workloads)
             .await
     }
@@ -426,19 +409,14 @@ impl DaemonState {
                 record.subnet = Some(claimed_subnet);
                 record.status = MachineStatus::Down;
                 record.participation = Participation::Disabled;
-                record.last_heartbeat = now;
                 record.updated_at = now;
             })
             .await
         else {
             return Err("local authoritative self record missing".into());
         };
-        active
-            .mesh
-            .store
-            .upsert_self_machine(&record)
-            .await
-            .map_err(|err| format!("mark local machine down before subnet heal: {err}"))
+        let _ = record;
+        Ok(())
     }
 
     async fn stop_local_workloads_for_subnet_heal(
