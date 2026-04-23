@@ -1,5 +1,9 @@
 use crate::{CliError, Result};
-use ployz_api::{DaemonPayload, DaemonRequest, DaemonResponse, DoctorPayload, MachineListPayload};
+use ployz_api::{
+    DaemonPayload, DaemonRequest, DaemonResponse, DoctorPayload, MachineInviteListPayload,
+    MachineListPayload, MachineOperationInfo, MachineOperationListPayload, MachineOperationPayload,
+    MeshListPayload, MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload, StatusPayload,
+};
 use ployz_sdk::{Transport, UnixSocketTransport};
 use std::io::{BufRead, BufReader, Read, Write};
 
@@ -82,8 +86,28 @@ fn render_plain_success(response: &DaemonResponse) -> String {
     match response.payload.as_ref() {
         Some(DaemonPayload::MachineList(payload)) => render_plain_machine_list(payload),
         Some(DaemonPayload::Doctor(payload)) => render_plain_doctor(payload),
+        Some(DaemonPayload::Status(payload)) => render_plain_status(payload),
+        Some(DaemonPayload::MeshList(payload)) => render_plain_mesh_list(payload),
+        Some(DaemonPayload::MeshStatus(payload)) => render_plain_mesh_status(payload),
+        Some(DaemonPayload::MeshReady(payload)) => render_plain_mesh_ready(payload),
+        Some(DaemonPayload::MeshSelfRecord(payload)) => render_plain_mesh_self_record(payload),
+        Some(DaemonPayload::MachineInviteList(payload)) => render_plain_invite_list(payload),
+        Some(DaemonPayload::MachineOperationList(payload)) => {
+            render_plain_machine_operation_list(payload)
+        }
+        Some(DaemonPayload::MachineOperation(payload)) => render_plain_machine_operation(payload),
         _ => response.message.clone(),
     }
+}
+
+fn render_plain_status(payload: &StatusPayload) -> String {
+    format!(
+        "machine={} network={} overlay={} phase={}",
+        payload.machine_id,
+        payload.network.as_deref().unwrap_or("none"),
+        payload.overlay_ip.as_deref().unwrap_or("—"),
+        payload.phase
+    )
 }
 
 fn render_plain_machine_list(payload: &MachineListPayload) -> String {
@@ -107,6 +131,41 @@ fn render_plain_machine_list(payload: &MachineListPayload) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn render_plain_mesh_list(payload: &MeshListPayload) -> String {
+    if payload.networks.is_empty() {
+        return String::from("no networks");
+    }
+    payload
+        .networks
+        .iter()
+        .map(|network| format!("network={} state={}", network.name, network.state))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn render_plain_mesh_status(payload: &MeshStatusPayload) -> String {
+    format!(
+        "network={} overlay={} state={}",
+        payload.network, payload.overlay_ip, payload.state
+    )
+}
+
+fn render_plain_mesh_ready(payload: &MeshReadyPayload) -> String {
+    format!(
+        "ready={} phase={} store_healthy={} sync_connected={} participation={} workload_subnet_present={}",
+        payload.ready,
+        payload.phase,
+        payload.store_healthy,
+        payload.sync_connected,
+        payload.participation,
+        payload.workload_subnet_present
+    )
+}
+
+fn render_plain_mesh_self_record(payload: &MeshSelfRecordPayload) -> String {
+    payload.encoded.clone()
 }
 
 fn render_plain_doctor(payload: &DoctorPayload) -> String {
@@ -135,6 +194,65 @@ fn render_plain_doctor(payload: &DoctorPayload) -> String {
         )
     }));
     lines.join("\n")
+}
+
+fn render_plain_invite_list(payload: &MachineInviteListPayload) -> String {
+    if payload.invites.is_empty() {
+        return String::from("no invites");
+    }
+    payload
+        .invites
+        .iter()
+        .map(|invite| {
+            format!(
+                "invite_id={} status={} expires_at={} consumed_by={}",
+                invite.invite_id,
+                invite.status,
+                invite.expires_at,
+                invite.consumed_by.as_deref().unwrap_or("—")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn render_plain_machine_operation_list(payload: &MachineOperationListPayload) -> String {
+    if payload.operations.is_empty() {
+        return String::from("no machine operations");
+    }
+    payload
+        .operations
+        .iter()
+        .map(render_plain_machine_operation_info)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn render_plain_machine_operation(payload: &MachineOperationPayload) -> String {
+    render_plain_machine_operation_info(&payload.operation)
+}
+
+fn render_plain_machine_operation_info(operation: &MachineOperationInfo) -> String {
+    format!(
+        "id={} kind={} status={} stage={} network={} targets={} machine_id={} invite_id={} allocated_subnet={} last_error={}",
+        operation.id,
+        operation.kind,
+        operation.status,
+        operation.stage,
+        operation.network_name.as_deref().unwrap_or("—"),
+        if operation.targets.is_empty() {
+            String::from("—")
+        } else {
+            operation.targets.join(",")
+        },
+        operation
+            .machine_id
+            .as_ref()
+            .map_or("—", |machine_id| machine_id.0.as_str()),
+        operation.invite_id.as_deref().unwrap_or("—"),
+        operation.allocated_subnet.as_deref().unwrap_or("—"),
+        operation.last_error.as_deref().unwrap_or("—")
+    )
 }
 
 pub(crate) fn read_stdin_string(label: &str) -> Result<String> {
@@ -183,6 +301,7 @@ mod tests {
     use super::*;
     use ployz_api::{
         DoctorLocal, DoctorOverall, DoctorPayload, DoctorPeer, MachineListPayload, MachineListRow,
+        MeshListEntry, MeshListPayload, StatusPayload,
     };
 
     #[test]
@@ -247,5 +366,45 @@ mod tests {
         assert!(rendered.contains("local_machine=founder"));
         assert!(rendered.contains("peer=peer"));
         assert!(rendered.contains("cause_code=overlay-probe-reachable"));
+    }
+
+    #[test]
+    fn plain_status_renders_single_line_summary() {
+        let response = DaemonResponse {
+            ok: true,
+            code: String::from("OK"),
+            message: String::from("status"),
+            payload: Some(DaemonPayload::Status(StatusPayload {
+                machine_id: String::from("founder"),
+                network: Some(String::from("alpha")),
+                overlay_ip: Some(String::from("fd00::1")),
+                phase: String::from("Running"),
+            })),
+        };
+
+        assert_eq!(
+            render_plain_success(&response),
+            "machine=founder network=alpha overlay=fd00::1 phase=Running"
+        );
+    }
+
+    #[test]
+    fn plain_mesh_list_renders_compact_network_lines() {
+        let response = DaemonResponse {
+            ok: true,
+            code: String::from("OK"),
+            message: String::from("mesh list"),
+            payload: Some(DaemonPayload::MeshList(MeshListPayload {
+                networks: vec![MeshListEntry {
+                    name: String::from("alpha"),
+                    state: String::from("running"),
+                }],
+            })),
+        };
+
+        assert_eq!(
+            render_plain_success(&response),
+            "network=alpha state=running"
+        );
     }
 }
