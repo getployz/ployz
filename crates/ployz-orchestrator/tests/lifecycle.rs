@@ -1,5 +1,6 @@
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
+use ployz_orchestrator::mesh::WireGuardDevice;
 use ployz_orchestrator::{Mesh, Phase, WireguardDriver};
 use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
@@ -458,6 +459,41 @@ async fn remove_event_drops_wireguard_peer() {
             .iter()
             .any(|candidate| candidate.id == peer.id),
         "peer must be removed from wireguard after store delete"
+    );
+
+    mesh.destroy().await.unwrap();
+}
+
+#[tokio::test]
+async fn manual_endpoint_maintenance_tick_rotates_down_peer_endpoint() {
+    let wg = Arc::new(MemoryWireGuard::new());
+    let svc = Arc::new(MemoryService::new());
+    let store = Arc::new(MemoryStore::new());
+
+    let local = test_record("m1", 1);
+    let mut peer = test_record("m2", 2);
+    peer.endpoints = vec!["198.51.100.10:51820".into(), "198.51.100.11:51820".into()];
+
+    store.upsert_self_machine(&local).await.unwrap();
+    store.upsert_self_machine(&peer).await.unwrap();
+    wg.set_device_peers(vec![ployz_orchestrator::mesh::DevicePeer {
+        public_key: peer.public_key.clone(),
+        endpoint: Some("198.51.100.10:51820".into()),
+        last_handshake: None,
+    }]);
+
+    let mut mesh = make_mesh("m1", wg.clone(), svc, store);
+    mesh.up().await.unwrap();
+
+    assert!(
+        mesh.run_endpoint_maintenance_once(true).await,
+        "endpoint maintainer tick should succeed"
+    );
+
+    let device_peers = wg.read_peers().await.unwrap();
+    assert_eq!(
+        device_peers[0].endpoint.as_deref(),
+        Some("198.51.100.11:51820")
     );
 
     mesh.destroy().await.unwrap();

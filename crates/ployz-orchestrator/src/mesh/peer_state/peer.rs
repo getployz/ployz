@@ -32,7 +32,23 @@ impl PeerState {
         self.endpoints = record.endpoints.clone();
     }
 
-    pub(super) fn planned_endpoints(&self) -> Vec<String> {
-        self.endpoints.clone()
+    pub(super) fn planned_endpoints(&self, selected_endpoint: Option<&str>) -> Vec<String> {
+        let Some(selected_endpoint) = selected_endpoint else {
+            return self.endpoints.clone();
+        };
+
+        if !self.endpoints.iter().any(|endpoint| endpoint == selected_endpoint) {
+            return self.endpoints.clone();
+        }
+
+        let mut planned = Vec::with_capacity(self.endpoints.len());
+        planned.push(selected_endpoint.to_string());
+        planned.extend(
+            self.endpoints
+                .iter()
+                .filter(|endpoint| endpoint.as_str() != selected_endpoint)
+                .cloned(),
+        );
+        planned
     }
 }

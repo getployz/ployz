@@ -63,6 +63,7 @@ pub struct MachineInstallOptions {
 #[serde(rename_all = "kebab-case")]
 pub enum DebugTickTask {
     PeerSync,
+    Endpoints,
     Heartbeat,
     Heal,
     All,
