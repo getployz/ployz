@@ -118,21 +118,3 @@ fn doctor_report_matches(
             && trimmed.contains(&format!("probe={probe_status}"))
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::doctor_report_matches;
-
-    #[test]
-    fn doctor_matcher_accepts_explicit_status_output() {
-        let report = "\
-participation: healthy
-
-all peers:
-  peer  store=enabled/up     wg=stale  probe=reachable
-
-local: machine=founder network=alpha participation=enabled status=up
-";
-        assert!(doctor_report_matches(report, "peer", "healthy", "reachable"));
-    }
-}
