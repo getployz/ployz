@@ -286,7 +286,7 @@ mod tests {
             None,
             None,
             51820,
-            &[db_founder.clone()],
+            std::slice::from_ref(&db_founder),
         )
         .await;
 

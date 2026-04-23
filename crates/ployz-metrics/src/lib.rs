@@ -80,7 +80,10 @@ async fn serve_connection(mut stream: TcpStream) -> io::Result<()> {
         if bytes_read == 0 {
             break;
         }
-        request_bytes.extend_from_slice(&read_buffer[..bytes_read]);
+        let Some(chunk) = read_buffer.get(..bytes_read) else {
+            return Err(io::Error::other("socket read exceeded buffer"));
+        };
+        request_bytes.extend_from_slice(chunk);
         if request_bytes.len() >= MAX_REQUEST_BYTES {
             return write_response(
                 &mut stream,
@@ -127,6 +130,21 @@ async fn write_ok_response(stream: &mut TcpStream, body: &[u8]) -> io::Result<()
     let headers = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         encoder.format_type(),
+        body.len()
+    );
+    stream.write_all(headers.as_bytes()).await?;
+    stream.write_all(body).await?;
+    stream.shutdown().await
+}
+
+async fn write_response(
+    stream: &mut TcpStream,
+    status_code: u16,
+    status_text: &str,
+    body: &[u8],
+) -> io::Result<()> {
+    let headers = format!(
+        "HTTP/1.1 {status_code} {status_text}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     stream.write_all(headers.as_bytes()).await?;
@@ -202,19 +220,4 @@ mod tests {
             "unexpected response: {response_text}"
         );
     }
-}
-
-async fn write_response(
-    stream: &mut TcpStream,
-    status_code: u16,
-    status_text: &str,
-    body: &[u8],
-) -> io::Result<()> {
-    let headers = format!(
-        "HTTP/1.1 {status_code} {status_text}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    stream.write_all(headers.as_bytes()).await?;
-    stream.write_all(body).await?;
-    stream.shutdown().await
 }

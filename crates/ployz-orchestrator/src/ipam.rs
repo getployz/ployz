@@ -34,7 +34,9 @@ pub fn pick_candidate_subnet(
     let start = (bias_seed as usize) % candidates.len();
     for offset in 0..candidates.len() {
         let index = (start + offset) % candidates.len();
-        let candidate = candidates[index];
+        let Some(candidate) = candidates.get(index).copied() else {
+            continue;
+        };
         if !taken.contains(&candidate) {
             return Some(candidate);
         }

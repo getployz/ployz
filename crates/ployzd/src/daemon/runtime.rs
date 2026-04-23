@@ -1,40 +1,20 @@
 use std::net::{Ipv4Addr, SocketAddr};
-use std::path::Path;
 
-use ipnet::Ipv4Net;
 use ployz_dns::DnsConfig;
 use ployz_gateway::GatewayConfig;
 use ployz_runtime_api::{NamespaceLockManager, RuntimeHandle};
 use ployz_store_api::StoreDriver;
-use ployz_types::model::MachineId;
-use ployz_types::model::OverlayIp;
+use ployz_types::model::{MachineId, OverlayIp};
 
 use super::DaemonState;
-use crate::runtime_profile::MeshRuntimeComponents;
+use crate::runtime_profile::{MeshBuildRequest, MeshRuntimeComponents};
 
 impl DaemonState {
     pub(crate) async fn build_runtime_mesh_components(
         &self,
-        overlay_ip: OverlayIp,
-        network_dir: &Path,
-        network_name: &str,
-        subnet: Option<Ipv4Net>,
-        exposed_tcp_ports: &[u16],
-        bootstrap: &[String],
-        network_id: &str,
+        request: MeshBuildRequest<'_>,
     ) -> Result<MeshRuntimeComponents, String> {
-        self.runtime_profile
-            .build_mesh_components(
-                &self.identity,
-                overlay_ip,
-                network_dir,
-                network_name,
-                subnet,
-                exposed_tcp_ports,
-                bootstrap,
-                network_id,
-            )
-            .await
+        self.runtime_profile.build_mesh_components(request).await
     }
 
     #[must_use]

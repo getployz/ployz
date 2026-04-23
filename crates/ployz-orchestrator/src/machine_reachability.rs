@@ -112,10 +112,9 @@ mod tests {
             Duration::from_millis(1),
         )
         .await;
-        assert_eq!(
-            results[&OverlayIp(std::net::Ipv6Addr::LOCALHOST)].status,
-            ReachabilityStatus::Unreachable
-        );
+        let localhost = OverlayIp(std::net::Ipv6Addr::LOCALHOST);
+        let result = results.get(&localhost).expect("localhost result present");
+        assert_eq!(result.status, ReachabilityStatus::Unreachable);
     }
 
     #[tokio::test]
@@ -125,8 +124,9 @@ mod tests {
         let results =
             probe_overlay_ips_with_policy(&[overlay_ip], 3, Duration::from_millis(50)).await;
         server.abort();
-        assert_eq!(results[&overlay_ip].status, ReachabilityStatus::Reachable);
-        assert_eq!(results[&overlay_ip].successful_attempt, Some(1));
+        let result = results.get(&overlay_ip).expect("overlay ip result present");
+        assert_eq!(result.status, ReachabilityStatus::Reachable);
+        assert_eq!(result.successful_attempt, Some(1));
     }
 
     async fn lock_test_probe_port() -> MutexGuard<'static, ()> {

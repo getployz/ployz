@@ -2,8 +2,8 @@ use ployz_api::{DaemonResponse, DebugTickTask};
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 
-use crate::endpoint_maintenance::reconcile_local_endpoints_for_mesh;
 use crate::daemon::DaemonState;
+use crate::endpoint_maintenance::reconcile_local_endpoints_for_mesh;
 
 impl DaemonState {
     pub(crate) async fn handle_debug_tick(

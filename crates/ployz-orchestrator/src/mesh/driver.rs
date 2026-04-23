@@ -92,41 +92,34 @@ impl WireguardDriver {
 }
 
 impl MeshNetwork for WireguardDriver {
-    fn up(&self) -> impl std::future::Future<Output = Result<()>> + Send + '_ {
-        async move { self.backend.up().await }
+    async fn up(&self) -> Result<()> {
+        self.backend.up().await
     }
 
-    fn down(&self) -> impl std::future::Future<Output = Result<()>> + Send + '_ {
-        async move { self.backend.down().await }
+    async fn down(&self) -> Result<()> {
+        self.backend.down().await
     }
 
-    fn set_peers<'a>(
-        &'a self,
-        peers: &'a [MachineRecord],
-    ) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
-        async move { self.backend.set_peers(peers).await }
+    async fn set_peers(&self, peers: &[MachineRecord]) -> Result<()> {
+        self.backend.set_peers(peers).await
     }
 
-    fn has_remote_handshake(&self) -> impl std::future::Future<Output = bool> + Send + '_ {
-        async move { self.backend.has_remote_handshake().await }
+    async fn has_remote_handshake(&self) -> bool {
+        self.backend.has_remote_handshake().await
     }
 
-    fn bridge_ip(&self) -> impl std::future::Future<Output = Option<OverlayIp>> + Send + '_ {
-        async move { self.backend.bridge_ip().await }
+    async fn bridge_ip(&self) -> Option<OverlayIp> {
+        self.backend.bridge_ip().await
     }
 }
 
 impl WireGuardDevice for WireguardDriver {
-    fn read_peers(&self) -> impl std::future::Future<Output = Result<Vec<DevicePeer>>> + Send + '_ {
-        async move { self.backend.read_peers().await }
+    async fn read_peers(&self) -> Result<Vec<DevicePeer>> {
+        self.backend.read_peers().await
     }
 
-    fn set_peer_endpoint<'a>(
-        &'a self,
-        key: &'a PublicKey,
-        endpoint: &'a str,
-    ) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
-        async move { self.backend.set_peer_endpoint(key, endpoint).await }
+    async fn set_peer_endpoint(&self, key: &PublicKey, endpoint: &str) -> Result<()> {
+        self.backend.set_peer_endpoint(key, endpoint).await
     }
 }
 
