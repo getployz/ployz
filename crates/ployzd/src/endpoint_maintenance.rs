@@ -79,6 +79,13 @@ pub(crate) async fn reconcile_local_endpoints_for_mesh(
 }
 
 async fn reconcile_local_endpoints_from_state(state: &Arc<RwLock<DaemonState>>) {
+    {
+        let state_guard = state.read().await;
+        if state_guard.active.is_none() {
+            return;
+        }
+    }
+
     let detected_endpoints = detect_advertised_endpoints(DEFAULT_LISTEN_PORT).await;
     let result = {
         let state_guard = state.read().await;

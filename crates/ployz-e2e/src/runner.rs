@@ -2,8 +2,9 @@ use crate::cli::Scenario;
 use crate::error::{Error, Result};
 use crate::scenarios;
 use crate::support::{
-    CommandOutput, docker_outer, docker_outer_raw, parse_ready, parse_ready_payload,
-    pick_free_port, run_command, run_command_expect_ok, wait_until,
+    CommandOutput, DaemonJsonPayload, docker_outer, docker_outer_raw, parse_daemon_json_response,
+    parse_ready, parse_ready_payload, pick_free_port, run_command, run_command_expect_ok,
+    wait_until,
 };
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -370,14 +371,14 @@ impl ScenarioRun {
         let mut consecutive_matches: u8 = 0;
 
         wait_until(STATE_WAIT_TIMEOUT, || {
-            let Ok(output) = self.ssh_run(node, "ployzd machine ls") else {
+            let Ok(output) = self.ssh_run(node, "ployzd --json machine ls") else {
                 return Ok(false);
             };
             if !output.status.success() {
                 return Ok(false);
             }
 
-            let snapshot = machine_rows(&output.stdout);
+            let snapshot = machine_rows(&output.stdout)?;
             if snapshot.len() != expected_count {
                 consecutive_matches = 0;
                 last_snapshot = None;
@@ -410,10 +411,10 @@ impl ScenarioRun {
     }
 
     pub(crate) fn assert_unique_machine_subnets(&self, node_name: &str) -> Result<()> {
-        let output = self.ssh_expect_ok_name(node_name, "ployzd machine ls")?;
+        let output = self.ssh_expect_ok_name(node_name, "ployzd --json machine ls")?;
         let mut seen: BTreeMap<String, String> = BTreeMap::new();
 
-        for prefix in machine_rows(&output.stdout) {
+        for prefix in machine_rows(&output.stdout)? {
             if !prefix.subnet.contains('/') {
                 continue;
             }
@@ -1028,27 +1029,30 @@ impl MachineRow {
     }
 }
 
-fn parse_machine_row(line: &str) -> Option<MachineRow> {
-    let mut fields = line.split_whitespace();
-    let id = fields.next()?;
-    let _status = fields.next()?;
-    let participation = fields.next()?;
-    let _overlay = fields.next()?;
-    let subnet = fields.next()?;
-    if id == "ID" {
-        return None;
+fn machine_rows(machine_ls: &str) -> Result<Vec<MachineRow>> {
+    let response = parse_daemon_json_response(machine_ls)?;
+    if !response.ok {
+        return Err(Error::Message(format!(
+            "machine list failed [{}]: {}",
+            response.code, response.message
+        )));
     }
-    Some(MachineRow {
-        id: id.to_string(),
-        participation: participation.to_string(),
-        subnet: subnet.to_string(),
-    })
-}
-
-fn machine_rows(machine_ls: &str) -> Vec<MachineRow> {
-    let mut rows: Vec<_> = machine_ls.lines().filter_map(parse_machine_row).collect();
+    let Some(DaemonJsonPayload::MachineList(payload)) = response.payload else {
+        return Err(Error::Message(String::from(
+            "machine list response missing machine-list payload",
+        )));
+    };
+    let mut rows: Vec<_> = payload
+        .rows
+        .into_iter()
+        .map(|row| MachineRow {
+            id: row.id,
+            participation: row.participation,
+            subnet: row.subnet.unwrap_or_else(|| String::from("—")),
+        })
+        .collect();
     rows.sort_by(|left, right| left.id.cmp(&right.id));
-    rows
+    Ok(rows)
 }
 
 #[cfg(test)]
@@ -1056,11 +1060,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_machine_row_uses_current_machine_list_layout() {
-        let row = parse_machine_row(
-            "peer  up      disabled       fd00::2      —       2026-04-23 10:15",
+    fn machine_rows_parse_machine_list_payload() {
+        let rows = machine_rows(
+            r#"{
+  "ok": true,
+  "code": "OK",
+  "message": "peer table",
+  "payload": {
+    "kind": "machine-list",
+    "rows": [
+      {
+        "id": "peer",
+        "status": "up",
+        "participation": "disabled",
+        "overlay_ip": "fd00::2",
+        "created_at": 123,
+        "subnet": null
+      }
+    ]
+  }
+}"#,
         )
-        .expect("machine row");
+        .expect("machine rows");
+        let [row] = rows.as_slice() else {
+            panic!("expected one row");
+        };
         assert_eq!(row.id, "peer");
         assert_eq!(row.participation, "disabled");
         assert_eq!(row.subnet, "—");
