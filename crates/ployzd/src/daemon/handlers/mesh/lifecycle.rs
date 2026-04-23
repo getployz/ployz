@@ -57,14 +57,12 @@ impl DaemonState {
             }
         }
 
-        if let Some(active) = self.active.as_ref() {
-            let _ = active
-                .mesh
-                .update_authoritative_self_record(|record| {
-                    record.participation = ployz_types::model::Participation::Enabled;
-                    record.updated_at = ployz_types::time::now_unix_secs();
-                })
-                .await;
+        if let Err(error) = self
+            .publish_started_mesh_participation(ployz_types::model::Participation::Enabled)
+            .await
+        {
+            self.stop_started_mesh_after_publish_failure().await;
+            return self.err("NETWORK_START_FAILED", error);
         }
 
         self.ok(format!(
@@ -150,16 +148,6 @@ impl DaemonState {
             }
         }
 
-        if let Some(active) = self.active.as_ref() {
-            let _ = active
-                .mesh
-                .update_authoritative_self_record(|record| {
-                    record.participation = ployz_types::model::Participation::Enabled;
-                    record.updated_at = ployz_types::time::now_unix_secs();
-                })
-                .await;
-        }
-
         self.ok(format!("mesh '{}' started", network_name))
     }
 
@@ -226,5 +214,51 @@ impl DaemonState {
 
         self.clear_active_marker();
         self.ok(format!("mesh '{network}' destroyed"))
+    }
+
+    pub(crate) async fn publish_started_mesh_participation(
+        &self,
+        participation: ployz_types::model::Participation,
+    ) -> Result<(), String> {
+        let Some(active) = self.active.as_ref() else {
+            return Err("mesh started without an active runtime".into());
+        };
+        let updated = active
+            .mesh
+            .update_authoritative_self_record(|record| {
+                record.participation = participation;
+                record.updated_at = ployz_types::time::now_unix_secs();
+            })
+            .await;
+        let Some(record) = updated else {
+            return Err(format!(
+                "failed to persist startup participation={participation}"
+            ));
+        };
+        if record.participation != participation {
+            return Err(format!(
+                "startup participation publish mismatch: expected {participation}, got {}",
+                record.participation
+            ));
+        }
+        Ok(())
+    }
+
+    async fn stop_started_mesh_after_publish_failure(&mut self) {
+        let Some(mut active) = self.active.take() else {
+            return;
+        };
+        if let Err(error) = active.mesh.destroy().await {
+            warn!(?error, "failed to stop mesh after startup participation publish error");
+        }
+        let _ = active.peer_control.shutdown().await;
+        let _ = active.remote_control.shutdown().await;
+        if let Err(error) = active.dns.shutdown().await {
+            warn!(?error, "failed to stop dns after startup participation publish error");
+        }
+        if let Err(error) = active.gateway.shutdown().await {
+            warn!(?error, "failed to stop gateway after startup participation publish error");
+        }
+        self.clear_active_marker();
     }
 }
