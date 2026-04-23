@@ -233,9 +233,12 @@ pub enum DaemonRequest {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum DaemonPayload {
     Doctor(DoctorPayload),
+    Status(StatusPayload),
     MachineList(MachineListPayload),
     MachineAdd(MachineAddPayload),
     MachineRemove(MachineRemovePayload),
+    MeshList(MeshListPayload),
+    MeshStatus(MeshStatusPayload),
     MeshReady(MeshReadyPayload),
     MeshSelfRecord(MeshSelfRecordPayload),
     MachineInviteList(MachineInviteListPayload),
@@ -257,6 +260,16 @@ pub struct MachineListRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subnet: Option<String>,
     pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusPayload {
+    pub machine_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay_ip: Option<String>,
+    pub phase: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -335,6 +348,24 @@ pub struct MeshReadyPayload {
     pub workload_subnet_present: bool,
     #[serde(default)]
     pub participation: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeshListPayload {
+    pub networks: Vec<MeshListEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeshListEntry {
+    pub name: String,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeshStatusPayload {
+    pub network: String,
+    pub overlay_ip: String,
+    pub state: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

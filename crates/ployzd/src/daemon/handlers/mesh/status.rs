@@ -1,5 +1,5 @@
 use crate::mesh_state::network::NetworkConfig;
-use ployz_api::{DaemonPayload, DaemonResponse};
+use ployz_api::{DaemonPayload, DaemonResponse, MeshListEntry, MeshListPayload, MeshStatusPayload};
 
 use super::{DaemonState, mesh_ready_payload};
 
@@ -9,7 +9,12 @@ impl DaemonState {
         let entries = match std::fs::read_dir(&networks_dir) {
             Ok(entries) => entries,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                return self.ok("no networks found");
+                return self.ok_with_payload(
+                    "no networks found",
+                    Some(DaemonPayload::MeshList(MeshListPayload {
+                        networks: Vec::new(),
+                    })),
+                );
             }
             Err(err) => {
                 return self.err("IO_ERROR", format!("failed to read networks dir: {err}"));
@@ -24,11 +29,16 @@ impl DaemonState {
         names.sort();
 
         if names.is_empty() {
-            return self.ok("no networks found");
+            return self.ok_with_payload(
+                "no networks found",
+                Some(DaemonPayload::MeshList(MeshListPayload {
+                    networks: Vec::new(),
+                })),
+            );
         }
 
         let running = self.active.as_ref().map(|a| a.config.name.0.as_str());
-        let lines: Vec<String> = names
+        let networks: Vec<MeshListEntry> = names
             .iter()
             .map(|name| {
                 let state = if running == Some(name.as_str()) {
@@ -36,11 +46,21 @@ impl DaemonState {
                 } else {
                     "created"
                 };
-                format!("{name}: {state}")
+                MeshListEntry {
+                    name: name.clone(),
+                    state: state.to_string(),
+                }
             })
             .collect();
 
-        self.ok(lines.join("\n"))
+        let lines: Vec<String> = networks
+            .iter()
+            .map(|network| format!("{}: {}", network.name, network.state))
+            .collect();
+        self.ok_with_payload(
+            lines.join("\n"),
+            Some(DaemonPayload::MeshList(MeshListPayload { networks })),
+        )
     }
 
     pub(crate) fn handle_mesh_status(&self, network: &str) -> DaemonResponse {
@@ -64,10 +84,17 @@ impl DaemonState {
             .as_ref()
             .is_some_and(|a| a.config.name.0 == network);
         let state = if running { "running" } else { "created" };
-        self.ok(format!(
-            "network: {}\noverlay: {}\nstate:   {}",
-            config.name, config.overlay_ip, state
-        ))
+        self.ok_with_payload(
+            format!(
+                "network: {}\noverlay: {}\nstate:   {}",
+                config.name, config.overlay_ip, state
+            ),
+            Some(DaemonPayload::MeshStatus(MeshStatusPayload {
+                network: config.name.0.clone(),
+                overlay_ip: config.overlay_ip.0.to_string(),
+                state: state.to_string(),
+            })),
+        )
     }
 
     pub(crate) async fn handle_mesh_ready(&self, json: bool) -> DaemonResponse {
