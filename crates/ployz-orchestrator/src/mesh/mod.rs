@@ -1,7 +1,6 @@
 pub mod container_network;
 pub mod driver;
 pub mod orchestrator;
-pub mod peer;
 pub(crate) mod peer_state;
 pub mod phase;
 pub(crate) mod probe;

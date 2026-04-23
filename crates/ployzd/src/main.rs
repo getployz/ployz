@@ -297,4 +297,19 @@ mod tests {
         assert_eq!(task, ProtocolDebugTickTask::All);
         assert_eq!(repeat, 1);
     }
+
+    #[test]
+    fn build_debug_tick_request_accepts_endpoints_task() {
+        let request = build_debug_request(DebugAction::Tick {
+            task: DebugTickTaskArg::Endpoints,
+            repeat: 2,
+        })
+        .expect("debug tick request");
+
+        let DaemonRequest::DebugTick { task, repeat } = request else {
+            panic!("expected debug tick request");
+        };
+        assert_eq!(task, ProtocolDebugTickTask::Endpoints);
+        assert_eq!(repeat, 2);
+    }
 }

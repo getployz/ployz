@@ -6,7 +6,8 @@ use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock
 use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
 use ipnet::Ipv4Net;
 use ployz_api::{
-    DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MeshSelfRecordPayload,
+    DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MeshReadyPayload,
+    MeshSelfRecordPayload,
 };
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::mesh::driver::WireguardDriver;
@@ -36,7 +37,6 @@ async fn machine_list_shows_disabled_explicitly() {
         "peer-disabled",
         "10.210.1.0/24",
         Participation::Disabled,
-        0,
         PublicKey([2; 32]),
     );
     store
@@ -46,10 +46,9 @@ async fn machine_list_shows_disabled_explicitly() {
 
     let response = state.handle_machine_list().await;
     assert!(response.ok);
-    assert!(response.message.contains("LIVENESS"));
+    assert!(!response.message.contains("LIVENESS"));
     assert!(response.message.contains("peer-disabled"));
     assert!(response.message.contains("disabled"));
-    assert!(response.message.contains("stale"));
 }
 
 #[tokio::test]
@@ -59,7 +58,6 @@ async fn machine_list_shows_down_liveness() {
         "peer-down",
         "10.210.1.0/24",
         Participation::Enabled,
-        now_unix_secs(),
         PublicKey([2; 32]),
     );
     down.status = MachineStatus::Down;
@@ -92,21 +90,18 @@ fn plan_local_subnet_heal_reassigns_losing_machine() {
             "alpha",
             "10.210.0.0/24",
             Participation::Enabled,
-            0,
             PublicKey([2; 32]),
         ),
         test_machine_record(
             "beta",
             "10.210.1.0/24",
             Participation::Enabled,
-            0,
             PublicKey([3; 32]),
         ),
         test_machine_record(
             "gamma",
             "10.210.1.0/24",
             Participation::Enabled,
-            0,
             PublicKey([4; 32]),
         ),
     ];
@@ -132,21 +127,18 @@ fn plan_local_subnet_heal_keeps_winner_in_place() {
             "alpha",
             "10.210.0.0/24",
             Participation::Enabled,
-            0,
             PublicKey([2; 32]),
         ),
         test_machine_record(
             "beta",
             "10.210.1.0/24",
             Participation::Enabled,
-            0,
             PublicKey([3; 32]),
         ),
         test_machine_record(
             "gamma",
             "10.210.1.0/24",
             Participation::Enabled,
-            0,
             PublicKey([4; 32]),
         ),
     ];
@@ -169,21 +161,18 @@ fn plan_local_subnet_heal_is_noop_after_subnet_changes() {
             "alpha",
             "10.210.0.0/24",
             Participation::Enabled,
-            0,
             PublicKey([2; 32]),
         ),
         test_machine_record(
             "beta",
             "10.210.1.0/24",
             Participation::Enabled,
-            0,
             PublicKey([3; 32]),
         ),
         test_machine_record(
             "gamma",
             "10.210.2.0/24",
             Participation::Enabled,
-            0,
             PublicKey([4; 32]),
         ),
     ];
@@ -200,7 +189,7 @@ fn plan_local_subnet_heal_is_noop_after_subnet_changes() {
 }
 
 #[tokio::test]
-async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
+async fn machine_add_enables_joiner_participation() {
     let _guard = test_ssh_env_lock().lock().await;
     let listener = TcpListener::bind("[::1]:0")
         .await
@@ -214,7 +203,6 @@ async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
         "stale-peer",
         "10.210.1.0/24",
         Participation::Enabled,
-        0,
         PublicKey([3; 32]),
     );
     stale_peer.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
@@ -224,8 +212,9 @@ async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
         .await
         .expect("upsert stale peer");
 
+    let server_store = store.clone();
     let server = tokio::spawn(async move {
-        for _ in 0..2 {
+        for _ in 0..5 {
             let (stream, _) = listener.accept().await.expect("accept overlay rpc");
             let (reader, mut writer) = stream.into_split();
             let mut buf = BufReader::new(reader);
@@ -233,17 +222,49 @@ async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
             buf.read_line(&mut line).await.expect("read request");
             let request: DaemonRequest =
                 serde_json::from_str(&line).expect("decode daemon request");
-            match request {
-                DaemonRequest::Coord { .. } => {}
+            let response = match request {
+                DaemonRequest::Coord { .. } => DaemonResponse {
+                    ok: true,
+                    code: "OK".into(),
+                    message: "allow".into(),
+                    payload: None,
+                },
+                DaemonRequest::MeshReady { .. } => DaemonResponse {
+                    ok: true,
+                    code: "OK".into(),
+                    message: "ready".into(),
+                    payload: Some(DaemonPayload::MeshReady(MeshReadyPayload {
+                        ready: true,
+                        phase: "running".into(),
+                        store_healthy: true,
+                        sync_connected: true,
+                        workload_subnet_present: true,
+                        participation: "enabled".into(),
+                    })),
+                },
+                DaemonRequest::MeshSetParticipation { participation } => {
+                    let mut joiner_record = MachineRecord::seed(
+                        MachineId("joiner-1".into()),
+                        PublicKey([4; 32]),
+                        "::1".parse().map(OverlayIp).expect("valid overlay"),
+                        Some("10.210.99.0/24".parse().expect("valid subnet")),
+                        vec!["203.0.113.10:51820".into()],
+                    );
+                    joiner_record.participation = participation;
+                    server_store
+                        .upsert_self_machine(&joiner_record)
+                        .await
+                        .expect("upsert joiner for projection");
+                    DaemonResponse {
+                        ok: true,
+                        code: "OK".into(),
+                        message: "enabled".into(),
+                        payload: None,
+                    }
+                }
                 other => panic!("unexpected daemon request: {other:?}"),
-            }
-            let mut response_line = serde_json::to_string(&DaemonResponse {
-                ok: true,
-                code: "OK".into(),
-                message: "allow".into(),
-                payload: None,
-            })
-            .expect("encode response");
+            };
+            let mut response_line = serde_json::to_string(&response).expect("encode response");
             response_line.push('\n');
             writer
                 .write_all(response_line.as_bytes())
@@ -270,7 +291,7 @@ async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
     let join_response = JoinResponse {
         machine_id: MachineId("joiner-1".into()),
         public_key: PublicKey([4; 32]),
-        overlay_ip: "fd00::4".parse().map(OverlayIp).expect("valid overlay"),
+        overlay_ip: "::1".parse().map(OverlayIp).expect("valid overlay"),
         subnet: Some(expected_subnet),
         endpoints: vec!["203.0.113.10:51820".into()],
     }
@@ -300,7 +321,7 @@ async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
     let _ready_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_READY_RESPONSE",
         Some(
-            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":true,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":true,\"heartbeat_started\":true}}".into(),
+            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":true,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":true,\"workload_subnet_present\":true,\"participation\":\"enabled\"}}".into(),
         ),
     );
 
@@ -308,19 +329,16 @@ async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
         .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
         .await;
     assert!(response.ok, "{}", response.message);
-    assert!(
-        response
-            .message
-            .contains("warning: enabled peer 'stale-peer' has a stale heartbeat")
-    );
     assert!(response.message.contains("awaiting_self_publication: 1"));
 
-    let machines = store.list_machines().await.expect("list machines");
-    assert!(
-        !machines
-            .into_iter()
-            .any(|machine| machine.id.0 == "joiner-1")
-    );
+    let joiner = store
+        .list_machines()
+        .await
+        .expect("list machines")
+        .into_iter()
+        .find(|machine| machine.id.0 == "joiner-1")
+        .expect("joiner should be in store after enable");
+    assert_eq!(joiner.participation, Participation::Enabled);
     assert!(
         network
             .current_peers()
@@ -333,7 +351,7 @@ async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
 }
 
 #[tokio::test]
-async fn machine_add_accepts_running_joiner_before_full_sync() {
+async fn machine_add_requires_sync_connected_for_running_joiner() {
     let _guard = test_ssh_env_lock().lock().await;
     let (mut state, store, network) = make_state(true).await;
 
@@ -384,15 +402,21 @@ async fn machine_add_accepts_running_joiner_before_full_sync() {
     let _ready_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_READY_RESPONSE",
         Some(
-            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":false,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":false,\"heartbeat_started\":true}}".into(),
+            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":false,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":false,\"workload_subnet_present\":true,\"participation\":\"enabled\"}}".into(),
         ),
     );
 
     let response = state
         .handle_machine_add(&["join-target".into()], &MachineAddOptions::default())
         .await;
-    assert!(response.ok, "{}", response.message);
-    assert!(response.message.contains("awaiting_self_publication: 1"));
+    assert!(!response.ok, "{}", response.message);
+    assert_eq!(response.code, "MACHINE_ADD_FAILED");
+    assert!(response.message.contains("failed_ready: 1"));
+    assert!(
+        response
+            .message
+            .contains("timed out waiting for remote mesh readiness")
+    );
 
     let machines = store.list_machines().await.expect("list machines");
     assert!(
@@ -401,7 +425,7 @@ async fn machine_add_accepts_running_joiner_before_full_sync() {
             .any(|machine| machine.id.0 == "joiner-2")
     );
     assert!(
-        network
+        !network
             .current_peers()
             .into_iter()
             .any(|machine| machine.id.0 == "joiner-2")
@@ -447,7 +471,6 @@ async fn machine_remove_refuses_enabled_without_force() {
             "peer-1",
             "10.210.1.0/24",
             Participation::Enabled,
-            10,
             PublicKey([2; 32]),
         ))
         .await
@@ -466,7 +489,6 @@ async fn machine_remove_deletes_disabled_record() {
             "peer-1",
             "10.210.1.0/24",
             Participation::Disabled,
-            10,
             PublicKey([2; 32]),
         ))
         .await
@@ -558,6 +580,31 @@ async fn mesh_standby_restores_subnet_when_restart_fails() {
 }
 
 #[tokio::test]
+async fn mesh_up_preserves_disabled_participation_after_standby() {
+    let (mut state, _, _) = make_state(true).await;
+
+    let standby = state.handle_mesh_standby(true).await;
+    assert!(standby.ok, "{}", standby.message);
+
+    let down = state.handle_mesh_down().await;
+    assert!(down.ok, "{}", down.message);
+
+    let up = state.handle_mesh_up("alpha", false).await;
+    assert!(up.ok, "{}", up.message);
+
+    let local = state
+        .active
+        .as_ref()
+        .expect("active mesh after up")
+        .mesh
+        .authoritative_self_record()
+        .await
+        .expect("self record");
+    assert_eq!(local.participation, Participation::Disabled);
+    assert_eq!(local.subnet, None);
+}
+
+#[tokio::test]
 async fn reserve_machine_subnet_clears_local_hold_when_quorum_denies() {
     let _guard = test_ssh_env_lock().lock().await;
     let (mut state, store, _) = make_state(true).await;
@@ -567,7 +614,6 @@ async fn reserve_machine_subnet_clears_local_hold_when_quorum_denies() {
             "peer-quorum",
             "10.210.1.0/24",
             Participation::Enabled,
-            now_unix_secs(),
             PublicKey([6; 32]),
         ))
         .await
@@ -612,7 +658,6 @@ async fn reserve_machine_subnet_releases_peer_holds_when_quorum_denies() {
             name,
             "10.210.1.0/24",
             Participation::Enabled,
-            now_unix_secs(),
             PublicKey([key_seed; 32]),
         );
         peer.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
@@ -853,7 +898,6 @@ async fn machine_enable_rolls_back_remote_promote_when_self_record_fails() {
         "peer",
         "10.210.1.0/24",
         Participation::Disabled,
-        now_unix_secs(),
         PublicKey([7; 32]),
     );
     peer.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
@@ -949,7 +993,6 @@ async fn memory_mode_local_subnet_heal_updates_local_config_and_store() {
             "founder",
             "10.210.1.0/24",
             Participation::Enabled,
-            0,
             PublicKey([2; 32]),
         ))
         .await
@@ -959,7 +1002,6 @@ async fn memory_mode_local_subnet_heal_updates_local_config_and_store() {
             "peer",
             "10.210.1.0/24",
             Participation::Enabled,
-            0,
             PublicKey([3; 32]),
         ))
         .await
@@ -1039,7 +1081,6 @@ async fn local_subnet_heal_skips_when_store_unhealthy() {
             "founder",
             "10.210.1.0/24",
             Participation::Enabled,
-            0,
             PublicKey([2; 32]),
         ))
         .await
@@ -1049,7 +1090,6 @@ async fn local_subnet_heal_skips_when_store_unhealthy() {
             "peer",
             "10.210.1.0/24",
             Participation::Enabled,
-            0,
             PublicKey([3; 32]),
         ))
         .await
@@ -1100,7 +1140,6 @@ async fn local_subnet_heal_skips_when_mesh_not_running() {
             "founder",
             "10.210.1.0/24",
             Participation::Enabled,
-            0,
             PublicKey([2; 32]),
         ))
         .await
@@ -1110,7 +1149,6 @@ async fn local_subnet_heal_skips_when_mesh_not_running() {
             "peer",
             "10.210.1.0/24",
             Participation::Enabled,
-            0,
             PublicKey([3; 32]),
         ))
         .await
@@ -1200,7 +1238,6 @@ async fn make_state_with_remote_port(
         "founder",
         "10.210.0.0/24",
         Participation::Disabled,
-        0,
         identity.public_key.clone(),
     );
     store
@@ -1296,7 +1333,6 @@ fn test_machine_record(
     id: &str,
     subnet: &str,
     participation: Participation,
-    last_heartbeat: u64,
     public_key: PublicKey,
 ) -> MachineRecord {
     MachineRecord {
@@ -1312,7 +1348,6 @@ fn test_machine_record(
         endpoints: vec!["127.0.0.1:51820".into()],
         status: MachineStatus::Unknown,
         participation,
-        last_heartbeat,
         created_at: 0,
         updated_at: 0,
         labels: std::collections::BTreeMap::new(),

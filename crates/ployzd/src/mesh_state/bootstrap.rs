@@ -1,5 +1,5 @@
 use super::network::NetworkConfig;
-use ployz_orchestrator::network::endpoints::detect_endpoints;
+use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 use ployz_runtime_api::Identity;
 use ployz_types::model::{MachineId, MachineRecord, OverlayIp, Participation, PublicKey};
 use serde::{Deserialize, Serialize};
@@ -172,7 +172,7 @@ pub async fn build_seed_records(
         }
     }
 
-    let endpoints = detect_endpoints(listen_port).await;
+    let endpoints = detect_advertised_endpoints(listen_port).await;
     let mut self_record = seed_records
         .iter()
         .find(|machine| machine.id == identity.machine_id)
@@ -185,10 +185,7 @@ pub async fn build_seed_records(
                 net_config.subnet,
                 endpoints.clone(),
             );
-            record.participation = match net_config.subnet {
-                Some(_) => Participation::Enabled,
-                None => Participation::Disabled,
-            };
+            record.participation = Participation::Disabled;
             record
         });
     self_record.public_key = identity.public_key.clone();

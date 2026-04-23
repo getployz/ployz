@@ -26,6 +26,11 @@ should be able to provision many machines and have them join cleanly with
 minimal manual setup, eventually without requiring traditional SSH-driven
 bootstrap flows.
 
+The long-term ideal is that cluster expansion feels routine and low-friction
+without becoming implicit or mysterious. Operators should get explicit
+outcomes, clear failures, and control over when the system changes cluster
+truth.
+
 Ployz should also scale down cleanly. A single macOS machine should be able to
 run the same core model locally, with the ability to grow into a multi-machine
 mesh by adding nearby hardware or cloud machines as needed.
@@ -73,6 +78,10 @@ A deploy should succeed or fail clearly. We do not want vague half-applied
 states presented as success. More sophisticated rollout strategies can come
 later, but the baseline contract is decisive and predictable change.
 
+That means deploy-time coordination, reachability, and lock acquisition should
+happen at apply time and block clearly when prerequisites are not met. We
+prefer a loud failure over ambiguous partial success.
+
 ### 3. Every node should be a first-class participant
 
 We design around a peer-oriented cluster, with Corrosion as a foundational part
@@ -100,6 +109,21 @@ as databases, much easier to move and manage.
 The system should expose real cluster state cleanly enough that future
 products, including cloud, can act as a lens over that live state rather than
 inventing a separate model of reality.
+
+Durable cluster state should represent operator intent and explicit lifecycle
+events, not inferred health. Health and reachability should be observed live at
+decision time through direct probes, RPC, session establishment, and concrete
+runtime signals. The system should not silently rewrite cluster truth in the
+background from stale observations.
+
+### 5a. Operator trust matters more than invisible correction
+
+Operators should be able to explain why the system believes what it believes
+with a short causal chain.
+
+We prefer explicit, imperative transitions over background self-healing loops
+that mutate durable state from stale or indirect signals. When a mutating
+operation cannot safely proceed, it should fail clearly and loudly.
 
 ### 6. Local and cloud should share one model
 
@@ -141,6 +165,7 @@ Ployz should feel:
 - fast to understand,
 - fast to bootstrap,
 - safe to operate,
+- easy to diagnose,
 - and pleasant to automate.
 
 The CLI should be strong, but it is not the final product surface. The core
@@ -179,8 +204,9 @@ When making design decisions, prefer:
 - disposability over snowflakes,
 - strong defaults over endless knobs,
 - one model across local and cloud over separate systems,
-- live truth over stale projections,
+- explicit truth in durable state and live observation at decision time over stale projections,
 - atomicity over ambiguous progress,
+- clear failure over silent correction,
 - and primitives that compose into future products.
 
 If a feature makes the system more generic but less coherent, it is probably

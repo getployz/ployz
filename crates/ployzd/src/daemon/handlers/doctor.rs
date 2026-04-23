@@ -1,26 +1,20 @@
 use crate::daemon::{ActiveMesh, DaemonState};
-use ployz_orchestrator::machine_liveness::{MachineLiveness, machine_liveness};
+use crate::endpoint_maintenance::local_endpoint_watch_supported;
+use ployz_orchestrator::machine_policy::{DiagnosticRole, diagnostic_role};
+use ployz_orchestrator::machine_reachability::{ReachabilityStatus, probe_overlay_ips};
+use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_orchestrator::mesh::{DevicePeer, WireGuardDevice};
+use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 use ployz_store_api::MachineStore;
 use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
-use ployz_types::time::now_unix_secs;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::io;
-use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 use tokio::time::Instant;
 
-use super::machine::render::{format_heartbeat, format_liveness};
+use super::machine::render::{format_participation, format_status};
 
 const PARTICIPATION_HANDSHAKE_FRESHNESS_WINDOW: Duration = Duration::from_secs(30);
-const PARTICIPATION_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
-const PARTICIPATION_PROBE_PORT: u16 = 51821;
-const PROBE_REQUEST: &[u8; 4] = b"PLZ?";
-const PROBE_RESPONSE: &[u8; 4] = b"OK!!";
-
 impl DaemonState {
     pub(crate) async fn handle_doctor(&self) -> ployz_api::DaemonResponse {
         let Some(active) = self.active.as_ref() else {
@@ -32,7 +26,6 @@ impl DaemonState {
             Err(err) => return self.err("LIST_FAILED", format!("failed to list machines: {err}")),
         };
 
-        let now = now_unix_secs();
         let local_record = match machines
             .iter()
             .find(|machine| machine.id == self.identity.machine_id)
@@ -60,6 +53,7 @@ impl DaemonState {
         };
         let overlay_probe_by_ip =
             probe_overlay_health(machines.as_slice(), &self.identity.machine_id).await;
+        let detected_local_endpoints = detect_advertised_endpoints(DEFAULT_LISTEN_PORT).await;
 
         self.ok(render_doctor_report(
             active,
@@ -67,7 +61,8 @@ impl DaemonState {
             local_record,
             &device_peers,
             &overlay_probe_by_ip,
-            now,
+            &detected_local_endpoints,
+            local_endpoint_watch_supported(),
         ))
     }
 }
@@ -78,7 +73,8 @@ fn render_doctor_report(
     local_record: &MachineRecord,
     device_peers: &[DevicePeer],
     overlay_probe_by_ip: &HashMap<OverlayIp, ProbeState>,
-    now: u64,
+    detected_local_endpoints: &[String],
+    endpoint_watch_supported: bool,
 ) -> String {
     let handshake_by_key = handshake_state_map(device_peers);
     let peer_rows = build_participation_rows(
@@ -86,11 +82,10 @@ fn render_doctor_report(
         &local_record.id,
         &handshake_by_key,
         overlay_probe_by_ip,
-        now,
     );
     let blocking_peers: Vec<&ParticipationRow> = peer_rows
         .iter()
-        .filter(|row| row.required)
+        .filter(|row| row.role == DiagnosticRole::Blocking)
         .filter(|row| !row.probe_reachable())
         .collect();
     let all_peers: Vec<&ParticipationRow> = peer_rows.iter().collect();
@@ -116,13 +111,23 @@ fn render_doctor_report(
     }
     lines.push(String::new());
     lines.push(format!(
-        "local: machine={} network={} store={}/{} heartbeat={}",
+        "local: machine={} network={} participation={} status={}",
         local_record.id,
         active.config.name,
-        local_record.participation,
-        format_liveness(local_record, now),
-        format_heartbeat(local_record.last_heartbeat, now)
+        format_participation(local_record),
+        format_status(local_record),
     ));
+    if local_record.endpoints != detected_local_endpoints {
+        lines.push(format!(
+            "local endpoint drift: published={:?} detected={:?}",
+            local_record.endpoints, detected_local_endpoints
+        ));
+    }
+    if !endpoint_watch_supported {
+        lines.push(String::from(
+            "local endpoint watch: unsupported, relying on periodic local endpoint audit",
+        ));
+    }
 
     lines.join("\n")
 }
@@ -172,15 +177,15 @@ fn append_peer_section(lines: &mut Vec<String>, rows: &[&ParticipationRow], incl
 struct ParticipationRow {
     id: String,
     participation: String,
-    liveness: String,
-    required: bool,
+    status: String,
+    role: DiagnosticRole,
     handshake: HandshakeState,
     probe: ProbeState,
 }
 
 impl ParticipationRow {
     fn store_status(&self) -> String {
-        format!("store={}/{}", self.participation, self.liveness)
+        format!("store={}/{}", self.participation, self.status)
     }
 
     fn wg_status(&self) -> String {
@@ -219,29 +224,30 @@ fn build_participation_rows(
     local_machine_id: &MachineId,
     handshake_by_key: &HashMap<PublicKey, HandshakeState>,
     overlay_probe_by_ip: &HashMap<OverlayIp, ProbeState>,
-    now: u64,
 ) -> Vec<ParticipationRow> {
     let mut rows: Vec<ParticipationRow> = machines
         .iter()
-        .filter(|machine| machine.id != *local_machine_id)
         .map(|machine| {
-            let required = machine_liveness(machine, now) == MachineLiveness::Fresh;
+            let Some(role) = diagnostic_role(machine, local_machine_id) else {
+                return None;
+            };
             let handshake_state = handshake_by_key
                 .get(&machine.public_key)
                 .copied()
                 .unwrap_or(HandshakeState::Absent);
-            ParticipationRow {
+            Some(ParticipationRow {
                 id: machine.id.0.clone(),
-                participation: machine.participation.to_string(),
-                liveness: format_liveness(machine, now).to_string(),
-                required,
+                participation: format_participation(machine).to_string(),
+                status: format_status(machine).to_string(),
+                role,
                 handshake: handshake_state,
                 probe: overlay_probe_by_ip
                     .get(&machine.overlay_ip)
                     .copied()
                     .unwrap_or(ProbeState::Unreachable),
-            }
+            })
         })
+        .flatten()
         .collect();
 
     rows.sort_by(|left, right| left.id.cmp(&right.id));
@@ -318,54 +324,16 @@ async fn probe_overlay_health(
         .map(|machine| machine.overlay_ip)
         .collect();
 
-    let mut set = tokio::task::JoinSet::new();
-    for ip in overlay_ips {
-        set.spawn(async move {
-            let state = match probe_overlay_ip(ip).await {
-                Some(()) => ProbeState::Reachable,
-                None => ProbeState::Unreachable,
-            };
-            (ip, state)
-        });
+    let results = probe_overlay_ips(&overlay_ips.into_iter().collect::<Vec<_>>()).await;
+    let mut states = HashMap::with_capacity(results.len());
+    for (ip, result) in results {
+        let state = match result.status {
+            ReachabilityStatus::Reachable => ProbeState::Reachable,
+            ReachabilityStatus::Unreachable => ProbeState::Unreachable,
+        };
+        states.insert(ip, state);
     }
-
-    let mut results = HashMap::with_capacity(set.len());
-    while let Some(Ok((ip, state))) = set.join_next().await {
-        results.insert(ip, state);
-    }
-    results
-}
-
-async fn probe_overlay_ip(overlay_ip: OverlayIp) -> Option<()> {
-    let mut stream = tokio::time::timeout(
-        PARTICIPATION_PROBE_TIMEOUT,
-        TcpStream::connect(SocketAddr::new(
-            IpAddr::from(overlay_ip.0),
-            PARTICIPATION_PROBE_PORT,
-        )),
-    )
-    .await
-    .ok()?
-    .ok()?;
-
-    tokio::time::timeout(PARTICIPATION_PROBE_TIMEOUT, async {
-        stream.write_all(PROBE_REQUEST).await?;
-        let mut response = [0_u8; PROBE_RESPONSE.len()];
-        stream.read_exact(&mut response).await?;
-        if &response == PROBE_RESPONSE {
-            Ok::<(), io::Error>(())
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid mesh probe response",
-            ))
-        }
-    })
-    .await
-    .ok()?
-    .ok()?;
-
-    Some(())
+    states
 }
 
 #[cfg(test)]
@@ -395,7 +363,6 @@ mod tests {
     async fn doctor_reports_missing_required_peer_handshake() {
         let _probe_guard = lock_test_probe_port().await;
         let (state, store, network) = make_state().await;
-        let now = now_unix_secs();
         let peer_key = PublicKey([2; 32]);
         let stale_key = PublicKey([3; 32]);
 
@@ -403,7 +370,6 @@ mod tests {
             .upsert_self_machine(&test_machine_record(
                 "peer",
                 Participation::Enabled,
-                now,
                 peer_key.clone(),
             ))
             .await
@@ -412,7 +378,6 @@ mod tests {
             .upsert_self_machine(&test_machine_record(
                 "stale-peer",
                 Participation::Enabled,
-                now.saturating_sub(31),
                 stale_key.clone(),
             ))
             .await
@@ -430,7 +395,7 @@ mod tests {
         assert!(response.message.contains("blocking peers:"));
         assert!(response.message.lines().any(|line| {
             line.contains("peer")
-                && line.contains("store=enabled/fresh")
+                && line.contains("store=enabled/up")
                 && line.contains("wg=absent")
                 && line.contains("probe=unreachable")
                 && line.contains("cause=no direct peer configured and overlay probe failed")
@@ -438,7 +403,7 @@ mod tests {
         assert!(response.message.contains("all peers:"));
         assert!(response.message.lines().any(|line| {
             line.contains("stale-peer")
-                && line.contains("store=enabled/stale")
+                && line.contains("store=enabled/up")
                 && line.contains("wg=stale")
                 && line.contains("probe=unreachable")
         }));
@@ -448,14 +413,12 @@ mod tests {
     async fn doctor_reports_healthy_when_overlay_probe_is_reachable() {
         let (_probe_guard, probe_cancel, probe_task) = start_test_probe_listener().await;
         let (state, store, network) = make_state().await;
-        let now = now_unix_secs();
         let peer_key = PublicKey([2; 32]);
 
         store
             .upsert_self_machine(&test_machine_record(
                 "peer",
                 Participation::Enabled,
-                now,
                 peer_key.clone(),
             ))
             .await
@@ -474,7 +437,7 @@ mod tests {
         assert!(response.message.contains("all peers:"));
         assert!(response.message.lines().any(|line| {
             line.contains("peer")
-                && line.contains("store=enabled/fresh")
+                && line.contains("store=enabled/up")
                 && line.contains("wg=fresh")
                 && line.contains("probe=reachable")
         }));
@@ -483,11 +446,9 @@ mod tests {
 
     #[tokio::test]
     async fn doctor_treats_overlay_probe_as_second_health_signal() {
-        let now = now_unix_secs();
         let local_record =
-            test_machine_record("joiner5", Participation::Disabled, now, PublicKey([1; 32]));
-        let peer_record =
-            test_machine_record("peer", Participation::Enabled, now, PublicKey([2; 32]));
+            test_machine_record("joiner5", Participation::Disabled, PublicKey([1; 32]));
+        let peer_record = test_machine_record("peer", Participation::Enabled, PublicKey([2; 32]));
         let machines = vec![local_record.clone(), peer_record.clone()];
         let overlay_probe_by_ip = HashMap::from([(peer_record.overlay_ip, ProbeState::Reachable)]);
         let report = render_doctor_report(
@@ -496,7 +457,8 @@ mod tests {
             &local_record,
             &[],
             &overlay_probe_by_ip,
-            now,
+            &local_record.endpoints,
+            true,
         );
 
         assert!(report.contains("participation: healthy"));
@@ -520,7 +482,6 @@ mod tests {
             .upsert_self_machine(&test_machine_record(
                 "joiner5",
                 Participation::Disabled,
-                now_unix_secs(),
                 identity.public_key.clone(),
             ))
             .await
@@ -558,7 +519,6 @@ mod tests {
     fn test_machine_record(
         id: &str,
         participation: Participation,
-        last_heartbeat: u64,
         public_key: PublicKey,
     ) -> MachineRecord {
         MachineRecord {
@@ -571,7 +531,6 @@ mod tests {
             endpoints: vec![String::from("127.0.0.1:51820")],
             status: MachineStatus::Up,
             participation,
-            last_heartbeat,
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),
@@ -618,7 +577,7 @@ mod tests {
     async fn start_test_probe_listener()
     -> (MutexGuard<'static, ()>, CancellationToken, JoinHandle<()>) {
         let probe_guard = lock_test_probe_port().await;
-        let listener = TcpListener::bind((Ipv6Addr::LOCALHOST, PARTICIPATION_PROBE_PORT))
+        let listener = TcpListener::bind((Ipv6Addr::LOCALHOST, 51821))
             .await
             .expect("bind probe listener");
         let probe_cancel = CancellationToken::new();
@@ -632,14 +591,14 @@ mod tests {
                             continue;
                         };
                         tokio::spawn(async move {
-                            let mut request = [0_u8; PROBE_REQUEST.len()];
+                            let mut request = [0_u8; 4];
                             if stream.read_exact(&mut request).await.is_err() {
                                 return;
                             }
-                            if request != *PROBE_REQUEST {
+                            if request != *b"PLZ?" {
                                 return;
                             }
-                            let _ = stream.write_all(PROBE_RESPONSE).await;
+                            let _ = stream.write_all(b"OK!!").await;
                             let _ = stream.flush().await;
                         });
                     }
