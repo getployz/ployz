@@ -249,15 +249,24 @@ impl DaemonState {
             return;
         };
         if let Err(error) = active.mesh.destroy().await {
-            warn!(?error, "failed to stop mesh after startup participation publish error");
+            warn!(
+                ?error,
+                "failed to stop mesh after startup participation publish error"
+            );
         }
         let _ = active.peer_control.shutdown().await;
         let _ = active.remote_control.shutdown().await;
         if let Err(error) = active.dns.shutdown().await {
-            warn!(?error, "failed to stop dns after startup participation publish error");
+            warn!(
+                ?error,
+                "failed to stop dns after startup participation publish error"
+            );
         }
         if let Err(error) = active.gateway.shutdown().await {
-            warn!(?error, "failed to stop gateway after startup participation publish error");
+            warn!(
+                ?error,
+                "failed to stop gateway after startup participation publish error"
+            );
         }
         self.clear_active_marker();
     }

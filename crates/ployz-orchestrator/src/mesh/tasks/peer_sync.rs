@@ -1,6 +1,6 @@
 use crate::mesh::driver::WireguardDriver;
-use crate::mesh::tasks::EndpointSelectionMap;
 use crate::mesh::peer_state::{PeerStateMap, sync_peers};
+use crate::mesh::tasks::EndpointSelectionMap;
 use crate::model::{MachineEvent, MachineId, MachineRecord};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -13,16 +13,28 @@ pub enum PeerSyncCommand {
     RemoveTransient(MachineId),
 }
 
-pub(crate) async fn run_peer_sync_task(
-    snapshot: Vec<MachineRecord>,
-    mut events: mpsc::Receiver<MachineEvent>,
-    mut commands: mpsc::Receiver<PeerSyncCommand>,
-    bootstrap_peers: Vec<MachineRecord>,
-    network: WireguardDriver,
-    local_machine_id: MachineId,
-    endpoint_selections: EndpointSelectionMap,
-    cancel: CancellationToken,
-) {
+pub(crate) struct PeerSyncTask {
+    pub(crate) snapshot: Vec<MachineRecord>,
+    pub(crate) events: mpsc::Receiver<MachineEvent>,
+    pub(crate) commands: mpsc::Receiver<PeerSyncCommand>,
+    pub(crate) bootstrap_peers: Vec<MachineRecord>,
+    pub(crate) network: WireguardDriver,
+    pub(crate) local_machine_id: MachineId,
+    pub(crate) endpoint_selections: EndpointSelectionMap,
+    pub(crate) cancel: CancellationToken,
+}
+
+pub(crate) async fn run_peer_sync_task(task: PeerSyncTask) {
+    let PeerSyncTask {
+        snapshot,
+        mut events,
+        mut commands,
+        bootstrap_peers,
+        network,
+        local_machine_id,
+        endpoint_selections,
+        cancel,
+    } = task;
     let mut state = PeerStateMap::new();
     let now = Instant::now();
     state.init_from_snapshot(&snapshot, now);
@@ -64,8 +76,8 @@ mod tests {
     use crate::mesh::driver::WireguardDriver;
     use crate::mesh::wireguard::MemoryWireGuard;
     use crate::model::{MachineEvent, MachineStatus, OverlayIp, Participation, PublicKey};
-    use std::net::Ipv6Addr;
     use std::collections::HashMap;
+    use std::net::Ipv6Addr;
     use std::sync::Arc;
     use tokio::sync::RwLock;
     use tokio::sync::mpsc;
@@ -105,16 +117,16 @@ mod tests {
         let task_cancel = cancel.clone();
 
         let handle = tokio::spawn(async move {
-            run_peer_sync_task(
+            run_peer_sync_task(PeerSyncTask {
                 snapshot,
-                event_rx,
-                command_rx,
+                events: event_rx,
+                commands: command_rx,
                 bootstrap_peers,
-                driver,
+                network: driver,
                 local_machine_id,
-                Arc::new(RwLock::new(HashMap::new())),
-                task_cancel,
-            )
+                endpoint_selections: Arc::new(RwLock::new(HashMap::new())),
+                cancel: task_cancel,
+            })
             .await;
         });
 

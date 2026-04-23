@@ -28,6 +28,7 @@ pub fn is_coordination_peer(machine: &MachineRecord, self_id: &MachineId) -> boo
         }
 }
 
+#[must_use]
 pub fn coordination_peers<'a>(
     machines: &'a [MachineRecord],
     self_id: &MachineId,
@@ -53,7 +54,8 @@ pub fn diagnostic_role(
     })
 }
 
-pub fn placement_candidates<'a>(machines: &'a [MachineRecord]) -> Vec<&'a MachineRecord> {
+#[must_use]
+pub fn placement_candidates(machines: &[MachineRecord]) -> Vec<&MachineRecord> {
     machines
         .iter()
         .filter(|machine| is_new_placement_candidate(machine))

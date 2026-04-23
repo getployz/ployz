@@ -29,12 +29,12 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 [features]
 ebpf-native = ["dep:aya"]
 
-[dependencies.aya]
-version = "0.13"
-optional = true
-
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies.aya]
+version = "0.13"
+optional = true
 
 [lints.clippy]
 indexing_slicing = "warn"

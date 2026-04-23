@@ -145,6 +145,42 @@ fn build_gateway_sidecar_spec(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Deployment artifact helpers
+// ---------------------------------------------------------------------------
+
+struct GatewayPaths {
+    gateway_dir: PathBuf,
+    pingora_config: PathBuf,
+    pid_file: PathBuf,
+    upgrade_sock: PathBuf,
+}
+
+impl GatewayPaths {
+    fn for_config(config: &GatewayConfig) -> Self {
+        let gateway_dir = NetworkConfig::dir(&config.data_dir, &config.network).join("gateway");
+        Self {
+            pingora_config: gateway_dir.join("pingora.yaml"),
+            pid_file: gateway_dir.join("pingora.pid"),
+            upgrade_sock: gateway_dir.join("pingora.sock"),
+            gateway_dir,
+        }
+    }
+}
+
+fn write_pingora_config(paths: &GatewayPaths, threads: usize) -> Result<(), GatewayError> {
+    std::fs::create_dir_all(&paths.gateway_dir)
+        .map_err(|err| GatewayError::Process(format!("create gateway dir: {err}")))?;
+    let contents = format!(
+        "---\nversion: 1\nthreads: {threads}\npid_file: {}\nupgrade_sock: {}\n",
+        paths.pid_file.display(),
+        paths.upgrade_sock.display(),
+    );
+    std::fs::write(&paths.pingora_config, contents)
+        .map_err(|err| GatewayError::Process(format!("write gateway config: {err}")))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{GatewayPaths, build_gateway_sidecar_spec};
@@ -187,40 +223,4 @@ mod tests {
                 .any(|(key, _)| key == "PLOYZ_GATEWAY_METRICS_LISTEN_ADDR")
         );
     }
-}
-
-// ---------------------------------------------------------------------------
-// Deployment artifact helpers
-// ---------------------------------------------------------------------------
-
-struct GatewayPaths {
-    gateway_dir: PathBuf,
-    pingora_config: PathBuf,
-    pid_file: PathBuf,
-    upgrade_sock: PathBuf,
-}
-
-impl GatewayPaths {
-    fn for_config(config: &GatewayConfig) -> Self {
-        let gateway_dir = NetworkConfig::dir(&config.data_dir, &config.network).join("gateway");
-        Self {
-            pingora_config: gateway_dir.join("pingora.yaml"),
-            pid_file: gateway_dir.join("pingora.pid"),
-            upgrade_sock: gateway_dir.join("pingora.sock"),
-            gateway_dir,
-        }
-    }
-}
-
-fn write_pingora_config(paths: &GatewayPaths, threads: usize) -> Result<(), GatewayError> {
-    std::fs::create_dir_all(&paths.gateway_dir)
-        .map_err(|err| GatewayError::Process(format!("create gateway dir: {err}")))?;
-    let contents = format!(
-        "---\nversion: 1\nthreads: {threads}\npid_file: {}\nupgrade_sock: {}\n",
-        paths.pid_file.display(),
-        paths.upgrade_sock.display(),
-    );
-    std::fs::write(&paths.pingora_config, contents)
-        .map_err(|err| GatewayError::Process(format!("write gateway config: {err}")))?;
-    Ok(())
 }

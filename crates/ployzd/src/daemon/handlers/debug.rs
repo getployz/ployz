@@ -2,8 +2,8 @@ use ployz_api::{DaemonResponse, DebugTickTask};
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 
-use crate::endpoint_maintenance::reconcile_local_endpoints_for_mesh;
 use crate::daemon::DaemonState;
+use crate::endpoint_maintenance::reconcile_local_endpoints_for_mesh;
 
 impl DaemonState {
     pub(crate) async fn handle_debug_tick(
@@ -20,14 +20,13 @@ impl DaemonState {
                 DebugTickTask::PeerSync => self.debug_tick_peer_sync(),
                 DebugTickTask::Endpoints => self.debug_tick_endpoints().await,
                 DebugTickTask::Heartbeat => self.debug_tick_heartbeat().await,
-                DebugTickTask::Heal => self.debug_tick_heal().await,
                 DebugTickTask::All => {
                     if let Err(error) = self.debug_tick_heartbeat().await {
                         Err(error)
                     } else if let Err(error) = self.debug_tick_endpoints().await {
                         Err(error)
                     } else {
-                        self.debug_tick_heal().await
+                        Ok(())
                     }
                 }
             };
@@ -81,11 +80,6 @@ impl DaemonState {
 
         Ok(())
     }
-
-    async fn debug_tick_heal(&mut self) -> Result<(), (&'static str, String)> {
-        self.heal_local_subnet_conflict_if_needed().await;
-        Ok(())
-    }
 }
 
 fn format_debug_tick_task(task: DebugTickTask) -> &'static str {
@@ -93,7 +87,6 @@ fn format_debug_tick_task(task: DebugTickTask) -> &'static str {
         DebugTickTask::PeerSync => "peer-sync",
         DebugTickTask::Endpoints => "endpoints",
         DebugTickTask::Heartbeat => "heartbeat",
-        DebugTickTask::Heal => "heal",
         DebugTickTask::All => "all",
     }
 }

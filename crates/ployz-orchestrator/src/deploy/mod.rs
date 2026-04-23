@@ -689,9 +689,11 @@ mod tests {
 
         let desired = desired_slots(&spec, &machines, Some(&current_slots), &machine_map)
             .expect("desired slots");
-        assert_eq!(desired.len(), 1);
-        assert_eq!(desired[0].slot_id, SlotId("slot-0001".into()));
-        assert_eq!(desired[0].machine_id, MachineId("machine-b".into()));
+        let [slot] = desired.as_slice() else {
+            panic!("expected one desired slot");
+        };
+        assert_eq!(slot.slot_id, SlotId("slot-0001".into()));
+        assert_eq!(slot.machine_id, MachineId("machine-b".into()));
     }
 
     fn test_machine(
