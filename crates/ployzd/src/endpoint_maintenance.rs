@@ -57,8 +57,8 @@ pub(crate) fn local_endpoint_watch_supported() -> bool {
 
 pub(crate) async fn reconcile_local_endpoints_for_mesh(
     mesh: &Mesh,
+    detected_endpoints: Vec<String>,
 ) -> Result<Option<Vec<String>>, String> {
-    let detected_endpoints = detect_advertised_endpoints(DEFAULT_LISTEN_PORT).await;
     let Some(current_record) = mesh.authoritative_self_record().await else {
         return Err("mesh self record unavailable".into());
     };
@@ -79,12 +79,13 @@ pub(crate) async fn reconcile_local_endpoints_for_mesh(
 }
 
 async fn reconcile_local_endpoints_from_state(state: &Arc<RwLock<DaemonState>>) {
+    let detected_endpoints = detect_advertised_endpoints(DEFAULT_LISTEN_PORT).await;
     let result = {
         let state_guard = state.read().await;
         let Some(active) = state_guard.active.as_ref() else {
             return;
         };
-        reconcile_local_endpoints_for_mesh(&active.mesh).await
+        reconcile_local_endpoints_for_mesh(&active.mesh, detected_endpoints).await
     };
 
     match result {
