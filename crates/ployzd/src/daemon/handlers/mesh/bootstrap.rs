@@ -1,9 +1,7 @@
 use crate::daemon::setup::MeshStartOptions;
 use crate::mesh_state::bootstrap::{BootstrapPeerRecord, write_bootstrap_peer_record};
 use crate::mesh_state::network::NetworkConfig;
-use ployz_api::{
-    DaemonPayload, DaemonResponse, MeshBootstrapRequest, MeshSelfRecordPayload,
-};
+use ployz_api::{DaemonPayload, DaemonResponse, MeshBootstrapRequest, MeshSelfRecordPayload};
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_orchestrator::network::endpoints::detect_endpoints;
 use ployz_types::model::{JoinResponse, NetworkName};

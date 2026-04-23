@@ -10,7 +10,7 @@ use tracing::{debug, info, warn};
 
 use crate::error::{Error, Result};
 use crate::mesh::DevicePeer;
-use crate::model::{PublicKey};
+use crate::model::PublicKey;
 use crate::runtime::parse_docker_image_ref;
 
 use super::{BRIDGE_HOST_LOOPBACK, DEFAULT_MTU, DockerWireGuard, INTERFACE_NAME};

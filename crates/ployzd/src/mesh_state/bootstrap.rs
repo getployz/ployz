@@ -185,10 +185,7 @@ pub async fn build_seed_records(
                 net_config.subnet,
                 endpoints.clone(),
             );
-            record.participation = match net_config.subnet {
-                Some(_) => Participation::Enabled,
-                None => Participation::Disabled,
-            };
+            record.participation = Participation::Disabled;
             record
         });
     self_record.public_key = identity.public_key.clone();

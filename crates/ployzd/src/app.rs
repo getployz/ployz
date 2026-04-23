@@ -16,8 +16,6 @@ use crate::metrics::{
     spawn_container_resource_metrics_loop,
 };
 
-const SUBNET_HEAL_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(5);
-
 pub fn init_tracing() {
     let _ = tracing_subscriber::fmt::try_init();
 }
@@ -192,7 +190,6 @@ async fn run_daemon_inner(
     reconcile_startup_operations(&state).await;
 
     tracing::info!(socket = socket_path, "daemon running");
-    spawn_subnet_heal_loop(Arc::clone(&state), cancel.clone());
 
     loop {
         tokio::select! {
@@ -231,22 +228,6 @@ async fn resume_active_network(state: &Arc<RwLock<DaemonState>>) {
 async fn reconcile_startup_operations(state: &Arc<RwLock<DaemonState>>) {
     let state_guard = state.read().await;
     state_guard.reconcile_machine_operations_on_startup().await;
-}
-
-fn spawn_subnet_heal_loop(state: Arc<RwLock<DaemonState>>, cancel: CancellationToken) {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(SUBNET_HEAL_INTERVAL);
-        interval.tick().await;
-        loop {
-            tokio::select! {
-                _ = cancel.cancelled() => break,
-                _ = interval.tick() => {
-                    let mut state_guard = state.write().await;
-                    state_guard.heal_local_subnet_conflict_if_needed().await;
-                }
-            }
-        }
-    });
 }
 
 fn spawn_command_task(

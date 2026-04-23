@@ -1,7 +1,11 @@
 use std::fs;
 use std::path::Path;
 
-pub(super) fn write_client_config(path: &Path, data_dir: &Path, socket_path: &str) -> Result<(), String> {
+pub(super) fn write_client_config(
+    path: &Path,
+    data_dir: &Path,
+    socket_path: &str,
+) -> Result<(), String> {
     let Some(parent) = path.parent() else {
         return Err(format!("invalid config path '{}'", path.display()));
     };

@@ -1,4 +1,3 @@
-mod candidate;
 mod map;
 mod peer;
 mod planning;
@@ -12,7 +11,9 @@ mod tests {
 
     use tokio::time::Instant;
 
-    use crate::model::{MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey};
+    use crate::model::{
+        MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
+    };
 
     use super::map::PeerStateMap;
 
