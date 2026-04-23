@@ -11,7 +11,8 @@ use super::super::types::{
 };
 use super::bootstrap::bootstrap_remote_machine;
 use super::coordination::{
-    BootstrapSubnetClaim, consume_invite, persist_machine_control_target, release_reserved_subnet,
+    BootstrapSubnetClaim, assert_subnet_unique, consume_invite, persist_machine_control_target,
+    release_reserved_subnet,
 };
 use super::remote::{
     ExpectedSubnetState, overlay_rpc_expect_ok, remote_rpc_expect_ok, remote_self_record,
@@ -275,6 +276,33 @@ pub(super) async fn run_machine_add_target(
     stage = MachineAddStage::Enabled;
     let _ = operation_store.update_stage(&mut operation, stage.to_string());
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: participation enabled");
+
+    if let Err(err) = assert_subnet_unique(&context.store, &machine_id, subnet_claim.subnet()).await
+    {
+        let quorum_peer_ids = subnet_claim
+            .quorum_peer_ids()
+            .into_iter()
+            .map(|machine_id| machine_id.0)
+            .collect::<Vec<_>>();
+        tracing::error!(
+            %target,
+            joiner_id = %machine_id,
+            subnet = %subnet_claim.subnet(),
+            error = %err,
+            quorum_peer_ids = ?quorum_peer_ids,
+            "machine add target: subnet uniqueness invariant violated"
+        );
+        let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
+        let _ = operation_store.update_status(
+            &mut operation,
+            MachineOperationStatus::Failed,
+            Some(err.clone()),
+        );
+        return MachineAddTargetResult::Failed {
+            target,
+            failure: MachineAddFailure::Enable { reason: err },
+        };
+    }
 
     let _ = operation_store.update_stage(&mut operation, MachineAddStage::Finalized.to_string());
     let _ = operation_store.update_status(&mut operation, MachineOperationStatus::Succeeded, None);
