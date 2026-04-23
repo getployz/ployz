@@ -8,7 +8,7 @@ use ployz_orchestrator::coordination::{
 };
 use ployz_orchestrator::ipam::pick_candidate_subnet;
 use ployz_orchestrator::machine_policy::coordination_peers as policy_coordination_peers;
-use ployz_store_api::{InviteStore, MachineStore};
+use ployz_store_api::{InviteStore, MachineStore, StoreDriver};
 use ployz_types::model::{MachineId, MachineRecord, OverlayIp};
 use ployz_types::time::now_unix_secs;
 
@@ -45,6 +45,14 @@ impl BootstrapSubnetClaim {
     #[must_use]
     pub(in crate::daemon::handlers::machine) fn reservation_nonce(&self) -> &str {
         &self.reservation.nonce
+    }
+
+    #[must_use]
+    pub(in crate::daemon::handlers::machine) fn quorum_peer_ids(&self) -> Vec<MachineId> {
+        self.quorum_peers
+            .iter()
+            .map(|peer| peer.machine_id.clone())
+            .collect()
     }
 }
 
@@ -313,11 +321,102 @@ pub(super) async fn persist_machine_control_target(
         .map_err(|err| format!("persist control target: {err}"))
 }
 
+pub(super) async fn assert_subnet_unique(
+    store: &StoreDriver,
+    machine_id: &MachineId,
+    claimed_subnet: Ipv4Net,
+) -> Result<(), String> {
+    let machines = store
+        .list_machines()
+        .await
+        .map_err(|err| format!("list machines for subnet assertion: {err}"))?;
+    let conflicting_machine_ids = machines
+        .into_iter()
+        .filter(|machine| machine.id != *machine_id && machine.subnet == Some(claimed_subnet))
+        .map(|machine| machine.id.0)
+        .collect::<Vec<_>>();
+    if conflicting_machine_ids.is_empty() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "subnet uniqueness invariant violated for machine '{}' subnet '{}'; conflicting machines: {}",
+        machine_id,
+        claimed_subnet,
+        conflicting_machine_ids.join(", ")
+    ))
+}
+
 fn api_resource_key(key: &ResourceKey) -> ApiResourceKey {
     match key {
         ResourceKey::Subnet(subnet) => ApiResourceKey::Subnet(*subnet),
         ResourceKey::DeployNamespace(namespace) => {
             ApiResourceKey::DeployNamespace(namespace.clone())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::assert_subnet_unique;
+    use ipnet::Ipv4Net;
+    use ployz_store_api::{MachineStore, StoreDriver};
+    use ployz_types::model::{MachineId, MachineRecord, OverlayIp, Participation, PublicKey};
+
+    #[tokio::test]
+    async fn subnet_assertion_rejects_duplicate_claims() {
+        let store = StoreDriver::memory();
+        let subnet: Ipv4Net = "10.210.1.0/24".parse().expect("valid subnet");
+        store
+            .upsert_self_machine(&machine_record("alpha", "::1", Some(subnet)))
+            .await
+            .expect("upsert alpha");
+        store
+            .upsert_self_machine(&machine_record("beta", "::2", Some(subnet)))
+            .await
+            .expect("upsert beta");
+
+        let err = assert_subnet_unique(&store, &MachineId("alpha".into()), subnet)
+            .await
+            .expect_err("duplicate subnet should fail");
+
+        assert!(err.contains("beta"));
+    }
+
+    #[tokio::test]
+    async fn subnet_assertion_accepts_unique_claim() {
+        let store = StoreDriver::memory();
+        let claimed_subnet: Ipv4Net = "10.210.1.0/24".parse().expect("valid subnet");
+        let other_subnet: Ipv4Net = "10.210.2.0/24".parse().expect("valid subnet");
+        store
+            .upsert_self_machine(&machine_record("alpha", "::1", Some(claimed_subnet)))
+            .await
+            .expect("upsert alpha");
+        store
+            .upsert_self_machine(&machine_record("beta", "::2", Some(other_subnet)))
+            .await
+            .expect("upsert beta");
+
+        let result = assert_subnet_unique(&store, &MachineId("alpha".into()), claimed_subnet).await;
+
+        assert!(result.is_ok());
+    }
+
+    fn machine_record(
+        machine_id: &str,
+        overlay_ip: &str,
+        subnet: Option<Ipv4Net>,
+    ) -> MachineRecord {
+        let record = MachineRecord::seed(
+            MachineId(machine_id.into()),
+            PublicKey([1; 32]),
+            overlay_ip.parse().map(OverlayIp).expect("valid overlay"),
+            subnet,
+            vec![],
+        );
+        MachineRecord {
+            participation: Participation::Enabled,
+            ..record
         }
     }
 }

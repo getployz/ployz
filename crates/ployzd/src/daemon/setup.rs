@@ -18,6 +18,7 @@ use ployz_runtime_api::{NoopRuntimeHandle, RuntimeHandle};
 
 use super::{ActiveMesh, DaemonState};
 use crate::ipc::peer_listener;
+use crate::runtime_profile::MeshBuildRequest;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MeshStartOptions {
@@ -103,15 +104,16 @@ impl MeshStartTx {
             Vec::new()
         });
         let components = state
-            .build_runtime_mesh_components(
-                self.config.overlay_ip,
-                &plan.network_dir,
-                &self.config.name.0,
-                self.config.subnet,
-                &exposed_tcp_ports,
-                &plan.bootstrap_addrs,
-                &self.config.id.0,
-            )
+            .build_runtime_mesh_components(MeshBuildRequest {
+                identity: &state.identity,
+                overlay_ip: self.config.overlay_ip,
+                network_dir: &plan.network_dir,
+                network_name: &self.config.name.0,
+                subnet: self.config.subnet,
+                exposed_tcp_ports: &exposed_tcp_ports,
+                bootstrap: &plan.bootstrap_addrs,
+                network_id: &self.config.id.0,
+            })
             .await
             .map_err(StartMeshError::NetworkDriver)?;
 
@@ -353,13 +355,6 @@ impl DaemonState {
         Ok(tx.finish())
     }
 
-    pub async fn restart_active_runtime_for_subnet_heal(
-        &mut self,
-        network: &str,
-    ) -> Result<(), String> {
-        self.restart_active_runtime_from_config(network).await
-    }
-
     pub async fn restart_active_runtime_from_config(
         &mut self,
         network: &str,
@@ -381,15 +376,16 @@ impl DaemonState {
         }
 
         let components = self
-            .build_runtime_mesh_components(
-                net_config.overlay_ip,
-                &network_dir,
-                &net_config.name.0,
-                net_config.subnet,
-                &exposed_tcp_ports,
-                &[],
-                &net_config.id.0,
-            )
+            .build_runtime_mesh_components(MeshBuildRequest {
+                identity: &self.identity,
+                overlay_ip: net_config.overlay_ip,
+                network_dir: &network_dir,
+                network_name: &net_config.name.0,
+                subnet: net_config.subnet,
+                exposed_tcp_ports: &exposed_tcp_ports,
+                bootstrap: &[],
+                network_id: &net_config.id.0,
+            })
             .await
             .map_err(|error| format!("runtime components failed: {error}"))?;
 
@@ -438,18 +434,12 @@ impl DaemonState {
 
         let dns = std::mem::replace(&mut active.dns, Box::new(NoopRuntimeHandle));
         if let Err(error) = dns.shutdown().await {
-            tracing::warn!(
-                ?error,
-                "subnet heal: dns stop failed during runtime restart"
-            );
+            tracing::warn!(?error, "runtime restart: dns stop failed");
         }
 
         let gateway = std::mem::replace(&mut active.gateway, Box::new(NoopRuntimeHandle));
         if let Err(error) = gateway.shutdown().await {
-            tracing::warn!(
-                ?error,
-                "subnet heal: gateway stop failed during runtime restart"
-            );
+            tracing::warn!(?error, "runtime restart: gateway stop failed");
         }
 
         let _ = active

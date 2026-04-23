@@ -4,13 +4,14 @@ use ployz_store_api::MachineStore;
 use tokio::sync::{RwLock, mpsc};
 use tracing::warn;
 
-use crate::mesh::{MeshNetwork, WireGuardDevice};
 use crate::mesh::probe::run_probe_listener_task;
 use crate::mesh::tasks::{
-    EndpointMaintainerCommand, SelfRecordMutation, TaskSetError, apply_self_record_mutation,
-    build_initial_endpoint_selections, run_ebpf_sync_task, run_endpoint_maintainer_task,
-    run_peer_sync_task, run_self_record_writer_task, run_subnet_claim_monitor_task,
+    EndpointMaintainerCommand, EndpointMaintainerTask, PeerSyncTask, SelfRecordMutation,
+    TaskSetError, apply_self_record_mutation, build_initial_endpoint_selections,
+    run_ebpf_sync_task, run_endpoint_maintainer_task, run_peer_sync_task,
+    run_self_record_writer_task, run_subnet_claim_monitor_task,
 };
+use crate::mesh::{MeshNetwork, WireGuardDevice};
 
 use super::{Mesh, Result};
 
@@ -30,7 +31,8 @@ impl Mesh {
             .subscribe_machines()
             .await
             .map_err(TaskSetError::Subscribe)?;
-        let (peer_sync_tx, mut peer_sync_rx) = mpsc::channel::<crate::mesh::tasks::PeerSyncCommand>(64);
+        let (peer_sync_tx, mut peer_sync_rx) =
+            mpsc::channel::<crate::mesh::tasks::PeerSyncCommand>(64);
         let (planner_tx, planner_rx) = mpsc::channel::<crate::mesh::tasks::PeerSyncCommand>(64);
         let (endpoint_maintainer_tx, maint_rx) = mpsc::channel::<EndpointMaintainerCommand>(64);
         let (mut task_set, cancel) = crate::mesh::tasks::TaskSet::new();
@@ -43,17 +45,21 @@ impl Mesh {
         let initial_device_peers = match self.network.read_peers().await {
             Ok(peers) => peers,
             Err(error) => {
-                warn!(?error, "failed to read initial wireguard peers for endpoint maintenance");
+                warn!(
+                    ?error,
+                    "failed to read initial wireguard peers for endpoint maintenance"
+                );
                 Vec::new()
             }
         };
-        let endpoint_selections = std::sync::Arc::new(RwLock::new(build_initial_endpoint_selections(
-            &snapshot,
-            &bootstrap_peers,
-            &self.machine_id,
-            &initial_device_peers,
-            tokio::time::Instant::now(),
-        )));
+        let endpoint_selections =
+            std::sync::Arc::new(RwLock::new(build_initial_endpoint_selections(
+                &snapshot,
+                &bootstrap_peers,
+                &self.machine_id,
+                &initial_device_peers,
+                tokio::time::Instant::now(),
+            )));
         if self.network.runs_probe_listener() {
             task_set.spawn(run_probe_listener_task(cancel.clone()));
         }
@@ -83,31 +89,32 @@ impl Mesh {
                 }
             }
         });
-        task_set.spawn(run_peer_sync_task(
+        task_set.spawn(run_peer_sync_task(PeerSyncTask {
             snapshot,
             events,
-            planner_rx,
+            commands: planner_rx,
             bootstrap_peers,
-            self.network.clone(),
-            self.machine_id.clone(),
-            endpoint_selections.clone(),
-            cancel.clone(),
-        ));
-        task_set.spawn(run_endpoint_maintainer_task(
-            maint_snapshot,
-            maint_events,
-            maint_rx,
-            self.seed_records
+            network: self.network.clone(),
+            local_machine_id: self.machine_id.clone(),
+            endpoint_selections: endpoint_selections.clone(),
+            cancel: cancel.clone(),
+        }));
+        task_set.spawn(run_endpoint_maintainer_task(EndpointMaintainerTask {
+            snapshot: maint_snapshot,
+            events: maint_events,
+            commands: maint_rx,
+            bootstrap_peers: self
+                .seed_records
                 .iter()
                 .filter(|machine| machine.id != self.machine_id)
                 .cloned()
                 .collect(),
-            self.network.clone(),
-            self.machine_id.clone(),
+            network: self.network.clone(),
+            local_machine_id: self.machine_id.clone(),
             endpoint_selections,
             initial_device_peers,
-            cancel.clone(),
-        ));
+            cancel: cancel.clone(),
+        }));
 
         self.peer_sync_tx = Some(peer_sync_tx);
         self.endpoint_maintainer_tx = Some(endpoint_maintainer_tx);

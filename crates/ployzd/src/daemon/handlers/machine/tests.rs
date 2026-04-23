@@ -1,4 +1,3 @@
-use super::heal::plan_local_subnet_heal;
 use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
 use crate::daemon::ActiveMesh;
 use crate::daemon::DaemonState;
@@ -20,7 +19,7 @@ use ployz_types::model::{
     JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
 };
 use ployz_types::time::now_unix_secs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -80,112 +79,7 @@ async fn machine_list_json_payload_contains_rows() {
         panic!("expected machine list payload");
     };
     assert_eq!(payload.rows.len(), 1);
-    assert_eq!(payload.rows[0].id, "founder");
-}
-
-#[test]
-fn plan_local_subnet_heal_reassigns_losing_machine() {
-    let machines = vec![
-        test_machine_record(
-            "alpha",
-            "10.210.0.0/24",
-            Participation::Enabled,
-            PublicKey([2; 32]),
-        ),
-        test_machine_record(
-            "beta",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            PublicKey([3; 32]),
-        ),
-        test_machine_record(
-            "gamma",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            PublicKey([4; 32]),
-        ),
-    ];
-
-    let plan = plan_local_subnet_heal(
-        &machines,
-        &MachineId("gamma".into()),
-        DEFAULT_CLUSTER_CIDR,
-        24,
-    )
-    .expect("plan should succeed")
-    .expect("gamma should heal");
-
-    assert_eq!(plan.current_subnet, "10.210.1.0/24".parse().expect("valid"));
-    assert_eq!(plan.winner_machine_id, MachineId("beta".into()));
-    assert_eq!(plan.target_subnet, "10.210.2.0/24".parse().expect("valid"));
-}
-
-#[test]
-fn plan_local_subnet_heal_keeps_winner_in_place() {
-    let machines = vec![
-        test_machine_record(
-            "alpha",
-            "10.210.0.0/24",
-            Participation::Enabled,
-            PublicKey([2; 32]),
-        ),
-        test_machine_record(
-            "beta",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            PublicKey([3; 32]),
-        ),
-        test_machine_record(
-            "gamma",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            PublicKey([4; 32]),
-        ),
-    ];
-
-    let plan = plan_local_subnet_heal(
-        &machines,
-        &MachineId("beta".into()),
-        DEFAULT_CLUSTER_CIDR,
-        24,
-    )
-    .expect("plan should succeed");
-
-    assert!(plan.is_none());
-}
-
-#[test]
-fn plan_local_subnet_heal_is_noop_after_subnet_changes() {
-    let machines = vec![
-        test_machine_record(
-            "alpha",
-            "10.210.0.0/24",
-            Participation::Enabled,
-            PublicKey([2; 32]),
-        ),
-        test_machine_record(
-            "beta",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            PublicKey([3; 32]),
-        ),
-        test_machine_record(
-            "gamma",
-            "10.210.2.0/24",
-            Participation::Enabled,
-            PublicKey([4; 32]),
-        ),
-    ];
-
-    let plan = plan_local_subnet_heal(
-        &machines,
-        &MachineId("gamma".into()),
-        DEFAULT_CLUSTER_CIDR,
-        24,
-    )
-    .expect("plan should succeed");
-
-    assert!(plan.is_none());
+    assert_eq!(payload.rows.first().expect("founder row").id, "founder");
 }
 
 #[tokio::test]
@@ -222,14 +116,15 @@ async fn machine_add_enables_joiner_participation() {
             buf.read_line(&mut line).await.expect("read request");
             let request: DaemonRequest =
                 serde_json::from_str(&line).expect("decode daemon request");
-            let response = match request {
-                DaemonRequest::Coord { .. } => DaemonResponse {
+            let response = if matches!(request, DaemonRequest::Coord { .. }) {
+                DaemonResponse {
                     ok: true,
                     code: "OK".into(),
                     message: "allow".into(),
                     payload: None,
-                },
-                DaemonRequest::MeshReady { .. } => DaemonResponse {
+                }
+            } else if matches!(request, DaemonRequest::MeshReady { .. }) {
+                DaemonResponse {
                     ok: true,
                     code: "OK".into(),
                     message: "ready".into(),
@@ -241,8 +136,9 @@ async fn machine_add_enables_joiner_participation() {
                         workload_subnet_present: true,
                         participation: "enabled".into(),
                     })),
-                },
-                DaemonRequest::MeshSetParticipation { participation } => {
+                }
+            } else if let DaemonRequest::MeshSetParticipation { participation } = request {
+                {
                     let mut joiner_record = MachineRecord::seed(
                         MachineId("joiner-1".into()),
                         PublicKey([4; 32]),
@@ -262,7 +158,8 @@ async fn machine_add_enables_joiner_participation() {
                         payload: None,
                     }
                 }
-                other => panic!("unexpected daemon request: {other:?}"),
+            } else {
+                panic!("unexpected daemon request: {request:?}");
             };
             let mut response_line = serde_json::to_string(&response).expect("encode response");
             response_line.push('\n');
@@ -457,7 +354,13 @@ async fn machine_add_releases_reserved_subnet_when_operation_start_fails() {
 
     let invites = store.list_invites().await.expect("list invites");
     assert_eq!(invites.len(), 1);
-    assert!(invites[0].consumed_by.is_none());
+    assert!(
+        invites
+            .first()
+            .expect("invite created")
+            .consumed_by
+            .is_none()
+    );
     assert!(network.current_peers().is_empty());
 
     teardown_state(&mut state).await;
@@ -680,30 +583,31 @@ async fn reserve_machine_subnet_releases_peer_holds_when_quorum_denies() {
             buf.read_line(&mut line).await.expect("read request");
             let request: DaemonRequest =
                 serde_json::from_str(&line).expect("decode daemon request");
-            let (label, response) = match request {
-                DaemonRequest::Coord {
-                    op: ployz_api::CoordOp::Prepare { .. },
-                } => {
-                    let response = if index == 0 {
-                        DaemonResponse {
-                            ok: true,
-                            code: "OK".into(),
-                            message: "allow".into(),
-                            payload: None,
-                        }
-                    } else {
-                        DaemonResponse {
-                            ok: false,
-                            code: "COORDINATION_DENIED".into(),
-                            message: "denied".into(),
-                            payload: None,
-                        }
-                    };
-                    ("prepare", response)
-                }
-                DaemonRequest::Coord {
-                    op: ployz_api::CoordOp::Release { .. },
-                } => (
+            let (label, response) = if let DaemonRequest::Coord {
+                op: ployz_api::CoordOp::Prepare { .. },
+            } = request
+            {
+                let response = if index == 0 {
+                    DaemonResponse {
+                        ok: true,
+                        code: "OK".into(),
+                        message: "allow".into(),
+                        payload: None,
+                    }
+                } else {
+                    DaemonResponse {
+                        ok: false,
+                        code: "COORDINATION_DENIED".into(),
+                        message: "denied".into(),
+                        payload: None,
+                    }
+                };
+                ("prepare", response)
+            } else if let DaemonRequest::Coord {
+                op: ployz_api::CoordOp::Release { .. },
+            } = request
+            {
+                (
                     "release",
                     DaemonResponse {
                         ok: true,
@@ -711,8 +615,9 @@ async fn reserve_machine_subnet_releases_peer_holds_when_quorum_denies() {
                         message: "released".into(),
                         payload: None,
                     },
-                ),
-                other => panic!("unexpected daemon request: {other:?}"),
+                )
+            } else {
+                panic!("unexpected daemon request: {request:?}");
             };
             server_seen_requests.lock().await.push(label.into());
             let mut response_line = serde_json::to_string(&response).expect("encode response");
@@ -825,7 +730,7 @@ async fn machine_add_rejects_remote_subnet_mismatch_before_invite_consume() {
 
     let invites = store.list_invites().await.expect("list invites");
     assert_eq!(invites.len(), 1);
-    assert_eq!(invites[0].consumed_by, None);
+    assert_eq!(invites.first().expect("invite created").consumed_by, None);
     assert!(
         state
             .reservations
@@ -916,8 +821,8 @@ async fn machine_enable_rolls_back_remote_promote_when_self_record_fails() {
             buf.read_line(&mut line).await.expect("read request");
             let request: DaemonRequest =
                 serde_json::from_str(&line).expect("decode daemon request");
-            let (label, response) = match request {
-                DaemonRequest::MeshPromote { .. } => (
+            let (label, response) = if matches!(request, DaemonRequest::MeshPromote { .. }) {
+                (
                     "promote",
                     DaemonResponse {
                         ok: true,
@@ -925,8 +830,9 @@ async fn machine_enable_rolls_back_remote_promote_when_self_record_fails() {
                         message: "promoted".into(),
                         payload: None,
                     },
-                ),
-                DaemonRequest::MeshSelfRecord => (
+                )
+            } else if matches!(request, DaemonRequest::MeshSelfRecord) {
+                (
                     "self_record",
                     DaemonResponse {
                         ok: false,
@@ -934,8 +840,9 @@ async fn machine_enable_rolls_back_remote_promote_when_self_record_fails() {
                         message: "self record unavailable".into(),
                         payload: None,
                     },
-                ),
-                DaemonRequest::MeshStandby { force } => {
+                )
+            } else if let DaemonRequest::MeshStandby { force } = request {
+                {
                     assert!(force);
                     (
                         "standby",
@@ -947,7 +854,8 @@ async fn machine_enable_rolls_back_remote_promote_when_self_record_fails() {
                         },
                     )
                 }
-                other => panic!("unexpected daemon request: {other:?}"),
+            } else {
+                panic!("unexpected daemon request: {request:?}");
             };
             server_seen_requests.lock().await.push(label.into());
             let mut response_line = serde_json::to_string(&response).expect("encode response");
@@ -983,192 +891,6 @@ async fn machine_enable_rolls_back_remote_promote_when_self_record_fails() {
     );
 
     teardown_state(&mut state).await;
-}
-
-#[tokio::test]
-async fn memory_mode_local_subnet_heal_updates_local_config_and_store() {
-    let store = Arc::new(MemoryStore::new());
-    store
-        .upsert_self_machine(&test_machine_record(
-            "founder",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            PublicKey([2; 32]),
-        ))
-        .await
-        .expect("upsert founder");
-    store
-        .upsert_self_machine(&test_machine_record(
-            "peer",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            PublicKey([3; 32]),
-        ))
-        .await
-        .expect("upsert peer");
-
-    let mut state = make_state_with_store(
-        Identity::generate(MachineId("peer".into()), [3; 32]),
-        "10.210.1.0/24",
-        store.clone(),
-    )
-    .await;
-    state
-        .active
-        .as_mut()
-        .expect("active mesh")
-        .mesh
-        .up()
-        .await
-        .expect("mesh up");
-
-    state.heal_local_subnet_conflict_if_needed().await;
-
-    let Some(pending) = state.pending_subnet_heal else {
-        panic!("expected pending heal after first pass");
-    };
-    let initial_config = NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha"))
-        .expect("load config after reservation");
-    assert_eq!(
-        initial_config.subnet,
-        Some("10.210.1.0/24".parse().expect("valid"))
-    );
-    let reserved_peer = store
-        .list_machines()
-        .await
-        .expect("list machines after reservation")
-        .into_iter()
-        .find(|machine| machine.id.0 == "peer")
-        .expect("peer present after reservation");
-    assert_eq!(reserved_peer.subnet, Some(pending.target_subnet));
-    assert_eq!(reserved_peer.participation, Participation::Disabled);
-
-    state.pending_subnet_heal = Some(crate::daemon::PendingSubnetHeal {
-        planned_at: pending.planned_at.saturating_sub(20),
-        ..pending
-    });
-    state.heal_local_subnet_conflict_if_needed().await;
-
-    let healed_config = NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha"))
-        .expect("load healed config");
-    assert_eq!(
-        healed_config.subnet,
-        Some("10.210.0.0/24".parse().expect("valid"))
-    );
-    let machines = store.list_machines().await.expect("list machines");
-    let peer = machines
-        .into_iter()
-        .find(|machine| machine.id.0 == "peer")
-        .expect("peer present");
-    assert_eq!(peer.subnet, Some("10.210.0.0/24".parse().expect("valid")));
-    assert_eq!(
-        state
-            .active
-            .as_ref()
-            .map(|active| active.config.subnet)
-            .expect("active config present"),
-        Some("10.210.0.0/24".parse().expect("valid"))
-    );
-
-    teardown_state(&mut state).await;
-}
-
-#[tokio::test]
-async fn local_subnet_heal_skips_when_store_unhealthy() {
-    let store = Arc::new(MemoryStore::new());
-    store
-        .upsert_self_machine(&test_machine_record(
-            "founder",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            PublicKey([2; 32]),
-        ))
-        .await
-        .expect("upsert founder");
-    store
-        .upsert_self_machine(&test_machine_record(
-            "peer",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            PublicKey([3; 32]),
-        ))
-        .await
-        .expect("upsert peer");
-
-    let mut state = make_state_with_store(
-        Identity::generate(MachineId("peer".into()), [3; 32]),
-        "10.210.1.0/24",
-        store,
-    )
-    .await;
-    state
-        .active
-        .as_mut()
-        .expect("active mesh")
-        .mesh
-        .up()
-        .await
-        .expect("mesh up");
-
-    let service = state
-        .active
-        .as_ref()
-        .expect("active")
-        .mesh
-        .store
-        .memory_service()
-        .expect("expected memory store");
-    service.set_healthy(false);
-
-    state.heal_local_subnet_conflict_if_needed().await;
-
-    let healed_config =
-        NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha")).expect("load config");
-    assert_eq!(
-        healed_config.subnet,
-        Some("10.210.1.0/24".parse().expect("valid"))
-    );
-
-    teardown_state(&mut state).await;
-}
-
-#[tokio::test]
-async fn local_subnet_heal_skips_when_mesh_not_running() {
-    let store = Arc::new(MemoryStore::new());
-    store
-        .upsert_self_machine(&test_machine_record(
-            "founder",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            PublicKey([2; 32]),
-        ))
-        .await
-        .expect("upsert founder");
-    store
-        .upsert_self_machine(&test_machine_record(
-            "peer",
-            "10.210.1.0/24",
-            Participation::Enabled,
-            PublicKey([3; 32]),
-        ))
-        .await
-        .expect("upsert peer");
-
-    let mut state = make_state_with_store(
-        Identity::generate(MachineId("peer".into()), [3; 32]),
-        "10.210.1.0/24",
-        store,
-    )
-    .await;
-
-    state.heal_local_subnet_conflict_if_needed().await;
-
-    let healed_config =
-        NetworkConfig::load(&NetworkConfig::path(&state.data_dir, "alpha")).expect("load config");
-    assert_eq!(
-        healed_config.subnet,
-        Some("10.210.1.0/24".parse().expect("valid"))
-    );
 }
 
 #[tokio::test]
@@ -1277,51 +999,6 @@ async fn make_state_with_remote_port(
     (state, store, network)
 }
 
-async fn make_state_with_store(
-    identity: Identity,
-    subnet: &str,
-    store: Arc<MemoryStore>,
-) -> DaemonState {
-    let subnet: Ipv4Net = subnet.parse().expect("valid subnet");
-    let data_dir = unique_temp_dir("ployz-machine-heal-state");
-    let config = NetworkConfig::new(
-        ployz_types::model::NetworkName("alpha".into()),
-        &identity.public_key,
-        DEFAULT_CLUSTER_CIDR,
-        subnet,
-    );
-    config
-        .save(&NetworkConfig::path(&data_dir, "alpha"))
-        .expect("save config");
-
-    let mesh = Mesh::new(
-        WireguardDriver::memory_with(Arc::new(MemoryWireGuard::new())),
-        StoreDriver::memory_with(store, Arc::new(MemoryService::new())),
-        None,
-        identity.machine_id.clone(),
-        51820,
-    );
-
-    let mut state = DaemonState::new_for_tests(
-        &data_dir,
-        identity,
-        DEFAULT_CLUSTER_CIDR.into(),
-        24,
-        4317,
-        "127.0.0.1:0".into(),
-        1,
-    );
-    state.active = Some(ActiveMesh {
-        config,
-        mesh,
-        remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-        peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-        gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-        dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-    });
-    state
-}
-
 async fn teardown_state(state: &mut DaemonState) {
     let Some(active) = state.active.as_mut() else {
         return;
@@ -1362,7 +1039,7 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{label}-{}-{nanos}", std::process::id()))
 }
 
-fn write_fake_ssh(dir: &PathBuf) -> PathBuf {
+fn write_fake_ssh(dir: &Path) -> PathBuf {
     let script = dir.join("ssh");
     std::fs::write(
         &script,

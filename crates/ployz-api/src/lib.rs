@@ -65,7 +65,6 @@ pub enum DebugTickTask {
     PeerSync,
     Endpoints,
     Heartbeat,
-    Heal,
     All,
 }
 

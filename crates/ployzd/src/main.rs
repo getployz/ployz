@@ -2,9 +2,9 @@ mod cli;
 mod cli_io;
 mod request_builder;
 
-use clap::Parser;
 #[cfg(test)]
 use clap::CommandFactory;
+use clap::Parser;
 #[cfg(test)]
 pub(crate) use cli::DebugTickTaskArg;
 pub(crate) use cli::{

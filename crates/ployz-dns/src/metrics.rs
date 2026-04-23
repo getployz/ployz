@@ -52,6 +52,22 @@ fn response_code_label(response_code: ResponseCode) -> &'static str {
         ResponseCode::NXDomain => "NXDOMAIN",
         ResponseCode::FormErr => "FORMERR",
         ResponseCode::ServFail => "SERVFAIL",
-        _ => "OTHER",
+        ResponseCode::NotImp
+        | ResponseCode::Refused
+        | ResponseCode::YXDomain
+        | ResponseCode::YXRRSet
+        | ResponseCode::NXRRSet
+        | ResponseCode::NotAuth
+        | ResponseCode::NotZone
+        | ResponseCode::BADVERS
+        | ResponseCode::BADSIG
+        | ResponseCode::BADKEY
+        | ResponseCode::BADTIME
+        | ResponseCode::BADMODE
+        | ResponseCode::BADNAME
+        | ResponseCode::BADALG
+        | ResponseCode::BADTRUNC
+        | ResponseCode::BADCOOKIE
+        | ResponseCode::Unknown(_) => "OTHER",
     }
 }

@@ -10,7 +10,6 @@ use crate::built_in_images::BuiltInImages;
 use crate::ipc::listener::IncomingCommand;
 use crate::mesh_state::network::NetworkConfig;
 use crate::runtime_profile::RuntimeProfile;
-use ipnet::Ipv4Net;
 use ployz_api::{DaemonPayload, DaemonResponse};
 use ployz_config::{RuntimeTarget, ServiceMode};
 use ployz_orchestrator::Mesh;
@@ -26,20 +25,6 @@ pub struct ActiveMesh {
     pub peer_control: Box<dyn RuntimeHandle>,
     pub gateway: Box<dyn RuntimeHandle>,
     pub dns: Box<dyn RuntimeHandle>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct SubnetHealAttempt {
-    pub network_subnet: Ipv4Net,
-    pub target_subnet: Ipv4Net,
-    pub attempted_at: u64,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct PendingSubnetHeal {
-    pub network_subnet: Ipv4Net,
-    pub target_subnet: Ipv4Net,
-    pub planned_at: u64,
 }
 
 pub struct DaemonState {
@@ -60,8 +45,6 @@ pub struct DaemonState {
     pub namespace_locks: NamespaceLockManager,
     pub reservations: Arc<PendingReservations>,
     pub command_tx: Option<mpsc::Sender<IncomingCommand>>,
-    pub(crate) pending_subnet_heal: Option<PendingSubnetHeal>,
-    pub(crate) last_subnet_heal_attempt: Option<SubnetHealAttempt>,
 }
 
 impl DaemonState {
@@ -161,8 +144,6 @@ impl DaemonState {
             namespace_locks: NamespaceLockManager::default(),
             reservations: Arc::new(PendingReservations::new()),
             command_tx: None,
-            pending_subnet_heal: None,
-            last_subnet_heal_attempt: None,
         }
     }
 
