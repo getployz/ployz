@@ -188,7 +188,7 @@ enum PublicIpParser {
 }
 
 struct PublicIpService {
-    url: &'static str,
+    url: String,
     parser: PublicIpParser,
 }
 
@@ -204,27 +204,29 @@ fn public_ip_services() -> Vec<PublicIpService> {
                 } else {
                     PublicIpParser::Plaintext
                 };
-                let url: &'static str = Box::leak(url.to_string().into_boxed_str());
-                Some(PublicIpService { url, parser })
+                Some(PublicIpService {
+                    url: url.to_string(),
+                    parser,
+                })
             })
             .collect();
     }
 
     vec![
         PublicIpService {
-            url: "https://api.ipify.org",
+            url: "https://api.ipify.org".to_string(),
             parser: PublicIpParser::Plaintext,
         },
         PublicIpService {
-            url: "https://ipinfo.io/ip",
+            url: "https://ipinfo.io/ip".to_string(),
             parser: PublicIpParser::Plaintext,
         },
         PublicIpService {
-            url: "https://ifconfig.co/ip",
+            url: "https://ifconfig.co/ip".to_string(),
             parser: PublicIpParser::Plaintext,
         },
         PublicIpService {
-            url: "https://cloudflare.com/cdn-cgi/trace",
+            url: "https://cloudflare.com/cdn-cgi/trace".to_string(),
             parser: PublicIpParser::CloudflareTrace,
         },
     ]
@@ -234,7 +236,7 @@ async fn query_public_ip_service(
     client: &reqwest::Client,
     service: &PublicIpService,
 ) -> Option<IpAddr> {
-    let response = client.get(service.url).send().await.ok()?;
+    let response = client.get(&service.url).send().await.ok()?;
     if !response.status().is_success() {
         return None;
     }
@@ -283,5 +285,23 @@ mod tests {
             "fd00::1".parse::<Ipv6Addr>().expect("ula"),
         )));
         assert!(ip_is_eligible(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 10))));
+    }
+
+    #[test]
+    fn public_ip_services_use_override_urls_without_leaking_static_refs() {
+        unsafe {
+            std::env::set_var(
+                "PLOYZ_PUBLIC_IP_DISCOVERY_URLS",
+                "https://one.example/ip,https://two.example/cdn-cgi/trace",
+            );
+        }
+        let services = public_ip_services();
+        assert_eq!(services.len(), 2);
+        assert_eq!(services[0].url, "https://one.example/ip");
+        assert_eq!(services[1].url, "https://two.example/cdn-cgi/trace");
+
+        unsafe {
+            std::env::remove_var("PLOYZ_PUBLIC_IP_DISCOVERY_URLS");
+        }
     }
 }

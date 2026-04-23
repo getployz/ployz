@@ -1,4 +1,6 @@
 use ployz_api::{DaemonResponse, DebugTickTask};
+use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
+use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 
 use crate::endpoint_maintenance::reconcile_local_endpoints_for_mesh;
 use crate::daemon::DaemonState;
@@ -61,8 +63,9 @@ impl DaemonState {
         let Some(active) = self.active.as_ref() else {
             return Err(("NO_RUNNING_NETWORK", "no mesh running".into()));
         };
+        let detected_endpoints = detect_advertised_endpoints(DEFAULT_LISTEN_PORT).await;
 
-        reconcile_local_endpoints_for_mesh(&active.mesh)
+        reconcile_local_endpoints_for_mesh(&active.mesh, detected_endpoints)
             .await
             .map_err(|error| ("ENDPOINT_UPDATE_FAILED", error))?;
 
