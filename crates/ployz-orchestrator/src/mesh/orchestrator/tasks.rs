@@ -7,8 +7,7 @@ use crate::mesh::MeshNetwork;
 use crate::mesh::probe::run_probe_listener_task;
 use crate::mesh::tasks::{
     SelfRecordMutation, TaskSetError, apply_self_record_mutation, run_ebpf_sync_task,
-    run_endpoint_refresh_task, run_peer_sync_task, run_self_record_writer_task,
-    run_subnet_claim_monitor_task,
+    run_peer_sync_task, run_self_record_writer_task, run_subnet_claim_monitor_task,
 };
 
 use super::{Mesh, Result};
@@ -92,14 +91,6 @@ impl Mesh {
             authoritative_self.clone(),
             self.store.clone(),
             self_record_rx,
-            cancel.clone(),
-        ));
-
-        task_set.spawn(run_endpoint_refresh_task(
-            self.machine_id.clone(),
-            self.listen_port,
-            authoritative_self.clone(),
-            self_record_tx.clone(),
             cancel.clone(),
         ));
         let bridge_ip = self.network.bridge_ip().await;

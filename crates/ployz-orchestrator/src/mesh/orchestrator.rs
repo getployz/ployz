@@ -4,6 +4,7 @@ mod shutdown;
 mod tasks;
 
 use crate::error::Error as PortError;
+use crate::mesh::MeshDataplane;
 use crate::mesh::MeshNetwork;
 use crate::mesh::container_network::ContainerNetwork;
 use crate::mesh::driver::WireguardDriver;
@@ -11,7 +12,6 @@ use crate::mesh::phase::{Phase, TransitionError};
 use crate::mesh::tasks::{
     PeerSyncCommand, SelfRecordMutation, TaskSet, TaskSetError, apply_self_record_mutation,
 };
-use crate::mesh::MeshDataplane;
 use crate::model::{MachineId, MachineRecord};
 use ployz_store_api::StoreDriver;
 use ployz_store_api::{MachineStore, StoreRuntimeControl, SyncProbe, SyncStatus};
@@ -54,7 +54,7 @@ pub struct Mesh {
     connection_timeout: Duration,
     service_ready_timeout: Duration,
     machine_id: MachineId,
-    listen_port: u16,
+    _listen_port: u16,
     seed_records: Vec<MachineRecord>,
     authoritative_self: Option<Arc<RwLock<MachineRecord>>>,
     allow_disconnected_bootstrap: bool,
@@ -84,7 +84,7 @@ impl Mesh {
             connection_timeout: Duration::from_secs(30),
             service_ready_timeout: Duration::from_secs(15),
             machine_id,
-            listen_port,
+            _listen_port: listen_port,
             seed_records: Vec::new(),
             authoritative_self: None,
             allow_disconnected_bootstrap: false,

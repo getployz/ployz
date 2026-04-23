@@ -7,7 +7,9 @@ mod sys;
 use std::path::{Path, PathBuf};
 
 use crate::platform::{HostPlatform, validate_runtime};
-use paths::{ClientPaths, ConfigTarget, client_paths, resolve_config_target, resolve_manifest_path};
+use paths::{
+    ClientPaths, ConfigTarget, client_paths, resolve_config_target, resolve_manifest_path,
+};
 use ployz_config::{RuntimeTarget, ServiceMode};
 use render::write_client_config;
 use service::{ensure_user_service, install_system_service, promote_system_binaries, user_backend};

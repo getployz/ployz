@@ -3,8 +3,8 @@ use tokio::time::{Duration, timeout};
 
 use crate::daemon::ssh::SshOptions;
 
-use super::remote::remote_rpc;
 use super::super::types::{MachineAddContext, MachineAddStage};
+use super::remote::remote_rpc;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_types::model::MachineId;
 

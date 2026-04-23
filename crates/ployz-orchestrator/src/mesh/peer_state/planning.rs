@@ -50,7 +50,7 @@ pub(super) fn plan_mesh_peers(
         .stored_peers
         .values()
         .filter(|ps| ps.id != *local_machine_id)
-        .filter(|ps| !ps.runtime.endpoints.is_empty())
+        .filter(|ps| !ps.endpoints.is_empty())
         .map(peer_state_to_planned_record)
         .collect();
 
@@ -60,7 +60,7 @@ pub(super) fn plan_mesh_peers(
             .values()
             .filter(|ps| ps.id != *local_machine_id)
             .filter(|ps| !state.stored_peers.contains_key(&ps.id))
-            .filter(|ps| !ps.runtime.endpoints.is_empty())
+            .filter(|ps| !ps.endpoints.is_empty())
             .map(peer_state_to_planned_record),
     );
 
