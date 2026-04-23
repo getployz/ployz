@@ -168,7 +168,7 @@ pub fn observe(info: &ContainerInspectResponse) -> ObservedContainer {
 
     let pid_mode = host_config.and_then(|h| h.pid_mode.clone());
 
-    let stop_timeout = config.and_then(|c| c.stop_timeout).map(|t| t as i64);
+    let stop_timeout = config.and_then(|c| c.stop_timeout);
 
     let image = config.and_then(|c| c.image.clone()).unwrap_or_default();
 

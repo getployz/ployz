@@ -46,14 +46,14 @@ struct RuntimePeerState {
 }
 
 impl RuntimePeerState {
-    fn new(
-        record: &MachineRecord,
-        current_endpoint: Option<&str>,
-        now: Instant,
-    ) -> Self {
+    fn new(record: &MachineRecord, current_endpoint: Option<&str>, now: Instant) -> Self {
         let selected = select_current_endpoint(&record.endpoints, current_endpoint);
         let last_endpoint_change_at = match (selected.is_some(), current_endpoint) {
-            (true, Some(current)) if record.endpoints.iter().any(|endpoint| endpoint == current) => None,
+            (true, Some(current))
+                if record.endpoints.iter().any(|endpoint| endpoint == current) =>
+            {
+                None
+            }
             (true, _) => Some(now),
             (false, _) => None,
         };
@@ -78,7 +78,10 @@ impl RuntimePeerState {
         self.all_endpoints = record.endpoints.clone();
 
         if let Some(endpoint) = current_device_endpoint
-            && self.all_endpoints.iter().any(|candidate| candidate == endpoint)
+            && self
+                .all_endpoints
+                .iter()
+                .any(|candidate| candidate == endpoint)
         {
             self.current_endpoint = Some(endpoint.to_string());
             self.last_endpoint_change_at = None;
@@ -105,7 +108,10 @@ impl RuntimePeerState {
         };
 
         if let Some(endpoint) = device_peer.endpoint.as_deref()
-            && self.all_endpoints.iter().any(|candidate| candidate == endpoint)
+            && self
+                .all_endpoints
+                .iter()
+                .any(|candidate| candidate == endpoint)
             && self.current_endpoint.as_deref() != Some(endpoint)
         {
             self.current_endpoint = Some(endpoint.to_string());
@@ -127,11 +133,12 @@ impl RuntimePeerState {
         let since_last_handshake = self
             .last_handshake_at
             .map(|handshake_at| now.duration_since(handshake_at));
-        let handshake_after_endpoint_change = match (self.last_handshake_at, self.last_endpoint_change_at) {
-            (Some(_), None) => true,
-            (Some(handshake_at), Some(changed_at)) => handshake_at > changed_at,
-            (None, _) => false,
-        };
+        let handshake_after_endpoint_change =
+            match (self.last_handshake_at, self.last_endpoint_change_at) {
+                (Some(_), None) => true,
+                (Some(handshake_at), Some(changed_at)) => handshake_at > changed_at,
+                (None, _) => false,
+            };
 
         if since_endpoint_change > PEER_DOWN_INTERVAL {
             return match since_last_handshake {
@@ -162,7 +169,9 @@ impl RuntimePeerState {
         let Some(current_endpoint) = self.current_endpoint.as_deref() else {
             return self.all_endpoints.first().cloned();
         };
-        if self.all_endpoints.len() == 1 && self.all_endpoints[0] == current_endpoint {
+        if let [only_endpoint] = self.all_endpoints.as_slice()
+            && only_endpoint == current_endpoint
+        {
             return None;
         }
         let current_idx = self
@@ -170,7 +179,8 @@ impl RuntimePeerState {
             .iter()
             .position(|endpoint| endpoint == current_endpoint)
             .unwrap_or(0);
-        Some(self.all_endpoints[(current_idx + 1) % self.all_endpoints.len()].clone())
+        let next_idx = (current_idx + 1) % self.all_endpoints.len();
+        self.all_endpoints.get(next_idx).cloned()
     }
 }
 
@@ -215,15 +225,16 @@ impl RuntimePeerMap {
                 updated_at: 0,
                 labels: std::collections::BTreeMap::new(),
             };
-            let current_endpoint = device_endpoint_by_key
-                .get(&peer.public_key)
-                .and_then(|endpoint| {
-                    if peer.endpoints.iter().any(|candidate| candidate == endpoint) {
-                        Some(endpoint.as_str())
-                    } else {
-                        None
-                    }
-                });
+            let current_endpoint =
+                device_endpoint_by_key
+                    .get(&peer.public_key)
+                    .and_then(|endpoint| {
+                        if peer.endpoints.iter().any(|candidate| candidate == endpoint) {
+                            Some(endpoint.as_str())
+                        } else {
+                            None
+                        }
+                    });
             peers.insert(
                 record.id.clone(),
                 RuntimePeerState::new(&record, current_endpoint, now),
@@ -259,15 +270,16 @@ impl RuntimePeerMap {
                 continue;
             }
             seen.insert(peer.id.clone());
-            let current_device_endpoint = device_endpoint_by_key
-                .get(&peer.public_key)
-                .and_then(|endpoint| {
-                    if peer.endpoints.iter().any(|candidate| candidate == endpoint) {
-                        Some(endpoint.as_str())
-                    } else {
-                        None
-                    }
-                });
+            let current_device_endpoint =
+                device_endpoint_by_key
+                    .get(&peer.public_key)
+                    .and_then(|endpoint| {
+                        if peer.endpoints.iter().any(|candidate| candidate == endpoint) {
+                            Some(endpoint.as_str())
+                        } else {
+                            None
+                        }
+                    });
             let record = MachineRecord {
                 id: peer.id.clone(),
                 public_key: peer.public_key.clone(),
@@ -311,7 +323,8 @@ impl RuntimePeerMap {
     ) {
         for peer in self.peers.values_mut() {
             let status = peer.status(now);
-            if !force_rotate && status != RuntimePeerStatus::Down && peer.current_endpoint.is_some() {
+            if !force_rotate && status != RuntimePeerStatus::Down && peer.current_endpoint.is_some()
+            {
                 continue;
             }
 
@@ -350,8 +363,26 @@ pub(crate) fn build_initial_endpoint_selections(
     device_peers: &[DevicePeer],
     now: Instant,
 ) -> HashMap<MachineId, String> {
-    RuntimePeerMap::from_records(snapshot, bootstrap_peers, local_machine_id, device_peers, now)
-        .selection_map()
+    RuntimePeerMap::from_records(
+        snapshot,
+        bootstrap_peers,
+        local_machine_id,
+        device_peers,
+        now,
+    )
+    .selection_map()
+}
+
+pub(crate) struct EndpointMaintainerTask {
+    pub(crate) snapshot: Vec<MachineRecord>,
+    pub(crate) events: mpsc::Receiver<MachineEvent>,
+    pub(crate) commands: mpsc::Receiver<EndpointMaintainerCommand>,
+    pub(crate) bootstrap_peers: Vec<MachineRecord>,
+    pub(crate) network: WireguardDriver,
+    pub(crate) local_machine_id: MachineId,
+    pub(crate) endpoint_selections: EndpointSelectionMap,
+    pub(crate) initial_device_peers: Vec<DevicePeer>,
+    pub(crate) cancel: CancellationToken,
 }
 
 // This task is intentionally periodic, but it is observing/maintaining
@@ -359,17 +390,18 @@ pub(crate) fn build_initial_endpoint_selections(
 // endpoint list still comes from durable machine records; this loop only checks
 // external WireGuard handshake/device state and chooses which already-declared
 // endpoint to try right now.
-pub(crate) async fn run_endpoint_maintainer_task(
-    snapshot: Vec<MachineRecord>,
-    mut events: mpsc::Receiver<MachineEvent>,
-    mut commands: mpsc::Receiver<EndpointMaintainerCommand>,
-    bootstrap_peers: Vec<MachineRecord>,
-    network: WireguardDriver,
-    local_machine_id: MachineId,
-    endpoint_selections: EndpointSelectionMap,
-    initial_device_peers: Vec<DevicePeer>,
-    cancel: CancellationToken,
-) {
+pub(crate) async fn run_endpoint_maintainer_task(task: EndpointMaintainerTask) {
+    let EndpointMaintainerTask {
+        snapshot,
+        mut events,
+        mut commands,
+        bootstrap_peers,
+        network,
+        local_machine_id,
+        endpoint_selections,
+        initial_device_peers,
+        cancel,
+    } = task;
     let mut peer_map = PeerStateMap::new();
     let now = Instant::now();
     peer_map.init_from_snapshot(&snapshot, now);
@@ -502,7 +534,10 @@ mod tests {
             subnet: None,
             control_target: None,
             bridge_ip: None,
-            endpoints: endpoints.iter().map(|endpoint| endpoint.to_string()).collect(),
+            endpoints: endpoints
+                .iter()
+                .map(|endpoint| endpoint.to_string())
+                .collect(),
             status: MachineStatus::Unknown,
             participation: Participation::Disabled,
             created_at: 0,
@@ -527,7 +562,9 @@ mod tests {
             Instant::now(),
         );
         assert_eq!(
-            selections.get(&MachineId("peer".into())).map(String::as_str),
+            selections
+                .get(&MachineId("peer".into()))
+                .map(String::as_str),
             Some("b:2")
         );
     }
@@ -543,7 +580,9 @@ mod tests {
             Instant::now(),
         );
         assert_eq!(
-            selections.get(&MachineId("peer".into())).map(String::as_str),
+            selections
+                .get(&MachineId("peer".into()))
+                .map(String::as_str),
             Some("a:1")
         );
     }

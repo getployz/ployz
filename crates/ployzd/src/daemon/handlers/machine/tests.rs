@@ -19,7 +19,7 @@ use ployz_types::model::{
     JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
 };
 use ployz_types::time::now_unix_secs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -79,7 +79,7 @@ async fn machine_list_json_payload_contains_rows() {
         panic!("expected machine list payload");
     };
     assert_eq!(payload.rows.len(), 1);
-    assert_eq!(payload.rows[0].id, "founder");
+    assert_eq!(payload.rows.first().expect("founder row").id, "founder");
 }
 
 #[tokio::test]
@@ -116,14 +116,15 @@ async fn machine_add_enables_joiner_participation() {
             buf.read_line(&mut line).await.expect("read request");
             let request: DaemonRequest =
                 serde_json::from_str(&line).expect("decode daemon request");
-            let response = match request {
-                DaemonRequest::Coord { .. } => DaemonResponse {
+            let response = if matches!(request, DaemonRequest::Coord { .. }) {
+                DaemonResponse {
                     ok: true,
                     code: "OK".into(),
                     message: "allow".into(),
                     payload: None,
-                },
-                DaemonRequest::MeshReady { .. } => DaemonResponse {
+                }
+            } else if matches!(request, DaemonRequest::MeshReady { .. }) {
+                DaemonResponse {
                     ok: true,
                     code: "OK".into(),
                     message: "ready".into(),
@@ -135,8 +136,9 @@ async fn machine_add_enables_joiner_participation() {
                         workload_subnet_present: true,
                         participation: "enabled".into(),
                     })),
-                },
-                DaemonRequest::MeshSetParticipation { participation } => {
+                }
+            } else if let DaemonRequest::MeshSetParticipation { participation } = request {
+                {
                     let mut joiner_record = MachineRecord::seed(
                         MachineId("joiner-1".into()),
                         PublicKey([4; 32]),
@@ -156,7 +158,8 @@ async fn machine_add_enables_joiner_participation() {
                         payload: None,
                     }
                 }
-                other => panic!("unexpected daemon request: {other:?}"),
+            } else {
+                panic!("unexpected daemon request: {request:?}");
             };
             let mut response_line = serde_json::to_string(&response).expect("encode response");
             response_line.push('\n');
@@ -351,7 +354,13 @@ async fn machine_add_releases_reserved_subnet_when_operation_start_fails() {
 
     let invites = store.list_invites().await.expect("list invites");
     assert_eq!(invites.len(), 1);
-    assert!(invites[0].consumed_by.is_none());
+    assert!(
+        invites
+            .first()
+            .expect("invite created")
+            .consumed_by
+            .is_none()
+    );
     assert!(network.current_peers().is_empty());
 
     teardown_state(&mut state).await;
@@ -574,30 +583,31 @@ async fn reserve_machine_subnet_releases_peer_holds_when_quorum_denies() {
             buf.read_line(&mut line).await.expect("read request");
             let request: DaemonRequest =
                 serde_json::from_str(&line).expect("decode daemon request");
-            let (label, response) = match request {
-                DaemonRequest::Coord {
-                    op: ployz_api::CoordOp::Prepare { .. },
-                } => {
-                    let response = if index == 0 {
-                        DaemonResponse {
-                            ok: true,
-                            code: "OK".into(),
-                            message: "allow".into(),
-                            payload: None,
-                        }
-                    } else {
-                        DaemonResponse {
-                            ok: false,
-                            code: "COORDINATION_DENIED".into(),
-                            message: "denied".into(),
-                            payload: None,
-                        }
-                    };
-                    ("prepare", response)
-                }
-                DaemonRequest::Coord {
-                    op: ployz_api::CoordOp::Release { .. },
-                } => (
+            let (label, response) = if let DaemonRequest::Coord {
+                op: ployz_api::CoordOp::Prepare { .. },
+            } = request
+            {
+                let response = if index == 0 {
+                    DaemonResponse {
+                        ok: true,
+                        code: "OK".into(),
+                        message: "allow".into(),
+                        payload: None,
+                    }
+                } else {
+                    DaemonResponse {
+                        ok: false,
+                        code: "COORDINATION_DENIED".into(),
+                        message: "denied".into(),
+                        payload: None,
+                    }
+                };
+                ("prepare", response)
+            } else if let DaemonRequest::Coord {
+                op: ployz_api::CoordOp::Release { .. },
+            } = request
+            {
+                (
                     "release",
                     DaemonResponse {
                         ok: true,
@@ -605,8 +615,9 @@ async fn reserve_machine_subnet_releases_peer_holds_when_quorum_denies() {
                         message: "released".into(),
                         payload: None,
                     },
-                ),
-                other => panic!("unexpected daemon request: {other:?}"),
+                )
+            } else {
+                panic!("unexpected daemon request: {request:?}");
             };
             server_seen_requests.lock().await.push(label.into());
             let mut response_line = serde_json::to_string(&response).expect("encode response");
@@ -719,7 +730,7 @@ async fn machine_add_rejects_remote_subnet_mismatch_before_invite_consume() {
 
     let invites = store.list_invites().await.expect("list invites");
     assert_eq!(invites.len(), 1);
-    assert_eq!(invites[0].consumed_by, None);
+    assert_eq!(invites.first().expect("invite created").consumed_by, None);
     assert!(
         state
             .reservations
@@ -810,8 +821,8 @@ async fn machine_enable_rolls_back_remote_promote_when_self_record_fails() {
             buf.read_line(&mut line).await.expect("read request");
             let request: DaemonRequest =
                 serde_json::from_str(&line).expect("decode daemon request");
-            let (label, response) = match request {
-                DaemonRequest::MeshPromote { .. } => (
+            let (label, response) = if matches!(request, DaemonRequest::MeshPromote { .. }) {
+                (
                     "promote",
                     DaemonResponse {
                         ok: true,
@@ -819,8 +830,9 @@ async fn machine_enable_rolls_back_remote_promote_when_self_record_fails() {
                         message: "promoted".into(),
                         payload: None,
                     },
-                ),
-                DaemonRequest::MeshSelfRecord => (
+                )
+            } else if matches!(request, DaemonRequest::MeshSelfRecord) {
+                (
                     "self_record",
                     DaemonResponse {
                         ok: false,
@@ -828,8 +840,9 @@ async fn machine_enable_rolls_back_remote_promote_when_self_record_fails() {
                         message: "self record unavailable".into(),
                         payload: None,
                     },
-                ),
-                DaemonRequest::MeshStandby { force } => {
+                )
+            } else if let DaemonRequest::MeshStandby { force } = request {
+                {
                     assert!(force);
                     (
                         "standby",
@@ -841,7 +854,8 @@ async fn machine_enable_rolls_back_remote_promote_when_self_record_fails() {
                         },
                     )
                 }
-                other => panic!("unexpected daemon request: {other:?}"),
+            } else {
+                panic!("unexpected daemon request: {request:?}");
             };
             server_seen_requests.lock().await.push(label.into());
             let mut response_line = serde_json::to_string(&response).expect("encode response");
@@ -1025,7 +1039,7 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{label}-{}-{nanos}", std::process::id()))
 }
 
-fn write_fake_ssh(dir: &PathBuf) -> PathBuf {
+fn write_fake_ssh(dir: &Path) -> PathBuf {
     let script = dir.join("ssh");
     std::fs::write(
         &script,

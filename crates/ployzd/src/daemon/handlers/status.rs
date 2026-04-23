@@ -14,16 +14,22 @@ impl DaemonState {
                     overlay_ip: Some(net.overlay_ip.0.to_string()),
                     phase: format!("{:?}", active.mesh.phase()),
                 };
-                self.ok_with_payload(format!(
-                    "machine:  {}\nnetwork:  {}\noverlay:  {}\nphase:    {:?}",
-                    id.machine_id,
-                    net.name,
-                    net.overlay_ip,
-                    active.mesh.phase(),
-                ), Some(DaemonPayload::Status(payload)))
+                self.ok_with_payload(
+                    format!(
+                        "machine:  {}\nnetwork:  {}\noverlay:  {}\nphase:    {:?}",
+                        id.machine_id,
+                        net.name,
+                        net.overlay_ip,
+                        active.mesh.phase(),
+                    ),
+                    Some(DaemonPayload::Status(payload)),
+                )
             }
             None => self.ok_with_payload(
-                format!("machine:  {}\nnetwork:  none\nphase:    idle", id.machine_id),
+                format!(
+                    "machine:  {}\nnetwork:  none\nphase:    idle",
+                    id.machine_id
+                ),
                 Some(DaemonPayload::Status(StatusPayload {
                     machine_id: id.machine_id.0.clone(),
                     network: None,

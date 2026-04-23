@@ -60,8 +60,7 @@ impl Scenario {
         match self {
             Self::SingleNodeInit | Self::DeploySmoke => &["founder"],
             Self::MachineAddBasic => &["founder", "joiner"],
-            Self::MachineDisableEnableCycle => &["founder", "peer"],
-            Self::WireguardReconnect => &["founder", "peer"],
+            Self::MachineDisableEnableCycle | Self::WireguardReconnect => &["founder", "peer"],
             Self::TwoNodeEqualSplitAddDenied => &["founder", "peer", "target1", "target2"],
             Self::ThreeNodeMajorityAddSucceeds => {
                 &["founder", "peer1", "peer2", "target1", "target2"]

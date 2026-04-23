@@ -32,12 +32,12 @@ fn run() -> Result<()> {
     let artifacts_dir = resolve_artifacts_dir(&cli.artifacts_dir)?;
 
     let failures = if cli.parallel {
-        run_parallel_scenarios(scenarios, cli.image, artifacts_dir, cli.keep_failed)
+        run_parallel_scenarios(scenarios, &cli.image, &artifacts_dir, cli.keep_failed)
     } else {
         run_sequential_scenarios(
             scenarios,
-            cli.image,
-            artifacts_dir,
+            &cli.image,
+            &artifacts_dir,
             cli.keep_failed,
             cli.fail_fast,
         )?
@@ -56,14 +56,14 @@ fn run() -> Result<()> {
 
 fn run_sequential_scenarios(
     scenarios: Vec<cli::Scenario>,
-    image: String,
-    artifacts_dir: PathBuf,
+    image: &str,
+    artifacts_dir: &Path,
     keep_failed: bool,
     fail_fast: bool,
 ) -> Result<Vec<(cli::Scenario, Error)>> {
     let mut failures = Vec::new();
     for scenario in scenarios {
-        let outcome = run_scenario(scenario, &image, &artifacts_dir, keep_failed);
+        let outcome = run_scenario(scenario, image, artifacts_dir, keep_failed);
         if let Err((failed_scenario, error)) = outcome {
             if fail_fast {
                 return Err(Error::Message(format!(
@@ -79,14 +79,14 @@ fn run_sequential_scenarios(
 
 fn run_parallel_scenarios(
     scenarios: Vec<cli::Scenario>,
-    image: String,
-    artifacts_dir: PathBuf,
+    image: &str,
+    artifacts_dir: &Path,
     keep_failed: bool,
 ) -> Vec<(cli::Scenario, Error)> {
     let mut handles = Vec::with_capacity(scenarios.len());
     for scenario in scenarios {
-        let image = image.clone();
-        let artifacts_dir = artifacts_dir.clone();
+        let image = image.to_string();
+        let artifacts_dir = artifacts_dir.to_path_buf();
         handles.push((
             scenario,
             thread::spawn(move || run_scenario(scenario, &image, &artifacts_dir, keep_failed)),

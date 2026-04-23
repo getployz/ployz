@@ -87,7 +87,7 @@ fn wait_for_doctor_peer_status(
         }
 
         last_report = output.stdout;
-        Ok(doctor_report_matches(&last_report, peer_name, participation, probe_status)?)
+        doctor_report_matches(&last_report, peer_name, participation, probe_status)
     })
     .map_err(|error| {
         Error::Message(format!(

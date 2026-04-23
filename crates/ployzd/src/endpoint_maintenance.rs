@@ -6,9 +6,9 @@ use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
 #[cfg(target_os = "linux")]
 use tracing::debug;
+use tracing::{info, warn};
 
 use crate::daemon::DaemonState;
 
@@ -133,37 +133,37 @@ impl EndpointWatcher {
         #[cfg(not(target_os = "linux"))]
         {
             tokio::time::sleep(Duration::from_secs(3600)).await;
-            return None;
+            None
         }
 
         #[cfg(target_os = "linux")]
         {
-        let Some(lines) = &mut self.lines else {
-            tokio::time::sleep(Duration::from_secs(3600)).await;
-            return None;
-        };
+            let Some(lines) = &mut self.lines else {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+                return None;
+            };
 
-        match lines.next_line().await {
-            Ok(Some(line)) => {
-                debug!(line = %line, "local endpoint watcher event");
-                Some(EndpointWatchEvent::Changed)
-            }
-            Ok(None) => {
-                if let Some(mut child) = self.child.take() {
-                    let _ = child.wait().await;
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    debug!(line = %line, "local endpoint watcher event");
+                    Some(EndpointWatchEvent::Changed)
                 }
-                self.lines = None;
-                Some(EndpointWatchEvent::Closed)
-            }
-            Err(error) => {
-                warn!(?error, "local endpoint watcher read failed");
-                if let Some(mut child) = self.child.take() {
-                    let _ = child.wait().await;
+                Ok(None) => {
+                    if let Some(mut child) = self.child.take() {
+                        let _ = child.wait().await;
+                    }
+                    self.lines = None;
+                    Some(EndpointWatchEvent::Closed)
                 }
-                self.lines = None;
-                Some(EndpointWatchEvent::Closed)
+                Err(error) => {
+                    warn!(?error, "local endpoint watcher read failed");
+                    if let Some(mut child) = self.child.take() {
+                        let _ = child.wait().await;
+                    }
+                    self.lines = None;
+                    Some(EndpointWatchEvent::Closed)
+                }
             }
-        }
         }
     }
 }
