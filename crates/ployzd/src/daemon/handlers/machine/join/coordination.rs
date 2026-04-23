@@ -14,8 +14,8 @@ use ployz_types::time::now_unix_secs;
 
 use crate::daemon::DaemonState;
 
-use super::remote::{overlay_rpc, remote_response_error};
 use super::super::types::MachineAddContext;
+use super::remote::{overlay_rpc, remote_response_error};
 
 const SUBNET_RESERVATION_TTL_SECS: u64 = 30;
 const MAX_SUBNET_ATTEMPTS: usize = 64;
@@ -25,7 +25,7 @@ pub(in super::super) struct BootstrapSubnetClaim {
     reservation: Reservation,
     pub(super) subnet: Ipv4Net,
     quorum_peers: Vec<CoordinationPeer>,
-    peer_rpc_port: u16,
+    pub(super) peer_rpc_port: u16,
 }
 
 impl BootstrapSubnetClaim {
@@ -295,7 +295,9 @@ pub(super) async fn persist_machine_control_target(
     machine_id: &MachineId,
     control_target: &str,
 ) -> Result<(), String> {
-    let Some(mut record) = super::super::list::find_machine_record(&context.store, machine_id).await? else {
+    let Some(mut record) =
+        super::super::list::find_machine_record(&context.store, machine_id).await?
+    else {
         tracing::info!(
             machine_id = %machine_id,
             control_target,
@@ -314,6 +316,8 @@ pub(super) async fn persist_machine_control_target(
 fn api_resource_key(key: &ResourceKey) -> ApiResourceKey {
     match key {
         ResourceKey::Subnet(subnet) => ApiResourceKey::Subnet(*subnet),
-        ResourceKey::DeployNamespace(namespace) => ApiResourceKey::DeployNamespace(namespace.clone()),
+        ResourceKey::DeployNamespace(namespace) => {
+            ApiResourceKey::DeployNamespace(namespace.clone())
+        }
     }
 }

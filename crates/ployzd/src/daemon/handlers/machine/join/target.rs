@@ -1,22 +1,23 @@
 use ipnet::Ipv4Net;
 use ployz_api::{DaemonRequest, MeshBootstrapRequest};
 use ployz_store_api::MachineStore;
-use ployz_types::model::MachineRecord;
+use ployz_types::model::{MachineRecord, Participation, PublicKey};
 
+use super::super::operations::{
+    MachineOperationRecord, MachineOperationStatus, MachineOperationStore,
+};
+use super::super::types::{
+    MachineAddContext, MachineAddFailure, MachineAddStage, MachineAddTargetResult,
+};
 use super::bootstrap::bootstrap_remote_machine;
 use super::coordination::{
     BootstrapSubnetClaim, consume_invite, persist_machine_control_target, release_reserved_subnet,
 };
-use super::super::operations::{
-    MachineOperationRecord, MachineOperationStatus, MachineOperationStore,
-};
 use super::remote::{
-    remote_self_record, remote_rpc_expect_ok, wait_for_remote_ready,
+    ExpectedSubnetState, overlay_rpc_expect_ok, remote_rpc_expect_ok, remote_self_record,
+    wait_for_machine_projection, wait_for_overlay_ready, wait_for_remote_ready,
 };
 use super::rollback::rollback_machine_add_target;
-use super::super::types::{
-    MachineAddContext, MachineAddFailure, MachineAddStage, MachineAddTargetResult,
-};
 
 pub(super) async fn run_machine_add_target(
     context: MachineAddContext,
@@ -132,6 +133,7 @@ pub(super) async fn run_machine_add_target(
     tracing::info!(%target, "machine add target: self-record complete");
 
     let machine_id = record.id.clone();
+    let joiner_overlay_ip = record.overlay_ip;
     if let Err(err) = persist_machine_control_target(&context, &machine_id, &target).await {
         let _ = release_reserved_subnet(&context, &subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
@@ -203,6 +205,76 @@ pub(super) async fn run_machine_add_target(
     let _ = operation_store.update_stage(&mut operation, stage.to_string());
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: remote ready");
     let _ = release_reserved_subnet(&context, &subnet_claim).await;
+
+    tracing::info!(%target, joiner_id = %machine_id, "machine add target: waiting for overlay ready");
+    let joiner_ref = MachineRecord::seed(
+        machine_id.clone(),
+        PublicKey([0; 32]),
+        joiner_overlay_ip,
+        Some(subnet_claim.subnet),
+        vec![],
+    );
+    if let Err(err) = wait_for_overlay_ready(&joiner_ref, subnet_claim.peer_rpc_port).await {
+        tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: overlay ready failed");
+        let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
+        let _ = operation_store.update_status(
+            &mut operation,
+            MachineOperationStatus::Failed,
+            Some(err.clone()),
+        );
+        return MachineAddTargetResult::Failed {
+            target,
+            failure: MachineAddFailure::Enable { reason: err },
+        };
+    }
+
+    tracing::info!(%target, joiner_id = %machine_id, "machine add target: enabling participation");
+    if let Err(err) = overlay_rpc_expect_ok(
+        joiner_overlay_ip,
+        subnet_claim.peer_rpc_port,
+        DaemonRequest::MeshSetParticipation {
+            participation: Participation::Enabled,
+        },
+    )
+    .await
+    {
+        tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: enable participation failed");
+        let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
+        let _ = operation_store.update_status(
+            &mut operation,
+            MachineOperationStatus::Failed,
+            Some(err.clone()),
+        );
+        return MachineAddTargetResult::Failed {
+            target,
+            failure: MachineAddFailure::Enable { reason: err },
+        };
+    }
+
+    tracing::info!(%target, joiner_id = %machine_id, "machine add target: waiting for participation projection");
+    if let Err(err) = wait_for_machine_projection(
+        &context.store,
+        &machine_id,
+        Participation::Enabled,
+        ExpectedSubnetState::Present,
+    )
+    .await
+    {
+        tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: participation projection failed");
+        let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
+        let _ = operation_store.update_status(
+            &mut operation,
+            MachineOperationStatus::Failed,
+            Some(err.clone()),
+        );
+        return MachineAddTargetResult::Failed {
+            target,
+            failure: MachineAddFailure::Enable { reason: err },
+        };
+    }
+    stage = MachineAddStage::Enabled;
+    let _ = operation_store.update_stage(&mut operation, stage.to_string());
+    tracing::info!(%target, joiner_id = %machine_id, "machine add target: participation enabled");
 
     let _ = operation_store.update_stage(&mut operation, MachineAddStage::Finalized.to_string());
     let _ = operation_store.update_status(&mut operation, MachineOperationStatus::Succeeded, None);

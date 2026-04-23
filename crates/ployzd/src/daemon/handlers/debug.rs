@@ -1,6 +1,4 @@
 use ployz_api::{DaemonResponse, DebugTickTask};
-use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
-use tokio::sync::oneshot;
 
 use crate::daemon::DaemonState;
 
@@ -16,13 +14,11 @@ impl DaemonState {
 
         for _ in 0..repeat {
             let result = match task {
-                DebugTickTask::PeerSync => self.debug_tick_peer_sync().await,
+                DebugTickTask::PeerSync => self.debug_tick_peer_sync(),
                 DebugTickTask::Heartbeat => self.debug_tick_heartbeat().await,
                 DebugTickTask::Heal => self.debug_tick_heal().await,
                 DebugTickTask::All => {
-                    if let Err(error) = self.debug_tick_peer_sync().await {
-                        Err(error)
-                    } else if let Err(error) = self.debug_tick_heartbeat().await {
+                    if let Err(error) = self.debug_tick_heartbeat().await {
                         Err(error)
                     } else {
                         self.debug_tick_heal().await
@@ -40,30 +36,11 @@ impl DaemonState {
         ))
     }
 
-    async fn debug_tick_peer_sync(&mut self) -> Result<(), (&'static str, String)> {
-        let Some(active) = self.active.as_ref() else {
-            return Err(("NO_RUNNING_NETWORK", "no mesh running".into()));
-        };
-        let Some(peer_sync_tx) = active.mesh.peer_sync_sender() else {
-            return Err(("TASK_NOT_RUNNING", "peer sync task is not running".into()));
-        };
-        let (done_tx, done_rx) = oneshot::channel();
-        peer_sync_tx
-            .send(PeerSyncCommand::TickNow { done: done_tx })
-            .await
-            .map_err(|error| {
-                (
-                    "DEBUG_TICK_FAILED",
-                    format!("peer sync tick send failed: {error}"),
-                )
-            })?;
-        done_rx.await.map_err(|error| {
-            (
-                "DEBUG_TICK_FAILED",
-                format!("peer sync tick ack failed: {error}"),
-            )
-        })?;
-        Ok(())
+    fn debug_tick_peer_sync(&self) -> Result<(), (&'static str, String)> {
+        Err((
+            "UNSUPPORTED_OPERATION",
+            "peer sync is event-driven and no longer supports manual ticks".into(),
+        ))
     }
 
     async fn debug_tick_heartbeat(&mut self) -> Result<(), (&'static str, String)> {

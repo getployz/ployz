@@ -4,7 +4,9 @@ mod exec;
 
 use bollard::Docker;
 use bollard::models::{ContainerCreateBody, HostConfig, RestartPolicy, RestartPolicyNameEnum};
-use bollard::query_parameters::{CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder};
+use bollard::query_parameters::{
+    CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
+};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
@@ -314,8 +316,7 @@ impl MeshNetwork for DockerWireGuard {
         };
 
         let extra = self.extra_peers.lock().await;
-        let local_keys: HashSet<String> =
-            extra.iter().map(|p| encode_key(&p.public_key)).collect();
+        let local_keys: HashSet<String> = extra.iter().map(|p| encode_key(&p.public_key)).collect();
 
         for line in output.lines() {
             let Some((pubkey_raw, ts_raw)) = line.split_once('\t') else {

@@ -1,6 +1,4 @@
 use crate::model::OverlayIp;
-use futures_util::stream::{FuturesUnordered, StreamExt};
-use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, SocketAddr, TcpListener as StdTcpListener};
 use std::time::Duration;
@@ -13,7 +11,6 @@ use tracing::{debug, info, warn};
 pub const MESH_PROBE_PORT: u16 = 51821;
 const PROBE_REQUEST: &[u8; 4] = b"PLZ?";
 const PROBE_RESPONSE: &[u8; 4] = b"OK!!";
-pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 const PROBE_LISTENER_BIND_RETRY_DELAY: Duration = Duration::from_millis(100);
 const PROBE_LISTENER_BIND_RETRY_ATTEMPTS: u8 = 20;
 
@@ -89,33 +86,6 @@ pub(crate) async fn run_probe_listener_task(cancel: CancellationToken) {
     info!(port = MESH_PROBE_PORT, "mesh probe listener stopped");
 }
 
-pub(crate) async fn probe_endpoints_parallel(
-    endpoints: &[String],
-) -> HashMap<String, TcpProbeResult> {
-    let mut probes = FuturesUnordered::new();
-    for endpoint in endpoints {
-        let endpoint = endpoint.clone();
-        probes.push(async move {
-            let result = match probe_endpoint(&endpoint, PROBE_TIMEOUT).await {
-                Some(rtt) => TcpProbeResult::reachable(rtt),
-                None => TcpProbeResult::unreachable(),
-            };
-            (endpoint, result)
-        });
-    }
-
-    let mut results = HashMap::with_capacity(endpoints.len());
-    while let Some((endpoint, result)) = probes.next().await {
-        results.insert(endpoint, result);
-    }
-    results
-}
-
-async fn probe_endpoint(endpoint: &str, timeout: Duration) -> Option<Duration> {
-    let addr = probe_socket_addr(endpoint)?;
-    probe_addr(addr, timeout).await
-}
-
 async fn probe_overlay_ip(overlay_ip: OverlayIp, timeout: Duration) -> Option<Duration> {
     probe_addr(
         SocketAddr::new(IpAddr::from(overlay_ip.0), MESH_PROBE_PORT),
@@ -159,12 +129,6 @@ async fn probe_addr(addr: SocketAddr, timeout: Duration) -> Option<Duration> {
     .ok()?;
 
     Some(start.elapsed())
-}
-
-fn probe_socket_addr(endpoint: &str) -> Option<SocketAddr> {
-    let mut addr: SocketAddr = endpoint.parse().ok()?;
-    addr.set_port(MESH_PROBE_PORT);
-    Some(addr)
 }
 
 async fn serve_listener(listener: TcpListener, cancel: CancellationToken) {

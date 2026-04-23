@@ -1,11 +1,9 @@
 mod ebpf_sync;
-mod endpoint_refresh;
 mod peer_sync;
 mod self_record;
 mod subnet_claim_monitor;
 
 pub(crate) use ebpf_sync::run_ebpf_sync_task;
-pub(crate) use endpoint_refresh::run_endpoint_refresh_task;
 pub use peer_sync::PeerSyncCommand;
 pub(crate) use peer_sync::run_peer_sync_task;
 pub(crate) use self_record::SelfRecordCommand;

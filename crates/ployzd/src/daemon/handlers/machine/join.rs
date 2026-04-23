@@ -20,9 +20,7 @@ use self::remote::{
     remote_rpc_expect_ok, wait_for_machine_projection, wait_for_overlay_ready,
 };
 use self::target::run_machine_add_target;
-use super::operations::{
-    MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus,
-};
+use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
 use super::render::render_machine_add_report;
 use super::types::{MachineAddContext, MachineAddFailure, MachineAddReport};
 
@@ -369,7 +367,9 @@ impl DaemonState {
             return self.err("MACHINE_ID_MISMATCH", mismatch);
         }
 
-        if let Err(err) = self::target::upsert_transient_peer(&context.peer_sync_tx, remote_record).await {
+        if let Err(err) =
+            self::target::upsert_transient_peer(&context.peer_sync_tx, remote_record).await
+        {
             log_remote_enable_rollback(record, peer_rpc_port, &err).await;
             let _ = release_reserved_subnet(context, subnet_claim).await;
             return self.err("PEER_SYNC_UNAVAILABLE", err);

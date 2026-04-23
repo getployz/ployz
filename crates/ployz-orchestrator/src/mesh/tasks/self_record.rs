@@ -10,7 +10,6 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub(crate) enum SelfRecordMutation {
     PublishUp { bridge_ip: Option<OverlayIp> },
-    SetEndpoints { endpoints: Vec<String> },
     Replace(MachineRecord),
 }
 
@@ -82,9 +81,6 @@ fn apply_mutation(record: &mut MachineRecord, mutation: SelfRecordMutation) {
                 record.bridge_ip = Some(bridge_ip);
             }
         }
-        SelfRecordMutation::SetEndpoints { endpoints } => {
-            record.endpoints = endpoints;
-        }
         SelfRecordMutation::Replace(next) => {
             *record = next;
         }
@@ -117,7 +113,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn writer_preserves_endpoints_when_liveness_updates() {
+    async fn writer_preserves_endpoints_when_publish_updates() {
         let authoritative_self = Arc::new(RwLock::new(test_record()));
         let store = Arc::new(MemoryStore::new());
         let service = Arc::new(MemoryService::new());
@@ -131,14 +127,6 @@ mod tests {
                 .await;
         });
 
-        let endpoints = vec!["10.0.0.1:51820".into(), "10.0.0.2:51820".into()];
-        let _ = apply_self_record_mutation(
-            &tx,
-            SelfRecordMutation::SetEndpoints {
-                endpoints: endpoints.clone(),
-            },
-        )
-        .await;
         let _ = apply_self_record_mutation(&tx, SelfRecordMutation::PublishUp { bridge_ip: None })
             .await;
 
@@ -146,7 +134,7 @@ mod tests {
         handle.await.expect("writer exits");
 
         let record = authoritative_self.read().await.clone();
-        assert_eq!(record.endpoints, endpoints);
+        assert_eq!(record.endpoints, vec!["127.0.0.1:51820".to_string()]);
         assert_eq!(record.status, MachineStatus::Up);
         assert!(record.updated_at > 0);
     }

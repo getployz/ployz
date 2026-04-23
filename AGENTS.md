@@ -36,6 +36,9 @@
 - Keep placement, participation, coordination, and diagnostic classification
   policy centralized in orchestrator core helpers, not duplicated in daemon
   handlers or UI shaping code.
+- Keep steady-state runtimes boring: prefer one-shot startup/deploy
+  reconciliation and event-driven listeners over interval-driven control-plane
+  loops that poll, rank, rotate, or heal continuously.
 - Operator-facing surfaces should distinguish stored intent, explicit status,
   and live observations rather than collapsing them into one derived field.
 - Background tasks may publish explicit events or observations, but they should

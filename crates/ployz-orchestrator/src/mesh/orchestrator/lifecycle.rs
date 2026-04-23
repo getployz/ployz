@@ -4,9 +4,9 @@ use ployz_store_api::{MachineStore, StoreRuntimeControl, SyncProbe, SyncStatus};
 use tracing::{info, warn};
 
 use crate::error::Error as PortError;
+use crate::mesh::MeshNetwork;
 use crate::mesh::driver::WireguardBackendMode;
 use crate::mesh::phase::{PhaseEvent, TransitionError};
-use crate::mesh::MeshNetwork;
 
 use super::{Mesh, MeshError, Result, poll_until};
 

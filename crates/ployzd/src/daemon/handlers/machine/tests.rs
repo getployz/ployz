@@ -6,7 +6,8 @@ use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock
 use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
 use ipnet::Ipv4Net;
 use ployz_api::{
-    DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MeshSelfRecordPayload,
+    DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MeshReadyPayload,
+    MeshSelfRecordPayload,
 };
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::mesh::driver::WireguardDriver;
@@ -188,7 +189,7 @@ fn plan_local_subnet_heal_is_noop_after_subnet_changes() {
 }
 
 #[tokio::test]
-async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
+async fn machine_add_enables_joiner_participation() {
     let _guard = test_ssh_env_lock().lock().await;
     let listener = TcpListener::bind("[::1]:0")
         .await
@@ -211,8 +212,9 @@ async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
         .await
         .expect("upsert stale peer");
 
+    let server_store = store.clone();
     let server = tokio::spawn(async move {
-        for _ in 0..2 {
+        for _ in 0..5 {
             let (stream, _) = listener.accept().await.expect("accept overlay rpc");
             let (reader, mut writer) = stream.into_split();
             let mut buf = BufReader::new(reader);
@@ -220,17 +222,49 @@ async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
             buf.read_line(&mut line).await.expect("read request");
             let request: DaemonRequest =
                 serde_json::from_str(&line).expect("decode daemon request");
-            match request {
-                DaemonRequest::Coord { .. } => {}
+            let response = match request {
+                DaemonRequest::Coord { .. } => DaemonResponse {
+                    ok: true,
+                    code: "OK".into(),
+                    message: "allow".into(),
+                    payload: None,
+                },
+                DaemonRequest::MeshReady { .. } => DaemonResponse {
+                    ok: true,
+                    code: "OK".into(),
+                    message: "ready".into(),
+                    payload: Some(DaemonPayload::MeshReady(MeshReadyPayload {
+                        ready: true,
+                        phase: "running".into(),
+                        store_healthy: true,
+                        sync_connected: true,
+                        workload_subnet_present: true,
+                        participation: "enabled".into(),
+                    })),
+                },
+                DaemonRequest::MeshSetParticipation { participation } => {
+                    let mut joiner_record = MachineRecord::seed(
+                        MachineId("joiner-1".into()),
+                        PublicKey([4; 32]),
+                        "::1".parse().map(OverlayIp).expect("valid overlay"),
+                        Some("10.210.99.0/24".parse().expect("valid subnet")),
+                        vec!["203.0.113.10:51820".into()],
+                    );
+                    joiner_record.participation = participation;
+                    server_store
+                        .upsert_self_machine(&joiner_record)
+                        .await
+                        .expect("upsert joiner for projection");
+                    DaemonResponse {
+                        ok: true,
+                        code: "OK".into(),
+                        message: "enabled".into(),
+                        payload: None,
+                    }
+                }
                 other => panic!("unexpected daemon request: {other:?}"),
-            }
-            let mut response_line = serde_json::to_string(&DaemonResponse {
-                ok: true,
-                code: "OK".into(),
-                message: "allow".into(),
-                payload: None,
-            })
-            .expect("encode response");
+            };
+            let mut response_line = serde_json::to_string(&response).expect("encode response");
             response_line.push('\n');
             writer
                 .write_all(response_line.as_bytes())
@@ -257,7 +291,7 @@ async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
     let join_response = JoinResponse {
         machine_id: MachineId("joiner-1".into()),
         public_key: PublicKey([4; 32]),
-        overlay_ip: "fd00::4".parse().map(OverlayIp).expect("valid overlay"),
+        overlay_ip: "::1".parse().map(OverlayIp).expect("valid overlay"),
         subnet: Some(expected_subnet),
         endpoints: vec!["203.0.113.10:51820".into()],
     }
@@ -297,12 +331,14 @@ async fn machine_add_warns_on_degraded_mesh_and_publishes_disabled_joiner() {
     assert!(response.ok, "{}", response.message);
     assert!(response.message.contains("awaiting_self_publication: 1"));
 
-    let machines = store.list_machines().await.expect("list machines");
-    assert!(
-        !machines
-            .into_iter()
-            .any(|machine| machine.id.0 == "joiner-1")
-    );
+    let joiner = store
+        .list_machines()
+        .await
+        .expect("list machines")
+        .into_iter()
+        .find(|machine| machine.id.0 == "joiner-1")
+        .expect("joiner should be in store after enable");
+    assert_eq!(joiner.participation, Participation::Enabled);
     assert!(
         network
             .current_peers()
