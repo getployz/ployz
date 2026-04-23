@@ -143,12 +143,15 @@ pub(crate) struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     pub(crate) socket: Option<String>,
 
+    /// Print the full daemon response as JSON for scripting and automation.
     #[arg(long, global = true, conflicts_with = "plain")]
     pub(crate) json: bool,
 
+    /// Print compact human-readable text with less formatting and fewer tokens.
     #[arg(long, global = true, conflicts_with = "json")]
     pub(crate) plain: bool,
 
+    /// Suppress success output where possible.
     #[arg(short = 'q', long, global = true)]
     pub(crate) quiet: bool,
 
