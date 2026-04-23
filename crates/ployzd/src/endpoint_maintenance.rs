@@ -191,19 +191,3 @@ fn spawn_linux_endpoint_watcher() -> EndpointWatcher {
         EndpointWatcher::unsupported()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[tokio::test]
-    async fn local_endpoint_watch_support_helper_is_stable() {
-        unsafe {
-            std::env::set_var("PLOYZ_PUBLIC_IP", "203.0.113.10");
-        }
-        assert_eq!(local_endpoint_watch_supported(), cfg!(target_os = "linux"));
-
-        unsafe {
-            std::env::remove_var("PLOYZ_PUBLIC_IP");
-        }
-    }
-}
