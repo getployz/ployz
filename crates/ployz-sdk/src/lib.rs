@@ -3,10 +3,10 @@ pub mod transport;
 
 pub use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, DebugTickTask, DeployFrame, DeployOptions,
-    InstallSource, MachineAddOptions, MachineAddPayload, MachineAwaitingSelfPublication,
-    MachineInstallOptions, MachineListPayload, MachineListRow, MachineOperationInfo,
-    MachineOperationListPayload, MachineOperationPayload, MachineRemovePayload, MeshReadyPayload,
-    MeshSelfRecordPayload,
+    DoctorLocal, DoctorOverall, DoctorPayload, DoctorPeer, InstallSource, MachineAddOptions,
+    MachineAddPayload, MachineAwaitingSelfPublication, MachineInstallOptions, MachineListPayload,
+    MachineListRow, MachineOperationInfo, MachineOperationListPayload, MachineOperationPayload,
+    MachineRemovePayload, MeshReadyPayload, MeshSelfRecordPayload,
 };
 pub use ployz_types::{Error, Result};
 pub use ployz_types::{error, model, spec};

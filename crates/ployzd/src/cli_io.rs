@@ -1,5 +1,5 @@
 use crate::{CliError, Result};
-use ployz_api::{DaemonRequest, DaemonResponse};
+use ployz_api::{DaemonPayload, DaemonRequest, DaemonResponse, DoctorPayload, MachineListPayload};
 use ployz_sdk::{Transport, UnixSocketTransport};
 use std::io::{BufRead, BufReader, Read, Write};
 
@@ -61,7 +61,11 @@ pub(crate) fn render_response(
 
     if response.ok {
         if !quiet {
-            println!("{}", response.message);
+            if plain {
+                println!("{}", render_plain_success(response));
+            } else {
+                println!("{}", response.message);
+            }
         }
         return Ok(());
     }
@@ -72,6 +76,65 @@ pub(crate) fn render_response(
         eprintln!("error [{}]: {}", response.code, response.message);
     }
     Ok(())
+}
+
+fn render_plain_success(response: &DaemonResponse) -> String {
+    match response.payload.as_ref() {
+        Some(DaemonPayload::MachineList(payload)) => render_plain_machine_list(payload),
+        Some(DaemonPayload::Doctor(payload)) => render_plain_doctor(payload),
+        _ => response.message.clone(),
+    }
+}
+
+fn render_plain_machine_list(payload: &MachineListPayload) -> String {
+    if payload.rows.is_empty() {
+        return String::from("no machines");
+    }
+
+    payload
+        .rows
+        .iter()
+        .map(|row| {
+            format!(
+                "id={} status={} participation={} overlay_ip={} subnet={} created_at={}",
+                row.id,
+                row.status,
+                row.participation,
+                row.overlay_ip,
+                row.subnet.as_deref().unwrap_or("—"),
+                row.created_at
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn render_plain_doctor(payload: &DoctorPayload) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "participation={} local_machine={} network={} local_participation={} local_status={} endpoint_watch_supported={} endpoint_drift={}",
+        payload.overall.participation,
+        payload.local.machine_id,
+        payload.local.network,
+        payload.local.participation,
+        payload.local.status,
+        payload.local.endpoint_watch_supported,
+        payload.local.published_endpoints != payload.local.detected_endpoints,
+    ));
+    lines.extend(payload.peers.iter().map(|peer| {
+        format!(
+            "peer={} role={} blocking={} store_participation={} store_status={} wg_state={} probe_state={} cause_code={}",
+            peer.machine_id,
+            peer.role,
+            peer.blocking,
+            peer.store_participation,
+            peer.store_status,
+            peer.wg_state,
+            peer.probe_state,
+            peer.cause_code,
+        )
+    }));
+    lines.join("\n")
 }
 
 pub(crate) fn read_stdin_string(label: &str) -> Result<String> {
@@ -113,4 +176,76 @@ pub(crate) fn read_optional_text_file(
         )));
     }
     Ok(Some(contents))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_api::{
+        DoctorLocal, DoctorOverall, DoctorPayload, DoctorPeer, MachineListPayload, MachineListRow,
+    };
+
+    #[test]
+    fn plain_machine_list_renders_stable_lines() {
+        let response = DaemonResponse {
+            ok: true,
+            code: String::from("OK"),
+            message: String::from("table"),
+            payload: Some(DaemonPayload::MachineList(MachineListPayload {
+                rows: vec![MachineListRow {
+                    id: String::from("peer"),
+                    status: String::from("up"),
+                    participation: String::from("disabled"),
+                    overlay_ip: String::from("fd00::2"),
+                    subnet: None,
+                    created_at: 123,
+                }],
+            })),
+        };
+
+        assert_eq!(
+            render_plain_success(&response),
+            "id=peer status=up participation=disabled overlay_ip=fd00::2 subnet=— created_at=123"
+        );
+    }
+
+    #[test]
+    fn plain_doctor_renders_summary_and_peer_lines() {
+        let response = DaemonResponse {
+            ok: true,
+            code: String::from("OK"),
+            message: String::from("doctor"),
+            payload: Some(DaemonPayload::Doctor(DoctorPayload {
+                overall: DoctorOverall {
+                    participation: String::from("healthy"),
+                },
+                local: DoctorLocal {
+                    machine_id: String::from("founder"),
+                    network: String::from("alpha"),
+                    participation: String::from("enabled"),
+                    status: String::from("up"),
+                    published_endpoints: vec![String::from("10.0.0.1:51820")],
+                    detected_endpoints: vec![String::from("10.0.0.1:51820")],
+                    endpoint_watch_supported: true,
+                },
+                peers: vec![DoctorPeer {
+                    machine_id: String::from("peer"),
+                    role: String::from("blocking"),
+                    blocking: false,
+                    store_participation: String::from("enabled"),
+                    store_status: String::from("up"),
+                    wg_state: String::from("fresh"),
+                    probe_state: String::from("reachable"),
+                    cause_code: String::from("overlay-probe-reachable"),
+                    cause_message: String::from("healthy via overlay probe"),
+                }],
+            })),
+        };
+
+        let rendered = render_plain_success(&response);
+        assert!(rendered.contains("participation=healthy"));
+        assert!(rendered.contains("local_machine=founder"));
+        assert!(rendered.contains("peer=peer"));
+        assert!(rendered.contains("cause_code=overlay-probe-reachable"));
+    }
 }
