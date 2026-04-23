@@ -139,6 +139,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn publish_started_mesh_participation_fails_without_authoritative_self_record() {
+        let identity = Identity::generate(MachineId("founder".into()), [11; 32]);
+        let machine_id = identity.machine_id.clone();
+        let data_dir = unique_temp_dir("ployz-startup-participation-fail");
+        let config = NetworkConfig::new(
+            ployz_types::model::NetworkName("alpha".into()),
+            &identity.public_key,
+            "10.210.0.0/16",
+            "10.210.0.0/24".parse().expect("valid subnet"),
+        );
+
+        let mut state = DaemonState::new_for_tests(
+            &data_dir,
+            identity,
+            "10.210.0.0/16".into(),
+            24,
+            4317,
+            "127.0.0.1:0".into(),
+            1,
+        );
+        state.active = Some(ActiveMesh {
+            config,
+            mesh: Mesh::new(
+                WireguardDriver::memory(),
+                StoreDriver::memory(),
+                None,
+                machine_id,
+                51820,
+            ),
+            remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+        });
+
+        let error = state
+            .publish_started_mesh_participation(ployz_types::model::Participation::Enabled)
+            .await
+            .expect_err("missing self record should fail");
+        assert!(error.contains("failed to persist startup participation=enabled"));
+    }
+
+    #[tokio::test]
     async fn mesh_bootstrap_refuses_to_overwrite_existing_network_config() {
         let identity = Identity::generate(MachineId("joiner".into()), [9; 32]);
         let data_dir = unique_temp_dir("ployz-bootstrap-guard");
