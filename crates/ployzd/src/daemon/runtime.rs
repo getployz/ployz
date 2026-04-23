@@ -4,7 +4,7 @@ use std::path::Path;
 use ipnet::Ipv4Net;
 use ployz_dns::DnsConfig;
 use ployz_gateway::GatewayConfig;
-use ployz_runtime_api::{NamespaceLockManager, RestartableWorkload, RuntimeHandle};
+use ployz_runtime_api::{NamespaceLockManager, RuntimeHandle};
 use ployz_store_api::StoreDriver;
 use ployz_types::model::MachineId;
 use ployz_types::model::OverlayIp;
@@ -98,29 +98,6 @@ impl DaemonState {
     pub(crate) fn runtime_is_memory_test(&self) -> bool {
         self.runtime_profile.is_memory_test()
     }
-
-    pub(crate) async fn stop_runtime_local_workloads_for_subnet_heal(
-        &self,
-        machine_id: &MachineId,
-        network_name: &str,
-        target_subnet: Ipv4Net,
-    ) -> Result<Vec<RestartableWorkload>, String> {
-        self.runtime_profile
-            .stop_local_workloads_for_subnet_heal(machine_id, network_name, target_subnet)
-            .await
-    }
-
-    pub(crate) async fn start_runtime_local_workloads_after_subnet_heal(
-        &self,
-        network_name: &str,
-        target_subnet: Ipv4Net,
-        workloads: &[RestartableWorkload],
-    ) -> Result<(), String> {
-        self.runtime_profile
-            .start_local_workloads_after_subnet_heal(network_name, target_subnet, workloads)
-            .await
-    }
-
     pub(crate) async fn runtime_has_local_workloads(
         &self,
         machine_id: &MachineId,

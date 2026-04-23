@@ -22,7 +22,6 @@ const OPERATIONS_DIR_NAME: &str = "machine-operations";
 pub(super) enum MachineOperationKind {
     Init,
     Add,
-    Heal,
 }
 
 impl MachineOperationKind {
@@ -31,7 +30,6 @@ impl MachineOperationKind {
         match self {
             Self::Init => "init",
             Self::Add => "add",
-            Self::Heal => "heal",
         }
     }
 }
@@ -341,7 +339,7 @@ impl DaemonState {
         record: &MachineOperationRecord,
     ) -> Result<Option<String>, String> {
         match record.kind {
-            MachineOperationKind::Init | MachineOperationKind::Heal => Ok(None),
+            MachineOperationKind::Init => Ok(None),
             MachineOperationKind::Add => self.reconcile_machine_add_operation(record).await,
         }
     }
@@ -380,6 +378,7 @@ impl DaemonState {
                 | MachineAddStage::SelfRecorded
                 | MachineAddStage::TransientPeerInstalled
                 | MachineAddStage::Ready
+                | MachineAddStage::Enabled
                 | MachineAddStage::Finalized
         ) {
             return Ok((!notes.is_empty()).then_some(notes.join("; ")));

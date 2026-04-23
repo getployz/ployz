@@ -353,13 +353,6 @@ impl DaemonState {
         Ok(tx.finish())
     }
 
-    pub async fn restart_active_runtime_for_subnet_heal(
-        &mut self,
-        network: &str,
-    ) -> Result<(), String> {
-        self.restart_active_runtime_from_config(network).await
-    }
-
     pub async fn restart_active_runtime_from_config(
         &mut self,
         network: &str,
@@ -438,18 +431,12 @@ impl DaemonState {
 
         let dns = std::mem::replace(&mut active.dns, Box::new(NoopRuntimeHandle));
         if let Err(error) = dns.shutdown().await {
-            tracing::warn!(
-                ?error,
-                "subnet heal: dns stop failed during runtime restart"
-            );
+            tracing::warn!(?error, "runtime restart: dns stop failed");
         }
 
         let gateway = std::mem::replace(&mut active.gateway, Box::new(NoopRuntimeHandle));
         if let Err(error) = gateway.shutdown().await {
-            tracing::warn!(
-                ?error,
-                "subnet heal: gateway stop failed during runtime restart"
-            );
+            tracing::warn!(?error, "runtime restart: gateway stop failed");
         }
 
         let _ = active
