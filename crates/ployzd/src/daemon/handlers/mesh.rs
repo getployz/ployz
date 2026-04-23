@@ -227,23 +227,23 @@ mod tests {
         let identity = Identity::generate(MachineId("joiner".into()), [10; 32]);
         let data_dir = unique_temp_dir("ployz-promote-rollback");
         let config_path = NetworkConfig::path(&data_dir, "alpha");
-        let previous_subnet = Some("10.210.1.0/24".parse().expect("valid subnet"));
+        let previous_subnet: ipnet::Ipv4Net = "10.210.1.0/24".parse().expect("valid subnet");
         let mut config = NetworkConfig::new(
             ployz_types::model::NetworkName("alpha".into()),
             &identity.public_key,
             "10.210.0.0/16",
-            previous_subnet.expect("subnet present"),
+            previous_subnet,
         );
         config.save(&config_path).expect("save initial config");
 
         config.subnet = Some("10.210.2.0/24".parse().expect("valid subnet"));
         config.save(&config_path).expect("save promoted config");
 
-        restore_network_config_subnet(&config_path, &mut config, previous_subnet)
+        restore_network_config_subnet(&config_path, &mut config, Some(previous_subnet))
             .expect("restore subnet");
 
         let persisted = NetworkConfig::load(&config_path).expect("load restored config");
-        assert_eq!(persisted.subnet, previous_subnet);
+        assert_eq!(persisted.subnet, Some(previous_subnet));
     }
 
     async fn make_active_state() -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {

@@ -59,8 +59,10 @@ mod tests {
             &MachineId("self".into()),
             &std::collections::HashMap::new(),
         );
-        assert_eq!(planned.len(), 1);
-        assert_eq!(planned[0].endpoints, vec!["a:1", "b:2", "c:3"]);
+        let [peer] = planned.as_slice() else {
+            panic!("expected one planned peer");
+        };
+        assert_eq!(peer.endpoints, vec!["a:1", "b:2", "c:3"]);
     }
 
     #[test]

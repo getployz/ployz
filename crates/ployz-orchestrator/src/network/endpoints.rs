@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
-use std::net::{IpAddr, Ipv4Addr};
 #[cfg(test)]
 use std::net::Ipv6Addr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 const MIN_ENDPOINT_MTU: u32 = 1280;
@@ -198,16 +198,16 @@ fn public_ip_services() -> Vec<PublicIpService> {
             .split(',')
             .map(str::trim)
             .filter(|url| !url.is_empty())
-            .filter_map(|url| {
+            .map(|url| {
                 let parser = if url.contains("cdn-cgi/trace") {
                     PublicIpParser::CloudflareTrace
                 } else {
                     PublicIpParser::Plaintext
                 };
-                Some(PublicIpService {
+                PublicIpService {
                     url: url.to_string(),
                     parser,
-                })
+                }
             })
             .collect();
     }
@@ -296,9 +296,11 @@ mod tests {
             );
         }
         let services = public_ip_services();
-        assert_eq!(services.len(), 2);
-        assert_eq!(services[0].url, "https://one.example/ip");
-        assert_eq!(services[1].url, "https://two.example/cdn-cgi/trace");
+        let [first, second] = services.as_slice() else {
+            panic!("expected two services");
+        };
+        assert_eq!(first.url, "https://one.example/ip");
+        assert_eq!(second.url, "https://two.example/cdn-cgi/trace");
 
         unsafe {
             std::env::remove_var("PLOYZ_PUBLIC_IP_DISCOVERY_URLS");

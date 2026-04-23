@@ -89,7 +89,7 @@ pub async fn corrosion_docker(
 
     let config_host = paths.config.to_string_lossy().into_owned();
     let schema_host = paths.schema.to_string_lossy().into_owned();
-    let service = DockerCorrosion::new("ployz-corrosion", image)
+    let service = DockerCorrosion::builder("ployz-corrosion", image)
         .cmd(vec![
             "agent".into(),
             "-c".into(),
@@ -287,8 +287,8 @@ impl<S> SyncProbe for CorrosionBackend<S>
 where
     S: StoreRuntimeControl + Send + Sync + 'static,
 {
-    fn sync_status(&self) -> impl std::future::Future<Output = Result<SyncStatus>> + Send + '_ {
-        async move { self.store.sync_status().await }
+    async fn sync_status(&self) -> Result<SyncStatus> {
+        self.store.sync_status().await
     }
 }
 
@@ -532,7 +532,7 @@ impl DockerCorrosionBuilder {
 }
 
 impl DockerCorrosion {
-    fn new(container_name: &str, image: &str) -> DockerCorrosionBuilder {
+    fn builder(container_name: &str, image: &str) -> DockerCorrosionBuilder {
         DockerCorrosionBuilder {
             container_name: container_name.to_string(),
             image: image.to_string(),

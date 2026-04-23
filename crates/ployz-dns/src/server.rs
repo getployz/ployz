@@ -346,7 +346,10 @@ mod tests {
             .recv_from(&mut response)
             .await
             .expect("response should arrive");
-        let _ = Message::from_vec(&response[..received]).expect("response should decode");
+        let Some(response_bytes) = response.get(..received) else {
+            panic!("response length exceeded buffer");
+        };
+        let _ = Message::from_vec(response_bytes).expect("response should decode");
     }
 
     async fn fetch_http_body(addr: SocketAddr, path: &str) -> String {

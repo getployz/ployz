@@ -37,7 +37,11 @@ impl PeerState {
             return self.endpoints.clone();
         };
 
-        if !self.endpoints.iter().any(|endpoint| endpoint == selected_endpoint) {
+        if !self
+            .endpoints
+            .iter()
+            .any(|endpoint| endpoint == selected_endpoint)
+        {
             return self.endpoints.clone();
         }
 
