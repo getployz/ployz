@@ -1,6 +1,4 @@
 use crate::model::OverlayIp;
-use futures_util::stream::{FuturesUnordered, StreamExt};
-use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, SocketAddr, TcpListener as StdTcpListener};
 use std::time::Duration;
@@ -10,34 +8,33 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-pub(crate) const MESH_PROBE_PORT: u16 = 51821;
+pub const MESH_PROBE_PORT: u16 = 51821;
 const PROBE_REQUEST: &[u8; 4] = b"PLZ?";
 const PROBE_RESPONSE: &[u8; 4] = b"OK!!";
-pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(750);
 const PROBE_LISTENER_BIND_RETRY_DELAY: Duration = Duration::from_millis(100);
 const PROBE_LISTENER_BIND_RETRY_ATTEMPTS: u8 = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TcpProbeStatus {
+pub enum TcpProbeStatus {
     Reachable,
     Unreachable,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct TcpProbeResult {
-    pub(crate) status: TcpProbeStatus,
-    pub(crate) rtt: Option<Duration>,
+pub struct TcpProbeResult {
+    pub status: TcpProbeStatus,
+    pub rtt: Option<Duration>,
 }
 
 impl TcpProbeResult {
-    fn reachable(rtt: Duration) -> Self {
+    pub(crate) fn reachable(rtt: Duration) -> Self {
         Self {
             status: TcpProbeStatus::Reachable,
             rtt: Some(rtt),
         }
     }
 
-    fn unreachable() -> Self {
+    pub(crate) fn unreachable() -> Self {
         Self {
             status: TcpProbeStatus::Unreachable,
             rtt: None,
@@ -89,61 +86,22 @@ pub(crate) async fn run_probe_listener_task(cancel: CancellationToken) {
     info!(port = MESH_PROBE_PORT, "mesh probe listener stopped");
 }
 
-pub(crate) async fn probe_endpoints_parallel(
-    endpoints: &[String],
-) -> HashMap<String, TcpProbeResult> {
-    let mut probes = FuturesUnordered::new();
-    for endpoint in endpoints {
-        let endpoint = endpoint.clone();
-        probes.push(async move {
-            let result = match probe_endpoint(&endpoint, PROBE_TIMEOUT).await {
-                Some(rtt) => TcpProbeResult::reachable(rtt),
-                None => TcpProbeResult::unreachable(),
-            };
-            (endpoint, result)
-        });
-    }
-
-    let mut results = HashMap::with_capacity(endpoints.len());
-    while let Some((endpoint, result)) = probes.next().await {
-        results.insert(endpoint, result);
-    }
-    results
-}
-
-pub(crate) async fn probe_overlay_ips_parallel(
-    overlay_ips: &[OverlayIp],
-) -> HashMap<OverlayIp, TcpProbeResult> {
-    let mut probes = FuturesUnordered::new();
-    for overlay_ip in overlay_ips {
-        let overlay_ip = *overlay_ip;
-        probes.push(async move {
-            let result = match probe_overlay_ip(overlay_ip, PROBE_TIMEOUT).await {
-                Some(rtt) => TcpProbeResult::reachable(rtt),
-                None => TcpProbeResult::unreachable(),
-            };
-            (overlay_ip, result)
-        });
-    }
-
-    let mut results = HashMap::with_capacity(overlay_ips.len());
-    while let Some((overlay_ip, result)) = probes.next().await {
-        results.insert(overlay_ip, result);
-    }
-    results
-}
-
-async fn probe_endpoint(endpoint: &str, timeout: Duration) -> Option<Duration> {
-    let addr = probe_socket_addr(endpoint)?;
-    probe_addr(addr, timeout).await
-}
-
 async fn probe_overlay_ip(overlay_ip: OverlayIp, timeout: Duration) -> Option<Duration> {
     probe_addr(
         SocketAddr::new(IpAddr::from(overlay_ip.0), MESH_PROBE_PORT),
         timeout,
     )
     .await
+}
+
+pub(crate) async fn probe_overlay_ip_with_timeout(
+    overlay_ip: OverlayIp,
+    timeout: Duration,
+) -> TcpProbeResult {
+    match probe_overlay_ip(overlay_ip, timeout).await {
+        Some(rtt) => TcpProbeResult::reachable(rtt),
+        None => TcpProbeResult::unreachable(),
+    }
 }
 
 async fn probe_addr(addr: SocketAddr, timeout: Duration) -> Option<Duration> {
@@ -171,12 +129,6 @@ async fn probe_addr(addr: SocketAddr, timeout: Duration) -> Option<Duration> {
     .ok()?;
 
     Some(start.elapsed())
-}
-
-fn probe_socket_addr(endpoint: &str) -> Option<SocketAddr> {
-    let mut addr: SocketAddr = endpoint.parse().ok()?;
-    addr.set_port(MESH_PROBE_PORT);
-    Some(addr)
 }
 
 async fn serve_listener(listener: TcpListener, cancel: CancellationToken) {
