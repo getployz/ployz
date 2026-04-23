@@ -580,6 +580,31 @@ async fn mesh_standby_restores_subnet_when_restart_fails() {
 }
 
 #[tokio::test]
+async fn mesh_up_preserves_disabled_participation_after_standby() {
+    let (mut state, _, _) = make_state(true).await;
+
+    let standby = state.handle_mesh_standby(true).await;
+    assert!(standby.ok, "{}", standby.message);
+
+    let down = state.handle_mesh_down().await;
+    assert!(down.ok, "{}", down.message);
+
+    let up = state.handle_mesh_up("alpha", false).await;
+    assert!(up.ok, "{}", up.message);
+
+    let local = state
+        .active
+        .as_ref()
+        .expect("active mesh after up")
+        .mesh
+        .authoritative_self_record()
+        .await
+        .expect("self record");
+    assert_eq!(local.participation, Participation::Disabled);
+    assert_eq!(local.subnet, None);
+}
+
+#[tokio::test]
 async fn reserve_machine_subnet_clears_local_hold_when_quorum_denies() {
     let _guard = test_ssh_env_lock().lock().await;
     let (mut state, store, _) = make_state(true).await;
