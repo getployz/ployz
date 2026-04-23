@@ -29,7 +29,6 @@ pub(crate) enum DebugTickTaskArg {
     PeerSync,
     Endpoints,
     Heartbeat,
-    Heal,
     All,
 }
 
@@ -84,7 +83,6 @@ impl From<DebugTickTaskArg> for ProtocolDebugTickTask {
             DebugTickTaskArg::PeerSync => ProtocolDebugTickTask::PeerSync,
             DebugTickTaskArg::Endpoints => ProtocolDebugTickTask::Endpoints,
             DebugTickTaskArg::Heartbeat => ProtocolDebugTickTask::Heartbeat,
-            DebugTickTaskArg::Heal => ProtocolDebugTickTask::Heal,
             DebugTickTaskArg::All => ProtocolDebugTickTask::All,
         }
     }

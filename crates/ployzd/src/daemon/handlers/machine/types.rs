@@ -215,16 +215,3 @@ impl MachineListReportRow {
         }
     }
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct LocalSubnetHealPlan {
-    pub current_subnet: Ipv4Net,
-    pub winner_machine_id: MachineId,
-    pub target_subnet: Ipv4Net,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct LocalSubnetConflict {
-    pub subnet: Ipv4Net,
-    pub winner_machine_id: MachineId,
-}
