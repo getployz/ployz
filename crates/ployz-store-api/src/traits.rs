@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use ployz_types::Result;
 use ployz_types::model::{
-    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
+    InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineRecord, RoutingState,
+    ServiceReleaseRecord, ServiceRevisionRecord,
 };
 use ployz_types::spec::Namespace;
 use std::future::Future;
@@ -125,6 +126,46 @@ pub trait DeployStore: Send + Sync {
         &'a self,
         deploy_id: &'a DeployId,
     ) -> impl Future<Output = Result<Option<DeployRecord>>> + Send + 'a;
+}
+
+pub trait CertificateStore: Send + Sync {
+    fn get_acme_account<'a>(
+        &'a self,
+        issuer_url: &'a str,
+    ) -> impl Future<Output = Result<Option<AcmeAccountRecord>>> + Send + 'a;
+
+    fn upsert_acme_account<'a>(
+        &'a self,
+        record: &'a AcmeAccountRecord,
+    ) -> impl Future<Output = Result<()>> + Send + 'a;
+
+    fn list_certificates(&self)
+    -> impl Future<Output = Result<Vec<CertificateRecord>>> + Send + '_;
+
+    fn get_certificate<'a>(
+        &'a self,
+        hostname: &'a str,
+    ) -> impl Future<Output = Result<Option<CertificateRecord>>> + Send + 'a;
+
+    fn upsert_certificate<'a>(
+        &'a self,
+        record: &'a CertificateRecord,
+    ) -> impl Future<Output = Result<()>> + Send + 'a;
+
+    fn list_acme_challenges(
+        &self,
+    ) -> impl Future<Output = Result<Vec<AcmeChallengeRecord>>> + Send + '_;
+
+    fn upsert_acme_challenge<'a>(
+        &'a self,
+        record: &'a AcmeChallengeRecord,
+    ) -> impl Future<Output = Result<()>> + Send + 'a;
+
+    fn delete_acme_challenge<'a>(
+        &'a self,
+        hostname: &'a str,
+        token: &'a str,
+    ) -> impl Future<Output = Result<()>> + Send + 'a;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

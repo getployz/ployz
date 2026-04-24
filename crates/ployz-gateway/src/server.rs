@@ -1,10 +1,13 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use pingora::listeners::{TlsAccept, tls::TlsSettings};
 use pingora::prelude::*;
+use pingora::protocols::tls::TlsRef;
 #[cfg(unix)]
 use pingora::server::{RunArgs, ShutdownSignal, ShutdownSignalWatch};
 use pingora::services::listening::Service as ListeningService;
+use pingora::tls::{ext, pkey::PKey, ssl, x509::X509};
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
 use tracing::info;
 
@@ -12,6 +15,55 @@ use crate::config::{GatewayConfig, GatewayError};
 use crate::proxy::GatewayApp;
 use crate::snapshot::SharedSnapshot;
 use crate::sync::load_projected_snapshot_from_store;
+
+pub struct GatewayTlsListener<'a> {
+    pub listen_addr: &'a str,
+    pub static_cert_path: Option<&'a str>,
+    pub static_key_path: Option<&'a str>,
+}
+
+struct ManagedTlsCallbacks {
+    shared_snapshot: SharedSnapshot,
+}
+
+#[async_trait]
+impl TlsAccept for ManagedTlsCallbacks {
+    async fn certificate_callback(&self, ssl: &mut TlsRef) -> () {
+        let Some(server_name) = ssl.servername(ssl::NameType::HOST_NAME) else {
+            return;
+        };
+        let state = self.shared_snapshot.load();
+        let Some(certificate) = state
+            .snapshot
+            .certificates
+            .iter()
+            .find(|certificate| certificate.hostname == server_name)
+        else {
+            return;
+        };
+        let Ok(certificates) = X509::stack_from_pem(certificate.fullchain_pem.as_bytes()) else {
+            return;
+        };
+        let [leaf, chain @ ..] = certificates.as_slice() else {
+            return;
+        };
+        let Ok(private_key) = PKey::private_key_from_pem(certificate.private_key_pem.as_bytes())
+        else {
+            return;
+        };
+        if ext::ssl_use_certificate(ssl, leaf).is_err() {
+            return;
+        }
+        if ext::ssl_use_private_key(ssl, &private_key).is_err() {
+            return;
+        }
+        for certificate in chain {
+            if ext::ssl_add_chain_cert(ssl, certificate).is_err() {
+                return;
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // EmbeddedShutdownWatch
@@ -52,6 +104,7 @@ impl ShutdownSignalWatch for EmbeddedShutdownWatch {
 pub fn run_server(
     opt: Opt,
     listen_addr: &str,
+    tls_listener: Option<GatewayTlsListener<'_>>,
     threads: usize,
     metrics_listen_addr: Option<&str>,
     shared_snapshot: SharedSnapshot,
@@ -74,8 +127,30 @@ pub fn run_server(
     }
     server.bootstrap();
 
-    let mut service = http_proxy_service(&server.configuration, GatewayApp::new(shared_snapshot));
+    let mut service = http_proxy_service(
+        &server.configuration,
+        GatewayApp::new(shared_snapshot.clone()),
+    );
     service.add_tcp(listen_addr);
+    if let Some(tls_listener) = tls_listener {
+        let mut tls_settings = if let (Some(cert_path), Some(key_path)) =
+            (tls_listener.static_cert_path, tls_listener.static_key_path)
+        {
+            TlsSettings::intermediate(cert_path, key_path)
+                .map_err(|err| GatewayError::Runtime(format!("tls settings: {err}")))?
+        } else {
+            TlsSettings::with_callbacks(Box::new(ManagedTlsCallbacks {
+                shared_snapshot: shared_snapshot.clone(),
+            }))
+            .map_err(|err| GatewayError::Runtime(format!("tls settings: {err}")))?
+        };
+        tls_settings.enable_h2();
+        service.add_tls_with_settings(tls_listener.listen_addr, None, tls_settings);
+        info!(
+            listen = tls_listener.listen_addr,
+            "gateway https listener running"
+        );
+    }
     server.add_service(service);
 
     if let Some(metrics_listen_addr) = metrics_listen_addr {
@@ -120,11 +195,29 @@ where
     run_server(
         opt,
         config.listen_addr.as_str(),
+        gateway_tls_listener(&config),
         config.threads,
         config.metrics_listen_addr.as_deref(),
         shared_snapshot,
         None,
     )
+}
+
+fn gateway_tls_listener(config: &GatewayConfig) -> Option<GatewayTlsListener<'_>> {
+    let Some(listen_addr) = config.https_listen_addr.as_deref() else {
+        return None;
+    };
+    Some(GatewayTlsListener {
+        listen_addr,
+        static_cert_path: config
+            .tls_cert_path
+            .as_deref()
+            .and_then(std::path::Path::to_str),
+        static_key_path: config
+            .tls_key_path
+            .as_deref()
+            .and_then(std::path::Path::to_str),
+    })
 }
 
 #[cfg(test)]
@@ -167,6 +260,8 @@ mod tests {
                 }],
             }],
             tcp_routes: Vec::new(),
+            acme_challenges: Vec::new(),
+            certificates: Vec::new(),
         };
         crate::metrics::update_route_counts(&snapshot);
 
@@ -176,6 +271,7 @@ mod tests {
             run_server(
                 Opt::default(),
                 &gateway_addr.to_string(),
+                None,
                 1,
                 Some(&metrics_addr.to_string()),
                 shared_snapshot,

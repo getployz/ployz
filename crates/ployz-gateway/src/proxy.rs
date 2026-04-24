@@ -2,8 +2,9 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use std::time::Instant;
 
-use crate::routes::match_http_route;
+use crate::routes::{match_acme_challenge, match_http_route};
 use async_trait::async_trait;
+use bytes::Bytes;
 use http::Method;
 use pingora::prelude::*;
 use tracing::info;
@@ -26,6 +27,7 @@ pub struct RequestCtx {
     retry_allowed: bool,
     matched: bool,
     started_at: Option<Instant>,
+    downstream_scheme: &'static str,
 }
 
 impl GatewayApp {
@@ -54,7 +56,26 @@ impl ProxyHttp for GatewayApp {
             .get("host")
             .and_then(|value| value.to_str().ok());
         let path = request.uri.path();
+        ctx.downstream_scheme = if session
+            .as_downstream()
+            .digest()
+            .and_then(|digest| digest.ssl_digest.as_ref())
+            .is_some()
+        {
+            "https"
+        } else {
+            "http"
+        };
         let state = self.snapshot.load();
+        if let Some(challenge) = match_acme_challenge(&state.snapshot, host, path) {
+            ctx.matched = true;
+            ctx.started_at = Some(Instant::now());
+            session
+                .respond_error_with_body(200, Bytes::from(challenge.key_authorization.clone()))
+                .await?;
+            return Ok(true);
+        }
+
         let Some(route) = match_http_route(&state.snapshot, host, path) else {
             ctx.matched = false;
             ctx.started_at = Some(Instant::now());
@@ -136,7 +157,7 @@ impl ProxyHttp for GatewayApp {
                 })?;
         }
         upstream_request
-            .insert_header("X-Forwarded-Proto", "http")
+            .insert_header("X-Forwarded-Proto", ctx.downstream_scheme)
             .map_err(|err| {
                 Error::because(
                     ErrorType::InternalError,

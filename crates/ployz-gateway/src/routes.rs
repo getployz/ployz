@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::net::{SocketAddr, SocketAddrV4};
 
 use ployz_types::model::{
-    InstanceId, InstancePhase, InstanceStatusRecord, MachineId, RoutingState, ServiceRelease,
-    ServiceReleaseSlot, ServiceRoutingPolicy,
+    AcmeChallengeRecord, CertificateRecord, CertificateState, InstanceId, InstancePhase,
+    InstanceStatusRecord, MachineId, RoutingState, ServiceRelease, ServiceReleaseSlot,
+    ServiceRoutingPolicy,
 };
 use ployz_types::spec::{Namespace, RouteSpec, ServiceSpec};
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,8 @@ use thiserror::Error;
 pub struct GatewaySnapshot {
     pub http_routes: Vec<HttpRouteView>,
     pub tcp_routes: Vec<TcpRouteView>,
+    pub acme_challenges: Vec<AcmeChallengeView>,
+    pub certificates: Vec<CertificateView>,
 }
 
 impl GatewaySnapshot {
@@ -22,8 +25,24 @@ impl GatewaySnapshot {
         Self {
             http_routes: Vec::new(),
             tcp_routes: Vec::new(),
+            acme_challenges: Vec::new(),
+            certificates: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcmeChallengeView {
+    pub hostname: String,
+    pub token: String,
+    pub key_authorization: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CertificateView {
+    pub hostname: String,
+    pub fullchain_pem: String,
+    pub private_key_pem: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,7 +256,58 @@ pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> 
     Ok(GatewaySnapshot {
         http_routes,
         tcp_routes,
+        acme_challenges: Vec::new(),
+        certificates: Vec::new(),
     })
+}
+
+#[must_use]
+pub fn with_managed_tls(
+    mut snapshot: GatewaySnapshot,
+    challenges: Vec<AcmeChallengeRecord>,
+    certificates: Vec<CertificateRecord>,
+) -> GatewaySnapshot {
+    snapshot.acme_challenges = challenges
+        .into_iter()
+        .map(|challenge| AcmeChallengeView {
+            hostname: normalize_request_host(&challenge.hostname),
+            token: challenge.token,
+            key_authorization: challenge.key_authorization,
+        })
+        .collect();
+    snapshot.certificates = certificates
+        .into_iter()
+        .filter(|record| record.state == CertificateState::Active)
+        .filter_map(|record| {
+            let active_version_id = record.active_version_id.as_deref()?;
+            let version = record
+                .versions
+                .iter()
+                .find(|version| version.version_id == active_version_id)?;
+            Some(CertificateView {
+                hostname: normalize_request_host(&record.hostname),
+                fullchain_pem: version.fullchain_pem.clone(),
+                private_key_pem: version.private_key_pem.clone(),
+            })
+        })
+        .collect();
+    snapshot
+}
+
+#[must_use]
+pub fn match_acme_challenge<'a>(
+    snapshot: &'a GatewaySnapshot,
+    host: Option<&str>,
+    path: &str,
+) -> Option<&'a AcmeChallengeView> {
+    let host = host
+        .map(normalize_request_host)
+        .filter(|value| !value.is_empty())?;
+    let token = path.strip_prefix("/.well-known/acme-challenge/")?;
+    snapshot
+        .acme_challenges
+        .iter()
+        .find(|challenge| challenge.hostname == host && challenge.token == token)
 }
 
 fn routable_backends_by_port(
@@ -548,6 +618,8 @@ mod tests {
                 },
             ],
             tcp_routes: Vec::new(),
+            acme_challenges: Vec::new(),
+            certificates: Vec::new(),
         };
 
         let route = match_http_route(&snapshot, Some("api.example.com"), "/v1/users")

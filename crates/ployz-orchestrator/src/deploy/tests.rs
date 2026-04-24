@@ -3,15 +3,16 @@ use super::plan::{deployable_machines, desired_slots, resolve_plan};
 use crate::deploy::session::{DeploySession, DeploySessionFactory, StartCandidateRequest};
 use crate::error::Result;
 use crate::model::{
-    DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
-    MachineLifecycle, MachineRecord, OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord,
-    ServiceReleaseSlot, ServiceRoutingPolicy, SlotId,
+    AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DrainState, InstanceId,
+    InstancePhase, InstanceStatusRecord, MachineId, MachineLifecycle, MachineRecord, OverlayIp,
+    PublicKey, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot, ServiceRoutingPolicy,
+    SlotId,
 };
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{
-    DeployStore, InviteStore, MachineStore, MachineSubscription, RoutingInvalidationSubscription,
-    RoutingStore, StoreBackend, StoreDriver, StoreRuntimeControl,
+    CertificateStore, DeployStore, InviteStore, MachineStore, MachineSubscription,
+    RoutingInvalidationSubscription, RoutingStore, StoreBackend, StoreDriver, StoreRuntimeControl,
 };
 use ployz_types::Result as PloyzResult;
 use ployz_types::spec::{
@@ -1174,6 +1175,38 @@ impl StoreBackend for CountingBackend {
         &self,
     ) -> PloyzResult<RoutingInvalidationSubscription> {
         self.store.subscribe_routing_invalidations().await
+    }
+
+    async fn get_acme_account(&self, issuer_url: &str) -> PloyzResult<Option<AcmeAccountRecord>> {
+        self.store.get_acme_account(issuer_url).await
+    }
+
+    async fn upsert_acme_account(&self, record: &AcmeAccountRecord) -> PloyzResult<()> {
+        self.store.upsert_acme_account(record).await
+    }
+
+    async fn list_certificates(&self) -> PloyzResult<Vec<CertificateRecord>> {
+        self.store.list_certificates().await
+    }
+
+    async fn get_certificate(&self, hostname: &str) -> PloyzResult<Option<CertificateRecord>> {
+        self.store.get_certificate(hostname).await
+    }
+
+    async fn upsert_certificate(&self, record: &CertificateRecord) -> PloyzResult<()> {
+        self.store.upsert_certificate(record).await
+    }
+
+    async fn list_acme_challenges(&self) -> PloyzResult<Vec<AcmeChallengeRecord>> {
+        self.store.list_acme_challenges().await
+    }
+
+    async fn upsert_acme_challenge(&self, record: &AcmeChallengeRecord) -> PloyzResult<()> {
+        self.store.upsert_acme_challenge(record).await
+    }
+
+    async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> PloyzResult<()> {
+        self.store.delete_acme_challenge(hostname, token).await
     }
 
     async fn list_service_revisions(
