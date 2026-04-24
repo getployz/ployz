@@ -10,6 +10,7 @@ use ployz_store_api::MachineStore;
 use ployz_types::model::MachineRecord;
 use ployz_types::model::{MachineId, MachineLifecycle, NetworkId, NetworkLifecycle, NetworkName};
 use std::path::{Path, PathBuf};
+use tokio::sync::oneshot;
 use tracing::{error, warn};
 
 use super::DaemonState;
@@ -395,31 +396,31 @@ impl DaemonState {
         &mut self,
         operation_id: &str,
         network_id: &NetworkId,
+        response_flushed: Option<oneshot::Receiver<()>>,
     ) -> ployz_api::DaemonResponse {
         match self.take_active_for_destroy(network_id) {
             Ok(active) => {
+                let data_dir = self.data_dir.clone();
                 let machine_id = self.identity.machine_id.clone();
+                let operation_id_for_log = operation_id.to_string();
                 let network_id_for_log = network_id.clone();
-                let (teardown_result, control_handles) =
-                    Self::perform_mesh_teardown_before_control_shutdown(&self.data_dir, active)
-                        .await;
-                Self::spawn_control_shutdown(control_handles);
-                match teardown_result {
-                    Ok(()) => self.ok(format!(
-                        "mesh destroy operation '{operation_id}' executed on '{}'",
-                        self.identity.machine_id
-                    )),
-                    Err(error) => {
+                Self::spawn_teardown_after_response(
+                    response_flushed,
+                    async move { Self::perform_mesh_teardown(data_dir, active).await },
+                    move |error| {
                         error!(
-                            operation_id,
+                            operation_id = %operation_id_for_log,
                             network_id = %network_id_for_log,
                             %machine_id,
                             %error,
-                            "mesh destroy teardown failed before peer ack"
+                            "mesh destroy teardown failed after peer ack"
                         );
-                        self.err("NETWORK_DESTROY_FAILED", error)
-                    }
-                }
+                    },
+                );
+                self.ok(format!(
+                    "mesh destroy operation '{operation_id}' executed on '{}'",
+                    self.identity.machine_id
+                ))
             }
             Err(error) => self.err("NETWORK_DESTROY_FAILED", error),
         }
@@ -430,6 +431,7 @@ impl DaemonState {
         operation_id: &str,
         network_id: &NetworkId,
         machine_id: &MachineId,
+        response_flushed: Option<oneshot::Receiver<()>>,
     ) -> ployz_api::DaemonResponse {
         if *machine_id != self.identity.machine_id {
             return self.err(
@@ -443,28 +445,27 @@ impl DaemonState {
 
         match self.take_active_for_destroy(network_id) {
             Ok(active) => {
+                let data_dir = self.data_dir.clone();
                 let local_machine_id = self.identity.machine_id.clone();
+                let operation_id_for_log = operation_id.to_string();
                 let network_id_for_log = network_id.clone();
-                let (teardown_result, control_handles) =
-                    Self::perform_mesh_teardown_before_control_shutdown(&self.data_dir, active)
-                        .await;
-                Self::spawn_control_shutdown(control_handles);
-                match teardown_result {
-                    Ok(()) => self.ok(format!(
-                        "machine remove operation '{operation_id}' executed on '{}'",
-                        self.identity.machine_id
-                    )),
-                    Err(error) => {
+                Self::spawn_teardown_after_response(
+                    response_flushed,
+                    async move { Self::perform_mesh_teardown(data_dir, active).await },
+                    move |error| {
                         error!(
-                            operation_id,
+                            operation_id = %operation_id_for_log,
                             network_id = %network_id_for_log,
                             machine_id = %local_machine_id,
                             %error,
-                            "machine remove teardown failed before peer ack"
+                            "machine remove teardown failed after peer ack"
                         );
-                        self.err("MACHINE_REMOVE_FAILED", error)
-                    }
-                }
+                    },
+                );
+                self.ok(format!(
+                    "machine remove operation '{operation_id}' executed on '{}'",
+                    self.identity.machine_id
+                ))
             }
             Err(error) => self.err("MACHINE_REMOVE_FAILED", error),
         }
@@ -545,10 +546,21 @@ impl DaemonState {
         (result, control_handles)
     }
 
-    fn spawn_control_shutdown(control_handles: MeshControlHandles) {
+    fn spawn_teardown_after_response<T, F>(
+        response_flushed: Option<oneshot::Receiver<()>>,
+        teardown: T,
+        log_error: F,
+    ) where
+        T: std::future::Future<Output = Result<(), String>> + Send + 'static,
+        F: FnOnce(String) + Send + 'static,
+    {
         tokio::spawn(async move {
-            let _ = control_handles.peer_control.shutdown().await;
-            let _ = control_handles.remote_control.shutdown().await;
+            if let Some(response_flushed) = response_flushed {
+                let _ = response_flushed.await;
+            }
+            if let Err(error) = teardown.await {
+                log_error(error);
+            }
         });
     }
 
