@@ -32,6 +32,39 @@ pub struct HostPathsContext {
     pub is_root: bool,
 }
 
+#[must_use]
+pub fn detect_host_paths_context() -> HostPathsContext {
+    HostPathsContext {
+        os: detect_os(),
+        is_root: current_user_is_root(),
+    }
+}
+
+#[must_use]
+pub fn detect_os() -> Os {
+    if cfg!(target_os = "linux") {
+        Os::Linux
+    } else if cfg!(target_os = "macos") {
+        Os::Darwin
+    } else {
+        Os::Other
+    }
+}
+
+#[must_use]
+pub fn current_user_is_root() -> bool {
+    #[cfg(unix)]
+    {
+        // SAFETY: `geteuid` has no Rust-side preconditions.
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum ConfigLoadError {
     #[error("failed to load configuration: {0}")]

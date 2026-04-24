@@ -102,11 +102,19 @@ fn render_plain_success(response: &DaemonResponse) -> String {
 
 fn render_plain_status(payload: &StatusPayload) -> String {
     format!(
-        "machine={} network={} overlay={} phase={}",
+        "machine={} network={} overlay={} network_lifecycle={} local_machine_lifecycle={} mesh_phase={}",
         payload.machine_id,
         payload.network.as_deref().unwrap_or("none"),
         payload.overlay_ip.as_deref().unwrap_or("—"),
-        payload.phase
+        payload
+            .network_lifecycle
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "—".into()),
+        payload
+            .local_machine_lifecycle
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "—".into()),
+        payload.mesh_phase
     )
 }
 
@@ -120,10 +128,9 @@ fn render_plain_machine_list(payload: &MachineListPayload) -> String {
         .iter()
         .map(|row| {
             format!(
-                "id={} status={} participation={} overlay_ip={} subnet={} created_at={}",
+                "id={} lifecycle={} overlay_ip={} subnet={} created_at={}",
                 row.id,
-                row.status,
-                row.participation,
+                row.lifecycle,
                 row.overlay_ip,
                 row.subnet.as_deref().unwrap_or("—"),
                 row.created_at
@@ -148,18 +155,17 @@ fn render_plain_mesh_list(payload: &MeshListPayload) -> String {
 fn render_plain_mesh_status(payload: &MeshStatusPayload) -> String {
     format!(
         "network={} overlay={} state={}",
-        payload.network, payload.overlay_ip, payload.state
+        payload.network, payload.overlay_ip, payload.lifecycle
     )
 }
 
 fn render_plain_mesh_ready(payload: &MeshReadyPayload) -> String {
     format!(
-        "ready={} phase={} store_healthy={} sync_connected={} participation={} workload_subnet_present={}",
+        "ready={} phase={} store_healthy={} sync_connected={} workload_subnet_present={}",
         payload.ready,
         payload.phase,
         payload.store_healthy,
         payload.sync_connected,
-        payload.participation,
         payload.workload_subnet_present
     )
 }
@@ -172,22 +178,22 @@ fn render_plain_doctor(payload: &DoctorPayload) -> String {
     let mut lines = Vec::new();
     lines.push(format!(
         "participation={} local_machine={} network={} local_participation={} local_status={} endpoint_watch_supported={} endpoint_drift={}",
-        payload.overall.participation,
+        payload.overall.lifecycle,
         payload.local.machine_id,
         payload.local.network,
-        payload.local.participation,
-        payload.local.status,
+        payload.local.machine_lifecycle,
+        payload.local.network_lifecycle,
         payload.local.endpoint_watch_supported,
         payload.local.published_endpoints != payload.local.detected_endpoints,
     ));
     lines.extend(payload.peers.iter().map(|peer| {
         format!(
-            "peer={} role={} blocking={} store_participation={} store_status={} wg_state={} probe_state={} cause_code={}",
+            "peer={} role={} blocking={} store_lifecycle={} subnet={} wg_state={} probe_state={} cause_code={}",
             peer.machine_id,
             peer.role,
             peer.blocking,
-            peer.store_participation,
-            peer.store_status,
+            peer.store_lifecycle,
+            peer.subnet.as_deref().unwrap_or("—"),
             peer.wg_state,
             peer.probe_state,
             peer.cause_code,
@@ -313,8 +319,7 @@ mod tests {
             payload: Some(DaemonPayload::MachineList(MachineListPayload {
                 rows: vec![MachineListRow {
                     id: String::from("peer"),
-                    status: String::from("up"),
-                    participation: String::from("disabled"),
+                    lifecycle: String::from("standby"),
                     overlay_ip: String::from("fd00::2"),
                     subnet: None,
                     created_at: 123,
@@ -324,7 +329,7 @@ mod tests {
 
         assert_eq!(
             render_plain_success(&response),
-            "id=peer status=up participation=disabled overlay_ip=fd00::2 subnet=— created_at=123"
+            "id=peer lifecycle=standby overlay_ip=fd00::2 subnet=— created_at=123"
         );
     }
 
@@ -336,13 +341,16 @@ mod tests {
             message: String::from("doctor"),
             payload: Some(DaemonPayload::Doctor(DoctorPayload {
                 overall: DoctorOverall {
-                    participation: String::from("healthy"),
+                    lifecycle: String::from("healthy"),
                 },
                 local: DoctorLocal {
                     machine_id: String::from("founder"),
                     network: String::from("alpha"),
-                    participation: String::from("enabled"),
-                    status: String::from("up"),
+                    network_lifecycle: String::from("running"),
+                    machine_lifecycle: String::from("active"),
+                    config_subnet: Some(String::from("10.210.0.0/24")),
+                    record_subnet: Some(String::from("10.210.0.0/24")),
+                    runtime_running: true,
                     published_endpoints: vec![String::from("10.0.0.1:51820")],
                     detected_endpoints: vec![String::from("10.0.0.1:51820")],
                     endpoint_watch_supported: true,
@@ -351,8 +359,8 @@ mod tests {
                     machine_id: String::from("peer"),
                     role: String::from("blocking"),
                     blocking: false,
-                    store_participation: String::from("enabled"),
-                    store_status: String::from("up"),
+                    store_lifecycle: String::from("active"),
+                    subnet: Some(String::from("10.210.1.0/24")),
                     wg_state: String::from("fresh"),
                     probe_state: String::from("reachable"),
                     cause_code: String::from("overlay-probe-reachable"),
@@ -365,6 +373,7 @@ mod tests {
         assert!(rendered.contains("participation=healthy"));
         assert!(rendered.contains("local_machine=founder"));
         assert!(rendered.contains("peer=peer"));
+        assert!(rendered.contains("store_lifecycle=active"));
         assert!(rendered.contains("cause_code=overlay-probe-reachable"));
     }
 
@@ -378,13 +387,15 @@ mod tests {
                 machine_id: String::from("founder"),
                 network: Some(String::from("alpha")),
                 overlay_ip: Some(String::from("fd00::1")),
-                phase: String::from("Running"),
+                network_lifecycle: Some(ployz_types::model::NetworkLifecycle::Running),
+                local_machine_lifecycle: Some(ployz_types::model::MachineLifecycle::Active),
+                mesh_phase: String::from("Running"),
             })),
         };
 
         assert_eq!(
             render_plain_success(&response),
-            "machine=founder network=alpha overlay=fd00::1 phase=Running"
+            "machine=founder network=alpha overlay=fd00::1 network_lifecycle=running local_machine_lifecycle=active mesh_phase=Running"
         );
     }
 

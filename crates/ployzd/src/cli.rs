@@ -283,12 +283,15 @@ pub(crate) enum MeshAction {
         #[arg(long)]
         name_stdin: bool,
     },
-    Up {
+    Start {
         network: String,
         #[arg(long)]
-        skip_bootstrap_wait: bool,
+        allow_disconnected_bootstrap: bool,
     },
-    Down,
+    Stop {
+        #[arg(long)]
+        force: bool,
+    },
     Destroy {
         network: Option<String>,
         #[arg(long)]
@@ -339,13 +342,13 @@ pub(crate) enum MachineAction {
         #[arg(required = true, num_args = 1..)]
         targets: Vec<String>,
     },
-    Enable {
+    Activate {
         target: String,
     },
     Drain {
         target: String,
     },
-    Disable {
+    Standby {
         target: String,
         #[arg(long)]
         force: bool,

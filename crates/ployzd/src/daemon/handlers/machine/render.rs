@@ -1,5 +1,5 @@
 use chrono::DateTime;
-use ployz_types::model::{MachineRecord, MachineStatus, Participation};
+use ployz_types::model::{MachineLifecycle, MachineRecord};
 
 use super::types::{MachineAddReport, MachineListReport};
 
@@ -25,25 +25,24 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
         .max()
         .unwrap_or(0)
         .max(6);
-    let w_part = report
+    let w_lifecycle = report
         .rows
         .iter()
-        .map(|row| row.participation.len())
+        .map(|row| row.lifecycle.len())
         .max()
         .unwrap_or(0)
-        .max("PARTICIPATION".len());
+        .max("LIFECYCLE".len());
 
     let mut lines = Vec::with_capacity(report.rows.len() + 1);
     lines.push(format!(
-        "{:<w_id$}  {:<6}  {:<w_part$}  {:<w_ov$}  {:<w_sub$}  {}",
-        "ID", "STATUS", "PARTICIPATION", "OVERLAY IP", "SUBNET", "CREATED",
+        "{:<w_id$}  {:<w_lifecycle$}  {:<w_ov$}  {:<w_sub$}  {}",
+        "ID", "LIFECYCLE", "OVERLAY IP", "SUBNET", "CREATED",
     ));
     for row in &report.rows {
         lines.push(format!(
-            "{:<w_id$}  {:<6}  {:<w_part$}  {:<w_ov$}  {:<w_sub$}  {}",
+            "{:<w_id$}  {:<w_lifecycle$}  {:<w_ov$}  {:<w_sub$}  {}",
             row.id,
-            row.status,
-            row.participation,
+            row.lifecycle,
             row.overlay,
             row.subnet_display,
             row.created_display,
@@ -73,19 +72,11 @@ pub(super) fn render_machine_add_report(report: &MachineAddReport) -> String {
     lines.join("\n")
 }
 
-pub(crate) fn format_status(machine: &MachineRecord) -> &'static str {
-    match machine.status {
-        MachineStatus::Up => "up",
-        MachineStatus::Down => "down",
-        MachineStatus::Unknown => "—",
-    }
-}
-
-pub(crate) fn format_participation(machine: &MachineRecord) -> &'static str {
-    match machine.participation {
-        Participation::Enabled => "enabled",
-        Participation::Draining => "draining",
-        Participation::Disabled => "disabled",
+pub(crate) fn format_lifecycle(machine: &MachineRecord) -> &'static str {
+    match machine.lifecycle {
+        MachineLifecycle::Standby => "standby",
+        MachineLifecycle::Active => "active",
+        MachineLifecycle::Draining => "draining",
     }
 }
 

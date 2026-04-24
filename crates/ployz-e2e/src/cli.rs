@@ -32,7 +32,7 @@ pub(crate) struct Cli {
 pub(crate) enum Scenario {
     SingleNodeInit,
     MachineAddBasic,
-    MachineDisableEnableCycle,
+    MachineDrainStandbyActivateCycle,
     TwoNodeEqualSplitAddDenied,
     ThreeNodeMajorityAddSucceeds,
     WireguardReconnect,
@@ -44,7 +44,7 @@ impl Scenario {
     const ALL: [Self; 8] = [
         Self::SingleNodeInit,
         Self::MachineAddBasic,
-        Self::MachineDisableEnableCycle,
+        Self::MachineDrainStandbyActivateCycle,
         Self::TwoNodeEqualSplitAddDenied,
         Self::ThreeNodeMajorityAddSucceeds,
         Self::WireguardReconnect,
@@ -62,7 +62,9 @@ impl Scenario {
         match self {
             Self::SingleNodeInit | Self::DeploySmoke | Self::BridgeForwardSmoke => &["founder"],
             Self::MachineAddBasic => &["founder", "joiner"],
-            Self::MachineDisableEnableCycle | Self::WireguardReconnect => &["founder", "peer"],
+            Self::MachineDrainStandbyActivateCycle | Self::WireguardReconnect => {
+                &["founder", "peer"]
+            }
             Self::TwoNodeEqualSplitAddDenied => &["founder", "peer", "target1", "target2"],
             Self::ThreeNodeMajorityAddSucceeds => {
                 &["founder", "peer1", "peer2", "target1", "target2"]
@@ -75,7 +77,7 @@ impl Scenario {
         match self {
             Self::SingleNodeInit => "single_node_init",
             Self::MachineAddBasic => "machine_add_basic",
-            Self::MachineDisableEnableCycle => "machine_disable_enable_cycle",
+            Self::MachineDrainStandbyActivateCycle => "machine_drain_standby_activate_cycle",
             Self::TwoNodeEqualSplitAddDenied => "two_node_equal_split_add_denied",
             Self::ThreeNodeMajorityAddSucceeds => "three_node_majority_add_succeeds",
             Self::WireguardReconnect => "wireguard_reconnect",

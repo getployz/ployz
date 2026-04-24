@@ -42,8 +42,6 @@ pub(crate) struct ReadyPayload {
     pub(crate) ready: bool,
     #[serde(default)]
     pub(crate) workload_subnet_present: bool,
-    #[serde(default)]
-    pub(crate) participation: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,7 +72,7 @@ pub(crate) struct MachineListPayload {
 #[derive(Debug, Deserialize)]
 pub(crate) struct MachineListRow {
     pub(crate) id: String,
-    pub(crate) participation: String,
+    pub(crate) lifecycle: String,
     #[serde(default)]
     pub(crate) subnet: Option<String>,
 }
@@ -87,15 +85,15 @@ pub(crate) struct DoctorPayload {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct DoctorOverall {
-    pub(crate) participation: String,
+    pub(crate) lifecycle: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct DoctorPeer {
     pub(crate) machine_id: String,
     pub(crate) blocking: bool,
-    pub(crate) store_participation: String,
-    pub(crate) store_status: String,
+    pub(crate) store_lifecycle: String,
+    pub(crate) wg_state: String,
     pub(crate) probe_state: String,
 }
 

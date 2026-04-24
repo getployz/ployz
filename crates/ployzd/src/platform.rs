@@ -9,10 +9,8 @@ pub struct HostPlatform {
 impl HostPlatform {
     #[must_use]
     pub fn detect() -> Self {
-        Self {
-            os: detect_os(),
-            is_root: current_user_is_root(),
-        }
+        let HostPathsContext { os, is_root } = ployz_config::detect_host_paths_context();
+        Self { os, is_root }
     }
 
     #[must_use]
@@ -42,28 +40,5 @@ pub fn validate_runtime(
         }
         (RuntimeTarget::Host, ServiceMode::User, Os::Linux | Os::Darwin) => Ok(()),
         (RuntimeTarget::Docker, ServiceMode::User, _) => Ok(()),
-    }
-}
-
-fn detect_os() -> Os {
-    if cfg!(target_os = "linux") {
-        Os::Linux
-    } else if cfg!(target_os = "macos") {
-        Os::Darwin
-    } else {
-        Os::Other
-    }
-}
-
-fn current_user_is_root() -> bool {
-    #[cfg(unix)]
-    {
-        // SAFETY: `geteuid` has no Rust-side preconditions.
-        unsafe { libc::geteuid() == 0 }
-    }
-
-    #[cfg(not(unix))]
-    {
-        false
     }
 }

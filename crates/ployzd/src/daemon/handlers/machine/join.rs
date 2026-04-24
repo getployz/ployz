@@ -6,8 +6,9 @@ mod target;
 
 use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MachineInstallOptions,
+    MachineTransitionGoal,
 };
-use ployz_types::model::{MachineId, MachineRecord, Participation};
+use ployz_types::model::{MachineId, MachineLifecycle, MachineRecord};
 use tokio::task::JoinSet;
 
 use crate::daemon::DaemonState;
@@ -248,13 +249,13 @@ impl DaemonState {
         self.ok_with_payload(message, Some(DaemonPayload::MachineAdd(payload)))
     }
 
-    pub(crate) async fn handle_machine_enable(&self, target: &str) -> DaemonResponse {
+    pub(crate) async fn handle_machine_activate(&self, target: &str) -> DaemonResponse {
         let active = match self.active.as_ref() {
             Some(active) => active,
             None => {
                 return self.err(
                     "NO_RUNNING_NETWORK",
-                    "machine enable requires a running network",
+                    "machine activate requires a running network",
                 );
             }
         };
@@ -267,10 +268,10 @@ impl DaemonState {
         else {
             return self.err("MACHINE_NOT_FOUND", format!("machine '{target}' not found"));
         };
-        if record.participation != Participation::Disabled {
+        if record.lifecycle != MachineLifecycle::Standby {
             return self.err(
-                "MACHINE_NOT_DISABLED",
-                format!("machine '{target}' is not disabled"),
+                "INVALID_TRANSITION",
+                format!("machine '{target}' is not standby"),
             );
         }
         let peer_rpc_port = match self.peer_control_port() {
@@ -300,7 +301,7 @@ impl DaemonState {
         };
 
         let result = self
-            .handle_machine_enable_remote(
+            .handle_machine_activate_remote(
                 &machine_id,
                 &record,
                 peer_rpc_port,
@@ -313,12 +314,21 @@ impl DaemonState {
             match wait_for_machine_projection(
                 &active.mesh.store,
                 &machine_id,
-                Participation::Enabled,
+                MachineLifecycle::Active,
                 ExpectedSubnetState::Present,
             )
             .await
             {
-                Ok(()) => result,
+                Ok(()) => match self::coordination::assert_subnet_unique(
+                    &active.mesh.store,
+                    &machine_id,
+                    subnet_claim.subnet(),
+                )
+                .await
+                {
+                    Ok(()) => result,
+                    Err(err) => self.err("SUBNET_UNIQUENESS_FAILED", err),
+                },
                 Err(err) => self.err("MACHINE_ENABLE_SYNC_FAILED", err),
             }
         } else {
@@ -326,7 +336,7 @@ impl DaemonState {
         }
     }
 
-    async fn handle_machine_enable_remote(
+    async fn handle_machine_activate_remote(
         &self,
         machine_id: &MachineId,
         record: &MachineRecord,
@@ -337,14 +347,16 @@ impl DaemonState {
         if let Err(err) = overlay_rpc_expect_ok(
             record.overlay_ip,
             peer_rpc_port,
-            DaemonRequest::MeshPromote {
-                assigned_subnet: subnet_claim.subnet,
+            DaemonRequest::MachineTransitionSelf {
+                goal: MachineTransitionGoal::Activate,
+                assigned_subnet: Some(subnet_claim.subnet),
+                force: false,
             },
         )
         .await
         {
             let _ = release_reserved_subnet(context, subnet_claim).await;
-            return self.err("REMOTE_ENABLE_FAILED", err);
+            return self.err("REMOTE_ACTIVATE_FAILED", err);
         }
 
         let remote_record = match overlay_self_record(record, peer_rpc_port).await {
@@ -365,36 +377,15 @@ impl DaemonState {
             return self.err("MACHINE_ID_MISMATCH", mismatch);
         }
 
-        if let Err(err) =
-            self::target::upsert_transient_peer(&context.peer_sync_tx, remote_record).await
-        {
-            log_remote_enable_rollback(record, peer_rpc_port, &err).await;
-            let _ = release_reserved_subnet(context, subnet_claim).await;
-            return self.err("PEER_SYNC_UNAVAILABLE", err);
-        }
-
         if let Err(err) = wait_for_overlay_ready(record, peer_rpc_port).await {
             log_remote_enable_rollback(record, peer_rpc_port, &err).await;
             let _ = release_reserved_subnet(context, subnet_claim).await;
             return self.err("REMOTE_READY_FAILED", err);
         }
-        if let Err(err) = overlay_rpc_expect_ok(
-            record.overlay_ip,
-            peer_rpc_port,
-            DaemonRequest::MeshSetParticipation {
-                participation: Participation::Enabled,
-            },
-        )
-        .await
-        {
-            log_remote_enable_rollback(record, peer_rpc_port, &err).await;
-            let _ = release_reserved_subnet(context, subnet_claim).await;
-            return self.err("REMOTE_ENABLE_FAILED", err);
-        }
 
         let _ = release_reserved_subnet(context, subnet_claim).await;
         self.ok(format!(
-            "machine enabled\n  machine: {}\n  subnet:  {}",
+            "machine activated\n  machine: {}\n  subnet:  {}",
             machine_id, subnet_claim.subnet
         ))
     }
@@ -418,7 +409,7 @@ impl DaemonState {
         else {
             return self.err("MACHINE_NOT_FOUND", format!("machine '{target}' not found"));
         };
-        if record.participation == Participation::Draining {
+        if record.lifecycle == MachineLifecycle::Draining {
             return self.ok(format!("machine '{}' already draining", machine_id));
         }
         let peer_rpc_port = match self.peer_control_port() {
@@ -428,24 +419,36 @@ impl DaemonState {
         if let Err(err) = overlay_rpc_expect_ok(
             record.overlay_ip,
             peer_rpc_port,
-            DaemonRequest::MeshSetParticipation {
-                participation: Participation::Draining,
+            DaemonRequest::MachineTransitionSelf {
+                goal: MachineTransitionGoal::Drain,
+                assigned_subnet: None,
+                force: false,
             },
         )
         .await
         {
             return self.err("REMOTE_DRAIN_FAILED", err);
         }
-        self.ok(format!("machine '{}' draining", machine_id))
+        match wait_for_machine_projection(
+            &active.mesh.store,
+            &machine_id,
+            MachineLifecycle::Draining,
+            ExpectedSubnetState::Present,
+        )
+        .await
+        {
+            Ok(()) => self.ok(format!("machine '{}' draining", machine_id)),
+            Err(err) => self.err("MACHINE_DRAIN_SYNC_FAILED", err),
+        }
     }
 
-    pub(crate) async fn handle_machine_disable(&self, target: &str, force: bool) -> DaemonResponse {
+    pub(crate) async fn handle_machine_standby(&self, target: &str, force: bool) -> DaemonResponse {
         let active = match self.active.as_ref() {
             Some(active) => active,
             None => {
                 return self.err(
                     "NO_RUNNING_NETWORK",
-                    "machine disable requires a running network",
+                    "machine standby requires a running network",
                 );
             }
         };
@@ -458,8 +461,8 @@ impl DaemonState {
         else {
             return self.err("MACHINE_NOT_FOUND", format!("machine '{target}' not found"));
         };
-        if record.participation == Participation::Disabled && record.subnet.is_none() {
-            return self.ok(format!("machine '{}' already disabled", machine_id));
+        if record.lifecycle == MachineLifecycle::Standby && record.subnet.is_none() {
+            return self.ok(format!("machine '{}' already standby", machine_id));
         }
         let peer_rpc_port = match self.peer_control_port() {
             Ok(port) => port,
@@ -468,23 +471,27 @@ impl DaemonState {
         if let Err(err) = overlay_rpc_expect_ok(
             record.overlay_ip,
             peer_rpc_port,
-            DaemonRequest::MeshStandby { force },
+            DaemonRequest::MachineTransitionSelf {
+                goal: MachineTransitionGoal::Standby,
+                assigned_subnet: None,
+                force,
+            },
         )
         .await
         {
-            return self.err("REMOTE_DISABLE_FAILED", err);
+            return self.err("REMOTE_STANDBY_FAILED", err);
         }
 
         match wait_for_machine_projection(
             &active.mesh.store,
             &machine_id,
-            Participation::Disabled,
+            MachineLifecycle::Standby,
             ExpectedSubnetState::Absent,
         )
         .await
         {
-            Ok(()) => self.ok(format!("machine '{}' disabled", machine_id)),
-            Err(err) => self.err("MACHINE_DISABLE_SYNC_FAILED", err),
+            Ok(()) => self.ok(format!("machine '{}' standby", machine_id)),
+            Err(err) => self.err("MACHINE_STANDBY_SYNC_FAILED", err),
         }
     }
 }

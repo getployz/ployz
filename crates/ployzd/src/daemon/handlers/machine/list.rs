@@ -2,18 +2,16 @@ use crate::daemon::DaemonState;
 use ployz_api::{DaemonPayload, DaemonResponse, MachineRemovePayload};
 use ployz_store_api::MachineStore;
 use ployz_store_api::StoreDriver;
-use ployz_types::model::{MachineId, MachineRecord, Participation};
+use ployz_types::model::{MachineId, MachineLifecycle, MachineRecord};
 
-use super::render::{
-    format_participation, format_status, format_timestamp, render_machine_list_report,
-};
+use super::render::{format_lifecycle, format_timestamp, render_machine_list_report};
 use super::types::{MachineListReport, MachineListReportRow};
 
 impl DaemonState {
     pub(crate) async fn handle_machine_list(&self) -> DaemonResponse {
-        let active = match self.active.as_ref() {
-            Some(active) => active,
-            None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
+        let active = match self.require_active("NO_RUNNING_NETWORK", "no mesh running") {
+            Ok(active) => active,
+            Err(response) => return response,
         };
 
         let report = match machine_list_report(active.mesh.store.clone()).await {
@@ -34,9 +32,9 @@ impl DaemonState {
     }
 
     pub(crate) async fn handle_machine_remove(&self, id: &str, force: bool) -> DaemonResponse {
-        let active = match self.active.as_ref() {
-            Some(active) => active,
-            None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
+        let active = match self.require_active("NO_RUNNING_NETWORK", "no mesh running") {
+            Ok(active) => active,
+            Err(response) => return response,
         };
 
         let machine_id = MachineId(id.to_string());
@@ -50,12 +48,12 @@ impl DaemonState {
             }
         };
 
-        if !force && record.participation != Participation::Disabled {
+        if !force && record.lifecycle != MachineLifecycle::Standby {
             return self.err(
-                "MACHINE_NOT_DISABLED",
+                "MACHINE_NOT_STANDBY",
                 format!(
-                    "machine '{id}' must be disabled before removal (current participation: {})",
-                    record.participation
+                    "machine '{id}' must be standby before removal (current lifecycle: {})",
+                    record.lifecycle
                 ),
             );
         }
@@ -97,8 +95,7 @@ pub(super) async fn machine_list_report(store: StoreDriver) -> Result<MachineLis
             .iter()
             .map(|machine| MachineListReportRow {
                 id: machine.id.0.clone(),
-                status: format_status(machine),
-                participation: format_participation(machine),
+                lifecycle: format_lifecycle(machine),
                 overlay: machine.overlay_ip.0.to_string(),
                 subnet: machine.subnet,
                 subnet_display: machine

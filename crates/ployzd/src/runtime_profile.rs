@@ -16,10 +16,6 @@ use ployz_runtime_api::NamespaceLockManager;
 use ployz_runtime_backends::deploy::remote::{RemoteControlHandle, start_remote_control_listener};
 use ployz_runtime_backends::mesh::driver as mesh_backends;
 use ployz_runtime_backends::network::docker_bridge_network;
-use ployz_runtime_backends::runtime::{
-    ContainerEngine,
-    labels::{LABEL_KIND, LABEL_MACHINE, LABEL_MANAGED},
-};
 use ployz_store_api::StoreDriver;
 use ployz_types::model::{MachineId, OverlayIp};
 
@@ -247,23 +243,5 @@ impl RuntimeProfile {
         )
         .await
         .map_err(|error| error.to_string())
-    }
-    pub(crate) async fn has_local_workloads(&self, machine_id: &MachineId) -> Result<bool, String> {
-        if self.is_memory_test() {
-            return Ok(false);
-        }
-
-        let engine = ContainerEngine::connect()
-            .await
-            .map_err(|err| format!("connect docker engine for workload inspection: {err}"))?;
-        let observed = engine
-            .list_by_labels(&[
-                (LABEL_MANAGED, "true"),
-                (LABEL_KIND, "workload"),
-                (LABEL_MACHINE, &machine_id.0),
-            ])
-            .await
-            .map_err(|err| format!("list local workloads: {err}"))?;
-        Ok(!observed.is_empty())
     }
 }
