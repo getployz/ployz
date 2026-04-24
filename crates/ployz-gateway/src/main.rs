@@ -28,6 +28,24 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
                 .await
                 .map_err(|err| ployz_gateway::GatewayError::Store(err.to_string()))
         }
+
+        async fn list_certificates(
+            &self,
+        ) -> Result<Vec<ployz_types::model::CertificateRecord>, ployz_gateway::GatewayError>
+        {
+            ployz_store_api::CertificateStore::list_certificates(&self.0)
+                .await
+                .map_err(|err| ployz_gateway::GatewayError::Store(err.to_string()))
+        }
+
+        async fn list_acme_challenges(
+            &self,
+        ) -> Result<Vec<ployz_types::model::AcmeChallengeRecord>, ployz_gateway::GatewayError>
+        {
+            ployz_store_api::CertificateStore::list_acme_challenges(&self.0)
+                .await
+                .map_err(|err| ployz_gateway::GatewayError::Store(err.to_string()))
+        }
     }
     ployz_gateway::run_gateway_process_with_store(config, StandaloneStore(store))
 }

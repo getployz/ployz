@@ -129,3 +129,25 @@ CREATE TABLE IF NOT EXISTS deploys (
     namespace TEXT NOT NULL DEFAULT '',
     payload_json TEXT NOT NULL DEFAULT '' CHECK (payload_json = '' OR json_valid(payload_json))
 );
+
+-- ACME account material replicated for all certificate managers. The issuer
+-- URL is the identity because v1 uses one account per issuer.
+CREATE TABLE IF NOT EXISTS acme_accounts (
+    issuer_url TEXT NOT NULL PRIMARY KEY,
+    payload_json TEXT NOT NULL DEFAULT '' CHECK (payload_json = '' OR json_valid(payload_json))
+);
+
+-- Managed certificate intent, status, and versioned PEM material. The hostname
+-- is exact in v1; wildcard names are rejected before records are written.
+CREATE TABLE IF NOT EXISTS certificates (
+    hostname TEXT NOT NULL PRIMARY KEY,
+    payload_json TEXT NOT NULL DEFAULT '' CHECK (payload_json = '' OR json_valid(payload_json))
+);
+
+-- HTTP-01 challenges projected into the gateway before normal route matching.
+CREATE TABLE IF NOT EXISTS acme_challenges (
+    hostname TEXT NOT NULL DEFAULT '',
+    token TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '' CHECK (payload_json = '' OR json_valid(payload_json)),
+    PRIMARY KEY (hostname, token)
+);

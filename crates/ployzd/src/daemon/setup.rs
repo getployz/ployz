@@ -389,6 +389,9 @@ impl DaemonState {
                 &self.data_dir,
                 &net_config.name.0,
                 self.gateway_listen_addr.clone(),
+                None,
+                None,
+                None,
                 self.gateway_threads,
                 self.gateway_metrics_listen_addr.clone(),
             );
@@ -491,6 +494,9 @@ impl DaemonState {
                 &self.data_dir,
                 &net_config.name.0,
                 self.gateway_listen_addr.clone(),
+                None,
+                None,
+                None,
                 self.gateway_threads,
                 self.gateway_metrics_listen_addr.clone(),
             )

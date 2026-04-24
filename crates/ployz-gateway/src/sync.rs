@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::time::Duration;
 
-use crate::routes::{GatewaySnapshot, project};
+use crate::routes::{GatewaySnapshot, project, with_managed_tls};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -21,6 +21,14 @@ pub trait RoutingStore: Send + Sync {
     fn subscribe_routing_invalidations(
         &self,
     ) -> impl Future<Output = Result<mpsc::Receiver<()>, GatewayError>> + Send + '_;
+    fn list_certificates(
+        &self,
+    ) -> impl Future<Output = Result<Vec<ployz_types::model::CertificateRecord>, GatewayError>> + Send + '_;
+    fn list_acme_challenges(
+        &self,
+    ) -> impl Future<Output = Result<Vec<ployz_types::model::AcmeChallengeRecord>, GatewayError>>
+    + Send
+    + '_;
 }
 
 // ---------------------------------------------------------------------------
@@ -34,7 +42,10 @@ where
     S: RoutingStore + Send + Sync,
 {
     let state = store.load_routing_state().await?;
-    project(state).map_err(|err| GatewayError::Projection(err.to_string()))
+    let snapshot = project(state).map_err(|err| GatewayError::Projection(err.to_string()))?;
+    let certificates = store.list_certificates().await?;
+    let challenges = store.list_acme_challenges().await?;
+    Ok(with_managed_tls(snapshot, challenges, certificates))
 }
 
 pub async fn run_sync_loop<S>(store: S, snapshot: SharedSnapshot) -> Result<(), GatewayError>

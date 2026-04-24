@@ -2,6 +2,7 @@ pub(crate) use ployz_types::error;
 pub(crate) use ployz_types::model;
 pub(crate) use ployz_types::time;
 
+pub mod certificates;
 pub mod coordination;
 pub mod deploy;
 pub mod ipam;
