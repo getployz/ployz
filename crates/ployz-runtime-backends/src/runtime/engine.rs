@@ -5,7 +5,8 @@ use bollard::Docker;
 use bollard::models::{ContainerCreateBody, ContainerStatsResponse, HostConfig};
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, CreateImageOptionsBuilder, ListContainersOptionsBuilder,
-    RemoveContainerOptionsBuilder, StatsOptionsBuilder, StopContainerOptionsBuilder,
+    RemoveContainerOptionsBuilder, RemoveVolumeOptionsBuilder, StatsOptionsBuilder,
+    StopContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
 use ployz_types::{Error, Result};
@@ -180,6 +181,20 @@ impl ContainerEngine {
         }
 
         info!(name = %container_name, "container removed");
+        Ok(())
+    }
+
+    pub async fn remove_volume(&self, volume_name: &str) -> Result<()> {
+        let options = RemoveVolumeOptionsBuilder::default().force(true).build();
+        match self.docker.remove_volume(volume_name, Some(options)).await {
+            Ok(()) => {}
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => {}
+            Err(e) => return Err(Error::operation("docker remove volume", e.to_string())),
+        }
+
+        info!(name = %volume_name, "volume removed");
         Ok(())
     }
 

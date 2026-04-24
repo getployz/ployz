@@ -138,7 +138,7 @@ pub fn corrosion_host(
     .map_err(|error| format!("write corrosion config: {error}"))?;
 
     let store = CorrosionStore::new(api_addr, Transport::Direct, Some(paths.admin.clone()));
-    let service = HostCorrosion::new(which_corrosion()?, &paths.config);
+    let service = HostCorrosion::new(which_corrosion()?, &paths.config, &paths.dir);
 
     let backend = Arc::new(CorrosionBackend {
         store,
@@ -305,6 +305,10 @@ where
         self.service.stop().await
     }
 
+    async fn wipe_data(&self) -> Result<()> {
+        self.service.wipe_data().await
+    }
+
     async fn healthy(&self) -> bool {
         self.service.healthy().await
     }
@@ -313,17 +317,23 @@ where
 struct HostCorrosion {
     binary: PathBuf,
     config_path: PathBuf,
+    data_dir: PathBuf,
     log_path: PathBuf,
     child: Mutex<Option<Child>>,
 }
 
 impl HostCorrosion {
-    fn new(binary: impl Into<PathBuf>, config_path: impl Into<PathBuf>) -> Self {
+    fn new(
+        binary: impl Into<PathBuf>,
+        config_path: impl Into<PathBuf>,
+        data_dir: impl Into<PathBuf>,
+    ) -> Self {
         let config_path = config_path.into();
         let log_path = default_log_path(&config_path);
         Self {
             binary: binary.into(),
             config_path,
+            data_dir: data_dir.into(),
             log_path,
             child: Mutex::new(None),
         }
@@ -471,6 +481,17 @@ impl StoreRuntimeControl for HostCorrosion {
         Ok(())
     }
 
+    async fn wipe_data(&self) -> Result<()> {
+        match tokio::fs::remove_dir_all(&self.data_dir).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(ployz_types::Error::operation(
+                "corrosion wipe",
+                format!("remove data dir {}: {error}", self.data_dir.display()),
+            )),
+        }
+    }
+
     async fn healthy(&self) -> bool {
         let mut guard = self.child.lock().await;
         match guard.as_mut() {
@@ -596,6 +617,10 @@ impl StoreRuntimeControl for DockerCorrosion {
         self.engine
             .remove(&self.container_name, STOP_GRACE_PERIOD)
             .await
+    }
+
+    async fn wipe_data(&self) -> Result<()> {
+        self.engine.remove_volume("ployz-corrosion-data").await
     }
 
     async fn healthy(&self) -> bool {

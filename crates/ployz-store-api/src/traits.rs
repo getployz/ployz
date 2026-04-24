@@ -144,5 +144,8 @@ pub trait SyncProbe: Send + Sync {
 pub trait StoreRuntimeControl: Send + Sync {
     async fn start(&self) -> Result<()>;
     async fn stop(&self) -> Result<()>;
+    async fn wipe_data(&self) -> Result<()> {
+        Ok(())
+    }
     async fn healthy(&self) -> bool;
 }

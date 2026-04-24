@@ -316,11 +316,7 @@ impl ScenarioRun {
         Ok(())
     }
 
-    pub(crate) fn machine_activate(
-        &self,
-        controller_name: &str,
-        target_name: &str,
-    ) -> Result<()> {
+    pub(crate) fn machine_activate(&self, controller_name: &str, target_name: &str) -> Result<()> {
         self.ssh_expect_ok_name(
             controller_name,
             &format!("ployzd machine activate {target_name}"),
@@ -347,10 +343,27 @@ impl ScenarioRun {
         } else {
             format!("ployzd machine standby {target_name}")
         };
-        self.ssh_expect_ok_name(
-            controller_name,
-            &command,
-        )?;
+        self.ssh_expect_ok_name(controller_name, &command)?;
+        Ok(())
+    }
+
+    pub(crate) fn machine_rm(
+        &self,
+        controller_name: &str,
+        target_name: &str,
+        force: bool,
+    ) -> Result<()> {
+        let command = if force {
+            format!("ployzd machine rm {target_name} --force")
+        } else {
+            format!("ployzd machine rm {target_name}")
+        };
+        self.ssh_expect_ok_name(controller_name, &command)?;
+        Ok(())
+    }
+
+    pub(crate) fn mesh_destroy(&self, node_name: &str, network: &str) -> Result<()> {
+        self.ssh_expect_ok_name(node_name, &format!("ployzd mesh destroy {network}"))?;
         Ok(())
     }
 
