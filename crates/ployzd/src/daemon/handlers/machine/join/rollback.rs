@@ -66,7 +66,11 @@ pub(in super::super) async fn best_effort_remote_cleanup(
     tracing::debug!(%target, %network_name, "machine add cleanup: mesh down starting");
     let down_error = match timeout(
         REMOTE_CLEANUP_RPC_TIMEOUT,
-        remote_rpc(target, DaemonRequest::MeshDown, ssh_options),
+        remote_rpc(
+            target,
+            DaemonRequest::MeshStop { force: true },
+            ssh_options,
+        ),
     )
     .await
     {

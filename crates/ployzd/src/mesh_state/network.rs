@@ -1,5 +1,7 @@
 use ipnet::Ipv4Net;
-use ployz_types::model::{NetworkId, NetworkName, OverlayIp, PublicKey, management_ip_from_key};
+use ployz_types::model::{
+    NetworkId, NetworkLifecycle, NetworkName, OverlayIp, PublicKey, management_ip_from_key,
+};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -41,6 +43,8 @@ pub struct NetworkConfig {
     pub name: NetworkName,
     pub overlay_ip: OverlayIp,
     pub cluster_cidr: String,
+    #[serde(default)]
+    pub lifecycle: NetworkLifecycle,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subnet: Option<Ipv4Net>,
 }
@@ -59,6 +63,7 @@ impl NetworkConfig {
             name,
             overlay_ip,
             cluster_cidr: cluster_cidr.to_string(),
+            lifecycle: NetworkLifecycle::Stopped,
             subnet: Some(subnet),
         }
     }
@@ -96,12 +101,6 @@ impl NetworkConfig {
             source,
         })
     }
-
-    #[must_use]
-    pub fn read_active_network(data_dir: &Path) -> Option<String> {
-        ployz_config::read_active_network(data_dir)
-    }
-
     pub fn delete(data_dir: &Path, name: &str) -> std::io::Result<()> {
         let dir = Self::dir(data_dir, name);
         if dir.exists() {

@@ -1,7 +1,8 @@
 use crate::daemon::setup::MeshStartOptions;
 use crate::mesh_state::network::NetworkConfig;
+use ployz_api::MachineTransitionGoal;
 use ployz_orchestrator::ipam::pick_candidate_subnet;
-use ployz_types::model::NetworkName;
+use ployz_types::model::{MachineLifecycle, NetworkLifecycle, NetworkName};
 use tracing::warn;
 
 use super::DaemonState;
@@ -16,8 +17,8 @@ impl DaemonState {
         };
 
         self.ok(format!(
-            "created network '{}'\n  overlay: {}\n  state:   created",
-            net_config.name, net_config.overlay_ip,
+            "created network '{}'\n  overlay: {}\n  lifecycle: {}",
+            net_config.name, net_config.overlay_ip, net_config.lifecycle
         ))
     }
 
@@ -26,8 +27,8 @@ impl DaemonState {
             return self.err(
                 "NETWORK_ALREADY_RUNNING",
                 format!(
-                    "network '{}' is already running -- run `mesh down` first",
-                    active.config.name,
+                    "network '{}' is already running -- run `mesh stop` first",
+                    active.config.name
                 ),
             );
         }
@@ -39,43 +40,20 @@ impl DaemonState {
             }
         };
 
-        let network_name = net_config.name.clone();
-        let overlay_ip = net_config.overlay_ip;
         match self
-            .start_mesh(net_config, None, MeshStartOptions::default())
+            .start_network_transition(net_config, false, true)
             .await
         {
-            Ok(_) => {}
-            Err(e) => {
-                return self.err(
-                    "NETWORK_START_FAILED",
-                    format!(
-                        "initialized network '{}' but failed to start: {e}\n  state:   created",
-                        network_name,
-                    ),
-                );
-            }
+            Ok(message) => self.ok(message),
+            Err(error) => self.err("NETWORK_START_FAILED", error),
         }
-
-        if let Err(error) = self
-            .publish_started_mesh_participation(ployz_types::model::Participation::Enabled)
-            .await
-        {
-            self.stop_started_mesh_after_publish_failure().await;
-            return self.err("NETWORK_START_FAILED", error);
-        }
-
-        self.ok(format!(
-            "initialized and started network '{}'\n  overlay: {}\n  state:   running",
-            network_name, overlay_ip,
-        ))
     }
 
     pub(crate) fn create_network_config(&self, network: &str) -> Result<NetworkConfig, String> {
         let config_path = NetworkConfig::path(&self.data_dir, network);
         if config_path.exists() {
             return Err(format!(
-                "network '{network}' already exists -- use `mesh up {network}` or `mesh destroy {network}`"
+                "network '{network}' already exists -- use `mesh start {network}` or `mesh destroy {network}`"
             ));
         }
 
@@ -98,24 +76,24 @@ impl DaemonState {
             subnet,
         );
 
-        if let Err(e) = net_config.save(&config_path) {
-            return Err(format!("failed to save network config: {e}"));
-        }
+        net_config
+            .save(&config_path)
+            .map_err(|e| format!("failed to save network config: {e}"))?;
 
         Ok(net_config)
     }
 
-    pub(crate) async fn handle_mesh_up(
+    pub(crate) async fn handle_mesh_start(
         &mut self,
         network: &str,
-        skip_bootstrap_wait: bool,
+        allow_disconnected_bootstrap: bool,
     ) -> ployz_api::DaemonResponse {
         if let Some(active) = &self.active {
             return self.err(
                 "NETWORK_ALREADY_RUNNING",
                 format!(
-                    "network '{}' is already running -- run `mesh down` first",
-                    active.config.name,
+                    "network '{}' is already running -- run `mesh stop` first",
+                    active.config.name
                 ),
             );
         }
@@ -136,41 +114,91 @@ impl DaemonState {
                 return self.err("IO_ERROR", format!("failed to load network config: {e}"));
             }
         };
-
-        let network_name = net_config.name.clone();
-        let options = MeshStartOptions {
-            allow_disconnected_bootstrap: skip_bootstrap_wait,
-        };
-        match self.start_mesh(net_config, None, options).await {
-            Ok(_) => {}
-            Err(e) => {
-                return self.err("NETWORK_START_FAILED", e.to_string());
-            }
+        if net_config.lifecycle != NetworkLifecycle::Stopped {
+            return self.err(
+                "INVALID_TRANSITION",
+                format!(
+                    "network '{}' is {} -- expected stopped before start",
+                    net_config.name, net_config.lifecycle
+                ),
+            );
         }
 
-        self.ok(format!("mesh '{}' started", network_name))
+        match self
+            .start_network_transition(net_config, allow_disconnected_bootstrap, false)
+            .await
+        {
+            Ok(message) => self.ok(message),
+            Err(error) => self.err("NETWORK_START_FAILED", error),
+        }
     }
 
-    pub(crate) async fn handle_mesh_down(&mut self) -> ployz_api::DaemonResponse {
+    pub(crate) async fn handle_mesh_stop(&mut self, force: bool) -> ployz_api::DaemonResponse {
+        let (network_name, overlay_ip, cached_subnet, current_lifecycle) = {
+            let Some(active) = self.active.as_ref() else {
+                return self.err("NO_RUNNING_NETWORK", "no mesh running");
+            };
+            let Some(self_record) = active.mesh.authoritative_self_record().await else {
+                return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
+            };
+            (
+                active.config.name.0.clone(),
+                active.config.overlay_ip,
+                active.config.subnet,
+                self_record.lifecycle,
+            )
+        };
+
+        if !force && current_lifecycle != MachineLifecycle::Draining {
+            return self.err(
+                "INVALID_TRANSITION",
+                "mesh stop requires the local machine to be draining; rerun with --force to bypass",
+            );
+        }
+
+        let now = ployz_types::time::now_unix_secs();
+        if let Some(active) = self.active.as_mut() {
+            let _ = active
+                .mesh
+                .update_authoritative_self_record(|record| {
+                    record.lifecycle = MachineLifecycle::Standby;
+                    record.subnet = None;
+                    record.updated_at = now;
+                })
+                .await;
+        }
+
         let Some(mut active) = self.active.take() else {
             return self.err("NO_RUNNING_NETWORK", "no mesh running");
         };
-
-        if let Err(e) = active.mesh.destroy().await {
+        if let Err(error) = active.mesh.destroy().await {
             self.active = Some(active);
-            return self.err("NETWORK_STOP_FAILED", format!("mesh down failed: {e}"));
+            return self.err("NETWORK_STOP_FAILED", format!("mesh stop failed: {error}"));
         }
         let _ = active.peer_control.shutdown().await;
         let _ = active.remote_control.shutdown().await;
-        if let Err(e) = active.dns.shutdown().await {
-            warn!(?e, "dns stop failed during mesh down");
+        if let Err(error) = active.dns.shutdown().await {
+            warn!(?error, "dns stop failed during mesh stop");
         }
-        if let Err(e) = active.gateway.shutdown().await {
-            return self.err("NETWORK_STOP_FAILED", format!("gateway stop failed: {e}"));
+        if let Err(error) = active.gateway.shutdown().await {
+            return self.err("NETWORK_STOP_FAILED", format!("gateway stop failed: {error}"));
         }
 
-        self.clear_active_marker();
-        self.ok("mesh stopped (config kept)")
+        let mut persisted = active.config.clone();
+        persisted.lifecycle = NetworkLifecycle::Stopped;
+        persisted.subnet = cached_subnet;
+        let config_path = NetworkConfig::path(&self.data_dir, &network_name);
+        if let Err(error) = persisted.save(&config_path) {
+            return self.err(
+                "IO_ERROR",
+                format!("failed to persist stopped network config: {error}"),
+            );
+        }
+
+        self.ok(format!(
+            "mesh '{}' stopped\n  overlay: {}\n  lifecycle: stopped",
+            network_name, overlay_ip
+        ))
     }
 
     pub(crate) async fn handle_mesh_destroy(&mut self, network: &str) -> ployz_api::DaemonResponse {
@@ -188,23 +216,9 @@ impl DaemonState {
         }
 
         if running_target {
-            let Some(mut active) = self.active.take() else {
-                return self.err("NO_RUNNING_NETWORK", "no mesh running");
-            };
-            if let Err(e) = active.mesh.destroy().await {
-                self.active = Some(active);
-                return self.err("NETWORK_DESTROY_FAILED", format!("destroy failed: {e}"));
-            }
-            let _ = active.peer_control.shutdown().await;
-            let _ = active.remote_control.shutdown().await;
-            if let Err(e) = active.dns.shutdown().await {
-                warn!(?e, "dns stop failed during mesh destroy");
-            }
-            if let Err(e) = active.gateway.shutdown().await {
-                return self.err(
-                    "NETWORK_DESTROY_FAILED",
-                    format!("gateway stop failed: {e}"),
-                );
+            let response = self.handle_mesh_stop(true).await;
+            if !response.ok {
+                return response;
             }
         }
 
@@ -212,62 +226,81 @@ impl DaemonState {
             return self.err("IO_ERROR", format!("failed to delete network config: {e}"));
         }
 
-        self.clear_active_marker();
         self.ok(format!("mesh '{network}' destroyed"))
     }
 
-    pub(crate) async fn publish_started_mesh_participation(
-        &self,
-        participation: ployz_types::model::Participation,
-    ) -> Result<(), String> {
-        let Some(active) = self.active.as_ref() else {
-            return Err("mesh started without an active runtime".into());
-        };
-        let updated = active
-            .mesh
-            .update_authoritative_self_record(|record| {
-                record.participation = participation;
-                record.updated_at = ployz_types::time::now_unix_secs();
-            })
-            .await;
-        let Some(record) = updated else {
+    async fn start_network_transition(
+        &mut self,
+        net_config: NetworkConfig,
+        allow_disconnected_bootstrap: bool,
+        initialized: bool,
+    ) -> Result<String, String> {
+        let Some(assigned_subnet) = net_config.subnet else {
             return Err(format!(
-                "failed to persist startup participation={participation}"
+                "network '{}' has no local subnet assignment to activate",
+                net_config.name
             ));
         };
-        if record.participation != participation {
-            return Err(format!(
-                "startup participation publish mismatch: expected {participation}, got {}",
-                record.participation
-            ));
+
+        let mut running_config = net_config.clone();
+        running_config.lifecycle = NetworkLifecycle::Running;
+        let network_name = running_config.name.clone();
+        let overlay_ip = running_config.overlay_ip;
+        self.start_mesh(
+            running_config.clone(),
+            None,
+            MeshStartOptions {
+                allow_disconnected_bootstrap,
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+
+        if let Err(error) = self
+            .transition_local_machine(
+                MachineTransitionGoal::Activate,
+                Some(assigned_subnet),
+                false,
+            )
+            .await
+        {
+            self.stop_started_mesh_after_transition_failure().await;
+            return Err(error.message);
         }
-        Ok(())
+
+        let config_path = NetworkConfig::path(&self.data_dir, &network_name.0);
+        if let Some(active) = self.active.as_mut() {
+            active.config.lifecycle = NetworkLifecycle::Running;
+            active.config
+                .save(&config_path)
+                .map_err(|error| format!("save network config: {error}"))?;
+        }
+
+        let verb = if initialized {
+            "initialized and started"
+        } else {
+            "started"
+        };
+        Ok(format!(
+            "mesh '{}' {}\n  overlay: {}\n  lifecycle: running",
+            network_name, verb, overlay_ip
+        ))
     }
 
-    async fn stop_started_mesh_after_publish_failure(&mut self) {
+    async fn stop_started_mesh_after_transition_failure(&mut self) {
         let Some(mut active) = self.active.take() else {
             return;
         };
         if let Err(error) = active.mesh.destroy().await {
-            warn!(
-                ?error,
-                "failed to stop mesh after startup participation publish error"
-            );
+            warn!(?error, "failed to stop mesh after transition error");
         }
         let _ = active.peer_control.shutdown().await;
         let _ = active.remote_control.shutdown().await;
         if let Err(error) = active.dns.shutdown().await {
-            warn!(
-                ?error,
-                "failed to stop dns after startup participation publish error"
-            );
+            warn!(?error, "failed to stop dns after transition error");
         }
         if let Err(error) = active.gateway.shutdown().await {
-            warn!(
-                ?error,
-                "failed to stop gateway after startup participation publish error"
-            );
+            warn!(?error, "failed to stop gateway after transition error");
         }
-        self.clear_active_marker();
     }
 }

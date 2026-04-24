@@ -1,7 +1,7 @@
 use super::network::NetworkConfig;
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 use ployz_runtime_api::Identity;
-use ployz_types::model::{MachineId, MachineRecord, OverlayIp, Participation, PublicKey};
+use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
 use serde::{Deserialize, Serialize};
 use std::net::Ipv6Addr;
 use std::path::Path;
@@ -178,15 +178,13 @@ pub async fn build_seed_records(
         .find(|machine| machine.id == identity.machine_id)
         .cloned()
         .unwrap_or_else(|| {
-            let mut record = MachineRecord::seed(
+            MachineRecord::seed(
                 identity.machine_id.clone(),
                 identity.public_key.clone(),
                 net_config.overlay_ip,
                 net_config.subnet,
                 endpoints.clone(),
-            );
-            record.participation = Participation::Disabled;
-            record
+            )
         });
     self_record.public_key = identity.public_key.clone();
     self_record.overlay_ip = net_config.overlay_ip;
@@ -207,7 +205,7 @@ mod tests {
     use super::*;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use ployz_runtime_api::Identity;
-    use ployz_types::model::{NetworkId, NetworkName};
+    use ployz_types::model::{MachineLifecycle, NetworkId, NetworkName};
 
     fn temp_network_dir(name: &str) -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -320,8 +318,7 @@ mod tests {
             net_config.subnet,
             vec!["persisted:51820".into()],
         );
-        existing_self.participation = Participation::Draining;
-        existing_self.status = ployz_types::model::MachineStatus::Up;
+        existing_self.lifecycle = MachineLifecycle::Draining;
         existing_self.created_at = 42;
         existing_self.updated_at = 77;
         existing_self.control_target = Some("persisted-target".into());
@@ -342,8 +339,7 @@ mod tests {
             .into_iter()
             .find(|machine| machine.id == identity.machine_id)
             .expect("self record");
-        assert_eq!(self_record.participation, Participation::Draining);
-        assert_eq!(self_record.status, existing_self.status);
+        assert_eq!(self_record.lifecycle, MachineLifecycle::Draining);
         assert_eq!(self_record.created_at, existing_self.created_at);
         assert_eq!(self_record.updated_at, existing_self.updated_at);
         assert_eq!(self_record.control_target, existing_self.control_target);
