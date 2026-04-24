@@ -1,11 +1,12 @@
 use crate::daemon::DaemonState;
-use ployz_api::{DaemonPayload, DaemonResponse, MachineRemovePayload};
+use ployz_api::{DaemonPayload, DaemonRequest, DaemonResponse, MachineRemovePayload};
 use ployz_store_api::MachineStore;
 use ployz_store_api::StoreDriver;
-use ployz_types::model::{MachineId, MachineLifecycle, MachineRecord};
+use ployz_types::model::{MachineId, MachineRecord};
 
 use super::render::{format_lifecycle, format_timestamp, render_machine_list_report};
 use super::types::{MachineListReport, MachineListReportRow};
+use crate::daemon::handlers::peer_rpc::overlay_rpc_expect_ok;
 
 impl DaemonState {
     pub(crate) async fn handle_machine_list(&self) -> DaemonResponse {
@@ -48,14 +49,37 @@ impl DaemonState {
             }
         };
 
-        if !force && record.lifecycle != MachineLifecycle::Standby {
+        if record.id == self.identity.machine_id {
             return self.err(
-                "MACHINE_NOT_STANDBY",
-                format!(
-                    "machine '{id}' must be standby before removal (current lifecycle: {})",
-                    record.lifecycle
-                ),
+                "CANNOT_REMOVE_SELF",
+                "cannot remove the local machine with `machine rm`; use `mesh destroy` for whole-mesh teardown",
             );
+        }
+
+        if !force {
+            let peer_rpc_port = match self.peer_control_port() {
+                Ok(port) => port,
+                Err(error) => return self.err("PEER_RPC_UNAVAILABLE", error.to_string()),
+            };
+            let operation_id = format!("machine-rm-{}", ployz_types::model::NetworkId::random());
+            if let Err(error) = overlay_rpc_expect_ok(
+                record.overlay_ip,
+                peer_rpc_port,
+                DaemonRequest::MeshPeerRemoveMachine {
+                    operation_id,
+                    network_id: active.config.id.clone(),
+                    machine_id: record.id.clone(),
+                },
+            )
+            .await
+            {
+                return self.err(
+                    "MACHINE_REMOVE_PEER_UNREACHABLE",
+                    format!(
+                        "machine '{id}' did not confirm online removal; rerun with --force for registry-only removal: {error}"
+                    ),
+                );
+            }
         }
 
         match active.mesh.store.delete_machine(&machine_id).await {
