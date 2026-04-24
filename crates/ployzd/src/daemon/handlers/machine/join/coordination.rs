@@ -353,6 +353,7 @@ fn api_resource_key(key: &ResourceKey) -> ApiResourceKey {
         ResourceKey::DeployNamespace(namespace) => {
             ApiResourceKey::DeployNamespace(namespace.clone())
         }
+        ResourceKey::CertIssuance(hostname) => ApiResourceKey::CertIssuance(hostname.clone()),
     }
 }
 

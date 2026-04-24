@@ -62,7 +62,8 @@ impl Scenario {
     #[must_use]
     pub(crate) fn node_names(self) -> &'static [&'static str] {
         match self {
-            Self::SingleNodeInit | Self::DeploySmoke | Self::BridgeForwardSmoke => &["founder"],
+            Self::SingleNodeInit | Self::BridgeForwardSmoke => &["founder"],
+            Self::DeploySmoke => &["founder", "peer"],
             Self::MachineAddBasic => &["founder", "joiner"],
             Self::MachineDrainStandbyActivateCycle | Self::WireguardReconnect => {
                 &["founder", "peer"]

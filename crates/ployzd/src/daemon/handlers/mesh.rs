@@ -96,6 +96,7 @@ mod tests {
             24,
             4317,
             "127.0.0.1:0".into(),
+            None,
             1,
         );
 
@@ -167,6 +168,7 @@ mod tests {
             24,
             4317,
             "127.0.0.1:0".into(),
+            None,
             1,
         );
         let cached_subnet = config.subnet;
@@ -217,6 +219,7 @@ mod tests {
             24,
             4317,
             "127.0.0.1:0".into(),
+            None,
             1,
         );
 
@@ -305,6 +308,7 @@ mod tests {
             24,
             4317,
             "127.0.0.1:0".into(),
+            None,
             1,
         );
         let cached_subnet = config.subnet;

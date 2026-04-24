@@ -1,8 +1,8 @@
 use crate::memory::{MemoryService, MemoryStore};
 use crate::{
-    CertificateStore, DeployStore, InviteStore, MachineStore, MachineSubscription,
-    RoutingInvalidationSubscription, RoutingStore, StoreBackend, StoreRuntimeControl, SyncProbe,
-    SyncStatus,
+    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployStore,
+    InviteStore, MachineStore, MachineSubscription, RoutingInvalidationSubscription, RoutingStore,
+    StoreBackend, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::Result;
@@ -249,6 +249,14 @@ impl CertificateStore for StoreDriver {
     async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> Result<()> {
         self.backend.delete_acme_challenge(hostname, token).await
     }
+
+    async fn subscribe_certificates(&self) -> Result<CertificateSubscription> {
+        self.backend.subscribe_certificates().await
+    }
+
+    async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
+        self.backend.subscribe_acme_challenges().await
+    }
 }
 
 struct MemoryStoreBackend {
@@ -404,6 +412,14 @@ impl StoreBackend for MemoryStoreBackend {
 
     async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> Result<()> {
         self.store.delete_acme_challenge(hostname, token).await
+    }
+
+    async fn subscribe_certificates(&self) -> Result<CertificateSubscription> {
+        self.store.subscribe_certificates().await
+    }
+
+    async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
+        self.store.subscribe_acme_challenges().await
     }
 
     async fn sync_status(&self) -> Result<SyncStatus> {

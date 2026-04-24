@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use pingora::listeners::{TlsAccept, tls::TlsSettings};
@@ -7,14 +8,79 @@ use pingora::protocols::tls::TlsRef;
 #[cfg(unix)]
 use pingora::server::{RunArgs, ShutdownSignal, ShutdownSignalWatch};
 use pingora::services::listening::Service as ListeningService;
+use pingora::tls::pkey::Private;
 use pingora::tls::{ext, pkey::PKey, ssl, x509::X509};
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
-use tracing::info;
+use tokio::time::{sleep, timeout};
+use tracing::{error, info, warn};
 
 use crate::config::{GatewayConfig, GatewayError};
 use crate::proxy::GatewayApp;
+use crate::routes::GatewaySnapshot;
 use crate::snapshot::SharedSnapshot;
 use crate::sync::load_projected_snapshot_from_store;
+
+const STORE_READY_TIMEOUT: Duration = Duration::from_secs(30);
+const STORE_READY_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
+const STORE_READY_POLL: Duration = Duration::from_millis(250);
+
+// ---------------------------------------------------------------------------
+// Managed-TLS material resolution (pure, testable without pingora)
+// ---------------------------------------------------------------------------
+
+pub(crate) struct ResolvedTlsMaterial {
+    pub(crate) leaf: X509,
+    pub(crate) chain: Vec<X509>,
+    pub(crate) private_key: PKey<Private>,
+}
+
+pub(crate) enum TlsResolution {
+    Ready(ResolvedTlsMaterial),
+    MissingSni,
+    HostnameMiss(String),
+    FullchainParse { hostname: String, reason: String },
+    EmptyFullchain(String),
+    PrivateKeyParse { hostname: String, reason: String },
+}
+
+pub(crate) fn resolve_tls_material(
+    snapshot: &GatewaySnapshot,
+    server_name: Option<&str>,
+) -> TlsResolution {
+    let Some(server_name) = server_name else {
+        return TlsResolution::MissingSni;
+    };
+    let hostname = server_name.to_string();
+    let Some(certificate) = snapshot.certificates.get(&hostname) else {
+        return TlsResolution::HostnameMiss(hostname);
+    };
+    let certificates = match X509::stack_from_pem(certificate.fullchain_pem.as_bytes()) {
+        Ok(certificates) => certificates,
+        Err(error) => {
+            return TlsResolution::FullchainParse {
+                hostname,
+                reason: error.to_string(),
+            };
+        }
+    };
+    let [leaf, chain @ ..] = certificates.as_slice() else {
+        return TlsResolution::EmptyFullchain(hostname);
+    };
+    let private_key = match PKey::private_key_from_pem(certificate.private_key_pem.as_bytes()) {
+        Ok(private_key) => private_key,
+        Err(error) => {
+            return TlsResolution::PrivateKeyParse {
+                hostname,
+                reason: error.to_string(),
+            };
+        }
+    };
+    TlsResolution::Ready(ResolvedTlsMaterial {
+        leaf: leaf.clone(),
+        chain: chain.to_vec(),
+        private_key,
+    })
+}
 
 pub struct GatewayTlsListener<'a> {
     pub listen_addr: &'a str,
@@ -29,36 +95,69 @@ struct ManagedTlsCallbacks {
 #[async_trait]
 impl TlsAccept for ManagedTlsCallbacks {
     async fn certificate_callback(&self, ssl: &mut TlsRef) -> () {
-        let Some(server_name) = ssl.servername(ssl::NameType::HOST_NAME) else {
-            return;
-        };
         let state = self.shared_snapshot.load();
-        let Some(certificate) = state
-            .snapshot
-            .certificates
-            .iter()
-            .find(|certificate| certificate.hostname == server_name)
-        else {
-            return;
+        let server_name = ssl.servername(ssl::NameType::HOST_NAME);
+        let material = match resolve_tls_material(&state.snapshot, server_name) {
+            TlsResolution::Ready(material) => material,
+            TlsResolution::MissingSni => {
+                warn!("managed TLS handshake did not include SNI");
+                return;
+            }
+            TlsResolution::HostnameMiss(hostname) => {
+                warn!(
+                    hostname = hostname,
+                    "managed TLS certificate was not found for SNI hostname"
+                );
+                return;
+            }
+            TlsResolution::FullchainParse { hostname, reason } => {
+                error!(
+                    hostname = hostname,
+                    reason = reason,
+                    "managed TLS certificate fullchain PEM did not parse"
+                );
+                return;
+            }
+            TlsResolution::EmptyFullchain(hostname) => {
+                error!(
+                    hostname = hostname,
+                    "managed TLS certificate fullchain PEM did not contain a leaf certificate"
+                );
+                return;
+            }
+            TlsResolution::PrivateKeyParse { hostname, reason } => {
+                error!(
+                    hostname = hostname,
+                    reason = reason,
+                    "managed TLS private key PEM did not parse"
+                );
+                return;
+            }
         };
-        let Ok(certificates) = X509::stack_from_pem(certificate.fullchain_pem.as_bytes()) else {
-            return;
-        };
-        let [leaf, chain @ ..] = certificates.as_slice() else {
-            return;
-        };
-        let Ok(private_key) = PKey::private_key_from_pem(certificate.private_key_pem.as_bytes())
-        else {
-            return;
-        };
-        if ext::ssl_use_certificate(ssl, leaf).is_err() {
+        let hostname = server_name.map(ToString::to_string).unwrap_or_default();
+        if let Err(error) = ext::ssl_use_certificate(ssl, &material.leaf) {
+            error!(
+                hostname = hostname,
+                ?error,
+                "managed TLS leaf certificate could not be installed"
+            );
             return;
         }
-        if ext::ssl_use_private_key(ssl, &private_key).is_err() {
+        if let Err(error) = ext::ssl_use_private_key(ssl, &material.private_key) {
+            error!(
+                hostname = hostname,
+                ?error,
+                "managed TLS private key could not be installed"
+            );
             return;
         }
-        for certificate in chain {
-            if ext::ssl_add_chain_cert(ssl, certificate).is_err() {
+        for certificate in &material.chain {
+            if let Err(error) = ext::ssl_add_chain_cert(ssl, certificate) {
+                error!(
+                    hostname = hostname,
+                    ?error,
+                    "managed TLS chain certificate could not be installed"
+                );
                 return;
             }
         }
@@ -183,16 +282,45 @@ pub fn run_gateway_process_with_store<S>(
 where
     S: crate::sync::RoutingStore + Send + Sync + 'static,
 {
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        .thread_name("ployz-gateway-async")
+        .worker_threads(2)
         .build()
         .map_err(|err| GatewayError::Runtime(err.to_string()))?;
-    let initial_snapshot = runtime.block_on(load_projected_snapshot_from_store(&store))?;
+    run_gateway_process_on_runtime(runtime, config, store)
+}
+
+/// Run the gateway using an externally-provided runtime.
+///
+/// All Corrosion client work (connect, initial snapshot, live subscriptions)
+/// must stay on a single tokio runtime: `reqwest::Client` pins its HTTP/2
+/// connection driver to the runtime that first used it, and any cross-runtime
+/// call will hang waiting for a response that never comes.
+pub fn run_gateway_process_on_runtime<S>(
+    runtime: tokio::runtime::Runtime,
+    config: GatewayConfig,
+    store: S,
+) -> Result<(), GatewayError>
+where
+    S: crate::sync::RoutingStore + Send + Sync + 'static,
+{
+    let initial_snapshot = runtime.block_on(wait_for_initial_snapshot(&store))?;
     crate::metrics::update_route_counts(&initial_snapshot);
     let shared_snapshot = SharedSnapshot::new(initial_snapshot);
-    crate::sync::spawn_sync_thread_with_store(store, shared_snapshot.clone())?;
+
+    // Keep the sync loop on the same runtime so the Corrosion client never
+    // crosses runtimes. The multi-thread runtime's worker threads keep
+    // polling while pingora blocks the main thread.
+    let sync_snapshot = shared_snapshot.clone();
+    runtime.spawn(async move {
+        if let Err(err) = crate::sync::run_sync_loop(store, sync_snapshot).await {
+            tracing::warn!(?err, "gateway sync loop exited");
+        }
+    });
+
     let opt = Opt::parse_args();
-    run_server(
+    let result = run_server(
         opt,
         config.listen_addr.as_str(),
         gateway_tls_listener(&config),
@@ -200,7 +328,48 @@ where
         config.metrics_listen_addr.as_deref(),
         shared_snapshot,
         None,
-    )
+    );
+
+    // Explicitly tear down the runtime so any in-flight Corrosion tasks get
+    // a chance to finish before the process exits.
+    runtime.shutdown_background();
+    result
+}
+
+async fn wait_for_initial_snapshot<S>(store: &S) -> Result<GatewaySnapshot, GatewayError>
+where
+    S: crate::sync::RoutingStore + Send + Sync,
+{
+    let deadline = tokio::time::Instant::now() + STORE_READY_TIMEOUT;
+    loop {
+        match timeout(
+            STORE_READY_ATTEMPT_TIMEOUT,
+            load_projected_snapshot_from_store(store),
+        )
+        .await
+        {
+            Ok(Ok(snapshot)) => return Ok(snapshot),
+            Ok(Err(error)) if tokio::time::Instant::now() < deadline => {
+                warn!(?error, "gateway waiting for corrosion query readiness");
+            }
+            Err(_) if tokio::time::Instant::now() < deadline => {
+                warn!("gateway timed out loading initial store snapshot; retrying");
+            }
+            Ok(Err(error)) => {
+                return Err(GatewayError::Store(format!(
+                    "corrosion query API did not become ready within {:?}: {error}",
+                    STORE_READY_TIMEOUT
+                )));
+            }
+            Err(_) => {
+                return Err(GatewayError::Store(format!(
+                    "corrosion query API did not return initial snapshot within {:?}",
+                    STORE_READY_TIMEOUT
+                )));
+            }
+        }
+        sleep(STORE_READY_POLL).await;
+    }
 }
 
 fn gateway_tls_listener(config: &GatewayConfig) -> Option<GatewayTlsListener<'_>> {
@@ -262,8 +431,8 @@ mod tests {
                 }],
             }],
             tcp_routes: Vec::new(),
-            acme_challenges: Vec::new(),
-            certificates: Vec::new(),
+            acme_challenges: std::collections::HashMap::new(),
+            certificates: std::collections::HashMap::new(),
         };
         crate::metrics::update_route_counts(&snapshot);
 
@@ -321,6 +490,7 @@ mod tests {
             run_server(
                 Opt::default(),
                 &gateway_addr.to_string(),
+                None,
                 1,
                 None,
                 shared_snapshot,
@@ -381,6 +551,7 @@ mod tests {
             run_server(
                 Opt::default(),
                 &gateway_addr.to_string(),
+                None,
                 1,
                 None,
                 shared_snapshot,
@@ -533,6 +704,8 @@ mod tests {
                 }],
             }],
             tcp_routes: Vec::new(),
+            acme_challenges: std::collections::HashMap::new(),
+            certificates: std::collections::HashMap::new(),
         }
     }
 
@@ -565,5 +738,145 @@ mod tests {
             .expect("should bind ephemeral port")
             .local_addr()
             .expect("ephemeral listener should have local addr")
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_tls_material — pure SNI selection + PEM parsing
+    // -----------------------------------------------------------------------
+
+    mod resolve_tls_material_tests {
+        use crate::routes::{CertificateView, GatewaySnapshot};
+        use crate::server::{TlsResolution, resolve_tls_material};
+        use std::collections::HashMap;
+
+        fn snapshot_with_cert(hostname: &str, fullchain: &str, key: &str) -> GatewaySnapshot {
+            let mut certificates = HashMap::new();
+            certificates.insert(
+                hostname.to_string(),
+                CertificateView {
+                    hostname: hostname.to_string(),
+                    fullchain_pem: fullchain.to_string(),
+                    private_key_pem: key.to_string(),
+                },
+            );
+            GatewaySnapshot {
+                http_routes: Vec::new(),
+                tcp_routes: Vec::new(),
+                acme_challenges: HashMap::new(),
+                certificates,
+            }
+        }
+
+        fn make_self_signed() -> (String, String) {
+            let key = rcgen::KeyPair::generate().expect("keypair");
+            let params = rcgen::CertificateParams::new(vec!["test.example.com".into()])
+                .expect("cert params");
+            let cert = params.self_signed(&key).expect("self-signed cert");
+            (cert.pem(), key.serialize_pem())
+        }
+
+        #[test]
+        fn missing_sni_returns_missing_sni() {
+            let snapshot = GatewaySnapshot::empty();
+            assert!(matches!(
+                resolve_tls_material(&snapshot, None),
+                TlsResolution::MissingSni
+            ));
+        }
+
+        #[test]
+        fn unknown_hostname_returns_hostname_miss() {
+            let snapshot = GatewaySnapshot::empty();
+            match resolve_tls_material(&snapshot, Some("api.example.com")) {
+                TlsResolution::HostnameMiss(hostname) => {
+                    assert_eq!(hostname, "api.example.com");
+                }
+                other => panic!(
+                    "expected HostnameMiss, got other variant: {}",
+                    label(&other)
+                ),
+            }
+        }
+
+        #[test]
+        fn non_pem_fullchain_returns_empty_fullchain() {
+            // boring's `X509::stack_from_pem` is permissive and returns an empty
+            // vec for content with no PEM envelopes, so the "unparseable" path
+            // surfaces as `EmptyFullchain`. `FullchainParse` only fires on
+            // content that looks like a PEM but is malformed inside.
+            let snapshot = snapshot_with_cert("api.example.com", "this is not a pem", "ignored");
+            match resolve_tls_material(&snapshot, Some("api.example.com")) {
+                TlsResolution::EmptyFullchain(hostname) => {
+                    assert_eq!(hostname, "api.example.com");
+                }
+                other => panic!("expected EmptyFullchain, got {}", label(&other)),
+            }
+        }
+
+        #[test]
+        fn malformed_pem_fullchain_returns_fullchain_parse() {
+            // PEM envelope present, body is garbage → real parse error.
+            let bad =
+                "-----BEGIN CERTIFICATE-----\nnot-valid-base64!!!\n-----END CERTIFICATE-----\n";
+            let snapshot = snapshot_with_cert("api.example.com", bad, "ignored");
+            match resolve_tls_material(&snapshot, Some("api.example.com")) {
+                TlsResolution::FullchainParse { hostname, reason } => {
+                    assert_eq!(hostname, "api.example.com");
+                    assert!(!reason.is_empty(), "reason should be populated");
+                }
+                other => panic!("expected FullchainParse, got {}", label(&other)),
+            }
+        }
+
+        #[test]
+        fn valid_fullchain_with_garbage_key_returns_private_key_parse() {
+            let (cert_pem, _) = make_self_signed();
+            let snapshot = snapshot_with_cert("api.example.com", &cert_pem, "not a pem either");
+            match resolve_tls_material(&snapshot, Some("api.example.com")) {
+                TlsResolution::PrivateKeyParse { hostname, reason } => {
+                    assert_eq!(hostname, "api.example.com");
+                    assert!(!reason.is_empty(), "reason should be populated");
+                }
+                other => panic!("expected PrivateKeyParse, got {}", label(&other)),
+            }
+        }
+
+        #[test]
+        fn valid_cert_and_key_returns_ready_with_empty_chain() {
+            let (cert_pem, key_pem) = make_self_signed();
+            let snapshot = snapshot_with_cert("api.example.com", &cert_pem, &key_pem);
+            match resolve_tls_material(&snapshot, Some("api.example.com")) {
+                TlsResolution::Ready(material) => {
+                    assert!(
+                        material.chain.is_empty(),
+                        "self-signed fullchain has only the leaf; chain must be empty"
+                    );
+                    // Leaf parsed enough to round-trip back to PEM.
+                    let round_trip = material.leaf.to_pem().expect("cert back to pem");
+                    assert!(!round_trip.is_empty());
+                    // Private key parsed and matches the cert's public key.
+                    assert!(
+                        material
+                            .leaf
+                            .public_key()
+                            .expect("cert pubkey")
+                            .public_eq(&material.private_key),
+                        "private key must match the leaf's public key"
+                    );
+                }
+                other => panic!("expected Ready, got {}", label(&other)),
+            }
+        }
+
+        fn label(resolution: &TlsResolution) -> &'static str {
+            match resolution {
+                TlsResolution::Ready(_) => "Ready",
+                TlsResolution::MissingSni => "MissingSni",
+                TlsResolution::HostnameMiss(_) => "HostnameMiss",
+                TlsResolution::FullchainParse { .. } => "FullchainParse",
+                TlsResolution::EmptyFullchain(_) => "EmptyFullchain",
+                TlsResolution::PrivateKeyParse { .. } => "PrivateKeyParse",
+            }
+        }
     }
 }

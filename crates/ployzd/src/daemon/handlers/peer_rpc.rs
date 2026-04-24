@@ -8,7 +8,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
-pub(super) const PEER_RPC_TIMEOUT: Duration = Duration::from_secs(3);
+pub(crate) const PEER_RPC_TIMEOUT: Duration = Duration::from_secs(3);
 pub(super) const PEER_RPC_DESTRUCTIVE_READ_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Copy)]
@@ -42,7 +42,7 @@ impl Display for OverlayRpcExpectOkError {
     }
 }
 
-pub(super) async fn overlay_rpc(
+pub(crate) async fn overlay_rpc(
     overlay_ip: OverlayIp,
     peer_rpc_port: u16,
     request: DaemonRequest,
@@ -134,7 +134,7 @@ pub(super) async fn overlay_rpc_expect_ok_classified(
     .await
 }
 
-pub(super) async fn overlay_rpc_expect_ok_with_read_timeout(
+pub(crate) async fn overlay_rpc_expect_ok_with_read_timeout(
     overlay_ip: OverlayIp,
     peer_rpc_port: u16,
     request: DaemonRequest,
