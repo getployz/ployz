@@ -5,6 +5,25 @@ use std::sync::{Arc, RwLock};
 use ployz_types::model::{DrainState, InstancePhase, RoutingState};
 use ployz_types::spec::Namespace;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DnsInstanceDiagnostic {
+    pub service: String,
+    pub instance_id: String,
+    pub machine_id: String,
+    pub slot_id: String,
+    pub overlay_ip: Ipv4Addr,
+}
+
+impl DnsInstanceDiagnostic {
+    #[must_use]
+    pub fn txt_record(&self) -> String {
+        format!(
+            "service={},instance={},machine={},slot={},ip={}",
+            self.service, self.instance_id, self.machine_id, self.slot_id, self.overlay_ip
+        )
+    }
+}
+
 // ---------------------------------------------------------------------------
 // DnsSnapshot
 // ---------------------------------------------------------------------------
@@ -18,6 +37,8 @@ pub struct DnsSnapshot {
     pub ip_to_namespace: HashMap<Ipv4Addr, Namespace>,
     /// namespace -> sorted list of service names (for TXT _services queries)
     pub service_names: HashMap<Namespace, Vec<String>>,
+    /// namespace -> sorted instance diagnostics for routable instances.
+    pub instances: HashMap<Namespace, Vec<DnsInstanceDiagnostic>>,
 }
 
 impl DnsSnapshot {
@@ -27,6 +48,7 @@ impl DnsSnapshot {
             services: HashMap::new(),
             ip_to_namespace: HashMap::new(),
             service_names: HashMap::new(),
+            instances: HashMap::new(),
         }
     }
 
@@ -37,6 +59,47 @@ impl DnsSnapshot {
             .get(namespace)
             .and_then(|by_service| by_service.get(service))
             .map(Vec::as_slice)
+    }
+
+    #[must_use]
+    pub fn lookup_instance(
+        &self,
+        namespace: &Namespace,
+        service: &str,
+        instance_id: &str,
+    ) -> Option<Ipv4Addr> {
+        self.instances.get(namespace).and_then(|instances| {
+            instances
+                .iter()
+                .find(|instance| instance.service == service && instance.instance_id == instance_id)
+                .map(|instance| instance.overlay_ip)
+        })
+    }
+
+    #[must_use]
+    pub fn has_service_instances(&self, namespace: &Namespace, service: &str) -> bool {
+        self.lookup_service(namespace, service)
+            .is_some_and(|ips| !ips.is_empty())
+    }
+
+    #[must_use]
+    pub fn instance_txt_records(
+        &self,
+        namespace: &Namespace,
+        service: Option<&str>,
+    ) -> Vec<String> {
+        let Some(instances) = self.instances.get(namespace) else {
+            return Vec::new();
+        };
+        instances
+            .iter()
+            .filter(|instance| {
+                service
+                    .map(|service| instance.service == service)
+                    .unwrap_or(true)
+            })
+            .map(DnsInstanceDiagnostic::txt_record)
+            .collect()
     }
 }
 
@@ -82,6 +145,7 @@ pub fn project_dns(state: &RoutingState) -> DnsSnapshot {
     let mut services: HashMap<Namespace, HashMap<String, Vec<Ipv4Addr>>> = HashMap::new();
     let mut ip_to_namespace: HashMap<Ipv4Addr, Namespace> = HashMap::new();
     let mut service_names: HashMap<Namespace, Vec<String>> = HashMap::new();
+    let mut instances: HashMap<Namespace, Vec<DnsInstanceDiagnostic>> = HashMap::new();
 
     for instance in &state.instances {
         if instance.phase != InstancePhase::Ready || !instance.ready {
@@ -101,6 +165,16 @@ pub fn project_dns(state: &RoutingState) -> DnsSnapshot {
             .or_default()
             .push(overlay_ip);
         ip_to_namespace.insert(overlay_ip, instance.namespace.clone());
+        instances
+            .entry(instance.namespace.clone())
+            .or_default()
+            .push(DnsInstanceDiagnostic {
+                service: instance.service.clone(),
+                instance_id: instance.instance_id.0.clone(),
+                machine_id: instance.machine_id.0.clone(),
+                slot_id: instance.slot_id.0.clone(),
+                overlay_ip,
+            });
     }
 
     // Sort IPs for deterministic ordering
@@ -116,11 +190,19 @@ pub fn project_dns(state: &RoutingState) -> DnsSnapshot {
         names.sort();
         service_names.insert(namespace.clone(), names);
     }
+    for instances in instances.values_mut() {
+        instances.sort_by(|left, right| {
+            left.service
+                .cmp(&right.service)
+                .then_with(|| left.instance_id.cmp(&right.instance_id))
+        });
+    }
 
     DnsSnapshot {
         services,
         ip_to_namespace,
         service_names,
+        instances,
     }
 }
 
@@ -171,6 +253,7 @@ mod tests {
         assert!(snapshot.services.is_empty());
         assert!(snapshot.ip_to_namespace.is_empty());
         assert!(snapshot.service_names.is_empty());
+        assert!(snapshot.instances.is_empty());
     }
 
     #[test]
@@ -195,6 +278,11 @@ mod tests {
                 .map(Vec::as_slice),
             Some(vec!["web".to_string()].as_slice())
         );
+        assert_eq!(
+            snapshot.instance_txt_records(&ns, Some("web")),
+            vec!["service=web,instance=inst-1,machine=machine-1,slot=slot-1,ip=10.42.1.10"]
+        );
+        assert_eq!(snapshot.lookup_instance(&ns, "web", "inst-1"), Some(ip));
     }
 
     #[test]
@@ -208,6 +296,7 @@ mod tests {
 
         let snapshot = project_dns(&state);
         assert!(snapshot.services.is_empty());
+        assert!(snapshot.instances.is_empty());
     }
 
     #[test]
@@ -221,6 +310,7 @@ mod tests {
 
         let snapshot = project_dns(&state);
         assert!(snapshot.services.is_empty());
+        assert!(snapshot.instances.is_empty());
     }
 
     #[test]
@@ -230,5 +320,6 @@ mod tests {
 
         let snapshot = project_dns(&state);
         assert!(snapshot.services.is_empty());
+        assert!(snapshot.instances.is_empty());
     }
 }
