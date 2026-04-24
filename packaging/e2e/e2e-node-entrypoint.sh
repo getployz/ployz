@@ -3,6 +3,12 @@ set -euo pipefail
 
 echo "ployz-e2e boot: node=${PLOYZ_E2E_NODE:-unknown} scenario=${PLOYZ_E2E_SCENARIO:-unknown} run_id=${PLOYZ_E2E_RUN_ID:-unknown} image=${PLOYZ_E2E_IMAGE:-unknown} image_id=${PLOYZ_E2E_IMAGE_ID:-unknown}"
 
+runtime="${PLOYZ_E2E_RUNTIME:-host}"
+if [[ "${runtime}" != "host" && "${runtime}" != "docker" ]]; then
+  echo "unsupported PLOYZ_E2E_RUNTIME=${runtime}" >&2
+  exit 1
+fi
+
 if [[ -z "${PLOYZ_E2E_SSH_AUTHORIZED_KEY:-}" ]]; then
   echo "missing PLOYZ_E2E_SSH_AUTHORIZED_KEY" >&2
   exit 1
@@ -35,6 +41,22 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
+preload_dir="/opt/ployz-e2e/preloaded-images"
+preload_manifest="${preload_dir}/built_in_images.toml"
+if [[ -f "${preload_manifest}" ]]; then
+  echo "ployz-e2e preload images start"
+  shopt -s nullglob
+  for tar_path in "${preload_dir}"/*.tar; do
+    echo "ployz-e2e preload image load: ${tar_path}"
+    docker load -i "${tar_path}" >/dev/null
+  done
+  shopt -u nullglob
+  export PLOYZ_BUILTIN_IMAGES_MANIFEST="${preload_manifest}"
+  echo "ployz-e2e preload images complete manifest=${PLOYZ_BUILTIN_IMAGES_MANIFEST}"
+else
+  echo "ployz-e2e preload images: no manifest at ${preload_manifest}"
+fi
+
 /usr/sbin/sshd
 
 if [[ ! -d /e2e-payload ]]; then
@@ -54,7 +76,7 @@ else
   echo "ployz-e2e payload metadata: missing /e2e-payload/metadata.env"
 fi
 
-HOME=/root /usr/local/bin/ployz.sh install --source payload --payload-dir /e2e-payload --runtime host --service-mode user --no-daemon-install
+HOME=/root /usr/local/bin/ployz.sh install --source payload --payload-dir /e2e-payload --runtime "${runtime}" --service-mode user --no-daemon-install
 
 ln -sf /root/.local/bin/ployz /usr/local/bin/ployz
 ln -sf /root/.local/bin/ployzd /usr/local/bin/ployzd
@@ -72,4 +94,4 @@ for binary in /root/.local/bin/ployz /root/.local/bin/ployzd /root/.local/bin/co
   fi
 done
 
-exec /root/.local/bin/ployzd --data-dir /var/lib/ployz run --runtime host --service-mode user
+exec /root/.local/bin/ployzd --data-dir /var/lib/ployz run --runtime "${runtime}" --service-mode user
