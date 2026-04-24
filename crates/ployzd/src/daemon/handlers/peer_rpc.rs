@@ -1,3 +1,4 @@
+use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
@@ -8,6 +9,22 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 pub(super) const PEER_RPC_TIMEOUT: Duration = Duration::from_secs(3);
+
+pub(super) enum OverlayRpcExpectOkError {
+    Transport(String),
+    Remote { code: String, message: String },
+}
+
+impl Display for OverlayRpcExpectOkError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transport(error) => write!(f, "{error}"),
+            Self::Remote { code, message } => {
+                write!(f, "remote daemon error [{code}]: {message}")
+            }
+        }
+    }
+}
 
 pub(super) async fn overlay_rpc(
     overlay_ip: OverlayIp,
@@ -67,12 +84,24 @@ pub(super) async fn overlay_rpc_expect_ok(
     peer_rpc_port: u16,
     request: DaemonRequest,
 ) -> Result<(), String> {
-    let response = overlay_rpc(overlay_ip, peer_rpc_port, request).await?;
+    overlay_rpc_expect_ok_classified(overlay_ip, peer_rpc_port, request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+pub(super) async fn overlay_rpc_expect_ok_classified(
+    overlay_ip: OverlayIp,
+    peer_rpc_port: u16,
+    request: DaemonRequest,
+) -> Result<(), OverlayRpcExpectOkError> {
+    let response = overlay_rpc(overlay_ip, peer_rpc_port, request)
+        .await
+        .map_err(OverlayRpcExpectOkError::Transport)?;
     if response.ok {
         return Ok(());
     }
-    Err(format!(
-        "remote daemon error [{}]: {}",
-        response.code, response.message
-    ))
+    Err(OverlayRpcExpectOkError::Remote {
+        code: response.code,
+        message: response.message,
+    })
 }

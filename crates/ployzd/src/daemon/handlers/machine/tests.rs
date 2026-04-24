@@ -389,6 +389,62 @@ async fn machine_remove_refuses_offline_peer_without_force() {
 }
 
 #[tokio::test]
+async fn machine_remove_reports_peer_rejection_without_unreachable_hint() {
+    let listener = TcpListener::bind("[::1]:0")
+        .await
+        .expect("bind overlay listener");
+    let peer_rpc_port = listener.local_addr().expect("listener addr").port();
+    let remote_control_port = peer_rpc_port
+        .checked_sub(1)
+        .expect("peer rpc port has preceding remote control port");
+    let (mut state, store, _) = make_state_with_remote_port(true, remote_control_port).await;
+
+    let mut peer = test_machine_record(
+        "peer-1",
+        "10.210.1.0/24",
+        MachineLifecycle::Active,
+        PublicKey([2; 32]),
+    );
+    peer.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
+    store.upsert_self_machine(&peer).await.expect("upsert peer");
+
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept overlay rpc");
+        let (reader, mut writer) = stream.into_split();
+        let mut buf = BufReader::new(reader);
+        let mut line = String::new();
+        buf.read_line(&mut line).await.expect("read request");
+        let request: DaemonRequest = serde_json::from_str(&line).expect("decode daemon request");
+        assert!(matches!(
+            request,
+            DaemonRequest::MeshPeerRemoveMachine { .. }
+        ));
+        let mut response_line = serde_json::to_string(&DaemonResponse {
+            ok: false,
+            code: "MACHINE_REMOVE_FAILED".into(),
+            message: "remote cleanup rejected".into(),
+            payload: None,
+        })
+        .expect("encode response");
+        response_line.push('\n');
+        writer
+            .write_all(response_line.as_bytes())
+            .await
+            .expect("write response");
+        writer.shutdown().await.expect("shutdown writer");
+    });
+
+    let response = state.handle_machine_remove("peer-1", false).await;
+    assert!(!response.ok);
+    assert_eq!(response.code, "MACHINE_REMOVE_PEER_REJECTED");
+    assert!(response.message.contains("MACHINE_REMOVE_FAILED"));
+    assert!(!response.message.contains("did not confirm online removal"));
+
+    server.await.expect("overlay server exit");
+    teardown_state(&mut state).await;
+}
+
+#[tokio::test]
 async fn machine_remove_force_deletes_registry_record() {
     let (state, store, _) = make_state(false).await;
     store
