@@ -1,3 +1,4 @@
+mod bridge_forward_smoke;
 mod deploy_smoke;
 mod machine_add_basic;
 mod single_node_init;
@@ -17,5 +18,6 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
         }
         Scenario::WireguardReconnect => wireguard_reconnect::run(run),
         Scenario::DeploySmoke => deploy_smoke::run(run),
+        Scenario::BridgeForwardSmoke => bridge_forward_smoke::run(run),
     }
 }
