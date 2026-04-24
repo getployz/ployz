@@ -5,8 +5,8 @@ use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock
 use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
 use ipnet::Ipv4Net;
 use ployz_api::{
-    DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MeshReadyPayload,
-    MeshSelfRecordPayload,
+    DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MachineTransitionGoal,
+    MeshReadyPayload, MeshSelfRecordPayload,
 };
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::mesh::driver::WireguardDriver;
@@ -16,7 +16,8 @@ use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{InviteStore, MachineStore};
 use ployz_types::model::{
-    JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
+    JoinResponse, MachineId, MachineLifecycle, MachineRecord, NetworkLifecycle, OverlayIp,
+    PublicKey,
 };
 use ployz_types::time::now_unix_secs;
 use std::path::{Path, PathBuf};
@@ -35,7 +36,7 @@ async fn machine_list_shows_disabled_explicitly() {
     let disabled = test_machine_record(
         "peer-disabled",
         "10.210.1.0/24",
-        Participation::Disabled,
+        MachineLifecycle::Standby,
         PublicKey([2; 32]),
     );
     store
@@ -51,24 +52,23 @@ async fn machine_list_shows_disabled_explicitly() {
 }
 
 #[tokio::test]
-async fn machine_list_shows_down_liveness() {
+async fn machine_list_shows_active_lifecycle() {
     let (state, store, _) = make_state(false).await;
-    let mut down = test_machine_record(
-        "peer-down",
+    let active_peer = test_machine_record(
+        "peer-active",
         "10.210.1.0/24",
-        Participation::Enabled,
+        MachineLifecycle::Active,
         PublicKey([2; 32]),
     );
-    down.status = MachineStatus::Down;
     store
-        .upsert_self_machine(&down)
+        .upsert_self_machine(&active_peer)
         .await
-        .expect("upsert down peer");
+        .expect("upsert active peer");
 
     let response = state.handle_machine_list().await;
     assert!(response.ok);
-    assert!(response.message.contains("peer-down"));
-    assert!(response.message.contains("down"));
+    assert!(response.message.contains("peer-active"));
+    assert!(response.message.contains("active"));
 }
 
 #[tokio::test]
@@ -83,7 +83,7 @@ async fn machine_list_json_payload_contains_rows() {
 }
 
 #[tokio::test]
-async fn machine_add_enables_joiner_participation() {
+async fn machine_add_activates_joiner_lifecycle() {
     let _guard = test_ssh_env_lock().lock().await;
     let listener = TcpListener::bind("[::1]:0")
         .await
@@ -96,11 +96,10 @@ async fn machine_add_enables_joiner_participation() {
     let mut stale_peer = test_machine_record(
         "stale-peer",
         "10.210.1.0/24",
-        Participation::Enabled,
+        MachineLifecycle::Active,
         PublicKey([3; 32]),
     );
     stale_peer.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
-    stale_peer.status = MachineStatus::Up;
     store
         .upsert_self_machine(&stale_peer)
         .await
@@ -134,10 +133,14 @@ async fn machine_add_enables_joiner_participation() {
                         store_healthy: true,
                         sync_connected: true,
                         workload_subnet_present: true,
-                        participation: "enabled".into(),
                     })),
                 }
-            } else if let DaemonRequest::MeshSetParticipation { participation } = request {
+            } else if let DaemonRequest::MachineTransitionSelf {
+                goal: MachineTransitionGoal::Activate,
+                assigned_subnet,
+                ..
+            } = request
+            {
                 {
                     let mut joiner_record = MachineRecord::seed(
                         MachineId("joiner-1".into()),
@@ -146,7 +149,8 @@ async fn machine_add_enables_joiner_participation() {
                         Some("10.210.99.0/24".parse().expect("valid subnet")),
                         vec!["203.0.113.10:51820".into()],
                     );
-                    joiner_record.participation = participation;
+                    joiner_record.subnet = assigned_subnet;
+                    joiner_record.lifecycle = MachineLifecycle::Active;
                     server_store
                         .upsert_self_machine(&joiner_record)
                         .await
@@ -218,7 +222,7 @@ async fn machine_add_enables_joiner_participation() {
     let _ready_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_READY_RESPONSE",
         Some(
-            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":true,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":true,\"workload_subnet_present\":true,\"participation\":\"enabled\"}}".into(),
+            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":true,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":true,\"workload_subnet_present\":true}}".into(),
         ),
     );
 
@@ -235,7 +239,7 @@ async fn machine_add_enables_joiner_participation() {
         .into_iter()
         .find(|machine| machine.id.0 == "joiner-1")
         .expect("joiner should be in store after enable");
-    assert_eq!(joiner.participation, Participation::Enabled);
+    assert_eq!(joiner.lifecycle, MachineLifecycle::Active);
     assert!(
         network
             .current_peers()
@@ -299,7 +303,7 @@ async fn machine_add_requires_sync_connected_for_running_joiner() {
     let _ready_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_READY_RESPONSE",
         Some(
-            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":false,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":false,\"workload_subnet_present\":true,\"participation\":\"enabled\"}}".into(),
+            "{\"ok\":true,\"code\":\"OK\",\"message\":\"ready\",\"payload\":{\"kind\":\"mesh-ready\",\"ready\":false,\"phase\":\"running\",\"store_healthy\":true,\"sync_connected\":false,\"workload_subnet_present\":true}}".into(),
         ),
     );
 
@@ -373,7 +377,7 @@ async fn machine_remove_refuses_enabled_without_force() {
         .upsert_self_machine(&test_machine_record(
             "peer-1",
             "10.210.1.0/24",
-            Participation::Enabled,
+            MachineLifecycle::Active,
             PublicKey([2; 32]),
         ))
         .await
@@ -381,7 +385,7 @@ async fn machine_remove_refuses_enabled_without_force() {
 
     let response = state.handle_machine_remove("peer-1", false).await;
     assert!(!response.ok);
-    assert!(response.message.contains("must be disabled"));
+    assert!(response.message.contains("must be standby"));
 }
 
 #[tokio::test]
@@ -391,7 +395,7 @@ async fn machine_remove_deletes_disabled_record() {
         .upsert_self_machine(&test_machine_record(
             "peer-1",
             "10.210.1.0/24",
-            Participation::Disabled,
+            MachineLifecycle::Standby,
             PublicKey([2; 32]),
         ))
         .await
@@ -405,10 +409,12 @@ async fn machine_remove_deletes_disabled_record() {
 }
 
 #[tokio::test]
-async fn mesh_standby_clears_subnet_and_marks_disabled() {
+async fn local_standby_clears_subnet_and_marks_standby() {
     let (mut state, store, _) = make_state(true).await;
-    let response = state.handle_mesh_standby(true).await;
-    assert!(response.ok, "{}", response.message);
+    let response = state
+        .transition_local_machine(MachineTransitionGoal::Standby, None, true)
+        .await;
+    assert!(response.is_ok(), "{response:?}");
 
     let local = store
         .list_machines()
@@ -417,9 +423,8 @@ async fn mesh_standby_clears_subnet_and_marks_disabled() {
         .into_iter()
         .find(|machine| machine.id == state.identity.machine_id)
         .expect("local machine present");
-    assert_eq!(local.participation, Participation::Disabled);
+    assert_eq!(local.lifecycle, MachineLifecycle::Standby);
     assert_eq!(local.subnet, None);
-    assert_eq!(local.status, MachineStatus::Up);
     assert_eq!(
         state.active.as_ref().expect("active mesh").config.subnet,
         None
@@ -427,23 +432,21 @@ async fn mesh_standby_clears_subnet_and_marks_disabled() {
 }
 
 #[tokio::test]
-async fn mesh_standby_auto_drains_when_no_local_workloads_exist() {
+async fn local_standby_requires_draining_without_force() {
     let (mut state, store, _) = make_state(true).await;
     {
         let active = state.active.as_mut().expect("active mesh");
         let Some(mut record) = active
             .mesh
             .update_authoritative_self_record(|record| {
-                record.participation = Participation::Enabled;
-                record.status = MachineStatus::Up;
+                record.lifecycle = MachineLifecycle::Active;
                 record.subnet = Some("10.210.0.0/24".parse().expect("valid subnet"));
             })
             .await
         else {
             panic!("self record missing");
         };
-        record.participation = Participation::Enabled;
-        record.status = MachineStatus::Up;
+        record.lifecycle = MachineLifecycle::Active;
         record.subnet = Some("10.210.0.0/24".parse().expect("valid subnet"));
         active
             .mesh
@@ -453,8 +456,10 @@ async fn mesh_standby_auto_drains_when_no_local_workloads_exist() {
             .expect("persist enabled self");
     }
 
-    let response = state.handle_mesh_standby(false).await;
-    assert!(response.ok, "{}", response.message);
+    let response = state
+        .transition_local_machine(MachineTransitionGoal::Standby, None, false)
+        .await;
+    assert!(response.is_err());
 
     let local = store
         .list_machines()
@@ -463,36 +468,42 @@ async fn mesh_standby_auto_drains_when_no_local_workloads_exist() {
         .into_iter()
         .find(|machine| machine.id == state.identity.machine_id)
         .expect("local machine present");
-    assert_eq!(local.participation, Participation::Disabled);
-    assert_eq!(local.subnet, None);
+    assert_eq!(local.lifecycle, MachineLifecycle::Active);
+    assert_eq!(
+        local.subnet,
+        Some("10.210.0.0/24".parse().expect("valid subnet"))
+    );
 }
 
 #[tokio::test]
-async fn mesh_standby_restores_subnet_when_restart_fails() {
+async fn local_standby_restores_subnet_when_restart_fails() {
     let (mut state, _, _) = make_state(true).await;
     let config_path = NetworkConfig::path(&state.data_dir, "alpha");
     let original_config = NetworkConfig::load(&config_path).expect("load original config");
     state.gateway_listen_addr = "invalid".into();
 
-    let response = state.handle_mesh_standby(true).await;
-    assert!(!response.ok);
-    assert_eq!(response.code, "NETWORK_RESTART_FAILED");
+    let response = state
+        .transition_local_machine(MachineTransitionGoal::Standby, None, true)
+        .await;
+    assert!(response.is_err());
 
     let restored_config = NetworkConfig::load(&config_path).expect("load restored config");
     assert_eq!(restored_config.subnet, original_config.subnet);
 }
 
 #[tokio::test]
-async fn mesh_up_preserves_disabled_participation_after_standby() {
+async fn mesh_start_reactivates_local_machine_after_stop() {
     let (mut state, _, _) = make_state(true).await;
 
-    let standby = state.handle_mesh_standby(true).await;
-    assert!(standby.ok, "{}", standby.message);
+    let standby = state
+        .transition_local_machine(MachineTransitionGoal::Standby, None, true)
+        .await;
+    assert!(standby.is_ok(), "{standby:?}");
 
-    let down = state.handle_mesh_down().await;
+    let down = state.handle_mesh_stop(true).await;
     assert!(down.ok, "{}", down.message);
 
-    let up = state.handle_mesh_up("alpha", false).await;
+    let up = state.handle_mesh_start("alpha", false).await;
     assert!(up.ok, "{}", up.message);
 
     let local = state
@@ -503,8 +514,41 @@ async fn mesh_up_preserves_disabled_participation_after_standby() {
         .authoritative_self_record()
         .await
         .expect("self record");
-    assert_eq!(local.participation, Participation::Disabled);
-    assert_eq!(local.subnet, None);
+    assert_eq!(local.lifecycle, MachineLifecycle::Active);
+    assert_eq!(local.subnet, Some("10.210.0.0/24".parse().expect("valid subnet")));
+}
+
+#[tokio::test]
+async fn mesh_stop_restores_local_record_when_destroy_fails() {
+    let (mut state, store, network) = make_state(true).await;
+    let activate = state
+        .transition_local_machine(
+            MachineTransitionGoal::Activate,
+            Some("10.210.0.0/24".parse().expect("valid subnet")),
+            false,
+        )
+        .await;
+    assert!(activate.is_ok(), "{activate:?}");
+
+    network.set_fail_down(true);
+
+    let response = state.handle_mesh_stop(true).await;
+    assert!(!response.ok);
+    assert_eq!(response.code, "NETWORK_STOP_FAILED");
+    assert!(state.active.is_some(), "active mesh should be restored");
+
+    let local = store
+        .list_machines()
+        .await
+        .expect("list machines")
+        .into_iter()
+        .find(|machine| machine.id == state.identity.machine_id)
+        .expect("local machine present");
+    assert_eq!(local.lifecycle, MachineLifecycle::Active);
+    assert_eq!(
+        local.subnet,
+        Some("10.210.0.0/24".parse().expect("valid subnet"))
+    );
 }
 
 #[tokio::test]
@@ -516,7 +560,7 @@ async fn reserve_machine_subnet_clears_local_hold_when_quorum_denies() {
         .upsert_self_machine(&test_machine_record(
             "peer-quorum",
             "10.210.1.0/24",
-            Participation::Enabled,
+            MachineLifecycle::Active,
             PublicKey([6; 32]),
         ))
         .await
@@ -560,12 +604,11 @@ async fn reserve_machine_subnet_releases_peer_holds_when_quorum_denies() {
         let mut peer = test_machine_record(
             name,
             "10.210.1.0/24",
-            Participation::Enabled,
+            MachineLifecycle::Active,
             PublicKey([key_seed; 32]),
         );
         peer.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
         peer.subnet = None;
-        peer.status = MachineStatus::Up;
         store
             .upsert_self_machine(&peer)
             .await
@@ -741,15 +784,21 @@ async fn machine_add_rejects_remote_subnet_mismatch_before_invite_consume() {
 }
 
 #[tokio::test]
-async fn mesh_promote_restores_subnet_before_enable_finalization() {
+async fn local_activate_restores_subnet_before_active_finalization() {
     let (mut state, store, _) = make_state(true).await;
-    let standby_response = state.handle_mesh_standby(true).await;
-    assert!(standby_response.ok, "{}", standby_response.message);
-
-    let promote_response = state
-        .handle_mesh_promote("10.210.2.0/24".parse().expect("valid subnet"))
+    let standby_response = state
+        .transition_local_machine(MachineTransitionGoal::Standby, None, true)
         .await;
-    assert!(promote_response.ok, "{}", promote_response.message);
+    assert!(standby_response.is_ok(), "{standby_response:?}");
+
+    let activate_response = state
+        .transition_local_machine(
+            MachineTransitionGoal::Activate,
+            Some("10.210.2.0/24".parse().expect("valid subnet")),
+            false,
+        )
+        .await;
+    assert!(activate_response.is_ok(), "{activate_response:?}");
 
     let promoted = store
         .list_machines()
@@ -758,38 +807,19 @@ async fn mesh_promote_restores_subnet_before_enable_finalization() {
         .into_iter()
         .find(|machine| machine.id == state.identity.machine_id)
         .expect("local machine present");
-    assert_eq!(promoted.participation, Participation::Disabled);
+    assert_eq!(promoted.lifecycle, MachineLifecycle::Active);
     assert_eq!(
         promoted.subnet,
         Some("10.210.2.0/24".parse().expect("valid subnet"))
     );
-    assert_eq!(promoted.status, MachineStatus::Up);
     assert_eq!(
         state.active.as_ref().expect("active mesh").config.subnet,
-        Some("10.210.2.0/24".parse().expect("valid subnet"))
-    );
-
-    let enable_response = state
-        .handle_mesh_set_participation(Participation::Enabled)
-        .await;
-    assert!(enable_response.ok, "{}", enable_response.message);
-
-    let local = store
-        .list_machines()
-        .await
-        .expect("list machines")
-        .into_iter()
-        .find(|machine| machine.id == state.identity.machine_id)
-        .expect("local machine present");
-    assert_eq!(local.participation, Participation::Enabled);
-    assert_eq!(
-        local.subnet,
         Some("10.210.2.0/24".parse().expect("valid subnet"))
     );
 }
 
 #[tokio::test]
-async fn machine_enable_rolls_back_remote_promote_when_self_record_fails() {
+async fn machine_activate_rolls_back_remote_activate_when_self_record_fails() {
     let listener = TcpListener::bind("[::1]:0")
         .await
         .expect("bind overlay listener");
@@ -802,12 +832,11 @@ async fn machine_enable_rolls_back_remote_promote_when_self_record_fails() {
     let mut peer = test_machine_record(
         "peer",
         "10.210.1.0/24",
-        Participation::Disabled,
+        MachineLifecycle::Standby,
         PublicKey([7; 32]),
     );
     peer.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
     peer.subnet = None;
-    peer.status = MachineStatus::Up;
     store.upsert_self_machine(&peer).await.expect("upsert peer");
 
     let seen_requests = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -821,13 +850,17 @@ async fn machine_enable_rolls_back_remote_promote_when_self_record_fails() {
             buf.read_line(&mut line).await.expect("read request");
             let request: DaemonRequest =
                 serde_json::from_str(&line).expect("decode daemon request");
-            let (label, response) = if matches!(request, DaemonRequest::MeshPromote { .. }) {
+            let (label, response) = if let DaemonRequest::MachineTransitionSelf {
+                goal: MachineTransitionGoal::Activate,
+                ..
+            } = request
+            {
                 (
-                    "promote",
+                    "activate",
                     DaemonResponse {
                         ok: true,
                         code: "OK".into(),
-                        message: "promoted".into(),
+                        message: "activated".into(),
                         payload: None,
                     },
                 )
@@ -841,7 +874,12 @@ async fn machine_enable_rolls_back_remote_promote_when_self_record_fails() {
                         payload: None,
                     },
                 )
-            } else if let DaemonRequest::MeshStandby { force } = request {
+            } else if let DaemonRequest::MachineTransitionSelf {
+                goal: MachineTransitionGoal::Standby,
+                force,
+                ..
+            } = request
+            {
                 {
                     assert!(force);
                     (
@@ -868,7 +906,7 @@ async fn machine_enable_rolls_back_remote_promote_when_self_record_fails() {
         }
     });
 
-    let response = state.handle_machine_enable("peer").await;
+    let response = state.handle_machine_activate("peer").await;
     assert!(!response.ok, "{}", response.message);
     assert_eq!(response.code, "SELF_RECORD_FAILED");
     assert!(
@@ -884,7 +922,7 @@ async fn machine_enable_rolls_back_remote_promote_when_self_record_fails() {
     assert_eq!(
         seen_requests,
         vec![
-            "promote".to_string(),
+            "activate".to_string(),
             "self_record".to_string(),
             "standby".to_string()
         ]
@@ -959,7 +997,7 @@ async fn make_state_with_remote_port(
     let founder_record = test_machine_record(
         "founder",
         "10.210.0.0/24",
-        Participation::Disabled,
+        MachineLifecycle::Standby,
         identity.public_key.clone(),
     );
     store
@@ -987,6 +1025,12 @@ async fn make_state_with_remote_port(
         "127.0.0.1:0".into(),
         1,
     );
+    let mut config = config;
+    config.lifecycle = if start_mesh {
+        NetworkLifecycle::Running
+    } else {
+        NetworkLifecycle::Stopped
+    };
     state.active = Some(ActiveMesh {
         config,
         mesh,
@@ -1009,7 +1053,7 @@ async fn teardown_state(state: &mut DaemonState) {
 fn test_machine_record(
     id: &str,
     subnet: &str,
-    participation: Participation,
+    lifecycle: MachineLifecycle,
     public_key: PublicKey,
 ) -> MachineRecord {
     MachineRecord {
@@ -1023,8 +1067,7 @@ fn test_machine_record(
         subnet: Some(subnet.parse().expect("valid subnet")),
         bridge_ip: None,
         endpoints: vec!["127.0.0.1:51820".into()],
-        status: MachineStatus::Unknown,
-        participation,
+        lifecycle,
         created_at: 0,
         updated_at: 0,
         labels: std::collections::BTreeMap::new(),
