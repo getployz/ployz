@@ -45,7 +45,10 @@ impl DaemonState {
     ) -> Result<String, TransitionError> {
         let (network_name, current) = {
             let Some(active) = self.active.as_ref() else {
-                return Err(TransitionError::new("NO_RUNNING_NETWORK", "no mesh running"));
+                return Err(TransitionError::new(
+                    "NO_RUNNING_NETWORK",
+                    "no mesh running",
+                ));
             };
             let Some(self_record) = active.mesh.authoritative_self_record().await else {
                 return Err(TransitionError::new(
@@ -67,7 +70,9 @@ impl DaemonState {
                 if current.lifecycle == MachineLifecycle::Active
                     && current.subnet == Some(assigned_subnet)
                 {
-                    return Ok(format!("machine already active with subnet {assigned_subnet}"));
+                    return Ok(format!(
+                        "machine already active with subnet {assigned_subnet}"
+                    ));
                 }
                 if current.lifecycle == MachineLifecycle::Draining {
                     return Err(TransitionError::new(
@@ -124,6 +129,7 @@ impl DaemonState {
                     ));
                 };
                 active.config.subnet = Some(assigned_subnet);
+                active.cached_subnet = Some(assigned_subnet);
                 Ok(format!(
                     "machine '{}' activated with subnet {}",
                     record.id, assigned_subnet
@@ -221,6 +227,7 @@ impl DaemonState {
                     ));
                 };
                 active.config.subnet = None;
+                active.cached_subnet = previous_subnet;
                 Ok(format!("machine '{}' entered standby", record.id))
             }
         }
