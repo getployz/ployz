@@ -300,13 +300,8 @@ pub fn project_certificates(
 ) -> HashMap<String, CertificateView> {
     certificates
         .iter()
-        .filter(|record| record.state == CertificateState::Active)
         .filter_map(|record| {
-            let active_version_id = record.active_version_id.as_deref()?;
-            let version = record
-                .versions
-                .iter()
-                .find(|version| version.version_id == active_version_id)?;
+            let version = record.installed_version()?;
             let hostname = normalize_request_host(&record.hostname);
             Some((
                 hostname.clone(),
@@ -919,29 +914,83 @@ mod tests {
     }
 
     #[test]
-    fn with_managed_tls_excludes_non_active_certs() {
-        let mut pending = active_cert("pending.example.com", "v1");
-        pending.state = CertificateState::Pending;
-        let mut issuing = active_cert("issuing.example.com", "v1");
-        issuing.state = CertificateState::Issuing;
-        let mut renewal = active_cert("renewal.example.com", "v1");
-        renewal.state = CertificateState::RenewalDue;
-        let mut failed = active_cert("failed.example.com", "v1");
-        failed.state = CertificateState::Failed;
+    fn with_managed_tls_serves_certs_with_installed_version_regardless_of_state() {
+        // Whether a cert is projected is governed by `installed_version()`,
+        // not by `state`. Renewal flips a healthy row to RenewalDue→Issuing
+        // (and possibly Failed on a non-retryable finalize) while keeping
+        // `active_version_id` pointing at the previous valid leaf, so all of
+        // those states must remain serviceable. Only `Pending` with no prior
+        // issuance — i.e. `active_version_id == None` — should drop out.
+        let mut pending_no_version = active_cert("pending.example.com", "v1");
+        pending_no_version.state = CertificateState::Pending;
+        pending_no_version.active_version_id = None;
+        pending_no_version.versions.clear();
+
+        let mut issuing_renewal = active_cert("issuing.example.com", "v1");
+        issuing_renewal.state = CertificateState::Issuing;
+        let mut renewal_due = active_cert("renewal.example.com", "v1");
+        renewal_due.state = CertificateState::RenewalDue;
+        let mut failed_with_fallback = active_cert("failed.example.com", "v1");
+        failed_with_fallback.state = CertificateState::Failed;
 
         let snapshot = with_managed_tls(
             GatewaySnapshot::empty(),
             &[],
             &[
-                pending,
-                issuing,
-                renewal,
-                failed,
+                pending_no_version,
+                issuing_renewal,
+                renewal_due,
+                failed_with_fallback,
                 active_cert("ok.example.com", "v1"),
             ],
         );
-        assert_eq!(snapshot.certificates.len(), 1);
+        // pending-without-version is dropped; the other four are served.
+        assert_eq!(snapshot.certificates.len(), 4);
         assert!(snapshot.certificates.contains_key("ok.example.com"));
+        assert!(snapshot.certificates.contains_key("issuing.example.com"));
+        assert!(snapshot.certificates.contains_key("renewal.example.com"));
+        assert!(snapshot.certificates.contains_key("failed.example.com"));
+        assert!(!snapshot.certificates.contains_key("pending.example.com"));
+    }
+
+    #[test]
+    fn with_managed_tls_keeps_serving_old_leaf_during_in_flight_renewal() {
+        // Concrete renewal scenario: cert was Active with version v1, the
+        // ticker promoted it to RenewalDue, start_one moved it to Issuing
+        // for the new order, but finalize hasn't completed. The gateway must
+        // keep handing out v1 — not blackhole TLS for the duration of the
+        // ACME round trip.
+        let mut renewing = active_cert("api.example.com", "v1");
+        renewing.state = CertificateState::Issuing;
+        renewing.order_url = Some("https://acme.test/orders/42".into());
+
+        let snapshot = with_managed_tls(GatewaySnapshot::empty(), &[], &[renewing]);
+        let entry = snapshot
+            .certificates
+            .get("api.example.com")
+            .expect("renewing cert should still serve the previous leaf");
+        // Material is the previously-issued v1, untouched by the in-flight order.
+        assert_eq!(entry.fullchain_pem, "fullchain:api.example.com");
+        assert_eq!(entry.private_key_pem, "key:api.example.com");
+    }
+
+    #[test]
+    fn with_managed_tls_keeps_serving_old_leaf_after_failed_renewal() {
+        // finalize_one's non-retryable error path explicitly restores
+        // `previous_active_version_id` before downgrading to Failed, so the
+        // gateway can keep using the prior leaf until the next reconcile pass
+        // retries. The projection must respect that fallback contract.
+        let mut failed = active_cert("api.example.com", "v1");
+        failed.state = CertificateState::Failed;
+        failed.last_error = Some("orderInvalid: rateLimited".into());
+
+        let snapshot = with_managed_tls(GatewaySnapshot::empty(), &[], &[failed]);
+        let entry = snapshot
+            .certificates
+            .get("api.example.com")
+            .expect("failed-with-fallback cert should still serve previous leaf");
+        assert_eq!(entry.fullchain_pem, "fullchain:api.example.com");
+        assert_eq!(entry.private_key_pem, "key:api.example.com");
     }
 
     #[test]
