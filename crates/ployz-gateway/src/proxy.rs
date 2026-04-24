@@ -231,13 +231,18 @@ fn is_retryable_method(method: &Method) -> bool {
 }
 
 fn append_header_value(upstream_request: &RequestHeader, name: &str, value: &str) -> String {
-    match upstream_request
+    let mut combined = upstream_request
         .headers
-        .get(name)
-        .and_then(|existing| existing.to_str().ok())
+        .get_all(name)
+        .iter()
+        .filter_map(|existing| existing.to_str().ok())
         .filter(|existing| !existing.is_empty())
-    {
-        Some(existing) => format!("{existing}, {value}"),
-        None => value.to_string(),
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    if !combined.is_empty() {
+        combined.push_str(", ");
     }
+    combined.push_str(value);
+    combined
 }
