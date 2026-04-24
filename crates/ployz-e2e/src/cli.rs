@@ -35,18 +35,20 @@ pub(crate) enum Scenario {
     MachineDrainStandbyActivateCycle,
     TwoNodeEqualSplitAddDenied,
     ThreeNodeMajorityAddSucceeds,
+    DestroyWithDeadPeer,
     WireguardReconnect,
     DeploySmoke,
     BridgeForwardSmoke,
 }
 
 impl Scenario {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::SingleNodeInit,
         Self::MachineAddBasic,
         Self::MachineDrainStandbyActivateCycle,
         Self::TwoNodeEqualSplitAddDenied,
         Self::ThreeNodeMajorityAddSucceeds,
+        Self::DestroyWithDeadPeer,
         Self::WireguardReconnect,
         Self::DeploySmoke,
         Self::BridgeForwardSmoke,
@@ -69,6 +71,7 @@ impl Scenario {
             Self::ThreeNodeMajorityAddSucceeds => {
                 &["founder", "peer1", "peer2", "target1", "target2"]
             }
+            Self::DestroyWithDeadPeer => &["founder", "peer1", "peer2"],
         }
     }
 
@@ -80,6 +83,7 @@ impl Scenario {
             Self::MachineDrainStandbyActivateCycle => "machine_drain_standby_activate_cycle",
             Self::TwoNodeEqualSplitAddDenied => "two_node_equal_split_add_denied",
             Self::ThreeNodeMajorityAddSucceeds => "three_node_majority_add_succeeds",
+            Self::DestroyWithDeadPeer => "destroy_with_dead_peer",
             Self::WireguardReconnect => "wireguard_reconnect",
             Self::DeploySmoke => "deploy_smoke",
             Self::BridgeForwardSmoke => "bridge_forward_smoke",
@@ -95,6 +99,7 @@ impl Scenario {
             | Self::MachineDrainStandbyActivateCycle
             | Self::TwoNodeEqualSplitAddDenied
             | Self::ThreeNodeMajorityAddSucceeds
+            | Self::DestroyWithDeadPeer
             | Self::WireguardReconnect
             | Self::DeploySmoke => "host",
         }

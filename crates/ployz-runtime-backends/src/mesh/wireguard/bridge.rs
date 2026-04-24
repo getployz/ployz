@@ -276,6 +276,21 @@ struct BridgeState<'a, 'sockets> {
     wg_scratch: &'a mut [u8],
 }
 
+#[derive(Clone, Copy)]
+struct BridgeEnvironment<'a> {
+    diag: &'a BridgeDiag,
+    udp: &'a UdpSocket,
+    peer_endpoint: SocketAddr,
+}
+
+struct BridgeRuntime<'a, 'sockets> {
+    tunn: &'a mut Tunn,
+    iface: &'a mut Interface,
+    device: &'a mut VirtualDevice,
+    sockets: &'a mut SocketSet<'sockets>,
+    relays: &'a mut Vec<OutboundRelay>,
+}
+
 struct BridgeScratch<'a> {
     timer: &'a mut [u8],
     decode: &'a mut [u8],
@@ -285,25 +300,19 @@ struct BridgeScratch<'a> {
 
 impl<'a, 'sockets> BridgeState<'a, 'sockets> {
     fn new(
-        diag: &'a BridgeDiag,
-        udp: &'a UdpSocket,
-        peer_endpoint: SocketAddr,
-        tunn: &'a mut Tunn,
-        iface: &'a mut Interface,
-        device: &'a mut VirtualDevice,
-        sockets: &'a mut SocketSet<'sockets>,
-        relays: &'a mut Vec<OutboundRelay>,
+        environment: BridgeEnvironment<'a>,
+        runtime: BridgeRuntime<'a, 'sockets>,
         scratch: BridgeScratch<'a>,
     ) -> Self {
         Self {
-            diag,
-            udp,
-            peer_endpoint,
-            tunn,
-            iface,
-            device,
-            sockets,
-            relays,
+            diag: environment.diag,
+            udp: environment.udp,
+            peer_endpoint: environment.peer_endpoint,
+            tunn: runtime.tunn,
+            iface: runtime.iface,
+            device: runtime.device,
+            sockets: runtime.sockets,
+            relays: runtime.relays,
             timer_scratch: scratch.timer,
             decode_scratch: scratch.decode,
             drain_scratch: scratch.drain,
@@ -419,7 +428,6 @@ impl<'a, 'sockets> BridgeState<'a, 'sockets> {
     }
 }
 
-#[allow(clippy::indexing_slicing)]
 async fn bridge_event_loop(
     bridge_secret: StaticSecret,
     container_pubkey: X25519Public,
@@ -474,6 +482,11 @@ async fn bridge_event_loop(
     let mut drain_scratch = [0u8; MAX_WG_PACKET];
     let mut wg_scratch = [0u8; MAX_WG_PACKET];
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(POLL_INTERVAL_MS));
+    let environment = BridgeEnvironment {
+        diag: diag.as_ref(),
+        udp: &udp,
+        peer_endpoint,
+    };
 
     // Initiate WireGuard handshake (best-effort — container port may not be ready yet,
     // boringtun timers will retry automatically)
@@ -493,14 +506,14 @@ async fn bridge_event_loop(
             // Timer: WG keepalives + smoltcp poll + relay data
             _ = interval.tick() => {
                 let mut state = BridgeState::new(
-                    diag.as_ref(),
-                    &udp,
-                    peer_endpoint,
-                    &mut tunn,
-                    &mut iface,
-                    &mut device,
-                    &mut sockets,
-                    &mut relays,
+                    environment,
+                    BridgeRuntime {
+                        tunn: &mut tunn,
+                        iface: &mut iface,
+                        device: &mut device,
+                        sockets: &mut sockets,
+                        relays: &mut relays,
+                    },
                     BridgeScratch {
                         timer: &mut timer_scratch,
                         decode: &mut decode_scratch,
@@ -543,15 +556,19 @@ async fn bridge_event_loop(
                 }
 
                 diag.mark_recv_packet();
+                let Some(packet) = udp_recv_buf.get(..n) else {
+                    debug!(len = n, "UDP recv length exceeded buffer");
+                    continue;
+                };
                 let mut state = BridgeState::new(
-                    diag.as_ref(),
-                    &udp,
-                    peer_endpoint,
-                    &mut tunn,
-                    &mut iface,
-                    &mut device,
-                    &mut sockets,
-                    &mut relays,
+                    environment,
+                    BridgeRuntime {
+                        tunn: &mut tunn,
+                        iface: &mut iface,
+                        device: &mut device,
+                        sockets: &mut sockets,
+                        relays: &mut relays,
+                    },
                     BridgeScratch {
                         timer: &mut timer_scratch,
                         decode: &mut decode_scratch,
@@ -559,21 +576,21 @@ async fn bridge_event_loop(
                         wg: &mut wg_scratch,
                     },
                 );
-                state.handle_udp_packet(&udp_recv_buf[..n]).await;
+                state.handle_udp_packet(packet).await;
             }
 
             // Accept new outbound TCP connections
             result = accept_any(&listeners) => {
                 if let Some((stream, overlay_dest, local_addr)) = result {
                     let mut state = BridgeState::new(
-                        diag.as_ref(),
-                        &udp,
-                        peer_endpoint,
-                        &mut tunn,
-                        &mut iface,
-                        &mut device,
-                        &mut sockets,
-                        &mut relays,
+                        environment,
+                        BridgeRuntime {
+                            tunn: &mut tunn,
+                            iface: &mut iface,
+                            device: &mut device,
+                            sockets: &mut sockets,
+                            relays: &mut relays,
+                        },
                         BridgeScratch {
                             timer: &mut timer_scratch,
                             decode: &mut decode_scratch,
@@ -701,7 +718,11 @@ fn handle_host_read_result(socket: &mut TcpSocket<'_>, result: std::io::Result<u
             socket.close();
         }
         Ok(n) => {
-            let _ = socket.send_slice(&buf[..n]);
+            if let Some(data) = buf.get(..n) {
+                let _ = socket.send_slice(data);
+            } else {
+                socket.abort();
+            }
         }
         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
         Err(e) => {
@@ -718,14 +739,20 @@ fn write_overlay_to_host(relay: &mut OutboundRelay, socket: &mut TcpSocket<'_>) 
 
     let mut buf = [0u8; RELAY_IO_BUF_SIZE];
     match socket.recv_slice(&mut buf) {
-        Ok(n) if n > 0 => match relay.stream.try_write(&buf[..n]) {
-            Ok(_) => {}
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(e) => {
-                debug!(?e, "host TCP write error");
+        Ok(n) if n > 0 => {
+            if let Some(data) = buf.get(..n) {
+                match relay.stream.try_write(data) {
+                    Ok(_) => {}
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(e) => {
+                        debug!(?e, "host TCP write error");
+                        socket.abort();
+                    }
+                }
+            } else {
                 socket.abort();
             }
-        },
+        }
         _ => {}
     }
 }
@@ -836,38 +863,60 @@ mod tests {
     fn sample_ipv6_packet() -> Vec<u8> {
         let payload = [9u8, 8, 7, 6];
         let mut packet = vec![0u8; 40 + payload.len()];
-        packet[0] = 0x60;
-        packet[4..6].copy_from_slice(&(payload.len() as u16).to_be_bytes());
-        packet[6] = 17;
-        packet[7] = 64;
-        packet[8..24].copy_from_slice(&Ipv6Addr::LOCALHOST.octets());
-        packet[24..40].copy_from_slice(&Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2).octets());
-        packet[40..].copy_from_slice(&payload);
+        *packet.first_mut().expect("ipv6 version byte") = 0x60;
+        packet
+            .get_mut(4..6)
+            .expect("ipv6 payload length bytes")
+            .copy_from_slice(&(payload.len() as u16).to_be_bytes());
+        *packet.get_mut(6).expect("ipv6 next-header byte") = 17;
+        *packet.get_mut(7).expect("ipv6 hop-limit byte") = 64;
+        packet
+            .get_mut(8..24)
+            .expect("ipv6 source bytes")
+            .copy_from_slice(&Ipv6Addr::LOCALHOST.octets());
+        packet
+            .get_mut(24..40)
+            .expect("ipv6 destination bytes")
+            .copy_from_slice(&Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2).octets());
+        packet
+            .get_mut(40..)
+            .expect("ipv6 payload bytes")
+            .copy_from_slice(&payload);
         packet
     }
 
     fn tcp_flags(packet: &[u8]) -> u8 {
-        packet[53]
+        *packet.get(53).expect("tcp flags byte")
     }
 
     fn ipv6_source(packet: &[u8]) -> Ipv6Addr {
         let mut octets = [0u8; 16];
-        octets.copy_from_slice(&packet[8..24]);
+        octets.copy_from_slice(packet.get(8..24).expect("ipv6 source bytes"));
         Ipv6Addr::from(octets)
     }
 
     fn ipv6_destination(packet: &[u8]) -> Ipv6Addr {
         let mut octets = [0u8; 16];
-        octets.copy_from_slice(&packet[24..40]);
+        octets.copy_from_slice(packet.get(24..40).expect("ipv6 destination bytes"));
         Ipv6Addr::from(octets)
     }
 
     fn tcp_source_port(packet: &[u8]) -> u16 {
-        u16::from_be_bytes([packet[40], packet[41]])
+        let bytes: [u8; 2] = packet
+            .get(40..42)
+            .expect("tcp source port bytes")
+            .try_into()
+            .expect("tcp source port length");
+        u16::from_be_bytes(bytes)
     }
 
     fn tcp_destination_port(packet: &[u8]) -> u16 {
-        u16::from_be_bytes([packet[42], packet[43]])
+        let bytes: [u8; 2] = packet
+            .get(42..44)
+            .expect("tcp destination port bytes")
+            .try_into()
+            .expect("tcp destination port length");
+        u16::from_be_bytes(bytes)
     }
 
     async fn connected_tcp_pair() -> (TcpStream, TcpStream) {
@@ -905,7 +954,7 @@ mod tests {
             .await
             .expect("recv udp packet");
         assert_eq!(src, send_udp.local_addr().expect("send addr"));
-        assert_eq!(&recv_buf[..n], &[1u8, 2, 3, 4]);
+        assert_eq!(recv_buf.get(..n).expect("received packet"), &[1u8, 2, 3, 4]);
         assert_eq!(diag.snapshot().2, 1);
         assert!(device.rx_queue.is_empty());
     }
@@ -964,7 +1013,11 @@ mod tests {
             .await
             .expect("recv encrypted packet");
         let mut decode_scratch = [0u8; MAX_WG_PACKET];
-        let result = right_tunn.decapsulate(None, &recv_buf[..n], &mut decode_scratch);
+        let result = right_tunn.decapsulate(
+            None,
+            recv_buf.get(..n).expect("received encrypted packet"),
+            &mut decode_scratch,
+        );
         let TunnResult::WriteToTunnelV6(recv_packet, recv_addr) = result else {
             panic!("expected tunnel packet");
         };
@@ -1017,7 +1070,10 @@ mod tests {
         retain_open_relays(&mut relays, &sockets);
 
         assert_eq!(relays.len(), 1);
-        assert_eq!(relays[0].overlay_dest, open_dest);
+        assert_eq!(
+            relays.first().expect("remaining relay").overlay_dest,
+            open_dest
+        );
 
         drop(peer_a);
         drop(peer_b);
@@ -1102,7 +1158,11 @@ mod tests {
             .await
             .expect("recv encrypted syn");
         let mut peer_decode_scratch = [0u8; MAX_WG_PACKET];
-        let result = right_tunn.decapsulate(None, &recv_buf[..n], &mut peer_decode_scratch);
+        let result = right_tunn.decapsulate(
+            None,
+            recv_buf.get(..n).expect("received encrypted syn"),
+            &mut peer_decode_scratch,
+        );
         let TunnResult::WriteToTunnelV6(packet, recv_addr) = result else {
             panic!("expected tunneled ipv6 tcp packet");
         };
@@ -1115,7 +1175,10 @@ mod tests {
         assert_ne!(tcp_flags(packet) & 0x02, 0);
         assert_eq!(tcp_flags(packet) & 0x10, 0);
         assert_eq!(state.relays.len(), 1);
-        assert_eq!(state.relays[0].overlay_dest, overlay_dest);
+        assert_eq!(
+            state.relays.first().expect("created relay").overlay_dest,
+            overlay_dest
+        );
         assert_eq!(diag.snapshot().2, 1);
 
         drop(client);

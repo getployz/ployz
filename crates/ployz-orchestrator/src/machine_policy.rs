@@ -87,7 +87,10 @@ mod tests {
 
     #[test]
     fn enabled_is_new_placement_candidate() {
-        assert!(is_new_placement_candidate(&machine("enabled", MachineLifecycle::Active)));
+        assert!(is_new_placement_candidate(&machine(
+            "enabled",
+            MachineLifecycle::Active
+        )));
         assert!(!is_new_placement_candidate(&machine(
             "draining",
             MachineLifecycle::Draining
@@ -115,7 +118,10 @@ mod tests {
     #[test]
     fn diagnostic_role_marks_disabled_as_informational() {
         assert_eq!(
-            diagnostic_role(&machine("enabled", MachineLifecycle::Active), &MachineId("self".into())),
+            diagnostic_role(
+                &machine("enabled", MachineLifecycle::Active),
+                &MachineId("self".into())
+            ),
             Some(DiagnosticRole::Blocking)
         );
         assert_eq!(
@@ -126,7 +132,10 @@ mod tests {
             Some(DiagnosticRole::Informational)
         );
         assert_eq!(
-            diagnostic_role(&machine("self", MachineLifecycle::Active), &MachineId("self".into())),
+            diagnostic_role(
+                &machine("self", MachineLifecycle::Active),
+                &MachineId("self".into())
+            ),
             None
         );
     }

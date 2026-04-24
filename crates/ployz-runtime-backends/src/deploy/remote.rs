@@ -41,7 +41,7 @@ impl RemoteControlHandle {
 
     pub async fn shutdown(self) {
         self.cancel.cancel();
-        let _ = self.task.await;
+        self.task.abort();
     }
 }
 
