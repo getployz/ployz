@@ -244,6 +244,12 @@ impl MeshStartTx {
 
     /// Commit: publish the active mesh into daemon state.
     async fn publish_active(&mut self, state: &mut DaemonState) -> Result<(), StartMeshError> {
+        let spawn_renewal_ticker = !state.runtime_is_memory_test();
+        let peer_rpc_port = if spawn_renewal_ticker {
+            Some(state.peer_control_port()?)
+        } else {
+            None
+        };
         let Some(mesh) = self.mesh.take() else {
             return Err(StartMeshError::MeshUp(
                 "startup transaction missing mesh at commit".into(),
@@ -255,22 +261,14 @@ impl MeshStartTx {
         let gateway = std::mem::replace(&mut self.gateway, Box::new(NoopRuntimeHandle));
         let dns = std::mem::replace(&mut self.dns, Box::new(NoopRuntimeHandle));
 
-        let store_for_ticker = (!state.runtime_is_memory_test()).then(|| mesh.store.clone());
+        let store_for_ticker = spawn_renewal_ticker.then(|| mesh.store.clone());
 
-        state.active = Some(ActiveMesh {
-            config: self.config.clone(),
-            cached_subnet: self.config.subnet,
-            mesh,
-            remote_control,
-            peer_control,
-            gateway,
-            dns,
-        });
-
-        if let Some(store) = store_for_ticker {
-            let peer_rpc_port = match state.peer_control_port() {
-                Ok(port) => port,
-                Err(error) => return Err(error),
+        let certificate_renewal = if let Some(store) = store_for_ticker {
+            let Some(peer_rpc_port) = peer_rpc_port else {
+                return Err(StartMeshError::RemoteControl {
+                    bind: std::net::SocketAddr::from(([127, 0, 0, 1], state.remote_control_port)),
+                    error: "certificate renewal missing peer control port".into(),
+                });
             };
             let coordinator = std::sync::Arc::new(
                 crate::daemon::cert_coordination::OverlayIssuanceCoordinator::new(
@@ -287,14 +285,27 @@ impl MeshStartTx {
                     peer_rpc_port,
                 ),
             );
-            spawn_certificate_renewal_ticker(
+            Some(spawn_certificate_renewal_ticker(
                 store,
                 CertificateManagerConfig::from_env(),
                 RenewalConfig::from_env(),
                 coordinator,
                 readiness,
-            );
-        }
+            ))
+        } else {
+            None
+        };
+
+        state.active = Some(ActiveMesh {
+            config: self.config.clone(),
+            cached_subnet: self.config.subnet,
+            mesh,
+            remote_control,
+            peer_control,
+            gateway,
+            dns,
+            certificate_renewal,
+        });
         Ok(())
     }
 

@@ -577,6 +577,7 @@ mod tests {
             peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            certificate_renewal: None,
         });
 
         (state, store, network)
@@ -631,6 +632,7 @@ mod tests {
             peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            certificate_renewal: None,
         }
     }
 
