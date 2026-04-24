@@ -371,7 +371,7 @@ async fn machine_add_releases_reserved_subnet_when_operation_start_fails() {
 }
 
 #[tokio::test]
-async fn machine_remove_refuses_enabled_without_force() {
+async fn machine_remove_refuses_offline_peer_without_force() {
     let (state, store, _) = make_state(false).await;
     store
         .upsert_self_machine(&test_machine_record(
@@ -385,11 +385,11 @@ async fn machine_remove_refuses_enabled_without_force() {
 
     let response = state.handle_machine_remove("peer-1", false).await;
     assert!(!response.ok);
-    assert!(response.message.contains("must be standby"));
+    assert!(response.message.contains("--force"));
 }
 
 #[tokio::test]
-async fn machine_remove_deletes_disabled_record() {
+async fn machine_remove_force_deletes_registry_record() {
     let (state, store, _) = make_state(false).await;
     store
         .upsert_self_machine(&test_machine_record(
@@ -401,7 +401,7 @@ async fn machine_remove_deletes_disabled_record() {
         .await
         .expect("upsert peer");
 
-    let response = state.handle_machine_remove("peer-1", false).await;
+    let response = state.handle_machine_remove("peer-1", true).await;
     assert!(response.ok, "{}", response.message);
 
     let machines = store.list_machines().await.expect("list machines");

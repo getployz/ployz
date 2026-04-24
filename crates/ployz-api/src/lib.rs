@@ -1,7 +1,6 @@
 use ipnet::Ipv4Net;
 use ployz_types::model::{
-    InstanceStatusRecord, MachineId, MachineLifecycle, MachineRecord, NetworkId,
-    NetworkLifecycle,
+    InstanceStatusRecord, MachineId, MachineLifecycle, MachineRecord, NetworkId, NetworkLifecycle,
 };
 use serde::{Deserialize, Serialize};
 
@@ -161,6 +160,19 @@ pub enum DaemonRequest {
     MeshDestroy {
         network: String,
     },
+    MeshPeerPrepareDestroy {
+        operation_id: String,
+        network_id: NetworkId,
+        coordinator_id: MachineId,
+        expected_machine_ids: Vec<MachineId>,
+    },
+    MeshPeerCancelDestroy {
+        operation_id: String,
+    },
+    MeshPeerExecuteDestroy {
+        operation_id: String,
+        network_id: NetworkId,
+    },
     MachineList,
     MachineInit {
         target: String,
@@ -184,6 +196,11 @@ pub enum DaemonRequest {
     MachineRemove {
         id: String,
         force: bool,
+    },
+    MeshPeerRemoveMachine {
+        operation_id: String,
+        network_id: NetworkId,
+        machine_id: MachineId,
     },
     MachineOperationList,
     MachineOperationGet {
