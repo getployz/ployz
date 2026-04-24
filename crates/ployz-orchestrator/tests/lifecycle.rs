@@ -6,7 +6,7 @@ use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{MachineStore, SyncStatus};
 use ployz_types::model::{
-    JoinResponse, MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
+    JoinResponse, MachineId, MachineLifecycle, MachineRecord, OverlayIp, PublicKey,
 };
 use std::net::Ipv6Addr;
 use std::sync::Arc;
@@ -21,8 +21,7 @@ fn test_record(id: &str, key_byte: u8) -> MachineRecord {
         control_target: None,
         bridge_ip: None,
         endpoints: vec![format!("10.0.0.{key_byte}:51820")],
-        status: MachineStatus::Unknown,
-        participation: Participation::Disabled,
+        lifecycle: MachineLifecycle::Standby,
         created_at: 0,
         updated_at: 0,
         labels: std::collections::BTreeMap::new(),
@@ -104,7 +103,7 @@ async fn startup_reaches_running_single_node() {
         .authoritative_self_record()
         .await
         .expect("self record should exist");
-    assert_eq!(self_record.participation, Participation::Disabled);
+    assert_eq!(self_record.lifecycle, MachineLifecycle::Standby);
 }
 
 #[tokio::test]

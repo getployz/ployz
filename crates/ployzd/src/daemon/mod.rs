@@ -194,8 +194,10 @@ impl DaemonState {
         &self,
         code: &str,
         message: &'static str,
-    ) -> Result<&ActiveMesh, DaemonResponse> {
-        self.active.as_ref().ok_or_else(|| self.err(code, message))
+    ) -> Result<&ActiveMesh, Box<DaemonResponse>> {
+        self.active
+            .as_ref()
+            .ok_or_else(|| Box::new(self.err(code, message)))
     }
 
     pub fn ok_json_pretty<T: Serialize>(

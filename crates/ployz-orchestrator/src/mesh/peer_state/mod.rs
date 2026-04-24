@@ -11,9 +11,7 @@ mod tests {
 
     use tokio::time::Instant;
 
-    use crate::model::{
-        MachineId, MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey,
-    };
+    use crate::model::{MachineId, MachineLifecycle, MachineRecord, OverlayIp, PublicKey};
 
     use super::map::PeerStateMap;
 
@@ -26,8 +24,7 @@ mod tests {
             subnet: None,
             bridge_ip: None,
             endpoints: endpoints.into_iter().map(String::from).collect(),
-            status: MachineStatus::Unknown,
-            participation: Participation::Disabled,
+            lifecycle: MachineLifecycle::Standby,
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),
@@ -46,8 +43,7 @@ mod tests {
             subnet: None,
             bridge_ip: None,
             endpoints: vec!["a:1".into(), "b:2".into(), "c:3".into()],
-            status: MachineStatus::Unknown,
-            participation: Participation::Disabled,
+            lifecycle: MachineLifecycle::Standby,
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),

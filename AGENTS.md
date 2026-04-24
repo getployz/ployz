@@ -60,6 +60,9 @@
 - Never `.unwrap()` on Option state — use `let Some(x) = opt else { return err }`
 - Add `#[must_use]` on all builder methods returning `Self`
 - Prefer enums over boolean parameters
+- Treat Clippy suppressions as a last resort. First ask why the lint is firing,
+  whether the code should be split, simplified, or reshaped, and fix the code
+  directly when that makes sense.
 
 # Test Discipline
 
