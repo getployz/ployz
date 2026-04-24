@@ -2,9 +2,9 @@ use crate::cli::Scenario;
 use crate::error::{Error, Result};
 use crate::scenarios;
 use crate::support::{
-    CommandOutput, DaemonJsonPayload, docker_outer, docker_outer_raw, parse_daemon_json_response,
-    parse_ready, parse_ready_payload, pick_free_port, run_command, run_command_expect_ok,
-    wait_until,
+    docker_outer, docker_outer_raw, parse_daemon_json_response, parse_ready, parse_ready_payload,
+    pick_free_port, run_command, run_command_expect_ok, wait_until, CommandOutput,
+    DaemonJsonPayload,
 };
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -143,10 +143,15 @@ impl ScenarioRun {
     }
 
     pub(crate) fn execute(&mut self) -> Result<()> {
-        self.log_progress("starting scenario");
+        self.log_progress(&format!(
+            "starting scenario '{}' with image '{}'",
+            self.scenario.as_str(),
+            self.image
+        ));
         self.generate_ssh_keypair()?;
         self.create_outer_network()?;
         self.start_nodes(self.scenario.node_names())?;
+        self.log_progress("running scenario steps");
         scenarios::run(self)
     }
 
@@ -283,16 +288,20 @@ impl ScenarioRun {
     }
 
     pub(crate) fn mesh_init(&self, node_name: &str, network: &str) -> Result<()> {
+        self.log_progress(&format!("mesh_init node={node_name} network={network}"));
         self.ssh_expect_ok_name(node_name, &format!("ployzd mesh init {network}"))?;
+        self.log_progress(&format!("mesh_init complete node={node_name}"));
         Ok(())
     }
 
     pub(crate) fn wait_mesh_ready_name(&self, node_name: &str) -> Result<()> {
+        self.log_progress(&format!("wait_mesh_ready start node={node_name}"));
         self.wait_mesh_ready_default(self.node(node_name)?)
     }
 
     pub(crate) fn wait_mesh_standby_name(&self, node_name: &str) -> Result<()> {
         let node = self.node(node_name)?;
+        self.log_progress(&format!("wait_mesh_standby start node={node_name}"));
         wait_until(READY_WAIT_TIMEOUT, || {
             let Ok(output) = self.ssh_run(node, "ployzd --plain mesh ready --json") else {
                 return Ok(false);
@@ -308,11 +317,14 @@ impl ScenarioRun {
                 "mesh did not become standby-ready on {}: {error}",
                 node.name
             ))
-        })
+        })?;
+        self.log_progress(&format!("wait_mesh_standby complete node={node_name}"));
+        Ok(())
     }
 
     pub(crate) fn wait_mesh_absent_name(&self, node_name: &str) -> Result<()> {
         let node = self.node(node_name)?;
+        self.log_progress(&format!("wait_mesh_absent start node={node_name}"));
         wait_until(READY_WAIT_TIMEOUT, || {
             let Ok(output) = self.ssh_run(node, "ployzd --plain mesh ready --json") else {
                 return Ok(false);
@@ -328,7 +340,9 @@ impl ScenarioRun {
                 "mesh did not become absent on {}: {error}",
                 node.name
             ))
-        })
+        })?;
+        self.log_progress(&format!("wait_mesh_absent complete node={node_name}"));
+        Ok(())
     }
 
     pub(crate) fn machine_add(&self, controller_name: &str, target_name: &str) -> Result<()> {
@@ -340,25 +354,40 @@ impl ScenarioRun {
         controller_name: &str,
         target_names: &[&str],
     ) -> Result<()> {
+        self.log_progress(&format!(
+            "machine_add controller={controller_name} targets={}",
+            target_names.join(",")
+        ));
         let controller = self.node(controller_name)?;
         let command = self.machine_add_command(target_names)?;
         self.ssh_expect_ok(controller, &command)?;
+        self.log_progress(&format!(
+            "machine_add complete controller={controller_name}"
+        ));
         Ok(())
     }
 
     pub(crate) fn machine_activate(&self, controller_name: &str, target_name: &str) -> Result<()> {
+        self.log_progress(&format!(
+            "machine_activate controller={controller_name} target={target_name}"
+        ));
         self.ssh_expect_ok_name(
             controller_name,
             &format!("ployzd machine activate {target_name}"),
         )?;
+        self.log_progress(&format!("machine_activate complete target={target_name}"));
         Ok(())
     }
 
     pub(crate) fn machine_drain(&self, controller_name: &str, target_name: &str) -> Result<()> {
+        self.log_progress(&format!(
+            "machine_drain controller={controller_name} target={target_name}"
+        ));
         self.ssh_expect_ok_name(
             controller_name,
             &format!("ployzd machine drain {target_name}"),
         )?;
+        self.log_progress(&format!("machine_drain complete target={target_name}"));
         Ok(())
     }
 
@@ -368,12 +397,16 @@ impl ScenarioRun {
         target_name: &str,
         force: bool,
     ) -> Result<()> {
+        self.log_progress(&format!(
+            "machine_standby controller={controller_name} target={target_name} force={force}"
+        ));
         let command = if force {
             format!("ployzd machine standby {target_name} --force")
         } else {
             format!("ployzd machine standby {target_name}")
         };
         self.ssh_expect_ok_name(controller_name, &command)?;
+        self.log_progress(&format!("machine_standby complete target={target_name}"));
         Ok(())
     }
 
@@ -432,6 +465,9 @@ impl ScenarioRun {
             .join(", ");
         let mut last_snapshot: Option<Vec<MachineRow>> = None;
         let mut consecutive_matches: u8 = 0;
+        self.log_progress(&format!(
+            "wait_machine_rows start node={node_name} expected=[{expected_labels}]"
+        ));
 
         wait_until(STATE_WAIT_TIMEOUT, || {
             let Ok(output) = self.ssh_run(node, "ployzd --json machine ls") else {
@@ -470,7 +506,9 @@ impl ScenarioRun {
                 "machine state did not settle on {} for [{}]: {error}",
                 node.name, expected_labels
             ))
-        })
+        })?;
+        self.log_progress(&format!("wait_machine_rows complete node={node_name}"));
+        Ok(())
     }
 
     pub(crate) fn assert_unique_machine_subnets(&self, node_name: &str) -> Result<()> {
@@ -493,6 +531,11 @@ impl ScenarioRun {
     }
 
     pub(crate) fn partition_groups(&self, left: &[&str], right: &[&str]) -> Result<()> {
+        self.log_progress(&format!(
+            "partition_groups start left={} right={}",
+            left.join(","),
+            right.join(",")
+        ));
         self.clear_partition_rules()?;
 
         for node in &self.nodes {
@@ -508,10 +551,12 @@ impl ScenarioRun {
             }
         }
 
+        self.log_progress("partition_groups complete");
         Ok(())
     }
 
     pub(crate) fn clear_partition_rules(&self) -> Result<()> {
+        self.log_progress("clear_partition_rules start");
         for node in &self.nodes {
             self.ssh_expect_ok(
                 node,
@@ -526,6 +571,7 @@ impl ScenarioRun {
             )?;
         }
 
+        self.log_progress("clear_partition_rules complete");
         Ok(())
     }
 
@@ -852,6 +898,7 @@ impl ScenarioRun {
     }
 
     fn wait_for_ssh(&self, node: &Node) -> Result<()> {
+        self.log_progress(&format!("wait_for_ssh start node={}", node.name));
         wait_until(SSH_WAIT_TIMEOUT, || match self.ssh_run(node, "true") {
             Ok(output) => Ok(output.status.success()),
             Err(_) => Ok(false),
@@ -861,10 +908,13 @@ impl ScenarioRun {
                 "ssh did not become ready on {}: {error}",
                 node.name
             ))
-        })
+        })?;
+        self.log_progress(&format!("wait_for_ssh complete node={}", node.name));
+        Ok(())
     }
 
     fn wait_for_daemon(&self, node: &Node) -> Result<()> {
+        self.log_progress(&format!("wait_for_daemon start node={}", node.name));
         wait_until(DAEMON_WAIT_TIMEOUT, || {
             match self.ssh_run(node, "ployzd status") {
                 Ok(output) => Ok(output.status.success()),
@@ -876,10 +926,17 @@ impl ScenarioRun {
                 "daemon did not become ready on {}: {error}",
                 node.name
             ))
-        })
+        })?;
+        self.log_progress(&format!("wait_for_daemon complete node={}", node.name));
+        Ok(())
     }
 
     fn wait_mesh_ready(&self, node: &Node, timeout: Duration) -> Result<()> {
+        self.log_progress(&format!(
+            "wait_mesh_ready polling node={} timeout={}s",
+            node.name,
+            timeout.as_secs()
+        ));
         wait_until(timeout, || {
             let Ok(output) = self.ssh_run(node, "ployzd --plain mesh ready --json") else {
                 return Ok(false);
@@ -894,7 +951,9 @@ impl ScenarioRun {
                 "mesh did not become ready on {}: {error}",
                 node.name
             ))
-        })
+        })?;
+        self.log_progress(&format!("wait_mesh_ready complete node={}", node.name));
+        Ok(())
     }
 
     fn generate_ssh_keypair(&mut self) -> Result<()> {
