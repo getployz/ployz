@@ -10,12 +10,15 @@ build-release:
     if [[ "$(uname -s)" == "Linux" ]]; then
       ./scripts/install-ebpf-bytecode.sh
       cargo build --release -p ployzd --features ebpf-native --bins
-      cargo build --release -p ployz-gateway -p ployz-dns
+      cargo build --release -p ployz -p ployz-gateway -p ployz-dns
       exit 0
     fi
-    cargo build --release -p ployzd --bins -p ployz-gateway -p ployz-dns
+    cargo build --release -p ployzd --bins -p ployz -p ployz-gateway -p ployz-dns
 
 test:
+    cargo test --workspace --exclude ployzd --exclude ployz-runtime-backends
+
+test-all:
     cargo test
 
 bootstrap-linux *args:
