@@ -98,6 +98,7 @@ impl DaemonState {
                     )
                     .await
                 {
+                    self.stop_started_mesh_after_transition_failure().await;
                     return self.err("NETWORK_START_FAILED", error.message);
                 }
                 let config_path = NetworkConfig::path(&self.data_dir, network);

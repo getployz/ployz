@@ -2,9 +2,12 @@ use crate::daemon::setup::MeshStartOptions;
 use crate::mesh_state::network::NetworkConfig;
 use ployz_api::MachineTransitionGoal;
 use ployz_orchestrator::ipam::pick_candidate_subnet;
+use ployz_store_api::MachineStore;
+use ployz_types::model::MachineRecord;
 use ployz_types::model::{MachineLifecycle, NetworkLifecycle, NetworkName};
 use tracing::warn;
 
+use crate::daemon::ActiveMesh;
 use super::DaemonState;
 
 impl DaemonState {
@@ -134,7 +137,13 @@ impl DaemonState {
     }
 
     pub(crate) async fn handle_mesh_stop(&mut self, force: bool) -> ployz_api::DaemonResponse {
-        let (network_name, overlay_ip, cached_subnet, current_lifecycle) = {
+        let (
+            network_name,
+            overlay_ip,
+            cached_subnet,
+            current_lifecycle,
+            previous_self_record,
+        ) = {
             let Some(active) = self.active.as_ref() else {
                 return self.err("NO_RUNNING_NETWORK", "no mesh running");
             };
@@ -146,6 +155,7 @@ impl DaemonState {
                 active.config.overlay_ip,
                 active.config.subnet,
                 self_record.lifecycle,
+                self_record,
             )
         };
 
@@ -172,8 +182,18 @@ impl DaemonState {
             return self.err("NO_RUNNING_NETWORK", "no mesh running");
         };
         if let Err(error) = active.mesh.destroy().await {
+            let rollback_error =
+                restore_self_record_after_stop_failure(&mut active, &previous_self_record)
+                    .await
+                    .err();
             self.active = Some(active);
-            return self.err("NETWORK_STOP_FAILED", format!("mesh stop failed: {error}"));
+            let message = match rollback_error {
+                Some(rollback_error) => format!(
+                    "mesh stop failed: {error}; failed to restore self record: {rollback_error}"
+                ),
+                None => format!("mesh stop failed: {error}"),
+            };
+            return self.err("NETWORK_STOP_FAILED", message);
         }
         let _ = active.peer_control.shutdown().await;
         let _ = active.remote_control.shutdown().await;
@@ -287,7 +307,7 @@ impl DaemonState {
         ))
     }
 
-    async fn stop_started_mesh_after_transition_failure(&mut self) {
+    pub(super) async fn stop_started_mesh_after_transition_failure(&mut self) {
         let Some(mut active) = self.active.take() else {
             return;
         };
@@ -303,4 +323,26 @@ impl DaemonState {
             warn!(?error, "failed to stop gateway after transition error");
         }
     }
+}
+
+async fn restore_self_record_after_stop_failure(
+    active: &mut ActiveMesh,
+    previous_self_record: &MachineRecord,
+) -> Result<(), String> {
+    if let Err(error) = active.mesh.store.upsert_self_machine(previous_self_record).await {
+        return Err(format!("restore store self record: {error}"));
+    }
+
+    if active
+        .mesh
+        .update_authoritative_self_record(|record| {
+            *record = previous_self_record.clone();
+        })
+        .await
+        .is_none()
+    {
+        return Err("restore authoritative self record".to_string());
+    }
+
+    Ok(())
 }
