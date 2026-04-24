@@ -11,9 +11,9 @@ use super::types::{MachineListReport, MachineListReportRow};
 
 impl DaemonState {
     pub(crate) async fn handle_machine_list(&self) -> DaemonResponse {
-        let active = match self.active.as_ref() {
-            Some(active) => active,
-            None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
+        let active = match self.require_active("NO_RUNNING_NETWORK", "no mesh running") {
+            Ok(active) => active,
+            Err(response) => return response,
         };
 
         let report = match machine_list_report(active.mesh.store.clone()).await {
@@ -34,9 +34,9 @@ impl DaemonState {
     }
 
     pub(crate) async fn handle_machine_remove(&self, id: &str, force: bool) -> DaemonResponse {
-        let active = match self.active.as_ref() {
-            Some(active) => active,
-            None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
+        let active = match self.require_active("NO_RUNNING_NETWORK", "no mesh running") {
+            Ok(active) => active,
+            Err(response) => return response,
         };
 
         let machine_id = MachineId(id.to_string());

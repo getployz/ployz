@@ -37,16 +37,13 @@ impl DaemonState {
             Ok(manifest) => manifest,
             Err(response) => return *response,
         };
-        let active = match &self.active {
-            Some(active) => active,
-            None => return self.err("NO_MESH", "no mesh is running"),
+        let active = match self.require_active("NO_MESH", "no mesh is running") {
+            Ok(active) => active,
+            Err(response) => return response,
         };
 
         match preview(&active.mesh.store, &self.identity.machine_id, &manifest).await {
-            Ok(plan) => match serde_json::to_string_pretty(&plan) {
-                Ok(json) => self.ok(json),
-                Err(err) => self.err("ENCODE_PREVIEW", format!("encode preview: {err}")),
-            },
+            Ok(plan) => self.ok_json_pretty(&plan, "ENCODE_PREVIEW", "encode preview"),
             Err(err) => self.err("DEPLOY_PREVIEW_FAILED", format!("{err}")),
         }
     }
@@ -60,9 +57,9 @@ impl DaemonState {
             Ok(manifest) => manifest,
             Err(response) => return *response,
         };
-        let active = match &self.active {
-            Some(active) => active,
-            None => return self.err("NO_MESH", "no mesh is running"),
+        let active = match self.require_active("NO_MESH", "no mesh is running") {
+            Ok(active) => active,
+            Err(response) => return response,
         };
 
         let agent = Arc::new(DeployAgent::new(
@@ -86,28 +83,22 @@ impl DaemonState {
         )
         .await
         {
-            Ok(result) => match serde_json::to_string_pretty(&result) {
-                Ok(json) => self.ok(json),
-                Err(err) => self.err("ENCODE_DEPLOY", format!("encode deploy result: {err}")),
-            },
+            Ok(result) => self.ok_json_pretty(&result, "ENCODE_DEPLOY", "encode deploy result"),
             Err(err) => self.err("DEPLOY_APPLY_FAILED", format!("{err}")),
         }
     }
 
     pub async fn handle_deploy_export(&self, namespace: &str) -> DaemonResponse {
-        let active = match &self.active {
-            Some(active) => active,
-            None => return self.err("NO_MESH", "no mesh is running"),
+        let active = match self.require_active("NO_MESH", "no mesh is running") {
+            Ok(active) => active,
+            Err(response) => return response,
         };
         let namespace = Namespace(namespace.to_string());
         let manifest = match export_manifest(&active.mesh.store, &namespace).await {
             Ok(manifest) => manifest,
             Err(err) => return self.err("DEPLOY_EXPORT_FAILED", format!("{err}")),
         };
-        match serde_json::to_string_pretty(&manifest) {
-            Ok(json) => self.ok(json),
-            Err(err) => self.err("ENCODE_MANIFEST", format!("encode manifest: {err}")),
-        }
+        self.ok_json_pretty(&manifest, "ENCODE_MANIFEST", "encode manifest")
     }
 }
 
