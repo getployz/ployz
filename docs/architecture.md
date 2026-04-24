@@ -79,6 +79,29 @@ Those workloads can use short names (`db`) within their namespace or fully-quali
 Pingora-based HTTP/TCP reverse proxy. Routes incoming requests by Host header to healthy
 service instances discovered from the distributed store. Load balances across replicas.
 
+## Endpoint Ordering
+
+Published machine endpoints are not an arbitrary interface dump. The default
+ordering is part of transport behavior because it becomes the candidate order
+for WireGuard endpoint selection and endpoint rotation.
+
+The rules are:
+
+1. Drop unusable addresses entirely:
+   - loopback
+   - link-local
+   - IPv6 ULA
+   - interfaces below the minimum MTU required for the overlay
+   - container/bridge/tailscale helper interfaces that are not cluster-facing
+2. Order the remaining addresses by likely usefulness:
+   - private RFC1918 first
+   - CGNAT second
+   - public addresses after that
+
+Public-IP discovery is folded into the same ordering instead of being forced to
+the front. That keeps directly routable private paths ahead of broader internet
+paths while still advertising NAT-discovered public reachability when needed.
+
 ## Upgrade Contract
 
 The daemon separates cleanly into ephemeral control plane and persistent data plane:

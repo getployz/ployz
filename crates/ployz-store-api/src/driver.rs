@@ -80,163 +80,134 @@ impl StoreRuntimeControl for StoreDriver {
 }
 
 impl MachineStore for StoreDriver {
-    fn init(&self) -> impl std::future::Future<Output = Result<()>> + Send + '_ {
-        async move { self.backend.init().await }
+    async fn init(&self) -> Result<()> {
+        self.backend.init().await
     }
 
-    fn list_machines(
-        &self,
-    ) -> impl std::future::Future<Output = Result<Vec<MachineRecord>>> + Send + '_ {
-        async move { self.backend.list_machines().await }
+    async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
+        self.backend.list_machines().await
     }
 
-    fn upsert_self_machine<'a>(
-        &'a self,
-        record: &'a MachineRecord,
-    ) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
-        async move { self.backend.upsert_self_machine(record).await }
+    async fn upsert_self_machine(&self, record: &MachineRecord) -> Result<()> {
+        self.backend.upsert_self_machine(record).await
     }
 
-    fn delete_machine<'a>(
-        &'a self,
-        id: &'a MachineId,
-    ) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
-        async move { self.backend.delete_machine(id).await }
+    async fn delete_machine(&self, id: &MachineId) -> Result<()> {
+        self.backend.delete_machine(id).await
     }
 
-    fn subscribe_machines(
-        &self,
-    ) -> impl std::future::Future<Output = Result<MachineSubscription>> + Send + '_ {
-        async move { self.backend.subscribe_machines().await }
+    async fn subscribe_machines(&self) -> Result<MachineSubscription> {
+        self.backend.subscribe_machines().await
     }
 }
 
 impl InviteStore for StoreDriver {
-    fn create_invite<'a>(
-        &'a self,
-        invite: &'a InviteRecord,
-    ) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
-        async move { self.backend.create_invite(invite).await }
+    async fn create_invite(&self, invite: &InviteRecord) -> Result<()> {
+        self.backend.create_invite(invite).await
     }
 
-    fn consume_invite<'a>(
-        &'a self,
-        invite_id: &'a str,
+    async fn get_invite(&self, invite_id: &str) -> Result<Option<InviteRecord>> {
+        self.backend.get_invite(invite_id).await
+    }
+
+    async fn list_invites(&self) -> Result<Vec<InviteRecord>> {
+        self.backend.list_invites().await
+    }
+
+    async fn redeem_invite(
+        &self,
+        invite_id: &str,
+        machine_id: &MachineId,
         now_unix_secs: u64,
-    ) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
-        async move { self.backend.consume_invite(invite_id, now_unix_secs).await }
+    ) -> Result<InviteRecord> {
+        self.backend
+            .redeem_invite(invite_id, machine_id, now_unix_secs)
+            .await
+    }
+
+    async fn revoke_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<InviteRecord> {
+        self.backend.revoke_invite(invite_id, now_unix_secs).await
     }
 }
 
 impl RoutingStore for StoreDriver {
-    fn load_routing_state(
-        &self,
-    ) -> impl std::future::Future<Output = Result<RoutingState>> + Send + '_ {
-        async move { self.backend.load_routing_state().await }
+    async fn load_routing_state(&self) -> Result<RoutingState> {
+        self.backend.load_routing_state().await
     }
 
-    fn subscribe_routing_invalidations(
-        &self,
-    ) -> impl std::future::Future<Output = Result<RoutingInvalidationSubscription>> + Send + '_
-    {
-        async move { self.backend.subscribe_routing_invalidations().await }
+    async fn subscribe_routing_invalidations(&self) -> Result<RoutingInvalidationSubscription> {
+        self.backend.subscribe_routing_invalidations().await
     }
 }
 
 impl DeployStore for StoreDriver {
-    fn list_service_revisions<'a>(
-        &'a self,
-        namespace: &'a Namespace,
-    ) -> impl std::future::Future<Output = Result<Vec<ServiceRevisionRecord>>> + Send + 'a {
-        async move { self.backend.list_service_revisions(namespace).await }
+    async fn list_service_revisions(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceRevisionRecord>> {
+        self.backend.list_service_revisions(namespace).await
     }
 
-    fn list_service_releases<'a>(
-        &'a self,
-        namespace: &'a Namespace,
-    ) -> impl std::future::Future<Output = Result<Vec<ServiceReleaseRecord>>> + Send + 'a {
-        async move { self.backend.list_service_releases(namespace).await }
+    async fn list_service_releases(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceReleaseRecord>> {
+        self.backend.list_service_releases(namespace).await
     }
 
-    fn list_instance_status<'a>(
-        &'a self,
-        namespace: &'a Namespace,
-    ) -> impl std::future::Future<Output = Result<Vec<InstanceStatusRecord>>> + Send + 'a {
-        async move { self.backend.list_instance_status(namespace).await }
+    async fn list_instance_status(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<InstanceStatusRecord>> {
+        self.backend.list_instance_status(namespace).await
     }
 
-    fn upsert_service_revision<'a>(
-        &'a self,
-        record: &'a ServiceRevisionRecord,
-    ) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
-        async move { self.backend.upsert_service_revision(record).await }
+    async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
+        self.backend.upsert_service_revision(record).await
     }
 
-    fn upsert_service_release<'a>(
-        &'a self,
-        record: &'a ServiceReleaseRecord,
-    ) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
-        async move { self.backend.upsert_service_release(record).await }
+    async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> Result<()> {
+        self.backend.upsert_service_release(record).await
     }
 
-    fn delete_service_release<'a>(
-        &'a self,
-        namespace: &'a Namespace,
-        service: &'a str,
-    ) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
-        async move {
-            self.backend
-                .delete_service_release(namespace, service)
-                .await
-        }
+    async fn delete_service_release(&self, namespace: &Namespace, service: &str) -> Result<()> {
+        self.backend
+            .delete_service_release(namespace, service)
+            .await
     }
 
-    fn upsert_instance_status<'a>(
-        &'a self,
-        record: &'a InstanceStatusRecord,
-    ) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
-        async move { self.backend.upsert_instance_status(record).await }
+    async fn upsert_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
+        self.backend.upsert_instance_status(record).await
     }
 
-    fn delete_instance_status<'a>(
-        &'a self,
-        instance_id: &'a InstanceId,
-    ) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
-        async move { self.backend.delete_instance_status(instance_id).await }
+    async fn delete_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
+        self.backend.delete_instance_status(instance_id).await
     }
 
-    fn upsert_deploy<'a>(
-        &'a self,
-        record: &'a DeployRecord,
-    ) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
-        async move { self.backend.upsert_deploy(record).await }
+    async fn upsert_deploy(&self, record: &DeployRecord) -> Result<()> {
+        self.backend.upsert_deploy(record).await
     }
 
-    fn commit_deploy<'a>(
-        &'a self,
-        namespace: &'a Namespace,
-        removed_services: &'a [String],
-        releases: &'a [ServiceReleaseRecord],
-        deploy: &'a DeployRecord,
-    ) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
-        async move {
-            self.backend
-                .commit_deploy(namespace, removed_services, releases, deploy)
-                .await
-        }
+    async fn commit_deploy(
+        &self,
+        namespace: &Namespace,
+        removed_services: &[String],
+        releases: &[ServiceReleaseRecord],
+        deploy: &DeployRecord,
+    ) -> Result<()> {
+        self.backend
+            .commit_deploy(namespace, removed_services, releases, deploy)
+            .await
     }
 
-    fn get_deploy<'a>(
-        &'a self,
-        deploy_id: &'a DeployId,
-    ) -> impl std::future::Future<Output = Result<Option<DeployRecord>>> + Send + 'a {
-        async move { self.backend.get_deploy(deploy_id).await }
+    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
+        self.backend.get_deploy(deploy_id).await
     }
 }
 
 impl SyncProbe for StoreDriver {
-    fn sync_status(&self) -> impl std::future::Future<Output = Result<SyncStatus>> + Send + '_ {
-        async move { self.backend.sync_status().await }
+    async fn sync_status(&self) -> Result<SyncStatus> {
+        self.backend.sync_status().await
     }
 }
 
@@ -271,8 +242,27 @@ impl StoreBackend for MemoryStoreBackend {
         self.store.create_invite(invite).await
     }
 
-    async fn consume_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<()> {
-        self.store.consume_invite(invite_id, now_unix_secs).await
+    async fn get_invite(&self, invite_id: &str) -> Result<Option<InviteRecord>> {
+        self.store.get_invite(invite_id).await
+    }
+
+    async fn list_invites(&self) -> Result<Vec<InviteRecord>> {
+        self.store.list_invites().await
+    }
+
+    async fn redeem_invite(
+        &self,
+        invite_id: &str,
+        machine_id: &MachineId,
+        now_unix_secs: u64,
+    ) -> Result<InviteRecord> {
+        self.store
+            .redeem_invite(invite_id, machine_id, now_unix_secs)
+            .await
+    }
+
+    async fn revoke_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<InviteRecord> {
+        self.store.revoke_invite(invite_id, now_unix_secs).await
     }
 
     async fn load_routing_state(&self) -> Result<RoutingState> {

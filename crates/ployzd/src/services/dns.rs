@@ -108,10 +108,60 @@ fn build_dns_sidecar_spec(config: &DnsConfig, image: &str) -> SidecarSpec {
                     bridge_listen_addr.clone(),
                 ));
             }
+            if let Some(metrics_listen_addr) = &config.metrics_listen_addr {
+                env.push((
+                    "PLOYZ_DNS_METRICS_LISTEN_ADDR".into(),
+                    metrics_listen_addr.clone(),
+                ));
+            }
             env
         },
         binds: vec![format!("{data_dir_str}:{data_dir_str}")],
         network_container: Some("ployz-networking".to_string()),
         systemd_extra: String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_dns_sidecar_spec;
+    use ployz_dns::DnsConfig;
+    use ployz_types::model::OverlayIp;
+    use std::net::Ipv6Addr;
+    use std::path::Path;
+
+    #[test]
+    fn sidecar_spec_includes_metrics_env_when_configured() {
+        let config = DnsConfig::for_network(
+            Path::new("/tmp/ployz"),
+            "alpha",
+            OverlayIp(Ipv6Addr::LOCALHOST),
+            Some("0.0.0.0:53".into()),
+            Some("127.0.0.1:9153".into()),
+        );
+
+        let spec = build_dns_sidecar_spec(&config, "ployz-dns:latest");
+        assert!(spec.env.iter().any(|(key, value)| {
+            key == "PLOYZ_DNS_METRICS_LISTEN_ADDR" && value == "127.0.0.1:9153"
+        }));
+    }
+
+    #[test]
+    fn sidecar_spec_omits_metrics_env_by_default() {
+        let config = DnsConfig::for_network(
+            Path::new("/tmp/ployz"),
+            "alpha",
+            OverlayIp(Ipv6Addr::LOCALHOST),
+            None,
+            None,
+        );
+
+        let spec = build_dns_sidecar_spec(&config, "ployz-dns:latest");
+        assert!(
+            !spec
+                .env
+                .iter()
+                .any(|(key, _)| key == "PLOYZ_DNS_METRICS_LISTEN_ADDR")
+        );
     }
 }

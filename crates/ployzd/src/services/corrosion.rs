@@ -89,7 +89,7 @@ pub async fn corrosion_docker(
 
     let config_host = paths.config.to_string_lossy().into_owned();
     let schema_host = paths.schema.to_string_lossy().into_owned();
-    let service = DockerCorrosion::new("ployz-corrosion", image)
+    let service = DockerCorrosion::builder("ployz-corrosion", image)
         .cmd(vec![
             "agent".into(),
             "-c".into(),
@@ -186,8 +186,27 @@ where
         self.store.create_invite(invite).await
     }
 
-    async fn consume_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<()> {
-        self.store.consume_invite(invite_id, now_unix_secs).await
+    async fn get_invite(&self, invite_id: &str) -> Result<Option<InviteRecord>> {
+        self.store.get_invite(invite_id).await
+    }
+
+    async fn list_invites(&self) -> Result<Vec<InviteRecord>> {
+        self.store.list_invites().await
+    }
+
+    async fn redeem_invite(
+        &self,
+        invite_id: &str,
+        machine_id: &MachineId,
+        now_unix_secs: u64,
+    ) -> Result<InviteRecord> {
+        self.store
+            .redeem_invite(invite_id, machine_id, now_unix_secs)
+            .await
+    }
+
+    async fn revoke_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<InviteRecord> {
+        self.store.revoke_invite(invite_id, now_unix_secs).await
     }
 
     async fn load_routing_state(&self) -> Result<RoutingState> {
@@ -268,8 +287,8 @@ impl<S> SyncProbe for CorrosionBackend<S>
 where
     S: StoreRuntimeControl + Send + Sync + 'static,
 {
-    fn sync_status(&self) -> impl std::future::Future<Output = Result<SyncStatus>> + Send + '_ {
-        async move { self.store.sync_status().await }
+    async fn sync_status(&self) -> Result<SyncStatus> {
+        self.store.sync_status().await
     }
 }
 
@@ -513,7 +532,7 @@ impl DockerCorrosionBuilder {
 }
 
 impl DockerCorrosion {
-    fn new(container_name: &str, image: &str) -> DockerCorrosionBuilder {
+    fn builder(container_name: &str, image: &str) -> DockerCorrosionBuilder {
         DockerCorrosionBuilder {
             container_name: container_name.to_string(),
             image: image.to_string(),

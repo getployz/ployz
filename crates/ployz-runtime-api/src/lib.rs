@@ -8,12 +8,6 @@ use ployz_types::{Error, Result as PloyzResult, spec::Namespace};
 
 pub use identity::{Identity, IdentityError};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RestartableWorkload {
-    pub container_name: String,
-    pub was_running: bool,
-}
-
 #[async_trait]
 pub trait RuntimeHandle: Send + Sync {
     async fn shutdown(self: Box<Self>) -> std::result::Result<(), String>;

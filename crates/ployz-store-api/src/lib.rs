@@ -25,7 +25,15 @@ pub trait StoreBackend: Send + Sync {
     async fn subscribe_machines(&self) -> Result<MachineSubscription>;
 
     async fn create_invite(&self, invite: &InviteRecord) -> Result<()>;
-    async fn consume_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<()>;
+    async fn get_invite(&self, invite_id: &str) -> Result<Option<InviteRecord>>;
+    async fn list_invites(&self) -> Result<Vec<InviteRecord>>;
+    async fn redeem_invite(
+        &self,
+        invite_id: &str,
+        machine_id: &MachineId,
+        now_unix_secs: u64,
+    ) -> Result<InviteRecord>;
+    async fn revoke_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<InviteRecord>;
 
     async fn load_routing_state(&self) -> Result<RoutingState>;
     async fn subscribe_routing_invalidations(&self) -> Result<RoutingInvalidationSubscription>;

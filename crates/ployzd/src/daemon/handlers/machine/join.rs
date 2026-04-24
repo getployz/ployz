@@ -1,43 +1,30 @@
-use std::path::{Path, PathBuf};
+mod bootstrap;
+mod coordination;
+mod remote;
+pub(super) mod rollback;
+mod target;
 
-use crate::mesh_state::invite::parse_and_verify_invite_token;
-use ipnet::Ipv4Net;
 use ployz_api::{
-    DaemonPayload, DaemonRequest, DaemonResponse, InstallRuntimeTarget, InstallServiceMode,
-    InstallSource, MachineAddOptions, MachineInstallOptions, MeshReadyPayload,
-    MeshSelfRecordPayload,
+    DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MachineInstallOptions,
 };
-use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
-use ployz_orchestrator::ipam::Ipam;
-use ployz_sdk::Transport;
-use ployz_store_api::{InviteStore, MachineStore};
-use ployz_types::model::{JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineRecord};
-use ployz_types::time::now_unix_secs;
+use ployz_types::model::{MachineId, MachineRecord, Participation};
 use tokio::task::JoinSet;
-use tokio::time::{Duration, Instant, sleep, timeout};
 
 use crate::daemon::DaemonState;
-use crate::daemon::ssh::{
-    EphemeralSshIdentityFile, SshOptions, run_ssh, run_ssh_with_stdin, ssh_stdio_transport,
-};
+use crate::daemon::ssh::{EphemeralSshIdentityFile, SshOptions};
 
-use super::operations::{
-    MachineOperationArtifacts, MachineOperationKind, MachineOperationRecord,
-    MachineOperationStatus, MachineOperationStore,
+use self::bootstrap::bootstrap_remote_machine;
+use self::coordination::{BootstrapSubnetClaim, release_reserved_subnet};
+use self::remote::{
+    ExpectedSubnetState, log_remote_enable_rollback, overlay_rpc_expect_ok, overlay_self_record,
+    remote_rpc_expect_ok, wait_for_machine_projection, wait_for_overlay_ready,
 };
+use self::target::run_machine_add_target;
+use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
 use super::render::render_machine_add_report;
-use super::types::{
-    MachineAddContext, MachineAddFailure, MachineAddReport, MachineAddStage, MachineAddTargetResult,
-};
+use super::types::{MachineAddContext, MachineAddFailure, MachineAddReport};
 
 const INVITE_TTL_SECS: u64 = 600;
-const REMOTE_READY_TIMEOUT: Duration = Duration::from_secs(30);
-const REMOTE_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
-const REMOTE_READY_RPC_TIMEOUT: Duration = Duration::from_secs(10);
-const REMOTE_CLEANUP_RPC_TIMEOUT: Duration = Duration::from_secs(10);
-const REMOTE_STATUS_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" status >/dev/null";
-const REMOTE_PLOYZ_VERSION_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" --version";
-const REMOTE_RPC_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" rpc-stdio";
 
 impl DaemonState {
     pub(crate) async fn handle_machine_init(
@@ -139,7 +126,10 @@ impl DaemonState {
                     active.config.clone(),
                     MachineAddContext {
                         network_name: active.config.name.0.clone(),
+                        network_id: active.config.id.clone(),
+                        cluster_cidr: active.config.cluster_cidr.clone(),
                         store: active.mesh.store.clone(),
+                        reservations: self.reservations.clone(),
                         peer_sync_tx,
                         ssh_options,
                         install: options.install.clone().unwrap_or_default(),
@@ -154,57 +144,34 @@ impl DaemonState {
             }
         };
 
-        let warnings = match self.degraded_mesh_warnings().await {
-            Ok(warnings) => warnings,
-            Err(err) => return self.err("LIST_FAILED", err),
-        };
-        tracing::info!(
-            warning_count = warnings.len(),
-            "machine add degraded-mesh check complete"
-        );
-
-        let allocated_subnets = match self.allocate_machine_subnets(targets.len()).await {
-            Ok(subnets) => subnets,
-            Err(err) => return self.err("SUBNET_EXHAUSTION", err),
-        };
-        tracing::info!(
-            allocated_count = allocated_subnets.len(),
-            "machine add subnet allocation complete"
-        );
-
         let operation_store = self.machine_operation_store();
-        let mut report = MachineAddReport::with_warnings(warnings);
+        let mut report = MachineAddReport::with_warnings(Vec::new());
         let mut tasks = JoinSet::new();
 
-        for (target, allocated_subnet) in targets.iter().cloned().zip(allocated_subnets) {
-            tracing::info!(%target, %allocated_subnet, "machine add issuing invite token");
-            let token = match self
-                .do_issue_invite_token(&running, INVITE_TTL_SECS, allocated_subnet)
-                .await
+        for target in targets.iter().cloned() {
+            tracing::info!(%target, "machine add issuing invite token");
+            let (_token, invite) = match self.do_issue_invite_token(&running, INVITE_TTL_SECS).await
             {
-                Ok(token) => token,
+                Ok(value) => value,
                 Err(err) => {
-                    report.push(MachineAddTargetResult::Failed {
+                    report.push(super::types::MachineAddTargetResult::Failed {
                         target,
                         failure: MachineAddFailure::Preflight {
-                            reason: format!(
-                                "failed to issue invite token for subnet {allocated_subnet}: {err}"
-                            ),
+                            reason: format!("failed to issue invite token: {err}"),
                         },
                     });
                     continue;
                 }
             };
             tracing::info!(%target, "machine add invite token issued");
-            let invite = match parse_and_verify_invite_token(&token) {
-                Ok(invite) => invite,
+            let target_machine_id = MachineId(target.clone());
+            let subnet_claim = match self.reserve_machine_subnet(&target_machine_id).await {
+                Ok(claim) => claim,
                 Err(err) => {
-                    report.push(MachineAddTargetResult::Failed {
+                    report.push(super::types::MachineAddTargetResult::Failed {
                         target,
                         failure: MachineAddFailure::Preflight {
-                            reason: format!(
-                                "issued invite token could not be re-read for finalization: {err}"
-                            ),
+                            reason: format!("failed to reserve subnet: {err}"),
                         },
                     });
                     continue;
@@ -215,17 +182,25 @@ impl DaemonState {
                 MachineOperationKind::Add,
                 Some(context.network_name.clone()),
                 vec![target.clone()],
-                MachineAddStage::Preflight.to_string(),
+                super::types::MachineAddStage::Preflight.to_string(),
                 MachineOperationArtifacts {
                     invite_id: Some(invite.invite_id.clone()),
-                    allocated_subnet: Some(allocated_subnet.to_string()),
+                    allocated_subnet: Some(subnet_claim.subnet.to_string()),
                     uses_operation_identity: options.ssh_identity_private_key.is_some(),
                     ..MachineOperationArtifacts::default()
                 },
             ) {
                 Ok(operation) => operation,
                 Err(err) => {
-                    report.push(MachineAddTargetResult::Failed {
+                    if let Err(release_err) = release_reserved_subnet(&context, &subnet_claim).await
+                    {
+                        tracing::warn!(
+                            target = %target,
+                            error = %release_err,
+                            "machine add: failed to release reserved subnet after operation start failure"
+                        );
+                    }
+                    report.push(super::types::MachineAddTargetResult::Failed {
                         target,
                         failure: MachineAddFailure::Preflight { reason: err },
                     });
@@ -241,9 +216,8 @@ impl DaemonState {
                     task_operation_store,
                     operation,
                     target,
-                    allocated_subnet,
-                    token,
                     invite.invite_id,
+                    subnet_claim,
                 )
                 .await
             });
@@ -252,7 +226,7 @@ impl DaemonState {
         while let Some(join_result) = tasks.join_next().await {
             match join_result {
                 Ok(outcome) => report.push(outcome),
-                Err(err) => report.push(MachineAddTargetResult::Failed {
+                Err(err) => report.push(super::types::MachineAddTargetResult::Failed {
                     target: "task".into(),
                     failure: MachineAddFailure::Preflight {
                         reason: format!("task join failure: {err}"),
@@ -274,628 +248,243 @@ impl DaemonState {
         self.ok_with_payload(message, Some(DaemonPayload::MachineAdd(payload)))
     }
 
-    pub(crate) async fn allocate_machine_subnets(
-        &self,
-        count: usize,
-    ) -> Result<Vec<Ipv4Net>, String> {
-        let active = self
-            .active
-            .as_ref()
-            .ok_or_else(|| "no running network".to_string())?;
-        let machines = active
-            .mesh
-            .store
-            .list_machines()
+    pub(crate) async fn handle_machine_enable(&self, target: &str) -> DaemonResponse {
+        let active = match self.active.as_ref() {
+            Some(active) => active,
+            None => {
+                return self.err(
+                    "NO_RUNNING_NETWORK",
+                    "machine enable requires a running network",
+                );
+            }
+        };
+        let machine_id = MachineId(target.to_string());
+        let Some(record) =
+            (match super::list::find_machine_record(&active.mesh.store, &machine_id).await {
+                Ok(record) => record,
+                Err(err) => return self.err("LIST_FAILED", err),
+            })
+        else {
+            return self.err("MACHINE_NOT_FOUND", format!("machine '{target}' not found"));
+        };
+        if record.participation != Participation::Disabled {
+            return self.err(
+                "MACHINE_NOT_DISABLED",
+                format!("machine '{target}' is not disabled"),
+            );
+        }
+        let peer_rpc_port = match self.peer_control_port() {
+            Ok(port) => port,
+            Err(error) => return self.err("CONTROL_TRANSPORT_FAILED", error.to_string()),
+        };
+
+        let context = MachineAddContext {
+            network_name: active.config.name.0.clone(),
+            network_id: active.config.id.clone(),
+            cluster_cidr: active.config.cluster_cidr.clone(),
+            store: active.mesh.store.clone(),
+            reservations: self.reservations.clone(),
+            peer_sync_tx: {
+                let Some(peer_sync_tx) = active.mesh.peer_sync_sender() else {
+                    return self.err("PEER_SYNC_UNAVAILABLE", "peer sync task is not running");
+                };
+                peer_sync_tx
+            },
+            ssh_options: SshOptions::default(),
+            install: MachineInstallOptions::default(),
+        };
+
+        let subnet_claim = match self.reserve_machine_subnet(&machine_id).await {
+            Ok(claim) => claim,
+            Err(err) => return self.err("SUBNET_RESERVATION_FAILED", err),
+        };
+
+        let result = self
+            .handle_machine_enable_remote(
+                &machine_id,
+                &record,
+                peer_rpc_port,
+                &context,
+                &subnet_claim,
+            )
+            .await;
+
+        if result.ok {
+            match wait_for_machine_projection(
+                &active.mesh.store,
+                &machine_id,
+                Participation::Enabled,
+                ExpectedSubnetState::Present,
+            )
             .await
-            .map_err(|err| format!("failed to list machines for subnet allocation: {err}"))?;
-
-        let cluster: Ipv4Net = self
-            .cluster_cidr
-            .parse()
-            .map_err(|err| format!("invalid cluster CIDR '{}': {err}", self.cluster_cidr))?;
-        let allocated = machines.iter().filter_map(|machine| machine.subnet);
-        let mut ipam = Ipam::with_allocated(cluster, self.subnet_prefix_len, allocated);
-        let mut subnets = Vec::with_capacity(count);
-
-        for _ in 0..count {
-            let Some(subnet) = ipam.allocate() else {
-                return Err("no available subnets".into());
-            };
-            subnets.push(subnet);
-        }
-
-        Ok(subnets)
-    }
-}
-
-async fn run_machine_add_target(
-    context: MachineAddContext,
-    operation_store: MachineOperationStore,
-    mut operation: MachineOperationRecord,
-    target: String,
-    allocated_subnet: Ipv4Net,
-    token: String,
-    invite_id: String,
-) -> MachineAddTargetResult {
-    let mut stage;
-    let mut joiner_id = None;
-
-    tracing::info!(%target, "machine add target: bootstrap starting");
-    if let Err(err) =
-        bootstrap_remote_machine(&target, &context.install, &context.ssh_options).await
-    {
-        let _ = operation_store.update_status(
-            &mut operation,
-            MachineOperationStatus::Failed,
-            Some(err.clone()),
-        );
-        return MachineAddTargetResult::Failed {
-            target,
-            failure: MachineAddFailure::Preflight { reason: err },
-        };
-    }
-    stage = MachineAddStage::Bootstrapped;
-    let _ = operation_store.update_stage(&mut operation, stage.to_string());
-    tracing::info!(%target, "machine add target: bootstrap complete");
-
-    tracing::info!(%target, "machine add target: remote join starting");
-    match remote_rpc_expect_ok(
-        &target,
-        DaemonRequest::MeshJoin { token },
-        &context.ssh_options,
-    )
-    .await
-    {
-        Ok(()) => {}
-        Err(err) if err.contains("already exists") || err.contains("already running") => {
-            tracing::info!(target, "remote already joined, continuing to self-record");
-        }
-        Err(err) => {
-            let _ = operation_store.update_status(
-                &mut operation,
-                MachineOperationStatus::Failed,
-                Some(err.clone()),
-            );
-            return MachineAddTargetResult::Failed {
-                target,
-                failure: MachineAddFailure::Join { reason: err },
-            };
+            {
+                Ok(()) => result,
+                Err(err) => self.err("MACHINE_ENABLE_SYNC_FAILED", err),
+            }
+        } else {
+            result
         }
     }
-    stage = MachineAddStage::Joined;
-    let _ = operation_store.update_stage(&mut operation, stage.to_string());
-    tracing::info!(%target, "machine add target: remote join complete");
 
-    tracing::info!(%target, "machine add target: self-record starting");
-    let record = match remote_self_record(&target, &context.ssh_options).await {
-        Ok(record) => record,
-        Err(err) => {
-            let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
-            let _ = operation_store.update_status(
-                &mut operation,
-                MachineOperationStatus::Failed,
-                Some(err.clone()),
-            );
-            return MachineAddTargetResult::Failed {
-                target,
-                failure: MachineAddFailure::SelfRecord { reason: err },
-            };
-        }
-    };
-    stage = MachineAddStage::SelfRecorded;
-    let _ = operation_store.update_stage(&mut operation, stage.to_string());
-    tracing::info!(%target, "machine add target: self-record complete");
-
-    if record.subnet != Some(allocated_subnet) {
-        let actual_subnet = record
-            .subnet
-            .map(|subnet| subnet.to_string())
-            .unwrap_or_else(|| "—".into());
-        let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
-        let reason = format!(
-            "joiner self-record subnet '{actual_subnet}' did not match allocated subnet '{allocated_subnet}'"
-        );
-        let _ = operation_store.update_status(
-            &mut operation,
-            MachineOperationStatus::Failed,
-            Some(reason.clone()),
-        );
-        return MachineAddTargetResult::Failed {
-            target,
-            failure: MachineAddFailure::SelfRecord { reason },
-        };
-    }
-
-    let machine_id = record.id.clone();
-    operation.artifacts.machine_id = Some(machine_id.clone());
-    let _ = operation_store.save(&operation);
-    joiner_id = Some(machine_id.clone());
-    tracing::info!(%target, joiner_id = %machine_id, "machine add target: transient peer install starting");
-    if let Err(err) = upsert_transient_peer(&context.peer_sync_tx, record).await {
-        let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
-        let _ = operation_store.update_status(
-            &mut operation,
-            MachineOperationStatus::Failed,
-            Some(err.clone()),
-        );
-        return MachineAddTargetResult::Failed {
-            target,
-            failure: MachineAddFailure::Preflight { reason: err },
-        };
-    }
-    stage = MachineAddStage::TransientPeerInstalled;
-    let _ = operation_store.update_stage(&mut operation, stage.to_string());
-    tracing::info!(%target, joiner_id = %machine_id, "machine add target: transient peer installed");
-
-    tracing::info!(%target, joiner_id = %machine_id, "machine add target: waiting for remote ready");
-    if let Err(err) = wait_for_remote_ready(&target, &context.ssh_options).await {
-        tracing::warn!(
-            %target,
-            joiner_id = %machine_id,
-            error = %err,
-            "machine add target: remote ready failed"
-        );
-        let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
-        let _ = operation_store.update_status(
-            &mut operation,
-            MachineOperationStatus::Failed,
-            Some(err.clone()),
-        );
-        return MachineAddTargetResult::Failed {
-            target,
-            failure: MachineAddFailure::Ready { reason: err },
-        };
-    }
-    stage = MachineAddStage::Ready;
-    let _ = operation_store.update_stage(&mut operation, stage.to_string());
-    tracing::info!(%target, joiner_id = %machine_id, "machine add target: remote ready");
-
-    tracing::info!(
-        %target,
-        joiner_id = %machine_id,
-        invite_id,
-        "machine add target: finalizing invite"
-    );
-    if let Err(err) = context
-        .store
-        .consume_invite(&invite_id, now_unix_secs())
-        .await
-    {
-        tracing::warn!(
-            %target,
-            joiner_id = %machine_id,
-            invite_id,
-            error = %err,
-            "machine add target: invite finalization failed"
-        );
-    } else {
-        tracing::info!(
-            %target,
-            joiner_id = %machine_id,
-            invite_id,
-            "machine add target: invite finalized"
-        );
-    }
-
-    let _ = operation_store.update_stage(&mut operation, MachineAddStage::Finalized.to_string());
-    let _ = operation_store.update_status(&mut operation, MachineOperationStatus::Succeeded, None);
-    tracing::info!(
-        %target,
-        joiner_id = %machine_id,
-        "machine add target: awaiting self-publication"
-    );
-    MachineAddTargetResult::AwaitingSelfPublication {
-        target,
-        joiner_id: machine_id,
-    }
-}
-
-async fn upsert_transient_peer(
-    peer_sync_tx: &tokio::sync::mpsc::Sender<PeerSyncCommand>,
-    record: MachineRecord,
-) -> Result<(), String> {
-    peer_sync_tx
-        .send(PeerSyncCommand::UpsertTransient(record))
-        .await
-        .map_err(|err| format!("failed to install founder-local transient peer: {err}"))
-}
-
-pub(super) async fn remove_transient_peer(
-    peer_sync_tx: &tokio::sync::mpsc::Sender<PeerSyncCommand>,
-    machine_id: &MachineId,
-) -> Result<(), String> {
-    peer_sync_tx
-        .send(PeerSyncCommand::RemoveTransient(machine_id.clone()))
-        .await
-        .map_err(|err| format!("failed to clear founder-local transient peer: {err}"))
-}
-
-async fn rollback_machine_add_target(
-    context: &MachineAddContext,
-    target: &str,
-    stage: MachineAddStage,
-    joiner_id: Option<&MachineId>,
-) -> Result<(), String> {
-    let mut errors = Vec::new();
-    if matches!(
-        stage,
-        MachineAddStage::TransientPeerInstalled
-            | MachineAddStage::Ready
-            | MachineAddStage::Finalized
-    ) && let Some(joiner_id) = joiner_id
-        && let Err(err) = remove_transient_peer(&context.peer_sync_tx, joiner_id).await
-    {
-        errors.push(err);
-    }
-    if matches!(
-        stage,
-        MachineAddStage::Joined
-            | MachineAddStage::SelfRecorded
-            | MachineAddStage::TransientPeerInstalled
-            | MachineAddStage::Ready
-            | MachineAddStage::Finalized
-    ) && let Err(err) =
-        best_effort_remote_cleanup(target, &context.network_name, &context.ssh_options).await
-    {
-        errors.push(err);
-    }
-
-    if errors.is_empty() {
-        return Ok(());
-    }
-    Err(errors.join("; "))
-}
-
-async fn wait_for_remote_ready(target: &str, ssh_options: &SshOptions) -> Result<(), String> {
-    let deadline = Instant::now() + REMOTE_READY_TIMEOUT;
-    let mut attempt: u32 = 0;
-
-    loop {
-        attempt += 1;
-        let last_error = match timeout(
-            REMOTE_READY_RPC_TIMEOUT,
-            remote_rpc(
-                target,
-                DaemonRequest::MeshReady { json: false },
-                ssh_options,
-            ),
+    async fn handle_machine_enable_remote(
+        &self,
+        machine_id: &MachineId,
+        record: &MachineRecord,
+        peer_rpc_port: u16,
+        context: &MachineAddContext,
+        subnet_claim: &BootstrapSubnetClaim,
+    ) -> DaemonResponse {
+        if let Err(err) = overlay_rpc_expect_ok(
+            record.overlay_ip,
+            peer_rpc_port,
+            DaemonRequest::MeshPromote {
+                assigned_subnet: subnet_claim.subnet,
+            },
         )
         .await
         {
-            Ok(Ok(response)) => match mesh_ready_payload(&response) {
-                Ok(payload) => {
-                    if remote_join_ready(&payload) {
-                        tracing::debug!(%target, attempt, "remote mesh ready confirmed");
-                        return Ok(());
-                    }
-                    tracing::debug!(%target, attempt, ?payload, "remote mesh not ready yet");
-                    format!("mesh reported not ready yet: {}", response.message)
-                }
-                Err(err) => {
-                    tracing::debug!(%target, attempt, error = %err, "remote readiness payload parse failed");
-                    err
-                }
-            },
-            Ok(Err(err)) => {
-                tracing::debug!(%target, attempt, error = %err, "remote readiness rpc failed");
-                err
-            }
-            Err(_) => {
-                let err = format!(
-                    "rpc readiness probe exceeded {:?}",
-                    REMOTE_READY_RPC_TIMEOUT
-                );
-                tracing::debug!(%target, attempt, error = %err, "remote readiness rpc timed out");
-                err
+            let _ = release_reserved_subnet(context, subnet_claim).await;
+            return self.err("REMOTE_ENABLE_FAILED", err);
+        }
+
+        let remote_record = match overlay_self_record(record, peer_rpc_port).await {
+            Ok(record) => record,
+            Err(err) => {
+                log_remote_enable_rollback(record, peer_rpc_port, &err).await;
+                let _ = release_reserved_subnet(context, subnet_claim).await;
+                return self.err("SELF_RECORD_FAILED", err);
             }
         };
-
-        if Instant::now() >= deadline {
-            return Err(format!(
-                "timed out waiting for remote mesh readiness after {:?}: {last_error}",
-                REMOTE_READY_TIMEOUT,
-            ));
-        }
-
-        sleep(REMOTE_READY_POLL_INTERVAL).await;
-    }
-}
-
-async fn remote_self_record(
-    target: &str,
-    ssh_options: &SshOptions,
-) -> Result<MachineRecord, String> {
-    let response = remote_rpc(target, DaemonRequest::MeshSelfRecord, ssh_options).await?;
-    if !response.ok {
-        return Err(remote_response_error(&response));
-    }
-    match response.payload {
-        Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload { record, .. })) => Ok(record),
-        Some(payload) => Err(format!("unexpected self-record payload: {payload:?}")),
-        None => decode_joiner_record(&response.message),
-    }
-}
-
-fn mesh_ready_payload(response: &DaemonResponse) -> Result<MeshReadyPayload, String> {
-    match &response.payload {
-        Some(DaemonPayload::MeshReady(payload)) => Ok(payload.clone()),
-        Some(payload) => Err(format!("unexpected readiness payload: {payload:?}")),
-        None => parse_remote_ready_payload(&response.message),
-    }
-}
-
-fn parse_remote_ready_payload(output: &str) -> Result<MeshReadyPayload, String> {
-    if let Ok(payload) = serde_json::from_str::<MeshReadyPayload>(output) {
-        return Ok(payload);
-    }
-
-    #[derive(serde::Deserialize)]
-    struct RemoteReadyEnvelope {
-        message: String,
-    }
-
-    let envelope = serde_json::from_str::<RemoteReadyEnvelope>(output)
-        .map_err(|error| format!("failed to parse remote readiness envelope: {error}"))?;
-    serde_json::from_str::<MeshReadyPayload>(&envelope.message)
-        .map_err(|error| format!("failed to parse remote readiness message: {error}"))
-}
-
-fn remote_join_ready(payload: &MeshReadyPayload) -> bool {
-    payload.ready
-        || (payload.phase == "running" && payload.store_healthy && payload.heartbeat_started)
-}
-
-async fn remote_rpc(
-    target: &str,
-    request: DaemonRequest,
-    ssh_options: &SshOptions,
-) -> Result<DaemonResponse, String> {
-    let transport = ssh_stdio_transport(target, REMOTE_RPC_COMMAND, ssh_options);
-    transport.request(request).await.map_err(|err| {
-        format!(
-            "remote rpc via '{}' failed: {err}",
-            transport.command_display()
-        )
-    })
-}
-
-async fn remote_rpc_expect_ok(
-    target: &str,
-    request: DaemonRequest,
-    ssh_options: &SshOptions,
-) -> Result<(), String> {
-    let response = remote_rpc(target, request, ssh_options).await?;
-    if response.ok {
-        return Ok(());
-    }
-    Err(remote_response_error(&response))
-}
-
-fn remote_response_error(response: &DaemonResponse) -> String {
-    format!(
-        "remote daemon error [{}]: {}",
-        response.code, response.message
-    )
-}
-
-pub(super) async fn best_effort_remote_cleanup(
-    target: &str,
-    network_name: &str,
-    ssh_options: &SshOptions,
-) -> Result<(), String> {
-    tracing::debug!(%target, %network_name, "machine add cleanup: mesh down starting");
-    let down_error = match timeout(
-        REMOTE_CLEANUP_RPC_TIMEOUT,
-        remote_rpc(target, DaemonRequest::MeshDown, ssh_options),
-    )
-    .await
-    {
-        Ok(Ok(response)) if response.ok => None,
-        Ok(Ok(response)) => Some(remote_response_error(&response)),
-        Ok(Err(err)) => Some(err),
-        Err(_) => Some(format!(
-            "mesh down rpc exceeded {:?}",
-            REMOTE_CLEANUP_RPC_TIMEOUT
-        )),
-    };
-    tracing::debug!(
-        %target,
-        %network_name,
-        had_error = down_error.is_some(),
-        "machine add cleanup: mesh down complete"
-    );
-    tracing::debug!(%target, %network_name, "machine add cleanup: mesh destroy starting");
-    let destroy_error = match timeout(
-        REMOTE_CLEANUP_RPC_TIMEOUT,
-        remote_rpc(
-            target,
-            DaemonRequest::MeshDestroy {
-                network: network_name.to_string(),
-            },
-            ssh_options,
-        ),
-    )
-    .await
-    {
-        Ok(Ok(response)) if response.ok => None,
-        Ok(Ok(response)) => Some(remote_response_error(&response)),
-        Ok(Err(err)) => Some(err),
-        Err(_) => Some(format!(
-            "mesh destroy rpc exceeded {:?}",
-            REMOTE_CLEANUP_RPC_TIMEOUT
-        )),
-    };
-    tracing::debug!(
-        %target,
-        %network_name,
-        had_error = destroy_error.is_some(),
-        "machine add cleanup: mesh destroy complete"
-    );
-
-    let mut errors = Vec::new();
-    if let Some(err) = down_error {
-        errors.push(format!("mesh down: {err}"));
-    }
-    if let Some(err) = destroy_error {
-        errors.push(format!("mesh destroy: {err}"));
-    }
-
-    if errors.is_empty() {
-        return Ok(());
-    }
-
-    Err(errors.join("; "))
-}
-
-fn decode_joiner_record(output: &str) -> Result<MachineRecord, String> {
-    let response_line = match output
-        .lines()
-        .find(|line| line.starts_with(JOIN_RESPONSE_PREFIX))
-    {
-        Some(line) => line,
-        None => {
-            return Err(format!(
-                "self-record output missing {JOIN_RESPONSE_PREFIX} line\nhint: run `ployz mesh self-record` on the joiner and `ployz mesh accept <response>` on this machine"
-            ));
-        }
-    };
-
-    let join_response = JoinResponse::decode(response_line)
-        .map_err(|err| format!("failed to decode join response: {err}"))?;
-    Ok(join_response.into_seed_machine_record())
-}
-
-async fn bootstrap_remote_machine(
-    target: &str,
-    install: &MachineInstallOptions,
-    ssh_options: &SshOptions,
-) -> Result<(), String> {
-    let local_version = local_ployz_version()?;
-    if let Ok(remote_version) = run_ssh(target, REMOTE_PLOYZ_VERSION_COMMAND, ssh_options).await {
-        if remote_version.trim() == local_version.trim() {
-            tracing::info!(
-                %target,
-                version = remote_version.trim(),
-                "machine add bootstrap: remote ployz version already matches, skipping install"
+        if remote_record.id != *machine_id {
+            let mismatch = format!(
+                "remote machine id '{}' did not match enable target '{}'",
+                remote_record.id, machine_id
             );
-            return run_ssh(target, REMOTE_STATUS_COMMAND, ssh_options)
-                .await
-                .map(|_| ());
+            log_remote_enable_rollback(record, peer_rpc_port, &mismatch).await;
+            let _ = release_reserved_subnet(context, subnet_claim).await;
+            return self.err("MACHINE_ID_MISMATCH", mismatch);
         }
-        tracing::info!(
-            %target,
-            local_version = local_version.trim(),
-            remote_version = remote_version.trim(),
-            "machine add bootstrap: remote ployz version mismatch, reinstalling"
-        );
-    } else {
-        tracing::info!(%target, "machine add bootstrap: remote ployz missing, installing");
-    }
 
-    let installer_path = crate::install::find_installer_script()?;
-    let installer = std::fs::read(&installer_path)
-        .map_err(|error| format!("read installer '{}': {error}", installer_path.display()))?;
-    let remote_command = format!("bash -s -- {}", install_script_args(install));
-    run_ssh_with_stdin(target, &remote_command, &installer, ssh_options).await?;
-    run_ssh(target, REMOTE_STATUS_COMMAND, ssh_options)
+        if let Err(err) =
+            self::target::upsert_transient_peer(&context.peer_sync_tx, remote_record).await
+        {
+            log_remote_enable_rollback(record, peer_rpc_port, &err).await;
+            let _ = release_reserved_subnet(context, subnet_claim).await;
+            return self.err("PEER_SYNC_UNAVAILABLE", err);
+        }
+
+        if let Err(err) = wait_for_overlay_ready(record, peer_rpc_port).await {
+            log_remote_enable_rollback(record, peer_rpc_port, &err).await;
+            let _ = release_reserved_subnet(context, subnet_claim).await;
+            return self.err("REMOTE_READY_FAILED", err);
+        }
+        if let Err(err) = overlay_rpc_expect_ok(
+            record.overlay_ip,
+            peer_rpc_port,
+            DaemonRequest::MeshSetParticipation {
+                participation: Participation::Enabled,
+            },
+        )
         .await
-        .map(|_| ())
-}
+        {
+            log_remote_enable_rollback(record, peer_rpc_port, &err).await;
+            let _ = release_reserved_subnet(context, subnet_claim).await;
+            return self.err("REMOTE_ENABLE_FAILED", err);
+        }
 
-fn local_ployz_version() -> Result<String, String> {
-    let ployz_path = local_ployz_path()?;
-    let output = std::process::Command::new(&ployz_path)
-        .arg("--version")
-        .output()
-        .map_err(|error| format!("run '{}' --version: {error}", ployz_path.display()))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!(
-            "'{}' --version failed (status: {}){}",
-            ployz_path.display(),
-            output
-                .status
-                .code()
-                .map(|code| code.to_string())
-                .unwrap_or_else(|| "signal".into()),
-            if stderr.is_empty() {
-                String::new()
-            } else {
-                format!(": {stderr}")
-            }
-        ));
+        let _ = release_reserved_subnet(context, subnet_claim).await;
+        self.ok(format!(
+            "machine enabled\n  machine: {}\n  subnet:  {}",
+            machine_id, subnet_claim.subnet
+        ))
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
 
-fn local_ployz_path() -> Result<PathBuf, String> {
-    let current_exe =
-        std::env::current_exe().map_err(|error| format!("current_exe failed: {error}"))?;
-    let candidates = [
-        current_exe.with_file_name("ployz"),
-        current_exe
-            .parent()
-            .map(|parent| parent.join("ployz"))
-            .unwrap_or_else(|| PathBuf::from("ployz")),
-        PathBuf::from("/usr/local/bin/ployz"),
-        PathBuf::from("/usr/bin/ployz"),
-    ];
-    for candidate in candidates {
-        if Path::new(&candidate).exists() {
-            return Ok(candidate);
+    pub(crate) async fn handle_machine_drain(&self, target: &str) -> DaemonResponse {
+        let active = match self.active.as_ref() {
+            Some(active) => active,
+            None => {
+                return self.err(
+                    "NO_RUNNING_NETWORK",
+                    "machine drain requires a running network",
+                );
+            }
+        };
+        let machine_id = MachineId(target.to_string());
+        let Some(record) =
+            (match super::list::find_machine_record(&active.mesh.store, &machine_id).await {
+                Ok(record) => record,
+                Err(err) => return self.err("LIST_FAILED", err),
+            })
+        else {
+            return self.err("MACHINE_NOT_FOUND", format!("machine '{target}' not found"));
+        };
+        if record.participation == Participation::Draining {
+            return self.ok(format!("machine '{}' already draining", machine_id));
+        }
+        let peer_rpc_port = match self.peer_control_port() {
+            Ok(port) => port,
+            Err(error) => return self.err("CONTROL_TRANSPORT_FAILED", error.to_string()),
+        };
+        if let Err(err) = overlay_rpc_expect_ok(
+            record.overlay_ip,
+            peer_rpc_port,
+            DaemonRequest::MeshSetParticipation {
+                participation: Participation::Draining,
+            },
+        )
+        .await
+        {
+            return self.err("REMOTE_DRAIN_FAILED", err);
+        }
+        self.ok(format!("machine '{}' draining", machine_id))
+    }
+
+    pub(crate) async fn handle_machine_disable(&self, target: &str, force: bool) -> DaemonResponse {
+        let active = match self.active.as_ref() {
+            Some(active) => active,
+            None => {
+                return self.err(
+                    "NO_RUNNING_NETWORK",
+                    "machine disable requires a running network",
+                );
+            }
+        };
+        let machine_id = MachineId(target.to_string());
+        let Some(record) =
+            (match super::list::find_machine_record(&active.mesh.store, &machine_id).await {
+                Ok(record) => record,
+                Err(err) => return self.err("LIST_FAILED", err),
+            })
+        else {
+            return self.err("MACHINE_NOT_FOUND", format!("machine '{target}' not found"));
+        };
+        if record.participation == Participation::Disabled && record.subnet.is_none() {
+            return self.ok(format!("machine '{}' already disabled", machine_id));
+        }
+        let peer_rpc_port = match self.peer_control_port() {
+            Ok(port) => port,
+            Err(error) => return self.err("CONTROL_TRANSPORT_FAILED", error.to_string()),
+        };
+        if let Err(err) = overlay_rpc_expect_ok(
+            record.overlay_ip,
+            peer_rpc_port,
+            DaemonRequest::MeshStandby { force },
+        )
+        .await
+        {
+            return self.err("REMOTE_DISABLE_FAILED", err);
+        }
+
+        match wait_for_machine_projection(
+            &active.mesh.store,
+            &machine_id,
+            Participation::Disabled,
+            ExpectedSubnetState::Absent,
+        )
+        .await
+        {
+            Ok(()) => self.ok(format!("machine '{}' disabled", machine_id)),
+            Err(err) => self.err("MACHINE_DISABLE_SYNC_FAILED", err),
         }
     }
-    Err("ployz binary not found next to current daemon".into())
-}
-
-fn install_script_args(install: &MachineInstallOptions) -> String {
-    let mut args = vec!["install".to_string()];
-    if let Some(runtime_target) = install.runtime_target {
-        args.push("--runtime".into());
-        args.push(
-            match runtime_target {
-                InstallRuntimeTarget::Docker => "docker",
-                InstallRuntimeTarget::Host => "host",
-            }
-            .into(),
-        );
-    }
-    if let Some(service_mode) = install.service_mode {
-        args.push("--service-mode".into());
-        args.push(
-            match service_mode {
-                InstallServiceMode::User => "user",
-                InstallServiceMode::System => "system",
-            }
-            .into(),
-        );
-    }
-    if let Some(source) = &install.source {
-        args.push("--source".into());
-        args.push(
-            match source {
-                InstallSource::Release => "release",
-                InstallSource::Git => "git",
-            }
-            .into(),
-        );
-    }
-    if let Some(version) = &install.version {
-        args.push("--version".into());
-        args.push(shell_quote(version));
-    }
-    if let Some(git_url) = &install.git_url {
-        args.push("--git-url".into());
-        args.push(shell_quote(git_url));
-    }
-    if let Some(git_ref) = &install.git_ref {
-        args.push("--git-ref".into());
-        args.push(shell_quote(git_ref));
-    }
-
-    args.join(" ")
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }

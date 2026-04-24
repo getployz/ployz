@@ -1,5 +1,6 @@
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use hickory_server::ServerFuture;
@@ -38,18 +39,26 @@ impl RequestHandler for DnsHandler {
         request: &Request,
         mut response_handle: R,
     ) -> ResponseInfo {
+        let started_at = Instant::now();
         let src_ip = request.src().ip();
 
         let request_info = match request.request_info() {
             Ok(info) => info,
             Err(err) => {
                 warn!(?err, "malformed dns request");
-                return send_formerr(request, &mut response_handle).await;
+                let response = send_formerr(request, &mut response_handle).await;
+                crate::metrics::observe_query(
+                    "UNKNOWN",
+                    response.response_code(),
+                    started_at.elapsed(),
+                );
+                return response;
             }
         };
 
         let name_str = request_info.query.name().to_string();
         let rtype = request_info.query.query_type();
+        let query_type = rtype.to_string();
         let query_name: Name = request_info.query.name().into();
 
         let snapshot = self.snapshot.load();
@@ -75,7 +84,7 @@ impl RequestHandler for DnsHandler {
         let builder = MessageResponseBuilder::from_message_request(request);
         let mut header = Header::response_from_request(request.header());
 
-        match result {
+        let response = match result {
             ResolveResult::Addresses(ips) if rtype == RecordType::A || rtype == RecordType::ANY => {
                 let records: Vec<Record> = ips
                     .into_iter()
@@ -113,7 +122,9 @@ impl RequestHandler for DnsHandler {
                 let response = builder.build_no_records(header);
                 send(&mut response_handle, response).await
             }
-        }
+        };
+        crate::metrics::observe_query(&query_type, response.response_code(), started_at.elapsed());
+        response
     }
 }
 
@@ -208,6 +219,17 @@ where
         .map_err(|err| DnsError::Runtime(err.to_string()))?;
 
     runtime.block_on(async {
+        if let Some(metrics_listen_addr) = config.metrics_listen_addr.as_deref() {
+            let metrics_addr = ployz_metrics::spawn_metrics_listener(metrics_listen_addr)
+                .await
+                .map_err(|err| {
+                    DnsError::Runtime(format!(
+                        "start dns metrics listener on {metrics_listen_addr}: {err}"
+                    ))
+                })?;
+            info!(listen = %metrics_addr, "dns metrics listener running");
+        }
+
         let state = DnsStore::load_routing_state(&store).await?;
         let initial_snapshot = project_dns(&state);
         let shared = SharedDnsSnapshot::new(initial_snapshot);
@@ -234,4 +256,133 @@ where
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
         run_dns_server(&listen_addrs, shared, shutdown_rx).await
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_dns_server;
+    use crate::SharedDnsSnapshot;
+    use hickory_server::proto::op::{Message, MessageType, OpCode, Query};
+    use hickory_server::proto::rr::{Name, RecordType};
+    use std::collections::HashMap;
+    use std::net::{Ipv4Addr, SocketAddr};
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpStream, UdpSocket};
+    use tokio::sync::oneshot;
+
+    #[tokio::test]
+    async fn dns_metrics_listener_reports_queries_and_rcodes() {
+        ployz_metrics::set_build_info("ployz-dns", env!("CARGO_PKG_VERSION"));
+        let metrics_addr = free_local_addr();
+        let dns_addr = free_local_addr();
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        ployz_metrics::spawn_metrics_listener(&metrics_addr.to_string())
+            .await
+            .expect("metrics listener should start");
+
+        let mut services = HashMap::new();
+        services.insert(
+            ployz_types::spec::Namespace("prod".into()),
+            HashMap::from([("web".into(), vec![Ipv4Addr::new(10, 42, 0, 2)])]),
+        );
+        let snapshot = crate::DnsSnapshot {
+            services,
+            ip_to_namespace: HashMap::new(),
+            service_names: HashMap::from([(
+                ployz_types::spec::Namespace("prod".into()),
+                vec!["web".into()],
+            )]),
+        };
+        let listen_addrs = vec![dns_addr];
+
+        let server = tokio::spawn(async move {
+            run_dns_server(&listen_addrs, SharedDnsSnapshot::new(snapshot), shutdown_rx).await
+        });
+
+        send_dns_query(dns_addr, "web.prod.ployz.internal.", RecordType::A).await;
+        send_dns_query(dns_addr, "missing.prod.ployz.internal.", RecordType::A).await;
+
+        let metrics = fetch_http_body(metrics_addr, "/metrics").await;
+        assert!(metrics.contains("ployz_dns_queries_total{qtype=\"A\",rcode=\"NOERROR\"}"));
+        assert!(metrics.contains("ployz_dns_queries_total{qtype=\"A\",rcode=\"NXDOMAIN\"}"));
+        assert!(
+            metrics
+                .contains("ployz_dns_query_duration_seconds_count{qtype=\"A\",rcode=\"NOERROR\"}")
+        );
+        assert!(
+            metrics
+                .contains("ployz_dns_query_duration_seconds_count{qtype=\"A\",rcode=\"NXDOMAIN\"}")
+        );
+
+        server.abort();
+        let _ = server.await;
+    }
+
+    async fn send_dns_query(addr: SocketAddr, name: &str, record_type: RecordType) {
+        let mut message = Message::new();
+        message
+            .set_id(7)
+            .set_message_type(MessageType::Query)
+            .set_op_code(OpCode::Query)
+            .set_recursion_desired(true)
+            .add_query(Query::query(
+                Name::from_ascii(name).expect("dns name should parse"),
+                record_type,
+            ));
+
+        let bytes = message.to_vec().expect("query should encode");
+        let socket = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("udp socket should bind");
+        socket
+            .send_to(&bytes, addr)
+            .await
+            .expect("query should send");
+
+        let mut response = [0_u8; 512];
+        let (received, _) = socket
+            .recv_from(&mut response)
+            .await
+            .expect("response should arrive");
+        let Some(response_bytes) = response.get(..received) else {
+            panic!("response length exceeded buffer");
+        };
+        let _ = Message::from_vec(response_bytes).expect("response should decode");
+    }
+
+    async fn fetch_http_body(addr: SocketAddr, path: &str) -> String {
+        for _ in 0..50 {
+            if let Ok(mut stream) = TcpStream::connect(addr).await {
+                let request = format!(
+                    "GET {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+                    addr
+                );
+                stream
+                    .write_all(request.as_bytes())
+                    .await
+                    .expect("request write should succeed");
+                let mut response = Vec::new();
+                stream
+                    .read_to_end(&mut response)
+                    .await
+                    .expect("response read should succeed");
+                let response = String::from_utf8(response).expect("response should be utf-8");
+                let Some((_, body)) = response.split_once("\r\n\r\n") else {
+                    panic!("http response should contain headers");
+                };
+                return body.to_string();
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("timed out fetching metrics from {addr}");
+    }
+
+    fn free_local_addr() -> SocketAddr {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("should bind ephemeral port")
+            .local_addr()
+            .expect("ephemeral listener should have local addr")
+    }
 }

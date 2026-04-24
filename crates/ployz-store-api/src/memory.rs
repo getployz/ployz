@@ -1,8 +1,8 @@
-use async_trait::async_trait;
 use crate::{
     DeployStore, InviteStore, MachineStore, RoutingInvalidationSubscription, RoutingStore,
     StoreRuntimeControl, SyncProbe, SyncStatus,
 };
+use async_trait::async_trait;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
@@ -152,24 +152,50 @@ impl RoutingStore for MemoryStore {
 impl InviteStore for MemoryStore {
     async fn create_invite(&self, invite: &InviteRecord) -> Result<()> {
         let mut inner = self.lock_inner();
-        if inner.invites.contains_key(&invite.id) {
+        if inner.invites.contains_key(&invite.invite_id) {
             return Err(Error::operation(
                 "invite_exists",
-                format!("invite '{}' already exists", invite.id),
+                format!("invite '{}' already exists", invite.invite_id),
             ));
         }
-        inner.invites.insert(invite.id.clone(), invite.clone());
+        inner
+            .invites
+            .insert(invite.invite_id.clone(), invite.clone());
         Ok(())
     }
 
-    async fn consume_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<()> {
+    async fn get_invite(&self, invite_id: &str) -> Result<Option<InviteRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner.invites.get(invite_id).cloned())
+    }
+
+    async fn list_invites(&self) -> Result<Vec<InviteRecord>> {
+        let inner = self.lock_inner();
+        let mut invites = inner.invites.values().cloned().collect::<Vec<_>>();
+        invites.sort_by(|left, right| left.invite_id.cmp(&right.invite_id));
+        Ok(invites)
+    }
+
+    async fn redeem_invite(
+        &self,
+        invite_id: &str,
+        machine_id: &MachineId,
+        now_unix_secs: u64,
+    ) -> Result<InviteRecord> {
         let mut inner = self.lock_inner();
-        let invite = inner.invites.get(invite_id).ok_or_else(|| {
-            Error::operation(
+        let Some(invite) = inner.invites.get(invite_id).cloned() else {
+            return Err(Error::operation(
                 "invite_not_found",
                 format!("invite '{invite_id}' not found"),
-            )
-        })?;
+            ));
+        };
+
+        if invite.revoked_at.is_some() {
+            return Err(Error::operation(
+                "invite_revoked",
+                format!("invite '{invite_id}' is revoked"),
+            ));
+        }
 
         if now_unix_secs > invite.expires_at {
             return Err(Error::operation(
@@ -178,8 +204,47 @@ impl InviteStore for MemoryStore {
             ));
         }
 
-        inner.invites.remove(invite_id);
-        Ok(())
+        if let Some(consumed_by) = &invite.consumed_by {
+            if consumed_by == machine_id {
+                return Ok(invite);
+            }
+            return Err(Error::operation(
+                "invite_consumed",
+                format!("invite '{invite_id}' is already consumed"),
+            ));
+        }
+
+        let mut next_invite = invite.clone();
+        next_invite.consumed_by = Some(machine_id.clone());
+        next_invite.consumed_at = Some(now_unix_secs);
+        inner
+            .invites
+            .insert(invite_id.to_string(), next_invite.clone());
+
+        Ok(next_invite)
+    }
+
+    async fn revoke_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<InviteRecord> {
+        let mut inner = self.lock_inner();
+        let invite = inner.invites.get(invite_id).ok_or_else(|| {
+            Error::operation(
+                "invite_not_found",
+                format!("invite '{invite_id}' not found"),
+            )
+        })?;
+        if invite.consumed_by.is_some() {
+            return Err(Error::operation(
+                "invite_consumed",
+                format!("invite '{invite_id}' is already consumed"),
+            ));
+        }
+
+        let mut next_invite = invite.clone();
+        next_invite.revoked_at = Some(now_unix_secs);
+        inner
+            .invites
+            .insert(invite_id.to_string(), next_invite.clone());
+        Ok(next_invite)
     }
 }
 
@@ -388,21 +453,30 @@ mod tests {
     async fn invite_is_single_use() {
         let store = MemoryStore::new();
         let invite = InviteRecord {
-            id: "inv-1".into(),
+            invite_id: "inv-1".into(),
+            network_id: ployz_types::model::NetworkId("net-1".into()),
+            issuer_machine_id: MachineId("issuer".into()),
+            issuer_verify_key: "verify".into(),
             expires_at: 10_000,
+            consumed_by: None,
+            consumed_at: None,
+            revoked_at: None,
+            signature: "sig".into(),
         };
 
         store.create_invite(&invite).await.expect("create invite");
         store
-            .consume_invite("inv-1", 100)
+            .redeem_invite("inv-1", &MachineId("joiner".into()), 100)
             .await
             .expect("consume invite once");
 
-        let second = store.consume_invite("inv-1", 101).await;
+        let second = store
+            .redeem_invite("inv-1", &MachineId("other".into()), 101)
+            .await;
         assert!(matches!(
             second,
             Err(Error::Operation {
-                operation: "invite_not_found",
+                operation: "invite_consumed",
                 ..
             })
         ));
@@ -412,13 +486,22 @@ mod tests {
     async fn invite_expiry_is_enforced() {
         let store = MemoryStore::new();
         let invite = InviteRecord {
-            id: "inv-2".into(),
+            invite_id: "inv-2".into(),
+            network_id: ployz_types::model::NetworkId("net-1".into()),
+            issuer_machine_id: MachineId("issuer".into()),
+            issuer_verify_key: "verify".into(),
             expires_at: 50,
+            consumed_by: None,
+            consumed_at: None,
+            revoked_at: None,
+            signature: "sig".into(),
         };
 
         store.create_invite(&invite).await.expect("create invite");
 
-        let expired = store.consume_invite("inv-2", 51).await;
+        let expired = store
+            .redeem_invite("inv-2", &MachineId("joiner".into()), 51)
+            .await;
         assert!(matches!(
             expired,
             Err(Error::Operation {

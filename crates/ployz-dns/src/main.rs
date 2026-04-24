@@ -1,5 +1,6 @@
 fn main() -> Result<(), ployz_dns::DnsError> {
     tracing_subscriber::fmt::init();
+    ployz_metrics::set_build_info("ployz-dns", env!("CARGO_PKG_VERSION"));
     let config = ployz_dns::DnsConfig::from_env()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

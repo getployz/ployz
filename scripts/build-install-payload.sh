@@ -57,15 +57,25 @@ output_dir_parent() {
 
 cache_key() {
   local repo_dir=$1
+  local cache_root
+  if cache_root="$(git -C "${repo_dir}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+    :
+  elif cache_root="$(git -C "${repo_dir}" rev-parse --git-common-dir 2>/dev/null)"; then
+    if [[ "${cache_root}" != /* ]]; then
+      cache_root="$(cd "${repo_dir}" && cd "${cache_root}" && pwd -P)"
+    fi
+  else
+    cache_root="$(cd "${repo_dir}" && pwd -P)"
+  fi
   if command -v shasum >/dev/null 2>&1; then
-    printf '%s' "${repo_dir}" | shasum -a 256 | awk '{print substr($1, 1, 12)}'
+    printf '%s' "${cache_root}" | shasum -a 256 | awk '{print substr($1, 1, 12)}'
     return
   fi
   if command -v sha256sum >/dev/null 2>&1; then
-    printf '%s' "${repo_dir}" | sha256sum | awk '{print substr($1, 1, 12)}'
+    printf '%s' "${cache_root}" | sha256sum | awk '{print substr($1, 1, 12)}'
     return
   fi
-  printf '%s' "$(basename "${repo_dir}")"
+  printf '%s' "$(basename "${cache_root}")"
 }
 
 build_linux_payload_in_docker() {
@@ -245,8 +255,18 @@ install_corrosion() {
   trap 'rm -rf "${tmp_dir}"' RETURN
   download "https://github.com/getployz/corrosion/releases/download/${version}/${asset}" "${tmp_dir}/${asset}"
   tar -xzf "${tmp_dir}/${asset}" -C "${tmp_dir}"
-  install -m 0755 "${tmp_dir}/corrosion" "${output_dir}/bin/corrosion"
+  copy_file "${tmp_dir}/corrosion" "${output_dir}/bin/corrosion" 0755
   printf 'CORROSION_VERSION=%s\n' "${version}" > "${output_dir}/metadata.env"
+}
+
+copy_file() {
+  local src=$1
+  local dest=$2
+  local mode=$3
+
+  rm -f "${dest}"
+  cat "${src}" > "${dest}"
+  chmod "${mode}" "${dest}"
 }
 
 build_binaries() {
@@ -341,20 +361,28 @@ fi
 
 build_binaries
 
-rm -rf "${OUTPUT_DIR}"
-install -d "${OUTPUT_DIR}/bin" "${OUTPUT_DIR}/assets/systemd"
-install -m 0755 "${REPO_DIR}/ployz.sh" "${OUTPUT_DIR}/ployz.sh"
-install -m 0755 "$(binary_build_dir)/ployz" "${OUTPUT_DIR}/bin/ployz"
-install -m 0755 "$(binary_build_dir)/ployzd" "${OUTPUT_DIR}/bin/ployzd"
-install -m 0755 "$(binary_build_dir)/ployz-gateway" "${OUTPUT_DIR}/bin/ployz-gateway"
-install -m 0755 "$(binary_build_dir)/ployz-dns" "${OUTPUT_DIR}/bin/ployz-dns"
-install -m 0644 "${REPO_DIR}/packaging/systemd/ployzd.service" "${OUTPUT_DIR}/assets/systemd/ployzd.service"
+output_parent="$(dirname "${OUTPUT_DIR}")"
+output_name="$(basename "${OUTPUT_DIR}")"
+tmp_output_dir="$(mktemp -d "${output_parent}/.${output_name}.tmp.XXXXXX")"
+trap 'rm -rf "${tmp_output_dir}"' EXIT
 
-install_corrosion "${OUTPUT_DIR}"
+install -d "${tmp_output_dir}/bin" "${tmp_output_dir}/assets/systemd"
+copy_file "${REPO_DIR}/ployz.sh" "${tmp_output_dir}/ployz.sh" 0755
+copy_file "$(binary_build_dir)/ployz" "${tmp_output_dir}/bin/ployz" 0755
+copy_file "$(binary_build_dir)/ployzd" "${tmp_output_dir}/bin/ployzd" 0755
+copy_file "$(binary_build_dir)/ployz-gateway" "${tmp_output_dir}/bin/ployz-gateway" 0755
+copy_file "$(binary_build_dir)/ployz-dns" "${tmp_output_dir}/bin/ployz-dns" 0755
+copy_file "${REPO_DIR}/packaging/systemd/ployzd.service" "${tmp_output_dir}/assets/systemd/ployzd.service" 0644
+
+install_corrosion "${tmp_output_dir}"
 
 {
   printf 'GIT_REV=%s\n' "$(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
   printf 'PLATFORM=%s\n' "${TARGET_PLATFORM}"
   printf 'PROFILE=%s\n' "${BUILD_PROFILE}"
   printf 'BUILD_FINGERPRINT=%s\n' "${BUILD_FINGERPRINT}"
-} >> "${OUTPUT_DIR}/metadata.env"
+} >> "${tmp_output_dir}/metadata.env"
+
+rm -rf "${OUTPUT_DIR}"
+mv "${tmp_output_dir}" "${OUTPUT_DIR}"
+trap - EXIT

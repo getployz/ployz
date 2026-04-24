@@ -27,8 +27,8 @@ pub(crate) enum InstallSourceArg {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub(crate) enum DebugTickTaskArg {
     PeerSync,
+    Endpoints,
     Heartbeat,
-    Heal,
     All,
 }
 
@@ -81,8 +81,8 @@ impl From<DebugTickTaskArg> for ProtocolDebugTickTask {
     fn from(value: DebugTickTaskArg) -> Self {
         match value {
             DebugTickTaskArg::PeerSync => ProtocolDebugTickTask::PeerSync,
+            DebugTickTaskArg::Endpoints => ProtocolDebugTickTask::Endpoints,
             DebugTickTaskArg::Heartbeat => ProtocolDebugTickTask::Heartbeat,
-            DebugTickTaskArg::Heal => ProtocolDebugTickTask::Heal,
             DebugTickTaskArg::All => ProtocolDebugTickTask::All,
         }
     }
@@ -102,10 +102,7 @@ impl CliError {
     pub(crate) fn exit_code(&self) -> i32 {
         match self {
             Self::Usage(_) | Self::Config(_) => 2,
-            Self::Io(_)
-            | Self::Serialize(_)
-            | Self::Daemon { .. }
-            | Self::Transport { .. } => 1,
+            Self::Io(_) | Self::Serialize(_) | Self::Daemon { .. } | Self::Transport { .. } => 1,
         }
     }
 
@@ -144,12 +141,15 @@ pub(crate) struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     pub(crate) socket: Option<String>,
 
+    /// Print the full daemon response as JSON for scripting and automation.
     #[arg(long, global = true, conflicts_with = "plain")]
     pub(crate) json: bool,
 
+    /// Print compact human-readable text with less formatting and fewer tokens.
     #[arg(long, global = true, conflicts_with = "json")]
     pub(crate) plain: bool,
 
+    /// Suppress success output where possible.
     #[arg(short = 'q', long, global = true)]
     pub(crate) quiet: bool,
 
@@ -339,6 +339,17 @@ pub(crate) enum MachineAction {
         #[arg(required = true, num_args = 1..)]
         targets: Vec<String>,
     },
+    Enable {
+        target: String,
+    },
+    Drain {
+        target: String,
+    },
+    Disable {
+        target: String,
+        #[arg(long)]
+        force: bool,
+    },
     Rm {
         id: String,
         #[arg(long)]
@@ -360,6 +371,10 @@ pub(crate) enum MachineInviteAction {
     Create {
         #[arg(long, default_value_t = 600)]
         ttl_secs: u64,
+    },
+    List,
+    Revoke {
+        invite_id: String,
     },
     Import {
         #[arg(long)]
