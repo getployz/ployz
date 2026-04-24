@@ -72,6 +72,7 @@ pub enum DebugTickTask {
 pub enum ResourceKey {
     Subnet(Ipv4Net),
     DeployNamespace(String),
+    CertIssuance(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -227,6 +228,10 @@ pub enum DaemonRequest {
     },
     Coord {
         op: CoordOp,
+    },
+    AcmeChallengeReady {
+        hostname: String,
+        token: String,
     },
     MeshSelfRecord,
     MeshAccept {

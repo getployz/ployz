@@ -13,8 +13,9 @@ use ployz_types::spec::Namespace;
 
 pub use driver::StoreDriver;
 pub use traits::{
-    CertificateStore, DeployStore, InviteStore, MachineStore, MachineSubscription,
-    RoutingInvalidationSubscription, RoutingStore, StoreRuntimeControl, SyncProbe, SyncStatus,
+    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployStore, InviteStore,
+    MachineStore, MachineSubscription, RoutingInvalidationSubscription, RoutingStore,
+    StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 
 #[async_trait]
@@ -77,6 +78,8 @@ pub trait StoreBackend: Send + Sync {
     async fn list_acme_challenges(&self) -> Result<Vec<AcmeChallengeRecord>>;
     async fn upsert_acme_challenge(&self, record: &AcmeChallengeRecord) -> Result<()>;
     async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> Result<()>;
+    async fn subscribe_certificates(&self) -> Result<CertificateSubscription>;
+    async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription>;
 
     async fn sync_status(&self) -> Result<SyncStatus> {
         Ok(SyncStatus::Synced)

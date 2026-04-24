@@ -1,13 +1,15 @@
 use crate::{
-    CertificateStore, DeployStore, InviteStore, MachineStore, RoutingInvalidationSubscription,
-    RoutingStore, StoreRuntimeControl, SyncProbe, SyncStatus,
+    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployStore,
+    InviteStore, MachineStore, RoutingInvalidationSubscription, RoutingStore, StoreRuntimeControl,
+    SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
-    AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
-    InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineRecord, RoutingState,
-    ServiceReleaseRecord, ServiceRevisionRecord,
+    AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeRecord, CertificateEvent,
+    CertificateRecord, DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord,
+    MachineEvent, MachineId, MachineRecord, RoutingState, ServiceReleaseRecord,
+    ServiceRevisionRecord,
 };
 use ployz_types::spec::Namespace;
 use std::collections::{HashMap, HashSet};
@@ -31,7 +33,9 @@ struct StoreInner {
     deploys: HashMap<DeployId, DeployRecord>,
     acme_accounts: HashMap<String, AcmeAccountRecord>,
     certificates: HashMap<String, CertificateRecord>,
+    certificate_subscribers: Vec<mpsc::Sender<CertificateEvent>>,
     acme_challenges: HashMap<(String, String), AcmeChallengeRecord>,
+    acme_challenge_subscribers: Vec<mpsc::Sender<AcmeChallengeEvent>>,
     sync_status: SyncStatus,
 }
 
@@ -56,7 +60,9 @@ impl MemoryStore {
                 deploys: HashMap::new(),
                 acme_accounts: HashMap::new(),
                 certificates: HashMap::new(),
+                certificate_subscribers: Vec::new(),
                 acme_challenges: HashMap::new(),
+                acme_challenge_subscribers: Vec::new(),
                 sync_status: SyncStatus::Synced,
             }),
         }
@@ -92,6 +98,32 @@ impl MemoryStore {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Closed(_)) => false,
                 Err(mpsc::error::TrySendError::Full(_)) => true,
+            });
+    }
+
+    fn broadcast_certificate(inner: &mut StoreInner, event: CertificateEvent) {
+        inner
+            .certificate_subscribers
+            .retain(|sender| match sender.try_send(event.clone()) {
+                Ok(()) => true,
+                Err(mpsc::error::TrySendError::Closed(_)) => false,
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    warn!("certificate subscriber channel full, event dropped");
+                    true
+                }
+            });
+    }
+
+    fn broadcast_acme_challenge(inner: &mut StoreInner, event: AcmeChallengeEvent) {
+        inner
+            .acme_challenge_subscribers
+            .retain(|sender| match sender.try_send(event.clone()) {
+                Ok(()) => true,
+                Err(mpsc::error::TrySendError::Closed(_)) => false,
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    warn!("acme challenge subscriber channel full, event dropped");
+                    true
+                }
             });
     }
 }
@@ -415,9 +447,16 @@ impl CertificateStore for MemoryStore {
 
     async fn upsert_certificate(&self, record: &CertificateRecord) -> Result<()> {
         let mut inner = self.lock_inner();
+        let is_update = inner.certificates.contains_key(&record.hostname);
         inner
             .certificates
             .insert(record.hostname.clone(), record.clone());
+        let event = if is_update {
+            CertificateEvent::Updated(record.clone())
+        } else {
+            CertificateEvent::Added(record.clone())
+        };
+        Self::broadcast_certificate(&mut inner, event);
         Self::broadcast_routing_refresh(&mut inner);
         Ok(())
     }
@@ -429,21 +468,45 @@ impl CertificateStore for MemoryStore {
 
     async fn upsert_acme_challenge(&self, record: &AcmeChallengeRecord) -> Result<()> {
         let mut inner = self.lock_inner();
-        inner.acme_challenges.insert(
-            (record.hostname.clone(), record.token.clone()),
-            record.clone(),
-        );
+        let key = (record.hostname.clone(), record.token.clone());
+        let is_update = inner.acme_challenges.contains_key(&key);
+        inner.acme_challenges.insert(key, record.clone());
+        let event = if is_update {
+            AcmeChallengeEvent::Updated(record.clone())
+        } else {
+            AcmeChallengeEvent::Added(record.clone())
+        };
+        Self::broadcast_acme_challenge(&mut inner, event);
         Self::broadcast_routing_refresh(&mut inner);
         Ok(())
     }
 
     async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> Result<()> {
         let mut inner = self.lock_inner();
-        inner
+        if let Some(record) = inner
             .acme_challenges
-            .remove(&(hostname.to_string(), token.to_string()));
+            .remove(&(hostname.to_string(), token.to_string()))
+        {
+            Self::broadcast_acme_challenge(&mut inner, AcmeChallengeEvent::Removed(record));
+        }
         Self::broadcast_routing_refresh(&mut inner);
         Ok(())
+    }
+
+    async fn subscribe_certificates(&self) -> Result<CertificateSubscription> {
+        let mut inner = self.lock_inner();
+        let snapshot = inner.certificates.values().cloned().collect();
+        let (sender, receiver) = mpsc::channel(64);
+        inner.certificate_subscribers.push(sender);
+        Ok((snapshot, receiver))
+    }
+
+    async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
+        let mut inner = self.lock_inner();
+        let snapshot = inner.acme_challenges.values().cloned().collect();
+        let (sender, receiver) = mpsc::channel(64);
+        inner.acme_challenge_subscribers.push(sender);
+        Ok((snapshot, receiver))
     }
 }
 

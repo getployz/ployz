@@ -5,7 +5,7 @@ mod doctor;
 mod invite;
 pub(crate) mod machine;
 mod mesh;
-mod peer_rpc;
+pub(crate) mod peer_rpc;
 mod status;
 
 use ployz_api::{DaemonRequest, DaemonResponse};
@@ -57,6 +57,7 @@ impl DaemonState {
             | DaemonRequest::MachineInviteList
             | DaemonRequest::MachineInviteImport { .. }
             | DaemonRequest::Coord { .. }
+            | DaemonRequest::AcmeChallengeReady { .. }
             | DaemonRequest::MeshSelfRecord
             | DaemonRequest::MeshAccept { .. } => RequestLane::Shared,
         }
@@ -127,6 +128,9 @@ impl DaemonState {
                 self.handle_machine_invite_import(&token).await
             }
             DaemonRequest::Coord { op } => self.handle_coord(op).await,
+            DaemonRequest::AcmeChallengeReady { hostname, token } => {
+                self.handle_acme_challenge_ready(&hostname, &token).await
+            }
             DaemonRequest::MeshSelfRecord => self.handle_mesh_self_record().await,
             DaemonRequest::MeshAccept { response } => self.handle_mesh_accept(&response).await,
         }
@@ -212,6 +216,7 @@ impl DaemonState {
             | DaemonRequest::MachineInviteList
             | DaemonRequest::MachineInviteImport { .. }
             | DaemonRequest::Coord { .. }
+            | DaemonRequest::AcmeChallengeReady { .. }
             | DaemonRequest::MeshSelfRecord
             | DaemonRequest::MeshAccept { .. } => {
                 self.err("INTERNAL", "shared request routed to exclusive handler")

@@ -3,7 +3,8 @@ use crate::client::{CorrClient, Transport};
 use crate::config as corrosion_config;
 use corro_api_types::{ExecResult, Statement};
 use ployz_store_api::{
-    CertificateStore, DeployStore, InviteStore, MachineStore, RoutingStore, SyncProbe, SyncStatus,
+    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployStore, InviteStore,
+    MachineStore, RoutingStore, SyncProbe, SyncStatus,
 };
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
@@ -316,5 +317,13 @@ impl CertificateStore for CorrosionStore {
 
     async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> Result<()> {
         tables::acme_challenges::delete_acme_challenge(&self.client, hostname, token).await
+    }
+
+    async fn subscribe_certificates(&self) -> Result<CertificateSubscription> {
+        tables::certificates::subscribe_certificates(&self.client).await
+    }
+
+    async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
+        tables::acme_challenges::subscribe_acme_challenges(&self.client).await
     }
 }

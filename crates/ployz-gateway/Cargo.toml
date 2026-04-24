@@ -35,6 +35,9 @@ tracing-subscriber = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
+[dev-dependencies]
+rcgen = "0.14"
+
 [lints.clippy]
 indexing_slicing = "warn"
 fallible_impl_from = "warn"

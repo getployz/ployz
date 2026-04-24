@@ -1,15 +1,20 @@
 use async_trait::async_trait;
 use ployz_types::Result;
 use ployz_types::model::{
-    AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
-    InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineRecord, RoutingState,
-    ServiceReleaseRecord, ServiceRevisionRecord,
+    AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeRecord, CertificateEvent,
+    CertificateRecord, DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord,
+    MachineEvent, MachineId, MachineRecord, RoutingState, ServiceReleaseRecord,
+    ServiceRevisionRecord,
 };
 use ployz_types::spec::Namespace;
 use std::future::Future;
 use tokio::sync::mpsc;
 
 pub type MachineSubscription = (Vec<MachineRecord>, mpsc::Receiver<MachineEvent>);
+pub type CertificateSubscription =
+    (Vec<CertificateRecord>, mpsc::Receiver<CertificateEvent>);
+pub type AcmeChallengeSubscription =
+    (Vec<AcmeChallengeRecord>, mpsc::Receiver<AcmeChallengeEvent>);
 pub type RoutingInvalidationSubscription = mpsc::Receiver<()>;
 
 pub trait MachineStore: Send + Sync {
@@ -166,6 +171,14 @@ pub trait CertificateStore: Send + Sync {
         hostname: &'a str,
         token: &'a str,
     ) -> impl Future<Output = Result<()>> + Send + 'a;
+
+    fn subscribe_certificates(
+        &self,
+    ) -> impl Future<Output = Result<CertificateSubscription>> + Send + '_;
+
+    fn subscribe_acme_challenges(
+        &self,
+    ) -> impl Future<Output = Result<AcmeChallengeSubscription>> + Send + '_;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
