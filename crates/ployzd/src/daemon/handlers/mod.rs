@@ -24,12 +24,10 @@ impl DaemonState {
             DaemonRequest::DebugTick { .. }
             | DaemonRequest::MeshJoin { .. }
             | DaemonRequest::MeshBootstrap { .. }
-            | DaemonRequest::MeshPromote { .. }
-            | DaemonRequest::MeshStandby { .. }
-            | DaemonRequest::MeshSetParticipation { .. }
+            | DaemonRequest::MachineTransitionSelf { .. }
             | DaemonRequest::MeshInit { .. }
-            | DaemonRequest::MeshUp { .. }
-            | DaemonRequest::MeshDown
+            | DaemonRequest::MeshStart { .. }
+            | DaemonRequest::MeshStop { .. }
             | DaemonRequest::MeshDestroy { .. } => RequestLane::Exclusive,
             DaemonRequest::Status
             | DaemonRequest::Doctor
@@ -43,9 +41,9 @@ impl DaemonState {
             | DaemonRequest::MachineList
             | DaemonRequest::MachineInit { .. }
             | DaemonRequest::MachineAdd { .. }
-            | DaemonRequest::MachineEnable { .. }
+            | DaemonRequest::MachineActivate { .. }
             | DaemonRequest::MachineDrain { .. }
-            | DaemonRequest::MachineDisable { .. }
+            | DaemonRequest::MachineStandby { .. }
             | DaemonRequest::MachineRemove { .. }
             | DaemonRequest::MachineOperationList
             | DaemonRequest::MachineOperationGet { .. }
@@ -61,17 +59,15 @@ impl DaemonState {
 
     pub async fn handle_shared(&self, req: DaemonRequest) -> DaemonResponse {
         match req {
-            DaemonRequest::Status => self.handle_status(),
+            DaemonRequest::Status => self.handle_status().await,
             DaemonRequest::Doctor => self.handle_doctor().await,
             DaemonRequest::DebugTick { .. }
             | DaemonRequest::MeshJoin { .. }
             | DaemonRequest::MeshBootstrap { .. }
-            | DaemonRequest::MeshPromote { .. }
-            | DaemonRequest::MeshStandby { .. }
-            | DaemonRequest::MeshSetParticipation { .. }
+            | DaemonRequest::MachineTransitionSelf { .. }
             | DaemonRequest::MeshInit { .. }
-            | DaemonRequest::MeshUp { .. }
-            | DaemonRequest::MeshDown
+            | DaemonRequest::MeshStart { .. }
+            | DaemonRequest::MeshStop { .. }
             | DaemonRequest::MeshDestroy { .. } => {
                 self.err("INTERNAL", "exclusive request routed to shared handler")
             }
@@ -99,10 +95,12 @@ impl DaemonState {
             DaemonRequest::MachineAdd { targets, options } => {
                 self.handle_machine_add(&targets, &options).await
             }
-            DaemonRequest::MachineEnable { target } => self.handle_machine_enable(&target).await,
+            DaemonRequest::MachineActivate { target } => {
+                self.handle_machine_activate(&target).await
+            }
             DaemonRequest::MachineDrain { target } => self.handle_machine_drain(&target).await,
-            DaemonRequest::MachineDisable { target, force } => {
-                self.handle_machine_disable(&target, force).await
+            DaemonRequest::MachineStandby { target, force } => {
+                self.handle_machine_standby(&target, force).await
             }
             DaemonRequest::MachineRemove { id, force } => {
                 self.handle_machine_remove(&id, force).await
@@ -132,19 +130,23 @@ impl DaemonState {
             DaemonRequest::DebugTick { task, repeat } => self.handle_debug_tick(task, repeat).await,
             DaemonRequest::MeshJoin { token } => self.handle_mesh_join(&token).await,
             DaemonRequest::MeshBootstrap { request } => self.handle_mesh_bootstrap(&request).await,
-            DaemonRequest::MeshPromote { assigned_subnet } => {
-                self.handle_mesh_promote(assigned_subnet).await
-            }
-            DaemonRequest::MeshStandby { force } => self.handle_mesh_standby(force).await,
-            DaemonRequest::MeshSetParticipation { participation } => {
-                self.handle_mesh_set_participation(participation).await
+            DaemonRequest::MachineTransitionSelf {
+                goal,
+                assigned_subnet,
+                force,
+            } => {
+                self.handle_machine_transition_self(goal, assigned_subnet, force)
+                    .await
             }
             DaemonRequest::MeshInit { network } => self.handle_mesh_init(&network).await,
-            DaemonRequest::MeshUp {
+            DaemonRequest::MeshStart {
                 network,
-                skip_bootstrap_wait,
-            } => self.handle_mesh_up(&network, skip_bootstrap_wait).await,
-            DaemonRequest::MeshDown => self.handle_mesh_down().await,
+                allow_disconnected_bootstrap,
+            } => {
+                self.handle_mesh_start(&network, allow_disconnected_bootstrap)
+                    .await
+            }
+            DaemonRequest::MeshStop { force } => self.handle_mesh_stop(force).await,
             DaemonRequest::MeshDestroy { network } => self.handle_mesh_destroy(&network).await,
             DaemonRequest::Status
             | DaemonRequest::Doctor
@@ -158,9 +160,9 @@ impl DaemonState {
             | DaemonRequest::MachineList
             | DaemonRequest::MachineInit { .. }
             | DaemonRequest::MachineAdd { .. }
-            | DaemonRequest::MachineEnable { .. }
+            | DaemonRequest::MachineActivate { .. }
             | DaemonRequest::MachineDrain { .. }
-            | DaemonRequest::MachineDisable { .. }
+            | DaemonRequest::MachineStandby { .. }
             | DaemonRequest::MachineRemove { .. }
             | DaemonRequest::MachineOperationList
             | DaemonRequest::MachineOperationGet { .. }

@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 use tokio::time::Instant;
 
-use super::machine::render::{format_participation, format_status};
+use super::machine::render::format_lifecycle;
 
 const PARTICIPATION_HANDSHAKE_FRESHNESS_WINDOW: Duration = Duration::from_secs(30);
 impl DaemonState {
@@ -90,7 +90,7 @@ fn build_doctor_payload(
     );
     DoctorPayload {
         overall: DoctorOverall {
-            participation: if peers.iter().any(|row| row.blocking) {
+            lifecycle: if peers.iter().any(|row| row.blocking) {
                 String::from("blocked")
             } else {
                 String::from("healthy")
@@ -99,8 +99,11 @@ fn build_doctor_payload(
         local: DoctorLocal {
             machine_id: local_record.id.0.clone(),
             network: active.config.name.0.clone(),
-            participation: format_participation(local_record).to_string(),
-            status: format_status(local_record).to_string(),
+            network_lifecycle: active.config.lifecycle.to_string(),
+            machine_lifecycle: format_lifecycle(local_record).to_string(),
+            config_subnet: active.config.subnet.map(|subnet| subnet.to_string()),
+            record_subnet: local_record.subnet.map(|subnet| subnet.to_string()),
+            runtime_running: true,
             published_endpoints: local_record.endpoints.clone(),
             detected_endpoints: detected_local_endpoints.to_vec(),
             endpoint_watch_supported,
@@ -114,7 +117,7 @@ fn render_doctor_report(report: &DoctorPayload) -> String {
     let all_peers: Vec<&DoctorPeer> = report.peers.iter().collect();
 
     let mut lines = Vec::new();
-    lines.push(format!("participation: {}", report.overall.participation));
+    lines.push(format!("lifecycle: {}", report.overall.lifecycle));
     if !blocking_peers.is_empty() {
         lines.push(String::new());
         lines.push(String::from("blocking peers:"));
@@ -127,12 +130,19 @@ fn render_doctor_report(report: &DoctorPayload) -> String {
     }
     lines.push(String::new());
     lines.push(format!(
-        "local: machine={} network={} participation={} status={}",
+        "local: machine={} network={} network_lifecycle={} machine_lifecycle={} runtime_running={}",
         report.local.machine_id,
         report.local.network,
-        report.local.participation,
-        report.local.status,
+        report.local.network_lifecycle,
+        report.local.machine_lifecycle,
+        report.local.runtime_running,
     ));
+    if report.local.config_subnet != report.local.record_subnet {
+        lines.push(format!(
+            "local subnet mismatch: config={:?} record={:?}",
+            report.local.config_subnet, report.local.record_subnet
+        ));
+    }
     if report.local.published_endpoints != report.local.detected_endpoints {
         lines.push(format!(
             "local endpoint drift: published={:?} detected={:?}",
@@ -159,8 +169,8 @@ fn append_peer_section(lines: &mut Vec<String>, rows: &[&DoctorPeer], include_ca
         .iter()
         .map(|row| store_status_column(row).len())
         .max()
-        .unwrap_or("store=enabled/up".len())
-        .max("store=enabled/up".len());
+        .unwrap_or("store=active subnet=none".len())
+        .max("store=active subnet=none".len());
     let w_wg = rows
         .iter()
         .map(|row| wg_status_column(row).len())
@@ -190,7 +200,11 @@ fn append_peer_section(lines: &mut Vec<String>, rows: &[&DoctorPeer], include_ca
 }
 
 fn store_status_column(row: &DoctorPeer) -> String {
-    format!("store={}/{}", row.store_participation, row.store_status)
+    format!(
+        "store={} subnet={}",
+        row.store_lifecycle,
+        row.subnet.as_deref().unwrap_or("none")
+    )
 }
 
 fn wg_status_column(row: &DoctorPeer) -> String {
@@ -253,8 +267,8 @@ fn build_participation_rows(
                 machine_id: machine.id.0.clone(),
                 role: diagnostic_role_name(role).to_string(),
                 blocking: role == DiagnosticRole::Blocking && probe == ProbeState::Unreachable,
-                store_participation: format_participation(machine).to_string(),
-                store_status: format_status(machine).to_string(),
+                store_lifecycle: format_lifecycle(machine).to_string(),
+                subnet: machine.subnet.map(|subnet| subnet.to_string()),
                 wg_state: handshake_state.as_str().to_string(),
                 probe_state: probe.as_str().to_string(),
                 cause_code: cause_code.to_string(),
@@ -361,7 +375,9 @@ mod tests {
     use ployz_runtime_api::Identity;
     use ployz_store_api::StoreDriver;
     use ployz_store_api::memory::{MemoryService, MemoryStore};
-    use ployz_types::model::{MachineId, MachineStatus, OverlayIp, Participation, PublicKey};
+    use ployz_types::model::{
+        MachineId, MachineLifecycle, NetworkLifecycle, OverlayIp, PublicKey,
+    };
     use std::net::Ipv6Addr;
     use std::path::PathBuf;
     use std::sync::{Arc, OnceLock};
@@ -380,17 +396,13 @@ mod tests {
         let stale_key = PublicKey([3; 32]);
 
         store
-            .upsert_self_machine(&test_machine_record(
-                "peer",
-                Participation::Enabled,
-                peer_key.clone(),
-            ))
+            .upsert_self_machine(&test_machine_record("peer", MachineLifecycle::Active, peer_key.clone()))
             .await
             .expect("upsert peer");
         store
             .upsert_self_machine(&test_machine_record(
                 "stale-peer",
-                Participation::Enabled,
+                MachineLifecycle::Active,
                 stale_key.clone(),
             ))
             .await
@@ -407,13 +419,12 @@ mod tests {
         let Some(DaemonPayload::Doctor(payload)) = response.payload.as_ref() else {
             panic!("expected doctor payload");
         };
-        assert_eq!(payload.overall.participation, "blocked");
+        assert_eq!(payload.overall.lifecycle, "blocked");
         assert!(payload.peers.iter().any(|peer| {
             peer.machine_id == "peer"
                 && peer.blocking
                 && peer.role == "blocking"
-                && peer.store_participation == "enabled"
-                && peer.store_status == "up"
+                && peer.store_lifecycle == "active"
                 && peer.wg_state == "absent"
                 && peer.probe_state == "unreachable"
                 && peer.cause_code == "no-direct-peer-and-probe-failed"
@@ -423,11 +434,11 @@ mod tests {
                 && peer.wg_state == "stale"
                 && peer.probe_state == "unreachable"
         }));
-        assert!(response.message.contains("participation: blocked"));
+        assert!(response.message.contains("lifecycle: blocked"));
         assert!(response.message.contains("blocking peers:"));
         assert!(response.message.lines().any(|line| {
             line.contains("peer")
-                && line.contains("store=enabled/up")
+                && line.contains("store=active")
                 && line.contains("wg=absent")
                 && line.contains("probe=unreachable")
                 && line.contains("cause=no direct peer configured and overlay probe failed")
@@ -435,7 +446,7 @@ mod tests {
         assert!(response.message.contains("all peers:"));
         assert!(response.message.lines().any(|line| {
             line.contains("stale-peer")
-                && line.contains("store=enabled/up")
+                && line.contains("store=active")
                 && line.contains("wg=stale")
                 && line.contains("probe=unreachable")
         }));
@@ -448,11 +459,7 @@ mod tests {
         let peer_key = PublicKey([2; 32]);
 
         store
-            .upsert_self_machine(&test_machine_record(
-                "peer",
-                Participation::Enabled,
-                peer_key.clone(),
-            ))
+            .upsert_self_machine(&test_machine_record("peer", MachineLifecycle::Active, peer_key.clone()))
             .await
             .expect("upsert peer");
 
@@ -467,7 +474,7 @@ mod tests {
         let Some(DaemonPayload::Doctor(payload)) = response.payload.as_ref() else {
             panic!("expected doctor payload");
         };
-        assert_eq!(payload.overall.participation, "healthy");
+        assert_eq!(payload.overall.lifecycle, "healthy");
         assert!(payload.peers.iter().any(|peer| {
             peer.machine_id == "peer"
                 && !peer.blocking
@@ -475,12 +482,12 @@ mod tests {
                 && peer.probe_state == "reachable"
                 && peer.cause_code == "overlay-probe-reachable"
         }));
-        assert!(response.message.contains("participation: healthy"));
+        assert!(response.message.contains("lifecycle: healthy"));
         assert!(!response.message.contains("blocking peers:"));
         assert!(response.message.contains("all peers:"));
         assert!(response.message.lines().any(|line| {
             line.contains("peer")
-                && line.contains("store=enabled/up")
+                && line.contains("store=active")
                 && line.contains("wg=fresh")
                 && line.contains("probe=reachable")
         }));
@@ -490,8 +497,8 @@ mod tests {
     #[tokio::test]
     async fn doctor_treats_overlay_probe_as_second_health_signal() {
         let local_record =
-            test_machine_record("joiner5", Participation::Disabled, PublicKey([1; 32]));
-        let peer_record = test_machine_record("peer", Participation::Enabled, PublicKey([2; 32]));
+            test_machine_record("joiner5", MachineLifecycle::Standby, PublicKey([1; 32]));
+        let peer_record = test_machine_record("peer", MachineLifecycle::Active, PublicKey([2; 32]));
         let machines = vec![local_record.clone(), peer_record.clone()];
         let overlay_probe_by_ip = HashMap::from([(peer_record.overlay_ip, ProbeState::Reachable)]);
         let payload = build_doctor_payload(
@@ -505,13 +512,13 @@ mod tests {
         );
         let report = render_doctor_report(&payload);
 
-        assert_eq!(payload.overall.participation, "healthy");
+        assert_eq!(payload.overall.lifecycle, "healthy");
         assert!(payload.peers.iter().any(|peer| {
             peer.machine_id == "peer"
                 && peer.probe_state == "reachable"
                 && peer.cause_code == "overlay-probe-reachable"
         }));
-        assert!(report.contains("participation: healthy"));
+        assert!(report.contains("lifecycle: healthy"));
         assert!(report.contains("wg=absent"));
         assert!(report.contains("probe=reachable"));
     }
@@ -531,7 +538,7 @@ mod tests {
         store
             .upsert_self_machine(&test_machine_record(
                 "joiner5",
-                Participation::Disabled,
+                MachineLifecycle::Standby,
                 identity.public_key.clone(),
             ))
             .await
@@ -566,11 +573,7 @@ mod tests {
         (state, store, network)
     }
 
-    fn test_machine_record(
-        id: &str,
-        participation: Participation,
-        public_key: PublicKey,
-    ) -> MachineRecord {
+    fn test_machine_record(id: &str, lifecycle: MachineLifecycle, public_key: PublicKey) -> MachineRecord {
         MachineRecord {
             id: MachineId(String::from(id)),
             public_key,
@@ -579,8 +582,7 @@ mod tests {
             subnet: Some("10.210.0.0/24".parse().expect("valid subnet")),
             bridge_ip: None,
             endpoints: vec![String::from("127.0.0.1:51820")],
-            status: MachineStatus::Up,
-            participation,
+            lifecycle,
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),
@@ -589,12 +591,13 @@ mod tests {
 
     fn test_active_mesh() -> ActiveMesh {
         let identity = Identity::generate(MachineId(String::from("joiner5")), [1; 32]);
-        let config = NetworkConfig::new(
+        let mut config = NetworkConfig::new(
             ployz_types::model::NetworkName(String::from("alpha")),
             &identity.public_key,
             "10.210.0.0/16",
             "10.210.3.0/24".parse().expect("valid subnet"),
         );
+        config.lifecycle = NetworkLifecycle::Running;
         let store = Arc::new(MemoryStore::new());
         let service = Arc::new(MemoryService::new());
         let network = Arc::new(MemoryWireGuard::new());

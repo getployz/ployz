@@ -39,7 +39,6 @@ fn mesh_ready_payload(value: MeshReadyStatus, self_record: &MachineRecord) -> Me
         store_healthy: value.store_healthy,
         sync_connected: value.sync_connected,
         workload_subnet_present: self_record.subnet.is_some(),
-        participation: self_record.participation.to_string(),
     }
 }
 
@@ -49,14 +48,14 @@ mod tests {
     use crate::daemon::ActiveMesh;
     use crate::mesh_state::invite::issue_invite_token;
     use crate::mesh_state::network::NetworkConfig;
-    use ployz_api::MeshBootstrapRequest;
+    use ployz_api::{MachineTransitionGoal, MeshBootstrapRequest};
     use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
     use ployz_orchestrator::{Mesh, WireguardDriver};
     use ployz_runtime_api::Identity;
     use ployz_store_api::MachineStore;
     use ployz_store_api::StoreDriver;
     use ployz_store_api::memory::{MemoryService, MemoryStore};
-    use ployz_types::model::{MachineId, OverlayIp, PublicKey};
+    use ployz_types::model::{MachineId, MachineLifecycle, OverlayIp, PublicKey};
     use ployz_types::time::now_unix_secs;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -139,7 +138,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publish_started_mesh_participation_fails_without_authoritative_self_record() {
+    async fn started_mesh_cleanup_removes_active_after_transition_failure() {
+        let (mut state, _, network) = make_active_state().await;
+        assert!(network.is_up(), "mesh should start up for cleanup test");
+
+        state.stop_started_mesh_after_transition_failure().await;
+
+        assert!(state.active.is_none(), "cleanup should clear active mesh");
+        assert!(!network.is_up(), "cleanup should tear down the runtime");
+    }
+
+    #[tokio::test]
+    async fn local_transition_fails_without_authoritative_self_record() {
         let identity = Identity::generate(MachineId("founder".into()), [11; 32]);
         let machine_id = identity.machine_id.clone();
         let data_dir = unique_temp_dir("ployz-startup-participation-fail");
@@ -175,10 +185,14 @@ mod tests {
         });
 
         let error = state
-            .publish_started_mesh_participation(ployz_types::model::Participation::Enabled)
+            .transition_local_machine(
+                MachineTransitionGoal::Activate,
+                Some("10.210.0.0/24".parse().expect("valid subnet")),
+                false,
+            )
             .await
             .expect_err("missing self record should fail");
-        assert!(error.contains("failed to persist startup participation=enabled"));
+        assert_eq!(error.code, "SELF_RECORD_MISSING");
     }
 
     #[tokio::test]
@@ -264,8 +278,7 @@ mod tests {
                 control_target: None,
                 bridge_ip: None,
                 endpoints: vec!["127.0.0.1:51820".into()],
-                status: ployz_types::model::MachineStatus::Unknown,
-                participation: ployz_types::model::Participation::Disabled,
+                lifecycle: MachineLifecycle::Standby,
                 created_at: 0,
                 updated_at: 0,
                 labels: std::collections::BTreeMap::new(),

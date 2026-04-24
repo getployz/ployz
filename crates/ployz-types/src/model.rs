@@ -77,33 +77,30 @@ pub struct OverlayIp(pub Ipv6Addr);
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString, Default,
 )]
-pub enum MachineStatus {
+pub enum MachineLifecycle {
     #[default]
-    #[display("unknown")]
-    #[strum(serialize = "unknown", serialize = "")]
-    Unknown,
-    #[display("up")]
-    #[strum(serialize = "up")]
-    Up,
-    #[display("down")]
-    #[strum(serialize = "down")]
-    Down,
+    #[display("standby")]
+    #[strum(serialize = "standby")]
+    Standby,
+    #[display("active")]
+    #[strum(serialize = "active")]
+    Active,
+    #[display("draining")]
+    #[strum(serialize = "draining")]
+    Draining,
 }
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString, Default,
 )]
-pub enum Participation {
+pub enum NetworkLifecycle {
     #[default]
-    #[display("disabled")]
-    #[strum(serialize = "disabled")]
-    Disabled,
-    #[display("enabled")]
-    #[strum(serialize = "enabled")]
-    Enabled,
-    #[display("draining")]
-    #[strum(serialize = "draining")]
-    Draining,
+    #[display("stopped")]
+    #[strum(serialize = "stopped")]
+    Stopped,
+    #[display("running")]
+    #[strum(serialize = "running")]
+    Running,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,8 +113,8 @@ pub struct MachineRecord {
     pub subnet: Option<Ipv4Net>,
     pub bridge_ip: Option<OverlayIp>,
     pub endpoints: Vec<String>,
-    pub status: MachineStatus,
-    pub participation: Participation,
+    #[serde(default)]
+    pub lifecycle: MachineLifecycle,
     pub created_at: u64,
     pub updated_at: u64,
     pub labels: BTreeMap<String, String>,
@@ -126,7 +123,7 @@ pub struct MachineRecord {
 impl MachineRecord {
     /// Create a minimal seed record for bootstrap/peer-discovery purposes.
     ///
-    /// Control-plane fields (`status`, `participation`, timestamps, `labels`)
+    /// Control-plane fields (`lifecycle`, timestamps, `labels`)
     /// are zeroed — the real values arrive once the store is online.
     #[must_use]
     pub fn seed(
@@ -144,8 +141,7 @@ impl MachineRecord {
             subnet,
             bridge_ip: None,
             endpoints,
-            status: MachineStatus::Unknown,
-            participation: Participation::Disabled,
+            lifecycle: MachineLifecycle::Standby,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -449,8 +445,7 @@ impl JoinResponse {
             subnet: self.subnet,
             bridge_ip: None,
             endpoints: self.endpoints,
-            status: MachineStatus::Unknown,
-            participation: Participation::Disabled,
+            lifecycle: MachineLifecycle::Standby,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -524,30 +519,28 @@ mod tests {
     }
 
     #[test]
-    fn machine_status_display_is_explicit() {
-        assert_eq!(MachineStatus::Unknown.to_string(), "unknown");
+    fn machine_lifecycle_display_is_explicit() {
+        assert_eq!(MachineLifecycle::Standby.to_string(), "standby");
     }
 
     #[test]
-    fn machine_status_from_str_accepts_legacy_empty_string() {
-        assert_eq!(MachineStatus::from_str(""), Ok(MachineStatus::Unknown));
+    fn machine_lifecycle_from_str_is_explicit() {
         assert_eq!(
-            MachineStatus::from_str("unknown"),
-            Ok(MachineStatus::Unknown)
+            MachineLifecycle::from_str("active"),
+            Ok(MachineLifecycle::Active)
         );
     }
 
     #[test]
-    fn participation_display_is_explicit() {
-        assert_eq!(Participation::Disabled.to_string(), "disabled");
+    fn network_lifecycle_display_is_explicit() {
+        assert_eq!(NetworkLifecycle::Stopped.to_string(), "stopped");
     }
 
     #[test]
-    fn participation_from_str_rejects_legacy_empty_string() {
-        assert!(Participation::from_str("").is_err());
+    fn network_lifecycle_from_str_is_explicit() {
         assert_eq!(
-            Participation::from_str("disabled"),
-            Ok(Participation::Disabled)
+            NetworkLifecycle::from_str("running"),
+            Ok(NetworkLifecycle::Running)
         );
     }
 }

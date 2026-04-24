@@ -361,7 +361,7 @@ mod tests {
     use super::assert_subnet_unique;
     use ipnet::Ipv4Net;
     use ployz_store_api::{MachineStore, StoreDriver};
-    use ployz_types::model::{MachineId, MachineRecord, OverlayIp, Participation, PublicKey};
+    use ployz_types::model::{MachineId, MachineLifecycle, MachineRecord, OverlayIp, PublicKey};
 
     #[tokio::test]
     async fn subnet_assertion_rejects_duplicate_claims() {
@@ -415,7 +415,7 @@ mod tests {
             vec![],
         );
         MachineRecord {
-            participation: Participation::Enabled,
+            lifecycle: MachineLifecycle::Active,
             ..record
         }
     }

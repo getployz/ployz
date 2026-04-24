@@ -1,6 +1,7 @@
 use ipnet::Ipv4Net;
 use ployz_types::model::{
-    InstanceStatusRecord, MachineId, MachineRecord, NetworkId, Participation,
+    InstanceStatusRecord, MachineId, MachineLifecycle, MachineRecord, NetworkId,
+    NetworkLifecycle,
 };
 use serde::{Deserialize, Serialize};
 
@@ -150,11 +151,13 @@ pub enum DaemonRequest {
     MeshInit {
         network: String,
     },
-    MeshUp {
+    MeshStart {
         network: String,
-        skip_bootstrap_wait: bool,
+        allow_disconnected_bootstrap: bool,
     },
-    MeshDown,
+    MeshStop {
+        force: bool,
+    },
     MeshDestroy {
         network: String,
     },
@@ -168,13 +171,13 @@ pub enum DaemonRequest {
         targets: Vec<String>,
         options: MachineAddOptions,
     },
-    MachineEnable {
+    MachineActivate {
         target: String,
     },
     MachineDrain {
         target: String,
     },
-    MachineDisable {
+    MachineStandby {
         target: String,
         force: bool,
     },
@@ -199,14 +202,11 @@ pub enum DaemonRequest {
     MeshBootstrap {
         request: MeshBootstrapRequest,
     },
-    MeshPromote {
-        assigned_subnet: Ipv4Net,
-    },
-    MeshStandby {
+    MachineTransitionSelf {
+        goal: MachineTransitionGoal,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        assigned_subnet: Option<Ipv4Net>,
         force: bool,
-    },
-    MeshSetParticipation {
-        participation: Participation,
     },
     Coord {
         op: CoordOp,
@@ -253,8 +253,7 @@ pub struct MachineListPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineListRow {
     pub id: String,
-    pub status: String,
-    pub participation: String,
+    pub lifecycle: String,
     pub overlay_ip: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subnet: Option<String>,
@@ -268,7 +267,11 @@ pub struct StatusPayload {
     pub network: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overlay_ip: Option<String>,
-    pub phase: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_lifecycle: Option<NetworkLifecycle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_machine_lifecycle: Option<MachineLifecycle>,
+    pub mesh_phase: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -280,15 +283,18 @@ pub struct DoctorPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoctorOverall {
-    pub participation: String,
+    pub lifecycle: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoctorLocal {
     pub machine_id: String,
     pub network: String,
-    pub participation: String,
-    pub status: String,
+    pub network_lifecycle: String,
+    pub machine_lifecycle: String,
+    pub config_subnet: Option<String>,
+    pub record_subnet: Option<String>,
+    pub runtime_running: bool,
     pub published_endpoints: Vec<String>,
     pub detected_endpoints: Vec<String>,
     pub endpoint_watch_supported: bool,
@@ -299,8 +305,9 @@ pub struct DoctorPeer {
     pub machine_id: String,
     pub role: String,
     pub blocking: bool,
-    pub store_participation: String,
-    pub store_status: String,
+    pub store_lifecycle: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subnet: Option<String>,
     pub wg_state: String,
     pub probe_state: String,
     pub cause_code: String,
@@ -345,8 +352,6 @@ pub struct MeshReadyPayload {
     pub sync_connected: bool,
     #[serde(default)]
     pub workload_subnet_present: bool,
-    #[serde(default)]
-    pub participation: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -364,7 +369,15 @@ pub struct MeshListEntry {
 pub struct MeshStatusPayload {
     pub network: String,
     pub overlay_ip: String,
-    pub state: String,
+    pub lifecycle: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MachineTransitionGoal {
+    Activate,
+    Drain,
+    Standby,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
