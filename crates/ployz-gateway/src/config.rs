@@ -57,7 +57,7 @@ impl GatewayConfig {
     pub fn from_env() -> Result<Self, GatewayError> {
         let data_dir = match std::env::var_os("PLOYZ_GATEWAY_DATA_DIR") {
             Some(path) => PathBuf::from(path),
-            None => ployz_config::default_data_dir(&host_paths_context()),
+            None => ployz_config::default_data_dir(&ployz_config::detect_host_paths_context()),
         };
         let network = match std::env::var("PLOYZ_GATEWAY_NETWORK") {
             Ok(network) if !network.trim().is_empty() => network,
@@ -103,32 +103,6 @@ impl GatewayConfig {
             threads,
             metrics_listen_addr,
         })
-    }
-}
-
-fn host_paths_context() -> ployz_config::HostPathsContext {
-    ployz_config::HostPathsContext {
-        os: if cfg!(target_os = "linux") {
-            ployz_config::Os::Linux
-        } else if cfg!(target_os = "macos") {
-            ployz_config::Os::Darwin
-        } else {
-            ployz_config::Os::Other
-        },
-        is_root: current_user_is_root(),
-    }
-}
-
-fn current_user_is_root() -> bool {
-    #[cfg(unix)]
-    {
-        // SAFETY: `geteuid` has no Rust-side preconditions.
-        unsafe { libc::geteuid() == 0 }
-    }
-
-    #[cfg(not(unix))]
-    {
-        false
     }
 }
 
