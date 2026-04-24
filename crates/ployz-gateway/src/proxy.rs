@@ -121,16 +121,43 @@ impl ProxyHttp for GatewayApp {
                 .map_err(|err| {
                     Error::because(ErrorType::InternalError, "insert Host header", err)
                 })?;
+            upstream_request
+                .insert_header("X-Forwarded-Host", host)
+                .map_err(|err| {
+                    Error::because(
+                        ErrorType::InternalError,
+                        "insert X-Forwarded-Host header",
+                        err,
+                    )
+                })?;
         }
         if let Some(client_addr) = session.client_addr()
             && let Some(address) = client_addr.as_inet()
         {
+            let forwarded_for = append_header_value(
+                upstream_request,
+                "X-Forwarded-For",
+                &address.ip().to_string(),
+            );
             upstream_request
-                .insert_header("X-Forwarded-For", address.ip().to_string())
+                .insert_header("X-Forwarded-For", forwarded_for)
                 .map_err(|err| {
                     Error::because(
                         ErrorType::InternalError,
                         "insert X-Forwarded-For header",
+                        err,
+                    )
+                })?;
+        }
+        if let Some(server_addr) = session.server_addr()
+            && let Some(address) = server_addr.as_inet()
+        {
+            upstream_request
+                .insert_header("X-Forwarded-Port", address.port().to_string())
+                .map_err(|err| {
+                    Error::because(
+                        ErrorType::InternalError,
+                        "insert X-Forwarded-Port header",
                         err,
                     )
                 })?;
@@ -144,6 +171,10 @@ impl ProxyHttp for GatewayApp {
                     err,
                 )
             })?;
+        let via = append_header_value(upstream_request, "Via", "1.1 ployz-gateway");
+        upstream_request
+            .insert_header("Via", via)
+            .map_err(|err| Error::because(ErrorType::InternalError, "insert Via header", err))?;
         Ok(())
     }
 
@@ -197,4 +228,16 @@ impl ProxyHttp for GatewayApp {
 
 fn is_retryable_method(method: &Method) -> bool {
     matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
+}
+
+fn append_header_value(upstream_request: &RequestHeader, name: &str, value: &str) -> String {
+    match upstream_request
+        .headers
+        .get(name)
+        .and_then(|existing| existing.to_str().ok())
+        .filter(|existing| !existing.is_empty())
+    {
+        Some(existing) => format!("{existing}, {value}"),
+        None => value.to_string(),
+    }
 }
