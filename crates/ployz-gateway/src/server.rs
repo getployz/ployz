@@ -300,7 +300,9 @@ mod tests {
             "example.com",
             &[
                 ("X-Forwarded-For", "203.0.113.10"),
+                ("X-Forwarded-For", "198.51.100.20"),
                 ("Via", "1.0 previous-proxy"),
+                ("Via", "1.1 second-proxy"),
             ],
         )
         .await;
@@ -311,11 +313,11 @@ mod tests {
             .expect("upstream request should be captured");
         assert_eq!(
             captured.headers.get("x-forwarded-for"),
-            Some(&"203.0.113.10, 127.0.0.1".to_string())
+            Some(&"203.0.113.10, 198.51.100.20, 127.0.0.1".to_string())
         );
         assert_eq!(
             captured.headers.get("via"),
-            Some(&"1.0 previous-proxy, 1.1 ployz-gateway".to_string())
+            Some(&"1.0 previous-proxy, 1.1 second-proxy, 1.1 ployz-gateway".to_string())
         );
 
         let _ = shutdown_tx.send(());
