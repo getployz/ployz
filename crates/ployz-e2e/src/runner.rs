@@ -2,9 +2,9 @@ use crate::cli::Scenario;
 use crate::error::{Error, Result};
 use crate::scenarios;
 use crate::support::{
-    docker_outer, docker_outer_raw, parse_daemon_json_response, parse_ready, parse_ready_payload,
-    pick_free_port, run_command, run_command_expect_ok, wait_until, CommandOutput,
-    DaemonJsonPayload,
+    CommandOutput, DaemonJsonPayload, docker_outer, docker_outer_raw, parse_daemon_json_response,
+    parse_ready, parse_ready_payload, pick_free_port, run_command, run_command_expect_ok,
+    wait_until,
 };
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
