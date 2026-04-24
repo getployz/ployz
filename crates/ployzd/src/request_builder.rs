@@ -173,14 +173,14 @@ fn build_mesh_request(action: MeshAction) -> Result<DaemonRequest> {
         } => Ok(DaemonRequest::MeshInit {
             network: string_arg_or_stdin("mesh init network", "--name-stdin", network, name_stdin)?,
         }),
-        MeshAction::Up {
+        MeshAction::Start {
             network,
-            skip_bootstrap_wait,
-        } => Ok(DaemonRequest::MeshUp {
+            allow_disconnected_bootstrap,
+        } => Ok(DaemonRequest::MeshStart {
             network,
-            skip_bootstrap_wait,
+            allow_disconnected_bootstrap,
         }),
-        MeshAction::Down => Ok(DaemonRequest::MeshDown),
+        MeshAction::Stop { force } => Ok(DaemonRequest::MeshStop { force }),
         MeshAction::Destroy {
             network,
             name_stdin,
@@ -252,10 +252,10 @@ pub(crate) fn build_machine_request(action: MachineAction) -> Result<DaemonReque
             };
             Ok(DaemonRequest::MachineAdd { targets, options })
         }
-        MachineAction::Enable { target } => Ok(DaemonRequest::MachineEnable { target }),
+        MachineAction::Activate { target } => Ok(DaemonRequest::MachineActivate { target }),
         MachineAction::Drain { target } => Ok(DaemonRequest::MachineDrain { target }),
-        MachineAction::Disable { target, force } => {
-            Ok(DaemonRequest::MachineDisable { target, force })
+        MachineAction::Standby { target, force } => {
+            Ok(DaemonRequest::MachineStandby { target, force })
         }
         MachineAction::Rm { id, force } => Ok(DaemonRequest::MachineRemove { id, force }),
         MachineAction::Invite { action } => match action {

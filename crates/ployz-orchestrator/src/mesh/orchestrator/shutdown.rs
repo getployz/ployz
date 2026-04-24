@@ -1,7 +1,6 @@
 use crate::mesh::MeshNetwork;
 use crate::mesh::container_network::ContainerNetwork;
 use crate::mesh::driver::WireguardDriver;
-use crate::model::MachineStatus;
 use ployz_store_api::StoreRuntimeControl;
 use tracing::{info, warn};
 
@@ -73,19 +72,6 @@ impl Mesh {
 
     pub async fn destroy(&mut self) -> Result<()> {
         self.apply(crate::mesh::phase::PhaseEvent::DestroyRequested)?;
-
-        let now = crate::time::now_unix_secs();
-        if self
-            .update_authoritative_self_record(|record| {
-                record.status = MachineStatus::Down;
-                record.updated_at = now;
-            })
-            .await
-            .is_none()
-            && self.authoritative_self_record().await.is_some()
-        {
-            warn!(timestamp = now, "failed to set status=down on destroy");
-        }
 
         let first_err = self.stop_runtime(true).await;
 
