@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 pub enum ResourceKey {
     Subnet(Ipv4Net),
     DeployNamespace(String),
+    CertIssuance(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

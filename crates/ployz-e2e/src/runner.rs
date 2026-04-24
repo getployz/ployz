@@ -29,6 +29,9 @@ const PAYLOAD_STAMP_FILE: &str = ".payload-stamp";
 const PAYLOAD_LOCK_FILE: &str = ".payload.lock";
 const PAYLOAD_LOCK_TIMEOUT: Duration = Duration::from_secs(300);
 const PAYLOAD_LOCK_POLL: Duration = Duration::from_millis(200);
+const PEBBLE_IMAGE: &str = "ployz-e2e-preload/pebble:latest";
+const PEBBLE_CHALLTESTSRV_IMAGE: &str = "ployz-e2e-preload/pebble-challtestsrv:latest";
+const PEBBLE_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
 pub(crate) struct Node {
@@ -72,6 +75,7 @@ struct NodeStartMounts {
     dind: String,
     entrypoint: String,
     preloaded_images: String,
+    pebble: String,
 }
 
 fn node_start_mounts(repo_root: &Path) -> NodeStartMounts {
@@ -93,6 +97,10 @@ fn node_start_mounts(repo_root: &Path) -> NodeStartMounts {
             repo_root
                 .join("packaging/e2e/preloaded-images")
                 .to_string_lossy()
+        ),
+        pebble: format!(
+            "{}:/e2e-pebble:ro",
+            repo_root.join("packaging/e2e/pebble").to_string_lossy()
         ),
     }
 }
@@ -173,6 +181,10 @@ impl ScenarioRun {
 
         for node in &self.nodes {
             let _ = docker_outer(["rm", "-f", node.container_name.as_str()]);
+        }
+        if self.scenario == Scenario::DeploySmoke {
+            let _ = docker_outer(["rm", "-f", self.pebble_container_name().as_str()]);
+            let _ = docker_outer(["rm", "-f", self.challtestsrv_container_name().as_str()]);
         }
         let _ = docker_outer(["network", "rm", self.outer_network.as_str()]);
     }
@@ -270,6 +282,23 @@ impl ScenarioRun {
             let destination = copy_target.to_string_lossy().into_owned();
             let source = format!("{}:/var/lib/ployz", node.container_name);
             let _ = docker_outer_raw(["cp", source.as_str(), destination.as_str()]);
+        }
+
+        if self.scenario == Scenario::DeploySmoke {
+            for container_name in [
+                self.challtestsrv_container_name(),
+                self.pebble_container_name(),
+            ] {
+                let container_logs =
+                    docker_outer_raw(["logs", container_name.as_str()]).unwrap_or_default();
+                fs::write(
+                    logs_dir.join(format!("{container_name}.log")),
+                    container_logs.stdout,
+                )
+                .map_err(|error| {
+                    Error::Io(format!("write container log '{container_name}': {error}"))
+                })?;
+            }
         }
 
         Ok(())
@@ -612,6 +641,93 @@ impl ScenarioRun {
         self.wait_service_container(self.node(node_name)?, namespace, service)
     }
 
+    pub(crate) fn start_pebble_for_http01(&self, node_name: &str) -> Result<()> {
+        let node = self.node(node_name)?;
+        self.log_progress("start_pebble_for_http01 start");
+        let challtestsrv_name = self.challtestsrv_container_name();
+        let pebble_name = self.pebble_container_name();
+        let _ = docker_outer(["rm", "-f", challtestsrv_name.as_str()]);
+        let _ = docker_outer(["rm", "-f", pebble_name.as_str()]);
+
+        let challtestsrv_args = vec![
+            "run".to_string(),
+            "-d".to_string(),
+            "--name".to_string(),
+            challtestsrv_name.clone(),
+            "--network".to_string(),
+            self.outer_network.clone(),
+            PEBBLE_CHALLTESTSRV_IMAGE.to_string(),
+            "-defaultIPv6".to_string(),
+            String::new(),
+            "-management".to_string(),
+            ":8055".to_string(),
+            "-dnsserver".to_string(),
+            ":8053".to_string(),
+            "-http01".to_string(),
+            ":5002".to_string(),
+            "-tlsalpn01".to_string(),
+            ":5001".to_string(),
+            "-https01".to_string(),
+            String::new(),
+            "-doh".to_string(),
+            String::new(),
+        ];
+        let challtestsrv_arg_refs: Vec<&str> =
+            challtestsrv_args.iter().map(String::as_str).collect();
+        run_command_expect_ok("docker", &challtestsrv_arg_refs)?;
+
+        let challtestsrv_ip = self.container_outer_ip(&challtestsrv_name)?;
+        self.ssh_expect_ok(
+            node,
+            &format!(
+                "curl -fsS -X POST -d '{{\"ip\":\"{}\"}}' http://{}:8055/set-default-ipv4",
+                node.outer_ip, challtestsrv_ip
+            ),
+        )?;
+
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| Error::Message("failed to resolve repo root".into()))?
+            .to_path_buf();
+        let pebble_mount = format!(
+            "{}:/e2e-pebble:ro",
+            repo_root.join("packaging/e2e/pebble").to_string_lossy()
+        );
+        let pebble_args = vec![
+            "run".to_string(),
+            "-d".to_string(),
+            "--name".to_string(),
+            pebble_name.clone(),
+            "--network".to_string(),
+            self.outer_network.clone(),
+            "-v".to_string(),
+            pebble_mount,
+            "-e".to_string(),
+            "PEBBLE_VA_NOSLEEP=1".to_string(),
+            "-e".to_string(),
+            "PEBBLE_WFE_NONCEREJECT=0".to_string(),
+            PEBBLE_IMAGE.to_string(),
+            "-config".to_string(),
+            "/e2e-pebble/pebble-config.json".to_string(),
+            "-dnsserver".to_string(),
+            format!("{challtestsrv_ip}:8053"),
+            "-strict=false".to_string(),
+        ];
+        let pebble_arg_refs: Vec<&str> = pebble_args.iter().map(String::as_str).collect();
+        run_command_expect_ok("docker", &pebble_arg_refs)?;
+
+        wait_until(PEBBLE_WAIT_TIMEOUT, || {
+            let output = self.ssh_run(
+                node,
+                &format!("curl -kfsS https://{}:14000/dir >/dev/null", pebble_name),
+            )?;
+            Ok(output.status.success())
+        })?;
+        self.log_progress("start_pebble_for_http01 complete");
+        Ok(())
+    }
+
     pub(crate) fn ssh_expect_ok_name(
         &self,
         node_name: &str,
@@ -880,6 +996,8 @@ impl ScenarioRun {
         args.push(mounts.entrypoint.clone());
         args.push("-v".to_string());
         args.push(mounts.preloaded_images.clone());
+        args.push("-v".to_string());
+        args.push(mounts.pebble.clone());
         args.push(self.image.clone());
         args
     }
@@ -894,7 +1012,7 @@ impl ScenarioRun {
                 .unwrap_or_default()
         );
 
-        vec![
+        let mut args = vec![
             "run".to_string(),
             "-d".to_string(),
             "--privileged".to_string(),
@@ -922,7 +1040,51 @@ impl ScenarioRun {
             format!("PLOYZ_PEER_CONTROL_TARGET={name}"),
             "-e".to_string(),
             run_id,
-        ]
+        ];
+
+        if self.scenario == Scenario::DeploySmoke {
+            args.push("-e".to_string());
+            args.push(format!(
+                "PLOYZ_ACME_DIRECTORY_URL=https://{}:14000/dir",
+                self.pebble_container_name()
+            ));
+            args.push("-e".to_string());
+            args.push("PLOYZ_ACME_ROOT_CA_PATH=/e2e-pebble/pebble.minica.pem".to_string());
+            args.push("-e".to_string());
+            args.push("PLOYZ_GATEWAY_HTTPS_LISTEN_ADDR=0.0.0.0:443".to_string());
+            if std::env::var(CORROSION_RUST_LOG_ENV).is_err() {
+                args.push("-e".to_string());
+                args.push(format!(
+                    "{CORROSION_RUST_LOG_ENV}=info,tower_http=debug,corro_agent::api::public=debug"
+                ));
+            }
+        }
+
+        args
+    }
+
+    pub(crate) fn pebble_container_name(&self) -> String {
+        format!("ployz-e2e-{}-pebble", self.scenario.as_str())
+    }
+
+    fn challtestsrv_container_name(&self) -> String {
+        format!("ployz-e2e-{}-challtestsrv", self.scenario.as_str())
+    }
+
+    fn container_outer_ip(&self, container_name: &str) -> Result<String> {
+        let output = docker_outer([
+            "inspect",
+            "--format",
+            "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+            container_name,
+        ])?;
+        let ip = output.stdout.trim().to_string();
+        if ip.is_empty() {
+            return Err(Error::Message(format!(
+                "container '{container_name}' did not receive an outer network IP"
+            )));
+        }
+        Ok(ip)
     }
 
     fn wait_for_ssh(&self, node: &Node) -> Result<()> {

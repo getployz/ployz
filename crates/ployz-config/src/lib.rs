@@ -98,6 +98,8 @@ pub struct DaemonConfig {
     pub peer_control_target: Option<String>,
     #[serde(default = "default_gateway_listen_addr")]
     pub gateway_listen_addr: String,
+    #[serde(default)]
+    pub gateway_https_listen_addr: Option<String>,
     #[serde(default = "default_gateway_threads")]
     pub gateway_threads: usize,
 }
@@ -140,6 +142,8 @@ struct RuntimeDefaults {
     #[serde(skip_serializing_if = "Option::is_none")]
     peer_control_target: Option<String>,
     gateway_listen_addr: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gateway_https_listen_addr: Option<String>,
     gateway_threads: usize,
 }
 
@@ -173,6 +177,8 @@ struct DaemonOverrides {
     peer_control_target: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     gateway_listen_addr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gateway_https_listen_addr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     gateway_threads: Option<usize>,
 }
@@ -271,6 +277,7 @@ pub fn load_daemon_config(
         remote_control_port: cli_remote_control_port,
         peer_control_target: None,
         gateway_listen_addr: None,
+        gateway_https_listen_addr: None,
         gateway_threads: None,
     };
 
@@ -293,6 +300,7 @@ fn build_figment(cli_config_path: Option<PathBuf>, context: &HostPathsContext) -
         remote_control_port: default_remote_control_port(),
         peer_control_target: None,
         gateway_listen_addr: default_gateway_listen_addr(),
+        gateway_https_listen_addr: None,
         gateway_threads: default_gateway_threads(),
     };
 

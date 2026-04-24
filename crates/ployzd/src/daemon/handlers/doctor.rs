@@ -565,6 +565,7 @@ mod tests {
             24,
             4317,
             String::from("127.0.0.1:0"),
+            None,
             1,
         );
         let cached_subnet = config.subnet;

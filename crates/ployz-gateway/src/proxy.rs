@@ -54,7 +54,8 @@ impl ProxyHttp for GatewayApp {
         let host = request
             .headers
             .get("host")
-            .and_then(|value| value.to_str().ok());
+            .and_then(|value| value.to_str().ok())
+            .or_else(|| request.uri.authority().map(|authority| authority.as_str()));
         let path = request.uri.path();
         ctx.downstream_scheme = if session
             .as_downstream()

@@ -1,3 +1,4 @@
+mod cert_coordination;
 pub mod handlers;
 mod runtime;
 mod setup;
@@ -41,6 +42,7 @@ pub struct DaemonState {
     pub remote_control_port: u16,
     pub peer_control_target: Option<String>,
     pub gateway_listen_addr: String,
+    pub gateway_https_listen_addr: Option<String>,
     pub gateway_threads: usize,
     pub dns_metrics_listen_addr: Option<String>,
     pub gateway_metrics_listen_addr: Option<String>,
@@ -63,6 +65,7 @@ impl DaemonState {
         subnet_prefix_len: u8,
         remote_control_port: u16,
         gateway_listen_addr: String,
+        gateway_https_listen_addr: Option<String>,
         gateway_threads: usize,
         dns_metrics_listen_addr: Option<String>,
         gateway_metrics_listen_addr: Option<String>,
@@ -79,6 +82,7 @@ impl DaemonState {
             subnet_prefix_len,
             remote_control_port,
             gateway_listen_addr,
+            gateway_https_listen_addr,
             gateway_threads,
             dns_metrics_listen_addr,
             gateway_metrics_listen_addr,
@@ -95,6 +99,7 @@ impl DaemonState {
         subnet_prefix_len: u8,
         remote_control_port: u16,
         gateway_listen_addr: String,
+        gateway_https_listen_addr: Option<String>,
         gateway_threads: usize,
     ) -> Self {
         Self::new_with_runtime_profile(
@@ -107,6 +112,7 @@ impl DaemonState {
             subnet_prefix_len,
             remote_control_port,
             gateway_listen_addr,
+            gateway_https_listen_addr,
             gateway_threads,
             None,
             None,
@@ -125,6 +131,7 @@ impl DaemonState {
         subnet_prefix_len: u8,
         remote_control_port: u16,
         gateway_listen_addr: String,
+        gateway_https_listen_addr: Option<String>,
         gateway_threads: usize,
         dns_metrics_listen_addr: Option<String>,
         gateway_metrics_listen_addr: Option<String>,
@@ -140,6 +147,7 @@ impl DaemonState {
             remote_control_port,
             peer_control_target: None,
             gateway_listen_addr,
+            gateway_https_listen_addr,
             gateway_threads,
             dns_metrics_listen_addr,
             gateway_metrics_listen_addr,

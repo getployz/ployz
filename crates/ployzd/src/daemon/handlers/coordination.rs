@@ -81,7 +81,7 @@ impl DaemonState {
                     .iter()
                     .any(|machine| machine.subnet == Some(*subnet)))
             }
-            ResourceKey::DeployNamespace(_) => Ok(false),
+            ResourceKey::DeployNamespace(_) | ResourceKey::CertIssuance(_) => Ok(false),
         }
     }
 }
@@ -97,6 +97,7 @@ fn into_resource_key(key: ApiResourceKey) -> ResourceKey {
     match key {
         ApiResourceKey::Subnet(subnet) => ResourceKey::Subnet(subnet),
         ApiResourceKey::DeployNamespace(namespace) => ResourceKey::DeployNamespace(namespace),
+        ApiResourceKey::CertIssuance(hostname) => ResourceKey::CertIssuance(hostname),
     }
 }
 
@@ -190,6 +191,7 @@ mod tests {
             24,
             4317,
             "127.0.0.1:0".into(),
+            None,
             1,
         );
         let cached_subnet = config.subnet;

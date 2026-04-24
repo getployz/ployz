@@ -13,6 +13,9 @@ use ployz_corrosion::{
 use ployz_dns_config::DnsConfig;
 use ployz_gateway_config::GatewayConfig;
 use ployz_orchestrator::Mesh;
+use ployz_orchestrator::certificates::{
+    CertificateManagerConfig, RenewalConfig, spawn_certificate_renewal_ticker,
+};
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_runtime_api::{NoopRuntimeHandle, RuntimeHandle};
 
@@ -54,7 +57,7 @@ struct StartPlan {
     network_dir: PathBuf,
     bootstrap: Option<BootstrapInfo>,
     bootstrap_addrs: Vec<String>,
-    gateway_port: u16,
+    gateway_ports: Vec<u16>,
     remote_control_bind_addr: SocketAddr,
     peer_control_bind_addr: SocketAddr,
     gateway_config: Option<GatewayConfig>,
@@ -91,7 +94,7 @@ impl MeshStartTx {
         options: MeshStartOptions,
     ) -> Result<(), StartMeshError> {
         let exposed_tcp_ports = match self.config.subnet {
-            Some(_) => vec![plan.gateway_port],
+            Some(_) => plan.gateway_ports.clone(),
             None => Vec::new(),
         };
         let db_records = peer_records_from_db(&plan.network_dir).unwrap_or_else(|error| {
@@ -252,6 +255,8 @@ impl MeshStartTx {
         let gateway = std::mem::replace(&mut self.gateway, Box::new(NoopRuntimeHandle));
         let dns = std::mem::replace(&mut self.dns, Box::new(NoopRuntimeHandle));
 
+        let store_for_ticker = (!state.runtime_is_memory_test()).then(|| mesh.store.clone());
+
         state.active = Some(ActiveMesh {
             config: self.config.clone(),
             cached_subnet: self.config.subnet,
@@ -261,6 +266,35 @@ impl MeshStartTx {
             gateway,
             dns,
         });
+
+        if let Some(store) = store_for_ticker {
+            let peer_rpc_port = match state.peer_control_port() {
+                Ok(port) => port,
+                Err(error) => return Err(error),
+            };
+            let coordinator = std::sync::Arc::new(
+                crate::daemon::cert_coordination::OverlayIssuanceCoordinator::new(
+                    store.clone(),
+                    state.reservations.clone(),
+                    state.identity.machine_id.clone(),
+                    peer_rpc_port,
+                ),
+            );
+            let readiness = std::sync::Arc::new(
+                crate::daemon::cert_coordination::OverlayChallengeReadiness::new(
+                    store.clone(),
+                    state.identity.machine_id.clone(),
+                    peer_rpc_port,
+                ),
+            );
+            spawn_certificate_renewal_ticker(
+                store,
+                CertificateManagerConfig::from_env(),
+                RenewalConfig::from_env(),
+                coordinator,
+                readiness,
+            );
+        }
         Ok(())
     }
 
@@ -357,10 +391,9 @@ impl DaemonState {
         let config_path = NetworkConfig::path(&self.data_dir, network);
         let net_config = NetworkConfig::load(&config_path)
             .map_err(|error| format!("load network config: {error}"))?;
-        let gateway_port =
-            Self::gateway_port(&self.gateway_listen_addr).map_err(|error| error.to_string())?;
+        let gateway_ports = self.gateway_ports().map_err(|error| error.to_string())?;
         let exposed_tcp_ports: Vec<u16> = match net_config.subnet {
-            Some(_) => vec![gateway_port],
+            Some(_) => gateway_ports,
             None => Vec::new(),
         };
         let network_dir = self.network_dir(&net_config.name.0);
@@ -389,7 +422,7 @@ impl DaemonState {
                 &self.data_dir,
                 &net_config.name.0,
                 self.gateway_listen_addr.clone(),
-                None,
+                self.gateway_https_listen_addr.clone(),
                 None,
                 None,
                 self.gateway_threads,
@@ -484,7 +517,7 @@ impl DaemonState {
             &fallback_bootstrap_addrs,
         )
         .map_err(StartMeshError::BootstrapResolve)?;
-        let gateway_port = Self::gateway_port(&self.gateway_listen_addr)?;
+        let gateway_ports = self.gateway_ports()?;
         let remote_control_bind_addr =
             self.remote_control_bind_addr(self.remote_control_port, net_config.overlay_ip);
         let peer_control_bind_addr =
@@ -494,7 +527,7 @@ impl DaemonState {
                 &self.data_dir,
                 &net_config.name.0,
                 self.gateway_listen_addr.clone(),
-                None,
+                self.gateway_https_listen_addr.clone(),
                 None,
                 None,
                 self.gateway_threads,
@@ -515,7 +548,7 @@ impl DaemonState {
             network_dir,
             bootstrap,
             bootstrap_addrs,
-            gateway_port,
+            gateway_ports,
             remote_control_bind_addr,
             peer_control_bind_addr,
             gateway_config,
@@ -532,6 +565,16 @@ impl DaemonState {
         } else {
             None
         }
+    }
+
+    fn gateway_ports(&self) -> Result<Vec<u16>, StartMeshError> {
+        let mut ports = vec![Self::gateway_port(&self.gateway_listen_addr)?];
+        if let Some(addr) = &self.gateway_https_listen_addr {
+            ports.push(Self::gateway_port(addr)?);
+        }
+        ports.sort_unstable();
+        ports.dedup();
+        Ok(ports)
     }
 
     fn gateway_port(gateway_listen_addr: &str) -> Result<u16, StartMeshError> {
@@ -660,6 +703,7 @@ mod tests {
             24,
             4317,
             gateway_listen_addr.into(),
+            None,
             1,
             None,
             None,
@@ -677,6 +721,7 @@ mod tests {
             24,
             4317,
             gateway_listen_addr.into(),
+            None,
             1,
         )
     }

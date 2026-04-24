@@ -184,6 +184,20 @@ pub enum MachineEvent {
     Removed(MachineRecord),
 }
 
+#[derive(Debug, Clone)]
+pub enum CertificateEvent {
+    Added(CertificateRecord),
+    Updated(CertificateRecord),
+    Removed(CertificateRecord),
+}
+
+#[derive(Debug, Clone)]
+pub enum AcmeChallengeEvent {
+    Added(AcmeChallengeRecord),
+    Updated(AcmeChallengeRecord),
+    Removed(AcmeChallengeRecord),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JoinResponse {
     pub machine_id: MachineId,
@@ -321,6 +335,7 @@ pub struct CertificateRecord {
     pub state: CertificateState,
     pub active_version_id: Option<String>,
     pub versions: Vec<CertificateVersion>,
+    pub order_url: Option<String>,
     pub last_error: Option<String>,
     pub requested_at: u64,
     pub updated_at: u64,

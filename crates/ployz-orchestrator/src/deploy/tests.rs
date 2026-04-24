@@ -1,5 +1,6 @@
 use super::execute::{SessionSet, apply_with_initial_plan, ensure_plan_stable, run_phase_startup};
 use super::plan::{deployable_machines, desired_slots, resolve_plan};
+use super::preview;
 use crate::deploy::session::{DeploySession, DeploySessionFactory, StartCandidateRequest};
 use crate::error::Result;
 use crate::model::{
@@ -16,8 +17,8 @@ use ployz_store_api::{
 };
 use ployz_types::Result as PloyzResult;
 use ployz_types::spec::{
-    ContainerSpec, DeployManifest, Namespace, NetworkMode, Placement, PullPolicy, Resources,
-    RestartPolicy, RolloutStrategy, ServiceSpec,
+    ContainerSpec, DeployManifest, HttpRoute, Namespace, NetworkMode, Placement, PortProtocol,
+    PullPolicy, Resources, RestartPolicy, RolloutStrategy, RouteSpec, ServicePort, ServiceSpec,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::net::Ipv6Addr;
@@ -557,6 +558,84 @@ async fn ensure_plan_stable_rejects_post_lock_drift() {
 }
 
 #[tokio::test]
+async fn preview_rejects_duplicate_hostname_in_final_plan() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![
+        http_route_service_spec("api", "api.example.com"),
+        http_route_service_spec("web", "API.EXAMPLE.COM."),
+    ]);
+
+    let error = preview(&store, &local_machine_id, &manifest)
+        .await
+        .expect_err("duplicate hostname should fail preview");
+
+    assert!(error.to_string().contains("api.example.com"));
+    assert!(error.to_string().contains("test/api"));
+    assert!(error.to_string().contains("test/web"));
+}
+
+#[tokio::test]
+async fn preview_rejects_hostname_owned_by_another_namespace() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    seed_committed_http_release(&store, "prod", "api", "api.example.com").await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![http_route_service_spec("web", "api.example.com")]);
+
+    let error = preview(&store, &local_machine_id, &manifest)
+        .await
+        .expect_err("cross-namespace hostname conflict should fail preview");
+
+    assert!(error.to_string().contains("api.example.com"));
+    assert!(error.to_string().contains("prod/api"));
+    assert!(error.to_string().contains("test/web"));
+}
+
+#[tokio::test]
+async fn apply_rejects_hostname_owned_by_another_namespace_before_commit() {
+    let (store, backend) = counting_store_with_machines(&["machine-a"]).await;
+    seed_committed_http_release(&store, "prod", "api", "api.example.com").await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![http_route_service_spec("web", "api.example.com")]);
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    let factory = FakeSessionFactory::new(FakeController::default());
+
+    let error =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect_err("cross-namespace hostname conflict should fail apply");
+
+    assert!(error.to_string().contains("prod/api"));
+    assert_eq!(backend.commit_count(), 0);
+}
+
+#[tokio::test]
+async fn preview_allows_hostname_reuse_within_same_namespace() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    seed_committed_http_release(&store, "test", "api", "api.example.com").await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![http_route_service_spec("api", "api.example.com")]);
+
+    preview(&store, &local_machine_id, &manifest)
+        .await
+        .expect("same-namespace replacement should be valid");
+}
+
+#[tokio::test]
+async fn preview_allows_hostname_move_within_same_namespace() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    seed_committed_http_release(&store, "test", "api", "api.example.com").await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![http_route_service_spec("web", "api.example.com")]);
+
+    preview(&store, &local_machine_id, &manifest)
+        .await
+        .expect("same-namespace ownership move should be valid");
+}
+
+#[tokio::test]
 async fn apply_with_initial_plan_does_not_commit_when_session_open_fails() {
     let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
     let local_machine_id = MachineId("local".into());
@@ -1005,6 +1084,54 @@ fn test_service_spec(name: &str, placement: Placement, image: &str) -> ServiceSp
     }
 }
 
+fn http_route_service_spec(name: &str, hostname: &str) -> ServiceSpec {
+    let mut spec = test_service_spec(name, Placement::Replicated { count: 1 }, "nginx:1.27");
+    spec.service_ports = vec![ServicePort {
+        name: "http".into(),
+        container_port: 8080,
+        protocol: PortProtocol::Tcp,
+    }];
+    spec.routes = vec![RouteSpec::Http(HttpRoute {
+        service_port: "http".into(),
+        hostnames: vec![hostname.into()],
+        path_prefix: "/".into(),
+    })];
+    spec
+}
+
+async fn seed_committed_http_release(
+    store: &StoreDriver,
+    namespace: &str,
+    service: &str,
+    hostname: &str,
+) {
+    let namespace = Namespace(namespace.into());
+    let spec = http_route_service_spec(service, hostname);
+    let revision_hash = spec.revision_hash().expect("revision hash");
+    store
+        .upsert_service_revision(&crate::model::ServiceRevisionRecord {
+            namespace: namespace.clone(),
+            service: service.into(),
+            revision_hash: revision_hash.clone(),
+            spec_json: spec
+                .canonical_revision_json()
+                .expect("canonical revision json"),
+            created_by: MachineId("seed".into()),
+            created_at: 0,
+        })
+        .await
+        .expect("seed revision");
+    store
+        .upsert_service_release(&test_release(
+            &namespace,
+            service,
+            &revision_hash,
+            Vec::new(),
+        ))
+        .await
+        .expect("seed release");
+}
+
 fn test_release(
     namespace: &Namespace,
     service: &str,
@@ -1207,6 +1334,18 @@ impl StoreBackend for CountingBackend {
 
     async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> PloyzResult<()> {
         self.store.delete_acme_challenge(hostname, token).await
+    }
+
+    async fn subscribe_certificates(
+        &self,
+    ) -> PloyzResult<ployz_store_api::CertificateSubscription> {
+        self.store.subscribe_certificates().await
+    }
+
+    async fn subscribe_acme_challenges(
+        &self,
+    ) -> PloyzResult<ployz_store_api::AcmeChallengeSubscription> {
+        self.store.subscribe_acme_challenges().await
     }
 
     async fn list_service_revisions(
