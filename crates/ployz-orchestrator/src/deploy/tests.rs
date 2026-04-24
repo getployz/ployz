@@ -4,8 +4,8 @@ use crate::deploy::session::{DeploySession, DeploySessionFactory, StartCandidate
 use crate::error::Result;
 use crate::model::{
     DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
-    MachineRecord, MachineStatus, OverlayIp, Participation, PublicKey, ServiceRelease,
-    ServiceReleaseRecord, ServiceReleaseSlot, ServiceRoutingPolicy, SlotId,
+    MachineLifecycle, MachineRecord, OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord,
+    ServiceReleaseSlot, ServiceRoutingPolicy, SlotId,
 };
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
@@ -29,9 +29,9 @@ use tokio::time::sleep;
 #[test]
 fn deployable_machines_filters_by_participation() {
     let machines = vec![
-        test_machine("enabled-a", Participation::Enabled, MachineStatus::Up),
-        test_machine("enabled-b", Participation::Enabled, MachineStatus::Down),
-        test_machine("draining", Participation::Draining, MachineStatus::Up),
+        test_machine("enabled-a", MachineLifecycle::Active),
+        test_machine("enabled-b", MachineLifecycle::Active),
+        test_machine("draining", MachineLifecycle::Draining),
     ];
 
     let deployable = deployable_machines(&machines, &MachineId("local".into()));
@@ -43,11 +43,7 @@ fn deployable_machines_filters_by_participation() {
 
 #[test]
 fn deployable_machines_falls_back_to_local_when_none_are_enabled() {
-    let machines = vec![test_machine(
-        "draining",
-        Participation::Draining,
-        MachineStatus::Down,
-    )];
+    let machines = vec![test_machine("draining", MachineLifecycle::Draining)];
 
     let deployable = deployable_machines(&machines, &MachineId("local".into()));
     assert_eq!(deployable, vec![MachineId("local".into())]);
@@ -67,11 +63,11 @@ fn replicated_one_reuses_existing_slot_machine() {
     let machine_map = HashMap::from([
         (
             MachineId("machine-a".into()),
-            test_machine("machine-a", Participation::Enabled, MachineStatus::Up),
+            test_machine("machine-a", MachineLifecycle::Active),
         ),
         (
             MachineId("machine-b".into()),
-            test_machine("machine-b", Participation::Enabled, MachineStatus::Up),
+            test_machine("machine-b", MachineLifecycle::Active),
         ),
     ]);
 
@@ -99,19 +95,11 @@ async fn resolve_plan_marks_matching_release_unchanged() {
     let revision_hash = spec.revision_hash().expect("revision hash");
 
     store
-        .upsert_self_machine(&test_machine(
-            "machine-a",
-            Participation::Enabled,
-            MachineStatus::Up,
-        ))
+        .upsert_self_machine(&test_machine("machine-a", MachineLifecycle::Active))
         .await
         .expect("seed machine-a");
     store
-        .upsert_self_machine(&test_machine(
-            "machine-b",
-            Participation::Enabled,
-            MachineStatus::Up,
-        ))
+        .upsert_self_machine(&test_machine("machine-b", MachineLifecycle::Active))
         .await
         .expect("seed machine-b");
     store
@@ -156,19 +144,11 @@ async fn resolve_plan_reuses_slot_machine_when_revision_changes() {
     let old_revision_hash = old_spec.revision_hash().expect("old revision hash");
 
     store
-        .upsert_self_machine(&test_machine(
-            "machine-a",
-            Participation::Enabled,
-            MachineStatus::Up,
-        ))
+        .upsert_self_machine(&test_machine("machine-a", MachineLifecycle::Active))
         .await
         .expect("seed machine-a");
     store
-        .upsert_self_machine(&test_machine(
-            "machine-b",
-            Participation::Enabled,
-            MachineStatus::Up,
-        ))
+        .upsert_self_machine(&test_machine("machine-b", MachineLifecycle::Active))
         .await
         .expect("seed machine-b");
     store
@@ -211,27 +191,15 @@ async fn resolve_plan_global_service_targets_enabled_machines_in_order() {
     )]);
 
     store
-        .upsert_self_machine(&test_machine(
-            "machine-b",
-            Participation::Enabled,
-            MachineStatus::Up,
-        ))
+        .upsert_self_machine(&test_machine("machine-b", MachineLifecycle::Active))
         .await
         .expect("seed machine-b");
     store
-        .upsert_self_machine(&test_machine(
-            "machine-a",
-            Participation::Enabled,
-            MachineStatus::Up,
-        ))
+        .upsert_self_machine(&test_machine("machine-a", MachineLifecycle::Active))
         .await
         .expect("seed machine-a");
     store
-        .upsert_self_machine(&test_machine(
-            "machine-c",
-            Participation::Draining,
-            MachineStatus::Up,
-        ))
+        .upsert_self_machine(&test_machine("machine-c", MachineLifecycle::Draining))
         .await
         .expect("seed machine-c");
 
@@ -278,19 +246,11 @@ async fn resolve_plan_includes_removed_service_participants() {
     let current_revision_hash = current_spec.revision_hash().expect("current revision hash");
 
     store
-        .upsert_self_machine(&test_machine(
-            "machine-a",
-            Participation::Enabled,
-            MachineStatus::Up,
-        ))
+        .upsert_self_machine(&test_machine("machine-a", MachineLifecycle::Active))
         .await
         .expect("seed machine-a");
     store
-        .upsert_self_machine(&test_machine(
-            "machine-b",
-            Participation::Draining,
-            MachineStatus::Up,
-        ))
+        .upsert_self_machine(&test_machine("machine-b", MachineLifecycle::Draining))
         .await
         .expect("seed machine-b");
     store
@@ -984,11 +944,7 @@ async fn seeded_store_with_machines(machine_ids: &[&str]) -> StoreDriver {
     let store = StoreDriver::memory();
     for machine_id in machine_ids {
         store
-            .upsert_self_machine(&test_machine(
-                machine_id,
-                Participation::Enabled,
-                MachineStatus::Up,
-            ))
+            .upsert_self_machine(&test_machine(machine_id, MachineLifecycle::Active))
             .await
             .expect("seed machine");
     }
@@ -1003,11 +959,7 @@ async fn counting_store_with_machines(machine_ids: &[&str]) -> (StoreDriver, Arc
     );
     for machine_id in machine_ids {
         store
-            .upsert_self_machine(&test_machine(
-                machine_id,
-                Participation::Enabled,
-                MachineStatus::Up,
-            ))
+            .upsert_self_machine(&test_machine(machine_id, MachineLifecycle::Active))
             .await
             .expect("seed machine");
     }
@@ -1088,7 +1040,7 @@ fn test_slot(
     }
 }
 
-fn test_machine(id: &str, participation: Participation, status: MachineStatus) -> MachineRecord {
+fn test_machine(id: &str, lifecycle: MachineLifecycle) -> MachineRecord {
     MachineRecord {
         id: MachineId(id.into()),
         public_key: PublicKey([7; 32]),
@@ -1097,8 +1049,7 @@ fn test_machine(id: &str, participation: Participation, status: MachineStatus) -
         subnet: None,
         bridge_ip: None,
         endpoints: vec!["127.0.0.1:51820".into()],
-        status,
-        participation,
+        lifecycle,
         created_at: 0,
         updated_at: 0,
         labels: BTreeMap::new(),

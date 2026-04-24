@@ -520,7 +520,7 @@ fn select_current_endpoint(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{MachineStatus, OverlayIp, Participation};
+    use crate::model::{MachineLifecycle, OverlayIp};
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
 
@@ -536,8 +536,7 @@ mod tests {
                 .iter()
                 .map(|endpoint| endpoint.to_string())
                 .collect(),
-            status: MachineStatus::Unknown,
-            participation: Participation::Disabled,
+            lifecycle: MachineLifecycle::Standby,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
