@@ -64,3 +64,16 @@
 # Test Discipline
 
 - Before enabling parallel CI for changed E2E paths, rerun the affected scenarios repeatedly and fix ordering/idempotency bugs instead of adding sleeps or longer timeouts.
+
+# Build Discipline
+
+- Default inner-loop test command is `just test`, which excludes `ployzd` and
+  `ployz-runtime-backends`. Those two crates drag in the Docker client, userspace
+  WireGuard, pingora, and hickory; compiling them dominates cold-build time.
+- Use `just test-all` before pushing or when changes touch `ployzd`,
+  `ployz-runtime-backends`, or anything that affects the full build graph.
+- When editing a specific crate, prefer `cargo test -p <crate>` over the
+  full-workspace form.
+- `ployz-runtime-backends` exposes `docker` and `userspace-wg` cargo features,
+  both on by default. For tests that don't need them, compile with
+  `cargo test -p ployz-runtime-backends --no-default-features`.

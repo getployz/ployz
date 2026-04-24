@@ -1,6 +1,6 @@
 use crate::services::supervisor::{ServiceSupervision, SidecarHandle, SidecarSpec};
 use async_trait::async_trait;
-use ployz_dns::{DnsConfig, DnsError};
+use ployz_dns_config::{DnsConfig, DnsError};
 use ployz_runtime_api::RuntimeHandle;
 
 // ---------------------------------------------------------------------------
@@ -125,7 +125,7 @@ fn build_dns_sidecar_spec(config: &DnsConfig, image: &str) -> SidecarSpec {
 #[cfg(test)]
 mod tests {
     use super::build_dns_sidecar_spec;
-    use ployz_dns::DnsConfig;
+    use ployz_dns_config::DnsConfig;
     use ployz_types::model::OverlayIp;
     use std::net::Ipv6Addr;
     use std::path::Path;

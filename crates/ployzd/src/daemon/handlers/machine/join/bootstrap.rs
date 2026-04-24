@@ -34,7 +34,7 @@ pub(super) async fn bootstrap_remote_machine(
         tracing::info!(%target, "machine add bootstrap: remote ployz missing, installing");
     }
 
-    let installer_path = crate::install::find_installer_script()?;
+    let installer_path = ployz_install::find_installer_script()?;
     let installer = std::fs::read(&installer_path)
         .map_err(|error| format!("read installer '{}': {error}", installer_path.display()))?;
     let remote_command = format!("bash -s -- {}", install_script_args(install));

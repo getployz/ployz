@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::mesh_state::network::NetworkConfig;
 use crate::services::supervisor::{ServiceSupervision, SidecarHandle, SidecarSpec};
 use async_trait::async_trait;
-use ployz_gateway::{GatewayConfig, GatewayError};
+use ployz_gateway_config::{GatewayConfig, GatewayError};
 use ployz_runtime_api::RuntimeHandle;
 
 // ---------------------------------------------------------------------------
@@ -184,7 +184,7 @@ fn write_pingora_config(paths: &GatewayPaths, threads: usize) -> Result<(), Gate
 #[cfg(test)]
 mod tests {
     use super::{GatewayPaths, build_gateway_sidecar_spec};
-    use ployz_gateway::GatewayConfig;
+    use ployz_gateway_config::GatewayConfig;
     use std::path::Path;
 
     #[test]
