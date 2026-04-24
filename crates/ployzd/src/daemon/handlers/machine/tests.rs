@@ -519,6 +519,39 @@ async fn mesh_start_reactivates_local_machine_after_stop() {
 }
 
 #[tokio::test]
+async fn mesh_stop_restores_local_record_when_destroy_fails() {
+    let (mut state, store, network) = make_state(true).await;
+    let activate = state
+        .transition_local_machine(
+            MachineTransitionGoal::Activate,
+            Some("10.210.0.0/24".parse().expect("valid subnet")),
+            false,
+        )
+        .await;
+    assert!(activate.is_ok(), "{activate:?}");
+
+    network.set_fail_down(true);
+
+    let response = state.handle_mesh_stop(true).await;
+    assert!(!response.ok);
+    assert_eq!(response.code, "NETWORK_STOP_FAILED");
+    assert!(state.active.is_some(), "active mesh should be restored");
+
+    let local = store
+        .list_machines()
+        .await
+        .expect("list machines")
+        .into_iter()
+        .find(|machine| machine.id == state.identity.machine_id)
+        .expect("local machine present");
+    assert_eq!(local.lifecycle, MachineLifecycle::Active);
+    assert_eq!(
+        local.subnet,
+        Some("10.210.0.0/24".parse().expect("valid subnet"))
+    );
+}
+
+#[tokio::test]
 async fn reserve_machine_subnet_clears_local_hold_when_quorum_denies() {
     let _guard = test_ssh_env_lock().lock().await;
     let (mut state, store, _) = make_state(true).await;
