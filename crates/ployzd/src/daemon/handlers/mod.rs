@@ -9,6 +9,7 @@ mod peer_rpc;
 mod status;
 
 use ployz_api::{DaemonRequest, DaemonResponse};
+use tokio::sync::oneshot;
 
 use super::DaemonState;
 
@@ -132,7 +133,11 @@ impl DaemonState {
         }
     }
 
-    pub async fn handle_exclusive(&mut self, req: DaemonRequest) -> DaemonResponse {
+    pub async fn handle_exclusive(
+        &mut self,
+        req: DaemonRequest,
+        response_flushed: Option<oneshot::Receiver<()>>,
+    ) -> DaemonResponse {
         match req {
             DaemonRequest::DebugTick { task, repeat } => self.handle_debug_tick(task, repeat).await,
             DaemonRequest::MeshJoin { token } => self.handle_mesh_join(&token).await,
@@ -176,7 +181,7 @@ impl DaemonState {
                 operation_id,
                 network_id,
             } => {
-                self.handle_mesh_peer_execute_destroy(&operation_id, &network_id)
+                self.handle_mesh_peer_execute_destroy(&operation_id, &network_id, response_flushed)
                     .await
             }
             DaemonRequest::MachineRemove { id, force } => {
@@ -187,8 +192,13 @@ impl DaemonState {
                 network_id,
                 machine_id,
             } => {
-                self.handle_mesh_peer_remove_machine(&operation_id, &network_id, &machine_id)
-                    .await
+                self.handle_mesh_peer_remove_machine(
+                    &operation_id,
+                    &network_id,
+                    &machine_id,
+                    response_flushed,
+                )
+                .await
             }
             DaemonRequest::Status
             | DaemonRequest::Doctor
