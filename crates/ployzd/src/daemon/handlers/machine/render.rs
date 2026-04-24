@@ -41,11 +41,7 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
     for row in &report.rows {
         lines.push(format!(
             "{:<w_id$}  {:<w_lifecycle$}  {:<w_ov$}  {:<w_sub$}  {}",
-            row.id,
-            row.lifecycle,
-            row.overlay,
-            row.subnet_display,
-            row.created_display,
+            row.id, row.lifecycle, row.overlay, row.subnet_display, row.created_display,
         ));
     }
     lines.join("\n")

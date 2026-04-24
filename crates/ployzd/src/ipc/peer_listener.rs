@@ -27,7 +27,7 @@ impl PeerListenerHandle {
 
     pub async fn shutdown(self) {
         self.cancel.cancel();
-        let _ = self.task.await;
+        self.task.abort();
     }
 }
 
@@ -109,4 +109,55 @@ async fn handle_connection(
     writer.write_all(response_line.as_bytes()).await?;
     writer.shutdown().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::serve;
+    use ployz_api::{DaemonRequest, DaemonResponse};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::TcpStream;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn shutdown_keeps_in_flight_response_writable() {
+        let probe = std::net::TcpListener::bind("[::1]:0").expect("bind probe listener");
+        let addr = probe.local_addr().expect("probe listener address");
+        drop(probe);
+
+        let (tx, mut rx) = mpsc::channel(1);
+        let handle = serve(addr, tx).await.expect("start peer listener");
+        let mut stream = TcpStream::connect(addr).await.expect("connect peer rpc");
+
+        let mut request_line =
+            serde_json::to_string(&DaemonRequest::Status).expect("encode request");
+        request_line.push('\n');
+        stream
+            .write_all(request_line.as_bytes())
+            .await
+            .expect("write request");
+
+        let command = rx.recv().await.expect("receive command");
+        handle.shutdown().await;
+        command
+            .reply
+            .send(DaemonResponse {
+                ok: true,
+                code: "OK".into(),
+                message: "still writable".into(),
+                payload: None,
+            })
+            .expect("send response");
+
+        let mut reader = BufReader::new(stream);
+        let mut response_line = String::new();
+        reader
+            .read_line(&mut response_line)
+            .await
+            .expect("read response");
+        let response: DaemonResponse =
+            serde_json::from_str(&response_line).expect("decode response");
+        assert!(response.ok);
+        assert_eq!(response.message, "still writable");
+    }
 }

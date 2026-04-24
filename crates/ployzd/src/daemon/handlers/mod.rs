@@ -5,6 +5,7 @@ mod doctor;
 mod invite;
 pub(crate) mod machine;
 mod mesh;
+mod peer_rpc;
 mod status;
 
 use ployz_api::{DaemonRequest, DaemonResponse};
@@ -28,7 +29,12 @@ impl DaemonState {
             | DaemonRequest::MeshInit { .. }
             | DaemonRequest::MeshStart { .. }
             | DaemonRequest::MeshStop { .. }
-            | DaemonRequest::MeshDestroy { .. } => RequestLane::Exclusive,
+            | DaemonRequest::MeshDestroy { .. }
+            | DaemonRequest::MeshPeerPrepareDestroy { .. }
+            | DaemonRequest::MeshPeerCancelDestroy { .. }
+            | DaemonRequest::MeshPeerExecuteDestroy { .. }
+            | DaemonRequest::MachineRemove { .. }
+            | DaemonRequest::MeshPeerRemoveMachine { .. } => RequestLane::Exclusive,
             DaemonRequest::Status
             | DaemonRequest::Doctor
             | DaemonRequest::DeployPreview { .. }
@@ -44,7 +50,6 @@ impl DaemonState {
             | DaemonRequest::MachineActivate { .. }
             | DaemonRequest::MachineDrain { .. }
             | DaemonRequest::MachineStandby { .. }
-            | DaemonRequest::MachineRemove { .. }
             | DaemonRequest::MachineOperationList
             | DaemonRequest::MachineOperationGet { .. }
             | DaemonRequest::MachineInviteCreate { .. }
@@ -68,7 +73,12 @@ impl DaemonState {
             | DaemonRequest::MeshInit { .. }
             | DaemonRequest::MeshStart { .. }
             | DaemonRequest::MeshStop { .. }
-            | DaemonRequest::MeshDestroy { .. } => {
+            | DaemonRequest::MeshDestroy { .. }
+            | DaemonRequest::MeshPeerPrepareDestroy { .. }
+            | DaemonRequest::MeshPeerCancelDestroy { .. }
+            | DaemonRequest::MeshPeerExecuteDestroy { .. }
+            | DaemonRequest::MachineRemove { .. }
+            | DaemonRequest::MeshPeerRemoveMachine { .. } => {
                 self.err("INTERNAL", "exclusive request routed to shared handler")
             }
             DaemonRequest::DeployPreview {
@@ -101,9 +111,6 @@ impl DaemonState {
             DaemonRequest::MachineDrain { target } => self.handle_machine_drain(&target).await,
             DaemonRequest::MachineStandby { target, force } => {
                 self.handle_machine_standby(&target, force).await
-            }
-            DaemonRequest::MachineRemove { id, force } => {
-                self.handle_machine_remove(&id, force).await
             }
             DaemonRequest::MachineOperationList => self.handle_machine_operation_list().await,
             DaemonRequest::MachineOperationGet { id } => {
@@ -148,6 +155,41 @@ impl DaemonState {
             }
             DaemonRequest::MeshStop { force } => self.handle_mesh_stop(force).await,
             DaemonRequest::MeshDestroy { network } => self.handle_mesh_destroy(&network).await,
+            DaemonRequest::MeshPeerPrepareDestroy {
+                operation_id,
+                network_id,
+                coordinator_id,
+                expected_machine_ids,
+            } => {
+                self.handle_mesh_peer_prepare_destroy(
+                    &operation_id,
+                    &network_id,
+                    &coordinator_id,
+                    &expected_machine_ids,
+                )
+                .await
+            }
+            DaemonRequest::MeshPeerCancelDestroy { operation_id } => {
+                self.handle_mesh_peer_cancel_destroy(&operation_id).await
+            }
+            DaemonRequest::MeshPeerExecuteDestroy {
+                operation_id,
+                network_id,
+            } => {
+                self.handle_mesh_peer_execute_destroy(&operation_id, &network_id)
+                    .await
+            }
+            DaemonRequest::MachineRemove { id, force } => {
+                self.handle_machine_remove(&id, force).await
+            }
+            DaemonRequest::MeshPeerRemoveMachine {
+                operation_id,
+                network_id,
+                machine_id,
+            } => {
+                self.handle_mesh_peer_remove_machine(&operation_id, &network_id, &machine_id)
+                    .await
+            }
             DaemonRequest::Status
             | DaemonRequest::Doctor
             | DaemonRequest::DeployPreview { .. }
@@ -163,7 +205,6 @@ impl DaemonState {
             | DaemonRequest::MachineActivate { .. }
             | DaemonRequest::MachineDrain { .. }
             | DaemonRequest::MachineStandby { .. }
-            | DaemonRequest::MachineRemove { .. }
             | DaemonRequest::MachineOperationList
             | DaemonRequest::MachineOperationGet { .. }
             | DaemonRequest::MachineInviteCreate { .. }

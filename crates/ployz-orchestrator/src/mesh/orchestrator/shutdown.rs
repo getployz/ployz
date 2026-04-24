@@ -84,6 +84,24 @@ impl Mesh {
         }
     }
 
+    pub async fn destroy_and_wipe_store_data(&mut self) -> Result<()> {
+        self.apply(crate::mesh::phase::PhaseEvent::DestroyRequested)?;
+
+        let mut first_err = self.stop_runtime(true).await;
+        if let Err(error) = self.store.wipe_data().await {
+            warn!(?error, "store wipe failed during mesh destroy");
+            first_err.get_or_insert_with(|| error.into());
+        }
+
+        self.apply(crate::mesh::phase::PhaseEvent::TeardownComplete)?;
+        info!("mesh destroyed and store data wiped");
+
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
     pub async fn restart_runtime_for_subnet_change(
         &mut self,
         network: WireguardDriver,
