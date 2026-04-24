@@ -6,6 +6,8 @@ use bollard::models::{
 use ipnet::Ipv4Net;
 use ployz_orchestrator::ipam::{container_ip, machine_ip};
 use std::net::Ipv4Addr;
+#[cfg(target_os = "linux")]
+use std::process::Command;
 use tracing::{info, warn};
 
 use crate::error::{Error, Result};
@@ -14,6 +16,8 @@ use crate::error::{Error, Result};
 pub struct DockerBridgeNetwork {
     docker: Docker,
     name: String,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    overlay_ifname: String,
     subnet_v4: Ipv4Net,
     gateway_v4: Ipv4Addr,
     container_v4: Ipv4Addr,
@@ -30,6 +34,7 @@ impl DockerBridgeNetwork {
         Ok(Self {
             docker,
             name: format!("ployz-{mesh_name}"),
+            overlay_ifname: format!("plz-{mesh_name}"),
             subnet_v4,
             gateway_v4,
             container_v4,
@@ -41,16 +46,22 @@ impl DockerBridgeNetwork {
         match self.docker.inspect_network(&self.name, None).await {
             Ok(_) => {
                 info!(name = %self.name, "docker network already exists");
-                return Ok(());
             }
             Err(bollard::errors::Error::DockerResponseServerError {
                 status_code: 404, ..
-            }) => {}
+            }) => {
+                self.create_network().await?;
+            }
             Err(e) => {
                 return Err(Error::operation("inspect network", e.to_string()));
             }
         }
 
+        self.ensure_overlay_firewall_rules().await?;
+        Ok(())
+    }
+
+    async fn create_network(&self) -> Result<()> {
         let ipam = Ipam {
             driver: Some("default".to_string()),
             config: Some(vec![IpamConfig {
@@ -84,6 +95,19 @@ impl DockerBridgeNetwork {
             v4 = %self.subnet_v4,
             "created docker bridge network"
         );
+        Ok(())
+    }
+
+    async fn ensure_overlay_firewall_rules(&self) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            let bridge_ifname = self.resolve_bridge_ifname().await?;
+            install_overlay_firewall_rules(self.subnet_v4, &bridge_ifname, &self.overlay_ifname)?;
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = self;
+        }
         Ok(())
     }
 
@@ -230,4 +254,92 @@ impl DockerBridgeNetwork {
             .ok_or_else(|| Error::operation("resolve bridge", "network has no ID"))?;
         Ok(format!("br-{}", &id[..12]))
     }
+}
+
+#[cfg(target_os = "linux")]
+fn install_overlay_firewall_rules(
+    subnet: Ipv4Net,
+    bridge_ifname: &str,
+    overlay_ifname: &str,
+) -> Result<()> {
+    let subnet = subnet.to_string();
+
+    // Docker's bridge driver installs broad raw-table drops and subnet
+    // masquerade rules. Overlay traffic must keep its machine-subnet source
+    // address so WireGuard cryptokey routing accepts it on the remote node.
+    ensure_iptables_rule(
+        "raw",
+        "PREROUTING",
+        &["-i", overlay_ifname, "-d", &subnet, "-j", "ACCEPT"],
+    )?;
+    ensure_iptables_rule(
+        "filter",
+        "FORWARD",
+        &[
+            "-i",
+            overlay_ifname,
+            "-o",
+            bridge_ifname,
+            "-d",
+            &subnet,
+            "-j",
+            "ACCEPT",
+        ],
+    )?;
+    ensure_iptables_rule(
+        "filter",
+        "FORWARD",
+        &[
+            "-i",
+            bridge_ifname,
+            "-o",
+            overlay_ifname,
+            "-s",
+            &subnet,
+            "-j",
+            "ACCEPT",
+        ],
+    )?;
+    ensure_iptables_rule(
+        "nat",
+        "POSTROUTING",
+        &["-s", &subnet, "-o", overlay_ifname, "-j", "ACCEPT"],
+    )?;
+
+    info!(
+        %subnet,
+        bridge = bridge_ifname,
+        overlay = overlay_ifname,
+        "installed docker overlay firewall exemptions"
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_iptables_rule(table: &str, chain: &str, rule: &[&str]) -> Result<()> {
+    let mut check_args = vec!["-w", "-t", table, "-C", chain];
+    check_args.extend_from_slice(rule);
+    if run_iptables(&check_args)?.success() {
+        return Ok(());
+    }
+
+    let mut insert_args = vec!["-w", "-t", table, "-I", chain, "1"];
+    insert_args.extend_from_slice(rule);
+    let status = run_iptables(&insert_args)?;
+    if status.success() {
+        return Ok(());
+    }
+
+    Err(Error::operation(
+        "iptables insert",
+        format!("{table} {chain} {}", rule.join(" ")),
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn run_iptables(args: &[&str]) -> Result<std::process::ExitStatus> {
+    Command::new("iptables")
+        .args(args)
+        .status()
+        .map_err(|error| Error::operation("iptables", error.to_string()))
 }
