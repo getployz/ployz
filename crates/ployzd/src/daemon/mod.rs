@@ -10,6 +10,7 @@ use crate::built_in_images::BuiltInImages;
 use crate::ipc::listener::IncomingCommand;
 use crate::mesh_state::network::NetworkConfig;
 use crate::runtime_profile::RuntimeProfile;
+use ipnet::Ipv4Net;
 use ployz_api::{DaemonPayload, DaemonResponse};
 use ployz_config::{RuntimeTarget, ServiceMode};
 use ployz_orchestrator::Mesh;
@@ -21,6 +22,7 @@ use tokio::sync::mpsc;
 
 pub struct ActiveMesh {
     pub config: NetworkConfig,
+    pub cached_subnet: Option<Ipv4Net>,
     pub mesh: Mesh,
     pub remote_control: Box<dyn RuntimeHandle>,
     pub peer_control: Box<dyn RuntimeHandle>,

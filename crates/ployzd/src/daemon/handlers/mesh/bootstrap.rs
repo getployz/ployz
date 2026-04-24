@@ -88,7 +88,10 @@ impl DaemonState {
             allow_disconnected_bootstrap: bootstrap.is_some(),
         };
         net_config.lifecycle = NetworkLifecycle::Running;
-        match self.start_mesh(net_config.clone(), bootstrap, options).await {
+        match self
+            .start_mesh(net_config.clone(), bootstrap, options)
+            .await
+        {
             Ok(_) => {
                 if let Err(error) = self
                     .transition_local_machine(
@@ -105,8 +108,9 @@ impl DaemonState {
                 if let Some(active) = self.active.as_mut() {
                     active.config.lifecycle = NetworkLifecycle::Running;
                     if let Err(error) = active.config.save(&config_path) {
+                        self.stop_started_mesh_after_transition_failure().await;
                         return self.err(
-                            "IO_ERROR",
+                            "NETWORK_START_FAILED",
                             format!("failed to persist running network config: {error}"),
                         );
                     }
