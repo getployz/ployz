@@ -4,7 +4,7 @@ use ipnet::Ipv4Net;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::{self, Write as _};
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use strum::EnumString;
 
 use crate::spec::Namespace;
@@ -272,6 +272,75 @@ pub struct RoutingState {
     pub revisions: Vec<ServiceRevisionRecord>,
     pub releases: Vec<ServiceReleaseRecord>,
     pub instances: Vec<InstanceStatusRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcmeAccountRecord {
+    pub account_id: String,
+    pub issuer_url: String,
+    pub contact_email: Option<String>,
+    pub account_key_pem: String,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
+pub enum CertificateState {
+    #[display("pending")]
+    #[strum(serialize = "pending")]
+    Pending,
+    #[display("issuing")]
+    #[strum(serialize = "issuing")]
+    Issuing,
+    #[display("active")]
+    #[strum(serialize = "active")]
+    Active,
+    #[display("renewal_due")]
+    #[strum(serialize = "renewal_due")]
+    RenewalDue,
+    #[display("failed")]
+    #[strum(serialize = "failed")]
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CertificateVersion {
+    pub version_id: String,
+    pub fullchain_pem: String,
+    pub private_key_pem: String,
+    pub not_before: Option<u64>,
+    pub not_after: Option<u64>,
+    pub issued_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CertificateRecord {
+    pub hostname: String,
+    pub issuer_url: String,
+    pub account_id: String,
+    pub state: CertificateState,
+    pub active_version_id: Option<String>,
+    pub versions: Vec<CertificateVersion>,
+    pub last_error: Option<String>,
+    pub requested_at: u64,
+    pub updated_at: u64,
+    pub next_renewal_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcmeChallengeRecord {
+    pub hostname: String,
+    pub token: String,
+    pub key_authorization: String,
+    pub expires_at: u64,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DomainDnsAdvice {
+    pub hostname: String,
+    pub resolved_ips: Vec<IpAddr>,
+    pub recommended_ips: Vec<IpAddr>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]

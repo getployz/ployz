@@ -1,3 +1,5 @@
+use crate::certificates::{CertificateManagerConfig, spawn_certificate_issuance};
+use crate::deploy::managed_domains;
 use crate::deploy::plan::{PlanFingerprint, ResolvedPlan, resolve_plan};
 use crate::deploy::probe::probe_participants;
 use crate::deploy::session::{self, DeploySessionFactory};
@@ -201,7 +203,7 @@ pub(super) async fn apply_with_initial_plan(
         let final_fingerprint = final_plan.fingerprint();
         ensure_plan_stable(&initial_fingerprint, &final_fingerprint)?;
 
-        let final_preview = final_plan.to_preview(Vec::new());
+        let mut final_preview = final_plan.to_preview(Vec::new());
         let mut deploy_record = DeployRecord {
             deploy_id: deploy_id.clone(),
             namespace: final_plan.namespace().clone(),
@@ -253,6 +255,18 @@ pub(super) async fn apply_with_initial_plan(
                 final_plan.namespace()
             ),
         });
+
+        managed_domains::ensure_certificate_intents(store, &final_plan).await?;
+        let managed_warnings = managed_domains::warnings_for_plan(store, &final_plan).await?;
+        if final_preview.warnings != managed_warnings {
+            final_preview.warnings = managed_warnings;
+            deploy_record.summary_json =
+                serde_json::to_string(&final_preview).map_err(|error| {
+                    Error::operation("deploy_apply", format!("serialize preview: {error}"))
+                })?;
+            store.upsert_deploy(&deploy_record).await?;
+        }
+        spawn_certificate_issuance(store.clone(), CertificateManagerConfig::from_env());
 
         let cleanup = cleanup_stale_instances(
             store,

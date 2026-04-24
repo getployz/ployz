@@ -1,12 +1,13 @@
 use crate::{
-    DeployStore, InviteStore, MachineStore, RoutingInvalidationSubscription, RoutingStore,
-    StoreRuntimeControl, SyncProbe, SyncStatus,
+    CertificateStore, DeployStore, InviteStore, MachineStore, RoutingInvalidationSubscription,
+    RoutingStore, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
-    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
+    InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineRecord, RoutingState,
+    ServiceReleaseRecord, ServiceRevisionRecord,
 };
 use ployz_types::spec::Namespace;
 use std::collections::{HashMap, HashSet};
@@ -28,6 +29,9 @@ struct StoreInner {
     service_releases: HashMap<(Namespace, String), ServiceReleaseRecord>,
     instance_status: HashMap<InstanceId, InstanceStatusRecord>,
     deploys: HashMap<DeployId, DeployRecord>,
+    acme_accounts: HashMap<String, AcmeAccountRecord>,
+    certificates: HashMap<String, CertificateRecord>,
+    acme_challenges: HashMap<(String, String), AcmeChallengeRecord>,
     sync_status: SyncStatus,
 }
 
@@ -50,6 +54,9 @@ impl MemoryStore {
                 service_releases: HashMap::new(),
                 instance_status: HashMap::new(),
                 deploys: HashMap::new(),
+                acme_accounts: HashMap::new(),
+                certificates: HashMap::new(),
+                acme_challenges: HashMap::new(),
                 sync_status: SyncStatus::Synced,
             }),
         }
@@ -381,6 +388,65 @@ impl DeployStore for MemoryStore {
     }
 }
 
+impl CertificateStore for MemoryStore {
+    async fn get_acme_account(&self, issuer_url: &str) -> Result<Option<AcmeAccountRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner.acme_accounts.get(issuer_url).cloned())
+    }
+
+    async fn upsert_acme_account(&self, record: &AcmeAccountRecord) -> Result<()> {
+        let mut inner = self.lock_inner();
+        inner
+            .acme_accounts
+            .insert(record.issuer_url.clone(), record.clone());
+        Self::broadcast_routing_refresh(&mut inner);
+        Ok(())
+    }
+
+    async fn list_certificates(&self) -> Result<Vec<CertificateRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner.certificates.values().cloned().collect())
+    }
+
+    async fn get_certificate(&self, hostname: &str) -> Result<Option<CertificateRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner.certificates.get(hostname).cloned())
+    }
+
+    async fn upsert_certificate(&self, record: &CertificateRecord) -> Result<()> {
+        let mut inner = self.lock_inner();
+        inner
+            .certificates
+            .insert(record.hostname.clone(), record.clone());
+        Self::broadcast_routing_refresh(&mut inner);
+        Ok(())
+    }
+
+    async fn list_acme_challenges(&self) -> Result<Vec<AcmeChallengeRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner.acme_challenges.values().cloned().collect())
+    }
+
+    async fn upsert_acme_challenge(&self, record: &AcmeChallengeRecord) -> Result<()> {
+        let mut inner = self.lock_inner();
+        inner.acme_challenges.insert(
+            (record.hostname.clone(), record.token.clone()),
+            record.clone(),
+        );
+        Self::broadcast_routing_refresh(&mut inner);
+        Ok(())
+    }
+
+    async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> Result<()> {
+        let mut inner = self.lock_inner();
+        inner
+            .acme_challenges
+            .remove(&(hostname.to_string(), token.to_string()));
+        Self::broadcast_routing_refresh(&mut inner);
+        Ok(())
+    }
+}
+
 impl MemoryStore {
     pub async fn wipe_data(&self) -> Result<()> {
         let mut inner = self.lock_inner();
@@ -394,6 +460,9 @@ impl MemoryStore {
         inner.service_releases.clear();
         inner.instance_status.clear();
         inner.deploys.clear();
+        inner.acme_accounts.clear();
+        inner.certificates.clear();
+        inner.acme_challenges.clear();
 
         for record in removed {
             Self::broadcast_machine(&mut inner, MachineEvent::Removed(record));

@@ -1,6 +1,7 @@
 pub mod session;
 
 mod execute;
+mod managed_domains;
 mod plan;
 mod probe;
 
@@ -22,7 +23,9 @@ pub async fn preview(
 ) -> Result<DeployPreview> {
     let plan = resolve_plan(store, local_machine_id, manifest).await?;
     let reachability = probe_participants(plan.participants(), plan.machine_map()).await;
-    Ok(plan.to_preview(warnings_from_reachability(&reachability)))
+    let mut warnings = warnings_from_reachability(&reachability);
+    warnings.extend(managed_domains::warnings_for_plan(store, &plan).await?);
+    Ok(plan.to_preview(warnings))
 }
 
 pub async fn apply(
