@@ -16,6 +16,7 @@ use ployz_orchestrator::Mesh;
 use ployz_orchestrator::coordination::PendingReservations;
 use ployz_runtime_api::Identity;
 use ployz_runtime_api::{NamespaceLockManager, RuntimeHandle};
+use serde::Serialize;
 use tokio::sync::mpsc;
 
 pub struct ActiveMesh {
@@ -203,6 +204,26 @@ impl DaemonState {
             code: code.into(),
             message: message.into(),
             payload,
+        }
+    }
+
+    pub fn require_active(
+        &self,
+        code: &str,
+        message: &'static str,
+    ) -> Result<&ActiveMesh, DaemonResponse> {
+        self.active.as_ref().ok_or_else(|| self.err(code, message))
+    }
+
+    pub fn ok_json_pretty<T: Serialize>(
+        &self,
+        value: &T,
+        encode_error_code: &str,
+        context: &str,
+    ) -> DaemonResponse {
+        match serde_json::to_string_pretty(value) {
+            Ok(json) => self.ok(json),
+            Err(err) => self.err(encode_error_code, format!("{context}: {err}")),
         }
     }
 }
