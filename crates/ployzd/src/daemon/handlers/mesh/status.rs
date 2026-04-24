@@ -41,14 +41,18 @@ impl DaemonState {
         let networks: Vec<MeshListEntry> = names
             .iter()
             .map(|name| {
-                let state = if running == Some(name.as_str()) {
-                    "running"
-                } else {
-                    "created"
-                };
+                let lifecycle = NetworkConfig::load(&NetworkConfig::path(&self.data_dir, name))
+                    .map(|config| config.lifecycle.to_string())
+                    .unwrap_or_else(|_| {
+                        if running == Some(name.as_str()) {
+                            "running".into()
+                        } else {
+                            "stopped".into()
+                        }
+                    });
                 MeshListEntry {
                     name: name.clone(),
-                    state: state.to_string(),
+                    state: lifecycle,
                 }
             })
             .collect();
@@ -83,24 +87,28 @@ impl DaemonState {
             .active
             .as_ref()
             .is_some_and(|a| a.config.name.0 == network);
-        let state = if running { "running" } else { "created" };
+        let lifecycle = if running {
+            active_lifecycle_string(&config)
+        } else {
+            config.lifecycle.to_string()
+        };
         self.ok_with_payload(
             format!(
-                "network: {}\noverlay: {}\nstate:   {}",
-                config.name, config.overlay_ip, state
+                "network:   {}\noverlay:   {}\nlifecycle: {}",
+                config.name, config.overlay_ip, lifecycle
             ),
             Some(DaemonPayload::MeshStatus(MeshStatusPayload {
                 network: config.name.0.clone(),
                 overlay_ip: config.overlay_ip.0.to_string(),
-                state: state.to_string(),
+                lifecycle,
             })),
         )
     }
 
     pub(crate) async fn handle_mesh_ready(&self, json: bool) -> DaemonResponse {
-        let active = match self.active.as_ref() {
-            Some(active) => active,
-            None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
+        let active = match self.require_active("NO_RUNNING_NETWORK", "no mesh running") {
+            Ok(active) => active,
+            Err(response) => return response,
         };
 
         let Some(self_record) = active.mesh.authoritative_self_record().await else {
@@ -118,13 +126,16 @@ impl DaemonState {
         }
 
         self.ok_with_payload(format!(
-            "ready:                   {}\nphase:                   {}\nstore healthy:           {}\nsync connected:          {}\nparticipation:           {}\nworkload subnet present: {}",
+            "ready:                   {}\nphase:                   {}\nstore healthy:           {}\nsync connected:          {}\nworkload subnet present: {}",
             status.ready,
             status.phase,
             status.store_healthy,
             status.sync_connected,
-            status.participation,
             status.workload_subnet_present,
         ), Some(DaemonPayload::MeshReady(status)))
     }
+}
+
+fn active_lifecycle_string(config: &NetworkConfig) -> String {
+    config.lifecycle.to_string()
 }

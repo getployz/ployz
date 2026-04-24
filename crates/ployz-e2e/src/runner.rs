@@ -63,7 +63,7 @@ pub(crate) enum SubnetExpectation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MachineExpectation<'a> {
     pub(crate) id: &'a str,
-    pub(crate) participation: &'a str,
+    pub(crate) lifecycle: &'a str,
     pub(crate) subnet: SubnetExpectation,
 }
 
@@ -271,9 +271,7 @@ impl ScenarioRun {
                 return Ok(false);
             }
             let payload = parse_ready_payload(output.stdout.trim())?;
-            Ok(payload.ready
-                && !payload.workload_subnet_present
-                && payload.participation == "disabled")
+            Ok(payload.ready && !payload.workload_subnet_present)
         })
         .map_err(|error| {
             Error::Message(format!(
@@ -318,18 +316,40 @@ impl ScenarioRun {
         Ok(())
     }
 
-    pub(crate) fn machine_enable(&self, controller_name: &str, target_name: &str) -> Result<()> {
+    pub(crate) fn machine_activate(
+        &self,
+        controller_name: &str,
+        target_name: &str,
+    ) -> Result<()> {
         self.ssh_expect_ok_name(
             controller_name,
-            &format!("ployzd machine enable {target_name}"),
+            &format!("ployzd machine activate {target_name}"),
         )?;
         Ok(())
     }
 
-    pub(crate) fn machine_disable(&self, controller_name: &str, target_name: &str) -> Result<()> {
+    pub(crate) fn machine_drain(&self, controller_name: &str, target_name: &str) -> Result<()> {
         self.ssh_expect_ok_name(
             controller_name,
-            &format!("ployzd machine disable {target_name}"),
+            &format!("ployzd machine drain {target_name}"),
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn machine_standby(
+        &self,
+        controller_name: &str,
+        target_name: &str,
+        force: bool,
+    ) -> Result<()> {
+        let command = if force {
+            format!("ployzd machine standby {target_name} --force")
+        } else {
+            format!("ployzd machine standby {target_name}")
+        };
+        self.ssh_expect_ok_name(
+            controller_name,
+            &command,
         )?;
         Ok(())
     }
@@ -363,7 +383,7 @@ impl ScenarioRun {
                     SubnetExpectation::Present => "subnet=present",
                     SubnetExpectation::Absent => "subnet=absent",
                 };
-                format!("{}:{}:{subnet}", expected.id, expected.participation)
+                format!("{}:{}:{subnet}", expected.id, expected.lifecycle)
             })
             .collect::<Vec<_>>()
             .join(", ");
@@ -1056,13 +1076,13 @@ fn ssh_run_with_key(private_key_path: &Path, node: &Node, script: &str) -> Resul
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MachineRow {
     id: String,
-    participation: String,
+    lifecycle: String,
     subnet: String,
 }
 
 impl MachineRow {
     fn matches(&self, expected: MachineExpectation<'_>) -> bool {
-        if self.id != expected.id || self.participation != expected.participation {
+        if self.id != expected.id || self.lifecycle != expected.lifecycle {
             return false;
         }
         match expected.subnet {
@@ -1090,7 +1110,7 @@ fn machine_rows(machine_ls: &str) -> Result<Vec<MachineRow>> {
         .into_iter()
         .map(|row| MachineRow {
             id: row.id,
-            participation: row.participation,
+            lifecycle: row.lifecycle,
             subnet: row.subnet.unwrap_or_else(|| String::from("—")),
         })
         .collect();
@@ -1114,8 +1134,7 @@ mod tests {
     "rows": [
       {
         "id": "peer",
-        "status": "up",
-        "participation": "disabled",
+        "lifecycle": "standby",
         "overlay_ip": "fd00::2",
         "created_at": 123,
         "subnet": null
@@ -1129,7 +1148,7 @@ mod tests {
             panic!("expected one row");
         };
         assert_eq!(row.id, "peer");
-        assert_eq!(row.participation, "disabled");
+        assert_eq!(row.lifecycle, "standby");
         assert_eq!(row.subnet, "—");
     }
 }

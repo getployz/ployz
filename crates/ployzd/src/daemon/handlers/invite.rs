@@ -16,14 +16,12 @@ use super::super::DaemonState;
 
 impl DaemonState {
     pub(crate) async fn handle_machine_invite_create(&self, ttl_secs: u64) -> DaemonResponse {
-        let active_config = match self.active.as_ref() {
-            Some(active) => active.config.clone(),
-            None => {
-                return self.err(
-                    "NO_RUNNING_NETWORK",
-                    "machine invite create requires a running network",
-                );
-            }
+        let active_config = match self.require_active(
+            "NO_RUNNING_NETWORK",
+            "machine invite create requires a running network",
+        ) {
+            Ok(active) => active.config.clone(),
+            Err(response) => return response,
         };
 
         if ttl_secs == 0 {
@@ -42,11 +40,12 @@ impl DaemonState {
     }
 
     pub(crate) async fn handle_machine_invite_revoke(&self, invite_id: &str) -> DaemonResponse {
-        let Some(active) = self.active.as_ref() else {
-            return self.err(
-                "NO_RUNNING_NETWORK",
-                "machine invite revoke requires a running network",
-            );
+        let active = match self.require_active(
+            "NO_RUNNING_NETWORK",
+            "machine invite revoke requires a running network",
+        ) {
+            Ok(active) => active,
+            Err(response) => return response,
         };
 
         match active
@@ -64,11 +63,12 @@ impl DaemonState {
     }
 
     pub(crate) async fn handle_machine_invite_list(&self) -> DaemonResponse {
-        let Some(active) = self.active.as_ref() else {
-            return self.err(
-                "NO_RUNNING_NETWORK",
-                "machine invite list requires a running network",
-            );
+        let active = match self.require_active(
+            "NO_RUNNING_NETWORK",
+            "machine invite list requires a running network",
+        ) {
+            Ok(active) => active,
+            Err(response) => return response,
         };
 
         let invites = match active.mesh.store.list_invites().await {

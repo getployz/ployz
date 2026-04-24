@@ -16,6 +16,7 @@ use ployz_orchestrator::Mesh;
 use ployz_orchestrator::coordination::PendingReservations;
 use ployz_runtime_api::Identity;
 use ployz_runtime_api::{NamespaceLockManager, RuntimeHandle};
+use serde::Serialize;
 use tokio::sync::mpsc;
 
 pub struct ActiveMesh {
@@ -148,27 +149,8 @@ impl DaemonState {
     }
 
     #[must_use]
-    pub fn active_marker_path(&self) -> PathBuf {
-        self.data_dir.join("active_network")
-    }
-
-    #[must_use]
     pub fn network_dir(&self, network: &str) -> PathBuf {
         NetworkConfig::dir(&self.data_dir, network)
-    }
-
-    #[must_use]
-    pub fn read_active_marker(&self) -> Option<String> {
-        NetworkConfig::read_active_network(&self.data_dir)
-    }
-
-    pub fn write_active_marker(&self, network: &str) -> std::io::Result<()> {
-        std::fs::create_dir_all(&self.data_dir)?;
-        std::fs::write(self.active_marker_path(), network)
-    }
-
-    pub fn clear_active_marker(&self) {
-        let _ = std::fs::remove_file(self.active_marker_path());
     }
 
     pub fn ok(&self, message: impl Into<String>) -> DaemonResponse {
@@ -203,6 +185,26 @@ impl DaemonState {
             code: code.into(),
             message: message.into(),
             payload,
+        }
+    }
+
+    pub fn require_active(
+        &self,
+        code: &str,
+        message: &'static str,
+    ) -> Result<&ActiveMesh, DaemonResponse> {
+        self.active.as_ref().ok_or_else(|| self.err(code, message))
+    }
+
+    pub fn ok_json_pretty<T: Serialize>(
+        &self,
+        value: &T,
+        encode_error_code: &str,
+        context: &str,
+    ) -> DaemonResponse {
+        match serde_json::to_string_pretty(value) {
+            Ok(json) => self.ok(json),
+            Err(err) => self.err(encode_error_code, format!("{context}: {err}")),
         }
     }
 }

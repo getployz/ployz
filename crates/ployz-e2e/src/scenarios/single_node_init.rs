@@ -8,7 +8,7 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
         "founder",
         &[MachineExpectation {
             id: "founder",
-            participation: "enabled",
+            lifecycle: "active",
             subnet: SubnetExpectation::Present,
         }],
     )

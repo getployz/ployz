@@ -14,12 +14,12 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
         &[
             MachineExpectation {
                 id: "founder",
-                participation: "enabled",
+                lifecycle: "active",
                 subnet: SubnetExpectation::Present,
             },
             MachineExpectation {
                 id: "peer",
-                participation: "enabled",
+                lifecycle: "active",
                 subnet: SubnetExpectation::Present,
             },
         ],
@@ -43,12 +43,12 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
         &[
             MachineExpectation {
                 id: "founder",
-                participation: "enabled",
+                lifecycle: "active",
                 subnet: SubnetExpectation::Present,
             },
             MachineExpectation {
                 id: "peer",
-                participation: "enabled",
+                lifecycle: "active",
                 subnet: SubnetExpectation::Present,
             },
         ],
@@ -58,12 +58,12 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
         &[
             MachineExpectation {
                 id: "founder",
-                participation: "enabled",
+                lifecycle: "active",
                 subnet: SubnetExpectation::Present,
             },
             MachineExpectation {
                 id: "peer",
-                participation: "enabled",
+                lifecycle: "active",
                 subnet: SubnetExpectation::Present,
             },
         ],

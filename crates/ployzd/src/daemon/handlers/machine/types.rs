@@ -193,8 +193,7 @@ impl MachineListReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct MachineListReportRow {
     pub id: String,
-    pub status: &'static str,
-    pub participation: &'static str,
+    pub lifecycle: &'static str,
     pub overlay: String,
     pub subnet: Option<Ipv4Net>,
     pub subnet_display: String,
@@ -207,8 +206,7 @@ impl MachineListReportRow {
     fn payload(&self) -> MachineListRow {
         MachineListRow {
             id: self.id.clone(),
-            status: self.status.into(),
-            participation: self.participation.into(),
+            lifecycle: self.lifecycle.into(),
             overlay_ip: self.overlay.clone(),
             subnet: self.subnet.map(|subnet| subnet.to_string()),
             created_at: self.created_at,
