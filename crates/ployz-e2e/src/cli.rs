@@ -32,15 +32,17 @@ pub(crate) enum Scenario {
     SplitBrainConcurrentAddSubnetHeal,
     WireguardReconnect,
     DeploySmoke,
+    BridgeForwardSmoke,
 }
 
 impl Scenario {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::SingleNodeInit,
         Self::MachineAddBasic,
         Self::SplitBrainConcurrentAddSubnetHeal,
         Self::WireguardReconnect,
         Self::DeploySmoke,
+        Self::BridgeForwardSmoke,
     ];
 
     #[must_use]
@@ -51,7 +53,7 @@ impl Scenario {
     #[must_use]
     pub(crate) fn node_names(self) -> &'static [&'static str] {
         match self {
-            Self::SingleNodeInit | Self::DeploySmoke => &["founder"],
+            Self::SingleNodeInit | Self::DeploySmoke | Self::BridgeForwardSmoke => &["founder"],
             Self::MachineAddBasic => &["founder", "joiner"],
             Self::WireguardReconnect => &["founder", "peer"],
             Self::SplitBrainConcurrentAddSubnetHeal => &[
@@ -68,6 +70,19 @@ impl Scenario {
             Self::SplitBrainConcurrentAddSubnetHeal => "split_brain_concurrent_add_subnet_heal",
             Self::WireguardReconnect => "wireguard_reconnect",
             Self::DeploySmoke => "deploy_smoke",
+            Self::BridgeForwardSmoke => "bridge_forward_smoke",
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn runtime(self) -> &'static str {
+        match self {
+            Self::BridgeForwardSmoke => "docker",
+            Self::SingleNodeInit
+            | Self::MachineAddBasic
+            | Self::SplitBrainConcurrentAddSubnetHeal
+            | Self::WireguardReconnect
+            | Self::DeploySmoke => "host",
         }
     }
 }
