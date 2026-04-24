@@ -192,11 +192,36 @@ hash_file() {
   exit 1
 }
 
+hash_build_inputs_without_git() {
+  local tmp_file input rel_path
+  tmp_file="$(mktemp)"
+  trap 'rm -f "${tmp_file}"' RETURN
+
+  for input in "${BUILD_INPUT_PATHS[@]}"; do
+    rel_path="${input#./}"
+    if [[ -f "${REPO_DIR}/${rel_path}" ]]; then
+      printf 'FILE %s %s\n' "${rel_path}" "$(hash_file "${REPO_DIR}/${rel_path}")" >> "${tmp_file}"
+      continue
+    fi
+
+    if [[ -d "${REPO_DIR}/${rel_path}" ]]; then
+      while IFS= read -r path; do
+        printf 'FILE %s %s\n' "${path}" "$(hash_file "${REPO_DIR}/${path}")" >> "${tmp_file}"
+      done < <(cd "${REPO_DIR}" && find "${rel_path}" -type f | LC_ALL=C sort)
+      continue
+    fi
+
+    printf 'MISSING %s\n' "${rel_path}" >> "${tmp_file}"
+  done
+
+  hash_file "${tmp_file}"
+}
+
 repo_build_fingerprint() {
   local head_rev dirty_paths tmp_file path abs_path
 
   if ! git -C "${REPO_DIR}" rev-parse --show-toplevel >/dev/null 2>&1; then
-    printf 'nogit'
+    printf 'nogit:%s' "$(hash_build_inputs_without_git)"
     return
   fi
 
