@@ -3,6 +3,12 @@ set -euo pipefail
 
 echo "ployz-e2e boot: node=${PLOYZ_E2E_NODE:-unknown} scenario=${PLOYZ_E2E_SCENARIO:-unknown} run_id=${PLOYZ_E2E_RUN_ID:-unknown} image=${PLOYZ_E2E_IMAGE:-unknown} image_id=${PLOYZ_E2E_IMAGE_ID:-unknown}"
 
+runtime="${PLOYZ_E2E_RUNTIME:-host}"
+if [[ "${runtime}" != "host" && "${runtime}" != "docker" ]]; then
+  echo "unsupported PLOYZ_E2E_RUNTIME=${runtime}" >&2
+  exit 1
+fi
+
 if [[ -z "${PLOYZ_E2E_SSH_AUTHORIZED_KEY:-}" ]]; then
   echo "missing PLOYZ_E2E_SSH_AUTHORIZED_KEY" >&2
   exit 1
@@ -14,7 +20,7 @@ chmod 600 /root/.ssh/authorized_keys
 
 install -d -m 755 /run/sshd /var/lib/ployz
 rm -f /var/run/docker.sock /run/docker.sock /run/docker.pid
-/usr/local/bin/e2e-dind.sh dockerd --host=unix:///var/run/docker.sock >/var/log/dockerd.log 2>&1 &
+/usr/local/bin/e2e-dind.sh dockerd --host=unix:///var/run/docker.sock --storage-driver=vfs >/var/log/dockerd.log 2>&1 &
 
 for _ in $(seq 1 100); do
   if docker info >/dev/null 2>&1; then
@@ -48,7 +54,7 @@ else
   echo "ployz-e2e payload metadata: missing /e2e-payload/metadata.env"
 fi
 
-HOME=/root /usr/local/bin/ployz.sh install --source payload --payload-dir /e2e-payload --runtime host --service-mode user --no-daemon-install
+HOME=/root /usr/local/bin/ployz.sh install --source payload --payload-dir /e2e-payload --runtime "${runtime}" --service-mode user --no-daemon-install
 
 ln -sf /root/.local/bin/ployz /usr/local/bin/ployz
 ln -sf /root/.local/bin/ployzd /usr/local/bin/ployzd
@@ -66,4 +72,4 @@ for binary in /root/.local/bin/ployz /root/.local/bin/ployzd /root/.local/bin/co
   fi
 done
 
-exec /root/.local/bin/ployzd --data-dir /var/lib/ployz run --runtime host --service-mode user
+exec /root/.local/bin/ployzd --data-dir /var/lib/ployz run --runtime "${runtime}" --service-mode user
