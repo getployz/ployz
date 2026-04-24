@@ -89,7 +89,8 @@ pub async fn corrosion_docker(
 
     let config_host = paths.config.to_string_lossy().into_owned();
     let schema_host = paths.schema.to_string_lossy().into_owned();
-    let service = DockerCorrosion::builder("ployz-corrosion", image)
+    let data_volume = corrosion_data_volume_name(network_id);
+    let service = DockerCorrosion::builder("ployz-corrosion", image, &data_volume)
         .cmd(vec![
             "agent".into(),
             "-c".into(),
@@ -97,7 +98,7 @@ pub async fn corrosion_docker(
         ])
         .volume(&format!("{config_host}:/etc/corrosion/config.toml:ro"))
         .volume(&format!("{schema_host}:/etc/corrosion/schema.sql:ro"))
-        .volume("ployz-corrosion-data:/data")
+        .volume(&format!("{data_volume}:/data"))
         .network_mode("container:ployz-networking")
         .build()
         .await
@@ -509,6 +510,7 @@ struct DockerCorrosion {
     env: Vec<String>,
     volumes: Vec<String>,
     network_mode: Option<String>,
+    data_volume: String,
 }
 
 struct DockerCorrosionBuilder {
@@ -518,6 +520,7 @@ struct DockerCorrosionBuilder {
     env: Vec<String>,
     volumes: Vec<String>,
     network_mode: Option<String>,
+    data_volume: String,
 }
 
 impl DockerCorrosionBuilder {
@@ -548,12 +551,13 @@ impl DockerCorrosionBuilder {
             env: self.env,
             volumes: self.volumes,
             network_mode: self.network_mode,
+            data_volume: self.data_volume,
         })
     }
 }
 
 impl DockerCorrosion {
-    fn builder(container_name: &str, image: &str) -> DockerCorrosionBuilder {
+    fn builder(container_name: &str, image: &str, data_volume: &str) -> DockerCorrosionBuilder {
         DockerCorrosionBuilder {
             container_name: container_name.to_string(),
             image: image.to_string(),
@@ -561,6 +565,7 @@ impl DockerCorrosion {
             env: Vec::new(),
             volumes: Vec::new(),
             network_mode: None,
+            data_volume: data_volume.to_string(),
         }
     }
 
@@ -620,7 +625,7 @@ impl StoreRuntimeControl for DockerCorrosion {
     }
 
     async fn wipe_data(&self) -> Result<()> {
-        self.engine.remove_volume("ployz-corrosion-data").await
+        self.engine.remove_volume(&self.data_volume).await
     }
 
     async fn healthy(&self) -> bool {
@@ -629,5 +634,69 @@ impl StoreRuntimeControl for DockerCorrosion {
             Ok(None) => false,
             Err(_) => false,
         }
+    }
+}
+
+fn corrosion_data_volume_name(network_id: &str) -> String {
+    let mut suffix = String::with_capacity(network_id.len());
+    for character in network_id.chars() {
+        let valid = character.is_ascii_alphanumeric() || matches!(character, '_' | '.' | '-');
+        if valid {
+            suffix.push(character);
+        } else {
+            suffix.push('-');
+        }
+    }
+
+    let mut name = String::from("ployz-corrosion-data-");
+    if suffix.is_empty() {
+        name.push_str("mesh");
+        return name;
+    }
+
+    let starts_with_alnum = suffix
+        .chars()
+        .next()
+        .is_some_and(|character| character.is_ascii_alphanumeric());
+    if starts_with_alnum {
+        name.push_str(&suffix);
+    } else {
+        name.push('n');
+        name.push_str(&suffix);
+    }
+
+    name
+}
+
+#[cfg(test)]
+mod tests {
+    use super::corrosion_data_volume_name;
+
+    #[test]
+    fn corrosion_data_volume_is_namespaced_per_network() {
+        let alpha = corrosion_data_volume_name("alpha");
+        let beta = corrosion_data_volume_name("beta");
+
+        assert_ne!(alpha, beta);
+        assert_eq!(alpha, "ployz-corrosion-data-alpha");
+        assert_eq!(beta, "ployz-corrosion-data-beta");
+    }
+
+    #[test]
+    fn corrosion_data_volume_sanitizes_invalid_network_ids() {
+        assert_eq!(
+            corrosion_data_volume_name("/mesh@a"),
+            "ployz-corrosion-data-n-mesh-a"
+        );
+        assert_eq!(corrosion_data_volume_name(""), "ployz-corrosion-data-mesh");
+    }
+
+    #[test]
+    fn corrosion_data_volume_mount_and_wipe_target_same_volume() {
+        let volume = corrosion_data_volume_name("alpha");
+        let mount = format!("{volume}:/data");
+
+        assert_eq!(volume, "ployz-corrosion-data-alpha");
+        assert_eq!(mount, "ployz-corrosion-data-alpha:/data");
     }
 }
