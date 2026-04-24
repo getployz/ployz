@@ -38,8 +38,12 @@ impl Default for CommandOutput {
 }
 
 #[derive(Debug, Deserialize)]
-struct ReadyPayload {
-    ready: bool,
+pub(crate) struct ReadyPayload {
+    pub(crate) ready: bool,
+    #[serde(default)]
+    pub(crate) workload_subnet_present: bool,
+    #[serde(default)]
+    pub(crate) participation: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,9 +51,61 @@ struct ReadyEnvelope {
     message: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct DaemonJsonResponse {
+    pub(crate) ok: bool,
+    pub(crate) code: String,
+    pub(crate) message: String,
+    pub(crate) payload: Option<DaemonJsonPayload>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub(crate) enum DaemonJsonPayload {
+    Doctor(DoctorPayload),
+    MachineList(MachineListPayload),
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct MachineListPayload {
+    pub(crate) rows: Vec<MachineListRow>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct MachineListRow {
+    pub(crate) id: String,
+    pub(crate) participation: String,
+    #[serde(default)]
+    pub(crate) subnet: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct DoctorPayload {
+    pub(crate) overall: DoctorOverall,
+    pub(crate) peers: Vec<DoctorPeer>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct DoctorOverall {
+    pub(crate) participation: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct DoctorPeer {
+    pub(crate) machine_id: String,
+    pub(crate) blocking: bool,
+    pub(crate) store_participation: String,
+    pub(crate) store_status: String,
+    pub(crate) probe_state: String,
+}
+
 pub(crate) fn parse_ready(output: &str) -> Result<bool> {
+    Ok(parse_ready_payload(output)?.ready)
+}
+
+pub(crate) fn parse_ready_payload(output: &str) -> Result<ReadyPayload> {
     if let Ok(payload) = serde_json::from_str::<ReadyPayload>(output) {
-        return Ok(payload.ready);
+        return Ok(payload);
     }
 
     let envelope = serde_json::from_str::<ReadyEnvelope>(output).map_err(|error| {
@@ -57,12 +113,16 @@ pub(crate) fn parse_ready(output: &str) -> Result<bool> {
             "failed to parse readiness response envelope: {error}"
         ))
     })?;
-    let payload = serde_json::from_str::<ReadyPayload>(&envelope.message).map_err(|error| {
+    serde_json::from_str::<ReadyPayload>(&envelope.message).map_err(|error| {
         Error::Message(format!(
             "failed to parse readiness response message: {error}"
         ))
-    })?;
-    Ok(payload.ready)
+    })
+}
+
+pub(crate) fn parse_daemon_json_response(output: &str) -> Result<DaemonJsonResponse> {
+    serde_json::from_str::<DaemonJsonResponse>(output)
+        .map_err(|error| Error::Message(format!("failed to parse daemon JSON response: {error}")))
 }
 
 pub(crate) fn docker_outer<const N: usize>(args: [&str; N]) -> Result<CommandOutput> {

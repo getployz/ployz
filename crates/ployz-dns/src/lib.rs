@@ -1,4 +1,5 @@
 mod config;
+mod metrics;
 mod resolve;
 mod server;
 mod snapshot;

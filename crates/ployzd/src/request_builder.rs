@@ -252,10 +252,19 @@ pub(crate) fn build_machine_request(action: MachineAction) -> Result<DaemonReque
             };
             Ok(DaemonRequest::MachineAdd { targets, options })
         }
+        MachineAction::Enable { target } => Ok(DaemonRequest::MachineEnable { target }),
+        MachineAction::Drain { target } => Ok(DaemonRequest::MachineDrain { target }),
+        MachineAction::Disable { target, force } => {
+            Ok(DaemonRequest::MachineDisable { target, force })
+        }
         MachineAction::Rm { id, force } => Ok(DaemonRequest::MachineRemove { id, force }),
         MachineAction::Invite { action } => match action {
             MachineInviteAction::Create { ttl_secs } => {
                 Ok(DaemonRequest::MachineInviteCreate { ttl_secs })
+            }
+            MachineInviteAction::List => Ok(DaemonRequest::MachineInviteList),
+            MachineInviteAction::Revoke { invite_id } => {
+                Ok(DaemonRequest::MachineInviteRevoke { invite_id })
             }
             MachineInviteAction::Import { token } => {
                 Ok(DaemonRequest::MachineInviteImport { token })
@@ -433,6 +442,8 @@ pub(crate) fn build_service_spec(
             cap_drop: vec![],
             privileged: false,
             user: None,
+            stop_grace_period: None,
+            pid_mode: None,
             pull_policy: if pull {
                 PullPolicy::Always
             } else {
@@ -448,7 +459,6 @@ pub(crate) fn build_service_spec(
         readiness: None,
         rollout: RolloutStrategy::Recreate,
         labels: BTreeMap::new(),
-        stop_grace_period: None,
         restart: match restart {
             "always" => RestartPolicy::Always,
             "on-failure" => RestartPolicy::OnFailure,

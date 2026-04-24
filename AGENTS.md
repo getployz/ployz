@@ -23,6 +23,34 @@
 - When in doubt, optimize for testable seams, narrow public surfaces, and
   moving policy out of binaries and adapters.
 
+# Operational Design Rules
+
+- Durable cluster state should represent operator intent and explicit lifecycle
+  events, not inferred liveness.
+- Prefer imperative transitions triggered by commands or concrete runtime events
+  over background self-healing or correction loops.
+- Mutating control-plane operations should fail fast and fail loudly when
+  required peers or preconditions are missing.
+- Reachability checks belong at decision time through direct probes, RPC, or
+  session establishment, not freshness timestamps.
+- Keep placement, participation, coordination, and diagnostic classification
+  policy centralized in orchestrator core helpers, not duplicated in daemon
+  handlers or UI shaping code.
+- Keep steady-state runtimes boring: prefer one-shot startup/deploy
+  reconciliation and explicit event handling over interval-driven
+  control-plane loops that continuously converge internal policy.
+- The real distinction is reconciliation vs observation:
+  periodic loops that keep re-deriving cluster policy from internal state are
+  bad; periodic checks that observe external reality because it cannot emit a
+  native event are acceptable.
+- Polling external reality is fine when it turns an external fact into an
+  explicit event or maintains narrow runtime truth such as transport endpoint
+  selection. It must not silently rewrite cluster policy or operator intent.
+- Operator-facing surfaces should distinguish stored intent, explicit status,
+  and live observations rather than collapsing them into one derived field.
+- Background tasks may publish explicit events or observations, but they should
+  not silently rewrite cluster truth.
+
 # Defensive Rust Rules
 
 - Use slice patterns over indexing: `let [a, b] = slice else { ... }` not `slice[0]`
@@ -32,3 +60,7 @@
 - Never `.unwrap()` on Option state — use `let Some(x) = opt else { return err }`
 - Add `#[must_use]` on all builder methods returning `Self`
 - Prefer enums over boolean parameters
+
+# Test Discipline
+
+- Before enabling parallel CI for changed E2E paths, rerun the affected scenarios repeatedly and fix ordering/idempotency bugs instead of adding sleeps or longer timeouts.

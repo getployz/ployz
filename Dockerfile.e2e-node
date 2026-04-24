@@ -22,6 +22,7 @@ RUN mkdir -p /run/sshd /var/lib/ployz && \
 COPY ployz.sh /usr/local/bin/ployz.sh
 COPY packaging/e2e/e2e-dind.sh /usr/local/bin/e2e-dind.sh
 COPY packaging/e2e/e2e-node-entrypoint.sh /usr/local/bin/e2e-node-entrypoint.sh
+COPY packaging/e2e/preloaded-images /opt/ployz-e2e/preloaded-images
 
 RUN chmod 0755 /usr/local/bin/ployz.sh \
     /usr/local/bin/e2e-dind.sh \

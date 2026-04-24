@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::runner::ScenarioRun;
+use crate::runner::{MachineExpectation, ScenarioRun, SubnetExpectation};
 use crate::support::wait_until;
 use std::time::Duration;
 
@@ -12,7 +12,14 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
     run.log_progress("wait founder mesh ready");
     run.wait_mesh_ready_name("founder")?;
     run.log_progress("wait founder enabled");
-    run.wait_for_settled_machine_states("founder", &[("founder", "enabled")])?;
+    run.wait_machine_rows(
+        "founder",
+        &[MachineExpectation {
+            id: "founder",
+            participation: "enabled",
+            subnet: SubnetExpectation::Present,
+        }],
+    )?;
     run.log_progress("probe corrosion bridge forward");
     wait_for_bridge_health(run, "founder")?;
     run.log_progress("scenario complete");

@@ -1,4 +1,5 @@
-use ployz_orchestrator::mesh::tasks::{HeartbeatCommand, PeerSyncCommand};
+use ployz_orchestrator::mesh::WireGuardDevice;
+use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
 use ployz_orchestrator::{Mesh, Phase, WireguardDriver};
 use ployz_store_api::StoreDriver;
@@ -10,7 +11,6 @@ use ployz_types::model::{
 use std::net::Ipv6Addr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::oneshot;
 
 fn test_record(id: &str, key_byte: u8) -> MachineRecord {
     MachineRecord {
@@ -18,11 +18,11 @@ fn test_record(id: &str, key_byte: u8) -> MachineRecord {
         public_key: PublicKey([key_byte; 32]),
         overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
         subnet: None,
+        control_target: None,
         bridge_ip: None,
         endpoints: vec![format!("10.0.0.{key_byte}:51820")],
         status: MachineStatus::Unknown,
         participation: Participation::Disabled,
-        last_heartbeat: 0,
         created_at: 0,
         updated_at: 0,
         labels: std::collections::BTreeMap::new(),
@@ -100,25 +100,11 @@ async fn startup_reaches_running_single_node() {
         "single-node founder should not wait for remote sync"
     );
 
-    let heartbeat_tx = mesh
-        .heartbeat_sender()
-        .expect("heartbeat coordinator should be running");
-    for _ in 0..3 {
-        let (done_tx, done_rx) = oneshot::channel();
-        heartbeat_tx
-            .send(HeartbeatCommand::TickNow { done: done_tx })
-            .await
-            .expect("manual heartbeat tick should send");
-        done_rx
-            .await
-            .expect("manual heartbeat tick should acknowledge");
-    }
-
     let self_record = mesh
         .authoritative_self_record()
         .await
         .expect("self record should exist");
-    assert_eq!(self_record.participation, Participation::Enabled);
+    assert_eq!(self_record.participation, Participation::Disabled);
 }
 
 #[tokio::test]
@@ -474,6 +460,39 @@ async fn remove_event_drops_wireguard_peer() {
             .any(|candidate| candidate.id == peer.id),
         "peer must be removed from wireguard after store delete"
     );
+
+    mesh.destroy().await.unwrap();
+}
+
+#[tokio::test]
+async fn manual_endpoint_maintenance_tick_rotates_down_peer_endpoint() {
+    let wg = Arc::new(MemoryWireGuard::new());
+    let svc = Arc::new(MemoryService::new());
+    let store = Arc::new(MemoryStore::new());
+
+    let local = test_record("m1", 1);
+    let mut peer = test_record("m2", 2);
+    peer.endpoints = vec!["198.51.100.10:51820".into(), "198.51.100.11:51820".into()];
+
+    store.upsert_self_machine(&local).await.unwrap();
+    store.upsert_self_machine(&peer).await.unwrap();
+    wg.set_device_peers(vec![ployz_orchestrator::mesh::DevicePeer {
+        public_key: peer.public_key.clone(),
+        endpoint: Some("198.51.100.10:51820".into()),
+        last_handshake: None,
+    }]);
+
+    let mut mesh = make_mesh("m1", wg.clone(), svc, store);
+    mesh.up().await.unwrap();
+
+    assert!(
+        mesh.run_endpoint_maintenance_once(true).await,
+        "endpoint maintainer tick should succeed"
+    );
+
+    let device_peers = wg.read_peers().await.unwrap();
+    let peer = device_peers.first().expect("one device peer present");
+    assert_eq!(peer.endpoint.as_deref(), Some("198.51.100.11:51820"));
 
     mesh.destroy().await.unwrap();
 }

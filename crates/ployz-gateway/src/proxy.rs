@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::time::Duration;
+use std::time::Instant;
 
 use crate::routes::match_http_route;
 use async_trait::async_trait;
@@ -23,6 +24,8 @@ pub struct RequestCtx {
     selected_addr: Option<SocketAddr>,
     upstream_host: Option<String>,
     retry_allowed: bool,
+    matched: bool,
+    started_at: Option<Instant>,
 }
 
 impl GatewayApp {
@@ -53,13 +56,17 @@ impl ProxyHttp for GatewayApp {
         let path = request.uri.path();
         let state = self.snapshot.load();
         let Some(route) = match_http_route(&state.snapshot, host, path) else {
+            ctx.matched = false;
+            ctx.started_at = Some(Instant::now());
             session.respond_error(404).await?;
             return Ok(true);
         };
 
+        ctx.matched = true;
         ctx.route_id = Some(route.route_id.clone());
         ctx.retry_allowed = is_retryable_method(&request.method);
         ctx.upstream_host = host.map(ToOwned::to_owned);
+        ctx.started_at = Some(Instant::now());
 
         Ok(false)
     }
@@ -173,6 +180,17 @@ impl ProxyHttp for GatewayApp {
             backend = backend_label,
             failed = e.is_some(),
             "gateway request completed"
+        );
+
+        let response_code = session
+            .response_written()
+            .map_or(0, |resp| resp.status.as_u16());
+        let started_at = ctx.started_at.unwrap_or_else(Instant::now);
+        crate::metrics::observe_request(
+            request.method.as_str(),
+            response_code,
+            ctx.matched,
+            started_at.elapsed(),
         );
     }
 }

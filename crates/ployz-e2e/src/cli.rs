@@ -23,23 +23,30 @@ pub(crate) struct Cli {
 
     #[arg(long)]
     pub(crate) fail_fast: bool,
+
+    #[arg(long)]
+    pub(crate) parallel: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum Scenario {
     SingleNodeInit,
     MachineAddBasic,
-    SplitBrainConcurrentAddSubnetHeal,
+    MachineDisableEnableCycle,
+    TwoNodeEqualSplitAddDenied,
+    ThreeNodeMajorityAddSucceeds,
     WireguardReconnect,
     DeploySmoke,
     BridgeForwardSmoke,
 }
 
 impl Scenario {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 8] = [
         Self::SingleNodeInit,
         Self::MachineAddBasic,
-        Self::SplitBrainConcurrentAddSubnetHeal,
+        Self::MachineDisableEnableCycle,
+        Self::TwoNodeEqualSplitAddDenied,
+        Self::ThreeNodeMajorityAddSucceeds,
         Self::WireguardReconnect,
         Self::DeploySmoke,
         Self::BridgeForwardSmoke,
@@ -55,10 +62,11 @@ impl Scenario {
         match self {
             Self::SingleNodeInit | Self::DeploySmoke | Self::BridgeForwardSmoke => &["founder"],
             Self::MachineAddBasic => &["founder", "joiner"],
-            Self::WireguardReconnect => &["founder", "peer"],
-            Self::SplitBrainConcurrentAddSubnetHeal => &[
-                "founder", "peer", "joiner1", "joiner2", "joiner3", "joiner4", "joiner5", "joiner6",
-            ],
+            Self::MachineDisableEnableCycle | Self::WireguardReconnect => &["founder", "peer"],
+            Self::TwoNodeEqualSplitAddDenied => &["founder", "peer", "target1", "target2"],
+            Self::ThreeNodeMajorityAddSucceeds => {
+                &["founder", "peer1", "peer2", "target1", "target2"]
+            }
         }
     }
 
@@ -67,7 +75,9 @@ impl Scenario {
         match self {
             Self::SingleNodeInit => "single_node_init",
             Self::MachineAddBasic => "machine_add_basic",
-            Self::SplitBrainConcurrentAddSubnetHeal => "split_brain_concurrent_add_subnet_heal",
+            Self::MachineDisableEnableCycle => "machine_disable_enable_cycle",
+            Self::TwoNodeEqualSplitAddDenied => "two_node_equal_split_add_denied",
+            Self::ThreeNodeMajorityAddSucceeds => "three_node_majority_add_succeeds",
             Self::WireguardReconnect => "wireguard_reconnect",
             Self::DeploySmoke => "deploy_smoke",
             Self::BridgeForwardSmoke => "bridge_forward_smoke",
@@ -80,7 +90,9 @@ impl Scenario {
             Self::BridgeForwardSmoke => "docker",
             Self::SingleNodeInit
             | Self::MachineAddBasic
-            | Self::SplitBrainConcurrentAddSubnetHeal
+            | Self::MachineDisableEnableCycle
+            | Self::TwoNodeEqualSplitAddDenied
+            | Self::ThreeNodeMajorityAddSucceeds
             | Self::WireguardReconnect
             | Self::DeploySmoke => "host",
         }

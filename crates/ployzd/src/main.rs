@@ -2,14 +2,16 @@ mod cli;
 mod cli_io;
 mod request_builder;
 
+#[cfg(test)]
+use clap::CommandFactory;
 use clap::Parser;
+#[cfg(test)]
+pub(crate) use cli::DebugTickTaskArg;
 pub(crate) use cli::{
     Cli, CliError, Command, DebugAction, DeployAction, DeployCommand, DeployManifestArgs,
     DeployServiceArgs, InstallSourceArg, MachineAction, MachineInviteAction,
     MachineOperationAction, MeshAction, RuntimeTargetArg, ServiceModeArg,
 };
-#[cfg(test)]
-pub(crate) use cli::DebugTickTaskArg;
 use cli_io::{cmd_rpc_stdio, render_response, request_daemon};
 #[cfg(test)]
 use ployz_api::DaemonRequest;
@@ -80,8 +82,12 @@ async fn run() -> Result<i32> {
                 cfg.cluster_cidr,
                 cfg.subnet_prefix_len,
                 cfg.remote_control_port,
+                cfg.peer_control_target,
                 cfg.gateway_listen_addr,
                 cfg.gateway_threads,
+                cfg.daemon_metrics_listen_addr,
+                cfg.dns_metrics_listen_addr,
+                cfg.gateway_metrics_listen_addr,
             )
             .await
             .map_err(CliError::Io)?;
@@ -280,6 +286,18 @@ mod tests {
     }
 
     #[test]
+    fn json_and_plain_flags_conflict() {
+        assert!(Cli::try_parse_from(["ployzd", "--json", "--plain", "doctor"]).is_err());
+    }
+
+    #[test]
+    fn help_mentions_json_and_plain_output_modes() {
+        let help = Cli::command().render_long_help().to_string();
+        assert!(help.contains("--json"));
+        assert!(help.contains("--plain"));
+    }
+
+    #[test]
     fn build_debug_tick_request_defaults_to_all() {
         let request = build_debug_request(DebugAction::Tick {
             task: DebugTickTaskArg::All,
@@ -292,5 +310,20 @@ mod tests {
         };
         assert_eq!(task, ProtocolDebugTickTask::All);
         assert_eq!(repeat, 1);
+    }
+
+    #[test]
+    fn build_debug_tick_request_accepts_endpoints_task() {
+        let request = build_debug_request(DebugAction::Tick {
+            task: DebugTickTaskArg::Endpoints,
+            repeat: 2,
+        })
+        .expect("debug tick request");
+
+        let DaemonRequest::DebugTick { task, repeat } = request else {
+            panic!("expected debug tick request");
+        };
+        assert_eq!(task, ProtocolDebugTickTask::Endpoints);
+        assert_eq!(repeat, 2);
     }
 }

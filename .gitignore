@@ -11,4 +11,7 @@ ebpf/target/
 .idea/
 .lab/
 .e2e-artifacts/
+e2e-artifacts/
+packaging/e2e/preloaded-images/*
+!packaging/e2e/preloaded-images/.gitkeep
 lab/lab.env
