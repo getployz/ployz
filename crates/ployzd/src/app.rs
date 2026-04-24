@@ -279,12 +279,13 @@ async fn reconcile_startup_operations(state: &Arc<RwLock<DaemonState>>) {
 fn spawn_command_task(
     state: Arc<RwLock<DaemonState>>,
     cancel: CancellationToken,
-    command: IncomingCommand,
+    mut command: IncomingCommand,
 ) {
     tokio::spawn(async move {
         let request_name = crate::metrics::request_name(&command.request);
         let lane = DaemonState::request_lane(&command.request);
         let started_at = std::time::Instant::now();
+        let response_flushed = command.response_flushed.take();
         let response = tokio::select! {
             _ = cancel.cancelled() => ployz_api::DaemonResponse {
                 ok: false,
@@ -300,7 +301,9 @@ fn spawn_command_task(
                     }
                     RequestLane::Exclusive => {
                         let mut state_guard = state.write_owned().await;
-                        state_guard.handle_exclusive(command.request).await
+                        state_guard
+                            .handle_exclusive(command.request, response_flushed)
+                            .await
                     }
                 }
             } => response,
