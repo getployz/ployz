@@ -7,8 +7,8 @@ use ployz_types::model::MachineRecord;
 use ployz_types::model::{MachineLifecycle, NetworkLifecycle, NetworkName};
 use tracing::warn;
 
-use crate::daemon::ActiveMesh;
 use super::DaemonState;
+use crate::daemon::ActiveMesh;
 
 impl DaemonState {
     pub(crate) fn handle_mesh_create(&self, network: &str) -> ployz_api::DaemonResponse {
@@ -43,10 +43,7 @@ impl DaemonState {
             }
         };
 
-        match self
-            .start_network_transition(net_config, false, true)
-            .await
-        {
+        match self.start_network_transition(net_config, false, true).await {
             Ok(message) => self.ok(message),
             Err(error) => self.err("NETWORK_START_FAILED", error),
         }
@@ -137,13 +134,7 @@ impl DaemonState {
     }
 
     pub(crate) async fn handle_mesh_stop(&mut self, force: bool) -> ployz_api::DaemonResponse {
-        let (
-            network_name,
-            overlay_ip,
-            cached_subnet,
-            current_lifecycle,
-            previous_self_record,
-        ) = {
+        let (network_name, overlay_ip, cached_subnet, current_lifecycle, previous_self_record) = {
             let Some(active) = self.active.as_ref() else {
                 return self.err("NO_RUNNING_NETWORK", "no mesh running");
             };
@@ -166,18 +157,6 @@ impl DaemonState {
             );
         }
 
-        let now = ployz_types::time::now_unix_secs();
-        if let Some(active) = self.active.as_mut() {
-            let _ = active
-                .mesh
-                .update_authoritative_self_record(|record| {
-                    record.lifecycle = MachineLifecycle::Standby;
-                    record.subnet = None;
-                    record.updated_at = now;
-                })
-                .await;
-        }
-
         let Some(mut active) = self.active.take() else {
             return self.err("NO_RUNNING_NETWORK", "no mesh running");
         };
@@ -195,13 +174,23 @@ impl DaemonState {
             };
             return self.err("NETWORK_STOP_FAILED", message);
         }
+        if let Err(error) = persist_stopped_self_record(&mut active, &previous_self_record).await {
+            self.active = Some(active);
+            return self.err(
+                "NETWORK_STOP_FAILED",
+                format!("mesh stopped but failed to persist standby lifecycle: {error}"),
+            );
+        }
         let _ = active.peer_control.shutdown().await;
         let _ = active.remote_control.shutdown().await;
         if let Err(error) = active.dns.shutdown().await {
             warn!(?error, "dns stop failed during mesh stop");
         }
         if let Err(error) = active.gateway.shutdown().await {
-            return self.err("NETWORK_STOP_FAILED", format!("gateway stop failed: {error}"));
+            return self.err(
+                "NETWORK_STOP_FAILED",
+                format!("gateway stop failed: {error}"),
+            );
         }
 
         let mut persisted = active.config.clone();
@@ -291,9 +280,10 @@ impl DaemonState {
         let config_path = NetworkConfig::path(&self.data_dir, &network_name.0);
         if let Some(active) = self.active.as_mut() {
             active.config.lifecycle = NetworkLifecycle::Running;
-            active.config
-                .save(&config_path)
-                .map_err(|error| format!("save network config: {error}"))?;
+            if let Err(error) = active.config.save(&config_path) {
+                self.stop_started_mesh_after_transition_failure().await;
+                return Err(format!("save network config: {error}"));
+            }
         }
 
         let verb = if initialized {
@@ -329,7 +319,12 @@ async fn restore_self_record_after_stop_failure(
     active: &mut ActiveMesh,
     previous_self_record: &MachineRecord,
 ) -> Result<(), String> {
-    if let Err(error) = active.mesh.store.upsert_self_machine(previous_self_record).await {
+    if let Err(error) = active
+        .mesh
+        .store
+        .upsert_self_machine(previous_self_record)
+        .await
+    {
         return Err(format!("restore store self record: {error}"));
     }
 
@@ -342,6 +337,36 @@ async fn restore_self_record_after_stop_failure(
         .is_none()
     {
         return Err("restore authoritative self record".to_string());
+    }
+
+    Ok(())
+}
+
+async fn persist_stopped_self_record(
+    active: &mut ActiveMesh,
+    previous_self_record: &MachineRecord,
+) -> Result<(), String> {
+    let mut standby = previous_self_record.clone();
+    standby.lifecycle = MachineLifecycle::Standby;
+    standby.subnet = None;
+    standby.updated_at = ployz_types::time::now_unix_secs();
+
+    active
+        .mesh
+        .store
+        .upsert_self_machine(&standby)
+        .await
+        .map_err(|error| format!("persist standby self record in store: {error}"))?;
+
+    if active
+        .mesh
+        .update_authoritative_self_record(|record| {
+            *record = standby.clone();
+        })
+        .await
+        .is_none()
+    {
+        return Err("persist standby self record in authoritative cache".to_string());
     }
 
     Ok(())

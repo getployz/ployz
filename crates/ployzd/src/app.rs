@@ -12,11 +12,11 @@ use crate::daemon::handlers::RequestLane;
 use crate::daemon::{ActiveMesh, DaemonState};
 use crate::endpoint_maintenance::spawn_local_endpoint_maintenance;
 use crate::ipc::listener::{IncomingCommand, serve};
+use crate::mesh_state::network::NetworkConfig;
 use crate::metrics::{
     ContainerResourceMetricsSource, DockerContainerResourceMetricsSource,
     spawn_container_resource_metrics_loop,
 };
-use crate::mesh_state::network::NetworkConfig;
 use ployz_types::model::NetworkLifecycle;
 
 pub fn init_tracing() {
@@ -246,7 +246,10 @@ async fn resume_running_network(state: &Arc<RwLock<DaemonState>>) {
                 .iter()
                 .map(|config| config.name.0.as_str())
                 .collect::<Vec<_>>();
-            tracing::error!(?names, "multiple network configs are marked running; refusing automatic resume");
+            tracing::error!(
+                ?names,
+                "multiple network configs are marked running; refusing automatic resume"
+            );
         }
         return;
     };

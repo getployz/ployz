@@ -54,7 +54,20 @@ else
   echo "ployz-e2e payload metadata: missing /e2e-payload/metadata.env"
 fi
 
-HOME=/root /usr/local/bin/ployz.sh install --source payload --payload-dir /e2e-payload --runtime host --service-mode user --no-daemon-install
+runtime_target="${PLOYZ_E2E_RUNTIME:-host}"
+echo "ployz-e2e runtime target: ${runtime_target}"
+
+if [[ "${runtime_target}" == "docker" && -f /e2e-payload/assets/built_in_images.toml ]]; then
+  shopt -s nullglob
+  preload_archives=(/e2e-payload/preloaded-images/*.tar)
+  shopt -u nullglob
+  for archive in "${preload_archives[@]}"; do
+    echo "ployz-e2e preloading image archive: ${archive}"
+    docker load -i "${archive}" >/dev/null
+  done
+fi
+
+HOME=/root /usr/local/bin/ployz.sh install --source payload --payload-dir /e2e-payload --runtime "${runtime_target}" --service-mode user --no-daemon-install
 
 ln -sf /root/.local/bin/ployz /usr/local/bin/ployz
 ln -sf /root/.local/bin/ployzd /usr/local/bin/ployzd
@@ -72,4 +85,4 @@ for binary in /root/.local/bin/ployz /root/.local/bin/ployzd /root/.local/bin/co
   fi
 done
 
-exec /root/.local/bin/ployzd --data-dir /var/lib/ployz run --runtime host --service-mode user
+exec /root/.local/bin/ployzd --data-dir /var/lib/ployz run --runtime "${runtime_target}" --service-mode user
