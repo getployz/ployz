@@ -10,8 +10,8 @@ use ployz_config::RuntimeTarget;
 use ployz_corrosion::{
     config as corrosion_config, corrosion_bootstrap_from_db, peer_records_from_db,
 };
-use ployz_dns::DnsConfig;
-use ployz_gateway::GatewayConfig;
+use ployz_dns_config::DnsConfig;
+use ployz_gateway_config::GatewayConfig;
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_runtime_api::{NoopRuntimeHandle, RuntimeHandle};

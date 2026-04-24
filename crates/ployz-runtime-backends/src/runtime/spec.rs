@@ -1,9 +1,35 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 
-use bollard::models::{ContainerInspectResponse, PortMap};
+#[cfg(feature = "docker")]
+use bollard::models::ContainerInspectResponse;
 
 pub use ployz_types::spec::PullPolicy;
+
+/// Local mirror of the subset of container port/restart metadata used by the
+/// runtime seam. Keeping these out of `bollard::models` lets upstream callers
+/// depend on `ployz-runtime-backends` without dragging the Docker API client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortBinding {
+    pub host_ip: Option<String>,
+    pub host_port: Option<String>,
+}
+
+pub type PortMap = HashMap<String, Option<Vec<PortBinding>>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartPolicyName {
+    No,
+    Always,
+    UnlessStopped,
+    OnFailure,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestartPolicy {
+    pub name: Option<RestartPolicyName>,
+    pub maximum_retry_count: Option<i64>,
+}
 
 /// Flat declarative spec for a managed container.
 /// Callers construct this from their own domain types.
@@ -26,7 +52,7 @@ pub struct RuntimeContainerSpec {
     pub cap_drop: Vec<String>,
     pub privileged: bool,
     pub user: Option<String>,
-    pub restart_policy: Option<bollard::models::RestartPolicy>,
+    pub restart_policy: Option<RestartPolicy>,
     pub memory_bytes: Option<i64>,
     pub nano_cpus: Option<i64>,
     pub sysctls: HashMap<String, String>,
@@ -85,7 +111,7 @@ pub struct ObservedContainer {
     pub cap_drop: Vec<String>,
     pub privileged: bool,
     pub user: Option<String>,
-    pub restart_policy: Option<bollard::models::RestartPolicy>,
+    pub restart_policy: Option<RestartPolicy>,
     pub memory_bytes: Option<i64>,
     pub nano_cpus: Option<i64>,
     pub sysctls: HashMap<String, String>,
@@ -96,6 +122,7 @@ pub struct ObservedContainer {
 }
 
 /// Parse env string "KEY=VALUE" into (key, value) tuple.
+#[cfg(feature = "docker")]
 fn parse_env_pair(s: &str) -> (String, String) {
     match s.split_once('=') {
         Some((k, v)) => (k.to_string(), v.to_string()),
@@ -103,7 +130,83 @@ fn parse_env_pair(s: &str) -> (String, String) {
     }
 }
 
+#[cfg(feature = "docker")]
+fn restart_policy_from_bollard(policy: &bollard::models::RestartPolicy) -> RestartPolicy {
+    let name = policy.name.as_ref().and_then(|n| match n {
+        bollard::models::RestartPolicyNameEnum::NO => Some(RestartPolicyName::No),
+        bollard::models::RestartPolicyNameEnum::ALWAYS => Some(RestartPolicyName::Always),
+        bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED => {
+            Some(RestartPolicyName::UnlessStopped)
+        }
+        bollard::models::RestartPolicyNameEnum::ON_FAILURE => Some(RestartPolicyName::OnFailure),
+        bollard::models::RestartPolicyNameEnum::EMPTY => None,
+    });
+    RestartPolicy {
+        name,
+        maximum_retry_count: policy.maximum_retry_count,
+    }
+}
+
+#[cfg(feature = "docker")]
+pub(crate) fn restart_policy_to_bollard(policy: &RestartPolicy) -> bollard::models::RestartPolicy {
+    let name = policy.name.map(|n| match n {
+        RestartPolicyName::No => bollard::models::RestartPolicyNameEnum::NO,
+        RestartPolicyName::Always => bollard::models::RestartPolicyNameEnum::ALWAYS,
+        RestartPolicyName::UnlessStopped => bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED,
+        RestartPolicyName::OnFailure => bollard::models::RestartPolicyNameEnum::ON_FAILURE,
+    });
+    bollard::models::RestartPolicy {
+        name,
+        maximum_retry_count: policy.maximum_retry_count,
+    }
+}
+
+#[cfg(feature = "docker")]
+fn port_map_from_bollard(src: &bollard::models::PortMap) -> PortMap {
+    src.iter()
+        .map(|(key, value)| {
+            (
+                key.clone(),
+                value
+                    .as_ref()
+                    .map(|items| items.iter().map(port_binding_from_bollard).collect()),
+            )
+        })
+        .collect()
+}
+
+#[cfg(feature = "docker")]
+fn port_binding_from_bollard(src: &bollard::models::PortBinding) -> PortBinding {
+    PortBinding {
+        host_ip: src.host_ip.clone(),
+        host_port: src.host_port.clone(),
+    }
+}
+
+#[cfg(feature = "docker")]
+pub(crate) fn port_map_to_bollard(src: &PortMap) -> bollard::models::PortMap {
+    src.iter()
+        .map(|(key, value)| {
+            (
+                key.clone(),
+                value
+                    .as_ref()
+                    .map(|items| items.iter().map(port_binding_to_bollard).collect()),
+            )
+        })
+        .collect()
+}
+
+#[cfg(feature = "docker")]
+fn port_binding_to_bollard(src: &PortBinding) -> bollard::models::PortBinding {
+    bollard::models::PortBinding {
+        host_ip: src.host_ip.clone(),
+        host_port: src.host_port.clone(),
+    }
+}
+
 /// Extract `ObservedContainer` from a Docker inspect response.
+#[cfg(feature = "docker")]
 #[must_use]
 pub fn observe(info: &ContainerInspectResponse) -> ObservedContainer {
     let config = info.config.as_ref();
@@ -137,7 +240,9 @@ pub fn observe(info: &ContainerInspectResponse) -> ObservedContainer {
 
     let network_mode = host_config.and_then(|h| h.network_mode.clone());
 
-    let port_bindings = host_config.and_then(|h| h.port_bindings.clone());
+    let port_bindings = host_config
+        .and_then(|h| h.port_bindings.as_ref())
+        .map(port_map_from_bollard);
 
     let cap_add = host_config
         .and_then(|h| h.cap_add.as_ref())
@@ -155,7 +260,9 @@ pub fn observe(info: &ContainerInspectResponse) -> ObservedContainer {
         .and_then(|c| c.user.clone())
         .filter(|u| !u.is_empty());
 
-    let restart_policy = host_config.and_then(|h| h.restart_policy.clone());
+    let restart_policy = host_config
+        .and_then(|h| h.restart_policy.as_ref())
+        .map(restart_policy_from_bollard);
 
     let memory_bytes = host_config.and_then(|h| h.memory).filter(|&m| m > 0);
 
@@ -231,7 +338,7 @@ pub fn observe(info: &ContainerInspectResponse) -> ObservedContainer {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "docker"))]
 mod tests {
     use super::observe;
     use bollard::models::{ContainerConfig, ContainerInspectResponse, HostConfig};
