@@ -92,7 +92,7 @@ impl Scenario {
             Self::BridgeForwardSmoke => "docker",
             Self::SingleNodeInit
             | Self::MachineAddBasic
-            | Self::MachineDisableEnableCycle
+            | Self::MachineDrainStandbyActivateCycle
             | Self::TwoNodeEqualSplitAddDenied
             | Self::ThreeNodeMajorityAddSucceeds
             | Self::WireguardReconnect
