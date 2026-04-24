@@ -1,3 +1,4 @@
+mod bridge_forward_smoke;
 mod deploy_smoke;
 mod machine_add_basic;
 mod machine_drain_standby_activate_cycle;
@@ -21,5 +22,6 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
         Scenario::ThreeNodeMajorityAddSucceeds => three_node_majority_add_succeeds::run(run),
         Scenario::WireguardReconnect => wireguard_reconnect::run(run),
         Scenario::DeploySmoke => deploy_smoke::run(run),
+        Scenario::BridgeForwardSmoke => bridge_forward_smoke::run(run),
     }
 }

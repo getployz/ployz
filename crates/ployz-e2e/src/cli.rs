@@ -37,10 +37,11 @@ pub(crate) enum Scenario {
     ThreeNodeMajorityAddSucceeds,
     WireguardReconnect,
     DeploySmoke,
+    BridgeForwardSmoke,
 }
 
 impl Scenario {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::SingleNodeInit,
         Self::MachineAddBasic,
         Self::MachineDrainStandbyActivateCycle,
@@ -48,6 +49,7 @@ impl Scenario {
         Self::ThreeNodeMajorityAddSucceeds,
         Self::WireguardReconnect,
         Self::DeploySmoke,
+        Self::BridgeForwardSmoke,
     ];
 
     #[must_use]
@@ -58,7 +60,7 @@ impl Scenario {
     #[must_use]
     pub(crate) fn node_names(self) -> &'static [&'static str] {
         match self {
-            Self::SingleNodeInit | Self::DeploySmoke => &["founder"],
+            Self::SingleNodeInit | Self::DeploySmoke | Self::BridgeForwardSmoke => &["founder"],
             Self::MachineAddBasic => &["founder", "joiner"],
             Self::MachineDrainStandbyActivateCycle | Self::WireguardReconnect => {
                 &["founder", "peer"]
@@ -80,6 +82,21 @@ impl Scenario {
             Self::ThreeNodeMajorityAddSucceeds => "three_node_majority_add_succeeds",
             Self::WireguardReconnect => "wireguard_reconnect",
             Self::DeploySmoke => "deploy_smoke",
+            Self::BridgeForwardSmoke => "bridge_forward_smoke",
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn runtime(self) -> &'static str {
+        match self {
+            Self::BridgeForwardSmoke => "docker",
+            Self::SingleNodeInit
+            | Self::MachineAddBasic
+            | Self::MachineDrainStandbyActivateCycle
+            | Self::TwoNodeEqualSplitAddDenied
+            | Self::ThreeNodeMajorityAddSucceeds
+            | Self::WireguardReconnect
+            | Self::DeploySmoke => "host",
         }
     }
 }

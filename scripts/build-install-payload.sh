@@ -7,6 +7,16 @@ OUTPUT_DIR=""
 TARGET_PLATFORM=""
 BUILDER_IMAGE="${PLOYZ_PAYLOAD_BUILDER_IMAGE:-rust:1-bookworm}"
 BUILD_PROFILE="${PLOYZ_PAYLOAD_BUILD_PROFILE:-release}"
+BUILD_INPUT_PATHS=(
+  Cargo.toml
+  Cargo.lock
+  .corrosion-version
+  ployz.sh
+  crates
+  ebpf
+  packaging
+  scripts
+)
 
 usage() {
   cat <<'EOF'
@@ -45,7 +55,7 @@ output_dir_parent() {
   (cd "${parent}" && pwd)
 }
 
-cache_key() {
+repo_cache_root() {
   local repo_dir=$1
   local cache_root
   if cache_root="$(git -C "${repo_dir}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
@@ -57,6 +67,13 @@ cache_key() {
   else
     cache_root="$(cd "${repo_dir}" && pwd -P)"
   fi
+  printf '%s' "${cache_root}"
+}
+
+cache_key() {
+  local repo_dir=$1
+  local cache_root
+  cache_root="$(repo_cache_root "${repo_dir}")"
   if command -v shasum >/dev/null 2>&1; then
     printf '%s' "${cache_root}" | shasum -a 256 | awk '{print substr($1, 1, 12)}'
     return
@@ -137,9 +154,139 @@ download() {
   exit 1
 }
 
+cached_download() {
+  local url=$1
+  local dest=$2
+  local cache_dir=$3
+  local cache_name=$4
+  local cache_path tmp_path
+
+  mkdir -p "${cache_dir}"
+  cache_path="${cache_dir}/${cache_name}"
+
+  if [[ -f "${cache_path}" ]]; then
+    cp "${cache_path}" "${dest}"
+    printf 'corrosion archive cache hit %s\n' "${cache_name}" >&2
+    return
+  fi
+
+  tmp_path="${cache_path}.tmp.$$"
+  printf 'corrosion archive download start %s\n' "${cache_name}" >&2
+  download "${url}" "${tmp_path}"
+  mv "${tmp_path}" "${cache_path}"
+  cp "${cache_path}" "${dest}"
+  printf 'corrosion archive download complete %s\n' "${cache_name}" >&2
+}
+
+hash_file() {
+  local path=$1
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "${path}" | awk '{print $1}'
+    return
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "${path}" | awk '{print $1}'
+    return
+  fi
+  printf 'missing shasum/sha256sum for %s\n' "${path}" >&2
+  exit 1
+}
+
+hash_build_inputs_without_git() {
+  local tmp_file input rel_path
+  tmp_file="$(mktemp)"
+  trap 'rm -f "${tmp_file}"' RETURN
+
+  for input in "${BUILD_INPUT_PATHS[@]}"; do
+    rel_path="${input#./}"
+    if [[ -f "${REPO_DIR}/${rel_path}" ]]; then
+      printf 'FILE %s %s\n' "${rel_path}" "$(hash_file "${REPO_DIR}/${rel_path}")" >> "${tmp_file}"
+      continue
+    fi
+
+    if [[ -d "${REPO_DIR}/${rel_path}" ]]; then
+      while IFS= read -r path; do
+        printf 'FILE %s %s\n' "${path}" "$(hash_file "${REPO_DIR}/${path}")" >> "${tmp_file}"
+      done < <(cd "${REPO_DIR}" && find "${rel_path}" -type f | LC_ALL=C sort)
+      continue
+    fi
+
+    printf 'MISSING %s\n' "${rel_path}" >> "${tmp_file}"
+  done
+
+  hash_file "${tmp_file}"
+}
+
+repo_build_fingerprint() {
+  local head_rev dirty_paths tmp_file path abs_path
+
+  if ! git -C "${REPO_DIR}" rev-parse --show-toplevel >/dev/null 2>&1; then
+    printf 'nogit:%s' "$(hash_build_inputs_without_git)"
+    return
+  fi
+
+  head_rev="$(git -C "${REPO_DIR}" rev-parse HEAD 2>/dev/null || printf 'unknown')"
+  dirty_paths="$(
+    {
+      git -C "${REPO_DIR}" diff --name-only -- "${BUILD_INPUT_PATHS[@]}"
+      git -C "${REPO_DIR}" diff --cached --name-only -- "${BUILD_INPUT_PATHS[@]}"
+      git -C "${REPO_DIR}" ls-files --others --exclude-standard -- "${BUILD_INPUT_PATHS[@]}"
+    } | sed '/^$/d' | LC_ALL=C sort -u
+  )"
+
+  if [[ -z "${dirty_paths}" ]]; then
+    printf 'git:%s' "${head_rev}"
+    return
+  fi
+
+  tmp_file="$(mktemp)"
+  trap 'rm -f "${tmp_file}"' RETURN
+  printf 'HEAD %s\n' "${head_rev}" > "${tmp_file}"
+
+  while IFS= read -r path; do
+    [[ -n "${path}" ]] || continue
+    abs_path="${REPO_DIR}/${path}"
+    if [[ -f "${abs_path}" ]]; then
+      printf 'FILE %s %s\n' "${path}" "$(hash_file "${abs_path}")" >> "${tmp_file}"
+      continue
+    fi
+    printf 'MISSING %s\n' "${path}" >> "${tmp_file}"
+  done <<< "${dirty_paths}"
+
+  printf 'git:%s-dirty:%s' "${head_rev}" "$(hash_file "${tmp_file}")"
+}
+
+metadata_value() {
+  local metadata_path=$1
+  local key=$2
+  awk -F= -v key="${key}" '$1 == key { print substr($0, length(key) + 2); exit }' "${metadata_path}"
+}
+
+payload_is_fresh() {
+  local metadata_path=$1
+  local build_fingerprint=$2
+  local metadata_fingerprint metadata_platform metadata_profile
+
+  [[ -f "${metadata_path}" ]] || return 1
+  [[ -f "${OUTPUT_DIR}/ployz.sh" ]] || return 1
+  [[ -f "${OUTPUT_DIR}/bin/ployz" ]] || return 1
+  [[ -f "${OUTPUT_DIR}/bin/ployzd" ]] || return 1
+  [[ -f "${OUTPUT_DIR}/bin/ployz-gateway" ]] || return 1
+  [[ -f "${OUTPUT_DIR}/bin/ployz-dns" ]] || return 1
+  [[ -f "${OUTPUT_DIR}/bin/corrosion" ]] || return 1
+
+  metadata_fingerprint="$(metadata_value "${metadata_path}" BUILD_FINGERPRINT)"
+  metadata_platform="$(metadata_value "${metadata_path}" PLATFORM)"
+  metadata_profile="$(metadata_value "${metadata_path}" PROFILE)"
+
+  [[ "${metadata_fingerprint}" == "${build_fingerprint}" ]] || return 1
+  [[ "${metadata_platform}" == "${TARGET_PLATFORM}" ]] || return 1
+  [[ "${metadata_profile}" == "${BUILD_PROFILE}" ]] || return 1
+}
+
 install_corrosion() {
   local output_dir=$1
-  local version asset tmp_dir
+  local version asset tmp_dir cache_dir archive_url
   version="$(tr -d '[:space:]' < "${REPO_DIR}/.corrosion-version")"
   case "$(uname -s):$(uname -m)" in
     Darwin:arm64)
@@ -160,9 +307,11 @@ install_corrosion() {
       ;;
   esac
 
+  cache_dir="$(repo_cache_root "${REPO_DIR}")/.payload-cache/corrosion"
+  archive_url="https://github.com/getployz/corrosion/releases/download/${version}/${asset}"
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "${tmp_dir}"' RETURN
-  download "https://github.com/getployz/corrosion/releases/download/${version}/${asset}" "${tmp_dir}/${asset}"
+  cached_download "${archive_url}" "${tmp_dir}/${asset}" "${cache_dir}" "${version}-${asset}"
   tar -xzf "${tmp_dir}/${asset}" -C "${tmp_dir}"
   copy_file "${tmp_dir}/corrosion" "${output_dir}/bin/corrosion" 0755
   printf 'CORROSION_VERSION=%s\n' "${version}" > "${output_dir}/metadata.env"
@@ -248,6 +397,13 @@ case "${BUILD_PROFILE}" in
     ;;
 esac
 
+BUILD_FINGERPRINT="$(repo_build_fingerprint)"
+METADATA_PATH="${OUTPUT_DIR}/metadata.env"
+if payload_is_fresh "${METADATA_PATH}" "${BUILD_FINGERPRINT}"; then
+  printf 'payload cache hit profile=%s platform=%s\n' "${BUILD_PROFILE}" "${TARGET_PLATFORM}"
+  exit 0
+fi
+
 if [[ -z "${PLOYZ_PAYLOAD_BUILD_INTERNAL:-}" && "${TARGET_PLATFORM}" != "$(current_platform)" ]]; then
   case "${TARGET_PLATFORM}" in
     linux/amd64|linux/arm64)
@@ -261,6 +417,9 @@ if [[ -z "${PLOYZ_PAYLOAD_BUILD_INTERNAL:-}" && "${TARGET_PLATFORM}" != "$(curre
   esac
 fi
 
+mkdir -p "${OUTPUT_DIR}"
+install -d "${OUTPUT_DIR}/bin"
+install_corrosion "${OUTPUT_DIR}"
 build_binaries
 
 output_parent="$(dirname "${OUTPUT_DIR}")"
@@ -275,13 +434,13 @@ copy_file "$(binary_build_dir)/ployzd" "${tmp_output_dir}/bin/ployzd" 0755
 copy_file "$(binary_build_dir)/ployz-gateway" "${tmp_output_dir}/bin/ployz-gateway" 0755
 copy_file "$(binary_build_dir)/ployz-dns" "${tmp_output_dir}/bin/ployz-dns" 0755
 copy_file "${REPO_DIR}/packaging/systemd/ployzd.service" "${tmp_output_dir}/assets/systemd/ployzd.service" 0644
-
-install_corrosion "${tmp_output_dir}"
+copy_file "${OUTPUT_DIR}/bin/corrosion" "${tmp_output_dir}/bin/corrosion" 0755
 
 {
   printf 'GIT_REV=%s\n' "$(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
   printf 'PLATFORM=%s\n' "${TARGET_PLATFORM}"
   printf 'PROFILE=%s\n' "${BUILD_PROFILE}"
+  printf 'BUILD_FINGERPRINT=%s\n' "${BUILD_FINGERPRINT}"
 } >> "${tmp_output_dir}/metadata.env"
 
 rm -rf "${OUTPUT_DIR}"
