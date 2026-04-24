@@ -327,7 +327,11 @@ async fn shutdown_active_mesh(state: &Arc<RwLock<DaemonState>>) {
             peer_control,
             gateway,
             dns,
+            certificate_renewal,
         } = active;
+        if let Some(task) = certificate_renewal {
+            task.shutdown().await;
+        }
         let _ = dns.detach().await;
         let _ = gateway.detach().await;
         let _ = peer_control.shutdown().await;
