@@ -184,8 +184,25 @@ impl InviteStore for CorrosionStore {
         tables::invites::create_invite(&self.client, invite).await
     }
 
-    async fn consume_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<()> {
-        tables::invites::consume_invite(&self.client, invite_id, now_unix_secs).await
+    async fn get_invite(&self, invite_id: &str) -> Result<Option<InviteRecord>> {
+        tables::invites::get_invite(&self.client, invite_id).await
+    }
+
+    async fn list_invites(&self) -> Result<Vec<InviteRecord>> {
+        tables::invites::list_invites(&self.client).await
+    }
+
+    async fn redeem_invite(
+        &self,
+        invite_id: &str,
+        machine_id: &MachineId,
+        now_unix_secs: u64,
+    ) -> Result<InviteRecord> {
+        tables::invites::redeem_invite(&self.client, invite_id, machine_id, now_unix_secs).await
+    }
+
+    async fn revoke_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<InviteRecord> {
+        tables::invites::revoke_invite(&self.client, invite_id, now_unix_secs).await
     }
 }
 

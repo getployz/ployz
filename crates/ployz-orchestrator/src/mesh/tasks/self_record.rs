@@ -1,4 +1,4 @@
-use crate::model::{MachineRecord, OverlayIp, Participation};
+use crate::model::{MachineRecord, OverlayIp};
 use ployz_store_api::MachineStore;
 use ployz_store_api::StoreDriver;
 use tokio::sync::{RwLock, mpsc, oneshot};
@@ -9,16 +9,7 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub(crate) enum SelfRecordMutation {
-    RefreshLiveness {
-        now: u64,
-        bridge_ip: Option<OverlayIp>,
-    },
-    SetEndpoints {
-        endpoints: Vec<String>,
-    },
-    SetParticipation {
-        participation: Participation,
-    },
+    PublishUp { bridge_ip: Option<OverlayIp> },
     Replace(MachineRecord),
 }
 
@@ -79,22 +70,16 @@ pub(crate) async fn run_self_record_writer_task(
 
 fn apply_mutation(record: &mut MachineRecord, mutation: SelfRecordMutation) {
     match mutation {
-        SelfRecordMutation::RefreshLiveness { now, bridge_ip } => {
+        SelfRecordMutation::PublishUp { bridge_ip } => {
+            let now = crate::time::now_unix_secs();
             record.status = crate::model::MachineStatus::Up;
             if record.created_at == 0 {
                 record.created_at = now;
             }
-            record.last_heartbeat = now;
             record.updated_at = now;
             if let Some(bridge_ip) = bridge_ip {
                 record.bridge_ip = Some(bridge_ip);
             }
-        }
-        SelfRecordMutation::SetEndpoints { endpoints } => {
-            record.endpoints = endpoints;
-        }
-        SelfRecordMutation::SetParticipation { participation } => {
-            record.participation = participation;
         }
         SelfRecordMutation::Replace(next) => {
             *record = next;
@@ -105,7 +90,7 @@ fn apply_mutation(record: &mut MachineRecord, mutation: SelfRecordMutation) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{MachineId, MachineStatus, PublicKey};
+    use crate::model::{MachineId, MachineStatus, Participation, PublicKey};
     use ployz_store_api::memory::{MemoryService, MemoryStore};
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
@@ -116,11 +101,11 @@ mod tests {
             public_key: PublicKey([1; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             subnet: None,
+            control_target: None,
             bridge_ip: None,
             endpoints: vec!["127.0.0.1:51820".into()],
             status: MachineStatus::Unknown,
             participation: Participation::Disabled,
-            last_heartbeat: 0,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -128,7 +113,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn writer_preserves_endpoints_when_liveness_updates() {
+    async fn writer_preserves_endpoints_when_publish_updates() {
         let authoritative_self = Arc::new(RwLock::new(test_record()));
         let store = Arc::new(MemoryStore::new());
         let service = Arc::new(MemoryService::new());
@@ -142,69 +127,15 @@ mod tests {
                 .await;
         });
 
-        let endpoints = vec!["10.0.0.1:51820".into(), "10.0.0.2:51820".into()];
-        let _ = apply_self_record_mutation(
-            &tx,
-            SelfRecordMutation::SetEndpoints {
-                endpoints: endpoints.clone(),
-            },
-        )
-        .await;
-        let _ = apply_self_record_mutation(
-            &tx,
-            SelfRecordMutation::RefreshLiveness {
-                now: 123,
-                bridge_ip: None,
-            },
-        )
-        .await;
+        let _ = apply_self_record_mutation(&tx, SelfRecordMutation::PublishUp { bridge_ip: None })
+            .await;
 
         cancel.cancel();
         handle.await.expect("writer exits");
 
         let record = authoritative_self.read().await.clone();
-        assert_eq!(record.endpoints, endpoints);
+        assert_eq!(record.endpoints, vec!["127.0.0.1:51820".to_string()]);
         assert_eq!(record.status, MachineStatus::Up);
-        assert_eq!(record.last_heartbeat, 123);
-    }
-
-    #[tokio::test]
-    async fn writer_preserves_liveness_fields_when_participation_changes() {
-        let authoritative_self = Arc::new(RwLock::new(test_record()));
-        let store = Arc::new(MemoryStore::new());
-        let service = Arc::new(MemoryService::new());
-        let store_driver = StoreDriver::memory_with(store.clone(), service);
-        let (tx, rx) = mpsc::channel(8);
-        let cancel = CancellationToken::new();
-        let task_cancel = cancel.clone();
-        let writer_authoritative_self = authoritative_self.clone();
-        let handle = tokio::spawn(async move {
-            run_self_record_writer_task(writer_authoritative_self, store_driver, rx, task_cancel)
-                .await;
-        });
-
-        let _ = apply_self_record_mutation(
-            &tx,
-            SelfRecordMutation::RefreshLiveness {
-                now: 123,
-                bridge_ip: None,
-            },
-        )
-        .await;
-        let _ = apply_self_record_mutation(
-            &tx,
-            SelfRecordMutation::SetParticipation {
-                participation: Participation::Enabled,
-            },
-        )
-        .await;
-
-        cancel.cancel();
-        handle.await.expect("writer exits");
-
-        let record = authoritative_self.read().await.clone();
-        assert_eq!(record.participation, Participation::Enabled);
-        assert_eq!(record.last_heartbeat, 123);
-        assert_eq!(record.updated_at, 123);
+        assert!(record.updated_at > 0);
     }
 }

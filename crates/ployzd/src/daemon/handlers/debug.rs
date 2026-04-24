@@ -1,8 +1,9 @@
 use ployz_api::{DaemonResponse, DebugTickTask};
-use ployz_orchestrator::mesh::tasks::{HeartbeatCommand, PeerSyncCommand};
-use tokio::sync::oneshot;
+use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
+use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 
 use crate::daemon::DaemonState;
+use crate::endpoint_maintenance::reconcile_local_endpoints_for_mesh;
 
 impl DaemonState {
     pub(crate) async fn handle_debug_tick(
@@ -16,16 +17,16 @@ impl DaemonState {
 
         for _ in 0..repeat {
             let result = match task {
-                DebugTickTask::PeerSync => self.debug_tick_peer_sync().await,
+                DebugTickTask::PeerSync => self.debug_tick_peer_sync(),
+                DebugTickTask::Endpoints => self.debug_tick_endpoints().await,
                 DebugTickTask::Heartbeat => self.debug_tick_heartbeat().await,
-                DebugTickTask::Heal => self.debug_tick_heal().await,
                 DebugTickTask::All => {
-                    if let Err(error) = self.debug_tick_peer_sync().await {
+                    if let Err(error) = self.debug_tick_heartbeat().await {
                         Err(error)
-                    } else if let Err(error) = self.debug_tick_heartbeat().await {
+                    } else if let Err(error) = self.debug_tick_endpoints().await {
                         Err(error)
                     } else {
-                        self.debug_tick_heal().await
+                        Ok(())
                     }
                 }
             };
@@ -40,60 +41,43 @@ impl DaemonState {
         ))
     }
 
-    async fn debug_tick_peer_sync(&mut self) -> Result<(), (&'static str, String)> {
-        let Some(active) = self.active.as_ref() else {
-            return Err(("NO_RUNNING_NETWORK", "no mesh running".into()));
-        };
-        let Some(peer_sync_tx) = active.mesh.peer_sync_sender() else {
-            return Err(("TASK_NOT_RUNNING", "peer sync task is not running".into()));
-        };
-        let (done_tx, done_rx) = oneshot::channel();
-        peer_sync_tx
-            .send(PeerSyncCommand::TickNow { done: done_tx })
-            .await
-            .map_err(|error| {
-                (
-                    "DEBUG_TICK_FAILED",
-                    format!("peer sync tick send failed: {error}"),
-                )
-            })?;
-        done_rx.await.map_err(|error| {
-            (
-                "DEBUG_TICK_FAILED",
-                format!("peer sync tick ack failed: {error}"),
-            )
-        })?;
-        Ok(())
+    fn debug_tick_peer_sync(&self) -> Result<(), (&'static str, String)> {
+        Err((
+            "UNSUPPORTED_OPERATION",
+            "peer sync is event-driven and no longer supports manual ticks".into(),
+        ))
     }
 
     async fn debug_tick_heartbeat(&mut self) -> Result<(), (&'static str, String)> {
         let Some(active) = self.active.as_ref() else {
             return Err(("NO_RUNNING_NETWORK", "no mesh running".into()));
         };
-        let Some(heartbeat_tx) = active.mesh.heartbeat_sender() else {
+        if active.mesh.publish_up_once().await.is_none() {
             return Err(("TASK_NOT_RUNNING", "heartbeat task is not running".into()));
-        };
-        let (done_tx, done_rx) = oneshot::channel();
-        heartbeat_tx
-            .send(HeartbeatCommand::TickNow { done: done_tx })
-            .await
-            .map_err(|error| {
-                (
-                    "DEBUG_TICK_FAILED",
-                    format!("heartbeat tick send failed: {error}"),
-                )
-            })?;
-        done_rx.await.map_err(|error| {
-            (
-                "DEBUG_TICK_FAILED",
-                format!("heartbeat tick ack failed: {error}"),
-            )
-        })?;
+        }
         Ok(())
     }
 
-    async fn debug_tick_heal(&mut self) -> Result<(), (&'static str, String)> {
-        self.heal_local_subnet_conflict_if_needed().await;
+    async fn debug_tick_endpoints(&mut self) -> Result<(), (&'static str, String)> {
+        let Some(active) = self.active.as_ref() else {
+            return Err(("NO_RUNNING_NETWORK", "no mesh running".into()));
+        };
+        let detected_endpoints = detect_advertised_endpoints(DEFAULT_LISTEN_PORT).await;
+
+        reconcile_local_endpoints_for_mesh(&active.mesh, detected_endpoints)
+            .await
+            .map_err(|error| ("ENDPOINT_UPDATE_FAILED", error))?;
+
+        // Manual debug ticks are allowed to force a one-shot endpoint rotation
+        // pass so operators and tests do not have to wait through the normal
+        // down interval before trying the next declared candidate.
+        if !active.mesh.run_endpoint_maintenance_once(true).await {
+            return Err((
+                "TASK_NOT_RUNNING",
+                "endpoint maintainer task is not running".into(),
+            ));
+        }
+
         Ok(())
     }
 }
@@ -101,8 +85,8 @@ impl DaemonState {
 fn format_debug_tick_task(task: DebugTickTask) -> &'static str {
     match task {
         DebugTickTask::PeerSync => "peer-sync",
+        DebugTickTask::Endpoints => "endpoints",
         DebugTickTask::Heartbeat => "heartbeat",
-        DebugTickTask::Heal => "heal",
         DebugTickTask::All => "all",
     }
 }
@@ -127,6 +111,23 @@ mod tests {
         );
 
         let response = state.handle_debug_tick(DebugTickTask::All, 1).await;
+        assert!(!response.ok);
+        assert_eq!(response.code, "NO_RUNNING_NETWORK");
+    }
+
+    #[tokio::test]
+    async fn endpoint_debug_tick_rejects_when_no_mesh_is_running() {
+        let mut state = DaemonState::new_for_tests(
+            &std::env::temp_dir().join("ployz-debug-tick-no-mesh-endpoints"),
+            Identity::generate(ployz_types::model::MachineId("self".into()), [1; 32]),
+            DEFAULT_CLUSTER_CIDR.into(),
+            24,
+            4317,
+            "127.0.0.1:0".into(),
+            1,
+        );
+
+        let response = state.handle_debug_tick(DebugTickTask::Endpoints, 1).await;
         assert!(!response.ok);
         assert_eq!(response.code, "NO_RUNNING_NETWORK");
     }

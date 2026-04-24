@@ -6,7 +6,9 @@ TOOLCHAIN="${PLOYZ_EBPF_TOOLCHAIN:-nightly}"
 
 rustup install "${TOOLCHAIN}"
 rustup component add rust-src --toolchain "${TOOLCHAIN}"
-cargo +"${TOOLCHAIN}" install --locked bpf-linker
+if ! command -v bpf-linker >/dev/null 2>&1; then
+  cargo +"${TOOLCHAIN}" install --locked bpf-linker
+fi
 
 cargo +"${TOOLCHAIN}" build \
   -Z build-std=core \

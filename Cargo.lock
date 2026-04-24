@@ -2709,6 +2709,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 name = "ployz-api"
 version = "0.1.0"
 dependencies = [
+ "ipnet",
  "ployz-types",
  "serde",
  "serde_json",
@@ -2773,8 +2774,10 @@ dependencies = [
  "libc",
  "ployz-config",
  "ployz-corrosion",
+ "ployz-metrics",
  "ployz-store-api",
  "ployz-types",
+ "prometheus",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2806,14 +2809,25 @@ dependencies = [
  "pingora",
  "ployz-config",
  "ployz-corrosion",
+ "ployz-metrics",
  "ployz-store-api",
  "ployz-types",
+ "prometheus",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "ployz-metrics"
+version = "0.1.0"
+dependencies = [
+ "httparse",
+ "prometheus",
+ "tokio",
 ]
 
 [[package]]
@@ -2829,6 +2843,9 @@ dependencies = [
  "ployz-ebpf-common",
  "ployz-store-api",
  "ployz-types",
+ "rand 0.10.0",
+ "reqwest",
+ "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
@@ -2939,12 +2956,14 @@ dependencies = [
  "ployz-corrosion",
  "ployz-dns",
  "ployz-gateway",
+ "ployz-metrics",
  "ployz-orchestrator",
  "ployz-runtime-api",
  "ployz-runtime-backends",
  "ployz-sdk",
  "ployz-store-api",
  "ployz-types",
+ "prometheus",
  "rand 0.10.0",
  "serde",
  "serde_json",

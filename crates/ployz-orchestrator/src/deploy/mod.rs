@@ -2,6 +2,8 @@ pub mod session;
 
 use crate::deploy::session::DeploySessionFactory;
 use crate::error::{Error, Result};
+use crate::machine_policy::{can_keep_existing_slot, is_new_placement_candidate};
+use crate::machine_reachability::{ReachabilityStatus, probe_overlay_ips};
 use crate::model::{
     DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployPreview, DeployRecord,
     DeployState, InstanceId, MachineId, ServicePlan, ServiceRelease, ServiceReleaseRecord,
@@ -12,8 +14,6 @@ use ployz_types::spec::{DeployManifest, Placement, ServiceSpec, stable_hash_hex}
 use ployz_types::time::now_unix_secs;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use uuid::Uuid;
-
-use crate::machine_liveness::machine_is_fresh;
 
 #[derive(Debug, Clone)]
 struct DesiredSlot {
@@ -34,7 +34,11 @@ pub async fn preview(
 
     let current_releases = store.list_service_releases(namespace).await?;
     let machines = store.list_machines().await?;
-    let desired_machines = deployable_machines(&machines, local_machine_id, now_unix_secs());
+    let machine_map: HashMap<MachineId, crate::model::MachineRecord> = machines
+        .iter()
+        .map(|machine| (machine.id.clone(), machine.clone()))
+        .collect();
+    let desired_machines = deployable_machines(&machines, local_machine_id);
     let current_release_map: HashMap<String, ServiceReleaseRecord> = current_releases
         .into_iter()
         .map(|record| (record.service.clone(), record))
@@ -63,6 +67,7 @@ pub async fn preview(
             spec,
             &desired_machines,
             current_slots_by_service.get(&spec.name).map(Vec::as_slice),
+            &machine_map,
         )?;
         let current_service_slots = current_slots_by_service
             .get(&spec.name)
@@ -153,12 +158,14 @@ pub async fn preview(
         });
     }
 
+    let warnings = participant_probe_warnings(&participants, &machine_map).await;
+
     Ok(DeployPreview {
         namespace: namespace.clone(),
         manifest_hash,
         participants: participants.into_iter().collect(),
         services,
-        warnings: Vec::new(),
+        warnings,
     })
 }
 
@@ -182,6 +189,8 @@ pub async fn apply(
     let mut events = vec![];
     let mut sorted_participants = initial_preview.participants.clone();
     sorted_participants.sort();
+
+    fail_if_unreachable_participants(&sorted_participants, &machine_map).await?;
 
     let mut sessions: BTreeMap<MachineId, Box<dyn session::DeploySession>> = BTreeMap::new();
     for participant in &sorted_participants {
@@ -234,7 +243,7 @@ pub async fn apply(
 
         let current_slots_by_service =
             current_slots_by_service_from_releases(&store.list_service_releases(namespace).await?);
-        let desired_machines = deployable_machines(&machines, local_machine_id, now_unix_secs());
+        let desired_machines = deployable_machines(&machines, local_machine_id);
         let mut removed_services = Vec::new();
         let mut committed_releases = Vec::new();
         let mut committed_slots = Vec::new();
@@ -261,6 +270,7 @@ pub async fn apply(
                 spec,
                 &desired_machines,
                 current_slots_by_service.get(&spec.name).map(Vec::as_slice),
+                &machine_map,
             )?;
 
             let mut next_slots = Vec::new();
@@ -435,12 +445,10 @@ pub async fn apply(
 fn deployable_machines(
     machines: &[crate::model::MachineRecord],
     local_machine_id: &MachineId,
-    now: u64,
 ) -> Vec<MachineId> {
     let mut enabled: Vec<MachineId> = machines
         .iter()
-        .filter(|machine| machine.participation == crate::model::Participation::Enabled)
-        .filter(|machine| machine_is_fresh(machine, now))
+        .filter(|machine| is_new_placement_candidate(machine))
         .map(|machine| machine.id.clone())
         .collect();
     enabled.sort_by(|left, right| left.0.cmp(&right.0));
@@ -455,6 +463,7 @@ fn desired_slots(
     spec: &ServiceSpec,
     machines: &[MachineId],
     current_slots: Option<&[ServiceReleaseSlot]>,
+    machine_map: &HashMap<MachineId, crate::model::MachineRecord>,
 ) -> Result<Vec<DesiredSlot>> {
     let candidates = if machines.is_empty() {
         vec![MachineId("local".into())]
@@ -480,6 +489,11 @@ fn desired_slots(
                             .find(|slot| slot.slot_id == slot_id)
                             .map(|slot| slot.machine_id.clone())
                     })
+                    .filter(|machine_id| {
+                        machine_map
+                            .get(machine_id)
+                            .is_some_and(can_keep_existing_slot)
+                    })
                     .unwrap_or_else(|| candidates[usize::from(index) % candidates.len()].clone());
                 desired.push(DesiredSlot {
                     slot_id,
@@ -497,6 +511,73 @@ fn desired_slots(
         }
     }
     Ok(desired)
+}
+
+async fn participant_probe_warnings(
+    participants: &BTreeSet<MachineId>,
+    machine_map: &HashMap<MachineId, crate::model::MachineRecord>,
+) -> Vec<String> {
+    let participant_machines: Vec<_> = participants
+        .iter()
+        .filter_map(|machine_id| machine_map.get(machine_id))
+        .collect();
+    let overlay_ips: Vec<_> = participant_machines
+        .iter()
+        .map(|machine| machine.overlay_ip)
+        .collect();
+    let results = probe_overlay_ips(&overlay_ips).await;
+
+    let mut warnings = Vec::new();
+    for machine in participant_machines {
+        if results
+            .get(&machine.overlay_ip)
+            .is_some_and(|result| result.status == ReachabilityStatus::Unreachable)
+        {
+            warnings.push(format!("machine '{}' is unreachable", machine.id));
+        }
+    }
+    warnings.sort();
+    warnings
+}
+
+async fn fail_if_unreachable_participants(
+    participants: &[MachineId],
+    machine_map: &HashMap<MachineId, crate::model::MachineRecord>,
+) -> Result<()> {
+    let participant_machines: Vec<_> = participants
+        .iter()
+        .filter_map(|machine_id| machine_map.get(machine_id))
+        .collect();
+    let overlay_ips: Vec<_> = participant_machines
+        .iter()
+        .map(|machine| machine.overlay_ip)
+        .collect();
+    let results = probe_overlay_ips(&overlay_ips).await;
+
+    let mut unreachable = Vec::new();
+    for machine in participant_machines {
+        if results
+            .get(&machine.overlay_ip)
+            .is_some_and(|result| result.status == ReachabilityStatus::Unreachable)
+        {
+            unreachable.push(machine.id.0.clone());
+        }
+    }
+
+    if unreachable.is_empty() {
+        return Ok(());
+    }
+
+    unreachable.sort();
+    Err(Error::operation(
+        "deploy_apply",
+        format!(
+            "deploy blocked: {} of {} participants unreachable: {}",
+            unreachable.len(),
+            participants.len(),
+            unreachable.join(", ")
+        ),
+    ))
 }
 
 fn current_slots_by_service(
@@ -531,57 +612,29 @@ mod tests {
     use std::net::Ipv6Addr;
 
     #[test]
-    fn deployable_machines_excludes_stale_and_down_peers() {
-        let now = 100;
+    fn deployable_machines_filters_by_participation() {
         let machines = vec![
-            test_machine(
-                "fresh-enabled",
-                Participation::Enabled,
-                MachineStatus::Up,
-                90,
-            ),
-            test_machine(
-                "stale-enabled",
-                Participation::Enabled,
-                MachineStatus::Up,
-                69,
-            ),
-            test_machine(
-                "down-enabled",
-                Participation::Enabled,
-                MachineStatus::Down,
-                100,
-            ),
-            test_machine(
-                "draining-fresh",
-                Participation::Draining,
-                MachineStatus::Up,
-                100,
-            ),
+            test_machine("enabled-a", Participation::Enabled, MachineStatus::Up),
+            test_machine("enabled-b", Participation::Enabled, MachineStatus::Down),
+            test_machine("draining", Participation::Draining, MachineStatus::Up),
         ];
 
-        let deployable = deployable_machines(&machines, &MachineId("local".into()), now);
-        assert_eq!(deployable, vec![MachineId("fresh-enabled".into())]);
+        let deployable = deployable_machines(&machines, &MachineId("local".into()));
+        assert_eq!(
+            deployable,
+            vec![MachineId("enabled-a".into()), MachineId("enabled-b".into())]
+        );
     }
 
     #[test]
-    fn deployable_machines_falls_back_to_local_when_none_are_fresh_enabled() {
-        let machines = vec![
-            test_machine(
-                "stale-enabled",
-                Participation::Enabled,
-                MachineStatus::Up,
-                10,
-            ),
-            test_machine(
-                "down-enabled",
-                Participation::Enabled,
-                MachineStatus::Down,
-                100,
-            ),
-        ];
+    fn deployable_machines_falls_back_to_local_when_none_are_enabled() {
+        let machines = vec![test_machine(
+            "draining",
+            Participation::Draining,
+            MachineStatus::Down,
+        )];
 
-        let deployable = deployable_machines(&machines, &MachineId("local".into()), 100);
+        let deployable = deployable_machines(&machines, &MachineId("local".into()));
         assert_eq!(deployable, vec![MachineId("local".into())]);
     }
 
@@ -600,6 +653,8 @@ mod tests {
                 cap_drop: Vec::new(),
                 privileged: false,
                 user: None,
+                stop_grace_period: None,
+                pid_mode: None,
                 pull_policy: PullPolicy::IfNotPresent,
                 resources: Resources::empty(),
                 sysctls: BTreeMap::new(),
@@ -611,7 +666,6 @@ mod tests {
             readiness: None,
             rollout: RolloutStrategy::Recreate,
             labels: BTreeMap::new(),
-            stop_grace_period: None,
             restart: RestartPolicy::UnlessStopped,
         };
         let machines = vec![MachineId("machine-a".into()), MachineId("machine-b".into())];
@@ -622,28 +676,41 @@ mod tests {
             revision_hash: "rev-1".into(),
         }];
 
-        let desired = desired_slots(&spec, &machines, Some(&current_slots)).expect("desired slots");
-        assert_eq!(desired.len(), 1);
-        assert_eq!(desired[0].slot_id, SlotId("slot-0001".into()));
-        assert_eq!(desired[0].machine_id, MachineId("machine-b".into()));
+        let machine_map = HashMap::from([
+            (
+                MachineId("machine-a".into()),
+                test_machine("machine-a", Participation::Enabled, MachineStatus::Up),
+            ),
+            (
+                MachineId("machine-b".into()),
+                test_machine("machine-b", Participation::Enabled, MachineStatus::Up),
+            ),
+        ]);
+
+        let desired = desired_slots(&spec, &machines, Some(&current_slots), &machine_map)
+            .expect("desired slots");
+        let [slot] = desired.as_slice() else {
+            panic!("expected one desired slot");
+        };
+        assert_eq!(slot.slot_id, SlotId("slot-0001".into()));
+        assert_eq!(slot.machine_id, MachineId("machine-b".into()));
     }
 
     fn test_machine(
         id: &str,
         participation: Participation,
         status: MachineStatus,
-        last_heartbeat: u64,
     ) -> MachineRecord {
         MachineRecord {
             id: MachineId(id.into()),
             public_key: PublicKey([7; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+            control_target: None,
             subnet: None,
             bridge_ip: None,
             endpoints: vec!["127.0.0.1:51820".into()],
             status,
             participation,
-            last_heartbeat,
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),

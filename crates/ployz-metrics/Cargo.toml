@@ -1,0 +1,21 @@
+[package]
+name = "ployz-metrics"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "ployz_metrics"
+path = "src/lib.rs"
+
+[dependencies]
+httparse = "1.10"
+prometheus = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net"] }
+
+[lints.clippy]
+indexing_slicing = "warn"
+fallible_impl_from = "warn"
+wildcard_enum_match_arm = "warn"
+fn_params_excessive_bools = "warn"
+must_use_candidate = "warn"
