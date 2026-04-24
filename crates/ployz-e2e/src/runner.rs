@@ -2,9 +2,9 @@ use crate::cli::Scenario;
 use crate::error::{Error, Result};
 use crate::scenarios;
 use crate::support::{
-    docker_outer, docker_outer_raw, parse_daemon_json_response, parse_ready, parse_ready_payload,
-    pick_free_port, run_command, run_command_expect_ok, wait_until, CommandOutput,
-    DaemonJsonPayload,
+    CommandOutput, DaemonJsonPayload, docker_outer, docker_outer_raw, parse_daemon_json_response,
+    parse_ready, parse_ready_payload, pick_free_port, run_command, run_command_expect_ok,
+    wait_until,
 };
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -65,6 +65,36 @@ pub(crate) struct MachineExpectation<'a> {
     pub(crate) id: &'a str,
     pub(crate) lifecycle: &'a str,
     pub(crate) subnet: SubnetExpectation,
+}
+
+#[derive(Debug)]
+struct NodeStartMounts {
+    dind: String,
+    entrypoint: String,
+    preloaded_images: String,
+}
+
+fn node_start_mounts(repo_root: &Path) -> NodeStartMounts {
+    NodeStartMounts {
+        dind: format!(
+            "{}:/usr/local/bin/e2e-dind.sh:ro",
+            repo_root
+                .join("packaging/e2e/e2e-dind.sh")
+                .to_string_lossy()
+        ),
+        entrypoint: format!(
+            "{}:/usr/local/bin/e2e-node-entrypoint.sh:ro",
+            repo_root
+                .join("packaging/e2e/e2e-node-entrypoint.sh")
+                .to_string_lossy()
+        ),
+        preloaded_images: format!(
+            "{}:/opt/ployz-e2e/preloaded-images:ro",
+            repo_root
+                .join("packaging/e2e/preloaded-images")
+                .to_string_lossy()
+        ),
+    }
 }
 
 impl ScenarioRun {
@@ -377,6 +407,26 @@ impl ScenarioRun {
         };
         self.ssh_expect_ok_name(controller_name, &command)?;
         self.log_progress(&format!("machine_standby complete target={target_name}"));
+        Ok(())
+    }
+
+    pub(crate) fn machine_rm(
+        &self,
+        controller_name: &str,
+        target_name: &str,
+        force: bool,
+    ) -> Result<()> {
+        let command = if force {
+            format!("ployzd machine rm {target_name} --force")
+        } else {
+            format!("ployzd machine rm {target_name}")
+        };
+        self.ssh_expect_ok_name(controller_name, &command)?;
+        Ok(())
+    }
+
+    pub(crate) fn mesh_destroy(&self, node_name: &str, network: &str) -> Result<()> {
+        self.ssh_expect_ok_name(node_name, &format!("ployzd mesh destroy {network}"))?;
         Ok(())
     }
 
@@ -715,135 +765,49 @@ impl ScenarioRun {
             .and_then(Path::parent)
             .ok_or_else(|| Error::Message("failed to resolve repo root".into()))?
             .to_path_buf();
-        let e2e_dind_mount = format!(
-            "{}:/usr/local/bin/e2e-dind.sh:ro",
-            repo_root
-                .join("packaging/e2e/e2e-dind.sh")
-                .to_string_lossy()
-        );
-        let e2e_entrypoint_mount = format!(
-            "{}:/usr/local/bin/e2e-node-entrypoint.sh:ro",
-            repo_root
-                .join("packaging/e2e/e2e-node-entrypoint.sh")
-                .to_string_lossy()
-        );
-        let preloaded_images_mount = format!(
-            "{}:/opt/ployz-e2e/preloaded-images:ro",
-            repo_root
-                .join("packaging/e2e/preloaded-images")
-                .to_string_lossy()
-        );
+        let mounts = node_start_mounts(&repo_root);
 
         for name in names {
-            self.log_progress(&format!("node start requested name={name}"));
-            let ssh_port = pick_free_port()?;
-            let container_name = format!("ployz-e2e-{}-{name}", self.scenario.as_str());
-            let _ = docker_outer(["rm", "-f", container_name.as_str()]);
-
-            let key_mount = format!(
-                "{}:/e2e-keys:ro",
-                self.private_key_path
-                    .parent()
-                    .map_or_else(|| self.root_dir.join("keys"), Path::to_path_buf)
-                    .to_string_lossy()
-            );
-            let payload_mount = format!("{}:/e2e-payload:ro", self.payload_dir.to_string_lossy());
-            let ssh_mapping = format!("{ssh_port}:22");
-            let authorized_key = format!("PLOYZ_E2E_SSH_AUTHORIZED_KEY={}", self.public_key);
-            let image_name = format!("PLOYZ_E2E_IMAGE={}", self.image);
-            let image_id = format!("PLOYZ_E2E_IMAGE_ID={}", self.image_id);
-            let scenario_name = format!("PLOYZ_E2E_SCENARIO={}", self.scenario.as_str());
-            let runtime = format!("PLOYZ_E2E_RUNTIME={}", self.scenario.runtime());
-            let node_name = format!("PLOYZ_E2E_NODE={name}");
-            let peer_control_target = format!("PLOYZ_PEER_CONTROL_TARGET={name}");
-            let run_id = format!(
-                "PLOYZ_E2E_RUN_ID={}",
-                self.root_dir
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or_default()
-            );
-            let mut args = vec![
-                "run".to_string(),
-                "-d".to_string(),
-                "--privileged".to_string(),
-                "--name".to_string(),
-                container_name.clone(),
-                "--hostname".to_string(),
-                (*name).to_string(),
-                "--network".to_string(),
-                self.outer_network.clone(),
-                "-p".to_string(),
-                ssh_mapping,
-                "-e".to_string(),
-                authorized_key,
-                "-e".to_string(),
-                image_name,
-                "-e".to_string(),
-                image_id,
-                "-e".to_string(),
-                scenario_name,
-                "-e".to_string(),
-                runtime,
-                "-e".to_string(),
-                node_name,
-                "-e".to_string(),
-                peer_control_target,
-                "-e".to_string(),
-                run_id,
-            ];
-
-            for env_name in [CORROSION_LOG_PATH_ENV, CORROSION_RUST_LOG_ENV] {
-                if let Ok(value) = std::env::var(env_name) {
-                    args.push("-e".to_string());
-                    args.push(format!("{env_name}={value}"));
-                }
-            }
-
-            args.push("-v".to_string());
-            args.push(key_mount);
-            args.push("-v".to_string());
-            args.push(payload_mount);
-            args.push("-v".to_string());
-            args.push(e2e_dind_mount.clone());
-            args.push("-v".to_string());
-            args.push(e2e_entrypoint_mount.clone());
-            args.push("-v".to_string());
-            args.push(preloaded_images_mount.clone());
-            args.push(self.image.clone());
-
-            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-            run_command_expect_ok("docker", &arg_refs)?;
-            self.log_progress(&format!(
-                "node container started name={name} container={container_name} ssh_port={ssh_port}"
-            ));
-
-            let outer_ip = docker_outer([
-                "inspect",
-                "--format",
-                "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
-                container_name.as_str(),
-            ])?
-            .stdout
-            .trim()
-            .to_string();
-            if outer_ip.is_empty() {
-                return Err(Error::Message(format!(
-                    "node '{name}' did not receive an outer network IP"
-                )));
-            }
-
-            let node = Node {
-                name: (*name).to_string(),
-                container_name,
-                ssh_port,
-                outer_ip,
-            };
-            self.nodes.push(node);
-            self.write_metadata()?;
-            self.log_progress(&format!("node metadata recorded name={name}"));
+            self.start_node(name, &mounts)?;
         }
 
+        self.wait_for_started_nodes()
+    }
+
+    fn start_node(&mut self, name: &str, mounts: &NodeStartMounts) -> Result<()> {
+        let ssh_port = pick_free_port()?;
+        let container_name = format!("ployz-e2e-{}-{name}", self.scenario.as_str());
+        let _ = docker_outer(["rm", "-f", container_name.as_str()]);
+
+        let args = self.node_run_args(name, &container_name, ssh_port, mounts);
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_command_expect_ok("docker", &arg_refs)?;
+
+        let outer_ip = docker_outer([
+            "inspect",
+            "--format",
+            "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+            container_name.as_str(),
+        ])?
+        .stdout
+        .trim()
+        .to_string();
+        if outer_ip.is_empty() {
+            return Err(Error::Message(format!(
+                "node '{name}' did not receive an outer network IP"
+            )));
+        }
+
+        self.nodes.push(Node {
+            name: name.to_string(),
+            container_name,
+            ssh_port,
+            outer_ip,
+        });
+        self.write_metadata()
+    }
+
+    fn wait_for_started_nodes(&self) -> Result<()> {
         for node in &self.nodes {
             self.wait_for_ssh(node)?;
         }
@@ -852,6 +816,85 @@ impl ScenarioRun {
         }
 
         Ok(())
+    }
+
+    fn node_run_args(
+        &self,
+        name: &str,
+        container_name: &str,
+        ssh_port: u16,
+        mounts: &NodeStartMounts,
+    ) -> Vec<String> {
+        let key_mount = format!(
+            "{}:/e2e-keys:ro",
+            self.private_key_path
+                .parent()
+                .map_or_else(|| self.root_dir.join("keys"), Path::to_path_buf)
+                .to_string_lossy()
+        );
+        let payload_mount = format!("{}:/e2e-payload:ro", self.payload_dir.to_string_lossy());
+        let mut args = self.node_run_base_args(name, container_name, ssh_port);
+
+        for env_name in [CORROSION_LOG_PATH_ENV, CORROSION_RUST_LOG_ENV] {
+            if let Ok(value) = std::env::var(env_name) {
+                args.push("-e".to_string());
+                args.push(format!("{env_name}={value}"));
+            }
+        }
+
+        args.push("-v".to_string());
+        args.push(key_mount);
+        args.push("-v".to_string());
+        args.push(payload_mount);
+        args.push("-v".to_string());
+        args.push(mounts.dind.clone());
+        args.push("-v".to_string());
+        args.push(mounts.entrypoint.clone());
+        args.push("-v".to_string());
+        args.push(mounts.preloaded_images.clone());
+        args.push(self.image.clone());
+        args
+    }
+
+    fn node_run_base_args(&self, name: &str, container_name: &str, ssh_port: u16) -> Vec<String> {
+        let ssh_mapping = format!("{ssh_port}:22");
+        let run_id = format!(
+            "PLOYZ_E2E_RUN_ID={}",
+            self.root_dir
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default()
+        );
+
+        vec![
+            "run".to_string(),
+            "-d".to_string(),
+            "--privileged".to_string(),
+            "--name".to_string(),
+            container_name.to_string(),
+            "--hostname".to_string(),
+            name.to_string(),
+            "--network".to_string(),
+            self.outer_network.clone(),
+            "-p".to_string(),
+            ssh_mapping,
+            "-e".to_string(),
+            format!("PLOYZ_E2E_SSH_AUTHORIZED_KEY={}", self.public_key),
+            "-e".to_string(),
+            format!("PLOYZ_E2E_IMAGE={}", self.image),
+            "-e".to_string(),
+            format!("PLOYZ_E2E_IMAGE_ID={}", self.image_id),
+            "-e".to_string(),
+            format!("PLOYZ_E2E_SCENARIO={}", self.scenario.as_str()),
+            "-e".to_string(),
+            format!("PLOYZ_E2E_RUNTIME={}", self.scenario.runtime()),
+            "-e".to_string(),
+            format!("PLOYZ_E2E_NODE={name}"),
+            "-e".to_string(),
+            format!("PLOYZ_PEER_CONTROL_TARGET={name}"),
+            "-e".to_string(),
+            run_id,
+        ]
     }
 
     fn wait_for_ssh(&self, node: &Node) -> Result<()> {

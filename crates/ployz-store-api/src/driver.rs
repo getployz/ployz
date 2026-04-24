@@ -74,6 +74,10 @@ impl StoreRuntimeControl for StoreDriver {
         self.runtime_control.stop().await
     }
 
+    async fn wipe_data(&self) -> Result<()> {
+        self.runtime_control.wipe_data().await
+    }
+
     async fn healthy(&self) -> bool {
         self.runtime_control.healthy().await
     }
@@ -347,6 +351,10 @@ impl StoreRuntimeControl for MemoryStoreBackend {
 
     async fn stop(&self) -> Result<()> {
         self.service.stop().await
+    }
+
+    async fn wipe_data(&self) -> Result<()> {
+        self.store.wipe_data().await
     }
 
     async fn healthy(&self) -> bool {

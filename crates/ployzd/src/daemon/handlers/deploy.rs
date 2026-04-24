@@ -39,7 +39,7 @@ impl DaemonState {
         };
         let active = match self.require_active("NO_MESH", "no mesh is running") {
             Ok(active) => active,
-            Err(response) => return response,
+            Err(response) => return *response,
         };
 
         match preview(&active.mesh.store, &self.identity.machine_id, &manifest).await {
@@ -59,7 +59,7 @@ impl DaemonState {
         };
         let active = match self.require_active("NO_MESH", "no mesh is running") {
             Ok(active) => active,
-            Err(response) => return response,
+            Err(response) => return *response,
         };
 
         let agent = Arc::new(DeployAgent::new(
@@ -91,7 +91,7 @@ impl DaemonState {
     pub async fn handle_deploy_export(&self, namespace: &str) -> DaemonResponse {
         let active = match self.require_active("NO_MESH", "no mesh is running") {
             Ok(active) => active,
-            Err(response) => return response,
+            Err(response) => return *response,
         };
         let namespace = Namespace(namespace.to_string());
         let manifest = match export_manifest(&active.mesh.store, &namespace).await {

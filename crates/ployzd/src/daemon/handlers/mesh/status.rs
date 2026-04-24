@@ -108,7 +108,7 @@ impl DaemonState {
     pub(crate) async fn handle_mesh_ready(&self, json: bool) -> DaemonResponse {
         let active = match self.require_active("NO_RUNNING_NETWORK", "no mesh running") {
             Ok(active) => active,
-            Err(response) => return response,
+            Err(response) => return *response,
         };
 
         let Some(self_record) = active.mesh.authoritative_self_record().await else {

@@ -355,7 +355,10 @@ pub(crate) enum MachineAction {
     },
     Rm {
         id: String,
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Skip online target cleanup and remove only the registry row"
+        )]
         force: bool,
     },
     Invite {

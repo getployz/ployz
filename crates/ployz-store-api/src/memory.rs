@@ -381,6 +381,28 @@ impl DeployStore for MemoryStore {
     }
 }
 
+impl MemoryStore {
+    pub async fn wipe_data(&self) -> Result<()> {
+        let mut inner = self.lock_inner();
+        let removed = inner
+            .machines
+            .drain()
+            .map(|(_, record)| record)
+            .collect::<Vec<_>>();
+        inner.invites.clear();
+        inner.service_revisions.clear();
+        inner.service_releases.clear();
+        inner.instance_status.clear();
+        inner.deploys.clear();
+
+        for record in removed {
+            Self::broadcast_machine(&mut inner, MachineEvent::Removed(record));
+        }
+        Self::broadcast_routing_refresh(&mut inner);
+        Ok(())
+    }
+}
+
 pub struct MemoryService {
     started: AtomicBool,
     healthy: AtomicBool,
