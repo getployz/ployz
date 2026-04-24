@@ -612,6 +612,7 @@ impl ScenarioRun {
     }
 
     fn ensure_payload(&self) -> Result<()> {
+        self.log_progress("build payload manifest start");
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(Path::parent)
@@ -627,6 +628,7 @@ impl ScenarioRun {
         if let Ok(existing) = fs::read_to_string(&stamp_path)
             && existing == stamp
         {
+            self.log_progress("build payload manifest complete");
             return Ok(());
         }
 
@@ -639,7 +641,7 @@ impl ScenarioRun {
             })?;
         }
         let script = repo_root.join("scripts/build-install-payload.sh");
-        run_command_expect_ok(
+        let output = run_command_expect_ok(
             "bash",
             &[
                 script.to_string_lossy().as_ref(),
@@ -651,16 +653,48 @@ impl ScenarioRun {
                 E2E_PAYLOAD_BUILD_PROFILE,
             ],
         )?;
+        if let Some(line) = output
+            .stdout
+            .lines()
+            .find(|line| line.starts_with("payload cache hit"))
+        {
+            self.log_progress(line);
+        }
         fs::write(&stamp_path, stamp).map_err(|error| {
             Error::Io(format!(
                 "write payload stamp '{}': {error}",
                 stamp_path.display()
             ))
         })?;
+        self.log_progress("build payload manifest complete");
         Ok(())
     }
 
     fn start_nodes(&mut self, names: &[&str]) -> Result<()> {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| Error::Message("failed to resolve repo root".into()))?
+            .to_path_buf();
+        let e2e_dind_mount = format!(
+            "{}:/usr/local/bin/e2e-dind.sh:ro",
+            repo_root
+                .join("packaging/e2e/e2e-dind.sh")
+                .to_string_lossy()
+        );
+        let e2e_entrypoint_mount = format!(
+            "{}:/usr/local/bin/e2e-node-entrypoint.sh:ro",
+            repo_root
+                .join("packaging/e2e/e2e-node-entrypoint.sh")
+                .to_string_lossy()
+        );
+        let preloaded_images_mount = format!(
+            "{}:/opt/ployz-e2e/preloaded-images:ro",
+            repo_root
+                .join("packaging/e2e/preloaded-images")
+                .to_string_lossy()
+        );
+
         for name in names {
             let ssh_port = pick_free_port()?;
             let container_name = format!("ployz-e2e-{}-{name}", self.scenario.as_str());
@@ -679,6 +713,7 @@ impl ScenarioRun {
             let image_name = format!("PLOYZ_E2E_IMAGE={}", self.image);
             let image_id = format!("PLOYZ_E2E_IMAGE_ID={}", self.image_id);
             let scenario_name = format!("PLOYZ_E2E_SCENARIO={}", self.scenario.as_str());
+            let runtime = format!("PLOYZ_E2E_RUNTIME={}", self.scenario.runtime());
             let node_name = format!("PLOYZ_E2E_NODE={name}");
             let peer_control_target = format!("PLOYZ_PEER_CONTROL_TARGET={name}");
             let run_id = format!(
@@ -709,6 +744,8 @@ impl ScenarioRun {
                 "-e".to_string(),
                 scenario_name,
                 "-e".to_string(),
+                runtime,
+                "-e".to_string(),
                 node_name,
                 "-e".to_string(),
                 peer_control_target,
@@ -727,6 +764,12 @@ impl ScenarioRun {
             args.push(key_mount);
             args.push("-v".to_string());
             args.push(payload_mount);
+            args.push("-v".to_string());
+            args.push(e2e_dind_mount.clone());
+            args.push("-v".to_string());
+            args.push(e2e_entrypoint_mount.clone());
+            args.push("-v".to_string());
+            args.push(preloaded_images_mount.clone());
             args.push(self.image.clone());
 
             let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
