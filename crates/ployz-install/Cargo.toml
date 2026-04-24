@@ -1,0 +1,18 @@
+[package]
+name = "ployz-install"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ployz-config = { path = "../ployz-config" }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[lints.clippy]
+indexing_slicing = "warn"
+fallible_impl_from = "warn"
+wildcard_enum_match_arm = "warn"
+fn_params_excessive_bools = "warn"
+must_use_candidate = "warn"

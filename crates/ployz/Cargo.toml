@@ -1,0 +1,21 @@
+[package]
+name = "ployz"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "ployz"
+path = "src/main.rs"
+
+[dependencies]
+ployz-config = { path = "../ployz-config" }
+ployz-install = { path = "../ployz-install" }
+clap = { workspace = true }
+
+[lints.clippy]
+indexing_slicing = "warn"
+fallible_impl_from = "warn"
+wildcard_enum_match_arm = "warn"
+fn_params_excessive_bools = "warn"
+must_use_candidate = "warn"

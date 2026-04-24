@@ -1,5 +1,8 @@
-use crate::mesh::wireguard::{DockerWireGuard, HostWireGuard};
+#[cfg(feature = "docker")]
+use crate::mesh::wireguard::DockerWireGuard;
+use crate::mesh::wireguard::HostWireGuard;
 use async_trait::async_trait;
+#[cfg(feature = "docker")]
 use ployz_corrosion::config as corrosion_config;
 use ployz_orchestrator::WireguardDriver;
 use ployz_orchestrator::mesh::driver::{WireguardBackend, WireguardBackendMode};
@@ -7,10 +10,12 @@ use ployz_orchestrator::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
 use ployz_runtime_api::Identity;
 use ployz_types::Result;
 use ployz_types::model::{MachineRecord, OverlayIp, PublicKey};
+#[cfg(feature = "docker")]
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::sync::Arc;
 
+#[cfg(feature = "docker")]
 pub async fn docker(
     identity: &Identity,
     overlay_ip: OverlayIp,
@@ -68,10 +73,12 @@ pub fn host(
     )))
 }
 
+#[cfg(feature = "docker")]
 struct DockerWireguardBackend {
     inner: Arc<DockerWireGuard>,
 }
 
+#[cfg(feature = "docker")]
 #[async_trait]
 impl WireguardBackend for DockerWireguardBackend {
     fn mode(&self) -> WireguardBackendMode {
