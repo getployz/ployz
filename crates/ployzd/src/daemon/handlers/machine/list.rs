@@ -2,11 +2,9 @@ use crate::daemon::DaemonState;
 use ployz_api::{DaemonPayload, DaemonResponse, MachineRemovePayload};
 use ployz_store_api::MachineStore;
 use ployz_store_api::StoreDriver;
-use ployz_types::model::{MachineId, MachineRecord, Participation};
+use ployz_types::model::{MachineId, MachineLifecycle, MachineRecord};
 
-use super::render::{
-    format_participation, format_status, format_timestamp, render_machine_list_report,
-};
+use super::render::{format_lifecycle, format_timestamp, render_machine_list_report};
 use super::types::{MachineListReport, MachineListReportRow};
 
 impl DaemonState {
@@ -50,12 +48,12 @@ impl DaemonState {
             }
         };
 
-        if !force && record.participation != Participation::Disabled {
+        if !force && record.lifecycle != MachineLifecycle::Standby {
             return self.err(
-                "MACHINE_NOT_DISABLED",
+                "MACHINE_NOT_STANDBY",
                 format!(
-                    "machine '{id}' must be disabled before removal (current participation: {})",
-                    record.participation
+                    "machine '{id}' must be standby before removal (current lifecycle: {})",
+                    record.lifecycle
                 ),
             );
         }
@@ -97,8 +95,7 @@ pub(super) async fn machine_list_report(store: StoreDriver) -> Result<MachineLis
             .iter()
             .map(|machine| MachineListReportRow {
                 id: machine.id.0.clone(),
-                status: format_status(machine),
-                participation: format_participation(machine),
+                lifecycle: format_lifecycle(machine),
                 overlay: machine.overlay_ip.0.to_string(),
                 subnet: machine.subnet,
                 subnet_display: machine

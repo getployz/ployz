@@ -1,9 +1,13 @@
 use crate::daemon::setup::MeshStartOptions;
 use crate::mesh_state::bootstrap::{BootstrapPeerRecord, write_bootstrap_peer_record};
 use crate::mesh_state::network::NetworkConfig;
-use ployz_api::{DaemonPayload, DaemonResponse, MeshBootstrapRequest, MeshSelfRecordPayload};
+use ployz_api::{
+    DaemonPayload, DaemonResponse, MachineTransitionGoal, MeshBootstrapRequest,
+    MeshSelfRecordPayload,
+};
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
+use ployz_types::model::NetworkLifecycle;
 use ployz_types::model::{JoinResponse, NetworkName};
 
 use super::{DaemonState, bootstrap_info_from_record};
@@ -83,8 +87,29 @@ impl DaemonState {
         let options = MeshStartOptions {
             allow_disconnected_bootstrap: bootstrap.is_some(),
         };
-        match self.start_mesh(net_config, bootstrap, options).await {
+        net_config.lifecycle = NetworkLifecycle::Running;
+        match self.start_mesh(net_config.clone(), bootstrap, options).await {
             Ok(_) => {
+                if let Err(error) = self
+                    .transition_local_machine(
+                        MachineTransitionGoal::Activate,
+                        Some(request.assigned_subnet),
+                        false,
+                    )
+                    .await
+                {
+                    return self.err("NETWORK_START_FAILED", error.message);
+                }
+                let config_path = NetworkConfig::path(&self.data_dir, network);
+                if let Some(active) = self.active.as_mut() {
+                    active.config.lifecycle = NetworkLifecycle::Running;
+                    if let Err(error) = active.config.save(&config_path) {
+                        return self.err(
+                            "IO_ERROR",
+                            format!("failed to persist running network config: {error}"),
+                        );
+                    }
+                }
                 if let Some(active) = self.active.as_ref()
                     && let Some(control_target) = request.self_control_target.clone()
                 {

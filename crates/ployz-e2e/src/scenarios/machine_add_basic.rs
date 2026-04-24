@@ -10,12 +10,12 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
         &[
             MachineExpectation {
                 id: "founder",
-                participation: "enabled",
+                lifecycle: "active",
                 subnet: SubnetExpectation::Present,
             },
             MachineExpectation {
                 id: "joiner",
-                participation: "enabled",
+                lifecycle: "active",
                 subnet: SubnetExpectation::Present,
             },
         ],
