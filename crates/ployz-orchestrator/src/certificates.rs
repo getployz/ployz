@@ -316,24 +316,49 @@ where
 async fn finalize_one<I>(
     store: &StoreDriver,
     issuer: &I,
-    mut record: CertificateRecord,
+    record: CertificateRecord,
     order_url: &str,
 ) -> Result<()>
 where
     I: AcmeIssuer + Sync,
 {
-    let previous_active_version_id = record.active_version_id.clone();
-    match issuer
+    let hostname = record.hostname.clone();
+    let outcome = issuer
         .finalize_order(store, &record.hostname, order_url)
-        .await
-    {
+        .await;
+
+    // Finalization is intentionally background and can run concurrently on
+    // multiple daemons. Only publish the ACME result if the stored row still
+    // represents the same in-flight order we just finalized; otherwise a stale
+    // worker could downgrade an already-active cert or overwrite a newer order.
+    let Some(mut current) = store.get_certificate(&hostname).await? else {
+        tracing::warn!(
+            hostname = %hostname,
+            order_url,
+            "skipping ACME finalization write because certificate row disappeared"
+        );
+        return Ok(());
+    };
+    if !is_same_inflight_order(&current, order_url) {
+        tracing::info!(
+            hostname = %hostname,
+            order_url,
+            current_state = %current.state,
+            current_order_url = ?current.order_url,
+            "skipping stale ACME finalization write"
+        );
+        return Ok(());
+    }
+
+    let previous_active_version_id = current.active_version_id.clone();
+    match outcome {
         Ok(issued) => {
             let now = now_unix_secs();
             let (not_before, not_after) = leaf_validity(&issued.fullchain_pem)
                 .unwrap_or((Some(now), Some(now + CERT_VALIDITY_FALLBACK_SECS)));
             let next_renewal_at = renewal_threshold(not_before, not_after);
             let version_id = Uuid::new_v4().to_string();
-            record.versions.push(CertificateVersion {
+            current.versions.push(CertificateVersion {
                 version_id: version_id.clone(),
                 fullchain_pem: issued.fullchain_pem,
                 private_key_pem: issued.private_key_pem,
@@ -341,27 +366,31 @@ where
                 not_after,
                 issued_at: now,
             });
-            record.active_version_id = Some(version_id);
-            record.state = CertificateState::Active;
-            record.updated_at = now;
-            record.next_renewal_at = next_renewal_at;
-            record.order_url = None;
-            record.last_error = None;
+            current.active_version_id = Some(version_id);
+            current.state = CertificateState::Active;
+            current.updated_at = now;
+            current.next_renewal_at = next_renewal_at;
+            current.order_url = None;
+            current.last_error = None;
         }
         Err(error) => {
             if is_retryable_challenge_visibility(&error) {
-                record.state = CertificateState::Issuing;
+                current.state = CertificateState::Issuing;
             } else {
-                record.state = CertificateState::Failed;
-                record.active_version_id = previous_active_version_id;
-                record.order_url = None;
+                current.state = CertificateState::Failed;
+                current.active_version_id = previous_active_version_id;
+                current.order_url = None;
             }
-            record.updated_at = now_unix_secs();
-            record.last_error = Some(error.to_string());
+            current.updated_at = now_unix_secs();
+            current.last_error = Some(error.to_string());
         }
     }
 
-    store.upsert_certificate(&record).await
+    store.upsert_certificate(&current).await
+}
+
+fn is_same_inflight_order(record: &CertificateRecord, order_url: &str) -> bool {
+    record.state == CertificateState::Issuing && record.order_url.as_deref() == Some(order_url)
 }
 
 fn is_retryable_challenge_visibility(error: &Error) -> bool {
@@ -780,6 +809,31 @@ mod tests {
         finalize_result: Mutex<Option<Result<IssuedCertificate>>>,
     }
 
+    enum FinalizeMutation {
+        Activate {
+            active_version_id: String,
+            fullchain_pem: String,
+            private_key_pem: String,
+        },
+        ReplaceOrder {
+            order_url: String,
+        },
+    }
+
+    struct MutatingFinalizeIssuer {
+        mutation: FinalizeMutation,
+        result: Mutex<Option<Result<IssuedCertificate>>>,
+    }
+
+    impl MutatingFinalizeIssuer {
+        fn new(mutation: FinalizeMutation, result: Result<IssuedCertificate>) -> Self {
+            Self {
+                mutation,
+                result: Mutex::new(Some(result)),
+            }
+        }
+    }
+
     impl FakeIssuer {
         fn new(
             start_result: Result<StartedOrder>,
@@ -816,6 +870,54 @@ mod tests {
             _order_url: &str,
         ) -> Result<IssuedCertificate> {
             self.finalize_result
+                .lock()
+                .expect("finalize_result lock")
+                .take()
+                .unwrap_or_else(|| Err(Error::operation("fake_finalize_order", "exhausted")))
+        }
+    }
+
+    #[async_trait]
+    impl AcmeIssuer for MutatingFinalizeIssuer {
+        async fn start_order(&self, _store: &StoreDriver, _hostname: &str) -> Result<StartedOrder> {
+            Err(Error::operation("fake_start_order", "unused"))
+        }
+
+        async fn finalize_order(
+            &self,
+            store: &StoreDriver,
+            _hostname: &str,
+            _order_url: &str,
+        ) -> Result<IssuedCertificate> {
+            let mut current = store
+                .get_certificate("example.com")
+                .await?
+                .ok_or_else(|| Error::operation("fake_finalize_order", "missing cert"))?;
+            match &self.mutation {
+                FinalizeMutation::Activate {
+                    active_version_id,
+                    fullchain_pem,
+                    private_key_pem,
+                } => {
+                    current.state = CertificateState::Active;
+                    current.order_url = None;
+                    current.active_version_id = Some(active_version_id.clone());
+                    current.versions.push(CertificateVersion {
+                        version_id: active_version_id.clone(),
+                        fullchain_pem: fullchain_pem.clone(),
+                        private_key_pem: private_key_pem.clone(),
+                        not_before: Some(1),
+                        not_after: Some(2),
+                        issued_at: 1,
+                    });
+                }
+                FinalizeMutation::ReplaceOrder { order_url } => {
+                    current.order_url = Some(order_url.clone());
+                    current.updated_at = now_unix_secs();
+                }
+            }
+            store.upsert_certificate(&current).await?;
+            self.result
                 .lock()
                 .expect("finalize_result lock")
                 .take()
@@ -1003,6 +1105,84 @@ mod tests {
         assert_eq!(record.active_version_id.as_deref(), Some("old"));
         assert_eq!(record.versions.len(), 1);
         assert!(record.order_url.is_none());
+    }
+
+    #[tokio::test]
+    async fn stale_finalize_failure_does_not_overwrite_active_certificate() {
+        let store = StoreDriver::memory();
+        let mut record = pending_record("example.com");
+        record.state = CertificateState::Issuing;
+        record.order_url = Some("https://acme/orders/42".into());
+        store
+            .upsert_certificate(&record)
+            .await
+            .expect("issuing cert should persist");
+
+        finalize_one(
+            &store,
+            &MutatingFinalizeIssuer::new(
+                FinalizeMutation::Activate {
+                    active_version_id: "new".into(),
+                    fullchain_pem: "new-chain".into(),
+                    private_key_pem: "new-key".into(),
+                },
+                Err(Error::operation("fake_acme", "late failure")),
+            ),
+            record,
+            "https://acme/orders/42",
+        )
+        .await
+        .expect("stale finalization should be skipped");
+
+        let record = store
+            .get_certificate("example.com")
+            .await
+            .expect("cert lookup should work")
+            .expect("cert record should exist");
+        assert_eq!(record.state, CertificateState::Active);
+        assert_eq!(record.active_version_id.as_deref(), Some("new"));
+        assert_eq!(record.versions.len(), 1);
+        assert!(record.order_url.is_none());
+        assert!(record.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn stale_finalize_success_does_not_overwrite_new_order() {
+        let store = StoreDriver::memory();
+        let mut record = pending_record("example.com");
+        record.state = CertificateState::Issuing;
+        record.order_url = Some("https://acme/orders/42".into());
+        store
+            .upsert_certificate(&record)
+            .await
+            .expect("issuing cert should persist");
+
+        finalize_one(
+            &store,
+            &MutatingFinalizeIssuer::new(
+                FinalizeMutation::ReplaceOrder {
+                    order_url: "https://acme/orders/43".into(),
+                },
+                Ok(IssuedCertificate {
+                    fullchain_pem: "stale-chain".into(),
+                    private_key_pem: "stale-key".into(),
+                }),
+            ),
+            record,
+            "https://acme/orders/42",
+        )
+        .await
+        .expect("stale finalization should be skipped");
+
+        let record = store
+            .get_certificate("example.com")
+            .await
+            .expect("cert lookup should work")
+            .expect("cert record should exist");
+        assert_eq!(record.state, CertificateState::Issuing);
+        assert_eq!(record.order_url.as_deref(), Some("https://acme/orders/43"));
+        assert!(record.active_version_id.is_none());
+        assert!(record.versions.is_empty());
     }
 
     #[tokio::test]
