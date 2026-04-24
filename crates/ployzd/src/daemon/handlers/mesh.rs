@@ -138,6 +138,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn started_mesh_cleanup_removes_active_after_transition_failure() {
+        let (mut state, _, network) = make_active_state().await;
+        assert!(network.is_up(), "mesh should start up for cleanup test");
+
+        state.stop_started_mesh_after_transition_failure().await;
+
+        assert!(state.active.is_none(), "cleanup should clear active mesh");
+        assert!(!network.is_up(), "cleanup should tear down the runtime");
+    }
+
+    #[tokio::test]
     async fn local_transition_fails_without_authoritative_self_record() {
         let identity = Identity::generate(MachineId("founder".into()), [11; 32]);
         let machine_id = identity.machine_id.clone();
