@@ -16,6 +16,8 @@ use crate::metrics::{
     ContainerResourceMetricsSource, DockerContainerResourceMetricsSource,
     spawn_container_resource_metrics_loop,
 };
+use crate::mesh_state::network::NetworkConfig;
+use ployz_types::model::NetworkLifecycle;
 
 pub fn init_tracing() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -188,7 +190,7 @@ async fn run_daemon_inner(
         }
     }
 
-    resume_active_network(&state).await;
+    resume_running_network(&state).await;
     reconcile_startup_operations(&state).await;
 
     tracing::info!(socket = socket_path, "daemon running");
@@ -208,20 +210,59 @@ async fn run_daemon_inner(
     Ok(())
 }
 
-async fn resume_active_network(state: &Arc<RwLock<DaemonState>>) {
-    let active_marker = {
+async fn resume_running_network(state: &Arc<RwLock<DaemonState>>) {
+    let data_dir = {
         let state_guard = state.read().await;
-        state_guard.read_active_marker()
+        state_guard.data_dir.clone()
+    };
+    let networks_dir = data_dir.join("networks");
+    let entries = match std::fs::read_dir(&networks_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            tracing::warn!(?error, path = %networks_dir.display(), "failed to scan network configs during startup resume");
+            return;
+        }
     };
 
-    if let Some(network) = active_marker {
-        tracing::info!(%network, "resuming network");
-        let mut state_guard = state.write().await;
-        match state_guard.start_mesh_by_name(&network).await {
-            Ok(_) => tracing::info!(%network, "resumed network"),
+    let mut running = Vec::new();
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else {
+            continue;
+        };
+        let path = NetworkConfig::path(&data_dir, &name);
+        match NetworkConfig::load(&path) {
+            Ok(config) if config.lifecycle == NetworkLifecycle::Running => running.push(config),
+            Ok(_) => {}
             Err(error) => {
-                tracing::warn!(%error, %network, "failed to resume network");
-                state_guard.clear_active_marker();
+                tracing::warn!(?error, path = %path.display(), "failed to load network config during startup resume");
+            }
+        }
+    }
+
+    let [config] = running.as_slice() else {
+        if running.len() > 1 {
+            let names = running
+                .iter()
+                .map(|config| config.name.0.as_str())
+                .collect::<Vec<_>>();
+            tracing::error!(?names, "multiple network configs are marked running; refusing automatic resume");
+        }
+        return;
+    };
+
+    let network = config.name.0.clone();
+    tracing::info!(%network, "resuming network from persisted lifecycle");
+    let mut state_guard = state.write().await;
+    match state_guard.start_mesh_by_name(&network).await {
+        Ok(_) => tracing::info!(%network, "resumed network"),
+        Err(error) => {
+            tracing::warn!(%error, %network, "failed to resume network");
+            let mut stopped = config.clone();
+            stopped.lifecycle = NetworkLifecycle::Stopped;
+            let path = NetworkConfig::path(&state_guard.data_dir, &network);
+            if let Err(save_error) = stopped.save(&path) {
+                tracing::warn!(?save_error, %network, "failed to persist stopped lifecycle after resume failure");
             }
         }
     }
@@ -346,7 +387,7 @@ mod tests {
         assert!(status_response.ok);
 
         let mesh_down_response = transport
-            .request(DaemonRequest::MeshDown)
+            .request(DaemonRequest::MeshStop { force: false })
             .await
             .expect("mesh down request should return a response");
         assert!(!mesh_down_response.ok);
@@ -356,13 +397,13 @@ mod tests {
             "ployz_daemon_requests_total{lane=\"shared\",outcome=\"ok\",request=\"status\"}"
         ));
         assert!(metrics.contains(
-            "ployz_daemon_requests_total{lane=\"exclusive\",outcome=\"error\",request=\"mesh_down\"}"
+            "ployz_daemon_requests_total{lane=\"exclusive\",outcome=\"error\",request=\"mesh_stop\"}"
         ));
         assert!(metrics.contains(
             "ployz_daemon_request_duration_seconds_count{lane=\"shared\",outcome=\"ok\",request=\"status\"}"
         ));
         assert!(metrics.contains(
-            "ployz_daemon_request_duration_seconds_count{lane=\"exclusive\",outcome=\"error\",request=\"mesh_down\"}"
+            "ployz_daemon_request_duration_seconds_count{lane=\"exclusive\",outcome=\"error\",request=\"mesh_stop\"}"
         ));
 
         daemon.abort();

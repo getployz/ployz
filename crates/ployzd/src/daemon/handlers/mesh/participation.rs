@@ -1,181 +1,228 @@
+use ipnet::Ipv4Net;
+use ployz_api::MachineTransitionGoal;
+use ployz_types::model::MachineLifecycle;
+
 use crate::mesh_state::network::NetworkConfig;
-use ployz_store_api::MachineStore;
 
 use super::{DaemonState, restore_network_config_subnet};
 
+#[derive(Debug)]
+pub(crate) struct TransitionError {
+    pub(super) code: &'static str,
+    pub(super) message: String,
+}
+
+impl TransitionError {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
 impl DaemonState {
-    pub(crate) async fn handle_mesh_set_participation(
+    pub(crate) async fn handle_machine_transition_self(
         &mut self,
-        participation: ployz_types::model::Participation,
+        goal: MachineTransitionGoal,
+        assigned_subnet: Option<Ipv4Net>,
+        force: bool,
     ) -> ployz_api::DaemonResponse {
-        let Some(active) = self.active.as_mut() else {
-            return self.err("NO_RUNNING_NETWORK", "no mesh running");
-        };
-        let now = ployz_types::time::now_unix_secs();
-        let Some(record) = active
-            .mesh
-            .update_authoritative_self_record(|record| {
-                record.participation = participation;
-                record.updated_at = now;
-            })
+        match self
+            .transition_local_machine(goal, assigned_subnet, force)
             .await
-        else {
-            return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
-        };
-        match active.mesh.store.upsert_self_machine(&record).await {
-            Ok(()) => self.ok(format!("participation set to {}", record.participation)),
-            Err(error) => self.err(
-                "STORE_UPDATE_FAILED",
-                format!("failed to persist participation: {error}"),
-            ),
-        }
-    }
-
-    pub(crate) async fn handle_mesh_standby(&mut self, force: bool) -> ployz_api::DaemonResponse {
-        let Some(active) = self.active.as_ref() else {
-            return self.err("NO_RUNNING_NETWORK", "no mesh running");
-        };
-        let network_name = active.config.name.0.clone();
-        let Some(self_record) = active.mesh.authoritative_self_record().await else {
-            return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
-        };
-        if !force && self_record.participation != ployz_types::model::Participation::Draining {
-            let has_local_workloads = match self
-                .runtime_has_local_workloads(&self.identity.machine_id)
-                .await
-            {
-                Ok(value) => value,
-                Err(error) => {
-                    return self.err(
-                        "WORKLOAD_INSPECTION_FAILED",
-                        format!("failed to inspect local workloads before standby: {error}"),
-                    );
-                }
-            };
-            if has_local_workloads {
-                return self.err(
-                    "MACHINE_NOT_DRAINED",
-                    "machine must be draining before standby; rerun with --force to bypass",
-                );
-            }
-        }
-        let now = ployz_types::time::now_unix_secs();
         {
-            let Some(active) = self.active.as_ref() else {
-                return self.err("NO_RUNNING_NETWORK", "no mesh running");
-            };
-            let Some(record) = active
-                .mesh
-                .update_authoritative_self_record(|record| {
-                    record.participation = ployz_types::model::Participation::Disabled;
-                    record.updated_at = now;
-                })
-                .await
-            else {
-                return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
-            };
-            let _ = record;
+            Ok(message) => self.ok(message),
+            Err(error) => self.err(error.code, error.message),
         }
-        let config_path = NetworkConfig::path(&self.data_dir, &network_name);
-        let mut config = match NetworkConfig::load(&config_path) {
-            Ok(config) => config,
-            Err(error) => {
-                return self.err("IO_ERROR", format!("load network config: {error}"));
-            }
-        };
-        let previous_subnet = config.subnet;
-        config.subnet = None;
-        if let Err(error) = config.save(&config_path) {
-            return self.err("IO_ERROR", format!("save network config: {error}"));
-        }
-        if let Err(error) = self.restart_active_runtime_from_config(&network_name).await {
-            let rollback_error =
-                restore_network_config_subnet(&config_path, &mut config, previous_subnet).err();
-            return self.err(
-                "NETWORK_RESTART_FAILED",
-                match rollback_error {
-                    Some(rollback_error) => {
-                        format!(
-                            "failed to enter standby: {error}; failed to restore config: {rollback_error}"
-                        )
-                    }
-                    None => format!("failed to enter standby: {error}"),
-                },
-            );
-        }
-        let Some(active) = self.active.as_mut() else {
-            return self.err("NO_RUNNING_NETWORK", "no mesh running");
-        };
-        let Some(record) = active
-            .mesh
-            .update_authoritative_self_record(|record| {
-                record.participation = ployz_types::model::Participation::Disabled;
-                record.subnet = None;
-                record.status = ployz_types::model::MachineStatus::Up;
-                record.updated_at = now;
-            })
-            .await
-        else {
-            return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
-        };
-        active.config.subnet = None;
-        let _ = record;
-        self.ok("machine entered standby")
     }
 
-    pub(crate) async fn handle_mesh_promote(
+    pub(crate) async fn transition_local_machine(
         &mut self,
-        assigned_subnet: ipnet::Ipv4Net,
-    ) -> ployz_api::DaemonResponse {
-        let Some(active) = self.active.as_ref() else {
-            return self.err("NO_RUNNING_NETWORK", "no mesh running");
+        goal: MachineTransitionGoal,
+        assigned_subnet: Option<Ipv4Net>,
+        force: bool,
+    ) -> Result<String, TransitionError> {
+        let (network_name, current) = {
+            let Some(active) = self.active.as_ref() else {
+                return Err(TransitionError::new("NO_RUNNING_NETWORK", "no mesh running"));
+            };
+            let Some(self_record) = active.mesh.authoritative_self_record().await else {
+                return Err(TransitionError::new(
+                    "SELF_RECORD_MISSING",
+                    "mesh self record unavailable",
+                ));
+            };
+            (active.config.name.0.clone(), self_record)
         };
-        let network_name = active.config.name.0.clone();
-        let config_path = NetworkConfig::path(&self.data_dir, &network_name);
-        let mut config = match NetworkConfig::load(&config_path) {
-            Ok(config) => config,
-            Err(error) => {
-                return self.err("IO_ERROR", format!("load network config: {error}"));
+
+        match goal {
+            MachineTransitionGoal::Activate => {
+                let Some(assigned_subnet) = assigned_subnet else {
+                    return Err(TransitionError::new(
+                        "INVALID_ARGUMENT",
+                        "machine activate requires an assigned subnet",
+                    ));
+                };
+                if current.lifecycle == MachineLifecycle::Active
+                    && current.subnet == Some(assigned_subnet)
+                {
+                    return Ok(format!("machine already active with subnet {assigned_subnet}"));
+                }
+                if current.lifecycle == MachineLifecycle::Draining {
+                    return Err(TransitionError::new(
+                        "INVALID_TRANSITION",
+                        "cannot activate a draining machine without first entering standby",
+                    ));
+                }
+
+                let config_path = NetworkConfig::path(&self.data_dir, &network_name);
+                let mut config = NetworkConfig::load(&config_path).map_err(|error| {
+                    TransitionError::new("IO_ERROR", format!("load network config: {error}"))
+                })?;
+                let previous_subnet = config.subnet;
+                config.subnet = Some(assigned_subnet);
+                config.save(&config_path).map_err(|error| {
+                    TransitionError::new("IO_ERROR", format!("save network config: {error}"))
+                })?;
+                if previous_subnet != Some(assigned_subnet)
+                    && let Err(error) = self.restart_active_runtime_from_config(&network_name).await
+                {
+                    let rollback_error =
+                        restore_network_config_subnet(&config_path, &mut config, previous_subnet)
+                            .err();
+                    return Err(TransitionError::new(
+                        "NETWORK_RESTART_FAILED",
+                        match rollback_error {
+                            Some(rollback_error) => format!(
+                                "failed to activate machine: {error}; failed to restore config: {rollback_error}"
+                            ),
+                            None => format!("failed to activate machine: {error}"),
+                        },
+                    ));
+                }
+
+                let now = ployz_types::time::now_unix_secs();
+                let Some(active) = self.active.as_mut() else {
+                    return Err(TransitionError::new(
+                        "NO_RUNNING_NETWORK",
+                        "no mesh running",
+                    ));
+                };
+                let Some(record) = active
+                    .mesh
+                    .update_authoritative_self_record(|record| {
+                        record.lifecycle = MachineLifecycle::Active;
+                        record.subnet = Some(assigned_subnet);
+                        record.updated_at = now;
+                    })
+                    .await
+                else {
+                    return Err(TransitionError::new(
+                        "SELF_RECORD_MISSING",
+                        "mesh self record unavailable",
+                    ));
+                };
+                active.config.subnet = Some(assigned_subnet);
+                Ok(format!(
+                    "machine '{}' activated with subnet {}",
+                    record.id, assigned_subnet
+                ))
             }
-        };
-        let previous_subnet = config.subnet;
-        config.subnet = Some(assigned_subnet);
-        if let Err(error) = config.save(&config_path) {
-            return self.err("IO_ERROR", format!("save network config: {error}"));
+            MachineTransitionGoal::Drain => {
+                if current.lifecycle == MachineLifecycle::Draining {
+                    return Ok(format!("machine '{}' already draining", current.id));
+                }
+                if current.lifecycle == MachineLifecycle::Standby {
+                    return Err(TransitionError::new(
+                        "INVALID_TRANSITION",
+                        "cannot drain a standby machine",
+                    ));
+                }
+
+                let now = ployz_types::time::now_unix_secs();
+                let Some(active) = self.active.as_mut() else {
+                    return Err(TransitionError::new(
+                        "NO_RUNNING_NETWORK",
+                        "no mesh running",
+                    ));
+                };
+                let Some(record) = active
+                    .mesh
+                    .update_authoritative_self_record(|record| {
+                        record.lifecycle = MachineLifecycle::Draining;
+                        record.updated_at = now;
+                    })
+                    .await
+                else {
+                    return Err(TransitionError::new(
+                        "SELF_RECORD_MISSING",
+                        "mesh self record unavailable",
+                    ));
+                };
+                Ok(format!("machine '{}' draining", record.id))
+            }
+            MachineTransitionGoal::Standby => {
+                if current.lifecycle == MachineLifecycle::Standby && current.subnet.is_none() {
+                    return Ok(format!("machine '{}' already standby", current.id));
+                }
+                if !force && current.lifecycle != MachineLifecycle::Draining {
+                    return Err(TransitionError::new(
+                        "INVALID_TRANSITION",
+                        "machine must be draining before standby; rerun with --force to bypass",
+                    ));
+                }
+
+                let config_path = NetworkConfig::path(&self.data_dir, &network_name);
+                let mut config = NetworkConfig::load(&config_path).map_err(|error| {
+                    TransitionError::new("IO_ERROR", format!("load network config: {error}"))
+                })?;
+                let previous_subnet = config.subnet;
+                config.subnet = None;
+                config.save(&config_path).map_err(|error| {
+                    TransitionError::new("IO_ERROR", format!("save network config: {error}"))
+                })?;
+                if previous_subnet.is_some()
+                    && let Err(error) = self.restart_active_runtime_from_config(&network_name).await
+                {
+                    let rollback_error =
+                        restore_network_config_subnet(&config_path, &mut config, previous_subnet)
+                            .err();
+                    return Err(TransitionError::new(
+                        "NETWORK_RESTART_FAILED",
+                        match rollback_error {
+                            Some(rollback_error) => format!(
+                                "failed to enter standby: {error}; failed to restore config: {rollback_error}"
+                            ),
+                            None => format!("failed to enter standby: {error}"),
+                        },
+                    ));
+                }
+
+                let now = ployz_types::time::now_unix_secs();
+                let Some(active) = self.active.as_mut() else {
+                    return Err(TransitionError::new(
+                        "NO_RUNNING_NETWORK",
+                        "no mesh running",
+                    ));
+                };
+                let Some(record) = active
+                    .mesh
+                    .update_authoritative_self_record(|record| {
+                        record.lifecycle = MachineLifecycle::Standby;
+                        record.subnet = None;
+                        record.updated_at = now;
+                    })
+                    .await
+                else {
+                    return Err(TransitionError::new(
+                        "SELF_RECORD_MISSING",
+                        "mesh self record unavailable",
+                    ));
+                };
+                active.config.subnet = None;
+                Ok(format!("machine '{}' entered standby", record.id))
+            }
         }
-        if let Err(error) = self.restart_active_runtime_from_config(&network_name).await {
-            let rollback_error =
-                restore_network_config_subnet(&config_path, &mut config, previous_subnet).err();
-            return self.err(
-                "NETWORK_RESTART_FAILED",
-                match rollback_error {
-                    Some(rollback_error) => {
-                        format!(
-                            "failed to promote machine: {error}; failed to restore config: {rollback_error}"
-                        )
-                    }
-                    None => format!("failed to promote machine: {error}"),
-                },
-            );
-        }
-        let Some(active) = self.active.as_mut() else {
-            return self.err("NO_RUNNING_NETWORK", "no mesh running");
-        };
-        let now = ployz_types::time::now_unix_secs();
-        let Some(record) = active
-            .mesh
-            .update_authoritative_self_record(|record| {
-                record.participation = ployz_types::model::Participation::Disabled;
-                record.subnet = Some(assigned_subnet);
-                record.status = ployz_types::model::MachineStatus::Up;
-                record.updated_at = now;
-            })
-            .await
-        else {
-            return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
-        };
-        active.config.subnet = Some(assigned_subnet);
-        let _ = record;
-        self.ok(format!("machine promoted with subnet {}", assigned_subnet))
     }
 }

@@ -48,8 +48,6 @@ pub enum StartMeshError {
     Gateway(String),
     #[error("dns start failed: {0}")]
     Dns(String),
-    #[error("active marker persist failed: {0}")]
-    ActiveMarkerPersist(String),
 }
 
 struct StartPlan {
@@ -241,12 +239,8 @@ impl MeshStartTx {
         Ok(())
     }
 
-    /// Commit: persist the active marker, then publish the active mesh into daemon state.
+    /// Commit: publish the active mesh into daemon state.
     async fn publish_active(&mut self, state: &mut DaemonState) -> Result<(), StartMeshError> {
-        state
-            .write_active_marker(&self.config.name.0)
-            .map_err(|error| StartMeshError::ActiveMarkerPersist(error.to_string()))?;
-
         let Some(mesh) = self.mesh.take() else {
             return Err(StartMeshError::MeshUp(
                 "startup transaction missing mesh at commit".into(),
@@ -638,22 +632,6 @@ mod tests {
         assert!(state.active.is_some());
 
         teardown_active_mesh(&mut state).await;
-    }
-
-    #[tokio::test]
-    async fn start_mesh_rolls_back_when_active_marker_persist_fails() {
-        let mut state = make_test_state("127.0.0.1:8080");
-        let config = make_network_config(&state, "alpha");
-
-        fs::create_dir_all(state.active_marker_path()).expect("create marker dir");
-
-        let error = state
-            .start_mesh(config, None, MeshStartOptions::default())
-            .await
-            .expect_err("mesh start should fail");
-
-        assert!(matches!(error, StartMeshError::ActiveMarkerPersist(_)));
-        assert!(state.active.is_none());
     }
 
     fn make_state(

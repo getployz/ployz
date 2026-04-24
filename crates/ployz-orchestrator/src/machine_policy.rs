@@ -1,4 +1,4 @@
-use crate::model::{MachineId, MachineRecord, Participation};
+use crate::model::{MachineId, MachineLifecycle, MachineRecord};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticRole {
@@ -8,24 +8,24 @@ pub enum DiagnosticRole {
 
 #[must_use]
 pub fn is_new_placement_candidate(machine: &MachineRecord) -> bool {
-    machine.participation == Participation::Enabled
+    machine.lifecycle == MachineLifecycle::Active
 }
 
 #[must_use]
 pub fn can_keep_existing_slot(machine: &MachineRecord) -> bool {
-    match machine.participation {
-        Participation::Enabled | Participation::Draining => true,
-        Participation::Disabled => false,
-    }
+    matches!(
+        machine.lifecycle,
+        MachineLifecycle::Active | MachineLifecycle::Draining
+    )
 }
 
 #[must_use]
 pub fn is_coordination_peer(machine: &MachineRecord, self_id: &MachineId) -> bool {
     machine.id != *self_id
-        && match machine.participation {
-            Participation::Enabled | Participation::Draining => true,
-            Participation::Disabled => false,
-        }
+        && matches!(
+            machine.lifecycle,
+            MachineLifecycle::Active | MachineLifecycle::Draining
+        )
 }
 
 #[must_use]
@@ -48,9 +48,9 @@ pub fn diagnostic_role(
         return None;
     }
 
-    Some(match machine.participation {
-        Participation::Enabled | Participation::Draining => DiagnosticRole::Blocking,
-        Participation::Disabled => DiagnosticRole::Informational,
+    Some(match machine.lifecycle {
+        MachineLifecycle::Active | MachineLifecycle::Draining => DiagnosticRole::Blocking,
+        MachineLifecycle::Standby => DiagnosticRole::Informational,
     })
 }
 
@@ -65,11 +65,11 @@ pub fn placement_candidates(machines: &[MachineRecord]) -> Vec<&MachineRecord> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{MachineStatus, OverlayIp, PublicKey};
+    use crate::model::{OverlayIp, PublicKey};
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
 
-    fn machine(id: &str, participation: Participation) -> MachineRecord {
+    fn machine(id: &str, lifecycle: MachineLifecycle) -> MachineRecord {
         MachineRecord {
             id: MachineId(id.into()),
             public_key: PublicKey([1; 32]),
@@ -78,8 +78,7 @@ mod tests {
             subnet: None,
             bridge_ip: None,
             endpoints: Vec::new(),
-            status: MachineStatus::Unknown,
-            participation,
+            lifecycle,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -88,27 +87,24 @@ mod tests {
 
     #[test]
     fn enabled_is_new_placement_candidate() {
-        assert!(is_new_placement_candidate(&machine(
-            "enabled",
-            Participation::Enabled
-        )));
+        assert!(is_new_placement_candidate(&machine("enabled", MachineLifecycle::Active)));
         assert!(!is_new_placement_candidate(&machine(
             "draining",
-            Participation::Draining
+            MachineLifecycle::Draining
         )));
         assert!(!is_new_placement_candidate(&machine(
             "disabled",
-            Participation::Disabled
+            MachineLifecycle::Standby
         )));
     }
 
     #[test]
     fn coordination_peers_include_draining_and_exclude_disabled() {
         let machines = vec![
-            machine("self", Participation::Enabled),
-            machine("enabled", Participation::Enabled),
-            machine("draining", Participation::Draining),
-            machine("disabled", Participation::Disabled),
+            machine("self", MachineLifecycle::Active),
+            machine("enabled", MachineLifecycle::Active),
+            machine("draining", MachineLifecycle::Draining),
+            machine("disabled", MachineLifecycle::Standby),
         ];
 
         let peers = coordination_peers(&machines, &MachineId("self".into()));
@@ -119,24 +115,18 @@ mod tests {
     #[test]
     fn diagnostic_role_marks_disabled_as_informational() {
         assert_eq!(
-            diagnostic_role(
-                &machine("enabled", Participation::Enabled),
-                &MachineId("self".into())
-            ),
+            diagnostic_role(&machine("enabled", MachineLifecycle::Active), &MachineId("self".into())),
             Some(DiagnosticRole::Blocking)
         );
         assert_eq!(
             diagnostic_role(
-                &machine("disabled", Participation::Disabled),
+                &machine("disabled", MachineLifecycle::Standby),
                 &MachineId("self".into())
             ),
             Some(DiagnosticRole::Informational)
         );
         assert_eq!(
-            diagnostic_role(
-                &machine("self", Participation::Enabled),
-                &MachineId("self".into())
-            ),
+            diagnostic_role(&machine("self", MachineLifecycle::Active), &MachineId("self".into())),
             None
         );
     }

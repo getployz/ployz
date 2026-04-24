@@ -148,27 +148,8 @@ impl DaemonState {
     }
 
     #[must_use]
-    pub fn active_marker_path(&self) -> PathBuf {
-        self.data_dir.join("active_network")
-    }
-
-    #[must_use]
     pub fn network_dir(&self, network: &str) -> PathBuf {
         NetworkConfig::dir(&self.data_dir, network)
-    }
-
-    #[must_use]
-    pub fn read_active_marker(&self) -> Option<String> {
-        NetworkConfig::read_active_network(&self.data_dir)
-    }
-
-    pub fn write_active_marker(&self, network: &str) -> std::io::Result<()> {
-        std::fs::create_dir_all(&self.data_dir)?;
-        std::fs::write(self.active_marker_path(), network)
-    }
-
-    pub fn clear_active_marker(&self) {
-        let _ = std::fs::remove_file(self.active_marker_path());
     }
 
     pub fn ok(&self, message: impl Into<String>) -> DaemonResponse {

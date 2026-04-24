@@ -72,7 +72,6 @@ fn apply_mutation(record: &mut MachineRecord, mutation: SelfRecordMutation) {
     match mutation {
         SelfRecordMutation::PublishUp { bridge_ip } => {
             let now = crate::time::now_unix_secs();
-            record.status = crate::model::MachineStatus::Up;
             if record.created_at == 0 {
                 record.created_at = now;
             }
@@ -90,7 +89,7 @@ fn apply_mutation(record: &mut MachineRecord, mutation: SelfRecordMutation) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{MachineId, MachineStatus, Participation, PublicKey};
+    use crate::model::{MachineId, MachineLifecycle, PublicKey};
     use ployz_store_api::memory::{MemoryService, MemoryStore};
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
@@ -104,8 +103,7 @@ mod tests {
             control_target: None,
             bridge_ip: None,
             endpoints: vec!["127.0.0.1:51820".into()],
-            status: MachineStatus::Unknown,
-            participation: Participation::Disabled,
+            lifecycle: MachineLifecycle::Standby,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -135,7 +133,7 @@ mod tests {
 
         let record = authoritative_self.read().await.clone();
         assert_eq!(record.endpoints, vec!["127.0.0.1:51820".to_string()]);
-        assert_eq!(record.status, MachineStatus::Up);
+        assert_eq!(record.lifecycle, MachineLifecycle::Standby);
         assert!(record.updated_at > 0);
     }
 }

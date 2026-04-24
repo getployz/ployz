@@ -78,10 +78,4 @@ impl DaemonState {
     pub(crate) fn runtime_is_memory_test(&self) -> bool {
         self.runtime_profile.is_memory_test()
     }
-    pub(crate) async fn runtime_has_local_workloads(
-        &self,
-        machine_id: &MachineId,
-    ) -> Result<bool, String> {
-        self.runtime_profile.has_local_workloads(machine_id).await
-    }
 }
