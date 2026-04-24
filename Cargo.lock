@@ -2706,6 +2706,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
+name = "ployz"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "ployz-config",
+ "ployz-install",
+]
+
+[[package]]
 name = "ployz-api"
 version = "0.1.0"
 dependencies = [
@@ -2774,6 +2783,7 @@ dependencies = [
  "libc",
  "ployz-config",
  "ployz-corrosion",
+ "ployz-dns-config",
  "ployz-metrics",
  "ployz-store-api",
  "ployz-types",
@@ -2782,6 +2792,15 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "ployz-dns-config"
+version = "0.1.0"
+dependencies = [
+ "ployz-config",
+ "ployz-types",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2809,6 +2828,7 @@ dependencies = [
  "pingora",
  "ployz-config",
  "ployz-corrosion",
+ "ployz-gateway-config",
  "ployz-metrics",
  "ployz-store-api",
  "ployz-types",
@@ -2819,6 +2839,22 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "ployz-gateway-config"
+version = "0.1.0"
+dependencies = [
+ "ployz-config",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "ployz-install"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "ployz-config",
 ]
 
 [[package]]
@@ -2954,8 +2990,9 @@ dependencies = [
  "ployz-api",
  "ployz-config",
  "ployz-corrosion",
- "ployz-dns",
- "ployz-gateway",
+ "ployz-dns-config",
+ "ployz-gateway-config",
+ "ployz-install",
  "ployz-metrics",
  "ployz-orchestrator",
  "ployz-runtime-api",

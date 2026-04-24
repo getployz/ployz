@@ -4,7 +4,9 @@ use std::process::Command;
 use std::sync::Mutex;
 use std::time::SystemTime;
 use tokio::time::Instant;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
+#[cfg(not(target_os = "linux"))]
+use tracing::warn;
 
 use defguard_wireguard_rs::key::Key;
 use defguard_wireguard_rs::net::IpAddrMask;

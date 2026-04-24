@@ -13,7 +13,11 @@ members = [
     "crates/ployz-e2e",
     "crates/ployz-corrosion",
     "crates/ployz-gateway",
+    "crates/ployz-gateway-config",
     "crates/ployz-dns",
+    "crates/ployz-dns-config",
+    "crates/ployz-install",
+    "crates/ployz",
     "crates/ebpf-common",
     "crates/ployz-bpfctl",
 ]
@@ -31,7 +35,11 @@ default-members = [
     "crates/ployz-e2e",
     "crates/ployz-corrosion",
     "crates/ployz-gateway",
+    "crates/ployz-gateway-config",
     "crates/ployz-dns",
+    "crates/ployz-dns-config",
+    "crates/ployz-install",
+    "crates/ployz",
     "crates/ebpf-common",
 ]
 resolver = "3"

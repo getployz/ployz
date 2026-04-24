@@ -1,8 +1,7 @@
 use super::labels::{
     LABEL_KEY, LABEL_KIND, LABEL_MANAGED, LABEL_PARENT_ID, LEGACY_LABEL_CONFIG_HASH,
 };
-use super::spec::{ObservedContainer, RuntimeContainerSpec};
-use bollard::models::{RestartPolicy, RestartPolicyNameEnum};
+use super::spec::{ObservedContainer, RestartPolicy, RestartPolicyName, RuntimeContainerSpec};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChangedField {
@@ -229,9 +228,8 @@ fn restart_policy_equal(observed: Option<&RestartPolicy>, desired: Option<&Resta
 fn normalize_restart_policy(policy: Option<&RestartPolicy>) -> Option<RestartPolicy> {
     let policy = policy?;
 
-    let name = policy.name.as_ref();
     let maximum_retry_count = policy.maximum_retry_count;
-    if name == Some(&RestartPolicyNameEnum::NO) && maximum_retry_count.unwrap_or(0) == 0 {
+    if policy.name == Some(RestartPolicyName::No) && maximum_retry_count.unwrap_or(0) == 0 {
         return None;
     }
 
@@ -263,7 +261,6 @@ fn sorted_eq(a: &[String], b: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bollard::models::{RestartPolicy, RestartPolicyNameEnum};
     use std::collections::HashMap;
 
     fn base_observed() -> ObservedContainer {
@@ -439,7 +436,7 @@ mod tests {
     fn default_restart_policy_is_equivalent_to_none() {
         let mut observed = base_observed();
         observed.restart_policy = Some(RestartPolicy {
-            name: Some(RestartPolicyNameEnum::NO),
+            name: Some(RestartPolicyName::No),
             maximum_retry_count: Some(0),
         });
         let desired = base_spec();
@@ -451,7 +448,7 @@ mod tests {
     fn explicit_restart_policy_mismatch_is_drifted() {
         let mut observed = base_observed();
         observed.restart_policy = Some(RestartPolicy {
-            name: Some(RestartPolicyNameEnum::ALWAYS),
+            name: Some(RestartPolicyName::Always),
             maximum_retry_count: None,
         });
         let desired = base_spec();

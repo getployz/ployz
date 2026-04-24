@@ -1,12 +1,12 @@
 mod manifest;
 mod paths;
+mod platform;
 mod render;
 mod service;
 mod sys;
 
 use std::path::{Path, PathBuf};
 
-use crate::platform::{HostPlatform, validate_runtime};
 use paths::{
     ClientPaths, ConfigTarget, client_paths, resolve_config_target, resolve_manifest_path,
 };
@@ -15,6 +15,7 @@ use render::write_client_config;
 use service::{ensure_user_service, install_system_service, promote_system_binaries, user_backend};
 
 use self::manifest::validate_install_manifest;
+pub use self::platform::{HostPlatform, validate_runtime};
 
 const SERVICE_LABEL: &str = "dev.ployz.ployzd";
 const INSTALL_DIR_NAME: &str = "install";
