@@ -1,12 +1,13 @@
 use std::net::{IpAddr, SocketAddr};
 
 use ployz_api::{
-    DaemonPayload, DaemonRequest, DaemonResponse, MeshReadyPayload, MeshSelfRecordPayload,
+    DaemonPayload, DaemonRequest, DaemonResponse, MachineTransitionGoal, MeshReadyPayload,
+    MeshSelfRecordPayload,
 };
 use ployz_sdk::Transport;
 use ployz_store_api::StoreDriver;
 use ployz_types::model::{
-    JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineRecord, OverlayIp, Participation,
+    JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineLifecycle, MachineRecord, OverlayIp,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -198,7 +199,11 @@ async fn rollback_remote_enable(overlay_ip: OverlayIp, peer_rpc_port: u16) -> Re
     overlay_rpc_expect_ok(
         overlay_ip,
         peer_rpc_port,
-        DaemonRequest::MeshStandby { force: true },
+        DaemonRequest::MachineTransitionSelf {
+            goal: MachineTransitionGoal::Standby,
+            assigned_subnet: None,
+            force: true,
+        },
     )
     .await
 }
@@ -288,7 +293,7 @@ pub(super) async fn wait_for_overlay_ready(
 pub(super) async fn wait_for_machine_projection(
     store: &StoreDriver,
     machine_id: &MachineId,
-    expected_participation: Participation,
+    expected_lifecycle: MachineLifecycle,
     expected_subnet: ExpectedSubnetState,
 ) -> Result<(), String> {
     let deadline = Instant::now() + MACHINE_STATE_SYNC_TIMEOUT;
@@ -309,7 +314,7 @@ pub(super) async fn wait_for_machine_projection(
             ExpectedSubnetState::Present => record.subnet.is_some(),
             ExpectedSubnetState::Absent => record.subnet.is_none(),
         };
-        if record.participation == expected_participation && subnet_matches {
+        if record.lifecycle == expected_lifecycle && subnet_matches {
             return Ok(());
         }
 
@@ -324,8 +329,8 @@ pub(super) async fn wait_for_machine_projection(
                 "absent"
             };
             return Err(format!(
-                "timed out waiting for machine '{}' to reach participation='{}' subnet={expected_subnet}; observed participation='{}' subnet={actual_subnet}",
-                machine_id, expected_participation, record.participation,
+                "timed out waiting for machine '{}' to reach lifecycle='{}' subnet={expected_subnet}; observed lifecycle='{}' subnet={actual_subnet}",
+                machine_id, expected_lifecycle, record.lifecycle,
             ));
         }
 

@@ -16,18 +16,18 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
 
     run.log_progress("add peer from founder");
     run.machine_add("founder", "peer")?;
-    run.log_progress("wait founder+peer enabled");
+    run.log_progress("wait founder+peer active");
     run.wait_machine_rows(
         "founder",
         &[
             MachineExpectation {
                 id: "founder",
-                participation: "enabled",
+                lifecycle: "active",
                 subnet: SubnetExpectation::Present,
             },
             MachineExpectation {
                 id: "peer",
-                participation: "enabled",
+                lifecycle: "active",
                 subnet: SubnetExpectation::Present,
             },
         ],
@@ -36,36 +36,36 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
     run.wait_mesh_ready_name("peer")?;
 
     run.log_progress("wait initial peer connectivity");
-    wait_for_doctor_peer_status(run, "founder", "peer", "healthy", "reachable")?;
-    wait_for_doctor_peer_status(run, "peer", "founder", "healthy", "reachable")?;
+    wait_for_doctor_peer_status(run, "founder", "peer", "healthy", "active", "reachable")?;
+    wait_for_doctor_peer_status(run, "peer", "founder", "healthy", "active", "reachable")?;
 
     run.log_progress("install partition");
     run.partition_groups(&founder_side, &peer_side)?;
     run.log_progress("wait peer connectivity to drop");
-    wait_for_doctor_peer_status(run, "founder", "peer", "blocked", "unreachable")?;
-    wait_for_doctor_peer_status(run, "peer", "founder", "blocked", "unreachable")?;
+    wait_for_doctor_peer_status(run, "founder", "peer", "blocked", "active", "unreachable")?;
+    wait_for_doctor_peer_status(run, "peer", "founder", "blocked", "active", "unreachable")?;
 
     run.log_progress("clear partition");
     run.clear_partition_rules()?;
-    run.log_progress("wait founder+peer enabled again");
+    run.log_progress("wait founder+peer active again");
     run.wait_machine_rows(
         "founder",
         &[
             MachineExpectation {
                 id: "founder",
-                participation: "enabled",
+                lifecycle: "active",
                 subnet: SubnetExpectation::Present,
             },
             MachineExpectation {
                 id: "peer",
-                participation: "enabled",
+                lifecycle: "active",
                 subnet: SubnetExpectation::Present,
             },
         ],
     )?;
     run.log_progress("wait peer connectivity to reconnect");
-    wait_for_doctor_peer_status(run, "founder", "peer", "healthy", "reachable")?;
-    wait_for_doctor_peer_status(run, "peer", "founder", "healthy", "reachable")?;
+    wait_for_doctor_peer_status(run, "founder", "peer", "healthy", "active", "reachable")?;
+    wait_for_doctor_peer_status(run, "peer", "founder", "healthy", "active", "reachable")?;
     run.log_progress("scenario complete");
     Ok(())
 }
@@ -74,7 +74,8 @@ fn wait_for_doctor_peer_status(
     run: &ScenarioRun,
     node_name: &str,
     peer_name: &str,
-    participation: &str,
+    overall_lifecycle: &str,
+    peer_lifecycle: &str,
     probe_status: &str,
 ) -> Result<()> {
     let mut last_report = String::new();
@@ -87,11 +88,17 @@ fn wait_for_doctor_peer_status(
         }
 
         last_report = output.stdout;
-        doctor_report_matches(&last_report, peer_name, participation, probe_status)
+        doctor_report_matches(
+            &last_report,
+            peer_name,
+            overall_lifecycle,
+            peer_lifecycle,
+            probe_status,
+        )
     })
     .map_err(|error| {
         Error::Message(format!(
-            "doctor on {node_name} did not report peer '{peer_name}' as participation={participation} probe={probe_status}: {error}\nlast report:\n{last_report}"
+            "doctor on {node_name} did not report peer '{peer_name}' as overall={overall_lifecycle} lifecycle={peer_lifecycle} probe={probe_status}: {error}\nlast report:\n{last_report}"
         ))
     })
 }
@@ -99,7 +106,8 @@ fn wait_for_doctor_peer_status(
 fn doctor_report_matches(
     report: &str,
     peer_name: &str,
-    participation: &str,
+    overall_lifecycle: &str,
+    peer_lifecycle: &str,
     probe_status: &str,
 ) -> Result<bool> {
     let response = parse_daemon_json_response(report)?;
@@ -111,20 +119,20 @@ fn doctor_report_matches(
             "doctor response missing doctor payload",
         )));
     };
-    if payload.overall.participation != participation {
+    if payload.overall.lifecycle != overall_lifecycle {
         return Ok(false);
     }
 
     Ok(payload.peers.iter().any(|peer| {
-        let blocking_matches = match participation {
+        let blocking_matches = match overall_lifecycle {
             "blocked" => peer.blocking,
             "healthy" => !peer.blocking,
             _ => false,
         };
         peer.machine_id == peer_name
             && blocking_matches
-            && peer.store_participation == "enabled"
-            && peer.store_status == "up"
+            && peer.store_lifecycle == peer_lifecycle
+            && peer.wg_state != "absent"
             && peer.probe_state == probe_status
     }))
 }

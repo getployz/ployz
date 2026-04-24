@@ -4,7 +4,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
 use crate::mesh::MeshNetwork;
-use crate::model::{MachineId, MachineRecord, MachineStatus, Participation};
+use crate::model::{MachineId, MachineLifecycle, MachineRecord};
 use std::sync::Arc;
 
 use super::map::PeerStateMap;
@@ -40,8 +40,7 @@ fn peer_state_to_planned_record(ps: &PeerState, selected_endpoint: Option<&str>)
         subnet: ps.subnet,
         bridge_ip: ps.bridge_ip,
         endpoints: ps.planned_endpoints(selected_endpoint),
-        status: MachineStatus::Unknown,
-        participation: Participation::Disabled,
+        lifecycle: MachineLifecycle::Standby,
         created_at: 0,
         updated_at: 0,
         labels: std::collections::BTreeMap::new(),

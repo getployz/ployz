@@ -1,7 +1,7 @@
 use ipnet::Ipv4Net;
-use ployz_api::{DaemonRequest, MeshBootstrapRequest};
+use ployz_api::{DaemonRequest, MachineTransitionGoal, MeshBootstrapRequest};
 use ployz_store_api::MachineStore;
-use ployz_types::model::{MachineRecord, Participation, PublicKey};
+use ployz_types::model::{MachineLifecycle, MachineRecord, PublicKey};
 
 use super::super::operations::{
     MachineOperationRecord, MachineOperationStatus, MachineOperationStore,
@@ -229,17 +229,19 @@ pub(super) async fn run_machine_add_target(
         };
     }
 
-    tracing::info!(%target, joiner_id = %machine_id, "machine add target: enabling participation");
+    tracing::info!(%target, joiner_id = %machine_id, "machine add target: activating lifecycle");
     if let Err(err) = overlay_rpc_expect_ok(
         joiner_overlay_ip,
         subnet_claim.peer_rpc_port,
-        DaemonRequest::MeshSetParticipation {
-            participation: Participation::Enabled,
+        DaemonRequest::MachineTransitionSelf {
+            goal: MachineTransitionGoal::Activate,
+            assigned_subnet: Some(subnet_claim.subnet()),
+            force: false,
         },
     )
     .await
     {
-        tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: enable participation failed");
+        tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: activate lifecycle failed");
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
             &mut operation,
@@ -252,16 +254,16 @@ pub(super) async fn run_machine_add_target(
         };
     }
 
-    tracing::info!(%target, joiner_id = %machine_id, "machine add target: waiting for participation projection");
+    tracing::info!(%target, joiner_id = %machine_id, "machine add target: waiting for lifecycle projection");
     if let Err(err) = wait_for_machine_projection(
         &context.store,
         &machine_id,
-        Participation::Enabled,
+        MachineLifecycle::Active,
         ExpectedSubnetState::Present,
     )
     .await
     {
-        tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: participation projection failed");
+        tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: lifecycle projection failed");
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
             &mut operation,
@@ -275,7 +277,7 @@ pub(super) async fn run_machine_add_target(
     }
     stage = MachineAddStage::Enabled;
     let _ = operation_store.update_stage(&mut operation, stage.to_string());
-    tracing::info!(%target, joiner_id = %machine_id, "machine add target: participation enabled");
+    tracing::info!(%target, joiner_id = %machine_id, "machine add target: lifecycle active");
 
     if let Err(err) = assert_subnet_unique(&context.store, &machine_id, subnet_claim.subnet()).await
     {
