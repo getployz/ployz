@@ -340,11 +340,11 @@ build_binaries() {
       "${REPO_DIR}/scripts/install-ebpf-bytecode.sh"
     fi
     cargo build "${cargo_args[@]}" -p ployzd --features ebpf-native --bins
-    cargo build "${cargo_args[@]}" -p ployz-gateway -p ployz-dns
+    cargo build "${cargo_args[@]}" -p ployz -p ployz-gateway -p ployz-dns
     return
   fi
 
-  cargo build "${cargo_args[@]}" -p ployzd --bins
+  cargo build "${cargo_args[@]}" -p ployz -p ployzd --bins
   cargo build "${cargo_args[@]}" -p ployz-gateway -p ployz-dns
 }
 

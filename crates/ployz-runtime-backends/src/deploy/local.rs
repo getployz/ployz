@@ -2,15 +2,16 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
-use bollard::models::{PortBinding, PortMap};
-
 use crate::StoreDriver;
 use crate::error::{Error, Result};
 use crate::model::{
     DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, SlotId,
 };
 use crate::runtime::labels::{self, WorkloadMeta, build_workload_labels, extract_workload_labels};
-use crate::runtime::{ContainerEngine, Probe, PullPolicy, RuntimeContainerSpec};
+use crate::runtime::{
+    ContainerEngine, PortBinding, PortMap, Probe, PullPolicy, RestartPolicy, RestartPolicyName,
+    RuntimeContainerSpec,
+};
 use crate::spec::{
     ContainerSpec, Namespace, NetworkMode, PortProtocol, ServicePort, ServiceSpec, VolumeSource,
 };
@@ -449,16 +450,14 @@ fn workload_dns_servers(
     }
 }
 
-fn build_restart_policy(policy: &crate::spec::RestartPolicy) -> bollard::models::RestartPolicy {
+fn build_restart_policy(policy: &crate::spec::RestartPolicy) -> RestartPolicy {
     let name = match policy {
-        crate::spec::RestartPolicy::No => bollard::models::RestartPolicyNameEnum::NO,
-        crate::spec::RestartPolicy::Always => bollard::models::RestartPolicyNameEnum::ALWAYS,
-        crate::spec::RestartPolicy::OnFailure => bollard::models::RestartPolicyNameEnum::ON_FAILURE,
-        crate::spec::RestartPolicy::UnlessStopped => {
-            bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED
-        }
+        crate::spec::RestartPolicy::No => RestartPolicyName::No,
+        crate::spec::RestartPolicy::Always => RestartPolicyName::Always,
+        crate::spec::RestartPolicy::OnFailure => RestartPolicyName::OnFailure,
+        crate::spec::RestartPolicy::UnlessStopped => RestartPolicyName::UnlessStopped,
     };
-    bollard::models::RestartPolicy {
+    RestartPolicy {
         name: Some(name),
         maximum_retry_count: Some(0),
     }

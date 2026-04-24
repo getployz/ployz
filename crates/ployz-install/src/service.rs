@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use ployz_config::{Os, RuntimeTarget, ServiceMode};
 
-use crate::install::{InstallManifest, SERVICE_LABEL, ServiceBackend};
+use crate::{InstallManifest, SERVICE_LABEL, ServiceBackend};
 use crate::platform::HostPlatform;
 
 use super::manifest::{runtime_target_name, service_mode_name};

@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use ployz_config::{RuntimeTarget, ServiceMode};
-use ployzd::{ServiceBackend, daemon_install};
+use ployz_install::{ServiceBackend, daemon_install};
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::{self, Command, ExitStatus};
