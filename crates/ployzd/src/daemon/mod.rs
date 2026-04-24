@@ -15,6 +15,7 @@ use ipnet::Ipv4Net;
 use ployz_api::{DaemonPayload, DaemonResponse};
 use ployz_config::{RuntimeTarget, ServiceMode};
 use ployz_orchestrator::Mesh;
+use ployz_orchestrator::certificates::CertificateRenewalTask;
 use ployz_orchestrator::coordination::PendingReservations;
 use ployz_runtime_api::Identity;
 use ployz_runtime_api::{NamespaceLockManager, RuntimeHandle};
@@ -29,6 +30,15 @@ pub struct ActiveMesh {
     pub peer_control: Box<dyn RuntimeHandle>,
     pub gateway: Box<dyn RuntimeHandle>,
     pub dns: Box<dyn RuntimeHandle>,
+    pub certificate_renewal: Option<CertificateRenewalTask>,
+}
+
+impl ActiveMesh {
+    pub async fn stop_certificate_renewal(&mut self) {
+        if let Some(task) = self.certificate_renewal.take() {
+            task.shutdown().await;
+        }
+    }
 }
 
 pub struct DaemonState {

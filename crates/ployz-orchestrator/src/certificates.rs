@@ -14,6 +14,8 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use x509_parser::parse_x509_certificate;
 use x509_parser::pem::parse_x509_pem;
@@ -248,7 +250,7 @@ async fn start_one<I, C>(
     store: &StoreDriver,
     issuer: &I,
     coordinator: &C,
-    mut record: CertificateRecord,
+    record: CertificateRecord,
 ) -> Option<String>
 where
     I: AcmeIssuer + Sync,
@@ -266,20 +268,39 @@ where
             return None;
         }
     };
+
+    // Re-read inside the lock. Corrosion is CRDT-replicated and offers no
+    // native CAS, so the row we were handed by `start_pending_orders` may
+    // already be stale: another daemon could have raced ahead while we were
+    // waiting on the cluster lock. The lock-bound re-read is what makes
+    // this critical section publish-coherent.
+    let current = match store.get_certificate(&hostname).await {
+        Ok(Some(current)) if needs_start_order(&current) => current,
+        Ok(_) => {
+            hold.release().await;
+            return None;
+        }
+        Err(error) => {
+            hold.release().await;
+            return Some(format!(
+                "Could not re-read certificate {hostname} before ACME order: {error}"
+            ));
+        }
+    };
+    let mut record = current;
+
     let outcome = issuer.start_order(store, &hostname).await;
-    hold.release().await;
-    match outcome {
+    let warning = match outcome {
         Ok(started) => {
             record.state = CertificateState::Issuing;
             record.order_url = Some(started.order_url);
             record.updated_at = now_unix_secs();
             record.last_error = None;
-            if let Err(error) = store.upsert_certificate(&record).await {
-                return Some(format!(
-                    "Could not persist ACME order for {hostname}: {error}"
-                ));
-            }
-            None
+            store
+                .upsert_certificate(&record)
+                .await
+                .err()
+                .map(|error| format!("Could not persist ACME order for {hostname}: {error}"))
         }
         Err(error) => {
             let detail = error.to_string();
@@ -290,7 +311,14 @@ where
             let _ = store.upsert_certificate(&record).await;
             Some(format!("ACME order for {hostname} failed: {detail}"))
         }
-    }
+    };
+
+    // Release AFTER persistence so the lock covers both the external order
+    // creation and the row update. Releasing earlier opens a window where
+    // another daemon's reconciler can read the still-Pending row, acquire
+    // the (now-free) lock, and create a duplicate ACME order.
+    hold.release().await;
+    warning
 }
 
 /// Background: for every certificate with an open order (`Issuing` + stored
@@ -705,6 +733,24 @@ impl RenewalConfig {
     }
 }
 
+/// Cancellable owner for the certificate renewal ticker.
+pub struct CertificateRenewalTask {
+    cancel: CancellationToken,
+    task: JoinHandle<()>,
+}
+
+impl CertificateRenewalTask {
+    pub async fn shutdown(self) {
+        self.cancel.cancel();
+        if let Err(error) = self.task.await {
+            tracing::warn!(
+                ?error,
+                "certificate renewal ticker task failed during shutdown"
+            );
+        }
+    }
+}
+
 /// Spawn a background ticker that runs `reconcile_renewals` immediately and
 /// then on an hourly-ish jittered interval. The ticker only flips state and
 /// fires `start_pending_orders` — it never waits on ACME itself.
@@ -714,8 +760,10 @@ pub fn spawn_certificate_renewal_ticker(
     renewal_config: RenewalConfig,
     coordinator: std::sync::Arc<dyn IssuanceCoordinator>,
     readiness: Arc<dyn Http01ChallengeReadiness>,
-) {
-    tokio::spawn(async move {
+) -> CertificateRenewalTask {
+    let cancel = CancellationToken::new();
+    let task_cancel = cancel.clone();
+    let task = tokio::spawn(async move {
         let issuer = InstantAcmeIssuer::new(acme_config.clone());
         loop {
             if let Err(error) = reconcile_renewals(&store, &issuer, coordinator.as_ref()).await {
@@ -729,9 +777,13 @@ pub fn spawn_certificate_renewal_ticker(
                 acme_config.clone(),
                 readiness.clone(),
             );
-            tokio::time::sleep(jittered(renewal_config.interval)).await;
+            tokio::select! {
+                () = task_cancel.cancelled() => break,
+                () = tokio::time::sleep(jittered(renewal_config.interval)) => {}
+            }
         }
     });
+    CertificateRenewalTask { cancel, task }
 }
 
 /// Walk certificates and flip state based on wall-clock: `Active` past its
@@ -923,6 +975,149 @@ mod tests {
                 .take()
                 .unwrap_or_else(|| Err(Error::operation("fake_finalize_order", "exhausted")))
         }
+    }
+
+    // -------------------------------------------------------------------
+    // start_one — multi-daemon order-creation safety
+    //
+    // These tests pin the contract that protects against duplicate ACME
+    // orders in a clustered deployment:
+    //
+    //   1. The cluster lock must cover both the external `start_order`
+    //      side effect AND the row update — otherwise a peer's
+    //      reconciler can read the still-Pending row in the gap, acquire
+    //      the (released) lock, and create a duplicate order.
+    //
+    //   2. After acquiring the lock, the row must be re-read; Corrosion
+    //      replicates as a CRDT and offers no native CAS, so the snapshot
+    //      handed in by `start_pending_orders` may already be stale.
+    //      A row that is no longer Pending/Failed/RenewalDue must not
+    //      trigger a new ACME order.
+    // -------------------------------------------------------------------
+
+    /// Issuer that aborts the test if `start_order` is invoked. Used to
+    /// assert "we never asked ACME for a new order in this scenario."
+    struct PanickingIssuer;
+
+    #[async_trait]
+    impl AcmeIssuer for PanickingIssuer {
+        async fn start_order(&self, _: &StoreDriver, _: &str) -> Result<StartedOrder> {
+            panic!("start_order should not be invoked");
+        }
+        async fn finalize_order(
+            &self,
+            _: &StoreDriver,
+            _: &str,
+            _: &str,
+        ) -> Result<IssuedCertificate> {
+            Err(Error::operation("panicking_issuer", "unused"))
+        }
+    }
+
+    /// Coordinator that captures the certificate row's state at the moment
+    /// `IssuanceHold::release` runs. Lets the test assert that the lock is
+    /// still held when the row was upserted with `Issuing` + `order_url`.
+    struct CaptureOnReleaseCoordinator {
+        store: StoreDriver,
+        captured: std::sync::Arc<Mutex<Option<CertificateRecord>>>,
+    }
+
+    #[async_trait]
+    impl IssuanceCoordinator for CaptureOnReleaseCoordinator {
+        async fn try_acquire(&self, hostname: &str) -> IssuanceAcquisition {
+            let store = self.store.clone();
+            let captured = std::sync::Arc::clone(&self.captured);
+            let hostname = hostname.to_string();
+            IssuanceAcquisition::Allowed(IssuanceHold::new(move || async move {
+                if let Ok(Some(row)) = store.get_certificate(&hostname).await {
+                    *captured.lock().expect("captured lock") = Some(row);
+                }
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn start_one_skips_when_row_already_issuing_after_lock_acquire() {
+        // Simulate: peer A held the lock, ran start_order, persisted Issuing
+        // with an order_url, released. Peer B's `start_pending_orders` had
+        // already read the row as Pending before A's write replicated, so
+        // it hands a stale snapshot to start_one. The lock-bound re-read
+        // must catch this and skip — otherwise B would mint a duplicate
+        // ACME order for the same hostname.
+        let store = StoreDriver::memory();
+        let mut already_issuing = pending_record("example.com");
+        already_issuing.state = CertificateState::Issuing;
+        already_issuing.order_url = Some("https://acme/orders/41".into());
+        store
+            .upsert_certificate(&already_issuing)
+            .await
+            .expect("already-issuing cert should persist");
+
+        // Stale snapshot of the same row, as start_pending_orders would have
+        // observed it before peer A's write reached this daemon.
+        let stale = pending_record("example.com");
+
+        let warning =
+            start_one(&store, &PanickingIssuer, &NoopIssuanceCoordinator, stale).await;
+        assert!(warning.is_none(), "stale start should be skipped silently");
+
+        // Row is unchanged: A's order_url and Issuing state are intact.
+        let row = store
+            .get_certificate("example.com")
+            .await
+            .expect("cert lookup should work")
+            .expect("cert row should exist");
+        assert_eq!(row.state, CertificateState::Issuing);
+        assert_eq!(row.order_url.as_deref(), Some("https://acme/orders/41"));
+    }
+
+    #[tokio::test]
+    async fn start_one_holds_lock_until_after_upsert() {
+        // The cluster lock must cover the row write, not just `start_order`.
+        // We assert this by capturing the row's state at the exact moment
+        // `IssuanceHold::release` runs: if the lock covers the upsert, the
+        // captured row already has Issuing + the new order_url.
+        let store = StoreDriver::memory();
+        store
+            .upsert_certificate(&pending_record("example.com"))
+            .await
+            .expect("pending cert should persist");
+
+        let captured = std::sync::Arc::new(Mutex::new(None));
+        let coordinator = CaptureOnReleaseCoordinator {
+            store: store.clone(),
+            captured: std::sync::Arc::clone(&captured),
+        };
+
+        let stale = store
+            .get_certificate("example.com")
+            .await
+            .expect("read snapshot")
+            .expect("snapshot row");
+
+        let warning = start_one(
+            &store,
+            &FakeIssuer::start_only(Ok(StartedOrder {
+                order_url: "https://acme/orders/42".into(),
+            })),
+            &coordinator,
+            stale,
+        )
+        .await;
+        assert!(warning.is_none(), "happy-path start should not warn");
+
+        let snapshot_at_release = captured
+            .lock()
+            .expect("captured lock")
+            .clone()
+            .expect("release should have captured the row");
+        // If the lock had been released before the upsert, this would still
+        // be Pending with no order_url.
+        assert_eq!(snapshot_at_release.state, CertificateState::Issuing);
+        assert_eq!(
+            snapshot_at_release.order_url.as_deref(),
+            Some("https://acme/orders/42")
+        );
     }
 
     #[tokio::test]
