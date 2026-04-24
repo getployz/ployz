@@ -6,7 +6,10 @@ use ployz_types::model::{MachineId, MachineRecord};
 
 use super::render::{format_lifecycle, format_timestamp, render_machine_list_report};
 use super::types::{MachineListReport, MachineListReportRow};
-use crate::daemon::handlers::peer_rpc::overlay_rpc_expect_ok;
+use crate::daemon::handlers::peer_rpc::{
+    OverlayRpcExpectOkError, PEER_RPC_DESTRUCTIVE_READ_TIMEOUT,
+    overlay_rpc_expect_ok_classified_with_read_timeout,
+};
 
 impl DaemonState {
     pub(crate) async fn handle_machine_list(&self) -> DaemonResponse {
@@ -62,7 +65,7 @@ impl DaemonState {
                 Err(error) => return self.err("PEER_RPC_UNAVAILABLE", error.to_string()),
             };
             let operation_id = format!("machine-rm-{}", ployz_types::model::NetworkId::random());
-            if let Err(error) = overlay_rpc_expect_ok(
+            if let Err(error) = overlay_rpc_expect_ok_classified_with_read_timeout(
                 record.overlay_ip,
                 peer_rpc_port,
                 DaemonRequest::MeshPeerRemoveMachine {
@@ -70,15 +73,24 @@ impl DaemonState {
                     network_id: active.config.id.clone(),
                     machine_id: record.id.clone(),
                 },
+                PEER_RPC_DESTRUCTIVE_READ_TIMEOUT,
             )
             .await
             {
-                return self.err(
-                    "MACHINE_REMOVE_PEER_UNREACHABLE",
-                    format!(
-                        "machine '{id}' did not confirm online removal; rerun with --force for registry-only removal: {error}"
+                return match error {
+                    OverlayRpcExpectOkError::Transport(error) => self.err(
+                        "MACHINE_REMOVE_PEER_UNREACHABLE",
+                        format!(
+                            "machine '{id}' did not confirm online removal; rerun with --force for registry-only removal: {error}"
+                        ),
                     ),
-                );
+                    OverlayRpcExpectOkError::Remote { code, message } => self.err(
+                        "MACHINE_REMOVE_PEER_REJECTED",
+                        format!(
+                            "machine '{id}' rejected coordinated removal [{code}]: {message}; resolve the remote failure or rerun with --force only if you intend registry-only removal"
+                        ),
+                    ),
+                };
             }
         }
 
