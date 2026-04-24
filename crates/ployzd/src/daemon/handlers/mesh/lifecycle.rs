@@ -9,7 +9,8 @@ use ployz_orchestrator::ipam::pick_candidate_subnet;
 use ployz_store_api::MachineStore;
 use ployz_types::model::MachineRecord;
 use ployz_types::model::{MachineId, MachineLifecycle, NetworkId, NetworkLifecycle, NetworkName};
-use tracing::warn;
+use std::path::PathBuf;
+use tracing::{error, warn};
 
 use super::DaemonState;
 use crate::daemon::ActiveMesh;
@@ -390,11 +391,28 @@ impl DaemonState {
         operation_id: &str,
         network_id: &NetworkId,
     ) -> ployz_api::DaemonResponse {
-        match self.destroy_local_mesh_runtime(network_id).await {
-            Ok(()) => self.ok(format!(
-                "mesh destroy operation '{operation_id}' executed on '{}'",
-                self.identity.machine_id
-            )),
+        match self.take_active_for_destroy(network_id) {
+            Ok(active) => {
+                let data_dir = self.data_dir.clone();
+                let machine_id = self.identity.machine_id.clone();
+                let operation_id_for_log = operation_id.to_string();
+                let network_id_for_log = network_id.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = Self::perform_mesh_teardown(data_dir, active).await {
+                        error!(
+                            operation_id = %operation_id_for_log,
+                            network_id = %network_id_for_log,
+                            %machine_id,
+                            %error,
+                            "mesh destroy teardown failed after peer ack"
+                        );
+                    }
+                });
+                self.ok(format!(
+                    "mesh destroy operation '{operation_id}' executed on '{}'",
+                    self.identity.machine_id
+                ))
+            }
             Err(error) => self.err("NETWORK_DESTROY_FAILED", error),
         }
     }
@@ -415,16 +433,38 @@ impl DaemonState {
             );
         }
 
-        match self.destroy_local_mesh_runtime(network_id).await {
-            Ok(()) => self.ok(format!(
-                "machine remove operation '{operation_id}' executed on '{}'",
-                self.identity.machine_id
-            )),
+        match self.take_active_for_destroy(network_id) {
+            Ok(active) => {
+                let data_dir = self.data_dir.clone();
+                let local_machine_id = self.identity.machine_id.clone();
+                let operation_id_for_log = operation_id.to_string();
+                let network_id_for_log = network_id.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = Self::perform_mesh_teardown(data_dir, active).await {
+                        error!(
+                            operation_id = %operation_id_for_log,
+                            network_id = %network_id_for_log,
+                            machine_id = %local_machine_id,
+                            %error,
+                            "machine remove teardown failed after peer ack"
+                        );
+                    }
+                });
+                self.ok(format!(
+                    "machine remove operation '{operation_id}' executed on '{}'",
+                    self.identity.machine_id
+                ))
+            }
             Err(error) => self.err("MACHINE_REMOVE_FAILED", error),
         }
     }
 
     async fn destroy_local_mesh_runtime(&mut self, network_id: &NetworkId) -> Result<(), String> {
+        let active = self.take_active_for_destroy(network_id)?;
+        Self::perform_mesh_teardown(self.data_dir.clone(), active).await
+    }
+
+    fn take_active_for_destroy(&mut self, network_id: &NetworkId) -> Result<ActiveMesh, String> {
         let active_id = {
             let Some(active) = self.active.as_ref() else {
                 return Err("no mesh running".to_string());
@@ -438,17 +478,23 @@ impl DaemonState {
             active.config.id.clone()
         };
 
-        let Some(mut active) = self.active.take() else {
+        let Some(active) = self.active.take() else {
             return Err("no mesh running".to_string());
         };
         if active.config.id != active_id {
             self.active = Some(active);
             return Err("active network changed during destroy".to_string());
         }
+        Ok(active)
+    }
+
+    async fn perform_mesh_teardown(
+        data_dir: PathBuf,
+        mut active: ActiveMesh,
+    ) -> Result<(), String> {
         let network_name = active.config.name.0.clone();
 
         if let Err(error) = active.mesh.destroy_and_wipe_store_data().await {
-            self.active = Some(active);
             return Err(format!("mesh runtime destroy and wipe failed: {error}"));
         }
         let _ = active.peer_control.shutdown().await;
@@ -460,7 +506,7 @@ impl DaemonState {
             return Err(format!("gateway stop failed: {error}"));
         }
 
-        NetworkConfig::delete(&self.data_dir, &network_name)
+        NetworkConfig::delete(&data_dir, &network_name)
             .map_err(|error| format!("failed to delete network config: {error}"))
     }
 

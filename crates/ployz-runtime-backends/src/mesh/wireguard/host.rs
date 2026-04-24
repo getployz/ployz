@@ -133,8 +133,11 @@ fn wg_create_interface(backend: &mut WgBackend) -> Result<()> {
     }
 }
 
-fn wg_remove_interface(backend: &WgBackend) -> Result<()> {
-    match backend {
+fn wg_remove_interface(
+    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] ifname: &str,
+    backend: &WgBackend,
+) -> Result<()> {
+    let result = match backend {
         #[cfg(target_os = "linux")]
         WgBackend::Kernel(api) => api
             .remove_interface()
@@ -142,7 +145,12 @@ fn wg_remove_interface(backend: &WgBackend) -> Result<()> {
         WgBackend::Userspace(api) => api
             .remove_interface()
             .map_err(|e| Error::operation("remove interface", e.to_string())),
+    };
+    #[cfg(target_os = "linux")]
+    if result.is_err() && !interface_exists(ifname) {
+        return Ok(());
     }
+    result
 }
 
 fn wg_configure_interface(backend: &WgBackend, config: &InterfaceConfiguration) -> Result<()> {
@@ -246,6 +254,14 @@ fn del_route(cidr: &str, ifname: &str) -> Result<()> {
     ))
 }
 
+#[cfg(target_os = "linux")]
+fn interface_exists(ifname: &str) -> bool {
+    Command::new("ip")
+        .args(["link", "show", "dev", ifname])
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
 impl MeshNetwork for HostWireGuard {
     async fn up(&self) -> Result<()> {
         self.with_api(|backend| {
@@ -290,7 +306,7 @@ impl MeshNetwork for HostWireGuard {
         #[cfg(not(target_os = "linux"))]
         warn!("overlay route removal not implemented on this platform");
         let backend = self.lock_backend();
-        wg_remove_interface(&backend)?;
+        wg_remove_interface(&self.ifname, &backend)?;
         info!(ifname = %self.ifname, "wireguard interface down");
         Ok(())
     }
