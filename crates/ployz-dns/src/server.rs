@@ -94,7 +94,7 @@ impl RequestHandler for DnsHandler {
                 let response = builder.build(header, records.iter(), &[], &[], &[]);
                 send(&mut response_handle, response).await
             }
-            ResolveResult::ServiceList(names)
+            ResolveResult::ServiceList(names) | ResolveResult::InstanceList(names)
                 if rtype == RecordType::TXT || rtype == RecordType::ANY =>
             {
                 let records: Vec<Record> = names
@@ -111,7 +111,9 @@ impl RequestHandler for DnsHandler {
                 let response = builder.build(header, records.iter(), &[], &[], &[]);
                 send(&mut response_handle, response).await
             }
-            ResolveResult::Addresses(_) | ResolveResult::ServiceList(_) => {
+            ResolveResult::Addresses(_)
+            | ResolveResult::ServiceList(_)
+            | ResolveResult::InstanceList(_) => {
                 // Query type doesn't match (e.g., AAAA for an A-only record)
                 header.set_response_code(ResponseCode::NoError);
                 let response = builder.build_no_records(header);
@@ -261,9 +263,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::run_dns_server;
-    use crate::SharedDnsSnapshot;
-    use hickory_server::proto::op::{Message, MessageType, OpCode, Query};
-    use hickory_server::proto::rr::{Name, RecordType};
+    use crate::{DnsInstanceDiagnostic, SharedDnsSnapshot};
+    use hickory_server::proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
+    use hickory_server::proto::rr::rdata::A;
+    use hickory_server::proto::rr::{Name, RData, RecordType};
     use std::collections::HashMap;
     use std::net::{Ipv4Addr, SocketAddr};
     use std::time::Duration;
@@ -294,6 +297,7 @@ mod tests {
                 ployz_types::spec::Namespace("prod".into()),
                 vec!["web".into()],
             )]),
+            instances: HashMap::new(),
         };
         let listen_addrs = vec![dns_addr];
 
@@ -320,7 +324,133 @@ mod tests {
         let _ = server.await;
     }
 
-    async fn send_dns_query(addr: SocketAddr, name: &str, record_type: RecordType) {
+    #[tokio::test]
+    async fn dns_server_returns_instance_txt_records() {
+        let dns_addr = free_local_addr();
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+        let namespace = ployz_types::spec::Namespace("prod".into());
+        let instance = DnsInstanceDiagnostic {
+            service: "web".into(),
+            instance_id: "inst-1".into(),
+            machine_id: "machine-1".into(),
+            slot_id: "slot-1".into(),
+            overlay_ip: Ipv4Addr::new(10, 42, 0, 2),
+        };
+        let snapshot = crate::DnsSnapshot {
+            services: HashMap::from([(
+                namespace.clone(),
+                HashMap::from([("web".into(), vec![instance.overlay_ip])]),
+            )]),
+            ip_to_namespace: HashMap::new(),
+            service_names: HashMap::from([(namespace.clone(), vec!["web".into()])]),
+            instances: HashMap::from([(namespace, vec![instance])]),
+        };
+        let listen_addrs = vec![dns_addr];
+
+        let server = tokio::spawn(async move {
+            run_dns_server(&listen_addrs, SharedDnsSnapshot::new(snapshot), shutdown_rx).await
+        });
+
+        let response = send_dns_query(
+            dns_addr,
+            "_instances.web.ns.prod.ployz.internal.",
+            RecordType::TXT,
+        )
+        .await;
+
+        assert_eq!(response.response_code(), ResponseCode::NoError);
+        assert_eq!(
+            txt_answers(&response),
+            vec!["service=web,instance=inst-1,machine=machine-1,slot=slot-1,ip=10.42.0.2"]
+        );
+
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn dns_server_returns_direct_instance_a_record() {
+        let dns_addr = free_local_addr();
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+        let namespace = ployz_types::spec::Namespace("prod".into());
+        let instance = DnsInstanceDiagnostic {
+            service: "web".into(),
+            instance_id: "inst-1".into(),
+            machine_id: "machine-1".into(),
+            slot_id: "slot-1".into(),
+            overlay_ip: Ipv4Addr::new(10, 42, 0, 2),
+        };
+        let snapshot = crate::DnsSnapshot {
+            services: HashMap::from([(
+                namespace.clone(),
+                HashMap::from([("web".into(), vec![instance.overlay_ip])]),
+            )]),
+            ip_to_namespace: HashMap::new(),
+            service_names: HashMap::from([(namespace.clone(), vec!["web".into()])]),
+            instances: HashMap::from([(namespace, vec![instance])]),
+        };
+        let listen_addrs = vec![dns_addr];
+
+        let server = tokio::spawn(async move {
+            run_dns_server(&listen_addrs, SharedDnsSnapshot::new(snapshot), shutdown_rx).await
+        });
+
+        let response = send_dns_query(
+            dns_addr,
+            "inst-1.instance.web.prod.ployz.internal.",
+            RecordType::A,
+        )
+        .await;
+
+        assert_eq!(response.response_code(), ResponseCode::NoError);
+        assert_eq!(a_answers(&response), vec![Ipv4Addr::new(10, 42, 0, 2)]);
+
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn dns_server_returns_no_records_for_known_name_wrong_type() {
+        let dns_addr = free_local_addr();
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+        let namespace = ployz_types::spec::Namespace("prod".into());
+        let instance = DnsInstanceDiagnostic {
+            service: "web".into(),
+            instance_id: "inst-1".into(),
+            machine_id: "machine-1".into(),
+            slot_id: "slot-1".into(),
+            overlay_ip: Ipv4Addr::new(10, 42, 0, 2),
+        };
+        let snapshot = crate::DnsSnapshot {
+            services: HashMap::from([(
+                namespace.clone(),
+                HashMap::from([("web".into(), vec![instance.overlay_ip])]),
+            )]),
+            ip_to_namespace: HashMap::new(),
+            service_names: HashMap::from([(namespace.clone(), vec!["web".into()])]),
+            instances: HashMap::from([(namespace, vec![instance])]),
+        };
+        let listen_addrs = vec![dns_addr];
+
+        let server = tokio::spawn(async move {
+            run_dns_server(&listen_addrs, SharedDnsSnapshot::new(snapshot), shutdown_rx).await
+        });
+
+        let response = send_dns_query(
+            dns_addr,
+            "inst-1.instance.web.prod.ployz.internal.",
+            RecordType::TXT,
+        )
+        .await;
+
+        assert_eq!(response.response_code(), ResponseCode::NoError);
+        assert!(response.answers().is_empty());
+
+        server.abort();
+        let _ = server.await;
+    }
+
+    async fn send_dns_query(addr: SocketAddr, name: &str, record_type: RecordType) -> Message {
         let mut message = Message::new();
         message
             .set_id(7)
@@ -349,7 +479,34 @@ mod tests {
         let Some(response_bytes) = response.get(..received) else {
             panic!("response length exceeded buffer");
         };
-        let _ = Message::from_vec(response_bytes).expect("response should decode");
+        Message::from_vec(response_bytes).expect("response should decode")
+    }
+
+    fn a_answers(response: &Message) -> Vec<Ipv4Addr> {
+        response
+            .answers()
+            .iter()
+            .filter_map(|record| match record.data() {
+                RData::A(A(ip)) => Some(*ip),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn txt_answers(response: &Message) -> Vec<String> {
+        response
+            .answers()
+            .iter()
+            .filter_map(|record| match record.data() {
+                RData::TXT(txt) => Some(
+                    txt.iter()
+                        .flat_map(|bytes| bytes.iter().copied())
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            })
+            .map(|bytes| String::from_utf8(bytes).expect("TXT answer should be valid utf-8"))
+            .collect()
     }
 
     async fn fetch_http_body(addr: SocketAddr, path: &str) -> String {

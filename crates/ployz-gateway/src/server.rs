@@ -228,8 +228,10 @@ mod tests {
     use pingora::prelude::Opt;
     use ployz_types::model::{InstanceId, MachineId};
     use ployz_types::spec::Namespace;
+    use std::collections::HashMap;
     use std::io::{Read, Write};
     use std::net::{SocketAddr, TcpListener};
+    use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -305,6 +307,120 @@ mod tests {
         upstream.join().expect("upstream thread should join");
     }
 
+    #[tokio::test]
+    async fn gateway_adds_forwarded_headers_to_upstream_request() {
+        let gateway_addr = free_local_addr();
+        let upstream_addr = free_local_addr();
+        let (request_tx, request_rx) = mpsc::channel();
+
+        let upstream =
+            thread::spawn(move || capture_single_http_request(upstream_addr, request_tx));
+        let shared_snapshot = SharedSnapshot::new(gateway_snapshot(upstream_addr));
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let gateway_thread = thread::spawn(move || {
+            run_server(
+                Opt::default(),
+                &gateway_addr.to_string(),
+                1,
+                None,
+                shared_snapshot,
+                Some(Box::new(EmbeddedShutdownWatch::new(shutdown_rx))),
+            )
+            .expect("gateway server should run");
+        });
+
+        wait_for_listener(gateway_addr).await;
+
+        let response = send_http_request_with_headers(gateway_addr, "example.com", &[]).await;
+        assert!(response.starts_with("HTTP/1.1 200"));
+
+        let captured = request_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("upstream request should be captured");
+        assert_eq!(
+            captured.headers.get("host"),
+            Some(&"example.com".to_string())
+        );
+        assert_eq!(
+            captured.headers.get("x-forwarded-for"),
+            Some(&"127.0.0.1".to_string())
+        );
+        assert_eq!(
+            captured.headers.get("x-forwarded-proto"),
+            Some(&"http".to_string())
+        );
+        assert_eq!(
+            captured.headers.get("x-forwarded-host"),
+            Some(&"example.com".to_string())
+        );
+        assert_eq!(
+            captured.headers.get("x-forwarded-port"),
+            Some(&gateway_addr.port().to_string())
+        );
+        assert_eq!(
+            captured.headers.get("via"),
+            Some(&"1.1 ployz-gateway".to_string())
+        );
+
+        let _ = shutdown_tx.send(());
+        gateway_thread.join().expect("gateway thread should join");
+        upstream.join().expect("upstream thread should join");
+    }
+
+    #[tokio::test]
+    async fn gateway_appends_existing_forwarded_headers_to_upstream_request() {
+        let gateway_addr = free_local_addr();
+        let upstream_addr = free_local_addr();
+        let (request_tx, request_rx) = mpsc::channel();
+
+        let upstream =
+            thread::spawn(move || capture_single_http_request(upstream_addr, request_tx));
+        let shared_snapshot = SharedSnapshot::new(gateway_snapshot(upstream_addr));
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let gateway_thread = thread::spawn(move || {
+            run_server(
+                Opt::default(),
+                &gateway_addr.to_string(),
+                1,
+                None,
+                shared_snapshot,
+                Some(Box::new(EmbeddedShutdownWatch::new(shutdown_rx))),
+            )
+            .expect("gateway server should run");
+        });
+
+        wait_for_listener(gateway_addr).await;
+
+        let response = send_http_request_with_headers(
+            gateway_addr,
+            "example.com",
+            &[
+                ("X-Forwarded-For", "203.0.113.10"),
+                ("X-Forwarded-For", "198.51.100.20"),
+                ("Via", "1.0 previous-proxy"),
+                ("Via", "1.1 second-proxy"),
+            ],
+        )
+        .await;
+        assert!(response.starts_with("HTTP/1.1 200"));
+
+        let captured = request_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("upstream request should be captured");
+        assert_eq!(
+            captured.headers.get("x-forwarded-for"),
+            Some(&"203.0.113.10, 198.51.100.20, 127.0.0.1".to_string())
+        );
+        assert_eq!(
+            captured.headers.get("via"),
+            Some(&"1.0 previous-proxy, 1.1 second-proxy, 1.1 ployz-gateway".to_string())
+        );
+
+        let _ = shutdown_tx.send(());
+        gateway_thread.join().expect("gateway thread should join");
+        upstream.join().expect("upstream thread should join");
+    }
+
     fn serve_single_http_request(addr: SocketAddr) {
         let listener = TcpListener::bind(addr).expect("upstream listener should bind");
         let (mut stream, _) = listener
@@ -319,7 +435,46 @@ mod tests {
             .expect("upstream response should write");
     }
 
+    fn capture_single_http_request(addr: SocketAddr, sender: mpsc::Sender<CapturedRequest>) {
+        let listener = TcpListener::bind(addr).expect("upstream listener should bind");
+        let (mut stream, _) = listener
+            .accept()
+            .expect("upstream connection should arrive");
+        let mut buffer = [0_u8; 4096];
+        let read = stream
+            .read(&mut buffer)
+            .expect("upstream request should read");
+        let raw = String::from_utf8_lossy(&buffer[..read]).into_owned();
+        sender
+            .send(CapturedRequest {
+                headers: parse_headers(&raw),
+            })
+            .expect("captured request should send");
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .expect("upstream response should write");
+    }
+
+    struct CapturedRequest {
+        headers: HashMap<String, String>,
+    }
+
+    fn parse_headers(raw: &str) -> HashMap<String, String> {
+        raw.split("\r\n")
+            .skip(1)
+            .take_while(|line| !line.is_empty())
+            .filter_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                Some((name.to_ascii_lowercase(), value.trim().to_string()))
+            })
+            .collect()
+    }
+
     async fn wait_for_metrics_listener(addr: SocketAddr) {
+        wait_for_listener(addr).await;
+    }
+
+    async fn wait_for_listener(addr: SocketAddr) {
         for _ in 0..50 {
             if tokio::net::TcpStream::connect(addr).await.is_ok() {
                 return;
@@ -330,11 +485,25 @@ mod tests {
     }
 
     async fn send_http_request(addr: SocketAddr, host: Option<&str>) -> String {
+        send_http_request_with_headers(addr, host.unwrap_or("127.0.0.1"), &[]).await
+    }
+
+    async fn send_http_request_with_headers(
+        addr: SocketAddr,
+        host: &str,
+        headers: &[(&str, &str)],
+    ) -> String {
         let mut stream = tokio::net::TcpStream::connect(addr)
             .await
             .expect("http connection should succeed");
-        let host = host.unwrap_or("127.0.0.1");
-        let request = format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+        let mut request = format!("GET / HTTP/1.1\r\nHost: {host}\r\n");
+        for (name, value) in headers {
+            request.push_str(name);
+            request.push_str(": ");
+            request.push_str(value);
+            request.push_str("\r\n");
+        }
+        request.push_str("Connection: close\r\n\r\n");
         stream
             .write_all(request.as_bytes())
             .await
@@ -345,6 +514,26 @@ mod tests {
             .await
             .expect("response read should succeed");
         String::from_utf8(response).expect("response should be utf-8")
+    }
+
+    fn gateway_snapshot(upstream_addr: SocketAddr) -> GatewaySnapshot {
+        GatewaySnapshot {
+            http_routes: vec![HttpRouteView {
+                route_id: "http:prod:web:0".into(),
+                namespace: Namespace("prod".into()),
+                service: "web".into(),
+                revision_hash: "rev-1".into(),
+                hostnames: vec!["example.com".into()],
+                path_prefix: "/".into(),
+                backends: vec![BackendView {
+                    instance_id: InstanceId("inst-1".into()),
+                    machine_id: MachineId("machine-1".into()),
+                    service_port: "http".into(),
+                    address: upstream_addr,
+                }],
+            }],
+            tcp_routes: Vec::new(),
+        }
     }
 
     async fn fetch_http_body(addr: SocketAddr, path: &str) -> String {
