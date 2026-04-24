@@ -321,7 +321,7 @@ impl DaemonState {
     ) -> ployz_api::DaemonResponse {
         let active = match self.require_active("NO_RUNNING_NETWORK", "no mesh running") {
             Ok(active) => active,
-            Err(response) => return response,
+            Err(response) => return *response,
         };
         if active.config.id != *network_id {
             return self.err(

@@ -21,7 +21,7 @@ impl DaemonState {
             "machine invite create requires a running network",
         ) {
             Ok(active) => active.config.clone(),
-            Err(response) => return response,
+            Err(response) => return *response,
         };
 
         if ttl_secs == 0 {
@@ -45,7 +45,7 @@ impl DaemonState {
             "machine invite revoke requires a running network",
         ) {
             Ok(active) => active,
-            Err(response) => return response,
+            Err(response) => return *response,
         };
 
         match active
@@ -68,7 +68,7 @@ impl DaemonState {
             "machine invite list requires a running network",
         ) {
             Ok(active) => active,
-            Err(response) => return response,
+            Err(response) => return *response,
         };
 
         let invites = match active.mesh.store.list_invites().await {

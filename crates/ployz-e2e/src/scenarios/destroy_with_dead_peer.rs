@@ -64,5 +64,8 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
 
     run.mesh_destroy("founder", "alpha")?;
     run.wait_mesh_absent_name("founder")?;
-    run.wait_mesh_absent_name("peer1")
+    run.wait_mesh_absent_name("peer1")?;
+    run.ssh_expect_ok_name("founder", "test ! -d /var/lib/ployz/networks/alpha")?;
+    run.ssh_expect_ok_name("peer1", "test ! -d /var/lib/ployz/networks/alpha")?;
+    Ok(())
 }
