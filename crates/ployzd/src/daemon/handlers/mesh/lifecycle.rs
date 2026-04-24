@@ -307,20 +307,22 @@ impl DaemonState {
                 warn!(peer = %peer.id, %operation_id, error = %error, "mesh destroy execute failed");
             }
         }
-        if !execute_failures.is_empty() {
-            return self.err(
-                "MESH_DESTROY_PEER_EXECUTE_FAILED",
-                format!(
-                    "mesh destroy execution failed after prepare succeeded: {}",
-                    execute_failures.join("; ")
-                ),
-            );
+        let local_destroy = self.destroy_local_mesh_runtime(&network_id).await;
+        if execute_failures.is_empty() {
+            return match local_destroy {
+                Ok(()) => self.ok(format!("mesh '{network}' destroyed")),
+                Err(error) => self.err("NETWORK_DESTROY_FAILED", error),
+            };
         }
 
-        match self.destroy_local_mesh_runtime(&network_id).await {
-            Ok(()) => self.ok(format!("mesh '{network}' destroyed")),
-            Err(error) => self.err("NETWORK_DESTROY_FAILED", error),
+        let mut errors = vec![format!(
+            "peer execute failed after prepare succeeded: {}",
+            execute_failures.join("; ")
+        )];
+        if let Err(error) = local_destroy {
+            errors.push(format!("local teardown also failed: {error}"));
         }
+        self.err("MESH_DESTROY_PEER_EXECUTE_FAILED", errors.join("; "))
     }
 
     pub(crate) async fn handle_mesh_peer_prepare_destroy(
