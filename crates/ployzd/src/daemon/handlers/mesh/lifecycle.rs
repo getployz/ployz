@@ -1,4 +1,7 @@
-use crate::daemon::handlers::peer_rpc::{overlay_rpc, overlay_rpc_expect_ok};
+use crate::daemon::handlers::peer_rpc::{
+    PEER_RPC_DESTRUCTIVE_READ_TIMEOUT, overlay_rpc, overlay_rpc_expect_ok,
+    overlay_rpc_expect_ok_with_read_timeout,
+};
 use crate::daemon::setup::MeshStartOptions;
 use crate::mesh_state::network::NetworkConfig;
 use ployz_api::{DaemonRequest, MachineTransitionGoal};
@@ -293,13 +296,14 @@ impl DaemonState {
 
         let mut execute_failures = Vec::new();
         for peer in &prepared {
-            if let Err(error) = overlay_rpc_expect_ok(
+            if let Err(error) = overlay_rpc_expect_ok_with_read_timeout(
                 peer.overlay_ip,
                 peer_rpc_port,
                 DaemonRequest::MeshPeerExecuteDestroy {
                     operation_id: operation_id.clone(),
                     network_id: network_id.clone(),
                 },
+                PEER_RPC_DESTRUCTIVE_READ_TIMEOUT,
             )
             .await
             {

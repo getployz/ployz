@@ -7,7 +7,8 @@ use ployz_types::model::{MachineId, MachineRecord};
 use super::render::{format_lifecycle, format_timestamp, render_machine_list_report};
 use super::types::{MachineListReport, MachineListReportRow};
 use crate::daemon::handlers::peer_rpc::{
-    OverlayRpcExpectOkError, overlay_rpc_expect_ok_classified,
+    OverlayRpcExpectOkError, PEER_RPC_DESTRUCTIVE_READ_TIMEOUT,
+    overlay_rpc_expect_ok_classified_with_read_timeout,
 };
 
 impl DaemonState {
@@ -64,7 +65,7 @@ impl DaemonState {
                 Err(error) => return self.err("PEER_RPC_UNAVAILABLE", error.to_string()),
             };
             let operation_id = format!("machine-rm-{}", ployz_types::model::NetworkId::random());
-            if let Err(error) = overlay_rpc_expect_ok_classified(
+            if let Err(error) = overlay_rpc_expect_ok_classified_with_read_timeout(
                 record.overlay_ip,
                 peer_rpc_port,
                 DaemonRequest::MeshPeerRemoveMachine {
@@ -72,6 +73,7 @@ impl DaemonState {
                     network_id: active.config.id.clone(),
                     machine_id: record.id.clone(),
                 },
+                PEER_RPC_DESTRUCTIVE_READ_TIMEOUT,
             )
             .await
             {
