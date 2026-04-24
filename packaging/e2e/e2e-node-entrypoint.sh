@@ -43,7 +43,7 @@ fi
 
 preload_dir="/opt/ployz-e2e/preloaded-images"
 preload_manifest="${preload_dir}/built_in_images.toml"
-if [[ -f "${preload_manifest}" ]]; then
+if [[ "${runtime}" == "docker" && -f "${preload_manifest}" ]]; then
   echo "ployz-e2e preload images start"
   shopt -s nullglob
   for tar_path in "${preload_dir}"/*.tar; do
@@ -53,6 +53,8 @@ if [[ -f "${preload_manifest}" ]]; then
   shopt -u nullglob
   export PLOYZ_BUILTIN_IMAGES_MANIFEST="${preload_manifest}"
   echo "ployz-e2e preload images complete manifest=${PLOYZ_BUILTIN_IMAGES_MANIFEST}"
+elif [[ "${runtime}" != "docker" ]]; then
+  echo "ployz-e2e preload images skipped runtime=${runtime}"
 else
   echo "ployz-e2e preload images: no manifest at ${preload_manifest}"
 fi

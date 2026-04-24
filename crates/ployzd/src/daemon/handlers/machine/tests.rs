@@ -515,7 +515,10 @@ async fn mesh_start_reactivates_local_machine_after_stop() {
         .await
         .expect("self record");
     assert_eq!(local.lifecycle, MachineLifecycle::Active);
-    assert_eq!(local.subnet, Some("10.210.0.0/24".parse().expect("valid subnet")));
+    assert_eq!(
+        local.subnet,
+        Some("10.210.0.0/24".parse().expect("valid subnet"))
+    );
 }
 
 #[tokio::test]
@@ -1031,8 +1034,10 @@ async fn make_state_with_remote_port(
     } else {
         NetworkLifecycle::Stopped
     };
+    let cached_subnet = config.subnet;
     state.active = Some(ActiveMesh {
         config,
+        cached_subnet,
         mesh,
         remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),

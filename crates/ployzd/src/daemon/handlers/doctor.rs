@@ -375,9 +375,7 @@ mod tests {
     use ployz_runtime_api::Identity;
     use ployz_store_api::StoreDriver;
     use ployz_store_api::memory::{MemoryService, MemoryStore};
-    use ployz_types::model::{
-        MachineId, MachineLifecycle, NetworkLifecycle, OverlayIp, PublicKey,
-    };
+    use ployz_types::model::{MachineId, MachineLifecycle, NetworkLifecycle, OverlayIp, PublicKey};
     use std::net::Ipv6Addr;
     use std::path::PathBuf;
     use std::sync::{Arc, OnceLock};
@@ -396,7 +394,11 @@ mod tests {
         let stale_key = PublicKey([3; 32]);
 
         store
-            .upsert_self_machine(&test_machine_record("peer", MachineLifecycle::Active, peer_key.clone()))
+            .upsert_self_machine(&test_machine_record(
+                "peer",
+                MachineLifecycle::Active,
+                peer_key.clone(),
+            ))
             .await
             .expect("upsert peer");
         store
@@ -459,7 +461,11 @@ mod tests {
         let peer_key = PublicKey([2; 32]);
 
         store
-            .upsert_self_machine(&test_machine_record("peer", MachineLifecycle::Active, peer_key.clone()))
+            .upsert_self_machine(&test_machine_record(
+                "peer",
+                MachineLifecycle::Active,
+                peer_key.clone(),
+            ))
             .await
             .expect("upsert peer");
 
@@ -561,8 +567,10 @@ mod tests {
             String::from("127.0.0.1:0"),
             1,
         );
+        let cached_subnet = config.subnet;
         state.active = Some(ActiveMesh {
             config,
+            cached_subnet,
             mesh,
             remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
@@ -573,7 +581,11 @@ mod tests {
         (state, store, network)
     }
 
-    fn test_machine_record(id: &str, lifecycle: MachineLifecycle, public_key: PublicKey) -> MachineRecord {
+    fn test_machine_record(
+        id: &str,
+        lifecycle: MachineLifecycle,
+        public_key: PublicKey,
+    ) -> MachineRecord {
         MachineRecord {
             id: MachineId(String::from(id)),
             public_key,
@@ -608,9 +620,11 @@ mod tests {
             identity.machine_id,
             51820,
         );
+        let cached_subnet = config.subnet;
 
         ActiveMesh {
             config,
+            cached_subnet,
             mesh,
             remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),

@@ -169,8 +169,10 @@ mod tests {
             "127.0.0.1:0".into(),
             1,
         );
+        let cached_subnet = config.subnet;
         state.active = Some(ActiveMesh {
             config,
+            cached_subnet,
             mesh: Mesh::new(
                 WireguardDriver::memory(),
                 StoreDriver::memory(),
@@ -305,8 +307,10 @@ mod tests {
             "127.0.0.1:0".into(),
             1,
         );
+        let cached_subnet = config.subnet;
         state.active = Some(ActiveMesh {
             config,
+            cached_subnet,
             mesh,
             peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),

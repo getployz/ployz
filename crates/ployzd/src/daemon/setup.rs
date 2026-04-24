@@ -254,6 +254,7 @@ impl MeshStartTx {
 
         state.active = Some(ActiveMesh {
             config: self.config.clone(),
+            cached_subnet: self.config.subnet,
             mesh,
             remote_control,
             peer_control,
