@@ -291,6 +291,7 @@ impl DaemonState {
             );
         }
 
+        let mut execute_failures = Vec::new();
         for peer in &prepared {
             if let Err(error) = overlay_rpc_expect_ok(
                 peer.overlay_ip,
@@ -302,8 +303,18 @@ impl DaemonState {
             )
             .await
             {
+                execute_failures.push(format!("{} execute failed: {error}", peer.id));
                 warn!(peer = %peer.id, %operation_id, error = %error, "mesh destroy execute failed");
             }
+        }
+        if !execute_failures.is_empty() {
+            return self.err(
+                "MESH_DESTROY_PEER_EXECUTE_FAILED",
+                format!(
+                    "mesh destroy execution failed after prepare succeeded: {}",
+                    execute_failures.join("; ")
+                ),
+            );
         }
 
         match self.destroy_local_mesh_runtime(&network_id).await {
@@ -433,7 +444,8 @@ impl DaemonState {
         let network_name = active.config.name.0.clone();
 
         if let Err(error) = active.mesh.destroy_and_wipe_store_data().await {
-            warn!(?error, "mesh runtime destroy reported an error");
+            self.active = Some(active);
+            return Err(format!("mesh runtime destroy and wipe failed: {error}"));
         }
         let _ = active.peer_control.shutdown().await;
         let _ = active.remote_control.shutdown().await;
