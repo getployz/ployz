@@ -1,7 +1,7 @@
 use std::net::{Ipv4Addr, SocketAddr};
 
-use ployz_dns::DnsConfig;
-use ployz_gateway::GatewayConfig;
+use ployz_dns_config::DnsConfig;
+use ployz_gateway_config::GatewayConfig;
 use ployz_runtime_api::{NamespaceLockManager, RuntimeHandle};
 use ployz_store_api::StoreDriver;
 use ployz_types::model::{MachineId, OverlayIp};

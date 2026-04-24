@@ -8,10 +8,6 @@ publish = false
 name = "ployzd"
 path = "src/main.rs"
 
-[[bin]]
-name = "ployz"
-path = "src/bin/ployz.rs"
-
 [features]
 ebpf-native = ["ployz-orchestrator/ebpf-native"]
 
@@ -26,8 +22,9 @@ ployz-runtime-backends = { path = "../ployz-runtime-backends" }
 ployz-sdk = { path = "../ployz-sdk" }
 ployz-store-api = { path = "../ployz-store-api" }
 ployz-types = { path = "../ployz-types" }
-ployz-gateway = { path = "../ployz-gateway" }
-ployz-dns = { path = "../ployz-dns" }
+ployz-gateway-config = { path = "../ployz-gateway-config" }
+ployz-dns-config = { path = "../ployz-dns-config" }
+ployz-install = { path = "../ployz-install" }
 clap = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
