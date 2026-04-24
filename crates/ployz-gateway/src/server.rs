@@ -50,7 +50,10 @@ pub(crate) fn resolve_tls_material(
     let Some(server_name) = server_name else {
         return TlsResolution::MissingSni;
     };
-    let hostname = server_name.to_string();
+    // Project stores certificate keys via `normalize_request_host` (lowercase,
+    // trimmed trailing dot/port), so the SNI must be normalized the same way
+    // or mixed-case clients miss an otherwise valid certificate.
+    let hostname = crate::routes::normalize_request_host(server_name);
     let Some(certificate) = snapshot.certificates.get(&hostname) else {
         return TlsResolution::HostnameMiss(hostname);
     };
@@ -876,6 +879,32 @@ mod tests {
                 TlsResolution::FullchainParse { .. } => "FullchainParse",
                 TlsResolution::EmptyFullchain(_) => "EmptyFullchain",
                 TlsResolution::PrivateKeyParse { .. } => "PrivateKeyParse",
+            }
+        }
+
+        #[test]
+        fn mixed_case_sni_matches_lowercase_certificate_key() {
+            let (cert_pem, key_pem) = make_self_signed();
+            let snapshot = snapshot_with_cert("api.example.com", &cert_pem, &key_pem);
+            match resolve_tls_material(&snapshot, Some("API.Example.COM")) {
+                TlsResolution::Ready(_) => {}
+                other => panic!(
+                    "mixed-case SNI should match lowercase cert key, got {}",
+                    label(&other)
+                ),
+            }
+        }
+
+        #[test]
+        fn sni_with_trailing_dot_matches_certificate_key() {
+            let (cert_pem, key_pem) = make_self_signed();
+            let snapshot = snapshot_with_cert("api.example.com", &cert_pem, &key_pem);
+            match resolve_tls_material(&snapshot, Some("api.example.com.")) {
+                TlsResolution::Ready(_) => {}
+                other => panic!(
+                    "SNI with trailing dot should match cert key, got {}",
+                    label(&other)
+                ),
             }
         }
     }
