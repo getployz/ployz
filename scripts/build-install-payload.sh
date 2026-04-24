@@ -55,7 +55,7 @@ output_dir_parent() {
   (cd "${parent}" && pwd)
 }
 
-cache_key() {
+repo_cache_root() {
   local repo_dir=$1
   local cache_root
   if cache_root="$(git -C "${repo_dir}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
@@ -67,6 +67,13 @@ cache_key() {
   else
     cache_root="$(cd "${repo_dir}" && pwd -P)"
   fi
+  printf '%s' "${cache_root}"
+}
+
+cache_key() {
+  local repo_dir=$1
+  local cache_root
+  cache_root="$(repo_cache_root "${repo_dir}")"
   if command -v shasum >/dev/null 2>&1; then
     printf '%s' "${cache_root}" | shasum -a 256 | awk '{print substr($1, 1, 12)}'
     return
@@ -145,6 +152,30 @@ download() {
   fi
   printf 'curl or wget is required to download %s\n' "${url}" >&2
   exit 1
+}
+
+cached_download() {
+  local url=$1
+  local dest=$2
+  local cache_dir=$3
+  local cache_name=$4
+  local cache_path tmp_path
+
+  mkdir -p "${cache_dir}"
+  cache_path="${cache_dir}/${cache_name}"
+
+  if [[ -f "${cache_path}" ]]; then
+    cp "${cache_path}" "${dest}"
+    printf 'corrosion archive cache hit %s\n' "${cache_name}" >&2
+    return
+  fi
+
+  tmp_path="${cache_path}.tmp.$$"
+  printf 'corrosion archive download start %s\n' "${cache_name}" >&2
+  download "${url}" "${tmp_path}"
+  mv "${tmp_path}" "${cache_path}"
+  cp "${cache_path}" "${dest}"
+  printf 'corrosion archive download complete %s\n' "${cache_name}" >&2
 }
 
 hash_file() {
@@ -230,7 +261,7 @@ payload_is_fresh() {
 
 install_corrosion() {
   local output_dir=$1
-  local version asset tmp_dir
+  local version asset tmp_dir cache_dir archive_url
   version="$(tr -d '[:space:]' < "${REPO_DIR}/.corrosion-version")"
   case "$(uname -s):$(uname -m)" in
     Darwin:arm64)
@@ -251,9 +282,11 @@ install_corrosion() {
       ;;
   esac
 
+  cache_dir="$(repo_cache_root "${REPO_DIR}")/.payload-cache/corrosion"
+  archive_url="https://github.com/getployz/corrosion/releases/download/${version}/${asset}"
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "${tmp_dir}"' RETURN
-  download "https://github.com/getployz/corrosion/releases/download/${version}/${asset}" "${tmp_dir}/${asset}"
+  cached_download "${archive_url}" "${tmp_dir}/${asset}" "${cache_dir}" "${version}-${asset}"
   tar -xzf "${tmp_dir}/${asset}" -C "${tmp_dir}"
   copy_file "${tmp_dir}/corrosion" "${output_dir}/bin/corrosion" 0755
   printf 'CORROSION_VERSION=%s\n' "${version}" > "${output_dir}/metadata.env"
@@ -359,6 +392,9 @@ if [[ -z "${PLOYZ_PAYLOAD_BUILD_INTERNAL:-}" && "${TARGET_PLATFORM}" != "$(curre
   esac
 fi
 
+mkdir -p "${OUTPUT_DIR}"
+install -d "${OUTPUT_DIR}/bin"
+install_corrosion "${OUTPUT_DIR}"
 build_binaries
 
 output_parent="$(dirname "${OUTPUT_DIR}")"
@@ -373,8 +409,7 @@ copy_file "$(binary_build_dir)/ployzd" "${tmp_output_dir}/bin/ployzd" 0755
 copy_file "$(binary_build_dir)/ployz-gateway" "${tmp_output_dir}/bin/ployz-gateway" 0755
 copy_file "$(binary_build_dir)/ployz-dns" "${tmp_output_dir}/bin/ployz-dns" 0755
 copy_file "${REPO_DIR}/packaging/systemd/ployzd.service" "${tmp_output_dir}/assets/systemd/ployzd.service" 0644
-
-install_corrosion "${tmp_output_dir}"
+copy_file "${OUTPUT_DIR}/bin/corrosion" "${tmp_output_dir}/bin/corrosion" 0755
 
 {
   printf 'GIT_REV=%s\n' "$(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
