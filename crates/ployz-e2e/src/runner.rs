@@ -345,6 +345,34 @@ impl ScenarioRun {
         Ok(())
     }
 
+    pub(crate) fn wait_network_dir_absent_name(
+        &self,
+        node_name: &str,
+        network: &str,
+    ) -> Result<()> {
+        let node = self.node(node_name)?;
+        self.log_progress(&format!(
+            "wait_network_dir_absent start node={node_name} network={network}"
+        ));
+        wait_until(READY_WAIT_TIMEOUT, || {
+            let output = self.ssh_run(
+                node,
+                &format!("test ! -d /var/lib/ployz/networks/{network}"),
+            )?;
+            Ok(output.status.success())
+        })
+        .map_err(|error| {
+            Error::Message(format!(
+                "network directory did not disappear on {} for {}: {error}",
+                node.name, network
+            ))
+        })?;
+        self.log_progress(&format!(
+            "wait_network_dir_absent complete node={node_name} network={network}"
+        ));
+        Ok(())
+    }
+
     pub(crate) fn machine_add(&self, controller_name: &str, target_name: &str) -> Result<()> {
         self.machine_add_many(controller_name, &[target_name])
     }
