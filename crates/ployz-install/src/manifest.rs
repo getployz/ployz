@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use ployz_config::{RuntimeTarget, ServiceMode};
 
-use crate::install::{InstallManifest, ServiceBackend};
+use crate::{InstallManifest, ServiceBackend};
 
 impl InstallManifest {
     pub fn load_from_path(path: &Path) -> Result<Self, String> {

@@ -4,7 +4,7 @@ use ployz_config::{
     Os, RuntimeTarget, ServiceMode, default_config_path, default_data_dir, default_socket_path,
 };
 
-use crate::install::{INSTALL_DIR_NAME, MANIFEST_FILE_NAME};
+use crate::{INSTALL_DIR_NAME, MANIFEST_FILE_NAME};
 use crate::platform::HostPlatform;
 
 use super::sys::{home_dir_for_current_user, sudo_user_home_dir};

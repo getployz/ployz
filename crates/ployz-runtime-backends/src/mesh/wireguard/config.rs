@@ -1,13 +1,19 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+#[cfg(feature = "docker")]
 use std::fmt::Write;
+#[cfg(feature = "docker")]
 use std::path::{Path, PathBuf};
+#[cfg(feature = "docker")]
 use std::{fs, io};
 
+#[cfg(feature = "docker")]
 use crate::model::{MachineRecord, PrivateKey};
 
+#[cfg(feature = "docker")]
 use super::PERSISTENT_KEEPALIVE_SECS;
 
 /// Filesystem paths for a WireGuard data directory.
+#[cfg(feature = "docker")]
 #[derive(Debug, Clone)]
 pub struct WgPaths {
     pub dir: PathBuf,
@@ -15,6 +21,7 @@ pub struct WgPaths {
     pub private_key_file: PathBuf,
 }
 
+#[cfg(feature = "docker")]
 impl WgPaths {
     #[must_use]
     pub fn new(data_dir: &Path) -> Self {
@@ -32,17 +39,20 @@ impl WgPaths {
 }
 
 /// Write the base64-encoded private key to a file (for `wg set ... private-key`).
+#[cfg(feature = "docker")]
 pub fn write_private_key(paths: &WgPaths, private_key: &PrivateKey) -> io::Result<()> {
     paths.ensure_dir()?;
     fs::write(&paths.private_key_file, encode_key(&private_key.0))
 }
 
 /// Extra peer entry for the bridge (not a mesh peer).
+#[cfg(feature = "docker")]
 pub struct BridgePeerInfo {
     pub public_key: [u8; 32],
     pub allowed_ips: Vec<String>,
 }
 
+#[cfg(feature = "docker")]
 fn render_peer(buf: &mut String, peer: &MachineRecord) {
     let _ = writeln!(buf, "[Peer]");
     let _ = writeln!(buf, "PublicKey = {}", encode_key(&peer.public_key.0));
@@ -54,6 +64,7 @@ fn render_peer(buf: &mut String, peer: &MachineRecord) {
     let _ = writeln!(buf, "PersistentKeepalive = {PERSISTENT_KEEPALIVE_SECS}");
 }
 
+#[cfg(feature = "docker")]
 fn render_bridge_peer(buf: &mut String, bridge: &BridgePeerInfo) {
     let _ = writeln!(buf, "[Peer]");
     let _ = writeln!(buf, "PublicKey = {}", encode_key(&bridge.public_key));
@@ -62,6 +73,7 @@ fn render_bridge_peer(buf: &mut String, bridge: &BridgePeerInfo) {
 }
 
 /// Write a sync config that includes extra peers (bridge + sidecars), protected from syncconf removal.
+#[cfg(feature = "docker")]
 pub fn write_sync_config_with_extra_peers(
     paths: &WgPaths,
     private_key: &PrivateKey,
@@ -93,6 +105,7 @@ pub fn encode_key(key: &[u8; 32]) -> String {
     BASE64.encode(key)
 }
 
+#[cfg(feature = "docker")]
 pub fn decode_key(b64: &str) -> Result<[u8; 32], String> {
     let bytes = BASE64
         .decode(b64)
@@ -102,7 +115,7 @@ pub fn decode_key(b64: &str) -> Result<[u8; 32], String> {
         .map_err(|v: Vec<u8>| format!("key must be 32 bytes, got {}", v.len()))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "docker"))]
 mod tests {
     use super::*;
 

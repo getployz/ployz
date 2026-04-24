@@ -14,7 +14,7 @@ use tracing::{info, warn};
 use super::diff::{ChangedField, SpecChange, eval_spec_change, parent_id_matches};
 use super::labels::{LABEL_KIND, LABEL_MANAGED, extract_workload_labels};
 use super::probe::ProbeRunner;
-use super::spec::{ObservedContainer, observe};
+use super::spec::{ObservedContainer, observe, port_map_to_bollard, restart_policy_to_bollard};
 use super::{PullPolicy, RuntimeContainerSpec, parse_docker_image_ref};
 
 pub struct ContainerEngine {
@@ -353,11 +353,11 @@ impl ContainerEngine {
             binds: none_if_empty(&spec.binds),
             dns: none_if_empty(&spec.dns_servers),
             network_mode: spec.network_mode.clone(),
-            port_bindings: spec.port_bindings.clone(),
+            port_bindings: spec.port_bindings.as_ref().map(port_map_to_bollard),
             cap_add: none_if_empty(&spec.cap_add),
             cap_drop: none_if_empty(&spec.cap_drop),
             privileged: Some(spec.privileged),
-            restart_policy: spec.restart_policy.clone(),
+            restart_policy: spec.restart_policy.as_ref().map(restart_policy_to_bollard),
             memory: spec.memory_bytes,
             nano_cpus: spec.nano_cpus,
             sysctls: none_if_empty_map(&spec.sysctls),
