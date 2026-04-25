@@ -22,9 +22,11 @@ use tracing::warn;
 use crate::daemon::DaemonState;
 use crate::daemon::handlers::peer_rpc;
 
-/// Best-effort cluster-wide coordinator for ACME issuance. Fans out
-/// `CoordOp::Prepare` to every active peer; explicit `COORDINATION_DENIED`
-/// from any reachable peer is a veto; RPC failures are abstentions.
+/// Best-effort cluster-wide coordinator for ACME issuance and ACME account
+/// creation. The peer inventory itself is required: if `list_machines` fails
+/// we cannot know which active machines to ask, so the operation is deferred.
+/// After inventory loads, known peer RPC failures are abstentions and explicit
+/// `COORDINATION_DENIED` replies from reachable peers are vetoes.
 pub struct OverlayIssuanceCoordinator {
     store: StoreDriver,
     reservations: Arc<PendingReservations>,
@@ -303,6 +305,11 @@ impl Http01ChallengeReadiness for OverlayChallengeReadiness {
     async fn wait_ready(&self, store: &StoreDriver, hostname: &str, token: &str) -> Result<()> {
         wait_for_local_challenge(store, hostname, token).await?;
 
+        // HTTP-01 readiness is not a mutation lock. It is a projection check:
+        // missing peer inventory falls back to local readiness, known
+        // unreachable peers abstain, and reachable peers that have not yet
+        // replicated the challenge keep the order in Issuing for a later
+        // finalization pass.
         let peers = match self.store.list_machines().await {
             Ok(machines) => coordination_peers(&machines, &self.self_id)
                 .into_iter()
