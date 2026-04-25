@@ -5,15 +5,17 @@ mod traits;
 use async_trait::async_trait;
 use ployz_types::Result;
 use ployz_types::model::{
-    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
-    MachineRecord, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
+    InstanceStatusRecord, InviteRecord, MachineId, MachineRecord, RoutingState,
+    ServiceReleaseRecord, ServiceRevisionRecord,
 };
 use ployz_types::spec::Namespace;
 
 pub use driver::StoreDriver;
 pub use traits::{
-    DeployStore, InviteStore, MachineStore, MachineSubscription, RoutingInvalidationSubscription,
-    RoutingStore, StoreRuntimeControl, SyncProbe, SyncStatus,
+    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployStore, InviteStore,
+    MachineStore, MachineSubscription, RoutingInvalidationSubscription, RoutingStore,
+    StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 
 #[async_trait]
@@ -67,6 +69,17 @@ pub trait StoreBackend: Send + Sync {
         deploy: &DeployRecord,
     ) -> Result<()>;
     async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>>;
+
+    async fn get_acme_account(&self, issuer_url: &str) -> Result<Option<AcmeAccountRecord>>;
+    async fn upsert_acme_account(&self, record: &AcmeAccountRecord) -> Result<()>;
+    async fn list_certificates(&self) -> Result<Vec<CertificateRecord>>;
+    async fn get_certificate(&self, hostname: &str) -> Result<Option<CertificateRecord>>;
+    async fn upsert_certificate(&self, record: &CertificateRecord) -> Result<()>;
+    async fn list_acme_challenges(&self) -> Result<Vec<AcmeChallengeRecord>>;
+    async fn upsert_acme_challenge(&self, record: &AcmeChallengeRecord) -> Result<()>;
+    async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> Result<()>;
+    async fn subscribe_certificates(&self) -> Result<CertificateSubscription>;
+    async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription>;
 
     async fn sync_status(&self) -> Result<SyncStatus> {
         Ok(SyncStatus::Synced)

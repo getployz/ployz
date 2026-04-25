@@ -125,6 +125,29 @@ We prefer explicit, imperative transitions over background self-healing loops
 that mutate durable state from stale or indirect signals. When a mutating
 operation cannot safely proceed, it should fail clearly and loudly.
 
+### 5b. Mesh membership is the trust boundary
+
+Corrosion replicates the full store to every mesh member. Anything written to a
+replicated table — including sensitive material such as TLS private keys, ACME
+account keys, and invite tokens — lands on every machine's data directory in
+the same form it was written. This is a deliberate design choice: it gives any
+machine the ability to terminate TLS, serve routes, and take over control-plane
+responsibilities without a separate key-distribution channel.
+
+The consequences follow from that:
+
+- Every mesh member must be treated as equally trusted with the cluster's
+  secrets. There is no "gateway-only" node that holds less.
+- Data-directory backups contain all private key material in effect at the
+  time of the backup.
+- Recovering from a suspected compromise means rotating the affected
+  material (re-issuing certs, revoking ACME accounts), not just removing the
+  machine.
+
+If a future workload needs a stricter boundary than "any mesh member can read
+it," that workload is outside the mesh's trust model and needs a separate
+mechanism — not a privacy flag on a Corrosion table.
+
 ### 6. Local and cloud should share one model
 
 Local development should not be a separate universe with separate assumptions.

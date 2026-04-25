@@ -111,6 +111,7 @@ build_linux_payload_in_docker() {
     -e PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     -e PLOYZ_PAYLOAD_BUILD_INTERNAL=1 \
     -e PLOYZ_PAYLOAD_BUILD_PROFILE="${build_profile}" \
+    -e PLOYZ_PAYLOAD_BUILD_FINGERPRINT="${BUILD_FINGERPRINT:-}" \
     -e CARGO_TARGET_DIR="${target_cache_dir}" \
     -e PLOYZ_PAYLOAD_OWNER_UID="${owner_uid}" \
     -e PLOYZ_PAYLOAD_OWNER_GID="${owner_gid}" \
@@ -125,7 +126,7 @@ build_linux_payload_in_docker() {
       set -euo pipefail
       export PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       apt-get update >/dev/null
-      apt-get install -y --no-install-recommends cmake pkg-config >/dev/null
+      apt-get install -y --no-install-recommends cmake libclang-dev pkg-config >/dev/null
       rm -rf /var/lib/apt/lists/*
       bash /repo/scripts/build-install-payload.sh \
         --repo /repo \
@@ -397,7 +398,7 @@ case "${BUILD_PROFILE}" in
     ;;
 esac
 
-BUILD_FINGERPRINT="$(repo_build_fingerprint)"
+BUILD_FINGERPRINT="${PLOYZ_PAYLOAD_BUILD_FINGERPRINT:-$(repo_build_fingerprint)}"
 METADATA_PATH="${OUTPUT_DIR}/metadata.env"
 if payload_is_fresh "${METADATA_PATH}" "${BUILD_FINGERPRINT}"; then
   printf 'payload cache hit profile=%s platform=%s\n' "${BUILD_PROFILE}" "${TARGET_PLATFORM}"

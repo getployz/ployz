@@ -84,6 +84,7 @@ async fn run() -> Result<i32> {
                 cfg.remote_control_port,
                 cfg.peer_control_target,
                 cfg.gateway_listen_addr,
+                cfg.gateway_https_listen_addr,
                 cfg.gateway_threads,
                 cfg.daemon_metrics_listen_addr,
                 cfg.dns_metrics_listen_addr,
