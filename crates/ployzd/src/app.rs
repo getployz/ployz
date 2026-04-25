@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use ployz_config::{RuntimeTarget, ServiceMode};
+use ployz_config::{RuntimeTarget, ServiceMode, StorageConfig};
 use ployz_metrics::{set_build_info, spawn_metrics_listener};
 use ployz_runtime_api::Identity;
 use tokio::sync::{RwLock, mpsc};
@@ -31,6 +31,7 @@ pub async fn run_daemon(
     service_mode: ServiceMode,
     socket_path: &str,
     built_in_images: BuiltInImages,
+    storage: StorageConfig,
     cluster_cidr: String,
     subnet_prefix_len: u8,
     remote_control_port: u16,
@@ -49,6 +50,7 @@ pub async fn run_daemon(
         service_mode,
         socket_path,
         built_in_images,
+        storage,
         cluster_cidr,
         subnet_prefix_len,
         remote_control_port,
@@ -73,6 +75,7 @@ async fn run_daemon_with_resource_metrics_source(
     service_mode: ServiceMode,
     socket_path: &str,
     built_in_images: BuiltInImages,
+    storage: StorageConfig,
     cluster_cidr: String,
     subnet_prefix_len: u8,
     remote_control_port: u16,
@@ -92,6 +95,7 @@ async fn run_daemon_with_resource_metrics_source(
         service_mode,
         socket_path,
         built_in_images,
+        storage,
         cluster_cidr,
         subnet_prefix_len,
         remote_control_port,
@@ -115,6 +119,7 @@ async fn run_daemon_inner(
     service_mode: ServiceMode,
     socket_path: &str,
     built_in_images: BuiltInImages,
+    storage: StorageConfig,
     cluster_cidr: String,
     subnet_prefix_len: u8,
     remote_control_port: u16,
@@ -163,6 +168,7 @@ async fn run_daemon_inner(
         identity,
         runtime_target,
         service_mode,
+        storage,
         built_in_images,
         cluster_cidr,
         subnet_prefix_len,
@@ -357,7 +363,7 @@ mod tests {
     use crate::metrics::ContainerResourceMetricsSource;
     use async_trait::async_trait;
     use ployz_api::DaemonRequest;
-    use ployz_config::{RuntimeTarget, ServiceMode};
+    use ployz_config::{RuntimeTarget, ServiceMode, StorageConfig};
     use ployz_runtime_backends::runtime::WorkloadResourceSnapshot;
     use ployz_sdk::{Transport, UnixSocketTransport};
     use std::path::PathBuf;
@@ -383,6 +389,7 @@ mod tests {
                 ServiceMode::User,
                 &socket_string,
                 BuiltInImages::load(None).expect("built-in images should load"),
+                StorageConfig::default(),
                 "10.210.0.0/16".into(),
                 24,
                 4317,
@@ -471,6 +478,7 @@ mod tests {
                 ServiceMode::User,
                 &socket_string,
                 BuiltInImages::load(None).expect("built-in images should load"),
+                StorageConfig::default(),
                 "10.210.0.0/16".into(),
                 24,
                 4317,

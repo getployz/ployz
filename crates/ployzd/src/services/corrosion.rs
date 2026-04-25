@@ -21,7 +21,7 @@ use ployz_types::Result;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
     InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineRecord, OverlayIp,
-    RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    RoutingState, ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
@@ -241,6 +241,18 @@ where
         self.store.list_instance_status(namespace).await
     }
 
+    async fn list_volumes(&self, namespace: &Namespace) -> Result<Vec<VolumeRecord>> {
+        self.store.list_volumes(namespace).await
+    }
+
+    async fn get_volume(
+        &self,
+        namespace: &Namespace,
+        volume_name: &str,
+    ) -> Result<Option<VolumeRecord>> {
+        self.store.get_volume(namespace, volume_name).await
+    }
+
     async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
         self.store.upsert_service_revision(record).await
     }
@@ -270,10 +282,11 @@ where
         namespace: &Namespace,
         removed_services: &[String],
         releases: &[ServiceReleaseRecord],
+        volumes: &[VolumeRecord],
         deploy: &DeployRecord,
     ) -> Result<()> {
         self.store
-            .commit_deploy(namespace, removed_services, releases, deploy)
+            .commit_deploy(namespace, removed_services, releases, volumes, deploy)
             .await
     }
 

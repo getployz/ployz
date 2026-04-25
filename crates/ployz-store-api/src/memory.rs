@@ -9,7 +9,7 @@ use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeRecord, CertificateEvent,
     CertificateRecord, DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord,
     MachineEvent, MachineId, MachineRecord, RoutingState, ServiceReleaseRecord,
-    ServiceRevisionRecord,
+    ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::collections::{HashMap, HashSet};
@@ -29,6 +29,7 @@ struct StoreInner {
     invites: HashMap<String, InviteRecord>,
     service_revisions: HashMap<(Namespace, String, String), ServiceRevisionRecord>,
     service_releases: HashMap<(Namespace, String), ServiceReleaseRecord>,
+    volumes: HashMap<(Namespace, String), VolumeRecord>,
     instance_status: HashMap<InstanceId, InstanceStatusRecord>,
     deploys: HashMap<DeployId, DeployRecord>,
     acme_accounts: HashMap<String, AcmeAccountRecord>,
@@ -56,6 +57,7 @@ impl MemoryStore {
                 invites: HashMap::new(),
                 service_revisions: HashMap::new(),
                 service_releases: HashMap::new(),
+                volumes: HashMap::new(),
                 instance_status: HashMap::new(),
                 deploys: HashMap::new(),
                 acme_accounts: HashMap::new(),
@@ -330,6 +332,30 @@ impl DeployStore for MemoryStore {
             .collect())
     }
 
+    async fn list_volumes(&self, namespace: &Namespace) -> Result<Vec<VolumeRecord>> {
+        let inner = self.lock_inner();
+        let mut volumes = inner
+            .volumes
+            .values()
+            .filter(|record| record.namespace == *namespace)
+            .cloned()
+            .collect::<Vec<_>>();
+        volumes.sort_by(|left, right| left.volume_name.cmp(&right.volume_name));
+        Ok(volumes)
+    }
+
+    async fn get_volume(
+        &self,
+        namespace: &Namespace,
+        volume_name: &str,
+    ) -> Result<Option<VolumeRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner
+            .volumes
+            .get(&(namespace.clone(), volume_name.to_string()))
+            .cloned())
+    }
+
     async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
         let mut inner = self.lock_inner();
         let key = (
@@ -388,6 +414,7 @@ impl DeployStore for MemoryStore {
         namespace: &Namespace,
         removed_services: &[String],
         releases: &[ServiceReleaseRecord],
+        volumes: &[VolumeRecord],
         deploy: &DeployRecord,
     ) -> Result<()> {
         let mut inner = self.lock_inner();
@@ -407,6 +434,13 @@ impl DeployStore for MemoryStore {
             inner.service_releases.insert(
                 (release.namespace.clone(), release.service.clone()),
                 release.clone(),
+            );
+        }
+
+        for volume in volumes {
+            inner.volumes.insert(
+                (volume.namespace.clone(), volume.volume_name.clone()),
+                volume.clone(),
             );
         }
 

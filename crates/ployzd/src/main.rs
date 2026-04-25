@@ -82,6 +82,7 @@ async fn run() -> Result<i32> {
                 service_mode,
                 &cfg.socket,
                 built_in_images,
+                cfg.storage,
                 cfg.cluster_cidr,
                 cfg.subnet_prefix_len,
                 cfg.remote_control_port,
@@ -193,6 +194,7 @@ mod tests {
     fn upsert_service_replaces_existing_service_and_sorts() {
         let mut manifest = DeployManifest {
             namespace: ployz_types::spec::Namespace("prod".into()),
+            volumes: Vec::new(),
             services: vec![
                 build_service_spec(
                     "redis:latest",

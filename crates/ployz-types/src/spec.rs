@@ -38,6 +38,8 @@ impl std::fmt::Display for Namespace {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployManifest {
     pub namespace: Namespace,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<VolumeDeclaration>,
     pub services: Vec<ServiceSpec>,
 }
 
@@ -51,6 +53,20 @@ impl DeployManifest {
             return Err("manifest must contain at least one service".into());
         }
 
+        let mut volumes_by_name = BTreeMap::new();
+        for volume in &self.volumes {
+            volume.validate()?;
+            if volumes_by_name
+                .insert(volume.name.clone(), volume)
+                .is_some()
+            {
+                return Err(format!(
+                    "manifest contains duplicate volume '{}'",
+                    volume.name
+                ));
+            }
+        }
+
         let mut seen = BTreeSet::new();
         for service in &self.services {
             if !seen.insert(service.name.clone()) {
@@ -60,6 +76,34 @@ impl DeployManifest {
                 ));
             }
             service.validate()?;
+
+            for mount in &service.template.mounts {
+                match &mount.source {
+                    MountSource::Volume(name) => {
+                        let Some(volume) = volumes_by_name.get(name) else {
+                            return Err(format!(
+                                "service '{}' references undeclared volume '{}'",
+                                service.name, name
+                            ));
+                        };
+                        if volume.scope == VolumeScope::Single
+                            && matches!(service.placement, Placement::Replicated { count } if count > 1)
+                        {
+                            return Err(format!(
+                                "service '{}' has replicas > 1 but mounts volume '{}' with scope=single",
+                                service.name, name
+                            ));
+                        }
+                    }
+                    MountSource::Bind(_) if !self.namespace.is_system() => {
+                        return Err(format!(
+                            "service '{}' uses a bind mount, which is only allowed in the system namespace",
+                            service.name
+                        ));
+                    }
+                    MountSource::Bind(_) | MountSource::Tmpfs => {}
+                }
+            }
         }
 
         Ok(())
@@ -121,7 +165,19 @@ impl ServiceSpec {
         }
 
         match self.placement {
-            Placement::Global => {}
+            Placement::Global => {
+                if self
+                    .template
+                    .mounts
+                    .iter()
+                    .any(|mount| matches!(mount.source, MountSource::Volume(_)))
+                {
+                    return Err(format!(
+                        "service '{}' cannot use global placement with managed volumes",
+                        self.name
+                    ));
+                }
+            }
             Placement::Replicated { count } => {
                 if count == 0 {
                     return Err(format!(
@@ -226,9 +282,9 @@ impl ServiceSpec {
                 }
                 if self
                     .template
-                    .volumes
+                    .mounts
                     .iter()
-                    .any(|mount| matches!(mount.source, VolumeSource::Bind(_)))
+                    .any(|mount| matches!(mount.source, MountSource::Bind(_)))
                 {
                     return Err(format!(
                         "service '{}' cannot use blue_green rollout with bind mounts",
@@ -269,7 +325,7 @@ pub struct ContainerSpec {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub volumes: Vec<VolumeMount>,
+    pub mounts: Vec<Mount>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cap_add: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -291,28 +347,89 @@ pub struct ContainerSpec {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VolumeMount {
-    pub source: VolumeSource,
+#[serde(rename_all = "snake_case")]
+pub enum MountSource {
+    Volume(String),
+    Bind(String),
+    Tmpfs,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mount {
+    pub source: MountSource,
     pub target: String,
     #[serde(default)]
     pub readonly: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum VolumeSource {
-    Bind(String),
-    Managed(ManagedVolumeSpec),
-    Tmpfs,
+pub enum VolumeScope {
+    Single,
+    Shared,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManagedVolumeSpec {
+pub struct VolumeDeclaration {
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub driver: Option<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub options: BTreeMap<String, String>,
+    pub scope: VolumeScope,
+    pub quota: String,
+    pub mode: String,
+    pub owner: String,
+}
+
+impl VolumeDeclaration {
+    fn validate(&self) -> Result<(), String> {
+        if self.name.trim().is_empty() {
+            return Err("volume name cannot be empty".into());
+        }
+        if !valid_quota(&self.quota) {
+            return Err(format!(
+                "volume '{}' quota must be an integer with optional K, M, G, or T suffix",
+                self.name
+            ));
+        }
+        if !valid_mode(&self.mode) {
+            return Err(format!(
+                "volume '{}' mode must be octal like 0750",
+                self.name
+            ));
+        }
+        if !valid_owner(&self.owner) {
+            return Err(format!(
+                "volume '{}' owner must be numeric uid:gid",
+                self.name
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn valid_quota(value: &str) -> bool {
+    let Some(last) = value.chars().last() else {
+        return false;
+    };
+    let digits = if matches!(last, 'K' | 'M' | 'G' | 'T') {
+        &value[..value.len() - 1]
+    } else {
+        value
+    };
+    !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn valid_mode(value: &str) -> bool {
+    let len = value.len();
+    (len == 3 || len == 4) && value.chars().all(|ch| matches!(ch, '0'..='7'))
+}
+
+fn valid_owner(value: &str) -> bool {
+    let Some((uid, gid)) = value.split_once(':') else {
+        return false;
+    };
+    !uid.is_empty()
+        && !gid.is_empty()
+        && uid.chars().all(|ch| ch.is_ascii_digit())
+        && gid.chars().all(|ch| ch.is_ascii_digit())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -575,18 +692,14 @@ mod tests {
     fn sample_spec() -> ServiceSpec {
         ServiceSpec {
             name: "api".into(),
-            placement: Placement::Replicated { count: 2 },
+            placement: Placement::Replicated { count: 1 },
             template: ContainerSpec {
                 image: "myapp:latest".into(),
                 command: Some(vec!["serve".into()]),
                 entrypoint: None,
                 env: BTreeMap::from([("PORT".into(), "8080".into())]),
-                volumes: vec![VolumeMount {
-                    source: VolumeSource::Managed(ManagedVolumeSpec {
-                        name: "data".into(),
-                        driver: Some("zfs".into()),
-                        options: BTreeMap::from([("quota".into(), "10G".into())]),
-                    }),
+                mounts: vec![Mount {
+                    source: MountSource::Volume("data".into()),
                     target: "/data".into(),
                     readonly: false,
                 }],
@@ -672,6 +785,13 @@ mod tests {
         let spec = sample_spec();
         let manifest = DeployManifest {
             namespace: Namespace::default_ns(),
+            volumes: vec![VolumeDeclaration {
+                name: "data".into(),
+                scope: VolumeScope::Single,
+                quota: "10G".into(),
+                mode: "0750".into(),
+                owner: "999:999".into(),
+            }],
             services: vec![spec.clone(), spec],
         };
         let error = manifest.validate().expect_err("duplicates should fail");
@@ -682,6 +802,13 @@ mod tests {
     fn manifest_rejects_empty_namespace() {
         let manifest = DeployManifest {
             namespace: Namespace(String::new()),
+            volumes: vec![VolumeDeclaration {
+                name: "data".into(),
+                scope: VolumeScope::Single,
+                quota: "10G".into(),
+                mode: "0750".into(),
+                owner: "999:999".into(),
+            }],
             services: vec![sample_spec()],
         };
         let error = manifest
