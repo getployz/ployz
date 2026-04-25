@@ -1,7 +1,8 @@
 use crate::certificates::{
-    CertificateManagerConfig, Http01ChallengeReadiness, InstantAcmeIssuer, IssuanceCoordinator,
-    LocalHttp01ChallengeReadiness, NoopIssuanceCoordinator,
-    spawn_certificate_finalization_with_readiness, start_pending_orders,
+    AcmeAccountCoordinator, CertificateManagerConfig, Http01ChallengeReadiness, InstantAcmeIssuer,
+    IssuanceCoordinator, LocalHttp01ChallengeReadiness, NoopAcmeAccountCoordinator,
+    NoopIssuanceCoordinator, spawn_certificate_finalization_with_coordination,
+    start_pending_orders,
 };
 use crate::deploy::managed_domains;
 use crate::deploy::plan::{PlanFingerprint, ResolvedPlan, resolve_plan};
@@ -163,6 +164,7 @@ pub(super) async fn apply(
         local_machine_id,
         manifest,
         &NoopIssuanceCoordinator,
+        Arc::new(NoopAcmeAccountCoordinator),
         Arc::new(LocalHttp01ChallengeReadiness),
     )
     .await
@@ -174,6 +176,7 @@ pub(super) async fn apply_with_certificate_coordination(
     local_machine_id: &MachineId,
     manifest: &ployz_types::spec::DeployManifest,
     certificate_coordinator: &dyn IssuanceCoordinator,
+    account_coordinator: Arc<dyn AcmeAccountCoordinator>,
     challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
 ) -> Result<DeployApplyResult> {
     let initial_plan = resolve_plan(store, local_machine_id, manifest).await?;
@@ -204,6 +207,7 @@ pub(super) async fn apply_with_certificate_coordination(
         manifest,
         initial_plan,
         certificate_coordinator,
+        account_coordinator,
         challenge_readiness,
     )
     .await
@@ -224,6 +228,7 @@ pub(super) async fn apply_with_initial_plan(
         manifest,
         initial_plan,
         &NoopIssuanceCoordinator,
+        Arc::new(NoopAcmeAccountCoordinator),
         Arc::new(LocalHttp01ChallengeReadiness),
     )
     .await
@@ -236,6 +241,7 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
     manifest: &ployz_types::spec::DeployManifest,
     initial_plan: ResolvedPlan,
     certificate_coordinator: &dyn IssuanceCoordinator,
+    account_coordinator: Arc<dyn AcmeAccountCoordinator>,
     challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
 ) -> Result<DeployApplyResult> {
     let deploy_id = DeployId(Uuid::new_v4().to_string());
@@ -313,7 +319,11 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
         .await?;
         let acme_warnings = start_pending_orders(
             store,
-            &InstantAcmeIssuer::new(acme_config.clone()),
+            &InstantAcmeIssuer::with_readiness_and_account_coordinator(
+                acme_config.clone(),
+                Arc::new(LocalHttp01ChallengeReadiness),
+                account_coordinator.clone(),
+            ),
             certificate_coordinator,
             &managed_hostnames,
         )
@@ -328,10 +338,11 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
                 })?;
             store.upsert_deploy(&deploy_record).await?;
         }
-        spawn_certificate_finalization_with_readiness(
+        spawn_certificate_finalization_with_coordination(
             store.clone(),
             acme_config,
             challenge_readiness.clone(),
+            account_coordinator.clone(),
         );
 
         let cleanup = cleanup_stale_instances(

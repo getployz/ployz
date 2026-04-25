@@ -278,6 +278,7 @@ impl MeshStartTx {
                     peer_rpc_port,
                 ),
             );
+            let account_coordinator = coordinator.clone();
             let readiness = std::sync::Arc::new(
                 crate::daemon::cert_coordination::OverlayChallengeReadiness::new(
                     store.clone(),
@@ -291,6 +292,7 @@ impl MeshStartTx {
                 RenewalConfig::from_env(),
                 coordinator,
                 readiness,
+                account_coordinator,
             ))
         } else {
             None
