@@ -7,7 +7,7 @@ use ployz_types::Result;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
     InstanceStatusRecord, InviteRecord, MachineId, MachineRecord, RoutingState,
-    ServiceReleaseRecord, ServiceRevisionRecord,
+    ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 
@@ -55,6 +55,12 @@ pub trait StoreBackend: Send + Sync {
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<InstanceStatusRecord>>;
+    async fn list_volumes(&self, namespace: &Namespace) -> Result<Vec<VolumeRecord>>;
+    async fn get_volume(
+        &self,
+        namespace: &Namespace,
+        volume_name: &str,
+    ) -> Result<Option<VolumeRecord>>;
 
     async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()>;
     async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> Result<()>;
@@ -67,6 +73,7 @@ pub trait StoreBackend: Send + Sync {
         namespace: &Namespace,
         removed_services: &[String],
         releases: &[ServiceReleaseRecord],
+        volumes: &[VolumeRecord],
         deploy: &DeployRecord,
     ) -> Result<()>;
     async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>>;

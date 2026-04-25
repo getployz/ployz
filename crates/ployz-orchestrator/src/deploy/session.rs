@@ -37,4 +37,5 @@ pub struct StartCandidateRequest {
     pub slot_id: SlotId,
     pub instance_id: InstanceId,
     pub spec_json: String,
+    pub volumes_json: String,
 }

@@ -527,6 +527,7 @@ pub enum DeployFrame {
         slot_id: String,
         instance_id: String,
         spec_json: String,
+        volumes_json: String,
     },
     DrainInstance {
         instance_id: String,
@@ -564,6 +565,7 @@ mod tests {
             slot_id: String::from("slot-1"),
             instance_id: String::from("inst-1"),
             spec_json: String::from("{\"name\":\"api\"}"),
+            volumes_json: String::from("[]"),
         };
 
         let json = serde_json::to_value(&frame).expect("serialize frame");
@@ -579,6 +581,7 @@ mod tests {
             slot_id,
             instance_id,
             spec_json,
+            volumes_json,
         } = decoded
         else {
             panic!("unexpected frame");
@@ -587,5 +590,6 @@ mod tests {
         assert_eq!(slot_id, "slot-1");
         assert_eq!(instance_id, "inst-1");
         assert_eq!(spec_json, "{\"name\":\"api\"}");
+        assert_eq!(volumes_json, "[]");
     }
 }

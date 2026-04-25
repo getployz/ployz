@@ -10,8 +10,9 @@ use ployz_api::{
 };
 use ployz_sdk::Transport;
 use ployz_types::spec::{
-    ContainerSpec, DeployManifest, NetworkMode, Placement, PortProtocol, PublishedPort, PullPolicy,
-    Resources, RestartPolicy, RolloutStrategy, ServicePort, ServiceSpec, VolumeMount, VolumeSource,
+    ContainerSpec, DeployManifest, Mount, MountSource, Namespace, NetworkMode, Placement,
+    PortProtocol, PublishedPort, PullPolicy, Resources, RestartPolicy, RolloutStrategy,
+    ServicePort, ServiceSpec,
 };
 use std::collections::BTreeMap;
 
@@ -82,6 +83,12 @@ async fn build_deploy_service_request<T: Transport>(
     transport: &T,
     socket: &str,
 ) -> Result<DaemonRequest> {
+    if !args.volume.is_empty() && args.namespace != Namespace::system().0 {
+        return Err(CliError::Usage(
+            "deploy service -v creates a host bind mount and is only supported in the system namespace; declare managed volumes in a manifest for user workloads"
+                .into(),
+        ));
+    }
     let mut manifest = export_namespace_manifest(transport, socket, &args.namespace).await?;
     let spec = build_service_spec(
         &args.image,
@@ -396,18 +403,18 @@ pub(crate) fn build_service_spec(
         })
         .collect();
 
-    let volumes: Vec<VolumeMount> = volume
+    let mounts: Vec<Mount> = volume
         .iter()
         .filter_map(|mapping| {
             let parts: Vec<&str> = mapping.splitn(3, ':').collect();
             match parts.as_slice() {
-                [src, dst] => Some(VolumeMount {
-                    source: VolumeSource::Bind(src.to_string()),
+                [src, dst] => Some(Mount {
+                    source: MountSource::Bind(src.to_string()),
                     target: dst.to_string(),
                     readonly: false,
                 }),
-                [src, dst, opts] => Some(VolumeMount {
-                    source: VolumeSource::Bind(src.to_string()),
+                [src, dst, opts] => Some(Mount {
+                    source: MountSource::Bind(src.to_string()),
                     target: dst.to_string(),
                     readonly: *opts == "ro",
                 }),
@@ -438,7 +445,7 @@ pub(crate) fn build_service_spec(
             },
             entrypoint: None,
             env: env_map,
-            volumes,
+            mounts,
             cap_add: vec![],
             cap_drop: vec![],
             privileged: false,

@@ -1,9 +1,9 @@
 use crate::client::CorrClient;
 use crate::store::shared::sql::exec_all;
-use crate::store::tables::{deploys, service_releases};
+use crate::store::tables::{deploys, service_releases, volumes as volume_table};
 use corro_api_types::Statement;
 use ployz_types::error::Result;
-use ployz_types::model::{DeployRecord, ServiceReleaseRecord};
+use ployz_types::model::{DeployRecord, ServiceReleaseRecord, VolumeRecord};
 use ployz_types::spec::Namespace;
 use std::collections::HashSet;
 
@@ -12,9 +12,11 @@ pub(crate) async fn commit_deploy(
     namespace: &Namespace,
     removed_services: &[String],
     releases: &[ServiceReleaseRecord],
+    volumes: &[VolumeRecord],
     deploy: &DeployRecord,
 ) -> Result<()> {
-    let statements = build_commit_statements(namespace, removed_services, releases, deploy)?;
+    let statements =
+        build_commit_statements(namespace, removed_services, releases, volumes, deploy)?;
     exec_all(client, &statements, "commit_deploy").await
 }
 
@@ -33,6 +35,7 @@ fn build_commit_statements(
     namespace: &Namespace,
     removed_services: &[String],
     releases: &[ServiceReleaseRecord],
+    volumes: &[VolumeRecord],
     deploy: &DeployRecord,
 ) -> Result<Vec<Statement>> {
     let touched = touched_services(removed_services, releases);
@@ -44,6 +47,10 @@ fn build_commit_statements(
 
     for release in releases {
         statements.push(service_releases::upsert_statement(release)?);
+    }
+
+    for volume in volumes {
+        statements.push(volume_table::upsert_statement(volume)?);
     }
 
     statements.push(deploys::upsert_statement(deploy)?);
@@ -107,8 +114,9 @@ mod tests {
             summary_json: String::from("{}"),
         };
 
-        let statements = build_commit_statements(&namespace, &removed_services, &releases, &deploy)
-            .expect("commit statements");
+        let statements =
+            build_commit_statements(&namespace, &removed_services, &releases, &[], &deploy)
+                .expect("commit statements");
 
         let [
             delete_api_release,

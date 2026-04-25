@@ -114,6 +114,16 @@ CREATE TABLE IF NOT EXISTS instance_status (
     payload_json TEXT NOT NULL DEFAULT '' CHECK (payload_json = '' OR json_valid(payload_json))
 );
 
+-- Durable ZFS volume intent and realization state. Volumes are identified by
+-- (namespace, volume_name); the bound machine, dataset, quota, ownership, and
+-- attachments publish together inside payload_json.
+CREATE TABLE IF NOT EXISTS volumes (
+    namespace TEXT NOT NULL DEFAULT '',
+    volume_name TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '' CHECK (payload_json = '' OR json_valid(payload_json)),
+    PRIMARY KEY (namespace, volume_name)
+);
+
 -- Tracks the lifecycle of each deployment operation. State progresses from
 -- applying → committed (or failed/cleanup_pending).
 --

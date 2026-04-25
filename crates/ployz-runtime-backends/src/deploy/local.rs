@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::{IpAddr, Ipv4Addr};
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::StoreDriver;
@@ -13,8 +15,10 @@ use crate::runtime::{
     RuntimeContainerSpec,
 };
 use crate::spec::{
-    ContainerSpec, Namespace, NetworkMode, PortProtocol, ServicePort, ServiceSpec, VolumeSource,
+    ContainerSpec, MountSource, Namespace, NetworkMode, PortProtocol, ServicePort, ServiceSpec,
+    VolumeDeclaration,
 };
+use crate::storage::{TokioShellRunner, ZfsDriver, resolve_volumes};
 use ployz_store_api::DeployStore;
 
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
@@ -73,18 +77,21 @@ pub(super) struct StartCandidate<'a> {
     pub(super) slot_id: &'a SlotId,
     pub(super) machine_id: &'a MachineId,
     pub(super) revision_hash: &'a str,
+    pub(super) volumes: &'a HashMap<String, VolumeDeclaration>,
 }
 
 pub struct LocalDeployRuntime {
     engine: ContainerEngine,
     overlay_network: Option<String>,
     overlay_dns_server: Option<Ipv4Addr>,
+    storage_driver: Option<Arc<ZfsDriver<TokioShellRunner>>>,
 }
 
 impl LocalDeployRuntime {
     pub fn new(
         overlay_network: Option<String>,
         overlay_dns_server: Option<Ipv4Addr>,
+        storage_driver: Option<Arc<ZfsDriver<TokioShellRunner>>>,
     ) -> Result<Self> {
         let docker = bollard::Docker::connect_with_socket_defaults()
             .map_err(|e| Error::operation("docker connect", e.to_string()))?;
@@ -93,6 +100,7 @@ impl LocalDeployRuntime {
             engine,
             overlay_network,
             overlay_dns_server,
+            storage_driver,
         })
     }
 
@@ -138,6 +146,7 @@ impl LocalDeployRuntime {
             slot_id,
             machine_id,
             revision_hash,
+            volumes,
         } = request;
         let container_name = format!("ployz-{namespace}-{}-{}", spec.name, instance_id.0);
         let key = format!("{namespace}/{}/{}/{}", spec.name, slot_id.0, instance_id.0);
@@ -176,6 +185,8 @@ impl LocalDeployRuntime {
 
         let dns_servers = workload_dns_servers(&spec.network, self.overlay_dns_server);
 
+        let resolved_volumes = self.resolve_mounts(namespace, container, volumes).await?;
+
         let runtime_spec = RuntimeContainerSpec {
             key,
             container_name: container_name.clone(),
@@ -185,7 +196,7 @@ impl LocalDeployRuntime {
             entrypoint: container.entrypoint.clone(),
             env,
             labels: workload_labels,
-            binds: build_binds(container),
+            binds: build_binds(container, &resolved_volumes),
             tmpfs: build_tmpfs(container),
             dns_servers,
             network_mode,
@@ -219,6 +230,28 @@ impl LocalDeployRuntime {
             ip_address: result.ip_address,
             backend_ports: service_port_map(&spec.service_ports),
         })
+    }
+
+    async fn resolve_mounts(
+        &self,
+        namespace: &Namespace,
+        container: &ContainerSpec,
+        volumes: &HashMap<String, VolumeDeclaration>,
+    ) -> Result<HashMap<String, PathBuf>> {
+        let has_volumes = container
+            .mounts
+            .iter()
+            .any(|mount| matches!(mount.source, MountSource::Volume(_)));
+        if !has_volumes {
+            return Ok(HashMap::new());
+        }
+        let Some(driver) = &self.storage_driver else {
+            return Err(Error::operation(
+                "start_candidate",
+                "service uses managed volumes but daemon has no [storage] zfs_root configured",
+            ));
+        };
+        resolve_volumes(driver.as_ref(), namespace, container, volumes).await
     }
 
     pub(super) async fn wait_ready(
@@ -366,29 +399,32 @@ fn resolve_service_port(spec: &ServiceSpec, name: &str) -> Result<u16> {
         })
 }
 
-fn build_binds(container: &ContainerSpec) -> Vec<String> {
+fn build_binds(container: &ContainerSpec, resolved: &HashMap<String, PathBuf>) -> Vec<String> {
     container
-        .volumes
+        .mounts
         .iter()
         .filter_map(|mount| match &mount.source {
-            VolumeSource::Bind(source) => {
+            MountSource::Bind(source) => {
                 let ro = if mount.readonly { ":ro" } else { "" };
                 Some(format!("{source}:{}{ro}", mount.target))
             }
-            VolumeSource::Managed(volume) => {
+            MountSource::Volume(volume) => {
+                let Some(host) = resolved.get(volume) else {
+                    return None;
+                };
                 let ro = if mount.readonly { ":ro" } else { "" };
-                Some(format!("{}:{}{ro}", volume.name, mount.target))
+                Some(format!("{}:{}{ro}", host.display(), mount.target))
             }
-            VolumeSource::Tmpfs => None,
+            MountSource::Tmpfs => None,
         })
         .collect()
 }
 
 fn build_tmpfs(container: &ContainerSpec) -> HashMap<String, String> {
     container
-        .volumes
+        .mounts
         .iter()
-        .filter(|mount| matches!(mount.source, VolumeSource::Tmpfs))
+        .filter(|mount| matches!(mount.source, MountSource::Tmpfs))
         .map(|mount| (mount.target.clone(), String::new()))
         .collect()
 }
