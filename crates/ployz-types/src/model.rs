@@ -8,7 +8,7 @@ use std::fmt::{self, Write as _};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use strum::EnumString;
 
-use crate::spec::Namespace;
+use crate::spec::{Namespace, VolumeScope};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display)]
 pub struct MachineId(pub String);
@@ -587,6 +587,24 @@ pub struct DeployRecord {
     pub committed_at: Option<u64>,
     pub finished_at: Option<u64>,
     pub summary_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VolumeRecord {
+    pub namespace: Namespace,
+    pub volume_name: String,
+    pub scope: VolumeScope,
+    pub machine_id: MachineId,
+    pub dataset: String,
+    pub mountpoint: String,
+    pub quota: String,
+    pub mode: String,
+    pub owner: String,
+    pub attached_services: Vec<String>,
+    pub created_at: u64,
+    pub created_by_deploy_id: DeployId,
+    pub last_modified_at: u64,
+    pub last_modified_by_deploy_id: DeployId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

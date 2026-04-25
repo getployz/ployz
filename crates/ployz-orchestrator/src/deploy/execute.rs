@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::model::{
     DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployRecord, DeployState,
     InstanceId, InstanceStatusRecord, MachineId, ServiceRelease, ServiceReleaseRecord,
-    ServiceRevisionRecord, ServiceRoutingPolicy,
+    ServiceRevisionRecord, ServiceRoutingPolicy, VolumeRecord,
 };
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use ployz_store_api::{DeployStore, StoreDriver};
@@ -33,6 +33,7 @@ struct StartTask {
     machine_id: MachineId,
     instance_id: InstanceId,
     spec_json: String,
+    volumes_json: String,
 }
 
 #[derive(Debug)]
@@ -258,6 +259,7 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
 
         let committed_releases =
             build_committed_releases(&final_plan, &startup.started, &deploy_id)?;
+        let committed_volumes = build_committed_volumes(&final_plan, &deploy_id, started_at);
         let removed_services = final_plan
             .services()
             .iter()
@@ -277,6 +279,7 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
                 final_plan.namespace(),
                 &removed_services,
                 &committed_releases,
+                &committed_volumes,
                 &deploy_record,
             )
             .await?;
@@ -417,6 +420,7 @@ pub(super) async fn run_phase_startup(
                     machine_id: slot.machine_id.clone(),
                     instance_id: InstanceId(Uuid::new_v4().to_string()),
                     spec_json: spec_json.to_string(),
+                    volumes_json: plan.volumes_json().to_string(),
                 });
         }
     }
@@ -497,6 +501,7 @@ async fn run_machine_start_queue(
                     slot_id: task.slot_id.clone(),
                     instance_id: task.instance_id.clone(),
                     spec_json: task.spec_json.clone(),
+                    volumes_json: task.volumes_json.clone(),
                 })
                 .await?
         };
@@ -587,6 +592,56 @@ fn build_committed_releases(
         });
     }
     Ok(releases)
+}
+
+fn build_committed_volumes(
+    plan: &ResolvedPlan,
+    deploy_id: &DeployId,
+    now: u64,
+) -> Vec<VolumeRecord> {
+    plan.volumes()
+        .iter()
+        .map(|planned| {
+            let created_at = planned
+                .current
+                .as_ref()
+                .map(|record| record.created_at)
+                .unwrap_or(now);
+            let created_by_deploy_id = planned
+                .current
+                .as_ref()
+                .map(|record| record.created_by_deploy_id.clone())
+                .unwrap_or_else(|| deploy_id.clone());
+            let dataset = planned
+                .current
+                .as_ref()
+                .map(|record| record.dataset.clone())
+                .filter(|dataset| !dataset.is_empty())
+                .unwrap_or_else(|| format!("{}/{}", plan.namespace().0, planned.declaration.name));
+            let mountpoint = planned
+                .current
+                .as_ref()
+                .map(|record| record.mountpoint.clone())
+                .filter(|mountpoint| !mountpoint.is_empty())
+                .unwrap_or_else(|| format!("/{}/{}", plan.namespace().0, planned.declaration.name));
+            VolumeRecord {
+                namespace: plan.namespace().clone(),
+                volume_name: planned.declaration.name.clone(),
+                scope: planned.declaration.scope,
+                machine_id: planned.machine_id.clone(),
+                dataset,
+                mountpoint,
+                quota: planned.declaration.quota.clone(),
+                mode: planned.declaration.mode.clone(),
+                owner: planned.declaration.owner.clone(),
+                attached_services: planned.attached_services.clone(),
+                created_at,
+                created_by_deploy_id,
+                last_modified_at: now,
+                last_modified_by_deploy_id: deploy_id.clone(),
+            }
+        })
+        .collect()
 }
 
 async fn cleanup_stale_instances(

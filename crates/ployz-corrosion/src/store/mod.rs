@@ -11,7 +11,7 @@ use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
     InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineRecord, OverlayIp,
-    RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    RoutingState, ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -299,6 +299,18 @@ impl DeployStore for CorrosionStore {
         tables::instance_status::list_instance_status(&self.client, namespace).await
     }
 
+    async fn list_volumes(&self, namespace: &Namespace) -> Result<Vec<VolumeRecord>> {
+        tables::volumes::list_volumes(&self.client, namespace).await
+    }
+
+    async fn get_volume(
+        &self,
+        namespace: &Namespace,
+        volume_name: &str,
+    ) -> Result<Option<VolumeRecord>> {
+        tables::volumes::get_volume(&self.client, namespace, volume_name).await
+    }
+
     async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
         tables::service_revisions::upsert_service_revision(&self.client, record).await
     }
@@ -328,6 +340,7 @@ impl DeployStore for CorrosionStore {
         namespace: &Namespace,
         removed_services: &[String],
         releases: &[ServiceReleaseRecord],
+        volumes: &[VolumeRecord],
         deploy: &DeployRecord,
     ) -> Result<()> {
         workflows::deploy_commit::commit_deploy(
@@ -335,6 +348,7 @@ impl DeployStore for CorrosionStore {
             namespace,
             removed_services,
             releases,
+            volumes,
             deploy,
         )
         .await

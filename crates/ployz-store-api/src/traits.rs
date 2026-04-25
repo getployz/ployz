@@ -4,7 +4,7 @@ use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeRecord, CertificateEvent,
     CertificateRecord, DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord,
     MachineEvent, MachineId, MachineRecord, RoutingState, ServiceReleaseRecord,
-    ServiceRevisionRecord,
+    ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::future::Future;
@@ -87,6 +87,17 @@ pub trait DeployStore: Send + Sync {
         namespace: &'a Namespace,
     ) -> impl Future<Output = Result<Vec<InstanceStatusRecord>>> + Send + 'a;
 
+    fn list_volumes<'a>(
+        &'a self,
+        namespace: &'a Namespace,
+    ) -> impl Future<Output = Result<Vec<VolumeRecord>>> + Send + 'a;
+
+    fn get_volume<'a>(
+        &'a self,
+        namespace: &'a Namespace,
+        volume_name: &'a str,
+    ) -> impl Future<Output = Result<Option<VolumeRecord>>> + Send + 'a;
+
     fn upsert_service_revision<'a>(
         &'a self,
         record: &'a ServiceRevisionRecord,
@@ -123,6 +134,7 @@ pub trait DeployStore: Send + Sync {
         namespace: &'a Namespace,
         removed_services: &'a [String],
         releases: &'a [ServiceReleaseRecord],
+        volumes: &'a [VolumeRecord],
         deploy: &'a DeployRecord,
     ) -> impl Future<Output = Result<()>> + Send + 'a;
 

@@ -2,11 +2,14 @@ use crate::error::{Error, Result};
 use crate::machine_policy::{can_keep_existing_slot, is_new_placement_candidate};
 use crate::model::{
     DeployChangeKind, DeployPreview, MachineId, MachineRecord, ServicePlan, ServiceReleaseRecord,
-    ServiceReleaseSlot, SlotId, SlotPlan,
+    ServiceReleaseSlot, SlotId, SlotPlan, VolumeRecord,
 };
 use ployz_store_api::{DeployStore, MachineStore, StoreDriver};
-use ployz_types::spec::{DeployManifest, Namespace, Placement, ServiceSpec, stable_hash_hex};
-use std::collections::{BTreeSet, HashMap};
+use ployz_types::spec::{
+    DeployManifest, MountSource, Namespace, Placement, ServiceSpec, VolumeDeclaration,
+    stable_hash_hex,
+};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PlannedSlot {
@@ -32,9 +35,19 @@ pub(super) struct PlannedService {
 pub(super) struct ResolvedPlan {
     namespace: Namespace,
     manifest_hash: String,
+    volumes_json: String,
+    volumes: Vec<PlannedVolume>,
     participants: BTreeSet<MachineId>,
     services: Vec<PlannedService>,
     machine_map: HashMap<MachineId, MachineRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PlannedVolume {
+    pub(super) declaration: VolumeDeclaration,
+    pub(super) machine_id: MachineId,
+    pub(super) attached_services: Vec<String>,
+    pub(super) current: Option<VolumeRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +71,14 @@ impl ResolvedPlan {
 
     pub(super) fn manifest_hash(&self) -> &str {
         &self.manifest_hash
+    }
+
+    pub(super) fn volumes_json(&self) -> &str {
+        &self.volumes_json
+    }
+
+    pub(super) fn volumes(&self) -> &[PlannedVolume] {
+        &self.volumes
     }
 
     pub(super) fn participants(&self) -> &BTreeSet<MachineId> {
@@ -154,6 +175,7 @@ pub(super) async fn resolve_plan(
         .map_err(|error| Error::operation("deploy_preview", error))?;
 
     let current_releases = store.list_service_releases(&manifest.namespace).await?;
+    let current_volumes = store.list_volumes(&manifest.namespace).await?;
     let machines = store.list_machines().await?;
     let machine_map: HashMap<MachineId, MachineRecord> = machines
         .iter()
@@ -172,9 +194,58 @@ pub(super) async fn resolve_plan(
             })?
             .as_slice(),
     );
+    let volumes_json = serde_json::to_string(&manifest.volumes).map_err(|error| {
+        Error::operation("deploy_preview", format!("serialize volumes: {error}"))
+    })?;
+
+    let service_volume_refs = service_volume_refs(manifest);
+    let volume_attachments = volume_attachments(manifest);
+    let volume_map = current_volumes
+        .into_iter()
+        .map(|volume| (volume.volume_name.clone(), volume))
+        .collect::<HashMap<_, _>>();
 
     let mut participants = BTreeSet::new();
     let mut services = Vec::new();
+    let mut planned_volumes = Vec::new();
+    let mut volume_machine_map = HashMap::new();
+
+    for declaration in &manifest.volumes {
+        let attached_services = volume_attachments
+            .get(&declaration.name)
+            .cloned()
+            .unwrap_or_default();
+        let machine_id = match volume_map.get(&declaration.name) {
+            Some(record) => {
+                validate_existing_volume(declaration, record)?;
+                if !machine_is_deployable(&record.machine_id, &machine_map, local_machine_id) {
+                    return Err(Error::operation(
+                        "deploy_preview",
+                        format!(
+                            "volume '{}' is bound to unavailable machine '{}'",
+                            declaration.name, record.machine_id
+                        ),
+                    ));
+                }
+                record.machine_id.clone()
+            }
+            None => new_volume_machine(
+                declaration,
+                &attached_services,
+                &current_slots_by_service,
+                &machine_map,
+                &desired_machines,
+                local_machine_id,
+            ),
+        };
+        volume_machine_map.insert(declaration.name.clone(), machine_id.clone());
+        planned_volumes.push(PlannedVolume {
+            declaration: declaration.clone(),
+            machine_id,
+            attached_services,
+            current: volume_map.get(&declaration.name).cloned(),
+        });
+    }
 
     for spec in &manifest.services {
         let revision_hash = spec
@@ -183,11 +254,13 @@ pub(super) async fn resolve_plan(
         let spec_json = spec
             .canonical_revision_json()
             .map_err(|error| Error::operation("deploy_preview", error))?;
+        let volume_pin = service_volume_pin(&spec.name, &service_volume_refs, &volume_machine_map)?;
         let desired_slots = desired_slots(
             spec,
             &desired_machines,
             current_slots_by_service.get(&spec.name).map(Vec::as_slice),
             &machine_map,
+            volume_pin.as_ref(),
         )?;
         let current_release = current_release_map.get(&spec.name);
         let current_service_slots = current_slots_by_service
@@ -310,6 +383,8 @@ pub(super) async fn resolve_plan(
     Ok(ResolvedPlan {
         namespace: manifest.namespace.clone(),
         manifest_hash,
+        volumes_json,
+        volumes: planned_volumes,
         participants,
         services,
         machine_map,
@@ -338,6 +413,7 @@ pub(super) fn desired_slots(
     machines: &[MachineId],
     current_slots: Option<&[ServiceReleaseSlot]>,
     machine_map: &HashMap<MachineId, MachineRecord>,
+    pinned_machine: Option<&MachineId>,
 ) -> Result<Vec<DesiredSlot>> {
     let candidates = if machines.is_empty() {
         vec![MachineId("local".into())]
@@ -364,11 +440,20 @@ pub(super) fn desired_slots(
                             .map(|slot| slot.machine_id.clone())
                     })
                     .filter(|machine_id| {
+                        if let Some(pinned_machine) = pinned_machine
+                            && machine_id != pinned_machine
+                        {
+                            return false;
+                        }
                         machine_map
                             .get(machine_id)
                             .is_some_and(can_keep_existing_slot)
                     })
-                    .unwrap_or_else(|| candidates[usize::from(index) % candidates.len()].clone());
+                    .unwrap_or_else(|| {
+                        pinned_machine.cloned().unwrap_or_else(|| {
+                            candidates[usize::from(index) % candidates.len()].clone()
+                        })
+                    });
                 desired.push(DesiredSlot {
                     slot_id,
                     machine_id,
@@ -385,6 +470,174 @@ pub(super) fn desired_slots(
         }
     }
     Ok(desired)
+}
+
+fn service_volume_refs(manifest: &DeployManifest) -> HashMap<String, Vec<String>> {
+    manifest
+        .services
+        .iter()
+        .map(|service| {
+            let mut refs = service
+                .template
+                .mounts
+                .iter()
+                .filter_map(|mount| match &mount.source {
+                    MountSource::Volume(name) => Some(name.clone()),
+                    MountSource::Bind(_) | MountSource::Tmpfs => None,
+                })
+                .collect::<Vec<_>>();
+            refs.sort();
+            refs.dedup();
+            (service.name.clone(), refs)
+        })
+        .collect()
+}
+
+fn volume_attachments(manifest: &DeployManifest) -> HashMap<String, Vec<String>> {
+    let mut attachments: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for service in &manifest.services {
+        for mount in &service.template.mounts {
+            let MountSource::Volume(name) = &mount.source else {
+                continue;
+            };
+            attachments
+                .entry(name.clone())
+                .or_default()
+                .push(service.name.clone());
+        }
+    }
+    attachments
+        .into_iter()
+        .map(|(name, mut services)| {
+            services.sort();
+            services.dedup();
+            (name, services)
+        })
+        .collect()
+}
+
+fn service_volume_pin(
+    service: &str,
+    service_volume_refs: &HashMap<String, Vec<String>>,
+    volume_machine_map: &HashMap<String, MachineId>,
+) -> Result<Option<MachineId>> {
+    let Some(volume_names) = service_volume_refs.get(service) else {
+        return Ok(None);
+    };
+    let mut pinned = None;
+    for name in volume_names {
+        let Some(machine_id) = volume_machine_map.get(name) else {
+            continue;
+        };
+        if let Some(existing) = &pinned
+            && existing != machine_id
+        {
+            return Err(Error::operation(
+                "deploy_preview",
+                format!("service '{service}' attaches volumes bound to different machines"),
+            ));
+        }
+        pinned = Some(machine_id.clone());
+    }
+    Ok(pinned)
+}
+
+fn validate_existing_volume(declaration: &VolumeDeclaration, record: &VolumeRecord) -> Result<()> {
+    if declaration.scope != record.scope {
+        return Err(Error::operation(
+            "deploy_preview",
+            format!("volume '{}' cannot change scope", declaration.name),
+        ));
+    }
+    if declaration.mode != record.mode {
+        return Err(Error::operation(
+            "deploy_preview",
+            format!(
+                "volume '{}' cannot change mode after creation",
+                declaration.name
+            ),
+        ));
+    }
+    if declaration.owner != record.owner {
+        return Err(Error::operation(
+            "deploy_preview",
+            format!(
+                "volume '{}' cannot change owner after creation",
+                declaration.name
+            ),
+        ));
+    }
+    let requested = quota_value(&declaration.quota)?;
+    let current = quota_value(&record.quota)?;
+    if requested < current {
+        return Err(Error::operation(
+            "deploy_preview",
+            format!("volume '{}' quota cannot shrink in v1", declaration.name),
+        ));
+    }
+    Ok(())
+}
+
+fn quota_value(value: &str) -> Result<u128> {
+    let Some(last) = value.chars().last() else {
+        return Err(Error::operation(
+            "deploy_preview",
+            "volume quota cannot be empty",
+        ));
+    };
+    let (digits, multiplier) = match last {
+        'K' => (&value[..value.len() - 1], 1024_u128),
+        'M' => (&value[..value.len() - 1], 1024_u128.pow(2)),
+        'G' => (&value[..value.len() - 1], 1024_u128.pow(3)),
+        'T' => (&value[..value.len() - 1], 1024_u128.pow(4)),
+        '0'..='9' => (value, 1),
+        _ => {
+            return Err(Error::operation(
+                "deploy_preview",
+                format!("unsupported volume quota '{value}'"),
+            ));
+        }
+    };
+    digits
+        .parse::<u128>()
+        .map(|number| number * multiplier)
+        .map_err(|error| Error::operation("deploy_preview", format!("parse quota: {error}")))
+}
+
+fn new_volume_machine(
+    declaration: &VolumeDeclaration,
+    attached_services: &[String],
+    current_slots_by_service: &HashMap<String, Vec<ServiceReleaseSlot>>,
+    machine_map: &HashMap<MachineId, MachineRecord>,
+    desired_machines: &[MachineId],
+    local_machine_id: &MachineId,
+) -> MachineId {
+    for service in attached_services {
+        if let Some(slots) = current_slots_by_service.get(service) {
+            for slot in slots {
+                if machine_is_deployable(&slot.machine_id, machine_map, local_machine_id) {
+                    return slot.machine_id.clone();
+                }
+            }
+        }
+    }
+    desired_machines.first().cloned().unwrap_or_else(|| {
+        let _ = declaration;
+        local_machine_id.clone()
+    })
+}
+
+fn machine_is_deployable(
+    machine_id: &MachineId,
+    machine_map: &HashMap<MachineId, MachineRecord>,
+    local_machine_id: &MachineId,
+) -> bool {
+    if machine_id == local_machine_id && !machine_map.contains_key(machine_id) {
+        return true;
+    }
+    machine_map
+        .get(machine_id)
+        .is_some_and(is_new_placement_candidate)
 }
 
 fn current_slots_by_service(

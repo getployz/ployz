@@ -4,10 +4,10 @@ use super::preview;
 use crate::deploy::session::{DeploySession, DeploySessionFactory, StartCandidateRequest};
 use crate::error::Result;
 use crate::model::{
-    AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DrainState, InstanceId,
-    InstancePhase, InstanceStatusRecord, MachineId, MachineLifecycle, MachineRecord,
-    MachineTopology, OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord,
-    ServiceReleaseSlot, ServiceRoutingPolicy, SlotId,
+    AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, DeployState,
+    DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, MachineLifecycle,
+    MachineRecord, MachineTopology, OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord,
+    ServiceReleaseSlot, ServiceRoutingPolicy, SlotId, VolumeRecord,
 };
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
@@ -17,8 +17,9 @@ use ployz_store_api::{
 };
 use ployz_types::Result as PloyzResult;
 use ployz_types::spec::{
-    ContainerSpec, DeployManifest, HttpRoute, Namespace, NetworkMode, Placement, PortProtocol,
-    PullPolicy, Resources, RestartPolicy, RolloutStrategy, RouteSpec, ServicePort, ServiceSpec,
+    ContainerSpec, DeployManifest, HttpRoute, Mount, MountSource, Namespace, NetworkMode,
+    Placement, PortProtocol, PullPolicy, Resources, RestartPolicy, RolloutStrategy, RouteSpec,
+    ServicePort, ServiceSpec, VolumeDeclaration, VolumeScope,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::net::Ipv6Addr;
@@ -73,8 +74,8 @@ fn replicated_one_reuses_existing_slot_machine() {
         ),
     ]);
 
-    let desired =
-        desired_slots(&spec, &machines, Some(&current_slots), &machine_map).expect("desired slots");
+    let desired = desired_slots(&spec, &machines, Some(&current_slots), &machine_map, None)
+        .expect("desired slots");
     let [slot] = desired.as_slice() else {
         panic!("expected one desired slot");
     };
@@ -180,6 +181,108 @@ async fn resolve_plan_reuses_slot_machine_when_revision_changes() {
     };
     assert_eq!(service_plan.action, crate::model::DeployChangeKind::Replace);
     assert_eq!(slot_plan.machine_id, MachineId("machine-b".into()));
+}
+
+#[tokio::test]
+async fn resolve_plan_pins_new_volume_to_existing_slot_machine() {
+    let store = StoreDriver::memory();
+    let local_machine_id = MachineId("local".into());
+    let mut service = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    service.template.mounts.push(Mount {
+        source: MountSource::Volume("data".into()),
+        target: "/var/lib/postgresql/data".into(),
+        readonly: false,
+    });
+    let mut manifest = test_manifest(vec![service]);
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
+    let old_spec = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:16");
+    let old_revision_hash = old_spec.revision_hash().expect("old revision hash");
+
+    store
+        .upsert_self_machine(&test_machine("machine-a", MachineLifecycle::Active))
+        .await
+        .expect("seed machine-a");
+    store
+        .upsert_self_machine(&test_machine("machine-b", MachineLifecycle::Active))
+        .await
+        .expect("seed machine-b");
+    store
+        .upsert_service_release(&test_release(
+            &manifest.namespace,
+            "db",
+            &old_revision_hash,
+            vec![test_slot(
+                "slot-0001",
+                "machine-b",
+                "inst-1",
+                &old_revision_hash,
+            )],
+        ))
+        .await
+        .expect("seed release");
+
+    let plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("resolve plan");
+
+    let [volume] = plan.volumes() else {
+        panic!("expected one volume");
+    };
+    assert_eq!(volume.machine_id, MachineId("machine-b".into()));
+    let [service_plan] = plan.services() else {
+        panic!("expected one service plan");
+    };
+    let [slot_plan] = service_plan.slots.as_slice() else {
+        panic!("expected one slot plan");
+    };
+    assert_eq!(slot_plan.machine_id, MachineId("machine-b".into()));
+}
+
+#[tokio::test]
+async fn resolve_plan_rejects_service_with_volumes_on_different_machines() {
+    let store = StoreDriver::memory();
+    let local_machine_id = MachineId("local".into());
+    let mut service = test_service_spec("api", Placement::Replicated { count: 1 }, "nginx:1.28");
+    service.template.mounts.push(Mount {
+        source: MountSource::Volume("left".into()),
+        target: "/left".into(),
+        readonly: false,
+    });
+    service.template.mounts.push(Mount {
+        source: MountSource::Volume("right".into()),
+        target: "/right".into(),
+        readonly: false,
+    });
+    let mut manifest = test_manifest(vec![service]);
+    manifest
+        .volumes
+        .push(test_volume("left", VolumeScope::Single));
+    manifest
+        .volumes
+        .push(test_volume("right", VolumeScope::Single));
+
+    store
+        .upsert_self_machine(&test_machine("machine-a", MachineLifecycle::Active))
+        .await
+        .expect("seed machine-a");
+    store
+        .upsert_self_machine(&test_machine("machine-b", MachineLifecycle::Active))
+        .await
+        .expect("seed machine-b");
+    seed_volume(&store, &manifest.namespace, "left", "machine-a").await;
+    seed_volume(&store, &manifest.namespace, "right", "machine-b").await;
+
+    let error = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect_err("volume machine conflict should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("attaches volumes bound to different machines")
+    );
 }
 
 #[tokio::test]
@@ -1050,8 +1153,59 @@ async fn counting_store_with_machines(machine_ids: &[&str]) -> (StoreDriver, Arc
 fn test_manifest(services: Vec<ServiceSpec>) -> DeployManifest {
     DeployManifest {
         namespace: Namespace("test".into()),
+        volumes: Vec::new(),
         services,
     }
+}
+
+fn test_volume(name: &str, scope: VolumeScope) -> VolumeDeclaration {
+    VolumeDeclaration {
+        name: name.into(),
+        scope,
+        quota: "1G".into(),
+        mode: "0750".into(),
+        owner: "999:999".into(),
+    }
+}
+
+async fn seed_volume(
+    store: &StoreDriver,
+    namespace: &Namespace,
+    volume_name: &str,
+    machine_id: &str,
+) {
+    let deploy_id = DeployId(format!("seed-{volume_name}"));
+    let volume = VolumeRecord {
+        namespace: namespace.clone(),
+        volume_name: volume_name.into(),
+        scope: VolumeScope::Single,
+        machine_id: MachineId(machine_id.into()),
+        dataset: format!("test/{volume_name}"),
+        mountpoint: format!("/test/{volume_name}"),
+        quota: "1G".into(),
+        mode: "0750".into(),
+        owner: "999:999".into(),
+        attached_services: Vec::new(),
+        created_at: 1,
+        created_by_deploy_id: deploy_id.clone(),
+        last_modified_at: 1,
+        last_modified_by_deploy_id: deploy_id.clone(),
+    };
+    let deploy = DeployRecord {
+        deploy_id,
+        namespace: namespace.clone(),
+        coordinator_machine_id: MachineId("local".into()),
+        manifest_hash: "seed".into(),
+        state: DeployState::Committed,
+        started_at: 1,
+        committed_at: Some(1),
+        finished_at: Some(1),
+        summary_json: "{}".into(),
+    };
+    store
+        .commit_deploy(namespace, &[], &[], &[volume], &deploy)
+        .await
+        .expect("seed volume");
 }
 
 fn test_service_spec(name: &str, placement: Placement, image: &str) -> ServiceSpec {
@@ -1063,7 +1217,7 @@ fn test_service_spec(name: &str, placement: Placement, image: &str) -> ServiceSp
             command: None,
             entrypoint: None,
             env: BTreeMap::new(),
-            volumes: Vec::new(),
+            mounts: Vec::new(),
             cap_add: Vec::new(),
             cap_drop: Vec::new(),
             privileged: false,
@@ -1398,6 +1552,21 @@ impl StoreBackend for CountingBackend {
         self.store.delete_instance_status(instance_id).await
     }
 
+    async fn list_volumes(
+        &self,
+        namespace: &Namespace,
+    ) -> PloyzResult<Vec<crate::model::VolumeRecord>> {
+        self.store.list_volumes(namespace).await
+    }
+
+    async fn get_volume(
+        &self,
+        namespace: &Namespace,
+        volume_name: &str,
+    ) -> PloyzResult<Option<crate::model::VolumeRecord>> {
+        self.store.get_volume(namespace, volume_name).await
+    }
+
     async fn upsert_deploy(&self, record: &crate::model::DeployRecord) -> PloyzResult<()> {
         self.upsert_deploy_calls.fetch_add(1, Ordering::SeqCst);
         self.store.upsert_deploy(record).await
@@ -1408,11 +1577,12 @@ impl StoreBackend for CountingBackend {
         namespace: &Namespace,
         removed_services: &[String],
         releases: &[ServiceReleaseRecord],
+        volumes: &[crate::model::VolumeRecord],
         deploy: &crate::model::DeployRecord,
     ) -> PloyzResult<()> {
         self.commit_calls.fetch_add(1, Ordering::SeqCst);
         self.store
-            .commit_deploy(namespace, removed_services, releases, deploy)
+            .commit_deploy(namespace, removed_services, releases, volumes, deploy)
             .await
     }
 

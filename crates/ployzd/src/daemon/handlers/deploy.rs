@@ -62,6 +62,10 @@ impl DaemonState {
             Ok(active) => active,
             Err(response) => return *response,
         };
+        let storage_driver = match self.zfs_storage_driver().await {
+            Ok(driver) => driver,
+            Err(error) => return self.err("DEPLOY_APPLY_FAILED", error),
+        };
 
         let agent = Arc::new(DeployAgent::new(
             active.mesh.store.clone(),
@@ -69,6 +73,7 @@ impl DaemonState {
             self.identity.machine_id.clone(),
             self.overlay_network_name(),
             self.overlay_dns_server(),
+            storage_driver,
         ));
         let factory = DefaultDeploySessionFactory::new(
             agent,
@@ -204,6 +209,7 @@ async fn export_manifest(
 
     Ok(DeployManifest {
         namespace: namespace.clone(),
+        volumes: Vec::new(),
         services,
     })
 }

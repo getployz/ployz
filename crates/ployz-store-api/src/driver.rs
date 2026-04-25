@@ -10,7 +10,7 @@ use ployz_types::Result;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
     InstanceStatusRecord, InviteRecord, MachineId, MachineRecord, RoutingState,
-    ServiceReleaseRecord, ServiceRevisionRecord,
+    ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::sync::Arc;
@@ -169,6 +169,18 @@ impl DeployStore for StoreDriver {
         self.backend.list_instance_status(namespace).await
     }
 
+    async fn list_volumes(&self, namespace: &Namespace) -> Result<Vec<VolumeRecord>> {
+        self.backend.list_volumes(namespace).await
+    }
+
+    async fn get_volume(
+        &self,
+        namespace: &Namespace,
+        volume_name: &str,
+    ) -> Result<Option<VolumeRecord>> {
+        self.backend.get_volume(namespace, volume_name).await
+    }
+
     async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
         self.backend.upsert_service_revision(record).await
     }
@@ -200,10 +212,11 @@ impl DeployStore for StoreDriver {
         namespace: &Namespace,
         removed_services: &[String],
         releases: &[ServiceReleaseRecord],
+        volumes: &[VolumeRecord],
         deploy: &DeployRecord,
     ) -> Result<()> {
         self.backend
-            .commit_deploy(namespace, removed_services, releases, deploy)
+            .commit_deploy(namespace, removed_services, releases, volumes, deploy)
             .await
     }
 
@@ -355,6 +368,18 @@ impl StoreBackend for MemoryStoreBackend {
         self.store.list_instance_status(namespace).await
     }
 
+    async fn list_volumes(&self, namespace: &Namespace) -> Result<Vec<VolumeRecord>> {
+        self.store.list_volumes(namespace).await
+    }
+
+    async fn get_volume(
+        &self,
+        namespace: &Namespace,
+        volume_name: &str,
+    ) -> Result<Option<VolumeRecord>> {
+        self.store.get_volume(namespace, volume_name).await
+    }
+
     async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
         self.store.upsert_service_revision(record).await
     }
@@ -384,10 +409,11 @@ impl StoreBackend for MemoryStoreBackend {
         namespace: &Namespace,
         removed_services: &[String],
         releases: &[ServiceReleaseRecord],
+        volumes: &[VolumeRecord],
         deploy: &DeployRecord,
     ) -> Result<()> {
         self.store
-            .commit_deploy(namespace, removed_services, releases, deploy)
+            .commit_deploy(namespace, removed_services, releases, volumes, deploy)
             .await
     }
 
