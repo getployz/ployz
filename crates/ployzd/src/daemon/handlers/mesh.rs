@@ -96,6 +96,7 @@ mod tests {
             24,
             4317,
             "127.0.0.1:0".into(),
+            None,
             1,
         );
 
@@ -167,6 +168,7 @@ mod tests {
             24,
             4317,
             "127.0.0.1:0".into(),
+            None,
             1,
         );
         let cached_subnet = config.subnet;
@@ -184,6 +186,7 @@ mod tests {
             peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            certificate_renewal: None,
         });
 
         let error = state
@@ -217,6 +220,7 @@ mod tests {
             24,
             4317,
             "127.0.0.1:0".into(),
+            None,
             1,
         );
 
@@ -305,6 +309,7 @@ mod tests {
             24,
             4317,
             "127.0.0.1:0".into(),
+            None,
             1,
         );
         let cached_subnet = config.subnet;
@@ -316,6 +321,7 @@ mod tests {
             remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            certificate_renewal: None,
         });
         (state, store, network)
     }

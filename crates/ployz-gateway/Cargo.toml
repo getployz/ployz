@@ -21,10 +21,11 @@ ployz-store-api = { path = "../ployz-store-api" }
 ployz-types = { path = "../ployz-types" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-pingora = { version = "0.8.0", features = ["lb"] }
+pingora = { version = "0.8.0", features = ["lb", "boringssl"] }
 tokio = { workspace = true }
 # TODO: remove when upstream pingora drops async_trait
 async-trait = { workspace = true }
+bytes = "1"
 http = { workspace = true }
 prometheus = { workspace = true }
 thiserror = { workspace = true }
@@ -33,6 +34,9 @@ tracing-subscriber = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+
+[dev-dependencies]
+rcgen = "0.14"
 
 [lints.clippy]
 indexing_slicing = "warn"

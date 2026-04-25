@@ -159,7 +159,17 @@ impl ServiceSpec {
 
         for route in &self.routes {
             let (kind, service_port) = match route {
-                RouteSpec::Http(r) => ("HTTP", &r.service_port),
+                RouteSpec::Http(r) => {
+                    for hostname in &r.hostnames {
+                        if hostname.trim().starts_with("*.") {
+                            return Err(
+                                "wildcard domains require DNS-01 managed public DNS, which is not enabled yet"
+                                    .into(),
+                            );
+                        }
+                    }
+                    ("HTTP", &r.service_port)
+                }
                 RouteSpec::Tcp(r) => ("TCP", &r.service_port),
             };
             if !seen_ports.contains(service_port) {

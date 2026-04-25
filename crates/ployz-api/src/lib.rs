@@ -70,8 +70,18 @@ pub enum DebugTickTask {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ResourceKey {
+    /// Subnet reservation: missing peers are acceptable only if the strict
+    /// majority quorum still allows the reservation.
     Subnet(Ipv4Net),
+    /// Namespace deploy lock: all required deploy participants must be
+    /// reachable and session-locked.
     DeployNamespace(String),
+    /// ACME hostname issuance lock: peer inventory must be available;
+    /// unreachable known peers abstain, explicit denials veto.
+    CertIssuance(String),
+    /// ACME account creation lock: peer inventory must be available;
+    /// unreachable known peers abstain, explicit denials veto.
+    AcmeAccount(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -227,6 +237,10 @@ pub enum DaemonRequest {
     },
     Coord {
         op: CoordOp,
+    },
+    AcmeChallengeReady {
+        hostname: String,
+        token: String,
     },
     MeshSelfRecord,
     MeshAccept {

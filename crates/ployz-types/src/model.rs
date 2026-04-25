@@ -4,7 +4,7 @@ use ipnet::Ipv4Net;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::{self, Write as _};
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use strum::EnumString;
 
 use crate::spec::Namespace;
@@ -184,6 +184,20 @@ pub enum MachineEvent {
     Removed(MachineRecord),
 }
 
+#[derive(Debug, Clone)]
+pub enum CertificateEvent {
+    Added(CertificateRecord),
+    Updated(CertificateRecord),
+    Removed(CertificateRecord),
+}
+
+#[derive(Debug, Clone)]
+pub enum AcmeChallengeEvent {
+    Added(AcmeChallengeRecord),
+    Updated(AcmeChallengeRecord),
+    Removed(AcmeChallengeRecord),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JoinResponse {
     pub machine_id: MachineId,
@@ -272,6 +286,92 @@ pub struct RoutingState {
     pub revisions: Vec<ServiceRevisionRecord>,
     pub releases: Vec<ServiceReleaseRecord>,
     pub instances: Vec<InstanceStatusRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcmeAccountRecord {
+    pub account_id: String,
+    pub issuer_url: String,
+    pub contact_email: Option<String>,
+    pub account_credentials_json: String,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
+pub enum CertificateState {
+    #[display("pending")]
+    #[strum(serialize = "pending")]
+    Pending,
+    #[display("issuing")]
+    #[strum(serialize = "issuing")]
+    Issuing,
+    #[display("active")]
+    #[strum(serialize = "active")]
+    Active,
+    #[display("renewal_due")]
+    #[strum(serialize = "renewal_due")]
+    RenewalDue,
+    #[display("failed")]
+    #[strum(serialize = "failed")]
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CertificateVersion {
+    pub version_id: String,
+    pub fullchain_pem: String,
+    pub private_key_pem: String,
+    pub not_before: Option<u64>,
+    pub not_after: Option<u64>,
+    pub issued_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CertificateRecord {
+    pub hostname: String,
+    pub issuer_url: String,
+    pub account_id: String,
+    pub state: CertificateState,
+    pub active_version_id: Option<String>,
+    pub versions: Vec<CertificateVersion>,
+    pub order_url: Option<String>,
+    pub last_error: Option<String>,
+    pub requested_at: u64,
+    pub updated_at: u64,
+    pub next_renewal_at: Option<u64>,
+}
+
+impl CertificateRecord {
+    /// The currently-installable version, if any. Independent of `state`:
+    /// renewal transitions a healthy cert through `RenewalDue → Issuing` and
+    /// `active_version_id` keeps pointing at the existing leaf the whole way;
+    /// a non-retryable finalize failure explicitly restores the previous
+    /// `active_version_id` so callers can keep serving the old cert. TLS
+    /// consumers should ask the type for material here, not gate on `state`.
+    #[must_use]
+    pub fn installed_version(&self) -> Option<&CertificateVersion> {
+        let id = self.active_version_id.as_deref()?;
+        self.versions
+            .iter()
+            .find(|version| version.version_id == id)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcmeChallengeRecord {
+    pub hostname: String,
+    pub token: String,
+    pub key_authorization: String,
+    pub expires_at: u64,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DomainDnsAdvice {
+    pub hostname: String,
+    pub resolved_ips: Vec<IpAddr>,
+    pub recommended_ips: Vec<IpAddr>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
@@ -541,6 +641,141 @@ mod tests {
         assert_eq!(
             NetworkLifecycle::from_str("running"),
             Ok(NetworkLifecycle::Running)
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // CertificateRecord::installed_version — installable-material lookup
+    //
+    // These tests pin the contract that TLS consumers (gateway, doctor,
+    // future status surfaces) must use when deciding whether to serve a
+    // managed cert. The rule is:
+    //
+    //   "Installable" == there is a `CertificateVersion` whose `version_id`
+    //   matches the record's `active_version_id`.
+    //
+    // It is deliberately independent of `state`. The renewal flow walks a
+    // healthy cert through `Active → RenewalDue → Issuing` (and possibly
+    // `→ Failed` on a non-retryable finalize) without clearing
+    // `active_version_id`, so the existing leaf must remain serviceable
+    // throughout. Gating on `state` would blackhole TLS handshakes during
+    // every renewal window.
+    // -------------------------------------------------------------------
+
+    fn cert_version(id: &str) -> CertificateVersion {
+        CertificateVersion {
+            version_id: id.into(),
+            fullchain_pem: format!(
+                "-----BEGIN CERTIFICATE-----\n{id}\n-----END CERTIFICATE-----\n"
+            ),
+            private_key_pem: format!(
+                "-----BEGIN PRIVATE KEY-----\n{id}\n-----END PRIVATE KEY-----\n"
+            ),
+            not_before: Some(0),
+            not_after: Some(0),
+            issued_at: 0,
+        }
+    }
+
+    fn cert_record(state: CertificateState) -> CertificateRecord {
+        CertificateRecord {
+            hostname: "example.com".into(),
+            issuer_url: "https://acme.example/directory".into(),
+            account_id: "acct".into(),
+            state,
+            active_version_id: None,
+            versions: Vec::new(),
+            order_url: None,
+            last_error: None,
+            requested_at: 0,
+            updated_at: 0,
+            next_renewal_at: None,
+        }
+    }
+
+    #[test]
+    fn installed_version_returns_none_without_active_version_id() {
+        // Brand-new Pending row with no successful issuance: nothing to serve.
+        let record = cert_record(CertificateState::Pending);
+        assert!(record.installed_version().is_none());
+    }
+
+    #[test]
+    fn installed_version_returns_none_when_active_id_points_at_missing_version() {
+        // The pointer is dangling — `versions` was rolled back or never
+        // populated. Treat as "no installable material" rather than panicking.
+        let mut record = cert_record(CertificateState::Active);
+        record.active_version_id = Some("v-missing".into());
+        assert!(record.installed_version().is_none());
+    }
+
+    #[test]
+    fn installed_version_returns_match_for_active_record() {
+        // Steady state: `state == Active`, single version, pointer matches.
+        let mut record = cert_record(CertificateState::Active);
+        record.versions.push(cert_version("v1"));
+        record.active_version_id = Some("v1".into());
+        assert_eq!(
+            record.installed_version().map(|v| v.version_id.as_str()),
+            Some("v1")
+        );
+    }
+
+    #[test]
+    fn installed_version_serves_during_renewal_due() {
+        // The renewal ticker flips `Active → RenewalDue` without touching the
+        // cert material. The old leaf must remain installable until a fresh
+        // version is committed; otherwise the gateway drops TLS during every
+        // renewal window.
+        let mut record = cert_record(CertificateState::RenewalDue);
+        record.versions.push(cert_version("v1"));
+        record.active_version_id = Some("v1".into());
+        assert_eq!(
+            record.installed_version().map(|v| v.version_id.as_str()),
+            Some("v1")
+        );
+    }
+
+    #[test]
+    fn installed_version_serves_during_issuing_renewal() {
+        // `start_one` flips the row to `Issuing` for the renewal order while
+        // `active_version_id` still points at the previous valid leaf. We
+        // serve the old material until finalize replaces it.
+        let mut record = cert_record(CertificateState::Issuing);
+        record.versions.push(cert_version("v1"));
+        record.active_version_id = Some("v1".into());
+        assert_eq!(
+            record.installed_version().map(|v| v.version_id.as_str()),
+            Some("v1")
+        );
+    }
+
+    #[test]
+    fn installed_version_serves_after_failed_renewal_when_previous_id_restored() {
+        // `finalize_one` non-retryable error restores `previous_active_version_id`
+        // before downgrading state to `Failed`, exactly so the gateway keeps
+        // serving the previously-issued cert until the next reconcile attempt.
+        // Old version is still in `versions`; new (failed) version is not added.
+        let mut record = cert_record(CertificateState::Failed);
+        record.versions.push(cert_version("v1"));
+        record.active_version_id = Some("v1".into());
+        assert_eq!(
+            record.installed_version().map(|v| v.version_id.as_str()),
+            Some("v1")
+        );
+    }
+
+    #[test]
+    fn installed_version_picks_newest_when_multiple_versions_present() {
+        // Successful renewal pushes a new `CertificateVersion`. The pointer
+        // must determine which one is served — not insertion order.
+        let mut record = cert_record(CertificateState::Active);
+        record.versions.push(cert_version("v1"));
+        record.versions.push(cert_version("v2"));
+        record.active_version_id = Some("v2".into());
+        assert_eq!(
+            record.installed_version().map(|v| v.version_id.as_str()),
+            Some("v2")
         );
     }
 }

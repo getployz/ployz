@@ -3,12 +3,14 @@ use crate::client::{CorrClient, Transport};
 use crate::config as corrosion_config;
 use corro_api_types::{ExecResult, Statement};
 use ployz_store_api::{
-    DeployStore, InviteStore, MachineStore, RoutingStore, SyncProbe, SyncStatus,
+    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployStore, InviteStore,
+    MachineStore, RoutingStore, SyncProbe, SyncStatus,
 };
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
-    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, OverlayIp, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
+    InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineRecord, OverlayIp,
+    RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
 };
 use ployz_types::spec::Namespace;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -281,5 +283,47 @@ impl DeployStore for CorrosionStore {
 
     async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
         tables::deploys::get_deploy(&self.client, deploy_id).await
+    }
+}
+
+impl CertificateStore for CorrosionStore {
+    async fn get_acme_account(&self, issuer_url: &str) -> Result<Option<AcmeAccountRecord>> {
+        tables::acme_accounts::get_acme_account(&self.client, issuer_url).await
+    }
+
+    async fn upsert_acme_account(&self, record: &AcmeAccountRecord) -> Result<()> {
+        tables::acme_accounts::upsert_acme_account(&self.client, record).await
+    }
+
+    async fn list_certificates(&self) -> Result<Vec<CertificateRecord>> {
+        tables::certificates::list_certificates(&self.client).await
+    }
+
+    async fn get_certificate(&self, hostname: &str) -> Result<Option<CertificateRecord>> {
+        tables::certificates::get_certificate(&self.client, hostname).await
+    }
+
+    async fn upsert_certificate(&self, record: &CertificateRecord) -> Result<()> {
+        tables::certificates::upsert_certificate(&self.client, record).await
+    }
+
+    async fn list_acme_challenges(&self) -> Result<Vec<AcmeChallengeRecord>> {
+        tables::acme_challenges::list_acme_challenges(&self.client).await
+    }
+
+    async fn upsert_acme_challenge(&self, record: &AcmeChallengeRecord) -> Result<()> {
+        tables::acme_challenges::upsert_acme_challenge(&self.client, record).await
+    }
+
+    async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> Result<()> {
+        tables::acme_challenges::delete_acme_challenge(&self.client, hostname, token).await
+    }
+
+    async fn subscribe_certificates(&self) -> Result<CertificateSubscription> {
+        tables::certificates::subscribe_certificates(&self.client).await
+    }
+
+    async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
+        tables::acme_challenges::subscribe_acme_challenges(&self.client).await
     }
 }

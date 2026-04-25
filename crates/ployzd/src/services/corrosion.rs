@@ -1,4 +1,3 @@
-use std::fs::OpenOptions;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -14,15 +13,18 @@ use ployz_runtime_backends::runtime::{
     ContainerEngine, EnsureAction, PullPolicy, RuntimeContainerSpec,
 };
 use ployz_store_api::{
-    DeployStore, InviteStore, MachineStore, RoutingStore, StoreBackend, StoreDriver,
-    StoreRuntimeControl, SyncProbe, SyncStatus,
+    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployStore, InviteStore,
+    MachineStore, RoutingStore, StoreBackend, StoreDriver, StoreRuntimeControl, SyncProbe,
+    SyncStatus,
 };
 use ployz_types::Result;
 use ployz_types::model::{
-    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, OverlayIp, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
+    InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineRecord, OverlayIp,
+    RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
 };
 use ployz_types::spec::Namespace;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, mpsc};
 use tracing::{info, warn};
@@ -279,6 +281,46 @@ where
         self.store.get_deploy(deploy_id).await
     }
 
+    async fn get_acme_account(&self, issuer_url: &str) -> Result<Option<AcmeAccountRecord>> {
+        self.store.get_acme_account(issuer_url).await
+    }
+
+    async fn upsert_acme_account(&self, record: &AcmeAccountRecord) -> Result<()> {
+        self.store.upsert_acme_account(record).await
+    }
+
+    async fn list_certificates(&self) -> Result<Vec<CertificateRecord>> {
+        self.store.list_certificates().await
+    }
+
+    async fn get_certificate(&self, hostname: &str) -> Result<Option<CertificateRecord>> {
+        self.store.get_certificate(hostname).await
+    }
+
+    async fn upsert_certificate(&self, record: &CertificateRecord) -> Result<()> {
+        self.store.upsert_certificate(record).await
+    }
+
+    async fn list_acme_challenges(&self) -> Result<Vec<AcmeChallengeRecord>> {
+        self.store.list_acme_challenges().await
+    }
+
+    async fn upsert_acme_challenge(&self, record: &AcmeChallengeRecord) -> Result<()> {
+        self.store.upsert_acme_challenge(record).await
+    }
+
+    async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> Result<()> {
+        self.store.delete_acme_challenge(hostname, token).await
+    }
+
+    async fn subscribe_certificates(&self) -> Result<CertificateSubscription> {
+        self.store.subscribe_certificates().await
+    }
+
+    async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
+        self.store.subscribe_acme_challenges().await
+    }
+
     async fn sync_status(&self) -> Result<SyncStatus> {
         self.store.sync_status().await
     }
@@ -356,6 +398,76 @@ fn configured_log_path(default_log_path: &Path) -> Option<PathBuf> {
     }
 }
 
+fn forward_corrosion_output<R>(stream_name: &'static str, stream: R, log_path: Option<PathBuf>)
+where
+    R: AsyncRead + Send + Unpin + 'static,
+{
+    tokio::spawn(async move {
+        let mut log_file = match log_path {
+            Some(path) => match tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .await
+            {
+                Ok(file) => Some((path, file)),
+                Err(error) => {
+                    warn!(
+                        stream = stream_name,
+                        ?error,
+                        "failed to open corrosion log file"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+        let mut lines = BufReader::new(stream).lines();
+
+        loop {
+            match lines.next_line().await {
+                Ok(Some(output)) => {
+                    info!(
+                        stream = stream_name,
+                        output = %output,
+                        "corrosion process output"
+                    );
+                    if let Some((path, file)) = log_file.as_mut() {
+                        if let Err(error) = file.write_all(output.as_bytes()).await {
+                            warn!(
+                                stream = stream_name,
+                                log = %path.display(),
+                                ?error,
+                                "failed to write corrosion log file"
+                            );
+                            log_file = None;
+                            continue;
+                        }
+                        if let Err(error) = file.write_all(b"\n").await {
+                            warn!(
+                                stream = stream_name,
+                                log = %path.display(),
+                                ?error,
+                                "failed to write corrosion log file"
+                            );
+                            log_file = None;
+                        }
+                    }
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    warn!(
+                        stream = stream_name,
+                        ?error,
+                        "failed to read corrosion output"
+                    );
+                    break;
+                }
+            }
+        }
+    });
+}
+
 #[async_trait]
 impl StoreRuntimeControl for HostCorrosion {
     async fn start(&self) -> Result<()> {
@@ -380,47 +492,29 @@ impl StoreRuntimeControl for HostCorrosion {
             .stdin(Stdio::null())
             .kill_on_drop(true);
 
-        match configured_log_path(&self.log_path) {
-            Some(log_path) => {
-                let log_file = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&log_path)
-                    .map_err(|error| {
-                        ployz_types::Error::operation(
-                            "corrosion start",
-                            format!("failed to open log file {}: {error}", log_path.display()),
-                        )
-                    })?;
-                let stdout_log = log_file.try_clone().map_err(|error| {
-                    ployz_types::Error::operation(
-                        "corrosion start",
-                        format!(
-                            "failed to clone log file handle {}: {error}",
-                            log_path.display()
-                        ),
-                    )
-                })?;
-                command
-                    .stdout(Stdio::from(stdout_log))
-                    .stderr(Stdio::from(log_file));
-                info!(log = %log_path.display(), "corrosion file logging enabled");
-            }
-            None => {
-                command.stdout(Stdio::null()).stderr(Stdio::null());
-            }
+        let log_path = configured_log_path(&self.log_path);
+        if let Some(log_path) = &log_path {
+            info!(log = %log_path.display(), "corrosion file logging enabled");
         }
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         if let Ok(rust_log) = std::env::var(CORROSION_RUST_LOG_ENV) {
             command.env("RUST_LOG", rust_log);
         }
 
-        let child = command.spawn().map_err(|error| {
+        let mut child = command.spawn().map_err(|error| {
             ployz_types::Error::operation(
                 "corrosion start",
                 format!("failed to spawn {}: {error}", self.binary.display()),
             )
         })?;
+
+        if let Some(stdout) = child.stdout.take() {
+            forward_corrosion_output("stdout", stdout, log_path.clone());
+        }
+        if let Some(stderr) = child.stderr.take() {
+            forward_corrosion_output("stderr", stderr, log_path.clone());
+        }
 
         info!(
             pid = child.id(),

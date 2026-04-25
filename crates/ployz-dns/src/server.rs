@@ -11,6 +11,7 @@ use hickory_server::proto::rr::{Name, RData, Record, RecordType};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::oneshot;
+use tokio::time::{sleep, timeout};
 use tracing::{info, trace, warn};
 
 use crate::config::{DnsConfig, DnsError};
@@ -23,6 +24,9 @@ use crate::sync::DnsStore;
 // an in-memory snapshot, so the cost per query is negligible.
 const DNS_TTL: u32 = 0;
 const TCP_TIMEOUT: Duration = Duration::from_secs(30);
+const STORE_READY_TIMEOUT: Duration = Duration::from_secs(30);
+const STORE_READY_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
+const STORE_READY_POLL: Duration = Duration::from_millis(250);
 
 // ---------------------------------------------------------------------------
 // DnsHandler — implements hickory-server RequestHandler
@@ -217,9 +221,26 @@ where
 {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        .thread_name("ployz-dns-async")
+        .worker_threads(2)
         .build()
         .map_err(|err| DnsError::Runtime(err.to_string()))?;
+    run_dns_process_on_runtime(runtime, config, store)
+}
 
+/// Run the DNS process on an externally-provided tokio runtime.
+///
+/// Corrosion's `reqwest::Client` pins its HTTP/2 connection driver to the
+/// runtime that first used it, so the store must stay on a single runtime
+/// for the entire lifetime of the process.
+pub fn run_dns_process_on_runtime<S>(
+    runtime: tokio::runtime::Runtime,
+    config: DnsConfig,
+    store: S,
+) -> Result<(), DnsError>
+where
+    S: DnsStore + Send + Sync + 'static,
+{
     runtime.block_on(async {
         if let Some(metrics_listen_addr) = config.metrics_listen_addr.as_deref() {
             let metrics_addr = ployz_metrics::spawn_metrics_listener(metrics_listen_addr)
@@ -232,7 +253,7 @@ where
             info!(listen = %metrics_addr, "dns metrics listener running");
         }
 
-        let state = DnsStore::load_routing_state(&store).await?;
+        let state = wait_for_initial_routing_state(&store).await?;
         let initial_snapshot = project_dns(&state);
         let shared = SharedDnsSnapshot::new(initial_snapshot);
 
@@ -258,6 +279,44 @@ where
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
         run_dns_server(&listen_addrs, shared, shutdown_rx).await
     })
+}
+
+async fn wait_for_initial_routing_state<S>(
+    store: &S,
+) -> Result<ployz_types::model::RoutingState, DnsError>
+where
+    S: DnsStore + Send + Sync,
+{
+    let deadline = tokio::time::Instant::now() + STORE_READY_TIMEOUT;
+    loop {
+        match timeout(
+            STORE_READY_ATTEMPT_TIMEOUT,
+            DnsStore::load_routing_state(store),
+        )
+        .await
+        {
+            Ok(Ok(state)) => return Ok(state),
+            Ok(Err(error)) if tokio::time::Instant::now() < deadline => {
+                warn!(?error, "dns waiting for corrosion query readiness");
+            }
+            Err(_) if tokio::time::Instant::now() < deadline => {
+                warn!("dns timed out loading initial routing state; retrying");
+            }
+            Ok(Err(error)) => {
+                return Err(DnsError::Store(format!(
+                    "corrosion query API did not become ready within {:?}: {error}",
+                    STORE_READY_TIMEOUT
+                )));
+            }
+            Err(_) => {
+                return Err(DnsError::Store(format!(
+                    "corrosion query API did not return initial routing state within {:?}",
+                    STORE_READY_TIMEOUT
+                )));
+            }
+        }
+        sleep(STORE_READY_POLL).await;
+    }
 }
 
 #[cfg(test)]

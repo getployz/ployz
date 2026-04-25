@@ -1,3 +1,10 @@
+use crate::certificates::{
+    AcmeAccountCoordinator, CertificateManagerConfig, Http01ChallengeReadiness, InstantAcmeIssuer,
+    IssuanceCoordinator, LocalHttp01ChallengeReadiness, NoopAcmeAccountCoordinator,
+    NoopIssuanceCoordinator, spawn_certificate_finalization_with_coordination,
+    start_pending_orders,
+};
+use crate::deploy::managed_domains;
 use crate::deploy::plan::{PlanFingerprint, ResolvedPlan, resolve_plan};
 use crate::deploy::probe::probe_participants;
 use crate::deploy::session::{self, DeploySessionFactory};
@@ -151,6 +158,27 @@ pub(super) async fn apply(
     local_machine_id: &MachineId,
     manifest: &ployz_types::spec::DeployManifest,
 ) -> Result<DeployApplyResult> {
+    apply_with_certificate_coordination(
+        store,
+        session_factory,
+        local_machine_id,
+        manifest,
+        &NoopIssuanceCoordinator,
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+    )
+    .await
+}
+
+pub(super) async fn apply_with_certificate_coordination(
+    store: &StoreDriver,
+    session_factory: &dyn DeploySessionFactory,
+    local_machine_id: &MachineId,
+    manifest: &ployz_types::spec::DeployManifest,
+    certificate_coordinator: &dyn IssuanceCoordinator,
+    account_coordinator: Arc<dyn AcmeAccountCoordinator>,
+    challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
+) -> Result<DeployApplyResult> {
     let initial_plan = resolve_plan(store, local_machine_id, manifest).await?;
     let reachability =
         probe_participants(initial_plan.participants(), initial_plan.machine_map()).await;
@@ -172,22 +200,49 @@ pub(super) async fn apply(
         ));
     }
 
-    apply_with_initial_plan(
+    apply_with_initial_plan_and_certificate_coordination(
         store,
         session_factory,
         local_machine_id,
         manifest,
         initial_plan,
+        certificate_coordinator,
+        account_coordinator,
+        challenge_readiness,
     )
     .await
 }
 
+#[cfg(test)]
 pub(super) async fn apply_with_initial_plan(
     store: &StoreDriver,
     session_factory: &dyn DeploySessionFactory,
     local_machine_id: &MachineId,
     manifest: &ployz_types::spec::DeployManifest,
     initial_plan: ResolvedPlan,
+) -> Result<DeployApplyResult> {
+    apply_with_initial_plan_and_certificate_coordination(
+        store,
+        session_factory,
+        local_machine_id,
+        manifest,
+        initial_plan,
+        &NoopIssuanceCoordinator,
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+    )
+    .await
+}
+
+pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
+    store: &StoreDriver,
+    session_factory: &dyn DeploySessionFactory,
+    local_machine_id: &MachineId,
+    manifest: &ployz_types::spec::DeployManifest,
+    initial_plan: ResolvedPlan,
+    certificate_coordinator: &dyn IssuanceCoordinator,
+    account_coordinator: Arc<dyn AcmeAccountCoordinator>,
+    challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
 ) -> Result<DeployApplyResult> {
     let deploy_id = DeployId(Uuid::new_v4().to_string());
     let started_at = now_unix_secs();
@@ -200,8 +255,9 @@ pub(super) async fn apply_with_initial_plan(
         let final_plan = resolve_plan(store, local_machine_id, manifest).await?;
         let final_fingerprint = final_plan.fingerprint();
         ensure_plan_stable(&initial_fingerprint, &final_fingerprint)?;
+        managed_domains::validate_hostname_ownership(store, &final_plan).await?;
 
-        let final_preview = final_plan.to_preview(Vec::new());
+        let mut final_preview = final_plan.to_preview(Vec::new());
         let mut deploy_record = DeployRecord {
             deploy_id: deploy_id.clone(),
             namespace: final_plan.namespace().clone(),
@@ -253,6 +309,38 @@ pub(super) async fn apply_with_initial_plan(
                 final_plan.namespace()
             ),
         });
+
+        let acme_config = CertificateManagerConfig::from_env();
+        let managed_hostnames = managed_domains::ensure_certificate_intents(
+            store,
+            &final_plan,
+            &acme_config.issuer_url,
+        )
+        .await?;
+        let acme_warnings = start_pending_orders(
+            store,
+            &InstantAcmeIssuer::with_readiness_and_account_coordinator(
+                acme_config.clone(),
+                Arc::new(LocalHttp01ChallengeReadiness),
+                account_coordinator.clone(),
+            ),
+            certificate_coordinator,
+            &managed_hostnames,
+        )
+        .await;
+        let mut managed_warnings = managed_domains::warnings_for_plan(store, &final_plan).await?;
+        managed_warnings.extend(acme_warnings);
+        final_preview.warnings = managed_warnings;
+        deploy_record.summary_json = serde_json::to_string(&final_preview).map_err(|error| {
+            Error::operation("deploy_apply", format!("serialize preview: {error}"))
+        })?;
+        store.upsert_deploy(&deploy_record).await?;
+        spawn_certificate_finalization_with_coordination(
+            store.clone(),
+            acme_config,
+            challenge_readiness.clone(),
+            account_coordinator.clone(),
+        );
 
         let cleanup = cleanup_stale_instances(
             store,
