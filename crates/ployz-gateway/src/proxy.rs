@@ -19,7 +19,6 @@ pub struct GatewayApp {
     snapshot: SharedSnapshot,
 }
 
-#[derive(Default)]
 pub struct RequestCtx {
     route_id: Option<String>,
     selected_addr: Option<SocketAddr>,
@@ -28,6 +27,20 @@ pub struct RequestCtx {
     matched: bool,
     started_at: Option<Instant>,
     downstream_scheme: &'static str,
+}
+
+impl Default for RequestCtx {
+    fn default() -> Self {
+        Self {
+            route_id: None,
+            selected_addr: None,
+            upstream_host: None,
+            retry_allowed: false,
+            matched: false,
+            started_at: None,
+            downstream_scheme: "http",
+        }
+    }
 }
 
 impl GatewayApp {
@@ -267,4 +280,15 @@ fn append_header_value(upstream_request: &RequestHeader, name: &str, value: &str
     }
     combined.push_str(value);
     combined
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_ctx_defaults_downstream_scheme_to_http() {
+        let ctx = RequestCtx::default();
+        assert_eq!(ctx.downstream_scheme, "http");
+    }
 }

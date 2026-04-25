@@ -41,6 +41,11 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
+# Start sshd before the disk-heavy preload loop so wait_for_ssh isn't gated
+# on image loading. wait_for_daemon still gates on the ployzd socket below,
+# which only appears after preload and install complete.
+/usr/sbin/sshd
+
 preload_dir="/opt/ployz-e2e/preloaded-images"
 preload_manifest="${preload_dir}/built_in_images.toml"
 if [[ -d "${preload_dir}" ]]; then
@@ -62,8 +67,6 @@ elif [[ "${runtime}" != "docker" ]]; then
 else
   echo "ployz-e2e preload images: no manifest at ${preload_manifest}"
 fi
-
-/usr/sbin/sshd
 
 if [[ ! -d /e2e-payload ]]; then
   echo "missing /e2e-payload" >&2

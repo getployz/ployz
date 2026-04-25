@@ -293,7 +293,7 @@ pub struct AcmeAccountRecord {
     pub account_id: String,
     pub issuer_url: String,
     pub contact_email: Option<String>,
-    pub account_key_pem: String,
+    pub account_credentials_json: String,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -352,7 +352,9 @@ impl CertificateRecord {
     #[must_use]
     pub fn installed_version(&self) -> Option<&CertificateVersion> {
         let id = self.active_version_id.as_deref()?;
-        self.versions.iter().find(|version| version.version_id == id)
+        self.versions
+            .iter()
+            .find(|version| version.version_id == id)
     }
 }
 
@@ -663,8 +665,12 @@ mod tests {
     fn cert_version(id: &str) -> CertificateVersion {
         CertificateVersion {
             version_id: id.into(),
-            fullchain_pem: format!("-----BEGIN CERTIFICATE-----\n{id}\n-----END CERTIFICATE-----\n"),
-            private_key_pem: format!("-----BEGIN PRIVATE KEY-----\n{id}\n-----END PRIVATE KEY-----\n"),
+            fullchain_pem: format!(
+                "-----BEGIN CERTIFICATE-----\n{id}\n-----END CERTIFICATE-----\n"
+            ),
+            private_key_pem: format!(
+                "-----BEGIN PRIVATE KEY-----\n{id}\n-----END PRIVATE KEY-----\n"
+            ),
             not_before: Some(0),
             not_after: Some(0),
             issued_at: 0,
@@ -709,7 +715,10 @@ mod tests {
         let mut record = cert_record(CertificateState::Active);
         record.versions.push(cert_version("v1"));
         record.active_version_id = Some("v1".into());
-        assert_eq!(record.installed_version().map(|v| v.version_id.as_str()), Some("v1"));
+        assert_eq!(
+            record.installed_version().map(|v| v.version_id.as_str()),
+            Some("v1")
+        );
     }
 
     #[test]
@@ -721,7 +730,10 @@ mod tests {
         let mut record = cert_record(CertificateState::RenewalDue);
         record.versions.push(cert_version("v1"));
         record.active_version_id = Some("v1".into());
-        assert_eq!(record.installed_version().map(|v| v.version_id.as_str()), Some("v1"));
+        assert_eq!(
+            record.installed_version().map(|v| v.version_id.as_str()),
+            Some("v1")
+        );
     }
 
     #[test]
@@ -732,7 +744,10 @@ mod tests {
         let mut record = cert_record(CertificateState::Issuing);
         record.versions.push(cert_version("v1"));
         record.active_version_id = Some("v1".into());
-        assert_eq!(record.installed_version().map(|v| v.version_id.as_str()), Some("v1"));
+        assert_eq!(
+            record.installed_version().map(|v| v.version_id.as_str()),
+            Some("v1")
+        );
     }
 
     #[test]
@@ -744,7 +759,10 @@ mod tests {
         let mut record = cert_record(CertificateState::Failed);
         record.versions.push(cert_version("v1"));
         record.active_version_id = Some("v1".into());
-        assert_eq!(record.installed_version().map(|v| v.version_id.as_str()), Some("v1"));
+        assert_eq!(
+            record.installed_version().map(|v| v.version_id.as_str()),
+            Some("v1")
+        );
     }
 
     #[test]
@@ -755,6 +773,9 @@ mod tests {
         record.versions.push(cert_version("v1"));
         record.versions.push(cert_version("v2"));
         record.active_version_id = Some("v2".into());
-        assert_eq!(record.installed_version().map(|v| v.version_id.as_str()), Some("v2"));
+        assert_eq!(
+            record.installed_version().map(|v| v.version_id.as_str()),
+            Some("v2")
+        );
     }
 }

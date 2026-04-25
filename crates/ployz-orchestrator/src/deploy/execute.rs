@@ -330,14 +330,11 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
         .await;
         let mut managed_warnings = managed_domains::warnings_for_plan(store, &final_plan).await?;
         managed_warnings.extend(acme_warnings);
-        if final_preview.warnings != managed_warnings {
-            final_preview.warnings = managed_warnings;
-            deploy_record.summary_json =
-                serde_json::to_string(&final_preview).map_err(|error| {
-                    Error::operation("deploy_apply", format!("serialize preview: {error}"))
-                })?;
-            store.upsert_deploy(&deploy_record).await?;
-        }
+        final_preview.warnings = managed_warnings;
+        deploy_record.summary_json = serde_json::to_string(&final_preview).map_err(|error| {
+            Error::operation("deploy_apply", format!("serialize preview: {error}"))
+        })?;
+        store.upsert_deploy(&deploy_record).await?;
         spawn_certificate_finalization_with_coordination(
             store.clone(),
             acme_config,

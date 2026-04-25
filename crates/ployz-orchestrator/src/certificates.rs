@@ -182,7 +182,20 @@ impl IssuanceHold {
 impl Drop for IssuanceHold {
     fn drop(&mut self) {
         if let Some(releaser) = self.releaser.take() {
-            tokio::spawn(releaser());
+            tracing::warn!(
+                "ACME issuance/account hold dropped without explicit release; releasing asynchronously"
+            );
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    handle.spawn(releaser());
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        ?error,
+                        "ACME issuance/account hold could not release because no Tokio runtime is active"
+                    );
+                }
+            }
         }
     }
 }
@@ -660,6 +673,12 @@ impl AcmeIssuer for InstantAcmeIssuer {
             .poll_certificate(&RetryPolicy::default())
             .await
             .map_err(acme_error("poll_certificate"))?;
+        // Challenge cleanup intentionally happens only after the certificate
+        // has been retrieved. Retryable finalization failures keep the same
+        // order in `Issuing`, so deleting its tokens here would break the
+        // next finalization pass. Non-retryable failures are bounded by
+        // `start_one` pruning stale hostname tokens before opening a new
+        // order.
         let challenges = store.list_acme_challenges().await?;
         for challenge in challenges
             .iter()
@@ -762,7 +781,7 @@ async fn load_or_create_account_under_lock(
             account_id: account_id_for_issuer_url(&config.issuer_url),
             issuer_url: config.issuer_url.clone(),
             contact_email: config.contact_email.clone(),
-            account_key_pem: serde_json::to_string(&credentials)
+            account_credentials_json: serde_json::to_string(&credentials)
                 .map_err(|error| Error::operation("acme_account_encode", error.to_string()))?,
             created_at: now,
             updated_at: now,
@@ -775,7 +794,7 @@ async fn account_from_record(
     config: &CertificateManagerConfig,
     record: &AcmeAccountRecord,
 ) -> Result<Account> {
-    let credentials: AccountCredentials = serde_json::from_str(&record.account_key_pem)
+    let credentials: AccountCredentials = serde_json::from_str(&record.account_credentials_json)
         .map_err(|error| Error::operation("acme_account_decode", error.to_string()))?;
     account_builder(config)?
         .from_credentials(credentials)
