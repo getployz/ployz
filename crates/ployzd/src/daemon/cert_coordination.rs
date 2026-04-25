@@ -137,6 +137,10 @@ impl OverlayIssuanceCoordinator {
                 })
                 .collect::<Vec<_>>(),
             Err(error) => {
+                let _released = self
+                    .reservations
+                    .release(&reservation.key, &reservation.nonce, now_unix_secs())
+                    .await;
                 warn!(
                     %resource_kind,
                     resource = %resource_value,
