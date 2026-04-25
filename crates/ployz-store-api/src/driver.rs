@@ -1,8 +1,8 @@
 use crate::memory::{MemoryService, MemoryStore};
 use crate::{
-    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployStore,
-    InviteStore, MachineStore, MachineSubscription, RoutingInvalidationSubscription, RoutingStore,
-    StoreBackend, StoreRuntimeControl, SyncProbe, SyncStatus,
+    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployStore, InviteStore,
+    MachineStore, MachineSubscription, RoutingInvalidationSubscription, RoutingStore, StoreBackend,
+    StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::Result;

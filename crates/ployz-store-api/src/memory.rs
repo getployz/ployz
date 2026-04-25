@@ -1,7 +1,7 @@
 use crate::{
-    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployStore,
-    InviteStore, MachineStore, RoutingInvalidationSubscription, RoutingStore, StoreRuntimeControl,
-    SyncProbe, SyncStatus,
+    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployStore, InviteStore,
+    MachineStore, RoutingInvalidationSubscription, RoutingStore, StoreRuntimeControl, SyncProbe,
+    SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::error::{Error, Result};

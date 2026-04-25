@@ -113,13 +113,10 @@ where
     Ok(snapshot)
 }
 
-fn rebuild_snapshot<S>(
+fn rebuild_snapshot(
     store_routing_state: ployz_types::model::RoutingState,
     cache: &ManagedTlsCache,
-) -> Result<GatewaySnapshot, GatewayError>
-where
-    S: RoutingStore,
-{
+) -> Result<GatewaySnapshot, GatewayError> {
     let mut snapshot =
         project(store_routing_state).map_err(|err| GatewayError::Projection(err.to_string()))?;
     snapshot.certificates = project_certificates(&cache.certificate_records());
@@ -225,7 +222,7 @@ where
             return;
         }
     };
-    match rebuild_snapshot::<S>(routing_state, cache) {
+    match rebuild_snapshot(routing_state, cache) {
         Ok(next_snapshot) => {
             let http_routes = next_snapshot.http_routes.len();
             let tcp_routes = next_snapshot.tcp_routes.len();

@@ -254,17 +254,47 @@ async fn prepare_peer(
 }
 
 async fn release_peers(peers: &[PeerAddress], reservation: &Reservation, peer_rpc_port: u16) {
-    for peer in peers {
-        let request = DaemonRequest::Coord {
-            op: CoordOp::Release {
-                id: reservation.id.0.clone(),
-                key: to_api_resource_key(&reservation.key),
-                nonce: reservation.nonce.clone(),
-            },
-        };
-        if let Err(error) = peer_rpc::overlay_rpc(peer.overlay_ip, peer_rpc_port, request).await {
-            warn!(peer = %peer.machine_id, %error, "cert issuance release rpc failed");
+    release_peers_with(
+        peers,
+        reservation,
+        peer_rpc_port,
+        |peer, request, port| async move {
+            let _response = peer_rpc::overlay_rpc(peer.overlay_ip, port, request).await?;
+            Ok(())
+        },
+    )
+    .await;
+}
+
+async fn release_peers_with<F, Fut>(
+    peers: &[PeerAddress],
+    reservation: &Reservation,
+    peer_rpc_port: u16,
+    release: F,
+) where
+    F: Fn(PeerAddress, DaemonRequest, u16) -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<(), String>>,
+{
+    join_all(peers.iter().cloned().map(|peer| {
+        let request = release_request(reservation);
+        let release = &release;
+        async move {
+            let machine_id = peer.machine_id.clone();
+            if let Err(error) = release(peer, request, peer_rpc_port).await {
+                warn!(peer = %machine_id, %error, "cert issuance release rpc failed");
+            }
         }
+    }))
+    .await;
+}
+
+fn release_request(reservation: &Reservation) -> DaemonRequest {
+    DaemonRequest::Coord {
+        op: CoordOp::Release {
+            id: reservation.id.0.clone(),
+            key: to_api_resource_key(&reservation.key),
+            nonce: reservation.nonce.clone(),
+        },
     }
 }
 
@@ -310,23 +340,8 @@ impl Http01ChallengeReadiness for OverlayChallengeReadiness {
         // unreachable peers abstain, and reachable peers that have not yet
         // replicated the challenge keep the order in Issuing for a later
         // finalization pass.
-        let peers = match self.store.list_machines().await {
-            Ok(machines) => coordination_peers(&machines, &self.self_id)
-                .into_iter()
-                .map(|machine| PeerAddress {
-                    machine_id: machine.id.clone(),
-                    overlay_ip: machine.overlay_ip,
-                })
-                .collect::<Vec<_>>(),
-            Err(error) => {
-                warn!(
-                    hostname = %hostname,
-                    ?error,
-                    "could not list peers for ACME challenge readiness; proceeding with local confirmation"
-                );
-                Vec::new()
-            }
-        };
+        let peers =
+            challenge_readiness_peers(self.store.list_machines().await, &self.self_id, hostname);
 
         let outcomes = join_all(peers.iter().map(|peer| {
             let hostname = hostname.to_string();
@@ -353,6 +368,30 @@ impl Http01ChallengeReadiness for OverlayChallengeReadiness {
         }
 
         Ok(())
+    }
+}
+
+fn challenge_readiness_peers(
+    machines: Result<Vec<ployz_types::model::MachineRecord>>,
+    self_id: &MachineId,
+    hostname: &str,
+) -> Vec<PeerAddress> {
+    match machines {
+        Ok(machines) => coordination_peers(&machines, self_id)
+            .into_iter()
+            .map(|machine| PeerAddress {
+                machine_id: machine.id.clone(),
+                overlay_ip: machine.overlay_ip,
+            })
+            .collect::<Vec<_>>(),
+        Err(error) => {
+            warn!(
+                hostname = %hostname,
+                ?error,
+                "could not list peers for ACME challenge readiness; proceeding with local confirmation"
+            );
+            Vec::new()
+        }
     }
 }
 
@@ -389,6 +428,78 @@ async fn challenge_ready_peer(
             warn!(peer = %peer.machine_id, %error, "ACME challenge readiness rpc failed; abstaining");
             ChallengeReadyOutcome::Unreachable
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv6Addr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Notify;
+
+    #[tokio::test]
+    async fn release_peers_starts_peer_releases_concurrently() {
+        let peers = vec![
+            PeerAddress {
+                machine_id: MachineId("peer-a".into()),
+                overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+            },
+            PeerAddress {
+                machine_id: MachineId("peer-b".into()),
+                overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+            },
+        ];
+        let reservation = Reservation {
+            id: ReservationId("reservation".into()),
+            key: ResourceKey::CertIssuance("example.com".into()),
+            owner: MachineId("self".into()),
+            nonce: "nonce".into(),
+            expires_at: now_unix_secs() + 60,
+        };
+        let started = Arc::new(AtomicUsize::new(0));
+        let max_in_flight = Arc::new(AtomicUsize::new(0));
+        let notify = Arc::new(Notify::new());
+
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            release_peers_with(&peers, &reservation, 4318, {
+                let started = Arc::clone(&started);
+                let max_in_flight = Arc::clone(&max_in_flight);
+                let notify = Arc::clone(&notify);
+                move |_peer, _request, _port| {
+                    let started = Arc::clone(&started);
+                    let max_in_flight = Arc::clone(&max_in_flight);
+                    let notify = Arc::clone(&notify);
+                    async move {
+                        let in_flight = started.fetch_add(1, Ordering::SeqCst) + 1;
+                        max_in_flight.fetch_max(in_flight, Ordering::SeqCst);
+                        if in_flight == 2 {
+                            notify.notify_waiters();
+                        }
+                        while started.load(Ordering::SeqCst) < 2 {
+                            notify.notified().await;
+                        }
+                        Ok(())
+                    }
+                }
+            }),
+        )
+        .await
+        .expect("release fanout should not serialize peers");
+
+        assert_eq!(max_in_flight.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn challenge_readiness_peer_inventory_failure_falls_back_to_local_only() {
+        let peers = challenge_readiness_peers(
+            Err(Error::operation("list_machines", "inventory unavailable")),
+            &MachineId("self".into()),
+            "example.com",
+        );
+
+        assert!(peers.is_empty());
     }
 }
 

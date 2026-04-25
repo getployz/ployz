@@ -11,10 +11,8 @@ use std::future::Future;
 use tokio::sync::mpsc;
 
 pub type MachineSubscription = (Vec<MachineRecord>, mpsc::Receiver<MachineEvent>);
-pub type CertificateSubscription =
-    (Vec<CertificateRecord>, mpsc::Receiver<CertificateEvent>);
-pub type AcmeChallengeSubscription =
-    (Vec<AcmeChallengeRecord>, mpsc::Receiver<AcmeChallengeEvent>);
+pub type CertificateSubscription = (Vec<CertificateRecord>, mpsc::Receiver<CertificateEvent>);
+pub type AcmeChallengeSubscription = (Vec<AcmeChallengeRecord>, mpsc::Receiver<AcmeChallengeEvent>);
 pub type RoutingInvalidationSubscription = mpsc::Receiver<()>;
 
 pub trait MachineStore: Send + Sync {
