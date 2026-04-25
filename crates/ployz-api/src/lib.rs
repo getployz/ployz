@@ -73,6 +73,7 @@ pub enum ResourceKey {
     Subnet(Ipv4Net),
     DeployNamespace(String),
     CertIssuance(String),
+    AcmeAccount(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

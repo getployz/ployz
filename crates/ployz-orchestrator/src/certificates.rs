@@ -102,6 +102,28 @@ pub trait Http01ChallengeReadiness: Send + Sync {
     async fn wait_ready(&self, store: &StoreDriver, hostname: &str, token: &str) -> Result<()>;
 }
 
+/// Issuer-scoped coordination for ACME account creation. Orders are tied to
+/// the account key that created them, so concurrent first-use account creation
+/// must be serialized per issuer URL before any order is opened.
+#[async_trait]
+pub trait AcmeAccountCoordinator: Send + Sync {
+    async fn try_acquire_account(&self, issuer_url: &str) -> AccountAcquisition;
+}
+
+pub enum AccountAcquisition {
+    Allowed(IssuanceHold),
+    VetoedByPeer(String),
+}
+
+pub struct NoopAcmeAccountCoordinator;
+
+#[async_trait]
+impl AcmeAccountCoordinator for NoopAcmeAccountCoordinator {
+    async fn try_acquire_account(&self, _issuer_url: &str) -> AccountAcquisition {
+        AccountAcquisition::Allowed(IssuanceHold::noop())
+    }
+}
+
 pub struct LocalHttp01ChallengeReadiness;
 
 #[async_trait]
@@ -114,8 +136,8 @@ impl Http01ChallengeReadiness for LocalHttp01ChallengeReadiness {
 /// Cluster-wide coordination for ACME order placement. Implementations fan
 /// out a connection-bound lock to peer machines before `start_order` runs;
 /// explicit deny from any reachable peer vetoes this pass, unreachable peers
-/// abstain. The guard's `release` is called after `start_order` completes
-/// (success or failure).
+/// abstain. The guard is held until both the ACME order side effect and the
+/// resulting certificate-row state transition have been persisted.
 #[async_trait]
 pub trait IssuanceCoordinator: Send + Sync {
     async fn try_acquire(&self, hostname: &str) -> IssuanceAcquisition;
@@ -189,8 +211,26 @@ pub fn spawn_certificate_finalization_with_readiness(
     config: CertificateManagerConfig,
     readiness: Arc<dyn Http01ChallengeReadiness>,
 ) {
+    spawn_certificate_finalization_with_coordination(
+        store,
+        config,
+        readiness,
+        Arc::new(NoopAcmeAccountCoordinator),
+    );
+}
+
+pub fn spawn_certificate_finalization_with_coordination(
+    store: StoreDriver,
+    config: CertificateManagerConfig,
+    readiness: Arc<dyn Http01ChallengeReadiness>,
+    account_coordinator: Arc<dyn AcmeAccountCoordinator>,
+) {
     tokio::spawn(async move {
-        let issuer = InstantAcmeIssuer::with_readiness(config, readiness);
+        let issuer = InstantAcmeIssuer::with_readiness_and_account_coordinator(
+            config,
+            readiness,
+            account_coordinator,
+        );
         if let Err(error) = finalize_due_certificates(&store, &issuer).await {
             tracing::warn!(?error, "managed certificate finalization failed");
         }
@@ -246,6 +286,22 @@ fn needs_start_order(record: &CertificateRecord) -> bool {
     }
 }
 
+/// Delete all challenge rows for a given hostname. Called immediately before
+/// minting a new ACME order so retries from `Failed` don't accumulate dead
+/// `(hostname, token)` rows in `acme_challenges`.
+async fn prune_acme_challenges_for(store: &StoreDriver, hostname: &str) -> Result<()> {
+    let challenges = store.list_acme_challenges().await?;
+    for challenge in challenges
+        .iter()
+        .filter(|challenge| challenge.hostname == hostname)
+    {
+        store
+            .delete_acme_challenge(&challenge.hostname, &challenge.token)
+            .await?;
+    }
+    Ok(())
+}
+
 async fn start_one<I, C>(
     store: &StoreDriver,
     issuer: &I,
@@ -288,6 +344,22 @@ where
         }
     };
     let mut record = current;
+
+    // Prune stale challenge rows for this hostname before opening a new
+    // order. Tokens are scoped to the order ACME issued them under, so rows
+    // left over from a prior failed order can no longer be validated. The
+    // success path of `finalize_order` deletes challenges per token, but
+    // failure paths leave them behind — without this prune, repeated retries
+    // would grow `acme_challenges` without bound, replicate the leak across
+    // the cluster, and bloat every gateway snapshot rebuild. Done under the
+    // cluster lock so a peer can't be mid-validation against a token we're
+    // about to delete.
+    if let Err(error) = prune_acme_challenges_for(store, &hostname).await {
+        hold.release().await;
+        return Some(format!(
+            "Could not prune stale ACME challenges for {hostname}: {error}"
+        ));
+    }
 
     let outcome = issuer.start_order(store, &hostname).await;
     let warning = match outcome {
@@ -434,6 +506,7 @@ fn is_retryable_challenge_visibility(error: &Error) -> bool {
 pub struct InstantAcmeIssuer {
     config: CertificateManagerConfig,
     readiness: Arc<dyn Http01ChallengeReadiness>,
+    account_coordinator: Arc<dyn AcmeAccountCoordinator>,
 }
 
 impl InstantAcmeIssuer {
@@ -447,14 +520,33 @@ impl InstantAcmeIssuer {
         config: CertificateManagerConfig,
         readiness: Arc<dyn Http01ChallengeReadiness>,
     ) -> Self {
-        Self { config, readiness }
+        Self::with_readiness_and_account_coordinator(
+            config,
+            readiness,
+            Arc::new(NoopAcmeAccountCoordinator),
+        )
+    }
+
+    #[must_use]
+    pub fn with_readiness_and_account_coordinator(
+        config: CertificateManagerConfig,
+        readiness: Arc<dyn Http01ChallengeReadiness>,
+        account_coordinator: Arc<dyn AcmeAccountCoordinator>,
+    ) -> Self {
+        Self {
+            config,
+            readiness,
+            account_coordinator,
+        }
     }
 }
 
 #[async_trait]
 impl AcmeIssuer for InstantAcmeIssuer {
     async fn start_order(&self, store: &StoreDriver, hostname: &str) -> Result<StartedOrder> {
-        let account = load_or_create_account(store, &self.config).await?;
+        let account =
+            load_or_create_account(store, &self.config, self.account_coordinator.as_ref()).await?;
+
         let identifiers = [Identifier::Dns(hostname.to_string())];
         let mut order = account
             .new_order(&NewOrder::new(&identifiers))
@@ -501,7 +593,8 @@ impl AcmeIssuer for InstantAcmeIssuer {
         hostname: &str,
         order_url: &str,
     ) -> Result<IssuedCertificate> {
-        let account = load_or_create_account(store, &self.config).await?;
+        let account =
+            load_or_create_account(store, &self.config, self.account_coordinator.as_ref()).await?;
         let mut order = account
             .order(order_url.to_string())
             .await
@@ -614,14 +707,39 @@ async fn wait_for_http01_challenge_visible(
 async fn load_or_create_account(
     store: &StoreDriver,
     config: &CertificateManagerConfig,
+    coordinator: &dyn AcmeAccountCoordinator,
 ) -> Result<Account> {
     if let Some(record) = store.get_acme_account(&config.issuer_url).await? {
-        let credentials: AccountCredentials = serde_json::from_str(&record.account_key_pem)
-            .map_err(|error| Error::operation("acme_account_decode", error.to_string()))?;
-        return account_builder(config)?
-            .from_credentials(credentials)
-            .await
-            .map_err(acme_error("account_from_credentials"));
+        return account_from_record(config, &record).await;
+    }
+
+    let hold = match coordinator.try_acquire_account(&config.issuer_url).await {
+        AccountAcquisition::Allowed(hold) => hold,
+        AccountAcquisition::VetoedByPeer(reason) => {
+            return Err(Error::operation(
+                "acme_account_coordination",
+                format!(
+                    "ACME account creation deferred for {}: {reason}",
+                    config.issuer_url
+                ),
+            ));
+        }
+    };
+
+    let result = load_or_create_account_under_lock(store, config).await;
+    hold.release().await;
+    result
+}
+
+async fn load_or_create_account_under_lock(
+    store: &StoreDriver,
+    config: &CertificateManagerConfig,
+) -> Result<Account> {
+    // Another daemon may have created the issuer account while we were waiting
+    // for the cluster-wide account lock. Re-read under the lock before making
+    // the external ACME create-account call.
+    if let Some(record) = store.get_acme_account(&config.issuer_url).await? {
+        return account_from_record(config, &record).await;
     }
 
     let contact = contact_uris(config);
@@ -651,6 +769,18 @@ async fn load_or_create_account(
         })
         .await?;
     Ok(account)
+}
+
+async fn account_from_record(
+    config: &CertificateManagerConfig,
+    record: &AcmeAccountRecord,
+) -> Result<Account> {
+    let credentials: AccountCredentials = serde_json::from_str(&record.account_key_pem)
+        .map_err(|error| Error::operation("acme_account_decode", error.to_string()))?;
+    account_builder(config)?
+        .from_credentials(credentials)
+        .await
+        .map_err(acme_error("account_from_credentials"))
 }
 
 fn account_builder(config: &CertificateManagerConfig) -> Result<instant_acme::AccountBuilder> {
@@ -760,11 +890,16 @@ pub fn spawn_certificate_renewal_ticker(
     renewal_config: RenewalConfig,
     coordinator: std::sync::Arc<dyn IssuanceCoordinator>,
     readiness: Arc<dyn Http01ChallengeReadiness>,
+    account_coordinator: Arc<dyn AcmeAccountCoordinator>,
 ) -> CertificateRenewalTask {
     let cancel = CancellationToken::new();
     let task_cancel = cancel.clone();
     let task = tokio::spawn(async move {
-        let issuer = InstantAcmeIssuer::new(acme_config.clone());
+        let issuer = InstantAcmeIssuer::with_readiness_and_account_coordinator(
+            acme_config.clone(),
+            Arc::new(LocalHttp01ChallengeReadiness),
+            account_coordinator.clone(),
+        );
         loop {
             if let Err(error) = reconcile_renewals(&store, &issuer, coordinator.as_ref()).await {
                 tracing::warn!(?error, "certificate renewal reconcile failed");
@@ -772,10 +907,11 @@ pub fn spawn_certificate_renewal_ticker(
             // Finalize any Issuing rows out-of-band. `finalize_order` blocks
             // on LE for seconds-to-minutes, so spawning prevents a single
             // slow cert from stalling the ticker.
-            spawn_certificate_finalization_with_readiness(
+            spawn_certificate_finalization_with_coordination(
                 store.clone(),
                 acme_config.clone(),
                 readiness.clone(),
+                account_coordinator.clone(),
             );
             tokio::select! {
                 () = task_cancel.cancelled() => break,
@@ -1036,6 +1172,37 @@ mod tests {
         }
     }
 
+    struct VetoAccountCoordinator;
+
+    #[async_trait]
+    impl AcmeAccountCoordinator for VetoAccountCoordinator {
+        async fn try_acquire_account(&self, issuer_url: &str) -> AccountAcquisition {
+            AccountAcquisition::VetoedByPeer(format!("peer holds {issuer_url}"))
+        }
+    }
+
+    #[tokio::test]
+    async fn account_creation_respects_issuer_scoped_coordination_veto() {
+        let store = StoreDriver::memory();
+        let config = CertificateManagerConfig {
+            issuer_url: "https://acme.test/dir".into(),
+            contact_email: None,
+            root_ca_path: None,
+        };
+
+        let error = match load_or_create_account(&store, &config, &VetoAccountCoordinator).await {
+            Ok(_) => {
+                panic!("missing account plus coordination veto should fail before ACME create")
+            }
+            Err(error) => error,
+        };
+
+        assert!(
+            error.to_string().contains("ACME account creation deferred"),
+            "{error}"
+        );
+    }
+
     #[tokio::test]
     async fn start_one_skips_when_row_already_issuing_after_lock_acquire() {
         // Simulate: peer A held the lock, ran start_order, persisted Issuing
@@ -1057,8 +1224,7 @@ mod tests {
         // observed it before peer A's write reached this daemon.
         let stale = pending_record("example.com");
 
-        let warning =
-            start_one(&store, &PanickingIssuer, &NoopIssuanceCoordinator, stale).await;
+        let warning = start_one(&store, &PanickingIssuer, &NoopIssuanceCoordinator, stale).await;
         assert!(warning.is_none(), "stale start should be skipped silently");
 
         // Row is unchanged: A's order_url and Issuing state are intact.
@@ -1118,6 +1284,65 @@ mod tests {
             snapshot_at_release.order_url.as_deref(),
             Some("https://acme/orders/42")
         );
+    }
+
+    #[tokio::test]
+    async fn start_one_prunes_stale_challenge_rows_for_same_hostname() {
+        // Failed-then-retry scenario: a previous order left stale challenge
+        // rows behind because finalize_order's success path is the only
+        // place that deletes them. The next `start_one` must prune those
+        // before minting a new order — otherwise `acme_challenges` grows
+        // unbounded across repeated failures, replicates the leak across
+        // the cluster, and bloats every gateway snapshot rebuild.
+        let store = StoreDriver::memory();
+        let mut failed = pending_record("example.com");
+        failed.state = CertificateState::Failed;
+        failed.last_error = Some("previous order failed".into());
+        store
+            .upsert_certificate(&failed)
+            .await
+            .expect("failed cert should persist");
+
+        // Two stale tokens for the failing hostname plus an unrelated
+        // hostname's token that must NOT be pruned.
+        for (hostname, token) in [
+            ("example.com", "stale-tok-A"),
+            ("example.com", "stale-tok-B"),
+            ("other.example.com", "keep-tok"),
+        ] {
+            store
+                .upsert_acme_challenge(&AcmeChallengeRecord {
+                    hostname: hostname.into(),
+                    token: token.into(),
+                    key_authorization: format!("{token}.keyauth"),
+                    expires_at: now_unix_secs() + 60,
+                    created_at: now_unix_secs(),
+                })
+                .await
+                .expect("challenge upsert should persist");
+        }
+
+        let warning = start_one(
+            &store,
+            &FakeIssuer::start_only(Ok(StartedOrder {
+                order_url: "https://acme/orders/42".into(),
+            })),
+            &NoopIssuanceCoordinator,
+            failed,
+        )
+        .await;
+        assert!(warning.is_none(), "happy retry should not warn");
+
+        let remaining = store
+            .list_acme_challenges()
+            .await
+            .expect("list should work");
+        // FakeIssuer::start_only doesn't write any new challenge rows; we
+        // only assert pruning here, so the surviving row is the unrelated
+        // hostname's challenge.
+        assert_eq!(remaining.len(), 1, "stale rows should be pruned");
+        assert_eq!(remaining[0].hostname, "other.example.com");
+        assert_eq!(remaining[0].token, "keep-tok");
     }
 
     #[tokio::test]

@@ -8,7 +8,7 @@ mod probe;
 #[cfg(test)]
 mod tests;
 
-use crate::certificates::{Http01ChallengeReadiness, IssuanceCoordinator};
+use crate::certificates::{AcmeAccountCoordinator, Http01ChallengeReadiness, IssuanceCoordinator};
 use crate::deploy::session::DeploySessionFactory;
 use crate::error::Result;
 use crate::model::{DeployApplyResult, DeployPreview, MachineId};
@@ -46,6 +46,7 @@ pub async fn apply_with_certificate_coordination(
     local_machine_id: &MachineId,
     manifest: &DeployManifest,
     certificate_coordinator: &dyn IssuanceCoordinator,
+    account_coordinator: Arc<dyn AcmeAccountCoordinator>,
     challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
 ) -> Result<DeployApplyResult> {
     execute::apply_with_certificate_coordination(
@@ -54,6 +55,7 @@ pub async fn apply_with_certificate_coordination(
         local_machine_id,
         manifest,
         certificate_coordinator,
+        account_coordinator,
         challenge_readiness,
     )
     .await

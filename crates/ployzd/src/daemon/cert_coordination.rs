@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use futures_util::future::join_all;
 use ployz_api::{CoordOp, DaemonRequest, ResourceKey as ApiResourceKey};
 use ployz_orchestrator::certificates::{
-    HTTP01_CHALLENGE_VISIBILITY_TIMEOUT, Http01ChallengeReadiness, IssuanceAcquisition,
-    IssuanceCoordinator, IssuanceHold,
+    AccountAcquisition, AcmeAccountCoordinator, HTTP01_CHALLENGE_VISIBILITY_TIMEOUT,
+    Http01ChallengeReadiness, IssuanceAcquisition, IssuanceCoordinator, IssuanceHold,
 };
 use ployz_orchestrator::coordination::{
     PendingReservations, Reservation, ReservationId, ResourceKey, Vote,
@@ -62,10 +62,53 @@ struct PeerAddress {
 #[async_trait]
 impl IssuanceCoordinator for OverlayIssuanceCoordinator {
     async fn try_acquire(&self, hostname: &str) -> IssuanceAcquisition {
+        match self
+            .try_acquire_resource(
+                ResourceKey::CertIssuance(hostname.to_string()),
+                "cert issuance",
+                hostname,
+            )
+            .await
+        {
+            ResourceAcquisition::Allowed(hold) => IssuanceAcquisition::Allowed(hold),
+            ResourceAcquisition::VetoedByPeer(reason) => IssuanceAcquisition::VetoedByPeer(reason),
+        }
+    }
+}
+
+#[async_trait]
+impl AcmeAccountCoordinator for OverlayIssuanceCoordinator {
+    async fn try_acquire_account(&self, issuer_url: &str) -> AccountAcquisition {
+        match self
+            .try_acquire_resource(
+                ResourceKey::AcmeAccount(issuer_url.to_string()),
+                "ACME account",
+                issuer_url,
+            )
+            .await
+        {
+            ResourceAcquisition::Allowed(hold) => AccountAcquisition::Allowed(hold),
+            ResourceAcquisition::VetoedByPeer(reason) => AccountAcquisition::VetoedByPeer(reason),
+        }
+    }
+}
+
+enum ResourceAcquisition {
+    Allowed(IssuanceHold),
+    VetoedByPeer(String),
+}
+
+impl OverlayIssuanceCoordinator {
+    async fn try_acquire_resource(
+        &self,
+        key: ResourceKey,
+        resource_kind: &'static str,
+        resource_value: &str,
+    ) -> ResourceAcquisition {
         let now = now_unix_secs();
         let reservation = Reservation {
             id: ReservationId::random(),
-            key: ResourceKey::CertIssuance(hostname.to_string()),
+            key,
             owner: self_id_value(&self.self_id),
             nonce: ReservationId::random().0,
             expires_at: now.saturating_add(self.ttl.as_secs()),
@@ -79,7 +122,7 @@ impl IssuanceCoordinator for OverlayIssuanceCoordinator {
         {
             Vote::Allow => {}
             Vote::Deny(conflict) => {
-                return IssuanceAcquisition::VetoedByPeer(format!("local: {conflict:?}"));
+                return ResourceAcquisition::VetoedByPeer(format!("local: {conflict:?}"));
             }
         }
 
@@ -93,9 +136,10 @@ impl IssuanceCoordinator for OverlayIssuanceCoordinator {
                 .collect::<Vec<_>>(),
             Err(error) => {
                 warn!(
-                    hostname = %hostname,
+                    %resource_kind,
+                    resource = %resource_value,
                     ?error,
-                    "could not list peers for cert issuance lock; proceeding without fanout"
+                    "could not list peers for coordination lock; proceeding without fanout"
                 );
                 Vec::new()
             }
@@ -125,7 +169,7 @@ impl IssuanceCoordinator for OverlayIssuanceCoordinator {
                     })
                     .collect::<Vec<_>>();
                 release_peers(&allowed_peers, &reservation, self.peer_rpc_port).await;
-                return IssuanceAcquisition::VetoedByPeer(format!("peer {}", peer.machine_id));
+                return ResourceAcquisition::VetoedByPeer(format!("peer {}", peer.machine_id));
             }
         }
 
@@ -141,7 +185,7 @@ impl IssuanceCoordinator for OverlayIssuanceCoordinator {
             })
             .collect::<Vec<_>>();
         let peer_rpc_port = self.peer_rpc_port;
-        IssuanceAcquisition::Allowed(IssuanceHold::new(move || async move {
+        ResourceAcquisition::Allowed(IssuanceHold::new(move || async move {
             let _ = reservations
                 .release(
                     &reservation_for_release.key,
@@ -168,13 +212,7 @@ async fn prepare_peer(
     let request = DaemonRequest::Coord {
         op: CoordOp::Prepare {
             id: reservation.id.0.clone(),
-            key: ApiResourceKey::CertIssuance(match &reservation.key {
-                ResourceKey::CertIssuance(hostname) => hostname.clone(),
-                ResourceKey::Subnet(_) | ResourceKey::DeployNamespace(_) => {
-                    // Defensive: this module only issues CertIssuance keys.
-                    return PeerPrepareOutcome::Unreachable;
-                }
-            }),
+            key: to_api_resource_key(&reservation.key),
             owner: reservation.owner.clone(),
             nonce: reservation.nonce.clone(),
             ttl_secs: reservation.expires_at.saturating_sub(now_unix_secs()),
@@ -213,20 +251,27 @@ async fn prepare_peer(
 
 async fn release_peers(peers: &[PeerAddress], reservation: &Reservation, peer_rpc_port: u16) {
     for peer in peers {
-        let key = match &reservation.key {
-            ResourceKey::CertIssuance(hostname) => ApiResourceKey::CertIssuance(hostname.clone()),
-            ResourceKey::Subnet(_) | ResourceKey::DeployNamespace(_) => continue,
-        };
         let request = DaemonRequest::Coord {
             op: CoordOp::Release {
                 id: reservation.id.0.clone(),
-                key,
+                key: to_api_resource_key(&reservation.key),
                 nonce: reservation.nonce.clone(),
             },
         };
         if let Err(error) = peer_rpc::overlay_rpc(peer.overlay_ip, peer_rpc_port, request).await {
             warn!(peer = %peer.machine_id, %error, "cert issuance release rpc failed");
         }
+    }
+}
+
+fn to_api_resource_key(key: &ResourceKey) -> ApiResourceKey {
+    match key {
+        ResourceKey::Subnet(subnet) => ApiResourceKey::Subnet(*subnet),
+        ResourceKey::DeployNamespace(namespace) => {
+            ApiResourceKey::DeployNamespace(namespace.clone())
+        }
+        ResourceKey::CertIssuance(hostname) => ApiResourceKey::CertIssuance(hostname.clone()),
+        ResourceKey::AcmeAccount(issuer_url) => ApiResourceKey::AcmeAccount(issuer_url.clone()),
     }
 }
 

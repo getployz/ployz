@@ -66,7 +66,9 @@ impl PendingReservations {
             .keys()
             .filter_map(|key| match key {
                 ResourceKey::Subnet(subnet) => Some(*subnet),
-                ResourceKey::DeployNamespace(_) | ResourceKey::CertIssuance(_) => None,
+                ResourceKey::DeployNamespace(_)
+                | ResourceKey::CertIssuance(_)
+                | ResourceKey::AcmeAccount(_) => None,
             })
             .collect()
     }

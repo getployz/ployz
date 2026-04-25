@@ -4,6 +4,7 @@ use std::sync::Arc;
 use crate::daemon::DaemonState;
 use ployz_api::{DaemonResponse, DeployOptions};
 use ployz_config::RuntimeTarget;
+use ployz_orchestrator::certificates::AcmeAccountCoordinator;
 use ployz_orchestrator::deploy::{apply_with_certificate_coordination, preview};
 use ployz_runtime_backends::deploy::remote::DeployAgent;
 use ployz_runtime_backends::deploy::session::DefaultDeploySessionFactory;
@@ -79,13 +80,15 @@ impl DaemonState {
             Ok(port) => port,
             Err(error) => return self.err("DEPLOY_APPLY_FAILED", error.to_string()),
         };
-        let certificate_coordinator =
+        let certificate_coordinator = Arc::new(
             crate::daemon::cert_coordination::OverlayIssuanceCoordinator::new(
                 active.mesh.store.clone(),
                 self.reservations.clone(),
                 self.identity.machine_id.clone(),
                 peer_rpc_port,
-            );
+            ),
+        );
+        let account_coordinator: Arc<dyn AcmeAccountCoordinator> = certificate_coordinator.clone();
         let challenge_readiness = Arc::new(
             crate::daemon::cert_coordination::OverlayChallengeReadiness::new(
                 active.mesh.store.clone(),
@@ -99,7 +102,8 @@ impl DaemonState {
             &factory,
             &self.identity.machine_id,
             &manifest,
-            &certificate_coordinator,
+            certificate_coordinator.as_ref(),
+            account_coordinator,
             challenge_readiness,
         )
         .await

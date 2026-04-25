@@ -81,7 +81,9 @@ impl DaemonState {
                     .iter()
                     .any(|machine| machine.subnet == Some(*subnet)))
             }
-            ResourceKey::DeployNamespace(_) | ResourceKey::CertIssuance(_) => Ok(false),
+            ResourceKey::DeployNamespace(_)
+            | ResourceKey::CertIssuance(_)
+            | ResourceKey::AcmeAccount(_) => Ok(false),
         }
     }
 }
@@ -98,6 +100,7 @@ fn into_resource_key(key: ApiResourceKey) -> ResourceKey {
         ApiResourceKey::Subnet(subnet) => ResourceKey::Subnet(subnet),
         ApiResourceKey::DeployNamespace(namespace) => ResourceKey::DeployNamespace(namespace),
         ApiResourceKey::CertIssuance(hostname) => ResourceKey::CertIssuance(hostname),
+        ApiResourceKey::AcmeAccount(issuer_url) => ResourceKey::AcmeAccount(issuer_url),
     }
 }
 
