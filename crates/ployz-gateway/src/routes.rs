@@ -3,9 +3,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::net::{SocketAddr, SocketAddrV4};
 
 use ployz_types::model::{
-    AcmeChallengeRecord, CertificateRecord, CertificateState, InstanceId, InstancePhase,
-    InstanceStatusRecord, MachineId, RoutingState, ServiceRelease, ServiceReleaseSlot,
-    ServiceRoutingPolicy,
+    AcmeChallengeRecord, CertificateRecord, InstanceId, InstancePhase, InstanceStatusRecord,
+    MachineId, RoutingState, ServiceRelease, ServiceReleaseSlot, ServiceRoutingPolicy,
 };
 use ployz_types::spec::{Namespace, RouteSpec, ServiceSpec};
 use serde::{Deserialize, Serialize};
@@ -486,8 +485,9 @@ fn normalize_path_prefix(path_prefix: &str) -> String {
 mod tests {
     use super::*;
     use ployz_types::model::{
-        DeployId, DrainState, InstanceStatusRecord, ServiceRelease, ServiceReleaseRecord,
-        ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy, SlotId,
+        CertificateState, DeployId, DrainState, InstanceStatusRecord, ServiceRelease,
+        ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy,
+        SlotId,
     };
     use ployz_types::spec::{
         ContainerSpec, NetworkMode, Placement, PortProtocol, PullPolicy, Resources, RestartPolicy,

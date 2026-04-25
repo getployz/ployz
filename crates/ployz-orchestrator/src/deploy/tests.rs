@@ -732,7 +732,8 @@ async fn apply_with_initial_plan_sets_cleanup_pending_after_cleanup_failure() {
 
     assert_eq!(result.state, crate::model::DeployState::CleanupPending);
     assert_eq!(backend.commit_count(), 1);
-    assert_eq!(backend.upsert_deploy_count(), 2);
+    // deploying -> post-cert warning refresh -> cleanup_pending
+    assert_eq!(backend.upsert_deploy_count(), 3);
     let commit_index = result
         .events
         .iter()
