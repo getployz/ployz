@@ -139,9 +139,11 @@ impl OverlayIssuanceCoordinator {
                     %resource_kind,
                     resource = %resource_value,
                     ?error,
-                    "could not list peers for coordination lock; proceeding without fanout"
+                    "could not list peers for coordination lock; deferring"
                 );
-                Vec::new()
+                return ResourceAcquisition::VetoedByPeer(format!(
+                    "peer inventory unavailable: {error}"
+                ));
             }
         };
 
