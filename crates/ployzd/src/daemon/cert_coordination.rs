@@ -101,6 +101,22 @@ enum ResourceAcquisition {
 }
 
 impl OverlayIssuanceCoordinator {
+    async fn release_local_reservation(&self, reservation: &Reservation) {
+        let _released = self
+            .reservations
+            .release(&reservation.key, &reservation.nonce, now_unix_secs())
+            .await;
+    }
+
+    async fn veto_with_local_release(
+        &self,
+        reservation: &Reservation,
+        reason: String,
+    ) -> ResourceAcquisition {
+        self.release_local_reservation(reservation).await;
+        ResourceAcquisition::VetoedByPeer(reason)
+    }
+
     async fn try_acquire_resource(
         &self,
         key: ResourceKey,
@@ -147,9 +163,12 @@ impl OverlayIssuanceCoordinator {
                     ?error,
                     "could not list peers for coordination lock; deferring"
                 );
-                return ResourceAcquisition::VetoedByPeer(format!(
-                    "peer inventory unavailable: {error}"
-                ));
+                return self
+                    .veto_with_local_release(
+                        &reservation,
+                        format!("peer inventory unavailable: {error}"),
+                    )
+                    .await;
             }
         };
 
@@ -164,10 +183,7 @@ impl OverlayIssuanceCoordinator {
         for (peer, outcome) in peers.iter().zip(prepare_results.iter()) {
             if matches!(outcome, PeerPrepareOutcome::ExplicitDeny) {
                 // Veto by any reachable peer — release everywhere and abort.
-                let _ = self
-                    .reservations
-                    .release(&reservation.key, &reservation.nonce, now_unix_secs())
-                    .await;
+                self.release_local_reservation(&reservation).await;
                 let allowed_peers = peers
                     .iter()
                     .zip(prepare_results.iter())
