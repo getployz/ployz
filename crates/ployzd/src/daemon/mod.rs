@@ -1,3 +1,4 @@
+mod cert_coordination;
 pub mod handlers;
 mod runtime;
 mod setup;
@@ -14,6 +15,7 @@ use ipnet::Ipv4Net;
 use ployz_api::{DaemonPayload, DaemonResponse};
 use ployz_config::{RuntimeTarget, ServiceMode};
 use ployz_orchestrator::Mesh;
+use ployz_orchestrator::certificates::CertificateRenewalTask;
 use ployz_orchestrator::coordination::PendingReservations;
 use ployz_runtime_api::Identity;
 use ployz_runtime_api::{NamespaceLockManager, RuntimeHandle};
@@ -28,6 +30,15 @@ pub struct ActiveMesh {
     pub peer_control: Box<dyn RuntimeHandle>,
     pub gateway: Box<dyn RuntimeHandle>,
     pub dns: Box<dyn RuntimeHandle>,
+    pub certificate_renewal: Option<CertificateRenewalTask>,
+}
+
+impl ActiveMesh {
+    pub async fn stop_certificate_renewal(&mut self) {
+        if let Some(task) = self.certificate_renewal.take() {
+            task.shutdown().await;
+        }
+    }
 }
 
 pub struct DaemonState {
@@ -41,6 +52,7 @@ pub struct DaemonState {
     pub remote_control_port: u16,
     pub peer_control_target: Option<String>,
     pub gateway_listen_addr: String,
+    pub gateway_https_listen_addr: Option<String>,
     pub gateway_threads: usize,
     pub dns_metrics_listen_addr: Option<String>,
     pub gateway_metrics_listen_addr: Option<String>,
@@ -63,6 +75,7 @@ impl DaemonState {
         subnet_prefix_len: u8,
         remote_control_port: u16,
         gateway_listen_addr: String,
+        gateway_https_listen_addr: Option<String>,
         gateway_threads: usize,
         dns_metrics_listen_addr: Option<String>,
         gateway_metrics_listen_addr: Option<String>,
@@ -79,6 +92,7 @@ impl DaemonState {
             subnet_prefix_len,
             remote_control_port,
             gateway_listen_addr,
+            gateway_https_listen_addr,
             gateway_threads,
             dns_metrics_listen_addr,
             gateway_metrics_listen_addr,
@@ -95,6 +109,7 @@ impl DaemonState {
         subnet_prefix_len: u8,
         remote_control_port: u16,
         gateway_listen_addr: String,
+        gateway_https_listen_addr: Option<String>,
         gateway_threads: usize,
     ) -> Self {
         Self::new_with_runtime_profile(
@@ -107,6 +122,7 @@ impl DaemonState {
             subnet_prefix_len,
             remote_control_port,
             gateway_listen_addr,
+            gateway_https_listen_addr,
             gateway_threads,
             None,
             None,
@@ -125,6 +141,7 @@ impl DaemonState {
         subnet_prefix_len: u8,
         remote_control_port: u16,
         gateway_listen_addr: String,
+        gateway_https_listen_addr: Option<String>,
         gateway_threads: usize,
         dns_metrics_listen_addr: Option<String>,
         gateway_metrics_listen_addr: Option<String>,
@@ -140,6 +157,7 @@ impl DaemonState {
             remote_control_port,
             peer_control_target: None,
             gateway_listen_addr,
+            gateway_https_listen_addr,
             gateway_threads,
             dns_metrics_listen_addr,
             gateway_metrics_listen_addr,

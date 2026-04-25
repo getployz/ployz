@@ -32,6 +32,9 @@ pub struct GatewayConfig {
     pub data_dir: PathBuf,
     pub network: String,
     pub listen_addr: String,
+    pub https_listen_addr: Option<String>,
+    pub tls_cert_path: Option<PathBuf>,
+    pub tls_key_path: Option<PathBuf>,
     pub threads: usize,
     pub metrics_listen_addr: Option<String>,
 }
@@ -42,6 +45,9 @@ impl GatewayConfig {
         data_dir: &std::path::Path,
         network: &str,
         listen_addr: String,
+        https_listen_addr: Option<String>,
+        tls_cert_path: Option<PathBuf>,
+        tls_key_path: Option<PathBuf>,
         threads: usize,
         metrics_listen_addr: Option<String>,
     ) -> Self {
@@ -49,6 +55,9 @@ impl GatewayConfig {
             data_dir: data_dir.to_path_buf(),
             network: network.to_string(),
             listen_addr,
+            https_listen_addr,
+            tls_cert_path,
+            tls_key_path,
             threads,
             metrics_listen_addr,
         }
@@ -86,6 +95,33 @@ impl GatewayConfig {
             })?,
             Err(_) => DEFAULT_THREADS,
         };
+        let https_listen_addr = match std::env::var("PLOYZ_GATEWAY_HTTPS_LISTEN_ADDR") {
+            Ok(address) if !address.trim().is_empty() => Some(address),
+            Ok(_) => {
+                return Err(GatewayError::Config(
+                    "PLOYZ_GATEWAY_HTTPS_LISTEN_ADDR was set but empty".into(),
+                ));
+            }
+            Err(_) => None,
+        };
+        let tls_cert_path = match std::env::var_os("PLOYZ_GATEWAY_TLS_CERT_PATH") {
+            Some(path) if !path.is_empty() => Some(PathBuf::from(path)),
+            Some(_) => {
+                return Err(GatewayError::Config(
+                    "PLOYZ_GATEWAY_TLS_CERT_PATH was set but empty".into(),
+                ));
+            }
+            None => None,
+        };
+        let tls_key_path = match std::env::var_os("PLOYZ_GATEWAY_TLS_KEY_PATH") {
+            Some(path) if !path.is_empty() => Some(PathBuf::from(path)),
+            Some(_) => {
+                return Err(GatewayError::Config(
+                    "PLOYZ_GATEWAY_TLS_KEY_PATH was set but empty".into(),
+                ));
+            }
+            None => None,
+        };
         let metrics_listen_addr = match std::env::var("PLOYZ_GATEWAY_METRICS_LISTEN_ADDR") {
             Ok(address) if !address.trim().is_empty() => Some(address),
             Ok(_) => {
@@ -95,11 +131,29 @@ impl GatewayConfig {
             }
             Err(_) => None,
         };
+        match (
+            https_listen_addr.as_ref(),
+            tls_cert_path.as_ref(),
+            tls_key_path.as_ref(),
+        ) {
+            (None, None, None) | (Some(_), None, None) | (Some(_), Some(_), Some(_)) => {}
+            (None, Some(_), _)
+            | (None, _, Some(_))
+            | (Some(_), Some(_), None)
+            | (Some(_), None, Some(_)) => {
+                return Err(GatewayError::Config(
+                    "PLOYZ_GATEWAY_TLS_CERT_PATH and PLOYZ_GATEWAY_TLS_KEY_PATH must be set together with PLOYZ_GATEWAY_HTTPS_LISTEN_ADDR; HTTPS may also use store-backed SNI certificates without static cert paths".into(),
+                ));
+            }
+        }
 
         Ok(Self {
             data_dir,
             network,
             listen_addr,
+            https_listen_addr,
+            tls_cert_path,
+            tls_key_path,
             threads,
             metrics_listen_addr,
         })
@@ -116,6 +170,9 @@ mod tests {
             std::path::Path::new("/tmp/ployz"),
             "alpha",
             "0.0.0.0:80".into(),
+            None,
+            None,
+            None,
             2,
             Some("127.0.0.1:9180".into()),
         );
@@ -134,12 +191,24 @@ mod tests {
             std::env::set_var("PLOYZ_GATEWAY_LISTEN_ADDR", DEFAULT_LISTEN_ADDR);
             std::env::set_var("PLOYZ_GATEWAY_THREADS", DEFAULT_THREADS.to_string());
             std::env::set_var("PLOYZ_GATEWAY_METRICS_LISTEN_ADDR", "127.0.0.1:9180");
+            std::env::set_var("PLOYZ_GATEWAY_HTTPS_LISTEN_ADDR", "0.0.0.0:443");
+            std::env::set_var("PLOYZ_GATEWAY_TLS_CERT_PATH", "/tmp/ployz-gateway/cert.pem");
+            std::env::set_var("PLOYZ_GATEWAY_TLS_KEY_PATH", "/tmp/ployz-gateway/key.pem");
         }
 
         let config = GatewayConfig::from_env().expect("gateway config should load");
         assert_eq!(
             config.metrics_listen_addr.as_deref(),
             Some("127.0.0.1:9180")
+        );
+        assert_eq!(config.https_listen_addr.as_deref(), Some("0.0.0.0:443"));
+        assert_eq!(
+            config.tls_cert_path.as_deref(),
+            Some(std::path::Path::new("/tmp/ployz-gateway/cert.pem"))
+        );
+        assert_eq!(
+            config.tls_key_path.as_deref(),
+            Some(std::path::Path::new("/tmp/ployz-gateway/key.pem"))
         );
 
         unsafe {
@@ -148,6 +217,9 @@ mod tests {
             std::env::remove_var("PLOYZ_GATEWAY_LISTEN_ADDR");
             std::env::remove_var("PLOYZ_GATEWAY_THREADS");
             std::env::remove_var("PLOYZ_GATEWAY_METRICS_LISTEN_ADDR");
+            std::env::remove_var("PLOYZ_GATEWAY_HTTPS_LISTEN_ADDR");
+            std::env::remove_var("PLOYZ_GATEWAY_TLS_CERT_PATH");
+            std::env::remove_var("PLOYZ_GATEWAY_TLS_KEY_PATH");
         }
     }
 }

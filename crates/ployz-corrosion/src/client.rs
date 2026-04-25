@@ -1,3 +1,11 @@
+// Keep this client intentionally close to Fly.io/Superfly's upstream
+// `crates/corro-client` implementation. Corrosion's public query and
+// subscription endpoints are HTTP/2 streaming APIs, and small differences in
+// client/body plumbing can break query-stream startup in ways that look like
+// store readiness failures. Local changes here should be limited to Ployz
+// integration points, such as direct-vs-bridge address selection.
+
+use std::error::Error as StdError;
 use std::fmt;
 use std::future::Future;
 use std::io;
@@ -11,18 +19,15 @@ use corro_api_types::{
     ChangeId, ExecResponse, ExecResult, QueryEvent, SqliteValue, Statement, TypedQueryEvent,
 };
 use futures_util::{Stream, ready};
-use http::Uri;
-use http_body_util::BodyExt;
-use hyper::body::Incoming;
-use hyper_util::client::legacy::Client as HyperClient;
-use hyper_util::rt::TokioExecutor;
 use pin_project_lite::pin_project;
 use serde::de::DeserializeOwned;
-use tokio::net::TcpStream;
 use tokio::time::{Sleep, sleep};
 use tokio_util::codec::{Decoder, FramedRead, LinesCodecError};
 use tokio_util::io::StreamReader;
 use tracing::error;
+
+const HTTP2_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const HTTP2_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(10);
 
 // ---------------------------------------------------------------------------
 // Transport
@@ -48,63 +53,6 @@ impl Transport {
 }
 
 // ---------------------------------------------------------------------------
-// Connector (tower Service<Uri> → TcpStream)
-// ---------------------------------------------------------------------------
-
-#[derive(Clone)]
-struct BridgeConnector {
-    transport: Transport,
-}
-
-impl tower::Service<Uri> for BridgeConnector {
-    type Response = hyper_util::rt::TokioIo<TcpStream>;
-    type Error = io::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
-
-    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn call(&mut self, uri: Uri) -> Self::Future {
-        let transport = self.transport.clone();
-        Box::pin(async move {
-            let host = uri.host().unwrap_or("127.0.0.1");
-            let port = uri.port_u16().unwrap_or(80);
-
-            // Parse the logical address from the URI
-            let addr_str =
-                if let Some(bare) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
-                    format!("[{bare}]:{port}")
-                } else {
-                    format!("{host}:{port}")
-                };
-            let logical: SocketAddr = addr_str.parse().map_err(|e| {
-                io::Error::new(io::ErrorKind::InvalidInput, format!("bad address: {e}"))
-            })?;
-
-            let target = transport.resolve(logical);
-            let stream = TcpStream::connect(target).await?;
-            Ok(hyper_util::rt::TokioIo::new(stream))
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Body type for requests
-// ---------------------------------------------------------------------------
-
-type ReqBody = http_body_util::Full<Bytes>;
-
-fn json_body(data: &impl serde::Serialize) -> Result<ReqBody, serde_json::Error> {
-    let bytes = serde_json::to_vec(data)?;
-    Ok(http_body_util::Full::new(Bytes::from(bytes)))
-}
-
-fn empty_body() -> ReqBody {
-    http_body_util::Full::new(Bytes::new())
-}
-
-// ---------------------------------------------------------------------------
 // CorrClient
 // ---------------------------------------------------------------------------
 
@@ -114,21 +62,23 @@ pub struct CorrClient {
     transport: Transport,
     api_addr: SocketAddr,
     base_url: String,
-    http: HyperClient<BridgeConnector, ReqBody>,
+    http: reqwest::Client,
 }
 
 impl CorrClient {
     #[must_use]
     pub fn new(api_addr: SocketAddr, transport: Transport) -> Self {
-        let connector = BridgeConnector {
-            transport: transport.clone(),
-        };
-        let http = HyperClient::builder(TokioExecutor::new())
-            .http2_only(true)
-            .build(connector);
+        let connect_addr = transport.resolve(api_addr);
+        let http = reqwest::ClientBuilder::new()
+            .http2_prior_knowledge()
+            .connect_timeout(HTTP2_CONNECT_TIMEOUT)
+            .http2_keep_alive_interval(Some(HTTP2_KEEP_ALIVE_INTERVAL))
+            .http2_keep_alive_timeout(HTTP2_KEEP_ALIVE_INTERVAL / 2)
+            .build()
+            .expect("build reqwest corrosion client");
         Self {
             transport,
-            base_url: format!("http://{api_addr}"),
+            base_url: format!("http://{connect_addr}"),
             api_addr,
             http,
         }
@@ -151,16 +101,16 @@ impl CorrClient {
     // -- schema (POST /v1/migrations) --
 
     pub async fn schema(&self, statements: &[Statement]) -> Result<ExecResponse, ClientError> {
-        let uri: Uri = format!("{}/v1/migrations", self.base_url()).parse()?;
-        let req = hyper::Request::builder()
-            .method("POST")
-            .uri(uri)
-            .header("content-type", "application/json")
-            .header("accept", "application/json")
-            .body(json_body(&statements)?)?;
-        let resp = self.http.request(req).await?;
+        let resp = self
+            .http
+            .post(format!("{}/v1/migrations", self.base_url()))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::ACCEPT, "application/json")
+            .body(serde_json::to_vec(statements)?)
+            .send()
+            .await?;
         let status = resp.status();
-        let body = resp.into_body().collect().await?.to_bytes();
+        let body = resp.bytes().await?;
         if !status.is_success() {
             return Err(ClientError::UnexpectedStatusCode(status));
         }
@@ -179,16 +129,16 @@ impl CorrClient {
         } else {
             format!("{}/v1/transactions", self.base_url())
         };
-        let uri: Uri = url.parse()?;
-        let req = hyper::Request::builder()
-            .method("POST")
-            .uri(uri)
-            .header("content-type", "application/json")
-            .header("accept", "application/json")
-            .body(json_body(&statements)?)?;
-        let resp = self.http.request(req).await?;
+        let resp = self
+            .http
+            .post(url)
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::ACCEPT, "application/json")
+            .body(serde_json::to_vec(statements)?)
+            .send()
+            .await?;
         let status = resp.status();
-        let body = resp.into_body().collect().await?.to_bytes();
+        let body = resp.bytes().await?;
         if !status.is_success() {
             if let Ok(exec_resp) = serde_json::from_slice::<ExecResponse>(&body)
                 && let Some(ExecResult::Error { error }) = exec_resp
@@ -215,17 +165,17 @@ impl CorrClient {
         } else {
             format!("{}/v1/queries", self.base_url())
         };
-        let uri: Uri = url.parse()?;
-        let req = hyper::Request::builder()
-            .method("POST")
-            .uri(uri)
-            .header("content-type", "application/json")
-            .header("accept", "application/json")
-            .body(json_body(&statement)?)?;
-        let resp = self.http.request(req).await?;
+        let resp = self
+            .http
+            .post(url)
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::ACCEPT, "application/json")
+            .body(serde_json::to_vec(statement)?)
+            .send()
+            .await?;
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.into_body().collect().await?.to_bytes();
+            let body = resp.bytes().await?;
             if let Ok(res) = serde_json::from_slice::<ExecResult>(&body)
                 && let ExecResult::Error { error } = res
             {
@@ -233,7 +183,7 @@ impl CorrClient {
             }
             return Err(ClientError::UnexpectedStatusCode(status));
         }
-        Ok(QueryStream::new(resp.into_body()))
+        Ok(QueryStream::new(resp.into()))
     }
 
     // -- subscribe (POST /v1/subscriptions) --
@@ -253,21 +203,21 @@ impl CorrClient {
         statement: &Statement,
         skip_rows: bool,
         from: Option<ChangeId>,
-    ) -> Result<(uuid::Uuid, Incoming), ClientError> {
+    ) -> Result<(uuid::Uuid, reqwest::Body), ClientError> {
         let mut url = format!("{}/v1/subscriptions?skip_rows={skip_rows}", self.base_url());
         if let Some(change_id) = from {
             use std::fmt::Write;
             // write! to String is infallible
             let _ = write!(&mut url, "&from={change_id}");
         }
-        let uri: Uri = url.parse()?;
-        let req = hyper::Request::builder()
-            .method("POST")
-            .uri(uri)
-            .header("content-type", "application/json")
-            .header("accept", "application/json")
-            .body(json_body(&statement)?)?;
-        let resp = self.http.request(req).await?;
+        let resp = self
+            .http
+            .post(url)
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::ACCEPT, "application/json")
+            .body(serde_json::to_vec(statement)?)
+            .send()
+            .await?;
         if !resp.status().is_success() {
             return Err(ClientError::UnexpectedStatusCode(resp.status()));
         }
@@ -276,45 +226,43 @@ impl CorrClient {
             .get("corro-query-id")
             .and_then(|v| v.to_str().ok().and_then(|v| v.parse().ok()))
             .ok_or(ClientError::ExpectedQueryId)?;
-        Ok((id, resp.into_body()))
+        Ok((id, resp.into()))
     }
 
     async fn resubscribe(
         &self,
         id: uuid::Uuid,
         from: Option<ChangeId>,
-    ) -> Result<Incoming, ClientError> {
+    ) -> Result<reqwest::Body, ClientError> {
         let url = format!(
             "{}/v1/subscriptions/{}?from={}",
             self.base_url(),
             id,
             from.unwrap_or_default()
         );
-        let uri: Uri = url.parse()?;
-        let req = hyper::Request::builder()
-            .method("GET")
-            .uri(uri)
-            .header("accept", "application/json")
-            .body(empty_body())?;
-        let resp = self.http.request(req).await?;
+        let resp = self
+            .http
+            .get(url)
+            .header(http::header::ACCEPT, "application/json")
+            .send()
+            .await?;
         if !resp.status().is_success() {
             return Err(ClientError::UnexpectedStatusCode(resp.status()));
         }
-        Ok(resp.into_body())
+        Ok(resp.into())
     }
 
     // -- health (GET /v1/health?gaps=0) --
 
     pub async fn health(&self) -> Result<HealthResponse, ClientError> {
-        let uri: Uri = format!("{}/v1/health?gaps=0", self.base_url()).parse()?;
-        let req = hyper::Request::builder()
-            .method("GET")
-            .uri(uri)
-            .header("accept", "application/json")
-            .body(empty_body())?;
-        let resp = self.http.request(req).await?;
+        let resp = self
+            .http
+            .get(format!("{}/v1/health?gaps=0", self.base_url()))
+            .header(http::header::ACCEPT, "application/json")
+            .send()
+            .await?;
         let status = resp.status();
-        let body = resp.into_body().collect().await?.to_bytes();
+        let body = resp.bytes().await?;
         if !status.is_success() {
             return Err(ClientError::UnexpectedStatusCode(status));
         }
@@ -345,13 +293,9 @@ pub struct HealthResponse {
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     #[error(transparent)]
-    Hyper(#[from] hyper_util::client::legacy::Error),
-    #[error(transparent)]
-    HyperHttp(#[from] hyper::http::Error),
+    Http(#[from] reqwest::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    #[error(transparent)]
-    InvalidUri(#[from] http::uri::InvalidUri),
     #[error(transparent)]
     Io(#[from] io::Error),
     #[error("unexpected status code: {0}")]
@@ -360,8 +304,6 @@ pub enum ClientError {
     ResponseError(String),
     #[error("could not retrieve subscription id from headers")]
     ExpectedQueryId,
-    #[error(transparent)]
-    BodyCollect(#[from] hyper::Error),
 }
 
 impl fmt::Display for CorrClient {
@@ -377,34 +319,37 @@ impl fmt::Display for CorrClient {
 }
 
 // ---------------------------------------------------------------------------
-// Incoming → AsyncRead adapter
+// reqwest::Body → AsyncRead adapter
 // ---------------------------------------------------------------------------
 
 pin_project! {
-    struct IncomingBodyStream {
+    struct BodyStream {
         #[pin]
-        body: Incoming,
+        body: reqwest::Body,
     }
 }
 
-impl Stream for IncomingBodyStream {
+impl Stream for BodyStream {
     type Item = io::Result<Bytes>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        use hyper::body::Body;
+        use http_body::Body;
         let this = self.project();
         let res = ready!(this.body.poll_frame(cx));
         match res {
-            Some(Ok(frame)) => {
-                if let Ok(data) = frame.into_data() {
-                    Poll::Ready(Some(Ok(data)))
-                } else {
-                    // Trailers frame — skip
-                    Poll::Ready(Some(Ok(Bytes::new())))
-                }
-            }
+            Some(Ok(frame)) => Poll::Ready(Some(
+                frame
+                    .into_data()
+                    .map_err(|_| io::Error::other("not a data frame")),
+            )),
             Some(Err(e)) => {
-                let io_err = io::Error::other(e.to_string());
+                let io_err = match e
+                    .source()
+                    .and_then(|source| source.downcast_ref::<io::Error>())
+                {
+                    Some(io_err) => io::Error::from(io_err.kind()),
+                    None => io::Error::other(e),
+                };
                 Poll::Ready(Some(Err(io_err)))
             }
             None => Poll::Ready(None),
@@ -412,12 +357,12 @@ impl Stream for IncomingBodyStream {
     }
 }
 
-type IncomingReader = StreamReader<IncomingBodyStream, Bytes>;
-type FramedBody = FramedRead<IncomingReader, LinesBytesCodec>;
+type BodyReader = StreamReader<BodyStream, Bytes>;
+type FramedBody = FramedRead<BodyReader, LinesBytesCodec>;
 
-fn framed_body(body: Incoming) -> FramedBody {
+fn framed_body(body: reqwest::Body) -> FramedBody {
     FramedRead::new(
-        StreamReader::new(IncomingBodyStream { body }),
+        StreamReader::new(BodyStream { body }),
         LinesBytesCodec::default(),
     )
 }
@@ -442,7 +387,7 @@ pub enum QueryError {
 }
 
 impl<T: DeserializeOwned + Unpin> QueryStream<T> {
-    fn new(body: Incoming) -> Self {
+    fn new(body: reqwest::Body) -> Self {
         Self {
             stream: framed_body(body),
             _deser: std::marker::PhantomData,
@@ -483,7 +428,7 @@ pub struct SubscriptionStream<T> {
     backoff: Option<Pin<Box<Sleep>>>,
     backoff_count: u32,
     #[allow(clippy::type_complexity)]
-    response: Option<Pin<Box<dyn Future<Output = Result<Incoming, ClientError>> + Send>>>,
+    response: Option<Pin<Box<dyn Future<Output = Result<reqwest::Body, ClientError>> + Send>>>,
     _deser: std::marker::PhantomData<T>,
 }
 
@@ -507,7 +452,7 @@ impl<T: DeserializeOwned + Unpin> SubscriptionStream<T> {
     fn new(
         id: uuid::Uuid,
         client: CorrClient,
-        body: Incoming,
+        body: reqwest::Body,
         change_id: Option<ChangeId>,
     ) -> Self {
         Self {

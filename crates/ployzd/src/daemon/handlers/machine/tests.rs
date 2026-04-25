@@ -1140,6 +1140,7 @@ async fn make_state_with_remote_port(
         24,
         remote_control_port,
         "127.0.0.1:0".into(),
+        None,
         1,
     );
     let mut config = config;
@@ -1157,6 +1158,7 @@ async fn make_state_with_remote_port(
         peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+        certificate_renewal: None,
     });
 
     (state, store, network)

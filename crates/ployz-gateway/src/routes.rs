@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::net::{SocketAddr, SocketAddrV4};
 
 use ployz_types::model::{
-    InstanceId, InstancePhase, InstanceStatusRecord, MachineId, RoutingState, ServiceRelease,
-    ServiceReleaseSlot, ServiceRoutingPolicy,
+    AcmeChallengeRecord, CertificateRecord, InstanceId, InstancePhase, InstanceStatusRecord,
+    MachineId, RoutingState, ServiceRelease, ServiceReleaseSlot, ServiceRoutingPolicy,
 };
 use ployz_types::spec::{Namespace, RouteSpec, ServiceSpec};
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,10 @@ use thiserror::Error;
 pub struct GatewaySnapshot {
     pub http_routes: Vec<HttpRouteView>,
     pub tcp_routes: Vec<TcpRouteView>,
+    /// Keyed on `(normalized hostname, token)` for O(1) HTTP-01 lookup.
+    pub acme_challenges: HashMap<(String, String), AcmeChallengeView>,
+    /// Keyed on normalized hostname for O(1) SNI lookup.
+    pub certificates: HashMap<String, CertificateView>,
 }
 
 impl GatewaySnapshot {
@@ -22,8 +26,24 @@ impl GatewaySnapshot {
         Self {
             http_routes: Vec::new(),
             tcp_routes: Vec::new(),
+            acme_challenges: HashMap::new(),
+            certificates: HashMap::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcmeChallengeView {
+    pub hostname: String,
+    pub token: String,
+    pub key_authorization: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CertificateView {
+    pub hostname: String,
+    pub fullchain_pem: String,
+    pub private_key_pem: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,7 +257,74 @@ pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> 
     Ok(GatewaySnapshot {
         http_routes,
         tcp_routes,
+        acme_challenges: HashMap::new(),
+        certificates: HashMap::new(),
     })
+}
+
+#[must_use]
+pub fn with_managed_tls(
+    mut snapshot: GatewaySnapshot,
+    challenges: &[AcmeChallengeRecord],
+    certificates: &[CertificateRecord],
+) -> GatewaySnapshot {
+    snapshot.acme_challenges = project_acme_challenges(challenges);
+    snapshot.certificates = project_certificates(certificates);
+    snapshot
+}
+
+#[must_use]
+pub fn project_acme_challenges(
+    challenges: &[AcmeChallengeRecord],
+) -> HashMap<(String, String), AcmeChallengeView> {
+    challenges
+        .iter()
+        .map(|challenge| {
+            let hostname = normalize_request_host(&challenge.hostname);
+            (
+                (hostname.clone(), challenge.token.clone()),
+                AcmeChallengeView {
+                    hostname,
+                    token: challenge.token.clone(),
+                    key_authorization: challenge.key_authorization.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn project_certificates(
+    certificates: &[CertificateRecord],
+) -> HashMap<String, CertificateView> {
+    certificates
+        .iter()
+        .filter_map(|record| {
+            let version = record.installed_version()?;
+            let hostname = normalize_request_host(&record.hostname);
+            Some((
+                hostname.clone(),
+                CertificateView {
+                    hostname,
+                    fullchain_pem: version.fullchain_pem.clone(),
+                    private_key_pem: version.private_key_pem.clone(),
+                },
+            ))
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn match_acme_challenge<'a>(
+    snapshot: &'a GatewaySnapshot,
+    host: Option<&str>,
+    path: &str,
+) -> Option<&'a AcmeChallengeView> {
+    let host = host
+        .map(normalize_request_host)
+        .filter(|value| !value.is_empty())?;
+    let token = path.strip_prefix("/.well-known/acme-challenge/")?;
+    snapshot.acme_challenges.get(&(host, token.to_string()))
 }
 
 fn routable_backends_by_port(
@@ -398,8 +485,9 @@ fn normalize_path_prefix(path_prefix: &str) -> String {
 mod tests {
     use super::*;
     use ployz_types::model::{
-        DeployId, DrainState, InstanceStatusRecord, ServiceRelease, ServiceReleaseRecord,
-        ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy, SlotId,
+        CertificateState, DeployId, DrainState, InstanceStatusRecord, ServiceRelease,
+        ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy,
+        SlotId,
     };
     use ployz_types::spec::{
         ContainerSpec, NetworkMode, Placement, PortProtocol, PullPolicy, Resources, RestartPolicy,
@@ -548,6 +636,8 @@ mod tests {
                 },
             ],
             tcp_routes: Vec::new(),
+            acme_challenges: HashMap::new(),
+            certificates: HashMap::new(),
         };
 
         let route = match_http_route(&snapshot, Some("api.example.com"), "/v1/users")
@@ -766,5 +856,303 @@ mod tests {
             service_port: "http".into(),
             address: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 2), 8080)),
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // with_managed_tls + match_acme_challenge
+    // ---------------------------------------------------------------------
+
+    use ployz_types::model::CertificateVersion;
+
+    fn active_cert(hostname: &str, version_id: &str) -> CertificateRecord {
+        CertificateRecord {
+            hostname: hostname.into(),
+            issuer_url: "https://acme.test/directory".into(),
+            account_id: "acct-test".into(),
+            state: CertificateState::Active,
+            active_version_id: Some(version_id.into()),
+            versions: vec![CertificateVersion {
+                version_id: version_id.into(),
+                fullchain_pem: format!("fullchain:{hostname}"),
+                private_key_pem: format!("key:{hostname}"),
+                not_before: Some(0),
+                not_after: Some(100),
+                issued_at: 0,
+            }],
+            order_url: None,
+            last_error: None,
+            requested_at: 0,
+            updated_at: 0,
+            next_renewal_at: None,
+        }
+    }
+
+    fn challenge(hostname: &str, token: &str) -> AcmeChallengeRecord {
+        AcmeChallengeRecord {
+            hostname: hostname.into(),
+            token: token.into(),
+            key_authorization: format!("{token}.keyauth"),
+            expires_at: 100,
+            created_at: 0,
+        }
+    }
+
+    #[test]
+    fn with_managed_tls_projects_active_cert_into_hostname_keyed_map() {
+        let snapshot = with_managed_tls(
+            GatewaySnapshot::empty(),
+            &[],
+            &[active_cert("api.example.com", "v1")],
+        );
+        let entry = snapshot
+            .certificates
+            .get("api.example.com")
+            .expect("certificate present under normalized hostname");
+        assert_eq!(entry.hostname, "api.example.com");
+        assert_eq!(entry.fullchain_pem, "fullchain:api.example.com");
+        assert_eq!(entry.private_key_pem, "key:api.example.com");
+    }
+
+    #[test]
+    fn with_managed_tls_serves_certs_with_installed_version_regardless_of_state() {
+        // Whether a cert is projected is governed by `installed_version()`,
+        // not by `state`. Renewal flips a healthy row to RenewalDue→Issuing
+        // (and possibly Failed on a non-retryable finalize) while keeping
+        // `active_version_id` pointing at the previous valid leaf, so all of
+        // those states must remain serviceable. Only `Pending` with no prior
+        // issuance — i.e. `active_version_id == None` — should drop out.
+        let mut pending_no_version = active_cert("pending.example.com", "v1");
+        pending_no_version.state = CertificateState::Pending;
+        pending_no_version.active_version_id = None;
+        pending_no_version.versions.clear();
+
+        let mut issuing_renewal = active_cert("issuing.example.com", "v1");
+        issuing_renewal.state = CertificateState::Issuing;
+        let mut renewal_due = active_cert("renewal.example.com", "v1");
+        renewal_due.state = CertificateState::RenewalDue;
+        let mut failed_with_fallback = active_cert("failed.example.com", "v1");
+        failed_with_fallback.state = CertificateState::Failed;
+
+        let snapshot = with_managed_tls(
+            GatewaySnapshot::empty(),
+            &[],
+            &[
+                pending_no_version,
+                issuing_renewal,
+                renewal_due,
+                failed_with_fallback,
+                active_cert("ok.example.com", "v1"),
+            ],
+        );
+        // pending-without-version is dropped; the other four are served.
+        assert_eq!(snapshot.certificates.len(), 4);
+        assert!(snapshot.certificates.contains_key("ok.example.com"));
+        assert!(snapshot.certificates.contains_key("issuing.example.com"));
+        assert!(snapshot.certificates.contains_key("renewal.example.com"));
+        assert!(snapshot.certificates.contains_key("failed.example.com"));
+        assert!(!snapshot.certificates.contains_key("pending.example.com"));
+    }
+
+    #[test]
+    fn with_managed_tls_keeps_serving_old_leaf_during_in_flight_renewal() {
+        // Concrete renewal scenario: cert was Active with version v1, the
+        // ticker promoted it to RenewalDue, start_one moved it to Issuing
+        // for the new order, but finalize hasn't completed. The gateway must
+        // keep handing out v1 — not blackhole TLS for the duration of the
+        // ACME round trip.
+        let mut renewing = active_cert("api.example.com", "v1");
+        renewing.state = CertificateState::Issuing;
+        renewing.order_url = Some("https://acme.test/orders/42".into());
+
+        let snapshot = with_managed_tls(GatewaySnapshot::empty(), &[], &[renewing]);
+        let entry = snapshot
+            .certificates
+            .get("api.example.com")
+            .expect("renewing cert should still serve the previous leaf");
+        // Material is the previously-issued v1, untouched by the in-flight order.
+        assert_eq!(entry.fullchain_pem, "fullchain:api.example.com");
+        assert_eq!(entry.private_key_pem, "key:api.example.com");
+    }
+
+    #[test]
+    fn with_managed_tls_keeps_serving_old_leaf_after_failed_renewal() {
+        // finalize_one's non-retryable error path explicitly restores
+        // `previous_active_version_id` before downgrading to Failed, so the
+        // gateway can keep using the prior leaf until the next reconcile pass
+        // retries. The projection must respect that fallback contract.
+        let mut failed = active_cert("api.example.com", "v1");
+        failed.state = CertificateState::Failed;
+        failed.last_error = Some("orderInvalid: rateLimited".into());
+
+        let snapshot = with_managed_tls(GatewaySnapshot::empty(), &[], &[failed]);
+        let entry = snapshot
+            .certificates
+            .get("api.example.com")
+            .expect("failed-with-fallback cert should still serve previous leaf");
+        assert_eq!(entry.fullchain_pem, "fullchain:api.example.com");
+        assert_eq!(entry.private_key_pem, "key:api.example.com");
+    }
+
+    #[test]
+    fn with_managed_tls_skips_active_cert_without_active_version_id() {
+        let mut record = active_cert("api.example.com", "v1");
+        record.active_version_id = None;
+        let snapshot = with_managed_tls(GatewaySnapshot::empty(), &[], &[record]);
+        assert!(snapshot.certificates.is_empty());
+    }
+
+    #[test]
+    fn with_managed_tls_skips_when_active_version_id_points_at_missing_version() {
+        let mut record = active_cert("api.example.com", "v1");
+        record.active_version_id = Some("vmissing".into());
+        let snapshot = with_managed_tls(GatewaySnapshot::empty(), &[], &[record]);
+        assert!(snapshot.certificates.is_empty());
+    }
+
+    #[test]
+    fn with_managed_tls_normalizes_cert_hostname_case_and_trailing_dot() {
+        let snapshot = with_managed_tls(
+            GatewaySnapshot::empty(),
+            &[],
+            &[active_cert("API.Example.Com.", "v1")],
+        );
+        assert!(snapshot.certificates.contains_key("api.example.com"));
+        assert!(!snapshot.certificates.contains_key("API.Example.Com."));
+    }
+
+    #[test]
+    fn with_managed_tls_projects_all_challenges_keyed_by_host_and_token() {
+        let snapshot = with_managed_tls(
+            GatewaySnapshot::empty(),
+            &[
+                challenge("api.example.com", "tok-a"),
+                challenge("api.example.com", "tok-b"),
+                challenge("other.example.com", "tok-c"),
+            ],
+            &[],
+        );
+        assert_eq!(snapshot.acme_challenges.len(), 3);
+        let one = snapshot
+            .acme_challenges
+            .get(&("api.example.com".into(), "tok-a".into()))
+            .expect("first challenge for api.example.com");
+        assert_eq!(one.key_authorization, "tok-a.keyauth");
+        assert!(
+            snapshot
+                .acme_challenges
+                .contains_key(&("api.example.com".into(), "tok-b".into()))
+        );
+        assert!(
+            snapshot
+                .acme_challenges
+                .contains_key(&("other.example.com".into(), "tok-c".into()))
+        );
+    }
+
+    #[test]
+    fn with_managed_tls_normalizes_challenge_hostname() {
+        let snapshot = with_managed_tls(
+            GatewaySnapshot::empty(),
+            &[challenge("API.Example.Com.", "tok")],
+            &[],
+        );
+        assert!(
+            snapshot
+                .acme_challenges
+                .contains_key(&("api.example.com".into(), "tok".into()))
+        );
+    }
+
+    #[test]
+    fn match_acme_challenge_returns_view_on_exact_path_and_host() {
+        let snapshot = with_managed_tls(
+            GatewaySnapshot::empty(),
+            &[challenge("api.example.com", "tok-1")],
+            &[],
+        );
+        let hit = match_acme_challenge(
+            &snapshot,
+            Some("api.example.com"),
+            "/.well-known/acme-challenge/tok-1",
+        )
+        .expect("challenge should match");
+        assert_eq!(hit.key_authorization, "tok-1.keyauth");
+    }
+
+    #[test]
+    fn match_acme_challenge_returns_none_on_unknown_host() {
+        let snapshot = with_managed_tls(
+            GatewaySnapshot::empty(),
+            &[challenge("api.example.com", "tok-1")],
+            &[],
+        );
+        assert!(
+            match_acme_challenge(
+                &snapshot,
+                Some("other.example.com"),
+                "/.well-known/acme-challenge/tok-1"
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn match_acme_challenge_returns_none_on_wrong_token() {
+        let snapshot = with_managed_tls(
+            GatewaySnapshot::empty(),
+            &[challenge("api.example.com", "tok-1")],
+            &[],
+        );
+        assert!(
+            match_acme_challenge(
+                &snapshot,
+                Some("api.example.com"),
+                "/.well-known/acme-challenge/tok-wrong"
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn match_acme_challenge_returns_none_without_well_known_prefix() {
+        let snapshot = with_managed_tls(
+            GatewaySnapshot::empty(),
+            &[challenge("api.example.com", "tok-1")],
+            &[],
+        );
+        assert!(match_acme_challenge(&snapshot, Some("api.example.com"), "/tok-1").is_none());
+        assert!(match_acme_challenge(&snapshot, Some("api.example.com"), "/").is_none());
+    }
+
+    #[test]
+    fn match_acme_challenge_requires_host_header() {
+        let snapshot = with_managed_tls(
+            GatewaySnapshot::empty(),
+            &[challenge("api.example.com", "tok-1")],
+            &[],
+        );
+        assert!(
+            match_acme_challenge(&snapshot, None, "/.well-known/acme-challenge/tok-1").is_none()
+        );
+        assert!(
+            match_acme_challenge(&snapshot, Some(""), "/.well-known/acme-challenge/tok-1")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn match_acme_challenge_normalizes_host_case_and_port() {
+        let snapshot = with_managed_tls(
+            GatewaySnapshot::empty(),
+            &[challenge("api.example.com", "tok-1")],
+            &[],
+        );
+        let hit = match_acme_challenge(
+            &snapshot,
+            Some("API.Example.Com:8080"),
+            "/.well-known/acme-challenge/tok-1",
+        )
+        .expect("challenge should match with normalized host");
+        assert_eq!(hit.token, "tok-1");
     }
 }

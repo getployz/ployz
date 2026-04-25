@@ -35,6 +35,7 @@ pub async fn run_daemon(
     remote_control_port: u16,
     peer_control_target: Option<String>,
     gateway_listen_addr: String,
+    gateway_https_listen_addr: Option<String>,
     gateway_threads: usize,
     daemon_metrics_listen_addr: Option<String>,
     dns_metrics_listen_addr: Option<String>,
@@ -51,6 +52,7 @@ pub async fn run_daemon(
         remote_control_port,
         peer_control_target,
         gateway_listen_addr,
+        gateway_https_listen_addr,
         gateway_threads,
         daemon_metrics_listen_addr,
         dns_metrics_listen_addr,
@@ -73,6 +75,7 @@ async fn run_daemon_with_resource_metrics_source(
     remote_control_port: u16,
     peer_control_target: Option<String>,
     gateway_listen_addr: String,
+    gateway_https_listen_addr: Option<String>,
     gateway_threads: usize,
     daemon_metrics_listen_addr: Option<String>,
     dns_metrics_listen_addr: Option<String>,
@@ -90,6 +93,7 @@ async fn run_daemon_with_resource_metrics_source(
         remote_control_port,
         peer_control_target,
         gateway_listen_addr,
+        gateway_https_listen_addr,
         gateway_threads,
         daemon_metrics_listen_addr,
         dns_metrics_listen_addr,
@@ -111,6 +115,7 @@ async fn run_daemon_inner(
     remote_control_port: u16,
     peer_control_target: Option<String>,
     gateway_listen_addr: String,
+    gateway_https_listen_addr: Option<String>,
     gateway_threads: usize,
     daemon_metrics_listen_addr: Option<String>,
     dns_metrics_listen_addr: Option<String>,
@@ -157,6 +162,7 @@ async fn run_daemon_inner(
         subnet_prefix_len,
         remote_control_port,
         gateway_listen_addr,
+        gateway_https_listen_addr,
         gateway_threads,
         dns_metrics_listen_addr,
         gateway_metrics_listen_addr,
@@ -324,7 +330,11 @@ async fn shutdown_active_mesh(state: &Arc<RwLock<DaemonState>>) {
             peer_control,
             gateway,
             dns,
+            certificate_renewal,
         } = active;
+        if let Some(task) = certificate_renewal {
+            task.shutdown().await;
+        }
         let _ = dns.detach().await;
         let _ = gateway.detach().await;
         let _ = peer_control.shutdown().await;
@@ -371,6 +381,7 @@ mod tests {
                 4317,
                 None,
                 "127.0.0.1:8080".into(),
+                None,
                 1,
                 Some(metrics_addr.to_string()),
                 None,
@@ -457,6 +468,7 @@ mod tests {
                 4317,
                 None,
                 "127.0.0.1:8080".into(),
+                None,
                 1,
                 Some(metrics_addr.to_string()),
                 None,

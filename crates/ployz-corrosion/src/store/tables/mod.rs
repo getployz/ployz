@@ -1,3 +1,6 @@
+pub(crate) mod acme_accounts;
+pub(crate) mod acme_challenges;
+pub(crate) mod certificates;
 pub(crate) mod deploys;
 pub(crate) mod instance_status;
 pub(crate) mod invites;
