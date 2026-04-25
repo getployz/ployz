@@ -343,59 +343,58 @@ where
     // already be stale: another daemon could have raced ahead while we were
     // waiting on the cluster lock. The lock-bound re-read is what makes
     // this critical section publish-coherent.
-    let current = match store.get_certificate(&hostname).await {
-        Ok(Some(current)) if needs_start_order(&current) => current,
-        Ok(_) => {
-            hold.release().await;
-            return None;
-        }
-        Err(error) => {
-            hold.release().await;
-            return Some(format!(
-                "Could not re-read certificate {hostname} before ACME order: {error}"
+    // Keep a single lock-release point, similar to Go's `defer`: everything in
+    // this critical section exits through `'under_lock`, then we release.
+    let warning = 'under_lock: {
+        let current = match store.get_certificate(&hostname).await {
+            Ok(Some(current)) if needs_start_order(&current) => current,
+            Ok(_) => break 'under_lock None,
+            Err(error) => {
+                break 'under_lock Some(format!(
+                    "Could not re-read certificate {hostname} before ACME order: {error}"
+                ));
+            }
+        };
+        let mut record = current;
+
+        // Prune stale challenge rows for this hostname before opening a new
+        // order. Tokens are scoped to the order ACME issued them under, so rows
+        // left over from a prior failed order can no longer be validated. The
+        // success path of `finalize_order` deletes challenges per token, but
+        // failure paths leave them behind — without this prune, repeated retries
+        // would grow `acme_challenges` without bound, replicate the leak across
+        // the cluster, and bloat every gateway snapshot rebuild. Done under the
+        // cluster lock so a peer can't be mid-validation against a token we're
+        // about to delete.
+        if let Err(error) = prune_acme_challenges_for(store, &hostname).await {
+            break 'under_lock Some(format!(
+                "Could not prune stale ACME challenges for {hostname}: {error}"
             ));
         }
-    };
-    let mut record = current;
 
-    // Prune stale challenge rows for this hostname before opening a new
-    // order. Tokens are scoped to the order ACME issued them under, so rows
-    // left over from a prior failed order can no longer be validated. The
-    // success path of `finalize_order` deletes challenges per token, but
-    // failure paths leave them behind — without this prune, repeated retries
-    // would grow `acme_challenges` without bound, replicate the leak across
-    // the cluster, and bloat every gateway snapshot rebuild. Done under the
-    // cluster lock so a peer can't be mid-validation against a token we're
-    // about to delete.
-    if let Err(error) = prune_acme_challenges_for(store, &hostname).await {
-        hold.release().await;
-        return Some(format!(
-            "Could not prune stale ACME challenges for {hostname}: {error}"
-        ));
-    }
-
-    let outcome = issuer.start_order(store, &hostname).await;
-    let warning = match outcome {
-        Ok(started) => {
-            record.state = CertificateState::Issuing;
-            record.order_url = Some(started.order_url);
-            record.updated_at = now_unix_secs();
-            record.last_error = None;
-            store
-                .upsert_certificate(&record)
-                .await
-                .err()
-                .map(|error| format!("Could not persist ACME order for {hostname}: {error}"))
-        }
-        Err(error) => {
-            let detail = error.to_string();
-            record.state = CertificateState::Failed;
-            record.last_error = Some(detail.clone());
-            record.order_url = None;
-            record.updated_at = now_unix_secs();
-            let _ = store.upsert_certificate(&record).await;
-            Some(format!("ACME order for {hostname} failed: {detail}"))
-        }
+        let outcome = issuer.start_order(store, &hostname).await;
+        break 'under_lock match outcome {
+            Ok(started) => {
+                record.state = CertificateState::Issuing;
+                record.order_url = Some(started.order_url);
+                record.updated_at = now_unix_secs();
+                record.last_error = None;
+                store
+                    .upsert_certificate(&record)
+                    .await
+                    .err()
+                    .map(|error| format!("Could not persist ACME order for {hostname}: {error}"))
+            }
+            Err(error) => {
+                let detail = error.to_string();
+                record.state = CertificateState::Failed;
+                record.last_error = Some(detail.clone());
+                record.order_url = None;
+                record.updated_at = now_unix_secs();
+                let _ = store.upsert_certificate(&record).await;
+                Some(format!("ACME order for {hostname} failed: {detail}"))
+            }
+        };
     };
 
     // Release AFTER persistence so the lock covers both the external order
