@@ -45,8 +45,11 @@ pub struct DeployManifest {
 
 impl DeployManifest {
     pub fn validate(&self) -> Result<(), String> {
-        if self.namespace.0.trim().is_empty() {
-            return Err("manifest namespace cannot be empty".into());
+        if !valid_namespace_name(&self.namespace.0) {
+            return Err(format!(
+                "manifest namespace '{}' must be 1-63 chars of [a-z0-9_-], starting with a letter or digit",
+                self.namespace
+            ));
         }
 
         if self.services.is_empty() {
@@ -409,6 +412,14 @@ impl VolumeDeclaration {
 }
 
 fn valid_volume_name(value: &str) -> bool {
+    valid_storage_segment(value)
+}
+
+fn valid_namespace_name(value: &str) -> bool {
+    valid_storage_segment(value)
+}
+
+fn valid_storage_segment(value: &str) -> bool {
     if value.is_empty() || value.len() > 63 {
         return false;
     }
@@ -852,6 +863,29 @@ mod tests {
             .validate()
             .expect_err("empty namespace should fail");
         assert!(error.contains("namespace"));
+    }
+
+    #[test]
+    fn manifest_rejects_path_segment_namespace() {
+        for namespace in ["../tmp", "prod/api", "prod api", ".prod", "Prod"] {
+            let manifest = DeployManifest {
+                namespace: Namespace(namespace.into()),
+                volumes: vec![VolumeDeclaration {
+                    name: "data".into(),
+                    scope: VolumeScope::Single,
+                    quota: "10G".into(),
+                    mode: "0750".into(),
+                    owner: "999:999".into(),
+                }],
+                services: vec![sample_spec()],
+            };
+
+            let error = manifest
+                .validate()
+                .expect_err("path-segment namespace should fail");
+
+            assert!(error.contains("namespace"));
+        }
     }
 
     #[test]

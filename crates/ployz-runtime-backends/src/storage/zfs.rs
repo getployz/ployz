@@ -264,7 +264,13 @@ impl<R: ShellRunner> ZfsDriver<R> {
             )
             .await?;
         if output.status != 0 {
-            return Ok(None);
+            if zfs_reports_dataset_missing(&output.stderr) {
+                return Ok(None);
+            }
+            return Err(Error::operation(
+                "zfs list dataset",
+                command_failure_message(&output.stderr, output.status),
+            ));
         }
         let text = String::from_utf8(output.stdout)
             .map_err(|err| Error::operation("zfs_parse", err.to_string()))?;
@@ -474,8 +480,23 @@ fn ensure_success(context: &'static str, stderr: &[u8], status: i32) -> Result<(
     }
     Err(Error::operation(
         context,
-        String::from_utf8_lossy(stderr).trim().to_string(),
+        command_failure_message(stderr, status),
     ))
+}
+
+fn command_failure_message(stderr: &[u8], status: i32) -> String {
+    let message = String::from_utf8_lossy(stderr).trim().to_string();
+    if message.is_empty() {
+        format!("exited with status {status}")
+    } else {
+        message
+    }
+}
+
+fn zfs_reports_dataset_missing(stderr: &[u8]) -> bool {
+    String::from_utf8_lossy(stderr)
+        .to_ascii_lowercase()
+        .contains("dataset does not exist")
 }
 
 fn parse_single_field(stdout: &[u8], field: &str) -> Result<String> {
@@ -596,6 +617,21 @@ mod tests {
         assert_eq!(calls[4][..4], ["zfs", "create", "-p", "-o"]);
         assert_eq!(calls[5], ["chmod", "0750", "/tank/ployz/prod/data"]);
         assert_eq!(calls[6], ["chown", "999:999", "/tank/ployz/prod/data"]);
+    }
+
+    #[tokio::test]
+    async fn ensure_propagates_zfs_list_failure() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        fake.push(1, "", "permission denied");
+
+        let err = driver
+            .ensure(&spec())
+            .await
+            .expect_err("zfs list failure should fail");
+
+        assert!(err.to_string().contains("permission denied"), "got: {err}");
+        assert_eq!(fake.calls().len(), 2);
     }
 
     #[tokio::test]
