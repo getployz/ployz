@@ -4,7 +4,7 @@ use crate::config as corrosion_config;
 use corro_api_types::{ExecResult, Statement};
 use ployz_store_api::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployStore, InviteStore,
-    MachineStore, RoutingStore, SyncProbe, SyncStatus,
+    MachineStore, PeerRttObservation, PeerRttStore, RoutingStore, SyncProbe, SyncStatus,
 };
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
@@ -146,6 +146,32 @@ impl SyncProbe for CorrosionStore {
         };
 
         Ok(status)
+    }
+}
+
+impl PeerRttStore for CorrosionStore {
+    async fn peer_rtt_observations(&self) -> Result<Vec<PeerRttObservation>> {
+        let Some(admin) = &self.admin else {
+            return Ok(Vec::new());
+        };
+        admin
+            .cluster_member_rtts()
+            .await
+            .map_err(|e| {
+                Error::operation(
+                    "peer_rtt_observations",
+                    format!("admin members request: {e}"),
+                )
+            })
+            .map(|members| {
+                members
+                    .into_iter()
+                    .map(|member| PeerRttObservation {
+                        addr: member.addr,
+                        rtts_ms: member.rtts_ms,
+                    })
+                    .collect()
+            })
     }
 }
 

@@ -17,7 +17,6 @@ pub enum ReachabilityStatus {
 pub struct ReachabilityResult {
     pub status: ReachabilityStatus,
     pub successful_attempt: Option<u8>,
-    pub rtt: Option<Duration>,
 }
 
 pub async fn probe_overlay_ips(
@@ -54,13 +53,11 @@ async fn probe_overlay_ip_with_retries(
 ) -> ReachabilityResult {
     let attempts = attempts.max(1);
     for attempt in 1..=attempts {
-        let TcpProbeResult { status, rtt } =
-            probe_overlay_ip_with_timeout(overlay_ip, timeout).await;
+        let TcpProbeResult { status } = probe_overlay_ip_with_timeout(overlay_ip, timeout).await;
         if status == TcpProbeStatus::Reachable {
             return ReachabilityResult {
                 status: ReachabilityStatus::Reachable,
                 successful_attempt: Some(attempt),
-                rtt,
             };
         }
     }
@@ -68,7 +65,6 @@ async fn probe_overlay_ip_with_retries(
     ReachabilityResult {
         status: ReachabilityStatus::Unreachable,
         successful_attempt: None,
-        rtt: None,
     }
 }
 
