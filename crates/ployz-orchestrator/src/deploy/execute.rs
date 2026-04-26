@@ -263,6 +263,7 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
             build_committed_releases(&final_plan, &startup.started, &deploy_id)?;
         let committed_volumes =
             build_committed_volumes(&final_plan, &startup.started, &deploy_id, started_at)?;
+        let removed_volumes = removed_volumes(store, &final_plan).await?;
         let removed_services = final_plan
             .services()
             .iter()
@@ -281,6 +282,7 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
             .commit_deploy(
                 final_plan.namespace(),
                 &removed_services,
+                &removed_volumes,
                 &committed_releases,
                 &committed_volumes,
                 &deploy_record,
@@ -595,6 +597,23 @@ fn build_committed_releases(
         });
     }
     Ok(releases)
+}
+
+async fn removed_volumes(store: &StoreDriver, plan: &ResolvedPlan) -> Result<Vec<String>> {
+    let declared = plan
+        .volumes()
+        .iter()
+        .map(|volume| volume.declaration.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut removed = store
+        .list_volumes(plan.namespace())
+        .await?
+        .into_iter()
+        .filter(|record| !declared.contains(record.volume_name.as_str()))
+        .map(|record| record.volume_name)
+        .collect::<Vec<_>>();
+    removed.sort();
+    Ok(removed)
 }
 
 fn build_committed_volumes(

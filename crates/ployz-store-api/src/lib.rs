@@ -72,6 +72,7 @@ pub trait StoreBackend: Send + Sync {
         &self,
         namespace: &Namespace,
         removed_services: &[String],
+        removed_volumes: &[String],
         releases: &[ServiceReleaseRecord],
         volumes: &[VolumeRecord],
         deploy: &DeployRecord,

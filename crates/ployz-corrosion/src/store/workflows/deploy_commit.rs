@@ -11,12 +11,19 @@ pub(crate) async fn commit_deploy(
     client: &CorrClient,
     namespace: &Namespace,
     removed_services: &[String],
+    removed_volumes: &[String],
     releases: &[ServiceReleaseRecord],
     volumes: &[VolumeRecord],
     deploy: &DeployRecord,
 ) -> Result<()> {
-    let statements =
-        build_commit_statements(namespace, removed_services, releases, volumes, deploy)?;
+    let statements = build_commit_statements(
+        namespace,
+        removed_services,
+        removed_volumes,
+        releases,
+        volumes,
+        deploy,
+    )?;
     exec_all(client, &statements, "commit_deploy").await
 }
 
@@ -34,6 +41,7 @@ fn touched_services(removed_services: &[String], releases: &[ServiceReleaseRecor
 fn build_commit_statements(
     namespace: &Namespace,
     removed_services: &[String],
+    removed_volumes: &[String],
     releases: &[ServiceReleaseRecord],
     volumes: &[VolumeRecord],
     deploy: &DeployRecord,
@@ -51,6 +59,10 @@ fn build_commit_statements(
 
     for volume in volumes {
         statements.push(volume_table::upsert_statement(volume)?);
+    }
+
+    for volume_name in removed_volumes {
+        statements.push(volume_table::delete_statement(namespace, volume_name));
     }
 
     statements.push(deploys::upsert_statement(deploy)?);
@@ -115,7 +127,7 @@ mod tests {
         };
 
         let statements =
-            build_commit_statements(&namespace, &removed_services, &releases, &[], &deploy)
+            build_commit_statements(&namespace, &removed_services, &[], &releases, &[], &deploy)
                 .expect("commit statements");
 
         let [

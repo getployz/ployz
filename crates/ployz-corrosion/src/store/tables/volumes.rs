@@ -60,6 +60,13 @@ pub(crate) fn upsert_statement(record: &VolumeRecord) -> Result<Statement> {
     ))
 }
 
+pub(crate) fn delete_statement(namespace: &Namespace, volume_name: &str) -> Statement {
+    Statement::WithParams(
+        "UPDATE volumes SET payload_json = '' WHERE namespace = ? AND volume_name = ?".to_string(),
+        vec![namespace.0.clone().into(), volume_name.to_string().into()],
+    )
+}
+
 fn parse_volume(row: &[SqliteValue]) -> Result<VolumeRecord> {
     let [namespace_val, volume_name_val, payload_val] = row else {
         return Err(Error::operation(
