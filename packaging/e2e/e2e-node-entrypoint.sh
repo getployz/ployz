@@ -85,6 +85,212 @@ else
   echo "ployz-e2e payload metadata: missing /e2e-payload/metadata.env"
 fi
 
+if [[ -n "${PLOYZ_E2E_ZFS_MODE:-}" ]]; then
+  zfs_mode="${PLOYZ_E2E_ZFS_MODE}"
+  if [[ "${zfs_mode}" != "fake" && "${zfs_mode}" != "real" ]]; then
+    echo "unsupported PLOYZ_E2E_ZFS_MODE=${zfs_mode}" >&2
+    exit 1
+  fi
+
+  install -d -m 755 /var/lib/ployz-e2e-zfs /root/.config/ployz
+  printf '%s\n' "${zfs_mode}" >/var/lib/ployz-e2e-zfs/mode
+
+  if [[ "${zfs_mode}" == "fake" ]]; then
+    zfs_root="${PLOYZ_E2E_ZFS_ROOT:-tank/ployz-e2e}"
+    zfs_root_mount="/${zfs_root}"
+    install -d -m 755 "${zfs_root_mount}"
+    printf '%s\n' "${zfs_root}" >/var/lib/ployz-e2e-zfs/root
+    printf '%s\n' "${zfs_root%%/*}" >/var/lib/ployz-e2e-zfs/pool.name
+    echo "ployz-e2e fake zfs root=${zfs_root}"
+  cat >/usr/local/bin/zfs <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+state_dir=/var/lib/ployz-e2e-zfs
+calls_file="${state_dir}/calls.log"
+datasets_file="${state_dir}/datasets.tsv"
+root_file="${state_dir}/root"
+mkdir -p "${state_dir}"
+printf 'zfs %q' "$1" >>"${calls_file}"
+for arg in "$@"; do
+  printf ' %q' "${arg}" >>"${calls_file}"
+done
+printf '\n' >>"${calls_file}"
+root="$(cat "${root_file}")"
+root_mount="/${root}"
+
+if [[ $# -ge 5 && "$1" == "list" && "$2" == "-H" && "$3" == "-o" && "$4" == "mountpoint" ]]; then
+  dataset="$5"
+  if [[ "${dataset}" == "${root}" ]]; then
+    printf '%s\n' "${root_mount}"
+    exit 0
+  fi
+  if [[ -f "${datasets_file}" ]]; then
+    mountpoint="$(awk -F '\t' -v dataset="${dataset}" '$1 == dataset { print $3; exit }' "${datasets_file}")"
+    if [[ -n "${mountpoint}" ]]; then
+      printf '%s\n' "${mountpoint}"
+      exit 0
+    fi
+  fi
+  printf 'dataset does not exist\n' >&2
+  exit 1
+fi
+
+if [[ $# -ge 5 && "$1" == "list" && "$2" == "-H" && "$3" == "-o" && "$4" == "name,quota,mountpoint" ]]; then
+  dataset="$5"
+  if [[ -f "${datasets_file}" ]]; then
+    row="$(awk -F '\t' -v dataset="${dataset}" '$1 == dataset { print; exit }' "${datasets_file}")"
+    if [[ -n "${row}" ]]; then
+      printf '%s\n' "${row}"
+      exit 0
+    fi
+  fi
+  printf 'dataset does not exist\n' >&2
+  exit 1
+fi
+
+if [[ $# -ge 6 && "$1" == "list" && "$2" == "-Hp" && "$3" == "-r" && "$4" == "-o" && "$5" == "name,quota" ]]; then
+  printf '%s\t0\n' "${root}"
+  if [[ -f "${datasets_file}" ]]; then
+    awk -F '\t' '{ print $1 "\t" $2 }' "${datasets_file}"
+  fi
+  exit 0
+fi
+
+if [[ $# -ge 1 && "$1" == "create" ]]; then
+  quota=
+  mountpoint=
+  dataset="${@: -1}"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -o)
+        opt="$2"
+        shift 2
+        case "${opt}" in
+          quota=*) quota="${opt#quota=}" ;;
+          mountpoint=*) mountpoint="${opt#mountpoint=}" ;;
+        esac
+        ;;
+      *) shift ;;
+    esac
+  done
+  if [[ -z "${quota}" || -z "${mountpoint}" ]]; then
+    printf 'missing quota or mountpoint\n' >&2
+    exit 1
+  fi
+  mkdir -p "${mountpoint}"
+  tmp="$(mktemp)"
+  if [[ -f "${datasets_file}" ]]; then
+    awk -F '\t' -v dataset="${dataset}" '$1 != dataset { print }' "${datasets_file}" >"${tmp}"
+  fi
+  printf '%s\t%s\t%s\n' "${dataset}" "${quota}" "${mountpoint}" >>"${tmp}"
+  mv "${tmp}" "${datasets_file}"
+  exit 0
+fi
+
+if [[ $# -ge 3 && "$1" == "set" ]]; then
+  exit 0
+fi
+
+if [[ $# -ge 6 && "$1" == "get" && "$4" == "value" && "$5" == "quota" ]]; then
+  dataset="$6"
+  if [[ -f "${datasets_file}" ]]; then
+    quota="$(awk -F '\t' -v dataset="${dataset}" '$1 == dataset { print $2; exit }' "${datasets_file}")"
+    if [[ -n "${quota}" ]]; then
+      printf '%s\n' "${quota}"
+      exit 0
+    fi
+  fi
+  printf 'dataset does not exist\n' >&2
+  exit 1
+fi
+
+if [[ $# -ge 6 && "$1" == "get" && "$4" == "value" && "$5" == "used" ]]; then
+  printf '0\n'
+  exit 0
+fi
+
+printf 'unsupported fake zfs command\n' >&2
+exit 2
+EOF
+    chmod 0755 /usr/local/bin/zfs
+  cat >/usr/local/bin/zpool <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+state_dir=/var/lib/ployz-e2e-zfs
+calls_file="${state_dir}/calls.log"
+root="$(cat "${state_dir}/root")"
+pool="${root%%/*}"
+printf 'zpool %q' "$1" >>"${calls_file}"
+for arg in "$@"; do
+  printf ' %q' "${arg}" >>"${calls_file}"
+done
+printf '\n' >>"${calls_file}"
+
+if [[ $# -ge 5 && "$1" == "list" && "$2" == "-Hp" && "$3" == "-o" && "$4" == "size" && "$5" == "${pool}" ]]; then
+  printf '10737418240\n'
+  exit 0
+fi
+
+if [[ $# -ge 2 && "$1" == "destroy" && "$2" == "${pool}" ]]; then
+  exit 0
+fi
+
+printf 'unsupported fake zpool command\n' >&2
+exit 2
+EOF
+    chmod 0755 /usr/local/bin/zpool
+  else
+    if [[ "$(uname -s)" != "Linux" ]]; then
+      echo "real ZFS e2e requires a Linux host/container" >&2
+      exit 1
+    fi
+    if [[ ! -e /dev/zfs ]]; then
+      echo "real ZFS e2e requires /dev/zfs to be visible in the node container" >&2
+      exit 1
+    fi
+    if ! command -v zfs >/dev/null 2>&1 || ! command -v zpool >/dev/null 2>&1; then
+      echo "real ZFS e2e requires zfs and zpool commands in the node image" >&2
+      exit 1
+    fi
+
+    raw_pool="${PLOYZ_E2E_ZFS_POOL:-ployze2e_${PLOYZ_E2E_RUN_ID:-manual}}"
+    pool="$(printf '%s' "${raw_pool}" | tr -c 'A-Za-z0-9_' '_' | cut -c1-60)"
+    if [[ -z "${pool}" || "${pool}" != ployze2e_* ]]; then
+      pool="ployze2e_${pool}"
+      pool="$(printf '%s' "${pool}" | cut -c1-60)"
+    fi
+    zfs_root="${pool}/ployz-e2e"
+    pool_img=/var/lib/ployz-e2e-zfs/pool.img
+    pool_size="${PLOYZ_E2E_ZFS_POOL_SIZE:-2G}"
+
+    if zpool list -H "${pool}" >/dev/null 2>&1; then
+      echo "real ZFS e2e pool already exists: ${pool}" >&2
+      exit 1
+    fi
+
+    echo "ployz-e2e real zfs pool=${pool} root=${zfs_root} image=${pool_img} size=${pool_size}"
+    truncate -s "${pool_size}" "${pool_img}"
+    if ! zpool create -f "${pool}" "${pool_img}"; then
+      rm -f "${pool_img}"
+      exit 1
+    fi
+    if ! zfs create -p "${zfs_root}"; then
+      zpool destroy "${pool}" >/dev/null 2>&1 || true
+      rm -f "${pool_img}"
+      exit 1
+    fi
+    printf '%s\n' "${pool}" >/var/lib/ployz-e2e-zfs/pool.name
+    printf '%s\n' "${zfs_root}" >/var/lib/ployz-e2e-zfs/root
+  fi
+
+  cat >/root/.config/ployz/config.toml <<EOF
+[storage]
+zfs_root = "${zfs_root}"
+EOF
+fi
+
 HOME=/root /usr/local/bin/ployz.sh install --source payload --payload-dir /e2e-payload --runtime "${runtime}" --service-mode user --no-daemon-install
 
 ln -sf /root/.local/bin/ployz /usr/local/bin/ployz

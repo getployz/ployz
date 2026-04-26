@@ -31,10 +31,18 @@ pub(crate) async fn get_volume(
         vec![namespace.0.clone().into(), volume_name.to_string().into()],
     );
     let rows = query_rows(client, &stmt, "get_volume").await?;
-    let [row] = rows.as_slice() else {
-        return Ok(None);
-    };
-    parse_volume(row).map(Some)
+    match rows.as_slice() {
+        [] => Ok(None),
+        [row] => parse_volume(row).map(Some),
+        more => Err(Error::operation(
+            "get_volume",
+            format!(
+                "expected at most one row for volume '{volume_name}' in namespace '{}', got {}",
+                namespace.0,
+                more.len()
+            ),
+        )),
+    }
 }
 
 pub(crate) fn upsert_statement(record: &VolumeRecord) -> Result<Statement> {

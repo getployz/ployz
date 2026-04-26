@@ -6,6 +6,7 @@ mod machine_drain_standby_activate_cycle;
 mod single_node_init;
 mod three_node_majority_add_succeeds;
 mod two_node_equal_split_add_denied;
+mod volume_smoke;
 mod wireguard_reconnect;
 
 use crate::cli::Scenario;
@@ -25,5 +26,6 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
         Scenario::WireguardReconnect => wireguard_reconnect::run(run),
         Scenario::DeploySmoke => deploy_smoke::run(run),
         Scenario::BridgeForwardSmoke => bridge_forward_smoke::run(run),
+        Scenario::VolumeSmoke => volume_smoke::run(run),
     }
 }

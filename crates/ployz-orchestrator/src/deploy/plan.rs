@@ -7,7 +7,7 @@ use crate::model::{
 use ployz_store_api::{DeployStore, MachineStore, StoreDriver};
 use ployz_types::spec::{
     DeployManifest, MountSource, Namespace, Placement, ServiceSpec, VolumeDeclaration,
-    stable_hash_hex,
+    parse_quota_bytes, stable_hash_hex,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -567,8 +567,10 @@ fn validate_existing_volume(declaration: &VolumeDeclaration, record: &VolumeReco
             ),
         ));
     }
-    let requested = quota_value(&declaration.quota)?;
-    let current = quota_value(&record.quota)?;
+    let requested = parse_quota_bytes(&declaration.quota)
+        .map_err(|error| Error::operation("deploy_preview", error))?;
+    let current = parse_quota_bytes(&record.quota)
+        .map_err(|error| Error::operation("deploy_preview", error))?;
     if requested < current {
         return Err(Error::operation(
             "deploy_preview",
@@ -576,32 +578,6 @@ fn validate_existing_volume(declaration: &VolumeDeclaration, record: &VolumeReco
         ));
     }
     Ok(())
-}
-
-fn quota_value(value: &str) -> Result<u128> {
-    let Some(last) = value.chars().last() else {
-        return Err(Error::operation(
-            "deploy_preview",
-            "volume quota cannot be empty",
-        ));
-    };
-    let (digits, multiplier) = match last {
-        'K' => (&value[..value.len() - 1], 1024_u128),
-        'M' => (&value[..value.len() - 1], 1024_u128.pow(2)),
-        'G' => (&value[..value.len() - 1], 1024_u128.pow(3)),
-        'T' => (&value[..value.len() - 1], 1024_u128.pow(4)),
-        '0'..='9' => (value, 1),
-        _ => {
-            return Err(Error::operation(
-                "deploy_preview",
-                format!("unsupported volume quota '{value}'"),
-            ));
-        }
-    };
-    digits
-        .parse::<u128>()
-        .map(|number| number * multiplier)
-        .map_err(|error| Error::operation("deploy_preview", format!("parse quota: {error}")))
 }
 
 fn new_volume_machine(

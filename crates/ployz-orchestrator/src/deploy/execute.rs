@@ -612,25 +612,11 @@ fn build_committed_volumes(
                 .as_ref()
                 .map(|record| record.created_by_deploy_id.clone())
                 .unwrap_or_else(|| deploy_id.clone());
-            let dataset = planned
-                .current
-                .as_ref()
-                .map(|record| record.dataset.clone())
-                .filter(|dataset| !dataset.is_empty())
-                .unwrap_or_else(|| format!("{}/{}", plan.namespace().0, planned.declaration.name));
-            let mountpoint = planned
-                .current
-                .as_ref()
-                .map(|record| record.mountpoint.clone())
-                .filter(|mountpoint| !mountpoint.is_empty())
-                .unwrap_or_else(|| format!("/{}/{}", plan.namespace().0, planned.declaration.name));
             VolumeRecord {
                 namespace: plan.namespace().clone(),
                 volume_name: planned.declaration.name.clone(),
                 scope: planned.declaration.scope,
                 machine_id: planned.machine_id.clone(),
-                dataset,
-                mountpoint,
                 quota: planned.declaration.quota.clone(),
                 mode: planned.declaration.mode.clone(),
                 owner: planned.declaration.owner.clone(),
