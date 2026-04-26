@@ -260,7 +260,7 @@ impl<R: ShellRunner> ZfsDriver<R> {
             .runner
             .run(
                 "zfs",
-                &["list", "-H", "-o", "name,quota,mountpoint", dataset],
+                &["list", "-Hp", "-o", "name,quota,mountpoint", dataset],
             )
             .await?;
         if output.status != 0 {
@@ -329,6 +329,9 @@ impl<R: ShellRunner> ZfsDriver<R> {
     async fn update_quota(&self, dataset: &str, current: &str, requested: &str) -> Result<()> {
         let current_bytes = parse_size_bytes(current)?;
         let requested_bytes = parse_size_bytes(requested)?;
+        if requested_bytes == current_bytes {
+            return Ok(());
+        }
         if requested_bytes < current_bytes {
             let used = self.used_bytes(dataset).await?;
             if used > requested_bytes {
@@ -611,7 +614,7 @@ mod tests {
         driver.ensure(&spec()).await.expect("ensure");
 
         let calls = fake.calls();
-        assert_eq!(calls[1][..4], ["zfs", "list", "-H", "-o"]);
+        assert_eq!(calls[1][..4], ["zfs", "list", "-Hp", "-o"]);
         assert_eq!(calls[2][..3], ["zpool", "list", "-Hp"]);
         assert_eq!(calls[3][..4], ["zfs", "list", "-Hp", "-r"]);
         assert_eq!(calls[4][..4], ["zfs", "create", "-p", "-o"]);
@@ -638,7 +641,11 @@ mod tests {
     async fn ensure_adopts_matching_dataset() {
         let fake = FakeShellRunner::default();
         let driver = driver(&fake).await;
-        fake.push(0, "tank/ployz/prod/data\t1G\t/tank/ployz/prod/data\n", "");
+        fake.push(
+            0,
+            "tank/ployz/prod/data\t1073741824\t/tank/ployz/prod/data\n",
+            "",
+        );
 
         driver.ensure(&spec()).await.expect("ensure");
 
@@ -646,10 +653,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ensure_skips_quota_update_when_numeric_zfs_quota_matches_request() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        fake.push(
+            0,
+            "tank/ployz/prod/data\t1073741824\t/tank/ployz/prod/data\n",
+            "",
+        );
+
+        driver.ensure(&spec()).await.expect("ensure");
+
+        assert_eq!(fake.calls().len(), 2);
+        assert_eq!(
+            fake.calls().last().expect("last"),
+            &vec![
+                "zfs",
+                "list",
+                "-Hp",
+                "-o",
+                "name,quota,mountpoint",
+                "tank/ployz/prod/data"
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn ensure_grows_quota() {
         let fake = FakeShellRunner::default();
         let driver = driver(&fake).await;
-        fake.push(0, "tank/ployz/prod/data\t1G\t/tank/ployz/prod/data\n", "");
+        fake.push(
+            0,
+            "tank/ployz/prod/data\t1073741824\t/tank/ployz/prod/data\n",
+            "",
+        );
         push_overcommit_lookup(
             &fake,
             1024_u64.pow(4),
@@ -671,7 +708,11 @@ mod tests {
     async fn ensure_refuses_shrink_below_used() {
         let fake = FakeShellRunner::default();
         let driver = driver(&fake).await;
-        fake.push(0, "tank/ployz/prod/data\t2G\t/tank/ployz/prod/data\n", "");
+        fake.push(
+            0,
+            "tank/ployz/prod/data\t2147483648\t/tank/ployz/prod/data\n",
+            "",
+        );
         fake.push(0, "1610612736\n", "");
 
         let err = driver
@@ -793,7 +834,7 @@ mod tests {
             [
                 "zfs",
                 "list",
-                "-H",
+                "-Hp",
                 "-o",
                 "name,quota,mountpoint",
                 "tank/ployz/prod"

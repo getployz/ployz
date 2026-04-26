@@ -628,11 +628,13 @@ fn build_committed_volumes(
         .iter()
         .filter(|planned| volume_record_needs_update(planned))
     {
-        if !planned.attached_services.iter().any(|service| {
-            started
-                .keys()
-                .any(|(started_service, _)| started_service == service)
-        }) {
+        if !planned.attached_services.is_empty()
+            && !planned.attached_services.iter().any(|service| {
+                started
+                    .keys()
+                    .any(|(started_service, _)| started_service == service)
+            })
+        {
             return Err(Error::operation(
                 "deploy_apply",
                 format!(
