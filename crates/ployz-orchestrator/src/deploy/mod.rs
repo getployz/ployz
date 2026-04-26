@@ -25,7 +25,7 @@ pub async fn preview(
 ) -> Result<DeployPreview> {
     let plan = resolve_plan(store, local_machine_id, manifest).await?;
     managed_domains::validate_hostname_ownership(store, &plan).await?;
-    let reachability = probe_participants(plan.participants(), plan.machine_map()).await;
+    let reachability = probe_participants(store, plan.participants(), plan.machine_map()).await;
     let mut warnings = warnings_from_reachability(&reachability);
     warnings.extend(managed_domains::warnings_for_plan(store, &plan).await?);
     Ok(plan.to_preview(warnings))

@@ -6,7 +6,6 @@ use crate::certificates::{
 };
 use crate::deploy::managed_domains;
 use crate::deploy::plan::{PlanFingerprint, ResolvedPlan, resolve_plan};
-use crate::deploy::probe::probe_participants;
 use crate::deploy::session::{self, DeploySessionFactory};
 use crate::error::{Error, Result};
 use crate::model::{
@@ -180,26 +179,6 @@ pub(super) async fn apply_with_certificate_coordination(
     challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
 ) -> Result<DeployApplyResult> {
     let initial_plan = resolve_plan(store, local_machine_id, manifest).await?;
-    let reachability =
-        probe_participants(initial_plan.participants(), initial_plan.machine_map()).await;
-    if !reachability.unreachable.is_empty() {
-        let unreachable = reachability
-            .unreachable
-            .iter()
-            .map(|machine_id| machine_id.0.clone())
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(Error::operation(
-            "deploy_apply",
-            format!(
-                "deploy blocked: {} of {} participants unreachable: {}",
-                reachability.unreachable.len(),
-                initial_plan.participants().len(),
-                unreachable
-            ),
-        ));
-    }
-
     apply_with_initial_plan_and_certificate_coordination(
         store,
         session_factory,
