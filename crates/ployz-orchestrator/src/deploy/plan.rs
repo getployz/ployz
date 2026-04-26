@@ -246,6 +246,11 @@ pub(super) async fn resolve_plan(
             current: volume_map.get(&declaration.name).cloned(),
         });
     }
+    let services_with_volume_changes = planned_volumes
+        .iter()
+        .filter(|volume| volume_record_needs_update(volume))
+        .flat_map(|volume| volume.attached_services.iter().cloned())
+        .collect::<BTreeSet<_>>();
 
     for spec in &manifest.services {
         let revision_hash = spec
@@ -284,7 +289,8 @@ pub(super) async fn resolve_plan(
             let action = match &current {
                 Some(slot)
                     if slot.machine_id == desired_slot.machine_id
-                        && slot.revision_hash == revision_hash =>
+                        && slot.revision_hash == revision_hash
+                        && !services_with_volume_changes.contains(&spec.name) =>
                 {
                     DeployChangeKind::Unchanged
                 }
@@ -540,6 +546,18 @@ fn service_volume_pin(
         pinned = Some(machine_id.clone());
     }
     Ok(pinned)
+}
+
+pub(super) fn volume_record_needs_update(volume: &PlannedVolume) -> bool {
+    let Some(current) = &volume.current else {
+        return true;
+    };
+    volume.declaration.scope != current.scope
+        || volume.machine_id != current.machine_id
+        || volume.declaration.quota != current.quota
+        || volume.declaration.mode != current.mode
+        || volume.declaration.owner != current.owner
+        || volume.attached_services != current.attached_services
 }
 
 fn validate_existing_volume(declaration: &VolumeDeclaration, record: &VolumeRecord) -> Result<()> {
