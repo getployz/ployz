@@ -108,7 +108,10 @@ impl DaemonState {
                 .cmp(&right.machine)
                 .then_with(|| left.peer.cmp(&right.peer))
         });
-        let payload = MachineRttPayload { rows };
+        let payload = MachineRttPayload {
+            rows,
+            warnings: warnings.clone(),
+        };
         self.ok_with_payload(
             render_machine_rtt_report(&payload, warnings.as_slice()),
             Some(DaemonPayload::MachineRtt(payload)),
@@ -139,7 +142,10 @@ impl DaemonState {
                 .cmp(&right.machine)
                 .then_with(|| left.peer.cmp(&right.peer))
         });
-        let payload = MachineRttPayload { rows };
+        let payload = MachineRttPayload {
+            rows,
+            warnings: Vec::new(),
+        };
         self.ok_with_payload(
             render_machine_rtt_report(&payload, &[]),
             Some(DaemonPayload::MachineRtt(payload)),
@@ -451,6 +457,7 @@ mod tests {
                 median_ms: 140.0,
                 stddev_ms: 19.4,
             }],
+            warnings: Vec::new(),
         };
 
         let rendered = render_machine_rtt_report(&payload, &[]);
