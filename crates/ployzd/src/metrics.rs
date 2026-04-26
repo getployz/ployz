@@ -85,6 +85,8 @@ pub fn request_name(request: &ployz_api::DaemonRequest) -> &'static str {
         ployz_api::DaemonRequest::MeshPeerCancelDestroy { .. } => "mesh_peer_cancel_destroy",
         ployz_api::DaemonRequest::MeshPeerExecuteDestroy { .. } => "mesh_peer_execute_destroy",
         ployz_api::DaemonRequest::MachineList => "machine_list",
+        ployz_api::DaemonRequest::MachineRtt => "machine_rtt",
+        ployz_api::DaemonRequest::MeshPeerRttSnapshot => "mesh_peer_rtt_snapshot",
         ployz_api::DaemonRequest::MachineInit { .. } => "machine_init",
         ployz_api::DaemonRequest::MachineAdd { .. } => "machine_add",
         ployz_api::DaemonRequest::MachineActivate { .. } => "machine_activate",

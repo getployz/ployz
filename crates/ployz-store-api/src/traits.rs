@@ -8,6 +8,7 @@ use ployz_types::model::{
 };
 use ployz_types::spec::Namespace;
 use std::future::Future;
+use std::net::SocketAddr;
 use tokio::sync::mpsc;
 
 pub type MachineSubscription = (Vec<MachineRecord>, mpsc::Receiver<MachineEvent>);
@@ -184,6 +185,43 @@ pub enum SyncStatus {
     Disconnected,
     Syncing { gaps: u64 },
     Synced,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerRttObservation {
+    pub addr: SocketAddr,
+    pub rtts_ms: Vec<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerMembershipState {
+    Alive,
+    Suspect,
+    Down,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerMembershipObservation {
+    pub addr: SocketAddr,
+    pub actor_id: String,
+    pub state: PeerMembershipState,
+    pub timestamp: u64,
+}
+
+pub trait PeerRttStore: Send + Sync {
+    fn peer_rtt_observations(
+        &self,
+    ) -> impl Future<Output = Result<Vec<PeerRttObservation>>> + Send + '_ {
+        async { Ok(Vec::new()) }
+    }
+}
+
+pub trait PeerMembershipStore: Send + Sync {
+    fn peer_membership_observations(
+        &self,
+    ) -> impl Future<Output = Result<Vec<PeerMembershipObservation>>> + Send + '_ {
+        async { Ok(Vec::new()) }
+    }
 }
 
 pub trait SyncProbe: Send + Sync {

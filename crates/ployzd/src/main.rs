@@ -302,6 +302,26 @@ mod tests {
     }
 
     #[test]
+    fn parse_machine_rtt_command() {
+        let cli =
+            Cli::try_parse_from(["ployzd", "machine", "rtt"]).expect("machine rtt args parse");
+
+        let Command::Machine {
+            action: MachineAction::Rtt,
+        } = cli.command
+        else {
+            panic!("expected machine rtt command");
+        };
+    }
+
+    #[test]
+    fn build_machine_rtt_request() {
+        let request = build_machine_request(MachineAction::Rtt).expect("machine rtt request");
+
+        assert!(matches!(request, DaemonRequest::MachineRtt));
+    }
+
+    #[test]
     fn json_and_plain_flags_conflict() {
         assert!(Cli::try_parse_from(["ployzd", "--json", "--plain", "doctor"]).is_err());
     }
