@@ -327,7 +327,7 @@ pub struct ContainerSpec {
     pub entrypoint: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, alias = "volumes", skip_serializing_if = "Vec::is_empty")]
     pub mounts: Vec<Mount>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cap_add: Vec<String>,
@@ -992,6 +992,43 @@ mod tests {
         let spec: ServiceSpec = serde_json::from_str(json).expect("deserialize legacy spec");
         assert_eq!(spec.name, "api");
         assert_eq!(spec.network, NetworkMode::Overlay);
+    }
+
+    #[test]
+    fn legacy_template_volumes_deserialize_as_mounts() {
+        let json = r#"{
+            "image":"myapp:latest",
+            "volumes":[
+                {
+                    "source":{"bind":"/host/data"},
+                    "target":"/data",
+                    "readonly":true
+                },
+                {
+                    "source":"tmpfs",
+                    "target":"/cache"
+                }
+            ]
+        }"#;
+
+        let template: ContainerSpec =
+            serde_json::from_str(json).expect("deserialize legacy template volumes");
+
+        assert_eq!(
+            template.mounts,
+            vec![
+                Mount {
+                    source: MountSource::Bind("/host/data".into()),
+                    target: "/data".into(),
+                    readonly: true,
+                },
+                Mount {
+                    source: MountSource::Tmpfs,
+                    target: "/cache".into(),
+                    readonly: false,
+                },
+            ]
+        );
     }
 
     #[test]
