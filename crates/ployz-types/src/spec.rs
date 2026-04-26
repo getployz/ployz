@@ -889,6 +889,29 @@ mod tests {
     }
 
     #[test]
+    fn volume_declaration_rejects_path_segment_name() {
+        for name in ["../tmp", "data/extra", "data extra", ".data", "Data"] {
+            let manifest = DeployManifest {
+                namespace: Namespace::default_ns(),
+                volumes: vec![VolumeDeclaration {
+                    name: name.into(),
+                    scope: VolumeScope::Single,
+                    quota: "10G".into(),
+                    mode: "0750".into(),
+                    owner: "999:999".into(),
+                }],
+                services: vec![sample_spec()],
+            };
+
+            let error = manifest
+                .validate()
+                .expect_err("path-segment volume name should fail");
+
+            assert!(error.contains("volume name"), "got: {error}");
+        }
+    }
+
+    #[test]
     fn replicated_zero_is_rejected() {
         let mut spec = sample_spec();
         spec.placement = Placement::Replicated { count: 0 };
