@@ -1,10 +1,11 @@
 use crate::client::{CorrClient, SubscriptionStream};
-use crate::store::tables::{instance_status, service_releases, service_revisions};
+use crate::store::tables::{instance_status, machines, service_releases, service_revisions};
 use corro_api_types::{RowId, SqliteValue, Statement, TypedQueryEvent, sqlite::ChangeType};
 use futures_util::StreamExt;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
-    InstanceId, InstanceStatusRecord, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    InstanceId, InstanceStatusRecord, MachineId, MachineRecord, RoutingState, ServiceReleaseRecord,
+    ServiceRevisionRecord,
 };
 use ployz_types::spec::Namespace;
 use std::collections::HashMap;
@@ -33,7 +34,13 @@ fn instance_key(record: &InstanceStatusRecord) -> InstanceId {
     record.instance_id.clone()
 }
 
+fn machine_key(record: &MachineRecord) -> MachineId {
+    record.id.clone()
+}
+
 struct LiveRoutingState {
+    machines: HashMap<MachineId, MachineRecord>,
+    machine_rows: HashMap<u64, MachineId>,
     revisions: HashMap<RevisionKey, ServiceRevisionRecord>,
     revision_rows: HashMap<u64, RevisionKey>,
     releases: HashMap<ReleaseKey, ServiceReleaseRecord>,
@@ -45,6 +52,8 @@ struct LiveRoutingState {
 impl LiveRoutingState {
     fn new() -> Self {
         Self {
+            machines: HashMap::new(),
+            machine_rows: HashMap::new(),
             revisions: HashMap::new(),
             revision_rows: HashMap::new(),
             releases: HashMap::new(),
@@ -56,6 +65,7 @@ impl LiveRoutingState {
 
     fn to_routing_state(&self) -> RoutingState {
         RoutingState {
+            machines: self.machines.values().cloned().collect(),
             revisions: self.revisions.values().cloned().collect(),
             releases: self.releases.values().cloned().collect(),
             instances: self.instances.values().cloned().collect(),
@@ -64,12 +74,14 @@ impl LiveRoutingState {
 }
 
 pub(crate) async fn load_routing_state(client: &CorrClient) -> Result<RoutingState> {
-    let (revisions, releases, instances) = tokio::join!(
+    let (machines, revisions, releases, instances) = tokio::join!(
+        machines::list_machines(client),
         service_revisions::load_all_service_revisions(client),
         service_releases::load_all_service_releases(client),
         instance_status::load_all_instance_status(client),
     );
     Ok(RoutingState {
+        machines: machines?,
         revisions: revisions?,
         releases: releases?,
         instances: instances?,
@@ -91,8 +103,9 @@ pub(crate) async fn subscribe_routing_invalidations(
     Ok(rx)
 }
 
-fn routing_subscription_statements() -> [(&'static str, Statement); 3] {
+fn routing_subscription_statements() -> [(&'static str, Statement); 4] {
     [
+        ("machines", machines::all_statement()),
         ("service_revisions", service_revisions::all_statement()),
         ("service_releases", service_releases::all_statement()),
         ("instance_status", instance_status::all_statement()),
@@ -258,6 +271,10 @@ pub(crate) async fn subscribe_routing_state_inner(
 ) -> Result<(RoutingState, mpsc::Receiver<RoutingState>)> {
     let mut state = LiveRoutingState::new();
 
+    let mut machine_stream = client
+        .subscribe(&machines::all_statement(), false, None)
+        .await
+        .map_err(|e| Error::operation("subscribe_routing_state", format!("machines: {e}")))?;
     let mut revision_stream = client
         .subscribe(&service_revisions::all_statement(), false, None)
         .await
@@ -270,6 +287,16 @@ pub(crate) async fn subscribe_routing_state_inner(
         .subscribe(&instance_status::all_statement(), false, None)
         .await
         .map_err(|e| Error::operation("subscribe_routing_state", format!("instances: {e}")))?;
+
+    collect_initial_rows(
+        &mut machine_stream,
+        &machines::parse_machine_row,
+        &machine_key,
+        &mut state.machines,
+        &mut state.machine_rows,
+        "machines",
+    )
+    .await?;
 
     collect_initial_rows(
         &mut revision_stream,
@@ -311,6 +338,13 @@ pub(crate) async fn subscribe_routing_state_inner(
 
         loop {
             let changed = tokio::select! {
+                event = machine_stream.next() => {
+                    handle_stream_event(
+                        event, "machines",
+                        &machines::parse_machine_row, &machine_key,
+                        &mut state.machines, &mut state.machine_rows,
+                    )
+                }
                 event = revision_stream.next() => {
                     handle_stream_event(
                         event, "revisions",
@@ -356,14 +390,15 @@ pub(crate) async fn subscribe_routing_state_inner(
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_routing_change, release_key};
+    use super::{LiveRoutingState, apply_routing_change, machine_key, release_key};
     use crate::store::tables::service_releases;
     use corro_api_types::{RowId, SqliteValue, sqlite::ChangeType};
     use ployz_types::model::{
-        DeployId, ServiceRelease, ServiceReleaseRecord, ServiceRoutingPolicy,
+        DeployId, MachineId, MachineLifecycle, MachineRecord, MachineTopology, OverlayIp,
+        PublicKey, ServiceRelease, ServiceReleaseRecord, ServiceRoutingPolicy,
     };
     use ployz_types::spec::Namespace;
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
 
     fn release_row(namespace: &str, service: &str) -> Vec<SqliteValue> {
         let record = ServiceReleaseRecord {
@@ -387,6 +422,54 @@ mod tests {
                 .expect("serialize release")
                 .into(),
         ]
+    }
+
+    fn machine_record(id: &str) -> MachineRecord {
+        MachineRecord {
+            id: MachineId(id.into()),
+            public_key: PublicKey([0; 32]),
+            overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay ip")),
+            topology: MachineTopology::local(),
+            control_target: None,
+            subnet: None,
+            bridge_ip: None,
+            endpoints: Vec::new(),
+            lifecycle: MachineLifecycle::Active,
+            created_at: 1,
+            updated_at: 1,
+            labels: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn routing_subscriptions_include_machine_table() {
+        let labels = super::routing_subscription_statements()
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            labels,
+            vec![
+                "machines",
+                "service_revisions",
+                "service_releases",
+                "instance_status"
+            ]
+        );
+    }
+
+    #[test]
+    fn live_routing_state_includes_machines() {
+        let mut state = LiveRoutingState::new();
+        let machine = machine_record("machine-1");
+        state
+            .machines
+            .insert(machine_key(&machine), machine.clone());
+
+        let routing_state = state.to_routing_state();
+
+        assert_eq!(routing_state.machines, vec![machine]);
     }
 
     #[test]
