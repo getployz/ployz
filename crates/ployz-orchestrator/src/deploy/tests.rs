@@ -417,6 +417,57 @@ async fn apply_reconciles_attached_service_before_committing_volume_quota_change
 }
 
 #[tokio::test]
+async fn apply_deletes_volume_records_removed_from_manifest() {
+    let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = volume_manifest();
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    let controller = FakeController::default();
+    let factory = FakeSessionFactory::new(controller);
+
+    apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+        .await
+        .expect("first deploy");
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list volumes");
+    let [record] = records.as_slice() else {
+        panic!("expected seeded volume");
+    };
+    assert_eq!(record.volume_name, "data");
+
+    let next_manifest = test_manifest(vec![test_service_spec(
+        "api",
+        Placement::Replicated { count: 1 },
+        "nginx:1.28",
+    )]);
+    let next_plan = resolve_plan(&store, &local_machine_id, &next_manifest)
+        .await
+        .expect("removal plan");
+    apply_with_initial_plan(
+        &store,
+        &factory,
+        &local_machine_id,
+        &next_manifest,
+        next_plan,
+    )
+    .await
+    .expect("remove volume deploy");
+
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list volumes after removal");
+    assert!(
+        records.is_empty(),
+        "expected volume row removed: {records:?}"
+    );
+}
+
+#[tokio::test]
 async fn resolve_plan_rejects_existing_volume_quota_shrink() {
     let store = seeded_store_with_machines(&["machine-a"]).await;
     let local_machine_id = MachineId("local".into());
@@ -1445,7 +1496,7 @@ async fn seed_volume_with(
         summary_json: "{}".into(),
     };
     store
-        .commit_deploy(namespace, &[], &[], &[volume], &deploy)
+        .commit_deploy(namespace, &[], &[], &[], &[volume], &deploy)
         .await
         .expect("seed volume");
 }
@@ -1818,13 +1869,21 @@ impl StoreBackend for CountingBackend {
         &self,
         namespace: &Namespace,
         removed_services: &[String],
+        removed_volumes: &[String],
         releases: &[ServiceReleaseRecord],
         volumes: &[crate::model::VolumeRecord],
         deploy: &crate::model::DeployRecord,
     ) -> PloyzResult<()> {
         self.commit_calls.fetch_add(1, Ordering::SeqCst);
         self.store
-            .commit_deploy(namespace, removed_services, releases, volumes, deploy)
+            .commit_deploy(
+                namespace,
+                removed_services,
+                removed_volumes,
+                releases,
+                volumes,
+                deploy,
+            )
             .await
     }
 
