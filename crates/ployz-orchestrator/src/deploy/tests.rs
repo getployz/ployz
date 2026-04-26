@@ -286,6 +286,140 @@ async fn resolve_plan_rejects_service_with_volumes_on_different_machines() {
 }
 
 #[tokio::test]
+async fn apply_commits_volume_records_and_sends_volume_payload_to_startup() {
+    let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = volume_manifest();
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    let controller = FakeController::default();
+    let factory = FakeSessionFactory::new(controller.clone());
+
+    let first =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect("first deploy");
+
+    let requests = controller.start_requests().await;
+    let [request] = requests.as_slice() else {
+        panic!("expected one start request");
+    };
+    let volumes: Vec<VolumeDeclaration> =
+        serde_json::from_str(&request.volumes_json).expect("volumes json");
+    let [volume] = volumes.as_slice() else {
+        panic!("expected one volume declaration");
+    };
+    assert_eq!(volume.name, "data");
+    assert_eq!(volume.scope, VolumeScope::Single);
+    assert_eq!(request.service, "db");
+
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list volumes");
+    let [record] = records.as_slice() else {
+        panic!("expected one committed volume");
+    };
+    assert_eq!(record.volume_name, "data");
+    assert_eq!(record.machine_id, MachineId("machine-a".into()));
+    assert_eq!(record.quota, "1G");
+    assert_eq!(record.mode, "0750");
+    assert_eq!(record.owner, "999:999");
+    assert_eq!(record.attached_services, vec!["db"]);
+    assert_eq!(record.created_by_deploy_id, first.deploy_id);
+    let first_created_at = record.created_at;
+    let first_created_by = record.created_by_deploy_id.clone();
+
+    let second_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("second plan");
+    let second =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, second_plan)
+            .await
+            .expect("second deploy");
+
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list volumes");
+    let [record] = records.as_slice() else {
+        panic!("expected one committed volume after redeploy");
+    };
+    assert_eq!(record.created_at, first_created_at);
+    assert_eq!(record.created_by_deploy_id, first_created_by);
+    assert_eq!(record.last_modified_by_deploy_id, second.deploy_id);
+}
+
+#[tokio::test]
+async fn resolve_plan_rejects_existing_volume_quota_shrink() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = volume_manifest();
+    seed_volume_with(
+        &store,
+        &manifest.namespace,
+        "data",
+        "machine-a",
+        "2G",
+        "0750",
+        "999:999",
+    )
+    .await;
+
+    let error = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect_err("quota shrink should fail");
+
+    assert!(error.to_string().contains("quota cannot shrink"));
+}
+
+#[tokio::test]
+async fn resolve_plan_rejects_existing_volume_scope_mode_or_owner_changes() {
+    let local_machine_id = MachineId("local".into());
+
+    for (field, manifest) in [
+        ("scope", {
+            let mut manifest = volume_manifest();
+            let Some(volume) = manifest.volumes.first_mut() else {
+                panic!("expected volume");
+            };
+            volume.scope = VolumeScope::Shared;
+            manifest
+        }),
+        ("mode", {
+            let mut manifest = volume_manifest();
+            let Some(volume) = manifest.volumes.first_mut() else {
+                panic!("expected volume");
+            };
+            volume.mode = "0700".into();
+            manifest
+        }),
+        ("owner", {
+            let mut manifest = volume_manifest();
+            let Some(volume) = manifest.volumes.first_mut() else {
+                panic!("expected volume");
+            };
+            volume.owner = "1000:1000".into();
+            manifest
+        }),
+    ] {
+        let store = seeded_store_with_machines(&["machine-a"]).await;
+        seed_volume(&store, &manifest.namespace, "data", "machine-a").await;
+
+        let error = match resolve_plan(&store, &local_machine_id, &manifest).await {
+            Ok(_) => panic!("{field} change should fail"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.to_string().contains("cannot change"),
+            "{field} error should mention immutability: {error}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn resolve_plan_global_service_targets_enabled_machines_in_order() {
     let store = StoreDriver::memory();
     let local_machine_id = MachineId("local".into());
@@ -921,6 +1055,7 @@ struct FakeController {
     machine_state: Arc<std::sync::Mutex<HashMap<String, usize>>>,
     machine_max: Arc<std::sync::Mutex<HashMap<String, usize>>>,
     start_log_entries: Arc<Mutex<Vec<String>>>,
+    start_requests: Arc<Mutex<Vec<StartCandidateRequest>>>,
 }
 
 impl FakeController {
@@ -955,6 +1090,10 @@ impl FakeController {
 
     async fn start_log(&self) -> Vec<String> {
         self.start_log_entries.lock().await.clone()
+    }
+
+    async fn start_requests(&self) -> Vec<StartCandidateRequest> {
+        self.start_requests.lock().await.clone()
     }
 
     async fn on_open_start(&self) {
@@ -1072,6 +1211,11 @@ impl DeploySession for FakeSession {
         req: StartCandidateRequest,
     ) -> Result<InstanceStatusRecord> {
         self.controller
+            .start_requests
+            .lock()
+            .await
+            .push(req.clone());
+        self.controller
             .on_start_begin(&self.machine_id, &req.service, &req.slot_id)
             .await;
         if self.controller.should_fail_start(&req.service) {
@@ -1158,6 +1302,20 @@ fn test_manifest(services: Vec<ServiceSpec>) -> DeployManifest {
     }
 }
 
+fn volume_manifest() -> DeployManifest {
+    let mut service = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    service.template.mounts.push(Mount {
+        source: MountSource::Volume("data".into()),
+        target: "/var/lib/postgresql/data".into(),
+        readonly: false,
+    });
+    let mut manifest = test_manifest(vec![service]);
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
+    manifest
+}
+
 fn test_volume(name: &str, scope: VolumeScope) -> VolumeDeclaration {
     VolumeDeclaration {
         name: name.into(),
@@ -1174,17 +1332,36 @@ async fn seed_volume(
     volume_name: &str,
     machine_id: &str,
 ) {
+    seed_volume_with(
+        store,
+        namespace,
+        volume_name,
+        machine_id,
+        "1G",
+        "0750",
+        "999:999",
+    )
+    .await;
+}
+
+async fn seed_volume_with(
+    store: &StoreDriver,
+    namespace: &Namespace,
+    volume_name: &str,
+    machine_id: &str,
+    quota: &str,
+    mode: &str,
+    owner: &str,
+) {
     let deploy_id = DeployId(format!("seed-{volume_name}"));
     let volume = VolumeRecord {
         namespace: namespace.clone(),
         volume_name: volume_name.into(),
         scope: VolumeScope::Single,
         machine_id: MachineId(machine_id.into()),
-        dataset: format!("test/{volume_name}"),
-        mountpoint: format!("/test/{volume_name}"),
-        quota: "1G".into(),
-        mode: "0750".into(),
-        owner: "999:999".into(),
+        quota: quota.into(),
+        mode: mode.into(),
+        owner: owner.into(),
         attached_services: Vec::new(),
         created_at: 1,
         created_by_deploy_id: deploy_id.clone(),

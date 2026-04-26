@@ -380,8 +380,11 @@ pub struct VolumeDeclaration {
 
 impl VolumeDeclaration {
     fn validate(&self) -> Result<(), String> {
-        if self.name.trim().is_empty() {
-            return Err("volume name cannot be empty".into());
+        if !valid_volume_name(&self.name) {
+            return Err(format!(
+                "volume name '{}' must be 1-63 chars of [a-z0-9_-], starting with a letter or digit",
+                self.name
+            ));
         }
         if !valid_quota(&self.quota) {
             return Err(format!(
@@ -405,16 +408,50 @@ impl VolumeDeclaration {
     }
 }
 
-fn valid_quota(value: &str) -> bool {
-    let Some(last) = value.chars().last() else {
+fn valid_volume_name(value: &str) -> bool {
+    if value.is_empty() || value.len() > 63 {
+        return false;
+    }
+    let Some(first) = value.chars().next() else {
         return false;
     };
-    let digits = if matches!(last, 'K' | 'M' | 'G' | 'T') {
-        &value[..value.len() - 1]
-    } else {
-        value
+    if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
+        return false;
+    }
+    value
+        .chars()
+        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_')
+}
+
+fn valid_quota(value: &str) -> bool {
+    parse_quota_bytes(value).is_ok()
+}
+
+/// Parse a ZFS-style quota string (`"20G"`, `"512M"`, `"1024"`) into bytes.
+///
+/// Suffixes use base-2 multipliers (K=1024, M=1024², G=1024³, T=1024⁴), matching
+/// ZFS conventions. A bare integer is interpreted as bytes.
+pub fn parse_quota_bytes(value: &str) -> Result<u64, String> {
+    let Some(last) = value.chars().last() else {
+        return Err("quota cannot be empty".into());
     };
-    !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit())
+    let (digits, multiplier) = match last {
+        'K' => (&value[..value.len() - 1], 1024_u64),
+        'M' => (&value[..value.len() - 1], 1024_u64.pow(2)),
+        'G' => (&value[..value.len() - 1], 1024_u64.pow(3)),
+        'T' => (&value[..value.len() - 1], 1024_u64.pow(4)),
+        '0'..='9' => (value, 1),
+        _ => return Err(format!("unsupported quota suffix in '{value}'")),
+    };
+    if digits.is_empty() {
+        return Err(format!("quota '{value}' has no digits"));
+    }
+    let amount = digits
+        .parse::<u64>()
+        .map_err(|err| format!("parse quota '{value}': {err}"))?;
+    amount
+        .checked_mul(multiplier)
+        .ok_or_else(|| format!("quota '{value}' overflows u64"))
 }
 
 fn valid_mode(value: &str) -> bool {
@@ -823,6 +860,49 @@ mod tests {
         spec.placement = Placement::Replicated { count: 0 };
         let error = spec.validate().expect_err("zero replicas should fail");
         assert!(error.contains("at least one replica"));
+    }
+
+    #[test]
+    fn single_scope_volume_rejects_multiple_replicas() {
+        let mut spec = sample_spec();
+        spec.placement = Placement::Replicated { count: 2 };
+        let manifest = DeployManifest {
+            namespace: Namespace::default_ns(),
+            volumes: vec![VolumeDeclaration {
+                name: "data".into(),
+                scope: VolumeScope::Single,
+                quota: "10G".into(),
+                mode: "0750".into(),
+                owner: "999:999".into(),
+            }],
+            services: vec![spec],
+        };
+
+        let error = manifest.validate().expect_err("single volume should fail");
+
+        assert!(error.contains("replicas > 1"));
+        assert!(error.contains("scope=single"));
+    }
+
+    #[test]
+    fn bind_mount_is_rejected_outside_system_namespace() {
+        let mut spec = sample_spec();
+        spec.template.mounts = vec![Mount {
+            source: MountSource::Bind("/host/data".into()),
+            target: "/data".into(),
+            readonly: false,
+        }];
+        spec.rollout = RolloutStrategy::Recreate;
+        let manifest = DeployManifest {
+            namespace: Namespace::default_ns(),
+            volumes: Vec::new(),
+            services: vec![spec],
+        };
+
+        let error = manifest.validate().expect_err("bind mount should fail");
+
+        assert!(error.contains("bind mount"));
+        assert!(error.contains("system"));
     }
 
     #[test]

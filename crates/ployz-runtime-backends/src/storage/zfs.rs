@@ -23,6 +23,7 @@ pub struct ZfsDriver<R> {
     runner: R,
     zfs_root_dataset: String,
     zfs_root_mountpoint: PathBuf,
+    overcommit_ratio: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,7 +33,13 @@ struct ExistingDataset {
 }
 
 impl<R: ShellRunner> ZfsDriver<R> {
-    pub async fn new(runner: R, zfs_root: &str) -> Result<Self> {
+    pub async fn new(runner: R, zfs_root: &str, overcommit_ratio: f64) -> Result<Self> {
+        if !overcommit_ratio.is_finite() || overcommit_ratio <= 0.0 {
+            return Err(Error::operation(
+                "zfs_driver",
+                format!("overcommit_ratio must be a positive finite number, got {overcommit_ratio}"),
+            ));
+        }
         let output = runner
             .run("zfs", &["list", "-H", "-o", "mountpoint", zfs_root])
             .await?;
@@ -42,6 +49,7 @@ impl<R: ShellRunner> ZfsDriver<R> {
             runner,
             zfs_root_dataset: zfs_root.to_string(),
             zfs_root_mountpoint: PathBuf::from(mountpoint),
+            overcommit_ratio,
         })
     }
 
@@ -116,6 +124,9 @@ impl<R: ShellRunner> ZfsDriver<R> {
     }
 
     async fn create_dataset(&self, spec: &DatasetSpec) -> Result<()> {
+        let requested_bytes = parse_size_bytes(&spec.quota)?;
+        self.check_overcommit(&spec.dataset, requested_bytes).await?;
+
         let mountpoint = spec.mountpoint.to_string_lossy();
         let quota = format!("quota={}", spec.quota);
         let mountpoint_opt = format!("mountpoint={mountpoint}");
@@ -156,10 +167,90 @@ impl<R: ShellRunner> ZfsDriver<R> {
                     ),
                 ));
             }
+        } else if requested_bytes > current_bytes {
+            self.check_overcommit(dataset, requested_bytes).await?;
         }
         let quota = format!("quota={requested}");
         self.run_success("zfs set quota", "zfs", &["set", &quota, dataset])
             .await
+    }
+
+    async fn check_overcommit(&self, dataset: &str, requested_bytes: u64) -> Result<()> {
+        let pool_size = self.pool_size_bytes().await?;
+        let other = self.declared_quota_bytes_excluding(dataset).await?;
+        let total = other.saturating_add(requested_bytes);
+        let budget = (pool_size as f64 * self.overcommit_ratio).floor() as u64;
+        if total > budget {
+            return Err(Error::operation(
+                "zfs_overcommit",
+                format!(
+                    "quota for '{dataset}' would overcommit pool '{}': declared total {total} bytes exceeds budget {budget} bytes (pool size {pool_size}, ratio {})",
+                    self.pool_name(),
+                    self.overcommit_ratio,
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn pool_name(&self) -> &str {
+        self.zfs_root_dataset
+            .split('/')
+            .next()
+            .unwrap_or(&self.zfs_root_dataset)
+    }
+
+    async fn pool_size_bytes(&self) -> Result<u64> {
+        let pool = self.pool_name();
+        let output = self
+            .runner
+            .run("zpool", &["list", "-Hp", "-o", "size", pool])
+            .await?;
+        ensure_success("zpool list size", &output.stderr, output.status)?;
+        let value = parse_single_field(&output.stdout, "pool size")?;
+        value
+            .parse::<u64>()
+            .map_err(|err| Error::operation("zfs_parse", format!("parse pool size: {err}")))
+    }
+
+    async fn declared_quota_bytes_excluding(&self, exclude_dataset: &str) -> Result<u64> {
+        let output = self
+            .runner
+            .run(
+                "zfs",
+                &[
+                    "list",
+                    "-Hp",
+                    "-r",
+                    "-o",
+                    "name,quota",
+                    &self.zfs_root_dataset,
+                ],
+            )
+            .await?;
+        ensure_success("zfs list quotas", &output.stderr, output.status)?;
+        let text = String::from_utf8(output.stdout)
+            .map_err(|err| Error::operation("zfs_parse", err.to_string()))?;
+        let mut sum: u64 = 0;
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let parts = trimmed.split('\t').collect::<Vec<_>>();
+            let [name, quota] = parts.as_slice() else {
+                return Err(Error::operation(
+                    "zfs_parse",
+                    format!("expected name and quota for line '{trimmed}'"),
+                ));
+            };
+            if *name == exclude_dataset || *name == self.zfs_root_dataset {
+                continue;
+            }
+            let bytes = quota.parse::<u64>().unwrap_or(0);
+            sum = sum.saturating_add(bytes);
+        }
+        Ok(sum)
     }
 
     async fn used_bytes(&self, dataset: &str) -> Result<u64> {
@@ -209,22 +300,7 @@ fn normalize_quota(value: &str) -> String {
 }
 
 fn parse_size_bytes(value: &str) -> Result<u64> {
-    let Some(last) = value.chars().last() else {
-        return Err(Error::operation("zfs_quota", "empty quota"));
-    };
-    let (digits, multiplier) = match last {
-        'K' => (&value[..value.len() - 1], 1024_u64),
-        'M' => (&value[..value.len() - 1], 1024_u64.pow(2)),
-        'G' => (&value[..value.len() - 1], 1024_u64.pow(3)),
-        'T' => (&value[..value.len() - 1], 1024_u64.pow(4)),
-        _ => (value, 1),
-    };
-    let amount = digits
-        .parse::<u64>()
-        .map_err(|err| Error::operation("zfs_quota", format!("parse quota '{value}': {err}")))?;
-    amount
-        .checked_mul(multiplier)
-        .ok_or_else(|| Error::operation("zfs_quota", format!("quota '{value}' is too large")))
+    crate::spec::parse_quota_bytes(value).map_err(|err| Error::operation("zfs_quota", err))
 }
 
 #[cfg(test)]
@@ -237,7 +313,7 @@ mod tests {
     use super::*;
     use crate::storage::ShellOutput;
 
-    #[derive(Clone, Default)]
+    #[derive(Debug, Clone, Default)]
     struct FakeShellRunner {
         calls: Arc<Mutex<Vec<Vec<String>>>>,
         outputs: Arc<Mutex<VecDeque<ShellOutput>>>,
@@ -284,11 +360,20 @@ mod tests {
         }
     }
 
-    async fn driver(fake: &FakeShellRunner) -> ZfsDriver<FakeShellRunner> {
+    async fn driver_with_ratio(fake: &FakeShellRunner, ratio: f64) -> ZfsDriver<FakeShellRunner> {
         fake.push(0, "/tank/ployz\n", "");
-        ZfsDriver::new(fake.clone(), "tank/ployz")
+        ZfsDriver::new(fake.clone(), "tank/ployz", ratio)
             .await
             .expect("driver")
+    }
+
+    async fn driver(fake: &FakeShellRunner) -> ZfsDriver<FakeShellRunner> {
+        driver_with_ratio(fake, 1.0).await
+    }
+
+    fn push_overcommit_lookup(fake: &FakeShellRunner, pool_size_bytes: u64, quota_list: &str) {
+        fake.push(0, &format!("{pool_size_bytes}\n"), "");
+        fake.push(0, quota_list, "");
     }
 
     #[tokio::test]
@@ -296,6 +381,7 @@ mod tests {
         let fake = FakeShellRunner::default();
         let driver = driver(&fake).await;
         fake.push(1, "", "dataset does not exist");
+        push_overcommit_lookup(&fake, 1024_u64.pow(4), "tank/ployz\t0\n");
         fake.push(0, "", "");
         fake.push(0, "", "");
         fake.push(0, "", "");
@@ -304,9 +390,11 @@ mod tests {
 
         let calls = fake.calls();
         assert_eq!(calls[1][..4], ["zfs", "list", "-H", "-o"]);
-        assert_eq!(calls[2][..4], ["zfs", "create", "-p", "-o"]);
-        assert_eq!(calls[3], ["chmod", "0750", "/tank/ployz/prod/data"]);
-        assert_eq!(calls[4], ["chown", "999:999", "/tank/ployz/prod/data"]);
+        assert_eq!(calls[2][..3], ["zpool", "list", "-Hp"]);
+        assert_eq!(calls[3][..4], ["zfs", "list", "-Hp", "-r"]);
+        assert_eq!(calls[4][..4], ["zfs", "create", "-p", "-o"]);
+        assert_eq!(calls[5], ["chmod", "0750", "/tank/ployz/prod/data"]);
+        assert_eq!(calls[6], ["chown", "999:999", "/tank/ployz/prod/data"]);
     }
 
     #[tokio::test]
@@ -325,6 +413,11 @@ mod tests {
         let fake = FakeShellRunner::default();
         let driver = driver(&fake).await;
         fake.push(0, "tank/ployz/prod/data\t1G\t/tank/ployz/prod/data\n", "");
+        push_overcommit_lookup(
+            &fake,
+            1024_u64.pow(4),
+            "tank/ployz\t0\ntank/ployz/prod/data\t1073741824\n",
+        );
         fake.push(0, "", "");
         let mut next = spec();
         next.quota = "2G".into();
@@ -364,5 +457,83 @@ mod tests {
             .expect_err("mismatch should fail");
 
         assert!(err.to_string().contains("has mountpoint"));
+    }
+
+    #[tokio::test]
+    async fn ensure_rejects_overcommit_on_create() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        fake.push(1, "", "dataset does not exist");
+        push_overcommit_lookup(
+            &fake,
+            1024_u64.pow(3),
+            "tank/ployz\t0\ntank/ployz/other\t536870912\n",
+        );
+        let mut greedy = spec();
+        greedy.quota = "1G".into();
+
+        let err = driver
+            .ensure(&greedy)
+            .await
+            .expect_err("overcommit should fail");
+
+        assert!(
+            err.to_string().contains("would overcommit pool"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_rejects_overcommit_on_grow() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        fake.push(0, "tank/ployz/prod/data\t1G\t/tank/ployz/prod/data\n", "");
+        push_overcommit_lookup(
+            &fake,
+            1024_u64.pow(3),
+            "tank/ployz\t0\ntank/ployz/prod/data\t1073741824\ntank/ployz/other\t536870912\n",
+        );
+        let mut next = spec();
+        next.quota = "1G".into();
+        // Force the grow path: existing 1G in the read result, requested 2G
+        next.quota = "2G".into();
+
+        let err = driver
+            .ensure(&next)
+            .await
+            .expect_err("overcommit on grow should fail");
+
+        assert!(
+            err.to_string().contains("would overcommit pool"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_respects_ratio_above_one() {
+        let fake = FakeShellRunner::default();
+        let driver = driver_with_ratio(&fake, 2.0).await;
+        fake.push(1, "", "dataset does not exist");
+        push_overcommit_lookup(
+            &fake,
+            1024_u64.pow(3),
+            "tank/ployz\t0\ntank/ployz/other\t1073741824\n",
+        );
+        fake.push(0, "", "");
+        fake.push(0, "", "");
+        fake.push(0, "", "");
+        let mut greedy = spec();
+        greedy.quota = "1G".into();
+
+        driver.ensure(&greedy).await.expect("ratio 2.0 should allow");
+    }
+
+    #[tokio::test]
+    async fn new_rejects_invalid_ratio() {
+        let fake = FakeShellRunner::default();
+        let err = ZfsDriver::new(fake, "tank/ployz", 0.0)
+            .await
+            .expect_err("zero ratio should be rejected");
+        assert!(err.to_string().contains("overcommit_ratio"));
     }
 }

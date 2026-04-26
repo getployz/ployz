@@ -175,6 +175,10 @@ impl ScenarioRun {
     }
 
     pub(crate) fn cleanup(&self, failed: bool) {
+        if self.scenario == Scenario::VolumeSmoke {
+            self.cleanup_volume_smoke_zfs();
+        }
+
         if failed && self.keep_failed {
             return;
         }
@@ -187,6 +191,23 @@ impl ScenarioRun {
             let _ = docker_outer(["rm", "-f", self.challtestsrv_container_name().as_str()]);
         }
         let _ = docker_outer(["network", "rm", self.outer_network.as_str()]);
+    }
+
+    fn cleanup_volume_smoke_zfs(&self) {
+        let command = "mode=$(cat /var/lib/ployz-e2e-zfs/mode 2>/dev/null || true); \
+                       if [ \"$mode\" != real ]; then exit 0; fi; \
+                       docker rm -f $(docker ps -aq --filter label=dev.ployz.namespace=default --filter label=dev.ployz.service=db) >/dev/null 2>&1 || true; \
+                       pool=$(cat /var/lib/ployz-e2e-zfs/pool.name 2>/dev/null || true); \
+                       if [ -n \"$pool\" ]; then zpool destroy \"$pool\" >/dev/null 2>&1 || true; fi; \
+                       rm -f /var/lib/ployz-e2e-zfs/pool.img";
+        for node in &self.nodes {
+            if let Err(error) = self.ssh_run(node, command) {
+                self.log_progress(&format!(
+                    "real zfs cleanup command failed on {}: {error}",
+                    node.name
+                ));
+            }
+        }
     }
 
     pub(crate) fn collect_failure_artifacts(&self) -> Result<()> {
@@ -1057,6 +1078,22 @@ impl ScenarioRun {
                 args.push(format!(
                     "{CORROSION_RUST_LOG_ENV}=info,tower_http=debug,corro_agent::api::public=debug"
                 ));
+            }
+        }
+
+        if self.scenario == Scenario::VolumeSmoke {
+            args.push("-e".to_string());
+            args.push(format!(
+                "PLOYZ_E2E_ZFS_MODE={}",
+                std::env::var("PLOYZ_E2E_ZFS_MODE").unwrap_or_else(|_| "fake".to_string())
+            ));
+            if let Ok(pool) = std::env::var("PLOYZ_E2E_ZFS_POOL") {
+                args.push("-e".to_string());
+                args.push(format!("PLOYZ_E2E_ZFS_POOL={pool}"));
+            }
+            if let Ok(pool_size) = std::env::var("PLOYZ_E2E_ZFS_POOL_SIZE") {
+                args.push("-e".to_string());
+                args.push(format!("PLOYZ_E2E_ZFS_POOL_SIZE={pool_size}"));
             }
         }
 

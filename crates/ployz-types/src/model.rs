@@ -595,8 +595,6 @@ pub struct VolumeRecord {
     pub volume_name: String,
     pub scope: VolumeScope,
     pub machine_id: MachineId,
-    pub dataset: String,
-    pub mountpoint: String,
     pub quota: String,
     pub mode: String,
     pub owner: String,
