@@ -375,7 +375,9 @@ mod tests {
     use ployz_runtime_api::Identity;
     use ployz_store_api::StoreDriver;
     use ployz_store_api::memory::{MemoryService, MemoryStore};
-    use ployz_types::model::{MachineId, MachineLifecycle, NetworkLifecycle, OverlayIp, PublicKey};
+    use ployz_types::model::{
+        MachineId, MachineLifecycle, MachineTopology, NetworkLifecycle, OverlayIp, PublicKey,
+    };
     use std::net::Ipv6Addr;
     use std::path::PathBuf;
     use std::sync::{Arc, OnceLock};
@@ -592,6 +594,7 @@ mod tests {
             id: MachineId(String::from(id)),
             public_key,
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+            topology: MachineTopology::local(),
             control_target: None,
             subnet: Some("10.210.0.0/24".parse().expect("valid subnet")),
             bridge_ip: None,

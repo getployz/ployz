@@ -128,9 +128,11 @@ fn render_plain_machine_list(payload: &MachineListPayload) -> String {
         .iter()
         .map(|row| {
             format!(
-                "id={} lifecycle={} overlay_ip={} subnet={} created_at={}",
+                "id={} lifecycle={} region={} az={} overlay_ip={} subnet={} created_at={}",
                 row.id,
                 row.lifecycle,
+                row.region,
+                row.availability_zone.as_deref().unwrap_or("—"),
                 row.overlay_ip,
                 row.subnet.as_deref().unwrap_or("—"),
                 row.created_at
