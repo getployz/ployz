@@ -14,8 +14,9 @@ use ployz_types::spec::Namespace;
 pub use driver::StoreDriver;
 pub use traits::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployStore, InviteStore,
-    MachineStore, MachineSubscription, PeerRttObservation, PeerRttStore,
-    RoutingInvalidationSubscription, RoutingStore, StoreRuntimeControl, SyncProbe, SyncStatus,
+    MachineStore, MachineSubscription, PeerMembershipObservation, PeerMembershipState,
+    PeerMembershipStore, PeerRttObservation, PeerRttStore, RoutingInvalidationSubscription,
+    RoutingStore, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 
 #[async_trait]
@@ -86,6 +87,10 @@ pub trait StoreBackend: Send + Sync {
     }
 
     async fn peer_rtt_observations(&self) -> Result<Vec<PeerRttObservation>> {
+        Ok(Vec::new())
+    }
+
+    async fn peer_membership_observations(&self) -> Result<Vec<PeerMembershipObservation>> {
         Ok(Vec::new())
     }
 }

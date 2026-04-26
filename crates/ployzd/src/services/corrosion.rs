@@ -14,8 +14,8 @@ use ployz_runtime_backends::runtime::{
 };
 use ployz_store_api::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployStore, InviteStore,
-    MachineStore, PeerRttObservation, PeerRttStore, RoutingStore, StoreBackend, StoreDriver,
-    StoreRuntimeControl, SyncProbe, SyncStatus,
+    MachineStore, PeerMembershipObservation, PeerMembershipStore, PeerRttObservation, PeerRttStore,
+    RoutingStore, StoreBackend, StoreDriver, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use ployz_types::Result;
 use ployz_types::model::{
@@ -328,6 +328,10 @@ where
     async fn peer_rtt_observations(&self) -> Result<Vec<PeerRttObservation>> {
         self.store.peer_rtt_observations().await
     }
+
+    async fn peer_membership_observations(&self) -> Result<Vec<PeerMembershipObservation>> {
+        self.store.peer_membership_observations().await
+    }
 }
 
 impl<S> SyncProbe for CorrosionBackend<S>
@@ -345,6 +349,15 @@ where
 {
     async fn peer_rtt_observations(&self) -> Result<Vec<PeerRttObservation>> {
         self.store.peer_rtt_observations().await
+    }
+}
+
+impl<S> PeerMembershipStore for CorrosionBackend<S>
+where
+    S: StoreRuntimeControl + Send + Sync + 'static,
+{
+    async fn peer_membership_observations(&self) -> Result<Vec<PeerMembershipObservation>> {
+        self.store.peer_membership_observations().await
     }
 }
 

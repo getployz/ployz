@@ -4,7 +4,7 @@ use crate::{
     MachineStore, MachineSubscription, RoutingInvalidationSubscription, RoutingStore, StoreBackend,
     StoreRuntimeControl, SyncProbe, SyncStatus,
 };
-use crate::{PeerRttObservation, PeerRttStore};
+use crate::{PeerMembershipObservation, PeerMembershipStore, PeerRttObservation, PeerRttStore};
 use async_trait::async_trait;
 use ployz_types::Result;
 use ployz_types::model::{
@@ -221,6 +221,12 @@ impl SyncProbe for StoreDriver {
 impl PeerRttStore for StoreDriver {
     async fn peer_rtt_observations(&self) -> Result<Vec<PeerRttObservation>> {
         self.backend.peer_rtt_observations().await
+    }
+}
+
+impl PeerMembershipStore for StoreDriver {
+    async fn peer_membership_observations(&self) -> Result<Vec<PeerMembershipObservation>> {
+        self.backend.peer_membership_observations().await
     }
 }
 

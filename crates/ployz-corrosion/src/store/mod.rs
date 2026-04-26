@@ -4,7 +4,8 @@ use crate::config as corrosion_config;
 use corro_api_types::{ExecResult, Statement};
 use ployz_store_api::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployStore, InviteStore,
-    MachineStore, PeerRttObservation, PeerRttStore, RoutingStore, SyncProbe, SyncStatus,
+    MachineStore, PeerMembershipObservation, PeerMembershipState, PeerMembershipStore,
+    PeerRttObservation, PeerRttStore, RoutingStore, SyncProbe, SyncStatus,
 };
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
@@ -169,6 +170,38 @@ impl PeerRttStore for CorrosionStore {
                     .map(|member| PeerRttObservation {
                         addr: member.addr,
                         rtts_ms: member.rtts_ms,
+                    })
+                    .collect()
+            })
+    }
+}
+
+impl PeerMembershipStore for CorrosionStore {
+    async fn peer_membership_observations(&self) -> Result<Vec<PeerMembershipObservation>> {
+        let Some(admin) = &self.admin else {
+            return Ok(Vec::new());
+        };
+        admin
+            .cluster_membership_states_latest()
+            .await
+            .map_err(|e| {
+                Error::operation(
+                    "peer_membership_observations",
+                    format!("admin membership request: {e}"),
+                )
+            })
+            .map(|members| {
+                members
+                    .into_iter()
+                    .map(|member| PeerMembershipObservation {
+                        addr: member.addr,
+                        actor_id: member.id,
+                        state: match member.state {
+                            crate::admin::MembershipState::Alive => PeerMembershipState::Alive,
+                            crate::admin::MembershipState::Suspect => PeerMembershipState::Suspect,
+                            crate::admin::MembershipState::Down => PeerMembershipState::Down,
+                        },
+                        timestamp: member.timestamp,
                     })
                     .collect()
             })

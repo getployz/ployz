@@ -1,9 +1,9 @@
 use crate::{CliError, Result};
 use ployz_api::{
-    DaemonPayload, DaemonRequest, DaemonResponse, DoctorPayload, MachineInviteListPayload,
-    MachineListPayload, MachineOperationInfo, MachineOperationListPayload, MachineOperationPayload,
-    MachineRttPayload, MeshListPayload, MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload,
-    StatusPayload,
+    DaemonPayload, DaemonRequest, DaemonResponse, DoctorPayload, DoctorPeer,
+    MachineInviteListPayload, MachineListPayload, MachineOperationInfo,
+    MachineOperationListPayload, MachineOperationPayload, MachineRttPayload, MeshListPayload,
+    MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload, StatusPayload,
 };
 use ployz_sdk::{Transport, UnixSocketTransport};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -143,13 +143,11 @@ fn render_plain_machine_list(payload: &MachineListPayload) -> String {
 }
 
 fn render_plain_machine_rtt(payload: &MachineRttPayload) -> String {
+    let mut lines = Vec::new();
     if payload.rows.is_empty() {
-        return String::from("no rtt samples");
-    }
-    payload
-        .rows
-        .iter()
-        .map(|row| {
+        lines.push(String::from("no rtt samples"));
+    } else {
+        lines.extend(payload.rows.iter().map(|row| {
             format!(
                 "machine={} peer={} median={} stddev=±{}",
                 row.machine,
@@ -157,9 +155,17 @@ fn render_plain_machine_rtt(payload: &MachineRttPayload) -> String {
                 format_ms(row.median_ms),
                 format_ms_one_decimal(row.stddev_ms),
             )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+        }));
+    }
+    if !payload.warnings.is_empty() {
+        lines.extend(
+            payload
+                .warnings
+                .iter()
+                .map(|warning| format!("warning={warning}")),
+        );
+    }
+    lines.join("\n")
 }
 
 fn format_ms(value: f64) -> String {
@@ -222,18 +228,29 @@ fn render_plain_doctor(payload: &DoctorPayload) -> String {
     ));
     lines.extend(payload.peers.iter().map(|peer| {
         format!(
-            "peer={} role={} blocking={} store_lifecycle={} subnet={} wg_state={} probe_state={} cause_code={}",
+            "peer={} role={} blocking={} store_lifecycle={} subnet={} corrosion_state={} wg_state={} rtt={} cause_code={}",
             peer.machine_id,
             peer.role,
             peer.blocking,
             peer.store_lifecycle,
             peer.subnet.as_deref().unwrap_or("—"),
+            peer.corrosion_state,
             peer.wg_state,
-            peer.probe_state,
+            render_plain_peer_rtt(peer),
             peer.cause_code,
         )
     }));
     lines.join("\n")
+}
+
+fn render_plain_peer_rtt(peer: &DoctorPeer) -> String {
+    match (peer.rtt_median_ms, peer.rtt_stddev_ms) {
+        (Some(median), Some(stddev)) => {
+            format!("{}±{}", format_ms(median), format_ms_one_decimal(stddev))
+        }
+        (Some(median), None) => format_ms(median),
+        (None, Some(_)) | (None, None) => String::from("none"),
+    }
 }
 
 fn render_plain_invite_list(payload: &MachineInviteListPayload) -> String {
@@ -380,12 +397,13 @@ mod tests {
                     median_ms: 140.0,
                     stddev_ms: 19.4,
                 }],
+                warnings: vec![String::from("machine 'machine-3' RTT snapshot unreachable")],
             })),
         };
 
         assert_eq!(
             render_plain_success(&response),
-            "machine=machine-1 peer=machine-2 median=140ms stddev=±19.4ms"
+            "machine=machine-1 peer=machine-2 median=140ms stddev=±19.4ms\nwarning=machine 'machine-3' RTT snapshot unreachable"
         );
     }
 
@@ -418,9 +436,14 @@ mod tests {
                     store_lifecycle: String::from("active"),
                     subnet: Some(String::from("10.210.1.0/24")),
                     wg_state: String::from("fresh"),
-                    probe_state: String::from("reachable"),
-                    cause_code: String::from("overlay-probe-reachable"),
-                    cause_message: String::from("healthy via overlay probe"),
+                    probe_state: String::from("not-used"),
+                    corrosion_state: String::from("alive"),
+                    corrosion_actor_id: Some(String::from("actor-1")),
+                    corrosion_timestamp: Some(123),
+                    rtt_median_ms: Some(40.0),
+                    rtt_stddev_ms: Some(2.0),
+                    cause_code: String::from("corrosion-alive"),
+                    cause_message: String::from("corrosion reports peer alive"),
                 }],
             })),
         };
@@ -430,7 +453,10 @@ mod tests {
         assert!(rendered.contains("local_machine=founder"));
         assert!(rendered.contains("peer=peer"));
         assert!(rendered.contains("store_lifecycle=active"));
-        assert!(rendered.contains("cause_code=overlay-probe-reachable"));
+        assert!(rendered.contains("corrosion_state=alive"));
+        assert!(rendered.contains("rtt=40ms±2.0ms"));
+        assert!(rendered.contains("cause_code=corrosion-alive"));
+        assert!(!rendered.contains("probe_state="));
     }
 
     #[test]
