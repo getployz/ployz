@@ -1,4 +1,4 @@
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 const DEFAULT_IMAGE: &str = "ployz-e2e-node:test";
@@ -29,6 +29,15 @@ pub(crate) struct Cli {
 
     #[arg(long)]
     pub(crate) parallel: bool,
+
+    #[command(subcommand)]
+    pub(crate) command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum Command {
+    /// Print scenarios as a JSON array (for CI matrix fanout).
+    Ls,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -50,6 +59,7 @@ impl ZfsMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
 pub(crate) enum Scenario {
     SingleNodeInit,
     MachineAddBasic,
@@ -89,6 +99,22 @@ impl Scenario {
             }
         }
         scenarios
+    }
+
+    #[must_use]
+    pub(crate) fn ci_zfs_mode(self) -> ZfsMode {
+        match self {
+            Self::VolumeSmoke | Self::ZfsTransferSmoke => ZfsMode::Real,
+            Self::SingleNodeInit
+            | Self::MachineAddBasic
+            | Self::MachineDrainStandbyActivateCycle
+            | Self::TwoNodeEqualSplitAddDenied
+            | Self::ThreeNodeMajorityAddSucceeds
+            | Self::DestroyWithDeadPeer
+            | Self::WireguardReconnect
+            | Self::DeploySmoke
+            | Self::BridgeForwardSmoke => ZfsMode::Off,
+        }
     }
 
     pub(crate) fn validate_zfs_mode(self, zfs_mode: ZfsMode) -> Result<(), String> {
