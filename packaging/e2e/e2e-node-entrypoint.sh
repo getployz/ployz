@@ -119,6 +119,34 @@ printf '\n' >>"${calls_file}"
 root="$(cat "${root_file}")"
 root_mount="/${root}"
 
+quota_bytes() {
+  value="$1"
+  case "${value}" in
+    none|-)
+      printf '0\n'
+      ;;
+    *[Kk])
+      number="${value%[Kk]}"
+      printf '%s\n' "$((number * 1024))"
+      ;;
+    *[Mm])
+      number="${value%[Mm]}"
+      printf '%s\n' "$((number * 1024 * 1024))"
+      ;;
+    *[Gg])
+      number="${value%[Gg]}"
+      printf '%s\n' "$((number * 1024 * 1024 * 1024))"
+      ;;
+    *[Tt])
+      number="${value%[Tt]}"
+      printf '%s\n' "$((number * 1024 * 1024 * 1024 * 1024))"
+      ;;
+    *)
+      printf '%s\n' "${value}"
+      ;;
+  esac
+}
+
 if [[ $# -ge 5 && "$1" == "list" && "$2" == "-H" && "$3" == "-o" && "$4" == "mountpoint" ]]; then
   dataset="$5"
   if [[ "${dataset}" == "${root}" ]]; then
@@ -136,12 +164,20 @@ if [[ $# -ge 5 && "$1" == "list" && "$2" == "-H" && "$3" == "-o" && "$4" == "mou
   exit 1
 fi
 
-if [[ $# -ge 5 && "$1" == "list" && "$2" == "-H" && "$3" == "-o" && "$4" == "name,quota,mountpoint" ]]; then
+if [[ $# -ge 5 && "$1" == "list" && "$3" == "-o" && "$4" == "name,quota,mountpoint" ]]; then
+  if [[ "$2" != "-H" && "$2" != "-Hp" ]]; then
+    printf 'unsupported fake zfs command\n' >&2
+    exit 2
+  fi
   dataset="$5"
   if [[ -f "${datasets_file}" ]]; then
     row="$(awk -F '\t' -v dataset="${dataset}" '$1 == dataset { print; exit }' "${datasets_file}")"
     if [[ -n "${row}" ]]; then
-      printf '%s\n' "${row}"
+      IFS=$'\t' read -r name quota mountpoint <<<"${row}"
+      if [[ "$2" == "-Hp" ]]; then
+        quota="$(quota_bytes "${quota}")"
+      fi
+      printf '%s\t%s\t%s\n' "${name}" "${quota}" "${mountpoint}"
       exit 0
     fi
   fi
@@ -152,7 +188,9 @@ fi
 if [[ $# -ge 6 && "$1" == "list" && "$2" == "-Hp" && "$3" == "-r" && "$4" == "-o" && "$5" == "name,quota" ]]; then
   printf '%s\t0\n' "${root}"
   if [[ -f "${datasets_file}" ]]; then
-    awk -F '\t' '{ print $1 "\t" $2 }' "${datasets_file}"
+    while IFS=$'\t' read -r dataset quota _mountpoint; do
+      printf '%s\t%s\n' "${dataset}" "$(quota_bytes "${quota}")"
+    done <"${datasets_file}"
   fi
   exit 0
 fi
@@ -189,7 +227,31 @@ if [[ $# -ge 1 && "$1" == "create" ]]; then
 fi
 
 if [[ $# -ge 3 && "$1" == "set" ]]; then
-  exit 0
+  opt="$2"
+  dataset="$3"
+  case "${opt}" in
+    quota=*)
+      quota="${opt#quota=}"
+      if [[ ! -f "${datasets_file}" ]]; then
+        printf 'dataset does not exist\n' >&2
+        exit 1
+      fi
+      row="$(awk -F '\t' -v dataset="${dataset}" '$1 == dataset { print; exit }' "${datasets_file}")"
+      if [[ -z "${row}" ]]; then
+        printf 'dataset does not exist\n' >&2
+        exit 1
+      fi
+      IFS=$'\t' read -r _name _old_quota mountpoint <<<"${row}"
+      tmp="$(mktemp)"
+      awk -F '\t' -v dataset="${dataset}" '$1 != dataset { print }' "${datasets_file}" >"${tmp}"
+      printf '%s\t%s\t%s\n' "${dataset}" "${quota}" "${mountpoint}" >>"${tmp}"
+      mv "${tmp}" "${datasets_file}"
+      exit 0
+      ;;
+    *)
+      exit 0
+      ;;
+  esac
 fi
 
 if [[ $# -ge 6 && "$1" == "get" && "$4" == "value" && "$5" == "quota" ]]; then
