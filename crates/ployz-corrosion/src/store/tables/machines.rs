@@ -12,8 +12,12 @@ use tracing::warn;
 const SQL_LIST_MACHINES: &str =
     "SELECT machine_id, payload_json FROM machines WHERE payload_json <> '' ORDER BY machine_id";
 
+pub(crate) fn all_statement() -> Statement {
+    Statement::Simple(SQL_LIST_MACHINES.to_string())
+}
+
 pub(crate) async fn list_machines(client: &CorrClient) -> Result<Vec<MachineRecord>> {
-    let stmt = Statement::Simple(SQL_LIST_MACHINES.to_string());
+    let stmt = all_statement();
     query_rows(client, &stmt, "list_machines")
         .await?
         .iter()
@@ -122,7 +126,7 @@ pub(crate) async fn subscribe_machines(
     Ok((snapshot, rx))
 }
 
-fn parse_machine_row(row: &[SqliteValue]) -> Result<MachineRecord> {
+pub(crate) fn parse_machine_row(row: &[SqliteValue]) -> Result<MachineRecord> {
     let [machine_id_val, payload_val] = row else {
         return Err(Error::operation(
             "parse_machine_row",
@@ -218,7 +222,8 @@ mod tests {
     use super::{into_machine_event, parse_machine_row};
     use corro_api_types::{ChangeId, RowId, TypedQueryEvent, sqlite::ChangeType};
     use ployz_types::model::{
-        MachineEvent, MachineId, MachineLifecycle, MachineRecord, OverlayIp, PublicKey,
+        MachineEvent, MachineId, MachineLifecycle, MachineRecord, MachineTopology, OverlayIp,
+        PublicKey,
     };
     use std::collections::{BTreeMap, HashMap};
     use std::net::Ipv6Addr;
@@ -230,6 +235,7 @@ mod tests {
             id: MachineId(id.into()),
             public_key: PublicKey([7_u8; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+            topology: MachineTopology::local(),
             control_target: None,
             subnet: None,
             bridge_ip: None,

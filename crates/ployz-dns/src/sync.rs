@@ -37,12 +37,19 @@ where
         tokio::time::sleep(REFRESH_DEBOUNCE).await;
         while refresh_rx.try_recv().is_ok() {}
         match store.load_routing_state().await {
-            Ok(state) => {
-                let next = project_dns(&state);
-                let service_count: usize = next.services.values().map(HashMap::len).sum();
-                snapshot.replace(next);
-                info!(service_count, "dns snapshot refreshed");
-            }
+            Ok(state) => match project_dns(&state) {
+                Ok(next) => {
+                    let service_count: usize = next.services.values().map(HashMap::len).sum();
+                    snapshot.replace(next);
+                    info!(service_count, "dns snapshot refreshed");
+                }
+                Err(err) => {
+                    warn!(
+                        ?err,
+                        "failed to project dns snapshot; keeping previous state"
+                    );
+                }
+            },
             Err(err) => {
                 warn!(
                     ?err,
