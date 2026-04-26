@@ -2,14 +2,18 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, RwLock};
 
-use ployz_types::model::{DrainState, InstancePhase, RoutingState};
+use ployz_types::model::{
+    DrainState, InstanceId, InstancePhase, MachineId, MachineRecord, MachineTopology, RoutingState,
+};
 use ployz_types::spec::Namespace;
+use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DnsInstanceDiagnostic {
     pub service: String,
     pub instance_id: String,
     pub machine_id: String,
+    pub topology: MachineTopology,
     pub slot_id: String,
     pub overlay_ip: Ipv4Addr,
 }
@@ -17,17 +21,43 @@ pub struct DnsInstanceDiagnostic {
 impl DnsInstanceDiagnostic {
     #[must_use]
     pub fn txt_record(&self) -> String {
+        let availability_zone = self
+            .topology
+            .availability_zone
+            .as_ref()
+            .map(|zone| zone.as_str())
+            .unwrap_or("none");
         format!(
-            "service={},instance={},machine={},slot={},ip={}",
-            self.service, self.instance_id, self.machine_id, self.slot_id, self.overlay_ip
+            "service={},instance={},machine={},region={},az={},slot={},ip={}",
+            self.service,
+            self.instance_id,
+            self.machine_id,
+            self.topology.region.as_str(),
+            availability_zone,
+            self.slot_id,
+            self.overlay_ip
         )
     }
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum DnsProjectionError {
+    #[error(
+        "routable instance '{instance_id}' for service '{service}' in namespace '{namespace}' referenced missing machine '{machine_id}'"
+    )]
+    MissingMachineForInstance {
+        namespace: Namespace,
+        service: String,
+        instance_id: InstanceId,
+        machine_id: MachineId,
+    },
 }
 
 // ---------------------------------------------------------------------------
 // DnsSnapshot
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 pub struct DnsSnapshot {
     /// namespace -> service -> sorted Vec of overlay IPs for ready instances.
     /// Two-level map avoids cloning `Namespace` + allocating a `String` on
@@ -140,12 +170,16 @@ impl SharedDnsSnapshot {
 // Projection: RoutingState -> DnsSnapshot
 // ---------------------------------------------------------------------------
 
-#[must_use]
-pub fn project_dns(state: &RoutingState) -> DnsSnapshot {
+pub fn project_dns(state: &RoutingState) -> Result<DnsSnapshot, DnsProjectionError> {
     let mut services: HashMap<Namespace, HashMap<String, Vec<Ipv4Addr>>> = HashMap::new();
     let mut ip_to_namespace: HashMap<Ipv4Addr, Namespace> = HashMap::new();
     let mut service_names: HashMap<Namespace, Vec<String>> = HashMap::new();
     let mut instances: HashMap<Namespace, Vec<DnsInstanceDiagnostic>> = HashMap::new();
+    let machines = state
+        .machines
+        .iter()
+        .map(|machine| (machine.id.clone(), machine))
+        .collect::<HashMap<MachineId, &MachineRecord>>();
 
     for instance in &state.instances {
         if instance.phase != InstancePhase::Ready || !instance.ready {
@@ -156,6 +190,14 @@ pub fn project_dns(state: &RoutingState) -> DnsSnapshot {
         }
         let Some(overlay_ip) = instance.overlay_ip else {
             continue;
+        };
+        let Some(machine) = machines.get(&instance.machine_id) else {
+            return Err(DnsProjectionError::MissingMachineForInstance {
+                namespace: instance.namespace.clone(),
+                service: instance.service.clone(),
+                instance_id: instance.instance_id.clone(),
+                machine_id: instance.machine_id.clone(),
+            });
         };
 
         services
@@ -172,6 +214,7 @@ pub fn project_dns(state: &RoutingState) -> DnsSnapshot {
                 service: instance.service.clone(),
                 instance_id: instance.instance_id.0.clone(),
                 machine_id: instance.machine_id.0.clone(),
+                topology: machine.topology.clone(),
                 slot_id: instance.slot_id.0.clone(),
                 overlay_ip,
             });
@@ -198,19 +241,20 @@ pub fn project_dns(state: &RoutingState) -> DnsSnapshot {
         });
     }
 
-    DnsSnapshot {
+    Ok(DnsSnapshot {
         services,
         ip_to_namespace,
         service_names,
         instances,
-    }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ployz_types::model::{
-        DeployId, InstanceId, InstanceStatusRecord, MachineId, RoutingState, SlotId,
+        DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineLifecycle, MachineRecord,
+        OverlayIp, PublicKey, RoutingState, SlotId,
     };
     use std::collections::BTreeMap;
 
@@ -241,15 +285,33 @@ mod tests {
 
     fn empty_routing_state() -> RoutingState {
         RoutingState {
+            machines: vec![machine_record("machine-1")],
             revisions: vec![],
             releases: vec![],
             instances: vec![],
         }
     }
 
+    fn machine_record(id: &str) -> MachineRecord {
+        MachineRecord {
+            id: MachineId(id.into()),
+            public_key: PublicKey([0; 32]),
+            overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay ip")),
+            topology: MachineTopology::local(),
+            control_target: None,
+            subnet: None,
+            bridge_ip: None,
+            endpoints: Vec::new(),
+            lifecycle: MachineLifecycle::Active,
+            created_at: 1,
+            updated_at: 1,
+            labels: BTreeMap::new(),
+        }
+    }
+
     #[test]
     fn project_empty_state() {
-        let snapshot = project_dns(&empty_routing_state());
+        let snapshot = project_dns(&empty_routing_state()).expect("projection succeeds");
         assert!(snapshot.services.is_empty());
         assert!(snapshot.ip_to_namespace.is_empty());
         assert!(snapshot.service_names.is_empty());
@@ -264,7 +326,7 @@ mod tests {
             .instances
             .push(ready_instance("prod", "web", Some(ip)));
 
-        let snapshot = project_dns(&state);
+        let snapshot = project_dns(&state).expect("projection succeeds");
         let ns = Namespace("prod".into());
         assert_eq!(snapshot.lookup_service(&ns, "web"), Some([ip].as_slice()));
         assert_eq!(
@@ -280,9 +342,58 @@ mod tests {
         );
         assert_eq!(
             snapshot.instance_txt_records(&ns, Some("web")),
-            vec!["service=web,instance=inst-1,machine=machine-1,slot=slot-1,ip=10.42.1.10"]
+            vec![
+                "service=web,instance=inst-1,machine=machine-1,region=local,az=none,slot=slot-1,ip=10.42.1.10"
+            ]
         );
         assert_eq!(snapshot.lookup_instance(&ns, "web", "inst-1"), Some(ip));
+    }
+
+    #[test]
+    fn instance_diagnostics_include_region_and_availability_zone() {
+        let ip = Ipv4Addr::new(10, 42, 1, 10);
+        let mut state = empty_routing_state();
+        state.machines = vec![MachineRecord {
+            topology: MachineTopology::new("us-west", Some("usw1-a"))
+                .expect("topology should parse"),
+            ..machine_record("machine-1")
+        }];
+        state
+            .instances
+            .push(ready_instance("prod", "web", Some(ip)));
+
+        let snapshot = project_dns(&state).expect("projection succeeds");
+        let ns = Namespace("prod".into());
+
+        assert_eq!(
+            snapshot.instance_txt_records(&ns, Some("web")),
+            vec![
+                "service=web,instance=inst-1,machine=machine-1,region=us-west,az=usw1-a,slot=slot-1,ip=10.42.1.10"
+            ]
+        );
+    }
+
+    #[test]
+    fn project_fails_when_routable_instance_references_missing_machine() {
+        let ip = Ipv4Addr::new(10, 42, 1, 10);
+        let mut state = empty_routing_state();
+        state.machines = Vec::new();
+        state
+            .instances
+            .push(ready_instance("prod", "web", Some(ip)));
+
+        let error = project_dns(&state).expect_err("missing machine should fail projection");
+
+        match error {
+            DnsProjectionError::MissingMachineForInstance {
+                instance_id,
+                machine_id,
+                ..
+            } => {
+                assert_eq!(instance_id.0, "inst-1");
+                assert_eq!(machine_id.0, "machine-1");
+            }
+        }
     }
 
     #[test]
@@ -294,7 +405,7 @@ mod tests {
         let mut state = empty_routing_state();
         state.instances.push(instance);
 
-        let snapshot = project_dns(&state);
+        let snapshot = project_dns(&state).expect("projection succeeds");
         assert!(snapshot.services.is_empty());
         assert!(snapshot.instances.is_empty());
     }
@@ -308,7 +419,7 @@ mod tests {
         let mut state = empty_routing_state();
         state.instances.push(instance);
 
-        let snapshot = project_dns(&state);
+        let snapshot = project_dns(&state).expect("projection succeeds");
         assert!(snapshot.services.is_empty());
         assert!(snapshot.instances.is_empty());
     }
@@ -318,7 +429,7 @@ mod tests {
         let mut state = empty_routing_state();
         state.instances.push(ready_instance("prod", "web", None));
 
-        let snapshot = project_dns(&state);
+        let snapshot = project_dns(&state).expect("projection succeeds");
         assert!(snapshot.services.is_empty());
         assert!(snapshot.instances.is_empty());
     }
