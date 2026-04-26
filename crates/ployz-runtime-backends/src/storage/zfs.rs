@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
-use super::ShellRunner;
+use super::{ShellRunner, ShellStdio, ShellStreamer, TokioShellRunner};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DatasetSpec {
@@ -16,6 +16,21 @@ pub struct DatasetSpec {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MountInfo {
     pub mountpoint: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatasetInspection {
+    pub dataset: String,
+    pub quota: String,
+    pub mountpoint: PathBuf,
+    pub used_bytes: u64,
+    pub snapshots: Vec<SnapshotInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotInfo {
+    pub name: String,
+    pub guid: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -37,7 +52,9 @@ impl<R: ShellRunner> ZfsDriver<R> {
         if !overcommit_ratio.is_finite() || overcommit_ratio <= 0.0 {
             return Err(Error::operation(
                 "zfs_driver",
-                format!("overcommit_ratio must be a positive finite number, got {overcommit_ratio}"),
+                format!(
+                    "overcommit_ratio must be a positive finite number, got {overcommit_ratio}"
+                ),
             ));
         }
         let output = runner
@@ -78,6 +95,117 @@ impl<R: ShellRunner> ZfsDriver<R> {
         Ok(MountInfo {
             mountpoint: spec.mountpoint.clone(),
         })
+    }
+
+    pub async fn inspect_dataset(&self, dataset: &str) -> Result<DatasetInspection> {
+        let existing = self.read_dataset(dataset).await?.ok_or_else(|| {
+            Error::operation("zfs_inspect", format!("dataset '{dataset}' does not exist"))
+        })?;
+        let used_bytes = self.used_bytes(dataset).await?;
+        let snapshots = self.list_snapshots(dataset).await?;
+        Ok(DatasetInspection {
+            dataset: dataset.to_string(),
+            quota: existing.quota,
+            mountpoint: existing.mountpoint,
+            used_bytes,
+            snapshots,
+        })
+    }
+
+    pub async fn dataset_exists(&self, dataset: &str) -> Result<bool> {
+        Ok(self.read_dataset(dataset).await?.is_some())
+    }
+
+    pub async fn create_snapshot(&self, dataset: &str, snapshot: &str) -> Result<SnapshotInfo> {
+        if self.snapshot_exists(dataset, snapshot).await? {
+            return Ok(SnapshotInfo {
+                name: snapshot.to_string(),
+                guid: self.snapshot_guid(dataset, snapshot).await?,
+            });
+        }
+        let full = snapshot_name(dataset, snapshot);
+        self.run_success("zfs snapshot", "zfs", &["snapshot", &full])
+            .await?;
+        Ok(SnapshotInfo {
+            name: snapshot.to_string(),
+            guid: self.snapshot_guid(dataset, snapshot).await?,
+        })
+    }
+
+    pub async fn snapshot_exists(&self, dataset: &str, snapshot: &str) -> Result<bool> {
+        let full = snapshot_name(dataset, snapshot);
+        let output = self
+            .runner
+            .run(
+                "zfs",
+                &["list", "-H", "-t", "snapshot", "-o", "name", &full],
+            )
+            .await?;
+        Ok(output.status == 0)
+    }
+
+    pub async fn snapshot_guid(&self, dataset: &str, snapshot: &str) -> Result<u64> {
+        let full = snapshot_name(dataset, snapshot);
+        let output = self
+            .runner
+            .run("zfs", &["get", "-Hp", "-o", "value", "guid", &full])
+            .await?;
+        ensure_success("zfs get snapshot guid", &output.stderr, output.status)?;
+        let value = parse_single_field(&output.stdout, "snapshot guid")?;
+        value
+            .parse::<u64>()
+            .map_err(|err| Error::operation("zfs_parse", format!("parse snapshot guid: {err}")))
+    }
+
+    pub async fn list_snapshots(&self, dataset: &str) -> Result<Vec<SnapshotInfo>> {
+        let output = self
+            .runner
+            .run(
+                "zfs",
+                &[
+                    "list",
+                    "-Hp",
+                    "-t",
+                    "snapshot",
+                    "-o",
+                    "name,guid",
+                    "-r",
+                    dataset,
+                ],
+            )
+            .await?;
+        if output.status != 0 {
+            return Ok(Vec::new());
+        }
+        let text = String::from_utf8(output.stdout)
+            .map_err(|err| Error::operation("zfs_parse", err.to_string()))?;
+        let mut snapshots = Vec::new();
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let parts = trimmed.split('\t').collect::<Vec<_>>();
+            let [name, guid] = parts.as_slice() else {
+                return Err(Error::operation(
+                    "zfs_parse",
+                    format!("expected snapshot name and guid for line '{trimmed}'"),
+                ));
+            };
+            let Some((listed_dataset, snap)) = name.split_once('@') else {
+                continue;
+            };
+            if listed_dataset != dataset {
+                continue;
+            }
+            snapshots.push(SnapshotInfo {
+                name: snap.to_string(),
+                guid: guid.parse::<u64>().map_err(|err| {
+                    Error::operation("zfs_parse", format!("parse snapshot guid: {err}"))
+                })?,
+            });
+        }
+        Ok(snapshots)
     }
 
     #[must_use]
@@ -125,7 +253,8 @@ impl<R: ShellRunner> ZfsDriver<R> {
 
     async fn create_dataset(&self, spec: &DatasetSpec) -> Result<()> {
         let requested_bytes = parse_size_bytes(&spec.quota)?;
-        self.check_overcommit(&spec.dataset, requested_bytes).await?;
+        self.check_overcommit(&spec.dataset, requested_bytes)
+            .await?;
 
         let mountpoint = spec.mountpoint.to_string_lossy();
         let quota = format!("quota={}", spec.quota);
@@ -271,6 +400,31 @@ impl<R: ShellRunner> ZfsDriver<R> {
     }
 }
 
+impl ZfsDriver<TokioShellRunner> {
+    pub fn spawn_send_full(&self, dataset: &str, snapshot: &str) -> Result<tokio::process::Child> {
+        let full = snapshot_name(dataset, snapshot);
+        self.runner
+            .spawn("zfs", &["send", &full], ShellStdio::PipedStdout)
+    }
+
+    pub fn spawn_send_incremental(
+        &self,
+        dataset: &str,
+        from_snapshot: &str,
+        snapshot: &str,
+    ) -> Result<tokio::process::Child> {
+        let from = snapshot_name(dataset, from_snapshot);
+        let to = snapshot_name(dataset, snapshot);
+        self.runner
+            .spawn("zfs", &["send", "-i", &from, &to], ShellStdio::PipedStdout)
+    }
+
+    pub fn spawn_recv(&self, dataset: &str) -> Result<tokio::process::Child> {
+        self.runner
+            .spawn("zfs", &["recv", "-F", dataset], ShellStdio::PipedStdin)
+    }
+}
+
 fn ensure_success(context: &'static str, stderr: &[u8], status: i32) -> Result<()> {
     if status == 0 {
         return Ok(());
@@ -301,6 +455,10 @@ fn normalize_quota(value: &str) -> String {
 
 fn parse_size_bytes(value: &str) -> Result<u64> {
     crate::spec::parse_quota_bytes(value).map_err(|err| Error::operation("zfs_quota", err))
+}
+
+fn snapshot_name(dataset: &str, snapshot: &str) -> String {
+    format!("{dataset}@{snapshot}")
 }
 
 #[cfg(test)]
@@ -460,6 +618,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn snapshot_creation_reads_guid() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        fake.push(1, "", "snapshot missing");
+        fake.push(0, "", "");
+        fake.push(0, "42\n", "");
+
+        let snapshot = driver
+            .create_snapshot("tank/ployz/prod/data", "base")
+            .await
+            .expect("snapshot");
+
+        assert_eq!(snapshot.name, "base");
+        assert_eq!(snapshot.guid, 42);
+        let calls = fake.calls();
+        assert_eq!(
+            calls[1],
+            [
+                "zfs",
+                "list",
+                "-H",
+                "-t",
+                "snapshot",
+                "-o",
+                "name",
+                "tank/ployz/prod/data@base"
+            ]
+        );
+        assert_eq!(calls[2], ["zfs", "snapshot", "tank/ployz/prod/data@base"]);
+        assert_eq!(
+            calls[3],
+            [
+                "zfs",
+                "get",
+                "-Hp",
+                "-o",
+                "value",
+                "guid",
+                "tank/ployz/prod/data@base"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn inspect_dataset_returns_snapshot_lineage() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        fake.push(0, "tank/ployz/prod/data\t1G\t/tank/ployz/prod/data\n", "");
+        fake.push(0, "123\n", "");
+        fake.push(
+            0,
+            "tank/ployz/prod/data@base\t42\ntank/ployz/prod/data@cutover\t43\n",
+            "",
+        );
+
+        let info = driver
+            .inspect_dataset("tank/ployz/prod/data")
+            .await
+            .expect("inspect");
+
+        assert_eq!(info.used_bytes, 123);
+        assert_eq!(
+            info.snapshots,
+            vec![
+                SnapshotInfo {
+                    name: "base".into(),
+                    guid: 42
+                },
+                SnapshotInfo {
+                    name: "cutover".into(),
+                    guid: 43
+                }
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn ensure_rejects_overcommit_on_create() {
         let fake = FakeShellRunner::default();
         let driver = driver(&fake).await;
@@ -525,7 +760,10 @@ mod tests {
         let mut greedy = spec();
         greedy.quota = "1G".into();
 
-        driver.ensure(&greedy).await.expect("ratio 2.0 should allow");
+        driver
+            .ensure(&greedy)
+            .await
+            .expect("ratio 2.0 should allow");
     }
 
     #[tokio::test]
