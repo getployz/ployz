@@ -29,6 +29,7 @@ pub struct ActiveMesh {
     pub mesh: Mesh,
     pub remote_control: Box<dyn RuntimeHandle>,
     pub peer_control: Box<dyn RuntimeHandle>,
+    pub zfs_transfer: Box<dyn RuntimeHandle>,
     pub gateway: Box<dyn RuntimeHandle>,
     pub dns: Box<dyn RuntimeHandle>,
     pub certificate_renewal: Option<CertificateRenewalTask>,

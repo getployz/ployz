@@ -3,5 +3,5 @@ pub mod shell;
 pub mod zfs;
 
 pub use resolve::resolve_volumes;
-pub use shell::{ShellOutput, ShellRunner, TokioShellRunner};
-pub use zfs::{DatasetSpec, MountInfo, ZfsDriver};
+pub use shell::{ShellOutput, ShellRunner, ShellStdio, ShellStreamer, TokioShellRunner};
+pub use zfs::{DatasetInspection, DatasetSpec, MountInfo, SnapshotInfo, ZfsDriver};

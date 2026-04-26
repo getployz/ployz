@@ -11,7 +11,7 @@ use ployz_runtime_backends::deploy::session::DefaultDeploySessionFactory;
 use ployz_store_api::DeployStore;
 use ployz_store_api::StoreDriver;
 use ployz_types::Error as PloyzError;
-use ployz_types::spec::{DeployManifest, Namespace, ServiceSpec};
+use ployz_types::spec::{DeployManifest, Namespace, ServiceSpec, VolumeDeclaration};
 
 impl DaemonState {
     fn overlay_network_name(&self) -> Option<String> {
@@ -160,6 +160,7 @@ async fn export_manifest(
 ) -> ployz_types::Result<DeployManifest> {
     let releases = store.list_service_releases(namespace).await?;
     let revisions = store.list_service_revisions(namespace).await?;
+    let volume_records = store.list_volumes(namespace).await?;
     let revisions_by_key: BTreeMap<(String, String), String> = revisions
         .into_iter()
         .map(|revision| {
@@ -207,9 +208,21 @@ async fn export_manifest(
     }
     services.sort_by(|left, right| left.name.cmp(&right.name));
 
+    let mut volumes: Vec<VolumeDeclaration> = volume_records
+        .into_iter()
+        .map(|record| VolumeDeclaration {
+            name: record.volume_name,
+            scope: record.scope,
+            quota: record.quota,
+            mode: record.mode,
+            owner: record.owner,
+        })
+        .collect();
+    volumes.sort_by(|left, right| left.name.cmp(&right.name));
+
     Ok(DeployManifest {
         namespace: namespace.clone(),
-        volumes: Vec::new(),
+        volumes,
         services,
     })
 }

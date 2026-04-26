@@ -7,6 +7,7 @@ pub(crate) mod machine;
 mod mesh;
 pub(crate) mod peer_rpc;
 mod status;
+pub(crate) mod volume;
 
 use ployz_api::{DaemonRequest, DaemonResponse};
 use tokio::sync::oneshot;
@@ -41,6 +42,11 @@ impl DaemonState {
             | DaemonRequest::DeployPreview { .. }
             | DaemonRequest::DeployApply { .. }
             | DaemonRequest::DeployExport { .. }
+            | DaemonRequest::VolumeZfsInspect { .. }
+            | DaemonRequest::VolumeZfsSnapshot { .. }
+            | DaemonRequest::VolumeZfsSend { .. }
+            | DaemonRequest::VolumeZfsTransferGet { .. }
+            | DaemonRequest::VolumeZfsTransferList
             | DaemonRequest::MeshList
             | DaemonRequest::MeshStatus { .. }
             | DaemonRequest::MeshReady { .. }
@@ -96,6 +102,42 @@ impl DaemonState {
             DaemonRequest::DeployExport { namespace } => {
                 self.handle_deploy_export(&namespace).await
             }
+            DaemonRequest::VolumeZfsInspect {
+                namespace,
+                volume,
+                machine,
+            } => {
+                self.handle_volume_zfs_inspect(&namespace, &volume, machine.as_deref())
+                    .await
+            }
+            DaemonRequest::VolumeZfsSnapshot {
+                namespace,
+                volume,
+                snapshot,
+            } => {
+                self.handle_volume_zfs_snapshot(&namespace, &volume, &snapshot)
+                    .await
+            }
+            DaemonRequest::VolumeZfsSend {
+                namespace,
+                volume,
+                snapshot,
+                target_machine,
+                from_snapshot,
+            } => {
+                self.handle_volume_zfs_send(
+                    &namespace,
+                    &volume,
+                    &snapshot,
+                    &target_machine,
+                    from_snapshot.as_deref(),
+                )
+                .await
+            }
+            DaemonRequest::VolumeZfsTransferGet { id } => {
+                self.handle_volume_zfs_transfer_get(&id).await
+            }
+            DaemonRequest::VolumeZfsTransferList => self.handle_volume_zfs_transfer_list().await,
             DaemonRequest::MeshList => self.handle_mesh_list(),
             DaemonRequest::MeshStatus { network } => self.handle_mesh_status(&network),
             DaemonRequest::MeshReady { json } => self.handle_mesh_ready(json).await,
@@ -213,6 +255,11 @@ impl DaemonState {
             | DaemonRequest::DeployPreview { .. }
             | DaemonRequest::DeployApply { .. }
             | DaemonRequest::DeployExport { .. }
+            | DaemonRequest::VolumeZfsInspect { .. }
+            | DaemonRequest::VolumeZfsSnapshot { .. }
+            | DaemonRequest::VolumeZfsSend { .. }
+            | DaemonRequest::VolumeZfsTransferGet { .. }
+            | DaemonRequest::VolumeZfsTransferList
             | DaemonRequest::MeshList
             | DaemonRequest::MeshStatus { .. }
             | DaemonRequest::MeshReady { .. }

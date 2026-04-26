@@ -105,6 +105,7 @@ async fn run() -> Result<i32> {
         | other @ Command::Deploy(_)
         | other @ Command::Mesh { .. }
         | other @ Command::Machine { .. }
+        | other @ Command::Volume { .. }
         | other @ Command::RpcStdio => {
             let platform = HostPlatform::detect();
             let resolved = load_client_config(cli.config, cli.socket, &platform.paths_context())

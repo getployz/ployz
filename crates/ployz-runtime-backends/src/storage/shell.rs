@@ -1,6 +1,7 @@
 use crate::error::{Error, Result};
 use async_trait::async_trait;
-use tokio::process::Command;
+use std::process::Stdio;
+use tokio::process::{Child, Command};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellOutput {
@@ -12,6 +13,16 @@ pub struct ShellOutput {
 #[async_trait]
 pub trait ShellRunner: Send + Sync {
     async fn run(&self, program: &str, args: &[&str]) -> Result<ShellOutput>;
+}
+
+pub trait ShellStreamer: Send + Sync {
+    fn spawn(&self, program: &str, args: &[&str], stdio: ShellStdio) -> Result<Child>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellStdio {
+    PipedStdout,
+    PipedStdin,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -30,5 +41,23 @@ impl ShellRunner for TokioShellRunner {
             stdout: output.stdout,
             stderr: output.stderr,
         })
+    }
+}
+
+impl ShellStreamer for TokioShellRunner {
+    fn spawn(&self, program: &str, args: &[&str], stdio: ShellStdio) -> Result<Child> {
+        let mut command = Command::new(program);
+        command.args(args);
+        match stdio {
+            ShellStdio::PipedStdout => {
+                command.stdout(Stdio::piped()).stderr(Stdio::piped());
+            }
+            ShellStdio::PipedStdin => {
+                command.stdin(Stdio::piped()).stderr(Stdio::piped());
+            }
+        }
+        command
+            .spawn()
+            .map_err(|err| Error::operation("shell_streamer", format!("spawn {program}: {err}")))
     }
 }
