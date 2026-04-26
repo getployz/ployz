@@ -199,7 +199,9 @@ impl ScenarioRun {
                        docker rm -f $(docker ps -aq --filter label=dev.ployz.namespace=default --filter label=dev.ployz.service=db) >/dev/null 2>&1 || true; \
                        pool=$(cat /var/lib/ployz-e2e-zfs/pool.name 2>/dev/null || true); \
                        if [ -n \"$pool\" ]; then zpool destroy \"$pool\" >/dev/null 2>&1 || true; fi; \
-                       rm -f /var/lib/ployz-e2e-zfs/pool.img";
+                       loopdev=$(cat /var/lib/ployz-e2e-zfs/pool.loop 2>/dev/null || true); \
+                       if [ -n \"$loopdev\" ]; then losetup -d \"$loopdev\" >/dev/null 2>&1 || true; fi; \
+                       rm -f /var/lib/ployz-e2e-zfs/pool.img /var/lib/ployz-e2e-zfs/pool.loop";
         for node in &self.nodes {
             if let Err(error) = self.ssh_run(node, command) {
                 self.log_progress(&format!(
