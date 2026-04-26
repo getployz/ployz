@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ployz_runtime_api::RuntimeHandle;
-use ployz_runtime_backends::storage::{TokioShellRunner, ZfsDriver};
+use ployz_runtime_backends::storage::{ShellRunner, TokioShellRunner, ZfsDriver};
 use ployz_store_api::{MachineStore, StoreDriver};
 use ployz_types::model::MachineId;
 use serde::{Deserialize, Serialize};
@@ -239,6 +239,77 @@ async fn validate_source_overlay(
     Ok(())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ReceiveDecision {
+    AlreadyHave(u64),
+    Proceed,
+}
+
+/// Pure decision logic for an incoming `zfs recv`. Generic over `ShellRunner`
+/// so it can be unit-tested with a fake runner; the real `receive_stream`
+/// wraps this and performs the actual stream I/O.
+async fn prepare_receive<R: ShellRunner>(
+    driver: &ZfsDriver<R>,
+    dataset: &str,
+    open: &ZfsTransferOpen,
+) -> Result<ReceiveDecision, String> {
+    // Idempotency: if a previous attempt already landed this snapshot with
+    // the right GUID, the caller drains the source stream and returns the
+    // guid without touching ZFS.
+    if driver
+        .snapshot_exists(dataset, &open.snapshot)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        let guid = driver
+            .snapshot_guid(dataset, &open.snapshot)
+            .await
+            .map_err(|error| error.to_string())?;
+        if guid == open.expected_guid {
+            return Ok(ReceiveDecision::AlreadyHave(guid));
+        }
+        return Err(format!(
+            "snapshot '{}@{}' already exists on target with guid {guid}, source claims {}",
+            dataset, open.snapshot, open.expected_guid
+        ));
+    }
+
+    // For incrementals, refuse to recv unless the named base snapshot is
+    // already on disk with the GUID the source claims it had. Catches the
+    // "wrong base" footgun that `zfs recv` would otherwise surface as a
+    // confusing checksum/lineage error mid-stream.
+    if let Some(from_snapshot) = open.from_snapshot.as_deref() {
+        if !driver
+            .snapshot_exists(dataset, from_snapshot)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            return Err(format!(
+                "incremental base snapshot '{dataset}@{from_snapshot}' missing on target"
+            ));
+        }
+        if let Some(expected_from_guid) = open.from_snapshot_guid {
+            let actual = driver
+                .snapshot_guid(dataset, from_snapshot)
+                .await
+                .map_err(|error| error.to_string())?;
+            if actual != expected_from_guid {
+                return Err(format!(
+                    "incremental base snapshot '{dataset}@{from_snapshot}' guid {actual} did not match source {expected_from_guid}",
+                ));
+            }
+        }
+    } else {
+        // Full sends require the parent namespace dataset to exist; `zfs recv`
+        // does not auto-create ancestors.
+        driver
+            .ensure_parent_dataset(dataset)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(ReceiveDecision::Proceed)
+}
+
 async fn receive_stream<R: tokio::io::AsyncRead + Unpin>(
     reader: &mut R,
     zfs_root: &PathBuf,
@@ -253,62 +324,11 @@ async fn receive_stream<R: tokio::io::AsyncRead + Unpin>(
         .map_err(|error| error.to_string())?;
     let dataset = format!("{root}/{}/{}", open.namespace, open.volume);
 
-    // Idempotency: if a previous attempt already landed this snapshot with
-    // the right GUID, drain the source stream and return success without
-    // touching ZFS.
-    if driver
-        .snapshot_exists(&dataset, &open.snapshot)
-        .await
-        .map_err(|error| error.to_string())?
-    {
-        let guid = driver
-            .snapshot_guid(&dataset, &open.snapshot)
-            .await
-            .map_err(|error| error.to_string())?;
-        if guid == open.expected_guid {
-            // Drain whatever the source already started to write so the source
-            // process exits cleanly instead of breaking on EPIPE.
-            let _ = tokio::io::copy(reader, &mut tokio::io::sink()).await;
-            return Ok(guid);
-        }
-        return Err(format!(
-            "snapshot '{}@{}' already exists on target with guid {guid}, source claims {}",
-            dataset, open.snapshot, open.expected_guid
-        ));
-    }
-
-    // For incrementals, refuse to recv unless the named base snapshot is
-    // already on disk with the GUID the source claims it had. Catches the
-    // "wrong base" footgun that `zfs recv` would otherwise surface as a
-    // confusing checksum/lineage error mid-stream.
-    if let Some(from_snapshot) = open.from_snapshot.as_deref() {
-        if !driver
-            .snapshot_exists(&dataset, from_snapshot)
-            .await
-            .map_err(|error| error.to_string())?
-        {
-            return Err(format!(
-                "incremental base snapshot '{dataset}@{from_snapshot}' missing on target"
-            ));
-        }
-        if let Some(expected_from_guid) = open.from_snapshot_guid {
-            let actual = driver
-                .snapshot_guid(&dataset, from_snapshot)
-                .await
-                .map_err(|error| error.to_string())?;
-            if actual != expected_from_guid {
-                return Err(format!(
-                    "incremental base snapshot '{dataset}@{from_snapshot}' guid {actual} did not match source {expected_from_guid}",
-                ));
-            }
-        }
-    } else {
-        // Full sends require the parent namespace dataset to exist; `zfs recv`
-        // does not auto-create ancestors.
-        driver
-            .ensure_parent_dataset(&dataset)
-            .await
-            .map_err(|error| error.to_string())?;
+    if let ReceiveDecision::AlreadyHave(guid) = prepare_receive(&driver, &dataset, open).await? {
+        // Drain whatever the source already started to write so the source
+        // process exits cleanly instead of breaking on EPIPE.
+        let _ = tokio::io::copy(reader, &mut tokio::io::sink()).await;
+        return Ok(guid);
     }
 
     let mut recv = driver
@@ -357,15 +377,139 @@ async fn cleanup_partial(driver: &ZfsDriver<TokioShellRunner>, dataset: &str, sn
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_HEADER_BYTES, ZfsTransferOpen, read_transfer_header, validate_open_source,
-        validate_source_overlay,
+        MAX_HEADER_BYTES, ReceiveDecision, ZfsTransferOpen, prepare_receive, read_transfer_header,
+        validate_open_source, validate_source_overlay,
     };
+    use async_trait::async_trait;
+    use ployz_runtime_backends::storage::{ShellOutput, ShellRunner, ZfsDriver};
     use ployz_store_api::{MachineStore, StoreDriver};
+    use ployz_types::error::{Error, Result};
     use ployz_types::model::{
         MachineId, MachineLifecycle, MachineRecord, MachineTopology, OverlayIp, PublicKey,
     };
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, VecDeque};
     use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Debug, Clone, Default)]
+    struct FakeShellRunner {
+        outputs: Arc<Mutex<VecDeque<ShellOutput>>>,
+    }
+
+    impl FakeShellRunner {
+        fn push(&self, status: i32, stdout: &str, stderr: &str) {
+            self.outputs.lock().expect("outputs").push_back(ShellOutput {
+                status,
+                stdout: stdout.as_bytes().to_vec(),
+                stderr: stderr.as_bytes().to_vec(),
+            });
+        }
+    }
+
+    #[async_trait]
+    impl ShellRunner for FakeShellRunner {
+        async fn run(&self, _program: &str, _args: &[&str]) -> Result<ShellOutput> {
+            self.outputs
+                .lock()
+                .expect("outputs")
+                .pop_front()
+                .ok_or_else(|| Error::operation("fake_shell", "missing output"))
+        }
+    }
+
+    /// Build a driver wired to fake `tank/ployz` root. The driver constructor
+    /// itself runs one `zfs list` call, so we satisfy that first.
+    async fn driver(fake: &FakeShellRunner) -> ZfsDriver<FakeShellRunner> {
+        fake.push(0, "/tank/ployz\n", "");
+        ZfsDriver::new(fake.clone(), "tank/ployz", 1.0)
+            .await
+            .expect("driver")
+    }
+
+    fn open(snapshot: &str, expected_guid: u64) -> ZfsTransferOpen {
+        ZfsTransferOpen {
+            namespace: "default".into(),
+            volume: "data".into(),
+            snapshot: snapshot.into(),
+            expected_guid,
+            source_machine_id: Some(MachineId("source".into())),
+            from_snapshot: None,
+            from_snapshot_guid: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn prepare_receive_returns_already_have_when_snapshot_matches() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        // snapshot_exists -> status 0 means present
+        fake.push(0, "tank/ployz/default/data@snap\n", "");
+        // snapshot_guid -> stdout is the guid
+        fake.push(0, "42\n", "");
+
+        let decision = prepare_receive(&driver, "tank/ployz/default/data", &open("snap", 42))
+            .await
+            .expect("prepare");
+
+        assert_eq!(decision, ReceiveDecision::AlreadyHave(42));
+    }
+
+    #[tokio::test]
+    async fn prepare_receive_rejects_existing_snapshot_with_mismatched_guid() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        fake.push(0, "tank/ployz/default/data@snap\n", "");
+        fake.push(0, "7\n", "");
+
+        let err = prepare_receive(&driver, "tank/ployz/default/data", &open("snap", 42))
+            .await
+            .expect_err("mismatched guid should fail");
+
+        assert!(err.contains("guid 7"), "got: {err}");
+        assert!(err.contains("source claims 42"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn prepare_receive_rejects_incremental_when_base_missing() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        // target snapshot missing
+        fake.push(1, "", "snapshot does not exist");
+        // base snapshot also missing
+        fake.push(1, "", "snapshot does not exist");
+        let mut o = open("snap", 42);
+        o.from_snapshot = Some("base".into());
+        o.from_snapshot_guid = Some(11);
+
+        let err = prepare_receive(&driver, "tank/ployz/default/data", &o)
+            .await
+            .expect_err("missing base should fail");
+
+        assert!(err.contains("base snapshot"), "got: {err}");
+        assert!(err.contains("missing on target"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn prepare_receive_rejects_incremental_when_base_guid_diverges() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        // target snapshot missing
+        fake.push(1, "", "snapshot does not exist");
+        // base snapshot present
+        fake.push(0, "tank/ployz/default/data@base\n", "");
+        // base guid -> different from claim
+        fake.push(0, "99\n", "");
+        let mut o = open("snap", 42);
+        o.from_snapshot = Some("base".into());
+        o.from_snapshot_guid = Some(11);
+
+        let err = prepare_receive(&driver, "tank/ployz/default/data", &o)
+            .await
+            .expect_err("mismatched base guid should fail");
+
+        assert!(err.contains("guid 99"), "got: {err}");
+        assert!(err.contains("source 11"), "got: {err}");
+    }
 
     fn machine(id: &str, overlay: Ipv6Addr) -> MachineRecord {
         MachineRecord {
