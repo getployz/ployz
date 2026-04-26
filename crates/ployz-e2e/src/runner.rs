@@ -1,4 +1,4 @@
-use crate::cli::Scenario;
+use crate::cli::{Scenario, ZfsMode};
 use crate::error::{Error, Result};
 use crate::scenarios;
 use crate::support::{
@@ -47,6 +47,7 @@ pub(crate) struct ScenarioRun {
     image: String,
     image_id: String,
     image_platform: String,
+    zfs_mode: ZfsMode,
     root_dir: PathBuf,
     payload_dir: PathBuf,
     outer_network: String,
@@ -111,6 +112,7 @@ impl ScenarioRun {
         image: &str,
         artifacts_root: &Path,
         keep_failed: bool,
+        zfs_mode: ZfsMode,
     ) -> Result<Self> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -136,6 +138,7 @@ impl ScenarioRun {
             image: image.to_string(),
             image_id,
             image_platform,
+            zfs_mode,
             root_dir,
             payload_dir,
             outer_network: format!("ployz-e2e-net-{run_id}"),
@@ -175,7 +178,7 @@ impl ScenarioRun {
     }
 
     pub(crate) fn cleanup(&self, failed: bool) {
-        if self.scenario == Scenario::VolumeSmoke {
+        if self.zfs_mode == ZfsMode::Real {
             self.cleanup_volume_smoke_zfs();
         }
 
@@ -1083,12 +1086,9 @@ impl ScenarioRun {
             }
         }
 
-        if self.scenario == Scenario::VolumeSmoke {
+        if self.zfs_mode != ZfsMode::Off {
             args.push("-e".to_string());
-            args.push(format!(
-                "PLOYZ_E2E_ZFS_MODE={}",
-                std::env::var("PLOYZ_E2E_ZFS_MODE").unwrap_or_else(|_| "fake".to_string())
-            ));
+            args.push(format!("PLOYZ_E2E_ZFS_MODE={}", self.zfs_mode.as_str()));
             if let Ok(pool) = std::env::var("PLOYZ_E2E_ZFS_POOL") {
                 args.push("-e".to_string());
                 args.push(format!("PLOYZ_E2E_ZFS_POOL={pool}"));
