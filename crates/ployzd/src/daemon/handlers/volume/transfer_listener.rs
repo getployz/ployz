@@ -5,8 +5,9 @@ use std::time::Duration;
 
 use ployz_runtime_api::RuntimeHandle;
 use ployz_runtime_backends::storage::{ShellRunner, TokioShellRunner, ZfsDriver};
-use ployz_store_api::{MachineStore, StoreDriver};
+use ployz_store_api::{DeployStore, MachineStore, StoreDriver};
 use ployz_types::model::MachineId;
+use ployz_types::spec::Namespace;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
@@ -86,34 +87,40 @@ pub(crate) async fn serve(
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_TRANSFERS));
     let task = tokio::spawn(async move {
         loop {
-            tokio::select! {
+            // Reserve a transfer slot before accepting; if all permits are
+            // held, the kernel queues new connections instead of letting us
+            // pile up unbounded sleeping tasks with open sockets.
+            let permit = tokio::select! {
                 _ = task_cancel.cancelled() => break,
-                accepted = listener.accept() => {
-                    let (stream, remote_addr) = match accepted {
-                        Ok(value) => value,
-                        Err(error) => {
-                            tracing::warn!(?error, "zfs transfer listener accept failed");
-                            continue;
-                        }
-                    };
-                    let zfs_root = zfs_root.clone();
-                    let store = store.clone();
-                    let semaphore = Arc::clone(&semaphore);
-                    tokio::spawn(async move {
-                        let permit = match semaphore.acquire_owned().await {
-                            Ok(permit) => permit,
-                            Err(error) => {
-                                tracing::warn!(?error, %remote_addr, "zfs transfer semaphore closed");
-                                return;
-                            }
-                        };
-                        if let Err(error) = handle_transfer(stream, zfs_root, overcommit_ratio, store, remote_addr).await {
-                            tracing::warn!(%error, %remote_addr, "zfs transfer failed");
-                        }
+                permit = Arc::clone(&semaphore).acquire_owned() => match permit {
+                    Ok(permit) => permit,
+                    Err(error) => {
+                        tracing::warn!(?error, "zfs transfer semaphore closed");
+                        break;
+                    }
+                },
+            };
+
+            let (stream, remote_addr) = tokio::select! {
+                _ = task_cancel.cancelled() => break,
+                accepted = listener.accept() => match accepted {
+                    Ok(value) => value,
+                    Err(error) => {
+                        tracing::warn!(?error, "zfs transfer listener accept failed");
                         drop(permit);
-                    });
+                        continue;
+                    }
+                },
+            };
+
+            let zfs_root = zfs_root.clone();
+            let store = store.clone();
+            tokio::spawn(async move {
+                if let Err(error) = handle_transfer(stream, zfs_root, overcommit_ratio, store, remote_addr).await {
+                    tracing::warn!(%error, %remote_addr, "zfs transfer failed");
                 }
-            }
+                drop(permit);
+            });
         }
     });
     Ok(ZfsTransferListenerHandle { cancel, task })
@@ -211,7 +218,35 @@ async fn validate_open_source(
         return Err("zfs transfer header missing source_machine_id".to_string());
     };
     validate_source_overlay(store, source, remote_addr).await?;
+    validate_volume_ownership(store, source, &open.namespace, &open.volume).await?;
     Ok(source.clone())
+}
+
+/// Verify the claimed source machine actually owns the namespace/volume the
+/// header asks us to write into. Without this check, any active mesh peer can
+/// pass IP validation and then redirect a `zfs recv` at an arbitrary dataset
+/// under the configured root by picking different namespace/volume fields.
+async fn validate_volume_ownership(
+    store: &StoreDriver,
+    source: &MachineId,
+    namespace: &str,
+    volume: &str,
+) -> Result<(), String> {
+    let namespace = Namespace(namespace.to_string());
+    let record = store
+        .get_volume(&namespace, volume)
+        .await
+        .map_err(|error| format!("look up volume for zfs transfer authorization: {error}"))?
+        .ok_or_else(|| {
+            format!("volume '{}/{volume}' not found for zfs transfer", namespace.0)
+        })?;
+    if record.machine_id != *source {
+        return Err(format!(
+            "zfs transfer source '{}' is not the owner of '{}/{volume}' (pinned to '{}')",
+            source, namespace.0, record.machine_id
+        ));
+    }
+    Ok(())
 }
 
 async fn validate_source_overlay(
@@ -378,15 +413,17 @@ async fn cleanup_partial(driver: &ZfsDriver<TokioShellRunner>, dataset: &str, sn
 mod tests {
     use super::{
         MAX_HEADER_BYTES, ReceiveDecision, ZfsTransferOpen, prepare_receive, read_transfer_header,
-        validate_open_source, validate_source_overlay,
+        validate_open_source, validate_source_overlay, validate_volume_ownership,
     };
     use async_trait::async_trait;
     use ployz_runtime_backends::storage::{ShellOutput, ShellRunner, ZfsDriver};
-    use ployz_store_api::{MachineStore, StoreDriver};
+    use ployz_store_api::{DeployStore, MachineStore, StoreDriver};
     use ployz_types::error::{Error, Result};
     use ployz_types::model::{
-        MachineId, MachineLifecycle, MachineRecord, MachineTopology, OverlayIp, PublicKey,
+        DeployId, DeployRecord, DeployState, MachineId, MachineLifecycle, MachineRecord,
+        MachineTopology, OverlayIp, PublicKey, VolumeRecord,
     };
+    use ployz_types::spec::{Namespace, VolumeScope};
     use std::collections::{BTreeMap, VecDeque};
     use std::net::{IpAddr, Ipv6Addr, SocketAddr};
     use std::sync::{Arc, Mutex};
@@ -536,6 +573,40 @@ mod tests {
         store
     }
 
+    async fn insert_volume(store: &StoreDriver, namespace: &str, volume: &str, owner: &str) {
+        let namespace = Namespace(namespace.to_string());
+        let deploy_id = DeployId(format!("deploy-{volume}"));
+        let record = VolumeRecord {
+            namespace: namespace.clone(),
+            volume_name: volume.to_string(),
+            scope: VolumeScope::Single,
+            machine_id: MachineId(owner.to_string()),
+            quota: "1G".into(),
+            mode: "rw".into(),
+            owner: "0:0".into(),
+            attached_services: Vec::new(),
+            created_at: 0,
+            created_by_deploy_id: deploy_id.clone(),
+            last_modified_at: 0,
+            last_modified_by_deploy_id: deploy_id.clone(),
+        };
+        let deploy = DeployRecord {
+            deploy_id: deploy_id.clone(),
+            namespace: namespace.clone(),
+            coordinator_machine_id: MachineId(owner.to_string()),
+            manifest_hash: "test".into(),
+            state: DeployState::Committed,
+            started_at: 0,
+            committed_at: Some(0),
+            finished_at: Some(0),
+            summary_json: "{}".into(),
+        };
+        store
+            .commit_deploy(&namespace, &[], &[], &[], &[record], &deploy)
+            .await
+            .expect("commit volume");
+    }
+
     #[tokio::test]
     async fn validate_source_overlay_accepts_matching_ip() {
         let overlay = "fd00::1".parse::<Ipv6Addr>().unwrap();
@@ -591,6 +662,50 @@ mod tests {
             err.contains("missing source_machine_id"),
             "unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn validate_open_source_accepts_when_source_owns_volume() {
+        let overlay = "fd00::1".parse::<Ipv6Addr>().unwrap();
+        let store = store_with(vec![machine("source", overlay)]).await;
+        insert_volume(&store, "default", "data", "source").await;
+        let remote = SocketAddr::new(IpAddr::V6(overlay), 4319);
+
+        validate_open_source(&store, &open("snap", 1), remote)
+            .await
+            .expect("owner accepted");
+    }
+
+    #[tokio::test]
+    async fn validate_open_source_rejects_when_volume_owned_by_other_machine() {
+        let overlay = "fd00::1".parse::<Ipv6Addr>().unwrap();
+        let other = "fd00::2".parse::<Ipv6Addr>().unwrap();
+        let store = store_with(vec![
+            machine("source", overlay),
+            machine("owner", other),
+        ])
+        .await;
+        insert_volume(&store, "default", "data", "owner").await;
+        let remote = SocketAddr::new(IpAddr::V6(overlay), 4319);
+
+        let err = validate_open_source(&store, &open("snap", 1), remote)
+            .await
+            .expect_err("non-owner rejected");
+        assert!(err.contains("not the owner"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn validate_volume_ownership_rejects_unknown_volume() {
+        let store = StoreDriver::memory();
+        let err = validate_volume_ownership(
+            &store,
+            &MachineId("source".into()),
+            "default",
+            "missing",
+        )
+        .await
+        .expect_err("unknown volume rejected");
+        assert!(err.contains("not found"), "unexpected error: {err}");
     }
 
     #[tokio::test]
