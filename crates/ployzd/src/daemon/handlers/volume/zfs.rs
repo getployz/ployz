@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use ployz_api::{
     DaemonPayload, DaemonResponse, VolumeZfsInspectPayload, VolumeZfsPeerSendPayload,
@@ -11,7 +12,7 @@ use ployz_types::model::{MachineId, MachineLifecycle, MachineRecord, VolumeRecor
 use ployz_types::spec::{Namespace, VolumeScope};
 use ployz_types::time::now_unix_secs;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
 use crate::daemon::DaemonState;
@@ -19,6 +20,8 @@ use crate::daemon::handlers::peer_rpc::{overlay_rpc, overlay_rpc_zfs_transfer};
 use crate::daemon::handlers::volume::transfer_listener::{ZfsTransferOpen, ZfsTransferReceived};
 
 const TRANSFERS_DIR_NAME: &str = "zfs-transfers";
+const ACK_READ_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_ACK_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 struct SendResult {
@@ -170,6 +173,7 @@ impl TransferStore {
     }
 
     fn load(&self, id: &str) -> Result<Option<TransferRecord>, String> {
+        validate_transfer_id(id)?;
         let path = self.path_for(id);
         if !path.exists() {
             return Ok(None);
@@ -219,6 +223,24 @@ impl TransferStore {
     fn path_for(&self, id: &str) -> PathBuf {
         self.dir().join(format!("{id}.json"))
     }
+}
+
+fn validate_transfer_id(id: &str) -> Result<(), String> {
+    if id.is_empty() || id.len() > 128 {
+        return Err(format!(
+            "transfer id must be 1-128 chars, got {}",
+            id.len()
+        ));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(format!(
+            "transfer id '{id}' must contain only [A-Za-z0-9_-]"
+        ));
+    }
+    Ok(())
 }
 
 fn read_transfer(path: &std::path::Path) -> Result<TransferRecord, String> {
@@ -922,13 +944,21 @@ async fn send_zfs_stream_from_local(
         ));
     }
 
-    let mut reader = BufReader::new(reader);
-    let mut line = String::new();
-    reader
-        .read_line(&mut line)
+    let mut reader = BufReader::new(reader).take((MAX_ACK_BYTES + 1) as u64);
+    let mut buf = Vec::new();
+    let bytes_read = tokio::time::timeout(ACK_READ_TIMEOUT, reader.read_until(b'\n', &mut buf))
         .await
+        .map_err(|_| "timed out waiting for zfs transfer response".to_string())?
         .map_err(|err| format!("read zfs transfer response: {err}"))?;
-    let response: ZfsTransferReceived = serde_json::from_str(&line)
+    if bytes_read == 0 {
+        return Err("connection closed before zfs transfer response".to_string());
+    }
+    if buf.len() > MAX_ACK_BYTES {
+        return Err(format!(
+            "zfs transfer response exceeded {MAX_ACK_BYTES} bytes"
+        ));
+    }
+    let response: ZfsTransferReceived = serde_json::from_slice(&buf)
         .map_err(|err| format!("decode zfs transfer response: {err}"))?;
     if !response.ok {
         return Err(response.message);
@@ -1165,6 +1195,17 @@ mod tests {
             .expect("record exists");
         assert_eq!(loaded.status, TransferStatus::Interrupted);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn load_rejects_path_segment_id() {
+        let store = TransferStore::new(tmp_root("reject-id"));
+        for bad in ["../etc/passwd", "foo/bar", "with space", "", "."] {
+            let err = store
+                .load(bad)
+                .expect_err(&format!("id '{bad}' should be rejected"));
+            assert!(err.contains("transfer id"), "got: {err}");
+        }
     }
 
     #[test]
