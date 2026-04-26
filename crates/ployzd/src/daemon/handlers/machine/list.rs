@@ -132,6 +132,18 @@ pub(super) async fn machine_list_report(store: StoreDriver) -> Result<MachineLis
             .map(|machine| MachineListReportRow {
                 id: machine.id.0.clone(),
                 lifecycle: format_lifecycle(machine),
+                region: machine.topology.region.0.clone(),
+                availability_zone: machine
+                    .topology
+                    .availability_zone
+                    .as_ref()
+                    .map(|zone| zone.0.clone()),
+                availability_zone_display: machine
+                    .topology
+                    .availability_zone
+                    .as_ref()
+                    .map(|zone| zone.0.clone())
+                    .unwrap_or_else(|| "—".into()),
                 overlay: machine.overlay_ip.0.to_string(),
                 subnet: machine.subnet,
                 subnet_display: machine

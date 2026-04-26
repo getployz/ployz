@@ -17,6 +17,7 @@ use crate::metrics::{
     ContainerResourceMetricsSource, DockerContainerResourceMetricsSource,
     spawn_container_resource_metrics_loop,
 };
+use ployz_types::model::MachineTopology;
 use ployz_types::model::NetworkLifecycle;
 
 pub fn init_tracing() {
@@ -37,6 +38,7 @@ pub async fn run_daemon(
     gateway_listen_addr: String,
     gateway_https_listen_addr: Option<String>,
     gateway_threads: usize,
+    configured_topology: Option<MachineTopology>,
     daemon_metrics_listen_addr: Option<String>,
     dns_metrics_listen_addr: Option<String>,
     gateway_metrics_listen_addr: Option<String>,
@@ -54,6 +56,7 @@ pub async fn run_daemon(
         gateway_listen_addr,
         gateway_https_listen_addr,
         gateway_threads,
+        configured_topology,
         daemon_metrics_listen_addr,
         dns_metrics_listen_addr,
         gateway_metrics_listen_addr,
@@ -77,6 +80,7 @@ async fn run_daemon_with_resource_metrics_source(
     gateway_listen_addr: String,
     gateway_https_listen_addr: Option<String>,
     gateway_threads: usize,
+    configured_topology: Option<MachineTopology>,
     daemon_metrics_listen_addr: Option<String>,
     dns_metrics_listen_addr: Option<String>,
     gateway_metrics_listen_addr: Option<String>,
@@ -95,6 +99,7 @@ async fn run_daemon_with_resource_metrics_source(
         gateway_listen_addr,
         gateway_https_listen_addr,
         gateway_threads,
+        configured_topology,
         daemon_metrics_listen_addr,
         dns_metrics_listen_addr,
         gateway_metrics_listen_addr,
@@ -117,6 +122,7 @@ async fn run_daemon_inner(
     gateway_listen_addr: String,
     gateway_https_listen_addr: Option<String>,
     gateway_threads: usize,
+    configured_topology: Option<MachineTopology>,
     daemon_metrics_listen_addr: Option<String>,
     dns_metrics_listen_addr: Option<String>,
     gateway_metrics_listen_addr: Option<String>,
@@ -164,6 +170,7 @@ async fn run_daemon_inner(
         gateway_listen_addr,
         gateway_https_listen_addr,
         gateway_threads,
+        configured_topology,
         dns_metrics_listen_addr,
         gateway_metrics_listen_addr,
     );
@@ -383,6 +390,7 @@ mod tests {
                 "127.0.0.1:8080".into(),
                 None,
                 1,
+                None,
                 Some(metrics_addr.to_string()),
                 None,
                 None,
@@ -470,6 +478,7 @@ mod tests {
                 "127.0.0.1:8080".into(),
                 None,
                 1,
+                None,
                 Some(metrics_addr.to_string()),
                 None,
                 None,

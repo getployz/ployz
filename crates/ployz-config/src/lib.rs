@@ -88,6 +88,10 @@ pub struct DaemonConfig {
     pub dns_metrics_listen_addr: Option<String>,
     #[serde(default)]
     pub gateway_metrics_listen_addr: Option<String>,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub az: Option<String>,
     #[serde(default = "default_cluster_cidr")]
     pub cluster_cidr: String,
     #[serde(default = "default_subnet_prefix_len")]
@@ -136,6 +140,10 @@ struct RuntimeDefaults {
     dns_metrics_listen_addr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     gateway_metrics_listen_addr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    region: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    az: Option<String>,
     cluster_cidr: String,
     subnet_prefix_len: u8,
     remote_control_port: u16,
@@ -167,6 +175,10 @@ struct DaemonOverrides {
     dns_metrics_listen_addr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     gateway_metrics_listen_addr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    region: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    az: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cluster_cidr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -272,6 +284,8 @@ pub fn load_daemon_config(
         daemon_metrics_listen_addr: None,
         dns_metrics_listen_addr: None,
         gateway_metrics_listen_addr: None,
+        region: None,
+        az: None,
         cluster_cidr: None,
         subnet_prefix_len: None,
         remote_control_port: cli_remote_control_port,
@@ -295,6 +309,8 @@ fn build_figment(cli_config_path: Option<PathBuf>, context: &HostPathsContext) -
         daemon_metrics_listen_addr: None,
         dns_metrics_listen_addr: None,
         gateway_metrics_listen_addr: None,
+        region: None,
+        az: None,
         cluster_cidr: default_cluster_cidr(),
         subnet_prefix_len: default_subnet_prefix_len(),
         remote_control_port: default_remote_control_port(),
@@ -383,6 +399,25 @@ mod tests {
             std::env::remove_var("PLOYZ_DAEMON_METRICS_LISTEN_ADDR");
             std::env::remove_var("PLOYZ_DNS_METRICS_LISTEN_ADDR");
             std::env::remove_var("PLOYZ_GATEWAY_METRICS_LISTEN_ADDR");
+        }
+    }
+
+    #[test]
+    fn daemon_config_reads_topology_from_env() {
+        unsafe {
+            std::env::set_var("PLOYZ_REGION", "eu-primary");
+            std::env::set_var("PLOYZ_AZ", "hel1-a");
+        }
+
+        let loaded = load_daemon_config(None, None, None, None, &context(Os::Darwin, false))
+            .expect("daemon config should load");
+
+        assert_eq!(loaded.region.as_deref(), Some("eu-primary"));
+        assert_eq!(loaded.az.as_deref(), Some("hel1-a"));
+
+        unsafe {
+            std::env::remove_var("PLOYZ_REGION");
+            std::env::remove_var("PLOYZ_AZ");
         }
     }
 }

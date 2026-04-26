@@ -127,6 +127,7 @@ impl MeshStartTx {
             plan.bootstrap.as_ref(),
             listen_port,
             &db_records,
+            state.configured_topology.as_ref(),
         )
         .await;
 
@@ -718,6 +719,7 @@ mod tests {
             gateway_listen_addr.into(),
             None,
             1,
+            None,
             None,
             None,
         )
