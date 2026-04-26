@@ -430,6 +430,7 @@ async fn apply_deletes_volume_records_removed_from_manifest() {
     apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
         .await
         .expect("first deploy");
+
     let records = store
         .list_volumes(&manifest.namespace)
         .await
@@ -465,6 +466,40 @@ async fn apply_deletes_volume_records_removed_from_manifest() {
         records.is_empty(),
         "expected volume row removed: {records:?}"
     );
+}
+
+#[tokio::test]
+async fn apply_commits_unattached_volume_declarations_without_service_reconciliation() {
+    let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = test_manifest(vec![test_service_spec(
+        "api",
+        Placement::Replicated { count: 1 },
+        "nginx:1.27",
+    )]);
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    let controller = FakeController::default();
+    let factory = FakeSessionFactory::new(controller.clone());
+
+    apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+        .await
+        .expect("deploy");
+
+    assert_eq!(controller.start_count(), 1);
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list volumes");
+    let [record] = records.as_slice() else {
+        panic!("expected one committed volume");
+    };
+    assert_eq!(record.volume_name, "data");
+    assert!(record.attached_services.is_empty());
 }
 
 #[tokio::test]
