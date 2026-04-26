@@ -8,6 +8,8 @@ mod three_node_majority_add_succeeds;
 mod two_node_equal_split_add_denied;
 mod volume_smoke;
 mod wireguard_reconnect;
+mod zfs_support;
+mod zfs_transfer_smoke;
 
 use crate::cli::Scenario;
 use crate::error::Result;
@@ -27,5 +29,6 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
         Scenario::DeploySmoke => deploy_smoke::run(run),
         Scenario::BridgeForwardSmoke => bridge_forward_smoke::run(run),
         Scenario::VolumeSmoke => volume_smoke::run(run),
+        Scenario::ZfsTransferSmoke => zfs_transfer_smoke::run(run),
     }
 }

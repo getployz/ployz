@@ -15,6 +15,9 @@ pub(crate) struct Cli {
     #[arg(long, value_enum)]
     pub(crate) scenario: Vec<Scenario>,
 
+    #[arg(long, value_enum, default_value_t = ZfsMode::Off)]
+    pub(crate) zfs: ZfsMode,
+
     #[arg(long, value_name = "PATH", default_value = ".e2e-artifacts")]
     pub(crate) artifacts_dir: PathBuf,
 
@@ -29,6 +32,24 @@ pub(crate) struct Cli {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ZfsMode {
+    Off,
+    Fake,
+    Real,
+}
+
+impl ZfsMode {
+    #[must_use]
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Fake => "fake",
+            Self::Real => "real",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum Scenario {
     SingleNodeInit,
     MachineAddBasic,
@@ -40,10 +61,11 @@ pub(crate) enum Scenario {
     DeploySmoke,
     BridgeForwardSmoke,
     VolumeSmoke,
+    ZfsTransferSmoke,
 }
 
 impl Scenario {
-    const ALL: [Self; 10] = [
+    const DEFAULT: [Self; 9] = [
         Self::SingleNodeInit,
         Self::MachineAddBasic,
         Self::MachineDrainStandbyActivateCycle,
@@ -53,19 +75,49 @@ impl Scenario {
         Self::WireguardReconnect,
         Self::DeploySmoke,
         Self::BridgeForwardSmoke,
-        Self::VolumeSmoke,
     ];
 
     #[must_use]
-    pub(crate) fn default_order() -> Vec<Self> {
-        Self::ALL.to_vec()
+    pub(crate) fn default_order(zfs_mode: ZfsMode) -> Vec<Self> {
+        let mut scenarios = Self::DEFAULT.to_vec();
+        match zfs_mode {
+            ZfsMode::Off => {}
+            ZfsMode::Fake => scenarios.push(Self::VolumeSmoke),
+            ZfsMode::Real => {
+                scenarios.push(Self::VolumeSmoke);
+                scenarios.push(Self::ZfsTransferSmoke);
+            }
+        }
+        scenarios
+    }
+
+    pub(crate) fn validate_zfs_mode(self, zfs_mode: ZfsMode) -> Result<(), String> {
+        match self {
+            Self::VolumeSmoke if zfs_mode == ZfsMode::Off => {
+                Err("volume_smoke requires --zfs fake or --zfs real".into())
+            }
+            Self::ZfsTransferSmoke if zfs_mode != ZfsMode::Real => {
+                Err("zfs_transfer_smoke requires --zfs real".into())
+            }
+            Self::SingleNodeInit
+            | Self::MachineAddBasic
+            | Self::MachineDrainStandbyActivateCycle
+            | Self::TwoNodeEqualSplitAddDenied
+            | Self::ThreeNodeMajorityAddSucceeds
+            | Self::DestroyWithDeadPeer
+            | Self::WireguardReconnect
+            | Self::DeploySmoke
+            | Self::BridgeForwardSmoke
+            | Self::VolumeSmoke
+            | Self::ZfsTransferSmoke => Ok(()),
+        }
     }
 
     #[must_use]
     pub(crate) fn node_names(self) -> &'static [&'static str] {
         match self {
             Self::SingleNodeInit | Self::BridgeForwardSmoke | Self::VolumeSmoke => &["founder"],
-            Self::DeploySmoke => &["founder", "peer"],
+            Self::DeploySmoke | Self::ZfsTransferSmoke => &["founder", "peer"],
             Self::MachineAddBasic => &["founder", "joiner"],
             Self::MachineDrainStandbyActivateCycle | Self::WireguardReconnect => {
                 &["founder", "peer"]
@@ -91,6 +143,7 @@ impl Scenario {
             Self::DeploySmoke => "deploy_smoke",
             Self::BridgeForwardSmoke => "bridge_forward_smoke",
             Self::VolumeSmoke => "volume_smoke",
+            Self::ZfsTransferSmoke => "zfs_transfer_smoke",
         }
     }
 
@@ -106,7 +159,8 @@ impl Scenario {
             | Self::DestroyWithDeadPeer
             | Self::WireguardReconnect
             | Self::DeploySmoke
-            | Self::VolumeSmoke => "host",
+            | Self::VolumeSmoke
+            | Self::ZfsTransferSmoke => "host",
         }
     }
 }
