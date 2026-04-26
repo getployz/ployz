@@ -178,7 +178,16 @@ impl<R: ShellRunner> ZfsDriver<R> {
                 &["list", "-H", "-t", "snapshot", "-o", "name", &full],
             )
             .await?;
-        Ok(output.status == 0)
+        if output.status == 0 {
+            return Ok(true);
+        }
+        if zfs_reports_not_found(&output.stderr) {
+            return Ok(false);
+        }
+        Err(Error::operation(
+            "zfs list snapshot",
+            command_failure_message(&output.stderr, output.status),
+        ))
     }
 
     pub async fn snapshot_guid(&self, dataset: &str, snapshot: &str) -> Result<u64> {
@@ -264,7 +273,7 @@ impl<R: ShellRunner> ZfsDriver<R> {
             )
             .await?;
         if output.status != 0 {
-            if zfs_reports_dataset_missing(&output.stderr) {
+            if zfs_reports_not_found(&output.stderr) {
                 return Ok(None);
             }
             return Err(Error::operation(
@@ -496,10 +505,9 @@ fn command_failure_message(stderr: &[u8], status: i32) -> String {
     }
 }
 
-fn zfs_reports_dataset_missing(stderr: &[u8]) -> bool {
-    String::from_utf8_lossy(stderr)
-        .to_ascii_lowercase()
-        .contains("dataset does not exist")
+fn zfs_reports_not_found(stderr: &[u8]) -> bool {
+    let message = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    message.contains("dataset does not exist") || message.contains("snapshot does not exist")
 }
 
 fn parse_single_field(stdout: &[u8], field: &str) -> Result<String> {
@@ -741,7 +749,7 @@ mod tests {
     async fn snapshot_creation_reads_guid() {
         let fake = FakeShellRunner::default();
         let driver = driver(&fake).await;
-        fake.push(1, "", "snapshot missing");
+        fake.push(1, "", "snapshot does not exist");
         fake.push(0, "", "");
         fake.push(0, "42\n", "");
 
@@ -779,6 +787,20 @@ mod tests {
                 "tank/ployz/prod/data@base"
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn snapshot_exists_returns_errors_other_than_not_found() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        fake.push(1, "", "permission denied");
+
+        let err = driver
+            .snapshot_exists("tank/ployz/prod/data", "base")
+            .await
+            .expect_err("permission failure should not be treated as missing");
+
+        assert!(err.to_string().contains("permission denied"));
     }
 
     #[tokio::test]
