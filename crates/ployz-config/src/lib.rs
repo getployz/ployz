@@ -110,10 +110,25 @@ pub struct DaemonConfig {
     pub gateway_threads: usize,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StorageConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zfs_root: Option<PathBuf>,
+    #[serde(default = "default_overcommit_ratio")]
+    pub overcommit_ratio: f64,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            zfs_root: None,
+            overcommit_ratio: default_overcommit_ratio(),
+        }
+    }
+}
+
+fn default_overcommit_ratio() -> f64 {
+    1.0
 }
 
 fn default_cluster_cidr() -> String {
@@ -453,6 +468,33 @@ mod tests {
             loaded.storage.zfs_root.as_deref(),
             Some(Path::new("tank/ployz"))
         );
+        assert!((loaded.storage.overcommit_ratio - 1.0).abs() < f64::EPSILON);
+
+        std::fs::remove_file(path).expect("remove config");
+    }
+
+    #[test]
+    fn daemon_config_reads_storage_overcommit_ratio_from_toml() {
+        let path = std::env::temp_dir().join(format!(
+            "ployz-storage-overcommit-{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "[storage]\nzfs_root = \"tank/ployz\"\novercommit_ratio = 1.5\n",
+        )
+        .expect("write config");
+
+        let loaded = load_daemon_config(
+            Some(path.clone()),
+            None,
+            None,
+            None,
+            &context(Os::Darwin, false),
+        )
+        .expect("daemon config should load");
+
+        assert!((loaded.storage.overcommit_ratio - 1.5).abs() < f64::EPSILON);
 
         std::fs::remove_file(path).expect("remove config");
     }

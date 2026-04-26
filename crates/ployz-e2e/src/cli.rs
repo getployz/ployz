@@ -39,10 +39,11 @@ pub(crate) enum Scenario {
     WireguardReconnect,
     DeploySmoke,
     BridgeForwardSmoke,
+    VolumeSmoke,
 }
 
 impl Scenario {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::SingleNodeInit,
         Self::MachineAddBasic,
         Self::MachineDrainStandbyActivateCycle,
@@ -52,6 +53,7 @@ impl Scenario {
         Self::WireguardReconnect,
         Self::DeploySmoke,
         Self::BridgeForwardSmoke,
+        Self::VolumeSmoke,
     ];
 
     #[must_use]
@@ -62,7 +64,7 @@ impl Scenario {
     #[must_use]
     pub(crate) fn node_names(self) -> &'static [&'static str] {
         match self {
-            Self::SingleNodeInit | Self::BridgeForwardSmoke => &["founder"],
+            Self::SingleNodeInit | Self::BridgeForwardSmoke | Self::VolumeSmoke => &["founder"],
             Self::DeploySmoke => &["founder", "peer"],
             Self::MachineAddBasic => &["founder", "joiner"],
             Self::MachineDrainStandbyActivateCycle | Self::WireguardReconnect => {
@@ -88,6 +90,7 @@ impl Scenario {
             Self::WireguardReconnect => "wireguard_reconnect",
             Self::DeploySmoke => "deploy_smoke",
             Self::BridgeForwardSmoke => "bridge_forward_smoke",
+            Self::VolumeSmoke => "volume_smoke",
         }
     }
 
@@ -102,7 +105,8 @@ impl Scenario {
             | Self::ThreeNodeMajorityAddSucceeds
             | Self::DestroyWithDeadPeer
             | Self::WireguardReconnect
-            | Self::DeploySmoke => "host",
+            | Self::DeploySmoke
+            | Self::VolumeSmoke => "host",
         }
     }
 }

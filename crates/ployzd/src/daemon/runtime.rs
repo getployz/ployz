@@ -92,7 +92,7 @@ impl DaemonState {
         let root = root
             .to_str()
             .ok_or_else(|| format!("storage zfs_root is not valid UTF-8: {}", root.display()))?;
-        ZfsDriver::new(TokioShellRunner, root)
+        ZfsDriver::new(TokioShellRunner, root, self.storage.overcommit_ratio)
             .await
             .map(Arc::new)
             .map(Some)
