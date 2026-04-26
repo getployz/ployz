@@ -26,6 +26,13 @@ const DEFAULT_OVERLAY_RPC_TIMEOUTS: OverlayRpcTimeouts = OverlayRpcTimeouts {
     read: PEER_RPC_TIMEOUT,
 };
 
+const ZFS_TRANSFER_RPC_TIMEOUTS: OverlayRpcTimeouts = OverlayRpcTimeouts {
+    connect: PEER_RPC_TIMEOUT,
+    write: PEER_RPC_TIMEOUT,
+    shutdown: PEER_RPC_TIMEOUT,
+    read: Duration::from_secs(24 * 60 * 60),
+};
+
 pub(super) enum OverlayRpcExpectOkError {
     Transport(String),
     Remote { code: String, message: String },
@@ -52,6 +59,20 @@ pub(crate) async fn overlay_rpc(
         peer_rpc_port,
         request,
         DEFAULT_OVERLAY_RPC_TIMEOUTS,
+    )
+    .await
+}
+
+pub(crate) async fn overlay_rpc_zfs_transfer(
+    overlay_ip: OverlayIp,
+    peer_rpc_port: u16,
+    request: DaemonRequest,
+) -> Result<DaemonResponse, String> {
+    overlay_rpc_with_timeouts(
+        overlay_ip,
+        peer_rpc_port,
+        request,
+        ZFS_TRANSFER_RPC_TIMEOUTS,
     )
     .await
 }

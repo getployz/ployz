@@ -260,10 +260,15 @@ impl MeshStartTx {
             self.zfs_transfer = Box::new(transfer_listener::ZfsTransferListenerHandle::noop());
             return Ok(());
         };
+        let Some(mesh) = self.mesh.as_ref() else {
+            self.zfs_transfer = Box::new(transfer_listener::ZfsTransferListenerHandle::noop());
+            return Ok(());
+        };
         let handle = transfer_listener::serve(
             plan.zfs_transfer_bind_addr,
             zfs_root,
             state.storage.overcommit_ratio,
+            mesh.store.clone(),
         )
         .await
         .map_err(|error| StartMeshError::RemoteControl {

@@ -116,6 +116,43 @@ impl<R: ShellRunner> ZfsDriver<R> {
         Ok(self.read_dataset(dataset).await?.is_some())
     }
 
+    /// Idempotently create the parent dataset of `dataset` (and any ancestors up
+    /// to the root) so that a subsequent `zfs recv` can land into it. The root
+    /// dataset itself is assumed to exist; we only create intermediate
+    /// namespaces.
+    pub async fn ensure_parent_dataset(&self, dataset: &str) -> Result<()> {
+        let Some((parent, _)) = dataset.rsplit_once('/') else {
+            return Err(Error::operation(
+                "zfs_ensure_parent",
+                format!("dataset '{dataset}' has no parent"),
+            ));
+        };
+        if parent.is_empty() || parent == self.zfs_root_dataset {
+            return Ok(());
+        }
+        if self.dataset_exists(parent).await? {
+            return Ok(());
+        }
+        self.run_success("zfs create parent", "zfs", &["create", "-p", parent])
+            .await
+    }
+
+    pub async fn destroy_snapshot(&self, dataset: &str, snapshot: &str) -> Result<()> {
+        let full = snapshot_name(dataset, snapshot);
+        let output = self.runner.run("zfs", &["destroy", &full]).await?;
+        if output.status == 0 {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("does not exist") || stderr.contains("dataset does not exist") {
+            return Ok(());
+        }
+        Err(Error::operation(
+            "zfs destroy snapshot",
+            stderr.trim().to_string(),
+        ))
+    }
+
     pub async fn create_snapshot(&self, dataset: &str, snapshot: &str) -> Result<SnapshotInfo> {
         if self.snapshot_exists(dataset, snapshot).await? {
             return Ok(SnapshotInfo {
@@ -419,9 +456,15 @@ impl ZfsDriver<TokioShellRunner> {
             .spawn("zfs", &["send", "-i", &from, &to], ShellStdio::PipedStdout)
     }
 
+    /// Spawn `zfs recv` against `dataset`. We deliberately do not pass `-F` so
+    /// that an unexpected pre-existing dataset or divergent snapshot list is
+    /// surfaced as an error rather than silently rolled back. Callers are
+    /// responsible for pre-checking idempotency (see
+    /// [`ZfsDriver::snapshot_exists`]) and cleaning up partial state on
+    /// failure (see [`ZfsDriver::destroy_snapshot`]).
     pub fn spawn_recv(&self, dataset: &str) -> Result<tokio::process::Child> {
         self.runner
-            .spawn("zfs", &["recv", "-F", dataset], ShellStdio::PipedStdin)
+            .spawn("zfs", &["recv", dataset], ShellStdio::PipedStdin)
     }
 }
 
@@ -692,6 +735,62 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn ensure_parent_dataset_creates_when_missing() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        // dataset_exists -> read_dataset returns missing
+        fake.push(1, "", "dataset does not exist");
+        // zfs create -p success
+        fake.push(0, "", "");
+
+        driver
+            .ensure_parent_dataset("tank/ployz/prod/data")
+            .await
+            .expect("ensure parent");
+
+        let calls = fake.calls();
+        assert_eq!(
+            calls[1],
+            [
+                "zfs",
+                "list",
+                "-H",
+                "-o",
+                "name,quota,mountpoint",
+                "tank/ployz/prod"
+            ]
+        );
+        assert_eq!(calls[2], ["zfs", "create", "-p", "tank/ployz/prod"]);
+    }
+
+    #[tokio::test]
+    async fn ensure_parent_dataset_no_op_when_parent_is_root() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        driver
+            .ensure_parent_dataset("tank/ployz/data")
+            .await
+            .expect("ensure parent root");
+        // Only the root validation call from driver construction.
+        assert_eq!(fake.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn destroy_snapshot_treats_missing_as_success() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        fake.push(
+            1,
+            "",
+            "could not find any snapshots to destroy: dataset does not exist",
+        );
+        driver
+            .destroy_snapshot("tank/ployz/prod/data", "missing")
+            .await
+            .expect("destroy missing snapshot");
     }
 
     #[tokio::test]
