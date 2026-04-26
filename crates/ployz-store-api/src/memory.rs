@@ -565,6 +565,7 @@ impl MemoryStore {
         inner.invites.clear();
         inner.service_revisions.clear();
         inner.service_releases.clear();
+        inner.volumes.clear();
         inner.instance_status.clear();
         inner.deploys.clear();
         inner.acme_accounts.clear();
@@ -804,5 +805,60 @@ mod tests {
             .await
             .expect("refresh event deadline");
         assert_eq!(event, Some(()));
+    }
+
+    #[tokio::test]
+    async fn wipe_data_clears_volume_records() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("prod".into());
+        let deploy_id = DeployId("dep-1".into());
+        let volume = VolumeRecord {
+            namespace: namespace.clone(),
+            volume_name: "data".into(),
+            scope: ployz_types::spec::VolumeScope::Single,
+            machine_id: MachineId("machine-1".into()),
+            quota: "1G".into(),
+            mode: "0750".into(),
+            owner: "999:999".into(),
+            attached_services: Vec::new(),
+            created_at: 1,
+            created_by_deploy_id: deploy_id.clone(),
+            last_modified_at: 1,
+            last_modified_by_deploy_id: deploy_id.clone(),
+        };
+        let deploy = DeployRecord {
+            deploy_id,
+            namespace: namespace.clone(),
+            coordinator_machine_id: MachineId("local".into()),
+            manifest_hash: "hash".into(),
+            state: ployz_types::model::DeployState::Committed,
+            started_at: 1,
+            committed_at: Some(1),
+            finished_at: Some(1),
+            summary_json: "{}".into(),
+        };
+
+        store
+            .commit_deploy(&namespace, &[], &[], &[], &[volume], &deploy)
+            .await
+            .expect("commit volume");
+        assert_eq!(
+            store
+                .list_volumes(&namespace)
+                .await
+                .expect("list volumes before wipe")
+                .len(),
+            1
+        );
+
+        store.wipe_data().await.expect("wipe data");
+
+        assert!(
+            store
+                .list_volumes(&namespace)
+                .await
+                .expect("list volumes after wipe")
+                .is_empty()
+        );
     }
 }
