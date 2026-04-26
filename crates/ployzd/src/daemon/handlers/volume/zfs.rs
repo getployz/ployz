@@ -1125,18 +1125,20 @@ fn finalize_zfs_transfer(
 
 #[cfg(test)]
 mod tests {
-    use super::{TransferStatus, TransferStore};
+    use super::{TransferStatus, TransferStore, finalize_zfs_transfer};
     use ployz_types::model::MachineId;
     use ployz_types::spec::Namespace;
+    use std::path::PathBuf;
 
-    #[test]
-    fn startup_reconciliation_marks_running_transfers_interrupted() {
-        let root = std::env::temp_dir().join(format!(
-            "ployz-zfs-transfer-test-{}",
+    fn tmp_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "ployz-zfs-transfer-test-{label}-{}",
             super::unique_transfer_id(0)
-        ));
-        let store = TransferStore::new(root.clone());
-        let transfer = store
+        ))
+    }
+
+    fn begin(store: &TransferStore) -> super::TransferRecord {
+        store
             .begin(
                 &Namespace("default".into()),
                 "data",
@@ -1145,7 +1147,14 @@ mod tests {
                 "snap".into(),
                 None,
             )
-            .expect("begin transfer");
+            .expect("begin transfer")
+    }
+
+    #[test]
+    fn startup_reconciliation_marks_running_transfers_interrupted() {
+        let root = tmp_root("reconcile");
+        let store = TransferStore::new(root.clone());
+        let transfer = begin(&store);
         assert_eq!(transfer.status, TransferStatus::Running);
 
         let count = store.reconcile_startup().expect("reconcile");
@@ -1155,6 +1164,70 @@ mod tests {
             .expect("load")
             .expect("record exists");
         assert_eq!(loaded.status, TransferStatus::Interrupted);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn list_orders_by_started_at_desc_then_id_asc() {
+        let root = tmp_root("list-order");
+        let store = TransferStore::new(root.clone());
+        let mut a = begin(&store);
+        let mut b = begin(&store);
+        let mut c = begin(&store);
+        // begin uses nanos in the id, so ids grow with call order
+        assert!(a.id < b.id && b.id < c.id);
+
+        a.started_at = 100;
+        b.started_at = 200;
+        c.started_at = 200;
+        store.save(&a).expect("save a");
+        store.save(&b).expect("save b");
+        store.save(&c).expect("save c");
+
+        let listed = store.list().expect("list");
+        let ids: Vec<&str> = listed.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec![b.id.as_str(), c.id.as_str(), a.id.as_str()]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn finalize_records_complete_stage_and_succeeded_status() {
+        let root = tmp_root("finalize-ok");
+        let store = TransferStore::new(root.clone());
+        let mut transfer = begin(&store);
+        store
+            .update_stage(&mut transfer, "snapshot")
+            .expect("stage snapshot");
+        store
+            .update_stage(&mut transfer, "send")
+            .expect("stage send");
+
+        finalize_zfs_transfer(&store, &mut transfer, Ok(()));
+
+        let loaded = store
+            .load(&transfer.id)
+            .expect("load")
+            .expect("record exists");
+        assert_eq!(loaded.status, TransferStatus::Succeeded);
+        assert_eq!(loaded.stage, "complete");
+        assert!(loaded.last_error.is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn finalize_captures_last_error_on_failure() {
+        let root = tmp_root("finalize-err");
+        let store = TransferStore::new(root.clone());
+        let mut transfer = begin(&store);
+
+        finalize_zfs_transfer(&store, &mut transfer, Err("boom".into()));
+
+        let loaded = store
+            .load(&transfer.id)
+            .expect("load")
+            .expect("record exists");
+        assert_eq!(loaded.status, TransferStatus::Failed);
+        assert_eq!(loaded.last_error.as_deref(), Some("boom"));
         let _ = std::fs::remove_dir_all(root);
     }
 }
