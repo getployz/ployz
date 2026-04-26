@@ -45,6 +45,9 @@ impl DaemonState {
             | DaemonRequest::VolumeZfsInspect { .. }
             | DaemonRequest::VolumeZfsSnapshot { .. }
             | DaemonRequest::VolumeZfsSend { .. }
+            | DaemonRequest::VolumeZfsPeerSnapshot { .. }
+            | DaemonRequest::VolumeZfsPeerSnapshotGuid { .. }
+            | DaemonRequest::VolumeZfsPeerStartSend { .. }
             | DaemonRequest::VolumeZfsTransferGet { .. }
             | DaemonRequest::VolumeZfsTransferList
             | DaemonRequest::MeshList
@@ -131,6 +134,42 @@ impl DaemonState {
                     &snapshot,
                     &target_machine,
                     from_snapshot.as_deref(),
+                )
+                .await
+            }
+            DaemonRequest::VolumeZfsPeerSnapshot {
+                namespace,
+                volume,
+                snapshot,
+            } => {
+                self.handle_volume_zfs_peer_snapshot(&namespace, &volume, &snapshot)
+                    .await
+            }
+            DaemonRequest::VolumeZfsPeerSnapshotGuid {
+                namespace,
+                volume,
+                snapshot,
+            } => {
+                self.handle_volume_zfs_peer_snapshot_guid(&namespace, &volume, &snapshot)
+                    .await
+            }
+            DaemonRequest::VolumeZfsPeerStartSend {
+                namespace,
+                volume,
+                snapshot,
+                target_machine,
+                expected_guid,
+                from_snapshot,
+                from_snapshot_guid,
+            } => {
+                self.handle_volume_zfs_peer_start_send(
+                    &namespace,
+                    &volume,
+                    &snapshot,
+                    &target_machine,
+                    expected_guid,
+                    from_snapshot.as_deref(),
+                    from_snapshot_guid,
                 )
                 .await
             }
@@ -258,6 +297,9 @@ impl DaemonState {
             | DaemonRequest::VolumeZfsInspect { .. }
             | DaemonRequest::VolumeZfsSnapshot { .. }
             | DaemonRequest::VolumeZfsSend { .. }
+            | DaemonRequest::VolumeZfsPeerSnapshot { .. }
+            | DaemonRequest::VolumeZfsPeerSnapshotGuid { .. }
+            | DaemonRequest::VolumeZfsPeerStartSend { .. }
             | DaemonRequest::VolumeZfsTransferGet { .. }
             | DaemonRequest::VolumeZfsTransferList
             | DaemonRequest::MeshList
