@@ -8,7 +8,7 @@ use ployz_api::{
 use ployz_runtime_backends::storage::{TokioShellRunner, ZfsDriver};
 use ployz_store_api::{DeployStore, MachineStore};
 use ployz_types::model::{MachineId, MachineLifecycle, MachineRecord, VolumeRecord};
-use ployz_types::spec::Namespace;
+use ployz_types::spec::{Namespace, VolumeScope};
 use ployz_types::time::now_unix_secs;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -322,6 +322,15 @@ impl DaemonState {
             Ok(record) => record,
             Err(error) => return self.err("VOLUME_ZFS_SEND_FAILED", error),
         };
+        if record.scope != VolumeScope::Single {
+            return self.err(
+                "VOLUME_ZFS_SCOPE_NOT_SUPPORTED",
+                format!(
+                    "volume '{}/{}' has scope {:?}; only Single is supported in this build",
+                    namespace.0, volume, record.scope
+                ),
+            );
+        }
         let source = match self.find_active_machine(&record.machine_id.0).await {
             Ok(record) => record,
             Err(error) => return self.err("VOLUME_ZFS_SEND_FAILED", error),
@@ -832,6 +841,28 @@ async fn send_zfs_stream_from_local(
         &record.namespace,
         &record.volume_name,
     );
+    let actual_guid = driver
+        .snapshot_guid(&dataset, snapshot)
+        .await
+        .map_err(|err| err.to_string())?;
+    if actual_guid != expected_guid {
+        return Err(format!(
+            "local snapshot '{dataset}@{snapshot}' guid {actual_guid} did not match expected {expected_guid}"
+        ));
+    }
+    if let Some(from_snapshot) = from_snapshot
+        && let Some(expected_from) = from_snapshot_guid
+    {
+        let actual_from = driver
+            .snapshot_guid(&dataset, from_snapshot)
+            .await
+            .map_err(|err| err.to_string())?;
+        if actual_from != expected_from {
+            return Err(format!(
+                "local base snapshot '{dataset}@{from_snapshot}' guid {actual_from} did not match expected {expected_from}"
+            ));
+        }
+    }
     let address =
         std::net::SocketAddr::new(std::net::IpAddr::V6(target.overlay_ip.0), transfer_port);
     let stream = TcpStream::connect(address)
