@@ -897,9 +897,16 @@ async fn send_zfs_stream_from_local(
     let Some(mut stdout) = send.stdout.take() else {
         return Err("zfs send stdout was not piped".to_string());
     };
-    let bytes = tokio::io::copy(&mut stdout, &mut writer)
-        .await
-        .map_err(|err| format!("copy zfs send stream: {err}"))?;
+    let bytes = match tokio::io::copy(&mut stdout, &mut writer).await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            let copy_error = format!("copy zfs send stream: {err}");
+            if let Err(kill_err) = send.kill().await {
+                return Err(format!("{copy_error}; failed to reap zfs send: {kill_err}"));
+            }
+            return Err(copy_error);
+        }
+    };
     writer
         .shutdown()
         .await
