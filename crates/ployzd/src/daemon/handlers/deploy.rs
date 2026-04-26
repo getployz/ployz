@@ -299,6 +299,7 @@ mod tests {
             .commit_deploy(
                 &namespace,
                 &[],
+                &[],
                 &[ServiceReleaseRecord {
                     namespace: namespace.clone(),
                     service: service.name.clone(),
