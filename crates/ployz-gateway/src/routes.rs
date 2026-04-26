@@ -4,7 +4,8 @@ use std::net::{SocketAddr, SocketAddrV4};
 
 use ployz_types::model::{
     AcmeChallengeRecord, CertificateRecord, InstanceId, InstancePhase, InstanceStatusRecord,
-    MachineId, RoutingState, ServiceRelease, ServiceReleaseSlot, ServiceRoutingPolicy,
+    MachineId, MachineRecord, MachineTopology, RoutingState, ServiceRelease, ServiceReleaseSlot,
+    ServiceRoutingPolicy,
 };
 use ployz_types::spec::{Namespace, RouteSpec, ServiceSpec};
 use serde::{Deserialize, Serialize};
@@ -71,6 +72,7 @@ pub struct TcpRouteView {
 pub struct BackendView {
     pub instance_id: InstanceId,
     pub machine_id: MachineId,
+    pub topology: MachineTopology,
     pub service_port: String,
     pub address: SocketAddr,
 }
@@ -107,6 +109,15 @@ pub enum ProjectionError {
         left: String,
         right: String,
         listen_port: u16,
+    },
+    #[error(
+        "routable instance '{instance_id}' for service '{service}' in namespace '{namespace}' referenced missing machine '{machine_id}'"
+    )]
+    MissingMachineForInstance {
+        namespace: Namespace,
+        service: String,
+        instance_id: InstanceId,
+        machine_id: MachineId,
     },
 }
 
@@ -166,6 +177,11 @@ pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> 
         .into_iter()
         .map(|instance| (instance.instance_id.clone(), instance))
         .collect::<HashMap<_, _>>();
+    let machines = state
+        .machines
+        .into_iter()
+        .map(|machine| (machine.id.clone(), machine))
+        .collect::<HashMap<_, _>>();
 
     let mut http_routes = Vec::new();
     let mut tcp_routes = Vec::new();
@@ -198,7 +214,8 @@ pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> 
             &allowed_revision_hashes(&release_record.release),
             &release_record.release.slots,
             &instances,
-        );
+            &machines,
+        )?;
 
         for (index, route) in spec.routes.iter().enumerate() {
             match route {
@@ -334,7 +351,8 @@ fn routable_backends_by_port(
     allowed_revision_hashes: &HashSet<String>,
     slots: &[ServiceReleaseSlot],
     instances: &HashMap<InstanceId, InstanceStatusRecord>,
-) -> BTreeMap<String, Vec<BackendView>> {
+    machines: &HashMap<MachineId, MachineRecord>,
+) -> Result<BTreeMap<String, Vec<BackendView>>, ProjectionError> {
     let service_ports = spec
         .service_ports
         .iter()
@@ -351,6 +369,14 @@ fn routable_backends_by_port(
         let Some(overlay_ip) = instance.overlay_ip else {
             continue;
         };
+        let Some(machine) = machines.get(&instance.machine_id) else {
+            return Err(ProjectionError::MissingMachineForInstance {
+                namespace: namespace.clone(),
+                service: service.to_string(),
+                instance_id: instance.instance_id.clone(),
+                machine_id: instance.machine_id.clone(),
+            });
+        };
         for port_name in service_ports.keys() {
             let Some(port_number) = instance.backend_ports.get(port_name) else {
                 continue;
@@ -361,6 +387,7 @@ fn routable_backends_by_port(
                 .push(BackendView {
                     instance_id: instance.instance_id.clone(),
                     machine_id: instance.machine_id.clone(),
+                    topology: machine.topology.clone(),
                     service_port: port_name.clone(),
                     address: SocketAddr::V4(SocketAddrV4::new(overlay_ip, *port_number)),
                 });
@@ -375,7 +402,7 @@ fn routable_backends_by_port(
             )
         });
     }
-    backends
+    Ok(backends)
 }
 
 fn is_routable_instance(
@@ -485,9 +512,9 @@ fn normalize_path_prefix(path_prefix: &str) -> String {
 mod tests {
     use super::*;
     use ployz_types::model::{
-        CertificateState, DeployId, DrainState, InstanceStatusRecord, ServiceRelease,
-        ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy,
-        SlotId,
+        CertificateState, DeployId, DrainState, InstanceStatusRecord, MachineLifecycle, OverlayIp,
+        PublicKey, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord,
+        ServiceRoutingPolicy, SlotId,
     };
     use ployz_types::spec::{
         ContainerSpec, NetworkMode, Placement, PortProtocol, PullPolicy, Resources, RestartPolicy,
@@ -502,6 +529,7 @@ mod tests {
         let current = service_spec(&namespace, "api", "v2", vec!["api.example.com".into()]);
 
         let snapshot = project(RoutingState {
+            machines: vec![machine_record("machine-a")],
             revisions: vec![revision_record(&old), revision_record(&current)],
             releases: vec![release_record(
                 &namespace,
@@ -554,6 +582,7 @@ mod tests {
         let canary_hash = canary.revision_hash().expect("canary revision hash");
 
         let snapshot = project(RoutingState {
+            machines: vec![machine_record("machine-a")],
             revisions: vec![revision_record(&stable), revision_record(&canary)],
             releases: vec![ServiceReleaseRecord {
                 namespace: namespace.clone(),
@@ -652,6 +681,7 @@ mod tests {
         let right = service_spec(&namespace, "two", "v1", vec!["api.example.com".into()]);
 
         let error = project(RoutingState {
+            machines: Vec::new(),
             revisions: vec![revision_record(&left), revision_record(&right)],
             releases: vec![
                 release_record(
@@ -680,7 +710,8 @@ mod tests {
             }
             ProjectionError::MissingRevision { .. }
             | ProjectionError::InvalidRevisionSpec { .. }
-            | ProjectionError::TcpRouteConflict { .. } => panic!("unexpected error"),
+            | ProjectionError::TcpRouteConflict { .. }
+            | ProjectionError::MissingMachineForInstance { .. } => panic!("unexpected error"),
         }
     }
 
@@ -699,6 +730,7 @@ mod tests {
         }];
 
         let snapshot = project(RoutingState {
+            machines: vec![machine_record("machine-a")],
             revisions: vec![revision_record(&spec)],
             releases: vec![release_record(
                 &namespace,
@@ -723,6 +755,88 @@ mod tests {
             panic!("expected one tcp route");
         };
         assert_eq!(route.listen_port, 5432);
+    }
+
+    #[test]
+    fn projected_backend_includes_machine_topology() {
+        let namespace = Namespace("prod".into());
+        let spec = service_spec(&namespace, "api", "v1", vec!["api.example.com".into()]);
+        let machine = MachineRecord {
+            topology: MachineTopology::new("us-east", Some("use1-a"))
+                .expect("topology should parse"),
+            ..machine_record("machine-a")
+        };
+
+        let snapshot = project(RoutingState {
+            machines: vec![machine.clone()],
+            revisions: vec![revision_record(&spec)],
+            releases: vec![release_record(
+                &namespace,
+                "api",
+                &spec.revision_hash().expect("revision hash"),
+                vec![slot_record("slot-1", "inst-ready", &spec)],
+            )],
+            instances: vec![instance_record(
+                &namespace,
+                "api",
+                "slot-1",
+                "inst-ready",
+                true,
+                DrainState::None,
+                &spec,
+            )],
+        })
+        .expect("projection succeeds");
+
+        let [route] = snapshot.http_routes.as_slice() else {
+            panic!("expected one http route");
+        };
+        let [backend] = route.backends.as_slice() else {
+            panic!("expected one backend");
+        };
+        assert_eq!(backend.topology, machine.topology);
+    }
+
+    #[test]
+    fn projection_fails_when_routable_instance_references_missing_machine() {
+        let namespace = Namespace("prod".into());
+        let spec = service_spec(&namespace, "api", "v1", vec!["api.example.com".into()]);
+
+        let error = project(RoutingState {
+            machines: Vec::new(),
+            revisions: vec![revision_record(&spec)],
+            releases: vec![release_record(
+                &namespace,
+                "api",
+                &spec.revision_hash().expect("revision hash"),
+                vec![slot_record("slot-1", "inst-ready", &spec)],
+            )],
+            instances: vec![instance_record(
+                &namespace,
+                "api",
+                "slot-1",
+                "inst-ready",
+                true,
+                DrainState::None,
+                &spec,
+            )],
+        })
+        .expect_err("missing machine should fail projection");
+
+        match error {
+            ProjectionError::MissingMachineForInstance {
+                instance_id,
+                machine_id,
+                ..
+            } => {
+                assert_eq!(instance_id.0, "inst-ready");
+                assert_eq!(machine_id.0, "machine-a");
+            }
+            ProjectionError::MissingRevision { .. }
+            | ProjectionError::InvalidRevisionSpec { .. }
+            | ProjectionError::HttpRouteConflict { .. }
+            | ProjectionError::TcpRouteConflict { .. } => panic!("unexpected error"),
+        }
     }
 
     fn service_spec(
@@ -849,10 +963,28 @@ mod tests {
         }
     }
 
+    fn machine_record(id: &str) -> MachineRecord {
+        MachineRecord {
+            id: MachineId(id.into()),
+            public_key: PublicKey([0; 32]),
+            overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay ip")),
+            topology: MachineTopology::local(),
+            control_target: None,
+            subnet: None,
+            bridge_ip: None,
+            endpoints: Vec::new(),
+            lifecycle: MachineLifecycle::Active,
+            created_at: 1,
+            updated_at: 1,
+            labels: BTreeMap::new(),
+        }
+    }
+
     fn backend(id: &str) -> BackendView {
         BackendView {
             instance_id: InstanceId(id.into()),
             machine_id: MachineId("machine-a".into()),
+            topology: MachineTopology::local(),
             service_port: "http".into(),
             address: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 2), 8080)),
         }

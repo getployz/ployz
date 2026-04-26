@@ -150,6 +150,7 @@ impl MachineStore for MemoryStore {
             MachineEvent::Added(record.clone())
         };
         Self::broadcast_machine(&mut inner, event);
+        Self::broadcast_routing_refresh(&mut inner);
         Ok(())
     }
 
@@ -157,6 +158,7 @@ impl MachineStore for MemoryStore {
         let mut inner = self.lock_inner();
         if let Some(record) = inner.machines.remove(id) {
             Self::broadcast_machine(&mut inner, MachineEvent::Removed(record));
+            Self::broadcast_routing_refresh(&mut inner);
         }
         Ok(())
     }
@@ -174,6 +176,7 @@ impl RoutingStore for MemoryStore {
     async fn load_routing_state(&self) -> Result<RoutingState> {
         let inner = self.lock_inner();
         Ok(RoutingState {
+            machines: inner.machines.values().cloned().collect(),
             revisions: inner.service_revisions.values().cloned().collect(),
             releases: inner.service_releases.values().cloned().collect(),
             instances: inner.instance_status.values().cloned().collect(),
@@ -693,6 +696,68 @@ mod tests {
             .upsert_service_release(&record)
             .await
             .expect("upsert service release");
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), refresh_rx.recv())
+            .await
+            .expect("refresh event deadline");
+        assert_eq!(event, Some(()));
+    }
+
+    #[tokio::test]
+    async fn load_routing_state_includes_machines() {
+        let store = MemoryStore::new();
+        let machine = MachineRecord {
+            id: MachineId("machine-1".into()),
+            public_key: ployz_types::model::PublicKey([0; 32]),
+            overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
+            topology: ployz_types::model::MachineTopology::new("us-east", Some("use1-a"))
+                .expect("topology should parse"),
+            control_target: None,
+            subnet: None,
+            bridge_ip: None,
+            endpoints: Vec::new(),
+            lifecycle: ployz_types::model::MachineLifecycle::Active,
+            created_at: 1,
+            updated_at: 1,
+            labels: std::collections::BTreeMap::new(),
+        };
+
+        store
+            .upsert_self_machine(&machine)
+            .await
+            .expect("upsert machine");
+
+        let state = store.load_routing_state().await.expect("routing state");
+
+        assert_eq!(state.machines, vec![machine]);
+    }
+
+    #[tokio::test]
+    async fn machine_changes_trigger_routing_refresh_events() {
+        let store = MemoryStore::new();
+        let mut refresh_rx = store
+            .subscribe_routing_invalidations()
+            .await
+            .expect("subscribe");
+        let machine = MachineRecord {
+            id: MachineId("machine-1".into()),
+            public_key: ployz_types::model::PublicKey([0; 32]),
+            overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
+            topology: ployz_types::model::MachineTopology::local(),
+            control_target: None,
+            subnet: None,
+            bridge_ip: None,
+            endpoints: Vec::new(),
+            lifecycle: ployz_types::model::MachineLifecycle::Active,
+            created_at: 1,
+            updated_at: 1,
+            labels: std::collections::BTreeMap::new(),
+        };
+
+        store
+            .upsert_self_machine(&machine)
+            .await
+            .expect("upsert machine");
 
         let event = tokio::time::timeout(std::time::Duration::from_secs(1), refresh_rx.recv())
             .await
