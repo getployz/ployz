@@ -276,6 +276,25 @@ pub enum DaemonRequest {
         target_machine: String,
         from_snapshot: Option<String>,
     },
+    VolumeZfsPeerSnapshot {
+        namespace: String,
+        volume: String,
+        snapshot: String,
+    },
+    VolumeZfsPeerSnapshotGuid {
+        namespace: String,
+        volume: String,
+        snapshot: String,
+    },
+    VolumeZfsPeerStartSend {
+        namespace: String,
+        volume: String,
+        snapshot: String,
+        target_machine: String,
+        expected_guid: u64,
+        from_snapshot: Option<String>,
+        from_snapshot_guid: Option<u64>,
+    },
     VolumeZfsTransferGet {
         id: String,
     },
@@ -300,6 +319,7 @@ pub enum DaemonPayload {
     MachineOperation(MachineOperationPayload),
     VolumeZfsInspect(VolumeZfsInspectPayload),
     VolumeZfsSnapshot(VolumeZfsSnapshotPayload),
+    VolumeZfsPeerSend(VolumeZfsPeerSendPayload),
     VolumeZfsTransfer(VolumeZfsTransferPayload),
     VolumeZfsTransferList(VolumeZfsTransferListPayload),
 }
@@ -557,6 +577,12 @@ pub struct VolumeZfsSnapshotPayload {
 pub struct VolumeZfsSnapshotInfo {
     pub name: String,
     pub guid: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeZfsPeerSendPayload {
+    pub bytes_transferred: u64,
+    pub snapshot_guid: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
