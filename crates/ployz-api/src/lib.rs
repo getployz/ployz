@@ -297,6 +297,8 @@ pub struct MachineListRow {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineRttPayload {
     pub rows: Vec<MachineRttRow>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -357,6 +359,15 @@ pub struct DoctorPeer {
     pub subnet: Option<String>,
     pub wg_state: String,
     pub probe_state: String,
+    pub corrosion_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corrosion_actor_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corrosion_timestamp: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtt_median_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtt_stddev_ms: Option<f64>,
     pub cause_code: String,
     pub cause_message: String,
 }

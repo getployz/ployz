@@ -122,6 +122,7 @@ async fn machine_rtt_aggregates_remote_peer_rows() {
                     median_ms: 40.0,
                     stddev_ms: 2.0,
                 }],
+                warnings: Vec::new(),
             })),
         })
         .expect("encode response");
@@ -179,6 +180,8 @@ async fn machine_rtt_warns_when_remote_peer_is_unreachable() {
         panic!("expected machine rtt payload");
     };
     assert!(payload.rows.is_empty());
+    assert_eq!(payload.warnings.len(), 1);
+    assert!(payload.warnings[0].contains("peer-1"));
 
     teardown_state(&mut state).await;
 }

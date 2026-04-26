@@ -288,6 +288,55 @@ mod tests {
     }
 
     #[test]
+    fn parses_alive_and_down_membership_states() {
+        for (raw, expected) in [
+            ("Alive", MembershipState::Alive),
+            ("Down", MembershipState::Down),
+        ] {
+            let payload = json!({
+                "id": {
+                    "addr": "[fd00::1]:51001",
+                    "id": "actor-1",
+                    "ts": 123_u64,
+                },
+                "state": raw,
+            });
+
+            let state = parse_cluster_membership_state(&payload).expect("parse membership state");
+            assert_eq!(state.state, expected);
+        }
+    }
+
+    #[test]
+    fn rejects_membership_state_missing_addr() {
+        let payload = json!({
+            "id": {
+                "id": "actor-1",
+                "ts": 123_u64,
+            },
+            "state": "Alive",
+        });
+
+        let error = parse_cluster_membership_state(&payload).expect_err("missing addr rejected");
+        assert!(error.to_string().contains("missing addr"));
+    }
+
+    #[test]
+    fn rejects_membership_state_invalid_addr() {
+        let payload = json!({
+            "id": {
+                "addr": "not-an-addr",
+                "id": "actor-1",
+                "ts": 123_u64,
+            },
+            "state": "Alive",
+        });
+
+        let error = parse_cluster_membership_state(&payload).expect_err("invalid addr rejected");
+        assert!(error.to_string().contains("invalid membership addr"));
+    }
+
+    #[test]
     fn parses_member_rtts() {
         let payload = json!({
             "id": "actor-1",
