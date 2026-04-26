@@ -6,6 +6,9 @@
 - This repo's focus is the orchestrator core, daemon, runtime model, and SDK
   and API surface. Future cloud products are downstream consumers of that core,
   not the source of truth for it.
+- Treat new feature work as greenfield: do not add backwards-compatibility
+  shims, legacy decode paths, or compatibility aliases unless explicitly
+  requested for a concrete rollout need.
 
 # Architecture Intent
 
