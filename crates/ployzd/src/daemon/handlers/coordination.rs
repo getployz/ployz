@@ -204,6 +204,7 @@ mod tests {
             mesh,
             remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             certificate_renewal: None,

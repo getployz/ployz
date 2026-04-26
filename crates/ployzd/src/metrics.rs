@@ -109,6 +109,11 @@ pub fn request_name(request: &ployz_api::DaemonRequest) -> &'static str {
         ployz_api::DaemonRequest::DeployPreview { .. } => "deploy_preview",
         ployz_api::DaemonRequest::DeployApply { .. } => "deploy_apply",
         ployz_api::DaemonRequest::DeployExport { .. } => "deploy_export",
+        ployz_api::DaemonRequest::VolumeZfsInspect { .. } => "volume_zfs_inspect",
+        ployz_api::DaemonRequest::VolumeZfsSnapshot { .. } => "volume_zfs_snapshot",
+        ployz_api::DaemonRequest::VolumeZfsSend { .. } => "volume_zfs_send",
+        ployz_api::DaemonRequest::VolumeZfsTransferGet { .. } => "volume_zfs_transfer_get",
+        ployz_api::DaemonRequest::VolumeZfsTransferList => "volume_zfs_transfer_list",
     }
 }
 

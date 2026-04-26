@@ -293,6 +293,7 @@ async fn resume_running_network(state: &Arc<RwLock<DaemonState>>) {
 async fn reconcile_startup_operations(state: &Arc<RwLock<DaemonState>>) {
     let state_guard = state.read().await;
     state_guard.reconcile_machine_operations_on_startup().await;
+    state_guard.reconcile_zfs_transfers_on_startup().await;
 }
 
 fn spawn_command_task(
@@ -341,6 +342,7 @@ async fn shutdown_active_mesh(state: &Arc<RwLock<DaemonState>>) {
             mut mesh,
             remote_control,
             peer_control,
+            zfs_transfer,
             gateway,
             dns,
             certificate_renewal,
@@ -350,6 +352,7 @@ async fn shutdown_active_mesh(state: &Arc<RwLock<DaemonState>>) {
         }
         let _ = dns.detach().await;
         let _ = gateway.detach().await;
+        let _ = zfs_transfer.shutdown().await;
         let _ = peer_control.shutdown().await;
         let _ = remote_control.shutdown().await;
         let _ = mesh.detach().await;
