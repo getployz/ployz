@@ -226,3 +226,132 @@ async fn export_manifest(
         services,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_store_api::DeployStore;
+    use ployz_types::model::{
+        DeployId, DeployRecord, DeployState, MachineId, ServiceRelease, ServiceReleaseRecord,
+        ServiceRevisionRecord, ServiceRoutingPolicy, VolumeRecord,
+    };
+    use ployz_types::spec::{
+        ContainerSpec, Mount, MountSource, NetworkMode, Placement, PullPolicy, Resources,
+        RestartPolicy, RolloutStrategy, VolumeScope,
+    };
+
+    fn test_service() -> ServiceSpec {
+        ServiceSpec {
+            name: "db".into(),
+            placement: Placement::Replicated { count: 1 },
+            template: ContainerSpec {
+                image: "postgres:17".into(),
+                command: None,
+                entrypoint: None,
+                env: BTreeMap::new(),
+                mounts: vec![Mount {
+                    source: MountSource::Volume("data".into()),
+                    target: "/var/lib/postgresql/data".into(),
+                    readonly: false,
+                }],
+                cap_add: Vec::new(),
+                cap_drop: Vec::new(),
+                privileged: false,
+                user: None,
+                stop_grace_period: None,
+                pid_mode: None,
+                pull_policy: PullPolicy::IfNotPresent,
+                resources: Resources::empty(),
+                sysctls: BTreeMap::new(),
+            },
+            network: NetworkMode::Overlay,
+            service_ports: Vec::new(),
+            publish: Vec::new(),
+            routes: Vec::new(),
+            readiness: None,
+            rollout: RolloutStrategy::Recreate,
+            labels: BTreeMap::new(),
+            restart: RestartPolicy::UnlessStopped,
+        }
+    }
+
+    #[tokio::test]
+    async fn export_manifest_includes_stored_volume_declarations() {
+        let store = StoreDriver::memory();
+        let namespace = Namespace("prod".into());
+        let service = test_service();
+        let revision_hash = "rev-db".to_string();
+        let deploy_id = DeployId("deploy-1".into());
+
+        store
+            .upsert_service_revision(&ServiceRevisionRecord {
+                namespace: namespace.clone(),
+                service: service.name.clone(),
+                revision_hash: revision_hash.clone(),
+                spec_json: serde_json::to_string(&service).expect("serialize service"),
+                created_by: MachineId("local".into()),
+                created_at: 1,
+            })
+            .await
+            .expect("seed revision");
+
+        store
+            .commit_deploy(
+                &namespace,
+                &[],
+                &[ServiceReleaseRecord {
+                    namespace: namespace.clone(),
+                    service: service.name.clone(),
+                    release: ServiceRelease {
+                        primary_revision_hash: revision_hash.clone(),
+                        referenced_revision_hashes: vec![revision_hash.clone()],
+                        routing: ServiceRoutingPolicy::Direct { revision_hash },
+                        slots: Vec::new(),
+                        updated_by_deploy_id: deploy_id.clone(),
+                        updated_at: 1,
+                    },
+                }],
+                &[VolumeRecord {
+                    namespace: namespace.clone(),
+                    volume_name: "data".into(),
+                    scope: VolumeScope::Single,
+                    machine_id: MachineId("machine-a".into()),
+                    quota: "10G".into(),
+                    mode: "0750".into(),
+                    owner: "999:999".into(),
+                    attached_services: vec!["db".into()],
+                    created_at: 1,
+                    created_by_deploy_id: deploy_id.clone(),
+                    last_modified_at: 1,
+                    last_modified_by_deploy_id: deploy_id.clone(),
+                }],
+                &DeployRecord {
+                    deploy_id,
+                    namespace: namespace.clone(),
+                    coordinator_machine_id: MachineId("local".into()),
+                    manifest_hash: "manifest".into(),
+                    state: DeployState::Committed,
+                    started_at: 1,
+                    committed_at: Some(1),
+                    finished_at: Some(1),
+                    summary_json: "{}".into(),
+                },
+            )
+            .await
+            .expect("seed release and volume");
+
+        let manifest = export_manifest(&store, &namespace)
+            .await
+            .expect("export manifest");
+
+        let [volume] = manifest.volumes.as_slice() else {
+            panic!("expected one volume declaration");
+        };
+        assert_eq!(volume.name, "data");
+        assert_eq!(volume.scope, VolumeScope::Single);
+        assert_eq!(volume.quota, "10G");
+        assert_eq!(volume.mode, "0750");
+        assert_eq!(volume.owner, "999:999");
+        manifest.validate().expect("export should validate");
+    }
+}
