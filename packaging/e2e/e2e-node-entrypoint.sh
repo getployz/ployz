@@ -317,7 +317,7 @@ EOF
       exit 1
     fi
 
-    raw_pool="${PLOYZ_E2E_ZFS_POOL:-ployze2e_${PLOYZ_E2E_RUN_ID:-manual}}"
+    raw_pool="${PLOYZ_E2E_ZFS_POOL:-ployze2e_${PLOYZ_E2E_NODE:-node}_${PLOYZ_E2E_RUN_ID:-manual}}"
     pool="$(printf '%s' "${raw_pool}" | tr -c 'A-Za-z0-9_' '_' | cut -c1-60)"
     if [[ -z "${pool}" || "${pool}" != ployze2e_* ]]; then
       pool="ployze2e_${pool}"

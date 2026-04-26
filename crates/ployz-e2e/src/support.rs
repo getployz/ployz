@@ -62,6 +62,7 @@ pub(crate) struct DaemonJsonResponse {
 pub(crate) enum DaemonJsonPayload {
     Doctor(DoctorPayload),
     MachineList(MachineListPayload),
+    VolumeZfsTransfer(VolumeZfsTransferPayload),
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,6 +97,22 @@ pub(crate) struct DoctorPeer {
     pub(crate) wg_state: String,
     pub(crate) probe_state: String,
     pub(crate) corrosion_state: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct VolumeZfsTransferPayload {
+    pub(crate) transfer: VolumeZfsTransferInfo,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct VolumeZfsTransferInfo {
+    pub(crate) id: String,
+    pub(crate) status: String,
+    pub(crate) stage: String,
+    #[serde(default)]
+    pub(crate) bytes_transferred: Option<u64>,
+    #[serde(default)]
+    pub(crate) last_error: Option<String>,
 }
 
 pub(crate) fn parse_ready(output: &str) -> Result<bool> {
