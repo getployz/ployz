@@ -1,3 +1,4 @@
+use crate::error::{Error, Result};
 use crate::model::{MachineId, MachineRecord};
 use ployz_store_api::{
     PeerMembershipObservation, PeerMembershipState, PeerMembershipStore, StoreDriver,
@@ -22,12 +23,21 @@ pub(super) async fn probe_participants(
     store: &StoreDriver,
     participants: &BTreeSet<MachineId>,
     machine_map: &HashMap<MachineId, MachineRecord>,
-) -> ParticipantReachability {
+) -> Result<ParticipantReachability> {
     let observations = store
         .peer_membership_observations()
         .await
-        .unwrap_or_default();
-    reachability_from_membership(participants, machine_map, observations.as_slice())
+        .map_err(|error| {
+            Error::operation(
+                "deploy_preview",
+                format!("failed to read Corrosion peer membership: {error}"),
+            )
+        })?;
+    Ok(reachability_from_membership(
+        participants,
+        machine_map,
+        observations.as_slice(),
+    ))
 }
 
 fn reachability_from_membership(

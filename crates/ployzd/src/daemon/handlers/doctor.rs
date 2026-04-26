@@ -447,11 +447,17 @@ fn handshake_state_map(device_peers: &[DevicePeer]) -> HashMap<PublicKey, Handsh
 fn membership_state_map(
     observations: &[PeerMembershipObservation],
 ) -> HashMap<IpAddr, CorrosionPeerState> {
-    observations
-        .iter()
-        .map(|observation| {
-            (
-                observation.addr.ip(),
+    let mut states = HashMap::new();
+    for observation in observations {
+        let ip = observation.addr.ip();
+        let replace = states.get(&ip).is_none_or(|existing: &CorrosionPeerState| {
+            existing
+                .timestamp
+                .is_none_or(|timestamp| observation.timestamp > timestamp)
+        });
+        if replace {
+            states.insert(
+                ip,
                 CorrosionPeerState {
                     state: match observation.state {
                         PeerMembershipState::Alive => CorrosionState::Alive,
@@ -461,9 +467,10 @@ fn membership_state_map(
                     actor_id: Some(observation.actor_id.clone()),
                     timestamp: Some(observation.timestamp),
                 },
-            )
-        })
-        .collect()
+            );
+        }
+    }
+    states
 }
 
 fn rtt_state_map(observations: &[PeerRttObservation]) -> HashMap<IpAddr, RttState> {
@@ -702,6 +709,38 @@ mod tests {
         assert!(report.contains("wg=absent"));
         assert!(report.contains("rtt=140ms±16.3ms"));
         assert!(!report.contains("probe="));
+    }
+
+    #[test]
+    fn membership_state_map_keeps_newest_observation_per_ip() {
+        let ip = IpAddr::V6("fd00::2".parse().expect("valid overlay"));
+        let observations = vec![
+            PeerMembershipObservation {
+                addr: SocketAddr::new(ip, 51001),
+                actor_id: String::from("old-actor"),
+                state: PeerMembershipState::Down,
+                timestamp: 100,
+            },
+            PeerMembershipObservation {
+                addr: SocketAddr::new(ip, 51001),
+                actor_id: String::from("new-actor"),
+                state: PeerMembershipState::Alive,
+                timestamp: 200,
+            },
+            PeerMembershipObservation {
+                addr: SocketAddr::new(ip, 51001),
+                actor_id: String::from("older-actor"),
+                state: PeerMembershipState::Suspect,
+                timestamp: 50,
+            },
+        ];
+
+        let states = membership_state_map(observations.as_slice());
+        let state = states.get(&ip).expect("membership state");
+
+        assert_eq!(state.state, CorrosionState::Alive);
+        assert_eq!(state.actor_id.as_deref(), Some("new-actor"));
+        assert_eq!(state.timestamp, Some(200));
     }
 
     async fn make_state() -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {
