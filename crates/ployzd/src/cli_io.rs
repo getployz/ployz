@@ -2,7 +2,8 @@ use crate::{CliError, Result};
 use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, DoctorPayload, MachineInviteListPayload,
     MachineListPayload, MachineOperationInfo, MachineOperationListPayload, MachineOperationPayload,
-    MeshListPayload, MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload, StatusPayload,
+    MachineRttPayload, MeshListPayload, MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload,
+    StatusPayload,
 };
 use ployz_sdk::{Transport, UnixSocketTransport};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -85,6 +86,7 @@ pub(crate) fn render_response(
 fn render_plain_success(response: &DaemonResponse) -> String {
     match response.payload.as_ref() {
         Some(DaemonPayload::MachineList(payload)) => render_plain_machine_list(payload),
+        Some(DaemonPayload::MachineRtt(payload)) => render_plain_machine_rtt(payload),
         Some(DaemonPayload::Doctor(payload)) => render_plain_doctor(payload),
         Some(DaemonPayload::Status(payload)) => render_plain_status(payload),
         Some(DaemonPayload::MeshList(payload)) => render_plain_mesh_list(payload),
@@ -138,6 +140,38 @@ fn render_plain_machine_list(payload: &MachineListPayload) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn render_plain_machine_rtt(payload: &MachineRttPayload) -> String {
+    if payload.rows.is_empty() {
+        return String::from("no rtt samples");
+    }
+    payload
+        .rows
+        .iter()
+        .map(|row| {
+            format!(
+                "machine={} peer={} median={} stddev=±{}",
+                row.machine,
+                row.peer,
+                format_ms(row.median_ms),
+                format_ms_one_decimal(row.stddev_ms),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_ms(value: f64) -> String {
+    if value.fract() == 0.0 {
+        format!("{value:.0}ms")
+    } else {
+        format!("{value:.1}ms")
+    }
+}
+
+fn format_ms_one_decimal(value: f64) -> String {
+    format!("{value:.1}ms")
 }
 
 fn render_plain_mesh_list(payload: &MeshListPayload) -> String {
@@ -307,7 +341,7 @@ mod tests {
     use super::*;
     use ployz_api::{
         DoctorLocal, DoctorOverall, DoctorPayload, DoctorPeer, MachineListPayload, MachineListRow,
-        MeshListEntry, MeshListPayload, StatusPayload,
+        MachineRttPayload, MachineRttRow, MeshListEntry, MeshListPayload, StatusPayload,
     };
 
     #[test]
@@ -330,6 +364,28 @@ mod tests {
         assert_eq!(
             render_plain_success(&response),
             "id=peer lifecycle=standby overlay_ip=fd00::2 subnet=— created_at=123"
+        );
+    }
+
+    #[test]
+    fn plain_machine_rtt_renders_stable_lines() {
+        let response = DaemonResponse {
+            ok: true,
+            code: String::from("OK"),
+            message: String::from("table"),
+            payload: Some(DaemonPayload::MachineRtt(MachineRttPayload {
+                rows: vec![MachineRttRow {
+                    machine: String::from("machine-1"),
+                    peer: String::from("machine-2"),
+                    median_ms: 140.0,
+                    stddev_ms: 19.4,
+                }],
+            })),
+        };
+
+        assert_eq!(
+            render_plain_success(&response),
+            "machine=machine-1 peer=machine-2 median=140ms stddev=±19.4ms"
         );
     }
 

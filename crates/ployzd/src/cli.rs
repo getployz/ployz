@@ -307,6 +307,7 @@ pub(crate) enum MeshAction {
 pub(crate) enum MachineAction {
     #[command(alias = "list")]
     Ls,
+    Rtt,
     Init {
         target: String,
         #[arg(long)]

@@ -4,7 +4,6 @@ use std::net::{IpAddr, SocketAddr, TcpListener as StdTcpListener};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -23,21 +22,18 @@ pub enum TcpProbeStatus {
 #[derive(Debug, Clone, Copy)]
 pub struct TcpProbeResult {
     pub status: TcpProbeStatus,
-    pub rtt: Option<Duration>,
 }
 
 impl TcpProbeResult {
-    pub(crate) fn reachable(rtt: Duration) -> Self {
+    pub(crate) fn reachable() -> Self {
         Self {
             status: TcpProbeStatus::Reachable,
-            rtt: Some(rtt),
         }
     }
 
     pub(crate) fn unreachable() -> Self {
         Self {
             status: TcpProbeStatus::Unreachable,
-            rtt: None,
         }
     }
 }
@@ -86,7 +82,7 @@ pub(crate) async fn run_probe_listener_task(cancel: CancellationToken) {
     info!(port = MESH_PROBE_PORT, "mesh probe listener stopped");
 }
 
-async fn probe_overlay_ip(overlay_ip: OverlayIp, timeout: Duration) -> Option<Duration> {
+async fn probe_overlay_ip(overlay_ip: OverlayIp, timeout: Duration) -> bool {
     probe_addr(
         SocketAddr::new(IpAddr::from(overlay_ip.0), MESH_PROBE_PORT),
         timeout,
@@ -99,19 +95,21 @@ pub(crate) async fn probe_overlay_ip_with_timeout(
     timeout: Duration,
 ) -> TcpProbeResult {
     match probe_overlay_ip(overlay_ip, timeout).await {
-        Some(rtt) => TcpProbeResult::reachable(rtt),
-        None => TcpProbeResult::unreachable(),
+        true => TcpProbeResult::reachable(),
+        false => TcpProbeResult::unreachable(),
     }
 }
 
-async fn probe_addr(addr: SocketAddr, timeout: Duration) -> Option<Duration> {
-    let start = Instant::now();
+async fn probe_addr(addr: SocketAddr, timeout: Duration) -> bool {
     let mut stream = tokio::time::timeout(timeout, TcpStream::connect(addr))
         .await
-        .ok()?
-        .ok()?;
+        .ok()
+        .and_then(Result::ok);
+    let Some(mut stream) = stream.take() else {
+        return false;
+    };
 
-    tokio::time::timeout(timeout, async {
+    let result = tokio::time::timeout(timeout, async {
         stream.write_all(PROBE_REQUEST).await?;
         let mut response = [0_u8; PROBE_RESPONSE.len()];
         stream.read_exact(&mut response).await?;
@@ -124,11 +122,9 @@ async fn probe_addr(addr: SocketAddr, timeout: Duration) -> Option<Duration> {
             ))
         }
     })
-    .await
-    .ok()?
-    .ok()?;
+    .await;
 
-    Some(start.elapsed())
+    result.is_ok_and(|inner| inner.is_ok())
 }
 
 async fn serve_listener(listener: TcpListener, cancel: CancellationToken) {
@@ -276,7 +272,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn probe_roundtrip_reports_rtt() {
+    async fn probe_roundtrip_reports_reachable() {
         let listener = bind_v4(0).await.expect("bind IPv4 test listener");
         let addr = listener.local_addr().expect("local addr");
         let cancel = CancellationToken::new();
@@ -285,10 +281,7 @@ mod tests {
             serve_listener(listener, task_cancel).await;
         });
 
-        let rtt = probe_addr(addr, Duration::from_secs(1))
-            .await
-            .expect("probe should succeed");
-        assert!(rtt >= Duration::ZERO);
+        assert!(probe_addr(addr, Duration::from_secs(1)).await);
 
         cancel.cancel();
         let _ = task.await;
@@ -301,7 +294,7 @@ mod tests {
         let addr = listener.local_addr().expect("local addr");
         drop(listener);
 
-        assert!(probe_addr(addr, Duration::from_millis(50)).await.is_none());
+        assert!(!probe_addr(addr, Duration::from_millis(50)).await);
     }
 
     #[tokio::test]

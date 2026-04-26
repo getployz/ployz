@@ -200,6 +200,7 @@ fn build_mesh_request(action: MeshAction) -> Result<DaemonRequest> {
 pub(crate) fn build_machine_request(action: MachineAction) -> Result<DaemonRequest> {
     match action {
         MachineAction::Ls => Ok(DaemonRequest::MachineList),
+        MachineAction::Rtt => Ok(DaemonRequest::MachineRtt),
         MachineAction::Init {
             target,
             network,

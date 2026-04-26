@@ -5,8 +5,8 @@ use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock
 use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
 use ipnet::Ipv4Net;
 use ployz_api::{
-    DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MachineTransitionGoal,
-    MeshReadyPayload, MeshSelfRecordPayload,
+    DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MachineRttPayload,
+    MachineRttRow, MachineTransitionGoal, MeshReadyPayload, MeshSelfRecordPayload,
 };
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::mesh::driver::WireguardDriver;
@@ -81,6 +81,106 @@ async fn machine_list_json_payload_contains_rows() {
     };
     assert_eq!(payload.rows.len(), 1);
     assert_eq!(payload.rows.first().expect("founder row").id, "founder");
+}
+
+#[tokio::test]
+async fn machine_rtt_aggregates_remote_peer_rows() {
+    let listener = TcpListener::bind("[::1]:0")
+        .await
+        .expect("bind overlay listener");
+    let peer_rpc_port = listener.local_addr().expect("listener addr").port();
+    let remote_control_port = peer_rpc_port
+        .checked_sub(1)
+        .expect("peer rpc port has preceding remote control port");
+    let (mut state, store, _) = make_state_with_remote_port(true, remote_control_port).await;
+
+    let mut peer = test_machine_record(
+        "peer-1",
+        "10.210.1.0/24",
+        MachineLifecycle::Active,
+        PublicKey([2; 32]),
+    );
+    peer.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
+    store.upsert_self_machine(&peer).await.expect("upsert peer");
+
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept overlay rpc");
+        let (reader, mut writer) = stream.into_split();
+        let mut buf = BufReader::new(reader);
+        let mut line = String::new();
+        buf.read_line(&mut line).await.expect("read request");
+        let request: DaemonRequest = serde_json::from_str(&line).expect("decode daemon request");
+        assert!(matches!(request, DaemonRequest::MeshPeerRttSnapshot));
+        let mut response_line = serde_json::to_string(&DaemonResponse {
+            ok: true,
+            code: "OK".into(),
+            message: "MACHINE  PEER  MEDIAN  STDDEV".into(),
+            payload: Some(DaemonPayload::MachineRtt(MachineRttPayload {
+                rows: vec![MachineRttRow {
+                    machine: "peer-1".into(),
+                    peer: "founder".into(),
+                    median_ms: 40.0,
+                    stddev_ms: 2.0,
+                }],
+            })),
+        })
+        .expect("encode response");
+        response_line.push('\n');
+        writer
+            .write_all(response_line.as_bytes())
+            .await
+            .expect("write response");
+        writer.shutdown().await.expect("shutdown writer");
+    });
+
+    let response = state.handle_machine_rtt().await;
+
+    assert!(response.ok);
+    let Some(DaemonPayload::MachineRtt(payload)) = response.payload else {
+        panic!("expected machine rtt payload");
+    };
+    assert_eq!(payload.rows.len(), 1);
+    assert_eq!(payload.rows[0].machine, "peer-1");
+    assert_eq!(payload.rows[0].peer, "founder");
+    assert!(response.message.contains("peer-1"));
+    assert!(response.message.contains("±2.0ms"));
+
+    server.await.expect("overlay server exit");
+    teardown_state(&mut state).await;
+}
+
+#[tokio::test]
+async fn machine_rtt_warns_when_remote_peer_is_unreachable() {
+    let listener = TcpListener::bind("[::1]:0")
+        .await
+        .expect("bind overlay listener");
+    let peer_rpc_port = listener.local_addr().expect("listener addr").port();
+    drop(listener);
+    let remote_control_port = peer_rpc_port
+        .checked_sub(1)
+        .expect("peer rpc port has preceding remote control port");
+    let (mut state, store, _) = make_state_with_remote_port(true, remote_control_port).await;
+
+    let mut peer = test_machine_record(
+        "peer-1",
+        "10.210.1.0/24",
+        MachineLifecycle::Active,
+        PublicKey([2; 32]),
+    );
+    peer.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
+    store.upsert_self_machine(&peer).await.expect("upsert peer");
+
+    let response = state.handle_machine_rtt().await;
+
+    assert!(response.ok);
+    assert!(response.message.contains("warnings:"));
+    assert!(response.message.contains("peer-1"));
+    let Some(DaemonPayload::MachineRtt(payload)) = response.payload else {
+        panic!("expected machine rtt payload");
+    };
+    assert!(payload.rows.is_empty());
+
+    teardown_state(&mut state).await;
 }
 
 #[tokio::test]
