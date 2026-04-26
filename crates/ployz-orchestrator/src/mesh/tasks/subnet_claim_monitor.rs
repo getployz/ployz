@@ -84,7 +84,7 @@ pub(crate) fn duplicate_subnet_claims(machines: &[MachineRecord]) -> Vec<(String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{MachineId, MachineLifecycle, OverlayIp, PublicKey};
+    use crate::model::{MachineId, MachineLifecycle, MachineTopology, OverlayIp, PublicKey};
     use ipnet::Ipv4Net;
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
@@ -94,6 +94,7 @@ mod tests {
             id: MachineId(id.into()),
             public_key: PublicKey([1; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+            topology: MachineTopology::local(),
             subnet,
             control_target: None,
             bridge_ip: None,

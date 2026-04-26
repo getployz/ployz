@@ -218,7 +218,8 @@ mod tests {
     use super::{into_machine_event, parse_machine_row};
     use corro_api_types::{ChangeId, RowId, TypedQueryEvent, sqlite::ChangeType};
     use ployz_types::model::{
-        MachineEvent, MachineId, MachineLifecycle, MachineRecord, OverlayIp, PublicKey,
+        MachineEvent, MachineId, MachineLifecycle, MachineRecord, MachineTopology, OverlayIp,
+        PublicKey,
     };
     use std::collections::{BTreeMap, HashMap};
     use std::net::Ipv6Addr;
@@ -230,6 +231,7 @@ mod tests {
             id: MachineId(id.into()),
             public_key: PublicKey([7_u8; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+            topology: MachineTopology::local(),
             control_target: None,
             subnet: None,
             bridge_ip: None,

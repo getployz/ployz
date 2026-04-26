@@ -10,7 +10,7 @@ use tracing::{debug, info, warn};
 use crate::mesh::driver::WireguardDriver;
 use crate::mesh::peer_state::PeerStateMap;
 use crate::mesh::{DevicePeer, WireGuardDevice};
-use crate::model::{MachineEvent, MachineId, MachineRecord, PublicKey};
+use crate::model::{MachineEvent, MachineId, MachineRecord, MachineTopology, PublicKey};
 
 const ENDPOINT_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(1);
 const ENDPOINT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
@@ -215,6 +215,7 @@ impl RuntimePeerMap {
                 id: peer.id.clone(),
                 public_key: peer.public_key.clone(),
                 overlay_ip: peer.overlay_ip,
+                topology: MachineTopology::local(),
                 subnet: peer.subnet,
                 control_target: None,
                 bridge_ip: peer.bridge_ip,
@@ -283,6 +284,7 @@ impl RuntimePeerMap {
                 id: peer.id.clone(),
                 public_key: peer.public_key.clone(),
                 overlay_ip: peer.overlay_ip,
+                topology: MachineTopology::local(),
                 subnet: peer.subnet,
                 control_target: None,
                 bridge_ip: peer.bridge_ip,
@@ -529,6 +531,7 @@ mod tests {
             id: MachineId(id.into()),
             public_key: PublicKey(key),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+            topology: MachineTopology::local(),
             subnet: None,
             control_target: None,
             bridge_ip: None,
