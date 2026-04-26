@@ -22,6 +22,7 @@ use ployz_api::{
 };
 use ployz_config::{RuntimeTarget, ServiceMode, load_client_config, load_daemon_config};
 use ployz_sdk::UnixSocketTransport;
+use ployz_types::model::MachineTopology;
 #[cfg(test)]
 use ployz_types::spec::DeployManifest;
 use ployzd::{BuiltInImages, HostPlatform, init_tracing, run_daemon, validate_runtime};
@@ -73,6 +74,8 @@ async fn run() -> Result<i32> {
             validate_runtime(runtime_target, service_mode, platform).map_err(CliError::Config)?;
             let built_in_images = BuiltInImages::load(cfg.builtin_images_manifest.as_deref())
                 .map_err(CliError::Config)?;
+            let configured_topology = configured_topology(cfg.region.as_deref(), cfg.az.as_deref())
+                .map_err(CliError::Config)?;
             run_daemon(
                 &cfg.data_dir,
                 runtime_target,
@@ -86,6 +89,7 @@ async fn run() -> Result<i32> {
                 cfg.gateway_listen_addr,
                 cfg.gateway_https_listen_addr,
                 cfg.gateway_threads,
+                configured_topology,
                 cfg.daemon_metrics_listen_addr,
                 cfg.dns_metrics_listen_addr,
                 cfg.gateway_metrics_listen_addr,
@@ -115,6 +119,17 @@ async fn run() -> Result<i32> {
             render_response(cli.json, cli.plain, cli.quiet, &response)?;
             if response.ok { Ok(0) } else { Ok(1) }
         }
+    }
+}
+
+fn configured_topology(
+    region: Option<&str>,
+    az: Option<&str>,
+) -> std::result::Result<Option<MachineTopology>, String> {
+    match (region, az) {
+        (None, None) => Ok(None),
+        (Some(region), az) => MachineTopology::new(region, az).map(Some),
+        (None, Some(az)) => MachineTopology::new("local", Some(az)).map(Some),
     }
 }
 

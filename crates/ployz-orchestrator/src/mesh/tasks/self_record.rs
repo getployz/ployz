@@ -89,7 +89,7 @@ fn apply_mutation(record: &mut MachineRecord, mutation: SelfRecordMutation) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{MachineId, MachineLifecycle, PublicKey};
+    use crate::model::{MachineId, MachineLifecycle, MachineTopology, PublicKey};
     use ployz_store_api::memory::{MemoryService, MemoryStore};
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
@@ -99,6 +99,7 @@ mod tests {
             id: MachineId("self".into()),
             public_key: PublicKey([1; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+            topology: MachineTopology::local(),
             subnet: None,
             control_target: None,
             bridge_ip: None,

@@ -19,6 +19,7 @@ use ployz_orchestrator::certificates::CertificateRenewalTask;
 use ployz_orchestrator::coordination::PendingReservations;
 use ployz_runtime_api::Identity;
 use ployz_runtime_api::{NamespaceLockManager, RuntimeHandle};
+use ployz_types::model::MachineTopology;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
@@ -54,6 +55,7 @@ pub struct DaemonState {
     pub gateway_listen_addr: String,
     pub gateway_https_listen_addr: Option<String>,
     pub gateway_threads: usize,
+    pub configured_topology: Option<MachineTopology>,
     pub dns_metrics_listen_addr: Option<String>,
     pub gateway_metrics_listen_addr: Option<String>,
     pub active: Option<ActiveMesh>,
@@ -77,6 +79,7 @@ impl DaemonState {
         gateway_listen_addr: String,
         gateway_https_listen_addr: Option<String>,
         gateway_threads: usize,
+        configured_topology: Option<MachineTopology>,
         dns_metrics_listen_addr: Option<String>,
         gateway_metrics_listen_addr: Option<String>,
     ) -> Self {
@@ -94,6 +97,7 @@ impl DaemonState {
             gateway_listen_addr,
             gateway_https_listen_addr,
             gateway_threads,
+            configured_topology,
             dns_metrics_listen_addr,
             gateway_metrics_listen_addr,
         )
@@ -126,6 +130,7 @@ impl DaemonState {
             gateway_threads,
             None,
             None,
+            None,
         )
     }
 
@@ -143,6 +148,7 @@ impl DaemonState {
         gateway_listen_addr: String,
         gateway_https_listen_addr: Option<String>,
         gateway_threads: usize,
+        configured_topology: Option<MachineTopology>,
         dns_metrics_listen_addr: Option<String>,
         gateway_metrics_listen_addr: Option<String>,
     ) -> Self {
@@ -159,6 +165,7 @@ impl DaemonState {
             gateway_listen_addr,
             gateway_https_listen_addr,
             gateway_threads,
+            configured_topology,
             dns_metrics_listen_addr,
             gateway_metrics_listen_addr,
             active: None,
