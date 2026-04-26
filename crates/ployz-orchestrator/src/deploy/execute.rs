@@ -5,7 +5,9 @@ use crate::certificates::{
     start_pending_orders,
 };
 use crate::deploy::managed_domains;
-use crate::deploy::plan::{PlanFingerprint, ResolvedPlan, resolve_plan};
+use crate::deploy::plan::{
+    PlanFingerprint, ResolvedPlan, resolve_plan, volume_record_needs_update,
+};
 use crate::deploy::session::{self, DeploySessionFactory};
 use crate::error::{Error, Result};
 use crate::model::{
@@ -259,7 +261,8 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
 
         let committed_releases =
             build_committed_releases(&final_plan, &startup.started, &deploy_id)?;
-        let committed_volumes = build_committed_volumes(&final_plan, &deploy_id, started_at);
+        let committed_volumes =
+            build_committed_volumes(&final_plan, &startup.started, &deploy_id, started_at)?;
         let removed_services = final_plan
             .services()
             .iter()
@@ -596,38 +599,56 @@ fn build_committed_releases(
 
 fn build_committed_volumes(
     plan: &ResolvedPlan,
+    started: &HashMap<(String, String), InstanceStatusRecord>,
     deploy_id: &DeployId,
     now: u64,
-) -> Vec<VolumeRecord> {
-    plan.volumes()
+) -> Result<Vec<VolumeRecord>> {
+    let mut volumes = Vec::new();
+    for planned in plan
+        .volumes()
         .iter()
-        .map(|planned| {
-            let created_at = planned
-                .current
-                .as_ref()
-                .map(|record| record.created_at)
-                .unwrap_or(now);
-            let created_by_deploy_id = planned
-                .current
-                .as_ref()
-                .map(|record| record.created_by_deploy_id.clone())
-                .unwrap_or_else(|| deploy_id.clone());
-            VolumeRecord {
-                namespace: plan.namespace().clone(),
-                volume_name: planned.declaration.name.clone(),
-                scope: planned.declaration.scope,
-                machine_id: planned.machine_id.clone(),
-                quota: planned.declaration.quota.clone(),
-                mode: planned.declaration.mode.clone(),
-                owner: planned.declaration.owner.clone(),
-                attached_services: planned.attached_services.clone(),
-                created_at,
-                created_by_deploy_id,
-                last_modified_at: now,
-                last_modified_by_deploy_id: deploy_id.clone(),
-            }
-        })
-        .collect()
+        .filter(|planned| volume_record_needs_update(planned))
+    {
+        if !planned.attached_services.iter().any(|service| {
+            started
+                .keys()
+                .any(|(started_service, _)| started_service == service)
+        }) {
+            return Err(Error::operation(
+                "deploy_apply",
+                format!(
+                    "volume '{}' changed but no attached service was reconciled",
+                    planned.declaration.name
+                ),
+            ));
+        }
+
+        let created_at = planned
+            .current
+            .as_ref()
+            .map(|record| record.created_at)
+            .unwrap_or(now);
+        let created_by_deploy_id = planned
+            .current
+            .as_ref()
+            .map(|record| record.created_by_deploy_id.clone())
+            .unwrap_or_else(|| deploy_id.clone());
+        volumes.push(VolumeRecord {
+            namespace: plan.namespace().clone(),
+            volume_name: planned.declaration.name.clone(),
+            scope: planned.declaration.scope,
+            machine_id: planned.machine_id.clone(),
+            quota: planned.declaration.quota.clone(),
+            mode: planned.declaration.mode.clone(),
+            owner: planned.declaration.owner.clone(),
+            attached_services: planned.attached_services.clone(),
+            created_at,
+            created_by_deploy_id,
+            last_modified_at: now,
+            last_modified_by_deploy_id: deploy_id.clone(),
+        });
+    }
+    Ok(volumes)
 }
 
 async fn cleanup_stale_instances(

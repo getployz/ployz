@@ -338,6 +338,7 @@ async fn apply_commits_volume_records_and_sends_volume_payload_to_startup() {
         apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, second_plan)
             .await
             .expect("second deploy");
+    assert_eq!(controller.start_count(), 1);
 
     let records = store
         .list_volumes(&manifest.namespace)
@@ -348,6 +349,70 @@ async fn apply_commits_volume_records_and_sends_volume_payload_to_startup() {
     };
     assert_eq!(record.created_at, first_created_at);
     assert_eq!(record.created_by_deploy_id, first_created_by);
+    assert_eq!(record.last_modified_by_deploy_id, first.deploy_id);
+    assert_ne!(record.last_modified_by_deploy_id, second.deploy_id);
+}
+
+#[tokio::test]
+async fn apply_reconciles_attached_service_before_committing_volume_quota_change() {
+    let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = volume_manifest();
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    let controller = FakeController::default();
+    let factory = FakeSessionFactory::new(controller.clone());
+
+    let first =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect("first deploy");
+
+    let mut quota_manifest = volume_manifest();
+    let Some(volume) = quota_manifest.volumes.first_mut() else {
+        panic!("expected volume");
+    };
+    volume.quota = "2G".into();
+    let quota_plan = resolve_plan(&store, &local_machine_id, &quota_manifest)
+        .await
+        .expect("quota plan");
+    let [service] = quota_plan.services() else {
+        panic!("expected one planned service");
+    };
+    assert_eq!(service.action, crate::model::DeployChangeKind::Replace);
+
+    let second = apply_with_initial_plan(
+        &store,
+        &factory,
+        &local_machine_id,
+        &quota_manifest,
+        quota_plan,
+    )
+    .await
+    .expect("quota deploy");
+
+    assert_eq!(controller.start_count(), 2);
+    let requests = controller.start_requests().await;
+    let [_, quota_request] = requests.as_slice() else {
+        panic!("expected two start requests");
+    };
+    let volumes: Vec<VolumeDeclaration> =
+        serde_json::from_str(&quota_request.volumes_json).expect("volumes json");
+    let [volume] = volumes.as_slice() else {
+        panic!("expected one volume declaration");
+    };
+    assert_eq!(volume.quota, "2G");
+
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list volumes");
+    let [record] = records.as_slice() else {
+        panic!("expected one committed volume");
+    };
+    assert_eq!(record.quota, "2G");
+    assert_eq!(record.created_by_deploy_id, first.deploy_id);
     assert_eq!(record.last_modified_by_deploy_id, second.deploy_id);
 }
 
