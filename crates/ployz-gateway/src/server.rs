@@ -398,7 +398,7 @@ mod tests {
     use crate::SharedSnapshot;
     use crate::routes::{BackendView, GatewaySnapshot, HttpRouteView};
     use pingora::prelude::Opt;
-    use ployz_types::model::{InstanceId, MachineId};
+    use ployz_types::model::{InstanceId, MachineId, MachineTopology};
     use ployz_types::spec::Namespace;
     use std::collections::HashMap;
     use std::io::{Read, Write};
@@ -429,6 +429,7 @@ mod tests {
                 backends: vec![BackendView {
                     instance_id: InstanceId("inst-1".into()),
                     machine_id: MachineId("machine-1".into()),
+                    topology: MachineTopology::local(),
                     service_port: "http".into(),
                     address: upstream_addr,
                 }],
@@ -702,6 +703,7 @@ mod tests {
                 backends: vec![BackendView {
                     instance_id: InstanceId("inst-1".into()),
                     machine_id: MachineId("machine-1".into()),
+                    topology: MachineTopology::local(),
                     service_port: "http".into(),
                     address: upstream_addr,
                 }],
