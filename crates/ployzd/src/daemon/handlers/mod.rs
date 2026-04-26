@@ -46,6 +46,8 @@ impl DaemonState {
             | DaemonRequest::MeshReady { .. }
             | DaemonRequest::MeshCreate { .. }
             | DaemonRequest::MachineList
+            | DaemonRequest::MachineRtt
+            | DaemonRequest::MeshPeerRttSnapshot
             | DaemonRequest::MachineInit { .. }
             | DaemonRequest::MachineAdd { .. }
             | DaemonRequest::MachineActivate { .. }
@@ -99,6 +101,8 @@ impl DaemonState {
             DaemonRequest::MeshReady { json } => self.handle_mesh_ready(json).await,
             DaemonRequest::MeshCreate { network } => self.handle_mesh_create(&network),
             DaemonRequest::MachineList => self.handle_machine_list().await,
+            DaemonRequest::MachineRtt => self.handle_machine_rtt().await,
+            DaemonRequest::MeshPeerRttSnapshot => self.handle_mesh_peer_rtt_snapshot().await,
             DaemonRequest::MachineInit {
                 target,
                 network,
@@ -214,6 +218,8 @@ impl DaemonState {
             | DaemonRequest::MeshReady { .. }
             | DaemonRequest::MeshCreate { .. }
             | DaemonRequest::MachineList
+            | DaemonRequest::MachineRtt
+            | DaemonRequest::MeshPeerRttSnapshot
             | DaemonRequest::MachineInit { .. }
             | DaemonRequest::MachineAdd { .. }
             | DaemonRequest::MachineActivate { .. }

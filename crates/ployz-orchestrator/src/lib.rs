@@ -7,7 +7,6 @@ pub mod coordination;
 pub mod deploy;
 pub mod ipam;
 pub mod machine_policy;
-pub mod machine_reachability;
 pub mod mesh;
 pub mod network;
 
