@@ -62,6 +62,7 @@ pub(crate) enum Scenario {
     BridgeForwardSmoke,
     VolumeSmoke,
     ZfsTransferSmoke,
+    ZfsCutoverMeasure,
 }
 
 impl Scenario {
@@ -99,6 +100,9 @@ impl Scenario {
             Self::ZfsTransferSmoke if zfs_mode != ZfsMode::Real => {
                 Err("zfs_transfer_smoke requires --zfs real".into())
             }
+            Self::ZfsCutoverMeasure if zfs_mode != ZfsMode::Real => {
+                Err("zfs_cutover_measure requires --zfs real".into())
+            }
             Self::SingleNodeInit
             | Self::MachineAddBasic
             | Self::MachineDrainStandbyActivateCycle
@@ -109,7 +113,8 @@ impl Scenario {
             | Self::DeploySmoke
             | Self::BridgeForwardSmoke
             | Self::VolumeSmoke
-            | Self::ZfsTransferSmoke => Ok(()),
+            | Self::ZfsTransferSmoke
+            | Self::ZfsCutoverMeasure => Ok(()),
         }
     }
 
@@ -117,7 +122,9 @@ impl Scenario {
     pub(crate) fn node_names(self) -> &'static [&'static str] {
         match self {
             Self::SingleNodeInit | Self::BridgeForwardSmoke | Self::VolumeSmoke => &["founder"],
-            Self::DeploySmoke | Self::ZfsTransferSmoke => &["founder", "peer"],
+            Self::DeploySmoke | Self::ZfsTransferSmoke | Self::ZfsCutoverMeasure => {
+                &["founder", "peer"]
+            }
             Self::MachineAddBasic => &["founder", "joiner"],
             Self::MachineDrainStandbyActivateCycle | Self::WireguardReconnect => {
                 &["founder", "peer"]
@@ -144,6 +151,7 @@ impl Scenario {
             Self::BridgeForwardSmoke => "bridge_forward_smoke",
             Self::VolumeSmoke => "volume_smoke",
             Self::ZfsTransferSmoke => "zfs_transfer_smoke",
+            Self::ZfsCutoverMeasure => "zfs_cutover_measure",
         }
     }
 
@@ -160,7 +168,8 @@ impl Scenario {
             | Self::WireguardReconnect
             | Self::DeploySmoke
             | Self::VolumeSmoke
-            | Self::ZfsTransferSmoke => "host",
+            | Self::ZfsTransferSmoke
+            | Self::ZfsCutoverMeasure => "host",
         }
     }
 }
