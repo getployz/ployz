@@ -151,6 +151,7 @@ impl DaemonState {
             machine_id: self.identity.machine_id.clone(),
             public_key: self.identity.public_key.clone(),
             overlay_ip: active.config.overlay_ip,
+            topology: self_record.topology.clone(),
             subnet: self_record.subnet,
             endpoints,
         };

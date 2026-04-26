@@ -5,9 +5,9 @@ use crate::deploy::session::{DeploySession, DeploySessionFactory, StartCandidate
 use crate::error::Result;
 use crate::model::{
     AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DrainState, InstanceId,
-    InstancePhase, InstanceStatusRecord, MachineId, MachineLifecycle, MachineRecord, OverlayIp,
-    PublicKey, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot, ServiceRoutingPolicy,
-    SlotId,
+    InstancePhase, InstanceStatusRecord, MachineId, MachineLifecycle, MachineRecord,
+    MachineTopology, OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord,
+    ServiceReleaseSlot, ServiceRoutingPolicy, SlotId,
 };
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
@@ -1174,6 +1174,7 @@ fn test_machine(id: &str, lifecycle: MachineLifecycle) -> MachineRecord {
         id: MachineId(id.into()),
         public_key: PublicKey([7; 32]),
         overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+        topology: MachineTopology::local(),
         control_target: None,
         subnet: None,
         bridge_ip: None,

@@ -16,8 +16,8 @@ use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{InviteStore, MachineStore};
 use ployz_types::model::{
-    JoinResponse, MachineId, MachineLifecycle, MachineRecord, NetworkLifecycle, OverlayIp,
-    PublicKey,
+    JoinResponse, MachineId, MachineLifecycle, MachineRecord, MachineTopology, NetworkLifecycle,
+    OverlayIp, PublicKey,
 };
 use ployz_types::time::now_unix_secs;
 use std::path::{Path, PathBuf};
@@ -297,6 +297,7 @@ async fn machine_add_activates_joiner_lifecycle() {
         machine_id: MachineId("joiner-1".into()),
         public_key: PublicKey([4; 32]),
         overlay_ip: "::1".parse().map(OverlayIp).expect("valid overlay"),
+        topology: MachineTopology::local(),
         subnet: Some(expected_subnet),
         endpoints: vec!["203.0.113.10:51820".into()],
     }
@@ -378,6 +379,7 @@ async fn machine_add_requires_sync_connected_for_running_joiner() {
         machine_id: MachineId("joiner-2".into()),
         public_key: PublicKey([5; 32]),
         overlay_ip: "fd00::5".parse().map(OverlayIp).expect("valid overlay"),
+        topology: MachineTopology::local(),
         subnet: Some(expected_subnet),
         endpoints: vec!["203.0.113.11:51820".into()],
     }
@@ -957,6 +959,7 @@ async fn machine_add_rejects_remote_subnet_mismatch_before_invite_consume() {
         machine_id: MachineId("joiner-mismatch".into()),
         public_key: PublicKey([14; 32]),
         overlay_ip: "fd00::14".parse().map(OverlayIp).expect("valid overlay"),
+        topology: MachineTopology::local(),
         subnet: Some("10.210.99.0/24".parse().expect("valid subnet")),
         endpoints: vec!["203.0.113.14:51820".into()],
     }
@@ -1287,6 +1290,7 @@ fn test_machine_record(
             .parse()
             .map(OverlayIp)
             .expect("valid overlay"),
+        topology: MachineTopology::local(),
         control_target: Some(id.into()),
         subnet: Some(subnet.parse().expect("valid subnet")),
         bridge_ip: None,

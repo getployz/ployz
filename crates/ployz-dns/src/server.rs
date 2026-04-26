@@ -254,7 +254,8 @@ where
         }
 
         let state = wait_for_initial_routing_state(&store).await?;
-        let initial_snapshot = project_dns(&state);
+        let initial_snapshot =
+            project_dns(&state).map_err(|err| DnsError::Projection(err.to_string()))?;
         let shared = SharedDnsSnapshot::new(initial_snapshot);
 
         tokio::spawn(crate::sync::run_sync_loop(store, shared.clone()));
@@ -326,6 +327,7 @@ mod tests {
     use hickory_server::proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
     use hickory_server::proto::rr::rdata::A;
     use hickory_server::proto::rr::{Name, RData, RecordType};
+    use ployz_types::model::MachineTopology;
     use std::collections::HashMap;
     use std::net::{Ipv4Addr, SocketAddr};
     use std::time::Duration;
@@ -392,6 +394,7 @@ mod tests {
             service: "web".into(),
             instance_id: "inst-1".into(),
             machine_id: "machine-1".into(),
+            topology: MachineTopology::local(),
             slot_id: "slot-1".into(),
             overlay_ip: Ipv4Addr::new(10, 42, 0, 2),
         };
@@ -420,7 +423,9 @@ mod tests {
         assert_eq!(response.response_code(), ResponseCode::NoError);
         assert_eq!(
             txt_answers(&response),
-            vec!["service=web,instance=inst-1,machine=machine-1,slot=slot-1,ip=10.42.0.2"]
+            vec![
+                "service=web,instance=inst-1,machine=machine-1,region=local,az=none,slot=slot-1,ip=10.42.0.2"
+            ]
         );
 
         server.abort();
@@ -436,6 +441,7 @@ mod tests {
             service: "web".into(),
             instance_id: "inst-1".into(),
             machine_id: "machine-1".into(),
+            topology: MachineTopology::local(),
             slot_id: "slot-1".into(),
             overlay_ip: Ipv4Addr::new(10, 42, 0, 2),
         };
@@ -477,6 +483,7 @@ mod tests {
             service: "web".into(),
             instance_id: "inst-1".into(),
             machine_id: "machine-1".into(),
+            topology: MachineTopology::local(),
             slot_id: "slot-1".into(),
             overlay_ip: Ipv4Addr::new(10, 42, 0, 2),
         };

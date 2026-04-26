@@ -55,7 +55,7 @@ mod tests {
     use ployz_store_api::MachineStore;
     use ployz_store_api::StoreDriver;
     use ployz_store_api::memory::{MemoryService, MemoryStore};
-    use ployz_types::model::{MachineId, MachineLifecycle, OverlayIp, PublicKey};
+    use ployz_types::model::{MachineId, MachineLifecycle, MachineTopology, OverlayIp, PublicKey};
     use ployz_types::time::now_unix_secs;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -112,6 +112,7 @@ mod tests {
             machine_id: MachineId("joiner".into()),
             public_key: PublicKey([2; 32]),
             overlay_ip: "fd00::2".parse().map(OverlayIp).expect("valid overlay"),
+            topology: MachineTopology::local(),
             subnet: Some("10.210.1.0/24".parse().expect("valid subnet")),
             endpoints: vec!["203.0.113.10:51820".into()],
         }
@@ -280,6 +281,7 @@ mod tests {
                 id: identity.machine_id.clone(),
                 public_key: identity.public_key.clone(),
                 overlay_ip: config.overlay_ip,
+                topology: MachineTopology::local(),
                 subnet: config.subnet,
                 control_target: None,
                 bridge_ip: None,
