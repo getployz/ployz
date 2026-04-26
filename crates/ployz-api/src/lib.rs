@@ -207,6 +207,8 @@ pub enum DaemonRequest {
         id: String,
         force: bool,
     },
+    MachineRtt,
+    MeshPeerRttSnapshot,
     MeshPeerRemoveMachine {
         operation_id: String,
         network_id: NetworkId,
@@ -265,6 +267,7 @@ pub enum DaemonPayload {
     Doctor(DoctorPayload),
     Status(StatusPayload),
     MachineList(MachineListPayload),
+    MachineRtt(MachineRttPayload),
     MachineAdd(MachineAddPayload),
     MachineRemove(MachineRemovePayload),
     MeshList(MeshListPayload),
@@ -289,6 +292,19 @@ pub struct MachineListRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subnet: Option<String>,
     pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MachineRttPayload {
+    pub rows: Vec<MachineRttRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MachineRttRow {
+    pub machine: String,
+    pub peer: String,
+    pub median_ms: f64,
+    pub stddev_ms: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
