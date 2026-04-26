@@ -1,4 +1,4 @@
-use crate::cli::Scenario;
+use crate::cli::{Scenario, ZfsMode};
 use crate::error::{Error, Result};
 use crate::scenarios;
 use crate::support::{
@@ -47,6 +47,7 @@ pub(crate) struct ScenarioRun {
     image: String,
     image_id: String,
     image_platform: String,
+    zfs_mode: ZfsMode,
     root_dir: PathBuf,
     payload_dir: PathBuf,
     outer_network: String,
@@ -111,6 +112,7 @@ impl ScenarioRun {
         image: &str,
         artifacts_root: &Path,
         keep_failed: bool,
+        zfs_mode: ZfsMode,
     ) -> Result<Self> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -136,6 +138,7 @@ impl ScenarioRun {
             image: image.to_string(),
             image_id,
             image_platform,
+            zfs_mode,
             root_dir,
             payload_dir,
             outer_network: format!("ployz-e2e-net-{run_id}"),
@@ -175,6 +178,10 @@ impl ScenarioRun {
     }
 
     pub(crate) fn cleanup(&self, failed: bool) {
+        if self.zfs_mode == ZfsMode::Real {
+            self.cleanup_volume_smoke_zfs();
+        }
+
         if failed && self.keep_failed {
             return;
         }
@@ -187,6 +194,25 @@ impl ScenarioRun {
             let _ = docker_outer(["rm", "-f", self.challtestsrv_container_name().as_str()]);
         }
         let _ = docker_outer(["network", "rm", self.outer_network.as_str()]);
+    }
+
+    fn cleanup_volume_smoke_zfs(&self) {
+        let command = "mode=$(cat /var/lib/ployz-e2e-zfs/mode 2>/dev/null || true); \
+                       if [ \"$mode\" != real ]; then exit 0; fi; \
+                       docker rm -f $(docker ps -aq --filter label=dev.ployz.namespace=default --filter label=dev.ployz.service=db) >/dev/null 2>&1 || true; \
+                       pool=$(cat /var/lib/ployz-e2e-zfs/pool.name 2>/dev/null || true); \
+                       if [ -n \"$pool\" ]; then zpool destroy \"$pool\" >/dev/null 2>&1 || true; fi; \
+                       loopdev=$(cat /var/lib/ployz-e2e-zfs/pool.loop 2>/dev/null || true); \
+                       if [ -n \"$loopdev\" ]; then losetup -d \"$loopdev\" >/dev/null 2>&1 || true; fi; \
+                       rm -f /var/lib/ployz-e2e-zfs/pool.img /var/lib/ployz-e2e-zfs/pool.loop";
+        for node in &self.nodes {
+            if let Err(error) = self.ssh_run(node, command) {
+                self.log_progress(&format!(
+                    "real zfs cleanup command failed on {}: {error}",
+                    node.name
+                ));
+            }
+        }
     }
 
     pub(crate) fn collect_failure_artifacts(&self) -> Result<()> {
@@ -1057,6 +1083,19 @@ impl ScenarioRun {
                 args.push(format!(
                     "{CORROSION_RUST_LOG_ENV}=info,tower_http=debug,corro_agent::api::public=debug"
                 ));
+            }
+        }
+
+        if self.zfs_mode != ZfsMode::Off {
+            args.push("-e".to_string());
+            args.push(format!("PLOYZ_E2E_ZFS_MODE={}", self.zfs_mode.as_str()));
+            if let Ok(pool) = std::env::var("PLOYZ_E2E_ZFS_POOL") {
+                args.push("-e".to_string());
+                args.push(format!("PLOYZ_E2E_ZFS_POOL={pool}"));
+            }
+            if let Ok(pool_size) = std::env::var("PLOYZ_E2E_ZFS_POOL_SIZE") {
+                args.push("-e".to_string());
+                args.push(format!("PLOYZ_E2E_ZFS_POOL_SIZE={pool_size}"));
             }
         }
 

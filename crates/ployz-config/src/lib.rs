@@ -81,6 +81,8 @@ pub struct DaemonConfig {
     pub data_dir: PathBuf,
     pub socket: String,
     #[serde(default)]
+    pub storage: StorageConfig,
+    #[serde(default)]
     pub builtin_images_manifest: Option<PathBuf>,
     #[serde(default)]
     pub daemon_metrics_listen_addr: Option<String>,
@@ -108,6 +110,27 @@ pub struct DaemonConfig {
     pub gateway_threads: usize,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StorageConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zfs_root: Option<PathBuf>,
+    #[serde(default = "default_overcommit_ratio")]
+    pub overcommit_ratio: f64,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            zfs_root: None,
+            overcommit_ratio: default_overcommit_ratio(),
+        }
+    }
+}
+
+fn default_overcommit_ratio() -> f64 {
+    1.0
+}
+
 fn default_cluster_cidr() -> String {
     "10.101.0.0/16".to_string()
 }
@@ -132,6 +155,7 @@ fn default_gateway_threads() -> usize {
 struct RuntimeDefaults {
     data_dir: PathBuf,
     socket: String,
+    storage: StorageConfig,
     #[serde(skip_serializing_if = "Option::is_none")]
     builtin_images_manifest: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -167,6 +191,8 @@ struct DaemonOverrides {
     data_dir: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     socket: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    storage: Option<StorageConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     builtin_images_manifest: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -280,6 +306,7 @@ pub fn load_daemon_config(
     let overrides = DaemonOverrides {
         data_dir: cli_data_dir,
         socket: cli_socket,
+        storage: None,
         builtin_images_manifest: None,
         daemon_metrics_listen_addr: None,
         dns_metrics_listen_addr: None,
@@ -305,6 +332,7 @@ fn build_figment(cli_config_path: Option<PathBuf>, context: &HostPathsContext) -
     let defaults = RuntimeDefaults {
         data_dir: default_data_dir(context),
         socket: default_socket_path(context),
+        storage: StorageConfig::default(),
         builtin_images_manifest: None,
         daemon_metrics_listen_addr: None,
         dns_metrics_listen_addr: None,
@@ -419,5 +447,55 @@ mod tests {
             std::env::remove_var("PLOYZ_REGION");
             std::env::remove_var("PLOYZ_AZ");
         }
+    }
+
+    #[test]
+    fn daemon_config_reads_storage_zfs_root_from_toml() {
+        let path =
+            std::env::temp_dir().join(format!("ployz-storage-config-{}.toml", std::process::id()));
+        std::fs::write(&path, "[storage]\nzfs_root = \"tank/ployz\"\n").expect("write config");
+
+        let loaded = load_daemon_config(
+            Some(path.clone()),
+            None,
+            None,
+            None,
+            &context(Os::Darwin, false),
+        )
+        .expect("daemon config should load");
+
+        assert_eq!(
+            loaded.storage.zfs_root.as_deref(),
+            Some(Path::new("tank/ployz"))
+        );
+        assert!((loaded.storage.overcommit_ratio - 1.0).abs() < f64::EPSILON);
+
+        std::fs::remove_file(path).expect("remove config");
+    }
+
+    #[test]
+    fn daemon_config_reads_storage_overcommit_ratio_from_toml() {
+        let path = std::env::temp_dir().join(format!(
+            "ployz-storage-overcommit-{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "[storage]\nzfs_root = \"tank/ployz\"\novercommit_ratio = 1.5\n",
+        )
+        .expect("write config");
+
+        let loaded = load_daemon_config(
+            Some(path.clone()),
+            None,
+            None,
+            None,
+            &context(Os::Darwin, false),
+        )
+        .expect("daemon config should load");
+
+        assert!((loaded.storage.overcommit_ratio - 1.5).abs() < f64::EPSILON);
+
+        std::fs::remove_file(path).expect("remove config");
     }
 }

@@ -259,6 +259,46 @@ pub enum DaemonRequest {
     DeployExport {
         namespace: String,
     },
+    VolumeZfsInspect {
+        namespace: String,
+        volume: String,
+        machine: Option<String>,
+    },
+    VolumeZfsSnapshot {
+        namespace: String,
+        volume: String,
+        snapshot: String,
+    },
+    VolumeZfsSend {
+        namespace: String,
+        volume: String,
+        snapshot: String,
+        target_machine: String,
+        from_snapshot: Option<String>,
+    },
+    VolumeZfsPeerSnapshot {
+        namespace: String,
+        volume: String,
+        snapshot: String,
+    },
+    VolumeZfsPeerSnapshotGuid {
+        namespace: String,
+        volume: String,
+        snapshot: String,
+    },
+    VolumeZfsPeerStartSend {
+        namespace: String,
+        volume: String,
+        snapshot: String,
+        target_machine: String,
+        expected_guid: u64,
+        from_snapshot: Option<String>,
+        from_snapshot_guid: Option<u64>,
+    },
+    VolumeZfsTransferGet {
+        id: String,
+    },
+    VolumeZfsTransferList,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -277,6 +317,11 @@ pub enum DaemonPayload {
     MachineInviteList(MachineInviteListPayload),
     MachineOperationList(MachineOperationListPayload),
     MachineOperation(MachineOperationPayload),
+    VolumeZfsInspect(VolumeZfsInspectPayload),
+    VolumeZfsSnapshot(VolumeZfsSnapshotPayload),
+    VolumeZfsPeerSend(VolumeZfsPeerSendPayload),
+    VolumeZfsTransfer(VolumeZfsTransferPayload),
+    VolumeZfsTransferList(VolumeZfsTransferListPayload),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -506,6 +551,75 @@ pub struct MachineOperationInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeZfsInspectPayload {
+    pub namespace: String,
+    pub volume: String,
+    pub machine_id: MachineId,
+    pub dataset: String,
+    pub mountpoint: String,
+    pub quota: String,
+    pub used_bytes: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub snapshots: Vec<VolumeZfsSnapshotInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeZfsSnapshotPayload {
+    pub namespace: String,
+    pub volume: String,
+    pub machine_id: MachineId,
+    pub dataset: String,
+    pub snapshot: String,
+    pub guid: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeZfsSnapshotInfo {
+    pub name: String,
+    pub guid: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeZfsPeerSendPayload {
+    pub bytes_transferred: u64,
+    pub snapshot_guid: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeZfsTransferPayload {
+    pub transfer: VolumeZfsTransferInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeZfsTransferListPayload {
+    pub transfers: Vec<VolumeZfsTransferInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeZfsTransferInfo {
+    pub id: String,
+    pub namespace: String,
+    pub volume: String,
+    pub source_machine: MachineId,
+    pub target_machine: MachineId,
+    pub status: String,
+    pub stage: String,
+    pub snapshot_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_guid: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_snapshot_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_snapshot_guid: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_transferred: Option<u64>,
+    pub started_at: u64,
+    pub updated_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonResponse {
     pub ok: bool,
     pub code: String,
@@ -527,6 +641,7 @@ pub enum DeployFrame {
         slot_id: String,
         instance_id: String,
         spec_json: String,
+        volumes_json: String,
     },
     DrainInstance {
         instance_id: String,
@@ -564,6 +679,7 @@ mod tests {
             slot_id: String::from("slot-1"),
             instance_id: String::from("inst-1"),
             spec_json: String::from("{\"name\":\"api\"}"),
+            volumes_json: String::from("[]"),
         };
 
         let json = serde_json::to_value(&frame).expect("serialize frame");
@@ -579,6 +695,7 @@ mod tests {
             slot_id,
             instance_id,
             spec_json,
+            volumes_json,
         } = decoded
         else {
             panic!("unexpected frame");
@@ -587,5 +704,6 @@ mod tests {
         assert_eq!(slot_id, "slot-1");
         assert_eq!(instance_id, "inst-1");
         assert_eq!(spec_json, "{\"name\":\"api\"}");
+        assert_eq!(volumes_json, "[]");
     }
 }

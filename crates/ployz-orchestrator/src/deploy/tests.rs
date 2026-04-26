@@ -4,10 +4,10 @@ use super::preview;
 use crate::deploy::session::{DeploySession, DeploySessionFactory, StartCandidateRequest};
 use crate::error::Result;
 use crate::model::{
-    AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DrainState, InstanceId,
-    InstancePhase, InstanceStatusRecord, MachineId, MachineLifecycle, MachineRecord,
-    MachineTopology, OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord,
-    ServiceReleaseSlot, ServiceRoutingPolicy, SlotId,
+    AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, DeployState,
+    DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, MachineLifecycle,
+    MachineRecord, MachineTopology, OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord,
+    ServiceReleaseSlot, ServiceRoutingPolicy, SlotId, VolumeRecord,
 };
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
@@ -17,8 +17,9 @@ use ployz_store_api::{
 };
 use ployz_types::Result as PloyzResult;
 use ployz_types::spec::{
-    ContainerSpec, DeployManifest, HttpRoute, Namespace, NetworkMode, Placement, PortProtocol,
-    PullPolicy, Resources, RestartPolicy, RolloutStrategy, RouteSpec, ServicePort, ServiceSpec,
+    ContainerSpec, DeployManifest, HttpRoute, Mount, MountSource, Namespace, NetworkMode,
+    Placement, PortProtocol, PullPolicy, Resources, RestartPolicy, RolloutStrategy, RouteSpec,
+    ServicePort, ServiceSpec, VolumeDeclaration, VolumeScope,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::net::Ipv6Addr;
@@ -73,8 +74,8 @@ fn replicated_one_reuses_existing_slot_machine() {
         ),
     ]);
 
-    let desired =
-        desired_slots(&spec, &machines, Some(&current_slots), &machine_map).expect("desired slots");
+    let desired = desired_slots(&spec, &machines, Some(&current_slots), &machine_map, None)
+        .expect("desired slots");
     let [slot] = desired.as_slice() else {
         panic!("expected one desired slot");
     };
@@ -180,6 +181,393 @@ async fn resolve_plan_reuses_slot_machine_when_revision_changes() {
     };
     assert_eq!(service_plan.action, crate::model::DeployChangeKind::Replace);
     assert_eq!(slot_plan.machine_id, MachineId("machine-b".into()));
+}
+
+#[tokio::test]
+async fn resolve_plan_pins_new_volume_to_existing_slot_machine() {
+    let store = StoreDriver::memory();
+    let local_machine_id = MachineId("local".into());
+    let mut service = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    service.template.mounts.push(Mount {
+        source: MountSource::Volume("data".into()),
+        target: "/var/lib/postgresql/data".into(),
+        readonly: false,
+    });
+    let mut manifest = test_manifest(vec![service]);
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
+    let old_spec = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:16");
+    let old_revision_hash = old_spec.revision_hash().expect("old revision hash");
+
+    store
+        .upsert_self_machine(&test_machine("machine-a", MachineLifecycle::Active))
+        .await
+        .expect("seed machine-a");
+    store
+        .upsert_self_machine(&test_machine("machine-b", MachineLifecycle::Active))
+        .await
+        .expect("seed machine-b");
+    store
+        .upsert_service_release(&test_release(
+            &manifest.namespace,
+            "db",
+            &old_revision_hash,
+            vec![test_slot(
+                "slot-0001",
+                "machine-b",
+                "inst-1",
+                &old_revision_hash,
+            )],
+        ))
+        .await
+        .expect("seed release");
+
+    let plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("resolve plan");
+
+    let [volume] = plan.volumes() else {
+        panic!("expected one volume");
+    };
+    assert_eq!(volume.machine_id, MachineId("machine-b".into()));
+    let [service_plan] = plan.services() else {
+        panic!("expected one service plan");
+    };
+    let [slot_plan] = service_plan.slots.as_slice() else {
+        panic!("expected one slot plan");
+    };
+    assert_eq!(slot_plan.machine_id, MachineId("machine-b".into()));
+}
+
+#[tokio::test]
+async fn resolve_plan_rejects_service_with_volumes_on_different_machines() {
+    let store = StoreDriver::memory();
+    let local_machine_id = MachineId("local".into());
+    let mut service = test_service_spec("api", Placement::Replicated { count: 1 }, "nginx:1.28");
+    service.template.mounts.push(Mount {
+        source: MountSource::Volume("left".into()),
+        target: "/left".into(),
+        readonly: false,
+    });
+    service.template.mounts.push(Mount {
+        source: MountSource::Volume("right".into()),
+        target: "/right".into(),
+        readonly: false,
+    });
+    let mut manifest = test_manifest(vec![service]);
+    manifest
+        .volumes
+        .push(test_volume("left", VolumeScope::Single));
+    manifest
+        .volumes
+        .push(test_volume("right", VolumeScope::Single));
+
+    store
+        .upsert_self_machine(&test_machine("machine-a", MachineLifecycle::Active))
+        .await
+        .expect("seed machine-a");
+    store
+        .upsert_self_machine(&test_machine("machine-b", MachineLifecycle::Active))
+        .await
+        .expect("seed machine-b");
+    seed_volume(&store, &manifest.namespace, "left", "machine-a").await;
+    seed_volume(&store, &manifest.namespace, "right", "machine-b").await;
+
+    let error = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect_err("volume machine conflict should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("attaches volumes bound to different machines")
+    );
+}
+
+#[tokio::test]
+async fn apply_commits_volume_records_and_sends_volume_payload_to_startup() {
+    let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = volume_manifest();
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    let controller = FakeController::default();
+    let factory = FakeSessionFactory::new(controller.clone());
+
+    let first =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect("first deploy");
+
+    let requests = controller.start_requests().await;
+    let [request] = requests.as_slice() else {
+        panic!("expected one start request");
+    };
+    let volumes: Vec<VolumeDeclaration> =
+        serde_json::from_str(&request.volumes_json).expect("volumes json");
+    let [volume] = volumes.as_slice() else {
+        panic!("expected one volume declaration");
+    };
+    assert_eq!(volume.name, "data");
+    assert_eq!(volume.scope, VolumeScope::Single);
+    assert_eq!(request.service, "db");
+
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list volumes");
+    let [record] = records.as_slice() else {
+        panic!("expected one committed volume");
+    };
+    assert_eq!(record.volume_name, "data");
+    assert_eq!(record.machine_id, MachineId("machine-a".into()));
+    assert_eq!(record.quota, "1G");
+    assert_eq!(record.mode, "0750");
+    assert_eq!(record.owner, "999:999");
+    assert_eq!(record.attached_services, vec!["db"]);
+    assert_eq!(record.created_by_deploy_id, first.deploy_id);
+    let first_created_at = record.created_at;
+    let first_created_by = record.created_by_deploy_id.clone();
+
+    let second_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("second plan");
+    let second =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, second_plan)
+            .await
+            .expect("second deploy");
+    assert_eq!(controller.start_count(), 1);
+
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list volumes");
+    let [record] = records.as_slice() else {
+        panic!("expected one committed volume after redeploy");
+    };
+    assert_eq!(record.created_at, first_created_at);
+    assert_eq!(record.created_by_deploy_id, first_created_by);
+    assert_eq!(record.last_modified_by_deploy_id, first.deploy_id);
+    assert_ne!(record.last_modified_by_deploy_id, second.deploy_id);
+}
+
+#[tokio::test]
+async fn apply_reconciles_attached_service_before_committing_volume_quota_change() {
+    let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = volume_manifest();
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    let controller = FakeController::default();
+    let factory = FakeSessionFactory::new(controller.clone());
+
+    let first =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect("first deploy");
+
+    let mut quota_manifest = volume_manifest();
+    let Some(volume) = quota_manifest.volumes.first_mut() else {
+        panic!("expected volume");
+    };
+    volume.quota = "2G".into();
+    let quota_plan = resolve_plan(&store, &local_machine_id, &quota_manifest)
+        .await
+        .expect("quota plan");
+    let [service] = quota_plan.services() else {
+        panic!("expected one planned service");
+    };
+    assert_eq!(service.action, crate::model::DeployChangeKind::Replace);
+
+    let second = apply_with_initial_plan(
+        &store,
+        &factory,
+        &local_machine_id,
+        &quota_manifest,
+        quota_plan,
+    )
+    .await
+    .expect("quota deploy");
+
+    assert_eq!(controller.start_count(), 2);
+    let requests = controller.start_requests().await;
+    let [_, quota_request] = requests.as_slice() else {
+        panic!("expected two start requests");
+    };
+    let volumes: Vec<VolumeDeclaration> =
+        serde_json::from_str(&quota_request.volumes_json).expect("volumes json");
+    let [volume] = volumes.as_slice() else {
+        panic!("expected one volume declaration");
+    };
+    assert_eq!(volume.quota, "2G");
+
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list volumes");
+    let [record] = records.as_slice() else {
+        panic!("expected one committed volume");
+    };
+    assert_eq!(record.quota, "2G");
+    assert_eq!(record.created_by_deploy_id, first.deploy_id);
+    assert_eq!(record.last_modified_by_deploy_id, second.deploy_id);
+}
+
+#[tokio::test]
+async fn apply_deletes_volume_records_removed_from_manifest() {
+    let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = volume_manifest();
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    let controller = FakeController::default();
+    let factory = FakeSessionFactory::new(controller);
+
+    apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+        .await
+        .expect("first deploy");
+
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list volumes");
+    let [record] = records.as_slice() else {
+        panic!("expected seeded volume");
+    };
+    assert_eq!(record.volume_name, "data");
+
+    let next_manifest = test_manifest(vec![test_service_spec(
+        "api",
+        Placement::Replicated { count: 1 },
+        "nginx:1.28",
+    )]);
+    let next_plan = resolve_plan(&store, &local_machine_id, &next_manifest)
+        .await
+        .expect("removal plan");
+    apply_with_initial_plan(
+        &store,
+        &factory,
+        &local_machine_id,
+        &next_manifest,
+        next_plan,
+    )
+    .await
+    .expect("remove volume deploy");
+
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list volumes after removal");
+    assert!(
+        records.is_empty(),
+        "expected volume row removed: {records:?}"
+    );
+}
+
+#[tokio::test]
+async fn apply_commits_unattached_volume_declarations_without_service_reconciliation() {
+    let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = test_manifest(vec![test_service_spec(
+        "api",
+        Placement::Replicated { count: 1 },
+        "nginx:1.27",
+    )]);
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    let controller = FakeController::default();
+    let factory = FakeSessionFactory::new(controller.clone());
+
+    apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+        .await
+        .expect("deploy");
+
+    assert_eq!(controller.start_count(), 1);
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list volumes");
+    let [record] = records.as_slice() else {
+        panic!("expected one committed volume");
+    };
+    assert_eq!(record.volume_name, "data");
+    assert!(record.attached_services.is_empty());
+}
+
+#[tokio::test]
+async fn resolve_plan_rejects_existing_volume_quota_shrink() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = volume_manifest();
+    seed_volume_with(
+        &store,
+        &manifest.namespace,
+        "data",
+        "machine-a",
+        "2G",
+        "0750",
+        "999:999",
+    )
+    .await;
+
+    let error = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect_err("quota shrink should fail");
+
+    assert!(error.to_string().contains("quota cannot shrink"));
+}
+
+#[tokio::test]
+async fn resolve_plan_rejects_existing_volume_scope_mode_or_owner_changes() {
+    let local_machine_id = MachineId("local".into());
+
+    for (field, manifest) in [
+        ("scope", {
+            let mut manifest = volume_manifest();
+            let Some(volume) = manifest.volumes.first_mut() else {
+                panic!("expected volume");
+            };
+            volume.scope = VolumeScope::Shared;
+            manifest
+        }),
+        ("mode", {
+            let mut manifest = volume_manifest();
+            let Some(volume) = manifest.volumes.first_mut() else {
+                panic!("expected volume");
+            };
+            volume.mode = "0700".into();
+            manifest
+        }),
+        ("owner", {
+            let mut manifest = volume_manifest();
+            let Some(volume) = manifest.volumes.first_mut() else {
+                panic!("expected volume");
+            };
+            volume.owner = "1000:1000".into();
+            manifest
+        }),
+    ] {
+        let store = seeded_store_with_machines(&["machine-a"]).await;
+        seed_volume(&store, &manifest.namespace, "data", "machine-a").await;
+
+        let error = match resolve_plan(&store, &local_machine_id, &manifest).await {
+            Ok(_) => panic!("{field} change should fail"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.to_string().contains("cannot change"),
+            "{field} error should mention immutability: {error}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -818,6 +1206,7 @@ struct FakeController {
     machine_state: Arc<std::sync::Mutex<HashMap<String, usize>>>,
     machine_max: Arc<std::sync::Mutex<HashMap<String, usize>>>,
     start_log_entries: Arc<Mutex<Vec<String>>>,
+    start_requests: Arc<Mutex<Vec<StartCandidateRequest>>>,
 }
 
 impl FakeController {
@@ -852,6 +1241,10 @@ impl FakeController {
 
     async fn start_log(&self) -> Vec<String> {
         self.start_log_entries.lock().await.clone()
+    }
+
+    async fn start_requests(&self) -> Vec<StartCandidateRequest> {
+        self.start_requests.lock().await.clone()
     }
 
     async fn on_open_start(&self) {
@@ -969,6 +1362,11 @@ impl DeploySession for FakeSession {
         req: StartCandidateRequest,
     ) -> Result<InstanceStatusRecord> {
         self.controller
+            .start_requests
+            .lock()
+            .await
+            .push(req.clone());
+        self.controller
             .on_start_begin(&self.machine_id, &req.service, &req.slot_id)
             .await;
         if self.controller.should_fail_start(&req.service) {
@@ -1050,8 +1448,92 @@ async fn counting_store_with_machines(machine_ids: &[&str]) -> (StoreDriver, Arc
 fn test_manifest(services: Vec<ServiceSpec>) -> DeployManifest {
     DeployManifest {
         namespace: Namespace("test".into()),
+        volumes: Vec::new(),
         services,
     }
+}
+
+fn volume_manifest() -> DeployManifest {
+    let mut service = test_service_spec("db", Placement::Replicated { count: 1 }, "postgres:17");
+    service.template.mounts.push(Mount {
+        source: MountSource::Volume("data".into()),
+        target: "/var/lib/postgresql/data".into(),
+        readonly: false,
+    });
+    let mut manifest = test_manifest(vec![service]);
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
+    manifest
+}
+
+fn test_volume(name: &str, scope: VolumeScope) -> VolumeDeclaration {
+    VolumeDeclaration {
+        name: name.into(),
+        scope,
+        quota: "1G".into(),
+        mode: "0750".into(),
+        owner: "999:999".into(),
+    }
+}
+
+async fn seed_volume(
+    store: &StoreDriver,
+    namespace: &Namespace,
+    volume_name: &str,
+    machine_id: &str,
+) {
+    seed_volume_with(
+        store,
+        namespace,
+        volume_name,
+        machine_id,
+        "1G",
+        "0750",
+        "999:999",
+    )
+    .await;
+}
+
+async fn seed_volume_with(
+    store: &StoreDriver,
+    namespace: &Namespace,
+    volume_name: &str,
+    machine_id: &str,
+    quota: &str,
+    mode: &str,
+    owner: &str,
+) {
+    let deploy_id = DeployId(format!("seed-{volume_name}"));
+    let volume = VolumeRecord {
+        namespace: namespace.clone(),
+        volume_name: volume_name.into(),
+        scope: VolumeScope::Single,
+        machine_id: MachineId(machine_id.into()),
+        quota: quota.into(),
+        mode: mode.into(),
+        owner: owner.into(),
+        attached_services: Vec::new(),
+        created_at: 1,
+        created_by_deploy_id: deploy_id.clone(),
+        last_modified_at: 1,
+        last_modified_by_deploy_id: deploy_id.clone(),
+    };
+    let deploy = DeployRecord {
+        deploy_id,
+        namespace: namespace.clone(),
+        coordinator_machine_id: MachineId("local".into()),
+        manifest_hash: "seed".into(),
+        state: DeployState::Committed,
+        started_at: 1,
+        committed_at: Some(1),
+        finished_at: Some(1),
+        summary_json: "{}".into(),
+    };
+    store
+        .commit_deploy(namespace, &[], &[], &[], &[volume], &deploy)
+        .await
+        .expect("seed volume");
 }
 
 fn test_service_spec(name: &str, placement: Placement, image: &str) -> ServiceSpec {
@@ -1063,7 +1545,7 @@ fn test_service_spec(name: &str, placement: Placement, image: &str) -> ServiceSp
             command: None,
             entrypoint: None,
             env: BTreeMap::new(),
-            volumes: Vec::new(),
+            mounts: Vec::new(),
             cap_add: Vec::new(),
             cap_drop: Vec::new(),
             privileged: false,
@@ -1398,6 +1880,21 @@ impl StoreBackend for CountingBackend {
         self.store.delete_instance_status(instance_id).await
     }
 
+    async fn list_volumes(
+        &self,
+        namespace: &Namespace,
+    ) -> PloyzResult<Vec<crate::model::VolumeRecord>> {
+        self.store.list_volumes(namespace).await
+    }
+
+    async fn get_volume(
+        &self,
+        namespace: &Namespace,
+        volume_name: &str,
+    ) -> PloyzResult<Option<crate::model::VolumeRecord>> {
+        self.store.get_volume(namespace, volume_name).await
+    }
+
     async fn upsert_deploy(&self, record: &crate::model::DeployRecord) -> PloyzResult<()> {
         self.upsert_deploy_calls.fetch_add(1, Ordering::SeqCst);
         self.store.upsert_deploy(record).await
@@ -1407,12 +1904,21 @@ impl StoreBackend for CountingBackend {
         &self,
         namespace: &Namespace,
         removed_services: &[String],
+        removed_volumes: &[String],
         releases: &[ServiceReleaseRecord],
+        volumes: &[crate::model::VolumeRecord],
         deploy: &crate::model::DeployRecord,
     ) -> PloyzResult<()> {
         self.commit_calls.fetch_add(1, Ordering::SeqCst);
         self.store
-            .commit_deploy(namespace, removed_services, releases, deploy)
+            .commit_deploy(
+                namespace,
+                removed_services,
+                removed_volumes,
+                releases,
+                volumes,
+                deploy,
+            )
             .await
     }
 

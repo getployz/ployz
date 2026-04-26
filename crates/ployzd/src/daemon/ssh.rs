@@ -241,6 +241,11 @@ fn test_ssh_overrides_snapshot() -> TestSshOverrides {
 }
 
 #[cfg(test)]
+pub(crate) fn test_ssh_env_value(key: &'static str) -> Option<OsString> {
+    test_ssh_overrides_snapshot().env.get(key).cloned()
+}
+
+#[cfg(test)]
 pub(crate) struct TestSshProgramGuard {
     previous: Option<OsString>,
 }

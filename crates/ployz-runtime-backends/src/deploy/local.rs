@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::{IpAddr, Ipv4Addr};
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::StoreDriver;
@@ -13,8 +15,10 @@ use crate::runtime::{
     RuntimeContainerSpec,
 };
 use crate::spec::{
-    ContainerSpec, Namespace, NetworkMode, PortProtocol, ServicePort, ServiceSpec, VolumeSource,
+    ContainerSpec, MountSource, Namespace, NetworkMode, PortProtocol, ServicePort, ServiceSpec,
+    VolumeDeclaration,
 };
+use crate::storage::{ShellRunner, TokioShellRunner, ZfsDriver, resolve_volumes};
 use ployz_store_api::DeployStore;
 
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
@@ -73,18 +77,21 @@ pub(super) struct StartCandidate<'a> {
     pub(super) slot_id: &'a SlotId,
     pub(super) machine_id: &'a MachineId,
     pub(super) revision_hash: &'a str,
+    pub(super) volumes: &'a HashMap<String, VolumeDeclaration>,
 }
 
 pub struct LocalDeployRuntime {
     engine: ContainerEngine,
     overlay_network: Option<String>,
     overlay_dns_server: Option<Ipv4Addr>,
+    storage_driver: Option<Arc<ZfsDriver<TokioShellRunner>>>,
 }
 
 impl LocalDeployRuntime {
     pub fn new(
         overlay_network: Option<String>,
         overlay_dns_server: Option<Ipv4Addr>,
+        storage_driver: Option<Arc<ZfsDriver<TokioShellRunner>>>,
     ) -> Result<Self> {
         let docker = bollard::Docker::connect_with_socket_defaults()
             .map_err(|e| Error::operation("docker connect", e.to_string()))?;
@@ -93,6 +100,7 @@ impl LocalDeployRuntime {
             engine,
             overlay_network,
             overlay_dns_server,
+            storage_driver,
         })
     }
 
@@ -138,6 +146,7 @@ impl LocalDeployRuntime {
             slot_id,
             machine_id,
             revision_hash,
+            volumes,
         } = request;
         let container_name = format!("ployz-{namespace}-{}-{}", spec.name, instance_id.0);
         let key = format!("{namespace}/{}/{}/{}", spec.name, slot_id.0, instance_id.0);
@@ -176,6 +185,8 @@ impl LocalDeployRuntime {
 
         let dns_servers = workload_dns_servers(&spec.network, self.overlay_dns_server);
 
+        let resolved_volumes = self.resolve_mounts(namespace, container, volumes).await?;
+
         let runtime_spec = RuntimeContainerSpec {
             key,
             container_name: container_name.clone(),
@@ -185,7 +196,7 @@ impl LocalDeployRuntime {
             entrypoint: container.entrypoint.clone(),
             env,
             labels: workload_labels,
-            binds: build_binds(container),
+            binds: build_binds(container, &resolved_volumes)?,
             tmpfs: build_tmpfs(container),
             dns_servers,
             network_mode,
@@ -219,6 +230,28 @@ impl LocalDeployRuntime {
             ip_address: result.ip_address,
             backend_ports: service_port_map(&spec.service_ports),
         })
+    }
+
+    async fn resolve_mounts(
+        &self,
+        namespace: &Namespace,
+        container: &ContainerSpec,
+        volumes: &HashMap<String, VolumeDeclaration>,
+    ) -> Result<HashMap<String, PathBuf>> {
+        let has_volumes = container
+            .mounts
+            .iter()
+            .any(|mount| matches!(mount.source, MountSource::Volume(_)));
+        if !has_volumes {
+            return Ok(HashMap::new());
+        }
+        let Some(driver) = &self.storage_driver else {
+            return resolve_mounts_with_driver::<TokioShellRunner>(
+                None, namespace, container, volumes,
+            )
+            .await;
+        };
+        resolve_mounts_with_driver(Some(driver.as_ref()), namespace, container, volumes).await
     }
 
     pub(super) async fn wait_ready(
@@ -291,6 +324,28 @@ impl LocalDeployRuntime {
         let container_name = format!("ployz-{namespace}-{service}-{}", instance_id.0);
         self.engine.remove(&container_name, STOP_GRACE_PERIOD).await
     }
+}
+
+async fn resolve_mounts_with_driver<R: ShellRunner>(
+    driver: Option<&ZfsDriver<R>>,
+    namespace: &Namespace,
+    container: &ContainerSpec,
+    volumes: &HashMap<String, VolumeDeclaration>,
+) -> Result<HashMap<String, PathBuf>> {
+    let has_volumes = container
+        .mounts
+        .iter()
+        .any(|mount| matches!(mount.source, MountSource::Volume(_)));
+    if !has_volumes {
+        return Ok(HashMap::new());
+    }
+    let Some(driver) = driver else {
+        return Err(Error::operation(
+            "start_candidate",
+            "service uses managed volumes but daemon has no [storage] zfs_root configured",
+        ));
+    };
+    resolve_volumes(driver, namespace, container, volumes).await
 }
 
 pub(super) async fn adopt_instances(
@@ -366,29 +421,38 @@ fn resolve_service_port(spec: &ServiceSpec, name: &str) -> Result<u16> {
         })
 }
 
-fn build_binds(container: &ContainerSpec) -> Vec<String> {
-    container
-        .volumes
-        .iter()
-        .filter_map(|mount| match &mount.source {
-            VolumeSource::Bind(source) => {
+fn build_binds(
+    container: &ContainerSpec,
+    resolved: &HashMap<String, PathBuf>,
+) -> Result<Vec<String>> {
+    let mut binds = Vec::new();
+    for mount in &container.mounts {
+        match &mount.source {
+            MountSource::Bind(source) => {
                 let ro = if mount.readonly { ":ro" } else { "" };
-                Some(format!("{source}:{}{ro}", mount.target))
+                binds.push(format!("{source}:{}{ro}", mount.target));
             }
-            VolumeSource::Managed(volume) => {
+            MountSource::Volume(volume) => {
+                let Some(host) = resolved.get(volume) else {
+                    return Err(Error::operation(
+                        "build_binds",
+                        format!("volume '{volume}' was not resolved before container start"),
+                    ));
+                };
                 let ro = if mount.readonly { ":ro" } else { "" };
-                Some(format!("{}:{}{ro}", volume.name, mount.target))
+                binds.push(format!("{}:{}{ro}", host.display(), mount.target));
             }
-            VolumeSource::Tmpfs => None,
-        })
-        .collect()
+            MountSource::Tmpfs => {}
+        }
+    }
+    Ok(binds)
 }
 
 fn build_tmpfs(container: &ContainerSpec) -> HashMap<String, String> {
     container
-        .volumes
+        .mounts
         .iter()
-        .filter(|mount| matches!(mount.source, VolumeSource::Tmpfs))
+        .filter(|mount| matches!(mount.source, MountSource::Tmpfs))
         .map(|mount| (mount.target.clone(), String::new()))
         .collect()
 }
@@ -478,9 +542,182 @@ pub(super) use crate::time::now_unix_secs;
 
 #[cfg(test)]
 mod tests {
-    use super::workload_dns_servers;
-    use crate::spec::NetworkMode;
+    use std::collections::{BTreeMap, HashMap, VecDeque};
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
+
+    use super::{build_binds, resolve_mounts_with_driver, workload_dns_servers};
+    use crate::error::{Error, Result};
+    use crate::spec::{
+        ContainerSpec, Mount, MountSource, Namespace, NetworkMode, PullPolicy, Resources,
+        VolumeDeclaration, VolumeScope,
+    };
+    use crate::storage::{ShellOutput, ShellRunner, ZfsDriver};
     use std::net::Ipv4Addr;
+
+    #[derive(Clone, Default)]
+    struct FakeShellRunner {
+        calls: Arc<Mutex<Vec<Vec<String>>>>,
+        outputs: Arc<Mutex<VecDeque<ShellOutput>>>,
+    }
+
+    impl FakeShellRunner {
+        fn push(&self, status: i32, stdout: &str, stderr: &str) {
+            self.outputs
+                .lock()
+                .expect("outputs")
+                .push_back(ShellOutput {
+                    status,
+                    stdout: stdout.as_bytes().to_vec(),
+                    stderr: stderr.as_bytes().to_vec(),
+                });
+        }
+
+        fn calls(&self) -> Vec<Vec<String>> {
+            self.calls.lock().expect("calls").clone()
+        }
+    }
+
+    #[async_trait]
+    impl ShellRunner for FakeShellRunner {
+        async fn run(&self, program: &str, args: &[&str]) -> Result<ShellOutput> {
+            let mut call = vec![program.to_string()];
+            call.extend(args.iter().map(|arg| (*arg).to_string()));
+            self.calls.lock().expect("calls").push(call);
+            self.outputs
+                .lock()
+                .expect("outputs")
+                .pop_front()
+                .ok_or_else(|| Error::operation("fake_shell", "missing output"))
+        }
+    }
+
+    fn volume_container() -> ContainerSpec {
+        ContainerSpec {
+            image: "postgres:17".into(),
+            command: None,
+            entrypoint: None,
+            env: BTreeMap::new(),
+            mounts: vec![Mount {
+                source: MountSource::Volume("data".into()),
+                target: "/var/lib/postgresql/data".into(),
+                readonly: false,
+            }],
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            user: None,
+            stop_grace_period: None,
+            pid_mode: None,
+            pull_policy: PullPolicy::IfNotPresent,
+            resources: Resources::empty(),
+            sysctls: BTreeMap::new(),
+        }
+    }
+
+    fn volume_declarations() -> HashMap<String, VolumeDeclaration> {
+        HashMap::from([(
+            "data".into(),
+            VolumeDeclaration {
+                name: "data".into(),
+                scope: VolumeScope::Single,
+                quota: "1G".into(),
+                mode: "0750".into(),
+                owner: "999:999".into(),
+            },
+        )])
+    }
+
+    #[tokio::test]
+    async fn managed_volume_resolves_zfs_dataset_and_builds_bind_mount() {
+        let fake = FakeShellRunner::default();
+        fake.push(0, "/tank/ployz-test\n", "");
+        let driver = ZfsDriver::new(fake.clone(), "tank/ployz-test", 1.0)
+            .await
+            .expect("driver");
+        fake.push(1, "", "dataset does not exist");
+        fake.push(0, &format!("{}\n", 1024_u64.pow(4)), "");
+        fake.push(0, "tank/ployz-test\t0\n", "");
+        fake.push(0, "", "");
+        fake.push(0, "", "");
+        fake.push(0, "", "");
+
+        let namespace = Namespace("test".into());
+        let container = volume_container();
+        let volumes = volume_declarations();
+        let resolved = resolve_mounts_with_driver(Some(&driver), &namespace, &container, &volumes)
+            .await
+            .expect("resolve mounts");
+
+        assert_eq!(
+            resolved.get("data").map(|path| path.as_path()),
+            Some(std::path::Path::new("/tank/ployz-test/test/data"))
+        );
+        assert_eq!(
+            build_binds(&container, &resolved).expect("build binds"),
+            vec!["/tank/ployz-test/test/data:/var/lib/postgresql/data"]
+        );
+
+        let calls = fake.calls();
+        assert!(calls.iter().any(|call| {
+            call == &[
+                "zfs",
+                "create",
+                "-p",
+                "-o",
+                "quota=1G",
+                "-o",
+                "mountpoint=/tank/ployz-test/test/data",
+                "-o",
+                "compression=lz4",
+                "tank/ployz-test/test/data",
+            ]
+        }));
+        assert!(
+            calls
+                .iter()
+                .any(|call| { call == &["chmod", "0750", "/tank/ployz-test/test/data"] })
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|call| { call == &["chown", "999:999", "/tank/ployz-test/test/data"] })
+        );
+
+        fake.push(
+            0,
+            "tank/ployz-test/test/data\t1G\t/tank/ployz-test/test/data\n",
+            "",
+        );
+        let _ = resolve_mounts_with_driver(Some(&driver), &namespace, &container, &volumes)
+            .await
+            .expect("adopt existing dataset");
+        let create_count = fake
+            .calls()
+            .iter()
+            .filter(|call| call.get(1).is_some_and(|arg| arg == "create"))
+            .count();
+        assert_eq!(create_count, 1);
+    }
+
+    #[tokio::test]
+    async fn managed_volume_without_storage_driver_fails_before_runtime_start() {
+        let error = resolve_mounts_with_driver::<FakeShellRunner>(
+            None,
+            &Namespace("test".into()),
+            &volume_container(),
+            &volume_declarations(),
+        )
+        .await
+        .expect_err("missing driver should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("no [storage] zfs_root configured")
+        );
+    }
 
     #[test]
     fn overlay_network_uses_overlay_dns_server() {

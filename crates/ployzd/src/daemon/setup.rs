@@ -20,6 +20,7 @@ use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_runtime_api::{NoopRuntimeHandle, RuntimeHandle};
 
 use super::{ActiveMesh, DaemonState};
+use crate::daemon::handlers::volume::transfer_listener;
 use crate::ipc::peer_listener;
 use crate::runtime_profile::MeshBuildRequest;
 
@@ -60,6 +61,7 @@ struct StartPlan {
     gateway_ports: Vec<u16>,
     remote_control_bind_addr: SocketAddr,
     peer_control_bind_addr: SocketAddr,
+    zfs_transfer_bind_addr: SocketAddr,
     gateway_config: Option<GatewayConfig>,
     dns_config: Option<DnsConfig>,
     overlay_network_name: Option<String>,
@@ -70,6 +72,7 @@ struct MeshStartTx {
     mesh: Option<Mesh>,
     remote_control: Box<dyn RuntimeHandle>,
     peer_control: Box<dyn RuntimeHandle>,
+    zfs_transfer: Box<dyn RuntimeHandle>,
     gateway: Box<dyn RuntimeHandle>,
     dns: Box<dyn RuntimeHandle>,
 }
@@ -81,6 +84,7 @@ impl MeshStartTx {
             mesh: None,
             remote_control: Box::new(NoopRuntimeHandle),
             peer_control: Box::new(NoopRuntimeHandle),
+            zfs_transfer: Box::new(NoopRuntimeHandle),
             gateway: Box::new(NoopRuntimeHandle),
             dns: Box::new(NoopRuntimeHandle),
         }
@@ -243,6 +247,38 @@ impl MeshStartTx {
         Ok(())
     }
 
+    async fn start_zfs_transfer_control(
+        &mut self,
+        state: &DaemonState,
+        plan: &StartPlan,
+    ) -> Result<(), StartMeshError> {
+        if state.runtime_is_memory_test() {
+            self.zfs_transfer = Box::new(transfer_listener::ZfsTransferListenerHandle::noop());
+            return Ok(());
+        }
+        let Some(zfs_root) = state.storage.zfs_root.clone() else {
+            self.zfs_transfer = Box::new(transfer_listener::ZfsTransferListenerHandle::noop());
+            return Ok(());
+        };
+        let Some(mesh) = self.mesh.as_ref() else {
+            self.zfs_transfer = Box::new(transfer_listener::ZfsTransferListenerHandle::noop());
+            return Ok(());
+        };
+        let handle = transfer_listener::serve(
+            plan.zfs_transfer_bind_addr,
+            zfs_root,
+            state.storage.overcommit_ratio,
+            mesh.store.clone(),
+        )
+        .await
+        .map_err(|error| StartMeshError::RemoteControl {
+            bind: plan.zfs_transfer_bind_addr,
+            error,
+        })?;
+        self.zfs_transfer = Box::new(handle);
+        Ok(())
+    }
+
     /// Commit: publish the active mesh into daemon state.
     async fn publish_active(&mut self, state: &mut DaemonState) -> Result<(), StartMeshError> {
         let spawn_renewal_ticker = !state.runtime_is_memory_test();
@@ -259,6 +295,7 @@ impl MeshStartTx {
         let remote_control =
             std::mem::replace(&mut self.remote_control, Box::new(NoopRuntimeHandle));
         let peer_control = std::mem::replace(&mut self.peer_control, Box::new(NoopRuntimeHandle));
+        let zfs_transfer = std::mem::replace(&mut self.zfs_transfer, Box::new(NoopRuntimeHandle));
         let gateway = std::mem::replace(&mut self.gateway, Box::new(NoopRuntimeHandle));
         let dns = std::mem::replace(&mut self.dns, Box::new(NoopRuntimeHandle));
 
@@ -305,6 +342,7 @@ impl MeshStartTx {
             mesh,
             remote_control,
             peer_control,
+            zfs_transfer,
             gateway,
             dns,
             certificate_renewal,
@@ -328,6 +366,8 @@ impl MeshStartTx {
         let _ = remote_control.shutdown().await;
         let peer_control = std::mem::replace(&mut self.peer_control, Box::new(NoopRuntimeHandle));
         let _ = peer_control.shutdown().await;
+        let zfs_transfer = std::mem::replace(&mut self.zfs_transfer, Box::new(NoopRuntimeHandle));
+        let _ = zfs_transfer.shutdown().await;
 
         if let Some(mut mesh) = self.mesh.take()
             && let Err(error) = mesh.detach().await
@@ -376,6 +416,11 @@ impl DaemonState {
         }
 
         if let Err(error) = tx.start_peer_control(self, &plan).await {
+            tx.rollback_startup().await;
+            return Err(error);
+        }
+
+        if let Err(error) = tx.start_zfs_transfer_control(self, &plan).await {
             tx.rollback_startup().await;
             return Err(error);
         }
@@ -536,6 +581,8 @@ impl DaemonState {
             self.remote_control_bind_addr(self.remote_control_port, net_config.overlay_ip);
         let peer_control_bind_addr =
             SocketAddr::new(remote_control_bind_addr.ip(), self.peer_control_port()?);
+        let zfs_transfer_bind_addr =
+            SocketAddr::new(remote_control_bind_addr.ip(), self.zfs_transfer_port()?);
         let gateway_config = net_config.subnet.map(|_| {
             GatewayConfig::for_network(
                 &self.data_dir,
@@ -565,6 +612,7 @@ impl DaemonState {
             gateway_ports,
             remote_control_bind_addr,
             peer_control_bind_addr,
+            zfs_transfer_bind_addr,
             gateway_config,
             dns_config,
             overlay_network_name: self.runtime_overlay_network_name(&net_config.name.0),
@@ -607,6 +655,15 @@ impl DaemonState {
             .ok_or_else(|| StartMeshError::RemoteControl {
                 bind: SocketAddr::from(([127, 0, 0, 1], self.remote_control_port)),
                 error: "peer control port overflow".into(),
+            })
+    }
+
+    pub(crate) fn zfs_transfer_port(&self) -> Result<u16, StartMeshError> {
+        self.remote_control_port
+            .checked_add(2)
+            .ok_or_else(|| StartMeshError::RemoteControl {
+                bind: SocketAddr::from(([127, 0, 0, 1], self.remote_control_port)),
+                error: "zfs transfer port overflow".into(),
             })
     }
 }
@@ -711,6 +768,7 @@ mod tests {
             identity,
             runtime_target,
             service_mode,
+            ployz_config::StorageConfig::default(),
             crate::BuiltInImages::load(None)
                 .expect("embedded built-in images manifest should parse"),
             "10.210.0.0/16".into(),

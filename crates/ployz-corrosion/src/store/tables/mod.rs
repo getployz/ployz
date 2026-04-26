@@ -7,3 +7,4 @@ pub(crate) mod invites;
 pub(crate) mod machines;
 pub(crate) mod service_releases;
 pub(crate) mod service_revisions;
+pub(crate) mod volumes;

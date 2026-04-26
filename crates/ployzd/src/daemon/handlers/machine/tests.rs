@@ -307,7 +307,11 @@ async fn machine_add_activates_joiner_lifecycle() {
     let ssh_dir = unique_temp_dir("ployz-fake-ssh");
     std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
     let fake_ssh = write_fake_ssh(&ssh_dir);
-    let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
+    let _ssh_guard = TestSshProgramGuard::set(fake_ssh.clone());
+    let _ployz_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_LOCAL_PLOYZ",
+        Some(fake_ssh.clone().into_os_string()),
+    );
     let self_record_response = serde_json::to_string(&DaemonResponse {
         ok: true,
         code: "OK".into(),
@@ -389,7 +393,11 @@ async fn machine_add_requires_sync_connected_for_running_joiner() {
     let ssh_dir = unique_temp_dir("ployz-fake-ssh");
     std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
     let fake_ssh = write_fake_ssh(&ssh_dir);
-    let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
+    let _ssh_guard = TestSshProgramGuard::set(fake_ssh.clone());
+    let _ployz_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_LOCAL_PLOYZ",
+        Some(fake_ssh.clone().into_os_string()),
+    );
     let self_record_response = serde_json::to_string(&DaemonResponse {
         ok: true,
         code: "OK".into(),
@@ -791,7 +799,11 @@ async fn reserve_machine_subnet_clears_local_hold_when_quorum_denies() {
     let ssh_dir = unique_temp_dir("ployz-fake-ssh-quorum-deny");
     std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
     let fake_ssh = write_fake_ssh(&ssh_dir);
-    let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
+    let _ssh_guard = TestSshProgramGuard::set(fake_ssh.clone());
+    let _ployz_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_LOCAL_PLOYZ",
+        Some(fake_ssh.clone().into_os_string()),
+    );
     let _deny_prepare_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_COORD_PREPARE_DENY_TARGETS",
         Some("peer-quorum".into()),
@@ -932,7 +944,11 @@ async fn machine_add_releases_reserved_subnet_when_remote_bootstrap_fails() {
     let ssh_dir = unique_temp_dir("ployz-fake-ssh-bootstrap-fail");
     std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
     let fake_ssh = write_fake_ssh(&ssh_dir);
-    let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
+    let _ssh_guard = TestSshProgramGuard::set(fake_ssh.clone());
+    let _ployz_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_LOCAL_PLOYZ",
+        Some(fake_ssh.clone().into_os_string()),
+    );
     let _status_fail_guard =
         TestSshEnvGuard::set("PLOYZ_TEST_STATUS_FAIL_TARGETS", Some("join-target".into()));
 
@@ -969,7 +985,11 @@ async fn machine_add_rejects_remote_subnet_mismatch_before_invite_consume() {
     let ssh_dir = unique_temp_dir("ployz-fake-ssh-mismatch");
     std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
     let fake_ssh = write_fake_ssh(&ssh_dir);
-    let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
+    let _ssh_guard = TestSshProgramGuard::set(fake_ssh.clone());
+    let _ployz_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_LOCAL_PLOYZ",
+        Some(fake_ssh.clone().into_os_string()),
+    );
     let self_record_response = serde_json::to_string(&DaemonResponse {
         ok: true,
         code: "OK".into(),
@@ -1262,6 +1282,7 @@ async fn make_state_with_remote_port(
         mesh,
         remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+        zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         certificate_renewal: None,

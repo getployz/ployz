@@ -5,13 +5,15 @@ use crate::certificates::{
     start_pending_orders,
 };
 use crate::deploy::managed_domains;
-use crate::deploy::plan::{PlanFingerprint, ResolvedPlan, resolve_plan};
+use crate::deploy::plan::{
+    PlanFingerprint, ResolvedPlan, resolve_plan, volume_record_needs_update,
+};
 use crate::deploy::session::{self, DeploySessionFactory};
 use crate::error::{Error, Result};
 use crate::model::{
     DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployRecord, DeployState,
     InstanceId, InstanceStatusRecord, MachineId, ServiceRelease, ServiceReleaseRecord,
-    ServiceRevisionRecord, ServiceRoutingPolicy,
+    ServiceRevisionRecord, ServiceRoutingPolicy, VolumeRecord,
 };
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use ployz_store_api::{DeployStore, StoreDriver};
@@ -33,6 +35,7 @@ struct StartTask {
     machine_id: MachineId,
     instance_id: InstanceId,
     spec_json: String,
+    volumes_json: String,
 }
 
 #[derive(Debug)]
@@ -258,6 +261,9 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
 
         let committed_releases =
             build_committed_releases(&final_plan, &startup.started, &deploy_id)?;
+        let committed_volumes =
+            build_committed_volumes(&final_plan, &startup.started, &deploy_id, started_at)?;
+        let removed_volumes = removed_volumes(store, &final_plan).await?;
         let removed_services = final_plan
             .services()
             .iter()
@@ -276,7 +282,9 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
             .commit_deploy(
                 final_plan.namespace(),
                 &removed_services,
+                &removed_volumes,
                 &committed_releases,
+                &committed_volumes,
                 &deploy_record,
             )
             .await?;
@@ -417,6 +425,7 @@ pub(super) async fn run_phase_startup(
                     machine_id: slot.machine_id.clone(),
                     instance_id: InstanceId(Uuid::new_v4().to_string()),
                     spec_json: spec_json.to_string(),
+                    volumes_json: plan.volumes_json().to_string(),
                 });
         }
     }
@@ -497,6 +506,7 @@ async fn run_machine_start_queue(
                     slot_id: task.slot_id.clone(),
                     instance_id: task.instance_id.clone(),
                     spec_json: task.spec_json.clone(),
+                    volumes_json: task.volumes_json.clone(),
                 })
                 .await?
         };
@@ -587,6 +597,79 @@ fn build_committed_releases(
         });
     }
     Ok(releases)
+}
+
+async fn removed_volumes(store: &StoreDriver, plan: &ResolvedPlan) -> Result<Vec<String>> {
+    let declared = plan
+        .volumes()
+        .iter()
+        .map(|volume| volume.declaration.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut removed = store
+        .list_volumes(plan.namespace())
+        .await?
+        .into_iter()
+        .filter(|record| !declared.contains(record.volume_name.as_str()))
+        .map(|record| record.volume_name)
+        .collect::<Vec<_>>();
+    removed.sort();
+    Ok(removed)
+}
+
+fn build_committed_volumes(
+    plan: &ResolvedPlan,
+    started: &HashMap<(String, String), InstanceStatusRecord>,
+    deploy_id: &DeployId,
+    now: u64,
+) -> Result<Vec<VolumeRecord>> {
+    let mut volumes = Vec::new();
+    for planned in plan
+        .volumes()
+        .iter()
+        .filter(|planned| volume_record_needs_update(planned))
+    {
+        if !planned.attached_services.is_empty()
+            && !planned.attached_services.iter().any(|service| {
+                started
+                    .keys()
+                    .any(|(started_service, _)| started_service == service)
+            })
+        {
+            return Err(Error::operation(
+                "deploy_apply",
+                format!(
+                    "volume '{}' changed but no attached service was reconciled",
+                    planned.declaration.name
+                ),
+            ));
+        }
+
+        let created_at = planned
+            .current
+            .as_ref()
+            .map(|record| record.created_at)
+            .unwrap_or(now);
+        let created_by_deploy_id = planned
+            .current
+            .as_ref()
+            .map(|record| record.created_by_deploy_id.clone())
+            .unwrap_or_else(|| deploy_id.clone());
+        volumes.push(VolumeRecord {
+            namespace: plan.namespace().clone(),
+            volume_name: planned.declaration.name.clone(),
+            scope: planned.declaration.scope,
+            machine_id: planned.machine_id.clone(),
+            quota: planned.declaration.quota.clone(),
+            mode: planned.declaration.mode.clone(),
+            owner: planned.declaration.owner.clone(),
+            attached_services: planned.attached_services.clone(),
+            created_at,
+            created_by_deploy_id,
+            last_modified_at: now,
+            last_modified_by_deploy_id: deploy_id.clone(),
+        });
+    }
+    Ok(volumes)
 }
 
 async fn cleanup_stale_instances(

@@ -853,7 +853,7 @@ mod tests {
                 command: None,
                 entrypoint: None,
                 env: BTreeMap::new(),
-                volumes: Vec::new(),
+                mounts: Vec::new(),
                 cap_add: Vec::new(),
                 cap_drop: Vec::new(),
                 privileged: false,

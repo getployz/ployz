@@ -1,8 +1,10 @@
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 
 use ployz_dns_config::DnsConfig;
 use ployz_gateway_config::GatewayConfig;
 use ployz_runtime_api::{NamespaceLockManager, RuntimeHandle};
+use ployz_runtime_backends::storage::{TokioShellRunner, ZfsDriver};
 use ployz_store_api::StoreDriver;
 use ployz_types::model::{MachineId, OverlayIp};
 
@@ -41,6 +43,7 @@ impl DaemonState {
         overlay_network_name: Option<String>,
         overlay_dns_server: Option<Ipv4Addr>,
     ) -> Result<Box<dyn RuntimeHandle>, String> {
+        let storage_driver = self.zfs_storage_driver().await?;
         self.runtime_profile
             .start_remote_control(
                 bind_addr,
@@ -49,6 +52,7 @@ impl DaemonState {
                 machine_id,
                 overlay_network_name,
                 overlay_dns_server,
+                storage_driver,
             )
             .await
             .map(|handle| Box::new(handle) as Box<dyn RuntimeHandle>)
@@ -77,5 +81,21 @@ impl DaemonState {
     #[must_use]
     pub(crate) fn runtime_is_memory_test(&self) -> bool {
         self.runtime_profile.is_memory_test()
+    }
+
+    pub(crate) async fn zfs_storage_driver(
+        &self,
+    ) -> Result<Option<Arc<ZfsDriver<TokioShellRunner>>>, String> {
+        let Some(root) = self.storage.zfs_root.as_ref() else {
+            return Ok(None);
+        };
+        let root = root
+            .to_str()
+            .ok_or_else(|| format!("storage zfs_root is not valid UTF-8: {}", root.display()))?;
+        ZfsDriver::new(TokioShellRunner, root, self.storage.overcommit_ratio)
+            .await
+            .map(Arc::new)
+            .map(Some)
+            .map_err(|error| error.to_string())
     }
 }

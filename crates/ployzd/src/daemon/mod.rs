@@ -13,7 +13,7 @@ use crate::mesh_state::network::NetworkConfig;
 use crate::runtime_profile::RuntimeProfile;
 use ipnet::Ipv4Net;
 use ployz_api::{DaemonPayload, DaemonResponse};
-use ployz_config::{RuntimeTarget, ServiceMode};
+use ployz_config::{RuntimeTarget, ServiceMode, StorageConfig};
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::certificates::CertificateRenewalTask;
 use ployz_orchestrator::coordination::PendingReservations;
@@ -29,6 +29,7 @@ pub struct ActiveMesh {
     pub mesh: Mesh,
     pub remote_control: Box<dyn RuntimeHandle>,
     pub peer_control: Box<dyn RuntimeHandle>,
+    pub zfs_transfer: Box<dyn RuntimeHandle>,
     pub gateway: Box<dyn RuntimeHandle>,
     pub dns: Box<dyn RuntimeHandle>,
     pub certificate_renewal: Option<CertificateRenewalTask>,
@@ -47,6 +48,7 @@ pub struct DaemonState {
     pub identity: Identity,
     pub runtime_target: RuntimeTarget,
     pub service_mode: ServiceMode,
+    pub storage: StorageConfig,
     runtime_profile: RuntimeProfile,
     pub cluster_cidr: String,
     pub subnet_prefix_len: u8,
@@ -72,6 +74,7 @@ impl DaemonState {
         identity: Identity,
         runtime_target: RuntimeTarget,
         service_mode: ServiceMode,
+        storage: StorageConfig,
         built_in_images: BuiltInImages,
         cluster_cidr: String,
         subnet_prefix_len: u8,
@@ -90,6 +93,7 @@ impl DaemonState {
             identity,
             runtime_target,
             service_mode,
+            storage,
             runtime_profile,
             cluster_cidr,
             subnet_prefix_len,
@@ -121,6 +125,7 @@ impl DaemonState {
             identity,
             RuntimeTarget::Host,
             ServiceMode::User,
+            StorageConfig::default(),
             RuntimeProfile::memory_for_tests(),
             cluster_cidr,
             subnet_prefix_len,
@@ -141,6 +146,7 @@ impl DaemonState {
         identity: Identity,
         runtime_target: RuntimeTarget,
         service_mode: ServiceMode,
+        storage: StorageConfig,
         runtime_profile: RuntimeProfile,
         cluster_cidr: String,
         subnet_prefix_len: u8,
@@ -157,6 +163,7 @@ impl DaemonState {
             identity,
             runtime_target,
             service_mode,
+            storage,
             runtime_profile,
             cluster_cidr,
             subnet_prefix_len,
