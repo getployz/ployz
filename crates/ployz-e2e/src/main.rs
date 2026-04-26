@@ -24,6 +24,10 @@ fn main() {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(cli::Command::Ls) = cli.command {
+        list_scenarios(cli.zfs);
+        return Ok(());
+    }
     let scenarios = if cli.scenario.is_empty() {
         cli::Scenario::default_order(cli.zfs)
     } else {
@@ -154,6 +158,22 @@ fn run_scenario(
             Err((scenario, error))
         }
     }
+}
+
+fn list_scenarios(zfs_mode: ZfsMode) {
+    let entries: Vec<serde_json::Value> = cli::Scenario::default_order(zfs_mode)
+        .into_iter()
+        .map(|scenario| {
+            serde_json::json!({
+                "scenario": scenario.as_str(),
+                "zfs": scenario.ci_zfs_mode().as_str(),
+            })
+        })
+        .collect();
+    println!(
+        "{}",
+        serde_json::to_string(&entries).expect("scenarios serialize as JSON")
+    );
 }
 
 fn resolve_artifacts_dir(path: &Path) -> Result<PathBuf> {
