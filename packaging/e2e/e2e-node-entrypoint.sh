@@ -270,15 +270,27 @@ EOF
       exit 1
     fi
 
+    loop_file=/var/lib/ployz-e2e-zfs/pool.loop
+
     echo "ployz-e2e real zfs pool=${pool} root=${zfs_root} image=${pool_img} size=${pool_size}"
     truncate -s "${pool_size}" "${pool_img}"
-    if ! zpool create -f "${pool}" "${pool_img}"; then
+    if ! loopdev="$(losetup --find --show "${pool_img}")"; then
       rm -f "${pool_img}"
+      exit 1
+    fi
+    printf '%s\n' "${loopdev}" >"${loop_file}"
+    echo "ployz-e2e real zfs loop=${loopdev}"
+    if ! zpool create -f "${pool}" "${loopdev}"; then
+      losetup -d "${loopdev}" >/dev/null 2>&1 || true
+      rm -f "${pool_img}"
+      rm -f "${loop_file}"
       exit 1
     fi
     if ! zfs create -p "${zfs_root}"; then
       zpool destroy "${pool}" >/dev/null 2>&1 || true
+      losetup -d "${loopdev}" >/dev/null 2>&1 || true
       rm -f "${pool_img}"
+      rm -f "${loop_file}"
       exit 1
     fi
     printf '%s\n' "${pool}" >/var/lib/ployz-e2e-zfs/pool.name
