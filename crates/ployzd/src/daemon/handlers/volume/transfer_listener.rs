@@ -8,13 +8,14 @@ use ployz_runtime_backends::storage::{TokioShellRunner, ZfsDriver};
 use ployz_store_api::{MachineStore, StoreDriver};
 use ployz_types::model::MachineId;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(15);
+const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_CONCURRENT_TRANSFERS: usize = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,11 +128,10 @@ async fn handle_transfer(
 ) -> Result<(), String> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
-    let mut line = String::new();
-    let header_read = tokio::time::timeout(HEADER_READ_TIMEOUT, reader.read_line(&mut line))
+    let line = tokio::time::timeout(HEADER_READ_TIMEOUT, read_transfer_header(&mut reader))
         .await
         .map_err(|_| format!("timed out waiting for zfs transfer header from {remote_addr}"))?;
-    header_read.map_err(|error| format!("read zfs transfer header: {error}"))?;
+    let line = line.map_err(|error| format!("read zfs transfer header: {error}"))?;
     let open: ZfsTransferOpen =
         serde_json::from_str(&line).map_err(|error| format!("decode transfer header: {error}"))?;
     let source = validate_open_source(&store, &open, remote_addr).await?;
@@ -177,6 +177,29 @@ async fn handle_transfer(
         .await
         .map_err(|error| format!("shutdown zfs transfer response: {error}"))?;
     Ok(())
+}
+
+async fn read_transfer_header<R: AsyncBufRead + Unpin>(reader: &mut R) -> Result<String, String> {
+    let mut header = Vec::new();
+    let bytes_read = {
+        let mut limited = reader.take((MAX_HEADER_BYTES + 1) as u64);
+        limited
+            .read_until(b'\n', &mut header)
+            .await
+            .map_err(|error| error.to_string())?
+    };
+    if bytes_read == 0 {
+        return Err("connection closed before zfs transfer header".to_string());
+    }
+    if header.len() > MAX_HEADER_BYTES {
+        return Err(format!(
+            "zfs transfer header exceeded {MAX_HEADER_BYTES} bytes"
+        ));
+    }
+    if header.last() != Some(&b'\n') {
+        return Err("zfs transfer header missing newline".to_string());
+    }
+    String::from_utf8(header).map_err(|error| format!("header was not UTF-8: {error}"))
 }
 
 async fn validate_open_source(
@@ -333,7 +356,10 @@ async fn cleanup_partial(driver: &ZfsDriver<TokioShellRunner>, dataset: &str, sn
 
 #[cfg(test)]
 mod tests {
-    use super::{ZfsTransferOpen, validate_open_source, validate_source_overlay};
+    use super::{
+        MAX_HEADER_BYTES, ZfsTransferOpen, read_transfer_header, validate_open_source,
+        validate_source_overlay,
+    };
     use ployz_store_api::{MachineStore, StoreDriver};
     use ployz_types::model::{
         MachineId, MachineLifecycle, MachineRecord, MachineTopology, OverlayIp, PublicKey,
@@ -421,5 +447,28 @@ mod tests {
             err.contains("missing source_machine_id"),
             "unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn read_transfer_header_rejects_oversized_header() {
+        let mut body = vec![b'a'; MAX_HEADER_BYTES + 1];
+        body.push(b'\n');
+        let mut reader = tokio::io::BufReader::new(body.as_slice());
+
+        let err = read_transfer_header(&mut reader)
+            .await
+            .expect_err("oversized header rejected");
+        assert!(err.contains("exceeded"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn read_transfer_header_rejects_missing_newline() {
+        let body = b"{\"namespace\":\"default\"}".as_slice();
+        let mut reader = tokio::io::BufReader::new(body);
+
+        let err = read_transfer_header(&mut reader)
+            .await
+            .expect_err("unterminated header rejected");
+        assert!(err.contains("missing newline"), "unexpected error: {err}");
     }
 }
