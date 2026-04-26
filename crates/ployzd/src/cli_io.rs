@@ -373,7 +373,7 @@ mod tests {
                 rows: vec![MachineListRow {
                     id: String::from("peer"),
                     lifecycle: String::from("standby"),
-                    region: String::from("local"),
+                    region: String::from("us-east-1"),
                     availability_zone: None,
                     overlay_ip: String::from("fd00::2"),
                     subnet: None,
@@ -384,7 +384,7 @@ mod tests {
 
         assert_eq!(
             render_plain_success(&response),
-            "id=peer lifecycle=standby region=local az=— overlay_ip=fd00::2 subnet=— created_at=123"
+            "id=peer lifecycle=standby region=us-east-1 az=— overlay_ip=fd00::2 subnet=— created_at=123"
         );
     }
 
