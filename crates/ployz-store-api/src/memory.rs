@@ -413,6 +413,7 @@ impl DeployStore for MemoryStore {
         &self,
         namespace: &Namespace,
         removed_services: &[String],
+        removed_volumes: &[String],
         releases: &[ServiceReleaseRecord],
         volumes: &[VolumeRecord],
         deploy: &DeployRecord,
@@ -442,6 +443,12 @@ impl DeployStore for MemoryStore {
                 (volume.namespace.clone(), volume.volume_name.clone()),
                 volume.clone(),
             );
+        }
+
+        for volume_name in removed_volumes {
+            inner
+                .volumes
+                .remove(&(namespace.clone(), volume_name.clone()));
         }
 
         inner

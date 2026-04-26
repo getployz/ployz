@@ -134,17 +134,15 @@ async fn handle_transfer(
     header_read.map_err(|error| format!("read zfs transfer header: {error}"))?;
     let open: ZfsTransferOpen =
         serde_json::from_str(&line).map_err(|error| format!("decode transfer header: {error}"))?;
-    if let Some(source) = open.source_machine_id.as_ref() {
-        validate_source_overlay(&store, source, remote_addr).await?;
-        tracing::info!(
-            %remote_addr,
-            source_machine_id = %source.0,
-            namespace = %open.namespace,
-            volume = %open.volume,
-            snapshot = %open.snapshot,
-            "zfs transfer accepted",
-        );
-    }
+    let source = validate_open_source(&store, &open, remote_addr).await?;
+    tracing::info!(
+        %remote_addr,
+        source_machine_id = %source.0,
+        namespace = %open.namespace,
+        volume = %open.volume,
+        snapshot = %open.snapshot,
+        "zfs transfer accepted",
+    );
 
     let result = receive_stream(&mut reader, &zfs_root, overcommit_ratio, &open).await;
     let response = match result {
@@ -179,6 +177,18 @@ async fn handle_transfer(
         .await
         .map_err(|error| format!("shutdown zfs transfer response: {error}"))?;
     Ok(())
+}
+
+async fn validate_open_source(
+    store: &StoreDriver,
+    open: &ZfsTransferOpen,
+    remote_addr: SocketAddr,
+) -> Result<MachineId, String> {
+    let Some(source) = open.source_machine_id.as_ref() else {
+        return Err("zfs transfer header missing source_machine_id".to_string());
+    };
+    validate_source_overlay(store, source, remote_addr).await?;
+    Ok(source.clone())
 }
 
 async fn validate_source_overlay(
@@ -317,6 +327,99 @@ async fn cleanup_partial(driver: &ZfsDriver<TokioShellRunner>, dataset: &str, sn
             dataset,
             snapshot,
             "failed to clean up partial snapshot after recv failure"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ZfsTransferOpen, validate_open_source, validate_source_overlay};
+    use ployz_store_api::{MachineStore, StoreDriver};
+    use ployz_types::model::{
+        MachineId, MachineLifecycle, MachineRecord, MachineTopology, OverlayIp, PublicKey,
+    };
+    use std::collections::BTreeMap;
+    use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+
+    fn machine(id: &str, overlay: Ipv6Addr) -> MachineRecord {
+        MachineRecord {
+            id: MachineId(id.into()),
+            public_key: PublicKey([1; 32]),
+            overlay_ip: OverlayIp(overlay),
+            topology: MachineTopology::local(),
+            control_target: None,
+            subnet: None,
+            bridge_ip: None,
+            endpoints: Vec::new(),
+            lifecycle: MachineLifecycle::Active,
+            created_at: 0,
+            updated_at: 0,
+            labels: BTreeMap::new(),
+        }
+    }
+
+    async fn store_with(machines: Vec<MachineRecord>) -> StoreDriver {
+        let store = StoreDriver::memory();
+        for m in machines {
+            store.upsert_self_machine(&m).await.expect("upsert");
+        }
+        store
+    }
+
+    #[tokio::test]
+    async fn validate_source_overlay_accepts_matching_ip() {
+        let overlay = "fd00::1".parse::<Ipv6Addr>().unwrap();
+        let store = store_with(vec![machine("source", overlay)]).await;
+        let remote = SocketAddr::new(IpAddr::V6(overlay), 4319);
+        validate_source_overlay(&store, &MachineId("source".into()), remote)
+            .await
+            .expect("matching ip accepted");
+    }
+
+    #[tokio::test]
+    async fn validate_source_overlay_rejects_mismatched_ip() {
+        let claimed = "fd00::1".parse::<Ipv6Addr>().unwrap();
+        let attacker = "fd00::2".parse::<Ipv6Addr>().unwrap();
+        let store = store_with(vec![machine("source", claimed)]).await;
+        let remote = SocketAddr::new(IpAddr::V6(attacker), 4319);
+        let err = validate_source_overlay(&store, &MachineId("source".into()), remote)
+            .await
+            .expect_err("mismatched ip rejected");
+        assert!(err.contains("connected from"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn validate_source_overlay_rejects_unknown_machine() {
+        let overlay = "fd00::1".parse::<Ipv6Addr>().unwrap();
+        let store = store_with(vec![machine("known", overlay)]).await;
+        let remote = SocketAddr::new(IpAddr::V6(overlay), 4319);
+        let err = validate_source_overlay(&store, &MachineId("ghost".into()), remote)
+            .await
+            .expect_err("unknown machine rejected");
+        assert!(err.contains("not found"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn validate_open_source_rejects_missing_source_machine_id() {
+        let overlay = "fd00::1".parse::<Ipv6Addr>().unwrap();
+        let store = store_with(vec![machine("source", overlay)]).await;
+        let remote = SocketAddr::new(IpAddr::V6(overlay), 4319);
+        let open = ZfsTransferOpen {
+            namespace: "default".into(),
+            volume: "data".into(),
+            snapshot: "snap".into(),
+            expected_guid: 1,
+            source_machine_id: None,
+            from_snapshot: None,
+            from_snapshot_guid: None,
+        };
+
+        let err = validate_open_source(&store, &open, remote)
+            .await
+            .expect_err("missing source rejected");
+        assert!(
+            err.contains("missing source_machine_id"),
+            "unexpected error: {err}"
         );
     }
 }

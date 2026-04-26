@@ -133,6 +133,7 @@ pub trait DeployStore: Send + Sync {
         &'a self,
         namespace: &'a Namespace,
         removed_services: &'a [String],
+        removed_volumes: &'a [String],
         releases: &'a [ServiceReleaseRecord],
         volumes: &'a [VolumeRecord],
         deploy: &'a DeployRecord,

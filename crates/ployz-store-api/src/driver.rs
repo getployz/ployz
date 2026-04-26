@@ -211,12 +211,20 @@ impl DeployStore for StoreDriver {
         &self,
         namespace: &Namespace,
         removed_services: &[String],
+        removed_volumes: &[String],
         releases: &[ServiceReleaseRecord],
         volumes: &[VolumeRecord],
         deploy: &DeployRecord,
     ) -> Result<()> {
         self.backend
-            .commit_deploy(namespace, removed_services, releases, volumes, deploy)
+            .commit_deploy(
+                namespace,
+                removed_services,
+                removed_volumes,
+                releases,
+                volumes,
+                deploy,
+            )
             .await
     }
 
@@ -408,12 +416,20 @@ impl StoreBackend for MemoryStoreBackend {
         &self,
         namespace: &Namespace,
         removed_services: &[String],
+        removed_volumes: &[String],
         releases: &[ServiceReleaseRecord],
         volumes: &[VolumeRecord],
         deploy: &DeployRecord,
     ) -> Result<()> {
         self.store
-            .commit_deploy(namespace, removed_services, releases, volumes, deploy)
+            .commit_deploy(
+                namespace,
+                removed_services,
+                removed_volumes,
+                releases,
+                volumes,
+                deploy,
+            )
             .await
     }
 
