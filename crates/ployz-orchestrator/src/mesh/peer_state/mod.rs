@@ -11,7 +11,9 @@ mod tests {
 
     use tokio::time::Instant;
 
-    use crate::model::{MachineId, MachineLifecycle, MachineRecord, OverlayIp, PublicKey};
+    use crate::model::{
+        MachineId, MachineLifecycle, MachineRecord, MachineTopology, OverlayIp, PublicKey,
+    };
 
     use super::map::PeerStateMap;
 
@@ -20,6 +22,7 @@ mod tests {
             id: MachineId(id.into()),
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+            topology: MachineTopology::local(),
             control_target: None,
             subnet: None,
             bridge_ip: None,
@@ -39,6 +42,7 @@ mod tests {
             id: MachineId("m1".into()),
             public_key: PublicKey([1; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+            topology: MachineTopology::local(),
             control_target: None,
             subnet: None,
             bridge_ip: None,

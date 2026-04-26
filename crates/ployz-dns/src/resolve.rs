@@ -1,5 +1,7 @@
 use std::net::Ipv4Addr;
 
+#[cfg(test)]
+use ployz_types::model::MachineTopology;
 use ployz_types::spec::Namespace;
 
 use crate::snapshot::DnsSnapshot;
@@ -459,6 +461,7 @@ mod tests {
                 service: service.into(),
                 instance_id: instance_id.into(),
                 machine_id: "machine-1".into(),
+                topology: MachineTopology::local(),
                 slot_id: "slot-1".into(),
                 overlay_ip: ip,
             });
@@ -536,7 +539,7 @@ mod tests {
         assert_eq!(
             result,
             ResolveResult::InstanceList(vec![
-                "service=api,instance=inst-1,machine=machine-1,slot=slot-1,ip=10.42.1.10".into()
+                "service=api,instance=inst-1,machine=machine-1,region=local,az=none,slot=slot-1,ip=10.42.1.10".into()
             ])
         );
     }
@@ -571,7 +574,7 @@ mod tests {
         assert_eq!(
             result,
             ResolveResult::InstanceList(vec![
-                "service=api,instance=inst-1,machine=machine-1,slot=slot-1,ip=10.42.1.10".into()
+                "service=api,instance=inst-1,machine=machine-1,region=local,az=none,slot=slot-1,ip=10.42.1.10".into()
             ])
         );
     }
@@ -598,7 +601,7 @@ mod tests {
         assert_eq!(
             result,
             ResolveResult::InstanceList(vec![
-                "service=api,instance=inst-1,machine=machine-1,slot=slot-1,ip=10.42.1.10".into()
+                "service=api,instance=inst-1,machine=machine-1,region=local,az=none,slot=slot-1,ip=10.42.1.10".into()
             ])
         );
     }

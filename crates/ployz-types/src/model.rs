@@ -1,6 +1,7 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use derive_more::Display;
 use ipnet::Ipv4Net;
+use serde::de::{self, Visitor};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::{self, Write as _};
@@ -47,6 +48,129 @@ impl NetworkId {
         }
         Self(value)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct RegionName(pub String);
+
+impl RegionName {
+    #[must_use]
+    pub fn local() -> Self {
+        Self("local".into())
+    }
+
+    pub fn new(value: impl AsRef<str>) -> Result<Self, String> {
+        normalize_topology_label(value.as_ref(), "region").map(Self)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for RegionName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = deserializer.deserialize_str(TopologyLabelVisitor { field: "region" })?;
+        Ok(Self(value))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct AvailabilityZoneName(pub String);
+
+impl AvailabilityZoneName {
+    pub fn new(value: impl AsRef<str>) -> Result<Self, String> {
+        normalize_topology_label(value.as_ref(), "availability_zone").map(Self)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for AvailabilityZoneName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = deserializer.deserialize_str(TopologyLabelVisitor {
+            field: "availability_zone",
+        })?;
+        Ok(Self(value))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MachineTopology {
+    pub region: RegionName,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub availability_zone: Option<AvailabilityZoneName>,
+}
+
+impl MachineTopology {
+    #[must_use]
+    pub fn local() -> Self {
+        Self {
+            region: RegionName::local(),
+            availability_zone: None,
+        }
+    }
+
+    pub fn new(
+        region: impl AsRef<str>,
+        availability_zone: Option<impl AsRef<str>>,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            region: RegionName::new(region)?,
+            availability_zone: availability_zone
+                .map(AvailabilityZoneName::new)
+                .transpose()?,
+        })
+    }
+}
+
+struct TopologyLabelVisitor {
+    field: &'static str,
+}
+
+impl Visitor<'_> for TopologyLabelVisitor {
+    type Value = String;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "a non-empty {} label", self.field)
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        normalize_topology_label(value, self.field).map_err(E::custom)
+    }
+}
+
+fn normalize_topology_label(value: &str, field: &str) -> Result<String, String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Err(format!("{field} cannot be empty"));
+    }
+    let mut chars = normalized.chars();
+    let Some(first) = chars.next() else {
+        return Err(format!("{field} cannot be empty"));
+    };
+    if !first.is_ascii_alphanumeric() {
+        return Err(format!("{field} must start with an ASCII letter or digit"));
+    }
+    if !chars.all(|char| char.is_ascii_alphanumeric() || matches!(char, '-' | '_' | '.')) {
+        return Err(format!(
+            "{field} may only contain ASCII letters, digits, '-', '_', and '.'"
+        ));
+    }
+    Ok(normalized)
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -108,6 +232,7 @@ pub struct MachineRecord {
     pub id: MachineId,
     pub public_key: PublicKey,
     pub overlay_ip: OverlayIp,
+    pub topology: MachineTopology,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub control_target: Option<String>,
     pub subnet: Option<Ipv4Net>,
@@ -137,6 +262,7 @@ impl MachineRecord {
             id,
             public_key,
             overlay_ip,
+            topology: MachineTopology::local(),
             control_target: None,
             subnet,
             bridge_ip: None,
@@ -203,6 +329,7 @@ pub struct JoinResponse {
     pub machine_id: MachineId,
     pub public_key: PublicKey,
     pub overlay_ip: OverlayIp,
+    pub topology: MachineTopology,
     pub subnet: Option<Ipv4Net>,
     pub endpoints: Vec<String>,
 }
@@ -283,6 +410,7 @@ pub struct ServiceReleaseSlot {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoutingState {
+    pub machines: Vec<MachineRecord>,
     pub revisions: Vec<ServiceRevisionRecord>,
     pub releases: Vec<ServiceReleaseRecord>,
     pub instances: Vec<InstanceStatusRecord>,
@@ -541,6 +669,7 @@ impl JoinResponse {
             id: self.machine_id,
             public_key: self.public_key,
             overlay_ip: self.overlay_ip,
+            topology: self.topology,
             control_target: None,
             subnet: self.subnet,
             bridge_ip: None,
@@ -589,6 +718,7 @@ mod tests {
             machine_id: MachineId("joiner-1".into()),
             public_key: PublicKey([0xab; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1)),
+            topology: MachineTopology::local(),
             subnet: Some("10.42.1.0/24".parse().unwrap()),
             endpoints: vec!["1.2.3.4:51820".into()],
         };
@@ -600,6 +730,7 @@ mod tests {
         assert_eq!(decoded.machine_id, resp.machine_id);
         assert_eq!(decoded.public_key, resp.public_key);
         assert_eq!(decoded.overlay_ip, resp.overlay_ip);
+        assert_eq!(decoded.topology, resp.topology);
         assert_eq!(decoded.subnet, resp.subnet);
         assert_eq!(decoded.endpoints, resp.endpoints);
     }
@@ -610,12 +741,33 @@ mod tests {
             machine_id: MachineId("joiner-1".into()),
             public_key: PublicKey([0xab; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1)),
+            topology: MachineTopology::local(),
             subnet: None,
             endpoints: vec![],
         };
         let record = resp.into_seed_machine_record();
         assert_eq!(record.id.0, "joiner-1");
         assert!(record.bridge_ip.is_none());
+    }
+
+    #[test]
+    fn machine_record_without_topology_is_rejected() {
+        let json = r#"{
+            "id":"node-1",
+            "public_key":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+            "overlay_ip":"fd00::1",
+            "subnet":null,
+            "bridge_ip":null,
+            "endpoints":[],
+            "lifecycle":"Standby",
+            "created_at":0,
+            "updated_at":0,
+            "labels":{}
+        }"#;
+
+        let error = serde_json::from_str::<MachineRecord>(json).expect_err("record should fail");
+
+        assert!(error.to_string().contains("missing field `topology`"));
     }
 
     #[test]

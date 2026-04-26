@@ -93,7 +93,7 @@ pub(super) fn warnings_from_reachability(reachability: &ParticipantReachability)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{MachineLifecycle, OverlayIp, PublicKey};
+    use crate::model::{MachineLifecycle, MachineTopology, OverlayIp, PublicKey};
     use std::collections::BTreeMap;
     use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 
@@ -157,6 +157,7 @@ mod tests {
             id: MachineId(id.into()),
             public_key: PublicKey([7; 32]),
             overlay_ip: OverlayIp(overlay_ip.parse::<Ipv6Addr>().expect("valid overlay ip")),
+            topology: MachineTopology::local(),
             control_target: None,
             subnet: None,
             bridge_ip: None,

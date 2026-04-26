@@ -130,9 +130,11 @@ fn render_plain_machine_list(payload: &MachineListPayload) -> String {
         .iter()
         .map(|row| {
             format!(
-                "id={} lifecycle={} overlay_ip={} subnet={} created_at={}",
+                "id={} lifecycle={} region={} az={} overlay_ip={} subnet={} created_at={}",
                 row.id,
                 row.lifecycle,
+                row.region,
+                row.availability_zone.as_deref().unwrap_or("—"),
                 row.overlay_ip,
                 row.subnet.as_deref().unwrap_or("—"),
                 row.created_at
@@ -371,6 +373,8 @@ mod tests {
                 rows: vec![MachineListRow {
                     id: String::from("peer"),
                     lifecycle: String::from("standby"),
+                    region: String::from("local"),
+                    availability_zone: None,
                     overlay_ip: String::from("fd00::2"),
                     subnet: None,
                     created_at: 123,
@@ -380,7 +384,7 @@ mod tests {
 
         assert_eq!(
             render_plain_success(&response),
-            "id=peer lifecycle=standby overlay_ip=fd00::2 subnet=— created_at=123"
+            "id=peer lifecycle=standby region=local az=— overlay_ip=fd00::2 subnet=— created_at=123"
         );
     }
 

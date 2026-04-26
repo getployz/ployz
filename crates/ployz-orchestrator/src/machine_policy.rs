@@ -1,4 +1,4 @@
-use crate::model::{MachineId, MachineLifecycle, MachineRecord};
+use crate::model::{MachineId, MachineLifecycle, MachineRecord, RegionName};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticRole {
@@ -9,6 +9,22 @@ pub enum DiagnosticRole {
 #[must_use]
 pub fn is_new_placement_candidate(machine: &MachineRecord) -> bool {
     machine.lifecycle == MachineLifecycle::Active
+}
+
+#[must_use]
+pub fn machine_region(machine: &MachineRecord) -> &RegionName {
+    &machine.topology.region
+}
+
+#[must_use]
+pub fn same_region(left: &MachineRecord, right: &MachineRecord) -> bool {
+    left.topology.region == right.topology.region
+}
+
+#[must_use]
+pub fn same_availability_zone(left: &MachineRecord, right: &MachineRecord) -> bool {
+    left.topology.availability_zone.is_some()
+        && left.topology.availability_zone == right.topology.availability_zone
 }
 
 #[must_use]
@@ -65,7 +81,7 @@ pub fn placement_candidates(machines: &[MachineRecord]) -> Vec<&MachineRecord> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{OverlayIp, PublicKey};
+    use crate::model::{MachineTopology, OverlayIp, PublicKey};
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
 
@@ -74,6 +90,7 @@ mod tests {
             id: MachineId(id.into()),
             public_key: PublicKey([1; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+            topology: MachineTopology::local(),
             control_target: None,
             subnet: None,
             bridge_ip: None,

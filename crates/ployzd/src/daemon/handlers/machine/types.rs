@@ -194,6 +194,9 @@ impl MachineListReport {
 pub(super) struct MachineListReportRow {
     pub id: String,
     pub lifecycle: &'static str,
+    pub region: String,
+    pub availability_zone: Option<String>,
+    pub availability_zone_display: String,
     pub overlay: String,
     pub subnet: Option<Ipv4Net>,
     pub subnet_display: String,
@@ -207,6 +210,8 @@ impl MachineListReportRow {
         MachineListRow {
             id: self.id.clone(),
             lifecycle: self.lifecycle.into(),
+            region: self.region.clone(),
+            availability_zone: self.availability_zone.clone(),
             overlay_ip: self.overlay.clone(),
             subnet: self.subnet.map(|subnet| subnet.to_string()),
             created_at: self.created_at,

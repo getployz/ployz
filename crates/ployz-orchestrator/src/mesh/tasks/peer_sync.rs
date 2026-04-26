@@ -75,7 +75,7 @@ mod tests {
     use super::*;
     use crate::mesh::driver::WireguardDriver;
     use crate::mesh::wireguard::MemoryWireGuard;
-    use crate::model::{MachineEvent, MachineLifecycle, OverlayIp, PublicKey};
+    use crate::model::{MachineEvent, MachineLifecycle, MachineTopology, OverlayIp, PublicKey};
     use std::collections::HashMap;
     use std::net::Ipv6Addr;
     use std::sync::Arc;
@@ -88,6 +88,7 @@ mod tests {
             id: MachineId(id.into()),
             public_key: key,
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+            topology: MachineTopology::local(),
             subnet: None,
             control_target: None,
             bridge_ip: None,

@@ -288,6 +288,9 @@ pub struct MachineListPayload {
 pub struct MachineListRow {
     pub id: String,
     pub lifecycle: String,
+    pub region: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub availability_zone: Option<String>,
     pub overlay_ip: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subnet: Option<String>,
