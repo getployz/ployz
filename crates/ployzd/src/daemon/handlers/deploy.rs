@@ -7,7 +7,7 @@ use ployz_config::RuntimeTarget;
 use ployz_orchestrator::deploy::{apply, preview};
 use ployz_runtime_backends::deploy::remote::DeployAgent;
 use ployz_runtime_backends::deploy::session::DefaultDeploySessionFactory;
-use ployz_store_api::DeployStore;
+use ployz_store_api::DeployRepository;
 use ployz_store_api::StoreDriver;
 use ployz_types::Error as PloyzError;
 use ployz_types::spec::{DeployManifest, Namespace, ServiceSpec};
@@ -128,8 +128,9 @@ async fn export_manifest(
     store: &StoreDriver,
     namespace: &Namespace,
 ) -> ployz_types::Result<DeployManifest> {
-    let releases = store.list_service_releases(namespace).await?;
-    let revisions = store.list_service_revisions(namespace).await?;
+    let snapshot = store.load_deploy_snapshot(namespace).await?;
+    let releases = snapshot.releases;
+    let revisions = snapshot.revisions;
     let revisions_by_key: BTreeMap<(String, String), String> = revisions
         .into_iter()
         .map(|revision| {

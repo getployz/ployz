@@ -15,7 +15,7 @@ use crate::mesh::tasks::{
 };
 use crate::model::{MachineId, MachineMembership};
 use ployz_store_api::StoreDriver;
-use ployz_store_api::{MachineStore, StoreRuntimeControl, SyncProbe, SyncStatus};
+use ployz_store_api::{MachineRegistry, StoreRuntimeControl, SyncProbe, SyncStatus};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::Duration;

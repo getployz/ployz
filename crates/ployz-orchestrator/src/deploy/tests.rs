@@ -3,15 +3,17 @@ use super::plan::{deployable_machines, desired_slots, resolve_plan};
 use crate::deploy::session::{DeploySession, DeploySessionFactory, StartCandidateRequest};
 use crate::error::Result;
 use crate::model::{
-    DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
-    MachineLifecycle, MachineMembership, OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord,
-    ServiceReleaseSlot, ServiceRoutingPolicy, SlotId,
+    DeployId, DeployRecord, DeployState, DrainState, InstanceId, InstancePhase,
+    InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, OverlayIp, PublicKey,
+    ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot, ServiceRoutingPolicy, SlotId,
 };
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{
-    DeployStore, InviteStore, MachineStore, MachineSubscription, RoutingInvalidationSubscription,
-    RoutingStore, StoreBackend, StoreDriver, StoreRuntimeControl,
+    DeployCommit, DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
+    InstanceStatusRepository, InviteRepository, MachineRegistry, MachineSubscription,
+    RoutingInvalidationSubscription, RoutingSnapshotReader, StoreBackend, StoreDriver,
+    StoreRuntimeControl,
 };
 use ployz_types::Result as PloyzResult;
 use ployz_types::spec::{
@@ -25,6 +27,35 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
+
+#[async_trait]
+trait TestStoreSeed {
+    async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> PloyzResult<()>;
+    async fn list_service_releases(
+        &self,
+        namespace: &Namespace,
+    ) -> PloyzResult<Vec<ServiceReleaseRecord>>;
+}
+
+#[async_trait]
+impl TestStoreSeed for StoreDriver {
+    async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> PloyzResult<()> {
+        self.commit_deploy(&DeployCommit {
+            namespace: record.namespace.clone(),
+            removed_services: Vec::new(),
+            releases: vec![record.clone()],
+            deploy: test_deploy_record(&record.namespace, "seed-deploy"),
+        })
+        .await
+    }
+
+    async fn list_service_releases(
+        &self,
+        namespace: &Namespace,
+    ) -> PloyzResult<Vec<ServiceReleaseRecord>> {
+        self.list_deploy_releases(namespace).await
+    }
+}
 
 #[test]
 fn deployable_machines_filters_by_participation() {
@@ -634,7 +665,7 @@ async fn apply_with_initial_plan_sets_cleanup_pending_after_cleanup_failure() {
         &revision_hash,
     );
     store
-        .upsert_instance_status(&old_instance)
+        .record_instance_status(&old_instance)
         .await
         .expect("seed old instance");
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
@@ -1026,6 +1057,20 @@ fn test_release(
     }
 }
 
+fn test_deploy_record(namespace: &Namespace, deploy_id: &str) -> DeployRecord {
+    DeployRecord {
+        deploy_id: DeployId(deploy_id.into()),
+        namespace: namespace.clone(),
+        coordinator_machine_id: MachineId("local".into()),
+        manifest_hash: "manifest".into(),
+        state: DeployState::Committed,
+        started_at: 0,
+        committed_at: Some(0),
+        finished_at: Some(0),
+        summary_json: "{}".into(),
+    }
+}
+
 fn test_slot(
     slot_id: &str,
     machine_id: &str,
@@ -1176,18 +1221,15 @@ impl StoreBackend for CountingBackend {
         self.store.subscribe_routing_invalidations().await
     }
 
-    async fn list_service_revisions(
-        &self,
-        namespace: &Namespace,
-    ) -> PloyzResult<Vec<crate::model::ServiceRevisionRecord>> {
-        self.store.list_service_revisions(namespace).await
-    }
-
-    async fn list_service_releases(
+    async fn list_deploy_releases(
         &self,
         namespace: &Namespace,
     ) -> PloyzResult<Vec<ServiceReleaseRecord>> {
-        self.store.list_service_releases(namespace).await
+        self.store.list_deploy_releases(namespace).await
+    }
+
+    async fn load_deploy_snapshot(&self, namespace: &Namespace) -> PloyzResult<DeploySnapshot> {
+        self.store.load_deploy_snapshot(namespace).await
     }
 
     async fn list_instance_status(
@@ -1197,49 +1239,26 @@ impl StoreBackend for CountingBackend {
         self.store.list_instance_status(namespace).await
     }
 
-    async fn upsert_service_revision(
-        &self,
-        record: &crate::model::ServiceRevisionRecord,
-    ) -> PloyzResult<()> {
-        self.store.upsert_service_revision(record).await
+    async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> PloyzResult<()> {
+        self.store.record_service_revision(command).await
     }
 
-    async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> PloyzResult<()> {
-        self.store.upsert_service_release(record).await
+    async fn record_instance_status(&self, record: &InstanceStatusRecord) -> PloyzResult<()> {
+        self.store.record_instance_status(record).await
     }
 
-    async fn delete_service_release(
-        &self,
-        namespace: &Namespace,
-        service: &str,
-    ) -> PloyzResult<()> {
-        self.store.delete_service_release(namespace, service).await
+    async fn remove_instance_status(&self, instance_id: &InstanceId) -> PloyzResult<()> {
+        self.store.remove_instance_status(instance_id).await
     }
 
-    async fn upsert_instance_status(&self, record: &InstanceStatusRecord) -> PloyzResult<()> {
-        self.store.upsert_instance_status(record).await
-    }
-
-    async fn delete_instance_status(&self, instance_id: &InstanceId) -> PloyzResult<()> {
-        self.store.delete_instance_status(instance_id).await
-    }
-
-    async fn upsert_deploy(&self, record: &crate::model::DeployRecord) -> PloyzResult<()> {
+    async fn update_deploy_record(&self, command: &DeployRecordUpdate) -> PloyzResult<()> {
         self.upsert_deploy_calls.fetch_add(1, Ordering::SeqCst);
-        self.store.upsert_deploy(record).await
+        self.store.update_deploy_record(command).await
     }
 
-    async fn commit_deploy(
-        &self,
-        namespace: &Namespace,
-        removed_services: &[String],
-        releases: &[ServiceReleaseRecord],
-        deploy: &crate::model::DeployRecord,
-    ) -> PloyzResult<()> {
+    async fn commit_deploy(&self, command: &DeployCommit) -> PloyzResult<()> {
         self.commit_calls.fetch_add(1, Ordering::SeqCst);
-        self.store
-            .commit_deploy(namespace, removed_services, releases, deploy)
-            .await
+        self.store.commit_deploy(command).await
     }
 
     async fn get_deploy(

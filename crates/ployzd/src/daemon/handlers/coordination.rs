@@ -1,7 +1,7 @@
 use crate::daemon::DaemonState;
 use ployz_api::{CoordOp, DaemonResponse, ResourceKey as ApiResourceKey};
 use ployz_orchestrator::coordination::{Reservation, ReservationId, ResourceKey, Vote};
-use ployz_store_api::MachineStore;
+use ployz_store_api::MachineRegistry;
 use ployz_types::time::now_unix_secs;
 
 impl DaemonState {

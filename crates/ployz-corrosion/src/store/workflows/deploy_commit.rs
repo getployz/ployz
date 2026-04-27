@@ -115,7 +115,7 @@ mod tests {
             delete_worker_release,
             upsert_api_release,
             upsert_worker_release,
-            upsert_deploy,
+            update_deploy_record,
         ] = statements.as_slice()
         else {
             panic!("unexpected statement layout");
@@ -147,7 +147,7 @@ mod tests {
         };
         assert!(query.starts_with("INSERT INTO service_releases"));
 
-        let Statement::WithParams(query, _) = upsert_deploy else {
+        let Statement::WithParams(query, _) = update_deploy_record else {
             panic!("expected deploy upsert statement");
         };
         assert!(query.starts_with("INSERT INTO deploys"));

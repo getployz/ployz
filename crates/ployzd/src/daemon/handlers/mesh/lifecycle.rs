@@ -6,7 +6,7 @@ use crate::daemon::setup::MeshStartOptions;
 use crate::mesh_state::network::NetworkConfig;
 use ployz_api::{DaemonRequest, MachineTransitionGoal};
 use ployz_orchestrator::ipam::pick_candidate_subnet;
-use ployz_store_api::MachineStore;
+use ployz_store_api::MachineRegistry;
 use ployz_types::model::MachineMembership;
 use ployz_types::model::{MachineId, MachineLifecycle, NetworkId, NetworkLifecycle, NetworkName};
 use std::path::PathBuf;
