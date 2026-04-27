@@ -10,7 +10,7 @@ use ployz_store_api::{
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, OverlayIp, RoutingState,
+    MachineId, MachineRecord, OverlayIp, RoutingState, ServiceReleaseRecord,
 };
 use ployz_types::spec::Namespace;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -219,6 +219,13 @@ impl RoutingSnapshotReader for CorrosionStore {
 }
 
 impl DeployRepository for CorrosionStore {
+    async fn list_deploy_releases(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceReleaseRecord>> {
+        tables::service_releases::list_service_releases(&self.client, namespace).await
+    }
+
     async fn load_deploy_snapshot(&self, namespace: &Namespace) -> Result<DeploySnapshot> {
         let (revisions, releases, instances) = tokio::join!(
             tables::service_revisions::list_service_revisions(&self.client, namespace),

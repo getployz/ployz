@@ -92,6 +92,11 @@ pub trait RoutingSnapshotReader: Send + Sync {
 }
 
 pub trait DeployRepository: Send + Sync {
+    fn list_deploy_releases<'a>(
+        &'a self,
+        namespace: &'a Namespace,
+    ) -> impl Future<Output = Result<Vec<ServiceReleaseRecord>>> + Send + 'a;
+
     fn load_deploy_snapshot<'a>(
         &'a self,
         namespace: &'a Namespace,

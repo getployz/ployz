@@ -53,7 +53,7 @@ impl TestStoreSeed for StoreDriver {
         &self,
         namespace: &Namespace,
     ) -> PloyzResult<Vec<ServiceReleaseRecord>> {
-        Ok(self.load_deploy_snapshot(namespace).await?.releases)
+        self.list_deploy_releases(namespace).await
     }
 }
 
@@ -1219,6 +1219,13 @@ impl StoreBackend for CountingBackend {
         &self,
     ) -> PloyzResult<RoutingInvalidationSubscription> {
         self.store.subscribe_routing_invalidations().await
+    }
+
+    async fn list_deploy_releases(
+        &self,
+        namespace: &Namespace,
+    ) -> PloyzResult<Vec<ServiceReleaseRecord>> {
+        self.store.list_deploy_releases(namespace).await
     }
 
     async fn load_deploy_snapshot(&self, namespace: &Namespace) -> PloyzResult<DeploySnapshot> {
