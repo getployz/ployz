@@ -1,13 +1,15 @@
 use crate::memory::{MemoryService, MemoryStore};
 use crate::{
-    DeployStore, InviteStore, MachineStore, MachineSubscription, RoutingInvalidationSubscription,
-    RoutingStore, StoreBackend, StoreRuntimeControl, SyncProbe, SyncStatus,
+    DeployCommit, DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
+    InstanceStatusRepository, InviteRepository, MachineRegistry, MachineSubscription,
+    RoutingInvalidationSubscription, RoutingSnapshotReader, StoreBackend, StoreRuntimeControl,
+    SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::Result;
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
-    MachineRecord, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    MachineRecord, RoutingState,
 };
 use ployz_types::spec::Namespace;
 use std::sync::Arc;
@@ -83,7 +85,7 @@ impl StoreRuntimeControl for StoreDriver {
     }
 }
 
-impl MachineStore for StoreDriver {
+impl MachineRegistry for StoreDriver {
     async fn init(&self) -> Result<()> {
         self.backend.init().await
     }
@@ -105,7 +107,7 @@ impl MachineStore for StoreDriver {
     }
 }
 
-impl InviteStore for StoreDriver {
+impl InviteRepository for StoreDriver {
     async fn create_invite(&self, invite: &InviteRecord) -> Result<()> {
         self.backend.create_invite(invite).await
     }
@@ -134,7 +136,7 @@ impl InviteStore for StoreDriver {
     }
 }
 
-impl RoutingStore for StoreDriver {
+impl RoutingSnapshotReader for StoreDriver {
     async fn load_routing_state(&self) -> Result<RoutingState> {
         self.backend.load_routing_state().await
     }
@@ -144,21 +146,29 @@ impl RoutingStore for StoreDriver {
     }
 }
 
-impl DeployStore for StoreDriver {
-    async fn list_service_revisions(
-        &self,
-        namespace: &Namespace,
-    ) -> Result<Vec<ServiceRevisionRecord>> {
-        self.backend.list_service_revisions(namespace).await
+impl DeployRepository for StoreDriver {
+    async fn load_deploy_snapshot(&self, namespace: &Namespace) -> Result<DeploySnapshot> {
+        self.backend.load_deploy_snapshot(namespace).await
     }
 
-    async fn list_service_releases(
-        &self,
-        namespace: &Namespace,
-    ) -> Result<Vec<ServiceReleaseRecord>> {
-        self.backend.list_service_releases(namespace).await
+    async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()> {
+        self.backend.record_service_revision(command).await
     }
 
+    async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
+        self.backend.commit_deploy(command).await
+    }
+
+    async fn update_deploy_record(&self, command: &DeployRecordUpdate) -> Result<()> {
+        self.backend.update_deploy_record(command).await
+    }
+
+    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
+        self.backend.get_deploy(deploy_id).await
+    }
+}
+
+impl InstanceStatusRepository for StoreDriver {
     async fn list_instance_status(
         &self,
         namespace: &Namespace,
@@ -166,46 +176,12 @@ impl DeployStore for StoreDriver {
         self.backend.list_instance_status(namespace).await
     }
 
-    async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
-        self.backend.upsert_service_revision(record).await
+    async fn record_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
+        self.backend.record_instance_status(record).await
     }
 
-    async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> Result<()> {
-        self.backend.upsert_service_release(record).await
-    }
-
-    async fn delete_service_release(&self, namespace: &Namespace, service: &str) -> Result<()> {
-        self.backend
-            .delete_service_release(namespace, service)
-            .await
-    }
-
-    async fn upsert_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
-        self.backend.upsert_instance_status(record).await
-    }
-
-    async fn delete_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
-        self.backend.delete_instance_status(instance_id).await
-    }
-
-    async fn upsert_deploy(&self, record: &DeployRecord) -> Result<()> {
-        self.backend.upsert_deploy(record).await
-    }
-
-    async fn commit_deploy(
-        &self,
-        namespace: &Namespace,
-        removed_services: &[String],
-        releases: &[ServiceReleaseRecord],
-        deploy: &DeployRecord,
-    ) -> Result<()> {
-        self.backend
-            .commit_deploy(namespace, removed_services, releases, deploy)
-            .await
-    }
-
-    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
-        self.backend.get_deploy(deploy_id).await
+    async fn remove_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
+        self.backend.remove_instance_status(instance_id).await
     }
 }
 
@@ -277,18 +253,24 @@ impl StoreBackend for MemoryStoreBackend {
         self.store.subscribe_routing_invalidations().await
     }
 
-    async fn list_service_revisions(
-        &self,
-        namespace: &Namespace,
-    ) -> Result<Vec<ServiceRevisionRecord>> {
-        self.store.list_service_revisions(namespace).await
+    async fn load_deploy_snapshot(&self, namespace: &Namespace) -> Result<DeploySnapshot> {
+        self.store.load_deploy_snapshot(namespace).await
     }
 
-    async fn list_service_releases(
-        &self,
-        namespace: &Namespace,
-    ) -> Result<Vec<ServiceReleaseRecord>> {
-        self.store.list_service_releases(namespace).await
+    async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()> {
+        self.store.record_service_revision(command).await
+    }
+
+    async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
+        self.store.commit_deploy(command).await
+    }
+
+    async fn update_deploy_record(&self, command: &DeployRecordUpdate) -> Result<()> {
+        self.store.update_deploy_record(command).await
+    }
+
+    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
+        self.store.get_deploy(deploy_id).await
     }
 
     async fn list_instance_status(
@@ -298,44 +280,12 @@ impl StoreBackend for MemoryStoreBackend {
         self.store.list_instance_status(namespace).await
     }
 
-    async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
-        self.store.upsert_service_revision(record).await
+    async fn record_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
+        self.store.record_instance_status(record).await
     }
 
-    async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> Result<()> {
-        self.store.upsert_service_release(record).await
-    }
-
-    async fn delete_service_release(&self, namespace: &Namespace, service: &str) -> Result<()> {
-        self.store.delete_service_release(namespace, service).await
-    }
-
-    async fn upsert_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
-        self.store.upsert_instance_status(record).await
-    }
-
-    async fn delete_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
-        self.store.delete_instance_status(instance_id).await
-    }
-
-    async fn upsert_deploy(&self, record: &DeployRecord) -> Result<()> {
-        self.store.upsert_deploy(record).await
-    }
-
-    async fn commit_deploy(
-        &self,
-        namespace: &Namespace,
-        removed_services: &[String],
-        releases: &[ServiceReleaseRecord],
-        deploy: &DeployRecord,
-    ) -> Result<()> {
-        self.store
-            .commit_deploy(namespace, removed_services, releases, deploy)
-            .await
-    }
-
-    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
-        self.store.get_deploy(deploy_id).await
+    async fn remove_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
+        self.store.remove_instance_status(instance_id).await
     }
 
     async fn sync_status(&self) -> Result<SyncStatus> {

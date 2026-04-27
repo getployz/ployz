@@ -38,12 +38,12 @@ pub(crate) async fn list_service_revisions(
         .collect()
 }
 
-pub(crate) async fn upsert_service_revision(
+pub(crate) async fn record_service_revision(
     client: &CorrClient,
     record: &ServiceRevisionRecord,
 ) -> Result<()> {
     let payload_json = serde_json::to_string(record)
-        .map_err(|e| Error::operation("upsert_service_revision", format!("serialize: {e}")))?;
+        .map_err(|e| Error::operation("record_service_revision", format!("serialize: {e}")))?;
     let stmt = Statement::WithParams(
         "INSERT INTO service_revisions (namespace, service, revision_hash, payload_json) VALUES (?, ?, ?, ?) \
          ON CONFLICT(namespace, service, revision_hash) DO UPDATE SET payload_json = CASE WHEN service_revisions.payload_json = '' THEN excluded.payload_json ELSE service_revisions.payload_json END"
@@ -55,7 +55,7 @@ pub(crate) async fn upsert_service_revision(
             payload_json.into(),
         ],
     );
-    exec_one(client, &[stmt], "upsert_service_revision").await
+    exec_one(client, &[stmt], "record_service_revision").await
 }
 
 pub(crate) fn parse_service_revision(row: &[SqliteValue]) -> Result<ServiceRevisionRecord> {

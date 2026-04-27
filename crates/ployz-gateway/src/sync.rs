@@ -11,10 +11,10 @@ use crate::snapshot::SharedSnapshot;
 const REFRESH_DEBOUNCE: Duration = Duration::from_millis(100);
 
 // ---------------------------------------------------------------------------
-// RoutingStore trait — consumer contract
+// RoutingSnapshotReader trait — consumer contract
 // ---------------------------------------------------------------------------
 
-pub trait RoutingStore: Send + Sync {
+pub trait RoutingSnapshotReader: Send + Sync {
     fn load_routing_state(
         &self,
     ) -> impl Future<Output = Result<ployz_types::model::RoutingState, GatewayError>> + Send + '_;
@@ -31,7 +31,7 @@ pub async fn load_projected_snapshot_from_store<S>(
     store: &S,
 ) -> Result<GatewaySnapshot, GatewayError>
 where
-    S: RoutingStore + Send + Sync,
+    S: RoutingSnapshotReader + Send + Sync,
 {
     let state = store.load_routing_state().await?;
     project(state).map_err(|err| GatewayError::Projection(err.to_string()))
@@ -39,7 +39,7 @@ where
 
 pub async fn run_sync_loop<S>(store: S, snapshot: SharedSnapshot) -> Result<(), GatewayError>
 where
-    S: RoutingStore + Send + Sync + 'static,
+    S: RoutingSnapshotReader + Send + Sync + 'static,
 {
     let mut refresh_rx = store.subscribe_routing_invalidations().await?;
 
@@ -71,7 +71,7 @@ pub fn spawn_sync_thread_with_store<S>(
     snapshot: SharedSnapshot,
 ) -> Result<(), GatewayError>
 where
-    S: RoutingStore + Send + Sync + 'static,
+    S: RoutingSnapshotReader + Send + Sync + 'static,
 {
     std::thread::Builder::new()
         .name("ployz-gateway-sync".into())

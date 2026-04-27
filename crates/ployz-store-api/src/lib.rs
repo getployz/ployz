@@ -6,14 +6,16 @@ use async_trait::async_trait;
 use ployz_types::Result;
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
-    MachineRecord, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    MachineRecord, RoutingState,
 };
 use ployz_types::spec::Namespace;
 
 pub use driver::StoreDriver;
 pub use traits::{
-    DeployStore, InviteStore, MachineStore, MachineSubscription, RoutingInvalidationSubscription,
-    RoutingStore, StoreRuntimeControl, SyncProbe, SyncStatus,
+    DeployCommit, DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
+    InstanceStatusRepository, InviteRepository, MachineRegistry, MachineSubscription,
+    RoutingInvalidationSubscription, RoutingSnapshotReader, StoreRuntimeControl, SyncProbe,
+    SyncStatus,
 };
 
 #[async_trait]
@@ -38,35 +40,18 @@ pub trait StoreBackend: Send + Sync {
     async fn load_routing_state(&self) -> Result<RoutingState>;
     async fn subscribe_routing_invalidations(&self) -> Result<RoutingInvalidationSubscription>;
 
-    async fn list_service_revisions(
-        &self,
-        namespace: &Namespace,
-    ) -> Result<Vec<ServiceRevisionRecord>>;
-
-    async fn list_service_releases(
-        &self,
-        namespace: &Namespace,
-    ) -> Result<Vec<ServiceReleaseRecord>>;
+    async fn load_deploy_snapshot(&self, namespace: &Namespace) -> Result<DeploySnapshot>;
+    async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()>;
+    async fn commit_deploy(&self, command: &DeployCommit) -> Result<()>;
+    async fn update_deploy_record(&self, command: &DeployRecordUpdate) -> Result<()>;
+    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>>;
 
     async fn list_instance_status(
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<InstanceStatusRecord>>;
-
-    async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()>;
-    async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> Result<()>;
-    async fn delete_service_release(&self, namespace: &Namespace, service: &str) -> Result<()>;
-    async fn upsert_instance_status(&self, record: &InstanceStatusRecord) -> Result<()>;
-    async fn delete_instance_status(&self, instance_id: &InstanceId) -> Result<()>;
-    async fn upsert_deploy(&self, record: &DeployRecord) -> Result<()>;
-    async fn commit_deploy(
-        &self,
-        namespace: &Namespace,
-        removed_services: &[String],
-        releases: &[ServiceReleaseRecord],
-        deploy: &DeployRecord,
-    ) -> Result<()>;
-    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>>;
+    async fn record_instance_status(&self, record: &InstanceStatusRecord) -> Result<()>;
+    async fn remove_instance_status(&self, instance_id: &InstanceId) -> Result<()>;
 
     async fn sync_status(&self) -> Result<SyncStatus> {
         Ok(SyncStatus::Synced)
