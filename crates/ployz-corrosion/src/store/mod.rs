@@ -244,14 +244,7 @@ impl DeployRepository for CorrosionStore {
     }
 
     async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
-        workflows::deploy_commit::commit_deploy(
-            &self.client,
-            &command.namespace,
-            &command.removed_services,
-            &command.releases,
-            &command.deploy,
-        )
-        .await
+        workflows::deploy_commit::commit_deploy(&self.client, command).await
     }
 
     async fn update_deploy_record(&self, command: &DeployRecordUpdate) -> Result<()> {

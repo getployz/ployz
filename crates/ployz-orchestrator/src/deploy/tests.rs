@@ -1,5 +1,6 @@
 use super::execute::{SessionSet, apply_with_initial_plan, ensure_plan_stable, run_phase_startup};
 use super::plan::{deployable_machines, desired_slots, resolve_plan};
+use super::transaction::PreparedDeploy;
 use crate::deploy::session::{DeploySession, DeploySessionFactory, StartCandidateRequest};
 use crate::error::Result;
 use crate::model::{
@@ -748,6 +749,129 @@ async fn apply_with_initial_plan_commits_once_after_all_starts_finish() {
             .enumerate()
             .skip(commit_index + 1)
             .all(|(_, event)| event.step != "start_candidate")
+    );
+}
+
+#[tokio::test]
+async fn prepared_deploy_builds_applying_record_and_revisions() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "api",
+        Placement::Replicated { count: 1 },
+        "nginx:1.27",
+    )]);
+    let plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("resolve plan");
+
+    let prepared = PreparedDeploy::new(
+        DeployId("deploy-1".into()),
+        10,
+        local_machine_id.clone(),
+        plan,
+    )
+    .expect("prepared deploy");
+
+    assert_eq!(
+        prepared.applying_record().state,
+        crate::model::DeployState::Applying
+    );
+    assert_eq!(prepared.applying_record().started_at, 10);
+    assert_eq!(prepared.applying_record().committed_at, None);
+    assert_eq!(prepared.revisions().len(), 1);
+    let [revision] = prepared.revisions() else {
+        panic!("expected one revision");
+    };
+    assert_eq!(revision.service, "api");
+    assert_eq!(revision.created_by, local_machine_id);
+}
+
+#[tokio::test]
+async fn started_candidates_rejects_missing_started_create_slot() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "api",
+        Placement::Replicated { count: 1 },
+        "nginx:1.27",
+    )]);
+    let plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("resolve plan");
+    let prepared = PreparedDeploy::new(DeployId("deploy-1".into()), 10, local_machine_id, plan)
+        .expect("prepared deploy");
+
+    let error = prepared
+        .into_started(HashMap::new())
+        .into_commit_plan()
+        .expect_err("missing started candidate should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("missing started instance for service 'api'")
+    );
+}
+
+#[tokio::test]
+async fn commit_plan_contains_removed_services() {
+    let store = seeded_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = test_manifest(vec![test_service_spec(
+        "worker",
+        Placement::Replicated { count: 1 },
+        "busybox:1.0",
+    )]);
+    let revision_hash = "old-rev";
+    store
+        .upsert_service_release(&test_release(
+            &manifest.namespace,
+            "api",
+            revision_hash,
+            vec![test_slot("slot-0001", "machine-a", "inst-1", revision_hash)],
+        ))
+        .await
+        .expect("seed release");
+    let plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("resolve plan");
+    let worker_slot = plan
+        .services()
+        .iter()
+        .find(|service| service.service == "worker")
+        .and_then(|service| service.slots.first().map(|slot| slot.slot_id.clone()))
+        .expect("worker slot");
+    let worker_revision_hash = manifest.services[0].revision_hash().expect("revision hash");
+    let prepared = PreparedDeploy::new(DeployId("deploy-1".into()), 10, local_machine_id, plan)
+        .expect("prepared deploy");
+    let started = HashMap::from([(
+        (String::from("worker"), worker_slot.0.clone()),
+        test_instance_status(
+            &manifest.namespace,
+            "worker",
+            &worker_slot.0,
+            "machine-a",
+            "worker-inst-1",
+            &worker_revision_hash,
+        ),
+    )]);
+
+    let commit_plan = prepared
+        .into_started(started)
+        .into_commit_plan()
+        .expect("commit plan");
+
+    assert_eq!(commit_plan.commit().removed_services, vec!["api"]);
+    assert_eq!(commit_plan.commit().releases.len(), 1);
+    assert_eq!(
+        commit_plan.commit().deploy.state,
+        crate::model::DeployState::Committed
+    );
+    assert!(commit_plan.commit().deploy.committed_at.is_some());
+    assert_eq!(
+        commit_plan.commit().deploy.committed_at,
+        commit_plan.commit().deploy.finished_at
     );
 }
 
