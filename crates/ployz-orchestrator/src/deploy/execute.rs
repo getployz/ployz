@@ -1,16 +1,16 @@
 use crate::deploy::plan::{PlanFingerprint, ResolvedPlan, resolve_plan};
 use crate::deploy::probe::probe_participants;
 use crate::deploy::session::{self, DeploySessionFactory};
+use crate::deploy::transaction::{CleanupPlan, PreparedDeploy};
 use crate::error::{Error, Result};
 use crate::model::{
-    DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployRecord, DeployState,
-    InstanceId, InstanceStatusRecord, MachineId, ServiceRelease, ServiceReleaseRecord,
-    ServiceRevisionRecord, ServiceRoutingPolicy,
+    DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployState, InstanceId,
+    InstanceStatusRecord, MachineId, ServiceRevisionRecord,
 };
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use ployz_store_api::{
-    DeployCommit, DeployRecordUpdate, DeployRepository, DeployRevisionUpsert,
-    InstanceStatusRepository, StoreDriver,
+    DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, InstanceStatusRepository,
+    StoreDriver,
 };
 use ployz_types::time::now_unix_secs;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -204,81 +204,38 @@ pub(super) async fn apply_with_initial_plan(
         let final_fingerprint = final_plan.fingerprint();
         ensure_plan_stable(&initial_fingerprint, &final_fingerprint)?;
 
-        let final_preview = final_plan.to_preview(Vec::new());
-        let mut deploy_record = DeployRecord {
-            deploy_id: deploy_id.clone(),
-            namespace: final_plan.namespace().clone(),
-            coordinator_machine_id: local_machine_id.clone(),
-            manifest_hash: final_plan.manifest_hash().to_string(),
-            state: DeployState::Applying,
+        let prepared = PreparedDeploy::new(
+            deploy_id.clone(),
             started_at,
-            committed_at: None,
-            finished_at: None,
-            summary_json: serde_json::to_string(&final_preview).map_err(|error| {
-                Error::operation("deploy_apply", format!("serialize preview: {error}"))
-            })?,
-        };
+            local_machine_id.clone(),
+            final_plan,
+        )?;
         store
             .update_deploy_record(&DeployRecordUpdate {
-                deploy: deploy_record.clone(),
+                deploy: prepared.applying_record().clone(),
             })
             .await?;
 
-        upsert_revisions(store, &final_plan, local_machine_id, started_at).await?;
-        let startup = run_phase_startup(store, &sessions, &final_plan, &deploy_id).await?;
+        upsert_revisions(store, prepared.revisions()).await?;
+        let startup = run_phase_startup(store, &sessions, prepared.plan(), &deploy_id).await?;
         events.extend(startup.events);
 
-        let committed_releases =
-            build_committed_releases(&final_plan, &startup.started, &deploy_id)?;
-        let removed_services = final_plan
-            .services()
-            .iter()
-            .filter(|service| service.action == DeployChangeKind::Remove)
-            .map(|service| service.service.clone())
-            .collect::<Vec<_>>();
+        let commit_plan = prepared.into_started(startup.started).into_commit_plan()?;
+        store.commit_deploy(commit_plan.commit()).await?;
+        let committed = commit_plan.into_committed();
+        events.push(committed.commit_event());
 
-        deploy_record.state = DeployState::Committed;
-        deploy_record.committed_at = Some(now_unix_secs());
-        deploy_record.finished_at = deploy_record.committed_at;
-        deploy_record.summary_json = serde_json::to_string(&final_preview).map_err(|error| {
-            Error::operation("deploy_apply", format!("serialize preview: {error}"))
-        })?;
-
-        store
-            .commit_deploy(&DeployCommit {
-                namespace: final_plan.namespace().clone(),
-                removed_services,
-                releases: committed_releases.clone(),
-                deploy: deploy_record.clone(),
-            })
-            .await?;
-        events.push(DeployEvent {
-            step: "commit".into(),
-            message: format!(
-                "committed deploy {} for '{}'",
-                deploy_id,
-                final_plan.namespace()
-            ),
-        });
-
-        let cleanup = cleanup_stale_instances(
-            store,
-            &sessions,
-            final_plan.namespace(),
-            final_plan.participants(),
-            committed_releases.as_slice(),
-        )
-        .await?;
+        let cleanup_plan = committed.cleanup_plan();
+        let cleanup = cleanup_stale_instances(store, &sessions, &cleanup_plan).await?;
         events.extend(cleanup.events);
 
         let final_state = if cleanup.errors.is_empty() {
             DeployState::Committed
         } else {
-            deploy_record.state = DeployState::CleanupPending;
-            deploy_record.finished_at = Some(now_unix_secs());
+            let cleanup_pending_record = committed.cleanup_pending_record(now_unix_secs());
             store
                 .update_deploy_record(&DeployRecordUpdate {
-                    deploy: deploy_record.clone(),
+                    deploy: cleanup_pending_record,
                 })
                 .await?;
             for error in cleanup.errors {
@@ -291,8 +248,8 @@ pub(super) async fn apply_with_initial_plan(
         };
 
         Ok(DeployApplyResult {
-            deploy_id: deploy_id.clone(),
-            preview: final_preview,
+            deploy_id: committed.deploy_id().clone(),
+            preview: committed.preview().clone(),
             state: final_state,
             events,
         })
@@ -303,29 +260,11 @@ pub(super) async fn apply_with_initial_plan(
     result
 }
 
-async fn upsert_revisions(
-    store: &StoreDriver,
-    plan: &ResolvedPlan,
-    local_machine_id: &MachineId,
-    created_at: u64,
-) -> Result<()> {
-    for service in plan.services() {
-        let Some(spec_json) = service.spec_json() else {
-            continue;
-        };
-        let Some(revision_hash) = service.next_revision_hash() else {
-            continue;
-        };
+async fn upsert_revisions(store: &StoreDriver, revisions: &[ServiceRevisionRecord]) -> Result<()> {
+    for revision in revisions {
         store
             .record_service_revision(&DeployRevisionUpsert {
-                revision: ServiceRevisionRecord {
-                    namespace: plan.namespace().clone(),
-                    service: service.service.clone(),
-                    revision_hash: revision_hash.to_string(),
-                    spec_json: spec_json.to_string(),
-                    created_by: local_machine_id.clone(),
-                    created_at,
-                },
+                revision: revision.clone(),
             })
             .await?;
     }
@@ -468,93 +407,20 @@ async fn run_machine_start_queue(
     })
 }
 
-fn build_committed_releases(
-    plan: &ResolvedPlan,
-    started: &HashMap<(String, String), InstanceStatusRecord>,
-    deploy_id: &DeployId,
-) -> Result<Vec<ServiceReleaseRecord>> {
-    let mut releases = Vec::new();
-    for service in plan.services() {
-        let Some(revision_hash) = service.next_revision_hash() else {
-            continue;
-        };
-
-        let mut next_slots = Vec::new();
-        for slot in &service.slots {
-            let active_instance_id = match slot.action {
-                DeployChangeKind::Unchanged => {
-                    let Some(current) = &slot.current else {
-                        return Err(Error::operation(
-                            "deploy_apply",
-                            format!(
-                                "missing current slot for unchanged service '{}' slot '{}'",
-                                service.service, slot.slot_id
-                            ),
-                        ));
-                    };
-                    current.active_instance_id.clone()
-                }
-                DeployChangeKind::Create | DeployChangeKind::Replace => {
-                    let key = (service.service.clone(), slot.slot_id.0.clone());
-                    let Some(status) = started.get(&key) else {
-                        return Err(Error::operation(
-                            "deploy_apply",
-                            format!(
-                                "missing started instance for service '{}' slot '{}'",
-                                service.service, slot.slot_id
-                            ),
-                        ));
-                    };
-                    status.instance_id.clone()
-                }
-                DeployChangeKind::Remove => continue,
-            };
-            next_slots.push(crate::model::ServiceReleaseSlot {
-                slot_id: slot.slot_id.clone(),
-                machine_id: slot.machine_id.clone(),
-                active_instance_id,
-                revision_hash: revision_hash.to_string(),
-            });
-        }
-
-        releases.push(ServiceReleaseRecord {
-            namespace: plan.namespace().clone(),
-            service: service.service.clone(),
-            release: ServiceRelease {
-                primary_revision_hash: revision_hash.to_string(),
-                referenced_revision_hashes: vec![revision_hash.to_string()],
-                routing: ServiceRoutingPolicy::Direct {
-                    revision_hash: revision_hash.to_string(),
-                },
-                slots: next_slots,
-                updated_by_deploy_id: deploy_id.clone(),
-                updated_at: now_unix_secs(),
-            },
-        });
-    }
-    Ok(releases)
-}
-
 async fn cleanup_stale_instances(
     store: &StoreDriver,
     sessions: &SessionSet,
-    namespace: &ployz_types::spec::Namespace,
-    participants: &BTreeSet<MachineId>,
-    committed_releases: &[ServiceReleaseRecord],
+    plan: &CleanupPlan,
 ) -> Result<CleanupResult> {
-    let active_instance_ids = committed_releases
-        .iter()
-        .flat_map(|release| release.release.slots.iter())
-        .map(|slot| slot.active_instance_id.0.clone())
-        .collect::<BTreeSet<_>>();
-    let participant_ids = participants
+    let participant_ids = plan
+        .participants()
         .iter()
         .map(|machine_id| machine_id.0.clone())
         .collect::<BTreeSet<_>>();
 
     let mut stale_by_machine: BTreeMap<MachineId, Vec<InstanceStatusRecord>> = BTreeMap::new();
-    for status in store.list_instance_status(namespace).await? {
-        if active_instance_ids.contains(&status.instance_id.0) {
+    for status in store.list_instance_status(plan.namespace()).await? {
+        if plan.active_instance_ids().contains(&status.instance_id.0) {
             continue;
         }
         if !participant_ids.contains(&status.machine_id.0) {

@@ -2,19 +2,13 @@ use crate::client::CorrClient;
 use crate::store::shared::sql::exec_all;
 use crate::store::tables::{deploys, service_releases};
 use corro_api_types::Statement;
+use ployz_store_api::DeployCommit;
 use ployz_types::error::Result;
-use ployz_types::model::{DeployRecord, ServiceReleaseRecord};
-use ployz_types::spec::Namespace;
+use ployz_types::model::ServiceReleaseRecord;
 use std::collections::HashSet;
 
-pub(crate) async fn commit_deploy(
-    client: &CorrClient,
-    namespace: &Namespace,
-    removed_services: &[String],
-    releases: &[ServiceReleaseRecord],
-    deploy: &DeployRecord,
-) -> Result<()> {
-    let statements = build_commit_statements(namespace, removed_services, releases, deploy)?;
+pub(crate) async fn commit_deploy(client: &CorrClient, commit: &DeployCommit) -> Result<()> {
+    let statements = build_commit_statements(commit)?;
     exec_all(client, &statements, "commit_deploy").await
 }
 
@@ -29,24 +23,22 @@ fn touched_services(removed_services: &[String], releases: &[ServiceReleaseRecor
     touched
 }
 
-fn build_commit_statements(
-    namespace: &Namespace,
-    removed_services: &[String],
-    releases: &[ServiceReleaseRecord],
-    deploy: &DeployRecord,
-) -> Result<Vec<Statement>> {
-    let touched = touched_services(removed_services, releases);
+fn build_commit_statements(commit: &DeployCommit) -> Result<Vec<Statement>> {
+    let touched = touched_services(&commit.removed_services, &commit.releases);
     let mut statements = Vec::new();
 
     for service in &touched {
-        statements.push(service_releases::delete_statement(namespace, service));
+        statements.push(service_releases::delete_statement(
+            &commit.namespace,
+            service,
+        ));
     }
 
-    for release in releases {
+    for release in &commit.releases {
         statements.push(service_releases::upsert_statement(release)?);
     }
 
-    statements.push(deploys::upsert_statement(deploy)?);
+    statements.push(deploys::upsert_statement(&commit.deploy)?);
 
     Ok(statements)
 }
@@ -55,6 +47,7 @@ fn build_commit_statements(
 mod tests {
     use super::build_commit_statements;
     use corro_api_types::Statement;
+    use ployz_store_api::DeployCommit;
     use ployz_types::model::{
         DeployId, DeployRecord, DeployState, MachineId, ServiceRelease, ServiceReleaseRecord,
         ServiceRoutingPolicy,
@@ -107,8 +100,14 @@ mod tests {
             summary_json: String::from("{}"),
         };
 
-        let statements = build_commit_statements(&namespace, &removed_services, &releases, &deploy)
-            .expect("commit statements");
+        let commit = DeployCommit {
+            namespace,
+            removed_services,
+            releases,
+            deploy,
+        };
+
+        let statements = build_commit_statements(&commit).expect("commit statements");
 
         let [
             delete_api_release,
