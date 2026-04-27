@@ -3,6 +3,7 @@ pub mod session;
 mod execute;
 mod plan;
 mod probe;
+mod transaction;
 
 #[cfg(test)]
 mod tests;
