@@ -6,7 +6,7 @@ use ployz_orchestrator::machine_reachability::{ReachabilityStatus, probe_overlay
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_orchestrator::mesh::{DevicePeer, WireGuardDevice};
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
-use ployz_store_api::MachineStore;
+use ployz_store_api::MachineRegistry;
 use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
 use std::collections::HashMap;
 use std::collections::HashSet;

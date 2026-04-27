@@ -14,7 +14,7 @@ use crate::model::{
 use crate::spec::{Namespace, ServiceSpec};
 use ployz_api::DeployFrame;
 use ployz_runtime_api::{NamespaceLock, NamespaceLockManager, RuntimeHandle};
-use ployz_store_api::DeployStore;
+use ployz_store_api::InstanceStatusRepository;
 
 use super::local::{
     LocalDeployRuntime, StartCandidate, adopt_instances, build_instance_status_record,
@@ -179,7 +179,7 @@ impl DeployAgent {
             DrainState::None,
             None,
         );
-        self.store.upsert_instance_status(&status).await?;
+        self.store.record_instance_status(&status).await?;
         Ok(status)
     }
 
@@ -203,7 +203,7 @@ impl DeployAgent {
         status.ready = false;
         status.drain_state = DrainState::Requested;
         status.updated_at = now_unix_secs();
-        self.store.upsert_instance_status(&status).await?;
+        self.store.record_instance_status(&status).await?;
         Ok(())
     }
 
@@ -224,7 +224,7 @@ impl DeployAgent {
             .remove_instance(&status.instance_id, &session.namespace, &status.service)
             .await?;
         self.store
-            .delete_instance_status(&status.instance_id)
+            .remove_instance_status(&status.instance_id)
             .await?;
         Ok(())
     }
