@@ -21,7 +21,7 @@ use ployz_store_api::{
 use ployz_types::Result;
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, OverlayIp, RoutingState,
+    MachineId, MachineRecord, OverlayIp, RoutingState, ServiceReleaseRecord,
 };
 use ployz_types::spec::Namespace;
 use tokio::process::{Child, Command};
@@ -217,6 +217,13 @@ where
 
     async fn subscribe_routing_invalidations(&self) -> Result<mpsc::Receiver<()>> {
         self.store.subscribe_routing_invalidations().await
+    }
+
+    async fn list_deploy_releases(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceReleaseRecord>> {
+        self.store.list_deploy_releases(namespace).await
     }
 
     async fn load_deploy_snapshot(&self, namespace: &Namespace) -> Result<DeploySnapshot> {

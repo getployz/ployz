@@ -250,6 +250,14 @@ impl InviteRepository for MemoryStore {
 }
 
 impl DeployRepository for MemoryStore {
+    async fn list_deploy_releases(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceReleaseRecord>> {
+        let inner = self.lock_inner();
+        Ok(Self::list_deploy_releases_inner(&inner, namespace))
+    }
+
     async fn load_deploy_snapshot(&self, namespace: &Namespace) -> Result<DeploySnapshot> {
         let inner = self.lock_inner();
         let revisions = inner
@@ -258,12 +266,7 @@ impl DeployRepository for MemoryStore {
             .filter(|record| record.namespace == *namespace)
             .cloned()
             .collect();
-        let releases = inner
-            .service_releases
-            .values()
-            .filter(|record| record.namespace == *namespace)
-            .cloned()
-            .collect();
+        let releases = Self::list_deploy_releases_inner(&inner, namespace);
         let instances = inner
             .instance_status
             .values()
@@ -335,6 +338,18 @@ impl InstanceStatusRepository for MemoryStore {
 }
 
 impl MemoryStore {
+    fn list_deploy_releases_inner(
+        inner: &StoreInner,
+        namespace: &Namespace,
+    ) -> Vec<ServiceReleaseRecord> {
+        inner
+            .service_releases
+            .values()
+            .filter(|record| record.namespace == *namespace)
+            .cloned()
+            .collect()
+    }
+
     fn record_service_revision_inner(inner: &mut StoreInner, record: &ServiceRevisionRecord) {
         let key = (
             record.namespace.clone(),

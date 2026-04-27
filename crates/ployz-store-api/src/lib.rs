@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use ployz_types::Result;
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
-    MachineRecord, RoutingState,
+    MachineRecord, RoutingState, ServiceReleaseRecord,
 };
 use ployz_types::spec::Namespace;
 
@@ -40,6 +40,10 @@ pub trait StoreBackend: Send + Sync {
     async fn load_routing_state(&self) -> Result<RoutingState>;
     async fn subscribe_routing_invalidations(&self) -> Result<RoutingInvalidationSubscription>;
 
+    async fn list_deploy_releases(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceReleaseRecord>>;
     async fn load_deploy_snapshot(&self, namespace: &Namespace) -> Result<DeploySnapshot>;
     async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()>;
     async fn commit_deploy(&self, command: &DeployCommit) -> Result<()>;

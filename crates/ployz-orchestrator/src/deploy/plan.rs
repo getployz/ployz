@@ -153,10 +153,7 @@ pub(super) async fn resolve_plan(
         .validate()
         .map_err(|error| Error::operation("deploy_preview", error))?;
 
-    let current_releases = store
-        .load_deploy_snapshot(&manifest.namespace)
-        .await?
-        .releases;
+    let current_releases = store.list_deploy_releases(&manifest.namespace).await?;
     let machines = store.list_machines().await?;
     let machine_map: HashMap<MachineId, MachineRecord> = machines
         .iter()

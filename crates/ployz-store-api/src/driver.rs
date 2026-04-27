@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use ployz_types::Result;
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
-    MachineRecord, RoutingState,
+    MachineRecord, RoutingState, ServiceReleaseRecord,
 };
 use ployz_types::spec::Namespace;
 use std::sync::Arc;
@@ -147,6 +147,13 @@ impl RoutingSnapshotReader for StoreDriver {
 }
 
 impl DeployRepository for StoreDriver {
+    async fn list_deploy_releases(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceReleaseRecord>> {
+        self.backend.list_deploy_releases(namespace).await
+    }
+
     async fn load_deploy_snapshot(&self, namespace: &Namespace) -> Result<DeploySnapshot> {
         self.backend.load_deploy_snapshot(namespace).await
     }
@@ -251,6 +258,13 @@ impl StoreBackend for MemoryStoreBackend {
 
     async fn subscribe_routing_invalidations(&self) -> Result<RoutingInvalidationSubscription> {
         self.store.subscribe_routing_invalidations().await
+    }
+
+    async fn list_deploy_releases(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<ServiceReleaseRecord>> {
+        self.store.list_deploy_releases(namespace).await
     }
 
     async fn load_deploy_snapshot(&self, namespace: &Namespace) -> Result<DeploySnapshot> {
