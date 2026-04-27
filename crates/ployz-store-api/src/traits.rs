@@ -11,7 +11,32 @@ use tokio::sync::mpsc;
 pub type MachineSubscription = (Vec<MachineRecord>, mpsc::Receiver<MachineEvent>);
 pub type RoutingInvalidationSubscription = mpsc::Receiver<()>;
 
-pub trait MachineStore: Send + Sync {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployCommit {
+    pub namespace: Namespace,
+    pub removed_services: Vec<String>,
+    pub releases: Vec<ServiceReleaseRecord>,
+    pub deploy: DeployRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployRevisionUpsert {
+    pub revision: ServiceRevisionRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployRecordUpdate {
+    pub deploy: DeployRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeploySnapshot {
+    pub revisions: Vec<ServiceRevisionRecord>,
+    pub releases: Vec<ServiceReleaseRecord>,
+    pub instances: Vec<InstanceStatusRecord>,
+}
+
+pub trait MachineRegistry: Send + Sync {
     fn init(&self) -> impl Future<Output = Result<()>> + Send + '_ {
         async { Ok(()) }
     }
@@ -31,7 +56,7 @@ pub trait MachineStore: Send + Sync {
     fn subscribe_machines(&self) -> impl Future<Output = Result<MachineSubscription>> + Send + '_;
 }
 
-pub trait InviteStore: Send + Sync {
+pub trait InviteRepository: Send + Sync {
     fn create_invite<'a>(
         &'a self,
         invite: &'a InviteRecord,
@@ -58,7 +83,7 @@ pub trait InviteStore: Send + Sync {
     ) -> impl Future<Output = Result<InviteRecord>> + Send + 'a;
 }
 
-pub trait RoutingStore: Send + Sync {
+pub trait RoutingSnapshotReader: Send + Sync {
     fn load_routing_state(&self) -> impl Future<Output = Result<RoutingState>> + Send + '_;
 
     fn subscribe_routing_invalidations(
@@ -66,65 +91,53 @@ pub trait RoutingStore: Send + Sync {
     ) -> impl Future<Output = Result<RoutingInvalidationSubscription>> + Send + '_;
 }
 
-pub trait DeployStore: Send + Sync {
-    fn list_service_revisions<'a>(
-        &'a self,
-        namespace: &'a Namespace,
-    ) -> impl Future<Output = Result<Vec<ServiceRevisionRecord>>> + Send + 'a;
-
-    fn list_service_releases<'a>(
+pub trait DeployRepository: Send + Sync {
+    fn list_deploy_releases<'a>(
         &'a self,
         namespace: &'a Namespace,
     ) -> impl Future<Output = Result<Vec<ServiceReleaseRecord>>> + Send + 'a;
 
-    fn list_instance_status<'a>(
+    fn load_deploy_snapshot<'a>(
         &'a self,
         namespace: &'a Namespace,
-    ) -> impl Future<Output = Result<Vec<InstanceStatusRecord>>> + Send + 'a;
+    ) -> impl Future<Output = Result<DeploySnapshot>> + Send + 'a;
 
-    fn upsert_service_revision<'a>(
+    fn record_service_revision<'a>(
         &'a self,
-        record: &'a ServiceRevisionRecord,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
-
-    fn upsert_service_release<'a>(
-        &'a self,
-        record: &'a ServiceReleaseRecord,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
-
-    fn delete_service_release<'a>(
-        &'a self,
-        namespace: &'a Namespace,
-        service: &'a str,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
-
-    fn upsert_instance_status<'a>(
-        &'a self,
-        record: &'a InstanceStatusRecord,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
-
-    fn delete_instance_status<'a>(
-        &'a self,
-        instance_id: &'a InstanceId,
-    ) -> impl Future<Output = Result<()>> + Send + 'a;
-
-    fn upsert_deploy<'a>(
-        &'a self,
-        record: &'a DeployRecord,
+        command: &'a DeployRevisionUpsert,
     ) -> impl Future<Output = Result<()>> + Send + 'a;
 
     fn commit_deploy<'a>(
         &'a self,
-        namespace: &'a Namespace,
-        removed_services: &'a [String],
-        releases: &'a [ServiceReleaseRecord],
-        deploy: &'a DeployRecord,
+        command: &'a DeployCommit,
+    ) -> impl Future<Output = Result<()>> + Send + 'a;
+
+    fn update_deploy_record<'a>(
+        &'a self,
+        command: &'a DeployRecordUpdate,
     ) -> impl Future<Output = Result<()>> + Send + 'a;
 
     fn get_deploy<'a>(
         &'a self,
         deploy_id: &'a DeployId,
     ) -> impl Future<Output = Result<Option<DeployRecord>>> + Send + 'a;
+}
+
+pub trait InstanceStatusRepository: Send + Sync {
+    fn list_instance_status<'a>(
+        &'a self,
+        namespace: &'a Namespace,
+    ) -> impl Future<Output = Result<Vec<InstanceStatusRecord>>> + Send + 'a;
+
+    fn record_instance_status<'a>(
+        &'a self,
+        record: &'a InstanceStatusRecord,
+    ) -> impl Future<Output = Result<()>> + Send + 'a;
+
+    fn remove_instance_status<'a>(
+        &'a self,
+        instance_id: &'a InstanceId,
+    ) -> impl Future<Output = Result<()>> + Send + 'a;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

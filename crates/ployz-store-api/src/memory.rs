@@ -1,6 +1,7 @@
 use crate::{
-    DeployStore, InviteStore, MachineStore, RoutingInvalidationSubscription, RoutingStore,
-    StoreRuntimeControl, SyncProbe, SyncStatus,
+    DeployCommit, DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
+    InstanceStatusRepository, InviteRepository, MachineRegistry, RoutingInvalidationSubscription,
+    RoutingSnapshotReader, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::error::{Error, Result};
@@ -95,7 +96,7 @@ impl SyncProbe for MemoryStore {
     }
 }
 
-impl MachineStore for MemoryStore {
+impl MachineRegistry for MemoryStore {
     async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
         let inner = self.lock_inner();
         Ok(inner.machines.values().cloned().collect())
@@ -131,7 +132,7 @@ impl MachineStore for MemoryStore {
     }
 }
 
-impl RoutingStore for MemoryStore {
+impl RoutingSnapshotReader for MemoryStore {
     async fn load_routing_state(&self) -> Result<RoutingState> {
         let inner = self.lock_inner();
         Ok(RoutingState {
@@ -149,7 +150,7 @@ impl RoutingStore for MemoryStore {
     }
 }
 
-impl InviteStore for MemoryStore {
+impl InviteRepository for MemoryStore {
     async fn create_invite(&self, invite: &InviteRecord) -> Result<()> {
         let mut inner = self.lock_inner();
         if inner.invites.contains_key(&invite.invite_id) {
@@ -248,33 +249,66 @@ impl InviteStore for MemoryStore {
     }
 }
 
-impl DeployStore for MemoryStore {
-    async fn list_service_revisions(
-        &self,
-        namespace: &Namespace,
-    ) -> Result<Vec<ServiceRevisionRecord>> {
-        let inner = self.lock_inner();
-        Ok(inner
-            .service_revisions
-            .values()
-            .filter(|record| record.namespace == *namespace)
-            .cloned()
-            .collect())
-    }
-
-    async fn list_service_releases(
+impl DeployRepository for MemoryStore {
+    async fn list_deploy_releases(
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<ServiceReleaseRecord>> {
         let inner = self.lock_inner();
-        Ok(inner
-            .service_releases
+        Ok(Self::list_deploy_releases_inner(&inner, namespace))
+    }
+
+    async fn load_deploy_snapshot(&self, namespace: &Namespace) -> Result<DeploySnapshot> {
+        let inner = self.lock_inner();
+        let revisions = inner
+            .service_revisions
             .values()
             .filter(|record| record.namespace == *namespace)
             .cloned()
-            .collect())
+            .collect();
+        let releases = Self::list_deploy_releases_inner(&inner, namespace);
+        let instances = inner
+            .instance_status
+            .values()
+            .filter(|record| record.namespace == *namespace)
+            .cloned()
+            .collect();
+        Ok(DeploySnapshot {
+            revisions,
+            releases,
+            instances,
+        })
     }
 
+    async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()> {
+        let mut inner = self.lock_inner();
+        Self::record_service_revision_inner(&mut inner, &command.revision);
+        Self::broadcast_routing_refresh(&mut inner);
+        Ok(())
+    }
+
+    async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
+        let mut inner = self.lock_inner();
+        Self::commit_deploy_inner(&mut inner, command);
+        Self::broadcast_routing_refresh(&mut inner);
+        Ok(())
+    }
+
+    async fn update_deploy_record(&self, command: &DeployRecordUpdate) -> Result<()> {
+        let mut inner = self.lock_inner();
+        inner
+            .deploys
+            .insert(command.deploy.deploy_id.clone(), command.deploy.clone());
+        Ok(())
+    }
+
+    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner.deploys.get(deploy_id).cloned())
+    }
+}
+
+impl InstanceStatusRepository for MemoryStore {
     async fn list_instance_status(
         &self,
         namespace: &Namespace,
@@ -288,80 +322,74 @@ impl DeployStore for MemoryStore {
             .collect())
     }
 
-    async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
+    async fn record_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
         let mut inner = self.lock_inner();
+        Self::record_instance_status_inner(&mut inner, record);
+        Self::broadcast_routing_refresh(&mut inner);
+        Ok(())
+    }
+
+    async fn remove_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
+        let mut inner = self.lock_inner();
+        Self::remove_instance_status_inner(&mut inner, instance_id);
+        Self::broadcast_routing_refresh(&mut inner);
+        Ok(())
+    }
+}
+
+impl MemoryStore {
+    fn list_deploy_releases_inner(
+        inner: &StoreInner,
+        namespace: &Namespace,
+    ) -> Vec<ServiceReleaseRecord> {
+        inner
+            .service_releases
+            .values()
+            .filter(|record| record.namespace == *namespace)
+            .cloned()
+            .collect()
+    }
+
+    fn record_service_revision_inner(inner: &mut StoreInner, record: &ServiceRevisionRecord) {
         let key = (
             record.namespace.clone(),
             record.service.clone(),
             record.revision_hash.clone(),
         );
         inner.service_revisions.insert(key, record.clone());
-        Self::broadcast_routing_refresh(&mut inner);
-        Ok(())
     }
 
-    async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> Result<()> {
-        let mut inner = self.lock_inner();
-        let key = (record.namespace.clone(), record.service.clone());
-        inner.service_releases.insert(key, record.clone());
-        Self::broadcast_routing_refresh(&mut inner);
-        Ok(())
-    }
-
-    async fn delete_service_release(&self, namespace: &Namespace, service: &str) -> Result<()> {
-        let mut inner = self.lock_inner();
-        inner
-            .service_releases
-            .remove(&(namespace.clone(), service.to_string()));
-        Self::broadcast_routing_refresh(&mut inner);
-        Ok(())
-    }
-
-    async fn upsert_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
-        let mut inner = self.lock_inner();
+    fn record_instance_status_inner(inner: &mut StoreInner, record: &InstanceStatusRecord) {
         inner
             .instance_status
             .insert(record.instance_id.clone(), record.clone());
-        Self::broadcast_routing_refresh(&mut inner);
-        Ok(())
     }
 
-    async fn delete_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
-        let mut inner = self.lock_inner();
+    fn remove_instance_status_inner(inner: &mut StoreInner, instance_id: &InstanceId) {
         inner.instance_status.remove(instance_id);
-        Self::broadcast_routing_refresh(&mut inner);
-        Ok(())
     }
 
-    async fn upsert_deploy(&self, record: &DeployRecord) -> Result<()> {
-        let mut inner = self.lock_inner();
-        inner
-            .deploys
-            .insert(record.deploy_id.clone(), record.clone());
-        Ok(())
-    }
-
-    async fn commit_deploy(
-        &self,
-        namespace: &Namespace,
-        removed_services: &[String],
-        releases: &[ServiceReleaseRecord],
-        deploy: &DeployRecord,
-    ) -> Result<()> {
-        let mut inner = self.lock_inner();
-        let touched_services: HashSet<&str> = removed_services
+    fn commit_deploy_inner(inner: &mut StoreInner, command: &DeployCommit) {
+        let touched_services: HashSet<&str> = command
+            .removed_services
             .iter()
             .map(String::as_str)
-            .chain(releases.iter().map(|record| record.service.as_str()))
+            .chain(
+                command
+                    .releases
+                    .iter()
+                    .map(|record| record.service.as_str()),
+            )
             .collect();
 
         inner
             .service_releases
             .retain(|(current_namespace, service), _| {
-                !(current_namespace == namespace && touched_services.contains(service.as_str()))
+                !(current_namespace == &command.namespace
+                    && touched_services.contains(service.as_str()))
             });
 
-        for release in releases {
+        for release in &command.releases {
             inner.service_releases.insert(
                 (release.namespace.clone(), release.service.clone()),
                 release.clone(),
@@ -370,14 +398,7 @@ impl DeployStore for MemoryStore {
 
         inner
             .deploys
-            .insert(deploy.deploy_id.clone(), deploy.clone());
-        Self::broadcast_routing_refresh(&mut inner);
-        Ok(())
-    }
-
-    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
-        let inner = self.lock_inner();
-        Ok(inner.deploys.get(deploy_id).cloned())
+            .insert(command.deploy.deploy_id.clone(), command.deploy.clone());
     }
 }
 
@@ -534,7 +555,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn routing_subscribers_receive_refresh_events() {
+    async fn record_service_revision_updates_routing_snapshot_and_emits_refresh() {
         let store = MemoryStore::new();
         let mut refresh_rx = store
             .subscribe_routing_invalidations()
@@ -542,29 +563,197 @@ mod tests {
             .expect("subscribe");
 
         let namespace = Namespace("prod".into());
-        let record = ServiceReleaseRecord {
-            namespace,
+        let revision = ServiceRevisionRecord {
+            namespace: namespace.clone(),
             service: "api".into(),
-            release: ployz_types::model::ServiceRelease {
-                primary_revision_hash: "rev-1".into(),
-                referenced_revision_hashes: vec!["rev-1".into()],
-                routing: ployz_types::model::ServiceRoutingPolicy::Direct {
-                    revision_hash: "rev-1".into(),
-                },
-                slots: Vec::new(),
-                updated_by_deploy_id: DeployId("dep-1".into()),
-                updated_at: 1,
-            },
+            revision_hash: "rev-1".into(),
+            spec_json: "{}".into(),
+            created_by: MachineId("machine-1".into()),
+            created_at: 1,
         };
 
         store
-            .upsert_service_release(&record)
+            .record_service_revision(&DeployRevisionUpsert { revision })
             .await
-            .expect("upsert service release");
+            .expect("record revision");
 
         let event = tokio::time::timeout(std::time::Duration::from_secs(1), refresh_rx.recv())
             .await
             .expect("refresh event deadline");
         assert_eq!(event, Some(()));
+
+        let snapshot = store
+            .load_routing_state()
+            .await
+            .expect("load routing state");
+        assert_eq!(snapshot.revisions.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn commit_deploy_replaces_touched_releases_and_records_deploy() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("prod".into());
+        let untouched = test_release(&namespace, "worker", "rev-old", "deploy-old");
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                removed_services: Vec::new(),
+                releases: vec![
+                    test_release(&namespace, "api", "rev-old", "deploy-old"),
+                    untouched.clone(),
+                ],
+                deploy: test_deploy(&namespace, "deploy-old"),
+            })
+            .await
+            .expect("seed deploy");
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                removed_services: vec!["worker".into()],
+                releases: vec![test_release(&namespace, "api", "rev-new", "deploy-new")],
+                deploy: test_deploy(&namespace, "deploy-new"),
+            })
+            .await
+            .expect("commit deploy");
+
+        let snapshot = store
+            .load_deploy_snapshot(&namespace)
+            .await
+            .expect("load deploy snapshot");
+        assert_eq!(snapshot.releases.len(), 1);
+        assert_eq!(snapshot.releases[0].service, "api");
+        assert_eq!(
+            snapshot.releases[0].release.primary_revision_hash,
+            "rev-new"
+        );
+        assert!(
+            store
+                .get_deploy(&DeployId("deploy-new".into()))
+                .await
+                .expect("get deploy")
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn instance_status_writes_update_routing_snapshot_and_emit_refreshes() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("prod".into());
+        let status = test_instance_status(&namespace, "inst-1");
+        let mut refresh_rx = store
+            .subscribe_routing_invalidations()
+            .await
+            .expect("subscribe");
+
+        store
+            .record_instance_status(&status)
+            .await
+            .expect("record instance status");
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), refresh_rx.recv())
+            .await
+            .expect("record refresh deadline");
+        assert_eq!(event, Some(()));
+
+        store
+            .remove_instance_status(&status.instance_id)
+            .await
+            .expect("remove instance status");
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), refresh_rx.recv())
+            .await
+            .expect("remove refresh deadline");
+        assert_eq!(event, Some(()));
+
+        let snapshot = store
+            .load_routing_state()
+            .await
+            .expect("load routing state");
+        assert!(snapshot.instances.is_empty());
+    }
+
+    #[tokio::test]
+    async fn machine_writes_do_not_emit_routing_refreshes() {
+        let store = MemoryStore::new();
+        let mut refresh_rx = store
+            .subscribe_routing_invalidations()
+            .await
+            .expect("subscribe");
+        let machine = MachineRecord::seed(
+            MachineId("machine-1".into()),
+            ployz_types::model::PublicKey([1; 32]),
+            ployz_types::model::OverlayIp(std::net::Ipv6Addr::LOCALHOST),
+            None,
+            Vec::new(),
+        );
+
+        store
+            .upsert_self_machine(&machine)
+            .await
+            .expect("upsert machine");
+        store
+            .delete_machine(&machine.id)
+            .await
+            .expect("delete machine");
+
+        let event =
+            tokio::time::timeout(std::time::Duration::from_millis(50), refresh_rx.recv()).await;
+        assert!(event.is_err());
+    }
+
+    fn test_release(
+        namespace: &Namespace,
+        service: &str,
+        revision_hash: &str,
+        deploy_id: &str,
+    ) -> ServiceReleaseRecord {
+        ServiceReleaseRecord {
+            namespace: namespace.clone(),
+            service: service.into(),
+            release: ployz_types::model::ServiceRelease {
+                primary_revision_hash: revision_hash.into(),
+                referenced_revision_hashes: vec![revision_hash.into()],
+                routing: ployz_types::model::ServiceRoutingPolicy::Direct {
+                    revision_hash: revision_hash.into(),
+                },
+                slots: Vec::new(),
+                updated_by_deploy_id: DeployId(deploy_id.into()),
+                updated_at: 1,
+            },
+        }
+    }
+
+    fn test_deploy(namespace: &Namespace, deploy_id: &str) -> DeployRecord {
+        DeployRecord {
+            deploy_id: DeployId(deploy_id.into()),
+            namespace: namespace.clone(),
+            coordinator_machine_id: MachineId("machine-1".into()),
+            manifest_hash: "manifest".into(),
+            state: ployz_types::model::DeployState::Committed,
+            started_at: 1,
+            committed_at: Some(2),
+            finished_at: Some(2),
+            summary_json: "{}".into(),
+        }
+    }
+
+    fn test_instance_status(namespace: &Namespace, instance_id: &str) -> InstanceStatusRecord {
+        InstanceStatusRecord {
+            instance_id: InstanceId(instance_id.into()),
+            namespace: namespace.clone(),
+            service: "api".into(),
+            slot_id: ployz_types::model::SlotId("slot-1".into()),
+            machine_id: MachineId("machine-1".into()),
+            revision_hash: "rev-1".into(),
+            deploy_id: DeployId("deploy-1".into()),
+            docker_container_id: "container-1".into(),
+            overlay_ip: None,
+            backend_ports: std::collections::BTreeMap::new(),
+            phase: ployz_types::model::InstancePhase::Ready,
+            ready: true,
+            drain_state: ployz_types::model::DrainState::None,
+            error: None,
+            started_at: 1,
+            updated_at: 1,
+        }
     }
 }

@@ -16,7 +16,7 @@ fn main() -> Result<(), ployz_dns::DnsError> {
         async fn load_routing_state(
             &self,
         ) -> Result<ployz_types::model::RoutingState, ployz_dns::DnsError> {
-            ployz_store_api::RoutingStore::load_routing_state(&self.0)
+            ployz_store_api::RoutingSnapshotReader::load_routing_state(&self.0)
                 .await
                 .map_err(|err| ployz_dns::DnsError::Store(err.to_string()))
         }
@@ -24,7 +24,7 @@ fn main() -> Result<(), ployz_dns::DnsError> {
         async fn subscribe_routing_invalidations(
             &self,
         ) -> Result<tokio::sync::mpsc::Receiver<()>, ployz_dns::DnsError> {
-            ployz_store_api::RoutingStore::subscribe_routing_invalidations(&self.0)
+            ployz_store_api::RoutingSnapshotReader::subscribe_routing_invalidations(&self.0)
                 .await
                 .map_err(|err| ployz_dns::DnsError::Store(err.to_string()))
         }

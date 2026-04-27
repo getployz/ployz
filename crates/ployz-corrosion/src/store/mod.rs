@@ -3,12 +3,14 @@ use crate::client::{CorrClient, Transport};
 use crate::config as corrosion_config;
 use corro_api_types::{ExecResult, Statement};
 use ployz_store_api::{
-    DeployStore, InviteStore, MachineStore, RoutingStore, SyncProbe, SyncStatus,
+    DeployCommit, DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
+    InstanceStatusRepository, InviteRepository, MachineRegistry, RoutingSnapshotReader, SyncProbe,
+    SyncStatus,
 };
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, OverlayIp, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    MachineId, MachineRecord, OverlayIp, RoutingState, ServiceReleaseRecord,
 };
 use ployz_types::spec::Namespace;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -147,7 +149,7 @@ impl SyncProbe for CorrosionStore {
     }
 }
 
-impl MachineStore for CorrosionStore {
+impl MachineRegistry for CorrosionStore {
     async fn init(&self) -> Result<()> {
         let res = self
             .client
@@ -179,7 +181,7 @@ impl MachineStore for CorrosionStore {
     }
 }
 
-impl InviteStore for CorrosionStore {
+impl InviteRepository for CorrosionStore {
     async fn create_invite(&self, invite: &InviteRecord) -> Result<()> {
         tables::invites::create_invite(&self.client, invite).await
     }
@@ -206,7 +208,7 @@ impl InviteStore for CorrosionStore {
     }
 }
 
-impl RoutingStore for CorrosionStore {
+impl RoutingSnapshotReader for CorrosionStore {
     async fn load_routing_state(&self) -> Result<RoutingState> {
         workflows::routing_state::load_routing_state(&self.client).await
     }
@@ -216,21 +218,52 @@ impl RoutingStore for CorrosionStore {
     }
 }
 
-impl DeployStore for CorrosionStore {
-    async fn list_service_revisions(
-        &self,
-        namespace: &Namespace,
-    ) -> Result<Vec<ServiceRevisionRecord>> {
-        tables::service_revisions::list_service_revisions(&self.client, namespace).await
-    }
-
-    async fn list_service_releases(
+impl DeployRepository for CorrosionStore {
+    async fn list_deploy_releases(
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<ServiceReleaseRecord>> {
         tables::service_releases::list_service_releases(&self.client, namespace).await
     }
 
+    async fn load_deploy_snapshot(&self, namespace: &Namespace) -> Result<DeploySnapshot> {
+        let (revisions, releases, instances) = tokio::join!(
+            tables::service_revisions::list_service_revisions(&self.client, namespace),
+            tables::service_releases::list_service_releases(&self.client, namespace),
+            tables::instance_status::list_instance_status(&self.client, namespace),
+        );
+        Ok(DeploySnapshot {
+            revisions: revisions?,
+            releases: releases?,
+            instances: instances?,
+        })
+    }
+
+    async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()> {
+        tables::service_revisions::record_service_revision(&self.client, &command.revision).await
+    }
+
+    async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
+        workflows::deploy_commit::commit_deploy(
+            &self.client,
+            &command.namespace,
+            &command.removed_services,
+            &command.releases,
+            &command.deploy,
+        )
+        .await
+    }
+
+    async fn update_deploy_record(&self, command: &DeployRecordUpdate) -> Result<()> {
+        tables::deploys::update_deploy_record(&self.client, &command.deploy).await
+    }
+
+    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
+        tables::deploys::get_deploy(&self.client, deploy_id).await
+    }
+}
+
+impl InstanceStatusRepository for CorrosionStore {
     async fn list_instance_status(
         &self,
         namespace: &Namespace,
@@ -238,48 +271,11 @@ impl DeployStore for CorrosionStore {
         tables::instance_status::list_instance_status(&self.client, namespace).await
     }
 
-    async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
-        tables::service_revisions::upsert_service_revision(&self.client, record).await
+    async fn record_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
+        tables::instance_status::record_instance_status(&self.client, record).await
     }
 
-    async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> Result<()> {
-        tables::service_releases::upsert_service_release(&self.client, record).await
-    }
-
-    async fn delete_service_release(&self, namespace: &Namespace, service: &str) -> Result<()> {
-        tables::service_releases::delete_service_release(&self.client, namespace, service).await
-    }
-
-    async fn upsert_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
-        tables::instance_status::upsert_instance_status(&self.client, record).await
-    }
-
-    async fn delete_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
-        tables::instance_status::delete_instance_status(&self.client, instance_id).await
-    }
-
-    async fn upsert_deploy(&self, record: &DeployRecord) -> Result<()> {
-        tables::deploys::upsert_deploy(&self.client, record).await
-    }
-
-    async fn commit_deploy(
-        &self,
-        namespace: &Namespace,
-        removed_services: &[String],
-        releases: &[ServiceReleaseRecord],
-        deploy: &DeployRecord,
-    ) -> Result<()> {
-        workflows::deploy_commit::commit_deploy(
-            &self.client,
-            namespace,
-            removed_services,
-            releases,
-            deploy,
-        )
-        .await
-    }
-
-    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
-        tables::deploys::get_deploy(&self.client, deploy_id).await
+    async fn remove_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
+        tables::instance_status::remove_instance_status(&self.client, instance_id).await
     }
 }
