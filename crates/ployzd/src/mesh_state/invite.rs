@@ -110,7 +110,7 @@ pub fn parse_and_verify_invite_token(encoded: &str) -> Result<InviteToken, Strin
 }
 
 #[must_use]
-pub fn peer_hint_from_record(record: &ployz_types::model::MachineRecord) -> Option<PeerHint> {
+pub fn peer_hint_from_record(record: &ployz_types::model::MachineMembership) -> Option<PeerHint> {
     if record.endpoints.is_empty() {
         return None;
     }

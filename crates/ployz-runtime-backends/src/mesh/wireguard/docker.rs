@@ -15,7 +15,7 @@ use tracing::{debug, info, warn};
 
 use crate::error::{Error, Result};
 use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
-use crate::model::{MachineRecord, OverlayIp, PrivateKey, PublicKey};
+use crate::model::{OverlayIp, PrivateKey, PublicKey, WireGuardPeerSpec};
 
 use super::DEFAULT_LISTEN_PORT;
 use super::PERSISTENT_KEEPALIVE_SECS;
@@ -234,7 +234,7 @@ impl MeshNetwork for DockerWireGuard {
         Ok(())
     }
 
-    async fn set_peers(&self, peers: &[MachineRecord]) -> Result<()> {
+    async fn set_peers(&self, peers: &[WireGuardPeerSpec]) -> Result<()> {
         let extra = self.extra_peers.lock().await;
         let extra_refs: Vec<&BridgePeerInfo> = extra.iter().collect();
         write_sync_config_with_extra_peers(

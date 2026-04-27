@@ -1,4 +1,4 @@
-use crate::model::{MachineId, MachineLifecycle, MachineRecord};
+use crate::model::{MachineId, MachineLifecycle, PlacementCandidate};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticRole {
@@ -7,12 +7,12 @@ pub enum DiagnosticRole {
 }
 
 #[must_use]
-pub fn is_new_placement_candidate(machine: &MachineRecord) -> bool {
+pub fn is_new_placement_candidate(machine: &PlacementCandidate) -> bool {
     machine.lifecycle == MachineLifecycle::Active
 }
 
 #[must_use]
-pub fn can_keep_existing_slot(machine: &MachineRecord) -> bool {
+pub fn can_keep_existing_slot(machine: &PlacementCandidate) -> bool {
     matches!(
         machine.lifecycle,
         MachineLifecycle::Active | MachineLifecycle::Draining
@@ -20,7 +20,7 @@ pub fn can_keep_existing_slot(machine: &MachineRecord) -> bool {
 }
 
 #[must_use]
-pub fn is_coordination_peer(machine: &MachineRecord, self_id: &MachineId) -> bool {
+pub fn is_coordination_peer(machine: &PlacementCandidate, self_id: &MachineId) -> bool {
     machine.id != *self_id
         && matches!(
             machine.lifecycle,
@@ -30,9 +30,9 @@ pub fn is_coordination_peer(machine: &MachineRecord, self_id: &MachineId) -> boo
 
 #[must_use]
 pub fn coordination_peers<'a>(
-    machines: &'a [MachineRecord],
+    machines: &'a [PlacementCandidate],
     self_id: &MachineId,
-) -> Vec<&'a MachineRecord> {
+) -> Vec<&'a PlacementCandidate> {
     machines
         .iter()
         .filter(|machine| is_coordination_peer(machine, self_id))
@@ -41,7 +41,7 @@ pub fn coordination_peers<'a>(
 
 #[must_use]
 pub fn diagnostic_role(
-    machine: &MachineRecord,
+    machine: &PlacementCandidate,
     local_machine_id: &MachineId,
 ) -> Option<DiagnosticRole> {
     if machine.id == *local_machine_id {
@@ -55,7 +55,7 @@ pub fn diagnostic_role(
 }
 
 #[must_use]
-pub fn placement_candidates(machines: &[MachineRecord]) -> Vec<&MachineRecord> {
+pub fn placement_candidates(machines: &[PlacementCandidate]) -> Vec<&PlacementCandidate> {
     machines
         .iter()
         .filter(|machine| is_new_placement_candidate(machine))
@@ -65,22 +65,12 @@ pub fn placement_candidates(machines: &[MachineRecord]) -> Vec<&MachineRecord> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{OverlayIp, PublicKey};
     use std::collections::BTreeMap;
-    use std::net::Ipv6Addr;
 
-    fn machine(id: &str, lifecycle: MachineLifecycle) -> MachineRecord {
-        MachineRecord {
+    fn machine(id: &str, lifecycle: MachineLifecycle) -> PlacementCandidate {
+        PlacementCandidate {
             id: MachineId(id.into()),
-            public_key: PublicKey([1; 32]),
-            overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
-            control_target: None,
-            subnet: None,
-            bridge_ip: None,
-            endpoints: Vec::new(),
             lifecycle,
-            created_at: 0,
-            updated_at: 0,
             labels: BTreeMap::new(),
         }
     }

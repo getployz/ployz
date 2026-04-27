@@ -16,7 +16,7 @@ use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{InviteStore, MachineStore};
 use ployz_types::model::{
-    JoinResponse, MachineId, MachineLifecycle, MachineRecord, NetworkLifecycle, OverlayIp,
+    JoinResponse, MachineId, MachineLifecycle, MachineMembership, NetworkLifecycle, OverlayIp,
     PublicKey,
 };
 use ployz_types::time::now_unix_secs;
@@ -143,7 +143,7 @@ async fn machine_add_activates_joiner_lifecycle() {
             } = request
             {
                 {
-                    let mut joiner_record = MachineRecord::seed(
+                    let mut joiner_record = MachineMembership::seed(
                         MachineId("joiner-1".into()),
                         PublicKey([4; 32]),
                         "::1".parse().map(OverlayIp).expect("valid overlay"),
@@ -212,7 +212,7 @@ async fn machine_add_activates_joiner_lifecycle() {
             encoded: join_response.clone(),
             record: JoinResponse::decode(&join_response)
                 .expect("decode join response")
-                .into_seed_machine_record(),
+                .into_seed_machine_membership(),
         })),
     })
     .expect("encode self-record response");
@@ -245,7 +245,7 @@ async fn machine_add_activates_joiner_lifecycle() {
         network
             .current_peers()
             .into_iter()
-            .any(|machine| machine.id.0 == "joiner-1")
+            .any(|peer| peer.id().0 == "joiner-1")
     );
     server.await.expect("overlay server exit");
 
@@ -293,7 +293,7 @@ async fn machine_add_requires_sync_connected_for_running_joiner() {
             encoded: join_response.clone(),
             record: JoinResponse::decode(&join_response)
                 .expect("decode join response")
-                .into_seed_machine_record(),
+                .into_seed_machine_membership(),
         })),
     })
     .expect("encode self-record response");
@@ -330,7 +330,7 @@ async fn machine_add_requires_sync_connected_for_running_joiner() {
         !network
             .current_peers()
             .into_iter()
-            .any(|machine| machine.id.0 == "joiner-2")
+            .any(|peer| peer.id().0 == "joiner-2")
     );
 
     teardown_state(&mut state).await;
@@ -872,7 +872,7 @@ async fn machine_add_rejects_remote_subnet_mismatch_before_invite_consume() {
             encoded: join_response.clone(),
             record: JoinResponse::decode(&join_response)
                 .expect("decode join response")
-                .into_seed_machine_record(),
+                .into_seed_machine_membership(),
         })),
     })
     .expect("encode self-record response");
@@ -1174,8 +1174,8 @@ fn test_machine_record(
     subnet: &str,
     lifecycle: MachineLifecycle,
     public_key: PublicKey,
-) -> MachineRecord {
-    MachineRecord {
+) -> MachineMembership {
+    MachineMembership {
         id: MachineId(id.into()),
         public_key,
         overlay_ip: format!("fd00::{id_len:x}", id_len = id.len())

@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    MachineId, MachineMembership, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
 };
 use ployz_types::spec::Namespace;
 use std::collections::{HashMap, HashSet};
@@ -20,7 +20,7 @@ pub struct MemoryStore {
 }
 
 struct StoreInner {
-    machines: HashMap<MachineId, MachineRecord>,
+    machines: HashMap<MachineId, MachineMembership>,
     machine_subscribers: Vec<mpsc::Sender<MachineEvent>>,
     routing_subscribers: Vec<mpsc::Sender<()>>,
     invites: HashMap<String, InviteRecord>,
@@ -96,12 +96,12 @@ impl SyncProbe for MemoryStore {
 }
 
 impl MachineStore for MemoryStore {
-    async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
+    async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
         let inner = self.lock_inner();
         Ok(inner.machines.values().cloned().collect())
     }
 
-    async fn upsert_self_machine(&self, record: &MachineRecord) -> Result<()> {
+    async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()> {
         let mut inner = self.lock_inner();
         let is_update = inner.machines.contains_key(&record.id);
         inner.machines.insert(record.id.clone(), record.clone());

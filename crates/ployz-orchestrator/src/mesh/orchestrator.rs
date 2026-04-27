@@ -13,7 +13,7 @@ use crate::mesh::tasks::{
     EndpointMaintainerCommand, PeerSyncCommand, SelfRecordMutation, TaskSet, TaskSetError,
     apply_self_record_mutation,
 };
-use crate::model::{MachineId, MachineRecord};
+use crate::model::{MachineId, MachineMembership};
 use ployz_store_api::StoreDriver;
 use ployz_store_api::{MachineStore, StoreRuntimeControl, SyncProbe, SyncStatus};
 use std::net::Ipv4Addr;
@@ -57,8 +57,8 @@ pub struct Mesh {
     service_ready_timeout: Duration,
     machine_id: MachineId,
     _listen_port: u16,
-    seed_records: Vec<MachineRecord>,
-    authoritative_self: Option<Arc<RwLock<MachineRecord>>>,
+    seed_records: Vec<MachineMembership>,
+    authoritative_self: Option<Arc<RwLock<MachineMembership>>>,
     allow_disconnected_bootstrap: bool,
     dataplane: Option<Arc<dyn MeshDataplane>>,
     wg_ifindex: u32,
@@ -108,7 +108,7 @@ impl Mesh {
     }
 
     #[must_use]
-    pub fn with_seed_records(mut self, seed_records: Vec<MachineRecord>) -> Self {
+    pub fn with_seed_records(mut self, seed_records: Vec<MachineMembership>) -> Self {
         self.seed_records = seed_records;
         self
     }
@@ -157,22 +157,22 @@ impl Mesh {
         rx.await.is_ok()
     }
 
-    pub async fn publish_up_once(&self) -> Option<MachineRecord> {
+    pub async fn publish_up_once(&self) -> Option<MachineMembership> {
         let self_record_tx = self.self_record_tx.as_ref()?;
         let bridge_ip = self.network.bridge_ip().await;
         apply_self_record_mutation(self_record_tx, SelfRecordMutation::PublishUp { bridge_ip })
             .await
     }
 
-    pub async fn authoritative_self_record(&self) -> Option<MachineRecord> {
+    pub async fn authoritative_self_record(&self) -> Option<MachineMembership> {
         let authoritative_self = self.authoritative_self.as_ref()?.clone();
         Some(authoritative_self.read().await.clone())
     }
 
     pub async fn update_authoritative_self_record(
         &self,
-        update: impl FnOnce(&mut MachineRecord),
-    ) -> Option<MachineRecord> {
+        update: impl FnOnce(&mut MachineMembership),
+    ) -> Option<MachineMembership> {
         let current = self.authoritative_self_record().await?;
         let mut next = current;
         update(&mut next);
