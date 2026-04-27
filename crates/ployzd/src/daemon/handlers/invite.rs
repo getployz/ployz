@@ -5,7 +5,7 @@ use crate::mesh_state::network::NetworkConfig;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signer, SigningKey};
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
-use ployz_store_api::{InviteStore, MachineStore};
+use ployz_store_api::{InviteRepository, MachineRegistry};
 use ployz_types::model::InviteRecord;
 use ployz_types::time::now_unix_secs;
 use x25519_dalek::StaticSecret;

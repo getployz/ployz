@@ -1,6 +1,6 @@
 use ipnet::Ipv4Net;
 use ployz_api::{DaemonRequest, MachineTransitionGoal, MeshBootstrapRequest};
-use ployz_store_api::MachineStore;
+use ployz_store_api::MachineRegistry;
 use ployz_types::model::{MachineLifecycle, MachineMembership, PublicKey};
 
 use super::super::operations::{

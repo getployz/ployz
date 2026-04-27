@@ -38,12 +38,12 @@ pub(crate) async fn list_instance_status(
         .collect()
 }
 
-pub(crate) async fn upsert_instance_status(
+pub(crate) async fn record_instance_status(
     client: &CorrClient,
     record: &InstanceStatusRecord,
 ) -> Result<()> {
     let payload_json = serde_json::to_string(record)
-        .map_err(|e| Error::operation("upsert_instance_status", format!("serialize: {e}")))?;
+        .map_err(|e| Error::operation("record_instance_status", format!("serialize: {e}")))?;
     let stmt = Statement::WithParams(
         "INSERT INTO instance_status (instance_id, namespace, service, machine_id, payload_json) VALUES (?, ?, ?, ?, ?) \
          ON CONFLICT(instance_id) DO UPDATE SET namespace=excluded.namespace, service=excluded.service, machine_id=excluded.machine_id, payload_json=excluded.payload_json"
@@ -56,10 +56,10 @@ pub(crate) async fn upsert_instance_status(
             payload_json.into(),
         ],
     );
-    exec_one(client, &[stmt], "upsert_instance_status").await
+    exec_one(client, &[stmt], "record_instance_status").await
 }
 
-pub(crate) async fn delete_instance_status(
+pub(crate) async fn remove_instance_status(
     client: &CorrClient,
     instance_id: &InstanceId,
 ) -> Result<()> {
@@ -67,7 +67,7 @@ pub(crate) async fn delete_instance_status(
         "DELETE FROM instance_status WHERE instance_id = ?".to_string(),
         vec![instance_id.0.clone().into()],
     );
-    exec_one(client, &[stmt], "delete_instance_status").await
+    exec_one(client, &[stmt], "remove_instance_status").await
 }
 
 pub(crate) fn parse_instance_status(row: &[SqliteValue]) -> Result<InstanceStatusRecord> {

@@ -12,11 +12,11 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
             .map_err(|err| ployz_gateway::GatewayError::Store(err.to_string()))
     })?;
     struct StandaloneStore(ployz_corrosion::CorrosionStore);
-    impl ployz_gateway::RoutingStore for StandaloneStore {
+    impl ployz_gateway::RoutingSnapshotReader for StandaloneStore {
         async fn load_routing_state(
             &self,
         ) -> Result<ployz_types::model::RoutingState, ployz_gateway::GatewayError> {
-            ployz_store_api::RoutingStore::load_routing_state(&self.0)
+            ployz_store_api::RoutingSnapshotReader::load_routing_state(&self.0)
                 .await
                 .map_err(|err| ployz_gateway::GatewayError::Store(err.to_string()))
         }
@@ -24,7 +24,7 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
         async fn subscribe_routing_invalidations(
             &self,
         ) -> Result<tokio::sync::mpsc::Receiver<()>, ployz_gateway::GatewayError> {
-            ployz_store_api::RoutingStore::subscribe_routing_invalidations(&self.0)
+            ployz_store_api::RoutingSnapshotReader::subscribe_routing_invalidations(&self.0)
                 .await
                 .map_err(|err| ployz_gateway::GatewayError::Store(err.to_string()))
         }

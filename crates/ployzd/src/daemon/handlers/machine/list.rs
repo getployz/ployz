@@ -1,6 +1,6 @@
 use crate::daemon::DaemonState;
 use ployz_api::{DaemonPayload, DaemonRequest, DaemonResponse, MachineRemovePayload};
-use ployz_store_api::MachineStore;
+use ployz_store_api::MachineRegistry;
 use ployz_store_api::StoreDriver;
 use ployz_types::model::{MachineId, MachineMembership};
 
