@@ -4,7 +4,7 @@ use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
 use ployz_orchestrator::{Mesh, Phase, WireguardDriver};
 use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
-use ployz_store_api::{MachineStore, SyncStatus};
+use ployz_store_api::{MachineRegistry, SyncStatus};
 use ployz_types::model::{
     JoinResponse, MachineId, MachineLifecycle, MachineRecord, OverlayIp, PublicKey,
 };

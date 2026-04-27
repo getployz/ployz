@@ -15,7 +15,7 @@ use crate::runtime::{
 use crate::spec::{
     ContainerSpec, Namespace, NetworkMode, PortProtocol, ServicePort, ServiceSpec, VolumeSource,
 };
-use ployz_store_api::DeployStore;
+use ployz_store_api::InstanceStatusRepository;
 
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
 
@@ -314,7 +314,7 @@ pub(super) async fn adopt_instances(
             DrainState::None,
             None,
         );
-        store.upsert_instance_status(&record).await?;
+        store.record_instance_status(&record).await?;
     }
     Ok(())
 }

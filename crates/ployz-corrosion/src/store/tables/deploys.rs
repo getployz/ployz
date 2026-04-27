@@ -5,9 +5,9 @@ use corro_api_types::{SqliteValue, Statement};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{DeployId, DeployRecord};
 
-pub(crate) async fn upsert_deploy(client: &CorrClient, record: &DeployRecord) -> Result<()> {
+pub(crate) async fn update_deploy_record(client: &CorrClient, record: &DeployRecord) -> Result<()> {
     let stmt = upsert_statement(record)?;
-    exec_one(client, &[stmt], "upsert_deploy").await
+    exec_one(client, &[stmt], "update_deploy_record").await
 }
 
 pub(crate) async fn get_deploy(
@@ -27,7 +27,7 @@ pub(crate) async fn get_deploy(
 
 pub(crate) fn upsert_statement(record: &DeployRecord) -> Result<Statement> {
     let payload_json = serde_json::to_string(record)
-        .map_err(|e| Error::operation("upsert_deploy", format!("serialize: {e}")))?;
+        .map_err(|e| Error::operation("update_deploy_record", format!("serialize: {e}")))?;
     Ok(Statement::WithParams(
         "INSERT INTO deploys (deploy_id, namespace, payload_json) VALUES (?, ?, ?) \
          ON CONFLICT(deploy_id) DO UPDATE SET namespace=excluded.namespace, payload_json=excluded.payload_json"

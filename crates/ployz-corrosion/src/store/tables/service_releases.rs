@@ -1,6 +1,6 @@
 use crate::client::CorrClient;
 use crate::store::shared::decode::text;
-use crate::store::shared::sql::{exec_one, query_rows};
+use crate::store::shared::sql::query_rows;
 use corro_api_types::{SqliteValue, Statement};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::ServiceReleaseRecord;
@@ -36,23 +36,6 @@ pub(crate) async fn list_service_releases(
         .iter()
         .map(|row| parse_service_release(row))
         .collect()
-}
-
-pub(crate) async fn upsert_service_release(
-    client: &CorrClient,
-    record: &ServiceReleaseRecord,
-) -> Result<()> {
-    let stmt = upsert_statement(record)?;
-    exec_one(client, &[stmt], "upsert_service_release").await
-}
-
-pub(crate) async fn delete_service_release(
-    client: &CorrClient,
-    namespace: &Namespace,
-    service: &str,
-) -> Result<()> {
-    let stmt = delete_statement(namespace, service);
-    exec_one(client, &[stmt], "delete_service_release").await
 }
 
 pub(crate) fn delete_statement(namespace: &Namespace, service: &str) -> Statement {

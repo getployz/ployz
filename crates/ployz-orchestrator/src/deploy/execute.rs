@@ -8,7 +8,10 @@ use crate::model::{
     ServiceRevisionRecord, ServiceRoutingPolicy,
 };
 use futures_util::stream::{self, StreamExt, TryStreamExt};
-use ployz_store_api::{DeployStore, StoreDriver};
+use ployz_store_api::{
+    DeployCommit, DeployRecordUpdate, DeployRepository, DeployRevisionUpsert,
+    InstanceStatusRepository, StoreDriver,
+};
 use ployz_types::time::now_unix_secs;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -215,7 +218,11 @@ pub(super) async fn apply_with_initial_plan(
                 Error::operation("deploy_apply", format!("serialize preview: {error}"))
             })?,
         };
-        store.upsert_deploy(&deploy_record).await?;
+        store
+            .update_deploy_record(&DeployRecordUpdate {
+                deploy: deploy_record.clone(),
+            })
+            .await?;
 
         upsert_revisions(store, &final_plan, local_machine_id, started_at).await?;
         let startup = run_phase_startup(store, &sessions, &final_plan, &deploy_id).await?;
@@ -238,12 +245,12 @@ pub(super) async fn apply_with_initial_plan(
         })?;
 
         store
-            .commit_deploy(
-                final_plan.namespace(),
-                &removed_services,
-                &committed_releases,
-                &deploy_record,
-            )
+            .commit_deploy(&DeployCommit {
+                namespace: final_plan.namespace().clone(),
+                removed_services,
+                releases: committed_releases.clone(),
+                deploy: deploy_record.clone(),
+            })
             .await?;
         events.push(DeployEvent {
             step: "commit".into(),
@@ -269,7 +276,11 @@ pub(super) async fn apply_with_initial_plan(
         } else {
             deploy_record.state = DeployState::CleanupPending;
             deploy_record.finished_at = Some(now_unix_secs());
-            store.upsert_deploy(&deploy_record).await?;
+            store
+                .update_deploy_record(&DeployRecordUpdate {
+                    deploy: deploy_record.clone(),
+                })
+                .await?;
             for error in cleanup.errors {
                 events.push(DeployEvent {
                     step: "cleanup_pending".into(),
@@ -306,13 +317,15 @@ async fn upsert_revisions(
             continue;
         };
         store
-            .upsert_service_revision(&ServiceRevisionRecord {
-                namespace: plan.namespace().clone(),
-                service: service.service.clone(),
-                revision_hash: revision_hash.to_string(),
-                spec_json: spec_json.to_string(),
-                created_by: local_machine_id.clone(),
-                created_at,
+            .record_service_revision(&DeployRevisionUpsert {
+                revision: ServiceRevisionRecord {
+                    namespace: plan.namespace().clone(),
+                    service: service.service.clone(),
+                    revision_hash: revision_hash.to_string(),
+                    spec_json: spec_json.to_string(),
+                    created_by: local_machine_id.clone(),
+                    created_at,
+                },
             })
             .await?;
     }
@@ -433,7 +446,7 @@ async fn run_machine_start_queue(
                 })
                 .await?
         };
-        store.upsert_instance_status(&status).await?;
+        store.record_instance_status(&status).await?;
         events.push(DeployEvent {
             step: "start_candidate".into(),
             message: format!(

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use ployz_store_api::MachineStore;
+use ployz_store_api::MachineRegistry;
 use tokio::sync::{RwLock, mpsc};
 use tracing::warn;
 
