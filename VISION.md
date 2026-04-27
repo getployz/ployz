@@ -110,26 +110,35 @@ could handle directly, we let the operator handle it.
 
 ## Relationship to ployz-cloud
 
-Ployz-cloud is a separate project: a Railway-style hosted UI with a
-built-in agent (in the spirit of Sentry's Seer) that drives the cluster on
-the user's behalf. It adds the niceties expected of a managed PaaS —
-git-push deploys, environment dashboards, hosted machine pools, billing —
-and the agent is the primary operator inside it.
+Ployz-cloud is an optional, paid hosted product built on top of this
+project: a Railway-style UI with a built-in agent (in the spirit of
+Sentry's Seer) that drives the cluster on the user's behalf. It adds the
+niceties expected of a managed PaaS — git-push deploys, environment
+dashboards, hosted machine pools, secrets management, billing — and the
+agent is the primary operator inside it. The cloud is where the commercial
+product lives.
 
-Ployz-cloud is a lens over this project. Every operation it exposes — every
-deploy, every branch, every migration — is implemented as a primitive
-shipped here. The cloud UI does not extend the cluster with private
-mechanisms. It does not maintain its own model of cluster truth. It does
-not add reconcilers or controllers that ployz core does not have. If the
-cloud needs a capability, the right answer is almost always to strengthen
-the primitives in this repo.
+This project is the open core. It is fully usable without ployz-cloud:
+self-host on your own machines, drive it with the CLI or with any
+general-purpose coding agent (Claude Code, Cursor, etc.), run `ployz dev`
+locally, never pay anyone. The cloud exists for people who want the
+managed experience and the hosted agent; the core exists for everyone.
+
+Ployz-cloud is a lens over this project. Every operation it exposes —
+every deploy, every branch, every migration — is implemented as a
+primitive shipped here. The cloud UI does not extend the cluster with
+private mechanisms. It does not maintain its own model of cluster truth.
+It does not add reconcilers or controllers that ployz core does not have.
+If the cloud needs a capability, the right answer is almost always to
+strengthen the primitives in this repo — both because it keeps the
+architecture clean, and because anything cloud-specific in the core is a
+tax on the open-source users who are not paying for the cloud.
 
 The dependency is one-way. This project does not know about ployz-cloud,
 does not assume the cloud is the operator, and does not optimize for the
 cloud's UI flows. The bet is that if these primitives are great,
 ployz-cloud — and any other downstream consumer, including general-purpose
-agents like Claude Code or Cursor driving the CLI directly — is great as
-a consequence.
+agents driving the CLI directly — is great as a consequence.
 
 The same primitives drive `ployz dev` on a developer's Mac, the cloud's
 hosted environments, and any future on-prem deployment. One model, three
