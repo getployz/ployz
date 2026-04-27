@@ -40,7 +40,7 @@ impl Mesh {
             .seed_records
             .iter()
             .filter(|machine| machine.id != self.machine_id)
-            .cloned()
+            .map(|machine| machine.observation())
             .collect();
         let initial_device_peers = match self.network.read_peers().await {
             Ok(peers) => peers,
@@ -107,7 +107,7 @@ impl Mesh {
                 .seed_records
                 .iter()
                 .filter(|machine| machine.id != self.machine_id)
-                .cloned()
+                .map(|machine| machine.observation())
                 .collect(),
             network: self.network.clone(),
             local_machine_id: self.machine_id.clone(),

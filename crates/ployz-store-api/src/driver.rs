@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use ployz_types::Result;
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
-    MachineRecord, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    MachineMembership, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
 };
 use ployz_types::spec::Namespace;
 use std::sync::Arc;
@@ -88,11 +88,11 @@ impl MachineStore for StoreDriver {
         self.backend.init().await
     }
 
-    async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
+    async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
         self.backend.list_machines().await
     }
 
-    async fn upsert_self_machine(&self, record: &MachineRecord) -> Result<()> {
+    async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()> {
         self.backend.upsert_self_machine(record).await
     }
 
@@ -226,11 +226,11 @@ impl StoreBackend for MemoryStoreBackend {
         self.store.init().await
     }
 
-    async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
+    async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
         self.store.list_machines().await
     }
 
-    async fn upsert_self_machine(&self, record: &MachineRecord) -> Result<()> {
+    async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()> {
         self.store.upsert_self_machine(record).await
     }
 

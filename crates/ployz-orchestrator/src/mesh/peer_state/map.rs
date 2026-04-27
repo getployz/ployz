@@ -1,6 +1,6 @@
 use tokio::time::Instant;
 
-use crate::model::{MachineEvent, MachineId, MachineRecord};
+use crate::model::{MachineEvent, MachineId, MachineObservation, MachineMembership};
 
 use super::peer::PeerState;
 
@@ -15,7 +15,7 @@ impl PeerStateMap {
         Self::default()
     }
 
-    pub(crate) fn init_from_snapshot(&mut self, records: &[MachineRecord], now: Instant) {
+    pub(crate) fn init_from_snapshot(&mut self, records: &[MachineMembership], now: Instant) {
         let _ = now;
         for record in records {
             self.stored_peers
@@ -24,7 +24,7 @@ impl PeerStateMap {
         }
     }
 
-    pub(crate) fn upsert_stored(&mut self, record: &MachineRecord, now: Instant) {
+    pub(crate) fn upsert_stored(&mut self, record: &MachineMembership, now: Instant) {
         let _ = now;
         self.stored_peers
             .entry(record.id.clone())
@@ -33,16 +33,17 @@ impl PeerStateMap {
         self.transient_peers.remove(&record.id);
     }
 
-    pub(crate) fn upsert_transient(&mut self, record: &MachineRecord, now: Instant) {
+    pub(crate) fn upsert_transient(&mut self, observation: &MachineObservation, now: Instant) {
         let _ = now;
-        if self.stored_peers.contains_key(&record.id) {
+        let id = &observation.identity.id;
+        if self.stored_peers.contains_key(id) {
             return;
         }
 
         self.transient_peers
-            .entry(record.id.clone())
-            .and_modify(|peer_state| peer_state.update_from_record(record))
-            .or_insert_with(|| PeerState::from_record(record));
+            .entry(id.clone())
+            .and_modify(|peer_state| peer_state.update_from_observation(observation))
+            .or_insert_with(|| PeerState::from_observation(observation));
     }
 
     pub(crate) fn apply_event(&mut self, event: &MachineEvent, now: Instant) {

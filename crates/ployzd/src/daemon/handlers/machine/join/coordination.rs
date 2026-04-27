@@ -7,9 +7,9 @@ use ployz_orchestrator::coordination::{
     PrepareVote, Reservation, ReservationId, ResourceKey, Vote, quorum_prepare,
 };
 use ployz_orchestrator::ipam::pick_candidate_subnet;
-use ployz_orchestrator::machine_policy::coordination_peers as policy_coordination_peers;
+use ployz_orchestrator::machine_policy::is_coordination_peer;
 use ployz_store_api::{InviteStore, MachineStore, StoreDriver};
-use ployz_types::model::{MachineId, MachineRecord, OverlayIp};
+use ployz_types::model::{MachineId, MachineMembership, OverlayIp};
 use ployz_types::time::now_unix_secs;
 
 use crate::daemon::DaemonState;
@@ -221,9 +221,10 @@ fn machine_bias_seed(machine_id: &MachineId) -> u64 {
     hasher.finish()
 }
 
-fn coordination_peers(machines: &[MachineRecord], self_id: &MachineId) -> Vec<CoordinationPeer> {
-    policy_coordination_peers(machines, self_id)
-        .into_iter()
+fn coordination_peers(machines: &[MachineMembership], self_id: &MachineId) -> Vec<CoordinationPeer> {
+    machines
+        .iter()
+        .filter(|machine| is_coordination_peer(&machine.placement_candidate(), self_id))
         .map(|machine| CoordinationPeer {
             machine_id: machine.id.clone(),
             overlay_ip: machine.overlay_ip,
@@ -361,7 +362,7 @@ mod tests {
     use super::assert_subnet_unique;
     use ipnet::Ipv4Net;
     use ployz_store_api::{MachineStore, StoreDriver};
-    use ployz_types::model::{MachineId, MachineLifecycle, MachineRecord, OverlayIp, PublicKey};
+    use ployz_types::model::{MachineId, MachineLifecycle, MachineMembership, OverlayIp, PublicKey};
 
     #[tokio::test]
     async fn subnet_assertion_rejects_duplicate_claims() {
@@ -406,15 +407,15 @@ mod tests {
         machine_id: &str,
         overlay_ip: &str,
         subnet: Option<Ipv4Net>,
-    ) -> MachineRecord {
-        let record = MachineRecord::seed(
+    ) -> MachineMembership {
+        let record = MachineMembership::seed(
             MachineId(machine_id.into()),
             PublicKey([1; 32]),
             overlay_ip.parse().map(OverlayIp).expect("valid overlay"),
             subnet,
             vec![],
         );
-        MachineRecord {
+        MachineMembership {
             lifecycle: MachineLifecycle::Active,
             ..record
         }

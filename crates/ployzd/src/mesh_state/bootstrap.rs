@@ -1,7 +1,7 @@
 use super::network::NetworkConfig;
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 use ployz_runtime_api::Identity;
-use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
+use ployz_types::model::{MachineId, MachineMembership, OverlayIp, PublicKey};
 use serde::{Deserialize, Serialize};
 use std::net::Ipv6Addr;
 use std::path::Path;
@@ -28,8 +28,8 @@ pub struct BootstrapPeerRecord {
 
 impl BootstrapPeerRecord {
     #[must_use]
-    pub fn into_machine_record(self) -> MachineRecord {
-        MachineRecord::seed(
+    pub fn into_machine_record(self) -> MachineMembership {
+        MachineMembership::seed(
             self.machine_id,
             self.public_key,
             self.overlay_ip,
@@ -123,7 +123,7 @@ pub fn resolve_bootstrap_addrs(
         .unwrap_or_else(|| fallback_bootstrap_addrs.to_vec()))
 }
 
-fn upsert_machine(records: &mut Vec<MachineRecord>, record: MachineRecord) {
+fn upsert_machine(records: &mut Vec<MachineMembership>, record: MachineMembership) {
     if let Some(existing) = records.iter_mut().find(|machine| machine.id == record.id) {
         *existing = record;
     } else {
@@ -138,9 +138,9 @@ pub async fn build_seed_records(
     self_control_target: Option<String>,
     bootstrap: Option<&BootstrapInfo>,
     listen_port: u16,
-    extra_records: &[MachineRecord],
-) -> Vec<MachineRecord> {
-    let mut seed_records: Vec<MachineRecord> = load_bootstrap_peer_records(network_dir)
+    extra_records: &[MachineMembership],
+) -> Vec<MachineMembership> {
+    let mut seed_records: Vec<MachineMembership> = load_bootstrap_peer_records(network_dir)
         .unwrap_or_else(|error| {
             tracing::warn!(
                 ?error,
@@ -157,7 +157,7 @@ pub async fn build_seed_records(
     }
 
     if let Some(bootstrap) = bootstrap {
-        let bootstrap_record = MachineRecord::seed(
+        let bootstrap_record = MachineMembership::seed(
             MachineId(bootstrap.peer_id.clone()),
             PublicKey(bootstrap.peer_wg_public_key),
             OverlayIp(bootstrap.peer_overlay_ip),
@@ -178,7 +178,7 @@ pub async fn build_seed_records(
         .find(|machine| machine.id == identity.machine_id)
         .cloned()
         .unwrap_or_else(|| {
-            MachineRecord::seed(
+            MachineMembership::seed(
                 identity.machine_id.clone(),
                 identity.public_key.clone(),
                 net_config.overlay_ip,
@@ -270,7 +270,7 @@ mod tests {
         )
         .expect("persist bootstrap founder");
 
-        let db_founder = MachineRecord::seed(
+        let db_founder = MachineMembership::seed(
             MachineId("founder".into()),
             PublicKey([9; 32]),
             OverlayIp("fd00::9".parse().expect("valid overlay")),
@@ -311,7 +311,7 @@ mod tests {
             DEFAULT_CLUSTER_CIDR,
             "10.210.1.0/24".parse().expect("valid subnet"),
         );
-        let mut existing_self = MachineRecord::seed(
+        let mut existing_self = MachineMembership::seed(
             identity.machine_id.clone(),
             identity.public_key.clone(),
             net_config.overlay_ip,

@@ -60,7 +60,7 @@ impl DaemonState {
                     .await,
             ),
             // Subnet coordination only uses prepare/release as a quorum reservation guard.
-            // The durable commit is the target machine's eventual MachineRecord write.
+            // The durable commit is the target machine's eventual MachineMembership write.
             CoordOp::Commit { .. } => self.ok("commit acknowledged"),
         }
     }
@@ -139,7 +139,7 @@ mod tests {
         active
             .mesh
             .store
-            .upsert_self_machine(&ployz_types::model::MachineRecord::seed(
+            .upsert_self_machine(&ployz_types::model::MachineMembership::seed(
                 MachineId("peer-1".into()),
                 PublicKey([2; 32]),
                 "fd00::2"
