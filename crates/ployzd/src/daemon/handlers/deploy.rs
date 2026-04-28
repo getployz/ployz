@@ -125,7 +125,7 @@ impl DaemonState {
             &factory,
             &self.identity.machine_id,
             &manifest,
-            certificate_coordinator.as_ref(),
+            certificate_coordinator,
             account_coordinator,
             challenge_readiness,
             issuer_factory,
