@@ -8,7 +8,7 @@ pub mod tasks;
 pub mod wireguard;
 
 use crate::error::Result;
-use crate::model::{MachineRecord, OverlayIp, PublicKey};
+use crate::model::{OverlayIp, PublicKey, WireGuardPeerSpec};
 use async_trait::async_trait;
 use ipnet::Ipv4Net;
 use std::future::Future;
@@ -19,7 +19,7 @@ pub trait MeshNetwork: Send + Sync {
     fn down(&self) -> impl Future<Output = Result<()>> + Send + '_;
     fn set_peers<'a>(
         &'a self,
-        peers: &'a [MachineRecord],
+        peers: &'a [WireGuardPeerSpec],
     ) -> impl Future<Output = Result<()>> + Send + 'a;
     /// Returns true if at least one remote mesh peer has completed a WG handshake.
     /// Must exclude local peers (bridge, sidecars) that handshake immediately.

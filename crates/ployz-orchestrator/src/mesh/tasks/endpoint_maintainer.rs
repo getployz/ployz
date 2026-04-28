@@ -10,7 +10,7 @@ use tracing::{debug, info, warn};
 use crate::mesh::driver::WireguardDriver;
 use crate::mesh::peer_state::PeerStateMap;
 use crate::mesh::{DevicePeer, WireGuardDevice};
-use crate::model::{MachineEvent, MachineId, MachineRecord, PublicKey};
+use crate::model::{MachineEvent, MachineId, MachineObservation, MachineMembership, PublicKey};
 
 const ENDPOINT_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(1);
 const ENDPOINT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
@@ -20,7 +20,7 @@ pub(crate) type EndpointSelectionMap = Arc<RwLock<HashMap<MachineId, String>>>;
 
 #[derive(Debug)]
 pub(crate) enum EndpointMaintainerCommand {
-    UpsertTransient(MachineRecord),
+    UpsertTransient(MachineObservation),
     RemoveTransient(MachineId),
     TickNow {
         force_rotate: bool,
@@ -46,11 +46,14 @@ struct RuntimePeerState {
 }
 
 impl RuntimePeerState {
-    fn new(record: &MachineRecord, current_endpoint: Option<&str>, now: Instant) -> Self {
-        let selected = select_current_endpoint(&record.endpoints, current_endpoint);
+    fn new(observation: &MachineObservation, current_endpoint: Option<&str>, now: Instant) -> Self {
+        let selected = select_current_endpoint(&observation.endpoints, current_endpoint);
         let last_endpoint_change_at = match (selected.is_some(), current_endpoint) {
             (true, Some(current))
-                if record.endpoints.iter().any(|endpoint| endpoint == current) =>
+                if observation
+                    .endpoints
+                    .iter()
+                    .any(|endpoint| endpoint == current) =>
             {
                 None
             }
@@ -59,9 +62,9 @@ impl RuntimePeerState {
         };
 
         Self {
-            machine_id: record.id.clone(),
-            public_key: record.public_key.clone(),
-            all_endpoints: record.endpoints.clone(),
+            machine_id: observation.identity.id.clone(),
+            public_key: observation.identity.public_key.clone(),
+            all_endpoints: observation.endpoints.clone(),
             current_endpoint: selected,
             last_endpoint_change_at,
             last_handshake_at: None,
@@ -70,12 +73,12 @@ impl RuntimePeerState {
 
     fn refresh_candidates(
         &mut self,
-        record: &MachineRecord,
+        observation: &MachineObservation,
         current_device_endpoint: Option<&str>,
         now: Instant,
     ) {
-        self.public_key = record.public_key.clone();
-        self.all_endpoints = record.endpoints.clone();
+        self.public_key = observation.identity.public_key.clone();
+        self.all_endpoints = observation.endpoints.clone();
 
         if let Some(endpoint) = current_device_endpoint
             && self
@@ -191,17 +194,17 @@ struct RuntimePeerMap {
 
 impl RuntimePeerMap {
     fn from_records(
-        snapshot: &[MachineRecord],
-        bootstrap_peers: &[MachineRecord],
+        snapshot: &[MachineMembership],
+        bootstrap_peers: &[MachineObservation],
         local_machine_id: &MachineId,
         device_peers: &[DevicePeer],
         now: Instant,
     ) -> Self {
         let mut peer_map = PeerStateMap::new();
         peer_map.init_from_snapshot(snapshot, now);
-        for record in bootstrap_peers {
-            if record.id != *local_machine_id {
-                peer_map.upsert_transient(record, now);
+        for observation in bootstrap_peers {
+            if observation.id() != local_machine_id {
+                peer_map.upsert_transient(observation, now);
             }
         }
 
@@ -211,19 +214,7 @@ impl RuntimePeerMap {
             if peer.endpoints.is_empty() {
                 continue;
             }
-            let record = MachineRecord {
-                id: peer.id.clone(),
-                public_key: peer.public_key.clone(),
-                overlay_ip: peer.overlay_ip,
-                subnet: peer.subnet,
-                control_target: None,
-                bridge_ip: peer.bridge_ip,
-                endpoints: peer.endpoints.clone(),
-                lifecycle: crate::model::MachineLifecycle::Standby,
-                created_at: 0,
-                updated_at: 0,
-                labels: std::collections::BTreeMap::new(),
-            };
+            let observation = peer.to_observation();
             let current_endpoint =
                 device_endpoint_by_key
                     .get(&peer.public_key)
@@ -235,8 +226,8 @@ impl RuntimePeerMap {
                         }
                     });
             peers.insert(
-                record.id.clone(),
-                RuntimePeerState::new(&record, current_endpoint, now),
+                peer.id.clone(),
+                RuntimePeerState::new(&observation, current_endpoint, now),
             );
         }
         Self { peers }
@@ -279,25 +270,15 @@ impl RuntimePeerMap {
                             None
                         }
                     });
-            let record = MachineRecord {
-                id: peer.id.clone(),
-                public_key: peer.public_key.clone(),
-                overlay_ip: peer.overlay_ip,
-                subnet: peer.subnet,
-                control_target: None,
-                bridge_ip: peer.bridge_ip,
-                endpoints: peer.endpoints.clone(),
-                lifecycle: crate::model::MachineLifecycle::Standby,
-                created_at: 0,
-                updated_at: 0,
-                labels: std::collections::BTreeMap::new(),
-            };
+            let observation = peer.to_observation();
             self.peers
                 .entry(peer.id.clone())
                 .and_modify(|runtime_peer| {
-                    runtime_peer.refresh_candidates(&record, current_device_endpoint, now);
+                    runtime_peer.refresh_candidates(&observation, current_device_endpoint, now);
                 })
-                .or_insert_with(|| RuntimePeerState::new(&record, current_device_endpoint, now));
+                .or_insert_with(|| {
+                    RuntimePeerState::new(&observation, current_device_endpoint, now)
+                });
         }
 
         self.peers.retain(|machine_id, _| seen.contains(machine_id));
@@ -355,8 +336,8 @@ impl RuntimePeerMap {
 }
 
 pub(crate) fn build_initial_endpoint_selections(
-    snapshot: &[MachineRecord],
-    bootstrap_peers: &[MachineRecord],
+    snapshot: &[MachineMembership],
+    bootstrap_peers: &[MachineObservation],
     local_machine_id: &MachineId,
     device_peers: &[DevicePeer],
     now: Instant,
@@ -372,10 +353,10 @@ pub(crate) fn build_initial_endpoint_selections(
 }
 
 pub(crate) struct EndpointMaintainerTask {
-    pub(crate) snapshot: Vec<MachineRecord>,
+    pub(crate) snapshot: Vec<MachineMembership>,
     pub(crate) events: mpsc::Receiver<MachineEvent>,
     pub(crate) commands: mpsc::Receiver<EndpointMaintainerCommand>,
-    pub(crate) bootstrap_peers: Vec<MachineRecord>,
+    pub(crate) bootstrap_peers: Vec<MachineObservation>,
     pub(crate) network: WireguardDriver,
     pub(crate) local_machine_id: MachineId,
     pub(crate) endpoint_selections: EndpointSelectionMap,
@@ -403,9 +384,9 @@ pub(crate) async fn run_endpoint_maintainer_task(task: EndpointMaintainerTask) {
     let mut peer_map = PeerStateMap::new();
     let now = Instant::now();
     peer_map.init_from_snapshot(&snapshot, now);
-    for record in &bootstrap_peers {
-        if record.id != local_machine_id {
-            peer_map.upsert_transient(record, now);
+    for observation in &bootstrap_peers {
+        if observation.id() != &local_machine_id {
+            peer_map.upsert_transient(observation, now);
         }
     }
     let mut runtime = RuntimePeerMap::from_records(
@@ -441,8 +422,8 @@ pub(crate) async fn run_endpoint_maintainer_task(task: EndpointMaintainerTask) {
             }
             Some(command) = commands.recv() => {
                 match command {
-                    EndpointMaintainerCommand::UpsertTransient(record) => {
-                        peer_map.upsert_transient(&record, Instant::now());
+                    EndpointMaintainerCommand::UpsertTransient(observation) => {
+                        peer_map.upsert_transient(&observation, Instant::now());
                     }
                     EndpointMaintainerCommand::RemoveTransient(id) => peer_map.remove_transient(&id),
                     EndpointMaintainerCommand::TickNow { force_rotate, complete } => {
@@ -524,8 +505,8 @@ mod tests {
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
 
-    fn test_record(id: &str, key: [u8; 32], endpoints: &[&str]) -> MachineRecord {
-        MachineRecord {
+    fn test_record(id: &str, key: [u8; 32], endpoints: &[&str]) -> MachineMembership {
+        MachineMembership {
             id: MachineId(id.into()),
             public_key: PublicKey(key),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),

@@ -50,7 +50,7 @@ impl Mesh {
             .seed_records
             .iter()
             .filter(|m| m.id != self.machine_id)
-            .cloned()
+            .map(|m| m.wireguard_peer_spec())
             .collect();
         if !pre_start_peers.is_empty() {
             if let Err(e) = self.network.set_peers(&pre_start_peers).await {

@@ -8,7 +8,7 @@ use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MachineInstallOptions,
     MachineTransitionGoal,
 };
-use ployz_types::model::{MachineId, MachineLifecycle, MachineRecord};
+use ployz_types::model::{MachineId, MachineLifecycle, MachineMembership};
 use tokio::task::JoinSet;
 
 use crate::daemon::DaemonState;
@@ -339,7 +339,7 @@ impl DaemonState {
     async fn handle_machine_activate_remote(
         &self,
         machine_id: &MachineId,
-        record: &MachineRecord,
+        record: &MachineMembership,
         peer_rpc_port: u16,
         context: &MachineAddContext,
         subnet_claim: &BootstrapSubnetClaim,

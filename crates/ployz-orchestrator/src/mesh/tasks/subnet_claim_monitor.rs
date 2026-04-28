@@ -1,11 +1,11 @@
-use crate::model::{MachineEvent, MachineRecord};
+use crate::model::{MachineEvent, MachineMembership};
 use std::collections::BTreeMap;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 pub(crate) async fn run_subnet_claim_monitor_task(
-    snapshot: Vec<MachineRecord>,
+    snapshot: Vec<MachineMembership>,
     mut events: mpsc::Receiver<MachineEvent>,
     cancel: CancellationToken,
 ) {
@@ -56,7 +56,7 @@ pub(crate) async fn run_subnet_claim_monitor_task(
     }
 }
 
-pub(crate) fn duplicate_subnet_claims(machines: &[MachineRecord]) -> Vec<(String, Vec<String>)> {
+pub(crate) fn duplicate_subnet_claims(machines: &[MachineMembership]) -> Vec<(String, Vec<String>)> {
     let mut claimants_by_subnet: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
     for machine in machines {
@@ -89,8 +89,8 @@ mod tests {
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
 
-    fn test_machine(id: &str, subnet: Option<Ipv4Net>) -> MachineRecord {
-        MachineRecord {
+    fn test_machine(id: &str, subnet: Option<Ipv4Net>) -> MachineMembership {
+        MachineMembership {
             id: MachineId(id.into()),
             public_key: PublicKey([1; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),

@@ -7,7 +7,7 @@ use crate::mesh_state::bootstrap::BootstrapInfo;
 use crate::mesh_state::network::NetworkConfig;
 use ployz_api::MeshReadyPayload;
 use ployz_orchestrator::mesh::orchestrator::MeshReadyStatus;
-use ployz_types::model::MachineRecord;
+use ployz_types::model::MachineMembership;
 use std::path::Path;
 
 use super::super::DaemonState;
@@ -23,7 +23,7 @@ fn restore_network_config_subnet(
         .map_err(|error| format!("restore network config: {error}"))
 }
 
-fn bootstrap_info_from_record(record: &MachineRecord) -> BootstrapInfo {
+fn bootstrap_info_from_record(record: &MachineMembership) -> BootstrapInfo {
     BootstrapInfo {
         peer_id: record.id.0.clone(),
         peer_wg_public_key: record.public_key.0,
@@ -32,7 +32,7 @@ fn bootstrap_info_from_record(record: &MachineRecord) -> BootstrapInfo {
     }
 }
 
-fn mesh_ready_payload(value: MeshReadyStatus, self_record: &MachineRecord) -> MeshReadyPayload {
+fn mesh_ready_payload(value: MeshReadyStatus, self_record: &MachineMembership) -> MeshReadyPayload {
     MeshReadyPayload {
         ready: value.ready,
         phase: value.phase.to_string(),
@@ -129,7 +129,7 @@ mod tests {
             network
                 .current_peers()
                 .into_iter()
-                .any(|machine| machine.id.0 == "joiner")
+                .any(|peer| peer.id().0 == "joiner")
         );
 
         if let Some(active) = state.active.as_mut() {
@@ -272,7 +272,7 @@ mod tests {
         );
         let store = Arc::new(MemoryStore::new());
         store
-            .upsert_self_machine(&ployz_types::model::MachineRecord {
+            .upsert_self_machine(&ployz_types::model::MachineMembership {
                 id: identity.machine_id.clone(),
                 public_key: identity.public_key.clone(),
                 overlay_ip: config.overlay_ip,

@@ -1,7 +1,7 @@
 use ipnet::Ipv4Net;
 use ployz_api::{DaemonRequest, MachineTransitionGoal, MeshBootstrapRequest};
 use ployz_store_api::MachineRegistry;
-use ployz_types::model::{MachineLifecycle, MachineRecord, PublicKey};
+use ployz_types::model::{MachineLifecycle, MachineMembership, PublicKey};
 
 use super::super::operations::{
     MachineOperationRecord, MachineOperationStatus, MachineOperationStore,
@@ -208,7 +208,7 @@ pub(super) async fn run_machine_add_target(
     let _ = release_reserved_subnet(&context, &subnet_claim).await;
 
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: waiting for overlay ready");
-    let joiner_ref = MachineRecord::seed(
+    let joiner_ref = MachineMembership::seed(
         machine_id.clone(),
         PublicKey([0; 32]),
         joiner_overlay_ip,
@@ -321,10 +321,12 @@ pub(super) async fn run_machine_add_target(
 
 pub(super) async fn upsert_transient_peer(
     peer_sync_tx: &tokio::sync::mpsc::Sender<ployz_orchestrator::mesh::tasks::PeerSyncCommand>,
-    record: MachineRecord,
+    record: MachineMembership,
 ) -> Result<(), String> {
     peer_sync_tx
-        .send(ployz_orchestrator::mesh::tasks::PeerSyncCommand::UpsertTransient(record))
+        .send(ployz_orchestrator::mesh::tasks::PeerSyncCommand::UpsertTransient(
+            record.observation(),
+        ))
         .await
         .map_err(|err| format!("failed to install founder-local transient peer: {err}"))
 }
@@ -354,7 +356,7 @@ async fn build_mesh_bootstrap_request(
 }
 
 fn validate_joined_machine_subnet(
-    record: &MachineRecord,
+    record: &MachineMembership,
     expected_subnet: Ipv4Net,
 ) -> Result<(), String> {
     match record.subnet {

@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use ployz_types::Result;
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
-    MachineRecord, RoutingState, ServiceReleaseRecord,
+    MachineMembership, RoutingState, ServiceReleaseRecord,
 };
 use ployz_types::spec::Namespace;
 
@@ -21,8 +21,8 @@ pub use traits::{
 #[async_trait]
 pub trait StoreBackend: Send + Sync {
     async fn init(&self) -> Result<()>;
-    async fn list_machines(&self) -> Result<Vec<MachineRecord>>;
-    async fn upsert_self_machine(&self, record: &MachineRecord) -> Result<()>;
+    async fn list_machines(&self) -> Result<Vec<MachineMembership>>;
+    async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()>;
     async fn delete_machine(&self, id: &MachineId) -> Result<()>;
     async fn subscribe_machines(&self) -> Result<MachineSubscription>;
 

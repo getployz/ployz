@@ -10,7 +10,7 @@ use ployz_store_api::{
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, OverlayIp, RoutingState, ServiceReleaseRecord,
+    MachineId, MachineMembership, OverlayIp, RoutingState, ServiceReleaseRecord,
 };
 use ployz_types::spec::Namespace;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -162,11 +162,11 @@ impl MachineRegistry for CorrosionStore {
         Ok(())
     }
 
-    async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
+    async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
         tables::machines::list_machines(&self.client).await
     }
 
-    async fn upsert_self_machine(&self, record: &MachineRecord) -> Result<()> {
+    async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()> {
         tables::machines::upsert_self_machine(&self.client, record).await
     }
 
@@ -176,7 +176,7 @@ impl MachineRegistry for CorrosionStore {
 
     async fn subscribe_machines(
         &self,
-    ) -> Result<(Vec<MachineRecord>, mpsc::Receiver<MachineEvent>)> {
+    ) -> Result<(Vec<MachineMembership>, mpsc::Receiver<MachineEvent>)> {
         tables::machines::subscribe_machines(&self.client).await
     }
 }
