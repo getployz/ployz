@@ -51,7 +51,7 @@ pub async fn apply_with_certificate_coordination(
     session_factory: &dyn DeploySessionFactory,
     local_machine_id: &MachineId,
     manifest: &DeployManifest,
-    certificate_coordinator: &dyn IssuanceCoordinator,
+    certificate_coordinator: Arc<dyn IssuanceCoordinator>,
     account_coordinator: Arc<dyn AcmeAccountCoordinator>,
     challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
     issuer_factory: Arc<dyn AcmeIssuerFactory>,

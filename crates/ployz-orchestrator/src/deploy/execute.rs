@@ -169,7 +169,7 @@ pub(super) async fn apply(
         session_factory,
         local_machine_id,
         manifest,
-        &NoopIssuanceCoordinator,
+        Arc::new(NoopIssuanceCoordinator),
         Arc::new(NoopAcmeAccountCoordinator),
         Arc::new(LocalHttp01ChallengeReadiness),
         Arc::new(NoopAcmeIssuerFactory::default()),
@@ -183,7 +183,7 @@ pub(super) async fn apply_with_certificate_coordination(
     session_factory: &dyn DeploySessionFactory,
     local_machine_id: &MachineId,
     manifest: &ployz_types::spec::DeployManifest,
-    certificate_coordinator: &dyn IssuanceCoordinator,
+    certificate_coordinator: Arc<dyn IssuanceCoordinator>,
     account_coordinator: Arc<dyn AcmeAccountCoordinator>,
     challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
     issuer_factory: Arc<dyn AcmeIssuerFactory>,
@@ -238,7 +238,7 @@ pub(super) async fn apply_with_initial_plan(
         local_machine_id,
         manifest,
         initial_plan,
-        &NoopIssuanceCoordinator,
+        Arc::new(NoopIssuanceCoordinator),
         Arc::new(NoopAcmeAccountCoordinator),
         Arc::new(LocalHttp01ChallengeReadiness),
         Arc::new(NoopAcmeIssuerFactory::default()),
@@ -252,7 +252,7 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
     local_machine_id: &MachineId,
     manifest: &ployz_types::spec::DeployManifest,
     initial_plan: ResolvedPlan,
-    certificate_coordinator: &dyn IssuanceCoordinator,
+    certificate_coordinator: Arc<dyn IssuanceCoordinator>,
     account_coordinator: Arc<dyn AcmeAccountCoordinator>,
     challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
     issuer_factory: Arc<dyn AcmeIssuerFactory>,
@@ -307,7 +307,7 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
         let acme_warnings = start_pending_orders(
             store,
             issuer.as_ref(),
-            certificate_coordinator,
+            certificate_coordinator.as_ref(),
             &managed_hostnames,
         )
         .await;
@@ -325,6 +325,7 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
             issuer_factory.clone(),
             challenge_readiness.clone(),
             account_coordinator.clone(),
+            certificate_coordinator.clone(),
         );
 
         let cleanup_plan = committed.cleanup_plan();
