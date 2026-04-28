@@ -1,4 +1,4 @@
-use crate::cli::Scenario;
+use crate::cli::{Scenario, ZfsMode};
 use crate::error::{Error, Result};
 use crate::scenarios;
 use crate::support::{
@@ -29,6 +29,9 @@ const PAYLOAD_STAMP_FILE: &str = ".payload-stamp";
 const PAYLOAD_LOCK_FILE: &str = ".payload.lock";
 const PAYLOAD_LOCK_TIMEOUT: Duration = Duration::from_secs(300);
 const PAYLOAD_LOCK_POLL: Duration = Duration::from_millis(200);
+const PEBBLE_IMAGE: &str = "ployz-e2e-preload/pebble:latest";
+const PEBBLE_CHALLTESTSRV_IMAGE: &str = "ployz-e2e-preload/pebble-challtestsrv:latest";
+const PEBBLE_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
 pub(crate) struct Node {
@@ -44,6 +47,7 @@ pub(crate) struct ScenarioRun {
     image: String,
     image_id: String,
     image_platform: String,
+    zfs_mode: ZfsMode,
     root_dir: PathBuf,
     payload_dir: PathBuf,
     outer_network: String,
@@ -72,6 +76,7 @@ struct NodeStartMounts {
     dind: String,
     entrypoint: String,
     preloaded_images: String,
+    pebble: String,
 }
 
 fn node_start_mounts(repo_root: &Path) -> NodeStartMounts {
@@ -94,6 +99,10 @@ fn node_start_mounts(repo_root: &Path) -> NodeStartMounts {
                 .join("packaging/e2e/preloaded-images")
                 .to_string_lossy()
         ),
+        pebble: format!(
+            "{}:/e2e-pebble:ro",
+            repo_root.join("packaging/e2e/pebble").to_string_lossy()
+        ),
     }
 }
 
@@ -103,6 +112,7 @@ impl ScenarioRun {
         image: &str,
         artifacts_root: &Path,
         keep_failed: bool,
+        zfs_mode: ZfsMode,
     ) -> Result<Self> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -128,6 +138,7 @@ impl ScenarioRun {
             image: image.to_string(),
             image_id,
             image_platform,
+            zfs_mode,
             root_dir,
             payload_dir,
             outer_network: format!("ployz-e2e-net-{run_id}"),
@@ -167,6 +178,10 @@ impl ScenarioRun {
     }
 
     pub(crate) fn cleanup(&self, failed: bool) {
+        if self.zfs_mode == ZfsMode::Real {
+            self.cleanup_volume_smoke_zfs();
+        }
+
         if failed && self.keep_failed {
             return;
         }
@@ -174,7 +189,30 @@ impl ScenarioRun {
         for node in &self.nodes {
             let _ = docker_outer(["rm", "-f", node.container_name.as_str()]);
         }
+        if self.scenario == Scenario::DeploySmoke {
+            let _ = docker_outer(["rm", "-f", self.pebble_container_name().as_str()]);
+            let _ = docker_outer(["rm", "-f", self.challtestsrv_container_name().as_str()]);
+        }
         let _ = docker_outer(["network", "rm", self.outer_network.as_str()]);
+    }
+
+    fn cleanup_volume_smoke_zfs(&self) {
+        let command = "mode=$(cat /var/lib/ployz-e2e-zfs/mode 2>/dev/null || true); \
+                       if [ \"$mode\" != real ]; then exit 0; fi; \
+                       docker rm -f $(docker ps -aq --filter label=dev.ployz.namespace=default --filter label=dev.ployz.service=db) >/dev/null 2>&1 || true; \
+                       pool=$(cat /var/lib/ployz-e2e-zfs/pool.name 2>/dev/null || true); \
+                       if [ -n \"$pool\" ]; then zpool destroy \"$pool\" >/dev/null 2>&1 || true; fi; \
+                       loopdev=$(cat /var/lib/ployz-e2e-zfs/pool.loop 2>/dev/null || true); \
+                       if [ -n \"$loopdev\" ]; then losetup -d \"$loopdev\" >/dev/null 2>&1 || true; fi; \
+                       rm -f /var/lib/ployz-e2e-zfs/pool.img /var/lib/ployz-e2e-zfs/pool.loop";
+        for node in &self.nodes {
+            if let Err(error) = self.ssh_run(node, command) {
+                self.log_progress(&format!(
+                    "real zfs cleanup command failed on {}: {error}",
+                    node.name
+                ));
+            }
+        }
     }
 
     pub(crate) fn collect_failure_artifacts(&self) -> Result<()> {
@@ -272,6 +310,23 @@ impl ScenarioRun {
             let _ = docker_outer_raw(["cp", source.as_str(), destination.as_str()]);
         }
 
+        if self.scenario == Scenario::DeploySmoke {
+            for container_name in [
+                self.challtestsrv_container_name(),
+                self.pebble_container_name(),
+            ] {
+                let container_logs =
+                    docker_outer_raw(["logs", container_name.as_str()]).unwrap_or_default();
+                fs::write(
+                    logs_dir.join(format!("{container_name}.log")),
+                    container_logs.stdout,
+                )
+                .map_err(|error| {
+                    Error::Io(format!("write container log '{container_name}': {error}"))
+                })?;
+            }
+        }
+
         Ok(())
     }
 
@@ -342,6 +397,34 @@ impl ScenarioRun {
             ))
         })?;
         self.log_progress(&format!("wait_mesh_absent complete node={node_name}"));
+        Ok(())
+    }
+
+    pub(crate) fn wait_network_dir_absent_name(
+        &self,
+        node_name: &str,
+        network: &str,
+    ) -> Result<()> {
+        let node = self.node(node_name)?;
+        self.log_progress(&format!(
+            "wait_network_dir_absent start node={node_name} network={network}"
+        ));
+        wait_until(READY_WAIT_TIMEOUT, || {
+            let output = self.ssh_run(
+                node,
+                &format!("test ! -d /var/lib/ployz/networks/{network}"),
+            )?;
+            Ok(output.status.success())
+        })
+        .map_err(|error| {
+            Error::Message(format!(
+                "network directory did not disappear on {} for {}: {error}",
+                node.name, network
+            ))
+        })?;
+        self.log_progress(&format!(
+            "wait_network_dir_absent complete node={node_name} network={network}"
+        ));
         Ok(())
     }
 
@@ -584,6 +667,93 @@ impl ScenarioRun {
         self.wait_service_container(self.node(node_name)?, namespace, service)
     }
 
+    pub(crate) fn start_pebble_for_http01(&self, node_name: &str) -> Result<()> {
+        let node = self.node(node_name)?;
+        self.log_progress("start_pebble_for_http01 start");
+        let challtestsrv_name = self.challtestsrv_container_name();
+        let pebble_name = self.pebble_container_name();
+        let _ = docker_outer(["rm", "-f", challtestsrv_name.as_str()]);
+        let _ = docker_outer(["rm", "-f", pebble_name.as_str()]);
+
+        let challtestsrv_args = vec![
+            "run".to_string(),
+            "-d".to_string(),
+            "--name".to_string(),
+            challtestsrv_name.clone(),
+            "--network".to_string(),
+            self.outer_network.clone(),
+            PEBBLE_CHALLTESTSRV_IMAGE.to_string(),
+            "-defaultIPv6".to_string(),
+            String::new(),
+            "-management".to_string(),
+            ":8055".to_string(),
+            "-dnsserver".to_string(),
+            ":8053".to_string(),
+            "-http01".to_string(),
+            ":5002".to_string(),
+            "-tlsalpn01".to_string(),
+            ":5001".to_string(),
+            "-https01".to_string(),
+            String::new(),
+            "-doh".to_string(),
+            String::new(),
+        ];
+        let challtestsrv_arg_refs: Vec<&str> =
+            challtestsrv_args.iter().map(String::as_str).collect();
+        run_command_expect_ok("docker", &challtestsrv_arg_refs)?;
+
+        let challtestsrv_ip = self.container_outer_ip(&challtestsrv_name)?;
+        self.ssh_expect_ok(
+            node,
+            &format!(
+                "curl -fsS -X POST -d '{{\"ip\":\"{}\"}}' http://{}:8055/set-default-ipv4",
+                node.outer_ip, challtestsrv_ip
+            ),
+        )?;
+
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| Error::Message("failed to resolve repo root".into()))?
+            .to_path_buf();
+        let pebble_mount = format!(
+            "{}:/e2e-pebble:ro",
+            repo_root.join("packaging/e2e/pebble").to_string_lossy()
+        );
+        let pebble_args = vec![
+            "run".to_string(),
+            "-d".to_string(),
+            "--name".to_string(),
+            pebble_name.clone(),
+            "--network".to_string(),
+            self.outer_network.clone(),
+            "-v".to_string(),
+            pebble_mount,
+            "-e".to_string(),
+            "PEBBLE_VA_NOSLEEP=1".to_string(),
+            "-e".to_string(),
+            "PEBBLE_WFE_NONCEREJECT=0".to_string(),
+            PEBBLE_IMAGE.to_string(),
+            "-config".to_string(),
+            "/e2e-pebble/pebble-config.json".to_string(),
+            "-dnsserver".to_string(),
+            format!("{challtestsrv_ip}:8053"),
+            "-strict=false".to_string(),
+        ];
+        let pebble_arg_refs: Vec<&str> = pebble_args.iter().map(String::as_str).collect();
+        run_command_expect_ok("docker", &pebble_arg_refs)?;
+
+        wait_until(PEBBLE_WAIT_TIMEOUT, || {
+            let output = self.ssh_run(
+                node,
+                &format!("curl -kfsS https://{}:14000/dir >/dev/null", pebble_name),
+            )?;
+            Ok(output.status.success())
+        })?;
+        self.log_progress("start_pebble_for_http01 complete");
+        Ok(())
+    }
+
     pub(crate) fn ssh_expect_ok_name(
         &self,
         node_name: &str,
@@ -715,7 +885,7 @@ impl ScenarioRun {
         let stamp = payload_stamp(&repo_root, &self.image_platform, E2E_PAYLOAD_BUILD_PROFILE)?;
         let stamp_path = self.payload_dir.join(PAYLOAD_STAMP_FILE);
         if let Ok(existing) = fs::read_to_string(&stamp_path)
-            && existing == stamp
+            && existing.trim() == stamp
         {
             self.log_progress("build payload manifest complete");
             return Ok(());
@@ -852,6 +1022,8 @@ impl ScenarioRun {
         args.push(mounts.entrypoint.clone());
         args.push("-v".to_string());
         args.push(mounts.preloaded_images.clone());
+        args.push("-v".to_string());
+        args.push(mounts.pebble.clone());
         args.push(self.image.clone());
         args
     }
@@ -866,7 +1038,7 @@ impl ScenarioRun {
                 .unwrap_or_default()
         );
 
-        vec![
+        let mut args = vec![
             "run".to_string(),
             "-d".to_string(),
             "--privileged".to_string(),
@@ -894,7 +1066,64 @@ impl ScenarioRun {
             format!("PLOYZ_PEER_CONTROL_TARGET={name}"),
             "-e".to_string(),
             run_id,
-        ]
+        ];
+
+        if self.scenario == Scenario::DeploySmoke {
+            args.push("-e".to_string());
+            args.push(format!(
+                "PLOYZ_ACME_DIRECTORY_URL=https://{}:14000/dir",
+                self.pebble_container_name()
+            ));
+            args.push("-e".to_string());
+            args.push("PLOYZ_ACME_ROOT_CA_PATH=/e2e-pebble/pebble.minica.pem".to_string());
+            args.push("-e".to_string());
+            args.push("PLOYZ_GATEWAY_HTTPS_LISTEN_ADDR=0.0.0.0:443".to_string());
+            if std::env::var(CORROSION_RUST_LOG_ENV).is_err() {
+                args.push("-e".to_string());
+                args.push(format!(
+                    "{CORROSION_RUST_LOG_ENV}=info,tower_http=debug,corro_agent::api::public=debug"
+                ));
+            }
+        }
+
+        if self.zfs_mode != ZfsMode::Off {
+            args.push("-e".to_string());
+            args.push(format!("PLOYZ_E2E_ZFS_MODE={}", self.zfs_mode.as_str()));
+            if let Ok(pool) = std::env::var("PLOYZ_E2E_ZFS_POOL") {
+                args.push("-e".to_string());
+                args.push(format!("PLOYZ_E2E_ZFS_POOL={pool}"));
+            }
+            if let Ok(pool_size) = std::env::var("PLOYZ_E2E_ZFS_POOL_SIZE") {
+                args.push("-e".to_string());
+                args.push(format!("PLOYZ_E2E_ZFS_POOL_SIZE={pool_size}"));
+            }
+        }
+
+        args
+    }
+
+    pub(crate) fn pebble_container_name(&self) -> String {
+        format!("ployz-e2e-{}-pebble", self.scenario.as_str())
+    }
+
+    fn challtestsrv_container_name(&self) -> String {
+        format!("ployz-e2e-{}-challtestsrv", self.scenario.as_str())
+    }
+
+    fn container_outer_ip(&self, container_name: &str) -> Result<String> {
+        let output = docker_outer([
+            "inspect",
+            "--format",
+            "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+            container_name,
+        ])?;
+        let ip = output.stdout.trim().to_string();
+        if ip.is_empty() {
+            return Err(Error::Message(format!(
+                "container '{container_name}' did not receive an outer network IP"
+            )));
+        }
+        Ok(ip)
     }
 
     fn wait_for_ssh(&self, node: &Node) -> Result<()> {
@@ -1025,46 +1254,11 @@ impl ScenarioRun {
 }
 
 fn payload_stamp(repo_root: &Path, target_platform: &str, build_profile: &str) -> Result<String> {
-    let script = r#"
-set -euo pipefail
-repo_root="$1"
-target_platform="$2"
-build_profile="$3"
-
-hash_cmd() {
-  if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256
-    return
-  fi
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum
-    return
-  fi
-  cksum
-}
-
-{
-  printf 'platform=%s\n' "$target_platform"
-  printf 'profile=%s\n' "$build_profile"
-  git -C "$repo_root" ls-files -z -- Cargo.toml Cargo.lock .corrosion-version ployz.sh crates scripts packaging \
-    | while IFS= read -r -d '' path; do
-        printf 'path=%s\n' "$path"
-        if [[ -f "$repo_root/$path" ]]; then
-          cat "$repo_root/$path"
-        else
-          printf '<missing>\n'
-        fi
-        printf '\n'
-      done
-} | hash_cmd | awk '{print $1}'
-"#;
-
+    let script = repo_root.join("scripts/payload-stamp.sh");
     let output = run_command_expect_ok(
         "bash",
         &[
-            "-lc",
-            script,
-            "--",
+            script.to_string_lossy().as_ref(),
             repo_root.to_string_lossy().as_ref(),
             target_platform,
             build_profile,

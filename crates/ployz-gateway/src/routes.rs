@@ -1,19 +1,28 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::net::{SocketAddr, SocketAddrV4};
+use std::sync::Arc;
 
+use pingora::tls::pkey::{PKey, Private};
+use pingora::tls::x509::X509;
 use ployz_types::model::{
-    InstanceId, InstancePhase, InstanceStatusRecord, MachineId, RoutingState, ServiceRelease,
-    ServiceReleaseSlot, ServiceRoutingPolicy,
+    AcmeChallengeRecord, CertificateRecord, InstanceId, InstancePhase, InstanceStatusRecord,
+    MachineId, MachineMembership, MachineTopology, RoutingState, ServiceRelease, ServiceReleaseSlot,
+    ServiceRoutingPolicy,
 };
 use ployz_types::spec::{Namespace, RouteSpec, ServiceSpec};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tracing::warn;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct GatewaySnapshot {
     pub http_routes: Vec<HttpRouteView>,
     pub tcp_routes: Vec<TcpRouteView>,
+    /// Keyed on `(normalized hostname, token)` for O(1) HTTP-01 lookup.
+    pub acme_challenges: HashMap<(String, String), AcmeChallengeView>,
+    /// Keyed on normalized hostname for O(1) SNI lookup.
+    pub certificates: HashMap<String, CertificateView>,
 }
 
 impl GatewaySnapshot {
@@ -22,8 +31,33 @@ impl GatewaySnapshot {
         Self {
             http_routes: Vec::new(),
             tcp_routes: Vec::new(),
+            acme_challenges: HashMap::new(),
+            certificates: HashMap::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcmeChallengeView {
+    pub hostname: String,
+    pub token: String,
+    pub key_authorization: String,
+}
+
+/// Parsed, ready-to-install TLS material. Built once at projection time so the
+/// handshake hot path is a snapshot lookup + `Arc::clone` — no PEM parsing, no
+/// `X509::clone`, no `Vec` allocation per connection.
+#[derive(Debug)]
+pub struct ProjectedTlsMaterial {
+    pub leaf: X509,
+    pub chain: Arc<[X509]>,
+    pub private_key: PKey<Private>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CertificateView {
+    pub hostname: String,
+    pub tls: Arc<ProjectedTlsMaterial>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +85,7 @@ pub struct TcpRouteView {
 pub struct BackendView {
     pub instance_id: InstanceId,
     pub machine_id: MachineId,
+    pub topology: MachineTopology,
     pub service_port: String,
     pub address: SocketAddr,
 }
@@ -87,6 +122,15 @@ pub enum ProjectionError {
         left: String,
         right: String,
         listen_port: u16,
+    },
+    #[error(
+        "routable instance '{instance_id}' for service '{service}' in namespace '{namespace}' referenced missing machine '{machine_id}'"
+    )]
+    MissingMachineForInstance {
+        namespace: Namespace,
+        service: String,
+        instance_id: InstanceId,
+        machine_id: MachineId,
     },
 }
 
@@ -146,6 +190,11 @@ pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> 
         .into_iter()
         .map(|instance| (instance.instance_id.clone(), instance))
         .collect::<HashMap<_, _>>();
+    let machines = state
+        .machines
+        .into_iter()
+        .map(|machine| (machine.id.clone(), machine))
+        .collect::<HashMap<_, _>>();
 
     let mut http_routes = Vec::new();
     let mut tcp_routes = Vec::new();
@@ -178,7 +227,8 @@ pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> 
             &allowed_revision_hashes(&release_record.release),
             &release_record.release.slots,
             &instances,
-        );
+            &machines,
+        )?;
 
         for (index, route) in spec.routes.iter().enumerate() {
             match route {
@@ -237,7 +287,120 @@ pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> 
     Ok(GatewaySnapshot {
         http_routes,
         tcp_routes,
+        acme_challenges: HashMap::new(),
+        certificates: HashMap::new(),
     })
+}
+
+#[must_use]
+pub fn with_managed_tls(
+    mut snapshot: GatewaySnapshot,
+    challenges: &[AcmeChallengeRecord],
+    certificates: &[CertificateRecord],
+) -> GatewaySnapshot {
+    snapshot.acme_challenges = project_acme_challenges(challenges);
+    snapshot.certificates = project_certificates(certificates);
+    snapshot
+}
+
+#[must_use]
+pub fn project_acme_challenges(
+    challenges: &[AcmeChallengeRecord],
+) -> HashMap<(String, String), AcmeChallengeView> {
+    challenges
+        .iter()
+        .map(|challenge| {
+            let hostname = normalize_request_host(&challenge.hostname);
+            (
+                (hostname.clone(), challenge.token.clone()),
+                AcmeChallengeView {
+                    hostname,
+                    token: challenge.token.clone(),
+                    key_authorization: challenge.key_authorization.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn project_certificates(
+    certificates: &[CertificateRecord],
+) -> HashMap<String, CertificateView> {
+    certificates
+        .iter()
+        .filter_map(|record| {
+            let version = record.installed_version()?;
+            let hostname = normalize_request_host(&record.hostname);
+            let tls = parse_tls_material(&hostname, version)?;
+            Some((
+                hostname.clone(),
+                CertificateView {
+                    hostname,
+                    tls: Arc::new(tls),
+                },
+            ))
+        })
+        .collect()
+}
+
+/// Parse a record's PEM material into ready-to-install X509 + chain + private
+/// key. Returns `None` and logs a warning for malformed records so they never
+/// reach the handshake-path callback. PEM parsing happens here (cold path) and
+/// is intentionally synchronous.
+fn parse_tls_material(
+    hostname: &str,
+    version: &ployz_types::model::CertificateVersion,
+) -> Option<ProjectedTlsMaterial> {
+    let stack = match X509::stack_from_pem(version.fullchain_pem.as_bytes()) {
+        Ok(stack) => stack,
+        Err(error) => {
+            warn!(
+                hostname,
+                reason = %error,
+                "managed TLS fullchain PEM did not parse; dropping certificate from snapshot"
+            );
+            return None;
+        }
+    };
+    let mut iter = stack.into_iter();
+    let Some(leaf) = iter.next() else {
+        warn!(
+            hostname,
+            "managed TLS fullchain PEM contained no leaf certificate; dropping from snapshot"
+        );
+        return None;
+    };
+    let chain: Arc<[X509]> = iter.collect();
+    let private_key = match PKey::private_key_from_pem(version.private_key_pem.as_bytes()) {
+        Ok(key) => key,
+        Err(error) => {
+            warn!(
+                hostname,
+                reason = %error,
+                "managed TLS private key PEM did not parse; dropping certificate from snapshot"
+            );
+            return None;
+        }
+    };
+    Some(ProjectedTlsMaterial {
+        leaf,
+        chain,
+        private_key,
+    })
+}
+
+#[must_use]
+pub fn match_acme_challenge<'a>(
+    snapshot: &'a GatewaySnapshot,
+    host: Option<&str>,
+    path: &str,
+) -> Option<&'a AcmeChallengeView> {
+    let host = host
+        .map(normalize_request_host)
+        .filter(|value| !value.is_empty())?;
+    let token = path.strip_prefix("/.well-known/acme-challenge/")?;
+    snapshot.acme_challenges.get(&(host, token.to_string()))
 }
 
 fn routable_backends_by_port(
@@ -247,7 +410,8 @@ fn routable_backends_by_port(
     allowed_revision_hashes: &HashSet<String>,
     slots: &[ServiceReleaseSlot],
     instances: &HashMap<InstanceId, InstanceStatusRecord>,
-) -> BTreeMap<String, Vec<BackendView>> {
+    machines: &HashMap<MachineId, MachineMembership>,
+) -> Result<BTreeMap<String, Vec<BackendView>>, ProjectionError> {
     let service_ports = spec
         .service_ports
         .iter()
@@ -264,6 +428,14 @@ fn routable_backends_by_port(
         let Some(overlay_ip) = instance.overlay_ip else {
             continue;
         };
+        let Some(machine) = machines.get(&instance.machine_id) else {
+            return Err(ProjectionError::MissingMachineForInstance {
+                namespace: namespace.clone(),
+                service: service.to_string(),
+                instance_id: instance.instance_id.clone(),
+                machine_id: instance.machine_id.clone(),
+            });
+        };
         for port_name in service_ports.keys() {
             let Some(port_number) = instance.backend_ports.get(port_name) else {
                 continue;
@@ -274,6 +446,7 @@ fn routable_backends_by_port(
                 .push(BackendView {
                     instance_id: instance.instance_id.clone(),
                     machine_id: instance.machine_id.clone(),
+                    topology: machine.topology.clone(),
                     service_port: port_name.clone(),
                     address: SocketAddr::V4(SocketAddrV4::new(overlay_ip, *port_number)),
                 });
@@ -288,7 +461,7 @@ fn routable_backends_by_port(
             )
         });
     }
-    backends
+    Ok(backends)
 }
 
 fn is_routable_instance(
@@ -398,8 +571,9 @@ fn normalize_path_prefix(path_prefix: &str) -> String {
 mod tests {
     use super::*;
     use ployz_types::model::{
-        DeployId, DrainState, InstanceStatusRecord, ServiceRelease, ServiceReleaseRecord,
-        ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy, SlotId,
+        CertificateState, DeployId, DrainState, InstanceStatusRecord, MachineLifecycle, OverlayIp,
+        PublicKey, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord,
+        ServiceRoutingPolicy, SlotId,
     };
     use ployz_types::spec::{
         ContainerSpec, NetworkMode, Placement, PortProtocol, PullPolicy, Resources, RestartPolicy,
@@ -414,6 +588,7 @@ mod tests {
         let current = service_spec(&namespace, "api", "v2", vec!["api.example.com".into()]);
 
         let snapshot = project(RoutingState {
+            machines: vec![machine_record("machine-a")],
             revisions: vec![revision_record(&old), revision_record(&current)],
             releases: vec![release_record(
                 &namespace,
@@ -466,6 +641,7 @@ mod tests {
         let canary_hash = canary.revision_hash().expect("canary revision hash");
 
         let snapshot = project(RoutingState {
+            machines: vec![machine_record("machine-a")],
             revisions: vec![revision_record(&stable), revision_record(&canary)],
             releases: vec![ServiceReleaseRecord {
                 namespace: namespace.clone(),
@@ -548,6 +724,8 @@ mod tests {
                 },
             ],
             tcp_routes: Vec::new(),
+            acme_challenges: HashMap::new(),
+            certificates: HashMap::new(),
         };
 
         let route = match_http_route(&snapshot, Some("api.example.com"), "/v1/users")
@@ -562,6 +740,7 @@ mod tests {
         let right = service_spec(&namespace, "two", "v1", vec!["api.example.com".into()]);
 
         let error = project(RoutingState {
+            machines: Vec::new(),
             revisions: vec![revision_record(&left), revision_record(&right)],
             releases: vec![
                 release_record(
@@ -590,7 +769,8 @@ mod tests {
             }
             ProjectionError::MissingRevision { .. }
             | ProjectionError::InvalidRevisionSpec { .. }
-            | ProjectionError::TcpRouteConflict { .. } => panic!("unexpected error"),
+            | ProjectionError::TcpRouteConflict { .. }
+            | ProjectionError::MissingMachineForInstance { .. } => panic!("unexpected error"),
         }
     }
 
@@ -609,6 +789,7 @@ mod tests {
         }];
 
         let snapshot = project(RoutingState {
+            machines: vec![machine_record("machine-a")],
             revisions: vec![revision_record(&spec)],
             releases: vec![release_record(
                 &namespace,
@@ -635,6 +816,88 @@ mod tests {
         assert_eq!(route.listen_port, 5432);
     }
 
+    #[test]
+    fn projected_backend_includes_machine_topology() {
+        let namespace = Namespace("prod".into());
+        let spec = service_spec(&namespace, "api", "v1", vec!["api.example.com".into()]);
+        let machine = MachineMembership {
+            topology: MachineTopology::new("us-east", Some("use1-a"))
+                .expect("topology should parse"),
+            ..machine_record("machine-a")
+        };
+
+        let snapshot = project(RoutingState {
+            machines: vec![machine.clone()],
+            revisions: vec![revision_record(&spec)],
+            releases: vec![release_record(
+                &namespace,
+                "api",
+                &spec.revision_hash().expect("revision hash"),
+                vec![slot_record("slot-1", "inst-ready", &spec)],
+            )],
+            instances: vec![instance_record(
+                &namespace,
+                "api",
+                "slot-1",
+                "inst-ready",
+                true,
+                DrainState::None,
+                &spec,
+            )],
+        })
+        .expect("projection succeeds");
+
+        let [route] = snapshot.http_routes.as_slice() else {
+            panic!("expected one http route");
+        };
+        let [backend] = route.backends.as_slice() else {
+            panic!("expected one backend");
+        };
+        assert_eq!(backend.topology, machine.topology);
+    }
+
+    #[test]
+    fn projection_fails_when_routable_instance_references_missing_machine() {
+        let namespace = Namespace("prod".into());
+        let spec = service_spec(&namespace, "api", "v1", vec!["api.example.com".into()]);
+
+        let error = project(RoutingState {
+            machines: Vec::new(),
+            revisions: vec![revision_record(&spec)],
+            releases: vec![release_record(
+                &namespace,
+                "api",
+                &spec.revision_hash().expect("revision hash"),
+                vec![slot_record("slot-1", "inst-ready", &spec)],
+            )],
+            instances: vec![instance_record(
+                &namespace,
+                "api",
+                "slot-1",
+                "inst-ready",
+                true,
+                DrainState::None,
+                &spec,
+            )],
+        })
+        .expect_err("missing machine should fail projection");
+
+        match error {
+            ProjectionError::MissingMachineForInstance {
+                instance_id,
+                machine_id,
+                ..
+            } => {
+                assert_eq!(instance_id.0, "inst-ready");
+                assert_eq!(machine_id.0, "machine-a");
+            }
+            ProjectionError::MissingRevision { .. }
+            | ProjectionError::InvalidRevisionSpec { .. }
+            | ProjectionError::HttpRouteConflict { .. }
+            | ProjectionError::TcpRouteConflict { .. } => panic!("unexpected error"),
+        }
+    }
+
     fn service_spec(
         _namespace: &Namespace,
         service: &str,
@@ -649,7 +912,7 @@ mod tests {
                 command: None,
                 entrypoint: None,
                 env: BTreeMap::new(),
-                volumes: Vec::new(),
+                mounts: Vec::new(),
                 cap_add: Vec::new(),
                 cap_drop: Vec::new(),
                 privileged: false,
@@ -759,12 +1022,398 @@ mod tests {
         }
     }
 
+    fn machine_record(id: &str) -> MachineMembership {
+        MachineMembership {
+            id: MachineId(id.into()),
+            public_key: PublicKey([0; 32]),
+            overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay ip")),
+            topology: MachineTopology::local(),
+            control_target: None,
+            subnet: None,
+            bridge_ip: None,
+            endpoints: Vec::new(),
+            lifecycle: MachineLifecycle::Active,
+            created_at: 1,
+            updated_at: 1,
+            labels: BTreeMap::new(),
+        }
+    }
+
     fn backend(id: &str) -> BackendView {
         BackendView {
             instance_id: InstanceId(id.into()),
             machine_id: MachineId("machine-a".into()),
+            topology: MachineTopology::local(),
             service_port: "http".into(),
             address: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 2), 8080)),
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // with_managed_tls + match_acme_challenge
+    // ---------------------------------------------------------------------
+
+    use ployz_types::model::CertificateVersion;
+
+    /// Generate a self-signed PEM bundle for tests. project_certificates parses
+    /// PEM at projection time and drops malformed records, so test fixtures
+    /// must produce real PEM.
+    fn self_signed_pem(hostname: &str) -> (String, String) {
+        let key = rcgen::KeyPair::generate().expect("keypair");
+        let params = rcgen::CertificateParams::new(vec![hostname.into()]).expect("cert params");
+        let cert = params.self_signed(&key).expect("self-signed cert");
+        (cert.pem(), key.serialize_pem())
+    }
+
+    fn active_cert(hostname: &str, version_id: &str) -> CertificateRecord {
+        let (fullchain_pem, private_key_pem) = self_signed_pem(hostname);
+        CertificateRecord {
+            hostname: hostname.into(),
+            issuer_url: "https://acme.test/directory".into(),
+            account_id: "acct-test".into(),
+            state: CertificateState::Active,
+            active_version_id: Some(version_id.into()),
+            versions: vec![CertificateVersion {
+                version_id: version_id.into(),
+                fullchain_pem,
+                private_key_pem,
+                not_before: Some(0),
+                not_after: Some(100),
+                issued_at: 0,
+            }],
+            order_url: None,
+            last_error: None,
+            requested_at: 0,
+            updated_at: 0,
+            next_renewal_at: None,
+        }
+    }
+
+    fn challenge(hostname: &str, token: &str) -> AcmeChallengeRecord {
+        AcmeChallengeRecord {
+            hostname: hostname.into(),
+            token: token.into(),
+            key_authorization: format!("{token}.keyauth"),
+            expires_at: 100,
+            created_at: 0,
+        }
+    }
+
+    #[test]
+    fn with_managed_tls_projects_active_cert_into_hostname_keyed_map() {
+        let snapshot = with_managed_tls(
+            GatewaySnapshot::empty(),
+            &[],
+            &[active_cert("api.example.com", "v1")],
+        );
+        let entry = snapshot
+            .certificates
+            .get("api.example.com")
+            .expect("certificate present under normalized hostname");
+        assert_eq!(entry.hostname, "api.example.com");
+        // Self-signed fullchain has only the leaf — chain must be empty —
+        // and the parsed private key must match the leaf's public key.
+        assert!(entry.tls.chain.is_empty());
+        assert!(
+            entry
+                .tls
+                .leaf
+                .public_key()
+                .expect("leaf pubkey")
+                .public_eq(&entry.tls.private_key)
+        );
+    }
+
+    #[test]
+    fn with_managed_tls_serves_certs_with_installed_version_regardless_of_state() {
+        // Whether a cert is projected is governed by `installed_version()`,
+        // not by `state`. Renewal flips a healthy row to RenewalDue→Issuing
+        // (and possibly Failed on a non-retryable finalize) while keeping
+        // `active_version_id` pointing at the previous valid leaf, so all of
+        // those states must remain serviceable. Only `Pending` with no prior
+        // issuance — i.e. `active_version_id == None` — should drop out.
+        let mut pending_no_version = active_cert("pending.example.com", "v1");
+        pending_no_version.state = CertificateState::Pending;
+        pending_no_version.active_version_id = None;
+        pending_no_version.versions.clear();
+
+        let mut issuing_renewal = active_cert("issuing.example.com", "v1");
+        issuing_renewal.state = CertificateState::Issuing;
+        let mut renewal_due = active_cert("renewal.example.com", "v1");
+        renewal_due.state = CertificateState::RenewalDue;
+        let mut failed_with_fallback = active_cert("failed.example.com", "v1");
+        failed_with_fallback.state = CertificateState::Failed;
+
+        let snapshot = with_managed_tls(
+            GatewaySnapshot::empty(),
+            &[],
+            &[
+                pending_no_version,
+                issuing_renewal,
+                renewal_due,
+                failed_with_fallback,
+                active_cert("ok.example.com", "v1"),
+            ],
+        );
+        // pending-without-version is dropped; the other four are served.
+        assert_eq!(snapshot.certificates.len(), 4);
+        assert!(snapshot.certificates.contains_key("ok.example.com"));
+        assert!(snapshot.certificates.contains_key("issuing.example.com"));
+        assert!(snapshot.certificates.contains_key("renewal.example.com"));
+        assert!(snapshot.certificates.contains_key("failed.example.com"));
+        assert!(!snapshot.certificates.contains_key("pending.example.com"));
+    }
+
+    #[test]
+    fn with_managed_tls_keeps_serving_old_leaf_during_in_flight_renewal() {
+        // Concrete renewal scenario: cert was Active with version v1, the
+        // ticker promoted it to RenewalDue, start_one moved it to Issuing
+        // for the new order, but finalize hasn't completed. The gateway must
+        // keep handing out v1 — not blackhole TLS for the duration of the
+        // ACME round trip.
+        let mut renewing = active_cert("api.example.com", "v1");
+        renewing.state = CertificateState::Issuing;
+        renewing.order_url = Some("https://acme.test/orders/42".into());
+
+        let snapshot = with_managed_tls(GatewaySnapshot::empty(), &[], &[renewing]);
+        let entry = snapshot
+            .certificates
+            .get("api.example.com")
+            .expect("renewing cert should still serve the previous leaf");
+        // Material is the previously-issued v1, untouched by the in-flight order.
+        assert!(
+            entry
+                .tls
+                .leaf
+                .public_key()
+                .expect("leaf pubkey")
+                .public_eq(&entry.tls.private_key)
+        );
+    }
+
+    #[test]
+    fn with_managed_tls_keeps_serving_old_leaf_after_failed_renewal() {
+        // finalize_one's non-retryable error path explicitly restores
+        // `previous_active_version_id` before downgrading to Failed, so the
+        // gateway can keep using the prior leaf until the next reconcile pass
+        // retries. The projection must respect that fallback contract.
+        let mut failed = active_cert("api.example.com", "v1");
+        failed.state = CertificateState::Failed;
+        failed.last_error = Some("orderInvalid: rateLimited".into());
+
+        let snapshot = with_managed_tls(GatewaySnapshot::empty(), &[], &[failed]);
+        let entry = snapshot
+            .certificates
+            .get("api.example.com")
+            .expect("failed-with-fallback cert should still serve previous leaf");
+        assert!(
+            entry
+                .tls
+                .leaf
+                .public_key()
+                .expect("leaf pubkey")
+                .public_eq(&entry.tls.private_key)
+        );
+    }
+
+    #[test]
+    fn project_certificates_drops_records_with_malformed_fullchain_pem() {
+        // PEM envelope present, body is garbage → real parse error. The bad
+        // record must be silently dropped from the snapshot (with a warn) so
+        // the handshake-path callback never sees it.
+        let mut bad_chain = active_cert("bad.example.com", "v1");
+        bad_chain.versions[0].fullchain_pem =
+            "-----BEGIN CERTIFICATE-----\nnot-valid-base64!!!\n-----END CERTIFICATE-----\n"
+                .to_string();
+        let good = active_cert("ok.example.com", "v1");
+        let snapshot = with_managed_tls(GatewaySnapshot::empty(), &[], &[bad_chain, good]);
+        assert_eq!(snapshot.certificates.len(), 1);
+        assert!(snapshot.certificates.contains_key("ok.example.com"));
+        assert!(!snapshot.certificates.contains_key("bad.example.com"));
+    }
+
+    #[test]
+    fn project_certificates_drops_records_with_malformed_private_key() {
+        let mut bad_key = active_cert("bad.example.com", "v1");
+        bad_key.versions[0].private_key_pem = "not a pem".to_string();
+        let good = active_cert("ok.example.com", "v1");
+        let snapshot = with_managed_tls(GatewaySnapshot::empty(), &[], &[bad_key, good]);
+        assert_eq!(snapshot.certificates.len(), 1);
+        assert!(snapshot.certificates.contains_key("ok.example.com"));
+        assert!(!snapshot.certificates.contains_key("bad.example.com"));
+    }
+
+    #[test]
+    fn project_certificates_drops_records_with_empty_fullchain_pem() {
+        // boring's `X509::stack_from_pem` is permissive and returns an empty
+        // vec for content with no PEM envelopes; we treat that the same as
+        // malformed and drop the record.
+        let mut empty_chain = active_cert("bad.example.com", "v1");
+        empty_chain.versions[0].fullchain_pem = "this is not a pem".to_string();
+        let snapshot = with_managed_tls(GatewaySnapshot::empty(), &[], &[empty_chain]);
+        assert!(snapshot.certificates.is_empty());
+    }
+
+    #[test]
+    fn with_managed_tls_skips_active_cert_without_active_version_id() {
+        let mut record = active_cert("api.example.com", "v1");
+        record.active_version_id = None;
+        let snapshot = with_managed_tls(GatewaySnapshot::empty(), &[], &[record]);
+        assert!(snapshot.certificates.is_empty());
+    }
+
+    #[test]
+    fn with_managed_tls_skips_when_active_version_id_points_at_missing_version() {
+        let mut record = active_cert("api.example.com", "v1");
+        record.active_version_id = Some("vmissing".into());
+        let snapshot = with_managed_tls(GatewaySnapshot::empty(), &[], &[record]);
+        assert!(snapshot.certificates.is_empty());
+    }
+
+    #[test]
+    fn with_managed_tls_normalizes_cert_hostname_case_and_trailing_dot() {
+        let snapshot = with_managed_tls(
+            GatewaySnapshot::empty(),
+            &[],
+            &[active_cert("API.Example.Com.", "v1")],
+        );
+        assert!(snapshot.certificates.contains_key("api.example.com"));
+        assert!(!snapshot.certificates.contains_key("API.Example.Com."));
+    }
+
+    #[test]
+    fn with_managed_tls_projects_all_challenges_keyed_by_host_and_token() {
+        let snapshot = with_managed_tls(
+            GatewaySnapshot::empty(),
+            &[
+                challenge("api.example.com", "tok-a"),
+                challenge("api.example.com", "tok-b"),
+                challenge("other.example.com", "tok-c"),
+            ],
+            &[],
+        );
+        assert_eq!(snapshot.acme_challenges.len(), 3);
+        let one = snapshot
+            .acme_challenges
+            .get(&("api.example.com".into(), "tok-a".into()))
+            .expect("first challenge for api.example.com");
+        assert_eq!(one.key_authorization, "tok-a.keyauth");
+        assert!(
+            snapshot
+                .acme_challenges
+                .contains_key(&("api.example.com".into(), "tok-b".into()))
+        );
+        assert!(
+            snapshot
+                .acme_challenges
+                .contains_key(&("other.example.com".into(), "tok-c".into()))
+        );
+    }
+
+    #[test]
+    fn with_managed_tls_normalizes_challenge_hostname() {
+        let snapshot = with_managed_tls(
+            GatewaySnapshot::empty(),
+            &[challenge("API.Example.Com.", "tok")],
+            &[],
+        );
+        assert!(
+            snapshot
+                .acme_challenges
+                .contains_key(&("api.example.com".into(), "tok".into()))
+        );
+    }
+
+    #[test]
+    fn match_acme_challenge_returns_view_on_exact_path_and_host() {
+        let snapshot = with_managed_tls(
+            GatewaySnapshot::empty(),
+            &[challenge("api.example.com", "tok-1")],
+            &[],
+        );
+        let hit = match_acme_challenge(
+            &snapshot,
+            Some("api.example.com"),
+            "/.well-known/acme-challenge/tok-1",
+        )
+        .expect("challenge should match");
+        assert_eq!(hit.key_authorization, "tok-1.keyauth");
+    }
+
+    #[test]
+    fn match_acme_challenge_returns_none_on_unknown_host() {
+        let snapshot = with_managed_tls(
+            GatewaySnapshot::empty(),
+            &[challenge("api.example.com", "tok-1")],
+            &[],
+        );
+        assert!(
+            match_acme_challenge(
+                &snapshot,
+                Some("other.example.com"),
+                "/.well-known/acme-challenge/tok-1"
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn match_acme_challenge_returns_none_on_wrong_token() {
+        let snapshot = with_managed_tls(
+            GatewaySnapshot::empty(),
+            &[challenge("api.example.com", "tok-1")],
+            &[],
+        );
+        assert!(
+            match_acme_challenge(
+                &snapshot,
+                Some("api.example.com"),
+                "/.well-known/acme-challenge/tok-wrong"
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn match_acme_challenge_returns_none_without_well_known_prefix() {
+        let snapshot = with_managed_tls(
+            GatewaySnapshot::empty(),
+            &[challenge("api.example.com", "tok-1")],
+            &[],
+        );
+        assert!(match_acme_challenge(&snapshot, Some("api.example.com"), "/tok-1").is_none());
+        assert!(match_acme_challenge(&snapshot, Some("api.example.com"), "/").is_none());
+    }
+
+    #[test]
+    fn match_acme_challenge_requires_host_header() {
+        let snapshot = with_managed_tls(
+            GatewaySnapshot::empty(),
+            &[challenge("api.example.com", "tok-1")],
+            &[],
+        );
+        assert!(
+            match_acme_challenge(&snapshot, None, "/.well-known/acme-challenge/tok-1").is_none()
+        );
+        assert!(
+            match_acme_challenge(&snapshot, Some(""), "/.well-known/acme-challenge/tok-1")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn match_acme_challenge_normalizes_host_case_and_port() {
+        let snapshot = with_managed_tls(
+            GatewaySnapshot::empty(),
+            &[challenge("api.example.com", "tok-1")],
+            &[],
+        );
+        let hit = match_acme_challenge(
+            &snapshot,
+            Some("API.Example.Com:8080"),
+            "/.well-known/acme-challenge/tok-1",
+        )
+        .expect("challenge should match with normalized host");
+        assert_eq!(hit.token, "tok-1");
     }
 }

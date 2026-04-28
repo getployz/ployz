@@ -71,6 +71,11 @@ fn local_ployz_version() -> Result<String, String> {
 }
 
 fn local_ployz_path() -> Result<PathBuf, String> {
+    #[cfg(test)]
+    if let Some(path) = crate::daemon::ssh::test_ssh_env_value("PLOYZ_TEST_LOCAL_PLOYZ") {
+        return Ok(PathBuf::from(path));
+    }
+
     let current_exe =
         std::env::current_exe().map_err(|error| format!("current_exe failed: {error}"))?;
     let candidates = [

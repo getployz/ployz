@@ -3,14 +3,17 @@ use crate::client::{CorrClient, Transport};
 use crate::config as corrosion_config;
 use corro_api_types::{ExecResult, Statement};
 use ployz_store_api::{
-    DeployCommit, DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
-    InstanceStatusRepository, InviteRepository, MachineRegistry, RoutingSnapshotReader, SyncProbe,
-    SyncStatus,
+    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
+    DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
+    InstanceStatusRepository, InviteRepository, MachineRegistry, PeerMembershipObservation,
+    PeerMembershipState, PeerMembershipStore, PeerRttObservation, PeerRttStore,
+    RoutingSnapshotReader, SyncProbe, SyncStatus,
 };
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
-    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, OverlayIp, RoutingState, ServiceReleaseRecord,
+    AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
+    InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineMembership, OverlayIp,
+    RoutingState, ServiceReleaseRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -149,6 +152,64 @@ impl SyncProbe for CorrosionStore {
     }
 }
 
+impl PeerRttStore for CorrosionStore {
+    async fn peer_rtt_observations(&self) -> Result<Vec<PeerRttObservation>> {
+        let Some(admin) = &self.admin else {
+            return Ok(Vec::new());
+        };
+        admin
+            .cluster_member_rtts()
+            .await
+            .map_err(|e| {
+                Error::operation(
+                    "peer_rtt_observations",
+                    format!("admin members request: {e}"),
+                )
+            })
+            .map(|members| {
+                members
+                    .into_iter()
+                    .map(|member| PeerRttObservation {
+                        addr: member.addr,
+                        rtts_ms: member.rtts_ms,
+                    })
+                    .collect()
+            })
+    }
+}
+
+impl PeerMembershipStore for CorrosionStore {
+    async fn peer_membership_observations(&self) -> Result<Vec<PeerMembershipObservation>> {
+        let Some(admin) = &self.admin else {
+            return Ok(Vec::new());
+        };
+        admin
+            .cluster_membership_states_latest()
+            .await
+            .map_err(|e| {
+                Error::operation(
+                    "peer_membership_observations",
+                    format!("admin membership request: {e}"),
+                )
+            })
+            .map(|members| {
+                members
+                    .into_iter()
+                    .map(|member| PeerMembershipObservation {
+                        addr: member.addr,
+                        actor_id: member.id,
+                        state: match member.state {
+                            crate::admin::MembershipState::Alive => PeerMembershipState::Alive,
+                            crate::admin::MembershipState::Suspect => PeerMembershipState::Suspect,
+                            crate::admin::MembershipState::Down => PeerMembershipState::Down,
+                        },
+                        timestamp: member.timestamp,
+                    })
+                    .collect()
+            })
+    }
+}
+
 impl MachineRegistry for CorrosionStore {
     async fn init(&self) -> Result<()> {
         let res = self
@@ -162,11 +223,11 @@ impl MachineRegistry for CorrosionStore {
         Ok(())
     }
 
-    async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
+    async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
         tables::machines::list_machines(&self.client).await
     }
 
-    async fn upsert_self_machine(&self, record: &MachineRecord) -> Result<()> {
+    async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()> {
         tables::machines::upsert_self_machine(&self.client, record).await
     }
 
@@ -176,7 +237,7 @@ impl MachineRegistry for CorrosionStore {
 
     async fn subscribe_machines(
         &self,
-    ) -> Result<(Vec<MachineRecord>, mpsc::Receiver<MachineEvent>)> {
+    ) -> Result<(Vec<MachineMembership>, mpsc::Receiver<MachineEvent>)> {
         tables::machines::subscribe_machines(&self.client).await
     }
 }
@@ -239,6 +300,18 @@ impl DeployRepository for CorrosionStore {
         })
     }
 
+    async fn list_volumes(&self, namespace: &Namespace) -> Result<Vec<VolumeRecord>> {
+        tables::volumes::list_volumes(&self.client, namespace).await
+    }
+
+    async fn get_volume(
+        &self,
+        namespace: &Namespace,
+        volume_name: &str,
+    ) -> Result<Option<VolumeRecord>> {
+        tables::volumes::get_volume(&self.client, namespace, volume_name).await
+    }
+
     async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()> {
         tables::service_revisions::record_service_revision(&self.client, &command.revision).await
     }
@@ -270,5 +343,47 @@ impl InstanceStatusRepository for CorrosionStore {
 
     async fn remove_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
         tables::instance_status::remove_instance_status(&self.client, instance_id).await
+    }
+}
+
+impl CertificateStore for CorrosionStore {
+    async fn get_acme_account(&self, issuer_url: &str) -> Result<Option<AcmeAccountRecord>> {
+        tables::acme_accounts::get_acme_account(&self.client, issuer_url).await
+    }
+
+    async fn upsert_acme_account(&self, record: &AcmeAccountRecord) -> Result<()> {
+        tables::acme_accounts::upsert_acme_account(&self.client, record).await
+    }
+
+    async fn list_certificates(&self) -> Result<Vec<CertificateRecord>> {
+        tables::certificates::list_certificates(&self.client).await
+    }
+
+    async fn get_certificate(&self, hostname: &str) -> Result<Option<CertificateRecord>> {
+        tables::certificates::get_certificate(&self.client, hostname).await
+    }
+
+    async fn upsert_certificate(&self, record: &CertificateRecord) -> Result<()> {
+        tables::certificates::upsert_certificate(&self.client, record).await
+    }
+
+    async fn list_acme_challenges(&self) -> Result<Vec<AcmeChallengeRecord>> {
+        tables::acme_challenges::list_acme_challenges(&self.client).await
+    }
+
+    async fn upsert_acme_challenge(&self, record: &AcmeChallengeRecord) -> Result<()> {
+        tables::acme_challenges::upsert_acme_challenge(&self.client, record).await
+    }
+
+    async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> Result<()> {
+        tables::acme_challenges::delete_acme_challenge(&self.client, hostname, token).await
+    }
+
+    async fn subscribe_certificates(&self) -> Result<CertificateSubscription> {
+        tables::certificates::subscribe_certificates(&self.client).await
+    }
+
+    async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
+        tables::acme_challenges::subscribe_acme_challenges(&self.client).await
     }
 }

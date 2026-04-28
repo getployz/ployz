@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::{info, warn};
@@ -196,7 +197,7 @@ async fn start_child(spec: SidecarSpec) -> Result<ChildHandle, SidecarError> {
         cmd.env(key, value);
     }
 
-    let child = cmd
+    let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -205,6 +206,13 @@ async fn start_child(spec: SidecarSpec) -> Result<ChildHandle, SidecarError> {
         .map_err(|err| {
             SidecarError::Process(format!("failed to spawn {}: {err}", binary.display()))
         })?;
+
+    if let Some(stdout) = child.stdout.take() {
+        forward_child_output(spec.name.clone(), "stdout", stdout);
+    }
+    if let Some(stderr) = child.stderr.take() {
+        forward_child_output(spec.name.clone(), "stderr", stderr);
+    }
 
     info!(
         pid = child.id(),
@@ -218,6 +226,37 @@ async fn start_child(spec: SidecarSpec) -> Result<ChildHandle, SidecarError> {
         name: spec.name,
         child: AsyncMutex::new(Some(child)),
     })
+}
+
+fn forward_child_output<R>(name: String, stream_name: &'static str, stream: R)
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stream).lines();
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    info!(
+                        sidecar = %name,
+                        stream = stream_name,
+                        output = %line,
+                        "sidecar output"
+                    );
+                }
+                Ok(None) => return,
+                Err(error) => {
+                    warn!(
+                        sidecar = %name,
+                        stream = stream_name,
+                        ?error,
+                        "failed to read sidecar output"
+                    );
+                    return;
+                }
+            }
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------

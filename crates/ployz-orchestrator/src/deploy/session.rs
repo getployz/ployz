@@ -1,12 +1,12 @@
 use crate::error::Result;
-use crate::model::{DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineRecord, SlotId};
+use crate::model::{DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineMembership, SlotId};
 use ployz_types::spec::Namespace;
 
 #[async_trait::async_trait]
 pub trait DeploySessionFactory: Send + Sync {
     async fn open(
         &self,
-        machine: &MachineRecord,
+        machine: &MachineMembership,
         namespace: &Namespace,
         deploy_id: &DeployId,
         coordinator_id: &MachineId,
@@ -37,4 +37,5 @@ pub struct StartCandidateRequest {
     pub slot_id: SlotId,
     pub instance_id: InstanceId,
     pub spec_json: String,
+    pub volumes_json: String,
 }

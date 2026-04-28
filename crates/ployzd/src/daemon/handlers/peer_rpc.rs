@@ -8,7 +8,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
-pub(super) const PEER_RPC_TIMEOUT: Duration = Duration::from_secs(3);
+pub(crate) const PEER_RPC_TIMEOUT: Duration = Duration::from_secs(3);
 pub(super) const PEER_RPC_DESTRUCTIVE_READ_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Copy)]
@@ -24,6 +24,13 @@ const DEFAULT_OVERLAY_RPC_TIMEOUTS: OverlayRpcTimeouts = OverlayRpcTimeouts {
     write: PEER_RPC_TIMEOUT,
     shutdown: PEER_RPC_TIMEOUT,
     read: PEER_RPC_TIMEOUT,
+};
+
+const ZFS_TRANSFER_RPC_TIMEOUTS: OverlayRpcTimeouts = OverlayRpcTimeouts {
+    connect: PEER_RPC_TIMEOUT,
+    write: PEER_RPC_TIMEOUT,
+    shutdown: PEER_RPC_TIMEOUT,
+    read: Duration::from_secs(24 * 60 * 60),
 };
 
 pub(super) enum OverlayRpcExpectOkError {
@@ -42,7 +49,7 @@ impl Display for OverlayRpcExpectOkError {
     }
 }
 
-pub(super) async fn overlay_rpc(
+pub(crate) async fn overlay_rpc(
     overlay_ip: OverlayIp,
     peer_rpc_port: u16,
     request: DaemonRequest,
@@ -52,6 +59,20 @@ pub(super) async fn overlay_rpc(
         peer_rpc_port,
         request,
         DEFAULT_OVERLAY_RPC_TIMEOUTS,
+    )
+    .await
+}
+
+pub(crate) async fn overlay_rpc_zfs_transfer(
+    overlay_ip: OverlayIp,
+    peer_rpc_port: u16,
+    request: DaemonRequest,
+) -> Result<DaemonResponse, String> {
+    overlay_rpc_with_timeouts(
+        overlay_ip,
+        peer_rpc_port,
+        request,
+        ZFS_TRANSFER_RPC_TIMEOUTS,
     )
     .await
 }
@@ -134,7 +155,7 @@ pub(super) async fn overlay_rpc_expect_ok_classified(
     .await
 }
 
-pub(super) async fn overlay_rpc_expect_ok_with_read_timeout(
+pub(crate) async fn overlay_rpc_expect_ok_with_read_timeout(
     overlay_ip: OverlayIp,
     peer_rpc_port: u16,
     request: DaemonRequest,

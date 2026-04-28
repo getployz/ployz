@@ -1,4 +1,4 @@
-use crate::model::{MachineRecord, OverlayIp};
+use crate::model::{MachineMembership, OverlayIp};
 use ployz_store_api::MachineRegistry;
 use ployz_store_api::StoreDriver;
 use tokio::sync::{RwLock, mpsc, oneshot};
@@ -10,19 +10,19 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub(crate) enum SelfRecordMutation {
     PublishUp { bridge_ip: Option<OverlayIp> },
-    Replace(MachineRecord),
+    Replace(MachineMembership),
 }
 
 #[derive(Debug)]
 pub(crate) struct SelfRecordCommand {
     mutation: SelfRecordMutation,
-    done: oneshot::Sender<Option<MachineRecord>>,
+    done: oneshot::Sender<Option<MachineMembership>>,
 }
 
 pub(crate) async fn apply_self_record_mutation(
     commands: &mpsc::Sender<SelfRecordCommand>,
     mutation: SelfRecordMutation,
-) -> Option<MachineRecord> {
+) -> Option<MachineMembership> {
     let (done_tx, done_rx) = oneshot::channel();
     commands
         .send(SelfRecordCommand {
@@ -35,7 +35,7 @@ pub(crate) async fn apply_self_record_mutation(
 }
 
 pub(crate) async fn run_self_record_writer_task(
-    authoritative_self: Arc<RwLock<MachineRecord>>,
+    authoritative_self: Arc<RwLock<MachineMembership>>,
     store: StoreDriver,
     mut commands: mpsc::Receiver<SelfRecordCommand>,
     cancel: CancellationToken,
@@ -68,7 +68,7 @@ pub(crate) async fn run_self_record_writer_task(
     }
 }
 
-fn apply_mutation(record: &mut MachineRecord, mutation: SelfRecordMutation) {
+fn apply_mutation(record: &mut MachineMembership, mutation: SelfRecordMutation) {
     match mutation {
         SelfRecordMutation::PublishUp { bridge_ip } => {
             let now = crate::time::now_unix_secs();
@@ -89,16 +89,17 @@ fn apply_mutation(record: &mut MachineRecord, mutation: SelfRecordMutation) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{MachineId, MachineLifecycle, PublicKey};
+    use crate::model::{MachineId, MachineLifecycle, MachineTopology, PublicKey};
     use ployz_store_api::memory::{MemoryService, MemoryStore};
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
 
-    fn test_record() -> MachineRecord {
-        MachineRecord {
+    fn test_record() -> MachineMembership {
+        MachineMembership {
             id: MachineId("self".into()),
             public_key: PublicKey([1; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+            topology: MachineTopology::local(),
             subnet: None,
             control_target: None,
             bridge_ip: None,

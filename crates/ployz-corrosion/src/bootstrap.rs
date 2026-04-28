@@ -1,12 +1,12 @@
 use std::path::Path;
 
-use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
+use ployz_types::model::{MachineId, MachineMembership, OverlayIp, PublicKey};
 
 use crate::config as corrosion_config;
 
 /// Read peer config from corrosion's sqlite DB (bypassing the API).
 /// Only fetches the columns needed for WG peer setup.
-pub fn peer_records_from_db(network_dir: &Path) -> Result<Vec<MachineRecord>, String> {
+pub fn peer_records_from_db(network_dir: &Path) -> Result<Vec<MachineMembership>, String> {
     let db_path = corrosion_config::Paths::new(network_dir).db;
     if !db_path.exists() {
         return Ok(Vec::new());
@@ -76,7 +76,7 @@ pub fn peer_records_from_db(network_dir: &Path) -> Result<Vec<MachineRecord>, St
                 Vec::new()
             });
 
-        let mut record = MachineRecord::seed(
+        let mut record = MachineMembership::seed(
             MachineId(id),
             PublicKey(key),
             OverlayIp(overlay),

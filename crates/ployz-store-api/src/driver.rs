@@ -1,15 +1,18 @@
 use crate::memory::{MemoryService, MemoryStore};
 use crate::{
-    DeployCommit, DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
+    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
+    DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
     InstanceStatusRepository, InviteRepository, MachineRegistry, MachineSubscription,
+    PeerMembershipObservation, PeerMembershipStore, PeerRttObservation, PeerRttStore,
     RoutingInvalidationSubscription, RoutingSnapshotReader, StoreBackend, StoreRuntimeControl,
     SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::Result;
 use ployz_types::model::{
-    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
-    MachineRecord, RoutingState, ServiceReleaseRecord,
+    AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
+    InstanceStatusRecord, InviteRecord, MachineId, MachineMembership, RoutingState,
+    ServiceReleaseRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::sync::Arc;
@@ -90,11 +93,11 @@ impl MachineRegistry for StoreDriver {
         self.backend.init().await
     }
 
-    async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
+    async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
         self.backend.list_machines().await
     }
 
-    async fn upsert_self_machine(&self, record: &MachineRecord) -> Result<()> {
+    async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()> {
         self.backend.upsert_self_machine(record).await
     }
 
@@ -158,6 +161,18 @@ impl DeployRepository for StoreDriver {
         self.backend.load_deploy_snapshot(namespace).await
     }
 
+    async fn list_volumes(&self, namespace: &Namespace) -> Result<Vec<VolumeRecord>> {
+        self.backend.list_volumes(namespace).await
+    }
+
+    async fn get_volume(
+        &self,
+        namespace: &Namespace,
+        volume_name: &str,
+    ) -> Result<Option<VolumeRecord>> {
+        self.backend.get_volume(namespace, volume_name).await
+    }
+
     async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()> {
         self.backend.record_service_revision(command).await
     }
@@ -198,6 +213,60 @@ impl SyncProbe for StoreDriver {
     }
 }
 
+impl PeerRttStore for StoreDriver {
+    async fn peer_rtt_observations(&self) -> Result<Vec<PeerRttObservation>> {
+        self.backend.peer_rtt_observations().await
+    }
+}
+
+impl PeerMembershipStore for StoreDriver {
+    async fn peer_membership_observations(&self) -> Result<Vec<PeerMembershipObservation>> {
+        self.backend.peer_membership_observations().await
+    }
+}
+
+impl CertificateStore for StoreDriver {
+    async fn get_acme_account(&self, issuer_url: &str) -> Result<Option<AcmeAccountRecord>> {
+        self.backend.get_acme_account(issuer_url).await
+    }
+
+    async fn upsert_acme_account(&self, record: &AcmeAccountRecord) -> Result<()> {
+        self.backend.upsert_acme_account(record).await
+    }
+
+    async fn list_certificates(&self) -> Result<Vec<CertificateRecord>> {
+        self.backend.list_certificates().await
+    }
+
+    async fn get_certificate(&self, hostname: &str) -> Result<Option<CertificateRecord>> {
+        self.backend.get_certificate(hostname).await
+    }
+
+    async fn upsert_certificate(&self, record: &CertificateRecord) -> Result<()> {
+        self.backend.upsert_certificate(record).await
+    }
+
+    async fn list_acme_challenges(&self) -> Result<Vec<AcmeChallengeRecord>> {
+        self.backend.list_acme_challenges().await
+    }
+
+    async fn upsert_acme_challenge(&self, record: &AcmeChallengeRecord) -> Result<()> {
+        self.backend.upsert_acme_challenge(record).await
+    }
+
+    async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> Result<()> {
+        self.backend.delete_acme_challenge(hostname, token).await
+    }
+
+    async fn subscribe_certificates(&self) -> Result<CertificateSubscription> {
+        self.backend.subscribe_certificates().await
+    }
+
+    async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
+        self.backend.subscribe_acme_challenges().await
+    }
+}
+
 struct MemoryStoreBackend {
     store: Arc<MemoryStore>,
     service: Arc<MemoryService>,
@@ -209,11 +278,11 @@ impl StoreBackend for MemoryStoreBackend {
         self.store.init().await
     }
 
-    async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
+    async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
         self.store.list_machines().await
     }
 
-    async fn upsert_self_machine(&self, record: &MachineRecord) -> Result<()> {
+    async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()> {
         self.store.upsert_self_machine(record).await
     }
 
@@ -271,6 +340,18 @@ impl StoreBackend for MemoryStoreBackend {
         self.store.load_deploy_snapshot(namespace).await
     }
 
+    async fn list_volumes(&self, namespace: &Namespace) -> Result<Vec<VolumeRecord>> {
+        self.store.list_volumes(namespace).await
+    }
+
+    async fn get_volume(
+        &self,
+        namespace: &Namespace,
+        volume_name: &str,
+    ) -> Result<Option<VolumeRecord>> {
+        self.store.get_volume(namespace, volume_name).await
+    }
+
     async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()> {
         self.store.record_service_revision(command).await
     }
@@ -300,6 +381,46 @@ impl StoreBackend for MemoryStoreBackend {
 
     async fn remove_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
         self.store.remove_instance_status(instance_id).await
+    }
+
+    async fn get_acme_account(&self, issuer_url: &str) -> Result<Option<AcmeAccountRecord>> {
+        self.store.get_acme_account(issuer_url).await
+    }
+
+    async fn upsert_acme_account(&self, record: &AcmeAccountRecord) -> Result<()> {
+        self.store.upsert_acme_account(record).await
+    }
+
+    async fn list_certificates(&self) -> Result<Vec<CertificateRecord>> {
+        self.store.list_certificates().await
+    }
+
+    async fn get_certificate(&self, hostname: &str) -> Result<Option<CertificateRecord>> {
+        self.store.get_certificate(hostname).await
+    }
+
+    async fn upsert_certificate(&self, record: &CertificateRecord) -> Result<()> {
+        self.store.upsert_certificate(record).await
+    }
+
+    async fn list_acme_challenges(&self) -> Result<Vec<AcmeChallengeRecord>> {
+        self.store.list_acme_challenges().await
+    }
+
+    async fn upsert_acme_challenge(&self, record: &AcmeChallengeRecord) -> Result<()> {
+        self.store.upsert_acme_challenge(record).await
+    }
+
+    async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> Result<()> {
+        self.store.delete_acme_challenge(hostname, token).await
+    }
+
+    async fn subscribe_certificates(&self) -> Result<CertificateSubscription> {
+        self.store.subscribe_certificates().await
+    }
+
+    async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
+        self.store.subscribe_acme_challenges().await
     }
 
     async fn sync_status(&self) -> Result<SyncStatus> {

@@ -7,7 +7,7 @@ use crate::mesh_state::bootstrap::BootstrapInfo;
 use crate::mesh_state::network::NetworkConfig;
 use ployz_api::MeshReadyPayload;
 use ployz_orchestrator::mesh::orchestrator::MeshReadyStatus;
-use ployz_types::model::MachineRecord;
+use ployz_types::model::MachineMembership;
 use std::path::Path;
 
 use super::super::DaemonState;
@@ -23,7 +23,7 @@ fn restore_network_config_subnet(
         .map_err(|error| format!("restore network config: {error}"))
 }
 
-fn bootstrap_info_from_record(record: &MachineRecord) -> BootstrapInfo {
+fn bootstrap_info_from_record(record: &MachineMembership) -> BootstrapInfo {
     BootstrapInfo {
         peer_id: record.id.0.clone(),
         peer_wg_public_key: record.public_key.0,
@@ -32,7 +32,7 @@ fn bootstrap_info_from_record(record: &MachineRecord) -> BootstrapInfo {
     }
 }
 
-fn mesh_ready_payload(value: MeshReadyStatus, self_record: &MachineRecord) -> MeshReadyPayload {
+fn mesh_ready_payload(value: MeshReadyStatus, self_record: &MachineMembership) -> MeshReadyPayload {
     MeshReadyPayload {
         ready: value.ready,
         phase: value.phase.to_string(),
@@ -55,7 +55,7 @@ mod tests {
     use ployz_store_api::MachineRegistry;
     use ployz_store_api::StoreDriver;
     use ployz_store_api::memory::{MemoryService, MemoryStore};
-    use ployz_types::model::{MachineId, MachineLifecycle, OverlayIp, PublicKey};
+    use ployz_types::model::{MachineId, MachineLifecycle, MachineTopology, OverlayIp, PublicKey};
     use ployz_types::time::now_unix_secs;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -96,6 +96,7 @@ mod tests {
             24,
             4317,
             "127.0.0.1:0".into(),
+            None,
             1,
         );
 
@@ -111,6 +112,7 @@ mod tests {
             machine_id: MachineId("joiner".into()),
             public_key: PublicKey([2; 32]),
             overlay_ip: "fd00::2".parse().map(OverlayIp).expect("valid overlay"),
+            topology: MachineTopology::local(),
             subnet: Some("10.210.1.0/24".parse().expect("valid subnet")),
             endpoints: vec!["203.0.113.10:51820".into()],
         }
@@ -129,7 +131,7 @@ mod tests {
             network
                 .current_peers()
                 .into_iter()
-                .any(|machine| machine.id.0 == "joiner")
+                .any(|peer| peer.id().0 == "joiner")
         );
 
         if let Some(active) = state.active.as_mut() {
@@ -167,6 +169,7 @@ mod tests {
             24,
             4317,
             "127.0.0.1:0".into(),
+            None,
             1,
         );
         let cached_subnet = config.subnet;
@@ -182,8 +185,10 @@ mod tests {
             ),
             remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            certificate_renewal: None,
         });
 
         let error = state
@@ -217,6 +222,7 @@ mod tests {
             24,
             4317,
             "127.0.0.1:0".into(),
+            None,
             1,
         );
 
@@ -272,10 +278,11 @@ mod tests {
         );
         let store = Arc::new(MemoryStore::new());
         store
-            .upsert_self_machine(&ployz_types::model::MachineRecord {
+            .upsert_self_machine(&ployz_types::model::MachineMembership {
                 id: identity.machine_id.clone(),
                 public_key: identity.public_key.clone(),
                 overlay_ip: config.overlay_ip,
+                topology: MachineTopology::local(),
                 subnet: config.subnet,
                 control_target: None,
                 bridge_ip: None,
@@ -305,6 +312,7 @@ mod tests {
             24,
             4317,
             "127.0.0.1:0".into(),
+            None,
             1,
         );
         let cached_subnet = config.subnet;
@@ -313,9 +321,11 @@ mod tests {
             cached_subnet,
             mesh,
             peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            certificate_renewal: None,
         });
         (state, store, network)
     }

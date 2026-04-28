@@ -114,6 +114,16 @@ CREATE TABLE IF NOT EXISTS instance_status (
     payload_json TEXT NOT NULL DEFAULT '' CHECK (payload_json = '' OR json_valid(payload_json))
 );
 
+-- Durable ZFS volume intent and realization state. Volumes are identified by
+-- (namespace, volume_name); the bound machine, dataset, quota, ownership, and
+-- attachments publish together inside payload_json.
+CREATE TABLE IF NOT EXISTS volumes (
+    namespace TEXT NOT NULL DEFAULT '',
+    volume_name TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '' CHECK (payload_json = '' OR json_valid(payload_json)),
+    PRIMARY KEY (namespace, volume_name)
+);
+
 -- Tracks the lifecycle of each deployment operation. State progresses from
 -- applying → committed (or failed/cleanup_pending).
 --
@@ -128,4 +138,41 @@ CREATE TABLE IF NOT EXISTS deploys (
     deploy_id TEXT NOT NULL PRIMARY KEY,
     namespace TEXT NOT NULL DEFAULT '',
     payload_json TEXT NOT NULL DEFAULT '' CHECK (payload_json = '' OR json_valid(payload_json))
+);
+
+-- ACME account material replicated for all certificate managers. The issuer
+-- URL is the identity because v1 uses one account per issuer.
+--
+-- SECURITY: payload_json contains the full instant_acme::AccountCredentials
+-- including the account private key, stored as plaintext JSON. Acceptable only
+-- because (1) Corrosion replication never leaves the WireGuard mesh overlay,
+-- and (2) per-node SQLite files are not backed up unencrypted. If either
+-- assumption changes (cross-WAN replication, off-host backup), this column
+-- must move to encrypted-at-rest storage.
+CREATE TABLE IF NOT EXISTS acme_accounts (
+    issuer_url TEXT NOT NULL PRIMARY KEY,
+    payload_json TEXT NOT NULL DEFAULT '' CHECK (payload_json = '' OR json_valid(payload_json))
+);
+
+-- Managed certificate intent, status, and versioned PEM material. The hostname
+-- is exact in v1; wildcard names are rejected before records are written.
+--
+-- SECURITY: payload_json embeds CertificateVersion.private_key_pem alongside
+-- fullchain_pem as plaintext JSON. Same WireGuard-only/no-unencrypted-backup
+-- assumption as acme_accounts above; revisit if replication topology changes.
+CREATE TABLE IF NOT EXISTS certificates (
+    hostname TEXT NOT NULL PRIMARY KEY,
+    payload_json TEXT NOT NULL DEFAULT '' CHECK (payload_json = '' OR json_valid(payload_json))
+);
+
+-- HTTP-01 challenges projected into the gateway before normal route matching.
+--
+-- SECURITY: payload_json carries the ACME key_authorization (the secret an
+-- HTTP-01 verifier must echo back) as plaintext JSON. Same WireGuard-only/
+-- no-unencrypted-backup assumption as acme_accounts above.
+CREATE TABLE IF NOT EXISTS acme_challenges (
+    hostname TEXT NOT NULL DEFAULT '',
+    token TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '' CHECK (payload_json = '' OR json_valid(payload_json)),
+    PRIMARY KEY (hostname, token)
 );

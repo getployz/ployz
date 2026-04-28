@@ -60,7 +60,7 @@ impl DaemonState {
                     .await,
             ),
             // Subnet coordination only uses prepare/release as a quorum reservation guard.
-            // The durable commit is the target machine's eventual MachineRecord write.
+            // The durable commit is the target machine's eventual MachineMembership write.
             CoordOp::Commit { .. } => self.ok("commit acknowledged"),
         }
     }
@@ -81,7 +81,9 @@ impl DaemonState {
                     .iter()
                     .any(|machine| machine.subnet == Some(*subnet)))
             }
-            ResourceKey::DeployNamespace(_) => Ok(false),
+            ResourceKey::DeployNamespace(_)
+            | ResourceKey::CertIssuance(_)
+            | ResourceKey::AcmeAccount(_) => Ok(false),
         }
     }
 }
@@ -97,6 +99,8 @@ fn into_resource_key(key: ApiResourceKey) -> ResourceKey {
     match key {
         ApiResourceKey::Subnet(subnet) => ResourceKey::Subnet(subnet),
         ApiResourceKey::DeployNamespace(namespace) => ResourceKey::DeployNamespace(namespace),
+        ApiResourceKey::CertIssuance(hostname) => ResourceKey::CertIssuance(hostname),
+        ApiResourceKey::AcmeAccount(issuer_url) => ResourceKey::AcmeAccount(issuer_url),
     }
 }
 
@@ -139,7 +143,7 @@ mod tests {
         active
             .mesh
             .store
-            .upsert_self_machine(&ployz_types::model::MachineRecord::seed(
+            .upsert_self_machine(&ployz_types::model::MachineMembership::seed(
                 MachineId("peer-1".into()),
                 PublicKey([2; 32]),
                 "fd00::2"
@@ -190,6 +194,7 @@ mod tests {
             24,
             4317,
             "127.0.0.1:0".into(),
+            None,
             1,
         );
         let cached_subnet = config.subnet;
@@ -199,8 +204,10 @@ mod tests {
             mesh,
             remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+            certificate_renewal: None,
         });
         state
     }
