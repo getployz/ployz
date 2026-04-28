@@ -5,10 +5,12 @@ mod doctor;
 mod invite;
 pub(crate) mod machine;
 mod mesh;
-mod peer_rpc;
+pub(crate) mod peer_rpc;
 mod status;
+pub(crate) mod volume;
 
 use ployz_api::{DaemonRequest, DaemonResponse};
+use tokio::sync::oneshot;
 
 use super::DaemonState;
 
@@ -35,16 +37,27 @@ impl DaemonState {
             | DaemonRequest::MeshPeerExecuteDestroy { .. }
             | DaemonRequest::MachineRemove { .. }
             | DaemonRequest::MeshPeerRemoveMachine { .. } => RequestLane::Exclusive,
-            DaemonRequest::Status
+            DaemonRequest::Ping
+            | DaemonRequest::Status
             | DaemonRequest::Doctor
             | DaemonRequest::DeployPreview { .. }
             | DaemonRequest::DeployApply { .. }
             | DaemonRequest::DeployExport { .. }
+            | DaemonRequest::VolumeZfsInspect { .. }
+            | DaemonRequest::VolumeZfsSnapshot { .. }
+            | DaemonRequest::VolumeZfsSend { .. }
+            | DaemonRequest::VolumeZfsPeerSnapshot { .. }
+            | DaemonRequest::VolumeZfsPeerSnapshotGuid { .. }
+            | DaemonRequest::VolumeZfsPeerStartSend { .. }
+            | DaemonRequest::VolumeZfsTransferGet { .. }
+            | DaemonRequest::VolumeZfsTransferList
             | DaemonRequest::MeshList
             | DaemonRequest::MeshStatus { .. }
             | DaemonRequest::MeshReady { .. }
             | DaemonRequest::MeshCreate { .. }
             | DaemonRequest::MachineList
+            | DaemonRequest::MachineRtt
+            | DaemonRequest::MeshPeerRttSnapshot
             | DaemonRequest::MachineInit { .. }
             | DaemonRequest::MachineAdd { .. }
             | DaemonRequest::MachineActivate { .. }
@@ -57,6 +70,7 @@ impl DaemonState {
             | DaemonRequest::MachineInviteList
             | DaemonRequest::MachineInviteImport { .. }
             | DaemonRequest::Coord { .. }
+            | DaemonRequest::AcmeChallengeReady { .. }
             | DaemonRequest::MeshSelfRecord
             | DaemonRequest::MeshAccept { .. } => RequestLane::Shared,
         }
@@ -64,6 +78,7 @@ impl DaemonState {
 
     pub async fn handle_shared(&self, req: DaemonRequest) -> DaemonResponse {
         match req {
+            DaemonRequest::Ping => self.ok("pong"),
             DaemonRequest::Status => self.handle_status().await,
             DaemonRequest::Doctor => self.handle_doctor().await,
             DaemonRequest::DebugTick { .. }
@@ -92,11 +107,85 @@ impl DaemonState {
             DaemonRequest::DeployExport { namespace } => {
                 self.handle_deploy_export(&namespace).await
             }
+            DaemonRequest::VolumeZfsInspect {
+                namespace,
+                volume,
+                machine,
+            } => {
+                self.handle_volume_zfs_inspect(&namespace, &volume, machine.as_deref())
+                    .await
+            }
+            DaemonRequest::VolumeZfsSnapshot {
+                namespace,
+                volume,
+                snapshot,
+            } => {
+                self.handle_volume_zfs_snapshot(&namespace, &volume, &snapshot)
+                    .await
+            }
+            DaemonRequest::VolumeZfsSend {
+                namespace,
+                volume,
+                snapshot,
+                target_machine,
+                from_snapshot,
+            } => {
+                self.handle_volume_zfs_send(
+                    &namespace,
+                    &volume,
+                    &snapshot,
+                    &target_machine,
+                    from_snapshot.as_deref(),
+                )
+                .await
+            }
+            DaemonRequest::VolumeZfsPeerSnapshot {
+                namespace,
+                volume,
+                snapshot,
+            } => {
+                self.handle_volume_zfs_peer_snapshot(&namespace, &volume, &snapshot)
+                    .await
+            }
+            DaemonRequest::VolumeZfsPeerSnapshotGuid {
+                namespace,
+                volume,
+                snapshot,
+            } => {
+                self.handle_volume_zfs_peer_snapshot_guid(&namespace, &volume, &snapshot)
+                    .await
+            }
+            DaemonRequest::VolumeZfsPeerStartSend {
+                namespace,
+                volume,
+                snapshot,
+                target_machine,
+                expected_guid,
+                from_snapshot,
+                from_snapshot_guid,
+            } => {
+                self.handle_volume_zfs_peer_start_send(
+                    &namespace,
+                    &volume,
+                    &snapshot,
+                    &target_machine,
+                    expected_guid,
+                    from_snapshot.as_deref(),
+                    from_snapshot_guid,
+                )
+                .await
+            }
+            DaemonRequest::VolumeZfsTransferGet { id } => {
+                self.handle_volume_zfs_transfer_get(&id).await
+            }
+            DaemonRequest::VolumeZfsTransferList => self.handle_volume_zfs_transfer_list().await,
             DaemonRequest::MeshList => self.handle_mesh_list(),
             DaemonRequest::MeshStatus { network } => self.handle_mesh_status(&network),
             DaemonRequest::MeshReady { json } => self.handle_mesh_ready(json).await,
             DaemonRequest::MeshCreate { network } => self.handle_mesh_create(&network),
             DaemonRequest::MachineList => self.handle_machine_list().await,
+            DaemonRequest::MachineRtt => self.handle_machine_rtt().await,
+            DaemonRequest::MeshPeerRttSnapshot => self.handle_mesh_peer_rtt_snapshot().await,
             DaemonRequest::MachineInit {
                 target,
                 network,
@@ -127,12 +216,19 @@ impl DaemonState {
                 self.handle_machine_invite_import(&token).await
             }
             DaemonRequest::Coord { op } => self.handle_coord(op).await,
+            DaemonRequest::AcmeChallengeReady { hostname, token } => {
+                self.handle_acme_challenge_ready(&hostname, &token).await
+            }
             DaemonRequest::MeshSelfRecord => self.handle_mesh_self_record().await,
             DaemonRequest::MeshAccept { response } => self.handle_mesh_accept(&response).await,
         }
     }
 
-    pub async fn handle_exclusive(&mut self, req: DaemonRequest) -> DaemonResponse {
+    pub async fn handle_exclusive(
+        &mut self,
+        req: DaemonRequest,
+        response_flushed: Option<oneshot::Receiver<()>>,
+    ) -> DaemonResponse {
         match req {
             DaemonRequest::DebugTick { task, repeat } => self.handle_debug_tick(task, repeat).await,
             DaemonRequest::MeshJoin { token } => self.handle_mesh_join(&token).await,
@@ -176,7 +272,7 @@ impl DaemonState {
                 operation_id,
                 network_id,
             } => {
-                self.handle_mesh_peer_execute_destroy(&operation_id, &network_id)
+                self.handle_mesh_peer_execute_destroy(&operation_id, &network_id, response_flushed)
                     .await
             }
             DaemonRequest::MachineRemove { id, force } => {
@@ -187,19 +283,35 @@ impl DaemonState {
                 network_id,
                 machine_id,
             } => {
-                self.handle_mesh_peer_remove_machine(&operation_id, &network_id, &machine_id)
-                    .await
+                self.handle_mesh_peer_remove_machine(
+                    &operation_id,
+                    &network_id,
+                    &machine_id,
+                    response_flushed,
+                )
+                .await
             }
-            DaemonRequest::Status
+            DaemonRequest::Ping
+            | DaemonRequest::Status
             | DaemonRequest::Doctor
             | DaemonRequest::DeployPreview { .. }
             | DaemonRequest::DeployApply { .. }
             | DaemonRequest::DeployExport { .. }
+            | DaemonRequest::VolumeZfsInspect { .. }
+            | DaemonRequest::VolumeZfsSnapshot { .. }
+            | DaemonRequest::VolumeZfsSend { .. }
+            | DaemonRequest::VolumeZfsPeerSnapshot { .. }
+            | DaemonRequest::VolumeZfsPeerSnapshotGuid { .. }
+            | DaemonRequest::VolumeZfsPeerStartSend { .. }
+            | DaemonRequest::VolumeZfsTransferGet { .. }
+            | DaemonRequest::VolumeZfsTransferList
             | DaemonRequest::MeshList
             | DaemonRequest::MeshStatus { .. }
             | DaemonRequest::MeshReady { .. }
             | DaemonRequest::MeshCreate { .. }
             | DaemonRequest::MachineList
+            | DaemonRequest::MachineRtt
+            | DaemonRequest::MeshPeerRttSnapshot
             | DaemonRequest::MachineInit { .. }
             | DaemonRequest::MachineAdd { .. }
             | DaemonRequest::MachineActivate { .. }
@@ -212,6 +324,7 @@ impl DaemonState {
             | DaemonRequest::MachineInviteList
             | DaemonRequest::MachineInviteImport { .. }
             | DaemonRequest::Coord { .. }
+            | DaemonRequest::AcmeChallengeReady { .. }
             | DaemonRequest::MeshSelfRecord
             | DaemonRequest::MeshAccept { .. } => {
                 self.err("INTERNAL", "shared request routed to exclusive handler")

@@ -5,8 +5,8 @@ use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock
 use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
 use ipnet::Ipv4Net;
 use ployz_api::{
-    DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MachineTransitionGoal,
-    MeshReadyPayload, MeshSelfRecordPayload,
+    DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MachineRttPayload,
+    MachineRttRow, MachineTransitionGoal, MeshReadyPayload, MeshSelfRecordPayload,
 };
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::mesh::driver::WireguardDriver;
@@ -16,8 +16,8 @@ use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{InviteRepository, MachineRegistry};
 use ployz_types::model::{
-    JoinResponse, MachineId, MachineLifecycle, MachineRecord, NetworkLifecycle, OverlayIp,
-    PublicKey,
+    JoinResponse, MachineId, MachineLifecycle, MachineMembership, MachineTopology,
+    NetworkLifecycle, OverlayIp, PublicKey,
 };
 use ployz_types::time::now_unix_secs;
 use std::path::{Path, PathBuf};
@@ -84,6 +84,109 @@ async fn machine_list_json_payload_contains_rows() {
 }
 
 #[tokio::test]
+async fn machine_rtt_aggregates_remote_peer_rows() {
+    let listener = TcpListener::bind("[::1]:0")
+        .await
+        .expect("bind overlay listener");
+    let peer_rpc_port = listener.local_addr().expect("listener addr").port();
+    let remote_control_port = peer_rpc_port
+        .checked_sub(1)
+        .expect("peer rpc port has preceding remote control port");
+    let (mut state, store, _) = make_state_with_remote_port(true, remote_control_port).await;
+
+    let mut peer = test_machine_record(
+        "peer-1",
+        "10.210.1.0/24",
+        MachineLifecycle::Active,
+        PublicKey([2; 32]),
+    );
+    peer.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
+    store.upsert_self_machine(&peer).await.expect("upsert peer");
+
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept overlay rpc");
+        let (reader, mut writer) = stream.into_split();
+        let mut buf = BufReader::new(reader);
+        let mut line = String::new();
+        buf.read_line(&mut line).await.expect("read request");
+        let request: DaemonRequest = serde_json::from_str(&line).expect("decode daemon request");
+        assert!(matches!(request, DaemonRequest::MeshPeerRttSnapshot));
+        let mut response_line = serde_json::to_string(&DaemonResponse {
+            ok: true,
+            code: "OK".into(),
+            message: "MACHINE  PEER  MEDIAN  STDDEV".into(),
+            payload: Some(DaemonPayload::MachineRtt(MachineRttPayload {
+                rows: vec![MachineRttRow {
+                    machine: "peer-1".into(),
+                    peer: "founder".into(),
+                    median_ms: 40.0,
+                    stddev_ms: 2.0,
+                }],
+                warnings: Vec::new(),
+            })),
+        })
+        .expect("encode response");
+        response_line.push('\n');
+        writer
+            .write_all(response_line.as_bytes())
+            .await
+            .expect("write response");
+        writer.shutdown().await.expect("shutdown writer");
+    });
+
+    let response = state.handle_machine_rtt().await;
+
+    assert!(response.ok);
+    let Some(DaemonPayload::MachineRtt(payload)) = response.payload else {
+        panic!("expected machine rtt payload");
+    };
+    assert_eq!(payload.rows.len(), 1);
+    assert_eq!(payload.rows[0].machine, "peer-1");
+    assert_eq!(payload.rows[0].peer, "founder");
+    assert!(response.message.contains("peer-1"));
+    assert!(response.message.contains("±2.0ms"));
+
+    server.await.expect("overlay server exit");
+    teardown_state(&mut state).await;
+}
+
+#[tokio::test]
+async fn machine_rtt_warns_when_remote_peer_is_unreachable() {
+    let listener = TcpListener::bind("[::1]:0")
+        .await
+        .expect("bind overlay listener");
+    let peer_rpc_port = listener.local_addr().expect("listener addr").port();
+    drop(listener);
+    let remote_control_port = peer_rpc_port
+        .checked_sub(1)
+        .expect("peer rpc port has preceding remote control port");
+    let (mut state, store, _) = make_state_with_remote_port(true, remote_control_port).await;
+
+    let mut peer = test_machine_record(
+        "peer-1",
+        "10.210.1.0/24",
+        MachineLifecycle::Active,
+        PublicKey([2; 32]),
+    );
+    peer.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
+    store.upsert_self_machine(&peer).await.expect("upsert peer");
+
+    let response = state.handle_machine_rtt().await;
+
+    assert!(response.ok);
+    assert!(response.message.contains("warnings:"));
+    assert!(response.message.contains("peer-1"));
+    let Some(DaemonPayload::MachineRtt(payload)) = response.payload else {
+        panic!("expected machine rtt payload");
+    };
+    assert!(payload.rows.is_empty());
+    assert_eq!(payload.warnings.len(), 1);
+    assert!(payload.warnings[0].contains("peer-1"));
+
+    teardown_state(&mut state).await;
+}
+
+#[tokio::test]
 async fn machine_add_activates_joiner_lifecycle() {
     let _guard = test_ssh_env_lock().lock().await;
     let listener = TcpListener::bind("[::1]:0")
@@ -143,7 +246,7 @@ async fn machine_add_activates_joiner_lifecycle() {
             } = request
             {
                 {
-                    let mut joiner_record = MachineRecord::seed(
+                    let mut joiner_record = MachineMembership::seed(
                         MachineId("joiner-1".into()),
                         PublicKey([4; 32]),
                         "::1".parse().map(OverlayIp).expect("valid overlay"),
@@ -194,6 +297,7 @@ async fn machine_add_activates_joiner_lifecycle() {
         machine_id: MachineId("joiner-1".into()),
         public_key: PublicKey([4; 32]),
         overlay_ip: "::1".parse().map(OverlayIp).expect("valid overlay"),
+        topology: MachineTopology::local(),
         subnet: Some(expected_subnet),
         endpoints: vec!["203.0.113.10:51820".into()],
     }
@@ -203,7 +307,11 @@ async fn machine_add_activates_joiner_lifecycle() {
     let ssh_dir = unique_temp_dir("ployz-fake-ssh");
     std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
     let fake_ssh = write_fake_ssh(&ssh_dir);
-    let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
+    let _ssh_guard = TestSshProgramGuard::set(fake_ssh.clone());
+    let _ployz_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_LOCAL_PLOYZ",
+        Some(fake_ssh.clone().into_os_string()),
+    );
     let self_record_response = serde_json::to_string(&DaemonResponse {
         ok: true,
         code: "OK".into(),
@@ -212,7 +320,7 @@ async fn machine_add_activates_joiner_lifecycle() {
             encoded: join_response.clone(),
             record: JoinResponse::decode(&join_response)
                 .expect("decode join response")
-                .into_seed_machine_record(),
+                .into_seed_machine_membership(),
         })),
     })
     .expect("encode self-record response");
@@ -245,7 +353,7 @@ async fn machine_add_activates_joiner_lifecycle() {
         network
             .current_peers()
             .into_iter()
-            .any(|machine| machine.id.0 == "joiner-1")
+            .any(|peer| peer.id().0 == "joiner-1")
     );
     server.await.expect("overlay server exit");
 
@@ -275,6 +383,7 @@ async fn machine_add_requires_sync_connected_for_running_joiner() {
         machine_id: MachineId("joiner-2".into()),
         public_key: PublicKey([5; 32]),
         overlay_ip: "fd00::5".parse().map(OverlayIp).expect("valid overlay"),
+        topology: MachineTopology::local(),
         subnet: Some(expected_subnet),
         endpoints: vec!["203.0.113.11:51820".into()],
     }
@@ -284,7 +393,11 @@ async fn machine_add_requires_sync_connected_for_running_joiner() {
     let ssh_dir = unique_temp_dir("ployz-fake-ssh");
     std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
     let fake_ssh = write_fake_ssh(&ssh_dir);
-    let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
+    let _ssh_guard = TestSshProgramGuard::set(fake_ssh.clone());
+    let _ployz_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_LOCAL_PLOYZ",
+        Some(fake_ssh.clone().into_os_string()),
+    );
     let self_record_response = serde_json::to_string(&DaemonResponse {
         ok: true,
         code: "OK".into(),
@@ -293,7 +406,7 @@ async fn machine_add_requires_sync_connected_for_running_joiner() {
             encoded: join_response.clone(),
             record: JoinResponse::decode(&join_response)
                 .expect("decode join response")
-                .into_seed_machine_record(),
+                .into_seed_machine_membership(),
         })),
     })
     .expect("encode self-record response");
@@ -330,7 +443,7 @@ async fn machine_add_requires_sync_connected_for_running_joiner() {
         !network
             .current_peers()
             .into_iter()
-            .any(|machine| machine.id.0 == "joiner-2")
+            .any(|peer| peer.id().0 == "joiner-2")
     );
 
     teardown_state(&mut state).await;
@@ -686,7 +799,11 @@ async fn reserve_machine_subnet_clears_local_hold_when_quorum_denies() {
     let ssh_dir = unique_temp_dir("ployz-fake-ssh-quorum-deny");
     std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
     let fake_ssh = write_fake_ssh(&ssh_dir);
-    let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
+    let _ssh_guard = TestSshProgramGuard::set(fake_ssh.clone());
+    let _ployz_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_LOCAL_PLOYZ",
+        Some(fake_ssh.clone().into_os_string()),
+    );
     let _deny_prepare_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_COORD_PREPARE_DENY_TARGETS",
         Some("peer-quorum".into()),
@@ -827,7 +944,11 @@ async fn machine_add_releases_reserved_subnet_when_remote_bootstrap_fails() {
     let ssh_dir = unique_temp_dir("ployz-fake-ssh-bootstrap-fail");
     std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
     let fake_ssh = write_fake_ssh(&ssh_dir);
-    let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
+    let _ssh_guard = TestSshProgramGuard::set(fake_ssh.clone());
+    let _ployz_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_LOCAL_PLOYZ",
+        Some(fake_ssh.clone().into_os_string()),
+    );
     let _status_fail_guard =
         TestSshEnvGuard::set("PLOYZ_TEST_STATUS_FAIL_TARGETS", Some("join-target".into()));
 
@@ -854,6 +975,7 @@ async fn machine_add_rejects_remote_subnet_mismatch_before_invite_consume() {
         machine_id: MachineId("joiner-mismatch".into()),
         public_key: PublicKey([14; 32]),
         overlay_ip: "fd00::14".parse().map(OverlayIp).expect("valid overlay"),
+        topology: MachineTopology::local(),
         subnet: Some("10.210.99.0/24".parse().expect("valid subnet")),
         endpoints: vec!["203.0.113.14:51820".into()],
     }
@@ -863,7 +985,11 @@ async fn machine_add_rejects_remote_subnet_mismatch_before_invite_consume() {
     let ssh_dir = unique_temp_dir("ployz-fake-ssh-mismatch");
     std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
     let fake_ssh = write_fake_ssh(&ssh_dir);
-    let _ssh_guard = TestSshProgramGuard::set(fake_ssh);
+    let _ssh_guard = TestSshProgramGuard::set(fake_ssh.clone());
+    let _ployz_guard = TestSshEnvGuard::set(
+        "PLOYZ_TEST_LOCAL_PLOYZ",
+        Some(fake_ssh.clone().into_os_string()),
+    );
     let self_record_response = serde_json::to_string(&DaemonResponse {
         ok: true,
         code: "OK".into(),
@@ -872,7 +998,7 @@ async fn machine_add_rejects_remote_subnet_mismatch_before_invite_consume() {
             encoded: join_response.clone(),
             record: JoinResponse::decode(&join_response)
                 .expect("decode join response")
-                .into_seed_machine_record(),
+                .into_seed_machine_membership(),
         })),
     })
     .expect("encode self-record response");
@@ -1140,6 +1266,7 @@ async fn make_state_with_remote_port(
         24,
         remote_control_port,
         "127.0.0.1:0".into(),
+        None,
         1,
     );
     let mut config = config;
@@ -1155,8 +1282,10 @@ async fn make_state_with_remote_port(
         mesh,
         remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+        zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+        certificate_renewal: None,
     });
 
     (state, store, network)
@@ -1174,14 +1303,15 @@ fn test_machine_record(
     subnet: &str,
     lifecycle: MachineLifecycle,
     public_key: PublicKey,
-) -> MachineRecord {
-    MachineRecord {
+) -> MachineMembership {
+    MachineMembership {
         id: MachineId(id.into()),
         public_key,
         overlay_ip: format!("fd00::{id_len:x}", id_len = id.len())
             .parse()
             .map(OverlayIp)
             .expect("valid overlay"),
+        topology: MachineTopology::local(),
         control_target: Some(id.into()),
         subnet: Some(subnet.parse().expect("valid subnet")),
         bridge_ip: None,

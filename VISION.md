@@ -236,10 +236,24 @@ truth in the background from stale observations.
 
 Corrosion replicates the full store to every mesh member. Anything written
 to a replicated table — including TLS private keys, ACME account keys, and
-invite tokens — lands on every machine in the same form it was written.
-Every mesh member is equally trusted with cluster secrets. Recovering from
-a suspected compromise means rotating material, not just removing the
-machine.
+invite tokens — lands on every machine's data directory in the same form it
+was written. This is a deliberate design choice: it gives any machine the
+ability to terminate TLS, serve routes, and take over control-plane
+responsibilities without a separate key-distribution channel.
+
+The consequences follow from that:
+
+- Every mesh member must be treated as equally trusted with the cluster's
+  secrets. There is no "gateway-only" node that holds less.
+- Data-directory backups contain all private key material in effect at the
+  time of the backup.
+- Recovering from a suspected compromise means rotating the affected
+  material (re-issuing certs, revoking ACME accounts), not just removing the
+  machine.
+
+If a future workload needs a stricter boundary than "any mesh member can read
+it," that workload is outside the mesh's trust model and needs a separate
+mechanism — not a privacy flag on a Corrosion table.
 
 ### 10. Local and cloud share one model
 

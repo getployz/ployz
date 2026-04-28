@@ -185,6 +185,11 @@ pub(crate) enum Command {
         action: MachineAction,
     },
     #[command(hide = true)]
+    Volume {
+        #[command(subcommand)]
+        action: VolumeAction,
+    },
+    #[command(hide = true)]
     RpcStdio,
 }
 
@@ -213,6 +218,47 @@ pub(crate) struct DeployCommand {
 pub(crate) enum DeployAction {
     Preview(DeployManifestArgs),
     Service(DeployServiceArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum VolumeAction {
+    Zfs {
+        #[command(subcommand)]
+        action: VolumeZfsAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum VolumeZfsAction {
+    Inspect {
+        namespace_volume: String,
+        #[arg(long)]
+        machine: Option<String>,
+    },
+    Snapshot {
+        namespace_volume: String,
+        #[arg(long)]
+        name: String,
+    },
+    Send {
+        namespace_volume: String,
+        #[arg(long)]
+        snapshot: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        from_snapshot: Option<String>,
+    },
+    Transfer {
+        #[command(subcommand)]
+        action: VolumeZfsTransferAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum VolumeZfsTransferAction {
+    Get { id: String },
+    List,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -307,6 +353,7 @@ pub(crate) enum MeshAction {
 pub(crate) enum MachineAction {
     #[command(alias = "list")]
     Ls,
+    Rtt,
     Init {
         target: String,
         #[arg(long)]

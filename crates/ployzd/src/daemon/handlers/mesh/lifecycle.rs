@@ -7,13 +7,19 @@ use crate::mesh_state::network::NetworkConfig;
 use ployz_api::{DaemonRequest, MachineTransitionGoal};
 use ployz_orchestrator::ipam::pick_candidate_subnet;
 use ployz_store_api::MachineRegistry;
-use ployz_types::model::MachineRecord;
+use ployz_types::model::MachineMembership;
 use ployz_types::model::{MachineId, MachineLifecycle, NetworkId, NetworkLifecycle, NetworkName};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use tokio::sync::oneshot;
 use tracing::{error, warn};
 
 use super::DaemonState;
 use crate::daemon::ActiveMesh;
+
+struct MeshControlHandles {
+    peer_control: Box<dyn ployz_runtime_api::RuntimeHandle>,
+    remote_control: Box<dyn ployz_runtime_api::RuntimeHandle>,
+}
 
 impl DaemonState {
     pub(crate) fn handle_mesh_create(&self, network: &str) -> ployz_api::DaemonResponse {
@@ -165,6 +171,7 @@ impl DaemonState {
         let Some(mut active) = self.active.take() else {
             return self.err("NO_RUNNING_NETWORK", "no mesh running");
         };
+        active.stop_certificate_renewal().await;
         if let Err(error) = active.mesh.destroy().await {
             self.active = Some(active);
             return self.err("NETWORK_STOP_FAILED", format!("mesh stop failed: {error}"));
@@ -390,6 +397,7 @@ impl DaemonState {
         &mut self,
         operation_id: &str,
         network_id: &NetworkId,
+        response_flushed: Option<oneshot::Receiver<()>>,
     ) -> ployz_api::DaemonResponse {
         match self.take_active_for_destroy(network_id) {
             Ok(active) => {
@@ -397,8 +405,10 @@ impl DaemonState {
                 let machine_id = self.identity.machine_id.clone();
                 let operation_id_for_log = operation_id.to_string();
                 let network_id_for_log = network_id.clone();
-                tokio::spawn(async move {
-                    if let Err(error) = Self::perform_mesh_teardown(data_dir, active).await {
+                Self::spawn_teardown_after_response(
+                    response_flushed,
+                    async move { Self::perform_mesh_teardown(data_dir, active).await },
+                    move |error| {
                         error!(
                             operation_id = %operation_id_for_log,
                             network_id = %network_id_for_log,
@@ -406,8 +416,8 @@ impl DaemonState {
                             %error,
                             "mesh destroy teardown failed after peer ack"
                         );
-                    }
-                });
+                    },
+                );
                 self.ok(format!(
                     "mesh destroy operation '{operation_id}' executed on '{}'",
                     self.identity.machine_id
@@ -422,6 +432,7 @@ impl DaemonState {
         operation_id: &str,
         network_id: &NetworkId,
         machine_id: &MachineId,
+        response_flushed: Option<oneshot::Receiver<()>>,
     ) -> ployz_api::DaemonResponse {
         if *machine_id != self.identity.machine_id {
             return self.err(
@@ -439,8 +450,10 @@ impl DaemonState {
                 let local_machine_id = self.identity.machine_id.clone();
                 let operation_id_for_log = operation_id.to_string();
                 let network_id_for_log = network_id.clone();
-                tokio::spawn(async move {
-                    if let Err(error) = Self::perform_mesh_teardown(data_dir, active).await {
+                Self::spawn_teardown_after_response(
+                    response_flushed,
+                    async move { Self::perform_mesh_teardown(data_dir, active).await },
+                    move |error| {
                         error!(
                             operation_id = %operation_id_for_log,
                             network_id = %network_id_for_log,
@@ -448,8 +461,8 @@ impl DaemonState {
                             %error,
                             "machine remove teardown failed after peer ack"
                         );
-                    }
-                });
+                    },
+                );
                 self.ok(format!(
                     "machine remove operation '{operation_id}' executed on '{}'",
                     self.identity.machine_id
@@ -488,26 +501,72 @@ impl DaemonState {
         Ok(active)
     }
 
-    async fn perform_mesh_teardown(
-        data_dir: PathBuf,
-        mut active: ActiveMesh,
-    ) -> Result<(), String> {
-        let network_name = active.config.name.0.clone();
+    async fn perform_mesh_teardown(data_dir: PathBuf, active: ActiveMesh) -> Result<(), String> {
+        let (result, control_handles) =
+            Self::perform_mesh_teardown_before_control_shutdown(&data_dir, active).await;
+        let _ = control_handles.peer_control.shutdown().await;
+        let _ = control_handles.remote_control.shutdown().await;
+        result
+    }
 
-        if let Err(error) = active.mesh.destroy_and_wipe_store_data().await {
-            return Err(format!("mesh runtime destroy and wipe failed: {error}"));
-        }
-        let _ = active.peer_control.shutdown().await;
-        let _ = active.remote_control.shutdown().await;
-        if let Err(error) = active.dns.shutdown().await {
-            warn!(?error, "dns stop failed during mesh destroy");
-        }
-        if let Err(error) = active.gateway.shutdown().await {
-            return Err(format!("gateway stop failed: {error}"));
-        }
+    async fn perform_mesh_teardown_before_control_shutdown(
+        data_dir: &Path,
+        active: ActiveMesh,
+    ) -> (Result<(), String>, MeshControlHandles) {
+        let ActiveMesh {
+            config,
+            mut mesh,
+            remote_control,
+            peer_control,
+            gateway,
+            dns,
+            mut certificate_renewal,
+            ..
+        } = active;
+        let network_name = config.name.0;
+        let control_handles = MeshControlHandles {
+            peer_control,
+            remote_control,
+        };
 
-        NetworkConfig::delete(&data_dir, &network_name)
-            .map_err(|error| format!("failed to delete network config: {error}"))
+        let result = async move {
+            if let Some(task) = certificate_renewal.take() {
+                task.shutdown().await;
+            }
+            if let Err(error) = mesh.destroy_and_wipe_store_data().await {
+                return Err(format!("mesh runtime destroy and wipe failed: {error}"));
+            }
+            if let Err(error) = dns.shutdown().await {
+                warn!(?error, "dns stop failed during mesh destroy");
+            }
+            if let Err(error) = gateway.shutdown().await {
+                return Err(format!("gateway stop failed: {error}"));
+            }
+
+            NetworkConfig::delete(data_dir, &network_name)
+                .map_err(|error| format!("failed to delete network config: {error}"))
+        }
+        .await;
+
+        (result, control_handles)
+    }
+
+    fn spawn_teardown_after_response<T, F>(
+        response_flushed: Option<oneshot::Receiver<()>>,
+        teardown: T,
+        log_error: F,
+    ) where
+        T: std::future::Future<Output = Result<(), String>> + Send + 'static,
+        F: FnOnce(String) + Send + 'static,
+    {
+        tokio::spawn(async move {
+            if let Some(response_flushed) = response_flushed {
+                let _ = response_flushed.await;
+            }
+            if let Err(error) = teardown.await {
+                log_error(error);
+            }
+        });
     }
 
     async fn start_network_transition(
@@ -574,6 +633,7 @@ impl DaemonState {
         let Some(mut active) = self.active.take() else {
             return;
         };
+        active.stop_certificate_renewal().await;
         if let Err(error) = active.mesh.destroy().await {
             warn!(?error, "failed to stop mesh after transition error");
         }
@@ -588,7 +648,7 @@ impl DaemonState {
     }
 }
 
-fn sorted_machine_ids(machines: &[MachineRecord]) -> Vec<MachineId> {
+fn sorted_machine_ids(machines: &[MachineMembership]) -> Vec<MachineId> {
     let mut ids = machines
         .iter()
         .map(|machine| machine.id.clone())
@@ -599,7 +659,7 @@ fn sorted_machine_ids(machines: &[MachineRecord]) -> Vec<MachineId> {
 
 async fn persist_stopped_self_record(
     active: &mut ActiveMesh,
-    previous_self_record: &MachineRecord,
+    previous_self_record: &MachineMembership,
 ) -> Result<(), String> {
     let mut standby = previous_self_record.clone();
     standby.lifecycle = MachineLifecycle::Standby;

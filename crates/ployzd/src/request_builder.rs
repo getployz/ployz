@@ -1,3 +1,4 @@
+use crate::cli::{VolumeAction, VolumeZfsAction, VolumeZfsTransferAction};
 use crate::cli_io::{read_optional_text_file, read_stdin_string, read_text_source, request_daemon};
 use crate::{
     CliError, Command, DebugAction, DeployAction, DeployCommand, DeployManifestArgs,
@@ -10,8 +11,9 @@ use ployz_api::{
 };
 use ployz_sdk::Transport;
 use ployz_types::spec::{
-    ContainerSpec, DeployManifest, NetworkMode, Placement, PortProtocol, PublishedPort, PullPolicy,
-    Resources, RestartPolicy, RolloutStrategy, ServicePort, ServiceSpec, VolumeMount, VolumeSource,
+    ContainerSpec, DeployManifest, Mount, MountSource, Namespace, NetworkMode, Placement,
+    PortProtocol, PublishedPort, PullPolicy, Resources, RestartPolicy, RolloutStrategy,
+    ServicePort, ServiceSpec,
 };
 use std::collections::BTreeMap;
 
@@ -27,6 +29,7 @@ pub(crate) async fn build_request<T: Transport>(
         Command::Deploy(command) => build_deploy_request(*command, transport, socket).await,
         Command::Mesh { action } => build_mesh_request(action),
         Command::Machine { action } => build_machine_request(action),
+        Command::Volume { action } => build_volume_request(action),
         Command::RpcStdio => Err(CliError::Usage(
             "internal error: rpc-stdio is handled directly".into(),
         )),
@@ -34,6 +37,72 @@ pub(crate) async fn build_request<T: Transport>(
             "internal error: daemon command cannot be encoded as a daemon request".into(),
         )),
     }
+}
+
+fn build_volume_request(action: VolumeAction) -> Result<DaemonRequest> {
+    match action {
+        VolumeAction::Zfs { action } => build_volume_zfs_request(action),
+    }
+}
+
+fn build_volume_zfs_request(action: VolumeZfsAction) -> Result<DaemonRequest> {
+    match action {
+        VolumeZfsAction::Inspect {
+            namespace_volume,
+            machine,
+        } => {
+            let (namespace, volume) = parse_namespace_volume(&namespace_volume)?;
+            Ok(DaemonRequest::VolumeZfsInspect {
+                namespace,
+                volume,
+                machine,
+            })
+        }
+        VolumeZfsAction::Snapshot {
+            namespace_volume,
+            name,
+        } => {
+            let (namespace, volume) = parse_namespace_volume(&namespace_volume)?;
+            Ok(DaemonRequest::VolumeZfsSnapshot {
+                namespace,
+                volume,
+                snapshot: name,
+            })
+        }
+        VolumeZfsAction::Send {
+            namespace_volume,
+            snapshot,
+            to,
+            from_snapshot,
+        } => {
+            let (namespace, volume) = parse_namespace_volume(&namespace_volume)?;
+            Ok(DaemonRequest::VolumeZfsSend {
+                namespace,
+                volume,
+                snapshot,
+                target_machine: to,
+                from_snapshot,
+            })
+        }
+        VolumeZfsAction::Transfer { action } => match action {
+            VolumeZfsTransferAction::Get { id } => Ok(DaemonRequest::VolumeZfsTransferGet { id }),
+            VolumeZfsTransferAction::List => Ok(DaemonRequest::VolumeZfsTransferList),
+        },
+    }
+}
+
+fn parse_namespace_volume(value: &str) -> Result<(String, String)> {
+    let Some((namespace, volume)) = value.split_once('/') else {
+        return Err(CliError::Usage(format!(
+            "expected namespace/volume, got '{value}'"
+        )));
+    };
+    if namespace.is_empty() || volume.is_empty() || volume.contains('/') {
+        return Err(CliError::Usage(format!(
+            "expected namespace/volume, got '{value}'"
+        )));
+    }
+    Ok((namespace.to_string(), volume.to_string()))
 }
 
 pub(crate) fn build_debug_request(action: DebugAction) -> Result<DaemonRequest> {
@@ -82,6 +151,12 @@ async fn build_deploy_service_request<T: Transport>(
     transport: &T,
     socket: &str,
 ) -> Result<DaemonRequest> {
+    if !args.volume.is_empty() && args.namespace != Namespace::system().0 {
+        return Err(CliError::Usage(
+            "deploy service -v creates a host bind mount and is only supported in the system namespace; declare managed volumes in a manifest for user workloads"
+                .into(),
+        ));
+    }
     let mut manifest = export_namespace_manifest(transport, socket, &args.namespace).await?;
     let spec = build_service_spec(
         &args.image,
@@ -200,6 +275,7 @@ fn build_mesh_request(action: MeshAction) -> Result<DaemonRequest> {
 pub(crate) fn build_machine_request(action: MachineAction) -> Result<DaemonRequest> {
     match action {
         MachineAction::Ls => Ok(DaemonRequest::MachineList),
+        MachineAction::Rtt => Ok(DaemonRequest::MachineRtt),
         MachineAction::Init {
             target,
             network,
@@ -395,18 +471,18 @@ pub(crate) fn build_service_spec(
         })
         .collect();
 
-    let volumes: Vec<VolumeMount> = volume
+    let mounts: Vec<Mount> = volume
         .iter()
         .filter_map(|mapping| {
             let parts: Vec<&str> = mapping.splitn(3, ':').collect();
             match parts.as_slice() {
-                [src, dst] => Some(VolumeMount {
-                    source: VolumeSource::Bind(src.to_string()),
+                [src, dst] => Some(Mount {
+                    source: MountSource::Bind(src.to_string()),
                     target: dst.to_string(),
                     readonly: false,
                 }),
-                [src, dst, opts] => Some(VolumeMount {
-                    source: VolumeSource::Bind(src.to_string()),
+                [src, dst, opts] => Some(Mount {
+                    source: MountSource::Bind(src.to_string()),
                     target: dst.to_string(),
                     readonly: *opts == "ro",
                 }),
@@ -437,7 +513,7 @@ pub(crate) fn build_service_spec(
             },
             entrypoint: None,
             env: env_map,
-            volumes,
+            mounts,
             cap_add: vec![],
             cap_drop: vec![],
             privileged: false,

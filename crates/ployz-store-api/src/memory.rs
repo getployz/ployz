@@ -1,13 +1,16 @@
 use crate::{
-    DeployCommit, DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
+    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
+    DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
     InstanceStatusRepository, InviteRepository, MachineRegistry, RoutingInvalidationSubscription,
     RoutingSnapshotReader, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
-    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeRecord, CertificateEvent,
+    CertificateRecord, DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord,
+    MachineEvent, MachineId, MachineMembership, RoutingState, ServiceReleaseRecord,
+    ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::collections::{HashMap, HashSet};
@@ -21,14 +24,20 @@ pub struct MemoryStore {
 }
 
 struct StoreInner {
-    machines: HashMap<MachineId, MachineRecord>,
+    machines: HashMap<MachineId, MachineMembership>,
     machine_subscribers: Vec<mpsc::Sender<MachineEvent>>,
     routing_subscribers: Vec<mpsc::Sender<()>>,
     invites: HashMap<String, InviteRecord>,
     service_revisions: HashMap<(Namespace, String, String), ServiceRevisionRecord>,
     service_releases: HashMap<(Namespace, String), ServiceReleaseRecord>,
+    volumes: HashMap<(Namespace, String), VolumeRecord>,
     instance_status: HashMap<InstanceId, InstanceStatusRecord>,
     deploys: HashMap<DeployId, DeployRecord>,
+    acme_accounts: HashMap<String, AcmeAccountRecord>,
+    certificates: HashMap<String, CertificateRecord>,
+    certificate_subscribers: Vec<mpsc::Sender<CertificateEvent>>,
+    acme_challenges: HashMap<(String, String), AcmeChallengeRecord>,
+    acme_challenge_subscribers: Vec<mpsc::Sender<AcmeChallengeEvent>>,
     sync_status: SyncStatus,
 }
 
@@ -49,8 +58,14 @@ impl MemoryStore {
                 invites: HashMap::new(),
                 service_revisions: HashMap::new(),
                 service_releases: HashMap::new(),
+                volumes: HashMap::new(),
                 instance_status: HashMap::new(),
                 deploys: HashMap::new(),
+                acme_accounts: HashMap::new(),
+                certificates: HashMap::new(),
+                certificate_subscribers: Vec::new(),
+                acme_challenges: HashMap::new(),
+                acme_challenge_subscribers: Vec::new(),
                 sync_status: SyncStatus::Synced,
             }),
         }
@@ -88,6 +103,32 @@ impl MemoryStore {
                 Err(mpsc::error::TrySendError::Full(_)) => true,
             });
     }
+
+    fn broadcast_certificate(inner: &mut StoreInner, event: CertificateEvent) {
+        inner
+            .certificate_subscribers
+            .retain(|sender| match sender.try_send(event.clone()) {
+                Ok(()) => true,
+                Err(mpsc::error::TrySendError::Closed(_)) => false,
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    warn!("certificate subscriber channel full, event dropped");
+                    true
+                }
+            });
+    }
+
+    fn broadcast_acme_challenge(inner: &mut StoreInner, event: AcmeChallengeEvent) {
+        inner
+            .acme_challenge_subscribers
+            .retain(|sender| match sender.try_send(event.clone()) {
+                Ok(()) => true,
+                Err(mpsc::error::TrySendError::Closed(_)) => false,
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    warn!("acme challenge subscriber channel full, event dropped");
+                    true
+                }
+            });
+    }
 }
 
 impl SyncProbe for MemoryStore {
@@ -97,12 +138,12 @@ impl SyncProbe for MemoryStore {
 }
 
 impl MachineRegistry for MemoryStore {
-    async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
+    async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
         let inner = self.lock_inner();
         Ok(inner.machines.values().cloned().collect())
     }
 
-    async fn upsert_self_machine(&self, record: &MachineRecord) -> Result<()> {
+    async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()> {
         let mut inner = self.lock_inner();
         let is_update = inner.machines.contains_key(&record.id);
         inner.machines.insert(record.id.clone(), record.clone());
@@ -112,6 +153,7 @@ impl MachineRegistry for MemoryStore {
             MachineEvent::Added(record.clone())
         };
         Self::broadcast_machine(&mut inner, event);
+        Self::broadcast_routing_refresh(&mut inner);
         Ok(())
     }
 
@@ -119,6 +161,7 @@ impl MachineRegistry for MemoryStore {
         let mut inner = self.lock_inner();
         if let Some(record) = inner.machines.remove(id) {
             Self::broadcast_machine(&mut inner, MachineEvent::Removed(record));
+            Self::broadcast_routing_refresh(&mut inner);
         }
         Ok(())
     }
@@ -136,6 +179,7 @@ impl RoutingSnapshotReader for MemoryStore {
     async fn load_routing_state(&self) -> Result<RoutingState> {
         let inner = self.lock_inner();
         Ok(RoutingState {
+            machines: inner.machines.values().cloned().collect(),
             revisions: inner.service_revisions.values().cloned().collect(),
             releases: inner.service_releases.values().cloned().collect(),
             instances: inner.instance_status.values().cloned().collect(),
@@ -280,6 +324,30 @@ impl DeployRepository for MemoryStore {
         })
     }
 
+    async fn list_volumes(&self, namespace: &Namespace) -> Result<Vec<VolumeRecord>> {
+        let inner = self.lock_inner();
+        let mut volumes = inner
+            .volumes
+            .values()
+            .filter(|record| record.namespace == *namespace)
+            .cloned()
+            .collect::<Vec<_>>();
+        volumes.sort_by(|left, right| left.volume_name.cmp(&right.volume_name));
+        Ok(volumes)
+    }
+
+    async fn get_volume(
+        &self,
+        namespace: &Namespace,
+        volume_name: &str,
+    ) -> Result<Option<VolumeRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner
+            .volumes
+            .get(&(namespace.clone(), volume_name.to_string()))
+            .cloned())
+    }
+
     async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()> {
         let mut inner = self.lock_inner();
         Self::record_service_revision_inner(&mut inner, &command.revision);
@@ -396,9 +464,112 @@ impl MemoryStore {
             );
         }
 
+        for volume in &command.volumes {
+            inner.volumes.insert(
+                (volume.namespace.clone(), volume.volume_name.clone()),
+                volume.clone(),
+            );
+        }
+
+        for volume_name in &command.removed_volumes {
+            inner
+                .volumes
+                .remove(&(command.namespace.clone(), volume_name.clone()));
+        }
+
         inner
             .deploys
             .insert(command.deploy.deploy_id.clone(), command.deploy.clone());
+    }
+}
+
+impl CertificateStore for MemoryStore {
+    async fn get_acme_account(&self, issuer_url: &str) -> Result<Option<AcmeAccountRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner.acme_accounts.get(issuer_url).cloned())
+    }
+
+    async fn upsert_acme_account(&self, record: &AcmeAccountRecord) -> Result<()> {
+        let mut inner = self.lock_inner();
+        inner
+            .acme_accounts
+            .insert(record.issuer_url.clone(), record.clone());
+        Self::broadcast_routing_refresh(&mut inner);
+        Ok(())
+    }
+
+    async fn list_certificates(&self) -> Result<Vec<CertificateRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner.certificates.values().cloned().collect())
+    }
+
+    async fn get_certificate(&self, hostname: &str) -> Result<Option<CertificateRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner.certificates.get(hostname).cloned())
+    }
+
+    async fn upsert_certificate(&self, record: &CertificateRecord) -> Result<()> {
+        let mut inner = self.lock_inner();
+        let is_update = inner.certificates.contains_key(&record.hostname);
+        inner
+            .certificates
+            .insert(record.hostname.clone(), record.clone());
+        let event = if is_update {
+            CertificateEvent::Updated(record.clone())
+        } else {
+            CertificateEvent::Added(record.clone())
+        };
+        Self::broadcast_certificate(&mut inner, event);
+        Self::broadcast_routing_refresh(&mut inner);
+        Ok(())
+    }
+
+    async fn list_acme_challenges(&self) -> Result<Vec<AcmeChallengeRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner.acme_challenges.values().cloned().collect())
+    }
+
+    async fn upsert_acme_challenge(&self, record: &AcmeChallengeRecord) -> Result<()> {
+        let mut inner = self.lock_inner();
+        let key = (record.hostname.clone(), record.token.clone());
+        let is_update = inner.acme_challenges.contains_key(&key);
+        inner.acme_challenges.insert(key, record.clone());
+        let event = if is_update {
+            AcmeChallengeEvent::Updated(record.clone())
+        } else {
+            AcmeChallengeEvent::Added(record.clone())
+        };
+        Self::broadcast_acme_challenge(&mut inner, event);
+        Self::broadcast_routing_refresh(&mut inner);
+        Ok(())
+    }
+
+    async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> Result<()> {
+        let mut inner = self.lock_inner();
+        if let Some(record) = inner
+            .acme_challenges
+            .remove(&(hostname.to_string(), token.to_string()))
+        {
+            Self::broadcast_acme_challenge(&mut inner, AcmeChallengeEvent::Removed(record));
+        }
+        Self::broadcast_routing_refresh(&mut inner);
+        Ok(())
+    }
+
+    async fn subscribe_certificates(&self) -> Result<CertificateSubscription> {
+        let mut inner = self.lock_inner();
+        let snapshot = inner.certificates.values().cloned().collect();
+        let (sender, receiver) = mpsc::channel(64);
+        inner.certificate_subscribers.push(sender);
+        Ok((snapshot, receiver))
+    }
+
+    async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
+        let mut inner = self.lock_inner();
+        let snapshot = inner.acme_challenges.values().cloned().collect();
+        let (sender, receiver) = mpsc::channel(64);
+        inner.acme_challenge_subscribers.push(sender);
+        Ok((snapshot, receiver))
     }
 }
 
@@ -413,8 +584,12 @@ impl MemoryStore {
         inner.invites.clear();
         inner.service_revisions.clear();
         inner.service_releases.clear();
+        inner.volumes.clear();
         inner.instance_status.clear();
         inner.deploys.clear();
+        inner.acme_accounts.clear();
+        inner.certificates.clear();
+        inner.acme_challenges.clear();
 
         for record in removed {
             Self::broadcast_machine(&mut inner, MachineEvent::Removed(record));
@@ -598,10 +773,12 @@ mod tests {
             .commit_deploy(&DeployCommit {
                 namespace: namespace.clone(),
                 removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
                 releases: vec![
                     test_release(&namespace, "api", "rev-old", "deploy-old"),
                     untouched.clone(),
                 ],
+                volumes: Vec::new(),
                 deploy: test_deploy(&namespace, "deploy-old"),
             })
             .await
@@ -611,7 +788,9 @@ mod tests {
             .commit_deploy(&DeployCommit {
                 namespace: namespace.clone(),
                 removed_services: vec!["worker".into()],
+                removed_volumes: Vec::new(),
                 releases: vec![test_release(&namespace, "api", "rev-new", "deploy-new")],
+                volumes: Vec::new(),
                 deploy: test_deploy(&namespace, "deploy-new"),
             })
             .await
@@ -671,35 +850,6 @@ mod tests {
         assert!(snapshot.instances.is_empty());
     }
 
-    #[tokio::test]
-    async fn machine_writes_do_not_emit_routing_refreshes() {
-        let store = MemoryStore::new();
-        let mut refresh_rx = store
-            .subscribe_routing_invalidations()
-            .await
-            .expect("subscribe");
-        let machine = MachineRecord::seed(
-            MachineId("machine-1".into()),
-            ployz_types::model::PublicKey([1; 32]),
-            ployz_types::model::OverlayIp(std::net::Ipv6Addr::LOCALHOST),
-            None,
-            Vec::new(),
-        );
-
-        store
-            .upsert_self_machine(&machine)
-            .await
-            .expect("upsert machine");
-        store
-            .delete_machine(&machine.id)
-            .await
-            .expect("delete machine");
-
-        let event =
-            tokio::time::timeout(std::time::Duration::from_millis(50), refresh_rx.recv()).await;
-        assert!(event.is_err());
-    }
-
     fn test_release(
         namespace: &Namespace,
         service: &str,
@@ -755,5 +905,129 @@ mod tests {
             started_at: 1,
             updated_at: 1,
         }
+    }
+
+    #[tokio::test]
+    async fn load_routing_state_includes_machines() {
+        let store = MemoryStore::new();
+        let machine = MachineMembership {
+            id: MachineId("machine-1".into()),
+            public_key: ployz_types::model::PublicKey([0; 32]),
+            overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
+            topology: ployz_types::model::MachineTopology::new("us-east", Some("use1-a"))
+                .expect("topology should parse"),
+            control_target: None,
+            subnet: None,
+            bridge_ip: None,
+            endpoints: Vec::new(),
+            lifecycle: ployz_types::model::MachineLifecycle::Active,
+            created_at: 1,
+            updated_at: 1,
+            labels: std::collections::BTreeMap::new(),
+        };
+
+        store
+            .upsert_self_machine(&machine)
+            .await
+            .expect("upsert machine");
+
+        let state = store.load_routing_state().await.expect("routing state");
+
+        assert_eq!(state.machines, vec![machine]);
+    }
+
+    #[tokio::test]
+    async fn machine_changes_trigger_routing_refresh_events() {
+        let store = MemoryStore::new();
+        let mut refresh_rx = store
+            .subscribe_routing_invalidations()
+            .await
+            .expect("subscribe");
+        let machine = MachineMembership {
+            id: MachineId("machine-1".into()),
+            public_key: ployz_types::model::PublicKey([0; 32]),
+            overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
+            topology: ployz_types::model::MachineTopology::local(),
+            control_target: None,
+            subnet: None,
+            bridge_ip: None,
+            endpoints: Vec::new(),
+            lifecycle: ployz_types::model::MachineLifecycle::Active,
+            created_at: 1,
+            updated_at: 1,
+            labels: std::collections::BTreeMap::new(),
+        };
+
+        store
+            .upsert_self_machine(&machine)
+            .await
+            .expect("upsert machine");
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), refresh_rx.recv())
+            .await
+            .expect("refresh event deadline");
+        assert_eq!(event, Some(()));
+    }
+
+    #[tokio::test]
+    async fn wipe_data_clears_volume_records() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("prod".into());
+        let deploy_id = DeployId("dep-1".into());
+        let volume = VolumeRecord {
+            namespace: namespace.clone(),
+            volume_name: "data".into(),
+            scope: ployz_types::spec::VolumeScope::Single,
+            machine_id: MachineId("machine-1".into()),
+            quota: "1G".into(),
+            mode: "0750".into(),
+            owner: "999:999".into(),
+            attached_services: Vec::new(),
+            created_at: 1,
+            created_by_deploy_id: deploy_id.clone(),
+            last_modified_at: 1,
+            last_modified_by_deploy_id: deploy_id.clone(),
+        };
+        let deploy = DeployRecord {
+            deploy_id,
+            namespace: namespace.clone(),
+            coordinator_machine_id: MachineId("local".into()),
+            manifest_hash: "hash".into(),
+            state: ployz_types::model::DeployState::Committed,
+            started_at: 1,
+            committed_at: Some(1),
+            finished_at: Some(1),
+            summary_json: "{}".into(),
+        };
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                releases: Vec::new(),
+                volumes: vec![volume],
+                deploy,
+            })
+            .await
+            .expect("commit volume");
+        assert_eq!(
+            store
+                .list_volumes(&namespace)
+                .await
+                .expect("list volumes before wipe")
+                .len(),
+            1
+        );
+
+        store.wipe_data().await.expect("wipe data");
+
+        assert!(
+            store
+                .list_volumes(&namespace)
+                .await
+                .expect("list volumes after wipe")
+                .is_empty()
+        );
     }
 }
