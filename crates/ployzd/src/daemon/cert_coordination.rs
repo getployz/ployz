@@ -12,7 +12,7 @@ use ployz_orchestrator::coordination::{
     PendingReservations, Reservation, ReservationId, ResourceKey, Vote,
 };
 use ployz_orchestrator::machine_policy::coordination_peers;
-use ployz_store_api::{CertificateStore, MachineStore, StoreDriver};
+use ployz_store_api::{CertificateStore, MachineRegistry, StoreDriver};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{MachineId, OverlayIp};
 use ployz_types::time::now_unix_secs;

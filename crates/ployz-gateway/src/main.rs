@@ -25,12 +25,12 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
         Ok::<_, ployz_gateway::GatewayError>(store)
     })?;
     struct StandaloneStore(ployz_corrosion::CorrosionStore);
-    impl ployz_gateway::RoutingStore for StandaloneStore {
+    impl ployz_gateway::RoutingSnapshotReader for StandaloneStore {
         async fn load_routing_state(
             &self,
         ) -> Result<ployz_types::model::RoutingState, ployz_gateway::GatewayError> {
             info!("gateway store call start: load_routing_state");
-            match ployz_store_api::RoutingStore::load_routing_state(&self.0).await {
+            match ployz_store_api::RoutingSnapshotReader::load_routing_state(&self.0).await {
                 Ok(state) => {
                     info!(
                         revisions = state.revisions.len(),
@@ -51,7 +51,9 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
             &self,
         ) -> Result<tokio::sync::mpsc::Receiver<()>, ployz_gateway::GatewayError> {
             info!("gateway store call start: subscribe_routing_invalidations");
-            match ployz_store_api::RoutingStore::subscribe_routing_invalidations(&self.0).await {
+            match ployz_store_api::RoutingSnapshotReader::subscribe_routing_invalidations(&self.0)
+                .await
+            {
                 Ok(rx) => {
                     info!("gateway store call complete: subscribe_routing_invalidations");
                     Ok(rx)
@@ -181,7 +183,7 @@ async fn probe_corrosion_startup(store: &ployz_corrosion::CorrosionStore) {
 
     match timeout(
         Duration::from_secs(5),
-        ployz_store_api::RoutingStore::load_routing_state(store),
+        ployz_store_api::RoutingSnapshotReader::load_routing_state(store),
     )
     .await
     {

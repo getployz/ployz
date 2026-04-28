@@ -4,6 +4,7 @@ mod execute;
 mod managed_domains;
 mod plan;
 mod probe;
+mod transaction;
 
 #[cfg(test)]
 mod tests;

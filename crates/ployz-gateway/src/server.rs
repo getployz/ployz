@@ -283,7 +283,7 @@ pub fn run_gateway_process_with_store<S>(
     store: S,
 ) -> Result<(), GatewayError>
 where
-    S: crate::sync::RoutingStore + Send + Sync + 'static,
+    S: crate::sync::RoutingSnapshotReader + Send + Sync + 'static,
 {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -306,7 +306,7 @@ pub fn run_gateway_process_on_runtime<S>(
     store: S,
 ) -> Result<(), GatewayError>
 where
-    S: crate::sync::RoutingStore + Send + Sync + 'static,
+    S: crate::sync::RoutingSnapshotReader + Send + Sync + 'static,
 {
     let initial_snapshot = runtime.block_on(wait_for_initial_snapshot(&store))?;
     crate::metrics::update_route_counts(&initial_snapshot);
@@ -341,7 +341,7 @@ where
 
 async fn wait_for_initial_snapshot<S>(store: &S) -> Result<GatewaySnapshot, GatewayError>
 where
-    S: crate::sync::RoutingStore + Send + Sync,
+    S: crate::sync::RoutingSnapshotReader + Send + Sync,
 {
     let deadline = tokio::time::Instant::now() + STORE_READY_TIMEOUT;
     loop {

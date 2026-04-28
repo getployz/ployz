@@ -52,7 +52,7 @@ mod tests {
     use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
     use ployz_orchestrator::{Mesh, WireguardDriver};
     use ployz_runtime_api::Identity;
-    use ployz_store_api::MachineStore;
+    use ployz_store_api::MachineRegistry;
     use ployz_store_api::StoreDriver;
     use ployz_store_api::memory::{MemoryService, MemoryStore};
     use ployz_types::model::{MachineId, MachineLifecycle, MachineTopology, OverlayIp, PublicKey};

@@ -5,7 +5,7 @@ use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, MachineRemovePayload, MachineRttPayload,
     MachineRttRow,
 };
-use ployz_store_api::{MachineStore, PeerRttObservation, PeerRttStore, StoreDriver};
+use ployz_store_api::{MachineRegistry, PeerRttObservation, PeerRttStore, StoreDriver};
 use ployz_types::model::{MachineId, MachineRecord};
 use std::collections::HashMap;
 use std::net::IpAddr;

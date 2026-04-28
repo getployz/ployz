@@ -7,16 +7,18 @@ use ployz_types::Result;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
     InstanceStatusRecord, InviteRecord, MachineId, MachineRecord, RoutingState,
-    ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
+    ServiceReleaseRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 
 pub use driver::StoreDriver;
 pub use traits::{
-    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployStore, InviteStore,
-    MachineStore, MachineSubscription, PeerMembershipObservation, PeerMembershipState,
-    PeerMembershipStore, PeerRttObservation, PeerRttStore, RoutingInvalidationSubscription,
-    RoutingStore, StoreRuntimeControl, SyncProbe, SyncStatus,
+    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
+    DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
+    InstanceStatusRepository, InviteRepository, MachineRegistry, MachineSubscription,
+    PeerMembershipObservation, PeerMembershipState, PeerMembershipStore, PeerRttObservation,
+    PeerRttStore, RoutingInvalidationSubscription, RoutingSnapshotReader, StoreRuntimeControl,
+    SyncProbe, SyncStatus,
 };
 
 #[async_trait]
@@ -41,43 +43,28 @@ pub trait StoreBackend: Send + Sync {
     async fn load_routing_state(&self) -> Result<RoutingState>;
     async fn subscribe_routing_invalidations(&self) -> Result<RoutingInvalidationSubscription>;
 
-    async fn list_service_revisions(
-        &self,
-        namespace: &Namespace,
-    ) -> Result<Vec<ServiceRevisionRecord>>;
-
-    async fn list_service_releases(
+    async fn list_deploy_releases(
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<ServiceReleaseRecord>>;
-
-    async fn list_instance_status(
-        &self,
-        namespace: &Namespace,
-    ) -> Result<Vec<InstanceStatusRecord>>;
+    async fn load_deploy_snapshot(&self, namespace: &Namespace) -> Result<DeploySnapshot>;
     async fn list_volumes(&self, namespace: &Namespace) -> Result<Vec<VolumeRecord>>;
     async fn get_volume(
         &self,
         namespace: &Namespace,
         volume_name: &str,
     ) -> Result<Option<VolumeRecord>>;
+    async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()>;
+    async fn commit_deploy(&self, command: &DeployCommit) -> Result<()>;
+    async fn update_deploy_record(&self, command: &DeployRecordUpdate) -> Result<()>;
+    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>>;
 
-    async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()>;
-    async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> Result<()>;
-    async fn delete_service_release(&self, namespace: &Namespace, service: &str) -> Result<()>;
-    async fn upsert_instance_status(&self, record: &InstanceStatusRecord) -> Result<()>;
-    async fn delete_instance_status(&self, instance_id: &InstanceId) -> Result<()>;
-    async fn upsert_deploy(&self, record: &DeployRecord) -> Result<()>;
-    async fn commit_deploy(
+    async fn list_instance_status(
         &self,
         namespace: &Namespace,
-        removed_services: &[String],
-        removed_volumes: &[String],
-        releases: &[ServiceReleaseRecord],
-        volumes: &[VolumeRecord],
-        deploy: &DeployRecord,
-    ) -> Result<()>;
-    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>>;
+    ) -> Result<Vec<InstanceStatusRecord>>;
+    async fn record_instance_status(&self, record: &InstanceStatusRecord) -> Result<()>;
+    async fn remove_instance_status(&self, instance_id: &InstanceId) -> Result<()>;
 
     async fn get_acme_account(&self, issuer_url: &str) -> Result<Option<AcmeAccountRecord>>;
     async fn upsert_acme_account(&self, record: &AcmeAccountRecord) -> Result<()>;

@@ -2,28 +2,13 @@ use crate::client::CorrClient;
 use crate::store::shared::sql::exec_all;
 use crate::store::tables::{deploys, service_releases, volumes as volume_table};
 use corro_api_types::Statement;
+use ployz_store_api::DeployCommit;
 use ployz_types::error::Result;
-use ployz_types::model::{DeployRecord, ServiceReleaseRecord, VolumeRecord};
-use ployz_types::spec::Namespace;
+use ployz_types::model::ServiceReleaseRecord;
 use std::collections::HashSet;
 
-pub(crate) async fn commit_deploy(
-    client: &CorrClient,
-    namespace: &Namespace,
-    removed_services: &[String],
-    removed_volumes: &[String],
-    releases: &[ServiceReleaseRecord],
-    volumes: &[VolumeRecord],
-    deploy: &DeployRecord,
-) -> Result<()> {
-    let statements = build_commit_statements(
-        namespace,
-        removed_services,
-        removed_volumes,
-        releases,
-        volumes,
-        deploy,
-    )?;
+pub(crate) async fn commit_deploy(client: &CorrClient, commit: &DeployCommit) -> Result<()> {
+    let statements = build_commit_statements(commit)?;
     exec_all(client, &statements, "commit_deploy").await
 }
 
@@ -38,34 +23,33 @@ fn touched_services(removed_services: &[String], releases: &[ServiceReleaseRecor
     touched
 }
 
-fn build_commit_statements(
-    namespace: &Namespace,
-    removed_services: &[String],
-    removed_volumes: &[String],
-    releases: &[ServiceReleaseRecord],
-    volumes: &[VolumeRecord],
-    deploy: &DeployRecord,
-) -> Result<Vec<Statement>> {
-    let touched = touched_services(removed_services, releases);
+fn build_commit_statements(commit: &DeployCommit) -> Result<Vec<Statement>> {
+    let touched = touched_services(&commit.removed_services, &commit.releases);
     let mut statements = Vec::new();
 
     for service in &touched {
-        statements.push(service_releases::delete_statement(namespace, service));
+        statements.push(service_releases::delete_statement(
+            &commit.namespace,
+            service,
+        ));
     }
 
-    for release in releases {
+    for release in &commit.releases {
         statements.push(service_releases::upsert_statement(release)?);
     }
 
-    for volume in volumes {
+    for volume in &commit.volumes {
         statements.push(volume_table::upsert_statement(volume)?);
     }
 
-    for volume_name in removed_volumes {
-        statements.push(volume_table::delete_statement(namespace, volume_name));
+    for volume_name in &commit.removed_volumes {
+        statements.push(volume_table::delete_statement(
+            &commit.namespace,
+            volume_name,
+        ));
     }
 
-    statements.push(deploys::upsert_statement(deploy)?);
+    statements.push(deploys::upsert_statement(&commit.deploy)?);
 
     Ok(statements)
 }
@@ -74,6 +58,7 @@ fn build_commit_statements(
 mod tests {
     use super::build_commit_statements;
     use corro_api_types::Statement;
+    use ployz_store_api::DeployCommit;
     use ployz_types::model::{
         DeployId, DeployRecord, DeployState, MachineId, ServiceRelease, ServiceReleaseRecord,
         ServiceRoutingPolicy,
@@ -126,16 +111,23 @@ mod tests {
             summary_json: String::from("{}"),
         };
 
-        let statements =
-            build_commit_statements(&namespace, &removed_services, &[], &releases, &[], &deploy)
-                .expect("commit statements");
+        let commit = DeployCommit {
+            namespace,
+            removed_services,
+            removed_volumes: Vec::new(),
+            releases,
+            volumes: Vec::new(),
+            deploy,
+        };
+
+        let statements = build_commit_statements(&commit).expect("commit statements");
 
         let [
             delete_api_release,
             delete_worker_release,
             upsert_api_release,
             upsert_worker_release,
-            upsert_deploy,
+            update_deploy_record,
         ] = statements.as_slice()
         else {
             panic!("unexpected statement layout");
@@ -167,7 +159,7 @@ mod tests {
         };
         assert!(query.starts_with("INSERT INTO service_releases"));
 
-        let Statement::WithParams(query, _) = upsert_deploy else {
+        let Statement::WithParams(query, _) = update_deploy_record else {
             panic!("expected deploy upsert statement");
         };
         assert!(query.starts_with("INSERT INTO deploys"));
