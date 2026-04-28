@@ -11,7 +11,7 @@ use crate::StoreDriver;
 use crate::error::{Error, Result};
 use crate::model::{
     DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
-    MachineRecord, SlotId,
+    MachineMembership, SlotId,
 };
 use crate::spec::{Namespace, ServiceSpec, VolumeDeclaration};
 use crate::storage::{TokioShellRunner, ZfsDriver};
@@ -527,7 +527,7 @@ impl TcpDeploySession {
     /// Connect to a remote machine and open a deploy session.
     /// Returns the session and a snapshot of current instances on that machine.
     pub async fn connect(
-        machine: &MachineRecord,
+        machine: &MachineMembership,
         port: u16,
         namespace: &Namespace,
         deploy_id: &DeployId,

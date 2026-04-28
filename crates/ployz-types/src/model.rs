@@ -228,7 +228,7 @@ pub enum NetworkLifecycle {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MachineRecord {
+pub struct MachineMembership {
     pub id: MachineId,
     pub public_key: PublicKey,
     pub overlay_ip: OverlayIp,
@@ -245,7 +245,7 @@ pub struct MachineRecord {
     pub labels: BTreeMap<String, String>,
 }
 
-impl MachineRecord {
+impl MachineMembership {
     /// Create a minimal seed record for bootstrap/peer-discovery purposes.
     ///
     /// Control-plane fields (`lifecycle`, timestamps, `labels`)
@@ -286,6 +286,167 @@ impl MachineRecord {
         }
         cidrs
     }
+
+    #[must_use]
+    pub fn identity(&self) -> MachineIdentity {
+        MachineIdentity {
+            id: self.id.clone(),
+            public_key: self.public_key.clone(),
+            overlay_ip: self.overlay_ip,
+        }
+    }
+
+    #[must_use]
+    pub fn placement_candidate(&self) -> PlacementCandidate {
+        PlacementCandidate {
+            id: self.id.clone(),
+            lifecycle: self.lifecycle,
+            labels: self.labels.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn wireguard_peer_spec(&self) -> WireGuardPeerSpec {
+        WireGuardPeerSpec {
+            identity: self.identity(),
+            subnet: self.subnet,
+            bridge_ip: self.bridge_ip,
+            endpoints: self.endpoints.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn observation(&self) -> MachineObservation {
+        MachineObservation {
+            identity: self.identity(),
+            subnet: self.subnet,
+            bridge_ip: self.bridge_ip,
+            endpoints: self.endpoints.clone(),
+        }
+    }
+}
+
+/// Immutable identity assigned at join — the (id, key, overlay_ip) triple every
+/// other view type carries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MachineIdentity {
+    pub id: MachineId,
+    pub public_key: PublicKey,
+    pub overlay_ip: OverlayIp,
+}
+
+/// Everything a WireGuard adapter needs to render a peer. No lifecycle,
+/// timestamps, control_target, or labels — those don't influence WG config.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireGuardPeerSpec {
+    pub identity: MachineIdentity,
+    pub subnet: Option<Ipv4Net>,
+    pub bridge_ip: Option<OverlayIp>,
+    pub endpoints: Vec<String>,
+}
+
+impl WireGuardPeerSpec {
+    #[must_use]
+    pub fn id(&self) -> &MachineId {
+        let Self { identity, .. } = self;
+        &identity.id
+    }
+
+    #[must_use]
+    pub fn public_key(&self) -> &PublicKey {
+        let Self { identity, .. } = self;
+        &identity.public_key
+    }
+
+    #[must_use]
+    pub fn overlay_ip(&self) -> OverlayIp {
+        let Self { identity, .. } = self;
+        identity.overlay_ip
+    }
+
+    /// All CIDRs this peer should route, used by both host and docker WireGuard adapters.
+    #[must_use]
+    pub fn allowed_cidrs(&self) -> Vec<String> {
+        let Self {
+            identity,
+            subnet,
+            bridge_ip,
+            endpoints: _,
+        } = self;
+        let mut cidrs = vec![format!("{}/128", identity.overlay_ip.0)];
+        if let Some(subnet) = subnet {
+            cidrs.push(subnet.to_string());
+        }
+        if let Some(bridge_ip) = bridge_ip {
+            cidrs.push(format!("{}/128", bridge_ip.0));
+        }
+        cidrs
+    }
+}
+
+impl From<&MachineMembership> for WireGuardPeerSpec {
+    fn from(record: &MachineMembership) -> Self {
+        record.wireguard_peer_spec()
+    }
+}
+
+/// Placement and coordination policy input — all `machine_policy.rs` reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlacementCandidate {
+    pub id: MachineId,
+    pub lifecycle: MachineLifecycle,
+    pub labels: BTreeMap<String, String>,
+}
+
+impl From<&MachineMembership> for PlacementCandidate {
+    fn from(record: &MachineMembership) -> Self {
+        record.placement_candidate()
+    }
+}
+
+/// Transient observation pushed into peer-state from `endpoint_maintainer` and
+/// `peer_sync`. Mirrors the fields that `PeerState` actually keeps.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MachineObservation {
+    pub identity: MachineIdentity,
+    pub subnet: Option<Ipv4Net>,
+    pub bridge_ip: Option<OverlayIp>,
+    pub endpoints: Vec<String>,
+}
+
+impl MachineObservation {
+    /// Build a transient observation for bootstrap/peer-discovery purposes.
+    #[must_use]
+    pub fn seed(
+        id: MachineId,
+        public_key: PublicKey,
+        overlay_ip: OverlayIp,
+        subnet: Option<Ipv4Net>,
+        endpoints: Vec<String>,
+    ) -> Self {
+        Self {
+            identity: MachineIdentity {
+                id,
+                public_key,
+                overlay_ip,
+            },
+            subnet,
+            bridge_ip: None,
+            endpoints,
+        }
+    }
+
+    #[must_use]
+    pub fn id(&self) -> &MachineId {
+        let Self { identity, .. } = self;
+        &identity.id
+    }
+}
+
+impl From<&MachineMembership> for MachineObservation {
+    fn from(record: &MachineMembership) -> Self {
+        record.observation()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -305,9 +466,9 @@ pub type InviteReservation = InviteRecord;
 
 #[derive(Debug, Clone)]
 pub enum MachineEvent {
-    Added(MachineRecord),
-    Updated(MachineRecord),
-    Removed(MachineRecord),
+    Added(MachineMembership),
+    Updated(MachineMembership),
+    Removed(MachineMembership),
 }
 
 #[derive(Debug, Clone)]
@@ -410,7 +571,7 @@ pub struct ServiceReleaseSlot {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoutingState {
-    pub machines: Vec<MachineRecord>,
+    pub machines: Vec<MachineMembership>,
     pub revisions: Vec<ServiceRevisionRecord>,
     pub releases: Vec<ServiceReleaseRecord>,
     pub instances: Vec<InstanceStatusRecord>,
@@ -680,8 +841,8 @@ impl JoinResponse {
     }
 
     #[must_use]
-    pub fn into_seed_machine_record(self) -> MachineRecord {
-        MachineRecord {
+    pub fn into_seed_machine_membership(self) -> MachineMembership {
+        MachineMembership {
             id: self.machine_id,
             public_key: self.public_key,
             overlay_ip: self.overlay_ip,
@@ -752,7 +913,7 @@ mod tests {
     }
 
     #[test]
-    fn join_response_into_seed_machine_record() {
+    fn join_response_into_seed_machine_membership() {
         let resp = JoinResponse {
             machine_id: MachineId("joiner-1".into()),
             public_key: PublicKey([0xab; 32]),
@@ -761,7 +922,7 @@ mod tests {
             subnet: None,
             endpoints: vec![],
         };
-        let record = resp.into_seed_machine_record();
+        let record = resp.into_seed_machine_membership();
         assert_eq!(record.id.0, "joiner-1");
         assert!(record.bridge_ip.is_none());
     }
@@ -781,7 +942,7 @@ mod tests {
             "labels":{}
         }"#;
 
-        let error = serde_json::from_str::<MachineRecord>(json).expect_err("record should fail");
+        let error = serde_json::from_str::<MachineMembership>(json).expect_err("record should fail");
 
         assert!(error.to_string().contains("missing field `topology`"));
     }
@@ -945,5 +1106,87 @@ mod tests {
             record.installed_version().map(|v| v.version_id.as_str()),
             Some("v2")
         );
+    }
+
+    fn sample_record() -> MachineMembership {
+        let mut labels = BTreeMap::new();
+        labels.insert("region".into(), "iad".into());
+        MachineMembership {
+            id: MachineId("m1".into()),
+            public_key: PublicKey([0x11; 32]),
+            overlay_ip: OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 7)),
+            topology: MachineTopology::local(),
+            control_target: Some("https://control.example".into()),
+            subnet: Some("10.42.7.0/24".parse().unwrap()),
+            bridge_ip: Some(OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 8))),
+            endpoints: vec!["1.2.3.4:51820".into(), "5.6.7.8:51820".into()],
+            lifecycle: MachineLifecycle::Active,
+            created_at: 100,
+            updated_at: 200,
+            labels,
+        }
+    }
+
+    #[test]
+    fn machine_record_identity_carries_id_key_overlay() {
+        let record = sample_record();
+        let identity = record.identity();
+        assert_eq!(identity.id, record.id);
+        assert_eq!(identity.public_key, record.public_key);
+        assert_eq!(identity.overlay_ip, record.overlay_ip);
+    }
+
+    #[test]
+    fn machine_record_placement_candidate_only_carries_policy_fields() {
+        let record = sample_record();
+        let candidate = record.placement_candidate();
+        assert_eq!(candidate.id, record.id);
+        assert_eq!(candidate.lifecycle, MachineLifecycle::Active);
+        assert_eq!(candidate.labels.get("region").map(String::as_str), Some("iad"));
+    }
+
+    #[test]
+    fn machine_record_wireguard_peer_spec_drops_control_plane_fields() {
+        let record = sample_record();
+        let spec = record.wireguard_peer_spec();
+        assert_eq!(spec.id(), &record.id);
+        assert_eq!(spec.public_key(), &record.public_key);
+        assert_eq!(spec.overlay_ip(), record.overlay_ip);
+        assert_eq!(spec.subnet, record.subnet);
+        assert_eq!(spec.bridge_ip, record.bridge_ip);
+        assert_eq!(spec.endpoints, record.endpoints);
+    }
+
+    #[test]
+    fn wireguard_peer_spec_allowed_cidrs_matches_record_helper() {
+        let record = sample_record();
+        let spec = record.wireguard_peer_spec();
+        assert_eq!(spec.allowed_cidrs(), record.allowed_cidrs());
+    }
+
+    #[test]
+    fn machine_observation_carries_observable_fields() {
+        let record = sample_record();
+        let observation = record.observation();
+        assert_eq!(observation.id(), &record.id);
+        assert_eq!(observation.identity.public_key, record.public_key);
+        assert_eq!(observation.subnet, record.subnet);
+        assert_eq!(observation.bridge_ip, record.bridge_ip);
+        assert_eq!(observation.endpoints, record.endpoints);
+    }
+
+    #[test]
+    fn machine_observation_seed_omits_bridge_ip() {
+        let observation = MachineObservation::seed(
+            MachineId("m9".into()),
+            PublicKey([0x22; 32]),
+            OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 9)),
+            None,
+            vec!["1.1.1.1:51820".into()],
+        );
+        assert_eq!(observation.id().0, "m9");
+        assert!(observation.bridge_ip.is_none());
+        assert!(observation.subnet.is_none());
+        assert_eq!(observation.endpoints, vec!["1.1.1.1:51820"]);
     }
 }

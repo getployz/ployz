@@ -1,5 +1,5 @@
 use chrono::DateTime;
-use ployz_types::model::{MachineLifecycle, MachineRecord};
+use ployz_types::model::{MachineLifecycle, MachineMembership};
 
 use super::types::{MachineAddReport, MachineListReport};
 
@@ -88,7 +88,7 @@ pub(super) fn render_machine_add_report(report: &MachineAddReport) -> String {
     lines.join("\n")
 }
 
-pub(crate) fn format_lifecycle(machine: &MachineRecord) -> &'static str {
+pub(crate) fn format_lifecycle(machine: &MachineMembership) -> &'static str {
     match machine.lifecycle {
         MachineLifecycle::Standby => "standby",
         MachineLifecycle::Active => "active",

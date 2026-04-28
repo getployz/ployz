@@ -7,7 +7,7 @@ use crate::error::Result;
 use crate::model::{
     AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, DeployState,
     DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, MachineLifecycle,
-    MachineRecord, MachineTopology, OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord,
+    MachineMembership, MachineTopology, OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord,
     ServiceReleaseSlot, ServiceRoutingPolicy, SlotId, VolumeRecord,
 };
 use async_trait::async_trait;
@@ -1474,7 +1474,7 @@ impl FakeSessionFactory {
 impl DeploySessionFactory for FakeSessionFactory {
     async fn open(
         &self,
-        machine: &MachineRecord,
+        machine: &MachineMembership,
         namespace: &Namespace,
         deploy_id: &DeployId,
         _coordinator_id: &MachineId,
@@ -1832,8 +1832,8 @@ fn test_slot(
     }
 }
 
-fn test_machine(id: &str, lifecycle: MachineLifecycle) -> MachineRecord {
-    MachineRecord {
+fn test_machine(id: &str, lifecycle: MachineLifecycle) -> MachineMembership {
+    MachineMembership {
         id: MachineId(id.into()),
         public_key: PublicKey([7; 32]),
         overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
@@ -1914,11 +1914,11 @@ impl StoreBackend for CountingBackend {
         self.store.init().await
     }
 
-    async fn list_machines(&self) -> PloyzResult<Vec<MachineRecord>> {
+    async fn list_machines(&self) -> PloyzResult<Vec<MachineMembership>> {
         self.store.list_machines().await
     }
 
-    async fn upsert_self_machine(&self, record: &MachineRecord) -> PloyzResult<()> {
+    async fn upsert_self_machine(&self, record: &MachineMembership) -> PloyzResult<()> {
         self.store.upsert_self_machine(record).await
     }
 

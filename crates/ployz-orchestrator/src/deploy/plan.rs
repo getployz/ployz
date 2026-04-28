@@ -1,8 +1,8 @@
 use crate::error::{Error, Result};
 use crate::machine_policy::{can_keep_existing_slot, is_new_placement_candidate};
 use crate::model::{
-    DeployChangeKind, DeployPreview, MachineId, MachineRecord, ServicePlan, ServiceReleaseRecord,
-    ServiceReleaseSlot, SlotId, SlotPlan, VolumeRecord,
+    DeployChangeKind, DeployPreview, MachineId, MachineMembership, ServicePlan,
+    ServiceReleaseRecord, ServiceReleaseSlot, SlotId, SlotPlan, VolumeRecord,
 };
 use ployz_store_api::{DeployRepository, MachineRegistry, StoreDriver};
 use ployz_types::spec::{
@@ -39,7 +39,7 @@ pub(super) struct ResolvedPlan {
     volumes: Vec<PlannedVolume>,
     participants: BTreeSet<MachineId>,
     services: Vec<PlannedService>,
-    machine_map: HashMap<MachineId, MachineRecord>,
+    machine_map: HashMap<MachineId, MachineMembership>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,7 +94,7 @@ impl ResolvedPlan {
         &mut self.services
     }
 
-    pub(super) fn machine_map(&self) -> &HashMap<MachineId, MachineRecord> {
+    pub(super) fn machine_map(&self) -> &HashMap<MachineId, MachineMembership> {
         &self.machine_map
     }
 
@@ -177,7 +177,7 @@ pub(super) async fn resolve_plan(
     let current_releases = store.list_deploy_releases(&manifest.namespace).await?;
     let current_volumes = store.list_volumes(&manifest.namespace).await?;
     let machines = store.list_machines().await?;
-    let machine_map: HashMap<MachineId, MachineRecord> = machines
+    let machine_map: HashMap<MachineId, MachineMembership> = machines
         .iter()
         .map(|machine| (machine.id.clone(), machine.clone()))
         .collect();
@@ -398,12 +398,12 @@ pub(super) async fn resolve_plan(
 }
 
 pub(super) fn deployable_machines(
-    machines: &[MachineRecord],
+    machines: &[MachineMembership],
     local_machine_id: &MachineId,
 ) -> Vec<MachineId> {
     let mut enabled: Vec<MachineId> = machines
         .iter()
-        .filter(|machine| is_new_placement_candidate(machine))
+        .filter(|machine| is_new_placement_candidate(&machine.placement_candidate()))
         .map(|machine| machine.id.clone())
         .collect();
     enabled.sort_by(|left, right| left.0.cmp(&right.0));
@@ -418,7 +418,7 @@ pub(super) fn desired_slots(
     spec: &ServiceSpec,
     machines: &[MachineId],
     current_slots: Option<&[ServiceReleaseSlot]>,
-    machine_map: &HashMap<MachineId, MachineRecord>,
+    machine_map: &HashMap<MachineId, MachineMembership>,
     pinned_machine: Option<&MachineId>,
 ) -> Result<Vec<DesiredSlot>> {
     let candidates = if machines.is_empty() {
@@ -453,7 +453,7 @@ pub(super) fn desired_slots(
                         }
                         machine_map
                             .get(machine_id)
-                            .is_some_and(can_keep_existing_slot)
+                            .is_some_and(|record| can_keep_existing_slot(&record.placement_candidate()))
                     })
                     .unwrap_or_else(|| {
                         pinned_machine.cloned().unwrap_or_else(|| {
@@ -602,7 +602,7 @@ fn new_volume_machine(
     declaration: &VolumeDeclaration,
     attached_services: &[String],
     current_slots_by_service: &HashMap<String, Vec<ServiceReleaseSlot>>,
-    machine_map: &HashMap<MachineId, MachineRecord>,
+    machine_map: &HashMap<MachineId, MachineMembership>,
     desired_machines: &[MachineId],
     local_machine_id: &MachineId,
 ) -> MachineId {
@@ -623,7 +623,7 @@ fn new_volume_machine(
 
 fn machine_is_deployable(
     machine_id: &MachineId,
-    machine_map: &HashMap<MachineId, MachineRecord>,
+    machine_map: &HashMap<MachineId, MachineMembership>,
     local_machine_id: &MachineId,
 ) -> bool {
     if machine_id == local_machine_id && !machine_map.contains_key(machine_id) {
@@ -631,7 +631,7 @@ fn machine_is_deployable(
     }
     machine_map
         .get(machine_id)
-        .is_some_and(is_new_placement_candidate)
+        .is_some_and(|record| is_new_placement_candidate(&record.placement_candidate()))
 }
 
 fn current_slots_by_service(

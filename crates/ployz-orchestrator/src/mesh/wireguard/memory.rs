@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
-use crate::model::{MachineRecord, PublicKey};
+use crate::model::{PublicKey, WireGuardPeerSpec};
 use std::sync::{Mutex, MutexGuard};
 
 pub struct MemoryWireGuard {
@@ -9,7 +9,7 @@ pub struct MemoryWireGuard {
 
 struct WgInner {
     is_up: bool,
-    peers: Vec<MachineRecord>,
+    peers: Vec<WireGuardPeerSpec>,
     device_peers: Vec<DevicePeer>,
     set_peers_count: usize,
     fail_up: bool,
@@ -59,7 +59,7 @@ impl MemoryWireGuard {
         self.lock_inner().set_peers_count
     }
 
-    pub fn current_peers(&self) -> Vec<MachineRecord> {
+    pub fn current_peers(&self) -> Vec<WireGuardPeerSpec> {
         self.lock_inner().peers.clone()
     }
 
@@ -87,7 +87,7 @@ impl MeshNetwork for MemoryWireGuard {
         Ok(())
     }
 
-    async fn set_peers(&self, peers: &[MachineRecord]) -> Result<()> {
+    async fn set_peers(&self, peers: &[WireGuardPeerSpec]) -> Result<()> {
         let mut inner = self.lock_inner();
         inner.peers = peers.to_vec();
         inner.set_peers_count += 1;

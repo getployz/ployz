@@ -1,4 +1,4 @@
-use crate::model::{MachineId, MachineRecord};
+use crate::model::{MachineId, MachineMembership};
 use ployz_store_api::{
     PeerMembershipObservation, PeerMembershipState, PeerMembershipStore, StoreDriver,
 };
@@ -21,7 +21,7 @@ struct ParticipantReachabilityDetail {
 pub(super) async fn probe_participants(
     store: &StoreDriver,
     participants: &BTreeSet<MachineId>,
-    machine_map: &HashMap<MachineId, MachineRecord>,
+    machine_map: &HashMap<MachineId, MachineMembership>,
 ) -> ParticipantReachability {
     let observations = store
         .peer_membership_observations()
@@ -32,7 +32,7 @@ pub(super) async fn probe_participants(
 
 fn reachability_from_membership(
     participants: &BTreeSet<MachineId>,
-    machine_map: &HashMap<MachineId, MachineRecord>,
+    machine_map: &HashMap<MachineId, MachineMembership>,
     observations: &[PeerMembershipObservation],
 ) -> ParticipantReachability {
     let membership_by_ip: HashMap<_, _> = observations
@@ -152,8 +152,8 @@ mod tests {
         assert!(reachability.unreachable.is_empty());
     }
 
-    fn test_machine(id: &str, overlay_ip: &str) -> MachineRecord {
-        MachineRecord {
+    fn test_machine(id: &str, overlay_ip: &str) -> MachineMembership {
+        MachineMembership {
             id: MachineId(id.into()),
             public_key: PublicKey([7; 32]),
             overlay_ip: OverlayIp(overlay_ip.parse::<Ipv6Addr>().expect("valid overlay ip")),

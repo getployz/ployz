@@ -7,7 +7,7 @@ use crate::mesh_state::network::NetworkConfig;
 use ployz_api::{DaemonRequest, MachineTransitionGoal};
 use ployz_orchestrator::ipam::pick_candidate_subnet;
 use ployz_store_api::MachineRegistry;
-use ployz_types::model::MachineRecord;
+use ployz_types::model::MachineMembership;
 use ployz_types::model::{MachineId, MachineLifecycle, NetworkId, NetworkLifecycle, NetworkName};
 use std::path::{Path, PathBuf};
 use tokio::sync::oneshot;
@@ -648,7 +648,7 @@ impl DaemonState {
     }
 }
 
-fn sorted_machine_ids(machines: &[MachineRecord]) -> Vec<MachineId> {
+fn sorted_machine_ids(machines: &[MachineMembership]) -> Vec<MachineId> {
     let mut ids = machines
         .iter()
         .map(|machine| machine.id.clone())
@@ -659,7 +659,7 @@ fn sorted_machine_ids(machines: &[MachineRecord]) -> Vec<MachineId> {
 
 async fn persist_stopped_self_record(
     active: &mut ActiveMesh,
-    previous_self_record: &MachineRecord,
+    previous_self_record: &MachineMembership,
 ) -> Result<(), String> {
     let mut standby = previous_self_record.clone();
     standby.lifecycle = MachineLifecycle::Standby;

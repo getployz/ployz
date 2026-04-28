@@ -9,7 +9,7 @@ use ployz_store_api::{
     MachineRegistry, PeerMembershipObservation, PeerMembershipState, PeerMembershipStore,
     PeerRttObservation, PeerRttStore,
 };
-use ployz_types::model::{MachineId, MachineRecord, PublicKey};
+use ployz_types::model::{MachineId, MachineMembership, OverlayIp, PublicKey};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::Duration;
@@ -93,8 +93,8 @@ impl DaemonState {
 
 fn build_doctor_payload(
     active: &ActiveMesh,
-    machines: &[MachineRecord],
-    local_record: &MachineRecord,
+    machines: &[MachineMembership],
+    local_record: &MachineMembership,
     device_peers: &[DevicePeer],
     membership_observations: &[PeerMembershipObservation],
     rtt_observations: &[PeerRttObservation],
@@ -316,7 +316,7 @@ fn cause_parts(
 }
 
 fn build_participation_rows(
-    machines: &[MachineRecord],
+    machines: &[MachineMembership],
     local_machine_id: &MachineId,
     handshake_by_key: &HashMap<PublicKey, HandshakeState>,
     membership_by_ip: &HashMap<IpAddr, CorrosionPeerState>,
@@ -325,7 +325,7 @@ fn build_participation_rows(
     let mut rows: Vec<DoctorPeer> = machines
         .iter()
         .filter_map(|machine| {
-            let role = diagnostic_role(machine, local_machine_id)?;
+            let role = diagnostic_role(&machine.placement_candidate(), local_machine_id)?;
             let handshake_state = handshake_by_key
                 .get(&machine.public_key)
                 .copied()
@@ -763,8 +763,8 @@ mod tests {
         id: &str,
         lifecycle: MachineLifecycle,
         public_key: PublicKey,
-    ) -> MachineRecord {
-        MachineRecord {
+    ) -> MachineMembership {
+        MachineMembership {
             id: MachineId(String::from(id)),
             public_key,
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),

@@ -12,13 +12,13 @@ mod tests {
     use tokio::time::Instant;
 
     use crate::model::{
-        MachineId, MachineLifecycle, MachineRecord, MachineTopology, OverlayIp, PublicKey,
+        MachineId, MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey,
     };
 
     use super::map::PeerStateMap;
 
-    fn test_record(id: &str, endpoints: Vec<&str>) -> MachineRecord {
-        MachineRecord {
+    fn test_record(id: &str, endpoints: Vec<&str>) -> MachineMembership {
+        MachineMembership {
             id: MachineId(id.into()),
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
@@ -38,7 +38,7 @@ mod tests {
     fn plan_passes_all_endpoints() {
         let now = Instant::now();
         let mut map = PeerStateMap::new();
-        let r = MachineRecord {
+        let r = MachineMembership {
             id: MachineId("m1".into()),
             public_key: PublicKey([1; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
@@ -70,7 +70,8 @@ mod tests {
         let now = Instant::now();
         let mut map = PeerStateMap::new();
         let record = test_record("m1", vec!["a:1"]);
-        map.upsert_transient(&record, now);
+        let observation = record.observation();
+        map.upsert_transient(&observation, now);
         assert!(map.transient_peers.contains_key(&record.id));
 
         map.upsert_stored(&record, now);

@@ -4,7 +4,7 @@ use std::net::{SocketAddr, SocketAddrV4};
 
 use ployz_types::model::{
     AcmeChallengeRecord, CertificateRecord, InstanceId, InstancePhase, InstanceStatusRecord,
-    MachineId, MachineRecord, MachineTopology, RoutingState, ServiceRelease, ServiceReleaseSlot,
+    MachineId, MachineMembership, MachineTopology, RoutingState, ServiceRelease, ServiceReleaseSlot,
     ServiceRoutingPolicy,
 };
 use ployz_types::spec::{Namespace, RouteSpec, ServiceSpec};
@@ -351,7 +351,7 @@ fn routable_backends_by_port(
     allowed_revision_hashes: &HashSet<String>,
     slots: &[ServiceReleaseSlot],
     instances: &HashMap<InstanceId, InstanceStatusRecord>,
-    machines: &HashMap<MachineId, MachineRecord>,
+    machines: &HashMap<MachineId, MachineMembership>,
 ) -> Result<BTreeMap<String, Vec<BackendView>>, ProjectionError> {
     let service_ports = spec
         .service_ports
@@ -761,7 +761,7 @@ mod tests {
     fn projected_backend_includes_machine_topology() {
         let namespace = Namespace("prod".into());
         let spec = service_spec(&namespace, "api", "v1", vec!["api.example.com".into()]);
-        let machine = MachineRecord {
+        let machine = MachineMembership {
             topology: MachineTopology::new("us-east", Some("use1-a"))
                 .expect("topology should parse"),
             ..machine_record("machine-a")
@@ -963,8 +963,8 @@ mod tests {
         }
     }
 
-    fn machine_record(id: &str) -> MachineRecord {
-        MachineRecord {
+    fn machine_record(id: &str) -> MachineMembership {
+        MachineMembership {
             id: MachineId(id.into()),
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay ip")),

@@ -161,7 +161,7 @@ impl DaemonState {
                 encoded.clone(),
                 Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
                     encoded,
-                    record: resp.into_seed_machine_record(),
+                    record: resp.into_seed_machine_membership(),
                 })),
             ),
             Err(e) => self.err(
@@ -186,10 +186,11 @@ impl DaemonState {
             return self.err("PEER_SYNC_UNAVAILABLE", "peer sync task is not running");
         };
 
-        let record = join_resp.into_seed_machine_record();
+        let record = join_resp.into_seed_machine_membership();
         let machine_id = record.id.clone();
+        let observation = record.observation();
         match peer_sync_tx
-            .send(PeerSyncCommand::UpsertTransient(record))
+            .send(PeerSyncCommand::UpsertTransient(observation))
             .await
         {
             Ok(()) => self.ok(format!(

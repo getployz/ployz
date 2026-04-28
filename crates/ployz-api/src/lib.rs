@@ -1,6 +1,6 @@
 use ipnet::Ipv4Net;
 use ployz_types::model::{
-    InstanceStatusRecord, MachineId, MachineLifecycle, MachineRecord, NetworkId, NetworkLifecycle,
+    InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, NetworkId, NetworkLifecycle,
 };
 use serde::{Deserialize, Serialize};
 
@@ -489,7 +489,7 @@ pub enum MachineTransitionGoal {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeshSelfRecordPayload {
     pub encoded: String,
-    pub record: MachineRecord,
+    pub record: MachineMembership,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -515,7 +515,7 @@ pub struct MeshBootstrapRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub self_control_target: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub bootstrap_peers: Vec<MachineRecord>,
+    pub bootstrap_peers: Vec<MachineMembership>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

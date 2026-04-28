@@ -4,7 +4,7 @@ use corro_api_types::{RowId, SqliteValue, Statement, TypedQueryEvent, sqlite::Ch
 use futures_util::StreamExt;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
-    InstanceId, InstanceStatusRecord, MachineId, MachineRecord, RoutingState, ServiceReleaseRecord,
+    InstanceId, InstanceStatusRecord, MachineId, MachineMembership, RoutingState, ServiceReleaseRecord,
     ServiceRevisionRecord,
 };
 use ployz_types::spec::Namespace;
@@ -34,12 +34,12 @@ fn instance_key(record: &InstanceStatusRecord) -> InstanceId {
     record.instance_id.clone()
 }
 
-fn machine_key(record: &MachineRecord) -> MachineId {
+fn machine_key(record: &MachineMembership) -> MachineId {
     record.id.clone()
 }
 
 struct LiveRoutingState {
-    machines: HashMap<MachineId, MachineRecord>,
+    machines: HashMap<MachineId, MachineMembership>,
     machine_rows: HashMap<u64, MachineId>,
     revisions: HashMap<RevisionKey, ServiceRevisionRecord>,
     revision_rows: HashMap<u64, RevisionKey>,
@@ -394,7 +394,7 @@ mod tests {
     use crate::store::tables::service_releases;
     use corro_api_types::{RowId, SqliteValue, sqlite::ChangeType};
     use ployz_types::model::{
-        DeployId, MachineId, MachineLifecycle, MachineRecord, MachineTopology, OverlayIp,
+        DeployId, MachineId, MachineLifecycle, MachineMembership, MachineTopology, OverlayIp,
         PublicKey, ServiceRelease, ServiceReleaseRecord, ServiceRoutingPolicy,
     };
     use ployz_types::spec::Namespace;
@@ -424,8 +424,8 @@ mod tests {
         ]
     }
 
-    fn machine_record(id: &str) -> MachineRecord {
-        MachineRecord {
+    fn machine_record(id: &str) -> MachineMembership {
+        MachineMembership {
             id: MachineId(id.into()),
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay ip")),

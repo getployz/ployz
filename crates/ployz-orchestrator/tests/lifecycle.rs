@@ -6,14 +6,15 @@ use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{MachineRegistry, SyncStatus};
 use ployz_types::model::{
-    JoinResponse, MachineId, MachineLifecycle, MachineRecord, MachineTopology, OverlayIp, PublicKey,
+    JoinResponse, MachineId, MachineLifecycle, MachineMembership, MachineTopology, OverlayIp,
+    PublicKey,
 };
 use std::net::Ipv6Addr;
 use std::sync::Arc;
 use std::time::Duration;
 
-fn test_record(id: &str, key_byte: u8) -> MachineRecord {
-    MachineRecord {
+fn test_record(id: &str, key_byte: u8) -> MachineMembership {
+    MachineMembership {
         id: MachineId(id.into()),
         public_key: PublicKey([key_byte; 32]),
         overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
@@ -166,7 +167,7 @@ async fn joiner_retains_founder_peer_across_peer_sync_handoff() {
     assert!(
         wg.current_peers()
             .iter()
-            .any(|peer| peer.id == founder_record.id),
+            .any(|peer| peer.id() == &founder_record.id),
         "bootstrap founder peer must remain configured before store convergence"
     );
 
@@ -175,7 +176,7 @@ async fn joiner_retains_founder_peer_across_peer_sync_handoff() {
     assert!(
         wg.current_peers()
             .iter()
-            .any(|peer| peer.id == founder_record.id),
+            .any(|peer| peer.id() == &founder_record.id),
         "founder peer must remain configured after store convergence"
     );
 }
@@ -365,12 +366,12 @@ async fn founder_can_configure_joiner_from_transient_peer() {
     // Encode → decode roundtrip (simulates SSH transport)
     let encoded = join_resp.encode().unwrap();
     let decoded = JoinResponse::decode(&encoded).unwrap();
-    let record = decoded.into_seed_machine_record();
+    let record = decoded.into_seed_machine_membership();
 
     founder_mesh
         .peer_sync_sender()
         .expect("peer sync sender")
-        .send(PeerSyncCommand::UpsertTransient(record))
+        .send(PeerSyncCommand::UpsertTransient(record.observation()))
         .await
         .unwrap();
 
@@ -381,7 +382,7 @@ async fn founder_can_configure_joiner_from_transient_peer() {
         founder_wg
             .current_peers()
             .iter()
-            .any(|peer| peer.id.0 == "joiner"),
+            .any(|peer| peer.id().0 == "joiner"),
         "transient joiner peer must be configured for the overlay to form"
     );
 
@@ -448,7 +449,7 @@ async fn remove_event_drops_wireguard_peer() {
     assert!(
         wg.current_peers()
             .iter()
-            .any(|candidate| candidate.id == peer.id),
+            .any(|candidate| candidate.id() == &peer.id),
         "peer must be configured before removal"
     );
 
@@ -458,7 +459,7 @@ async fn remove_event_drops_wireguard_peer() {
     assert!(
         !wg.current_peers()
             .iter()
-            .any(|candidate| candidate.id == peer.id),
+            .any(|candidate| candidate.id() == &peer.id),
         "peer must be removed from wireguard after store delete"
     );
 

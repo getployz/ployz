@@ -22,7 +22,7 @@ use ployz_store_api::{
 use ployz_types::Result;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
-    InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineRecord, OverlayIp,
+    InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineMembership, OverlayIp,
     RoutingState, ServiceReleaseRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
@@ -169,11 +169,11 @@ where
         self.store.init().await
     }
 
-    async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
+    async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
         self.store.list_machines().await
     }
 
-    async fn upsert_self_machine(&self, record: &MachineRecord) -> Result<()> {
+    async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()> {
         self.store.upsert_self_machine(record).await
     }
 
@@ -183,7 +183,7 @@ where
 
     async fn subscribe_machines(
         &self,
-    ) -> Result<(Vec<MachineRecord>, mpsc::Receiver<MachineEvent>)> {
+    ) -> Result<(Vec<MachineMembership>, mpsc::Receiver<MachineEvent>)> {
         self.store.subscribe_machines().await
     }
 

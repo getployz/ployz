@@ -3,7 +3,7 @@ use ployz_types::Result;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeRecord, CertificateEvent,
     CertificateRecord, DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord,
-    MachineEvent, MachineId, MachineRecord, RoutingState, ServiceReleaseRecord,
+    MachineEvent, MachineId, MachineMembership, RoutingState, ServiceReleaseRecord,
     ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
@@ -11,7 +11,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use tokio::sync::mpsc;
 
-pub type MachineSubscription = (Vec<MachineRecord>, mpsc::Receiver<MachineEvent>);
+pub type MachineSubscription = (Vec<MachineMembership>, mpsc::Receiver<MachineEvent>);
 pub type CertificateSubscription = (Vec<CertificateRecord>, mpsc::Receiver<CertificateEvent>);
 pub type AcmeChallengeSubscription = (Vec<AcmeChallengeRecord>, mpsc::Receiver<AcmeChallengeEvent>);
 pub type RoutingInvalidationSubscription = mpsc::Receiver<()>;
@@ -48,11 +48,11 @@ pub trait MachineRegistry: Send + Sync {
         async { Ok(()) }
     }
 
-    fn list_machines(&self) -> impl Future<Output = Result<Vec<MachineRecord>>> + Send + '_;
+    fn list_machines(&self) -> impl Future<Output = Result<Vec<MachineMembership>>> + Send + '_;
 
     fn upsert_self_machine<'a>(
         &'a self,
-        record: &'a MachineRecord,
+        record: &'a MachineMembership,
     ) -> impl Future<Output = Result<()>> + Send + 'a;
 
     fn delete_machine<'a>(
