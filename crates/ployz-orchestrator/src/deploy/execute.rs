@@ -190,8 +190,12 @@ pub(super) async fn apply_with_certificate_coordination(
     prober: &dyn ParticipantProbe,
 ) -> Result<DeployApplyResult> {
     let initial_plan = resolve_plan(store, local_machine_id, manifest).await?;
-    let reachability =
-        probe_participants(prober, initial_plan.participants(), initial_plan.machine_map()).await;
+    let reachability = probe_participants(
+        prober,
+        initial_plan.participants(),
+        initial_plan.machine_map(),
+    )
+    .await;
     if !reachability.unreachable.is_empty() {
         let unreachable = reachability
             .unreachable
@@ -287,8 +291,12 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
         events.extend(startup.events);
 
         let started = prepared.into_started(startup.started);
-        let committed_volumes =
-            build_committed_volumes(started.plan(), started.started(), started.deploy_id(), started_at)?;
+        let committed_volumes = build_committed_volumes(
+            started.plan(),
+            started.started(),
+            started.deploy_id(),
+            started_at,
+        )?;
         let removed_volumes_list = removed_volumes(store, started.plan()).await?;
 
         let commit_plan = started.into_commit_plan(removed_volumes_list, committed_volumes)?;
@@ -302,8 +310,10 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
             issuer_factory.issuer_url(),
         )
         .await?;
-        let issuer = issuer_factory
-            .create(Arc::new(LocalHttp01ChallengeReadiness), account_coordinator.clone());
+        let issuer = issuer_factory.create(
+            Arc::new(LocalHttp01ChallengeReadiness),
+            account_coordinator.clone(),
+        );
         let acme_warnings = start_pending_orders(
             store,
             issuer.as_ref(),

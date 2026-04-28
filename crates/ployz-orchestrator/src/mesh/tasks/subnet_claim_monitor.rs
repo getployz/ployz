@@ -56,7 +56,9 @@ pub(crate) async fn run_subnet_claim_monitor_task(
     }
 }
 
-pub(crate) fn duplicate_subnet_claims(machines: &[MachineMembership]) -> Vec<(String, Vec<String>)> {
+pub(crate) fn duplicate_subnet_claims(
+    machines: &[MachineMembership],
+) -> Vec<(String, Vec<String>)> {
     let mut claimants_by_subnet: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
     for machine in machines {

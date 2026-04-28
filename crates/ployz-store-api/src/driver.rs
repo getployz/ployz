@@ -4,8 +4,8 @@ use crate::{
     DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
     InstanceStatusRepository, InviteRepository, MachineRegistry, MachineSubscription,
     PeerMembershipObservation, PeerMembershipStore, PeerRttObservation, PeerRttStore,
-    RoutingInvalidationSubscription, RoutingSnapshotReader, StoreBackend, StoreRuntimeControl,
-    SyncProbe, SyncStatus,
+    RoutingSnapshotReader, RoutingSubscription, StoreBackend, StoreRuntimeControl, SyncProbe,
+    SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::Result;
@@ -140,12 +140,8 @@ impl InviteRepository for StoreDriver {
 }
 
 impl RoutingSnapshotReader for StoreDriver {
-    async fn load_routing_state(&self) -> Result<RoutingState> {
-        self.backend.load_routing_state().await
-    }
-
-    async fn subscribe_routing_invalidations(&self) -> Result<RoutingInvalidationSubscription> {
-        self.backend.subscribe_routing_invalidations().await
+    async fn subscribe_routing_events(&self) -> Result<RoutingSubscription> {
+        self.backend.subscribe_routing_events().await
     }
 }
 
@@ -325,8 +321,8 @@ impl StoreBackend for MemoryStoreBackend {
         self.store.load_routing_state().await
     }
 
-    async fn subscribe_routing_invalidations(&self) -> Result<RoutingInvalidationSubscription> {
-        self.store.subscribe_routing_invalidations().await
+    async fn subscribe_routing_events(&self) -> Result<RoutingSubscription> {
+        self.store.subscribe_routing_events().await
     }
 
     async fn list_deploy_releases(

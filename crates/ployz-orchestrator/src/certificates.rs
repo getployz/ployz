@@ -1727,8 +1727,7 @@ mod tests {
             _: &str,
             _: &str,
         ) -> Result<IssuedCertificate> {
-            self.calls
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             tokio::time::sleep(self.delay).await;
             self.result
                 .lock()
@@ -1808,7 +1807,10 @@ mod tests {
             "issued cert must land on the row, not Failed"
         );
         let [version] = row.versions.as_slice() else {
-            panic!("expected exactly one issued version, got {:?}", row.versions);
+            panic!(
+                "expected exactly one issued version, got {:?}",
+                row.versions
+            );
         };
         assert_eq!(version.fullchain_pem, "winner-chain");
         assert!(row.last_error.is_none());
@@ -2022,7 +2024,13 @@ mod tests {
             .expect_err("missing challenge should time out");
 
         assert!(
-            matches!(&error, Error::Operation { operation: "acme_challenge_visibility", .. }),
+            matches!(
+                &error,
+                Error::Operation {
+                    operation: "acme_challenge_visibility",
+                    ..
+                }
+            ),
             "expected acme_challenge_visibility tag, got: {error:?}"
         );
         assert!(

@@ -221,7 +221,10 @@ fn machine_bias_seed(machine_id: &MachineId) -> u64 {
     hasher.finish()
 }
 
-fn coordination_peers(machines: &[MachineMembership], self_id: &MachineId) -> Vec<CoordinationPeer> {
+fn coordination_peers(
+    machines: &[MachineMembership],
+    self_id: &MachineId,
+) -> Vec<CoordinationPeer> {
     machines
         .iter()
         .filter(|machine| is_coordination_peer(&machine.placement_candidate(), self_id))
@@ -364,7 +367,9 @@ mod tests {
     use super::assert_subnet_unique;
     use ipnet::Ipv4Net;
     use ployz_store_api::{MachineRegistry, StoreDriver};
-    use ployz_types::model::{MachineId, MachineLifecycle, MachineMembership, OverlayIp, PublicKey};
+    use ployz_types::model::{
+        MachineId, MachineLifecycle, MachineMembership, OverlayIp, PublicKey,
+    };
 
     #[tokio::test]
     async fn subnet_assertion_rejects_duplicate_claims() {

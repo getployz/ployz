@@ -1,6 +1,8 @@
 use ipnet::Ipv4Net;
 
-use crate::model::{MachineId, MachineIdentity, MachineObservation, MachineMembership, OverlayIp, PublicKey};
+use crate::model::{
+    MachineId, MachineIdentity, MachineMembership, MachineObservation, OverlayIp, PublicKey,
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct PeerState {

@@ -1,6 +1,7 @@
 use ipnet::Ipv4Net;
 use ployz_types::model::{
-    InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, NetworkId, NetworkLifecycle,
+    InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, NetworkId,
+    NetworkLifecycle,
 };
 use serde::{Deserialize, Serialize};
 

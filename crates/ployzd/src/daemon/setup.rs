@@ -6,6 +6,7 @@ use tracing::warn;
 
 use crate::mesh_state::bootstrap::{BootstrapInfo, build_seed_records, resolve_bootstrap_addrs};
 use crate::mesh_state::network::NetworkConfig;
+use ployz_cert_backends::InstantAcmeIssuerFactory;
 use ployz_config::RuntimeTarget;
 use ployz_corrosion::{
     config as corrosion_config, corrosion_bootstrap_from_db, peer_records_from_db,
@@ -13,7 +14,6 @@ use ployz_corrosion::{
 use ployz_dns_config::DnsConfig;
 use ployz_gateway_config::GatewayConfig;
 use ployz_orchestrator::Mesh;
-use ployz_cert_backends::InstantAcmeIssuerFactory;
 use ployz_orchestrator::certificates::{
     CertificateManagerConfig, RenewalConfig, spawn_certificate_renewal_ticker,
 };

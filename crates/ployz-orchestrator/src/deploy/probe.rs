@@ -210,10 +210,8 @@ mod tests {
         let alive = test_machine("alive-1", "fd00::1");
         let dead = test_machine("dead-1", "fd00::2");
         let participants = BTreeSet::from([alive.id.clone(), dead.id.clone()]);
-        let machine_map = HashMap::from([
-            (alive.id.clone(), alive),
-            (dead.id.clone(), dead.clone()),
-        ]);
+        let machine_map =
+            HashMap::from([(alive.id.clone(), alive), (dead.id.clone(), dead.clone())]);
         let prober = ScriptedProbe::new([(
             dead.id.clone(),
             Err(ProbeError {

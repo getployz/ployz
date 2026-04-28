@@ -3,7 +3,7 @@ use ployz_types::Result;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeRecord, CertificateEvent,
     CertificateRecord, DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord,
-    MachineEvent, MachineId, MachineMembership, RoutingState, ServiceReleaseRecord,
+    MachineEvent, MachineId, MachineMembership, RoutingEvent, RoutingState, ServiceReleaseRecord,
     ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 pub type MachineSubscription = (Vec<MachineMembership>, mpsc::Receiver<MachineEvent>);
 pub type CertificateSubscription = (Vec<CertificateRecord>, mpsc::Receiver<CertificateEvent>);
 pub type AcmeChallengeSubscription = (Vec<AcmeChallengeRecord>, mpsc::Receiver<AcmeChallengeEvent>);
-pub type RoutingInvalidationSubscription = mpsc::Receiver<()>;
+pub type RoutingSubscription = (RoutingState, mpsc::Receiver<RoutingEvent>);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployCommit {
@@ -91,11 +91,9 @@ pub trait InviteRepository: Send + Sync {
 }
 
 pub trait RoutingSnapshotReader: Send + Sync {
-    fn load_routing_state(&self) -> impl Future<Output = Result<RoutingState>> + Send + '_;
-
-    fn subscribe_routing_invalidations(
+    fn subscribe_routing_events(
         &self,
-    ) -> impl Future<Output = Result<RoutingInvalidationSubscription>> + Send + '_;
+    ) -> impl Future<Output = Result<RoutingSubscription>> + Send + '_;
 }
 
 pub trait DeployRepository: Send + Sync {

@@ -6,9 +6,9 @@ use std::sync::Arc;
 use pingora::tls::pkey::{PKey, Private};
 use pingora::tls::x509::X509;
 use ployz_types::model::{
-    AcmeChallengeRecord, CertificateRecord, InstanceId, InstancePhase, InstanceStatusRecord,
-    MachineId, MachineMembership, MachineTopology, RoutingState, ServiceRelease, ServiceReleaseSlot,
-    ServiceRoutingPolicy,
+    AcmeChallengeEvent, AcmeChallengeRecord, CertificateEvent, CertificateRecord, InstanceId,
+    InstancePhase, InstanceStatusRecord, MachineId, MachineMembership, MachineTopology,
+    RoutingEvent, RoutingState, ServiceRelease, ServiceReleaseSlot, ServiceRoutingPolicy,
 };
 use ployz_types::spec::{Namespace, RouteSpec, ServiceSpec};
 use serde::{Deserialize, Serialize};
@@ -88,6 +88,106 @@ pub struct BackendView {
     pub topology: MachineTopology,
     pub service_port: String,
     pub address: SocketAddr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ServiceKey {
+    pub namespace: Namespace,
+    pub service: String,
+}
+
+impl ServiceKey {
+    #[must_use]
+    pub fn new(namespace: Namespace, service: String) -> Self {
+        Self { namespace, service }
+    }
+
+    #[must_use]
+    pub fn from_release(record: &ployz_types::model::ServiceReleaseRecord) -> Self {
+        Self::new(record.namespace.clone(), record.service.clone())
+    }
+
+    #[must_use]
+    pub fn from_instance(record: &InstanceStatusRecord) -> Self {
+        Self::new(record.namespace.clone(), record.service.clone())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RevisionKey {
+    pub namespace: Namespace,
+    pub service: String,
+    pub revision_hash: String,
+}
+
+impl RevisionKey {
+    #[must_use]
+    pub fn new(namespace: Namespace, service: String, revision_hash: String) -> Self {
+        Self {
+            namespace,
+            service,
+            revision_hash,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RouteId(String);
+
+impl RouteId {
+    #[must_use]
+    pub fn http(service: &ServiceKey, index: usize) -> Self {
+        Self(format!(
+            "http:{}:{}:{}",
+            service.namespace, service.service, index
+        ))
+    }
+
+    #[must_use]
+    pub fn tcp(service: &ServiceKey, index: usize) -> Self {
+        Self(format!(
+            "tcp:{}:{}:{}",
+            service.namespace, service.service, index
+        ))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NormalizedHostname(String);
+
+impl NormalizedHostname {
+    #[must_use]
+    pub fn parse(hostname: &str) -> Option<Self> {
+        let normalized = normalize_request_host(hostname);
+        if normalized.is_empty() {
+            None
+        } else {
+            Some(Self(normalized))
+        }
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BackendKey {
+    pub instance_id: InstanceId,
+    pub service_port: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum GatewayProjectionEvent {
+    Routing(RoutingEvent),
+    Certificate(CertificateEvent),
+    AcmeChallenge(AcmeChallengeEvent),
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -170,126 +270,493 @@ pub fn match_http_route<'a>(
     })
 }
 
-pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> {
-    let revisions = state
-        .revisions
-        .into_iter()
-        .map(|revision| {
+pub struct GatewayProjector {
+    machines: HashMap<MachineId, MachineMembership>,
+    revisions: HashMap<RevisionKey, ployz_types::model::ServiceRevisionRecord>,
+    specs: HashMap<RevisionKey, ServiceSpec>,
+    releases: HashMap<ServiceKey, ployz_types::model::ServiceReleaseRecord>,
+    instances: HashMap<InstanceId, InstanceStatusRecord>,
+    instances_by_service: HashMap<ServiceKey, HashSet<InstanceId>>,
+    instances_by_machine: HashMap<MachineId, HashSet<InstanceId>>,
+    service_routes: HashMap<ServiceKey, BTreeSet<RouteId>>,
+    http_routes: BTreeMap<RouteId, HttpRouteView>,
+    tcp_routes: BTreeMap<RouteId, TcpRouteView>,
+    acme_challenges: HashMap<(String, String), AcmeChallengeView>,
+    certificates: HashMap<String, CertificateView>,
+    #[cfg(test)]
+    project_counts: HashMap<ServiceKey, usize>,
+}
+
+impl GatewayProjector {
+    pub fn new(state: RoutingState) -> Result<Self, ProjectionError> {
+        let mut projector = Self {
+            machines: state
+                .machines
+                .into_iter()
+                .map(|machine| (machine.id.clone(), machine))
+                .collect(),
+            revisions: state
+                .revisions
+                .into_iter()
+                .map(|revision| {
+                    (
+                        RevisionKey::new(
+                            revision.namespace.clone(),
+                            revision.service.clone(),
+                            revision.revision_hash.clone(),
+                        ),
+                        revision,
+                    )
+                })
+                .collect(),
+            specs: HashMap::new(),
+            releases: state
+                .releases
+                .into_iter()
+                .map(|release| (ServiceKey::from_release(&release), release))
+                .collect(),
+            instances: HashMap::new(),
+            instances_by_service: HashMap::new(),
+            instances_by_machine: HashMap::new(),
+            service_routes: HashMap::new(),
+            http_routes: BTreeMap::new(),
+            tcp_routes: BTreeMap::new(),
+            acme_challenges: HashMap::new(),
+            certificates: HashMap::new(),
+            #[cfg(test)]
+            project_counts: HashMap::new(),
+        };
+
+        for instance in state.instances {
+            projector.insert_instance(instance);
+        }
+        let services = projector.releases.keys().cloned().collect::<Vec<_>>();
+        projector.reproject_services(services)?;
+        Ok(projector)
+    }
+
+    pub fn apply(
+        &mut self,
+        event: GatewayProjectionEvent,
+    ) -> Result<Arc<GatewaySnapshot>, ProjectionError> {
+        match event {
+            GatewayProjectionEvent::Routing(event) => self.apply_routing(event)?,
+            GatewayProjectionEvent::Certificate(event) => self.apply_certificate(event),
+            GatewayProjectionEvent::AcmeChallenge(event) => self.apply_acme(event),
+        }
+        Ok(self.snapshot())
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> Arc<GatewaySnapshot> {
+        Arc::new(self.snapshot_value())
+    }
+
+    #[must_use]
+    pub fn snapshot_value(&self) -> GatewaySnapshot {
+        let mut http_routes = self.http_routes.values().cloned().collect::<Vec<_>>();
+        let mut tcp_routes = self.tcp_routes.values().cloned().collect::<Vec<_>>();
+        http_routes.sort_by_key(|route| {
             (
-                (
+                route.hostnames.is_empty(),
+                Reverse(route.path_prefix.len()),
+                route.namespace.0.clone(),
+                route.service.clone(),
+                route.route_id.clone(),
+            )
+        });
+        tcp_routes.sort_by_key(|route| (route.listen_port, route.route_id.clone()));
+        GatewaySnapshot {
+            http_routes,
+            tcp_routes,
+            acme_challenges: self.acme_challenges.clone(),
+            certificates: self.certificates.clone(),
+        }
+    }
+
+    fn apply_routing(&mut self, event: RoutingEvent) -> Result<(), ProjectionError> {
+        let mut services = BTreeSet::new();
+        match event {
+            RoutingEvent::MachineAdded(machine) => {
+                let machine_id = machine.id.clone();
+                self.machines.insert(machine.id.clone(), machine);
+                services.extend(self.services_for_machine(&machine_id));
+            }
+            RoutingEvent::MachineUpdated { old, new } => {
+                self.machines.insert(new.id.clone(), new);
+                services.extend(self.services_for_machine(&old.id));
+            }
+            RoutingEvent::MachineRemoved(machine) => {
+                self.machines.remove(&machine.id);
+                services.extend(self.services_for_machine(&machine.id));
+            }
+            RoutingEvent::RevisionAdded(revision)
+            | RoutingEvent::RevisionUpdated { new: revision, .. } => {
+                let key = RevisionKey::new(
                     revision.namespace.clone(),
                     revision.service.clone(),
                     revision.revision_hash.clone(),
-                ),
-                revision,
-            )
-        })
-        .collect::<HashMap<_, _>>();
-    let instances = state
-        .instances
-        .into_iter()
-        .map(|instance| (instance.instance_id.clone(), instance))
-        .collect::<HashMap<_, _>>();
-    let machines = state
-        .machines
-        .into_iter()
-        .map(|machine| (machine.id.clone(), machine))
-        .collect::<HashMap<_, _>>();
-
-    let mut http_routes = Vec::new();
-    let mut tcp_routes = Vec::new();
-    for release_record in state.releases {
-        let routing_revision_hash = routing_revision_hash(&release_record.release);
-        let revision_key = (
-            release_record.namespace.clone(),
-            release_record.service.clone(),
-            routing_revision_hash.clone(),
-        );
-        let Some(revision) = revisions.get(&revision_key) else {
-            return Err(ProjectionError::MissingRevision {
-                namespace: release_record.namespace,
-                service: release_record.service,
-                revision_hash: routing_revision_hash,
-            });
-        };
-        let spec: ServiceSpec = serde_json::from_str(&revision.spec_json).map_err(|err| {
-            ProjectionError::InvalidRevisionSpec {
-                namespace: revision.namespace.clone(),
-                service: revision.service.clone(),
-                message: err.to_string(),
+                );
+                self.specs.remove(&key);
+                self.revisions.insert(key.clone(), revision);
+                services.extend(self.services_using_revision(&key));
             }
-        })?;
-
-        let backends_by_port = routable_backends_by_port(
-            &spec,
-            &release_record.namespace,
-            &release_record.service,
-            &allowed_revision_hashes(&release_record.release),
-            &release_record.release.slots,
-            &instances,
-            &machines,
-        )?;
-
-        for (index, route) in spec.routes.iter().enumerate() {
-            match route {
-                RouteSpec::Http(route) => {
-                    let hostnames = route
-                        .hostnames
-                        .iter()
-                        .map(|hostname| normalize_request_host(hostname))
-                        .filter(|hostname| !hostname.is_empty())
-                        .collect::<BTreeSet<_>>()
-                        .into_iter()
-                        .collect::<Vec<_>>();
-                    http_routes.push(HttpRouteView {
-                        route_id: format!("http:{}:{}:{}", revision.namespace, spec.name, index),
-                        namespace: revision.namespace.clone(),
-                        service: spec.name.clone(),
-                        revision_hash: revision.revision_hash.clone(),
-                        hostnames,
-                        path_prefix: normalize_path_prefix(&route.path_prefix),
-                        backends: backends_by_port
-                            .get(&route.service_port)
-                            .cloned()
-                            .unwrap_or_default(),
-                    });
+            RoutingEvent::RevisionRemoved(revision) => {
+                let key =
+                    RevisionKey::new(revision.namespace, revision.service, revision.revision_hash);
+                self.revisions.remove(&key);
+                self.specs.remove(&key);
+                services.extend(self.services_using_revision(&key));
+            }
+            RoutingEvent::ReleaseAdded(release) => {
+                let service = ServiceKey::from_release(&release);
+                self.releases.insert(service.clone(), release);
+                services.insert(service);
+            }
+            RoutingEvent::ReleaseUpdated { old, new } => {
+                let old_service = ServiceKey::from_release(&old);
+                let service = ServiceKey::from_release(&new);
+                if old_service != service {
+                    self.releases.remove(&old_service);
+                    self.clear_service_routes(&old_service);
                 }
-                RouteSpec::Tcp(route) => {
-                    tcp_routes.push(TcpRouteView {
-                        route_id: format!("tcp:{}:{}:{}", revision.namespace, spec.name, index),
-                        namespace: revision.namespace.clone(),
-                        service: spec.name.clone(),
-                        revision_hash: revision.revision_hash.clone(),
-                        listen_port: route.listen_port,
-                        backends: backends_by_port
-                            .get(&route.service_port)
-                            .cloned()
-                            .unwrap_or_default(),
-                    });
+                self.releases.insert(service.clone(), new);
+                services.insert(service);
+            }
+            RoutingEvent::ReleaseRemoved(release) => {
+                let service = ServiceKey::from_release(&release);
+                self.releases.remove(&service);
+                self.clear_service_routes(&service);
+            }
+            RoutingEvent::InstanceAdded(instance) => {
+                services.insert(ServiceKey::from_instance(&instance));
+                self.insert_instance(instance);
+            }
+            RoutingEvent::InstanceUpdated { old, new } => {
+                services.insert(ServiceKey::from_instance(&old));
+                services.insert(ServiceKey::from_instance(&new));
+                self.insert_instance(new);
+            }
+            RoutingEvent::InstanceRemoved(instance) => {
+                services.insert(ServiceKey::from_instance(&instance));
+                self.remove_instance(&instance.instance_id);
+            }
+        }
+        self.reproject_services(services.into_iter().collect())
+    }
+
+    fn apply_certificate(&mut self, event: CertificateEvent) {
+        match event {
+            CertificateEvent::Added(record) | CertificateEvent::Updated(record) => {
+                self.project_certificate(record);
+            }
+            CertificateEvent::Removed(record) => {
+                if let Some(hostname) = NormalizedHostname::parse(&record.hostname) {
+                    self.certificates.remove(&hostname.into_string());
                 }
             }
         }
     }
 
-    validate_http_conflicts(&http_routes)?;
-    validate_tcp_conflicts(&tcp_routes)?;
-    http_routes.sort_by_key(|route| {
-        (
-            route.hostnames.is_empty(),
-            Reverse(route.path_prefix.len()),
-            route.namespace.0.clone(),
-            route.service.clone(),
-            route.route_id.clone(),
-        )
-    });
-    tcp_routes.sort_by_key(|route| (route.listen_port, route.route_id.clone()));
+    fn apply_acme(&mut self, event: AcmeChallengeEvent) {
+        match event {
+            AcmeChallengeEvent::Added(record) | AcmeChallengeEvent::Updated(record) => {
+                self.project_acme(record);
+            }
+            AcmeChallengeEvent::Removed(record) => {
+                if let Some(hostname) = NormalizedHostname::parse(&record.hostname) {
+                    self.acme_challenges
+                        .remove(&(hostname.into_string(), record.token));
+                }
+            }
+        }
+    }
 
-    Ok(GatewaySnapshot {
-        http_routes,
-        tcp_routes,
-        acme_challenges: HashMap::new(),
-        certificates: HashMap::new(),
-    })
+    fn reproject_services(&mut self, services: Vec<ServiceKey>) -> Result<(), ProjectionError> {
+        for service in services {
+            self.clear_service_routes(&service);
+            if self.releases.contains_key(&service) {
+                self.project_service(&service)?;
+            }
+        }
+        validate_http_conflicts(&self.http_routes.values().cloned().collect::<Vec<_>>())?;
+        validate_tcp_conflicts(&self.tcp_routes.values().cloned().collect::<Vec<_>>())
+    }
+
+    fn project_service(&mut self, service: &ServiceKey) -> Result<(), ProjectionError> {
+        #[cfg(test)]
+        {
+            *self.project_counts.entry(service.clone()).or_default() += 1;
+        }
+        let Some(release_record) = self.releases.get(service).cloned() else {
+            return Ok(());
+        };
+        let routing_revision_hash = routing_revision_hash(&release_record.release);
+        let revision_key = RevisionKey::new(
+            service.namespace.clone(),
+            service.service.clone(),
+            routing_revision_hash.clone(),
+        );
+        let spec = self.spec_for_revision(&revision_key)?.clone();
+        let backends_by_port = self.project_backends(&spec, &release_record)?;
+
+        for (index, route) in spec.routes.iter().enumerate() {
+            match route {
+                RouteSpec::Http(route) => {
+                    self.project_http(
+                        service,
+                        &spec,
+                        &routing_revision_hash,
+                        index,
+                        route,
+                        &backends_by_port,
+                    );
+                }
+                RouteSpec::Tcp(route) => {
+                    self.project_tcp(
+                        service,
+                        &spec,
+                        &routing_revision_hash,
+                        index,
+                        route,
+                        &backends_by_port,
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn project_http(
+        &mut self,
+        service: &ServiceKey,
+        spec: &ServiceSpec,
+        revision_hash: &str,
+        index: usize,
+        route: &ployz_types::spec::HttpRoute,
+        backends_by_port: &BTreeMap<String, Vec<BackendView>>,
+    ) {
+        let route_id = RouteId::http(service, index);
+        let hostnames = route
+            .hostnames
+            .iter()
+            .filter_map(|hostname| {
+                NormalizedHostname::parse(hostname).map(NormalizedHostname::into_string)
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        self.service_routes
+            .entry(service.clone())
+            .or_default()
+            .insert(route_id.clone());
+        self.http_routes.insert(
+            route_id.clone(),
+            HttpRouteView {
+                route_id: route_id.as_str().to_string(),
+                namespace: service.namespace.clone(),
+                service: spec.name.clone(),
+                revision_hash: revision_hash.to_string(),
+                hostnames,
+                path_prefix: normalize_path_prefix(&route.path_prefix),
+                backends: backends_by_port
+                    .get(&route.service_port)
+                    .cloned()
+                    .unwrap_or_default(),
+            },
+        );
+    }
+
+    fn project_tcp(
+        &mut self,
+        service: &ServiceKey,
+        spec: &ServiceSpec,
+        revision_hash: &str,
+        index: usize,
+        route: &ployz_types::spec::TcpRoute,
+        backends_by_port: &BTreeMap<String, Vec<BackendView>>,
+    ) {
+        let route_id = RouteId::tcp(service, index);
+        self.service_routes
+            .entry(service.clone())
+            .or_default()
+            .insert(route_id.clone());
+        self.tcp_routes.insert(
+            route_id.clone(),
+            TcpRouteView {
+                route_id: route_id.as_str().to_string(),
+                namespace: service.namespace.clone(),
+                service: spec.name.clone(),
+                revision_hash: revision_hash.to_string(),
+                listen_port: route.listen_port,
+                backends: backends_by_port
+                    .get(&route.service_port)
+                    .cloned()
+                    .unwrap_or_default(),
+            },
+        );
+    }
+
+    fn project_backends(
+        &self,
+        spec: &ServiceSpec,
+        release_record: &ployz_types::model::ServiceReleaseRecord,
+    ) -> Result<BTreeMap<String, Vec<BackendView>>, ProjectionError> {
+        let allowed_revision_hashes = allowed_revision_hashes(&release_record.release);
+        routable_backends_by_port(
+            spec,
+            &release_record.namespace,
+            &release_record.service,
+            &allowed_revision_hashes,
+            &release_record.release.slots,
+            &self.instances,
+            &self.machines,
+        )
+    }
+
+    fn project_certificate(&mut self, record: CertificateRecord) {
+        let Some(hostname) = NormalizedHostname::parse(&record.hostname) else {
+            return;
+        };
+        let hostname = hostname.into_string();
+        let Some(version) = record.installed_version() else {
+            self.certificates.remove(&hostname);
+            return;
+        };
+        match parse_tls_material(&hostname, version) {
+            Some(tls) => {
+                self.certificates.insert(
+                    hostname.clone(),
+                    CertificateView {
+                        hostname,
+                        tls: Arc::new(tls),
+                    },
+                );
+            }
+            None => {
+                self.certificates.remove(&hostname);
+            }
+        }
+    }
+
+    fn project_acme(&mut self, record: AcmeChallengeRecord) {
+        let Some(hostname) = NormalizedHostname::parse(&record.hostname) else {
+            return;
+        };
+        let hostname = hostname.into_string();
+        self.acme_challenges.insert(
+            (hostname.clone(), record.token.clone()),
+            AcmeChallengeView {
+                hostname,
+                token: record.token,
+                key_authorization: record.key_authorization,
+            },
+        );
+    }
+
+    fn spec_for_revision(&mut self, key: &RevisionKey) -> Result<&ServiceSpec, ProjectionError> {
+        if !self.specs.contains_key(key) {
+            let Some(revision) = self.revisions.get(key) else {
+                return Err(ProjectionError::MissingRevision {
+                    namespace: key.namespace.clone(),
+                    service: key.service.clone(),
+                    revision_hash: key.revision_hash.clone(),
+                });
+            };
+            let spec = serde_json::from_str(&revision.spec_json).map_err(|err| {
+                ProjectionError::InvalidRevisionSpec {
+                    namespace: revision.namespace.clone(),
+                    service: revision.service.clone(),
+                    message: err.to_string(),
+                }
+            })?;
+            self.specs.insert(key.clone(), spec);
+        }
+        Ok(self.specs.get(key).expect("spec inserted before lookup"))
+    }
+
+    fn clear_service_routes(&mut self, service: &ServiceKey) {
+        let Some(routes) = self.service_routes.remove(service) else {
+            return;
+        };
+        for route_id in routes {
+            self.http_routes.remove(&route_id);
+            self.tcp_routes.remove(&route_id);
+        }
+    }
+
+    fn insert_instance(&mut self, instance: InstanceStatusRecord) {
+        self.remove_instance(&instance.instance_id);
+        let service = ServiceKey::from_instance(&instance);
+        self.instances_by_service
+            .entry(service)
+            .or_default()
+            .insert(instance.instance_id.clone());
+        self.instances_by_machine
+            .entry(instance.machine_id.clone())
+            .or_default()
+            .insert(instance.instance_id.clone());
+        self.instances
+            .insert(instance.instance_id.clone(), instance);
+    }
+
+    fn remove_instance(&mut self, instance_id: &InstanceId) {
+        let Some(instance) = self.instances.remove(instance_id) else {
+            return;
+        };
+        let service = ServiceKey::from_instance(&instance);
+        if let Some(instances) = self.instances_by_service.get_mut(&service) {
+            instances.remove(instance_id);
+            if instances.is_empty() {
+                self.instances_by_service.remove(&service);
+            }
+        }
+        if let Some(instances) = self.instances_by_machine.get_mut(&instance.machine_id) {
+            instances.remove(instance_id);
+            if instances.is_empty() {
+                self.instances_by_machine.remove(&instance.machine_id);
+            }
+        }
+    }
+
+    fn services_for_machine(&self, machine_id: &MachineId) -> BTreeSet<ServiceKey> {
+        self.instances_by_machine
+            .get(machine_id)
+            .into_iter()
+            .flat_map(|instances| instances.iter())
+            .filter_map(|instance_id| self.instances.get(instance_id))
+            .map(ServiceKey::from_instance)
+            .collect()
+    }
+
+    fn services_using_revision(&self, revision: &RevisionKey) -> BTreeSet<ServiceKey> {
+        self.releases
+            .iter()
+            .filter_map(|(service, release)| {
+                if service.namespace == revision.namespace
+                    && service.service == revision.service
+                    && release
+                        .release
+                        .referenced_revision_hashes
+                        .iter()
+                        .any(|hash| hash == &revision.revision_hash)
+                {
+                    Some(service.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn project_count(&self, service: &ServiceKey) -> usize {
+        self.project_counts.get(service).copied().unwrap_or(0)
+    }
+}
+
+pub fn project(state: RoutingState) -> Result<GatewaySnapshot, ProjectionError> {
+    Ok(GatewayProjector::new(state)?.snapshot_value())
 }
 
 #[must_use]
@@ -898,6 +1365,95 @@ mod tests {
         }
     }
 
+    #[test]
+    fn route_id_and_hostname_keys_are_stable_and_normalized() {
+        let service = ServiceKey::new(Namespace("prod".into()), "api".into());
+        assert_eq!(RouteId::http(&service, 2).as_str(), "http:prod:api:2");
+        assert_eq!(RouteId::tcp(&service, 1).as_str(), "tcp:prod:api:1");
+        assert_eq!(
+            NormalizedHostname::parse("API.Example.Com.")
+                .expect("hostname")
+                .into_string(),
+            "api.example.com"
+        );
+        assert_eq!(
+            NormalizedHostname::parse("API.Example.Com:443")
+                .expect("hostname")
+                .into_string(),
+            "api.example.com"
+        );
+        assert!(NormalizedHostname::parse("   .").is_none());
+    }
+
+    #[test]
+    fn instance_event_reprojects_only_the_affected_service() {
+        let namespace = Namespace("prod".into());
+        let api = service_spec(&namespace, "api", "v1", vec!["api.example.com".into()]);
+        let web = service_spec(&namespace, "web", "v1", vec!["web.example.com".into()]);
+        let api_service = ServiceKey::new(namespace.clone(), "api".into());
+        let web_service = ServiceKey::new(namespace.clone(), "web".into());
+        let old_api_instance = instance_record(
+            &namespace,
+            "api",
+            "slot-api",
+            "inst-api",
+            true,
+            DrainState::None,
+            &api,
+        );
+        let mut new_api_instance = old_api_instance.clone();
+        new_api_instance
+            .backend_ports
+            .insert(String::from("http"), 8081);
+
+        let mut projector = GatewayProjector::new(RoutingState {
+            machines: vec![machine_record("machine-a")],
+            revisions: vec![revision_record(&api), revision_record(&web)],
+            releases: vec![
+                release_record(
+                    &namespace,
+                    "api",
+                    &api.revision_hash().expect("api revision hash"),
+                    vec![slot_record("slot-api", "inst-api", &api)],
+                ),
+                release_record(
+                    &namespace,
+                    "web",
+                    &web.revision_hash().expect("web revision hash"),
+                    vec![slot_record("slot-web", "inst-web", &web)],
+                ),
+            ],
+            instances: vec![
+                old_api_instance.clone(),
+                instance_record(
+                    &namespace,
+                    "web",
+                    "slot-web",
+                    "inst-web",
+                    true,
+                    DrainState::None,
+                    &web,
+                ),
+            ],
+        })
+        .expect("initial projection");
+
+        assert_eq!(projector.project_count(&api_service), 1);
+        assert_eq!(projector.project_count(&web_service), 1);
+
+        projector
+            .apply(GatewayProjectionEvent::Routing(
+                RoutingEvent::InstanceUpdated {
+                    old: old_api_instance,
+                    new: new_api_instance,
+                },
+            ))
+            .expect("apply instance update");
+
+        assert_eq!(projector.project_count(&api_service), 2);
+        assert_eq!(projector.project_count(&web_service), 1);
+    }
+
     fn service_spec(
         _namespace: &Namespace,
         service: &str,
@@ -1097,6 +1653,72 @@ mod tests {
             expires_at: 100,
             created_at: 0,
         }
+    }
+
+    #[test]
+    fn tls_events_do_not_reproject_routes_and_challenge_events_reuse_cert_material() {
+        let namespace = Namespace("prod".into());
+        let spec = service_spec(&namespace, "api", "v1", vec!["api.example.com".into()]);
+        let service = ServiceKey::new(namespace.clone(), "api".into());
+        let mut projector = GatewayProjector::new(RoutingState {
+            machines: vec![machine_record("machine-a")],
+            revisions: vec![revision_record(&spec)],
+            releases: vec![release_record(
+                &namespace,
+                "api",
+                &spec.revision_hash().expect("revision hash"),
+                vec![slot_record("slot-1", "inst-ready", &spec)],
+            )],
+            instances: vec![instance_record(
+                &namespace,
+                "api",
+                "slot-1",
+                "inst-ready",
+                true,
+                DrainState::None,
+                &spec,
+            )],
+        })
+        .expect("initial projection");
+        assert_eq!(projector.project_count(&service), 1);
+
+        projector
+            .apply(GatewayProjectionEvent::Certificate(
+                CertificateEvent::Added(active_cert("api.example.com", "v1")),
+            ))
+            .expect("certificate projection");
+        assert_eq!(
+            projector.project_count(&service),
+            1,
+            "certificate events must not route-project services"
+        );
+        let before = projector
+            .certificates
+            .get("api.example.com")
+            .expect("cert projected")
+            .tls
+            .clone();
+
+        projector
+            .apply(GatewayProjectionEvent::AcmeChallenge(
+                AcmeChallengeEvent::Added(challenge("api.example.com", "tok-1")),
+            ))
+            .expect("challenge projection");
+        assert_eq!(
+            projector.project_count(&service),
+            1,
+            "challenge events must not route-project services"
+        );
+        let after = projector
+            .certificates
+            .get("api.example.com")
+            .expect("cert still projected")
+            .tls
+            .clone();
+        assert!(
+            Arc::ptr_eq(&before, &after),
+            "challenge events must reuse unchanged parsed TLS material"
+        );
     }
 
     #[test]

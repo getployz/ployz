@@ -25,7 +25,10 @@ pub(crate) async fn list_machines(client: &CorrClient) -> Result<Vec<MachineMemb
         .collect()
 }
 
-pub(crate) async fn upsert_self_machine(client: &CorrClient, record: &MachineMembership) -> Result<()> {
+pub(crate) async fn upsert_self_machine(
+    client: &CorrClient,
+    record: &MachineMembership,
+) -> Result<()> {
     let stmt = upsert_statement(record)?;
     exec_one(client, &[stmt], "upsert_self_machine").await
 }

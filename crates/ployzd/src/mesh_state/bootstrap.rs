@@ -1,9 +1,7 @@
 use super::network::NetworkConfig;
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 use ployz_runtime_api::Identity;
-use ployz_types::model::{
-    MachineId, MachineMembership, MachineTopology, OverlayIp, PublicKey,
-};
+use ployz_types::model::{MachineId, MachineMembership, MachineTopology, OverlayIp, PublicKey};
 use serde::{Deserialize, Serialize};
 use std::net::Ipv6Addr;
 use std::path::Path;

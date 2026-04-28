@@ -118,7 +118,9 @@ pub(crate) async fn serve(
             let zfs_root = zfs_root.clone();
             let store = store.clone();
             tokio::spawn(async move {
-                if let Err(error) = handle_transfer(stream, zfs_root, overcommit_ratio, store, remote_addr).await {
+                if let Err(error) =
+                    handle_transfer(stream, zfs_root, overcommit_ratio, store, remote_addr).await
+                {
                     tracing::warn!(%error, %remote_addr, "zfs transfer failed");
                 }
                 drop(permit);
@@ -484,11 +486,14 @@ mod tests {
 
     impl FakeShellRunner {
         fn push(&self, status: i32, stdout: &str, stderr: &str) {
-            self.outputs.lock().expect("outputs").push_back(ShellOutput {
-                status,
-                stdout: stdout.as_bytes().to_vec(),
-                stderr: stderr.as_bytes().to_vec(),
-            });
+            self.outputs
+                .lock()
+                .expect("outputs")
+                .push_back(ShellOutput {
+                    status,
+                    stdout: stdout.as_bytes().to_vec(),
+                    stderr: stderr.as_bytes().to_vec(),
+                });
         }
     }
 
@@ -736,11 +741,7 @@ mod tests {
     async fn validate_open_source_rejects_when_volume_owned_by_other_machine() {
         let overlay = "fd00::1".parse::<Ipv6Addr>().unwrap();
         let other = "fd00::2".parse::<Ipv6Addr>().unwrap();
-        let store = store_with(vec![
-            machine("source", overlay),
-            machine("owner", other),
-        ])
-        .await;
+        let store = store_with(vec![machine("source", overlay), machine("owner", other)]).await;
         insert_volume(&store, "default", "data", "owner").await;
         let remote = SocketAddr::new(IpAddr::V6(overlay), 4319);
 
@@ -754,14 +755,10 @@ mod tests {
     #[tokio::test]
     async fn validate_volume_ownership_rejects_unknown_volume() {
         let store = StoreDriver::memory();
-        let err = validate_volume_ownership(
-            &store,
-            &MachineId("source".into()),
-            "default",
-            "missing",
-        )
-        .await
-        .expect_err("unknown volume rejected");
+        let err =
+            validate_volume_ownership(&store, &MachineId("source".into()), "default", "missing")
+                .await
+                .expect_err("unknown volume rejected");
         assert!(err.contains("not authorized"), "unexpected error: {err}");
         assert!(!err.contains("missing"), "volume name leaked: {err}");
     }
