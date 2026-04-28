@@ -104,6 +104,21 @@ impl LocalDeployRuntime {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_engine(
+        engine: ContainerEngine,
+        overlay_network: Option<String>,
+        overlay_dns_server: Option<Ipv4Addr>,
+        storage_driver: Option<Arc<ZfsDriver<TokioShellRunner>>>,
+    ) -> Self {
+        Self {
+            engine,
+            overlay_network,
+            overlay_dns_server,
+            storage_driver,
+        }
+    }
+
     async fn list_instances(&self, namespace: &Namespace) -> Result<Vec<ManagedInstance>> {
         let observed = self
             .engine
@@ -547,13 +562,19 @@ mod tests {
 
     use async_trait::async_trait;
 
-    use super::{build_binds, resolve_mounts_with_driver, workload_dns_servers};
+    use super::{
+        LocalDeployRuntime, StartCandidate, build_binds, resolve_mounts_with_driver,
+        workload_dns_servers,
+    };
     use crate::error::{Error, Result};
+    use crate::model::{DeployId, InstanceId, MachineId, SlotId};
+    use crate::runtime::ContainerEngine;
     use crate::spec::{
-        ContainerSpec, Mount, MountSource, Namespace, NetworkMode, PullPolicy, Resources,
-        VolumeDeclaration, VolumeScope,
+        ContainerSpec, Mount, MountSource, Namespace, NetworkMode, Placement, PullPolicy,
+        Resources, RestartPolicy, RolloutStrategy, ServiceSpec, VolumeDeclaration, VolumeScope,
     };
     use crate::storage::{ShellOutput, ShellRunner, ZfsDriver};
+    use bollard::Docker;
     use std::net::Ipv4Addr;
 
     #[derive(Clone, Default)]
@@ -717,6 +738,65 @@ mod tests {
             error
                 .to_string()
                 .contains("no [storage] zfs_root configured")
+        );
+    }
+
+    fn volume_service_spec() -> ServiceSpec {
+        ServiceSpec {
+            name: "db".into(),
+            placement: Placement::Replicated { count: 1 },
+            template: volume_container(),
+            network: NetworkMode::None,
+            service_ports: Vec::new(),
+            publish: Vec::new(),
+            routes: Vec::new(),
+            readiness: None,
+            rollout: RolloutStrategy::Recreate,
+            labels: BTreeMap::new(),
+            restart: RestartPolicy::No,
+        }
+    }
+
+    #[tokio::test]
+    async fn start_candidate_without_storage_driver_fails_for_volume_service() {
+        // Construct a runtime via the test seam so the no-zfs_root path is
+        // exercised through start_candidate, not just the inner resolver.
+        // resolve_mounts short-circuits before any Docker call, so the engine
+        // here is never reached at runtime.
+        let docker = Docker::connect_with_socket_defaults().expect("bollard client init");
+        let engine = ContainerEngine::new(docker);
+        let runtime = LocalDeployRuntime::from_engine(engine, None, None, None);
+
+        let namespace = Namespace("test".into());
+        let spec = volume_service_spec();
+        let deploy_id = DeployId("dep-1".into());
+        let instance_id = InstanceId("inst-1".into());
+        let slot_id = SlotId("slot-1".into());
+        let machine_id = MachineId("mach-1".into());
+        let volumes = volume_declarations();
+
+        let error = runtime
+            .start_candidate(StartCandidate {
+                namespace: &namespace,
+                spec: &spec,
+                deploy_id: &deploy_id,
+                instance_id: &instance_id,
+                slot_id: &slot_id,
+                machine_id: &machine_id,
+                revision_hash: "rev",
+                volumes: &volumes,
+            })
+            .await
+            .expect_err("missing storage driver should surface through start_candidate");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("start_candidate"),
+            "expected start_candidate operation tag, got: {message}"
+        );
+        assert!(
+            message.contains("no [storage] zfs_root configured"),
+            "expected zfs_root guidance in error, got: {message}"
         );
     }
 

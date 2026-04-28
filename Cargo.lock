@@ -3072,6 +3072,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ployz-cert-backends"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "instant-acme",
+ "ployz-orchestrator",
+ "ployz-store-api",
+ "ployz-types",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "ployz-config"
 version = "0.1.0"
 dependencies = [
@@ -3211,7 +3226,6 @@ dependencies = [
  "aya",
  "futures-util",
  "if-addrs",
- "instant-acme",
  "ipnet",
  "libc",
  "ployz-ebpf-common",
@@ -3328,6 +3342,7 @@ dependencies = [
  "ipnet",
  "libc",
  "ployz-api",
+ "ployz-cert-backends",
  "ployz-config",
  "ployz-corrosion",
  "ployz-dns-config",

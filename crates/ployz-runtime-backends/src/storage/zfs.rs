@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
+use crate::spec::parse_quota_bytes;
 
 use super::{ShellRunner, ShellStdio, ShellStreamer, TokioShellRunner};
 
@@ -349,7 +350,8 @@ impl<R: ShellRunner> ZfsDriver<R> {
     }
 
     async fn create_dataset(&self, spec: &DatasetSpec) -> Result<()> {
-        let requested_bytes = parse_size_bytes(&spec.quota)?;
+        let requested_bytes = parse_quota_bytes(&spec.quota)
+            .map_err(|err| Error::operation("zfs_quota", err))?;
         self.check_overcommit(&spec.dataset, requested_bytes)
             .await?;
 
@@ -381,8 +383,10 @@ impl<R: ShellRunner> ZfsDriver<R> {
     }
 
     async fn update_quota(&self, dataset: &str, current: &str, requested: &str) -> Result<()> {
-        let current_bytes = parse_size_bytes(current)?;
-        let requested_bytes = parse_size_bytes(requested)?;
+        let current_bytes =
+            parse_quota_bytes(current).map_err(|err| Error::operation("zfs_quota", err))?;
+        let requested_bytes =
+            parse_quota_bytes(requested).map_err(|err| Error::operation("zfs_quota", err))?;
         if requested_bytes == current_bytes {
             return Ok(());
         }
@@ -476,7 +480,19 @@ impl<R: ShellRunner> ZfsDriver<R> {
             if *name == exclude_dataset || *name == self.zfs_root_dataset {
                 continue;
             }
-            let bytes = quota.parse::<u64>().unwrap_or(0);
+            // `zfs list -Hp -o quota` prints "0" for unset (and "-" on some
+            // dataset types). Anything else must parse as bytes; failing
+            // closed prevents a malformed value from silently relaxing the
+            // overcommit guard.
+            let bytes = match quota.trim() {
+                "" | "-" => 0,
+                value => value.parse::<u64>().map_err(|err| {
+                    Error::operation(
+                        "zfs_parse",
+                        format!("parse quota for '{name}': {err} (got {value:?})"),
+                    )
+                })?,
+            };
             sum = sum.saturating_add(bytes);
         }
         Ok(sum)
@@ -571,10 +587,6 @@ fn normalize_quota(value: &str) -> String {
     } else {
         value.to_string()
     }
-}
-
-fn parse_size_bytes(value: &str) -> Result<u64> {
-    crate::spec::parse_quota_bytes(value).map_err(|err| Error::operation("zfs_quota", err))
 }
 
 fn snapshot_name(dataset: &str, snapshot: &str) -> String {

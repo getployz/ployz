@@ -67,10 +67,22 @@ impl RequestHandler for DnsHandler {
 
         let snapshot = self.snapshot.load();
 
-        // Determine caller namespace from source IPv4
+        // Determine caller namespace from source IPv4. The mesh issues IPv4
+        // overlay addresses, so the reverse map is keyed by Ipv4Addr; an IPv6
+        // caller has no namespace mapping and bare-name lookups will NXDOMAIN.
+        // Explicit `<service>.<namespace>.ployz.internal` queries still work.
         let caller_namespace = match src_ip {
             IpAddr::V4(ip) => snapshot.ip_to_namespace.get(&ip).cloned(),
-            IpAddr::V6(_) => None,
+            IpAddr::V6(_) => {
+                static WARNED: std::sync::Once = std::sync::Once::new();
+                WARNED.call_once(|| {
+                    warn!(
+                        ?src_ip,
+                        "ipv6 dns caller has no namespace mapping; bare-name lookups will NXDOMAIN"
+                    );
+                });
+                None
+            }
         };
 
         let dns_query = parse_query(&name_str);

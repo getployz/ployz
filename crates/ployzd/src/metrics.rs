@@ -69,6 +69,7 @@ pub fn observe_request(request: &str, lane: RequestLane, outcome_ok: bool, durat
 #[must_use]
 pub fn request_name(request: &ployz_api::DaemonRequest) -> &'static str {
     match request {
+        ployz_api::DaemonRequest::Ping => "ping",
         ployz_api::DaemonRequest::Status => "status",
         ployz_api::DaemonRequest::Doctor => "doctor",
         ployz_api::DaemonRequest::DebugTick { .. } => "debug_tick",

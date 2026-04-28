@@ -13,6 +13,7 @@ use ployz_corrosion::{
 use ployz_dns_config::DnsConfig;
 use ployz_gateway_config::GatewayConfig;
 use ployz_orchestrator::Mesh;
+use ployz_cert_backends::InstantAcmeIssuerFactory;
 use ployz_orchestrator::certificates::{
     CertificateManagerConfig, RenewalConfig, spawn_certificate_renewal_ticker,
 };
@@ -324,9 +325,12 @@ impl MeshStartTx {
                     peer_rpc_port,
                 ),
             );
+            let issuer_factory = std::sync::Arc::new(InstantAcmeIssuerFactory::new(
+                CertificateManagerConfig::from_env(),
+            ));
             Some(spawn_certificate_renewal_ticker(
                 store,
-                CertificateManagerConfig::from_env(),
+                issuer_factory,
                 RenewalConfig::from_env(),
                 coordinator,
                 readiness,

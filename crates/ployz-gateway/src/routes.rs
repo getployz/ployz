@@ -1,7 +1,10 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::net::{SocketAddr, SocketAddrV4};
+use std::sync::Arc;
 
+use pingora::tls::pkey::{PKey, Private};
+use pingora::tls::x509::X509;
 use ployz_types::model::{
     AcmeChallengeRecord, CertificateRecord, InstanceId, InstancePhase, InstanceStatusRecord,
     MachineId, MachineMembership, MachineTopology, RoutingState, ServiceRelease, ServiceReleaseSlot,
@@ -10,8 +13,9 @@ use ployz_types::model::{
 use ployz_types::spec::{Namespace, RouteSpec, ServiceSpec};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tracing::warn;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct GatewaySnapshot {
     pub http_routes: Vec<HttpRouteView>,
     pub tcp_routes: Vec<TcpRouteView>,
@@ -40,11 +44,20 @@ pub struct AcmeChallengeView {
     pub key_authorization: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Parsed, ready-to-install TLS material. Built once at projection time so the
+/// handshake hot path is a snapshot lookup + `Arc::clone` — no PEM parsing, no
+/// `X509::clone`, no `Vec` allocation per connection.
+#[derive(Debug)]
+pub struct ProjectedTlsMaterial {
+    pub leaf: X509,
+    pub chain: Arc<[X509]>,
+    pub private_key: PKey<Private>,
+}
+
+#[derive(Debug, Clone)]
 pub struct CertificateView {
     pub hostname: String,
-    pub fullchain_pem: String,
-    pub private_key_pem: String,
+    pub tls: Arc<ProjectedTlsMaterial>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -319,16 +332,62 @@ pub fn project_certificates(
         .filter_map(|record| {
             let version = record.installed_version()?;
             let hostname = normalize_request_host(&record.hostname);
+            let tls = parse_tls_material(&hostname, version)?;
             Some((
                 hostname.clone(),
                 CertificateView {
                     hostname,
-                    fullchain_pem: version.fullchain_pem.clone(),
-                    private_key_pem: version.private_key_pem.clone(),
+                    tls: Arc::new(tls),
                 },
             ))
         })
         .collect()
+}
+
+/// Parse a record's PEM material into ready-to-install X509 + chain + private
+/// key. Returns `None` and logs a warning for malformed records so they never
+/// reach the handshake-path callback. PEM parsing happens here (cold path) and
+/// is intentionally synchronous.
+fn parse_tls_material(
+    hostname: &str,
+    version: &ployz_types::model::CertificateVersion,
+) -> Option<ProjectedTlsMaterial> {
+    let stack = match X509::stack_from_pem(version.fullchain_pem.as_bytes()) {
+        Ok(stack) => stack,
+        Err(error) => {
+            warn!(
+                hostname,
+                reason = %error,
+                "managed TLS fullchain PEM did not parse; dropping certificate from snapshot"
+            );
+            return None;
+        }
+    };
+    let mut iter = stack.into_iter();
+    let Some(leaf) = iter.next() else {
+        warn!(
+            hostname,
+            "managed TLS fullchain PEM contained no leaf certificate; dropping from snapshot"
+        );
+        return None;
+    };
+    let chain: Arc<[X509]> = iter.collect();
+    let private_key = match PKey::private_key_from_pem(version.private_key_pem.as_bytes()) {
+        Ok(key) => key,
+        Err(error) => {
+            warn!(
+                hostname,
+                reason = %error,
+                "managed TLS private key PEM did not parse; dropping certificate from snapshot"
+            );
+            return None;
+        }
+    };
+    Some(ProjectedTlsMaterial {
+        leaf,
+        chain,
+        private_key,
+    })
 }
 
 #[must_use]
@@ -996,7 +1055,18 @@ mod tests {
 
     use ployz_types::model::CertificateVersion;
 
+    /// Generate a self-signed PEM bundle for tests. project_certificates parses
+    /// PEM at projection time and drops malformed records, so test fixtures
+    /// must produce real PEM.
+    fn self_signed_pem(hostname: &str) -> (String, String) {
+        let key = rcgen::KeyPair::generate().expect("keypair");
+        let params = rcgen::CertificateParams::new(vec![hostname.into()]).expect("cert params");
+        let cert = params.self_signed(&key).expect("self-signed cert");
+        (cert.pem(), key.serialize_pem())
+    }
+
     fn active_cert(hostname: &str, version_id: &str) -> CertificateRecord {
+        let (fullchain_pem, private_key_pem) = self_signed_pem(hostname);
         CertificateRecord {
             hostname: hostname.into(),
             issuer_url: "https://acme.test/directory".into(),
@@ -1005,8 +1075,8 @@ mod tests {
             active_version_id: Some(version_id.into()),
             versions: vec![CertificateVersion {
                 version_id: version_id.into(),
-                fullchain_pem: format!("fullchain:{hostname}"),
-                private_key_pem: format!("key:{hostname}"),
+                fullchain_pem,
+                private_key_pem,
                 not_before: Some(0),
                 not_after: Some(100),
                 issued_at: 0,
@@ -1041,8 +1111,17 @@ mod tests {
             .get("api.example.com")
             .expect("certificate present under normalized hostname");
         assert_eq!(entry.hostname, "api.example.com");
-        assert_eq!(entry.fullchain_pem, "fullchain:api.example.com");
-        assert_eq!(entry.private_key_pem, "key:api.example.com");
+        // Self-signed fullchain has only the leaf — chain must be empty —
+        // and the parsed private key must match the leaf's public key.
+        assert!(entry.tls.chain.is_empty());
+        assert!(
+            entry
+                .tls
+                .leaf
+                .public_key()
+                .expect("leaf pubkey")
+                .public_eq(&entry.tls.private_key)
+        );
     }
 
     #[test]
@@ -1102,8 +1181,14 @@ mod tests {
             .get("api.example.com")
             .expect("renewing cert should still serve the previous leaf");
         // Material is the previously-issued v1, untouched by the in-flight order.
-        assert_eq!(entry.fullchain_pem, "fullchain:api.example.com");
-        assert_eq!(entry.private_key_pem, "key:api.example.com");
+        assert!(
+            entry
+                .tls
+                .leaf
+                .public_key()
+                .expect("leaf pubkey")
+                .public_eq(&entry.tls.private_key)
+        );
     }
 
     #[test]
@@ -1121,8 +1206,52 @@ mod tests {
             .certificates
             .get("api.example.com")
             .expect("failed-with-fallback cert should still serve previous leaf");
-        assert_eq!(entry.fullchain_pem, "fullchain:api.example.com");
-        assert_eq!(entry.private_key_pem, "key:api.example.com");
+        assert!(
+            entry
+                .tls
+                .leaf
+                .public_key()
+                .expect("leaf pubkey")
+                .public_eq(&entry.tls.private_key)
+        );
+    }
+
+    #[test]
+    fn project_certificates_drops_records_with_malformed_fullchain_pem() {
+        // PEM envelope present, body is garbage → real parse error. The bad
+        // record must be silently dropped from the snapshot (with a warn) so
+        // the handshake-path callback never sees it.
+        let mut bad_chain = active_cert("bad.example.com", "v1");
+        bad_chain.versions[0].fullchain_pem =
+            "-----BEGIN CERTIFICATE-----\nnot-valid-base64!!!\n-----END CERTIFICATE-----\n"
+                .to_string();
+        let good = active_cert("ok.example.com", "v1");
+        let snapshot = with_managed_tls(GatewaySnapshot::empty(), &[], &[bad_chain, good]);
+        assert_eq!(snapshot.certificates.len(), 1);
+        assert!(snapshot.certificates.contains_key("ok.example.com"));
+        assert!(!snapshot.certificates.contains_key("bad.example.com"));
+    }
+
+    #[test]
+    fn project_certificates_drops_records_with_malformed_private_key() {
+        let mut bad_key = active_cert("bad.example.com", "v1");
+        bad_key.versions[0].private_key_pem = "not a pem".to_string();
+        let good = active_cert("ok.example.com", "v1");
+        let snapshot = with_managed_tls(GatewaySnapshot::empty(), &[], &[bad_key, good]);
+        assert_eq!(snapshot.certificates.len(), 1);
+        assert!(snapshot.certificates.contains_key("ok.example.com"));
+        assert!(!snapshot.certificates.contains_key("bad.example.com"));
+    }
+
+    #[test]
+    fn project_certificates_drops_records_with_empty_fullchain_pem() {
+        // boring's `X509::stack_from_pem` is permissive and returns an empty
+        // vec for content with no PEM envelopes; we treat that the same as
+        // malformed and drop the record.
+        let mut empty_chain = active_cert("bad.example.com", "v1");
+        empty_chain.versions[0].fullchain_pem = "this is not a pem".to_string();
+        let snapshot = with_managed_tls(GatewaySnapshot::empty(), &[], &[empty_chain]);
+        assert!(snapshot.certificates.is_empty());
     }
 
     #[test]

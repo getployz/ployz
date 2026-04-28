@@ -37,7 +37,8 @@ impl DaemonState {
             | DaemonRequest::MeshPeerExecuteDestroy { .. }
             | DaemonRequest::MachineRemove { .. }
             | DaemonRequest::MeshPeerRemoveMachine { .. } => RequestLane::Exclusive,
-            DaemonRequest::Status
+            DaemonRequest::Ping
+            | DaemonRequest::Status
             | DaemonRequest::Doctor
             | DaemonRequest::DeployPreview { .. }
             | DaemonRequest::DeployApply { .. }
@@ -77,6 +78,7 @@ impl DaemonState {
 
     pub async fn handle_shared(&self, req: DaemonRequest) -> DaemonResponse {
         match req {
+            DaemonRequest::Ping => self.ok("pong"),
             DaemonRequest::Status => self.handle_status().await,
             DaemonRequest::Doctor => self.handle_doctor().await,
             DaemonRequest::DebugTick { .. }
@@ -289,7 +291,8 @@ impl DaemonState {
                 )
                 .await
             }
-            DaemonRequest::Status
+            DaemonRequest::Ping
+            | DaemonRequest::Status
             | DaemonRequest::Doctor
             | DaemonRequest::DeployPreview { .. }
             | DaemonRequest::DeployApply { .. }
