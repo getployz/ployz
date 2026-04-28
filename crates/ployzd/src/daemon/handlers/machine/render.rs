@@ -32,16 +32,36 @@ pub(super) fn render_machine_list_report(report: &MachineListReport) -> String {
         .max()
         .unwrap_or(0)
         .max("LIFECYCLE".len());
+    let w_region = report
+        .rows
+        .iter()
+        .map(|row| row.region.len())
+        .max()
+        .unwrap_or(0)
+        .max("REGION".len());
+    let w_az = report
+        .rows
+        .iter()
+        .map(|row| row.availability_zone_display.len())
+        .max()
+        .unwrap_or(0)
+        .max("AZ".len());
 
     let mut lines = Vec::with_capacity(report.rows.len() + 1);
     lines.push(format!(
-        "{:<w_id$}  {:<w_lifecycle$}  {:<w_ov$}  {:<w_sub$}  {}",
-        "ID", "LIFECYCLE", "OVERLAY IP", "SUBNET", "CREATED",
+        "{:<w_id$}  {:<w_lifecycle$}  {:<w_region$}  {:<w_az$}  {:<w_ov$}  {:<w_sub$}  {}",
+        "ID", "LIFECYCLE", "REGION", "AZ", "OVERLAY IP", "SUBNET", "CREATED",
     ));
     for row in &report.rows {
         lines.push(format!(
-            "{:<w_id$}  {:<w_lifecycle$}  {:<w_ov$}  {:<w_sub$}  {}",
-            row.id, row.lifecycle, row.overlay, row.subnet_display, row.created_display,
+            "{:<w_id$}  {:<w_lifecycle$}  {:<w_region$}  {:<w_az$}  {:<w_ov$}  {:<w_sub$}  {}",
+            row.id,
+            row.lifecycle,
+            row.region,
+            row.availability_zone_display,
+            row.overlay,
+            row.subnet_display,
+            row.created_display,
         ));
     }
     lines.join("\n")

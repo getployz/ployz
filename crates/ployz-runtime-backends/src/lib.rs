@@ -10,3 +10,4 @@ pub mod mesh;
 #[cfg(feature = "docker")]
 pub mod network;
 pub mod runtime;
+pub mod storage;

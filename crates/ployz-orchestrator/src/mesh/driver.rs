@@ -73,11 +73,6 @@ impl WireguardDriver {
     }
 
     #[must_use]
-    pub fn runs_probe_listener(&self) -> bool {
-        self.mode() != WireguardBackendMode::Memory
-    }
-
-    #[must_use]
     pub fn ebpf_attachment_ifname(&self, bridge_ifname: &str) -> String {
         match self.backend.host_interface_name() {
             Some(ifname) if self.mode() == WireguardBackendMode::Host => ifname.to_string(),

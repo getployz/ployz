@@ -129,6 +129,24 @@ fn build_gateway_sidecar_spec(
             ("PLOYZ_GATEWAY_THREADS".into(), config.threads.to_string()),
         ]
         .into_iter()
+        .chain(config.https_listen_addr.iter().map(|listen_addr| {
+            (
+                "PLOYZ_GATEWAY_HTTPS_LISTEN_ADDR".into(),
+                listen_addr.clone(),
+            )
+        }))
+        .chain(config.tls_cert_path.iter().map(|path| {
+            (
+                "PLOYZ_GATEWAY_TLS_CERT_PATH".into(),
+                path.display().to_string(),
+            )
+        }))
+        .chain(config.tls_key_path.iter().map(|path| {
+            (
+                "PLOYZ_GATEWAY_TLS_KEY_PATH".into(),
+                path.display().to_string(),
+            )
+        }))
         .chain(config.metrics_listen_addr.iter().map(|listen_addr| {
             (
                 "PLOYZ_GATEWAY_METRICS_LISTEN_ADDR".into(),
@@ -193,6 +211,9 @@ mod tests {
             Path::new("/tmp/ployz"),
             "alpha",
             "0.0.0.0:80".into(),
+            None,
+            None,
+            None,
             2,
             Some("127.0.0.1:9180".into()),
         );
@@ -210,6 +231,9 @@ mod tests {
             Path::new("/tmp/ployz"),
             "alpha",
             "0.0.0.0:80".into(),
+            None,
+            None,
+            None,
             2,
             None,
         );

@@ -81,6 +81,8 @@ pub struct DaemonConfig {
     pub data_dir: PathBuf,
     pub socket: String,
     #[serde(default)]
+    pub storage: StorageConfig,
+    #[serde(default)]
     pub builtin_images_manifest: Option<PathBuf>,
     #[serde(default)]
     pub daemon_metrics_listen_addr: Option<String>,
@@ -88,6 +90,10 @@ pub struct DaemonConfig {
     pub dns_metrics_listen_addr: Option<String>,
     #[serde(default)]
     pub gateway_metrics_listen_addr: Option<String>,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub az: Option<String>,
     #[serde(default = "default_cluster_cidr")]
     pub cluster_cidr: String,
     #[serde(default = "default_subnet_prefix_len")]
@@ -98,8 +104,31 @@ pub struct DaemonConfig {
     pub peer_control_target: Option<String>,
     #[serde(default = "default_gateway_listen_addr")]
     pub gateway_listen_addr: String,
+    #[serde(default)]
+    pub gateway_https_listen_addr: Option<String>,
     #[serde(default = "default_gateway_threads")]
     pub gateway_threads: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StorageConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zfs_root: Option<PathBuf>,
+    #[serde(default = "default_overcommit_ratio")]
+    pub overcommit_ratio: f64,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            zfs_root: None,
+            overcommit_ratio: default_overcommit_ratio(),
+        }
+    }
+}
+
+fn default_overcommit_ratio() -> f64 {
+    1.0
 }
 
 fn default_cluster_cidr() -> String {
@@ -126,6 +155,7 @@ fn default_gateway_threads() -> usize {
 struct RuntimeDefaults {
     data_dir: PathBuf,
     socket: String,
+    storage: StorageConfig,
     #[serde(skip_serializing_if = "Option::is_none")]
     builtin_images_manifest: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -134,12 +164,18 @@ struct RuntimeDefaults {
     dns_metrics_listen_addr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     gateway_metrics_listen_addr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    region: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    az: Option<String>,
     cluster_cidr: String,
     subnet_prefix_len: u8,
     remote_control_port: u16,
     #[serde(skip_serializing_if = "Option::is_none")]
     peer_control_target: Option<String>,
     gateway_listen_addr: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gateway_https_listen_addr: Option<String>,
     gateway_threads: usize,
 }
 
@@ -156,6 +192,8 @@ struct DaemonOverrides {
     #[serde(skip_serializing_if = "Option::is_none")]
     socket: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    storage: Option<StorageConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     builtin_images_manifest: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     daemon_metrics_listen_addr: Option<String>,
@@ -163,6 +201,10 @@ struct DaemonOverrides {
     dns_metrics_listen_addr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     gateway_metrics_listen_addr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    region: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    az: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cluster_cidr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -173,6 +215,8 @@ struct DaemonOverrides {
     peer_control_target: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     gateway_listen_addr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gateway_https_listen_addr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     gateway_threads: Option<usize>,
 }
@@ -262,15 +306,19 @@ pub fn load_daemon_config(
     let overrides = DaemonOverrides {
         data_dir: cli_data_dir,
         socket: cli_socket,
+        storage: None,
         builtin_images_manifest: None,
         daemon_metrics_listen_addr: None,
         dns_metrics_listen_addr: None,
         gateway_metrics_listen_addr: None,
+        region: None,
+        az: None,
         cluster_cidr: None,
         subnet_prefix_len: None,
         remote_control_port: cli_remote_control_port,
         peer_control_target: None,
         gateway_listen_addr: None,
+        gateway_https_listen_addr: None,
         gateway_threads: None,
     };
 
@@ -284,15 +332,19 @@ fn build_figment(cli_config_path: Option<PathBuf>, context: &HostPathsContext) -
     let defaults = RuntimeDefaults {
         data_dir: default_data_dir(context),
         socket: default_socket_path(context),
+        storage: StorageConfig::default(),
         builtin_images_manifest: None,
         daemon_metrics_listen_addr: None,
         dns_metrics_listen_addr: None,
         gateway_metrics_listen_addr: None,
+        region: None,
+        az: None,
         cluster_cidr: default_cluster_cidr(),
         subnet_prefix_len: default_subnet_prefix_len(),
         remote_control_port: default_remote_control_port(),
         peer_control_target: None,
         gateway_listen_addr: default_gateway_listen_addr(),
+        gateway_https_listen_addr: None,
         gateway_threads: default_gateway_threads(),
     };
 
@@ -376,5 +428,74 @@ mod tests {
             std::env::remove_var("PLOYZ_DNS_METRICS_LISTEN_ADDR");
             std::env::remove_var("PLOYZ_GATEWAY_METRICS_LISTEN_ADDR");
         }
+    }
+
+    #[test]
+    fn daemon_config_reads_topology_from_env() {
+        unsafe {
+            std::env::set_var("PLOYZ_REGION", "eu-primary");
+            std::env::set_var("PLOYZ_AZ", "hel1-a");
+        }
+
+        let loaded = load_daemon_config(None, None, None, None, &context(Os::Darwin, false))
+            .expect("daemon config should load");
+
+        assert_eq!(loaded.region.as_deref(), Some("eu-primary"));
+        assert_eq!(loaded.az.as_deref(), Some("hel1-a"));
+
+        unsafe {
+            std::env::remove_var("PLOYZ_REGION");
+            std::env::remove_var("PLOYZ_AZ");
+        }
+    }
+
+    #[test]
+    fn daemon_config_reads_storage_zfs_root_from_toml() {
+        let path =
+            std::env::temp_dir().join(format!("ployz-storage-config-{}.toml", std::process::id()));
+        std::fs::write(&path, "[storage]\nzfs_root = \"tank/ployz\"\n").expect("write config");
+
+        let loaded = load_daemon_config(
+            Some(path.clone()),
+            None,
+            None,
+            None,
+            &context(Os::Darwin, false),
+        )
+        .expect("daemon config should load");
+
+        assert_eq!(
+            loaded.storage.zfs_root.as_deref(),
+            Some(Path::new("tank/ployz"))
+        );
+        assert!((loaded.storage.overcommit_ratio - 1.0).abs() < f64::EPSILON);
+
+        std::fs::remove_file(path).expect("remove config");
+    }
+
+    #[test]
+    fn daemon_config_reads_storage_overcommit_ratio_from_toml() {
+        let path = std::env::temp_dir().join(format!(
+            "ployz-storage-overcommit-{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "[storage]\nzfs_root = \"tank/ployz\"\novercommit_ratio = 1.5\n",
+        )
+        .expect("write config");
+
+        let loaded = load_daemon_config(
+            Some(path.clone()),
+            None,
+            None,
+            None,
+            &context(Os::Darwin, false),
+        )
+        .expect("daemon config should load");
+
+        assert!((loaded.storage.overcommit_ratio - 1.5).abs() < f64::EPSILON);
+
+        std::fs::remove_file(path).expect("remove config");
     }
 }

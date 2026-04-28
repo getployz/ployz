@@ -6,7 +6,8 @@ use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{MachineRegistry, SyncStatus};
 use ployz_types::model::{
-    JoinResponse, MachineId, MachineLifecycle, MachineMembership, OverlayIp, PublicKey,
+    JoinResponse, MachineId, MachineLifecycle, MachineMembership, MachineTopology, OverlayIp,
+    PublicKey,
 };
 use std::net::Ipv6Addr;
 use std::sync::Arc;
@@ -17,6 +18,7 @@ fn test_record(id: &str, key_byte: u8) -> MachineMembership {
         id: MachineId(id.into()),
         public_key: PublicKey([key_byte; 32]),
         overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+        topology: MachineTopology::local(),
         subnet: None,
         control_target: None,
         bridge_ip: None,
@@ -356,6 +358,7 @@ async fn founder_can_configure_joiner_from_transient_peer() {
         machine_id: joiner_record.id.clone(),
         public_key: joiner_record.public_key.clone(),
         overlay_ip: joiner_record.overlay_ip,
+        topology: joiner_record.topology.clone(),
         subnet: joiner_record.subnet,
         endpoints: joiner_record.endpoints.clone(),
     };

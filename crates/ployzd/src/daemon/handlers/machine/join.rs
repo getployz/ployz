@@ -17,13 +17,15 @@ use crate::daemon::ssh::{EphemeralSshIdentityFile, SshOptions};
 use self::bootstrap::bootstrap_remote_machine;
 use self::coordination::{BootstrapSubnetClaim, release_reserved_subnet};
 use self::remote::{
-    ExpectedSubnetState, log_remote_enable_rollback, overlay_rpc_expect_ok, overlay_self_record,
-    remote_rpc_expect_ok, wait_for_machine_projection, wait_for_overlay_ready,
+    ExpectedSubnetState, log_remote_enable_rollback, overlay_rpc_expect_ok,
+    overlay_rpc_expect_ok_with_read_timeout, overlay_self_record, remote_rpc_expect_ok,
+    wait_for_machine_projection, wait_for_overlay_ready,
 };
 use self::target::run_machine_add_target;
 use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
 use super::render::render_machine_add_report;
 use super::types::{MachineAddContext, MachineAddFailure, MachineAddReport};
+use crate::daemon::handlers::peer_rpc::PEER_RPC_DESTRUCTIVE_READ_TIMEOUT;
 
 const INVITE_TTL_SECS: u64 = 600;
 
@@ -344,7 +346,7 @@ impl DaemonState {
         context: &MachineAddContext,
         subnet_claim: &BootstrapSubnetClaim,
     ) -> DaemonResponse {
-        if let Err(err) = overlay_rpc_expect_ok(
+        if let Err(err) = overlay_rpc_expect_ok_with_read_timeout(
             record.overlay_ip,
             peer_rpc_port,
             DaemonRequest::MachineTransitionSelf {
@@ -352,6 +354,7 @@ impl DaemonState {
                 assigned_subnet: Some(subnet_claim.subnet),
                 force: false,
             },
+            PEER_RPC_DESTRUCTIVE_READ_TIMEOUT,
         )
         .await
         {
@@ -468,7 +471,7 @@ impl DaemonState {
             Ok(port) => port,
             Err(error) => return self.err("CONTROL_TRANSPORT_FAILED", error.to_string()),
         };
-        if let Err(err) = overlay_rpc_expect_ok(
+        if let Err(err) = overlay_rpc_expect_ok_with_read_timeout(
             record.overlay_ip,
             peer_rpc_port,
             DaemonRequest::MachineTransitionSelf {
@@ -476,6 +479,7 @@ impl DaemonState {
                 assigned_subnet: None,
                 force,
             },
+            PEER_RPC_DESTRUCTIVE_READ_TIMEOUT,
         )
         .await
         {

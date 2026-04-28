@@ -146,8 +146,23 @@ pub(super) async fn overlay_rpc_expect_ok(
     Err(remote_response_error(&response))
 }
 
+pub(super) async fn overlay_rpc_expect_ok_with_read_timeout(
+    overlay_ip: OverlayIp,
+    peer_rpc_port: u16,
+    request: DaemonRequest,
+    read_timeout: Duration,
+) -> Result<(), String> {
+    peer_rpc::overlay_rpc_expect_ok_with_read_timeout(
+        overlay_ip,
+        peer_rpc_port,
+        request,
+        read_timeout,
+    )
+    .await
+}
+
 async fn rollback_remote_enable(overlay_ip: OverlayIp, peer_rpc_port: u16) -> Result<(), String> {
-    overlay_rpc_expect_ok(
+    overlay_rpc_expect_ok_with_read_timeout(
         overlay_ip,
         peer_rpc_port,
         DaemonRequest::MachineTransitionSelf {
@@ -155,6 +170,7 @@ async fn rollback_remote_enable(overlay_ip: OverlayIp, peer_rpc_port: u16) -> Re
             assigned_subnet: None,
             force: true,
         },
+        peer_rpc::PEER_RPC_DESTRUCTIVE_READ_TIMEOUT,
     )
     .await
 }

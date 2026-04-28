@@ -44,6 +44,7 @@ impl DeploySession for InProcessDeploySession {
                 &req.instance_id,
                 self.state.deploy_id(),
                 &req.spec_json,
+                &req.volumes_json,
             )
             .await
     }

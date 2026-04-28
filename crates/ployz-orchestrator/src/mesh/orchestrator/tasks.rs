@@ -4,7 +4,6 @@ use ployz_store_api::MachineRegistry;
 use tokio::sync::{RwLock, mpsc};
 use tracing::warn;
 
-use crate::mesh::probe::run_probe_listener_task;
 use crate::mesh::tasks::{
     EndpointMaintainerCommand, EndpointMaintainerTask, PeerSyncTask, SelfRecordMutation,
     TaskSetError, apply_self_record_mutation, build_initial_endpoint_selections,
@@ -60,9 +59,6 @@ impl Mesh {
                 &initial_device_peers,
                 tokio::time::Instant::now(),
             )));
-        if self.network.runs_probe_listener() {
-            task_set.spawn(run_probe_listener_task(cancel.clone()));
-        }
         let planner_cancel = cancel.clone();
         let endpoint_maintainer_cmd_tx = endpoint_maintainer_tx.clone();
         task_set.spawn(async move {
