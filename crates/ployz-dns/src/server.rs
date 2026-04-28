@@ -303,11 +303,11 @@ where
     loop {
         match timeout(
             STORE_READY_ATTEMPT_TIMEOUT,
-            DnsStore::load_routing_state(store),
+            DnsStore::subscribe_routing_events(store),
         )
         .await
         {
-            Ok(Ok(state)) => return Ok(state),
+            Ok(Ok((state, _rx))) => return Ok(state),
             Ok(Err(error)) if tokio::time::Instant::now() < deadline => {
                 warn!(?error, "dns waiting for corrosion query readiness");
             }

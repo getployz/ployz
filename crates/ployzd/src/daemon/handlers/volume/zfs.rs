@@ -227,10 +227,7 @@ impl TransferStore {
 
 fn validate_transfer_id(id: &str) -> Result<(), String> {
     if id.is_empty() || id.len() > 128 {
-        return Err(format!(
-            "transfer id must be 1-128 chars, got {}",
-            id.len()
-        ));
+        return Err(format!("transfer id must be 1-128 chars, got {}", id.len()));
     }
     if !id
         .chars()

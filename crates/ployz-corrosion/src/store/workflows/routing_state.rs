@@ -1,19 +1,16 @@
 use crate::client::{CorrClient, SubscriptionStream};
 use crate::store::tables::{instance_status, machines, service_releases, service_revisions};
-use corro_api_types::{RowId, SqliteValue, Statement, TypedQueryEvent, sqlite::ChangeType};
+use corro_api_types::{RowId, SqliteValue, TypedQueryEvent, sqlite::ChangeType};
 use futures_util::StreamExt;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
-    InstanceId, InstanceStatusRecord, MachineId, MachineMembership, RoutingState, ServiceReleaseRecord,
-    ServiceRevisionRecord,
+    InstanceId, InstanceStatusRecord, MachineId, MachineMembership, RoutingEvent, RoutingState,
+    ServiceReleaseRecord, ServiceRevisionRecord,
 };
 use ployz_types::spec::Namespace;
 use std::collections::HashMap;
-use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::warn;
-
-const DEBOUNCE_WINDOW: Duration = Duration::from_millis(100);
 
 type RevisionKey = (Namespace, String, String);
 type ReleaseKey = (Namespace, String);
@@ -88,60 +85,14 @@ pub(crate) async fn load_routing_state(client: &CorrClient) -> Result<RoutingSta
     })
 }
 
-pub(crate) async fn subscribe_routing_invalidations(
-    client: &CorrClient,
-) -> Result<mpsc::Receiver<()>> {
-    let (tx, rx) = mpsc::channel(64);
-    for (label, statement) in routing_subscription_statements() {
-        tokio::spawn(run_routing_invalidator(
-            label,
-            client.clone(),
-            statement,
-            tx.clone(),
-        ));
-    }
-    Ok(rx)
-}
-
-fn routing_subscription_statements() -> [(&'static str, Statement); 4] {
+#[cfg(test)]
+fn routing_subscription_statements() -> [(&'static str, corro_api_types::Statement); 4] {
     [
         ("machines", machines::all_statement()),
         ("service_revisions", service_revisions::all_statement()),
         ("service_releases", service_releases::all_statement()),
         ("instance_status", instance_status::all_statement()),
     ]
-}
-
-async fn run_routing_invalidator(
-    label: &'static str,
-    client: CorrClient,
-    statement: Statement,
-    refresh_tx: mpsc::Sender<()>,
-) {
-    let mut stream = match client.subscribe(&statement, false, None).await {
-        Ok(stream) => stream,
-        Err(err) => {
-            warn!(%label, ?err, "failed to subscribe routing invalidator");
-            return;
-        }
-    };
-
-    while let Some(event) = stream.next().await {
-        match event {
-            Ok(TypedQueryEvent::Columns(_) | TypedQueryEvent::EndOfQuery { .. }) => {}
-            Ok(TypedQueryEvent::Row(_, _) | TypedQueryEvent::Change(_, _, _, _)) => {
-                if refresh_tx.send(()).await.is_err() {
-                    return;
-                }
-            }
-            Ok(TypedQueryEvent::Error(err)) => {
-                warn!(%label, ?err, "routing subscription error");
-            }
-            Err(err) => {
-                warn!(%label, ?err, "routing invalidator stream error");
-            }
-        }
-    }
 }
 
 async fn collect_initial_rows<T, K>(
@@ -154,6 +105,7 @@ async fn collect_initial_rows<T, K>(
 ) -> Result<()>
 where
     K: Eq + std::hash::Hash + Clone,
+    T: Clone,
 {
     loop {
         let event = stream
@@ -183,10 +135,18 @@ where
                 map.insert(record_key, record);
             }
             TypedQueryEvent::Change(change_type, rowid, cells, _) => {
-                apply_routing_change(change_type, rowid, &cells, parse, key, map, row_index)?;
+                let _ =
+                    apply_routing_change(change_type, rowid, &cells, parse, key, map, row_index)?;
             }
         }
     }
+}
+
+enum ChangeOutcome<T> {
+    Added(T),
+    Updated { old: T, new: T },
+    Removed(T),
+    Noop,
 }
 
 fn apply_routing_change<T, K>(
@@ -197,24 +157,32 @@ fn apply_routing_change<T, K>(
     key: &impl Fn(&T) -> K,
     map: &mut HashMap<K, T>,
     row_index: &mut HashMap<u64, K>,
-) -> Result<()>
+) -> Result<ChangeOutcome<T>>
 where
     K: Eq + std::hash::Hash + Clone,
+    T: Clone,
 {
     match change_type {
         ChangeType::Insert | ChangeType::Update => {
             let record = parse(cells)?;
             let record_key = key(&record);
             row_index.insert(rowid.0, record_key.clone());
-            map.insert(record_key, record);
+            Ok(match map.insert(record_key, record.clone()) {
+                Some(old) => ChangeOutcome::Updated { old, new: record },
+                None => ChangeOutcome::Added(record),
+            })
         }
         ChangeType::Delete => {
             if let Some(record_key) = row_index.remove(&rowid.0) {
-                map.remove(&record_key);
+                Ok(map
+                    .remove(&record_key)
+                    .map(ChangeOutcome::Removed)
+                    .unwrap_or(ChangeOutcome::Noop))
+            } else {
+                Ok(ChangeOutcome::Noop)
             }
         }
     }
-    Ok(())
 }
 
 /// Handle a single subscription event for a tracked table.
@@ -228,12 +196,14 @@ fn handle_stream_event<T, K>(
     key: &impl Fn(&T) -> K,
     map: &mut HashMap<K, T>,
     row_index: &mut HashMap<u64, K>,
-) -> std::result::Result<bool, ()>
+    to_event: impl Fn(ChangeOutcome<T>) -> Option<RoutingEvent>,
+) -> std::result::Result<Option<RoutingEvent>, ()>
 where
     K: Eq + std::hash::Hash + Clone,
+    T: Clone,
 {
     match event {
-        Some(Ok(TypedQueryEvent::Columns(_) | TypedQueryEvent::EndOfQuery { .. })) => Ok(false),
+        Some(Ok(TypedQueryEvent::Columns(_) | TypedQueryEvent::EndOfQuery { .. })) => Ok(None),
         Some(Ok(TypedQueryEvent::Error(err))) => {
             warn!(%label, ?err, "routing subscription error");
             Err(())
@@ -247,13 +217,13 @@ where
             map,
             row_index,
         )
-        .map(|()| true)
+        .map(to_event)
         .map_err(|err| {
             warn!(%label, ?err, "routing change parse error");
         }),
         Some(Ok(TypedQueryEvent::Change(change_type, rowid, cells, _))) => {
             apply_routing_change(change_type, rowid, &cells, parse, key, map, row_index)
-                .map(|()| true)
+                .map(to_event)
                 .map_err(|err| {
                     warn!(%label, ?err, "routing change parse error");
                 })
@@ -266,9 +236,9 @@ where
     }
 }
 
-pub(crate) async fn subscribe_routing_state_inner(
+pub(crate) async fn subscribe_routing_events(
     client: &CorrClient,
-) -> Result<(RoutingState, mpsc::Receiver<RoutingState>)> {
+) -> Result<(RoutingState, mpsc::Receiver<RoutingEvent>)> {
     let mut state = LiveRoutingState::new();
 
     let mut machine_stream = client
@@ -332,17 +302,19 @@ pub(crate) async fn subscribe_routing_state_inner(
     let (tx, rx) = mpsc::channel(16);
 
     tokio::spawn(async move {
-        let mut dirty = false;
-        let debounce = tokio::time::sleep(DEBOUNCE_WINDOW);
-        tokio::pin!(debounce);
-
         loop {
-            let changed = tokio::select! {
+            let event = tokio::select! {
                 event = machine_stream.next() => {
                     handle_stream_event(
                         event, "machines",
                         &machines::parse_machine_row, &machine_key,
                         &mut state.machines, &mut state.machine_rows,
+                        |change| match change {
+                            ChangeOutcome::Added(record) => Some(RoutingEvent::MachineAdded(record)),
+                            ChangeOutcome::Updated { old, new } => Some(RoutingEvent::MachineUpdated { old, new }),
+                            ChangeOutcome::Removed(record) => Some(RoutingEvent::MachineRemoved(record)),
+                            ChangeOutcome::Noop => None,
+                        },
                     )
                 }
                 event = revision_stream.next() => {
@@ -350,6 +322,12 @@ pub(crate) async fn subscribe_routing_state_inner(
                         event, "revisions",
                         &service_revisions::parse_service_revision, &revision_key,
                         &mut state.revisions, &mut state.revision_rows,
+                        |change| match change {
+                            ChangeOutcome::Added(record) => Some(RoutingEvent::RevisionAdded(record)),
+                            ChangeOutcome::Updated { old, new } => Some(RoutingEvent::RevisionUpdated { old, new }),
+                            ChangeOutcome::Removed(record) => Some(RoutingEvent::RevisionRemoved(record)),
+                            ChangeOutcome::Noop => None,
+                        },
                     )
                 }
                 event = release_stream.next() => {
@@ -357,6 +335,12 @@ pub(crate) async fn subscribe_routing_state_inner(
                         event, "releases",
                         &service_releases::parse_service_release, &release_key,
                         &mut state.releases, &mut state.release_rows,
+                        |change| match change {
+                            ChangeOutcome::Added(record) => Some(RoutingEvent::ReleaseAdded(record)),
+                            ChangeOutcome::Updated { old, new } => Some(RoutingEvent::ReleaseUpdated { old, new }),
+                            ChangeOutcome::Removed(record) => Some(RoutingEvent::ReleaseRemoved(record)),
+                            ChangeOutcome::Noop => None,
+                        },
                     )
                 }
                 event = instance_stream.next() => {
@@ -364,22 +348,24 @@ pub(crate) async fn subscribe_routing_state_inner(
                         event, "instances",
                         &instance_status::parse_instance_status, &instance_key,
                         &mut state.instances, &mut state.instance_rows,
+                        |change| match change {
+                            ChangeOutcome::Added(record) => Some(RoutingEvent::InstanceAdded(record)),
+                            ChangeOutcome::Updated { old, new } => Some(RoutingEvent::InstanceUpdated { old, new }),
+                            ChangeOutcome::Removed(record) => Some(RoutingEvent::InstanceRemoved(record)),
+                            ChangeOutcome::Noop => None,
+                        },
                     )
-                }
-                _ = &mut debounce, if dirty => {
-                    dirty = false;
-                    debounce.as_mut().reset(tokio::time::Instant::now() + DEBOUNCE_WINDOW);
-                    if tx.send(state.to_routing_state()).await.is_err() {
-                        return;
-                    }
-                    Ok(false)
                 }
                 _ = tx.closed() => return,
             };
 
-            match changed {
-                Ok(true) => dirty = true,
-                Ok(false) => {}
+            match event {
+                Ok(Some(event)) => {
+                    if tx.send(event).await.is_err() {
+                        return;
+                    }
+                }
+                Ok(None) => {}
                 Err(()) => return,
             }
         }

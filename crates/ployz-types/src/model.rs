@@ -578,6 +578,34 @@ pub struct RoutingState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RoutingEvent {
+    MachineAdded(MachineMembership),
+    MachineUpdated {
+        old: MachineMembership,
+        new: MachineMembership,
+    },
+    MachineRemoved(MachineMembership),
+    RevisionAdded(ServiceRevisionRecord),
+    RevisionUpdated {
+        old: ServiceRevisionRecord,
+        new: ServiceRevisionRecord,
+    },
+    RevisionRemoved(ServiceRevisionRecord),
+    ReleaseAdded(ServiceReleaseRecord),
+    ReleaseUpdated {
+        old: ServiceReleaseRecord,
+        new: ServiceReleaseRecord,
+    },
+    ReleaseRemoved(ServiceReleaseRecord),
+    InstanceAdded(InstanceStatusRecord),
+    InstanceUpdated {
+        old: InstanceStatusRecord,
+        new: InstanceStatusRecord,
+    },
+    InstanceRemoved(InstanceStatusRecord),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcmeAccountRecord {
     pub account_id: String,
     pub issuer_url: String,
@@ -954,7 +982,8 @@ mod tests {
             "labels":{}
         }"#;
 
-        let error = serde_json::from_str::<MachineMembership>(json).expect_err("record should fail");
+        let error =
+            serde_json::from_str::<MachineMembership>(json).expect_err("record should fail");
 
         assert!(error.to_string().contains("missing field `topology`"));
     }
@@ -1154,7 +1183,10 @@ mod tests {
         let candidate = record.placement_candidate();
         assert_eq!(candidate.id, record.id);
         assert_eq!(candidate.lifecycle, MachineLifecycle::Active);
-        assert_eq!(candidate.labels.get("region").map(String::as_str), Some("iad"));
+        assert_eq!(
+            candidate.labels.get("region").map(String::as_str),
+            Some("iad")
+        );
     }
 
     #[test]

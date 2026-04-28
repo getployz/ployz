@@ -4,10 +4,10 @@ use instant_acme::{
     NewOrder, OrderStatus, RetryPolicy,
 };
 use ployz_orchestrator::certificates::{
-    AccountAcquisition, AcmeAccountCoordinator, AcmeIssuer, AcmeIssuerFactory,
-    CHALLENGE_TTL_SECS, CertificateManagerConfig, HTTP01_GATEWAY_SNAPSHOT_SETTLE,
-    Http01ChallengeReadiness, IssuedCertificate, LocalHttp01ChallengeReadiness,
-    NoopAcmeAccountCoordinator, StartedOrder, account_id_for_issuer_url,
+    AccountAcquisition, AcmeAccountCoordinator, AcmeIssuer, AcmeIssuerFactory, CHALLENGE_TTL_SECS,
+    CertificateManagerConfig, HTTP01_GATEWAY_SNAPSHOT_SETTLE, Http01ChallengeReadiness,
+    IssuedCertificate, LocalHttp01ChallengeReadiness, NoopAcmeAccountCoordinator, StartedOrder,
+    account_id_for_issuer_url,
 };
 use ployz_store_api::{CertificateStore, StoreDriver};
 use ployz_types::error::{Error, Result};
@@ -375,7 +375,10 @@ mod tests {
         .expect_err("mismatched host should be rejected");
         assert!(matches!(
             mismatched_host,
-            Error::Operation { operation: "acme_order_url_origin", .. }
+            Error::Operation {
+                operation: "acme_order_url_origin",
+                ..
+            }
         ));
 
         let mismatched_scheme = ensure_order_url_matches_directory(
@@ -385,14 +388,20 @@ mod tests {
         .expect_err("mismatched scheme should be rejected");
         assert!(matches!(
             mismatched_scheme,
-            Error::Operation { operation: "acme_order_url_origin", .. }
+            Error::Operation {
+                operation: "acme_order_url_origin",
+                ..
+            }
         ));
 
         let bad_order = ensure_order_url_matches_directory(directory, "not a url")
             .expect_err("unparseable order URL should be rejected");
         assert!(matches!(
             bad_order,
-            Error::Operation { operation: "acme_order_url", .. }
+            Error::Operation {
+                operation: "acme_order_url",
+                ..
+            }
         ));
     }
 
@@ -402,7 +411,9 @@ mod tests {
         let config = config_with_issuer("https://acme.test/dir");
 
         let error = match load_or_create_account(&store, &config, &VetoAccountCoordinator).await {
-            Ok(_) => panic!("missing account plus coordination veto should fail before ACME create"),
+            Ok(_) => {
+                panic!("missing account plus coordination veto should fail before ACME create")
+            }
             Err(error) => error,
         };
 

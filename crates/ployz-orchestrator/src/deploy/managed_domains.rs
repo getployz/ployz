@@ -63,7 +63,7 @@ pub(super) async fn validate_hostname_ownership(
         return Ok(());
     }
 
-    let routing_state = store.load_routing_state().await?;
+    let (routing_state, _events) = store.subscribe_routing_events().await?;
     // This is admission validation, not a concurrency primitive. Same-namespace
     // deploys are already namespace-locked, but concurrent deploys in different
     // namespaces can still race for a brand-new hostname. Full serialization would

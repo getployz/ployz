@@ -1,5 +1,7 @@
 use crate::error::Result;
-use crate::model::{DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineMembership, SlotId};
+use crate::model::{
+    DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineMembership, SlotId,
+};
 use ployz_types::spec::Namespace;
 
 #[async_trait::async_trait]

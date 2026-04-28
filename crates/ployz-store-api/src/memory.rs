@@ -1,15 +1,15 @@
 use crate::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
     DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
-    InstanceStatusRepository, InviteRepository, MachineRegistry, RoutingInvalidationSubscription,
-    RoutingSnapshotReader, StoreRuntimeControl, SyncProbe, SyncStatus,
+    InstanceStatusRepository, InviteRepository, MachineRegistry, RoutingSnapshotReader,
+    RoutingSubscription, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeRecord, CertificateEvent,
     CertificateRecord, DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord,
-    MachineEvent, MachineId, MachineMembership, RoutingState, ServiceReleaseRecord,
+    MachineEvent, MachineId, MachineMembership, RoutingEvent, RoutingState, ServiceReleaseRecord,
     ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
@@ -26,7 +26,7 @@ pub struct MemoryStore {
 struct StoreInner {
     machines: HashMap<MachineId, MachineMembership>,
     machine_subscribers: Vec<mpsc::Sender<MachineEvent>>,
-    routing_subscribers: Vec<mpsc::Sender<()>>,
+    routing_subscribers: Vec<mpsc::Sender<RoutingEvent>>,
     invites: HashMap<String, InviteRecord>,
     service_revisions: HashMap<(Namespace, String, String), ServiceRevisionRecord>,
     service_releases: HashMap<(Namespace, String), ServiceReleaseRecord>,
@@ -94,14 +94,28 @@ impl MemoryStore {
             });
     }
 
-    fn broadcast_routing_refresh(inner: &mut StoreInner) {
+    fn broadcast_routing_event(inner: &mut StoreInner, event: RoutingEvent) {
         inner
             .routing_subscribers
-            .retain(|sender| match sender.try_send(()) {
+            .retain(|sender| match sender.try_send(event.clone()) {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Closed(_)) => false,
                 Err(mpsc::error::TrySendError::Full(_)) => true,
             });
+    }
+
+    fn routing_state(inner: &StoreInner) -> RoutingState {
+        RoutingState {
+            machines: inner.machines.values().cloned().collect(),
+            revisions: inner.service_revisions.values().cloned().collect(),
+            releases: inner.service_releases.values().cloned().collect(),
+            instances: inner.instance_status.values().cloned().collect(),
+        }
+    }
+
+    pub async fn load_routing_state(&self) -> Result<RoutingState> {
+        let inner = self.lock_inner();
+        Ok(Self::routing_state(&inner))
     }
 
     fn broadcast_certificate(inner: &mut StoreInner, event: CertificateEvent) {
@@ -146,22 +160,29 @@ impl MachineRegistry for MemoryStore {
     async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()> {
         let mut inner = self.lock_inner();
         let is_update = inner.machines.contains_key(&record.id);
-        inner.machines.insert(record.id.clone(), record.clone());
-        let event = if is_update {
+        let old = inner.machines.insert(record.id.clone(), record.clone());
+        let machine_event = if is_update {
             MachineEvent::Updated(record.clone())
         } else {
             MachineEvent::Added(record.clone())
         };
-        Self::broadcast_machine(&mut inner, event);
-        Self::broadcast_routing_refresh(&mut inner);
+        let routing_event = match old {
+            Some(old) => RoutingEvent::MachineUpdated {
+                old,
+                new: record.clone(),
+            },
+            None => RoutingEvent::MachineAdded(record.clone()),
+        };
+        Self::broadcast_machine(&mut inner, machine_event);
+        Self::broadcast_routing_event(&mut inner, routing_event);
         Ok(())
     }
 
     async fn delete_machine(&self, id: &MachineId) -> Result<()> {
         let mut inner = self.lock_inner();
         if let Some(record) = inner.machines.remove(id) {
-            Self::broadcast_machine(&mut inner, MachineEvent::Removed(record));
-            Self::broadcast_routing_refresh(&mut inner);
+            Self::broadcast_machine(&mut inner, MachineEvent::Removed(record.clone()));
+            Self::broadcast_routing_event(&mut inner, RoutingEvent::MachineRemoved(record));
         }
         Ok(())
     }
@@ -176,21 +197,12 @@ impl MachineRegistry for MemoryStore {
 }
 
 impl RoutingSnapshotReader for MemoryStore {
-    async fn load_routing_state(&self) -> Result<RoutingState> {
-        let inner = self.lock_inner();
-        Ok(RoutingState {
-            machines: inner.machines.values().cloned().collect(),
-            revisions: inner.service_revisions.values().cloned().collect(),
-            releases: inner.service_releases.values().cloned().collect(),
-            instances: inner.instance_status.values().cloned().collect(),
-        })
-    }
-
-    async fn subscribe_routing_invalidations(&self) -> Result<RoutingInvalidationSubscription> {
+    async fn subscribe_routing_events(&self) -> Result<RoutingSubscription> {
         let mut inner = self.lock_inner();
+        let state = Self::routing_state(&inner);
         let (sender, receiver) = mpsc::channel(64);
         inner.routing_subscribers.push(sender);
-        Ok(receiver)
+        Ok((state, receiver))
     }
 }
 
@@ -350,15 +362,24 @@ impl DeployRepository for MemoryStore {
 
     async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()> {
         let mut inner = self.lock_inner();
-        Self::record_service_revision_inner(&mut inner, &command.revision);
-        Self::broadcast_routing_refresh(&mut inner);
+        let old = Self::record_service_revision_inner(&mut inner, &command.revision);
+        let event = match old {
+            Some(old) => RoutingEvent::RevisionUpdated {
+                old,
+                new: command.revision.clone(),
+            },
+            None => RoutingEvent::RevisionAdded(command.revision.clone()),
+        };
+        Self::broadcast_routing_event(&mut inner, event);
         Ok(())
     }
 
     async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
         let mut inner = self.lock_inner();
-        Self::commit_deploy_inner(&mut inner, command);
-        Self::broadcast_routing_refresh(&mut inner);
+        let events = Self::commit_deploy_inner(&mut inner, command);
+        for event in events {
+            Self::broadcast_routing_event(&mut inner, event);
+        }
         Ok(())
     }
 
@@ -392,15 +413,23 @@ impl InstanceStatusRepository for MemoryStore {
 
     async fn record_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
         let mut inner = self.lock_inner();
-        Self::record_instance_status_inner(&mut inner, record);
-        Self::broadcast_routing_refresh(&mut inner);
+        let old = Self::record_instance_status_inner(&mut inner, record);
+        let event = match old {
+            Some(old) => RoutingEvent::InstanceUpdated {
+                old,
+                new: record.clone(),
+            },
+            None => RoutingEvent::InstanceAdded(record.clone()),
+        };
+        Self::broadcast_routing_event(&mut inner, event);
         Ok(())
     }
 
     async fn remove_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
         let mut inner = self.lock_inner();
-        Self::remove_instance_status_inner(&mut inner, instance_id);
-        Self::broadcast_routing_refresh(&mut inner);
+        if let Some(record) = Self::remove_instance_status_inner(&mut inner, instance_id) {
+            Self::broadcast_routing_event(&mut inner, RoutingEvent::InstanceRemoved(record));
+        }
         Ok(())
     }
 }
@@ -418,26 +447,36 @@ impl MemoryStore {
             .collect()
     }
 
-    fn record_service_revision_inner(inner: &mut StoreInner, record: &ServiceRevisionRecord) {
+    fn record_service_revision_inner(
+        inner: &mut StoreInner,
+        record: &ServiceRevisionRecord,
+    ) -> Option<ServiceRevisionRecord> {
         let key = (
             record.namespace.clone(),
             record.service.clone(),
             record.revision_hash.clone(),
         );
-        inner.service_revisions.insert(key, record.clone());
+        inner.service_revisions.insert(key, record.clone())
     }
 
-    fn record_instance_status_inner(inner: &mut StoreInner, record: &InstanceStatusRecord) {
+    fn record_instance_status_inner(
+        inner: &mut StoreInner,
+        record: &InstanceStatusRecord,
+    ) -> Option<InstanceStatusRecord> {
         inner
             .instance_status
-            .insert(record.instance_id.clone(), record.clone());
+            .insert(record.instance_id.clone(), record.clone())
     }
 
-    fn remove_instance_status_inner(inner: &mut StoreInner, instance_id: &InstanceId) {
-        inner.instance_status.remove(instance_id);
+    fn remove_instance_status_inner(
+        inner: &mut StoreInner,
+        instance_id: &InstanceId,
+    ) -> Option<InstanceStatusRecord> {
+        inner.instance_status.remove(instance_id)
     }
 
-    fn commit_deploy_inner(inner: &mut StoreInner, command: &DeployCommit) {
+    fn commit_deploy_inner(inner: &mut StoreInner, command: &DeployCommit) -> Vec<RoutingEvent> {
+        let mut events = Vec::new();
         let touched_services: HashSet<&str> = command
             .removed_services
             .iter()
@@ -450,18 +489,35 @@ impl MemoryStore {
             )
             .collect();
 
-        inner
+        let removed = inner
             .service_releases
-            .retain(|(current_namespace, service), _| {
-                !(current_namespace == &command.namespace
-                    && touched_services.contains(service.as_str()))
-            });
+            .extract_if(|(current_namespace, service), _| {
+                current_namespace == &command.namespace
+                    && touched_services.contains(service.as_str())
+            })
+            .map(|(_, record)| record)
+            .collect::<Vec<_>>();
 
         for release in &command.releases {
-            inner.service_releases.insert(
+            let old = inner.service_releases.insert(
                 (release.namespace.clone(), release.service.clone()),
                 release.clone(),
             );
+            match old {
+                Some(old) => events.push(RoutingEvent::ReleaseUpdated {
+                    old,
+                    new: release.clone(),
+                }),
+                None => events.push(RoutingEvent::ReleaseAdded(release.clone())),
+            }
+        }
+
+        for record in removed {
+            if !command.releases.iter().any(|release| {
+                release.namespace == record.namespace && release.service == record.service
+            }) {
+                events.push(RoutingEvent::ReleaseRemoved(record));
+            }
         }
 
         for volume in &command.volumes {
@@ -480,6 +536,7 @@ impl MemoryStore {
         inner
             .deploys
             .insert(command.deploy.deploy_id.clone(), command.deploy.clone());
+        events
     }
 }
 
@@ -494,7 +551,6 @@ impl CertificateStore for MemoryStore {
         inner
             .acme_accounts
             .insert(record.issuer_url.clone(), record.clone());
-        Self::broadcast_routing_refresh(&mut inner);
         Ok(())
     }
 
@@ -520,7 +576,6 @@ impl CertificateStore for MemoryStore {
             CertificateEvent::Added(record.clone())
         };
         Self::broadcast_certificate(&mut inner, event);
-        Self::broadcast_routing_refresh(&mut inner);
         Ok(())
     }
 
@@ -540,7 +595,6 @@ impl CertificateStore for MemoryStore {
             AcmeChallengeEvent::Added(record.clone())
         };
         Self::broadcast_acme_challenge(&mut inner, event);
-        Self::broadcast_routing_refresh(&mut inner);
         Ok(())
     }
 
@@ -552,7 +606,6 @@ impl CertificateStore for MemoryStore {
         {
             Self::broadcast_acme_challenge(&mut inner, AcmeChallengeEvent::Removed(record));
         }
-        Self::broadcast_routing_refresh(&mut inner);
         Ok(())
     }
 
@@ -581,20 +634,41 @@ impl MemoryStore {
             .drain()
             .map(|(_, record)| record)
             .collect::<Vec<_>>();
+        let removed_revisions = inner
+            .service_revisions
+            .drain()
+            .map(|(_, record)| record)
+            .collect::<Vec<_>>();
+        let removed_releases = inner
+            .service_releases
+            .drain()
+            .map(|(_, record)| record)
+            .collect::<Vec<_>>();
+        let removed_instances = inner
+            .instance_status
+            .drain()
+            .map(|(_, record)| record)
+            .collect::<Vec<_>>();
         inner.invites.clear();
-        inner.service_revisions.clear();
-        inner.service_releases.clear();
         inner.volumes.clear();
-        inner.instance_status.clear();
         inner.deploys.clear();
         inner.acme_accounts.clear();
         inner.certificates.clear();
         inner.acme_challenges.clear();
 
         for record in removed {
-            Self::broadcast_machine(&mut inner, MachineEvent::Removed(record));
+            Self::broadcast_machine(&mut inner, MachineEvent::Removed(record.clone()));
+            Self::broadcast_routing_event(&mut inner, RoutingEvent::MachineRemoved(record));
         }
-        Self::broadcast_routing_refresh(&mut inner);
+        for record in removed_revisions {
+            Self::broadcast_routing_event(&mut inner, RoutingEvent::RevisionRemoved(record));
+        }
+        for record in removed_releases {
+            Self::broadcast_routing_event(&mut inner, RoutingEvent::ReleaseRemoved(record));
+        }
+        for record in removed_instances {
+            Self::broadcast_routing_event(&mut inner, RoutingEvent::InstanceRemoved(record));
+        }
         Ok(())
     }
 }
@@ -730,12 +804,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn record_service_revision_updates_routing_snapshot_and_emits_refresh() {
+    async fn record_service_revision_updates_routing_snapshot_and_emits_event() {
         let store = MemoryStore::new();
-        let mut refresh_rx = store
-            .subscribe_routing_invalidations()
-            .await
-            .expect("subscribe");
+        let (_state, mut event_rx) = store.subscribe_routing_events().await.expect("subscribe");
 
         let namespace = Namespace("prod".into());
         let revision = ServiceRevisionRecord {
@@ -752,10 +823,13 @@ mod tests {
             .await
             .expect("record revision");
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), refresh_rx.recv())
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
             .await
             .expect("refresh event deadline");
-        assert_eq!(event, Some(()));
+        assert!(matches!(
+            event,
+            Some(RoutingEvent::RevisionAdded(ServiceRevisionRecord { .. }))
+        ));
 
         let snapshot = store
             .load_routing_state()
@@ -816,32 +890,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn instance_status_writes_update_routing_snapshot_and_emit_refreshes() {
+    async fn instance_status_writes_update_routing_snapshot_and_emit_events() {
         let store = MemoryStore::new();
         let namespace = Namespace("prod".into());
         let status = test_instance_status(&namespace, "inst-1");
-        let mut refresh_rx = store
-            .subscribe_routing_invalidations()
-            .await
-            .expect("subscribe");
+        let (_state, mut event_rx) = store.subscribe_routing_events().await.expect("subscribe");
 
         store
             .record_instance_status(&status)
             .await
             .expect("record instance status");
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), refresh_rx.recv())
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
             .await
             .expect("record refresh deadline");
-        assert_eq!(event, Some(()));
+        assert!(matches!(
+            event,
+            Some(RoutingEvent::InstanceAdded(InstanceStatusRecord { .. }))
+        ));
 
         store
             .remove_instance_status(&status.instance_id)
             .await
             .expect("remove instance status");
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), refresh_rx.recv())
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
             .await
             .expect("remove refresh deadline");
-        assert_eq!(event, Some(()));
+        assert!(matches!(
+            event,
+            Some(RoutingEvent::InstanceRemoved(InstanceStatusRecord { .. }))
+        ));
 
         let snapshot = store
             .load_routing_state()
@@ -937,12 +1014,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn machine_changes_trigger_routing_refresh_events() {
+    async fn machine_changes_trigger_routing_events() {
         let store = MemoryStore::new();
-        let mut refresh_rx = store
-            .subscribe_routing_invalidations()
-            .await
-            .expect("subscribe");
+        let (_state, mut event_rx) = store.subscribe_routing_events().await.expect("subscribe");
         let machine = MachineMembership {
             id: MachineId("machine-1".into()),
             public_key: ployz_types::model::PublicKey([0; 32]),
@@ -963,10 +1037,13 @@ mod tests {
             .await
             .expect("upsert machine");
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), refresh_rx.recv())
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
             .await
             .expect("refresh event deadline");
-        assert_eq!(event, Some(()));
+        assert!(matches!(
+            event,
+            Some(RoutingEvent::MachineAdded(MachineMembership { .. }))
+        ));
     }
 
     #[tokio::test]
