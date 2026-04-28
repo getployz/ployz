@@ -392,7 +392,7 @@ impl Http01ChallengeReadiness for OverlayChallengeReadiness {
 }
 
 fn challenge_readiness_peers(
-    machines: Result<Vec<ployz_types::model::MachineRecord>>,
+    machines: Result<Vec<ployz_types::model::MachineMembership>>,
     self_id: &MachineId,
     hostname: &str,
 ) -> Vec<PeerAddress> {
@@ -481,7 +481,7 @@ mod tests {
         let max_in_flight = Arc::new(AtomicUsize::new(0));
         let notify = Arc::new(Notify::new());
 
-        tokio::time::timeout(
+        let timeout_result = tokio::time::timeout(
             Duration::from_millis(500),
             release_peers_with(&peers, &reservation, 4318, {
                 let started = Arc::clone(&started);
@@ -505,8 +505,11 @@ mod tests {
                 }
             }),
         )
-        .await
-        .expect("release fanout should not serialize peers");
+        .await;
+        assert!(
+            timeout_result.is_ok(),
+            "release fanout should not serialize peers; timed out waiting for both peer releases"
+        );
 
         assert_eq!(max_in_flight.load(Ordering::SeqCst), 2);
     }

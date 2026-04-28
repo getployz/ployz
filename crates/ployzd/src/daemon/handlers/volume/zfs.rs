@@ -8,7 +8,7 @@ use ployz_api::{
 };
 use ployz_runtime_backends::storage::{TokioShellRunner, ZfsDriver};
 use ployz_store_api::{DeployRepository, MachineRegistry};
-use ployz_types::model::{MachineId, MachineLifecycle, MachineRecord, VolumeRecord};
+use ployz_types::model::{MachineId, MachineLifecycle, MachineMembership, VolumeRecord};
 use ployz_types::spec::{Namespace, VolumeScope};
 use ployz_types::time::now_unix_secs;
 use serde::{Deserialize, Serialize};
@@ -116,7 +116,7 @@ impl TransferStore {
     ) -> Result<TransferRecord, String> {
         let now = now_unix_secs();
         let record = TransferRecord {
-            id: unique_transfer_id(now),
+            id: unique_transfer_id(now)?,
             namespace: namespace.0.clone(),
             volume: volume.to_string(),
             source_machine,
@@ -250,12 +250,12 @@ fn read_transfer(path: &std::path::Path) -> Result<TransferRecord, String> {
         .map_err(|err| format!("decode zfs transfer '{}': {err}", path.display()))
 }
 
-fn unique_transfer_id(now: u64) -> String {
+fn unique_transfer_id(now: u64) -> Result<String, String> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    format!("zfs-transfer-{now}-{}-{nanos}", std::process::id())
+        .map_err(|err| format!("system clock is before UNIX epoch: {err}"))?;
+    Ok(format!("zfs-transfer-{now}-{}-{nanos}", std::process::id()))
 }
 
 impl DaemonState {
@@ -733,13 +733,13 @@ impl DaemonState {
         }
     }
 
-    async fn find_machine(&self, machine: &str) -> Option<ployz_types::model::MachineRecord> {
+    async fn find_machine(&self, machine: &str) -> Option<ployz_types::model::MachineMembership> {
         let active = self.active.as_ref()?;
         let machines = active.mesh.store.list_machines().await.ok()?;
         machines.into_iter().find(|record| record.id.0 == machine)
     }
 
-    async fn find_active_machine(&self, machine: &str) -> Result<MachineRecord, String> {
+    async fn find_active_machine(&self, machine: &str) -> Result<MachineMembership, String> {
         let record = self
             .find_machine(machine)
             .await
@@ -763,8 +763,8 @@ async fn run_coordinated_zfs_transfer_inner(
     store: &TransferStore,
     transfer: &mut TransferRecord,
     record: &VolumeRecord,
-    source: &MachineRecord,
-    target: &MachineRecord,
+    source: &MachineMembership,
+    target: &MachineMembership,
     local_driver: Option<&ZfsDriver<TokioShellRunner>>,
     transfer_port: u16,
     peer_port: u16,
@@ -849,7 +849,7 @@ async fn run_coordinated_zfs_transfer_inner(
 #[allow(clippy::too_many_arguments)]
 async fn send_zfs_stream_from_local(
     record: &VolumeRecord,
-    target: &MachineRecord,
+    target: &MachineMembership,
     driver: &ZfsDriver<TokioShellRunner>,
     transfer_port: u16,
     local_machine_id: &MachineId,
@@ -919,12 +919,19 @@ async fn send_zfs_stream_from_local(
     let Some(mut stdout) = send.stdout.take() else {
         return Err("zfs send stdout was not piped".to_string());
     };
-    let bytes = match tokio::io::copy(&mut stdout, &mut writer).await {
+    let copy_result = tokio::io::copy(&mut stdout, &mut writer).await;
+    drop(stdout);
+    let bytes = match copy_result {
         Ok(bytes) => bytes,
         Err(err) => {
             let copy_error = format!("copy zfs send stream: {err}");
+            // Always reap the child even if kill fails, so we never leave a
+            // zombie behind on stream errors.
             if let Err(kill_err) = send.kill().await {
-                return Err(format!("{copy_error}; failed to reap zfs send: {kill_err}"));
+                tracing::warn!(error = %kill_err, "failed to kill zfs send after copy error");
+            }
+            if let Err(wait_err) = send.wait_with_output().await {
+                return Err(format!("{copy_error}; failed to reap zfs send: {wait_err}"));
             }
             return Err(copy_error);
         }
@@ -973,7 +980,7 @@ async fn send_zfs_stream_from_local(
 }
 
 async fn snapshot_on_machine(
-    machine: &MachineRecord,
+    machine: &MachineMembership,
     local_driver: Option<&ZfsDriver<TokioShellRunner>>,
     local_machine_id: &MachineId,
     peer_port: u16,
@@ -1013,7 +1020,7 @@ async fn snapshot_on_machine(
 }
 
 async fn snapshot_guid_on_machine(
-    machine: &MachineRecord,
+    machine: &MachineMembership,
     local_driver: Option<&ZfsDriver<TokioShellRunner>>,
     local_machine_id: &MachineId,
     peer_port: u16,
@@ -1054,8 +1061,8 @@ async fn snapshot_guid_on_machine(
 
 #[allow(clippy::too_many_arguments)]
 async fn start_send_on_machine(
-    source: &MachineRecord,
-    target: &MachineRecord,
+    source: &MachineMembership,
+    target: &MachineMembership,
     local_driver: Option<&ZfsDriver<TokioShellRunner>>,
     local_machine_id: &MachineId,
     transfer_port: u16,
@@ -1161,10 +1168,8 @@ mod tests {
     use std::path::PathBuf;
 
     fn tmp_root(label: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "ployz-zfs-transfer-test-{label}-{}",
-            super::unique_transfer_id(0)
-        ))
+        let id = super::unique_transfer_id(0).expect("unique id");
+        std::env::temp_dir().join(format!("ployz-zfs-transfer-test-{label}-{id}"))
     }
 
     fn begin(store: &TransferStore) -> super::TransferRecord {

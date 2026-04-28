@@ -6,7 +6,7 @@ use ployz_api::{
     MachineRttRow,
 };
 use ployz_store_api::{MachineRegistry, PeerRttObservation, PeerRttStore, StoreDriver};
-use ployz_types::model::{MachineId, MachineRecord};
+use ployz_types::model::{MachineId, MachineMembership};
 use std::collections::HashMap;
 use std::net::IpAddr;
 
@@ -227,7 +227,7 @@ impl DaemonState {
 async fn machine_rtt_rows_for(
     store: &StoreDriver,
     source_machine_id: &MachineId,
-    machines: &[MachineRecord],
+    machines: &[MachineMembership],
 ) -> Result<Vec<MachineRttRow>, String> {
     let observations = store
         .peer_rtt_observations()
@@ -242,10 +242,10 @@ async fn machine_rtt_rows_for(
 
 fn rows_from_rtt_observations(
     source_machine_id: &MachineId,
-    machines: &[MachineRecord],
+    machines: &[MachineMembership],
     observations: &[PeerRttObservation],
 ) -> Vec<MachineRttRow> {
-    let machine_by_ip: HashMap<IpAddr, &MachineRecord> = machines
+    let machine_by_ip: HashMap<IpAddr, &MachineMembership> = machines
         .iter()
         .map(|machine| (IpAddr::V6(machine.overlay_ip.0), machine))
         .collect();
@@ -363,7 +363,7 @@ fn format_ms_one_decimal(value: f64) -> String {
 pub(super) async fn find_machine_record(
     store: &StoreDriver,
     machine_id: &MachineId,
-) -> Result<Option<MachineRecord>, String> {
+) -> Result<Option<MachineMembership>, String> {
     let machines = store
         .list_machines()
         .await
@@ -483,8 +483,8 @@ mod tests {
         assert!(rendered.contains("±19.4ms"));
     }
 
-    fn machine_record(id: &str, overlay_ip: Ipv6Addr, key_byte: u8) -> MachineRecord {
-        MachineRecord::seed(
+    fn machine_record(id: &str, overlay_ip: Ipv6Addr, key_byte: u8) -> MachineMembership {
+        MachineMembership::seed(
             MachineId(id.into()),
             PublicKey([key_byte; 32]),
             OverlayIp(overlay_ip),

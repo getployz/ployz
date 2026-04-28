@@ -3,7 +3,7 @@ use std::net::Ipv4Addr;
 use std::sync::{Arc, RwLock};
 
 use ployz_types::model::{
-    DrainState, InstancePhase, MachineId, MachineRecord, MachineTopology, RoutingState,
+    DrainState, InstancePhase, MachineId, MachineMembership, MachineTopology, RoutingState,
 };
 use ployz_types::spec::Namespace;
 use tracing::warn;
@@ -166,7 +166,7 @@ pub fn project_dns(state: &RoutingState) -> DnsSnapshot {
         .machines
         .iter()
         .map(|machine| (machine.id.clone(), machine))
-        .collect::<HashMap<MachineId, &MachineRecord>>();
+        .collect::<HashMap<MachineId, &MachineMembership>>();
 
     for instance in &state.instances {
         if instance.phase != InstancePhase::Ready || !instance.ready {
@@ -242,7 +242,7 @@ pub fn project_dns(state: &RoutingState) -> DnsSnapshot {
 mod tests {
     use super::*;
     use ployz_types::model::{
-        DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineLifecycle, MachineRecord,
+        DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership,
         OverlayIp, PublicKey, RoutingState, SlotId,
     };
     use std::collections::BTreeMap;
@@ -281,8 +281,8 @@ mod tests {
         }
     }
 
-    fn machine_record(id: &str) -> MachineRecord {
-        MachineRecord {
+    fn machine_record(id: &str) -> MachineMembership {
+        MachineMembership {
             id: MachineId(id.into()),
             public_key: PublicKey([0; 32]),
             overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay ip")),
@@ -342,7 +342,7 @@ mod tests {
     fn instance_diagnostics_include_region_and_availability_zone() {
         let ip = Ipv4Addr::new(10, 42, 1, 10);
         let mut state = empty_routing_state();
-        state.machines = vec![MachineRecord {
+        state.machines = vec![MachineMembership {
             topology: MachineTopology::new("us-west", Some("usw1-a"))
                 .expect("topology should parse"),
             ..machine_record("machine-1")

@@ -5,7 +5,7 @@ use ployz_api::{
 use ployz_sdk::Transport;
 use ployz_store_api::StoreDriver;
 use ployz_types::model::{
-    JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineLifecycle, MachineRecord, OverlayIp,
+    JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineLifecycle, MachineMembership, OverlayIp,
 };
 use tokio::time::{Duration, Instant, sleep, timeout};
 
@@ -86,7 +86,7 @@ pub(super) async fn wait_for_remote_ready(
 pub(super) async fn remote_self_record(
     target: &str,
     ssh_options: &SshOptions,
-) -> Result<MachineRecord, String> {
+) -> Result<MachineMembership, String> {
     let response = remote_rpc(target, DaemonRequest::MeshSelfRecord, ssh_options).await?;
     if !response.ok {
         return Err(remote_response_error(&response));
@@ -176,7 +176,7 @@ async fn rollback_remote_enable(overlay_ip: OverlayIp, peer_rpc_port: u16) -> Re
 }
 
 pub(super) async fn log_remote_enable_rollback(
-    machine: &MachineRecord,
+    machine: &MachineMembership,
     peer_rpc_port: u16,
     original_error: &str,
 ) {
@@ -191,9 +191,9 @@ pub(super) async fn log_remote_enable_rollback(
 }
 
 pub(super) async fn overlay_self_record(
-    machine: &MachineRecord,
+    machine: &MachineMembership,
     peer_rpc_port: u16,
-) -> Result<MachineRecord, String> {
+) -> Result<MachineMembership, String> {
     let response = overlay_rpc(
         machine.overlay_ip,
         peer_rpc_port,
@@ -211,7 +211,7 @@ pub(super) async fn overlay_self_record(
 }
 
 pub(super) async fn wait_for_overlay_ready(
-    machine: &MachineRecord,
+    machine: &MachineMembership,
     peer_rpc_port: u16,
 ) -> Result<(), String> {
     let deadline = Instant::now() + REMOTE_READY_TIMEOUT;
@@ -338,7 +338,7 @@ pub(super) fn remote_response_error(response: &DaemonResponse) -> String {
     )
 }
 
-fn decode_joiner_record(output: &str) -> Result<MachineRecord, String> {
+fn decode_joiner_record(output: &str) -> Result<MachineMembership, String> {
     let response_line = match output
         .lines()
         .find(|line| line.starts_with(JOIN_RESPONSE_PREFIX))
@@ -353,5 +353,5 @@ fn decode_joiner_record(output: &str) -> Result<MachineRecord, String> {
 
     let join_response = JoinResponse::decode(response_line)
         .map_err(|err| format!("failed to decode join response: {err}"))?;
-    Ok(join_response.into_seed_machine_record())
+    Ok(join_response.into_seed_machine_membership())
 }

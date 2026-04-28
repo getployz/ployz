@@ -18,6 +18,8 @@ use tokio_util::sync::CancellationToken;
 const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_CONCURRENT_TRANSFERS: usize = 4;
+const GUID_MISMATCH_MESSAGE: &str = "zfs transfer rejected: snapshot guid mismatch";
+const TRANSFER_FAILED_MESSAGE: &str = "zfs transfer failed";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ZfsTransferOpen {
@@ -158,19 +160,39 @@ async fn handle_transfer(
             snapshot_guid: Some(guid),
             message: "received".into(),
         },
-        Ok(guid) => ZfsTransferReceived {
-            ok: false,
-            snapshot_guid: Some(guid),
-            message: format!(
-                "received snapshot guid {guid}, expected {}",
-                open.expected_guid
-            ),
-        },
-        Err(error) => ZfsTransferReceived {
-            ok: false,
-            snapshot_guid: None,
-            message: error,
-        },
+        Ok(guid) => {
+            // Don't echo the local guid back — that's snapshot metadata the
+            // peer doesn't need. The sender already knows what they claimed.
+            tracing::warn!(
+                received_guid = guid,
+                expected_guid = open.expected_guid,
+                namespace = %open.namespace,
+                volume = %open.volume,
+                snapshot = %open.snapshot,
+                %remote_addr,
+                "zfs transfer guid mismatch",
+            );
+            ZfsTransferReceived {
+                ok: false,
+                snapshot_guid: None,
+                message: GUID_MISMATCH_MESSAGE.into(),
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                %remote_addr,
+                namespace = %open.namespace,
+                volume = %open.volume,
+                snapshot = %open.snapshot,
+                "zfs transfer receive failed",
+            );
+            ZfsTransferReceived {
+                ok: false,
+                snapshot_guid: None,
+                message: TRANSFER_FAILED_MESSAGE.into(),
+            }
+        }
     };
     let mut body =
         serde_json::to_string(&response).map_err(|error| format!("encode response: {error}"))?;
@@ -198,14 +220,18 @@ async fn read_transfer_header<R: AsyncBufRead + Unpin>(reader: &mut R) -> Result
     if bytes_read == 0 {
         return Err("connection closed before zfs transfer header".to_string());
     }
-    if header.len() > MAX_HEADER_BYTES {
-        return Err(format!(
-            "zfs transfer header exceeded {MAX_HEADER_BYTES} bytes"
-        ));
-    }
+    // take() lets us read up to MAX_HEADER_BYTES of content plus the trailing
+    // newline. If we hit that limit without finding `\n`, the content itself
+    // already exceeded the limit; otherwise the read terminated early.
     if header.last() != Some(&b'\n') {
+        if header.len() > MAX_HEADER_BYTES {
+            return Err(format!(
+                "zfs transfer header exceeded {MAX_HEADER_BYTES} bytes"
+            ));
+        }
         return Err("zfs transfer header missing newline".to_string());
     }
+    header.pop();
     String::from_utf8(header).map_err(|error| format!("header was not UTF-8: {error}"))
 }
 
@@ -226,6 +252,10 @@ async fn validate_open_source(
 /// header asks us to write into. Without this check, any active mesh peer can
 /// pass IP validation and then redirect a `zfs recv` at an arbitrary dataset
 /// under the configured root by picking different namespace/volume fields.
+///
+/// Returns a uniform "not authorized" message regardless of cause so that any
+/// peer on the overlay cannot probe which namespaces or volumes exist on the
+/// receiver. The detailed reason is logged locally for operators.
 async fn validate_volume_ownership(
     store: &StoreDriver,
     source: &MachineId,
@@ -233,21 +263,40 @@ async fn validate_volume_ownership(
     volume: &str,
 ) -> Result<(), String> {
     let namespace = Namespace(namespace.to_string());
-    let record = store
-        .get_volume(&namespace, volume)
-        .await
-        .map_err(|error| format!("look up volume for zfs transfer authorization: {error}"))?
-        .ok_or_else(|| {
-            format!("volume '{}/{volume}' not found for zfs transfer", namespace.0)
-        })?;
-    if record.machine_id != *source {
-        return Err(format!(
-            "zfs transfer source '{}' is not the owner of '{}/{volume}' (pinned to '{}')",
-            source, namespace.0, record.machine_id
-        ));
+    match store.get_volume(&namespace, volume).await {
+        Ok(Some(record)) if record.machine_id == *source => Ok(()),
+        Ok(Some(record)) => {
+            tracing::warn!(
+                namespace = %namespace.0,
+                volume,
+                source = %source,
+                owner = %record.machine_id,
+                "zfs transfer rejected: source is not the volume owner",
+            );
+            Err(VOLUME_NOT_AUTHORIZED.to_string())
+        }
+        Ok(None) => {
+            tracing::warn!(
+                namespace = %namespace.0,
+                volume,
+                source = %source,
+                "zfs transfer rejected: volume not found",
+            );
+            Err(VOLUME_NOT_AUTHORIZED.to_string())
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                namespace = %namespace.0,
+                volume,
+                "zfs transfer authorization lookup failed",
+            );
+            Err(VOLUME_NOT_AUTHORIZED.to_string())
+        }
     }
-    Ok(())
 }
+
+const VOLUME_NOT_AUTHORIZED: &str = "zfs transfer not authorized";
 
 async fn validate_source_overlay(
     store: &StoreDriver,
@@ -420,7 +469,7 @@ mod tests {
     use ployz_store_api::{DeployCommit, DeployRepository, MachineRegistry, StoreDriver};
     use ployz_types::error::{Error, Result};
     use ployz_types::model::{
-        DeployId, DeployRecord, DeployState, MachineId, MachineLifecycle, MachineRecord,
+        DeployId, DeployRecord, DeployState, MachineId, MachineLifecycle, MachineMembership,
         MachineTopology, OverlayIp, PublicKey, VolumeRecord,
     };
     use ployz_types::spec::{Namespace, VolumeScope};
@@ -548,8 +597,8 @@ mod tests {
         assert!(err.contains("source 11"), "got: {err}");
     }
 
-    fn machine(id: &str, overlay: Ipv6Addr) -> MachineRecord {
-        MachineRecord {
+    fn machine(id: &str, overlay: Ipv6Addr) -> MachineMembership {
+        MachineMembership {
             id: MachineId(id.into()),
             public_key: PublicKey([1; 32]),
             overlay_ip: OverlayIp(overlay),
@@ -565,7 +614,7 @@ mod tests {
         }
     }
 
-    async fn store_with(machines: Vec<MachineRecord>) -> StoreDriver {
+    async fn store_with(machines: Vec<MachineMembership>) -> StoreDriver {
         let store = StoreDriver::memory();
         for m in machines {
             store.upsert_self_machine(&m).await.expect("upsert");
@@ -698,7 +747,8 @@ mod tests {
         let err = validate_open_source(&store, &open("snap", 1), remote)
             .await
             .expect_err("non-owner rejected");
-        assert!(err.contains("not the owner"), "unexpected error: {err}");
+        assert!(err.contains("not authorized"), "unexpected error: {err}");
+        assert!(!err.contains("owner"), "ownership detail leaked: {err}");
     }
 
     #[tokio::test]
@@ -712,7 +762,8 @@ mod tests {
         )
         .await
         .expect_err("unknown volume rejected");
-        assert!(err.contains("not found"), "unexpected error: {err}");
+        assert!(err.contains("not authorized"), "unexpected error: {err}");
+        assert!(!err.contains("missing"), "volume name leaked: {err}");
     }
 
     #[tokio::test]

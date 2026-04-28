@@ -4,7 +4,7 @@ use crate::store::shared::sql::{exec_one, query_rows};
 use corro_api_types::{SqliteValue, Statement, TypedQueryEvent, sqlite::ChangeType};
 use futures_util::StreamExt;
 use ployz_types::error::{Error, Result};
-use ployz_types::model::{MachineEvent, MachineId, MachineRecord};
+use ployz_types::model::{MachineEvent, MachineId, MachineMembership};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tracing::warn;
@@ -16,7 +16,7 @@ pub(crate) fn all_statement() -> Statement {
     Statement::Simple(SQL_LIST_MACHINES.to_string())
 }
 
-pub(crate) async fn list_machines(client: &CorrClient) -> Result<Vec<MachineRecord>> {
+pub(crate) async fn list_machines(client: &CorrClient) -> Result<Vec<MachineMembership>> {
     let stmt = all_statement();
     query_rows(client, &stmt, "list_machines")
         .await?
@@ -25,12 +25,12 @@ pub(crate) async fn list_machines(client: &CorrClient) -> Result<Vec<MachineReco
         .collect()
 }
 
-pub(crate) async fn upsert_self_machine(client: &CorrClient, record: &MachineRecord) -> Result<()> {
+pub(crate) async fn upsert_self_machine(client: &CorrClient, record: &MachineMembership) -> Result<()> {
     let stmt = upsert_statement(record)?;
     exec_one(client, &[stmt], "upsert_self_machine").await
 }
 
-pub(crate) fn upsert_statement(record: &MachineRecord) -> Result<Statement> {
+pub(crate) fn upsert_statement(record: &MachineMembership) -> Result<Statement> {
     let payload_json = serde_json::to_string(record)
         .map_err(|e| Error::operation("upsert_self_machine", format!("serialize: {e}")))?;
     Ok(Statement::WithParams(
@@ -51,14 +51,14 @@ pub(crate) async fn delete_machine(client: &CorrClient, id: &MachineId) -> Resul
 
 pub(crate) async fn subscribe_machines(
     client: &CorrClient,
-) -> Result<(Vec<MachineRecord>, mpsc::Receiver<MachineEvent>)> {
+) -> Result<(Vec<MachineMembership>, mpsc::Receiver<MachineEvent>)> {
     let stmt = Statement::Simple(SQL_LIST_MACHINES.to_string());
     let mut stream = client
         .subscribe(&stmt, false, None)
         .await
         .map_err(|e| Error::operation("subscribe_machines", e.to_string()))?;
 
-    let mut machines: HashMap<MachineId, MachineRecord> = HashMap::new();
+    let mut machines: HashMap<MachineId, MachineMembership> = HashMap::new();
     let mut row_index: HashMap<u64, MachineId> = HashMap::new();
 
     loop {
@@ -85,7 +85,7 @@ pub(crate) async fn subscribe_machines(
         }
     }
 
-    let mut snapshot: Vec<MachineRecord> = machines.values().cloned().collect();
+    let mut snapshot: Vec<MachineMembership> = machines.values().cloned().collect();
     snapshot.sort_by(|left, right| left.id.0.cmp(&right.id.0));
 
     let (tx, rx) = mpsc::channel(64);
@@ -126,7 +126,7 @@ pub(crate) async fn subscribe_machines(
     Ok((snapshot, rx))
 }
 
-pub(crate) fn parse_machine_row(row: &[SqliteValue]) -> Result<MachineRecord> {
+pub(crate) fn parse_machine_row(row: &[SqliteValue]) -> Result<MachineMembership> {
     let [machine_id_val, payload_val] = row else {
         return Err(Error::operation(
             "parse_machine_row",
@@ -136,7 +136,7 @@ pub(crate) fn parse_machine_row(row: &[SqliteValue]) -> Result<MachineRecord> {
 
     let machine_id = text(machine_id_val, "machine_id")?;
     let payload_json = text(payload_val, "payload_json")?;
-    let record: MachineRecord = serde_json::from_str(&payload_json)
+    let record: MachineMembership = serde_json::from_str(&payload_json)
         .map_err(|e| Error::operation("parse_machine_row", format!("decode payload: {e}")))?;
     if record.id.0 != machine_id {
         return Err(Error::operation(
@@ -154,7 +154,7 @@ fn apply_change(
     change_type: ChangeType,
     rowid: u64,
     cells: &[SqliteValue],
-    machines: &mut HashMap<MachineId, MachineRecord>,
+    machines: &mut HashMap<MachineId, MachineMembership>,
     row_index: &mut HashMap<u64, MachineId>,
 ) -> Result<()> {
     match change_type {
@@ -174,7 +174,7 @@ fn apply_change(
 
 fn into_machine_event(
     event: TypedQueryEvent<Vec<SqliteValue>>,
-    known: &mut HashMap<MachineId, MachineRecord>,
+    known: &mut HashMap<MachineId, MachineMembership>,
     row_index: &mut HashMap<u64, MachineId>,
 ) -> Result<Option<MachineEvent>> {
     match event {
@@ -203,7 +203,7 @@ fn into_machine_event(
 fn upsert_event(
     rowid: u64,
     cells: &[SqliteValue],
-    known: &mut HashMap<MachineId, MachineRecord>,
+    known: &mut HashMap<MachineId, MachineMembership>,
     row_index: &mut HashMap<u64, MachineId>,
 ) -> Result<Option<MachineEvent>> {
     let record = parse_machine_row(cells)?;
@@ -222,16 +222,16 @@ mod tests {
     use super::{into_machine_event, parse_machine_row};
     use corro_api_types::{ChangeId, RowId, TypedQueryEvent, sqlite::ChangeType};
     use ployz_types::model::{
-        MachineEvent, MachineId, MachineLifecycle, MachineRecord, MachineTopology, OverlayIp,
+        MachineEvent, MachineId, MachineLifecycle, MachineMembership, MachineTopology, OverlayIp,
         PublicKey,
     };
     use std::collections::{BTreeMap, HashMap};
     use std::net::Ipv6Addr;
 
-    fn record(id: &str, role: &str) -> MachineRecord {
+    fn record(id: &str, role: &str) -> MachineMembership {
         let mut labels = BTreeMap::new();
         labels.insert(String::from("role"), role.to_string());
-        MachineRecord {
+        MachineMembership {
             id: MachineId(id.into()),
             public_key: PublicKey([7_u8; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),

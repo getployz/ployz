@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::error::Result;
-use crate::model::{DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineRecord};
+use crate::model::{DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineMembership};
 use crate::spec::Namespace;
 pub use ployz_orchestrator::deploy::session::{
     DeploySession, DeploySessionFactory, StartCandidateRequest,
@@ -95,7 +95,7 @@ impl DefaultDeploySessionFactory {
 impl DeploySessionFactory for DefaultDeploySessionFactory {
     async fn open(
         &self,
-        machine: &MachineRecord,
+        machine: &MachineMembership,
         namespace: &Namespace,
         deploy_id: &DeployId,
         coordinator_id: &MachineId,

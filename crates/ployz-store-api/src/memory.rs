@@ -9,7 +9,7 @@ use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeRecord, CertificateEvent,
     CertificateRecord, DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord,
-    MachineEvent, MachineId, MachineRecord, RoutingState, ServiceReleaseRecord,
+    MachineEvent, MachineId, MachineMembership, RoutingState, ServiceReleaseRecord,
     ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
@@ -24,7 +24,7 @@ pub struct MemoryStore {
 }
 
 struct StoreInner {
-    machines: HashMap<MachineId, MachineRecord>,
+    machines: HashMap<MachineId, MachineMembership>,
     machine_subscribers: Vec<mpsc::Sender<MachineEvent>>,
     routing_subscribers: Vec<mpsc::Sender<()>>,
     invites: HashMap<String, InviteRecord>,
@@ -138,12 +138,12 @@ impl SyncProbe for MemoryStore {
 }
 
 impl MachineRegistry for MemoryStore {
-    async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
+    async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
         let inner = self.lock_inner();
         Ok(inner.machines.values().cloned().collect())
     }
 
-    async fn upsert_self_machine(&self, record: &MachineRecord) -> Result<()> {
+    async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()> {
         let mut inner = self.lock_inner();
         let is_update = inner.machines.contains_key(&record.id);
         inner.machines.insert(record.id.clone(), record.clone());
@@ -910,7 +910,7 @@ mod tests {
     #[tokio::test]
     async fn load_routing_state_includes_machines() {
         let store = MemoryStore::new();
-        let machine = MachineRecord {
+        let machine = MachineMembership {
             id: MachineId("machine-1".into()),
             public_key: ployz_types::model::PublicKey([0; 32]),
             overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
@@ -943,7 +943,7 @@ mod tests {
             .subscribe_routing_invalidations()
             .await
             .expect("subscribe");
-        let machine = MachineRecord {
+        let machine = MachineMembership {
             id: MachineId("machine-1".into()),
             public_key: ployz_types::model::PublicKey([0; 32]),
             overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),

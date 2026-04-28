@@ -4,7 +4,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
 use crate::mesh::MeshNetwork;
-use crate::model::{MachineId, MachineLifecycle, MachineRecord, MachineTopology};
+use crate::model::{MachineId, MachineIdentity, WireGuardPeerSpec};
 use std::sync::Arc;
 
 use super::map::PeerStateMap;
@@ -22,7 +22,7 @@ pub(crate) async fn sync_peers<N: MeshNetwork>(
         local_machine_id = %local_machine_id,
         peers = ?planned
             .iter()
-            .map(|peer| (&peer.id, &peer.endpoints, peer.subnet))
+            .map(|peer| (peer.id(), &peer.endpoints, peer.subnet))
             .collect::<Vec<_>>(),
         "peer sync applying planned wireguard peers"
     );
@@ -31,20 +31,19 @@ pub(crate) async fn sync_peers<N: MeshNetwork>(
     }
 }
 
-fn peer_state_to_planned_record(ps: &PeerState, selected_endpoint: Option<&str>) -> MachineRecord {
-    MachineRecord {
-        id: ps.id.clone(),
-        public_key: ps.public_key.clone(),
-        overlay_ip: ps.overlay_ip,
-        topology: MachineTopology::local(),
-        control_target: None,
+fn peer_state_to_wireguard_peer_spec(
+    ps: &PeerState,
+    selected_endpoint: Option<&str>,
+) -> WireGuardPeerSpec {
+    WireGuardPeerSpec {
+        identity: MachineIdentity {
+            id: ps.id.clone(),
+            public_key: ps.public_key.clone(),
+            overlay_ip: ps.overlay_ip,
+        },
         subnet: ps.subnet,
         bridge_ip: ps.bridge_ip,
         endpoints: ps.planned_endpoints(selected_endpoint),
-        lifecycle: MachineLifecycle::Standby,
-        created_at: 0,
-        updated_at: 0,
-        labels: std::collections::BTreeMap::new(),
     }
 }
 
@@ -52,12 +51,12 @@ pub(super) fn plan_mesh_peers(
     state: &PeerStateMap,
     local_machine_id: &MachineId,
     endpoint_selections: &HashMap<MachineId, String>,
-) -> Vec<MachineRecord> {
+) -> Vec<WireGuardPeerSpec> {
     state
         .effective_peers(local_machine_id)
         .filter(|ps| !ps.endpoints.is_empty())
         .map(|peer| {
-            peer_state_to_planned_record(
+            peer_state_to_wireguard_peer_spec(
                 peer,
                 endpoint_selections.get(&peer.id).map(String::as_str),
             )
