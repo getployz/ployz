@@ -254,8 +254,7 @@ where
         }
 
         let state = wait_for_initial_routing_state(&store).await?;
-        let initial_snapshot =
-            project_dns(&state).map_err(|err| DnsError::Projection(err.to_string()))?;
+        let initial_snapshot = project_dns(&state);
         let shared = SharedDnsSnapshot::new(initial_snapshot);
 
         tokio::spawn(crate::sync::run_sync_loop(store, shared.clone()));

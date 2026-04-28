@@ -47,6 +47,12 @@ struct ExistingDataset {
     mountpoint: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PathPermissions {
+    mode: String,
+    owner: String,
+}
+
 impl<R: ShellRunner> ZfsDriver<R> {
     pub async fn new(runner: R, zfs_root: &str, overcommit_ratio: f64) -> Result<Self> {
         if !overcommit_ratio.is_finite() || overcommit_ratio <= 0.0 {
@@ -89,11 +95,50 @@ impl<R: ShellRunner> ZfsDriver<R> {
                     self.update_quota(&spec.dataset, &existing.quota, &spec.quota)
                         .await?;
                 }
+                self.reconcile_permissions(spec).await?;
             }
             None => self.create_dataset(spec).await?,
         }
         Ok(MountInfo {
             mountpoint: spec.mountpoint.clone(),
+        })
+    }
+
+    async fn reconcile_permissions(&self, spec: &DatasetSpec) -> Result<()> {
+        let mountpoint = spec.mountpoint.to_string_lossy();
+        let current = self.read_path_permissions(&mountpoint).await?;
+        if !mode_matches(&current.mode, &spec.mode) {
+            self.run_success("chmod", "chmod", &[&spec.mode, &mountpoint])
+                .await?;
+        }
+        if current.owner != spec.owner {
+            self.run_success("chown", "chown", &[&spec.owner, &mountpoint])
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn read_path_permissions(&self, mountpoint: &str) -> Result<PathPermissions> {
+        let output = self
+            .runner
+            .run("stat", &["-c", "%a:%u:%g", mountpoint])
+            .await?;
+        ensure_success("stat mountpoint", &output.stderr, output.status)?;
+        let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let mut parts = raw.splitn(3, ':');
+        let mode = parts
+            .next()
+            .ok_or_else(|| Error::operation("stat mountpoint", format!("missing mode in '{raw}'")))?
+            .to_string();
+        let uid = parts.next().ok_or_else(|| {
+            Error::operation("stat mountpoint", format!("missing uid in '{raw}'"))
+        })?;
+        let gid = parts.next().ok_or_else(|| {
+            Error::operation("stat mountpoint", format!("missing gid in '{raw}'"))
+        })?;
+        Ok(PathPermissions {
+            mode,
+            owner: format!("{uid}:{gid}"),
         })
     }
 
@@ -536,6 +581,19 @@ fn snapshot_name(dataset: &str, snapshot: &str) -> String {
     format!("{dataset}@{snapshot}")
 }
 
+fn mode_matches(actual: &str, expected: &str) -> bool {
+    parse_octal_mode(actual)
+        .zip(parse_octal_mode(expected))
+        .is_some_and(|(a, e)| a == e)
+        || actual == expected
+}
+
+fn parse_octal_mode(value: &str) -> Option<u32> {
+    let trimmed = value.trim_start_matches('0');
+    let normalized = if trimmed.is_empty() { "0" } else { trimmed };
+    u32::from_str_radix(normalized, 8).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
@@ -654,10 +712,34 @@ mod tests {
             "tank/ployz/prod/data\t1073741824\t/tank/ployz/prod/data\n",
             "",
         );
+        fake.push(0, "750:999:999\n", "");
 
         driver.ensure(&spec()).await.expect("ensure");
 
-        assert_eq!(fake.calls().len(), 2);
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[2], ["stat", "-c", "%a:%u:%g", "/tank/ployz/prod/data"]);
+    }
+
+    #[tokio::test]
+    async fn ensure_reconciles_drifted_mode_and_owner_on_adopt() {
+        let fake = FakeShellRunner::default();
+        let driver = driver(&fake).await;
+        fake.push(
+            0,
+            "tank/ployz/prod/data\t1073741824\t/tank/ployz/prod/data\n",
+            "",
+        );
+        fake.push(0, "777:0:0\n", "");
+        fake.push(0, "", "");
+        fake.push(0, "", "");
+
+        driver.ensure(&spec()).await.expect("ensure");
+
+        let calls = fake.calls();
+        assert_eq!(calls[2], ["stat", "-c", "%a:%u:%g", "/tank/ployz/prod/data"]);
+        assert_eq!(calls[3], ["chmod", "0750", "/tank/ployz/prod/data"]);
+        assert_eq!(calls[4], ["chown", "999:999", "/tank/ployz/prod/data"]);
     }
 
     #[tokio::test]
@@ -669,13 +751,15 @@ mod tests {
             "tank/ployz/prod/data\t1073741824\t/tank/ployz/prod/data\n",
             "",
         );
+        fake.push(0, "750:999:999\n", "");
 
         driver.ensure(&spec()).await.expect("ensure");
 
-        assert_eq!(fake.calls().len(), 2);
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 3);
         assert_eq!(
-            fake.calls().last().expect("last"),
-            &vec![
+            calls[1],
+            vec![
                 "zfs",
                 "list",
                 "-Hp",
@@ -701,15 +785,15 @@ mod tests {
             "tank/ployz\t0\ntank/ployz/prod/data\t1073741824\n",
         );
         fake.push(0, "", "");
+        fake.push(0, "750:999:999\n", "");
         let mut next = spec();
         next.quota = "2G".into();
 
         driver.ensure(&next).await.expect("ensure");
 
-        assert_eq!(
-            fake.calls().last().expect("last"),
-            &vec!["zfs", "set", "quota=2G", "tank/ployz/prod/data"]
-        );
+        let calls = fake.calls();
+        assert_eq!(calls[4], ["zfs", "set", "quota=2G", "tank/ployz/prod/data"]);
+        assert_eq!(calls[5], ["stat", "-c", "%a:%u:%g", "/tank/ployz/prod/data"]);
     }
 
     #[tokio::test]
