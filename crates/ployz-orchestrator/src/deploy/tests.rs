@@ -1,4 +1,5 @@
 use super::execute::{SessionSet, apply_with_initial_plan, ensure_plan_stable, run_phase_startup};
+use super::probe::NoopParticipantProbe;
 use super::plan::{deployable_machines, desired_slots, resolve_plan};
 use super::preview;
 use super::transaction::PreparedDeploy;
@@ -503,6 +504,73 @@ async fn apply_deletes_volume_records_removed_from_manifest() {
 }
 
 #[tokio::test]
+async fn apply_keeps_retained_volume_when_attached_service_is_removed() {
+    // Regression: a service that mounts a volume can be removed from the manifest
+    // while the volume itself is retained. The VolumeRecord must stay in the
+    // store, but its attached_services must drop the now-deleted service so it
+    // doesn't keep pointing at a name that no longer exists.
+    let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let manifest = volume_manifest();
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    let controller = FakeController::default();
+    let factory = FakeSessionFactory::new(controller);
+
+    apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+        .await
+        .expect("first deploy");
+
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list volumes");
+    let [record] = records.as_slice() else {
+        panic!("expected seeded volume");
+    };
+    assert_eq!(record.volume_name, "data");
+    assert_eq!(record.attached_services, vec!["db"]);
+
+    // Replace `db` (which mounted `data`) with an unrelated `api` service while
+    // keeping the volume declared.
+    let mut next_manifest = test_manifest(vec![test_service_spec(
+        "api",
+        Placement::Replicated { count: 1 },
+        "nginx:1.28",
+    )]);
+    next_manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
+    let next_plan = resolve_plan(&store, &local_machine_id, &next_manifest)
+        .await
+        .expect("removal plan");
+    apply_with_initial_plan(
+        &store,
+        &factory,
+        &local_machine_id,
+        &next_manifest,
+        next_plan,
+    )
+    .await
+    .expect("redeploy without db");
+
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list volumes after service removal");
+    let [record] = records.as_slice() else {
+        panic!("expected volume retained, got: {records:?}");
+    };
+    assert_eq!(record.volume_name, "data");
+    assert!(
+        record.attached_services.is_empty(),
+        "expected attached_services cleared, got: {:?}",
+        record.attached_services
+    );
+}
+
+#[tokio::test]
 async fn apply_commits_unattached_volume_declarations_without_service_reconciliation() {
     let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
     let local_machine_id = MachineId("local".into());
@@ -534,6 +602,67 @@ async fn apply_commits_unattached_volume_declarations_without_service_reconcilia
     };
     assert_eq!(record.volume_name, "data");
     assert!(record.attached_services.is_empty());
+}
+
+#[tokio::test]
+async fn apply_preserves_unattached_volume_record_on_unchanged_redeploy() {
+    // The redeploy-with-attached-service skip path is covered above. Pin the
+    // analogous skip behavior for a volume with no attached service: declared
+    // in the manifest, no service mounts it, last_modified_by_deploy_id stays
+    // tied to the first deploy after a no-op redeploy.
+    let (store, _backend) = counting_store_with_machines(&["machine-a"]).await;
+    let local_machine_id = MachineId("local".into());
+    let mut manifest = test_manifest(vec![test_service_spec(
+        "api",
+        Placement::Replicated { count: 1 },
+        "nginx:1.27",
+    )]);
+    manifest
+        .volumes
+        .push(test_volume("data", VolumeScope::Single));
+
+    let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("initial plan");
+    let controller = FakeController::default();
+    let factory = FakeSessionFactory::new(controller);
+
+    let first =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
+            .await
+            .expect("first deploy");
+
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list volumes after first apply");
+    let [record] = records.as_slice() else {
+        panic!("expected one committed volume, got: {records:?}");
+    };
+    assert!(record.attached_services.is_empty());
+    assert_eq!(record.last_modified_by_deploy_id, first.deploy_id);
+
+    let second_plan = resolve_plan(&store, &local_machine_id, &manifest)
+        .await
+        .expect("second plan");
+    let second =
+        apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, second_plan)
+            .await
+            .expect("second deploy");
+
+    let records = store
+        .list_volumes(&manifest.namespace)
+        .await
+        .expect("list volumes after redeploy");
+    let [record] = records.as_slice() else {
+        panic!("expected one committed volume after redeploy, got: {records:?}");
+    };
+    assert!(record.attached_services.is_empty());
+    assert_eq!(
+        record.last_modified_by_deploy_id, first.deploy_id,
+        "unchanged unattached volume should not be rewritten"
+    );
+    assert_ne!(record.last_modified_by_deploy_id, second.deploy_id);
 }
 
 #[tokio::test]
@@ -988,7 +1117,7 @@ async fn preview_rejects_duplicate_hostname_in_final_plan() {
         http_route_service_spec("web", "API.EXAMPLE.COM."),
     ]);
 
-    let error = preview(&store, &local_machine_id, &manifest)
+    let error = preview(&store, &local_machine_id, &manifest, &NoopParticipantProbe)
         .await
         .expect_err("duplicate hostname should fail preview");
 
@@ -1004,7 +1133,7 @@ async fn preview_rejects_hostname_owned_by_another_namespace() {
     let local_machine_id = MachineId("local".into());
     let manifest = test_manifest(vec![http_route_service_spec("web", "api.example.com")]);
 
-    let error = preview(&store, &local_machine_id, &manifest)
+    let error = preview(&store, &local_machine_id, &manifest, &NoopParticipantProbe)
         .await
         .expect_err("cross-namespace hostname conflict should fail preview");
 
@@ -1041,7 +1170,7 @@ async fn preview_allows_hostname_reuse_within_same_namespace() {
     let local_machine_id = MachineId("local".into());
     let manifest = test_manifest(vec![http_route_service_spec("api", "api.example.com")]);
 
-    preview(&store, &local_machine_id, &manifest)
+    preview(&store, &local_machine_id, &manifest, &NoopParticipantProbe)
         .await
         .expect("same-namespace replacement should be valid");
 }
@@ -1053,7 +1182,7 @@ async fn preview_allows_hostname_move_within_same_namespace() {
     let local_machine_id = MachineId("local".into());
     let manifest = test_manifest(vec![http_route_service_spec("web", "api.example.com")]);
 
-    preview(&store, &local_machine_id, &manifest)
+    preview(&store, &local_machine_id, &manifest, &NoopParticipantProbe)
         .await
         .expect("same-namespace ownership move should be valid");
 }

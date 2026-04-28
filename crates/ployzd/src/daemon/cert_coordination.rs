@@ -11,7 +11,7 @@ use ployz_orchestrator::certificates::{
 use ployz_orchestrator::coordination::{
     PendingReservations, Reservation, ReservationId, ResourceKey, Vote,
 };
-use ployz_orchestrator::machine_policy::coordination_peers;
+use ployz_orchestrator::machine_policy::is_coordination_peer;
 use ployz_store_api::{CertificateStore, MachineRegistry, StoreDriver};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{MachineId, OverlayIp};
@@ -145,8 +145,11 @@ impl OverlayIssuanceCoordinator {
         }
 
         let peers = match self.store.list_machines().await {
-            Ok(machines) => coordination_peers(&machines, &self.self_id)
-                .into_iter()
+            Ok(machines) => machines
+                .iter()
+                .filter(|machine| {
+                    is_coordination_peer(&machine.placement_candidate(), &self.self_id)
+                })
                 .map(|machine| PeerAddress {
                     machine_id: machine.id.clone(),
                     overlay_ip: machine.overlay_ip,
@@ -397,8 +400,9 @@ fn challenge_readiness_peers(
     hostname: &str,
 ) -> Vec<PeerAddress> {
     match machines {
-        Ok(machines) => coordination_peers(&machines, self_id)
-            .into_iter()
+        Ok(machines) => machines
+            .iter()
+            .filter(|machine| is_coordination_peer(&machine.placement_candidate(), self_id))
             .map(|machine| PeerAddress {
                 machine_id: machine.id.clone(),
                 overlay_ip: machine.overlay_ip,

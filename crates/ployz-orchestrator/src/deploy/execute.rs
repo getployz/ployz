@@ -1,14 +1,14 @@
 use crate::certificates::{
-    AcmeAccountCoordinator, CertificateManagerConfig, Http01ChallengeReadiness, InstantAcmeIssuer,
-    IssuanceCoordinator, LocalHttp01ChallengeReadiness, NoopAcmeAccountCoordinator,
+    AcmeAccountCoordinator, AcmeIssuerFactory, Http01ChallengeReadiness, IssuanceCoordinator,
+    LocalHttp01ChallengeReadiness, NoopAcmeAccountCoordinator, NoopAcmeIssuerFactory,
     NoopIssuanceCoordinator, spawn_certificate_finalization_with_coordination,
     start_pending_orders,
 };
 use crate::deploy::managed_domains;
 use crate::deploy::plan::{
-    PlanFingerprint, ResolvedPlan, resolve_plan, volume_record_needs_update,
+    PlanFingerprint, ResolvedPlan, VolumeChange, resolve_plan, volume_record_change,
 };
-use crate::deploy::probe::probe_participants;
+use crate::deploy::probe::{NoopParticipantProbe, ParticipantProbe, probe_participants};
 use crate::deploy::session::{self, DeploySessionFactory};
 use crate::deploy::transaction::{CleanupPlan, PreparedDeploy};
 use crate::error::{Error, Result};
@@ -172,6 +172,8 @@ pub(super) async fn apply(
         &NoopIssuanceCoordinator,
         Arc::new(NoopAcmeAccountCoordinator),
         Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &NoopParticipantProbe,
     )
     .await
 }
@@ -184,10 +186,12 @@ pub(super) async fn apply_with_certificate_coordination(
     certificate_coordinator: &dyn IssuanceCoordinator,
     account_coordinator: Arc<dyn AcmeAccountCoordinator>,
     challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
+    issuer_factory: Arc<dyn AcmeIssuerFactory>,
+    prober: &dyn ParticipantProbe,
 ) -> Result<DeployApplyResult> {
     let initial_plan = resolve_plan(store, local_machine_id, manifest).await?;
     let reachability =
-        probe_participants(store, initial_plan.participants(), initial_plan.machine_map()).await;
+        probe_participants(prober, initial_plan.participants(), initial_plan.machine_map()).await;
     if !reachability.unreachable.is_empty() {
         let unreachable = reachability
             .unreachable
@@ -215,6 +219,7 @@ pub(super) async fn apply_with_certificate_coordination(
         certificate_coordinator,
         account_coordinator,
         challenge_readiness,
+        issuer_factory,
     )
     .await
 }
@@ -236,6 +241,7 @@ pub(super) async fn apply_with_initial_plan(
         &NoopIssuanceCoordinator,
         Arc::new(NoopAcmeAccountCoordinator),
         Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
     )
     .await
 }
@@ -249,6 +255,7 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
     certificate_coordinator: &dyn IssuanceCoordinator,
     account_coordinator: Arc<dyn AcmeAccountCoordinator>,
     challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
+    issuer_factory: Arc<dyn AcmeIssuerFactory>,
 ) -> Result<DeployApplyResult> {
     let deploy_id = DeployId(Uuid::new_v4().to_string());
     let started_at = now_unix_secs();
@@ -289,20 +296,17 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
         let mut committed = commit_plan.into_committed();
         events.push(committed.commit_event());
 
-        let acme_config = CertificateManagerConfig::from_env();
         let managed_hostnames = managed_domains::ensure_certificate_intents(
             store,
             committed.plan(),
-            &acme_config.issuer_url,
+            issuer_factory.issuer_url(),
         )
         .await?;
+        let issuer = issuer_factory
+            .create(Arc::new(LocalHttp01ChallengeReadiness), account_coordinator.clone());
         let acme_warnings = start_pending_orders(
             store,
-            &InstantAcmeIssuer::with_readiness_and_account_coordinator(
-                acme_config.clone(),
-                Arc::new(LocalHttp01ChallengeReadiness),
-                account_coordinator.clone(),
-            ),
+            issuer.as_ref(),
             certificate_coordinator,
             &managed_hostnames,
         )
@@ -318,7 +322,7 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
             .await?;
         spawn_certificate_finalization_with_coordination(
             store.clone(),
-            acme_config,
+            issuer_factory.clone(),
             challenge_readiness.clone(),
             account_coordinator.clone(),
         );
@@ -534,7 +538,7 @@ fn build_committed_volumes(
     for planned in plan
         .volumes()
         .iter()
-        .filter(|planned| volume_record_needs_update(planned))
+        .filter(|planned| !matches!(volume_record_change(planned), VolumeChange::Skip))
     {
         if !planned.attached_services.is_empty()
             && !planned.attached_services.iter().any(|service| {

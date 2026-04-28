@@ -91,7 +91,8 @@ build_linux_payload_in_docker() {
   local target_platform=$3
   local build_profile=$4
   local repo_abs output_parent_abs output_name target_cache_dir owner_uid owner_gid
-  local cache_suffix cargo_registry_volume cargo_git_volume target_volume
+  local cache_suffix cargo_registry_mount cargo_git_mount target_mount
+  local host_cache_dir host_registry host_git host_target
 
   repo_abs="$(cd "${repo_dir}" && pwd)"
   output_parent_abs="$(output_dir_parent "${output_dir}")"
@@ -100,9 +101,26 @@ build_linux_payload_in_docker() {
   target_cache_dir="/cargo-target"
   owner_uid="$(id -u)"
   owner_gid="$(id -g)"
-  cargo_registry_volume="ployz-payload-${cache_suffix}-cargo-registry"
-  cargo_git_volume="ployz-payload-${cache_suffix}-cargo-git"
-  target_volume="ployz-payload-${cache_suffix}-target"
+
+  # When PLOYZ_PAYLOAD_HOST_CACHE_DIR is set, bind-mount its subdirs into the
+  # builder so the cargo registry / git / target dirs live on the host. CI uses
+  # this with actions/cache so the cache survives across runs. Otherwise fall
+  # back to docker named volumes (good enough for local dev where they persist
+  # between invocations).
+  host_cache_dir="${PLOYZ_PAYLOAD_HOST_CACHE_DIR:-}"
+  if [[ -n "${host_cache_dir}" ]]; then
+    host_registry="${host_cache_dir}/${cache_suffix}/cargo-registry"
+    host_git="${host_cache_dir}/${cache_suffix}/cargo-git"
+    host_target="${host_cache_dir}/${cache_suffix}/target"
+    mkdir -p "${host_registry}" "${host_git}" "${host_target}"
+    cargo_registry_mount="${host_registry}:/cargo/registry"
+    cargo_git_mount="${host_git}:/cargo/git"
+    target_mount="${host_target}:${target_cache_dir}"
+  else
+    cargo_registry_mount="ployz-payload-${cache_suffix}-cargo-registry:/cargo/registry"
+    cargo_git_mount="ployz-payload-${cache_suffix}-cargo-git:/cargo/git"
+    target_mount="ployz-payload-${cache_suffix}-target:${target_cache_dir}"
+  fi
 
   docker run --rm \
     --platform "${target_platform}" \
@@ -115,9 +133,10 @@ build_linux_payload_in_docker() {
     -e CARGO_TARGET_DIR="${target_cache_dir}" \
     -e PLOYZ_PAYLOAD_OWNER_UID="${owner_uid}" \
     -e PLOYZ_PAYLOAD_OWNER_GID="${owner_gid}" \
-    -v "${cargo_registry_volume}:/cargo/registry" \
-    -v "${cargo_git_volume}:/cargo/git" \
-    -v "${target_volume}:${target_cache_dir}" \
+    -e PLOYZ_PAYLOAD_CHOWN_CACHE="${host_cache_dir:+1}" \
+    -v "${cargo_registry_mount}" \
+    -v "${cargo_git_mount}" \
+    -v "${target_mount}" \
     -v "${repo_abs}:/repo" \
     -v "${output_parent_abs}:/out" \
     -w /repo \
@@ -134,6 +153,9 @@ build_linux_payload_in_docker() {
         --target-platform ${target_platform} \
         --profile ${build_profile}
       chown -R \"${owner_uid}:${owner_gid}\" /out/${output_name}
+      if [[ -n \"\${PLOYZ_PAYLOAD_CHOWN_CACHE:-}\" ]]; then
+        chown -R \"${owner_uid}:${owner_gid}\" /cargo /cargo-target
+      fi
       if [[ -d /repo/ebpf/target ]]; then
         chown -R \"${owner_uid}:${owner_gid}\" /repo/ebpf/target
       fi

@@ -1097,4 +1097,52 @@ mod tests {
         let deserialized: ServiceSpec = serde_json::from_str(&json).expect("deserialize spec");
         assert_eq!(deserialized.template.pid_mode.as_deref(), Some("host"));
     }
+
+    #[test]
+    fn parse_quota_bytes_accepts_decimal_and_suffixes() {
+        let cases: &[(&str, u64)] = &[
+            ("1024", 1024),
+            ("1K", 1024),
+            ("1M", 1024_u64.pow(2)),
+            ("2G", 2 * 1024_u64.pow(3)),
+            ("1T", 1024_u64.pow(4)),
+        ];
+        for (input, expected) in cases {
+            let actual = parse_quota_bytes(input)
+                .unwrap_or_else(|err| panic!("parse_quota_bytes({input}) failed: {err}"));
+            assert_eq!(actual, *expected, "input {input}");
+        }
+    }
+
+    #[test]
+    fn parse_quota_bytes_rejects_empty() {
+        let error = parse_quota_bytes("").expect_err("empty quota should fail");
+        assert!(error.contains("empty"), "got: {error}");
+    }
+
+    #[test]
+    fn parse_quota_bytes_rejects_no_digits() {
+        let error = parse_quota_bytes("K").expect_err("digit-less quota should fail");
+        assert!(error.contains("no digits"), "got: {error}");
+    }
+
+    #[test]
+    fn parse_quota_bytes_rejects_unknown_suffix() {
+        let error = parse_quota_bytes("5P").expect_err("P suffix is not supported");
+        assert!(error.contains("unsupported quota suffix"), "got: {error}");
+    }
+
+    #[test]
+    fn parse_quota_bytes_overflow() {
+        // 1024^4 = 2^40, so any amount >= 2^24 = 16_777_216 overflows u64 when
+        // multiplied by the T suffix.
+        let error = parse_quota_bytes("16777216T").expect_err("16777216T overflows u64");
+        assert!(error.contains("overflows"), "got: {error}");
+    }
+
+    #[test]
+    fn parse_quota_bytes_just_below_overflow_succeeds() {
+        let actual = parse_quota_bytes("16777215T").expect("16777215T fits in u64");
+        assert_eq!(actual, 16_777_215_u64 * 1024_u64.pow(4));
+    }
 }

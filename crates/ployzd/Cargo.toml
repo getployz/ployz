@@ -13,6 +13,7 @@ ebpf-native = ["ployz-orchestrator/ebpf-native"]
 
 [dependencies]
 ployz-api = { path = "../ployz-api" }
+ployz-cert-backends = { path = "../ployz-cert-backends" }
 ployz-config = { path = "../ployz-config" }
 ployz-corrosion = { path = "../ployz-corrosion" }
 ployz-metrics = { path = "../ployz-metrics" }

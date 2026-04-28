@@ -8,15 +8,14 @@ use pingora::protocols::tls::TlsRef;
 #[cfg(unix)]
 use pingora::server::{RunArgs, ShutdownSignal, ShutdownSignalWatch};
 use pingora::services::listening::Service as ListeningService;
-use pingora::tls::pkey::Private;
-use pingora::tls::{ext, pkey::PKey, ssl, x509::X509};
+use pingora::tls::{ext, ssl};
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
 use tokio::time::{sleep, timeout};
 use tracing::{error, info, warn};
 
 use crate::config::{GatewayConfig, GatewayError};
 use crate::proxy::GatewayApp;
-use crate::routes::GatewaySnapshot;
+use crate::routes::{GatewaySnapshot, ProjectedTlsMaterial};
 use crate::snapshot::SharedSnapshot;
 use crate::sync::load_projected_snapshot_from_store;
 
@@ -28,19 +27,13 @@ const STORE_READY_POLL: Duration = Duration::from_millis(250);
 // Managed-TLS material resolution (pure, testable without pingora)
 // ---------------------------------------------------------------------------
 
-pub(crate) struct ResolvedTlsMaterial {
-    pub(crate) leaf: X509,
-    pub(crate) chain: Vec<X509>,
-    pub(crate) private_key: PKey<Private>,
-}
-
+/// SNI -> snapshot lookup result. PEM parsing happens at projection time, so
+/// this enum no longer carries parse-error variants — malformed material never
+/// reaches the handshake path.
 pub(crate) enum TlsResolution {
-    Ready(ResolvedTlsMaterial),
+    Ready(Arc<ProjectedTlsMaterial>),
     MissingSni,
     HostnameMiss(String),
-    FullchainParse { hostname: String, reason: String },
-    EmptyFullchain(String),
-    PrivateKeyParse { hostname: String, reason: String },
 }
 
 pub(crate) fn resolve_tls_material(
@@ -54,35 +47,10 @@ pub(crate) fn resolve_tls_material(
     // trimmed trailing dot/port), so the SNI must be normalized the same way
     // or mixed-case clients miss an otherwise valid certificate.
     let hostname = crate::routes::normalize_request_host(server_name);
-    let Some(certificate) = snapshot.certificates.get(&hostname) else {
-        return TlsResolution::HostnameMiss(hostname);
-    };
-    let certificates = match X509::stack_from_pem(certificate.fullchain_pem.as_bytes()) {
-        Ok(certificates) => certificates,
-        Err(error) => {
-            return TlsResolution::FullchainParse {
-                hostname,
-                reason: error.to_string(),
-            };
-        }
-    };
-    let [leaf, chain @ ..] = certificates.as_slice() else {
-        return TlsResolution::EmptyFullchain(hostname);
-    };
-    let private_key = match PKey::private_key_from_pem(certificate.private_key_pem.as_bytes()) {
-        Ok(private_key) => private_key,
-        Err(error) => {
-            return TlsResolution::PrivateKeyParse {
-                hostname,
-                reason: error.to_string(),
-            };
-        }
-    };
-    TlsResolution::Ready(ResolvedTlsMaterial {
-        leaf: leaf.clone(),
-        chain: chain.to_vec(),
-        private_key,
-    })
+    match snapshot.certificates.get(&hostname) {
+        Some(certificate) => TlsResolution::Ready(Arc::clone(&certificate.tls)),
+        None => TlsResolution::HostnameMiss(hostname),
+    }
 }
 
 pub struct GatewayTlsListener<'a> {
@@ -113,29 +81,6 @@ impl TlsAccept for ManagedTlsCallbacks {
                 );
                 return;
             }
-            TlsResolution::FullchainParse { hostname, reason } => {
-                error!(
-                    hostname = hostname,
-                    reason = reason,
-                    "managed TLS certificate fullchain PEM did not parse"
-                );
-                return;
-            }
-            TlsResolution::EmptyFullchain(hostname) => {
-                error!(
-                    hostname = hostname,
-                    "managed TLS certificate fullchain PEM did not contain a leaf certificate"
-                );
-                return;
-            }
-            TlsResolution::PrivateKeyParse { hostname, reason } => {
-                error!(
-                    hostname = hostname,
-                    reason = reason,
-                    "managed TLS private key PEM did not parse"
-                );
-                return;
-            }
         };
         let hostname = server_name.map(ToString::to_string).unwrap_or_default();
         if let Err(error) = ext::ssl_use_certificate(ssl, &material.leaf) {
@@ -154,7 +99,7 @@ impl TlsAccept for ManagedTlsCallbacks {
             );
             return;
         }
-        for certificate in &material.chain {
+        for certificate in material.chain.iter() {
             if let Err(error) = ext::ssl_add_chain_cert(ssl, certificate) {
                 error!(
                     hostname = hostname,
@@ -746,31 +691,15 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // resolve_tls_material — pure SNI selection + PEM parsing
+    // resolve_tls_material — pure SNI selection (parsing happens at projection)
     // -----------------------------------------------------------------------
 
     mod resolve_tls_material_tests {
-        use crate::routes::{CertificateView, GatewaySnapshot};
+        use crate::routes::{GatewaySnapshot, ProjectedTlsMaterial, project_certificates};
         use crate::server::{TlsResolution, resolve_tls_material};
+        use ployz_types::model::{CertificateRecord, CertificateState, CertificateVersion};
         use std::collections::HashMap;
-
-        fn snapshot_with_cert(hostname: &str, fullchain: &str, key: &str) -> GatewaySnapshot {
-            let mut certificates = HashMap::new();
-            certificates.insert(
-                hostname.to_string(),
-                CertificateView {
-                    hostname: hostname.to_string(),
-                    fullchain_pem: fullchain.to_string(),
-                    private_key_pem: key.to_string(),
-                },
-            );
-            GatewaySnapshot {
-                http_routes: Vec::new(),
-                tcp_routes: Vec::new(),
-                acme_challenges: HashMap::new(),
-                certificates,
-            }
-        }
+        use std::sync::Arc;
 
         fn make_self_signed() -> (String, String) {
             let key = rcgen::KeyPair::generate().expect("keypair");
@@ -778,6 +707,36 @@ mod tests {
                 .expect("cert params");
             let cert = params.self_signed(&key).expect("self-signed cert");
             (cert.pem(), key.serialize_pem())
+        }
+
+        fn projected_snapshot_with_cert(hostname: &str) -> GatewaySnapshot {
+            let (fullchain_pem, private_key_pem) = make_self_signed();
+            let record = CertificateRecord {
+                hostname: hostname.into(),
+                issuer_url: "https://acme.test/directory".into(),
+                account_id: "acct-test".into(),
+                state: CertificateState::Active,
+                active_version_id: Some("v1".into()),
+                versions: vec![CertificateVersion {
+                    version_id: "v1".into(),
+                    fullchain_pem,
+                    private_key_pem,
+                    not_before: Some(0),
+                    not_after: Some(100),
+                    issued_at: 0,
+                }],
+                order_url: None,
+                last_error: None,
+                requested_at: 0,
+                updated_at: 0,
+                next_renewal_at: None,
+            };
+            GatewaySnapshot {
+                http_routes: Vec::new(),
+                tcp_routes: Vec::new(),
+                acme_challenges: HashMap::new(),
+                certificates: project_certificates(&[record]),
+            }
         }
 
         #[test]
@@ -804,69 +763,33 @@ mod tests {
         }
 
         #[test]
-        fn non_pem_fullchain_returns_empty_fullchain() {
-            // boring's `X509::stack_from_pem` is permissive and returns an empty
-            // vec for content with no PEM envelopes, so the "unparseable" path
-            // surfaces as `EmptyFullchain`. `FullchainParse` only fires on
-            // content that looks like a PEM but is malformed inside.
-            let snapshot = snapshot_with_cert("api.example.com", "this is not a pem", "ignored");
-            match resolve_tls_material(&snapshot, Some("api.example.com")) {
-                TlsResolution::EmptyFullchain(hostname) => {
-                    assert_eq!(hostname, "api.example.com");
-                }
-                other => panic!("expected EmptyFullchain, got {}", label(&other)),
-            }
-        }
-
-        #[test]
-        fn malformed_pem_fullchain_returns_fullchain_parse() {
-            // PEM envelope present, body is garbage → real parse error.
-            let bad =
-                "-----BEGIN CERTIFICATE-----\nnot-valid-base64!!!\n-----END CERTIFICATE-----\n";
-            let snapshot = snapshot_with_cert("api.example.com", bad, "ignored");
-            match resolve_tls_material(&snapshot, Some("api.example.com")) {
-                TlsResolution::FullchainParse { hostname, reason } => {
-                    assert_eq!(hostname, "api.example.com");
-                    assert!(!reason.is_empty(), "reason should be populated");
-                }
-                other => panic!("expected FullchainParse, got {}", label(&other)),
-            }
-        }
-
-        #[test]
-        fn valid_fullchain_with_garbage_key_returns_private_key_parse() {
-            let (cert_pem, _) = make_self_signed();
-            let snapshot = snapshot_with_cert("api.example.com", &cert_pem, "not a pem either");
-            match resolve_tls_material(&snapshot, Some("api.example.com")) {
-                TlsResolution::PrivateKeyParse { hostname, reason } => {
-                    assert_eq!(hostname, "api.example.com");
-                    assert!(!reason.is_empty(), "reason should be populated");
-                }
-                other => panic!("expected PrivateKeyParse, got {}", label(&other)),
-            }
-        }
-
-        #[test]
-        fn valid_cert_and_key_returns_ready_with_empty_chain() {
-            let (cert_pem, key_pem) = make_self_signed();
-            let snapshot = snapshot_with_cert("api.example.com", &cert_pem, &key_pem);
+        fn projected_snapshot_returns_ready_arc_with_empty_chain() {
+            let snapshot = projected_snapshot_with_cert("api.example.com");
+            let entry = snapshot
+                .certificates
+                .get("api.example.com")
+                .expect("cert projected");
+            let entry_tls_ptr: *const ProjectedTlsMaterial = Arc::as_ptr(&entry.tls);
             match resolve_tls_material(&snapshot, Some("api.example.com")) {
                 TlsResolution::Ready(material) => {
+                    // The handshake-path lookup must hand back the *same* Arc
+                    // that lives in the snapshot — no clone of the underlying
+                    // X509/PKey.
+                    assert!(
+                        std::ptr::eq(Arc::as_ptr(&material), entry_tls_ptr),
+                        "resolved material must share the snapshot's Arc"
+                    );
                     assert!(
                         material.chain.is_empty(),
-                        "self-signed fullchain has only the leaf; chain must be empty"
+                        "self-signed fullchain has only the leaf"
                     );
-                    // Leaf parsed enough to round-trip back to PEM.
-                    let round_trip = material.leaf.to_pem().expect("cert back to pem");
-                    assert!(!round_trip.is_empty());
-                    // Private key parsed and matches the cert's public key.
                     assert!(
                         material
                             .leaf
                             .public_key()
-                            .expect("cert pubkey")
+                            .expect("leaf pubkey")
                             .public_eq(&material.private_key),
-                        "private key must match the leaf's public key"
+                        "leaf and private key must match"
                     );
                 }
                 other => panic!("expected Ready, got {}", label(&other)),
@@ -878,16 +801,12 @@ mod tests {
                 TlsResolution::Ready(_) => "Ready",
                 TlsResolution::MissingSni => "MissingSni",
                 TlsResolution::HostnameMiss(_) => "HostnameMiss",
-                TlsResolution::FullchainParse { .. } => "FullchainParse",
-                TlsResolution::EmptyFullchain(_) => "EmptyFullchain",
-                TlsResolution::PrivateKeyParse { .. } => "PrivateKeyParse",
             }
         }
 
         #[test]
         fn mixed_case_sni_matches_lowercase_certificate_key() {
-            let (cert_pem, key_pem) = make_self_signed();
-            let snapshot = snapshot_with_cert("api.example.com", &cert_pem, &key_pem);
+            let snapshot = projected_snapshot_with_cert("api.example.com");
             match resolve_tls_material(&snapshot, Some("API.Example.COM")) {
                 TlsResolution::Ready(_) => {}
                 other => panic!(
@@ -899,8 +818,7 @@ mod tests {
 
         #[test]
         fn sni_with_trailing_dot_matches_certificate_key() {
-            let (cert_pem, key_pem) = make_self_signed();
-            let snapshot = snapshot_with_cert("api.example.com", &cert_pem, &key_pem);
+            let snapshot = projected_snapshot_with_cert("api.example.com");
             match resolve_tls_material(&snapshot, Some("api.example.com.")) {
                 TlsResolution::Ready(_) => {}
                 other => panic!(

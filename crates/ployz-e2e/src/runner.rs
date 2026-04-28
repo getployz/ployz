@@ -1254,46 +1254,11 @@ impl ScenarioRun {
 }
 
 fn payload_stamp(repo_root: &Path, target_platform: &str, build_profile: &str) -> Result<String> {
-    let script = r#"
-set -euo pipefail
-repo_root="$1"
-target_platform="$2"
-build_profile="$3"
-
-hash_cmd() {
-  if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256
-    return
-  fi
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum
-    return
-  fi
-  cksum
-}
-
-{
-  printf 'platform=%s\n' "$target_platform"
-  printf 'profile=%s\n' "$build_profile"
-  git -C "$repo_root" ls-files -z -- Cargo.toml Cargo.lock .corrosion-version ployz.sh crates scripts packaging \
-    | while IFS= read -r -d '' path; do
-        printf 'path=%s\n' "$path"
-        if [[ -f "$repo_root/$path" ]]; then
-          cat "$repo_root/$path"
-        else
-          printf '<missing>\n'
-        fi
-        printf '\n'
-      done
-} | hash_cmd | awk '{print $1}'
-"#;
-
+    let script = repo_root.join("scripts/payload-stamp.sh");
     let output = run_command_expect_ok(
         "bash",
         &[
-            "-lc",
-            script,
-            "--",
+            script.to_string_lossy().as_ref(),
             repo_root.to_string_lossy().as_ref(),
             target_platform,
             build_profile,

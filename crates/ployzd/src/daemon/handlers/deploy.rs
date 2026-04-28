@@ -4,7 +4,8 @@ use std::sync::Arc;
 use crate::daemon::DaemonState;
 use ployz_api::{DaemonResponse, DeployOptions};
 use ployz_config::RuntimeTarget;
-use ployz_orchestrator::certificates::AcmeAccountCoordinator;
+use ployz_cert_backends::InstantAcmeIssuerFactory;
+use ployz_orchestrator::certificates::{AcmeAccountCoordinator, CertificateManagerConfig};
 use ployz_orchestrator::deploy::{apply_with_certificate_coordination, preview};
 use ployz_runtime_backends::deploy::remote::DeployAgent;
 use ployz_runtime_backends::deploy::session::DefaultDeploySessionFactory;
@@ -43,7 +44,20 @@ impl DaemonState {
             Err(response) => return *response,
         };
 
-        match preview(&active.mesh.store, &self.identity.machine_id, &manifest).await {
+        let peer_rpc_port = match self.peer_control_port() {
+            Ok(port) => port,
+            Err(error) => return self.err("DEPLOY_PREVIEW_FAILED", error.to_string()),
+        };
+        let prober = crate::daemon::deploy_probe::OverlayRpcProbe::new(peer_rpc_port);
+
+        match preview(
+            &active.mesh.store,
+            &self.identity.machine_id,
+            &manifest,
+            &prober,
+        )
+        .await
+        {
             Ok(plan) => self.ok_json_pretty(&plan, "ENCODE_PREVIEW", "encode preview"),
             Err(err) => self.err("DEPLOY_PREVIEW_FAILED", format!("{err}")),
         }
@@ -101,6 +115,10 @@ impl DaemonState {
                 peer_rpc_port,
             ),
         );
+        let issuer_factory = Arc::new(InstantAcmeIssuerFactory::new(
+            CertificateManagerConfig::from_env(),
+        ));
+        let prober = crate::daemon::deploy_probe::OverlayRpcProbe::new(peer_rpc_port);
 
         match apply_with_certificate_coordination(
             &active.mesh.store,
@@ -110,6 +128,8 @@ impl DaemonState {
             certificate_coordinator.as_ref(),
             account_coordinator,
             challenge_readiness,
+            issuer_factory,
+            &prober,
         )
         .await
         {

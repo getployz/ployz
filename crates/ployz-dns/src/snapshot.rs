@@ -50,7 +50,9 @@ pub struct DnsSnapshot {
     /// Two-level map avoids cloning `Namespace` + allocating a `String` on
     /// every lookup in the hot path.
     pub services: HashMap<Namespace, HashMap<String, Vec<Ipv4Addr>>>,
-    /// overlay_ip -> namespace (reverse lookup for caller namespace detection)
+    /// overlay_ip -> namespace (reverse lookup for caller namespace detection).
+    /// Intentionally IPv4-only: the mesh issues only IPv4 overlay addresses,
+    /// so an IPv6 caller has no namespace and bare-name lookups will NXDOMAIN.
     pub ip_to_namespace: HashMap<Ipv4Addr, Namespace>,
     /// namespace -> sorted list of service names (for TXT _services queries)
     pub service_names: HashMap<Namespace, Vec<String>>,

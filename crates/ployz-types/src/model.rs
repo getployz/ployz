@@ -582,6 +582,10 @@ pub struct AcmeAccountRecord {
     pub account_id: String,
     pub issuer_url: String,
     pub contact_email: Option<String>,
+    // SECURITY: serialized `instant_acme::AccountCredentials` containing the
+    // account private key. Replicated as plaintext JSON via Corrosion. Safe
+    // only while replication stays inside the WireGuard mesh and SQLite files
+    // are not backed up unencrypted; revisit if either assumption changes.
     pub account_credentials_json: String,
     pub created_at: u64,
     pub updated_at: u64,
@@ -610,6 +614,10 @@ pub enum CertificateState {
 pub struct CertificateVersion {
     pub version_id: String,
     pub fullchain_pem: String,
+    // SECURITY: leaf private key in PEM form, replicated as plaintext JSON
+    // through the certificates table. Safe only under the WireGuard-only
+    // replication + no-unencrypted-backup assumption documented on the
+    // schema; revisit if either assumption changes.
     pub private_key_pem: String,
     pub not_before: Option<u64>,
     pub not_after: Option<u64>,
@@ -651,6 +659,10 @@ impl CertificateRecord {
 pub struct AcmeChallengeRecord {
     pub hostname: String,
     pub token: String,
+    // SECURITY: HTTP-01 key authorization is the secret an ACME verifier must
+    // echo back. Replicated as plaintext JSON. Safe only under the WireGuard-
+    // only replication + no-unencrypted-backup assumption documented on the
+    // schema; revisit if either assumption changes.
     pub key_authorization: String,
     pub expires_at: u64,
     pub created_at: u64,

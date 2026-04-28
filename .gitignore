@@ -16,3 +16,4 @@ e2e-artifacts/
 packaging/e2e/preloaded-images/*
 !packaging/e2e/preloaded-images/.gitkeep
 lab/lab.env
+docs/review.md

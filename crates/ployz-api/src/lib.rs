@@ -138,6 +138,10 @@ pub enum CoordOp {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonRequest {
+    /// Liveness probe used by deploy reachability checks. Returns immediately
+    /// with no side effects so callers can confirm the peer daemon is alive
+    /// at decision time.
+    Ping,
     Status,
     Doctor,
     DebugTick {

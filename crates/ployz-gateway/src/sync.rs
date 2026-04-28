@@ -14,6 +14,15 @@ use crate::snapshot::SharedSnapshot;
 
 const REFRESH_DEBOUNCE: Duration = Duration::from_millis(100);
 
+/// Paranoia caps on the in-memory mirror of the certificate / ACME challenge
+/// tables. These are not capacity targets — they're a safety belt: if a buggy
+/// upstream loops on challenge issuance or projection feedback ever pushes
+/// records in faster than we expect, the gateway logs and degrades instead of
+/// growing the cache without bound. The current ployz scale runs well under
+/// these limits.
+const MAX_CACHED_CERTIFICATES: usize = 10_000;
+const MAX_CACHED_CHALLENGES: usize = 10_000;
+
 // ---------------------------------------------------------------------------
 // RoutingSnapshotReader trait — consumer contract
 // ---------------------------------------------------------------------------
@@ -63,10 +72,40 @@ struct ManagedTlsCache {
 }
 
 impl ManagedTlsCache {
+    fn insert_certificate(&mut self, record: CertificateRecord) {
+        if !self.certificates.contains_key(&record.hostname)
+            && self.certificates.len() >= MAX_CACHED_CERTIFICATES
+        {
+            warn!(
+                hostname = %record.hostname,
+                cached = self.certificates.len(),
+                cap = MAX_CACHED_CERTIFICATES,
+                "managed-TLS cache is at the certificate cap; dropping new record"
+            );
+            return;
+        }
+        self.certificates.insert(record.hostname.clone(), record);
+    }
+
+    fn insert_challenge(&mut self, record: AcmeChallengeRecord) {
+        let key = (record.hostname.clone(), record.token.clone());
+        if !self.challenges.contains_key(&key) && self.challenges.len() >= MAX_CACHED_CHALLENGES {
+            warn!(
+                hostname = %record.hostname,
+                token = %record.token,
+                cached = self.challenges.len(),
+                cap = MAX_CACHED_CHALLENGES,
+                "managed-TLS cache is at the challenge cap; dropping new record"
+            );
+            return;
+        }
+        self.challenges.insert(key, record);
+    }
+
     fn apply_certificate(&mut self, event: CertificateEvent) {
         match event {
             CertificateEvent::Added(record) | CertificateEvent::Updated(record) => {
-                self.certificates.insert(record.hostname.clone(), record);
+                self.insert_certificate(record);
             }
             CertificateEvent::Removed(record) => {
                 self.certificates.remove(&record.hostname);
@@ -77,8 +116,7 @@ impl ManagedTlsCache {
     fn apply_challenge(&mut self, event: AcmeChallengeEvent) {
         match event {
             AcmeChallengeEvent::Added(record) | AcmeChallengeEvent::Updated(record) => {
-                self.challenges
-                    .insert((record.hostname.clone(), record.token.clone()), record);
+                self.insert_challenge(record);
             }
             AcmeChallengeEvent::Removed(record) => {
                 self.challenges.remove(&(record.hostname, record.token));
@@ -147,12 +185,10 @@ where
     );
     let mut cache = ManagedTlsCache::default();
     for record in cert_records {
-        cache.certificates.insert(record.hostname.clone(), record);
+        cache.insert_certificate(record);
     }
     for record in challenge_records {
-        cache
-            .challenges
-            .insert((record.hostname.clone(), record.token.clone()), record);
+        cache.insert_challenge(record);
     }
     load_initial_snapshot(store, &cache).await
 }
@@ -166,12 +202,10 @@ where
     let (challenge_records, mut chal_rx) = store.subscribe_acme_challenges().await?;
     let mut cache = ManagedTlsCache::default();
     for record in cert_records {
-        cache.certificates.insert(record.hostname.clone(), record);
+        cache.insert_certificate(record);
     }
     for record in challenge_records {
-        cache
-            .challenges
-            .insert((record.hostname.clone(), record.token.clone()), record);
+        cache.insert_challenge(record);
     }
 
     let mut refresh_rx = store.subscribe_routing_invalidations().await?;
@@ -272,4 +306,58 @@ where
         })
         .map_err(|err| GatewayError::Runtime(err.to_string()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_types::model::{CertificateRecord, CertificateState};
+
+    fn record(hostname: &str) -> CertificateRecord {
+        CertificateRecord {
+            hostname: hostname.into(),
+            issuer_url: "https://acme.test/directory".into(),
+            account_id: "acct".into(),
+            state: CertificateState::Active,
+            active_version_id: None,
+            versions: Vec::new(),
+            order_url: None,
+            last_error: None,
+            requested_at: 0,
+            updated_at: 0,
+            next_renewal_at: None,
+        }
+    }
+
+    #[test]
+    fn certificate_cache_caps_at_max_cached_certificates() {
+        let mut cache = ManagedTlsCache::default();
+        for i in 0..=MAX_CACHED_CERTIFICATES {
+            cache.insert_certificate(record(&format!("host-{i}.example.com")));
+        }
+        assert_eq!(
+            cache.certificates.len(),
+            MAX_CACHED_CERTIFICATES,
+            "cache must not exceed the cap"
+        );
+    }
+
+    #[test]
+    fn certificate_cache_replaces_existing_hostname_at_cap() {
+        // Updates to a hostname already in the cache must always succeed —
+        // otherwise a renewal could be silently dropped once the cap is hit.
+        let mut cache = ManagedTlsCache::default();
+        for i in 0..MAX_CACHED_CERTIFICATES {
+            cache.insert_certificate(record(&format!("host-{i}.example.com")));
+        }
+        assert_eq!(cache.certificates.len(), MAX_CACHED_CERTIFICATES);
+        let mut updated = record("host-0.example.com");
+        updated.account_id = "rotated".into();
+        cache.insert_certificate(updated);
+        assert_eq!(cache.certificates.len(), MAX_CACHED_CERTIFICATES);
+        assert_eq!(
+            cache.certificates["host-0.example.com"].account_id,
+            "rotated"
+        );
+    }
 }

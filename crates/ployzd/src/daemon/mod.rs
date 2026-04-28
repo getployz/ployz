@@ -1,4 +1,5 @@
 mod cert_coordination;
+mod deploy_probe;
 pub mod handlers;
 mod runtime;
 mod setup;

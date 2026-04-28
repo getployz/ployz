@@ -248,7 +248,7 @@ pub(super) async fn resolve_plan(
     }
     let services_with_volume_changes = planned_volumes
         .iter()
-        .filter(|volume| volume_record_needs_update(volume))
+        .filter(|volume| !matches!(volume_record_change(volume), VolumeChange::Skip))
         .flat_map(|volume| volume.attached_services.iter().cloned())
         .collect::<BTreeSet<_>>();
 
@@ -548,16 +548,28 @@ fn service_volume_pin(
     Ok(pinned)
 }
 
-pub(super) fn volume_record_needs_update(volume: &PlannedVolume) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum VolumeChange {
+    Create,
+    Update,
+    Skip,
+}
+
+pub(super) fn volume_record_change(volume: &PlannedVolume) -> VolumeChange {
     let Some(current) = &volume.current else {
-        return true;
+        return VolumeChange::Create;
     };
-    volume.declaration.scope != current.scope
+    let drifted = volume.declaration.scope != current.scope
         || volume.machine_id != current.machine_id
         || volume.declaration.quota != current.quota
         || volume.declaration.mode != current.mode
         || volume.declaration.owner != current.owner
-        || volume.attached_services != current.attached_services
+        || volume.attached_services != current.attached_services;
+    if drifted {
+        VolumeChange::Update
+    } else {
+        VolumeChange::Skip
+    }
 }
 
 fn validate_existing_volume(declaration: &VolumeDeclaration, record: &VolumeRecord) -> Result<()> {
