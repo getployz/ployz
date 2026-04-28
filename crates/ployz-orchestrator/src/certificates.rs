@@ -300,6 +300,7 @@ pub fn spawn_certificate_finalization_with_readiness(
         issuer_factory,
         readiness,
         Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(NoopIssuanceCoordinator),
     );
 }
 
@@ -308,10 +309,13 @@ pub fn spawn_certificate_finalization_with_coordination(
     issuer_factory: Arc<dyn AcmeIssuerFactory>,
     readiness: Arc<dyn Http01ChallengeReadiness>,
     account_coordinator: Arc<dyn AcmeAccountCoordinator>,
+    issuance_coordinator: Arc<dyn IssuanceCoordinator>,
 ) {
     tokio::spawn(async move {
         let issuer = issuer_factory.create(readiness, account_coordinator);
-        if let Err(error) = finalize_due_certificates(&store, issuer.as_ref()).await {
+        if let Err(error) =
+            finalize_due_certificates(&store, issuer.as_ref(), issuance_coordinator.as_ref()).await
+        {
             tracing::warn!(?error, "managed certificate finalization failed");
         }
     });
@@ -474,9 +478,14 @@ where
 /// Background: for every certificate with an open order (`Issuing` + stored
 /// `order_url`), resume the order and finalize. Runs after every apply and —
 /// once a renewal trigger exists — on that schedule too.
-pub async fn finalize_due_certificates<I>(store: &StoreDriver, issuer: &I) -> Result<()>
+pub async fn finalize_due_certificates<I, C>(
+    store: &StoreDriver,
+    issuer: &I,
+    coordinator: &C,
+) -> Result<()>
 where
     I: AcmeIssuer + Sync + ?Sized,
+    C: IssuanceCoordinator + ?Sized,
 {
     let certificates = store.list_certificates().await?;
     for certificate in certificates {
@@ -486,28 +495,64 @@ where
         let Some(order_url) = certificate.order_url.clone() else {
             continue;
         };
-        finalize_one(store, issuer, certificate, &order_url).await?;
+        finalize_one(store, issuer, coordinator, certificate, &order_url).await?;
     }
     Ok(())
 }
 
-async fn finalize_one<I>(
+async fn finalize_one<I, C>(
     store: &StoreDriver,
     issuer: &I,
+    coordinator: &C,
     record: CertificateRecord,
     order_url: &str,
 ) -> Result<()>
 where
     I: AcmeIssuer + Sync + ?Sized,
+    C: IssuanceCoordinator + ?Sized,
 {
     let hostname = record.hostname.clone();
 
-    // Finalization is intentionally background and can run concurrently on
-    // multiple daemons. Re-read the row before doing any ACME work so a
-    // stale worker that's already been superseded by a peer's newer order
-    // doesn't run side effects (notably challenge cleanup) against a
-    // hostname whose live order is no longer the one we picked up.
-    let Some(pre) = store.get_certificate(&hostname).await? else {
+    // Acquire the same hostname-scoped cluster lock `start_one` uses. Without
+    // it, every daemon that sees the Issuing row races the same ACME order:
+    // exactly one wins `finalize()`, but the losers' fast `Failed` writes
+    // beat the winner's slow `poll_certificate`, dropping the issued cert
+    // and burning duplicate-cert rate limit on every cycle. Holding the
+    // lock across the entire ACME flow + persistence guarantees a single
+    // finalizer per order.
+    let hold = match coordinator.try_acquire(&hostname).await {
+        IssuanceAcquisition::Allowed(hold) => hold,
+        IssuanceAcquisition::VetoedByPeer(reason) => {
+            tracing::info!(
+                hostname = %hostname,
+                reason = %reason,
+                "ACME finalization deferred: another orchestrator holds the hostname lock"
+            );
+            return Ok(());
+        }
+    };
+
+    let outcome = finalize_one_under_lock(store, issuer, &hostname, order_url).await;
+
+    // Release AFTER persistence (mirrors `start_one`): the lock must cover
+    // both the external ACME side effects and the row update.
+    hold.release().await;
+    outcome
+}
+
+async fn finalize_one_under_lock<I>(
+    store: &StoreDriver,
+    issuer: &I,
+    hostname: &str,
+    order_url: &str,
+) -> Result<()>
+where
+    I: AcmeIssuer + Sync + ?Sized,
+{
+    // Re-read inside the lock. The snapshot from `finalize_due_certificates`
+    // may be stale: a peer holding the lock before us could have rotated
+    // the row to Active or to a newer order_url.
+    let Some(pre) = store.get_certificate(hostname).await? else {
         tracing::warn!(
             hostname = %hostname,
             order_url,
@@ -526,17 +571,14 @@ where
         return Ok(());
     }
 
-    let outcome = issuer
-        .finalize_order(store, &record.hostname, order_url)
-        .await;
+    let outcome = issuer.finalize_order(store, hostname, order_url).await;
 
-    // The pre-call guard avoids running ACME side effects when we already
-    // know the order is stale, but it doesn't close the window between the
-    // re-read and `finalize_order`. The post-call guard catches the case
-    // where a peer rotated the row during the ACME RTT — without it, a
-    // stale worker could downgrade an already-active cert or overwrite a
-    // newer order's row.
-    let Some(mut current) = store.get_certificate(&hostname).await? else {
+    // Defense-in-depth post-check. The cluster lock prevents peer rotations
+    // while we ran ACME, but `NoopIssuanceCoordinator` (single-machine /
+    // tests) provides no real serialization, so a sibling task in the same
+    // process could have moved on. The cluster-locked path makes this guard
+    // unreachable; the noop path makes it load-bearing.
+    let Some(mut current) = store.get_certificate(hostname).await? else {
         tracing::warn!(
             hostname = %hostname,
             order_url,
@@ -742,6 +784,7 @@ pub fn spawn_certificate_renewal_ticker(
                 issuer_factory.clone(),
                 readiness.clone(),
                 account_coordinator.clone(),
+                coordinator.clone(),
             );
             tokio::select! {
                 () = task_cancel.cancelled() => break,
@@ -1269,6 +1312,7 @@ mod tests {
                     private_key_pem: "key".into(),
                 }),
             ),
+            &NoopIssuanceCoordinator,
         )
         .await
         .expect("finalization should run");
@@ -1311,6 +1355,7 @@ mod tests {
                 Err(Error::operation("unused", "start not called")),
                 Err(Error::operation("fake_acme", "failed")),
             ),
+            &NoopIssuanceCoordinator,
         )
         .await
         .expect("finalization errors are recorded per certificate");
@@ -1347,6 +1392,7 @@ mod tests {
                 },
                 Err(Error::operation("fake_acme", "late failure")),
             ),
+            &NoopIssuanceCoordinator,
             record,
             "https://acme/orders/42",
         )
@@ -1387,6 +1433,7 @@ mod tests {
                     private_key_pem: "stale-key".into(),
                 }),
             ),
+            &NoopIssuanceCoordinator,
             record,
             "https://acme/orders/42",
         )
@@ -1471,9 +1518,15 @@ mod tests {
         };
 
         let issuer = RecordingFinalizeIssuer::new();
-        finalize_one(&store, &issuer, stale_snapshot, "https://acme/orders/42")
-            .await
-            .expect("stale finalization should be skipped without error");
+        finalize_one(
+            &store,
+            &issuer,
+            &NoopIssuanceCoordinator,
+            stale_snapshot,
+            "https://acme/orders/42",
+        )
+        .await
+        .expect("stale finalization should be skipped without error");
 
         assert_eq!(
             issuer.finalize_call_count(),
@@ -1489,6 +1542,277 @@ mod tests {
             .expect("cert record should exist");
         assert_eq!(row.state, CertificateState::Issuing);
         assert_eq!(row.order_url.as_deref(), Some("https://acme/orders/43"));
+    }
+
+    // -------------------------------------------------------------------
+    // finalize_one — multi-daemon order-finalization safety
+    //
+    // The pre-fix race: every daemon independently finalizes the same
+    // Issuing row. Exactly one wins `finalize()` at LE; the losers' fast
+    // `Failed` writes beat the winner's slow `poll_certificate` and the
+    // winner's post-check then sees `Failed` and drops the issued cert.
+    // On a 300-node cluster this fires every cycle and burns LE's
+    // duplicate-cert rate limit.
+    //
+    // The fix: hold the same hostname-scoped cluster lock `start_one`
+    // uses for the entire ACME flow + persistence. These tests pin that
+    // contract.
+    // -------------------------------------------------------------------
+
+    /// Coordinator that always vetoes. Models a peer already holding the
+    /// hostname lock.
+    struct AlwaysVetoCoordinator;
+
+    #[async_trait]
+    impl IssuanceCoordinator for AlwaysVetoCoordinator {
+        async fn try_acquire(&self, _hostname: &str) -> IssuanceAcquisition {
+            IssuanceAcquisition::VetoedByPeer("peer holds lock".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn finalize_one_skips_acme_when_coordinator_vetoes() {
+        let store = StoreDriver::memory();
+        let mut record = pending_record("example.com");
+        record.state = CertificateState::Issuing;
+        record.order_url = Some("https://acme/orders/42".into());
+        store
+            .upsert_certificate(&record)
+            .await
+            .expect("issuing cert should persist");
+
+        let issuer = RecordingFinalizeIssuer::new();
+        finalize_one(
+            &store,
+            &issuer,
+            &AlwaysVetoCoordinator,
+            record,
+            "https://acme/orders/42",
+        )
+        .await
+        .expect("vetoed finalize should be a no-op, not an error");
+
+        assert_eq!(
+            issuer.finalize_call_count(),
+            0,
+            "ACME finalize_order must not run when a peer holds the lock"
+        );
+
+        let row = store
+            .get_certificate("example.com")
+            .await
+            .expect("cert lookup should work")
+            .expect("cert record should exist");
+        assert_eq!(row.state, CertificateState::Issuing);
+        assert_eq!(row.order_url.as_deref(), Some("https://acme/orders/42"));
+        assert!(row.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn finalize_one_holds_lock_until_after_persist() {
+        // Mirrors `start_one_holds_lock_until_after_upsert`. The lock must
+        // cover the row write so a peer can't read the still-Issuing row
+        // between `finalize_order` returning and the persist landing,
+        // grab the (released) lock, and start a duplicate fresh order.
+        let store = StoreDriver::memory();
+        let mut record = pending_record("example.com");
+        record.state = CertificateState::Issuing;
+        record.order_url = Some("https://acme/orders/42".into());
+        store
+            .upsert_certificate(&record)
+            .await
+            .expect("issuing cert should persist");
+
+        let captured = std::sync::Arc::new(Mutex::new(None));
+        let coordinator = CaptureOnReleaseCoordinator {
+            store: store.clone(),
+            captured: std::sync::Arc::clone(&captured),
+        };
+        let issuer = FakeIssuer::new(
+            Err(Error::operation("unused", "start not called")),
+            Ok(IssuedCertificate {
+                fullchain_pem: "fullchain".into(),
+                private_key_pem: "key".into(),
+            }),
+        );
+
+        finalize_one(
+            &store,
+            &issuer,
+            &coordinator,
+            record,
+            "https://acme/orders/42",
+        )
+        .await
+        .expect("finalization should succeed");
+
+        let row_at_release = captured
+            .lock()
+            .expect("captured lock")
+            .clone()
+            .expect("release callback should observe a row");
+        assert_eq!(row_at_release.state, CertificateState::Active);
+        assert!(row_at_release.active_version_id.is_some());
+        assert!(row_at_release.order_url.is_none());
+        let [version] = row_at_release.versions.as_slice() else {
+            panic!(
+                "expected exactly one issued version, got {:?}",
+                row_at_release.versions
+            );
+        };
+        assert_eq!(version.fullchain_pem, "fullchain");
+    }
+
+    /// Coordinator backed by a `tokio::sync::Mutex`. Concurrent acquires
+    /// return `VetoedByPeer` synchronously rather than waiting, mirroring
+    /// the production reservation semantics where peers either hold the
+    /// reservation or get a synchronous deny.
+    struct SerializingCoordinator {
+        held: std::sync::Arc<tokio::sync::Mutex<()>>,
+    }
+
+    impl Default for SerializingCoordinator {
+        fn default() -> Self {
+            Self {
+                held: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl IssuanceCoordinator for SerializingCoordinator {
+        async fn try_acquire(&self, _hostname: &str) -> IssuanceAcquisition {
+            match self.held.clone().try_lock_owned() {
+                Ok(guard) => IssuanceAcquisition::Allowed(IssuanceHold::new(move || async move {
+                    drop(guard);
+                })),
+                Err(_) => IssuanceAcquisition::VetoedByPeer("peer holds lock".into()),
+            }
+        }
+    }
+
+    /// Issuer whose `finalize_order` sleeps before returning, modelling
+    /// LE's poll_ready + finalize + poll_certificate round-trip. Forces
+    /// concurrent finalizers to overlap when running under a multi-thread
+    /// runtime so the lock's serialization is actually exercised.
+    struct SlowFinalizeIssuer {
+        delay: Duration,
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        result: std::sync::Mutex<Option<Result<IssuedCertificate>>>,
+    }
+
+    impl SlowFinalizeIssuer {
+        fn new(delay: Duration, result: Result<IssuedCertificate>) -> Self {
+            Self {
+                delay,
+                calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                result: std::sync::Mutex::new(Some(result)),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl AcmeIssuer for SlowFinalizeIssuer {
+        async fn start_order(&self, _: &StoreDriver, _: &str) -> Result<StartedOrder> {
+            Err(Error::operation("slow_issuer", "start unused"))
+        }
+
+        async fn finalize_order(
+            &self,
+            _: &StoreDriver,
+            _: &str,
+            _: &str,
+        ) -> Result<IssuedCertificate> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(self.delay).await;
+            self.result
+                .lock()
+                .expect("slow_issuer result lock")
+                .take()
+                .unwrap_or_else(|| Err(Error::operation("slow_issuer", "exhausted")))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_finalize_one_calls_serialize_through_lock() {
+        // Eight concurrent finalize_one tasks against the same Issuing row.
+        // Exactly one acquires the cluster lock and runs ACME; the seven
+        // losers see VetoedByPeer and return early without touching the
+        // row. The issued cert lands on the row — never `Failed`. This is
+        // the test that would have caught the original bug: pre-fix, the
+        // losers would have raced past the pre-check, run ACME, hit the
+        // already-finalized order at LE, and written `Failed` before the
+        // winner's `poll_certificate` returned.
+        let store = StoreDriver::memory();
+        let mut record = pending_record("example.com");
+        record.state = CertificateState::Issuing;
+        record.order_url = Some("https://acme/orders/42".into());
+        store
+            .upsert_certificate(&record)
+            .await
+            .expect("issuing cert should persist");
+
+        let coordinator = std::sync::Arc::new(SerializingCoordinator::default());
+        let issuer = std::sync::Arc::new(SlowFinalizeIssuer::new(
+            Duration::from_millis(150),
+            Ok(IssuedCertificate {
+                fullchain_pem: "winner-chain".into(),
+                private_key_pem: "winner-key".into(),
+            }),
+        ));
+
+        let runs: Vec<_> = (0..8)
+            .map(|_| {
+                let store = store.clone();
+                let coord = std::sync::Arc::clone(&coordinator);
+                let issuer = std::sync::Arc::clone(&issuer);
+                let record = record.clone();
+                tokio::spawn(async move {
+                    finalize_one(
+                        &store,
+                        issuer.as_ref(),
+                        coord.as_ref(),
+                        record,
+                        "https://acme/orders/42",
+                    )
+                    .await
+                })
+            })
+            .collect();
+
+        for run in runs {
+            run.await
+                .expect("task join")
+                .expect("finalize_one should not error");
+        }
+
+        assert_eq!(
+            issuer.calls(),
+            1,
+            "exactly one daemon should have run ACME finalize"
+        );
+
+        let row = store
+            .get_certificate("example.com")
+            .await
+            .expect("cert lookup should work")
+            .expect("cert record should exist");
+        assert_eq!(
+            row.state,
+            CertificateState::Active,
+            "issued cert must land on the row, not Failed"
+        );
+        let [version] = row.versions.as_slice() else {
+            panic!("expected exactly one issued version, got {:?}", row.versions);
+        };
+        assert_eq!(version.fullchain_pem, "winner-chain");
+        assert!(row.last_error.is_none());
+        assert!(row.order_url.is_none());
     }
 
     #[tokio::test]
@@ -1511,6 +1835,7 @@ mod tests {
                     "peer did not see challenge yet",
                 )),
             ),
+            &NoopIssuanceCoordinator,
         )
         .await
         .expect("retryable visibility errors are recorded per certificate");
