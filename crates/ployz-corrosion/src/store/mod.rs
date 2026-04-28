@@ -274,6 +274,10 @@ impl InviteRepository for CorrosionStore {
 }
 
 impl RoutingSnapshotReader for CorrosionStore {
+    async fn load_routing_state(&self) -> Result<RoutingState> {
+        workflows::routing_state::load_routing_state(&self.client).await
+    }
+
     async fn subscribe_routing_events(
         &self,
     ) -> Result<(RoutingState, mpsc::Receiver<RoutingEvent>)> {

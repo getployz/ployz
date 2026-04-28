@@ -26,6 +26,27 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
     })?;
     struct StandaloneStore(ployz_corrosion::CorrosionStore);
     impl ployz_gateway::RoutingSnapshotReader for StandaloneStore {
+        async fn load_routing_state(
+            &self,
+        ) -> Result<ployz_types::model::RoutingState, ployz_gateway::GatewayError> {
+            info!("gateway store call start: load_routing_state");
+            match self.0.load_routing_state().await {
+                Ok(state) => {
+                    info!(
+                        revisions = state.revisions.len(),
+                        releases = state.releases.len(),
+                        instances = state.instances.len(),
+                        "gateway store call complete: load_routing_state"
+                    );
+                    Ok(state)
+                }
+                Err(err) => {
+                    warn!(error = %err, "gateway store call failed: load_routing_state");
+                    Err(ployz_gateway::GatewayError::Store(err.to_string()))
+                }
+            }
+        }
+
         async fn subscribe_routing_events(
             &self,
         ) -> Result<

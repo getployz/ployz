@@ -140,6 +140,10 @@ impl InviteRepository for StoreDriver {
 }
 
 impl RoutingSnapshotReader for StoreDriver {
+    async fn load_routing_state(&self) -> Result<RoutingState> {
+        self.backend.load_routing_state().await
+    }
+
     async fn subscribe_routing_events(&self) -> Result<RoutingSubscription> {
         self.backend.subscribe_routing_events().await
     }

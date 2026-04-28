@@ -91,6 +91,8 @@ pub trait InviteRepository: Send + Sync {
 }
 
 pub trait RoutingSnapshotReader: Send + Sync {
+    fn load_routing_state(&self) -> impl Future<Output = Result<RoutingState>> + Send + '_;
+
     fn subscribe_routing_events(
         &self,
     ) -> impl Future<Output = Result<RoutingSubscription>> + Send + '_;
