@@ -690,6 +690,7 @@ mod tests {
             "tank/ployz-test/test/data\t1G\t/tank/ployz-test/test/data\n",
             "",
         );
+        fake.push(0, "750:999:999\n", "");
         let _ = resolve_mounts_with_driver(Some(&driver), &namespace, &container, &volumes)
             .await
             .expect("adopt existing dataset");
