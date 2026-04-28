@@ -15,10 +15,10 @@ use crate::snapshot::SharedSnapshot;
 const REFRESH_DEBOUNCE: Duration = Duration::from_millis(100);
 
 // ---------------------------------------------------------------------------
-// RoutingStore trait — consumer contract
+// RoutingSnapshotReader trait — consumer contract
 // ---------------------------------------------------------------------------
 
-pub trait RoutingStore: Send + Sync {
+pub trait RoutingSnapshotReader: Send + Sync {
     fn load_routing_state(
         &self,
     ) -> impl Future<Output = Result<ployz_types::model::RoutingState, GatewayError>> + Send + '_;
@@ -104,7 +104,7 @@ async fn load_initial_snapshot<S>(
     cache: &ManagedTlsCache,
 ) -> Result<GatewaySnapshot, GatewayError>
 where
-    S: RoutingStore + Send + Sync,
+    S: RoutingSnapshotReader + Send + Sync,
 {
     let state = store.load_routing_state().await?;
     let mut snapshot = project(state).map_err(|err| GatewayError::Projection(err.to_string()))?;
@@ -128,7 +128,7 @@ pub async fn load_projected_snapshot_from_store<S>(
     store: &S,
 ) -> Result<GatewaySnapshot, GatewayError>
 where
-    S: RoutingStore + Send + Sync,
+    S: RoutingSnapshotReader + Send + Sync,
 {
     // Boot path mirrors routing state: use bounded point-in-time queries for
     // the initial snapshot, then let the background sync loop attach live
@@ -159,7 +159,7 @@ where
 
 pub async fn run_sync_loop<S>(store: S, snapshot: SharedSnapshot) -> Result<(), GatewayError>
 where
-    S: RoutingStore + Send + Sync + 'static,
+    S: RoutingSnapshotReader + Send + Sync + 'static,
 {
     // Build initial cache from subscription snapshots.
     let (cert_records, mut cert_rx) = store.subscribe_certificates().await?;
@@ -210,7 +210,7 @@ where
 
 async fn refresh_and_replace<S>(store: &S, cache: &ManagedTlsCache, snapshot: &SharedSnapshot)
 where
-    S: RoutingStore + Send + Sync,
+    S: RoutingSnapshotReader + Send + Sync,
 {
     let routing_state = match store.load_routing_state().await {
         Ok(state) => state,
@@ -249,7 +249,7 @@ pub fn spawn_sync_thread_with_store<S>(
     snapshot: SharedSnapshot,
 ) -> Result<(), GatewayError>
 where
-    S: RoutingStore + Send + Sync + 'static,
+    S: RoutingSnapshotReader + Send + Sync + 'static,
 {
     std::thread::Builder::new()
         .name("ployz-gateway-sync".into())

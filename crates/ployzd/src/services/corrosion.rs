@@ -13,15 +13,17 @@ use ployz_runtime_backends::runtime::{
     ContainerEngine, EnsureAction, PullPolicy, RuntimeContainerSpec,
 };
 use ployz_store_api::{
-    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployStore, InviteStore,
-    MachineStore, PeerMembershipObservation, PeerMembershipStore, PeerRttObservation, PeerRttStore,
-    RoutingStore, StoreBackend, StoreDriver, StoreRuntimeControl, SyncProbe, SyncStatus,
+    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
+    DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
+    InstanceStatusRepository, InviteRepository, MachineRegistry, PeerMembershipObservation,
+    PeerMembershipStore, PeerRttObservation, PeerRttStore, RoutingSnapshotReader, StoreBackend,
+    StoreDriver, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use ployz_types::Result;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
     InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineRecord, OverlayIp,
-    RoutingState, ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
+    RoutingState, ServiceReleaseRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
@@ -220,18 +222,31 @@ where
         self.store.subscribe_routing_invalidations().await
     }
 
-    async fn list_service_revisions(
-        &self,
-        namespace: &Namespace,
-    ) -> Result<Vec<ServiceRevisionRecord>> {
-        self.store.list_service_revisions(namespace).await
-    }
-
-    async fn list_service_releases(
+    async fn list_deploy_releases(
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<ServiceReleaseRecord>> {
-        self.store.list_service_releases(namespace).await
+        self.store.list_deploy_releases(namespace).await
+    }
+
+    async fn load_deploy_snapshot(&self, namespace: &Namespace) -> Result<DeploySnapshot> {
+        self.store.load_deploy_snapshot(namespace).await
+    }
+
+    async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()> {
+        self.store.record_service_revision(command).await
+    }
+
+    async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
+        self.store.commit_deploy(command).await
+    }
+
+    async fn update_deploy_record(&self, command: &DeployRecordUpdate) -> Result<()> {
+        self.store.update_deploy_record(command).await
+    }
+
+    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
+        self.store.get_deploy(deploy_id).await
     }
 
     async fn list_instance_status(
@@ -253,53 +268,12 @@ where
         self.store.get_volume(namespace, volume_name).await
     }
 
-    async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
-        self.store.upsert_service_revision(record).await
+    async fn record_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
+        self.store.record_instance_status(record).await
     }
 
-    async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> Result<()> {
-        self.store.upsert_service_release(record).await
-    }
-
-    async fn delete_service_release(&self, namespace: &Namespace, service: &str) -> Result<()> {
-        self.store.delete_service_release(namespace, service).await
-    }
-
-    async fn upsert_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
-        self.store.upsert_instance_status(record).await
-    }
-
-    async fn delete_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
-        self.store.delete_instance_status(instance_id).await
-    }
-
-    async fn upsert_deploy(&self, record: &DeployRecord) -> Result<()> {
-        self.store.upsert_deploy(record).await
-    }
-
-    async fn commit_deploy(
-        &self,
-        namespace: &Namespace,
-        removed_services: &[String],
-        removed_volumes: &[String],
-        releases: &[ServiceReleaseRecord],
-        volumes: &[VolumeRecord],
-        deploy: &DeployRecord,
-    ) -> Result<()> {
-        self.store
-            .commit_deploy(
-                namespace,
-                removed_services,
-                removed_volumes,
-                releases,
-                volumes,
-                deploy,
-            )
-            .await
-    }
-
-    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
-        self.store.get_deploy(deploy_id).await
+    async fn remove_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
+        self.store.remove_instance_status(instance_id).await
     }
 
     async fn get_acme_account(&self, issuer_url: &str) -> Result<Option<AcmeAccountRecord>> {

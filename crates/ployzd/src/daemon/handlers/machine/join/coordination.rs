@@ -8,7 +8,7 @@ use ployz_orchestrator::coordination::{
 };
 use ployz_orchestrator::ipam::pick_candidate_subnet;
 use ployz_orchestrator::machine_policy::coordination_peers as policy_coordination_peers;
-use ployz_store_api::{InviteStore, MachineStore, StoreDriver};
+use ployz_store_api::{InviteRepository, MachineRegistry, StoreDriver};
 use ployz_types::model::{MachineId, MachineRecord, OverlayIp};
 use ployz_types::time::now_unix_secs;
 
@@ -362,7 +362,7 @@ fn api_resource_key(key: &ResourceKey) -> ApiResourceKey {
 mod tests {
     use super::assert_subnet_unique;
     use ipnet::Ipv4Net;
-    use ployz_store_api::{MachineStore, StoreDriver};
+    use ployz_store_api::{MachineRegistry, StoreDriver};
     use ployz_types::model::{MachineId, MachineLifecycle, MachineRecord, OverlayIp, PublicKey};
 
     #[tokio::test]

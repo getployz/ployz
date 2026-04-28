@@ -8,7 +8,7 @@ use ployz_orchestrator::certificates::AcmeAccountCoordinator;
 use ployz_orchestrator::deploy::{apply_with_certificate_coordination, preview};
 use ployz_runtime_backends::deploy::remote::DeployAgent;
 use ployz_runtime_backends::deploy::session::DefaultDeploySessionFactory;
-use ployz_store_api::DeployStore;
+use ployz_store_api::DeployRepository;
 use ployz_store_api::StoreDriver;
 use ployz_types::Error as PloyzError;
 use ployz_types::spec::{DeployManifest, Namespace, ServiceSpec, VolumeDeclaration};
@@ -158,8 +158,9 @@ async fn export_manifest(
     store: &StoreDriver,
     namespace: &Namespace,
 ) -> ployz_types::Result<DeployManifest> {
-    let releases = store.list_service_releases(namespace).await?;
-    let revisions = store.list_service_revisions(namespace).await?;
+    let snapshot = store.load_deploy_snapshot(namespace).await?;
+    let releases = snapshot.releases;
+    let revisions = snapshot.revisions;
     let volume_records = store.list_volumes(namespace).await?;
     let revisions_by_key: BTreeMap<(String, String), String> = revisions
         .into_iter()
@@ -230,7 +231,7 @@ async fn export_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_store_api::DeployStore;
+    use ployz_store_api::{DeployCommit, DeployRepository, DeployRevisionUpsert};
     use ployz_types::model::{
         DeployId, DeployRecord, DeployState, MachineId, ServiceRelease, ServiceReleaseRecord,
         ServiceRevisionRecord, ServiceRoutingPolicy, VolumeRecord,
@@ -284,23 +285,25 @@ mod tests {
         let deploy_id = DeployId("deploy-1".into());
 
         store
-            .upsert_service_revision(&ServiceRevisionRecord {
-                namespace: namespace.clone(),
-                service: service.name.clone(),
-                revision_hash: revision_hash.clone(),
-                spec_json: serde_json::to_string(&service).expect("serialize service"),
-                created_by: MachineId("local".into()),
-                created_at: 1,
+            .record_service_revision(&DeployRevisionUpsert {
+                revision: ServiceRevisionRecord {
+                    namespace: namespace.clone(),
+                    service: service.name.clone(),
+                    revision_hash: revision_hash.clone(),
+                    spec_json: serde_json::to_string(&service).expect("serialize service"),
+                    created_by: MachineId("local".into()),
+                    created_at: 1,
+                },
             })
             .await
             .expect("seed revision");
 
         store
-            .commit_deploy(
-                &namespace,
-                &[],
-                &[],
-                &[ServiceReleaseRecord {
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                releases: vec![ServiceReleaseRecord {
                     namespace: namespace.clone(),
                     service: service.name.clone(),
                     release: ServiceRelease {
@@ -312,7 +315,7 @@ mod tests {
                         updated_at: 1,
                     },
                 }],
-                &[VolumeRecord {
+                volumes: vec![VolumeRecord {
                     namespace: namespace.clone(),
                     volume_name: "data".into(),
                     scope: VolumeScope::Single,
@@ -326,7 +329,7 @@ mod tests {
                     last_modified_at: 1,
                     last_modified_by_deploy_id: deploy_id.clone(),
                 }],
-                &DeployRecord {
+                deploy: DeployRecord {
                     deploy_id,
                     namespace: namespace.clone(),
                     coordinator_machine_id: MachineId("local".into()),
@@ -337,7 +340,7 @@ mod tests {
                     finished_at: Some(1),
                     summary_json: "{}".into(),
                 },
-            )
+            })
             .await
             .expect("seed release and volume");
 

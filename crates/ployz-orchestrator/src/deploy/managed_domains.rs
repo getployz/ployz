@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use ployz_store_api::{CertificateStore, RoutingStore, StoreDriver};
+use ployz_store_api::{CertificateStore, RoutingSnapshotReader, StoreDriver};
 use ployz_types::model::{
     CertificateRecord, CertificateState, RoutingState, ServiceRelease, ServiceReleaseRecord,
     ServiceRevisionRecord, ServiceRoutingPolicy,

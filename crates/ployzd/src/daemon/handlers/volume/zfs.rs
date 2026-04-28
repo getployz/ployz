@@ -7,7 +7,7 @@ use ployz_api::{
     VolumeZfsTransferListPayload, VolumeZfsTransferPayload,
 };
 use ployz_runtime_backends::storage::{TokioShellRunner, ZfsDriver};
-use ployz_store_api::{DeployStore, MachineStore};
+use ployz_store_api::{DeployRepository, MachineRegistry};
 use ployz_types::model::{MachineId, MachineLifecycle, MachineRecord, VolumeRecord};
 use ployz_types::spec::{Namespace, VolumeScope};
 use ployz_types::time::now_unix_secs;

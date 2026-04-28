@@ -4,7 +4,7 @@ use crate::model::{
     DeployChangeKind, DeployPreview, MachineId, MachineRecord, ServicePlan, ServiceReleaseRecord,
     ServiceReleaseSlot, SlotId, SlotPlan, VolumeRecord,
 };
-use ployz_store_api::{DeployStore, MachineStore, StoreDriver};
+use ployz_store_api::{DeployRepository, MachineRegistry, StoreDriver};
 use ployz_types::spec::{
     DeployManifest, MountSource, Namespace, Placement, ServiceSpec, VolumeDeclaration,
     parse_quota_bytes, stable_hash_hex,
@@ -174,7 +174,7 @@ pub(super) async fn resolve_plan(
         .validate()
         .map_err(|error| Error::operation("deploy_preview", error))?;
 
-    let current_releases = store.list_service_releases(&manifest.namespace).await?;
+    let current_releases = store.list_deploy_releases(&manifest.namespace).await?;
     let current_volumes = store.list_volumes(&manifest.namespace).await?;
     let machines = store.list_machines().await?;
     let machine_map: HashMap<MachineId, MachineRecord> = machines

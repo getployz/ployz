@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use ployz_runtime_api::RuntimeHandle;
 use ployz_runtime_backends::storage::{ShellRunner, TokioShellRunner, ZfsDriver};
-use ployz_store_api::{DeployStore, MachineStore, StoreDriver};
+use ployz_store_api::{DeployRepository, MachineRegistry, StoreDriver};
 use ployz_types::model::MachineId;
 use ployz_types::spec::Namespace;
 use serde::{Deserialize, Serialize};
@@ -417,7 +417,7 @@ mod tests {
     };
     use async_trait::async_trait;
     use ployz_runtime_backends::storage::{ShellOutput, ShellRunner, ZfsDriver};
-    use ployz_store_api::{DeployStore, MachineStore, StoreDriver};
+    use ployz_store_api::{DeployCommit, DeployRepository, MachineRegistry, StoreDriver};
     use ployz_types::error::{Error, Result};
     use ployz_types::model::{
         DeployId, DeployRecord, DeployState, MachineId, MachineLifecycle, MachineRecord,
@@ -602,7 +602,14 @@ mod tests {
             summary_json: "{}".into(),
         };
         store
-            .commit_deploy(&namespace, &[], &[], &[], &[record], &deploy)
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                releases: Vec::new(),
+                volumes: vec![record],
+                deploy,
+            })
             .await
             .expect("commit volume");
     }
