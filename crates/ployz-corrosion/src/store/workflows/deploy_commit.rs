@@ -1,6 +1,6 @@
 use crate::client::CorrClient;
 use crate::store::shared::sql::exec_all;
-use crate::store::tables::{deploys, service_releases};
+use crate::store::tables::{deploys, service_releases, volumes as volume_table};
 use corro_api_types::Statement;
 use ployz_store_api::DeployCommit;
 use ployz_types::error::Result;
@@ -36,6 +36,17 @@ fn build_commit_statements(commit: &DeployCommit) -> Result<Vec<Statement>> {
 
     for release in &commit.releases {
         statements.push(service_releases::upsert_statement(release)?);
+    }
+
+    for volume in &commit.volumes {
+        statements.push(volume_table::upsert_statement(volume)?);
+    }
+
+    for volume_name in &commit.removed_volumes {
+        statements.push(volume_table::delete_statement(
+            &commit.namespace,
+            volume_name,
+        ));
     }
 
     statements.push(deploys::upsert_statement(&commit.deploy)?);
@@ -103,7 +114,9 @@ mod tests {
         let commit = DeployCommit {
             namespace,
             removed_services,
+            removed_volumes: Vec::new(),
             releases,
+            volumes: Vec::new(),
             deploy,
         };
 

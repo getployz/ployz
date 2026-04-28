@@ -1,4 +1,4 @@
-use crate::model::{MachineId, MachineLifecycle, PlacementCandidate};
+use crate::model::{MachineId, MachineLifecycle, MachineMembership, PlacementCandidate, RegionName};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticRole {
@@ -9,6 +9,22 @@ pub enum DiagnosticRole {
 #[must_use]
 pub fn is_new_placement_candidate(machine: &PlacementCandidate) -> bool {
     machine.lifecycle == MachineLifecycle::Active
+}
+
+#[must_use]
+pub fn machine_region(machine: &MachineMembership) -> &RegionName {
+    &machine.topology.region
+}
+
+#[must_use]
+pub fn same_region(left: &MachineMembership, right: &MachineMembership) -> bool {
+    left.topology.region == right.topology.region
+}
+
+#[must_use]
+pub fn same_availability_zone(left: &MachineMembership, right: &MachineMembership) -> bool {
+    left.topology.availability_zone.is_some()
+        && left.topology.availability_zone == right.topology.availability_zone
 }
 
 #[must_use]

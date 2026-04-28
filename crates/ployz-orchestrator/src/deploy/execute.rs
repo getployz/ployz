@@ -1,11 +1,20 @@
-use crate::deploy::plan::{PlanFingerprint, ResolvedPlan, resolve_plan};
-use crate::deploy::probe::probe_participants;
+use crate::certificates::{
+    AcmeAccountCoordinator, AcmeIssuerFactory, Http01ChallengeReadiness, IssuanceCoordinator,
+    LocalHttp01ChallengeReadiness, NoopAcmeAccountCoordinator, NoopAcmeIssuerFactory,
+    NoopIssuanceCoordinator, spawn_certificate_finalization_with_coordination,
+    start_pending_orders,
+};
+use crate::deploy::managed_domains;
+use crate::deploy::plan::{
+    PlanFingerprint, ResolvedPlan, VolumeChange, resolve_plan, volume_record_change,
+};
+use crate::deploy::probe::{NoopParticipantProbe, ParticipantProbe, probe_participants};
 use crate::deploy::session::{self, DeploySessionFactory};
 use crate::deploy::transaction::{CleanupPlan, PreparedDeploy};
 use crate::error::{Error, Result};
 use crate::model::{
     DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployState, InstanceId,
-    InstanceStatusRecord, MachineId, ServiceRevisionRecord,
+    InstanceStatusRecord, MachineId, ServiceRevisionRecord, VolumeRecord,
 };
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use ployz_store_api::{
@@ -30,6 +39,7 @@ struct StartTask {
     machine_id: MachineId,
     instance_id: InstanceId,
     spec_json: String,
+    volumes_json: String,
 }
 
 #[derive(Debug)]
@@ -154,9 +164,34 @@ pub(super) async fn apply(
     local_machine_id: &MachineId,
     manifest: &ployz_types::spec::DeployManifest,
 ) -> Result<DeployApplyResult> {
+    apply_with_certificate_coordination(
+        store,
+        session_factory,
+        local_machine_id,
+        manifest,
+        &NoopIssuanceCoordinator,
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &NoopParticipantProbe,
+    )
+    .await
+}
+
+pub(super) async fn apply_with_certificate_coordination(
+    store: &StoreDriver,
+    session_factory: &dyn DeploySessionFactory,
+    local_machine_id: &MachineId,
+    manifest: &ployz_types::spec::DeployManifest,
+    certificate_coordinator: &dyn IssuanceCoordinator,
+    account_coordinator: Arc<dyn AcmeAccountCoordinator>,
+    challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
+    issuer_factory: Arc<dyn AcmeIssuerFactory>,
+    prober: &dyn ParticipantProbe,
+) -> Result<DeployApplyResult> {
     let initial_plan = resolve_plan(store, local_machine_id, manifest).await?;
     let reachability =
-        probe_participants(initial_plan.participants(), initial_plan.machine_map()).await;
+        probe_participants(prober, initial_plan.participants(), initial_plan.machine_map()).await;
     if !reachability.unreachable.is_empty() {
         let unreachable = reachability
             .unreachable
@@ -175,22 +210,52 @@ pub(super) async fn apply(
         ));
     }
 
-    apply_with_initial_plan(
+    apply_with_initial_plan_and_certificate_coordination(
         store,
         session_factory,
         local_machine_id,
         manifest,
         initial_plan,
+        certificate_coordinator,
+        account_coordinator,
+        challenge_readiness,
+        issuer_factory,
     )
     .await
 }
 
+#[cfg(test)]
 pub(super) async fn apply_with_initial_plan(
     store: &StoreDriver,
     session_factory: &dyn DeploySessionFactory,
     local_machine_id: &MachineId,
     manifest: &ployz_types::spec::DeployManifest,
     initial_plan: ResolvedPlan,
+) -> Result<DeployApplyResult> {
+    apply_with_initial_plan_and_certificate_coordination(
+        store,
+        session_factory,
+        local_machine_id,
+        manifest,
+        initial_plan,
+        &NoopIssuanceCoordinator,
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+    )
+    .await
+}
+
+pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
+    store: &StoreDriver,
+    session_factory: &dyn DeploySessionFactory,
+    local_machine_id: &MachineId,
+    manifest: &ployz_types::spec::DeployManifest,
+    initial_plan: ResolvedPlan,
+    certificate_coordinator: &dyn IssuanceCoordinator,
+    account_coordinator: Arc<dyn AcmeAccountCoordinator>,
+    challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
+    issuer_factory: Arc<dyn AcmeIssuerFactory>,
 ) -> Result<DeployApplyResult> {
     let deploy_id = DeployId(Uuid::new_v4().to_string());
     let started_at = now_unix_secs();
@@ -203,6 +268,7 @@ pub(super) async fn apply_with_initial_plan(
         let final_plan = resolve_plan(store, local_machine_id, manifest).await?;
         let final_fingerprint = final_plan.fingerprint();
         ensure_plan_stable(&initial_fingerprint, &final_fingerprint)?;
+        managed_domains::validate_hostname_ownership(store, &final_plan).await?;
 
         let prepared = PreparedDeploy::new(
             deploy_id.clone(),
@@ -220,10 +286,46 @@ pub(super) async fn apply_with_initial_plan(
         let startup = run_phase_startup(store, &sessions, prepared.plan(), &deploy_id).await?;
         events.extend(startup.events);
 
-        let commit_plan = prepared.into_started(startup.started).into_commit_plan()?;
+        let started = prepared.into_started(startup.started);
+        let committed_volumes =
+            build_committed_volumes(started.plan(), started.started(), started.deploy_id(), started_at)?;
+        let removed_volumes_list = removed_volumes(store, started.plan()).await?;
+
+        let commit_plan = started.into_commit_plan(removed_volumes_list, committed_volumes)?;
         store.commit_deploy(commit_plan.commit()).await?;
-        let committed = commit_plan.into_committed();
+        let mut committed = commit_plan.into_committed();
         events.push(committed.commit_event());
+
+        let managed_hostnames = managed_domains::ensure_certificate_intents(
+            store,
+            committed.plan(),
+            issuer_factory.issuer_url(),
+        )
+        .await?;
+        let issuer = issuer_factory
+            .create(Arc::new(LocalHttp01ChallengeReadiness), account_coordinator.clone());
+        let acme_warnings = start_pending_orders(
+            store,
+            issuer.as_ref(),
+            certificate_coordinator,
+            &managed_hostnames,
+        )
+        .await;
+        let mut managed_warnings =
+            managed_domains::warnings_for_plan(store, committed.plan()).await?;
+        managed_warnings.extend(acme_warnings);
+        committed.set_warnings(managed_warnings)?;
+        store
+            .update_deploy_record(&DeployRecordUpdate {
+                deploy: committed.deploy_record().clone(),
+            })
+            .await?;
+        spawn_certificate_finalization_with_coordination(
+            store.clone(),
+            issuer_factory.clone(),
+            challenge_readiness.clone(),
+            account_coordinator.clone(),
+        );
 
         let cleanup_plan = committed.cleanup_plan();
         let cleanup = cleanup_stale_instances(store, &sessions, &cleanup_plan).await?;
@@ -302,6 +404,7 @@ pub(super) async fn run_phase_startup(
                     machine_id: slot.machine_id.clone(),
                     instance_id: InstanceId(Uuid::new_v4().to_string()),
                     spec_json: spec_json.to_string(),
+                    volumes_json: plan.volumes_json().to_string(),
                 });
         }
     }
@@ -382,6 +485,7 @@ async fn run_machine_start_queue(
                     slot_id: task.slot_id.clone(),
                     instance_id: task.instance_id.clone(),
                     spec_json: task.spec_json.clone(),
+                    volumes_json: task.volumes_json.clone(),
                 })
                 .await?
         };
@@ -405,6 +509,79 @@ async fn run_machine_start_queue(
         events,
         started,
     })
+}
+
+async fn removed_volumes(store: &StoreDriver, plan: &ResolvedPlan) -> Result<Vec<String>> {
+    let declared = plan
+        .volumes()
+        .iter()
+        .map(|volume| volume.declaration.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut removed = store
+        .list_volumes(plan.namespace())
+        .await?
+        .into_iter()
+        .filter(|record| !declared.contains(record.volume_name.as_str()))
+        .map(|record| record.volume_name)
+        .collect::<Vec<_>>();
+    removed.sort();
+    Ok(removed)
+}
+
+fn build_committed_volumes(
+    plan: &ResolvedPlan,
+    started: &HashMap<(String, String), InstanceStatusRecord>,
+    deploy_id: &DeployId,
+    now: u64,
+) -> Result<Vec<VolumeRecord>> {
+    let mut volumes = Vec::new();
+    for planned in plan
+        .volumes()
+        .iter()
+        .filter(|planned| !matches!(volume_record_change(planned), VolumeChange::Skip))
+    {
+        if !planned.attached_services.is_empty()
+            && !planned.attached_services.iter().any(|service| {
+                started
+                    .keys()
+                    .any(|(started_service, _)| started_service == service)
+            })
+        {
+            return Err(Error::operation(
+                "deploy_apply",
+                format!(
+                    "volume '{}' changed but no attached service was reconciled",
+                    planned.declaration.name
+                ),
+            ));
+        }
+
+        let created_at = planned
+            .current
+            .as_ref()
+            .map(|record| record.created_at)
+            .unwrap_or(now);
+        let created_by_deploy_id = planned
+            .current
+            .as_ref()
+            .map(|record| record.created_by_deploy_id.clone())
+            .unwrap_or_else(|| deploy_id.clone());
+        volumes.push(VolumeRecord {
+            namespace: plan.namespace().clone(),
+            volume_name: planned.declaration.name.clone(),
+            scope: planned.declaration.scope,
+            machine_id: planned.machine_id.clone(),
+            quota: planned.declaration.quota.clone(),
+            mode: planned.declaration.mode.clone(),
+            owner: planned.declaration.owner.clone(),
+            attached_services: planned.attached_services.clone(),
+            created_at,
+            created_by_deploy_id,
+            last_modified_at: now,
+            last_modified_by_deploy_id: deploy_id.clone(),
+        });
+    }
+    Ok(volumes)
 }
 
 async fn cleanup_stale_instances(

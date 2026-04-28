@@ -76,7 +76,7 @@ fn wait_for_doctor_peer_status(
     peer_name: &str,
     overall_lifecycle: &str,
     peer_lifecycle: &str,
-    probe_status: &str,
+    _legacy_probe_status: &str,
 ) -> Result<()> {
     let mut last_report = String::new();
 
@@ -93,12 +93,11 @@ fn wait_for_doctor_peer_status(
             peer_name,
             overall_lifecycle,
             peer_lifecycle,
-            probe_status,
         )
     })
     .map_err(|error| {
         Error::Message(format!(
-            "doctor on {node_name} did not report peer '{peer_name}' as overall={overall_lifecycle} lifecycle={peer_lifecycle} probe={probe_status}: {error}\nlast report:\n{last_report}"
+            "doctor on {node_name} did not report peer '{peer_name}' as overall={overall_lifecycle} lifecycle={peer_lifecycle}: {error}\nlast report:\n{last_report}"
         ))
     })
 }
@@ -108,7 +107,6 @@ fn doctor_report_matches(
     peer_name: &str,
     overall_lifecycle: &str,
     peer_lifecycle: &str,
-    probe_status: &str,
 ) -> Result<bool> {
     let response = parse_daemon_json_response(report)?;
     if !response.ok {
@@ -133,6 +131,11 @@ fn doctor_report_matches(
             && blocking_matches
             && peer.store_lifecycle == peer_lifecycle
             && peer.wg_state != "absent"
-            && peer.probe_state == probe_status
+            && peer.probe_state == "not-used"
+            && match overall_lifecycle {
+                "healthy" => peer.corrosion_state == "alive" || peer.wg_state == "fresh",
+                "blocked" => peer.corrosion_state != "alive" && peer.wg_state != "fresh",
+                _ => false,
+            }
     }))
 }

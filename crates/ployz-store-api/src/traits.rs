@@ -1,21 +1,28 @@
 use async_trait::async_trait;
 use ployz_types::Result;
 use ployz_types::model::{
-    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineMembership, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeRecord, CertificateEvent,
+    CertificateRecord, DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord,
+    MachineEvent, MachineId, MachineMembership, RoutingState, ServiceReleaseRecord,
+    ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::future::Future;
+use std::net::SocketAddr;
 use tokio::sync::mpsc;
 
 pub type MachineSubscription = (Vec<MachineMembership>, mpsc::Receiver<MachineEvent>);
+pub type CertificateSubscription = (Vec<CertificateRecord>, mpsc::Receiver<CertificateEvent>);
+pub type AcmeChallengeSubscription = (Vec<AcmeChallengeRecord>, mpsc::Receiver<AcmeChallengeEvent>);
 pub type RoutingInvalidationSubscription = mpsc::Receiver<()>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployCommit {
     pub namespace: Namespace,
     pub removed_services: Vec<String>,
+    pub removed_volumes: Vec<String>,
     pub releases: Vec<ServiceReleaseRecord>,
+    pub volumes: Vec<VolumeRecord>,
     pub deploy: DeployRecord,
 }
 
@@ -102,6 +109,17 @@ pub trait DeployRepository: Send + Sync {
         namespace: &'a Namespace,
     ) -> impl Future<Output = Result<DeploySnapshot>> + Send + 'a;
 
+    fn list_volumes<'a>(
+        &'a self,
+        namespace: &'a Namespace,
+    ) -> impl Future<Output = Result<Vec<VolumeRecord>>> + Send + 'a;
+
+    fn get_volume<'a>(
+        &'a self,
+        namespace: &'a Namespace,
+        volume_name: &'a str,
+    ) -> impl Future<Output = Result<Option<VolumeRecord>>> + Send + 'a;
+
     fn record_service_revision<'a>(
         &'a self,
         command: &'a DeployRevisionUpsert,
@@ -140,11 +158,96 @@ pub trait InstanceStatusRepository: Send + Sync {
     ) -> impl Future<Output = Result<()>> + Send + 'a;
 }
 
+pub trait CertificateStore: Send + Sync {
+    fn get_acme_account<'a>(
+        &'a self,
+        issuer_url: &'a str,
+    ) -> impl Future<Output = Result<Option<AcmeAccountRecord>>> + Send + 'a;
+
+    fn upsert_acme_account<'a>(
+        &'a self,
+        record: &'a AcmeAccountRecord,
+    ) -> impl Future<Output = Result<()>> + Send + 'a;
+
+    fn list_certificates(&self)
+    -> impl Future<Output = Result<Vec<CertificateRecord>>> + Send + '_;
+
+    fn get_certificate<'a>(
+        &'a self,
+        hostname: &'a str,
+    ) -> impl Future<Output = Result<Option<CertificateRecord>>> + Send + 'a;
+
+    fn upsert_certificate<'a>(
+        &'a self,
+        record: &'a CertificateRecord,
+    ) -> impl Future<Output = Result<()>> + Send + 'a;
+
+    fn list_acme_challenges(
+        &self,
+    ) -> impl Future<Output = Result<Vec<AcmeChallengeRecord>>> + Send + '_;
+
+    fn upsert_acme_challenge<'a>(
+        &'a self,
+        record: &'a AcmeChallengeRecord,
+    ) -> impl Future<Output = Result<()>> + Send + 'a;
+
+    fn delete_acme_challenge<'a>(
+        &'a self,
+        hostname: &'a str,
+        token: &'a str,
+    ) -> impl Future<Output = Result<()>> + Send + 'a;
+
+    fn subscribe_certificates(
+        &self,
+    ) -> impl Future<Output = Result<CertificateSubscription>> + Send + '_;
+
+    fn subscribe_acme_challenges(
+        &self,
+    ) -> impl Future<Output = Result<AcmeChallengeSubscription>> + Send + '_;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncStatus {
     Disconnected,
     Syncing { gaps: u64 },
     Synced,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerRttObservation {
+    pub addr: SocketAddr,
+    pub rtts_ms: Vec<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerMembershipState {
+    Alive,
+    Suspect,
+    Down,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerMembershipObservation {
+    pub addr: SocketAddr,
+    pub actor_id: String,
+    pub state: PeerMembershipState,
+    pub timestamp: u64,
+}
+
+pub trait PeerRttStore: Send + Sync {
+    fn peer_rtt_observations(
+        &self,
+    ) -> impl Future<Output = Result<Vec<PeerRttObservation>>> + Send + '_ {
+        async { Ok(Vec::new()) }
+    }
+}
+
+pub trait PeerMembershipStore: Send + Sync {
+    fn peer_membership_observations(
+        &self,
+    ) -> impl Future<Output = Result<Vec<PeerMembershipObservation>>> + Send + '_ {
+        async { Ok(Vec::new()) }
+    }
 }
 
 pub trait SyncProbe: Send + Sync {

@@ -1,7 +1,9 @@
 use super::network::NetworkConfig;
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 use ployz_runtime_api::Identity;
-use ployz_types::model::{MachineId, MachineMembership, OverlayIp, PublicKey};
+use ployz_types::model::{
+    MachineId, MachineMembership, MachineTopology, OverlayIp, PublicKey,
+};
 use serde::{Deserialize, Serialize};
 use std::net::Ipv6Addr;
 use std::path::Path;
@@ -139,6 +141,7 @@ pub async fn build_seed_records(
     bootstrap: Option<&BootstrapInfo>,
     listen_port: u16,
     extra_records: &[MachineMembership],
+    configured_topology: Option<&MachineTopology>,
 ) -> Vec<MachineMembership> {
     let mut seed_records: Vec<MachineMembership> = load_bootstrap_peer_records(network_dir)
         .unwrap_or_else(|error| {
@@ -190,6 +193,9 @@ pub async fn build_seed_records(
     self_record.overlay_ip = net_config.overlay_ip;
     self_record.subnet = net_config.subnet;
     self_record.endpoints = endpoints;
+    if let Some(topology) = configured_topology {
+        self_record.topology = topology.clone();
+    }
     if self_control_target.is_some() {
         self_record.control_target = self_control_target;
     }
@@ -205,7 +211,7 @@ mod tests {
     use super::*;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use ployz_runtime_api::Identity;
-    use ployz_types::model::{MachineLifecycle, NetworkId, NetworkName};
+    use ployz_types::model::{MachineLifecycle, MachineTopology, NetworkId, NetworkName};
 
     fn temp_network_dir(name: &str) -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -285,6 +291,7 @@ mod tests {
             None,
             51820,
             std::slice::from_ref(&db_founder),
+            None,
         )
         .await;
 
@@ -332,6 +339,7 @@ mod tests {
             None,
             51820,
             &[existing_self.clone()],
+            None,
         )
         .await;
 
@@ -344,5 +352,37 @@ mod tests {
         assert_eq!(self_record.updated_at, existing_self.updated_at);
         assert_eq!(self_record.control_target, existing_self.control_target);
         assert_eq!(self_record.labels, existing_self.labels);
+    }
+
+    #[tokio::test]
+    async fn build_seed_records_applies_configured_self_topology() {
+        let network_dir = temp_network_dir("self-topology");
+        let identity = Identity::generate(MachineId("joiner".into()), [4; 32]);
+        let net_config = NetworkConfig::new(
+            NetworkName("alpha".into()),
+            &identity.public_key,
+            DEFAULT_CLUSTER_CIDR,
+            "10.210.1.0/24".parse().expect("valid subnet"),
+        );
+        let configured_topology =
+            MachineTopology::new("eu-primary", Some("hel1-a")).expect("valid topology");
+
+        let seed_records = build_seed_records(
+            &network_dir,
+            &identity,
+            &net_config,
+            None,
+            None,
+            51820,
+            &[],
+            Some(&configured_topology),
+        )
+        .await;
+
+        let self_record = seed_records
+            .into_iter()
+            .find(|machine| machine.id == identity.machine_id)
+            .expect("self record");
+        assert_eq!(self_record.topology, configured_topology);
     }
 }

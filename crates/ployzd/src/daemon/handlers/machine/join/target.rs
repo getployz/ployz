@@ -15,10 +15,11 @@ use super::coordination::{
     release_reserved_subnet,
 };
 use super::remote::{
-    ExpectedSubnetState, overlay_rpc_expect_ok, remote_rpc_expect_ok, remote_self_record,
-    wait_for_machine_projection, wait_for_overlay_ready, wait_for_remote_ready,
+    ExpectedSubnetState, overlay_rpc_expect_ok_with_read_timeout, remote_rpc_expect_ok,
+    remote_self_record, wait_for_machine_projection, wait_for_overlay_ready, wait_for_remote_ready,
 };
 use super::rollback::rollback_machine_add_target;
+use crate::daemon::handlers::peer_rpc::PEER_RPC_DESTRUCTIVE_READ_TIMEOUT;
 
 pub(super) async fn run_machine_add_target(
     context: MachineAddContext,
@@ -230,7 +231,7 @@ pub(super) async fn run_machine_add_target(
     }
 
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: activating lifecycle");
-    if let Err(err) = overlay_rpc_expect_ok(
+    if let Err(err) = overlay_rpc_expect_ok_with_read_timeout(
         joiner_overlay_ip,
         subnet_claim.peer_rpc_port,
         DaemonRequest::MachineTransitionSelf {
@@ -238,6 +239,7 @@ pub(super) async fn run_machine_add_target(
             assigned_subnet: Some(subnet_claim.subnet()),
             force: false,
         },
+        PEER_RPC_DESTRUCTIVE_READ_TIMEOUT,
     )
     .await
     {

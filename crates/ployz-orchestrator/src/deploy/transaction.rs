@@ -3,7 +3,7 @@ use crate::error::{Error, Result};
 use crate::model::{
     DeployChangeKind, DeployEvent, DeployId, DeployPreview, DeployRecord, DeployState,
     InstanceStatusRecord, MachineId, ServiceRelease, ServiceReleaseRecord, ServiceRevisionRecord,
-    ServiceRoutingPolicy,
+    ServiceRoutingPolicy, VolumeRecord,
 };
 use ployz_store_api::DeployCommit;
 use ployz_types::spec::Namespace;
@@ -28,6 +28,7 @@ pub(super) struct StartedCandidates {
 #[derive(Debug)]
 pub(super) struct CommitPlan {
     deploy_id: DeployId,
+    plan: ResolvedPlan,
     preview: DeployPreview,
     participants: BTreeSet<MachineId>,
     commit: DeployCommit,
@@ -37,6 +38,7 @@ pub(super) struct CommitPlan {
 pub(super) struct CommittedDeploy {
     deploy_id: DeployId,
     namespace: Namespace,
+    plan: ResolvedPlan,
     preview: DeployPreview,
     participants: BTreeSet<MachineId>,
     releases: Vec<ServiceReleaseRecord>,
@@ -123,7 +125,23 @@ impl PreparedDeploy {
 }
 
 impl StartedCandidates {
-    pub(super) fn into_commit_plan(self) -> Result<CommitPlan> {
+    pub(super) fn started(&self) -> &HashMap<(String, String), InstanceStatusRecord> {
+        &self.started
+    }
+
+    pub(super) fn plan(&self) -> &ResolvedPlan {
+        &self.prepared.plan
+    }
+
+    pub(super) fn deploy_id(&self) -> &DeployId {
+        &self.prepared.deploy_id
+    }
+
+    pub(super) fn into_commit_plan(
+        self,
+        removed_volumes: Vec<String>,
+        volumes: Vec<VolumeRecord>,
+    ) -> Result<CommitPlan> {
         let PreparedDeploy {
             deploy_id,
             plan,
@@ -153,12 +171,15 @@ impl StartedCandidates {
 
         Ok(CommitPlan {
             deploy_id,
+            plan,
             preview,
             participants,
             commit: DeployCommit {
                 namespace,
                 removed_services,
+                removed_volumes,
                 releases,
+                volumes,
                 deploy,
             },
         })
@@ -173,6 +194,7 @@ impl CommitPlan {
     pub(super) fn into_committed(self) -> CommittedDeploy {
         let Self {
             deploy_id,
+            plan,
             preview,
             participants,
             commit,
@@ -180,6 +202,7 @@ impl CommitPlan {
         CommittedDeploy {
             deploy_id,
             namespace: commit.namespace,
+            plan,
             preview,
             participants,
             releases: commit.releases,
@@ -227,6 +250,23 @@ impl CommittedDeploy {
 
     pub(super) fn preview(&self) -> &DeployPreview {
         &self.preview
+    }
+
+    pub(super) fn plan(&self) -> &ResolvedPlan {
+        &self.plan
+    }
+
+    pub(super) fn deploy_record(&self) -> &DeployRecord {
+        &self.deploy
+    }
+
+    pub(super) fn set_warnings(&mut self, warnings: Vec<String>) -> Result<()> {
+        self.preview.warnings = warnings;
+        self.deploy.summary_json =
+            serde_json::to_string(&self.preview).map_err(|error| {
+                Error::operation("deploy_apply", format!("serialize preview: {error}"))
+            })?;
+        Ok(())
     }
 }
 

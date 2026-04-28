@@ -88,9 +88,11 @@ async fn handle_connection(
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
 
     let (reply_tx, reply_rx) = oneshot::channel();
+    let (response_flushed_tx, response_flushed_rx) = oneshot::channel();
     tx.send(IncomingCommand {
         request,
         reply: reply_tx,
+        response_flushed: Some(response_flushed_rx),
     })
     .await
     .map_err(|_| {
@@ -108,6 +110,7 @@ async fn handle_connection(
     response_line.push('\n');
     writer.write_all(response_line.as_bytes()).await?;
     writer.shutdown().await?;
+    let _ = response_flushed_tx.send(());
     Ok(())
 }
 

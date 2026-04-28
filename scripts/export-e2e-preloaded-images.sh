@@ -60,6 +60,30 @@ trap 'rm -rf "${tmp_dir}"' EXIT
   done
 } > "${tmp_dir}/built_in_images.toml"
 
+for image in pebble pebble-challtestsrv; do
+  ref="ghcr.io/letsencrypt/${image}:latest"
+  local_ref="ployz-e2e-preload/${image}:latest"
+  tar_path="${tmp_dir}/${image}.tar"
+
+  printf 'preload export start key=%s ref=%s\n' "${image}" "${ref}" >&2
+  docker pull "${ref}" >/dev/null
+  image_id="$(docker image inspect --format '{{.Id}}' "${ref}")"
+  docker tag "${image_id}" "${local_ref}"
+  docker save -o "${tar_path}" "${local_ref}"
+  printf 'preload export complete key=%s tar=%s\n' "${image}" "${tar_path}" >&2
+done
+
+ref="busybox:1.36.1"
+local_ref="ployz-e2e-preload/http-smoke:latest"
+tar_path="${tmp_dir}/http-smoke.tar"
+
+printf 'preload export start key=http-smoke ref=%s\n' "${ref}" >&2
+docker pull "${ref}" >/dev/null
+image_id="$(docker image inspect --format '{{.Id}}' "${ref}")"
+docker tag "${image_id}" "${local_ref}"
+docker save -o "${tar_path}" "${local_ref}"
+printf 'preload export complete key=http-smoke tar=%s\n' "${tar_path}" >&2
+
 rm -f "${OUTPUT_DIR}"/*.tar "${OUTPUT_DIR}/built_in_images.toml"
 mv "${tmp_dir}"/*.tar "${OUTPUT_DIR}/"
 mv "${tmp_dir}/built_in_images.toml" "${OUTPUT_DIR}/built_in_images.toml"

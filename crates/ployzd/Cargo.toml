@@ -13,6 +13,7 @@ ebpf-native = ["ployz-orchestrator/ebpf-native"]
 
 [dependencies]
 ployz-api = { path = "../ployz-api" }
+ployz-cert-backends = { path = "../ployz-cert-backends" }
 ployz-config = { path = "../ployz-config" }
 ployz-corrosion = { path = "../ployz-corrosion" }
 ployz-metrics = { path = "../ployz-metrics" }
@@ -25,6 +26,7 @@ ployz-types = { path = "../ployz-types" }
 ployz-gateway-config = { path = "../ployz-gateway-config" }
 ployz-dns-config = { path = "../ployz-dns-config" }
 ployz-install = { path = "../ployz-install" }
+futures-util = { workspace = true }
 clap = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }

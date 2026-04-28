@@ -10,7 +10,9 @@ use tracing::{debug, info, warn};
 use crate::mesh::driver::WireguardDriver;
 use crate::mesh::peer_state::PeerStateMap;
 use crate::mesh::{DevicePeer, WireGuardDevice};
-use crate::model::{MachineEvent, MachineId, MachineObservation, MachineMembership, PublicKey};
+use crate::model::{
+    MachineEvent, MachineId, MachineMembership, MachineObservation, PublicKey,
+};
 
 const ENDPOINT_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(1);
 const ENDPOINT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
@@ -501,7 +503,7 @@ fn select_current_endpoint(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{MachineLifecycle, OverlayIp};
+    use crate::model::{MachineLifecycle, MachineTopology, OverlayIp};
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
 
@@ -510,6 +512,7 @@ mod tests {
             id: MachineId(id.into()),
             public_key: PublicKey(key),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+            topology: MachineTopology::local(),
             subnet: None,
             control_target: None,
             bridge_ip: None,

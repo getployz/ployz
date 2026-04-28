@@ -69,6 +69,7 @@ pub fn observe_request(request: &str, lane: RequestLane, outcome_ok: bool, durat
 #[must_use]
 pub fn request_name(request: &ployz_api::DaemonRequest) -> &'static str {
     match request {
+        ployz_api::DaemonRequest::Ping => "ping",
         ployz_api::DaemonRequest::Status => "status",
         ployz_api::DaemonRequest::Doctor => "doctor",
         ployz_api::DaemonRequest::DebugTick { .. } => "debug_tick",
@@ -85,6 +86,8 @@ pub fn request_name(request: &ployz_api::DaemonRequest) -> &'static str {
         ployz_api::DaemonRequest::MeshPeerCancelDestroy { .. } => "mesh_peer_cancel_destroy",
         ployz_api::DaemonRequest::MeshPeerExecuteDestroy { .. } => "mesh_peer_execute_destroy",
         ployz_api::DaemonRequest::MachineList => "machine_list",
+        ployz_api::DaemonRequest::MachineRtt => "machine_rtt",
+        ployz_api::DaemonRequest::MeshPeerRttSnapshot => "mesh_peer_rtt_snapshot",
         ployz_api::DaemonRequest::MachineInit { .. } => "machine_init",
         ployz_api::DaemonRequest::MachineAdd { .. } => "machine_add",
         ployz_api::DaemonRequest::MachineActivate { .. } => "machine_activate",
@@ -101,11 +104,22 @@ pub fn request_name(request: &ployz_api::DaemonRequest) -> &'static str {
         ployz_api::DaemonRequest::MeshBootstrap { .. } => "mesh_bootstrap",
         ployz_api::DaemonRequest::MachineTransitionSelf { .. } => "machine_transition_self",
         ployz_api::DaemonRequest::Coord { .. } => "coord",
+        ployz_api::DaemonRequest::AcmeChallengeReady { .. } => "acme_challenge_ready",
         ployz_api::DaemonRequest::MeshSelfRecord => "mesh_self_record",
         ployz_api::DaemonRequest::MeshAccept { .. } => "mesh_accept",
         ployz_api::DaemonRequest::DeployPreview { .. } => "deploy_preview",
         ployz_api::DaemonRequest::DeployApply { .. } => "deploy_apply",
         ployz_api::DaemonRequest::DeployExport { .. } => "deploy_export",
+        ployz_api::DaemonRequest::VolumeZfsInspect { .. } => "volume_zfs_inspect",
+        ployz_api::DaemonRequest::VolumeZfsSnapshot { .. } => "volume_zfs_snapshot",
+        ployz_api::DaemonRequest::VolumeZfsSend { .. } => "volume_zfs_send",
+        ployz_api::DaemonRequest::VolumeZfsPeerSnapshot { .. } => "volume_zfs_peer_snapshot",
+        ployz_api::DaemonRequest::VolumeZfsPeerSnapshotGuid { .. } => {
+            "volume_zfs_peer_snapshot_guid"
+        }
+        ployz_api::DaemonRequest::VolumeZfsPeerStartSend { .. } => "volume_zfs_peer_start_send",
+        ployz_api::DaemonRequest::VolumeZfsTransferGet { .. } => "volume_zfs_transfer_get",
+        ployz_api::DaemonRequest::VolumeZfsTransferList => "volume_zfs_transfer_list",
     }
 }
 
