@@ -2,13 +2,13 @@ use async_trait::async_trait;
 use ployz_types::Result;
 use ployz_types::model::{
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    MachineId, MachineMembership, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
 };
 use ployz_types::spec::Namespace;
 use std::future::Future;
 use tokio::sync::mpsc;
 
-pub type MachineSubscription = (Vec<MachineRecord>, mpsc::Receiver<MachineEvent>);
+pub type MachineSubscription = (Vec<MachineMembership>, mpsc::Receiver<MachineEvent>);
 pub type RoutingInvalidationSubscription = mpsc::Receiver<()>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,11 +41,11 @@ pub trait MachineRegistry: Send + Sync {
         async { Ok(()) }
     }
 
-    fn list_machines(&self) -> impl Future<Output = Result<Vec<MachineRecord>>> + Send + '_;
+    fn list_machines(&self) -> impl Future<Output = Result<Vec<MachineMembership>>> + Send + '_;
 
     fn upsert_self_machine<'a>(
         &'a self,
-        record: &'a MachineRecord,
+        record: &'a MachineMembership,
     ) -> impl Future<Output = Result<()>> + Send + 'a;
 
     fn delete_machine<'a>(

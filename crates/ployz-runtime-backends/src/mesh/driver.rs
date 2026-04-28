@@ -9,7 +9,7 @@ use ployz_orchestrator::mesh::driver::{WireguardBackend, WireguardBackendMode};
 use ployz_orchestrator::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
 use ployz_runtime_api::Identity;
 use ployz_types::Result;
-use ployz_types::model::{MachineRecord, OverlayIp, PublicKey};
+use ployz_types::model::{OverlayIp, PublicKey, WireGuardPeerSpec};
 #[cfg(feature = "docker")]
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
@@ -93,7 +93,7 @@ impl WireguardBackend for DockerWireguardBackend {
         self.inner.down().await
     }
 
-    async fn set_peers(&self, peers: &[MachineRecord]) -> Result<()> {
+    async fn set_peers(&self, peers: &[WireGuardPeerSpec]) -> Result<()> {
         self.inner.set_peers(peers).await
     }
 
@@ -136,7 +136,7 @@ impl WireguardBackend for HostWireguardBackend {
         self.inner.down().await
     }
 
-    async fn set_peers(&self, peers: &[MachineRecord]) -> Result<()> {
+    async fn set_peers(&self, peers: &[WireGuardPeerSpec]) -> Result<()> {
         self.inner.set_peers(peers).await
     }
 

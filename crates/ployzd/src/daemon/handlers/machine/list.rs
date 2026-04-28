@@ -2,7 +2,7 @@ use crate::daemon::DaemonState;
 use ployz_api::{DaemonPayload, DaemonRequest, DaemonResponse, MachineRemovePayload};
 use ployz_store_api::MachineRegistry;
 use ployz_store_api::StoreDriver;
-use ployz_types::model::{MachineId, MachineRecord};
+use ployz_types::model::{MachineId, MachineMembership};
 
 use super::render::{format_lifecycle, format_timestamp, render_machine_list_report};
 use super::types::{MachineListReport, MachineListReportRow};
@@ -110,7 +110,7 @@ impl DaemonState {
 pub(super) async fn find_machine_record(
     store: &StoreDriver,
     machine_id: &MachineId,
-) -> Result<Option<MachineRecord>, String> {
+) -> Result<Option<MachineMembership>, String> {
     let machines = store
         .list_machines()
         .await

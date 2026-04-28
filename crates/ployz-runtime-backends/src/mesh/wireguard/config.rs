@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::{fs, io};
 
 #[cfg(feature = "docker")]
-use crate::model::{MachineRecord, PrivateKey};
+use crate::model::{PrivateKey, WireGuardPeerSpec};
 
 #[cfg(feature = "docker")]
 use super::PERSISTENT_KEEPALIVE_SECS;
@@ -53,9 +53,9 @@ pub struct BridgePeerInfo {
 }
 
 #[cfg(feature = "docker")]
-fn render_peer(buf: &mut String, peer: &MachineRecord) {
+fn render_peer(buf: &mut String, peer: &WireGuardPeerSpec) {
     let _ = writeln!(buf, "[Peer]");
-    let _ = writeln!(buf, "PublicKey = {}", encode_key(&peer.public_key.0));
+    let _ = writeln!(buf, "PublicKey = {}", encode_key(&peer.public_key().0));
     let _ = writeln!(buf, "AllowedIPs = {}", peer.allowed_cidrs().join(", "));
 
     if let Some(endpoint) = peer.endpoints.first() {
@@ -78,7 +78,7 @@ pub fn write_sync_config_with_extra_peers(
     paths: &WgPaths,
     private_key: &PrivateKey,
     listen_port: u16,
-    peers: &[MachineRecord],
+    peers: &[WireGuardPeerSpec],
     extra_peers: &[&BridgePeerInfo],
 ) -> io::Result<()> {
     paths.ensure_dir()?;

@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::mesh::wireguard::MemoryWireGuard;
 use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
-use crate::model::{MachineRecord, OverlayIp, PublicKey};
+use crate::model::{OverlayIp, PublicKey, WireGuardPeerSpec};
 use async_trait::async_trait;
 use std::sync::Arc;
 
@@ -22,7 +22,7 @@ pub trait WireguardBackend: Send + Sync {
 
     async fn up(&self) -> Result<()>;
     async fn down(&self) -> Result<()>;
-    async fn set_peers(&self, peers: &[MachineRecord]) -> Result<()>;
+    async fn set_peers(&self, peers: &[WireGuardPeerSpec]) -> Result<()>;
 
     async fn has_remote_handshake(&self) -> bool {
         true
@@ -100,7 +100,7 @@ impl MeshNetwork for WireguardDriver {
         self.backend.down().await
     }
 
-    async fn set_peers(&self, peers: &[MachineRecord]) -> Result<()> {
+    async fn set_peers(&self, peers: &[WireGuardPeerSpec]) -> Result<()> {
         self.backend.set_peers(peers).await
     }
 
@@ -141,7 +141,7 @@ impl WireguardBackend for MemoryWireguardBackend {
         self.memory.down().await
     }
 
-    async fn set_peers(&self, peers: &[MachineRecord]) -> Result<()> {
+    async fn set_peers(&self, peers: &[WireGuardPeerSpec]) -> Result<()> {
         self.memory.set_peers(peers).await
     }
 

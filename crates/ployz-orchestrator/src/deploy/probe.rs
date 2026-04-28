@@ -1,5 +1,5 @@
 use crate::machine_reachability::{ReachabilityStatus, probe_overlay_ips};
-use crate::model::{MachineId, MachineRecord};
+use crate::model::{MachineId, MachineMembership};
 use std::collections::{BTreeSet, HashMap};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -9,7 +9,7 @@ pub(super) struct ParticipantReachability {
 
 pub(super) async fn probe_participants(
     participants: &BTreeSet<MachineId>,
-    machine_map: &HashMap<MachineId, MachineRecord>,
+    machine_map: &HashMap<MachineId, MachineMembership>,
 ) -> ParticipantReachability {
     let participant_machines: Vec<_> = participants
         .iter()

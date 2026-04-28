@@ -7,7 +7,7 @@ use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_orchestrator::mesh::{DevicePeer, WireGuardDevice};
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 use ployz_store_api::MachineRegistry;
-use ployz_types::model::{MachineId, MachineRecord, OverlayIp, PublicKey};
+use ployz_types::model::{MachineId, MachineMembership, OverlayIp, PublicKey};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -74,8 +74,8 @@ impl DaemonState {
 
 fn build_doctor_payload(
     active: &ActiveMesh,
-    machines: &[MachineRecord],
-    local_record: &MachineRecord,
+    machines: &[MachineMembership],
+    local_record: &MachineMembership,
     device_peers: &[DevicePeer],
     overlay_probe_by_ip: &HashMap<OverlayIp, ProbeState>,
     detected_local_endpoints: &[String],
@@ -245,7 +245,7 @@ fn cause_parts(handshake: HandshakeState, probe: ProbeState) -> (&'static str, &
 }
 
 fn build_participation_rows(
-    machines: &[MachineRecord],
+    machines: &[MachineMembership],
     local_machine_id: &MachineId,
     handshake_by_key: &HashMap<PublicKey, HandshakeState>,
     overlay_probe_by_ip: &HashMap<OverlayIp, ProbeState>,
@@ -253,7 +253,7 @@ fn build_participation_rows(
     let mut rows: Vec<DoctorPeer> = machines
         .iter()
         .filter_map(|machine| {
-            let role = diagnostic_role(machine, local_machine_id)?;
+            let role = diagnostic_role(&machine.placement_candidate(), local_machine_id)?;
             let handshake_state = handshake_by_key
                 .get(&machine.public_key)
                 .copied()
@@ -342,7 +342,7 @@ fn handshake_state_map(device_peers: &[DevicePeer]) -> HashMap<PublicKey, Handsh
 }
 
 async fn probe_overlay_health(
-    machines: &[MachineRecord],
+    machines: &[MachineMembership],
     local_machine_id: &MachineId,
 ) -> HashMap<OverlayIp, ProbeState> {
     let overlay_ips: HashSet<_> = machines
@@ -585,8 +585,8 @@ mod tests {
         id: &str,
         lifecycle: MachineLifecycle,
         public_key: PublicKey,
-    ) -> MachineRecord {
-        MachineRecord {
+    ) -> MachineMembership {
+        MachineMembership {
             id: MachineId(String::from(id)),
             public_key,
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
