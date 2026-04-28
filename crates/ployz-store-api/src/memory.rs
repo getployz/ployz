@@ -100,7 +100,10 @@ impl MemoryStore {
             .retain(|sender| match sender.try_send(event.clone()) {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Closed(_)) => false,
-                Err(mpsc::error::TrySendError::Full(_)) => true,
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    warn!("routing subscriber channel full, closing stale delta stream");
+                    false
+                }
             });
     }
 
@@ -197,6 +200,10 @@ impl MachineRegistry for MemoryStore {
 }
 
 impl RoutingSnapshotReader for MemoryStore {
+    async fn load_routing_state(&self) -> Result<RoutingState> {
+        self.load_routing_state().await
+    }
+
     async fn subscribe_routing_events(&self) -> Result<RoutingSubscription> {
         let mut inner = self.lock_inner();
         let state = Self::routing_state(&inner);
@@ -1044,6 +1051,36 @@ mod tests {
             event,
             Some(RoutingEvent::MachineAdded(MachineMembership { .. }))
         ));
+    }
+
+    #[tokio::test]
+    async fn full_routing_event_channel_closes_subscriber() {
+        let store = MemoryStore::new();
+        let (_state, mut event_rx) = store.subscribe_routing_events().await.expect("subscribe");
+
+        for index in 0..70 {
+            let revision = ServiceRevisionRecord {
+                namespace: Namespace("prod".into()),
+                service: format!("api-{index}"),
+                revision_hash: "rev-1".into(),
+                spec_json: "{}".into(),
+                created_by: MachineId("machine-1".into()),
+                created_at: 1,
+            };
+            store
+                .record_service_revision(&DeployRevisionUpsert { revision })
+                .await
+                .expect("record revision");
+        }
+
+        let mut received = 0;
+        while event_rx.recv().await.is_some() {
+            received += 1;
+        }
+        assert_eq!(
+            received, 64,
+            "full delta channels must close after buffered events instead of silently skipping one"
+        );
     }
 
     #[tokio::test]

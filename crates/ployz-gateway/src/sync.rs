@@ -25,6 +25,10 @@ const MAX_CACHED_CHALLENGES: usize = 10_000;
 // ---------------------------------------------------------------------------
 
 pub trait RoutingSnapshotReader: Send + Sync {
+    fn load_routing_state(
+        &self,
+    ) -> impl Future<Output = Result<RoutingState, GatewayError>> + Send + '_;
+
     fn subscribe_routing_events(
         &self,
     ) -> impl Future<Output = Result<(RoutingState, mpsc::Receiver<RoutingEvent>), GatewayError>>
@@ -63,7 +67,7 @@ pub async fn load_projected_snapshot_from_store<S>(
 where
     S: RoutingSnapshotReader + Send + Sync,
 {
-    let (routing_state, _) = store.subscribe_routing_events().await?;
+    let routing_state = store.load_routing_state().await?;
     let mut projector = GatewayProjector::new(routing_state)
         .map_err(|err| GatewayError::Projection(err.to_string()))?;
     let cert_records = store.list_certificates().await?;
@@ -89,13 +93,13 @@ where
     loop {
         tokio::select! {
             Some(event) = routing_rx.recv() => {
-                apply_and_replace(&mut projector, GatewayProjectionEvent::Routing(event), &snapshot);
+                apply_routing_batch(&mut projector, event, &mut routing_rx, &snapshot);
             }
             Some(event) = cert_rx.recv() => {
-                apply_and_replace(&mut projector, GatewayProjectionEvent::Certificate(event), &snapshot);
+                apply_certificate_batch(&mut projector, event, &mut cert_rx, &snapshot);
             }
             Some(event) = chal_rx.recv() => {
-                apply_and_replace(&mut projector, GatewayProjectionEvent::AcmeChallenge(event), &snapshot);
+                apply_challenge_batch(&mut projector, event, &mut chal_rx, &snapshot);
             }
             else => break,
         }
@@ -113,9 +117,7 @@ fn apply_initial_certificates(projector: &mut GatewayProjector, records: Vec<Cer
         );
     }
     for record in records.into_iter().take(MAX_CACHED_CERTIFICATES) {
-        let _ = projector.apply(GatewayProjectionEvent::Certificate(
-            CertificateEvent::Added(record),
-        ));
+        apply_certificate_event(projector, CertificateEvent::Added(record));
     }
 }
 
@@ -128,23 +130,110 @@ fn apply_initial_challenges(projector: &mut GatewayProjector, records: Vec<AcmeC
         );
     }
     for record in records.into_iter().take(MAX_CACHED_CHALLENGES) {
-        let _ = projector.apply(GatewayProjectionEvent::AcmeChallenge(
-            AcmeChallengeEvent::Added(record),
-        ));
+        apply_challenge_event(projector, AcmeChallengeEvent::Added(record));
     }
 }
 
-fn apply_and_replace(
+fn apply_routing_batch(
     projector: &mut GatewayProjector,
-    event: GatewayProjectionEvent,
+    event: RoutingEvent,
+    routing_rx: &mut mpsc::Receiver<RoutingEvent>,
     snapshot: &SharedSnapshot,
 ) {
+    let mut publish = apply_one(projector, GatewayProjectionEvent::Routing(event));
+    while let Ok(event) = routing_rx.try_recv() {
+        publish |= apply_one(projector, GatewayProjectionEvent::Routing(event));
+    }
+    if publish {
+        replace_snapshot(snapshot, projector.snapshot_value());
+    }
+}
+
+fn apply_certificate_batch(
+    projector: &mut GatewayProjector,
+    event: CertificateEvent,
+    cert_rx: &mut mpsc::Receiver<CertificateEvent>,
+    snapshot: &SharedSnapshot,
+) {
+    let mut publish = apply_certificate_event(projector, event);
+    while let Ok(event) = cert_rx.try_recv() {
+        publish |= apply_certificate_event(projector, event);
+    }
+    if publish {
+        replace_snapshot(snapshot, projector.snapshot_value());
+    }
+}
+
+fn apply_challenge_batch(
+    projector: &mut GatewayProjector,
+    event: AcmeChallengeEvent,
+    chal_rx: &mut mpsc::Receiver<AcmeChallengeEvent>,
+    snapshot: &SharedSnapshot,
+) {
+    let mut publish = apply_challenge_event(projector, event);
+    while let Ok(event) = chal_rx.try_recv() {
+        publish |= apply_challenge_event(projector, event);
+    }
+    if publish {
+        replace_snapshot(snapshot, projector.snapshot_value());
+    }
+}
+
+fn apply_one(projector: &mut GatewayProjector, event: GatewayProjectionEvent) -> bool {
     match projector.apply(event) {
-        Ok(next_snapshot) => replace_snapshot(snapshot, (*next_snapshot).clone()),
-        Err(err) => warn!(
-            ?err,
-            "failed to apply gateway projection event; keeping previous state"
-        ),
+        Ok(()) => true,
+        Err(err) => {
+            warn!(
+                ?err,
+                "failed to apply gateway projection event; keeping previous state"
+            );
+            false
+        }
+    }
+}
+
+fn apply_certificate_event(projector: &mut GatewayProjector, event: CertificateEvent) -> bool {
+    match &event {
+        CertificateEvent::Added(record) | CertificateEvent::Updated(record)
+            if !projector.has_certificate(&record.hostname)
+                && projector.certificate_count() >= MAX_CACHED_CERTIFICATES =>
+        {
+            warn!(
+                hostname = %record.hostname,
+                cached = projector.certificate_count(),
+                cap = MAX_CACHED_CERTIFICATES,
+                "managed-TLS cache is at the certificate cap; dropping new record"
+            );
+            false
+        }
+        CertificateEvent::Added(_)
+        | CertificateEvent::Updated(_)
+        | CertificateEvent::Removed(_) => {
+            apply_one(projector, GatewayProjectionEvent::Certificate(event))
+        }
+    }
+}
+
+fn apply_challenge_event(projector: &mut GatewayProjector, event: AcmeChallengeEvent) -> bool {
+    match &event {
+        AcmeChallengeEvent::Added(record) | AcmeChallengeEvent::Updated(record)
+            if !projector.has_acme_challenge(&record.hostname, &record.token)
+                && projector.acme_challenge_count() >= MAX_CACHED_CHALLENGES =>
+        {
+            warn!(
+                hostname = %record.hostname,
+                token = %record.token,
+                cached = projector.acme_challenge_count(),
+                cap = MAX_CACHED_CHALLENGES,
+                "managed-TLS cache is at the challenge cap; dropping new record"
+            );
+            false
+        }
+        AcmeChallengeEvent::Added(_)
+        | AcmeChallengeEvent::Updated(_)
+        | AcmeChallengeEvent::Removed(_) => {
+            apply_one(projector, GatewayProjectionEvent::AcmeChallenge(event))
+        }
     }
 }
 

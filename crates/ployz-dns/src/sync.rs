@@ -39,6 +39,9 @@ where
 
     while let Some(event) = routing_rx.recv().await {
         apply_routing_event(&mut state, event);
+        while let Ok(event) = routing_rx.try_recv() {
+            apply_routing_event(&mut state, event);
+        }
         replace_dns_snapshot(&state, &snapshot);
     }
 
