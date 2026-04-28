@@ -885,7 +885,7 @@ impl ScenarioRun {
         let stamp = payload_stamp(&repo_root, &self.image_platform, E2E_PAYLOAD_BUILD_PROFILE)?;
         let stamp_path = self.payload_dir.join(PAYLOAD_STAMP_FILE);
         if let Ok(existing) = fs::read_to_string(&stamp_path)
-            && existing == stamp
+            && existing.trim() == stamp
         {
             self.log_progress("build payload manifest complete");
             return Ok(());
