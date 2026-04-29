@@ -1,8 +1,0 @@
-{
-  "version": 3,
-  "sources": ["../index.ts"],
-  "sourceRoot": "dist",
-  "sourcesContent": ["import installScript from \"./ployz.sh\";\n\nfunction response(body: string) {\n  return new Response(body, {\n    headers: {\n      \"content-type\": \"text/plain; charset=utf-8\",\n      \"cache-control\": \"public, max-age=300\",\n      \"x-content-type-options\": \"nosniff\",\n    },\n  });\n}\n\nexport default {\n  fetch(request: Request) {\n    const { pathname } = new URL(request.url);\n\n    if (pathname === \"/\" || pathname === \"/ployz.sh\") {\n      return response(installScript);\n    }\n\n    return new Response(\"Not found\\n\", {\n      status: 404,\n      headers: {\n        \"content-type\": \"text/plain; charset=utf-8\",\n        \"x-content-type-options\": \"nosniff\",\n      },\n    });\n  },\n};\n"],
-  "mappings": ";;;;AAAA,OAAO,mBAAmB;AAE1B,SAAS,SAAS,MAAc;AAC9B,SAAO,IAAI,SAAS,MAAM;AAAA,IACxB,SAAS;AAAA,MACP,gBAAgB;AAAA,MAChB,iBAAiB;AAAA,MACjB,0BAA0B;AAAA,IAC5B;AAAA,EACF,CAAC;AACH;AARS;AAUT,IAAO,gBAAQ;AAAA,EACb,MAAM,SAAkB;AACtB,UAAM,EAAE,SAAS,IAAI,IAAI,IAAI,QAAQ,GAAG;AAExC,QAAI,aAAa,OAAO,aAAa,aAAa;AAChD,aAAO,SAAS,aAAa;AAAA,IAC/B;AAEA,WAAO,IAAI,SAAS,eAAe;AAAA,MACjC,QAAQ;AAAA,MACR,SAAS;AAAA,QACP,gBAAgB;AAAA,QAChB,0BAA0B;AAAA,MAC5B;AAAA,IACF,CAAC;AAAA,EACH;AACF;",
-  "names": []
-}
