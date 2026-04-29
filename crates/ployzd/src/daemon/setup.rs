@@ -4,13 +4,14 @@ use std::path::PathBuf;
 use thiserror::Error;
 use tracing::warn;
 
-use crate::mesh_state::bootstrap::{BootstrapInfo, build_seed_records, resolve_bootstrap_addrs};
+use crate::mesh_state::bootstrap::{
+    BootstrapPeerRecord, BootstrapSeedCacheTask, build_seed_records, load_bootstrap_peer_records,
+    resolve_bootstrap_addrs,
+};
 use crate::mesh_state::network::NetworkConfig;
 use ployz_cert_backends::InstantAcmeIssuerFactory;
 use ployz_config::RuntimeTarget;
-use ployz_corrosion::{
-    config as corrosion_config, corrosion_bootstrap_from_db, peer_records_from_db,
-};
+use ployz_corrosion::config as corrosion_config;
 use ployz_dns_config::DnsConfig;
 use ployz_gateway_config::GatewayConfig;
 use ployz_orchestrator::Mesh;
@@ -57,7 +58,7 @@ pub enum StartMeshError {
 
 struct StartPlan {
     network_dir: PathBuf,
-    bootstrap: Option<BootstrapInfo>,
+    bootstrap_peer_records: Vec<BootstrapPeerRecord>,
     bootstrap_addrs: Vec<String>,
     gateway_ports: Vec<u16>,
     remote_control_bind_addr: SocketAddr,
@@ -102,13 +103,6 @@ impl MeshStartTx {
             Some(_) => plan.gateway_ports.clone(),
             None => Vec::new(),
         };
-        let db_records = peer_records_from_db(&plan.network_dir).unwrap_or_else(|error| {
-            tracing::warn!(
-                ?error,
-                "failed to load corrosion bootstrap peers, continuing without db seeds"
-            );
-            Vec::new()
-        });
         let components = state
             .build_runtime_mesh_components(MeshBuildRequest {
                 identity: &state.identity,
@@ -125,13 +119,11 @@ impl MeshStartTx {
 
         let listen_port = DEFAULT_LISTEN_PORT;
         let seed_records = build_seed_records(
-            &plan.network_dir,
             &state.identity,
             &self.config,
             state.peer_control_target.clone(),
-            plan.bootstrap.as_ref(),
             listen_port,
-            &db_records,
+            &plan.bootstrap_peer_records,
             state.configured_topology.as_ref(),
         )
         .await;
@@ -301,6 +293,11 @@ impl MeshStartTx {
         let dns = std::mem::replace(&mut self.dns, Box::new(NoopRuntimeHandle));
 
         let store_for_ticker = spawn_renewal_ticker.then(|| mesh.store.clone());
+        let bootstrap_seed_cache = Some(BootstrapSeedCacheTask::spawn(
+            NetworkConfig::dir(&state.data_dir, &self.config.name.0),
+            mesh.store.clone(),
+            state.identity.machine_id.clone(),
+        ));
 
         let certificate_renewal = if let Some(store) = store_for_ticker {
             let Some(peer_rpc_port) = peer_rpc_port else {
@@ -350,6 +347,7 @@ impl MeshStartTx {
             gateway,
             dns,
             certificate_renewal,
+            bootstrap_seed_cache,
         });
         Ok(())
     }
@@ -392,7 +390,7 @@ impl DaemonState {
         let config_path = NetworkConfig::path(&self.data_dir, network);
         let net_config = NetworkConfig::load(&config_path)
             .map_err(|error| format!("load network config: {error}"))?;
-        self.start_mesh(net_config, None, MeshStartOptions::default())
+        self.start_mesh(net_config, MeshStartOptions::default())
             .await
             .map_err(|error| error.to_string())
     }
@@ -400,10 +398,9 @@ impl DaemonState {
     pub async fn start_mesh(
         &mut self,
         net_config: NetworkConfig,
-        bootstrap: Option<BootstrapInfo>,
         options: MeshStartOptions,
     ) -> Result<MeshStartSummary, StartMeshError> {
-        let plan = self.plan_mesh_start(&net_config, bootstrap, options)?;
+        let plan = self.plan_mesh_start(&net_config, options)?;
         tracing::info!(
             ?self.runtime_target,
             ?self.service_mode,
@@ -567,19 +564,16 @@ impl DaemonState {
     fn plan_mesh_start(
         &self,
         net_config: &NetworkConfig,
-        bootstrap: Option<BootstrapInfo>,
         _options: MeshStartOptions,
     ) -> Result<StartPlan, StartMeshError> {
         let network_dir = self.network_dir(&net_config.name.0);
-        let fallback_bootstrap_addrs =
-            corrosion_bootstrap_from_db(&network_dir, &self.identity.machine_id)
-                .map_err(StartMeshError::BootstrapResolve)?;
+        let bootstrap_peer_records =
+            load_bootstrap_peer_records(&network_dir).map_err(StartMeshError::BootstrapResolve)?;
         let bootstrap_addrs = resolve_bootstrap_addrs(
-            &bootstrap,
+            &bootstrap_peer_records,
+            &self.identity.machine_id,
             corrosion_config::DEFAULT_GOSSIP_PORT,
-            &fallback_bootstrap_addrs,
-        )
-        .map_err(StartMeshError::BootstrapResolve)?;
+        );
         let gateway_ports = self.gateway_ports()?;
         let remote_control_bind_addr =
             self.remote_control_bind_addr(self.remote_control_port, net_config.overlay_ip);
@@ -611,7 +605,7 @@ impl DaemonState {
 
         Ok(StartPlan {
             network_dir,
-            bootstrap,
+            bootstrap_peer_records,
             bootstrap_addrs,
             gateway_ports,
             remote_control_bind_addr,
@@ -680,9 +674,10 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+    use crate::mesh_state::bootstrap::write_bootstrap_peer_records;
     use ployz_config::{RuntimeTarget, ServiceMode};
     use ployz_runtime_api::Identity;
-    use ployz_types::model::{MachineId, NetworkName};
+    use ployz_types::model::{MachineId, NetworkName, OverlayIp, PublicKey};
 
     #[test]
     fn plan_mesh_start_uses_localhost_for_docker_remote_control() {
@@ -690,7 +685,7 @@ mod tests {
         let config = make_network_config(&state, "alpha");
 
         let plan = state
-            .plan_mesh_start(&config, None, MeshStartOptions::default())
+            .plan_mesh_start(&config, MeshStartOptions::default())
             .expect("plan should succeed");
 
         assert_eq!(
@@ -705,7 +700,7 @@ mod tests {
         let config = make_network_config(&state, "alpha");
 
         let plan = state
-            .plan_mesh_start(&config, None, MeshStartOptions::default())
+            .plan_mesh_start(&config, MeshStartOptions::default())
             .expect("plan should succeed");
 
         assert_eq!(
@@ -719,7 +714,7 @@ mod tests {
         let state = make_test_state("not-a-socket");
         let config = make_network_config(&state, "alpha");
 
-        let error = match state.plan_mesh_start(&config, None, MeshStartOptions::default()) {
+        let error = match state.plan_mesh_start(&config, MeshStartOptions::default()) {
             Ok(_) => panic!("plan should fail"),
             Err(error) => error,
         };
@@ -728,19 +723,49 @@ mod tests {
     }
 
     #[test]
-    fn plan_mesh_start_maps_bootstrap_resolution_failures() {
+    fn plan_mesh_start_maps_corrupt_seed_cache_to_bootstrap_resolution_failure() {
         let state = make_test_state("0.0.0.0:80");
         let config = make_network_config(&state, "alpha");
         let network_dir = state.network_dir(&config.name.0);
-        let db_path = ployz_corrosion::config::Paths::new(&network_dir).db;
-        fs::create_dir_all(&db_path).expect("create invalid db path");
+        fs::create_dir_all(&network_dir).expect("create network dir");
+        fs::write(
+            crate::mesh_state::bootstrap::bootstrap_peers_path(&network_dir),
+            "{not-json",
+        )
+        .expect("write corrupt seed cache");
 
-        let error = match state.plan_mesh_start(&config, None, MeshStartOptions::default()) {
+        let error = match state.plan_mesh_start(&config, MeshStartOptions::default()) {
             Ok(_) => panic!("plan should fail"),
             Err(error) => error,
         };
 
         assert!(matches!(error, StartMeshError::BootstrapResolve(_)));
+    }
+
+    #[test]
+    fn plan_mesh_start_uses_seed_cache_and_ignores_corrosion_db_path() {
+        let state = make_test_state("0.0.0.0:80");
+        let config = make_network_config(&state, "alpha");
+        let network_dir = state.network_dir(&config.name.0);
+        let db_path = ployz_corrosion::config::Paths::new(&network_dir).db;
+        fs::create_dir_all(&db_path).expect("create db path that would break sqlite open");
+        let peer = BootstrapPeerRecord {
+            machine_id: MachineId("peer".into()),
+            public_key: PublicKey([8; 32]),
+            overlay_ip: OverlayIp("fd00::8".parse().expect("valid overlay")),
+            subnet: None,
+            bridge_ip: None,
+            endpoints: vec!["peer:51820".into()],
+        };
+        write_bootstrap_peer_records(&network_dir, std::slice::from_ref(&peer))
+            .expect("write seed cache");
+
+        let plan = state
+            .plan_mesh_start(&config, MeshStartOptions::default())
+            .expect("plan should succeed");
+
+        assert_eq!(plan.bootstrap_peer_records, vec![peer]);
+        assert_eq!(plan.bootstrap_addrs, vec!["[fd00::8]:51001"]);
     }
 
     #[tokio::test]
@@ -749,7 +774,7 @@ mod tests {
         let config = make_network_config(&state, "alpha");
 
         let summary = state
-            .start_mesh(config, None, MeshStartOptions::default())
+            .start_mesh(config, MeshStartOptions::default())
             .await
             .expect("mesh start should succeed");
 
@@ -817,6 +842,7 @@ mod tests {
             return;
         };
 
+        active.stop_bootstrap_seed_cache().await;
         active.mesh.destroy().await.expect("destroy mesh");
     }
 

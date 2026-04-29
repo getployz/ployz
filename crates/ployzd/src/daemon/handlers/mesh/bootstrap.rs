@@ -1,5 +1,7 @@
 use crate::daemon::setup::MeshStartOptions;
-use crate::mesh_state::bootstrap::{BootstrapPeerRecord, write_bootstrap_peer_record};
+use crate::mesh_state::bootstrap::{
+    BootstrapPeerRecord, refresh_bootstrap_peer_records_from_store, write_bootstrap_peer_records,
+};
 use crate::mesh_state::network::NetworkConfig;
 use ployz_api::{
     DaemonPayload, DaemonResponse, MachineTransitionGoal, MeshBootstrapRequest,
@@ -10,7 +12,7 @@ use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
 use ployz_types::model::NetworkLifecycle;
 use ployz_types::model::{JoinResponse, NetworkName};
 
-use super::{DaemonState, bootstrap_info_from_record};
+use super::DaemonState;
 
 impl DaemonState {
     pub(crate) async fn handle_mesh_join(&mut self, token: &str) -> DaemonResponse {
@@ -65,33 +67,23 @@ impl DaemonState {
         }
 
         let network_dir = NetworkConfig::dir(&self.data_dir, network);
-        for peer in &request.bootstrap_peers {
-            let peer_record = BootstrapPeerRecord {
-                machine_id: peer.id.clone(),
-                public_key: peer.public_key.clone(),
-                overlay_ip: peer.overlay_ip,
-                endpoints: peer.endpoints.clone(),
-            };
-            if let Err(error) = write_bootstrap_peer_record(&network_dir, &peer_record) {
-                return self.err(
-                    "IO_ERROR",
-                    format!("failed to persist bootstrap peer '{}': {error}", peer.id),
-                );
-            }
+        let peer_records = request
+            .bootstrap_peers
+            .iter()
+            .map(BootstrapPeerRecord::from_machine_record)
+            .collect::<Vec<_>>();
+        if let Err(error) = write_bootstrap_peer_records(&network_dir, &peer_records) {
+            return self.err(
+                "IO_ERROR",
+                format!("failed to persist bootstrap peers: {error}"),
+            );
         }
 
-        let bootstrap = request
-            .bootstrap_peers
-            .first()
-            .map(bootstrap_info_from_record);
         let options = MeshStartOptions {
-            allow_disconnected_bootstrap: bootstrap.is_some(),
+            allow_disconnected_bootstrap: !request.bootstrap_peers.is_empty(),
         };
         net_config.lifecycle = NetworkLifecycle::Running;
-        match self
-            .start_mesh(net_config.clone(), bootstrap, options)
-            .await
-        {
+        match self.start_mesh(net_config.clone(), options).await {
             Ok(_) => {
                 if let Err(error) = self
                     .transition_local_machine(
@@ -124,6 +116,16 @@ impl DaemonState {
                             record.control_target = Some(control_target);
                         })
                         .await;
+                }
+                if let Some(active) = self.active.as_ref()
+                    && let Err(error) = refresh_bootstrap_peer_records_from_store(
+                        &network_dir,
+                        &active.mesh.store,
+                        &self.identity.machine_id,
+                    )
+                    .await
+                {
+                    tracing::warn!(%error, "failed to refresh bootstrap seed cache after mesh bootstrap");
                 }
                 self.ok(format!(
                     "bootstrapped and started network '{}'",

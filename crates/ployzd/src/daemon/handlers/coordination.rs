@@ -208,6 +208,7 @@ mod tests {
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             certificate_renewal: None,
+            bootstrap_seed_cache: None,
         });
         state
     }

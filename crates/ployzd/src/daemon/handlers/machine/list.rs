@@ -16,6 +16,7 @@ use crate::daemon::handlers::peer_rpc::{
     OverlayRpcExpectOkError, PEER_RPC_DESTRUCTIVE_READ_TIMEOUT,
     overlay_rpc_expect_ok_classified_with_read_timeout,
 };
+use crate::mesh_state::bootstrap::refresh_bootstrap_peer_records_from_store;
 
 impl DaemonState {
     pub(crate) async fn handle_machine_list(&self) -> DaemonResponse {
@@ -212,13 +213,25 @@ impl DaemonState {
         }
 
         match active.mesh.store.delete_machine(&machine_id).await {
-            Ok(()) => self.ok_with_payload(
-                format!("machine '{id}' removed"),
-                Some(DaemonPayload::MachineRemove(MachineRemovePayload {
-                    id: id.to_string(),
-                    force,
-                })),
-            ),
+            Ok(()) => {
+                let network_dir = self.network_dir(&active.config.name.0);
+                if let Err(error) = refresh_bootstrap_peer_records_from_store(
+                    &network_dir,
+                    &active.mesh.store,
+                    &self.identity.machine_id,
+                )
+                .await
+                {
+                    tracing::warn!(%error, "failed to refresh bootstrap seed cache after machine remove");
+                }
+                self.ok_with_payload(
+                    format!("machine '{id}' removed"),
+                    Some(DaemonPayload::MachineRemove(MachineRemovePayload {
+                        id: id.to_string(),
+                        force,
+                    })),
+                )
+            }
             Err(err) => self.err("DELETE_FAILED", format!("failed to remove machine: {err}")),
         }
     }
