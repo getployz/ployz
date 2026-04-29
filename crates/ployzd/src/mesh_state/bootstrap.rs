@@ -167,6 +167,19 @@ pub fn write_bootstrap_peer_records(
     })
 }
 
+pub async fn refresh_bootstrap_peer_records_from_store(
+    network_dir: &Path,
+    store: &StoreDriver,
+    local_machine_id: &MachineId,
+) -> Result<(), String> {
+    let machines = store
+        .list_machines()
+        .await
+        .map_err(|error| format!("list machines for bootstrap seed cache: {error}"))?;
+    let peers = remote_peer_records(machines.iter(), local_machine_id);
+    write_bootstrap_peer_records(network_dir, &peers)
+}
+
 pub fn resolve_bootstrap_addrs(
     peers: &[BootstrapPeerRecord],
     local_machine_id: &MachineId,
@@ -629,6 +642,40 @@ mod tests {
 
         task.shutdown().await;
         assert!(removed_peer);
+        let _ = std::fs::remove_dir_all(&network_dir);
+    }
+
+    #[tokio::test]
+    async fn refresh_bootstrap_peer_records_from_store_rewrites_remote_peers() {
+        let network_dir = temp_network_dir("refresh");
+        let store = StoreDriver::memory();
+        let local = machine_record("local", "fd00::1", vec!["local:51820"]);
+        let peer = machine_record("peer", "fd00::2", vec!["peer:51820"]);
+        store
+            .upsert_self_machine(&local)
+            .await
+            .expect("insert local");
+        store.upsert_self_machine(&peer).await.expect("insert peer");
+
+        refresh_bootstrap_peer_records_from_store(&network_dir, &store, &local.id)
+            .await
+            .expect("refresh cache");
+        let records = load_bootstrap_peer_records(&network_dir).expect("load cache");
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.machine_id.clone())
+                .collect::<Vec<_>>(),
+            vec![peer.id.clone()]
+        );
+
+        store.delete_machine(&peer.id).await.expect("delete peer");
+        refresh_bootstrap_peer_records_from_store(&network_dir, &store, &local.id)
+            .await
+            .expect("refresh cache after delete");
+        let records = load_bootstrap_peer_records(&network_dir).expect("load cache");
+        assert!(records.is_empty());
+
         let _ = std::fs::remove_dir_all(&network_dir);
     }
 }
