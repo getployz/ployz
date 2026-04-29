@@ -1,6 +1,4 @@
-use super::labels::{
-    LABEL_KEY, LABEL_KIND, LABEL_MANAGED, LABEL_PARENT_ID, LEGACY_LABEL_CONFIG_HASH,
-};
+use super::labels::{LABEL_KEY, LABEL_KIND, LABEL_MANAGED, LABEL_PARENT_ID};
 use super::spec::{ObservedContainer, RestartPolicy, RestartPolicyName, RuntimeContainerSpec};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,7 +40,6 @@ impl SpecChange {
 
 /// Compare observed container state against the desired spec.
 ///
-/// Label-only drift (migration from old labels) is treated as InSync.
 /// A non-running container is treated as Missing (needs recreation).
 #[must_use]
 pub fn eval_spec_change(
@@ -150,18 +147,7 @@ pub fn eval_spec_change(
     }
 }
 
-/// Check if the observed container is a legacy container (has old labels
-/// but no new `dev.ployz.key` label). Used for migration-period adoption.
-#[must_use]
-pub fn is_legacy_container(observed: &ObservedContainer) -> bool {
-    let has_new_key = observed.labels.contains_key(LABEL_KEY);
-    let has_legacy = observed.labels.contains_key(LEGACY_LABEL_CONFIG_HASH)
-        || observed.labels.contains_key(LABEL_MANAGED)
-        || observed.labels.contains_key(LABEL_KIND);
-    !has_new_key && (has_legacy || !observed.labels.is_empty())
-}
-
-/// Check if the observed container has the new unified label schema.
+/// Check if the observed container has the unified label schema.
 #[must_use]
 pub fn has_new_labels(observed: &ObservedContainer) -> bool {
     observed.labels.contains_key(LABEL_KEY)
@@ -178,7 +164,6 @@ pub fn parent_id_matches(observed: &ObservedContainer, desired_parent_id: Option
         Some(expected) => observed
             .labels
             .get(LABEL_PARENT_ID)
-            .or_else(|| observed.labels.get(super::labels::LEGACY_LABEL_PARENT_ID))
             .map(|stored| stored == expected)
             .unwrap_or(false),
     }
@@ -491,16 +476,6 @@ mod tests {
         desired.binds = vec!["/host:/container".into()];
         let change = eval_spec_change(Some(&observed), &desired);
         assert!(change.is_in_sync());
-    }
-
-    #[test]
-    fn old_labels_only_treated_as_legacy() {
-        let mut observed = base_observed();
-        observed
-            .labels
-            .insert("ployz.config-hash".into(), "abc".into());
-        assert!(is_legacy_container(&observed));
-        assert!(!has_new_labels(&observed));
     }
 
     #[test]
