@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::future::Future;
+use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -34,18 +35,20 @@ pub async fn run_sync_loop<S>(store: S, snapshot: SharedDnsSnapshot) -> Result<(
 where
     S: DnsStore + Send + Sync + 'static,
 {
-    let (mut state, mut routing_rx) = store.subscribe_routing_events().await?;
-    replace_dns_snapshot(&state, &snapshot);
-
-    while let Some(event) = routing_rx.recv().await {
-        apply_routing_event(&mut state, event);
-        while let Ok(event) = routing_rx.try_recv() {
-            apply_routing_event(&mut state, event);
-        }
+    loop {
+        let (mut state, mut routing_rx) = store.subscribe_routing_events().await?;
         replace_dns_snapshot(&state, &snapshot);
-    }
 
-    Ok(())
+        while let Some(event) = routing_rx.recv().await {
+            apply_routing_event(&mut state, event);
+            while let Ok(event) = routing_rx.try_recv() {
+                apply_routing_event(&mut state, event);
+            }
+            replace_dns_snapshot(&state, &snapshot);
+        }
+        warn!("dns routing event stream closed; resubscribing");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
 }
 
 fn replace_dns_snapshot(state: &ployz_types::model::RoutingState, snapshot: &SharedDnsSnapshot) {

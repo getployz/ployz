@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::time::Duration;
 
 use crate::routes::{GatewayProjectionEvent, GatewayProjector, GatewaySnapshot, ProjectionDelta};
 use ployz_types::model::{
@@ -11,12 +12,7 @@ use tracing::{info, warn};
 use crate::config::GatewayError;
 use crate::snapshot::SharedSnapshot;
 
-/// Paranoia caps on the in-memory mirror of the certificate / ACME challenge
-/// tables. These are not capacity targets — they're a safety belt: if a buggy
-/// upstream loops on challenge issuance or projection feedback ever pushes
-/// records in faster than we expect, the gateway logs and degrades instead of
-/// growing the cache without bound. The current ployz scale runs well under
-/// these limits.
+// Safety belt against runaway upstream growth — not capacity targets.
 const MAX_CACHED_CERTIFICATES: usize = 10_000;
 const MAX_CACHED_CHALLENGES: usize = 10_000;
 
@@ -81,31 +77,43 @@ pub async fn run_sync_loop<S>(store: S, snapshot: SharedSnapshot) -> Result<(), 
 where
     S: RoutingSnapshotReader + Send + Sync + 'static,
 {
-    let (routing_state, mut routing_rx) = store.subscribe_routing_events().await?;
-    let (cert_records, mut cert_rx) = store.subscribe_certificates().await?;
-    let (challenge_records, mut chal_rx) = store.subscribe_acme_challenges().await?;
-    let mut projector = GatewayProjector::new(routing_state)
-        .map_err(|err| GatewayError::Projection(err.to_string()))?;
-    apply_initial_certificates(&mut projector, cert_records);
-    apply_initial_challenges(&mut projector, challenge_records);
-    publish_full_snapshot(&snapshot, projector.snapshot_value());
-
     loop {
-        tokio::select! {
-            Some(event) = routing_rx.recv() => {
-                apply_routing_batch(&mut projector, event, &mut routing_rx, &snapshot);
-            }
-            Some(event) = cert_rx.recv() => {
-                apply_certificate_batch(&mut projector, event, &mut cert_rx, &snapshot);
-            }
-            Some(event) = chal_rx.recv() => {
-                apply_challenge_batch(&mut projector, event, &mut chal_rx, &snapshot);
-            }
-            else => break,
-        }
-    }
+        let (routing_state, mut routing_rx) = store.subscribe_routing_events().await?;
+        let (cert_records, mut cert_rx) = store.subscribe_certificates().await?;
+        let (challenge_records, mut chal_rx) = store.subscribe_acme_challenges().await?;
+        let mut projector = GatewayProjector::new(routing_state)
+            .map_err(|err| GatewayError::Projection(err.to_string()))?;
+        apply_initial_certificates(&mut projector, cert_records);
+        apply_initial_challenges(&mut projector, challenge_records);
+        publish_full_snapshot(&snapshot, projector.snapshot_value());
 
-    Ok(())
+        loop {
+            tokio::select! {
+                event = routing_rx.recv() => {
+                    let Some(event) = event else {
+                        warn!("gateway routing event stream closed; resubscribing");
+                        break;
+                    };
+                    apply_routing_batch(&mut projector, event, &mut routing_rx, &snapshot);
+                }
+                event = cert_rx.recv() => {
+                    let Some(event) = event else {
+                        warn!("gateway certificate event stream closed; resubscribing");
+                        break;
+                    };
+                    apply_certificate_batch(&mut projector, event, &mut cert_rx, &snapshot);
+                }
+                event = chal_rx.recv() => {
+                    let Some(event) = event else {
+                        warn!("gateway ACME challenge event stream closed; resubscribing");
+                        break;
+                    };
+                    apply_challenge_batch(&mut projector, event, &mut chal_rx, &snapshot);
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
 }
 
 fn apply_initial_certificates(projector: &mut GatewayProjector, records: Vec<CertificateRecord>) {

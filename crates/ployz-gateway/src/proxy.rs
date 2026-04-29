@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -8,7 +9,8 @@ use http::Method;
 use pingora::prelude::*;
 use tracing::info;
 
-use crate::snapshot::SharedSnapshot;
+use crate::routes::RouteId;
+use crate::snapshot::{SharedSnapshot, SnapshotState};
 
 // ---------------------------------------------------------------------------
 // GatewayApp — pingora HTTP proxy
@@ -19,7 +21,8 @@ pub struct GatewayApp {
 }
 
 pub struct RequestCtx {
-    route_id: Option<String>,
+    state: Option<Arc<SnapshotState>>,
+    route_id: Option<RouteId>,
     selected_addr: Option<SocketAddr>,
     upstream_host: Option<String>,
     retry_allowed: bool,
@@ -28,9 +31,10 @@ pub struct RequestCtx {
     downstream_scheme: &'static str,
 }
 
-impl Default for RequestCtx {
-    fn default() -> Self {
+impl RequestCtx {
+    fn new() -> Self {
         Self {
+            state: None,
             route_id: None,
             selected_addr: None,
             upstream_host: None,
@@ -54,7 +58,7 @@ impl ProxyHttp for GatewayApp {
     type CTX = RequestCtx;
 
     fn new_ctx(&self) -> Self::CTX {
-        RequestCtx::default()
+        RequestCtx::new()
     }
 
     async fn request_filter(
@@ -80,6 +84,7 @@ impl ProxyHttp for GatewayApp {
             "http"
         };
         let state = self.snapshot.load();
+        ctx.state = Some(Arc::clone(&state));
         if let Some(challenge) = state.match_acme_challenge(host, path) {
             ctx.matched = true;
             ctx.started_at = Some(Instant::now());
@@ -110,14 +115,19 @@ impl ProxyHttp for GatewayApp {
         _session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<Box<HttpPeer>> {
-        let Some(route_id) = ctx.route_id.as_deref() else {
+        let Some(route_id) = ctx.route_id.as_ref() else {
             return Err(Error::explain(
                 ErrorType::HTTPStatus(500),
                 "missing route_id in upstream_peer",
             ));
         };
 
-        let state = self.snapshot.load();
+        let Some(state) = ctx.state.as_ref() else {
+            return Err(Error::explain(
+                ErrorType::HTTPStatus(500),
+                "missing snapshot state in upstream_peer",
+            ));
+        };
         let Some(lb) = state.load_balancers.get(route_id) else {
             return Err(Error::explain(
                 ErrorType::HTTPStatus(503),
@@ -229,12 +239,15 @@ impl ProxyHttp for GatewayApp {
 
     async fn logging(&self, session: &mut Session, e: Option<&Error>, ctx: &mut Self::CTX) {
         let request = session.req_header();
-        let route_id = ctx.route_id.as_deref().unwrap_or("-");
+        let route_id = ctx.route_id.as_ref().map(RouteId::as_str).unwrap_or("-");
 
-        let state = self.snapshot.load();
         let backend_label = ctx
-            .selected_addr
-            .and_then(|addr| state.backend_lookup.get(&addr))
+            .state
+            .as_ref()
+            .and_then(|state| {
+                ctx.selected_addr
+                    .and_then(|addr| state.backend_lookup.get(&addr))
+            })
             .map(|bv| bv.instance_id.0.as_str())
             .unwrap_or("-");
 
@@ -287,7 +300,7 @@ mod tests {
 
     #[test]
     fn request_ctx_defaults_downstream_scheme_to_http() {
-        let ctx = RequestCtx::default();
+        let ctx = RequestCtx::new();
         assert_eq!(ctx.downstream_scheme, "http");
     }
 }

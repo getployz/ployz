@@ -207,7 +207,7 @@ impl RoutingSnapshotReader for MemoryStore {
     async fn subscribe_routing_events(&self) -> Result<RoutingSubscription> {
         let mut inner = self.lock_inner();
         let state = Self::routing_state(&inner);
-        let (sender, receiver) = mpsc::channel(64);
+        let (sender, receiver) = mpsc::channel(1024);
         inner.routing_subscribers.push(sender);
         Ok((state, receiver))
     }
@@ -496,7 +496,7 @@ impl MemoryStore {
             )
             .collect();
 
-        let removed = inner
+        let mut removed = inner
             .service_releases
             .extract_if(|(current_namespace, service), _| {
                 current_namespace == &command.namespace
@@ -506,7 +506,13 @@ impl MemoryStore {
             .collect::<Vec<_>>();
 
         for release in &command.releases {
-            let old = inner.service_releases.insert(
+            let old = removed
+                .iter()
+                .position(|record| {
+                    record.namespace == release.namespace && record.service == release.service
+                })
+                .map(|idx| removed.swap_remove(idx));
+            inner.service_releases.insert(
                 (release.namespace.clone(), release.service.clone()),
                 release.clone(),
             );
@@ -520,11 +526,7 @@ impl MemoryStore {
         }
 
         for record in removed {
-            if !command.releases.iter().any(|release| {
-                release.namespace == record.namespace && release.service == record.service
-            }) {
-                events.push(RoutingEvent::ReleaseRemoved(record));
-            }
+            events.push(RoutingEvent::ReleaseRemoved(record));
         }
 
         for volume in &command.volumes {
@@ -897,6 +899,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn redeploying_existing_service_emits_release_updated() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("prod".into());
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                releases: vec![test_release(&namespace, "api", "rev-old", "deploy-old")],
+                volumes: Vec::new(),
+                deploy: test_deploy(&namespace, "deploy-old"),
+            })
+            .await
+            .expect("seed deploy");
+
+        let (_state, mut event_rx) = store.subscribe_routing_events().await.expect("subscribe");
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                releases: vec![test_release(&namespace, "api", "rev-new", "deploy-new")],
+                volumes: Vec::new(),
+                deploy: test_deploy(&namespace, "deploy-new"),
+            })
+            .await
+            .expect("redeploy");
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("await redeploy event")
+            .expect("event present");
+
+        match event {
+            RoutingEvent::ReleaseUpdated { old, new } => {
+                assert_eq!(old.release.primary_revision_hash, "rev-old");
+                assert_eq!(new.release.primary_revision_hash, "rev-new");
+            }
+            other => panic!(
+                "redeploy of an existing (namespace, service) must emit ReleaseUpdated, got {other:?}"
+            ),
+        }
+    }
+
+    #[tokio::test]
     async fn instance_status_writes_update_routing_snapshot_and_emit_events() {
         let store = MemoryStore::new();
         let namespace = Namespace("prod".into());
@@ -1058,7 +1107,7 @@ mod tests {
         let store = MemoryStore::new();
         let (_state, mut event_rx) = store.subscribe_routing_events().await.expect("subscribe");
 
-        for index in 0..70 {
+        for index in 0..1030 {
             let revision = ServiceRevisionRecord {
                 namespace: Namespace("prod".into()),
                 service: format!("api-{index}"),
@@ -1078,7 +1127,7 @@ mod tests {
             received += 1;
         }
         assert_eq!(
-            received, 64,
+            received, 1024,
             "full delta channels must close after buffered events instead of silently skipping one"
         );
     }
