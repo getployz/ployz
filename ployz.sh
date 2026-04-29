@@ -1050,6 +1050,7 @@ main() {
         "${payload_asset}" \
         "${installed_at}" \
         "${updated_at}"
+      installed=true
       if [[ "${PLOYZ_OUTPUT}" == "json" ]]; then
         json_step "install" "done" "Ployz files are ready" "" "$(json_install_summary_data "${source}" "${version}" "${resolved_runtime}" "${resolved_service_mode}" "${daemon_install_json}")"
       fi
