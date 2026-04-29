@@ -169,7 +169,6 @@ main_version="$(read_version_from_ref "${main_ref}")"
 latest_release_version="$(release_version_from_tag "${previous_tag}")"
 release_pr_number="${PR_NUMBER}"
 target_version=""
-preserve_release_files=0
 existing_release_sha=""
 changed=0
 
@@ -209,14 +208,9 @@ elif remote_release_branch_exists; then
   EXISTING_RELEASE_REF="origin/${RELEASE_BRANCH}"
   existing_release_sha="$(git rev-parse "${EXISTING_RELEASE_REF}")"
   if [[ -n "${release_pr_number}" ]]; then
-    if ! git diff --quiet "${main_ref}" "${EXISTING_RELEASE_REF}" -- "${RELEASE_FILES[@]}"; then
-      preserve_release_files=1
-      target_version="$(read_version_from_ref "${EXISTING_RELEASE_REF}")"
-    else
-      release_version="$(read_version_from_ref "${EXISTING_RELEASE_REF}")"
-      if [[ "${release_version}" != "${main_version}" ]]; then
-        target_version="${release_version}"
-      fi
+    release_version="$(read_version_from_ref "${EXISTING_RELEASE_REF}")"
+    if [[ "${release_version}" != "${main_version}" ]]; then
+      target_version="${release_version}"
     fi
   else
     target_version="$(
@@ -228,9 +222,7 @@ elif remote_release_branch_exists; then
 
   git checkout -B "${RELEASE_BRANCH}" "${main_ref}"
 
-  if [[ -n "${release_pr_number}" && "${preserve_release_files}" == "1" ]]; then
-    git checkout "${EXISTING_RELEASE_REF}" -- "${RELEASE_FILES[@]}"
-  elif [[ -n "${release_pr_number}" && -n "${target_version}" && "${target_version}" != "${main_version}" ]]; then
+  if [[ -n "${release_pr_number}" && -n "${target_version}" && "${target_version}" != "${main_version}" ]]; then
     bash "${ROOT_DIR}/scripts/update-workspace-version.sh" \
       --root "${ROOT_DIR}" \
       --set "${target_version}" >/dev/null
@@ -258,7 +250,7 @@ if [[ -z "${target_version}" ]]; then
   target_version="$(current_workspace_version)"
 fi
 
-if ! git diff --quiet -- "${RELEASE_FILES[@]}"; then
+if ! git diff --quiet HEAD -- "${RELEASE_FILES[@]}"; then
   git add "${RELEASE_FILES[@]}"
   git commit -m "release: v${target_version}"
 fi
