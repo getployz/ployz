@@ -64,6 +64,7 @@ pub(crate) enum Scenario {
     SingleNodeInit,
     MachineAddBasic,
     MachineDrainStandbyActivateCycle,
+    MeshRestartFromSeedCache,
     TwoNodeEqualSplitAddDenied,
     ThreeNodeMajorityAddSucceeds,
     DestroyWithDeadPeer,
@@ -75,10 +76,11 @@ pub(crate) enum Scenario {
 }
 
 impl Scenario {
-    const DEFAULT: [Self; 9] = [
+    const DEFAULT: [Self; 10] = [
         Self::SingleNodeInit,
         Self::MachineAddBasic,
         Self::MachineDrainStandbyActivateCycle,
+        Self::MeshRestartFromSeedCache,
         Self::TwoNodeEqualSplitAddDenied,
         Self::ThreeNodeMajorityAddSucceeds,
         Self::DestroyWithDeadPeer,
@@ -108,6 +110,7 @@ impl Scenario {
             Self::SingleNodeInit
             | Self::MachineAddBasic
             | Self::MachineDrainStandbyActivateCycle
+            | Self::MeshRestartFromSeedCache
             | Self::TwoNodeEqualSplitAddDenied
             | Self::ThreeNodeMajorityAddSucceeds
             | Self::DestroyWithDeadPeer
@@ -128,6 +131,7 @@ impl Scenario {
             Self::SingleNodeInit
             | Self::MachineAddBasic
             | Self::MachineDrainStandbyActivateCycle
+            | Self::MeshRestartFromSeedCache
             | Self::TwoNodeEqualSplitAddDenied
             | Self::ThreeNodeMajorityAddSucceeds
             | Self::DestroyWithDeadPeer
@@ -145,9 +149,9 @@ impl Scenario {
             Self::SingleNodeInit | Self::BridgeForwardSmoke | Self::VolumeSmoke => &["founder"],
             Self::DeploySmoke | Self::ZfsTransferSmoke => &["founder", "peer"],
             Self::MachineAddBasic => &["founder", "joiner"],
-            Self::MachineDrainStandbyActivateCycle | Self::WireguardReconnect => {
-                &["founder", "peer"]
-            }
+            Self::MachineDrainStandbyActivateCycle
+            | Self::MeshRestartFromSeedCache
+            | Self::WireguardReconnect => &["founder", "peer"],
             Self::TwoNodeEqualSplitAddDenied => &["founder", "peer", "target1", "target2"],
             Self::ThreeNodeMajorityAddSucceeds => {
                 &["founder", "peer1", "peer2", "target1", "target2"]
@@ -162,6 +166,7 @@ impl Scenario {
             Self::SingleNodeInit => "single_node_init",
             Self::MachineAddBasic => "machine_add_basic",
             Self::MachineDrainStandbyActivateCycle => "machine_drain_standby_activate_cycle",
+            Self::MeshRestartFromSeedCache => "mesh_restart_from_seed_cache",
             Self::TwoNodeEqualSplitAddDenied => "two_node_equal_split_add_denied",
             Self::ThreeNodeMajorityAddSucceeds => "three_node_majority_add_succeeds",
             Self::DestroyWithDeadPeer => "destroy_with_dead_peer",
@@ -180,6 +185,7 @@ impl Scenario {
             Self::SingleNodeInit
             | Self::MachineAddBasic
             | Self::MachineDrainStandbyActivateCycle
+            | Self::MeshRestartFromSeedCache
             | Self::TwoNodeEqualSplitAddDenied
             | Self::ThreeNodeMajorityAddSucceeds
             | Self::DestroyWithDeadPeer

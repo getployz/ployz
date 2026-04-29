@@ -20,6 +20,7 @@ use super::remote::{
 };
 use super::rollback::rollback_machine_add_target;
 use crate::daemon::handlers::peer_rpc::PEER_RPC_DESTRUCTIVE_READ_TIMEOUT;
+use crate::mesh_state::bootstrap::refresh_bootstrap_peer_records_from_store;
 
 pub(super) async fn run_machine_add_target(
     context: MachineAddContext,
@@ -309,6 +310,15 @@ pub(super) async fn run_machine_add_target(
     }
 
     let _ = operation_store.update_stage(&mut operation, MachineAddStage::Finalized.to_string());
+    if let Err(err) = refresh_bootstrap_peer_records_from_store(
+        &context.network_dir,
+        &context.store,
+        &context.local_machine_id,
+    )
+    .await
+    {
+        tracing::warn!(%target, error = %err, "failed to refresh bootstrap seed cache after machine add");
+    }
     let _ = operation_store.update_status(&mut operation, MachineOperationStatus::Succeeded, None);
     tracing::info!(
         %target,

@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use crate::built_in_images::BuiltInImages;
 use crate::ipc::listener::IncomingCommand;
+use crate::mesh_state::bootstrap::BootstrapSeedCacheTask;
 use crate::mesh_state::network::NetworkConfig;
 use crate::runtime_profile::RuntimeProfile;
 use ipnet::Ipv4Net;
@@ -34,11 +35,18 @@ pub struct ActiveMesh {
     pub gateway: Box<dyn RuntimeHandle>,
     pub dns: Box<dyn RuntimeHandle>,
     pub certificate_renewal: Option<CertificateRenewalTask>,
+    pub bootstrap_seed_cache: Option<BootstrapSeedCacheTask>,
 }
 
 impl ActiveMesh {
     pub async fn stop_certificate_renewal(&mut self) {
         if let Some(task) = self.certificate_renewal.take() {
+            task.shutdown().await;
+        }
+    }
+
+    pub async fn stop_bootstrap_seed_cache(&mut self) {
+        if let Some(task) = self.bootstrap_seed_cache.take() {
             task.shutdown().await;
         }
     }

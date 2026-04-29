@@ -172,6 +172,7 @@ impl DaemonState {
             return self.err("NO_RUNNING_NETWORK", "no mesh running");
         };
         active.stop_certificate_renewal().await;
+        active.stop_bootstrap_seed_cache().await;
         if let Err(error) = active.mesh.destroy().await {
             self.active = Some(active);
             return self.err("NETWORK_STOP_FAILED", format!("mesh stop failed: {error}"));
@@ -521,6 +522,7 @@ impl DaemonState {
             gateway,
             dns,
             mut certificate_renewal,
+            mut bootstrap_seed_cache,
             ..
         } = active;
         let network_name = config.name.0;
@@ -531,6 +533,9 @@ impl DaemonState {
 
         let result = async move {
             if let Some(task) = certificate_renewal.take() {
+                task.shutdown().await;
+            }
+            if let Some(task) = bootstrap_seed_cache.take() {
                 task.shutdown().await;
             }
             if let Err(error) = mesh.destroy_and_wipe_store_data().await {
@@ -588,7 +593,6 @@ impl DaemonState {
         let overlay_ip = running_config.overlay_ip;
         self.start_mesh(
             running_config.clone(),
-            None,
             MeshStartOptions {
                 allow_disconnected_bootstrap,
             },
@@ -634,6 +638,7 @@ impl DaemonState {
             return;
         };
         active.stop_certificate_renewal().await;
+        active.stop_bootstrap_seed_cache().await;
         if let Err(error) = active.mesh.destroy().await {
             warn!(?error, "failed to stop mesh after transition error");
         }
