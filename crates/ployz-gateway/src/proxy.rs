@@ -2,7 +2,6 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use std::time::Instant;
 
-use crate::routes::{match_acme_challenge, match_http_route};
 use async_trait::async_trait;
 use bytes::Bytes;
 use http::Method;
@@ -81,7 +80,7 @@ impl ProxyHttp for GatewayApp {
             "http"
         };
         let state = self.snapshot.load();
-        if let Some(challenge) = match_acme_challenge(&state.snapshot, host, path) {
+        if let Some(challenge) = state.match_acme_challenge(host, path) {
             ctx.matched = true;
             ctx.started_at = Some(Instant::now());
             session
@@ -90,7 +89,7 @@ impl ProxyHttp for GatewayApp {
             return Ok(true);
         }
 
-        let Some(route) = match_http_route(&state.snapshot, host, path) else {
+        let Some(route) = state.match_http_route(host, path) else {
             ctx.matched = false;
             ctx.started_at = Some(Instant::now());
             session.respond_error(404).await?;

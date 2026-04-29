@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use crate::routes::{GatewayProjectionEvent, GatewayProjector, GatewaySnapshot};
+use crate::routes::{GatewayProjectionEvent, GatewayProjector, GatewaySnapshot, ProjectionDelta};
 use ployz_types::model::{
     AcmeChallengeEvent, AcmeChallengeRecord, CertificateEvent, CertificateRecord, RoutingEvent,
     RoutingState,
@@ -88,7 +88,7 @@ where
         .map_err(|err| GatewayError::Projection(err.to_string()))?;
     apply_initial_certificates(&mut projector, cert_records);
     apply_initial_challenges(&mut projector, challenge_records);
-    replace_snapshot(&snapshot, projector.snapshot_value());
+    publish_full_snapshot(&snapshot, projector.snapshot_value());
 
     loop {
         tokio::select! {
@@ -140,12 +140,17 @@ fn apply_routing_batch(
     routing_rx: &mut mpsc::Receiver<RoutingEvent>,
     snapshot: &SharedSnapshot,
 ) {
-    let mut publish = apply_one(projector, GatewayProjectionEvent::Routing(event));
-    while let Ok(event) = routing_rx.try_recv() {
-        publish |= apply_one(projector, GatewayProjectionEvent::Routing(event));
+    let mut deltas = Vec::new();
+    if let Some(delta) = apply_one(projector, GatewayProjectionEvent::Routing(event)) {
+        deltas.push(delta);
     }
-    if publish {
-        replace_snapshot(snapshot, projector.snapshot_value());
+    while let Ok(event) = routing_rx.try_recv() {
+        if let Some(delta) = apply_one(projector, GatewayProjectionEvent::Routing(event)) {
+            deltas.push(delta);
+        }
+    }
+    if !deltas.is_empty() {
+        publish_deltas(snapshot, &deltas);
     }
 }
 
@@ -155,12 +160,17 @@ fn apply_certificate_batch(
     cert_rx: &mut mpsc::Receiver<CertificateEvent>,
     snapshot: &SharedSnapshot,
 ) {
-    let mut publish = apply_certificate_event(projector, event);
-    while let Ok(event) = cert_rx.try_recv() {
-        publish |= apply_certificate_event(projector, event);
+    let mut deltas = Vec::new();
+    if let Some(delta) = apply_certificate_event(projector, event) {
+        deltas.push(delta);
     }
-    if publish {
-        replace_snapshot(snapshot, projector.snapshot_value());
+    while let Ok(event) = cert_rx.try_recv() {
+        if let Some(delta) = apply_certificate_event(projector, event) {
+            deltas.push(delta);
+        }
+    }
+    if !deltas.is_empty() {
+        publish_deltas(snapshot, &deltas);
     }
 }
 
@@ -170,29 +180,41 @@ fn apply_challenge_batch(
     chal_rx: &mut mpsc::Receiver<AcmeChallengeEvent>,
     snapshot: &SharedSnapshot,
 ) {
-    let mut publish = apply_challenge_event(projector, event);
-    while let Ok(event) = chal_rx.try_recv() {
-        publish |= apply_challenge_event(projector, event);
+    let mut deltas = Vec::new();
+    if let Some(delta) = apply_challenge_event(projector, event) {
+        deltas.push(delta);
     }
-    if publish {
-        replace_snapshot(snapshot, projector.snapshot_value());
+    while let Ok(event) = chal_rx.try_recv() {
+        if let Some(delta) = apply_challenge_event(projector, event) {
+            deltas.push(delta);
+        }
+    }
+    if !deltas.is_empty() {
+        publish_deltas(snapshot, &deltas);
     }
 }
 
-fn apply_one(projector: &mut GatewayProjector, event: GatewayProjectionEvent) -> bool {
+fn apply_one(
+    projector: &mut GatewayProjector,
+    event: GatewayProjectionEvent,
+) -> Option<ProjectionDelta> {
     match projector.apply(event) {
-        Ok(()) => true,
+        Ok(ProjectionDelta::Empty) => None,
+        Ok(delta) => Some(delta),
         Err(err) => {
             warn!(
                 ?err,
                 "failed to apply gateway projection event; keeping previous state"
             );
-            false
+            None
         }
     }
 }
 
-fn apply_certificate_event(projector: &mut GatewayProjector, event: CertificateEvent) -> bool {
+fn apply_certificate_event(
+    projector: &mut GatewayProjector,
+    event: CertificateEvent,
+) -> Option<ProjectionDelta> {
     match &event {
         CertificateEvent::Added(record) | CertificateEvent::Updated(record)
             if !projector.has_certificate(&record.hostname)
@@ -204,7 +226,7 @@ fn apply_certificate_event(projector: &mut GatewayProjector, event: CertificateE
                 cap = MAX_CACHED_CERTIFICATES,
                 "managed-TLS cache is at the certificate cap; dropping new record"
             );
-            false
+            None
         }
         CertificateEvent::Added(_)
         | CertificateEvent::Updated(_)
@@ -214,7 +236,10 @@ fn apply_certificate_event(projector: &mut GatewayProjector, event: CertificateE
     }
 }
 
-fn apply_challenge_event(projector: &mut GatewayProjector, event: AcmeChallengeEvent) -> bool {
+fn apply_challenge_event(
+    projector: &mut GatewayProjector,
+    event: AcmeChallengeEvent,
+) -> Option<ProjectionDelta> {
     match &event {
         AcmeChallengeEvent::Added(record) | AcmeChallengeEvent::Updated(record)
             if !projector.has_acme_challenge(&record.hostname, &record.token)
@@ -227,7 +252,7 @@ fn apply_challenge_event(projector: &mut GatewayProjector, event: AcmeChallengeE
                 cap = MAX_CACHED_CHALLENGES,
                 "managed-TLS cache is at the challenge cap; dropping new record"
             );
-            false
+            None
         }
         AcmeChallengeEvent::Added(_)
         | AcmeChallengeEvent::Updated(_)
@@ -237,7 +262,7 @@ fn apply_challenge_event(projector: &mut GatewayProjector, event: AcmeChallengeE
     }
 }
 
-fn replace_snapshot(snapshot: &SharedSnapshot, next_snapshot: GatewaySnapshot) {
+fn publish_full_snapshot(snapshot: &SharedSnapshot, next_snapshot: GatewaySnapshot) {
     let http_routes = next_snapshot.http_routes.len();
     let tcp_routes = next_snapshot.tcp_routes.len();
     let certs = next_snapshot.certificates.len();
@@ -248,6 +273,14 @@ fn replace_snapshot(snapshot: &SharedSnapshot, next_snapshot: GatewaySnapshot) {
         http_routes,
         tcp_routes, certs, challenges, "gateway snapshot refreshed"
     );
+}
+
+fn publish_deltas(snapshot: &SharedSnapshot, deltas: &[ProjectionDelta]) {
+    snapshot.apply_deltas(deltas);
+    let state = snapshot.load();
+    let (http_routes, tcp_routes) = state.route_counts();
+    crate::metrics::update_route_count_values(http_routes, tcp_routes);
+    info!(http_routes, tcp_routes, "gateway snapshot refreshed");
 }
 
 pub fn spawn_sync_thread_with_store<S>(
