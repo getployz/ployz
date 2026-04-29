@@ -226,7 +226,7 @@ impl ScenarioRun {
                 docker_outer_raw(["logs", node.container_name.as_str()]).unwrap_or_default();
             fs::write(
                 logs_dir.join(format!("{}-container.log", node.name)),
-                container_logs.stdout,
+                container_logs.combined(),
             )
             .map_err(|error| {
                 Error::Io(format!(
@@ -319,7 +319,7 @@ impl ScenarioRun {
                     docker_outer_raw(["logs", container_name.as_str()]).unwrap_or_default();
                 fs::write(
                     logs_dir.join(format!("{container_name}.log")),
-                    container_logs.stdout,
+                    container_logs.combined(),
                 )
                 .map_err(|error| {
                     Error::Io(format!("write container log '{container_name}': {error}"))
@@ -346,6 +346,25 @@ impl ScenarioRun {
         self.log_progress(&format!("mesh_init node={node_name} network={network}"));
         self.ssh_expect_ok_name(node_name, &format!("ployzd mesh init {network}"))?;
         self.log_progress(&format!("mesh_init complete node={node_name}"));
+        Ok(())
+    }
+
+    pub(crate) fn mesh_start(&self, node_name: &str, network: &str) -> Result<()> {
+        self.log_progress(&format!("mesh_start node={node_name} network={network}"));
+        self.ssh_expect_ok_name(node_name, &format!("ployzd mesh start {network}"))?;
+        self.log_progress(&format!("mesh_start complete node={node_name}"));
+        Ok(())
+    }
+
+    pub(crate) fn mesh_stop(&self, node_name: &str, force: bool) -> Result<()> {
+        self.log_progress(&format!("mesh_stop node={node_name} force={force}"));
+        let command = if force {
+            "ployzd mesh stop --force"
+        } else {
+            "ployzd mesh stop"
+        };
+        self.ssh_expect_ok_name(node_name, command)?;
+        self.log_progress(&format!("mesh_stop complete node={node_name}"));
         Ok(())
     }
 
@@ -510,6 +529,17 @@ impl ScenarioRun {
 
     pub(crate) fn mesh_destroy(&self, node_name: &str, network: &str) -> Result<()> {
         self.ssh_expect_ok_name(node_name, &format!("ployzd mesh destroy {network}"))?;
+        Ok(())
+    }
+
+    pub(crate) fn hard_reboot_node(&self, node_name: &str) -> Result<()> {
+        let node = self.node(node_name)?.clone();
+        self.log_progress(&format!("hard_reboot start node={node_name}"));
+        docker_outer(["kill", node.container_name.as_str()])?;
+        docker_outer(["start", node.container_name.as_str()])?;
+        self.wait_for_ssh(&node)?;
+        self.wait_for_daemon(&node)?;
+        self.log_progress(&format!("hard_reboot complete node={node_name}"));
         Ok(())
     }
 

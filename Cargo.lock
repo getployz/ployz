@@ -3112,7 +3112,6 @@ dependencies = [
  "ployz-store-api",
  "ployz-types",
  "reqwest",
- "rusqlite",
  "serde",
  "serde_json",
  "strum 0.26.3",

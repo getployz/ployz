@@ -19,7 +19,34 @@ printf '%s\n' "${PLOYZ_E2E_SSH_AUTHORIZED_KEY}" >/root/.ssh/authorized_keys
 chmod 600 /root/.ssh/authorized_keys
 
 install -d -m 755 /run/sshd /var/lib/ployz
+
+stale_process_found=0
+for process_name in \
+  dockerd \
+  containerd \
+  docker-proxy \
+  ployzd \
+  corrosion \
+  ployz-dns \
+  ployz-gateway \
+  sshd
+do
+  if pgrep -x "${process_name}" >/dev/null 2>&1; then
+    stale_process_found=1
+    pkill -9 -x "${process_name}" >/dev/null 2>&1 || true
+  fi
+done
+if pgrep -f '^containerd-shim' >/dev/null 2>&1; then
+  stale_process_found=1
+  pkill -9 -f '^containerd-shim' >/dev/null 2>&1 || true
+fi
+if [[ "${stale_process_found}" -eq 1 ]]; then
+  echo "ployz-e2e cleaned stale processes from previous container start"
+  sleep 0.2
+fi
+
 rm -f /var/run/docker.sock /run/docker.sock /run/docker.pid
+rm -rf /var/run/docker/containerd /run/docker/containerd
 docker_storage_driver="${PLOYZ_E2E_DOCKER_STORAGE_DRIVER:-vfs}"
 echo "ployz-e2e dockerd storage driver: ${docker_storage_driver}"
 /usr/local/bin/e2e-dind.sh \
