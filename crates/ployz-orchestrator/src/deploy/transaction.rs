@@ -262,10 +262,9 @@ impl CommittedDeploy {
 
     pub(super) fn set_warnings(&mut self, warnings: Vec<String>) -> Result<()> {
         self.preview.warnings = warnings;
-        self.deploy.summary_json =
-            serde_json::to_string(&self.preview).map_err(|error| {
-                Error::operation("deploy_apply", format!("serialize preview: {error}"))
-            })?;
+        self.deploy.summary_json = serde_json::to_string(&self.preview).map_err(|error| {
+            Error::operation("deploy_apply", format!("serialize preview: {error}"))
+        })?;
         Ok(())
     }
 }

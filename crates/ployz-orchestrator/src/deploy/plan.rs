@@ -451,9 +451,9 @@ pub(super) fn desired_slots(
                         {
                             return false;
                         }
-                        machine_map
-                            .get(machine_id)
-                            .is_some_and(|record| can_keep_existing_slot(&record.placement_candidate()))
+                        machine_map.get(machine_id).is_some_and(|record| {
+                            can_keep_existing_slot(&record.placement_candidate())
+                        })
                     })
                     .unwrap_or_else(|| {
                         pinned_machine.cloned().unwrap_or_else(|| {

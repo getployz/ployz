@@ -15,7 +15,9 @@ use tracing::{error, info, warn};
 
 use crate::config::{GatewayConfig, GatewayError};
 use crate::proxy::GatewayApp;
-use crate::routes::{GatewaySnapshot, ProjectedTlsMaterial};
+use crate::routes::GatewaySnapshot;
+#[cfg(test)]
+use crate::routes::ProjectedTlsMaterial;
 use crate::snapshot::SharedSnapshot;
 use crate::sync::load_projected_snapshot_from_store;
 
@@ -30,12 +32,14 @@ const STORE_READY_POLL: Duration = Duration::from_millis(250);
 /// SNI -> snapshot lookup result. PEM parsing happens at projection time, so
 /// this enum no longer carries parse-error variants — malformed material never
 /// reaches the handshake path.
+#[cfg(test)]
 pub(crate) enum TlsResolution {
     Ready(Arc<ProjectedTlsMaterial>),
     MissingSni,
     HostnameMiss(String),
 }
 
+#[cfg(test)]
 pub(crate) fn resolve_tls_material(
     snapshot: &GatewaySnapshot,
     server_name: Option<&str>,
@@ -68,17 +72,19 @@ impl TlsAccept for ManagedTlsCallbacks {
     async fn certificate_callback(&self, ssl: &mut TlsRef) -> () {
         let state = self.shared_snapshot.load();
         let server_name = ssl.servername(ssl::NameType::HOST_NAME);
-        let material = match resolve_tls_material(&state.snapshot, server_name) {
-            TlsResolution::Ready(material) => material,
-            TlsResolution::MissingSni => {
+        let material = match server_name {
+            Some(server_name) => match state.certificate(server_name) {
+                Some(certificate) => Arc::clone(&certificate.tls),
+                None => {
+                    warn!(
+                        hostname = crate::routes::normalize_request_host(server_name),
+                        "managed TLS certificate was not found for SNI hostname"
+                    );
+                    return;
+                }
+            },
+            None => {
                 warn!("managed TLS handshake did not include SNI");
-                return;
-            }
-            TlsResolution::HostnameMiss(hostname) => {
-                warn!(
-                    hostname = hostname,
-                    "managed TLS certificate was not found for SNI hostname"
-                );
                 return;
             }
         };
@@ -341,7 +347,7 @@ fn gateway_tls_listener(config: &GatewayConfig) -> Option<GatewayTlsListener<'_>
 mod tests {
     use super::{EmbeddedShutdownWatch, run_server};
     use crate::SharedSnapshot;
-    use crate::routes::{BackendView, GatewaySnapshot, HttpRouteView};
+    use crate::routes::{BackendView, GatewaySnapshot, HttpRouteView, RouteId, ServiceKey};
     use pingora::prelude::Opt;
     use ployz_types::model::{InstanceId, MachineId, MachineTopology};
     use ployz_types::spec::Namespace;
@@ -365,7 +371,10 @@ mod tests {
 
         let snapshot = GatewaySnapshot {
             http_routes: vec![HttpRouteView {
-                route_id: "http:prod:web:0".into(),
+                route_id: RouteId::http(
+                    &ServiceKey::new(Namespace("prod".into()), "web".into()),
+                    0,
+                ),
                 namespace: Namespace("prod".into()),
                 service: "web".into(),
                 revision_hash: "rev-1".into(),
@@ -639,7 +648,10 @@ mod tests {
     fn gateway_snapshot(upstream_addr: SocketAddr) -> GatewaySnapshot {
         GatewaySnapshot {
             http_routes: vec![HttpRouteView {
-                route_id: "http:prod:web:0".into(),
+                route_id: RouteId::http(
+                    &ServiceKey::new(Namespace("prod".into()), "web".into()),
+                    0,
+                ),
                 namespace: Namespace("prod".into()),
                 service: "web".into(),
                 revision_hash: "rev-1".into(),

@@ -312,10 +312,7 @@ impl MeshNetwork for HostWireGuard {
     }
 
     async fn set_peers(&self, peers: &[WireGuardPeerSpec]) -> Result<()> {
-        let desired: Vec<Peer> = peers
-            .iter()
-            .map(spec_to_peer)
-            .collect::<Result<Vec<_>>>()?;
+        let desired: Vec<Peer> = peers.iter().map(spec_to_peer).collect::<Result<Vec<_>>>()?;
 
         let backend = self.lock_backend();
 

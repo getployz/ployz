@@ -1,7 +1,7 @@
 use crate::mesh::driver::WireguardDriver;
 use crate::mesh::peer_state::{PeerStateMap, sync_peers};
 use crate::mesh::tasks::EndpointSelectionMap;
-use crate::model::{MachineEvent, MachineId, MachineObservation, MachineMembership};
+use crate::model::{MachineEvent, MachineId, MachineMembership, MachineObservation};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;

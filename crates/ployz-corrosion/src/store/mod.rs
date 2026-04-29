@@ -13,7 +13,7 @@ use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
     InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineMembership, OverlayIp,
-    RoutingState, ServiceReleaseRecord, VolumeRecord,
+    RoutingEvent, RoutingState, ServiceReleaseRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -111,8 +111,12 @@ impl CorrosionStore {
 
     pub async fn subscribe_routing_state(
         &self,
-    ) -> Result<(RoutingState, mpsc::Receiver<RoutingState>)> {
-        workflows::routing_state::subscribe_routing_state_inner(&self.client).await
+    ) -> Result<(RoutingState, mpsc::Receiver<RoutingEvent>)> {
+        workflows::routing_state::subscribe_routing_events(&self.client).await
+    }
+
+    pub async fn load_routing_state(&self) -> Result<RoutingState> {
+        workflows::routing_state::load_routing_state(&self.client).await
     }
 }
 
@@ -274,8 +278,10 @@ impl RoutingSnapshotReader for CorrosionStore {
         workflows::routing_state::load_routing_state(&self.client).await
     }
 
-    async fn subscribe_routing_invalidations(&self) -> Result<mpsc::Receiver<()>> {
-        workflows::routing_state::subscribe_routing_invalidations(&self.client).await
+    async fn subscribe_routing_events(
+        &self,
+    ) -> Result<(RoutingState, mpsc::Receiver<RoutingEvent>)> {
+        workflows::routing_state::subscribe_routing_events(&self.client).await
     }
 }
 

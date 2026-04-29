@@ -1,7 +1,7 @@
 use super::execute::{SessionSet, apply_with_initial_plan, ensure_plan_stable, run_phase_startup};
-use super::probe::NoopParticipantProbe;
 use super::plan::{deployable_machines, desired_slots, resolve_plan};
 use super::preview;
+use super::probe::NoopParticipantProbe;
 use super::transaction::PreparedDeploy;
 use crate::deploy::session::{DeploySession, DeploySessionFactory, StartCandidateRequest};
 use crate::error::Result;
@@ -16,8 +16,8 @@ use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{
     CertificateStore, DeployCommit, DeployRecordUpdate, DeployRepository, DeployRevisionUpsert,
     DeploySnapshot, InstanceStatusRepository, InviteRepository, MachineRegistry,
-    MachineSubscription, RoutingInvalidationSubscription, RoutingSnapshotReader, StoreBackend,
-    StoreDriver, StoreRuntimeControl,
+    MachineSubscription, RoutingSnapshotReader, RoutingSubscription, StoreBackend, StoreDriver,
+    StoreRuntimeControl,
 };
 use ployz_types::Result as PloyzResult;
 use ployz_types::spec::{
@@ -2097,10 +2097,8 @@ impl StoreBackend for CountingBackend {
         self.store.load_routing_state().await
     }
 
-    async fn subscribe_routing_invalidations(
-        &self,
-    ) -> PloyzResult<RoutingInvalidationSubscription> {
-        self.store.subscribe_routing_invalidations().await
+    async fn subscribe_routing_events(&self) -> PloyzResult<RoutingSubscription> {
+        self.store.subscribe_routing_events().await
     }
 
     async fn get_acme_account(&self, issuer_url: &str) -> PloyzResult<Option<AcmeAccountRecord>> {

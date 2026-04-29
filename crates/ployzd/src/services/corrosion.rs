@@ -23,7 +23,7 @@ use ployz_types::Result;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
     InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineMembership, OverlayIp,
-    RoutingState, ServiceReleaseRecord, VolumeRecord,
+    RoutingEvent, RoutingState, ServiceReleaseRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
@@ -218,8 +218,10 @@ where
         self.store.load_routing_state().await
     }
 
-    async fn subscribe_routing_invalidations(&self) -> Result<mpsc::Receiver<()>> {
-        self.store.subscribe_routing_invalidations().await
+    async fn subscribe_routing_events(
+        &self,
+    ) -> Result<(RoutingState, mpsc::Receiver<RoutingEvent>)> {
+        self.store.subscribe_routing_events().await
     }
 
     async fn list_deploy_releases(

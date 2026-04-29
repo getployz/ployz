@@ -350,8 +350,8 @@ impl<R: ShellRunner> ZfsDriver<R> {
     }
 
     async fn create_dataset(&self, spec: &DatasetSpec) -> Result<()> {
-        let requested_bytes = parse_quota_bytes(&spec.quota)
-            .map_err(|err| Error::operation("zfs_quota", err))?;
+        let requested_bytes =
+            parse_quota_bytes(&spec.quota).map_err(|err| Error::operation("zfs_quota", err))?;
         self.check_overcommit(&spec.dataset, requested_bytes)
             .await?;
 
@@ -730,7 +730,10 @@ mod tests {
 
         let calls = fake.calls();
         assert_eq!(calls.len(), 3);
-        assert_eq!(calls[2], ["stat", "-c", "%a:%u:%g", "/tank/ployz/prod/data"]);
+        assert_eq!(
+            calls[2],
+            ["stat", "-c", "%a:%u:%g", "/tank/ployz/prod/data"]
+        );
     }
 
     #[tokio::test]
@@ -749,7 +752,10 @@ mod tests {
         driver.ensure(&spec()).await.expect("ensure");
 
         let calls = fake.calls();
-        assert_eq!(calls[2], ["stat", "-c", "%a:%u:%g", "/tank/ployz/prod/data"]);
+        assert_eq!(
+            calls[2],
+            ["stat", "-c", "%a:%u:%g", "/tank/ployz/prod/data"]
+        );
         assert_eq!(calls[3], ["chmod", "0750", "/tank/ployz/prod/data"]);
         assert_eq!(calls[4], ["chown", "999:999", "/tank/ployz/prod/data"]);
     }
@@ -805,7 +811,10 @@ mod tests {
 
         let calls = fake.calls();
         assert_eq!(calls[4], ["zfs", "set", "quota=2G", "tank/ployz/prod/data"]);
-        assert_eq!(calls[5], ["stat", "-c", "%a:%u:%g", "/tank/ployz/prod/data"]);
+        assert_eq!(
+            calls[5],
+            ["stat", "-c", "%a:%u:%g", "/tank/ployz/prod/data"]
+        );
     }
 
     #[tokio::test]

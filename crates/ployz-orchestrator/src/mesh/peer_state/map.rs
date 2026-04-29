@@ -1,6 +1,6 @@
 use tokio::time::Instant;
 
-use crate::model::{MachineEvent, MachineId, MachineObservation, MachineMembership};
+use crate::model::{MachineEvent, MachineId, MachineMembership, MachineObservation};
 
 use super::peer::PeerState;
 
