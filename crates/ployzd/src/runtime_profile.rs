@@ -16,6 +16,7 @@ use ployz_runtime_api::NamespaceLockManager;
 use ployz_runtime_backends::deploy::remote::{RemoteControlHandle, start_remote_control_listener};
 use ployz_runtime_backends::mesh::driver as mesh_backends;
 use ployz_runtime_backends::network::docker_bridge_network;
+use ployz_runtime_backends::storage::{TokioShellRunner, ZfsDriver};
 use ployz_store_api::StoreDriver;
 use ployz_types::model::{MachineId, OverlayIp};
 
@@ -206,6 +207,7 @@ impl RuntimeProfile {
         machine_id: MachineId,
         overlay_network_name: Option<String>,
         overlay_dns_server: Option<Ipv4Addr>,
+        storage_driver: Option<std::sync::Arc<ZfsDriver<TokioShellRunner>>>,
     ) -> Result<RemoteControlHandle, String> {
         if self.is_memory_test() {
             return Ok(RemoteControlHandle::noop());
@@ -217,6 +219,7 @@ impl RuntimeProfile {
             machine_id,
             overlay_network_name,
             overlay_dns_server,
+            storage_driver,
         )
         .await
         .map_err(|error| error.to_string())

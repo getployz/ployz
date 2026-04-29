@@ -15,7 +15,7 @@ use defguard_wireguard_rs::{InterfaceConfiguration, WGApi, WireguardInterfaceApi
 
 use crate::error::{Error, Result};
 use crate::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
-use crate::model::{MachineRecord, OverlayIp, PrivateKey, PublicKey};
+use crate::model::{OverlayIp, PrivateKey, PublicKey, WireGuardPeerSpec};
 
 use super::config::encode_key;
 
@@ -100,10 +100,10 @@ impl HostWireGuard {
     }
 }
 
-fn machine_to_peer(record: &MachineRecord) -> Result<Peer> {
-    let key = Key::new(record.public_key.0);
+fn spec_to_peer(spec: &WireGuardPeerSpec) -> Result<Peer> {
+    let key = Key::new(spec.public_key().0);
 
-    let allowed_ips: Vec<IpAddrMask> = record
+    let allowed_ips: Vec<IpAddrMask> = spec
         .allowed_cidrs()
         .iter()
         .map(|cidr| {
@@ -112,7 +112,7 @@ fn machine_to_peer(record: &MachineRecord) -> Result<Peer> {
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let endpoint: Option<SocketAddr> = record.endpoints.first().and_then(|ep| ep.parse().ok());
+    let endpoint: Option<SocketAddr> = spec.endpoints.first().and_then(|ep| ep.parse().ok());
 
     let mut peer = Peer::new(key);
     peer.allowed_ips = allowed_ips;
@@ -311,11 +311,8 @@ impl MeshNetwork for HostWireGuard {
         Ok(())
     }
 
-    async fn set_peers(&self, peers: &[MachineRecord]) -> Result<()> {
-        let desired: Vec<Peer> = peers
-            .iter()
-            .map(machine_to_peer)
-            .collect::<Result<Vec<_>>>()?;
+    async fn set_peers(&self, peers: &[WireGuardPeerSpec]) -> Result<()> {
+        let desired: Vec<Peer> = peers.iter().map(spec_to_peer).collect::<Result<Vec<_>>>()?;
 
         let backend = self.lock_backend();
 

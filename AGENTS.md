@@ -6,6 +6,9 @@
 - This repo's focus is the orchestrator core, daemon, runtime model, and SDK
   and API surface. Future cloud products are downstream consumers of that core,
   not the source of truth for it.
+- Treat new feature work as greenfield: do not add backwards-compatibility
+  shims, legacy decode paths, or compatibility aliases unless explicitly
+  requested for a concrete rollout need.
 
 # Architecture Intent
 
@@ -50,6 +53,36 @@
   and live observations rather than collapsing them into one derived field.
 - Background tasks may publish explicit events or observations, but they should
   not silently rewrite cluster truth.
+
+# Failure Audience Rule
+
+Every operation has an audience. A failure is only "loud" if it lands on
+someone who can act on it. It is never acceptable for a failure to have no
+audience — that is the definition of silent degradation.
+
+Three categories, each with a different audience and a different shape:
+
+- **Foreground** (RPC handler, CLI command, deploy commit): a synchronous
+  caller is waiting. Audience is the caller. Propagate `Result` outward; do
+  not log-and-continue, do not `let _ = ...` on a meaningful Result.
+- **Background-with-consumer** (snapshot reload, subscription, projection):
+  another component reads the output. Audience is the next read.
+  Failure must annotate the output with explicit health state (e.g.
+  `SnapshotHealth::Stale { since, last_error, consecutive_failures }`),
+  preserve the last good value, and let the consumer pick policy
+  (serve stale with a header, refuse past a threshold, etc).
+  Never silently keep serving stale data as if it were fresh.
+- **Background-autonomous** (cert renewal, cleanup, finalization): no direct
+  consumer. Audience is the operator. Failure must preserve prior state,
+  emit an explicit observation, retry with backoff, and escalate to an
+  operator-visible status surface (`ployz status`, metrics, telemetry)
+  after N failures. Fire-and-forget `tokio::spawn` without a supervisor
+  is a bug.
+
+Corollary: stale-state-served-silently is the worst class of failure in this
+codebase, because the daemon thinks it is fine, the operator sees no errors,
+and the data plane is wrong. Always model freshness explicitly when a
+background loop is the source of truth.
 
 # Defensive Rust Rules
 

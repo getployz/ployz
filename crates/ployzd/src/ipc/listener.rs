@@ -9,6 +9,7 @@ use tracing::{info, warn};
 pub struct IncomingCommand {
     pub request: DaemonRequest,
     pub reply: oneshot::Sender<DaemonResponse>,
+    pub response_flushed: Option<oneshot::Receiver<()>>,
 }
 
 /// Listen on a Unix socket and forward incoming requests as IncomingCommand.
@@ -64,6 +65,7 @@ async fn handle_connection(
     let cmd = IncomingCommand {
         request,
         reply: reply_tx,
+        response_flushed: None,
     };
 
     tx.send(cmd).await.map_err(|_| {

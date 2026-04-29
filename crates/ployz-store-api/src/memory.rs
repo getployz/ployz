@@ -1,12 +1,16 @@
 use crate::{
-    DeployStore, InviteStore, MachineStore, RoutingInvalidationSubscription, RoutingStore,
-    StoreRuntimeControl, SyncProbe, SyncStatus,
+    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
+    DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
+    InstanceStatusRepository, InviteRepository, MachineRegistry, RoutingSnapshotReader,
+    RoutingSubscription, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
-    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeRecord, CertificateEvent,
+    CertificateRecord, DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord,
+    MachineEvent, MachineId, MachineMembership, RoutingEvent, RoutingState, ServiceReleaseRecord,
+    ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::collections::{HashMap, HashSet};
@@ -20,14 +24,20 @@ pub struct MemoryStore {
 }
 
 struct StoreInner {
-    machines: HashMap<MachineId, MachineRecord>,
+    machines: HashMap<MachineId, MachineMembership>,
     machine_subscribers: Vec<mpsc::Sender<MachineEvent>>,
-    routing_subscribers: Vec<mpsc::Sender<()>>,
+    routing_subscribers: Vec<mpsc::Sender<RoutingEvent>>,
     invites: HashMap<String, InviteRecord>,
     service_revisions: HashMap<(Namespace, String, String), ServiceRevisionRecord>,
     service_releases: HashMap<(Namespace, String), ServiceReleaseRecord>,
+    volumes: HashMap<(Namespace, String), VolumeRecord>,
     instance_status: HashMap<InstanceId, InstanceStatusRecord>,
     deploys: HashMap<DeployId, DeployRecord>,
+    acme_accounts: HashMap<String, AcmeAccountRecord>,
+    certificates: HashMap<String, CertificateRecord>,
+    certificate_subscribers: Vec<mpsc::Sender<CertificateEvent>>,
+    acme_challenges: HashMap<(String, String), AcmeChallengeRecord>,
+    acme_challenge_subscribers: Vec<mpsc::Sender<AcmeChallengeEvent>>,
     sync_status: SyncStatus,
 }
 
@@ -48,8 +58,14 @@ impl MemoryStore {
                 invites: HashMap::new(),
                 service_revisions: HashMap::new(),
                 service_releases: HashMap::new(),
+                volumes: HashMap::new(),
                 instance_status: HashMap::new(),
                 deploys: HashMap::new(),
+                acme_accounts: HashMap::new(),
+                certificates: HashMap::new(),
+                certificate_subscribers: Vec::new(),
+                acme_challenges: HashMap::new(),
+                acme_challenge_subscribers: Vec::new(),
                 sync_status: SyncStatus::Synced,
             }),
         }
@@ -78,13 +94,56 @@ impl MemoryStore {
             });
     }
 
-    fn broadcast_routing_refresh(inner: &mut StoreInner) {
+    fn broadcast_routing_event(inner: &mut StoreInner, event: RoutingEvent) {
         inner
             .routing_subscribers
-            .retain(|sender| match sender.try_send(()) {
+            .retain(|sender| match sender.try_send(event.clone()) {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Closed(_)) => false,
-                Err(mpsc::error::TrySendError::Full(_)) => true,
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    warn!("routing subscriber channel full, closing stale delta stream");
+                    false
+                }
+            });
+    }
+
+    fn routing_state(inner: &StoreInner) -> RoutingState {
+        RoutingState {
+            machines: inner.machines.values().cloned().collect(),
+            revisions: inner.service_revisions.values().cloned().collect(),
+            releases: inner.service_releases.values().cloned().collect(),
+            instances: inner.instance_status.values().cloned().collect(),
+        }
+    }
+
+    pub async fn load_routing_state(&self) -> Result<RoutingState> {
+        let inner = self.lock_inner();
+        Ok(Self::routing_state(&inner))
+    }
+
+    fn broadcast_certificate(inner: &mut StoreInner, event: CertificateEvent) {
+        inner
+            .certificate_subscribers
+            .retain(|sender| match sender.try_send(event.clone()) {
+                Ok(()) => true,
+                Err(mpsc::error::TrySendError::Closed(_)) => false,
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    warn!("certificate subscriber channel full, event dropped");
+                    true
+                }
+            });
+    }
+
+    fn broadcast_acme_challenge(inner: &mut StoreInner, event: AcmeChallengeEvent) {
+        inner
+            .acme_challenge_subscribers
+            .retain(|sender| match sender.try_send(event.clone()) {
+                Ok(()) => true,
+                Err(mpsc::error::TrySendError::Closed(_)) => false,
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    warn!("acme challenge subscriber channel full, event dropped");
+                    true
+                }
             });
     }
 }
@@ -95,29 +154,38 @@ impl SyncProbe for MemoryStore {
     }
 }
 
-impl MachineStore for MemoryStore {
-    async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
+impl MachineRegistry for MemoryStore {
+    async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
         let inner = self.lock_inner();
         Ok(inner.machines.values().cloned().collect())
     }
 
-    async fn upsert_self_machine(&self, record: &MachineRecord) -> Result<()> {
+    async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()> {
         let mut inner = self.lock_inner();
         let is_update = inner.machines.contains_key(&record.id);
-        inner.machines.insert(record.id.clone(), record.clone());
-        let event = if is_update {
+        let old = inner.machines.insert(record.id.clone(), record.clone());
+        let machine_event = if is_update {
             MachineEvent::Updated(record.clone())
         } else {
             MachineEvent::Added(record.clone())
         };
-        Self::broadcast_machine(&mut inner, event);
+        let routing_event = match old {
+            Some(old) => RoutingEvent::MachineUpdated {
+                old,
+                new: record.clone(),
+            },
+            None => RoutingEvent::MachineAdded(record.clone()),
+        };
+        Self::broadcast_machine(&mut inner, machine_event);
+        Self::broadcast_routing_event(&mut inner, routing_event);
         Ok(())
     }
 
     async fn delete_machine(&self, id: &MachineId) -> Result<()> {
         let mut inner = self.lock_inner();
         if let Some(record) = inner.machines.remove(id) {
-            Self::broadcast_machine(&mut inner, MachineEvent::Removed(record));
+            Self::broadcast_machine(&mut inner, MachineEvent::Removed(record.clone()));
+            Self::broadcast_routing_event(&mut inner, RoutingEvent::MachineRemoved(record));
         }
         Ok(())
     }
@@ -131,25 +199,21 @@ impl MachineStore for MemoryStore {
     }
 }
 
-impl RoutingStore for MemoryStore {
+impl RoutingSnapshotReader for MemoryStore {
     async fn load_routing_state(&self) -> Result<RoutingState> {
-        let inner = self.lock_inner();
-        Ok(RoutingState {
-            revisions: inner.service_revisions.values().cloned().collect(),
-            releases: inner.service_releases.values().cloned().collect(),
-            instances: inner.instance_status.values().cloned().collect(),
-        })
+        self.load_routing_state().await
     }
 
-    async fn subscribe_routing_invalidations(&self) -> Result<RoutingInvalidationSubscription> {
+    async fn subscribe_routing_events(&self) -> Result<RoutingSubscription> {
         let mut inner = self.lock_inner();
-        let (sender, receiver) = mpsc::channel(64);
+        let state = Self::routing_state(&inner);
+        let (sender, receiver) = mpsc::channel(1024);
         inner.routing_subscribers.push(sender);
-        Ok(receiver)
+        Ok((state, receiver))
     }
 }
 
-impl InviteStore for MemoryStore {
+impl InviteRepository for MemoryStore {
     async fn create_invite(&self, invite: &InviteRecord) -> Result<()> {
         let mut inner = self.lock_inner();
         if inner.invites.contains_key(&invite.invite_id) {
@@ -248,33 +312,99 @@ impl InviteStore for MemoryStore {
     }
 }
 
-impl DeployStore for MemoryStore {
-    async fn list_service_revisions(
-        &self,
-        namespace: &Namespace,
-    ) -> Result<Vec<ServiceRevisionRecord>> {
-        let inner = self.lock_inner();
-        Ok(inner
-            .service_revisions
-            .values()
-            .filter(|record| record.namespace == *namespace)
-            .cloned()
-            .collect())
-    }
-
-    async fn list_service_releases(
+impl DeployRepository for MemoryStore {
+    async fn list_deploy_releases(
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<ServiceReleaseRecord>> {
         let inner = self.lock_inner();
-        Ok(inner
-            .service_releases
+        Ok(Self::list_deploy_releases_inner(&inner, namespace))
+    }
+
+    async fn load_deploy_snapshot(&self, namespace: &Namespace) -> Result<DeploySnapshot> {
+        let inner = self.lock_inner();
+        let revisions = inner
+            .service_revisions
             .values()
             .filter(|record| record.namespace == *namespace)
             .cloned()
-            .collect())
+            .collect();
+        let releases = Self::list_deploy_releases_inner(&inner, namespace);
+        let instances = inner
+            .instance_status
+            .values()
+            .filter(|record| record.namespace == *namespace)
+            .cloned()
+            .collect();
+        Ok(DeploySnapshot {
+            revisions,
+            releases,
+            instances,
+        })
     }
 
+    async fn list_volumes(&self, namespace: &Namespace) -> Result<Vec<VolumeRecord>> {
+        let inner = self.lock_inner();
+        let mut volumes = inner
+            .volumes
+            .values()
+            .filter(|record| record.namespace == *namespace)
+            .cloned()
+            .collect::<Vec<_>>();
+        volumes.sort_by(|left, right| left.volume_name.cmp(&right.volume_name));
+        Ok(volumes)
+    }
+
+    async fn get_volume(
+        &self,
+        namespace: &Namespace,
+        volume_name: &str,
+    ) -> Result<Option<VolumeRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner
+            .volumes
+            .get(&(namespace.clone(), volume_name.to_string()))
+            .cloned())
+    }
+
+    async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()> {
+        let mut inner = self.lock_inner();
+        let old = Self::record_service_revision_inner(&mut inner, &command.revision);
+        let event = match old {
+            Some(old) => RoutingEvent::RevisionUpdated {
+                old,
+                new: command.revision.clone(),
+            },
+            None => RoutingEvent::RevisionAdded(command.revision.clone()),
+        };
+        Self::broadcast_routing_event(&mut inner, event);
+        Ok(())
+    }
+
+    async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
+        let mut inner = self.lock_inner();
+        let events = Self::commit_deploy_inner(&mut inner, command);
+        for event in events {
+            Self::broadcast_routing_event(&mut inner, event);
+        }
+        Ok(())
+    }
+
+    async fn update_deploy_record(&self, command: &DeployRecordUpdate) -> Result<()> {
+        let mut inner = self.lock_inner();
+        inner
+            .deploys
+            .insert(command.deploy.deploy_id.clone(), command.deploy.clone());
+        Ok(())
+    }
+
+    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner.deploys.get(deploy_id).cloned())
+    }
+}
+
+impl InstanceStatusRepository for MemoryStore {
     async fn list_instance_status(
         &self,
         namespace: &Namespace,
@@ -288,96 +418,220 @@ impl DeployStore for MemoryStore {
             .collect())
     }
 
-    async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
+    async fn record_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
         let mut inner = self.lock_inner();
+        let old = Self::record_instance_status_inner(&mut inner, record);
+        let event = match old {
+            Some(old) => RoutingEvent::InstanceUpdated {
+                old,
+                new: record.clone(),
+            },
+            None => RoutingEvent::InstanceAdded(record.clone()),
+        };
+        Self::broadcast_routing_event(&mut inner, event);
+        Ok(())
+    }
+
+    async fn remove_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
+        let mut inner = self.lock_inner();
+        if let Some(record) = Self::remove_instance_status_inner(&mut inner, instance_id) {
+            Self::broadcast_routing_event(&mut inner, RoutingEvent::InstanceRemoved(record));
+        }
+        Ok(())
+    }
+}
+
+impl MemoryStore {
+    fn list_deploy_releases_inner(
+        inner: &StoreInner,
+        namespace: &Namespace,
+    ) -> Vec<ServiceReleaseRecord> {
+        inner
+            .service_releases
+            .values()
+            .filter(|record| record.namespace == *namespace)
+            .cloned()
+            .collect()
+    }
+
+    fn record_service_revision_inner(
+        inner: &mut StoreInner,
+        record: &ServiceRevisionRecord,
+    ) -> Option<ServiceRevisionRecord> {
         let key = (
             record.namespace.clone(),
             record.service.clone(),
             record.revision_hash.clone(),
         );
-        inner.service_revisions.insert(key, record.clone());
-        Self::broadcast_routing_refresh(&mut inner);
-        Ok(())
+        inner.service_revisions.insert(key, record.clone())
     }
 
-    async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> Result<()> {
-        let mut inner = self.lock_inner();
-        let key = (record.namespace.clone(), record.service.clone());
-        inner.service_releases.insert(key, record.clone());
-        Self::broadcast_routing_refresh(&mut inner);
-        Ok(())
-    }
-
-    async fn delete_service_release(&self, namespace: &Namespace, service: &str) -> Result<()> {
-        let mut inner = self.lock_inner();
-        inner
-            .service_releases
-            .remove(&(namespace.clone(), service.to_string()));
-        Self::broadcast_routing_refresh(&mut inner);
-        Ok(())
-    }
-
-    async fn upsert_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
-        let mut inner = self.lock_inner();
+    fn record_instance_status_inner(
+        inner: &mut StoreInner,
+        record: &InstanceStatusRecord,
+    ) -> Option<InstanceStatusRecord> {
         inner
             .instance_status
-            .insert(record.instance_id.clone(), record.clone());
-        Self::broadcast_routing_refresh(&mut inner);
-        Ok(())
+            .insert(record.instance_id.clone(), record.clone())
     }
 
-    async fn delete_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
-        let mut inner = self.lock_inner();
-        inner.instance_status.remove(instance_id);
-        Self::broadcast_routing_refresh(&mut inner);
-        Ok(())
+    fn remove_instance_status_inner(
+        inner: &mut StoreInner,
+        instance_id: &InstanceId,
+    ) -> Option<InstanceStatusRecord> {
+        inner.instance_status.remove(instance_id)
     }
 
-    async fn upsert_deploy(&self, record: &DeployRecord) -> Result<()> {
-        let mut inner = self.lock_inner();
-        inner
-            .deploys
-            .insert(record.deploy_id.clone(), record.clone());
-        Ok(())
-    }
-
-    async fn commit_deploy(
-        &self,
-        namespace: &Namespace,
-        removed_services: &[String],
-        releases: &[ServiceReleaseRecord],
-        deploy: &DeployRecord,
-    ) -> Result<()> {
-        let mut inner = self.lock_inner();
-        let touched_services: HashSet<&str> = removed_services
+    fn commit_deploy_inner(inner: &mut StoreInner, command: &DeployCommit) -> Vec<RoutingEvent> {
+        let mut events = Vec::new();
+        let touched_services: HashSet<&str> = command
+            .removed_services
             .iter()
             .map(String::as_str)
-            .chain(releases.iter().map(|record| record.service.as_str()))
+            .chain(
+                command
+                    .releases
+                    .iter()
+                    .map(|record| record.service.as_str()),
+            )
             .collect();
 
-        inner
+        let mut removed = inner
             .service_releases
-            .retain(|(current_namespace, service), _| {
-                !(current_namespace == namespace && touched_services.contains(service.as_str()))
-            });
+            .extract_if(|(current_namespace, service), _| {
+                current_namespace == &command.namespace
+                    && touched_services.contains(service.as_str())
+            })
+            .map(|(_, record)| record)
+            .collect::<Vec<_>>();
 
-        for release in releases {
+        for release in &command.releases {
+            let old = removed
+                .iter()
+                .position(|record| {
+                    record.namespace == release.namespace && record.service == release.service
+                })
+                .map(|idx| removed.swap_remove(idx));
             inner.service_releases.insert(
                 (release.namespace.clone(), release.service.clone()),
                 release.clone(),
             );
+            match old {
+                Some(old) => events.push(RoutingEvent::ReleaseUpdated {
+                    old,
+                    new: release.clone(),
+                }),
+                None => events.push(RoutingEvent::ReleaseAdded(release.clone())),
+            }
+        }
+
+        for record in removed {
+            events.push(RoutingEvent::ReleaseRemoved(record));
+        }
+
+        for volume in &command.volumes {
+            inner.volumes.insert(
+                (volume.namespace.clone(), volume.volume_name.clone()),
+                volume.clone(),
+            );
+        }
+
+        for volume_name in &command.removed_volumes {
+            inner
+                .volumes
+                .remove(&(command.namespace.clone(), volume_name.clone()));
         }
 
         inner
             .deploys
-            .insert(deploy.deploy_id.clone(), deploy.clone());
-        Self::broadcast_routing_refresh(&mut inner);
+            .insert(command.deploy.deploy_id.clone(), command.deploy.clone());
+        events
+    }
+}
+
+impl CertificateStore for MemoryStore {
+    async fn get_acme_account(&self, issuer_url: &str) -> Result<Option<AcmeAccountRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner.acme_accounts.get(issuer_url).cloned())
+    }
+
+    async fn upsert_acme_account(&self, record: &AcmeAccountRecord) -> Result<()> {
+        let mut inner = self.lock_inner();
+        inner
+            .acme_accounts
+            .insert(record.issuer_url.clone(), record.clone());
         Ok(())
     }
 
-    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
+    async fn list_certificates(&self) -> Result<Vec<CertificateRecord>> {
         let inner = self.lock_inner();
-        Ok(inner.deploys.get(deploy_id).cloned())
+        Ok(inner.certificates.values().cloned().collect())
+    }
+
+    async fn get_certificate(&self, hostname: &str) -> Result<Option<CertificateRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner.certificates.get(hostname).cloned())
+    }
+
+    async fn upsert_certificate(&self, record: &CertificateRecord) -> Result<()> {
+        let mut inner = self.lock_inner();
+        let is_update = inner.certificates.contains_key(&record.hostname);
+        inner
+            .certificates
+            .insert(record.hostname.clone(), record.clone());
+        let event = if is_update {
+            CertificateEvent::Updated(record.clone())
+        } else {
+            CertificateEvent::Added(record.clone())
+        };
+        Self::broadcast_certificate(&mut inner, event);
+        Ok(())
+    }
+
+    async fn list_acme_challenges(&self) -> Result<Vec<AcmeChallengeRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner.acme_challenges.values().cloned().collect())
+    }
+
+    async fn upsert_acme_challenge(&self, record: &AcmeChallengeRecord) -> Result<()> {
+        let mut inner = self.lock_inner();
+        let key = (record.hostname.clone(), record.token.clone());
+        let is_update = inner.acme_challenges.contains_key(&key);
+        inner.acme_challenges.insert(key, record.clone());
+        let event = if is_update {
+            AcmeChallengeEvent::Updated(record.clone())
+        } else {
+            AcmeChallengeEvent::Added(record.clone())
+        };
+        Self::broadcast_acme_challenge(&mut inner, event);
+        Ok(())
+    }
+
+    async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> Result<()> {
+        let mut inner = self.lock_inner();
+        if let Some(record) = inner
+            .acme_challenges
+            .remove(&(hostname.to_string(), token.to_string()))
+        {
+            Self::broadcast_acme_challenge(&mut inner, AcmeChallengeEvent::Removed(record));
+        }
+        Ok(())
+    }
+
+    async fn subscribe_certificates(&self) -> Result<CertificateSubscription> {
+        let mut inner = self.lock_inner();
+        let snapshot = inner.certificates.values().cloned().collect();
+        let (sender, receiver) = mpsc::channel(64);
+        inner.certificate_subscribers.push(sender);
+        Ok((snapshot, receiver))
+    }
+
+    async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
+        let mut inner = self.lock_inner();
+        let snapshot = inner.acme_challenges.values().cloned().collect();
+        let (sender, receiver) = mpsc::channel(64);
+        inner.acme_challenge_subscribers.push(sender);
+        Ok((snapshot, receiver))
     }
 }
 
@@ -389,16 +643,41 @@ impl MemoryStore {
             .drain()
             .map(|(_, record)| record)
             .collect::<Vec<_>>();
+        let removed_revisions = inner
+            .service_revisions
+            .drain()
+            .map(|(_, record)| record)
+            .collect::<Vec<_>>();
+        let removed_releases = inner
+            .service_releases
+            .drain()
+            .map(|(_, record)| record)
+            .collect::<Vec<_>>();
+        let removed_instances = inner
+            .instance_status
+            .drain()
+            .map(|(_, record)| record)
+            .collect::<Vec<_>>();
         inner.invites.clear();
-        inner.service_revisions.clear();
-        inner.service_releases.clear();
-        inner.instance_status.clear();
+        inner.volumes.clear();
         inner.deploys.clear();
+        inner.acme_accounts.clear();
+        inner.certificates.clear();
+        inner.acme_challenges.clear();
 
         for record in removed {
-            Self::broadcast_machine(&mut inner, MachineEvent::Removed(record));
+            Self::broadcast_machine(&mut inner, MachineEvent::Removed(record.clone()));
+            Self::broadcast_routing_event(&mut inner, RoutingEvent::MachineRemoved(record));
         }
-        Self::broadcast_routing_refresh(&mut inner);
+        for record in removed_revisions {
+            Self::broadcast_routing_event(&mut inner, RoutingEvent::RevisionRemoved(record));
+        }
+        for record in removed_releases {
+            Self::broadcast_routing_event(&mut inner, RoutingEvent::ReleaseRemoved(record));
+        }
+        for record in removed_instances {
+            Self::broadcast_routing_event(&mut inner, RoutingEvent::InstanceRemoved(record));
+        }
         Ok(())
     }
 }
@@ -534,37 +813,384 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn routing_subscribers_receive_refresh_events() {
+    async fn record_service_revision_updates_routing_snapshot_and_emits_event() {
         let store = MemoryStore::new();
-        let mut refresh_rx = store
-            .subscribe_routing_invalidations()
-            .await
-            .expect("subscribe");
+        let (_state, mut event_rx) = store.subscribe_routing_events().await.expect("subscribe");
 
         let namespace = Namespace("prod".into());
-        let record = ServiceReleaseRecord {
-            namespace,
+        let revision = ServiceRevisionRecord {
+            namespace: namespace.clone(),
             service: "api".into(),
-            release: ployz_types::model::ServiceRelease {
-                primary_revision_hash: "rev-1".into(),
-                referenced_revision_hashes: vec!["rev-1".into()],
-                routing: ployz_types::model::ServiceRoutingPolicy::Direct {
-                    revision_hash: "rev-1".into(),
-                },
-                slots: Vec::new(),
-                updated_by_deploy_id: DeployId("dep-1".into()),
-                updated_at: 1,
-            },
+            revision_hash: "rev-1".into(),
+            spec_json: "{}".into(),
+            created_by: MachineId("machine-1".into()),
+            created_at: 1,
         };
 
         store
-            .upsert_service_release(&record)
+            .record_service_revision(&DeployRevisionUpsert { revision })
             .await
-            .expect("upsert service release");
+            .expect("record revision");
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), refresh_rx.recv())
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
             .await
             .expect("refresh event deadline");
-        assert_eq!(event, Some(()));
+        assert!(matches!(
+            event,
+            Some(RoutingEvent::RevisionAdded(ServiceRevisionRecord { .. }))
+        ));
+
+        let snapshot = store
+            .load_routing_state()
+            .await
+            .expect("load routing state");
+        assert_eq!(snapshot.revisions.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn commit_deploy_replaces_touched_releases_and_records_deploy() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("prod".into());
+        let untouched = test_release(&namespace, "worker", "rev-old", "deploy-old");
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                releases: vec![
+                    test_release(&namespace, "api", "rev-old", "deploy-old"),
+                    untouched.clone(),
+                ],
+                volumes: Vec::new(),
+                deploy: test_deploy(&namespace, "deploy-old"),
+            })
+            .await
+            .expect("seed deploy");
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                removed_services: vec!["worker".into()],
+                removed_volumes: Vec::new(),
+                releases: vec![test_release(&namespace, "api", "rev-new", "deploy-new")],
+                volumes: Vec::new(),
+                deploy: test_deploy(&namespace, "deploy-new"),
+            })
+            .await
+            .expect("commit deploy");
+
+        let snapshot = store
+            .load_deploy_snapshot(&namespace)
+            .await
+            .expect("load deploy snapshot");
+        assert_eq!(snapshot.releases.len(), 1);
+        assert_eq!(snapshot.releases[0].service, "api");
+        assert_eq!(
+            snapshot.releases[0].release.primary_revision_hash,
+            "rev-new"
+        );
+        assert!(
+            store
+                .get_deploy(&DeployId("deploy-new".into()))
+                .await
+                .expect("get deploy")
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn redeploying_existing_service_emits_release_updated() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("prod".into());
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                releases: vec![test_release(&namespace, "api", "rev-old", "deploy-old")],
+                volumes: Vec::new(),
+                deploy: test_deploy(&namespace, "deploy-old"),
+            })
+            .await
+            .expect("seed deploy");
+
+        let (_state, mut event_rx) = store.subscribe_routing_events().await.expect("subscribe");
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                releases: vec![test_release(&namespace, "api", "rev-new", "deploy-new")],
+                volumes: Vec::new(),
+                deploy: test_deploy(&namespace, "deploy-new"),
+            })
+            .await
+            .expect("redeploy");
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("await redeploy event")
+            .expect("event present");
+
+        match event {
+            RoutingEvent::ReleaseUpdated { old, new } => {
+                assert_eq!(old.release.primary_revision_hash, "rev-old");
+                assert_eq!(new.release.primary_revision_hash, "rev-new");
+            }
+            other => panic!(
+                "redeploy of an existing (namespace, service) must emit ReleaseUpdated, got {other:?}"
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn instance_status_writes_update_routing_snapshot_and_emit_events() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("prod".into());
+        let status = test_instance_status(&namespace, "inst-1");
+        let (_state, mut event_rx) = store.subscribe_routing_events().await.expect("subscribe");
+
+        store
+            .record_instance_status(&status)
+            .await
+            .expect("record instance status");
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("record refresh deadline");
+        assert!(matches!(
+            event,
+            Some(RoutingEvent::InstanceAdded(InstanceStatusRecord { .. }))
+        ));
+
+        store
+            .remove_instance_status(&status.instance_id)
+            .await
+            .expect("remove instance status");
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("remove refresh deadline");
+        assert!(matches!(
+            event,
+            Some(RoutingEvent::InstanceRemoved(InstanceStatusRecord { .. }))
+        ));
+
+        let snapshot = store
+            .load_routing_state()
+            .await
+            .expect("load routing state");
+        assert!(snapshot.instances.is_empty());
+    }
+
+    fn test_release(
+        namespace: &Namespace,
+        service: &str,
+        revision_hash: &str,
+        deploy_id: &str,
+    ) -> ServiceReleaseRecord {
+        ServiceReleaseRecord {
+            namespace: namespace.clone(),
+            service: service.into(),
+            release: ployz_types::model::ServiceRelease {
+                primary_revision_hash: revision_hash.into(),
+                referenced_revision_hashes: vec![revision_hash.into()],
+                routing: ployz_types::model::ServiceRoutingPolicy::Direct {
+                    revision_hash: revision_hash.into(),
+                },
+                slots: Vec::new(),
+                updated_by_deploy_id: DeployId(deploy_id.into()),
+                updated_at: 1,
+            },
+        }
+    }
+
+    fn test_deploy(namespace: &Namespace, deploy_id: &str) -> DeployRecord {
+        DeployRecord {
+            deploy_id: DeployId(deploy_id.into()),
+            namespace: namespace.clone(),
+            coordinator_machine_id: MachineId("machine-1".into()),
+            manifest_hash: "manifest".into(),
+            state: ployz_types::model::DeployState::Committed,
+            started_at: 1,
+            committed_at: Some(2),
+            finished_at: Some(2),
+            summary_json: "{}".into(),
+        }
+    }
+
+    fn test_instance_status(namespace: &Namespace, instance_id: &str) -> InstanceStatusRecord {
+        InstanceStatusRecord {
+            instance_id: InstanceId(instance_id.into()),
+            namespace: namespace.clone(),
+            service: "api".into(),
+            slot_id: ployz_types::model::SlotId("slot-1".into()),
+            machine_id: MachineId("machine-1".into()),
+            revision_hash: "rev-1".into(),
+            deploy_id: DeployId("deploy-1".into()),
+            docker_container_id: "container-1".into(),
+            overlay_ip: None,
+            backend_ports: std::collections::BTreeMap::new(),
+            phase: ployz_types::model::InstancePhase::Ready,
+            ready: true,
+            drain_state: ployz_types::model::DrainState::None,
+            error: None,
+            started_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn load_routing_state_includes_machines() {
+        let store = MemoryStore::new();
+        let machine = MachineMembership {
+            id: MachineId("machine-1".into()),
+            public_key: ployz_types::model::PublicKey([0; 32]),
+            overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
+            topology: ployz_types::model::MachineTopology::new("us-east", Some("use1-a"))
+                .expect("topology should parse"),
+            control_target: None,
+            subnet: None,
+            bridge_ip: None,
+            endpoints: Vec::new(),
+            lifecycle: ployz_types::model::MachineLifecycle::Active,
+            created_at: 1,
+            updated_at: 1,
+            labels: std::collections::BTreeMap::new(),
+        };
+
+        store
+            .upsert_self_machine(&machine)
+            .await
+            .expect("upsert machine");
+
+        let state = store.load_routing_state().await.expect("routing state");
+
+        assert_eq!(state.machines, vec![machine]);
+    }
+
+    #[tokio::test]
+    async fn machine_changes_trigger_routing_events() {
+        let store = MemoryStore::new();
+        let (_state, mut event_rx) = store.subscribe_routing_events().await.expect("subscribe");
+        let machine = MachineMembership {
+            id: MachineId("machine-1".into()),
+            public_key: ployz_types::model::PublicKey([0; 32]),
+            overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
+            topology: ployz_types::model::MachineTopology::local(),
+            control_target: None,
+            subnet: None,
+            bridge_ip: None,
+            endpoints: Vec::new(),
+            lifecycle: ployz_types::model::MachineLifecycle::Active,
+            created_at: 1,
+            updated_at: 1,
+            labels: std::collections::BTreeMap::new(),
+        };
+
+        store
+            .upsert_self_machine(&machine)
+            .await
+            .expect("upsert machine");
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("refresh event deadline");
+        assert!(matches!(
+            event,
+            Some(RoutingEvent::MachineAdded(MachineMembership { .. }))
+        ));
+    }
+
+    #[tokio::test]
+    async fn full_routing_event_channel_closes_subscriber() {
+        let store = MemoryStore::new();
+        let (_state, mut event_rx) = store.subscribe_routing_events().await.expect("subscribe");
+
+        for index in 0..1030 {
+            let revision = ServiceRevisionRecord {
+                namespace: Namespace("prod".into()),
+                service: format!("api-{index}"),
+                revision_hash: "rev-1".into(),
+                spec_json: "{}".into(),
+                created_by: MachineId("machine-1".into()),
+                created_at: 1,
+            };
+            store
+                .record_service_revision(&DeployRevisionUpsert { revision })
+                .await
+                .expect("record revision");
+        }
+
+        let mut received = 0;
+        while event_rx.recv().await.is_some() {
+            received += 1;
+        }
+        assert_eq!(
+            received, 1024,
+            "full delta channels must close after buffered events instead of silently skipping one"
+        );
+    }
+
+    #[tokio::test]
+    async fn wipe_data_clears_volume_records() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("prod".into());
+        let deploy_id = DeployId("dep-1".into());
+        let volume = VolumeRecord {
+            namespace: namespace.clone(),
+            volume_name: "data".into(),
+            scope: ployz_types::spec::VolumeScope::Single,
+            machine_id: MachineId("machine-1".into()),
+            quota: "1G".into(),
+            mode: "0750".into(),
+            owner: "999:999".into(),
+            attached_services: Vec::new(),
+            created_at: 1,
+            created_by_deploy_id: deploy_id.clone(),
+            last_modified_at: 1,
+            last_modified_by_deploy_id: deploy_id.clone(),
+        };
+        let deploy = DeployRecord {
+            deploy_id,
+            namespace: namespace.clone(),
+            coordinator_machine_id: MachineId("local".into()),
+            manifest_hash: "hash".into(),
+            state: ployz_types::model::DeployState::Committed,
+            started_at: 1,
+            committed_at: Some(1),
+            finished_at: Some(1),
+            summary_json: "{}".into(),
+        };
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                releases: Vec::new(),
+                volumes: vec![volume],
+                deploy,
+            })
+            .await
+            .expect("commit volume");
+        assert_eq!(
+            store
+                .list_volumes(&namespace)
+                .await
+                .expect("list volumes before wipe")
+                .len(),
+            1
+        );
+
+        store.wipe_data().await.expect("wipe data");
+
+        assert!(
+            store
+                .list_volumes(&namespace)
+                .await
+                .expect("list volumes after wipe")
+                .is_empty()
+        );
     }
 }

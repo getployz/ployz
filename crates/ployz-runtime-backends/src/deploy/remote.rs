@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufStream};
 use tokio::net::{TcpListener, TcpStream};
@@ -9,12 +11,13 @@ use crate::StoreDriver;
 use crate::error::{Error, Result};
 use crate::model::{
     DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
-    MachineRecord, SlotId,
+    MachineMembership, SlotId,
 };
-use crate::spec::{Namespace, ServiceSpec};
+use crate::spec::{Namespace, ServiceSpec, VolumeDeclaration};
+use crate::storage::{TokioShellRunner, ZfsDriver};
 use ployz_api::DeployFrame;
 use ployz_runtime_api::{NamespaceLock, NamespaceLockManager, RuntimeHandle};
-use ployz_store_api::DeployStore;
+use ployz_store_api::InstanceStatusRepository;
 
 use super::local::{
     LocalDeployRuntime, StartCandidate, adopt_instances, build_instance_status_record,
@@ -62,6 +65,7 @@ pub struct DeployAgent {
     local_machine_id: MachineId,
     overlay_network_name: Option<String>,
     overlay_dns_server: Option<Ipv4Addr>,
+    storage_driver: Option<Arc<ZfsDriver<TokioShellRunner>>>,
 }
 
 /// Per-session state. The namespace lock is held for the session lifetime.
@@ -86,6 +90,7 @@ impl DeployAgent {
         local_machine_id: MachineId,
         overlay_network_name: Option<String>,
         overlay_dns_server: Option<Ipv4Addr>,
+        storage_driver: Option<Arc<ZfsDriver<TokioShellRunner>>>,
     ) -> Self {
         Self {
             store,
@@ -93,6 +98,7 @@ impl DeployAgent {
             local_machine_id,
             overlay_network_name,
             overlay_dns_server,
+            storage_driver,
         }
     }
 
@@ -135,6 +141,7 @@ impl DeployAgent {
         instance_id: &InstanceId,
         deploy_id: &DeployId,
         spec_json: &str,
+        volumes_json: &str,
     ) -> Result<InstanceStatusRecord> {
         // Idempotent: if instance already exists, return its status.
         if let Some(existing) = self
@@ -146,6 +153,12 @@ impl DeployAgent {
 
         let spec: ServiceSpec = serde_json::from_str(spec_json)
             .map_err(|e| Error::operation("start_candidate", format!("decode spec: {e}")))?;
+        let volumes: Vec<VolumeDeclaration> = serde_json::from_str(volumes_json)
+            .map_err(|e| Error::operation("start_candidate", format!("decode volumes: {e}")))?;
+        let volumes = volumes
+            .into_iter()
+            .map(|volume| (volume.name.clone(), volume))
+            .collect::<HashMap<_, _>>();
         if spec.name != service {
             return Err(Error::operation(
                 "start_candidate",
@@ -168,6 +181,7 @@ impl DeployAgent {
                 slot_id,
                 machine_id: &self.local_machine_id,
                 revision_hash: &revision_hash,
+                volumes: &volumes,
             })
             .await?;
         runtime.wait_ready(&spec, &instance).await?;
@@ -179,7 +193,7 @@ impl DeployAgent {
             DrainState::None,
             None,
         );
-        self.store.upsert_instance_status(&status).await?;
+        self.store.record_instance_status(&status).await?;
         Ok(status)
     }
 
@@ -203,7 +217,7 @@ impl DeployAgent {
         status.ready = false;
         status.drain_state = DrainState::Requested;
         status.updated_at = now_unix_secs();
-        self.store.upsert_instance_status(&status).await?;
+        self.store.record_instance_status(&status).await?;
         Ok(())
     }
 
@@ -224,7 +238,7 @@ impl DeployAgent {
             .remove_instance(&status.instance_id, &session.namespace, &status.service)
             .await?;
         self.store
-            .delete_instance_status(&status.instance_id)
+            .remove_instance_status(&status.instance_id)
             .await?;
         Ok(())
     }
@@ -235,7 +249,11 @@ impl DeployAgent {
     }
 
     fn new_runtime(&self) -> Result<LocalDeployRuntime> {
-        LocalDeployRuntime::new(self.overlay_network_name.clone(), self.overlay_dns_server)
+        LocalDeployRuntime::new(
+            self.overlay_network_name.clone(),
+            self.overlay_dns_server,
+            self.storage_driver.clone(),
+        )
     }
 
     async fn find_local_instance_status(
@@ -263,6 +281,7 @@ pub async fn start_remote_control_listener(
     local_machine_id: MachineId,
     overlay_network_name: Option<String>,
     overlay_dns_server: Option<Ipv4Addr>,
+    storage_driver: Option<Arc<ZfsDriver<TokioShellRunner>>>,
 ) -> Result<RemoteControlHandle> {
     let listener = TcpListener::bind(bind_addr).await.map_err(|e| {
         Error::operation("remote_control_listener", format!("bind {bind_addr}: {e}"))
@@ -274,6 +293,7 @@ pub async fn start_remote_control_listener(
         local_machine_id,
         overlay_network_name,
         overlay_dns_server,
+        storage_driver,
     );
     let listener_cancel = cancel.clone();
     let task = tokio::spawn(async move {
@@ -406,6 +426,7 @@ async fn handle_session_frame_inner(
             slot_id,
             instance_id,
             spec_json,
+            volumes_json,
         } => {
             let status = agent
                 .start_candidate(
@@ -415,6 +436,7 @@ async fn handle_session_frame_inner(
                     &InstanceId(instance_id),
                     session.deploy_id(),
                     &spec_json,
+                    &volumes_json,
                 )
                 .await?;
             Ok(DeployFrame::CandidateStarted {
@@ -505,7 +527,7 @@ impl TcpDeploySession {
     /// Connect to a remote machine and open a deploy session.
     /// Returns the session and a snapshot of current instances on that machine.
     pub async fn connect(
-        machine: &MachineRecord,
+        machine: &MachineMembership,
         port: u16,
         namespace: &Namespace,
         deploy_id: &DeployId,
@@ -601,6 +623,7 @@ impl DeploySession for TcpDeploySession {
                 slot_id: req.slot_id.0,
                 instance_id: req.instance_id.0,
                 spec_json: req.spec_json,
+                volumes_json: req.volumes_json,
             })
             .await?;
         let DeployFrame::CandidateStarted { status } = response else {

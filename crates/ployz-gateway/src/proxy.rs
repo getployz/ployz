@@ -1,14 +1,16 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-use crate::routes::match_http_route;
 use async_trait::async_trait;
+use bytes::Bytes;
 use http::Method;
 use pingora::prelude::*;
 use tracing::info;
 
-use crate::snapshot::SharedSnapshot;
+use crate::routes::RouteId;
+use crate::snapshot::{SharedSnapshot, SnapshotState};
 
 // ---------------------------------------------------------------------------
 // GatewayApp — pingora HTTP proxy
@@ -18,14 +20,30 @@ pub struct GatewayApp {
     snapshot: SharedSnapshot,
 }
 
-#[derive(Default)]
 pub struct RequestCtx {
-    route_id: Option<String>,
+    state: Option<Arc<SnapshotState>>,
+    route_id: Option<RouteId>,
     selected_addr: Option<SocketAddr>,
     upstream_host: Option<String>,
     retry_allowed: bool,
     matched: bool,
     started_at: Option<Instant>,
+    downstream_scheme: &'static str,
+}
+
+impl RequestCtx {
+    fn new() -> Self {
+        Self {
+            state: None,
+            route_id: None,
+            selected_addr: None,
+            upstream_host: None,
+            retry_allowed: false,
+            matched: false,
+            started_at: None,
+            downstream_scheme: "http",
+        }
+    }
 }
 
 impl GatewayApp {
@@ -40,7 +58,7 @@ impl ProxyHttp for GatewayApp {
     type CTX = RequestCtx;
 
     fn new_ctx(&self) -> Self::CTX {
-        RequestCtx::default()
+        RequestCtx::new()
     }
 
     async fn request_filter(
@@ -52,10 +70,31 @@ impl ProxyHttp for GatewayApp {
         let host = request
             .headers
             .get("host")
-            .and_then(|value| value.to_str().ok());
+            .and_then(|value| value.to_str().ok())
+            .or_else(|| request.uri.authority().map(|authority| authority.as_str()));
         let path = request.uri.path();
+        ctx.downstream_scheme = if session
+            .as_downstream()
+            .digest()
+            .and_then(|digest| digest.ssl_digest.as_ref())
+            .is_some()
+        {
+            "https"
+        } else {
+            "http"
+        };
         let state = self.snapshot.load();
-        let Some(route) = match_http_route(&state.snapshot, host, path) else {
+        ctx.state = Some(Arc::clone(&state));
+        if let Some(challenge) = state.match_acme_challenge(host, path) {
+            ctx.matched = true;
+            ctx.started_at = Some(Instant::now());
+            session
+                .respond_error_with_body(200, Bytes::from(challenge.key_authorization.clone()))
+                .await?;
+            return Ok(true);
+        }
+
+        let Some(route) = state.match_http_route(host, path) else {
             ctx.matched = false;
             ctx.started_at = Some(Instant::now());
             session.respond_error(404).await?;
@@ -76,14 +115,19 @@ impl ProxyHttp for GatewayApp {
         _session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<Box<HttpPeer>> {
-        let Some(route_id) = ctx.route_id.as_deref() else {
+        let Some(route_id) = ctx.route_id.as_ref() else {
             return Err(Error::explain(
                 ErrorType::HTTPStatus(500),
                 "missing route_id in upstream_peer",
             ));
         };
 
-        let state = self.snapshot.load();
+        let Some(state) = ctx.state.as_ref() else {
+            return Err(Error::explain(
+                ErrorType::HTTPStatus(500),
+                "missing snapshot state in upstream_peer",
+            ));
+        };
         let Some(lb) = state.load_balancers.get(route_id) else {
             return Err(Error::explain(
                 ErrorType::HTTPStatus(503),
@@ -121,12 +165,26 @@ impl ProxyHttp for GatewayApp {
                 .map_err(|err| {
                     Error::because(ErrorType::InternalError, "insert Host header", err)
                 })?;
+            upstream_request
+                .insert_header("X-Forwarded-Host", host)
+                .map_err(|err| {
+                    Error::because(
+                        ErrorType::InternalError,
+                        "insert X-Forwarded-Host header",
+                        err,
+                    )
+                })?;
         }
         if let Some(client_addr) = session.client_addr()
             && let Some(address) = client_addr.as_inet()
         {
+            let forwarded_for = append_header_value(
+                upstream_request,
+                "X-Forwarded-For",
+                &address.ip().to_string(),
+            );
             upstream_request
-                .insert_header("X-Forwarded-For", address.ip().to_string())
+                .insert_header("X-Forwarded-For", forwarded_for)
                 .map_err(|err| {
                     Error::because(
                         ErrorType::InternalError,
@@ -135,8 +193,21 @@ impl ProxyHttp for GatewayApp {
                     )
                 })?;
         }
+        if let Some(server_addr) = session.server_addr()
+            && let Some(address) = server_addr.as_inet()
+        {
+            upstream_request
+                .insert_header("X-Forwarded-Port", address.port().to_string())
+                .map_err(|err| {
+                    Error::because(
+                        ErrorType::InternalError,
+                        "insert X-Forwarded-Port header",
+                        err,
+                    )
+                })?;
+        }
         upstream_request
-            .insert_header("X-Forwarded-Proto", "http")
+            .insert_header("X-Forwarded-Proto", ctx.downstream_scheme)
             .map_err(|err| {
                 Error::because(
                     ErrorType::InternalError,
@@ -144,6 +215,10 @@ impl ProxyHttp for GatewayApp {
                     err,
                 )
             })?;
+        let via = append_header_value(upstream_request, "Via", "1.1 ployz-gateway");
+        upstream_request
+            .insert_header("Via", via)
+            .map_err(|err| Error::because(ErrorType::InternalError, "insert Via header", err))?;
         Ok(())
     }
 
@@ -164,12 +239,15 @@ impl ProxyHttp for GatewayApp {
 
     async fn logging(&self, session: &mut Session, e: Option<&Error>, ctx: &mut Self::CTX) {
         let request = session.req_header();
-        let route_id = ctx.route_id.as_deref().unwrap_or("-");
+        let route_id = ctx.route_id.as_ref().map(RouteId::as_str).unwrap_or("-");
 
-        let state = self.snapshot.load();
         let backend_label = ctx
-            .selected_addr
-            .and_then(|addr| state.backend_lookup.get(&addr))
+            .state
+            .as_ref()
+            .and_then(|state| {
+                ctx.selected_addr
+                    .and_then(|addr| state.backend_lookup.get(&addr))
+            })
             .map(|bv| bv.instance_id.0.as_str())
             .unwrap_or("-");
 
@@ -197,4 +275,32 @@ impl ProxyHttp for GatewayApp {
 
 fn is_retryable_method(method: &Method) -> bool {
     matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
+}
+
+fn append_header_value(upstream_request: &RequestHeader, name: &str, value: &str) -> String {
+    let mut combined = upstream_request
+        .headers
+        .get_all(name)
+        .iter()
+        .filter_map(|existing| existing.to_str().ok())
+        .filter(|existing| !existing.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    if !combined.is_empty() {
+        combined.push_str(", ");
+    }
+    combined.push_str(value);
+    combined
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_ctx_defaults_downstream_scheme_to_http() {
+        let ctx = RequestCtx::new();
+        assert_eq!(ctx.downstream_scheme, "http");
+    }
 }

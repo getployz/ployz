@@ -1,6 +1,7 @@
 use ipnet::Ipv4Net;
 use ployz_types::model::{
-    InstanceStatusRecord, MachineId, MachineLifecycle, MachineRecord, NetworkId, NetworkLifecycle,
+    InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, NetworkId,
+    NetworkLifecycle,
 };
 use serde::{Deserialize, Serialize};
 
@@ -70,8 +71,18 @@ pub enum DebugTickTask {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ResourceKey {
+    /// Subnet reservation: missing peers are acceptable only if the strict
+    /// majority quorum still allows the reservation.
     Subnet(Ipv4Net),
+    /// Namespace deploy lock: all required deploy participants must be
+    /// reachable and session-locked.
     DeployNamespace(String),
+    /// ACME hostname issuance lock: peer inventory must be available;
+    /// unreachable known peers abstain, explicit denials veto.
+    CertIssuance(String),
+    /// ACME account creation lock: peer inventory must be available;
+    /// unreachable known peers abstain, explicit denials veto.
+    AcmeAccount(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +139,10 @@ pub enum CoordOp {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonRequest {
+    /// Liveness probe used by deploy reachability checks. Returns immediately
+    /// with no side effects so callers can confirm the peer daemon is alive
+    /// at decision time.
+    Ping,
     Status,
     Doctor,
     DebugTick {
@@ -197,6 +212,8 @@ pub enum DaemonRequest {
         id: String,
         force: bool,
     },
+    MachineRtt,
+    MeshPeerRttSnapshot,
     MeshPeerRemoveMachine {
         operation_id: String,
         network_id: NetworkId,
@@ -228,6 +245,10 @@ pub enum DaemonRequest {
     Coord {
         op: CoordOp,
     },
+    AcmeChallengeReady {
+        hostname: String,
+        token: String,
+    },
     MeshSelfRecord,
     MeshAccept {
         response: String,
@@ -243,6 +264,46 @@ pub enum DaemonRequest {
     DeployExport {
         namespace: String,
     },
+    VolumeZfsInspect {
+        namespace: String,
+        volume: String,
+        machine: Option<String>,
+    },
+    VolumeZfsSnapshot {
+        namespace: String,
+        volume: String,
+        snapshot: String,
+    },
+    VolumeZfsSend {
+        namespace: String,
+        volume: String,
+        snapshot: String,
+        target_machine: String,
+        from_snapshot: Option<String>,
+    },
+    VolumeZfsPeerSnapshot {
+        namespace: String,
+        volume: String,
+        snapshot: String,
+    },
+    VolumeZfsPeerSnapshotGuid {
+        namespace: String,
+        volume: String,
+        snapshot: String,
+    },
+    VolumeZfsPeerStartSend {
+        namespace: String,
+        volume: String,
+        snapshot: String,
+        target_machine: String,
+        expected_guid: u64,
+        from_snapshot: Option<String>,
+        from_snapshot_guid: Option<u64>,
+    },
+    VolumeZfsTransferGet {
+        id: String,
+    },
+    VolumeZfsTransferList,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -251,6 +312,7 @@ pub enum DaemonPayload {
     Doctor(DoctorPayload),
     Status(StatusPayload),
     MachineList(MachineListPayload),
+    MachineRtt(MachineRttPayload),
     MachineAdd(MachineAddPayload),
     MachineRemove(MachineRemovePayload),
     MeshList(MeshListPayload),
@@ -260,6 +322,11 @@ pub enum DaemonPayload {
     MachineInviteList(MachineInviteListPayload),
     MachineOperationList(MachineOperationListPayload),
     MachineOperation(MachineOperationPayload),
+    VolumeZfsInspect(VolumeZfsInspectPayload),
+    VolumeZfsSnapshot(VolumeZfsSnapshotPayload),
+    VolumeZfsPeerSend(VolumeZfsPeerSendPayload),
+    VolumeZfsTransfer(VolumeZfsTransferPayload),
+    VolumeZfsTransferList(VolumeZfsTransferListPayload),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -271,10 +338,28 @@ pub struct MachineListPayload {
 pub struct MachineListRow {
     pub id: String,
     pub lifecycle: String,
+    pub region: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub availability_zone: Option<String>,
     pub overlay_ip: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subnet: Option<String>,
     pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MachineRttPayload {
+    pub rows: Vec<MachineRttRow>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MachineRttRow {
+    pub machine: String,
+    pub peer: String,
+    pub median_ms: f64,
+    pub stddev_ms: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -327,6 +412,15 @@ pub struct DoctorPeer {
     pub subnet: Option<String>,
     pub wg_state: String,
     pub probe_state: String,
+    pub corrosion_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corrosion_actor_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corrosion_timestamp: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtt_median_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtt_stddev_ms: Option<f64>,
     pub cause_code: String,
     pub cause_message: String,
 }
@@ -400,7 +494,7 @@ pub enum MachineTransitionGoal {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeshSelfRecordPayload {
     pub encoded: String,
-    pub record: MachineRecord,
+    pub record: MachineMembership,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -426,7 +520,7 @@ pub struct MeshBootstrapRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub self_control_target: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub bootstrap_peers: Vec<MachineRecord>,
+    pub bootstrap_peers: Vec<MachineMembership>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -462,6 +556,75 @@ pub struct MachineOperationInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeZfsInspectPayload {
+    pub namespace: String,
+    pub volume: String,
+    pub machine_id: MachineId,
+    pub dataset: String,
+    pub mountpoint: String,
+    pub quota: String,
+    pub used_bytes: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub snapshots: Vec<VolumeZfsSnapshotInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeZfsSnapshotPayload {
+    pub namespace: String,
+    pub volume: String,
+    pub machine_id: MachineId,
+    pub dataset: String,
+    pub snapshot: String,
+    pub guid: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeZfsSnapshotInfo {
+    pub name: String,
+    pub guid: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeZfsPeerSendPayload {
+    pub bytes_transferred: u64,
+    pub snapshot_guid: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeZfsTransferPayload {
+    pub transfer: VolumeZfsTransferInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeZfsTransferListPayload {
+    pub transfers: Vec<VolumeZfsTransferInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeZfsTransferInfo {
+    pub id: String,
+    pub namespace: String,
+    pub volume: String,
+    pub source_machine: MachineId,
+    pub target_machine: MachineId,
+    pub status: String,
+    pub stage: String,
+    pub snapshot_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_guid: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_snapshot_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_snapshot_guid: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_transferred: Option<u64>,
+    pub started_at: u64,
+    pub updated_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonResponse {
     pub ok: bool,
     pub code: String,
@@ -483,6 +646,7 @@ pub enum DeployFrame {
         slot_id: String,
         instance_id: String,
         spec_json: String,
+        volumes_json: String,
     },
     DrainInstance {
         instance_id: String,
@@ -520,6 +684,7 @@ mod tests {
             slot_id: String::from("slot-1"),
             instance_id: String::from("inst-1"),
             spec_json: String::from("{\"name\":\"api\"}"),
+            volumes_json: String::from("[]"),
         };
 
         let json = serde_json::to_value(&frame).expect("serialize frame");
@@ -535,6 +700,7 @@ mod tests {
             slot_id,
             instance_id,
             spec_json,
+            volumes_json,
         } = decoded
         else {
             panic!("unexpected frame");
@@ -543,5 +709,6 @@ mod tests {
         assert_eq!(slot_id, "slot-1");
         assert_eq!(instance_id, "inst-1");
         assert_eq!(spec_json, "{\"name\":\"api\"}");
+        assert_eq!(volumes_json, "[]");
     }
 }

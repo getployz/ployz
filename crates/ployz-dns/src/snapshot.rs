@@ -2,22 +2,62 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, RwLock};
 
-use ployz_types::model::{DrainState, InstancePhase, RoutingState};
+use ployz_types::model::{
+    DrainState, InstancePhase, MachineId, MachineMembership, MachineTopology, RoutingState,
+};
 use ployz_types::spec::Namespace;
+use tracing::warn;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DnsInstanceDiagnostic {
+    pub service: String,
+    pub instance_id: String,
+    pub machine_id: String,
+    pub topology: MachineTopology,
+    pub slot_id: String,
+    pub overlay_ip: Ipv4Addr,
+}
+
+impl DnsInstanceDiagnostic {
+    #[must_use]
+    pub fn txt_record(&self) -> String {
+        let availability_zone = self
+            .topology
+            .availability_zone
+            .as_ref()
+            .map(|zone| zone.as_str())
+            .unwrap_or("none");
+        format!(
+            "service={},instance={},machine={},region={},az={},slot={},ip={}",
+            self.service,
+            self.instance_id,
+            self.machine_id,
+            self.topology.region.as_str(),
+            availability_zone,
+            self.slot_id,
+            self.overlay_ip
+        )
+    }
+}
 
 // ---------------------------------------------------------------------------
 // DnsSnapshot
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 pub struct DnsSnapshot {
     /// namespace -> service -> sorted Vec of overlay IPs for ready instances.
     /// Two-level map avoids cloning `Namespace` + allocating a `String` on
     /// every lookup in the hot path.
     pub services: HashMap<Namespace, HashMap<String, Vec<Ipv4Addr>>>,
-    /// overlay_ip -> namespace (reverse lookup for caller namespace detection)
+    /// overlay_ip -> namespace (reverse lookup for caller namespace detection).
+    /// Intentionally IPv4-only: the mesh issues only IPv4 overlay addresses,
+    /// so an IPv6 caller has no namespace and bare-name lookups will NXDOMAIN.
     pub ip_to_namespace: HashMap<Ipv4Addr, Namespace>,
     /// namespace -> sorted list of service names (for TXT _services queries)
     pub service_names: HashMap<Namespace, Vec<String>>,
+    /// namespace -> sorted instance diagnostics for routable instances.
+    pub instances: HashMap<Namespace, Vec<DnsInstanceDiagnostic>>,
 }
 
 impl DnsSnapshot {
@@ -27,6 +67,7 @@ impl DnsSnapshot {
             services: HashMap::new(),
             ip_to_namespace: HashMap::new(),
             service_names: HashMap::new(),
+            instances: HashMap::new(),
         }
     }
 
@@ -37,6 +78,47 @@ impl DnsSnapshot {
             .get(namespace)
             .and_then(|by_service| by_service.get(service))
             .map(Vec::as_slice)
+    }
+
+    #[must_use]
+    pub fn lookup_instance(
+        &self,
+        namespace: &Namespace,
+        service: &str,
+        instance_id: &str,
+    ) -> Option<Ipv4Addr> {
+        self.instances.get(namespace).and_then(|instances| {
+            instances
+                .iter()
+                .find(|instance| instance.service == service && instance.instance_id == instance_id)
+                .map(|instance| instance.overlay_ip)
+        })
+    }
+
+    #[must_use]
+    pub fn has_service_instances(&self, namespace: &Namespace, service: &str) -> bool {
+        self.lookup_service(namespace, service)
+            .is_some_and(|ips| !ips.is_empty())
+    }
+
+    #[must_use]
+    pub fn instance_txt_records(
+        &self,
+        namespace: &Namespace,
+        service: Option<&str>,
+    ) -> Vec<String> {
+        let Some(instances) = self.instances.get(namespace) else {
+            return Vec::new();
+        };
+        instances
+            .iter()
+            .filter(|instance| {
+                service
+                    .map(|service| instance.service == service)
+                    .unwrap_or(true)
+            })
+            .map(DnsInstanceDiagnostic::txt_record)
+            .collect()
     }
 }
 
@@ -77,11 +159,16 @@ impl SharedDnsSnapshot {
 // Projection: RoutingState -> DnsSnapshot
 // ---------------------------------------------------------------------------
 
-#[must_use]
 pub fn project_dns(state: &RoutingState) -> DnsSnapshot {
     let mut services: HashMap<Namespace, HashMap<String, Vec<Ipv4Addr>>> = HashMap::new();
     let mut ip_to_namespace: HashMap<Ipv4Addr, Namespace> = HashMap::new();
     let mut service_names: HashMap<Namespace, Vec<String>> = HashMap::new();
+    let mut instances: HashMap<Namespace, Vec<DnsInstanceDiagnostic>> = HashMap::new();
+    let machines = state
+        .machines
+        .iter()
+        .map(|machine| (machine.id.clone(), machine))
+        .collect::<HashMap<MachineId, &MachineMembership>>();
 
     for instance in &state.instances {
         if instance.phase != InstancePhase::Ready || !instance.ready {
@@ -93,6 +180,16 @@ pub fn project_dns(state: &RoutingState) -> DnsSnapshot {
         let Some(overlay_ip) = instance.overlay_ip else {
             continue;
         };
+        let Some(machine) = machines.get(&instance.machine_id) else {
+            warn!(
+                namespace = %instance.namespace,
+                service = %instance.service,
+                instance_id = %instance.instance_id,
+                machine_id = %instance.machine_id,
+                "skipping orphaned instance with missing machine record",
+            );
+            continue;
+        };
 
         services
             .entry(instance.namespace.clone())
@@ -101,6 +198,17 @@ pub fn project_dns(state: &RoutingState) -> DnsSnapshot {
             .or_default()
             .push(overlay_ip);
         ip_to_namespace.insert(overlay_ip, instance.namespace.clone());
+        instances
+            .entry(instance.namespace.clone())
+            .or_default()
+            .push(DnsInstanceDiagnostic {
+                service: instance.service.clone(),
+                instance_id: instance.instance_id.0.clone(),
+                machine_id: instance.machine_id.0.clone(),
+                topology: machine.topology.clone(),
+                slot_id: instance.slot_id.0.clone(),
+                overlay_ip,
+            });
     }
 
     // Sort IPs for deterministic ordering
@@ -116,11 +224,19 @@ pub fn project_dns(state: &RoutingState) -> DnsSnapshot {
         names.sort();
         service_names.insert(namespace.clone(), names);
     }
+    for instances in instances.values_mut() {
+        instances.sort_by(|left, right| {
+            left.service
+                .cmp(&right.service)
+                .then_with(|| left.instance_id.cmp(&right.instance_id))
+        });
+    }
 
     DnsSnapshot {
         services,
         ip_to_namespace,
         service_names,
+        instances,
     }
 }
 
@@ -128,7 +244,8 @@ pub fn project_dns(state: &RoutingState) -> DnsSnapshot {
 mod tests {
     use super::*;
     use ployz_types::model::{
-        DeployId, InstanceId, InstanceStatusRecord, MachineId, RoutingState, SlotId,
+        DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership,
+        OverlayIp, PublicKey, RoutingState, SlotId,
     };
     use std::collections::BTreeMap;
 
@@ -159,9 +276,27 @@ mod tests {
 
     fn empty_routing_state() -> RoutingState {
         RoutingState {
+            machines: vec![machine_record("machine-1")],
             revisions: vec![],
             releases: vec![],
             instances: vec![],
+        }
+    }
+
+    fn machine_record(id: &str) -> MachineMembership {
+        MachineMembership {
+            id: MachineId(id.into()),
+            public_key: PublicKey([0; 32]),
+            overlay_ip: OverlayIp("fd00::1".parse().expect("valid overlay ip")),
+            topology: MachineTopology::local(),
+            control_target: None,
+            subnet: None,
+            bridge_ip: None,
+            endpoints: Vec::new(),
+            lifecycle: MachineLifecycle::Active,
+            created_at: 1,
+            updated_at: 1,
+            labels: BTreeMap::new(),
         }
     }
 
@@ -171,6 +306,7 @@ mod tests {
         assert!(snapshot.services.is_empty());
         assert!(snapshot.ip_to_namespace.is_empty());
         assert!(snapshot.service_names.is_empty());
+        assert!(snapshot.instances.is_empty());
     }
 
     #[test]
@@ -195,6 +331,59 @@ mod tests {
                 .map(Vec::as_slice),
             Some(vec!["web".to_string()].as_slice())
         );
+        assert_eq!(
+            snapshot.instance_txt_records(&ns, Some("web")),
+            vec![
+                "service=web,instance=inst-1,machine=machine-1,region=local,az=none,slot=slot-1,ip=10.42.1.10"
+            ]
+        );
+        assert_eq!(snapshot.lookup_instance(&ns, "web", "inst-1"), Some(ip));
+    }
+
+    #[test]
+    fn instance_diagnostics_include_region_and_availability_zone() {
+        let ip = Ipv4Addr::new(10, 42, 1, 10);
+        let mut state = empty_routing_state();
+        state.machines = vec![MachineMembership {
+            topology: MachineTopology::new("us-west", Some("usw1-a"))
+                .expect("topology should parse"),
+            ..machine_record("machine-1")
+        }];
+        state
+            .instances
+            .push(ready_instance("prod", "web", Some(ip)));
+
+        let snapshot = project_dns(&state);
+        let ns = Namespace("prod".into());
+
+        assert_eq!(
+            snapshot.instance_txt_records(&ns, Some("web")),
+            vec![
+                "service=web,instance=inst-1,machine=machine-1,region=us-west,az=usw1-a,slot=slot-1,ip=10.42.1.10"
+            ]
+        );
+    }
+
+    #[test]
+    fn project_skips_orphan_instance_and_keeps_healthy_services() {
+        let orphan_ip = Ipv4Addr::new(10, 42, 1, 10);
+        let healthy_ip = Ipv4Addr::new(10, 42, 1, 11);
+        let mut state = empty_routing_state();
+        state.machines = vec![machine_record("machine-1")];
+        let mut orphan = ready_instance("prod", "web", Some(orphan_ip));
+        orphan.machine_id = MachineId("missing-machine".into());
+        state.instances.push(orphan);
+        let mut healthy = ready_instance("prod", "api", Some(healthy_ip));
+        healthy.instance_id = InstanceId("inst-2".into());
+        state.instances.push(healthy);
+
+        let snapshot = project_dns(&state);
+        let ns = Namespace("prod".into());
+        assert_eq!(snapshot.lookup_service(&ns, "web"), None);
+        assert_eq!(
+            snapshot.lookup_service(&ns, "api"),
+            Some([healthy_ip].as_slice())
+        );
     }
 
     #[test]
@@ -208,6 +397,7 @@ mod tests {
 
         let snapshot = project_dns(&state);
         assert!(snapshot.services.is_empty());
+        assert!(snapshot.instances.is_empty());
     }
 
     #[test]
@@ -221,6 +411,7 @@ mod tests {
 
         let snapshot = project_dns(&state);
         assert!(snapshot.services.is_empty());
+        assert!(snapshot.instances.is_empty());
     }
 
     #[test]
@@ -230,5 +421,6 @@ mod tests {
 
         let snapshot = project_dns(&state);
         assert!(snapshot.services.is_empty());
+        assert!(snapshot.instances.is_empty());
     }
 }

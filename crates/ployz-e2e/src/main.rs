@@ -5,7 +5,7 @@ mod scenarios;
 mod support;
 
 use clap::Parser;
-use cli::Cli;
+use cli::{Cli, ZfsMode};
 use error::{Error, Result};
 use runner::ScenarioRun;
 use std::env;
@@ -24,15 +24,26 @@ fn main() {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(cli::Command::Ls) = cli.command {
+        list_scenarios(cli.zfs);
+        return Ok(());
+    }
     let scenarios = if cli.scenario.is_empty() {
-        cli::Scenario::default_order()
+        cli::Scenario::default_order(cli.zfs)
     } else {
         cli.scenario
     };
+    validate_scenarios(&scenarios, cli.zfs)?;
     let artifacts_dir = resolve_artifacts_dir(&cli.artifacts_dir)?;
 
     let failures = if cli.parallel {
-        run_parallel_scenarios(scenarios, &cli.image, &artifacts_dir, cli.keep_failed)
+        run_parallel_scenarios(
+            scenarios,
+            &cli.image,
+            &artifacts_dir,
+            cli.keep_failed,
+            cli.zfs,
+        )
     } else {
         run_sequential_scenarios(
             scenarios,
@@ -40,6 +51,7 @@ fn run() -> Result<()> {
             &artifacts_dir,
             cli.keep_failed,
             cli.fail_fast,
+            cli.zfs,
         )?
     };
 
@@ -54,16 +66,30 @@ fn run() -> Result<()> {
     Err(Error::Message(message.trim_end().to_string()))
 }
 
+fn validate_scenarios(scenarios: &[cli::Scenario], zfs_mode: ZfsMode) -> Result<()> {
+    for scenario in scenarios {
+        scenario.validate_zfs_mode(zfs_mode).map_err(|error| {
+            Error::Message(format!(
+                "{} cannot run with --zfs {}: {error}",
+                scenario.as_str(),
+                zfs_mode.as_str()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
 fn run_sequential_scenarios(
     scenarios: Vec<cli::Scenario>,
     image: &str,
     artifacts_dir: &Path,
     keep_failed: bool,
     fail_fast: bool,
+    zfs_mode: ZfsMode,
 ) -> Result<Vec<(cli::Scenario, Error)>> {
     let mut failures = Vec::new();
     for scenario in scenarios {
-        let outcome = run_scenario(scenario, image, artifacts_dir, keep_failed);
+        let outcome = run_scenario(scenario, image, artifacts_dir, keep_failed, zfs_mode);
         if let Err((failed_scenario, error)) = outcome {
             if fail_fast {
                 return Err(Error::Message(format!(
@@ -82,6 +108,7 @@ fn run_parallel_scenarios(
     image: &str,
     artifacts_dir: &Path,
     keep_failed: bool,
+    zfs_mode: ZfsMode,
 ) -> Vec<(cli::Scenario, Error)> {
     let mut handles = Vec::with_capacity(scenarios.len());
     for scenario in scenarios {
@@ -89,7 +116,9 @@ fn run_parallel_scenarios(
         let artifacts_dir = artifacts_dir.to_path_buf();
         handles.push((
             scenario,
-            thread::spawn(move || run_scenario(scenario, &image, &artifacts_dir, keep_failed)),
+            thread::spawn(move || {
+                run_scenario(scenario, &image, &artifacts_dir, keep_failed, zfs_mode)
+            }),
         ));
     }
 
@@ -112,8 +141,9 @@ fn run_scenario(
     image: &str,
     artifacts_dir: &Path,
     keep_failed: bool,
+    zfs_mode: ZfsMode,
 ) -> std::result::Result<(), (cli::Scenario, Error)> {
-    let mut run = ScenarioRun::new(scenario, image, artifacts_dir, keep_failed)
+    let mut run = ScenarioRun::new(scenario, image, artifacts_dir, keep_failed, zfs_mode)
         .map_err(|error| (scenario, error))?;
     match run.execute() {
         Ok(()) => {
@@ -128,6 +158,22 @@ fn run_scenario(
             Err((scenario, error))
         }
     }
+}
+
+fn list_scenarios(zfs_mode: ZfsMode) {
+    let entries: Vec<serde_json::Value> = cli::Scenario::default_order(zfs_mode)
+        .into_iter()
+        .map(|scenario| {
+            serde_json::json!({
+                "scenario": scenario.as_str(),
+                "zfs": scenario.ci_zfs_mode().as_str(),
+            })
+        })
+        .collect();
+    println!(
+        "{}",
+        serde_json::to_string(&entries).expect("scenarios serialize as JSON")
+    );
 }
 
 fn resolve_artifacts_dir(path: &Path) -> Result<PathBuf> {
