@@ -60,6 +60,7 @@ struct StartPlan {
     network_dir: PathBuf,
     bootstrap_peer_records: Vec<BootstrapPeerRecord>,
     bootstrap_addrs: Vec<String>,
+    allow_disconnected_bootstrap: bool,
     gateway_ports: Vec<u16>,
     remote_control_bind_addr: SocketAddr,
     peer_control_bind_addr: SocketAddr,
@@ -97,7 +98,6 @@ impl MeshStartTx {
         &mut self,
         state: &DaemonState,
         plan: &StartPlan,
-        options: MeshStartOptions,
     ) -> Result<(), StartMeshError> {
         let exposed_tcp_ports = match self.config.subnet {
             Some(_) => plan.gateway_ports.clone(),
@@ -136,7 +136,7 @@ impl MeshStartTx {
             listen_port,
         )
         .with_seed_records(seed_records)
-        .with_disconnected_bootstrap_allowed(options.allow_disconnected_bootstrap);
+        .with_disconnected_bootstrap_allowed(plan.allow_disconnected_bootstrap);
 
         mesh.up()
             .await
@@ -409,7 +409,7 @@ impl DaemonState {
         );
 
         let mut tx = MeshStartTx::new(net_config);
-        tx.build_mesh(self, &plan, options).await?;
+        tx.build_mesh(self, &plan).await?;
 
         if let Err(error) = tx.start_remote_control(self, &plan).await {
             tx.rollback_startup().await;
@@ -564,11 +564,14 @@ impl DaemonState {
     fn plan_mesh_start(
         &self,
         net_config: &NetworkConfig,
-        _options: MeshStartOptions,
+        options: MeshStartOptions,
     ) -> Result<StartPlan, StartMeshError> {
         let network_dir = self.network_dir(&net_config.name.0);
         let bootstrap_peer_records =
             load_bootstrap_peer_records(&network_dir).map_err(StartMeshError::BootstrapResolve)?;
+        let has_remote_bootstrap_seed = bootstrap_peer_records
+            .iter()
+            .any(|peer| peer.machine_id != self.identity.machine_id);
         let bootstrap_addrs = resolve_bootstrap_addrs(
             &bootstrap_peer_records,
             &self.identity.machine_id,
@@ -607,6 +610,8 @@ impl DaemonState {
             network_dir,
             bootstrap_peer_records,
             bootstrap_addrs,
+            allow_disconnected_bootstrap: options.allow_disconnected_bootstrap
+                || has_remote_bootstrap_seed,
             gateway_ports,
             remote_control_bind_addr,
             peer_control_bind_addr,
@@ -766,6 +771,27 @@ mod tests {
 
         assert_eq!(plan.bootstrap_peer_records, vec![peer]);
         assert_eq!(plan.bootstrap_addrs, vec!["[fd00::8]:51001"]);
+        assert!(
+            plan.allow_disconnected_bootstrap,
+            "cached remote seed should let restart stay up while Corrosion converges"
+        );
+    }
+
+    #[test]
+    fn plan_mesh_start_preserves_explicit_disconnected_bootstrap_without_seed_cache() {
+        let state = make_test_state("0.0.0.0:80");
+        let config = make_network_config(&state, "alpha");
+
+        let plan = state
+            .plan_mesh_start(
+                &config,
+                MeshStartOptions {
+                    allow_disconnected_bootstrap: true,
+                },
+            )
+            .expect("plan should succeed");
+
+        assert!(plan.allow_disconnected_bootstrap);
     }
 
     #[tokio::test]

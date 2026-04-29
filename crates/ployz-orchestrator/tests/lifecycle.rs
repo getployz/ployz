@@ -109,6 +109,68 @@ async fn startup_reaches_running_single_node() {
 }
 
 #[tokio::test]
+async fn startup_preserves_stored_self_control_fields_when_seed_rebuilds_runtime_fields() {
+    let wg = Arc::new(MemoryWireGuard::new());
+    let svc = Arc::new(MemoryService::new());
+    let store = Arc::new(MemoryStore::new());
+
+    let mut stored = test_record("m1", 1);
+    stored.lifecycle = MachineLifecycle::Active;
+    stored.created_at = 11;
+    stored.updated_at = 12;
+    stored.labels = std::collections::BTreeMap::from([("role".into(), "api".into())]);
+    stored.bridge_ip = Some(OverlayIp("fd00::10".parse().expect("valid bridge ip")));
+    stored.endpoints = vec!["old.example:51820".into()];
+    store.upsert_self_machine(&stored).await.unwrap();
+
+    let mut seed = test_record("m1", 9);
+    seed.overlay_ip = OverlayIp("fd00::9".parse().expect("valid overlay ip"));
+    seed.topology =
+        MachineTopology::new("seed-region", Some("seed-a")).expect("valid seed topology");
+    seed.subnet = Some("10.210.9.0/24".parse().expect("valid subnet"));
+    seed.control_target = Some("https://self.example".into());
+    seed.endpoints = vec!["new.example:51820".into()];
+
+    let mut mesh = Mesh::new(
+        WireguardDriver::memory_with(wg),
+        StoreDriver::memory_with(store.clone(), svc),
+        None,
+        stored.id.clone(),
+        51820,
+    )
+    .with_seed_records(vec![seed.clone()])
+    .with_bootstrap_timing(Duration::from_millis(10), Duration::from_secs(5));
+
+    mesh.up().await.unwrap();
+
+    let self_record = mesh
+        .authoritative_self_record()
+        .await
+        .expect("self record should exist");
+    assert_eq!(self_record.lifecycle, MachineLifecycle::Active);
+    assert_eq!(self_record.created_at, stored.created_at);
+    assert!(self_record.updated_at >= stored.updated_at);
+    assert_eq!(self_record.labels, stored.labels);
+    assert_eq!(self_record.public_key, seed.public_key);
+    assert_eq!(self_record.overlay_ip, seed.overlay_ip);
+    assert_eq!(self_record.topology, seed.topology);
+    assert_eq!(self_record.subnet, seed.subnet);
+    assert_eq!(self_record.control_target, seed.control_target);
+    assert_eq!(self_record.endpoints, seed.endpoints);
+    assert_eq!(self_record.bridge_ip, None);
+
+    let stored_after = store
+        .list_machines()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|machine| machine.id == stored.id)
+        .expect("stored self record");
+    assert_eq!(stored_after.lifecycle, MachineLifecycle::Active);
+    assert_eq!(stored_after.labels, stored.labels);
+}
+
+#[tokio::test]
 async fn joiner_seed_peer_requires_sync_for_ready() {
     let wg = Arc::new(MemoryWireGuard::new());
     let svc = Arc::new(MemoryService::new());
@@ -287,6 +349,37 @@ async fn bootstrap_connection_timeout() {
     let err = mesh.up().await.unwrap_err();
     assert!(err.to_string().contains("bootstrap timeout"));
     assert_eq!(mesh.phase(), Phase::Stopped);
+}
+
+#[tokio::test]
+async fn bootstrap_allows_disconnected_store_when_requested() {
+    let wg = Arc::new(MemoryWireGuard::new());
+    let svc = Arc::new(MemoryService::new());
+    let store = Arc::new(MemoryStore::new());
+    let founder_record = test_record("founder", 1);
+    let peer_record = test_record("peer", 2);
+
+    store.upsert_self_machine(&founder_record).await.unwrap();
+    store.upsert_self_machine(&peer_record).await.unwrap();
+    store.set_sync_status(SyncStatus::Disconnected);
+
+    let mut mesh = Mesh::new(
+        WireguardDriver::memory_with(wg),
+        StoreDriver::memory_with(store, svc),
+        None,
+        founder_record.id.clone(),
+        51820,
+    )
+    .with_seed_records(vec![peer_record])
+    .with_disconnected_bootstrap_allowed(true)
+    .with_bootstrap_timing(Duration::from_millis(10), Duration::from_millis(100));
+
+    mesh.up().await.unwrap();
+    assert_eq!(mesh.phase(), Phase::Running);
+
+    let ready = mesh.ready_status().await;
+    assert!(!ready.sync_connected);
+    assert!(!ready.ready);
 }
 
 /// Bootstrap gate proceeds once gossip sees a peer (any non-Disconnected status).

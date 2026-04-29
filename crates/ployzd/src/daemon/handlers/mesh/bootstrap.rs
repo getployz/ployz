@@ -1,5 +1,7 @@
 use crate::daemon::setup::MeshStartOptions;
-use crate::mesh_state::bootstrap::{BootstrapPeerRecord, write_bootstrap_peer_records};
+use crate::mesh_state::bootstrap::{
+    BootstrapPeerRecord, refresh_bootstrap_peer_records_from_store, write_bootstrap_peer_records,
+};
 use crate::mesh_state::network::NetworkConfig;
 use ployz_api::{
     DaemonPayload, DaemonResponse, MachineTransitionGoal, MeshBootstrapRequest,
@@ -114,6 +116,16 @@ impl DaemonState {
                             record.control_target = Some(control_target);
                         })
                         .await;
+                }
+                if let Some(active) = self.active.as_ref()
+                    && let Err(error) = refresh_bootstrap_peer_records_from_store(
+                        &network_dir,
+                        &active.mesh.store,
+                        &self.identity.machine_id,
+                    )
+                    .await
+                {
+                    tracing::warn!(%error, "failed to refresh bootstrap seed cache after mesh bootstrap");
                 }
                 self.ok(format!(
                     "bootstrapped and started network '{}'",
