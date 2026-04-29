@@ -1,7 +1,8 @@
 [package]
 name = "ployz-corrosion"
 version.workspace = true
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
 publish = false
 
 [dependencies]
