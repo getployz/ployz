@@ -129,7 +129,9 @@ impl DaemonState {
                     active.config.clone(),
                     MachineAddContext {
                         network_name: active.config.name.0.clone(),
+                        network_dir: self.network_dir(&active.config.name.0),
                         network_id: active.config.id.clone(),
+                        local_machine_id: self.identity.machine_id.clone(),
                         cluster_cidr: active.config.cluster_cidr.clone(),
                         store: active.mesh.store.clone(),
                         reservations: self.reservations.clone(),
@@ -283,7 +285,9 @@ impl DaemonState {
 
         let context = MachineAddContext {
             network_name: active.config.name.0.clone(),
+            network_dir: self.network_dir(&active.config.name.0),
             network_id: active.config.id.clone(),
+            local_machine_id: self.identity.machine_id.clone(),
             cluster_cidr: active.config.cluster_cidr.clone(),
             store: active.mesh.store.clone(),
             reservations: self.reservations.clone(),

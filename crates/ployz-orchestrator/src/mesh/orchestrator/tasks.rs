@@ -134,13 +134,13 @@ impl Mesh {
                     .into_iter()
                     .find(|machine| machine.id == self.machine_id)
             });
-            let authoritative = self
+            let seed_self = self
                 .seed_records
                 .iter()
                 .find(|machine| machine.id == self.machine_id)
-                .cloned()
-                .or(store_self)
-                .ok_or_else(|| {
+                .cloned();
+            let authoritative =
+                merge_authoritative_self(seed_self, store_self).ok_or_else(|| {
                     TaskSetError::Subscribe(crate::error::Error::operation(
                         "self machine record",
                         "authoritative self record missing".to_string(),
@@ -197,5 +197,26 @@ impl Mesh {
         }
 
         Ok(())
+    }
+}
+
+fn merge_authoritative_self(
+    seed_self: Option<crate::model::MachineMembership>,
+    store_self: Option<crate::model::MachineMembership>,
+) -> Option<crate::model::MachineMembership> {
+    match (seed_self, store_self) {
+        (Some(seed), Some(mut stored)) => {
+            stored.public_key = seed.public_key;
+            stored.overlay_ip = seed.overlay_ip;
+            stored.topology = seed.topology;
+            stored.control_target = seed.control_target;
+            stored.subnet = seed.subnet;
+            stored.bridge_ip = seed.bridge_ip;
+            stored.endpoints = seed.endpoints;
+            Some(stored)
+        }
+        (Some(seed), None) => Some(seed),
+        (None, Some(stored)) => Some(stored),
+        (None, None) => None,
     }
 }

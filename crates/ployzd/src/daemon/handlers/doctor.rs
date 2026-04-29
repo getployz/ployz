@@ -9,7 +9,7 @@ use ployz_store_api::{
     MachineRegistry, PeerMembershipObservation, PeerMembershipState, PeerMembershipStore,
     PeerRttObservation, PeerRttStore,
 };
-use ployz_types::model::{MachineId, MachineMembership, OverlayIp, PublicKey};
+use ployz_types::model::{MachineId, MachineMembership, PublicKey};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::Duration;
@@ -754,6 +754,7 @@ mod tests {
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             certificate_renewal: None,
+            bootstrap_seed_cache: None,
         });
 
         (state, store, network)
@@ -811,6 +812,7 @@ mod tests {
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             certificate_renewal: None,
+            bootstrap_seed_cache: None,
         }
     }
 

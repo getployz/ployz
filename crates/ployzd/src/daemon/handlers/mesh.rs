@@ -3,7 +3,6 @@ mod lifecycle;
 mod participation;
 mod status;
 
-use crate::mesh_state::bootstrap::BootstrapInfo;
 use crate::mesh_state::network::NetworkConfig;
 use ployz_api::MeshReadyPayload;
 use ployz_orchestrator::mesh::orchestrator::MeshReadyStatus;
@@ -21,15 +20,6 @@ fn restore_network_config_subnet(
     config
         .save(config_path)
         .map_err(|error| format!("restore network config: {error}"))
-}
-
-fn bootstrap_info_from_record(record: &MachineMembership) -> BootstrapInfo {
-    BootstrapInfo {
-        peer_id: record.id.0.clone(),
-        peer_wg_public_key: record.public_key.0,
-        peer_overlay_ip: record.overlay_ip.0,
-        peer_endpoints: record.endpoints.clone(),
-    }
 }
 
 fn mesh_ready_payload(value: MeshReadyStatus, self_record: &MachineMembership) -> MeshReadyPayload {
@@ -189,6 +179,7 @@ mod tests {
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             certificate_renewal: None,
+            bootstrap_seed_cache: None,
         });
 
         let error = state
@@ -326,6 +317,7 @@ mod tests {
             gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             certificate_renewal: None,
+            bootstrap_seed_cache: None,
         });
         (state, store, network)
     }

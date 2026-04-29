@@ -1286,6 +1286,7 @@ async fn make_state_with_remote_port(
         gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         certificate_renewal: None,
+        bootstrap_seed_cache: None,
     });
 
     (state, store, network)

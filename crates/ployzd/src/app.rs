@@ -346,8 +346,12 @@ async fn shutdown_active_mesh(state: &Arc<RwLock<DaemonState>>) {
             gateway,
             dns,
             certificate_renewal,
+            bootstrap_seed_cache,
         } = active;
         if let Some(task) = certificate_renewal {
+            task.shutdown().await;
+        }
+        if let Some(task) = bootstrap_seed_cache {
             task.shutdown().await;
         }
         let _ = dns.detach().await;
