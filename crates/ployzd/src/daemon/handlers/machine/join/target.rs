@@ -326,9 +326,9 @@ pub(super) async fn upsert_transient_peer(
     record: MachineMembership,
 ) -> Result<(), String> {
     peer_sync_tx
-        .send(ployz_orchestrator::mesh::tasks::PeerSyncCommand::UpsertTransient(
-            record.observation(),
-        ))
+        .send(
+            ployz_orchestrator::mesh::tasks::PeerSyncCommand::UpsertTransient(record.observation()),
+        )
         .await
         .map_err(|err| format!("failed to install founder-local transient peer: {err}"))
 }

@@ -8,19 +8,23 @@ use tracing::{info, warn};
 use crate::config::DnsError;
 use crate::snapshot::{SharedDnsSnapshot, project_dns};
 
-const REFRESH_DEBOUNCE: Duration = Duration::from_millis(100);
-
 // ---------------------------------------------------------------------------
 // DnsStore trait — consumer contract
 // ---------------------------------------------------------------------------
 
 pub trait DnsStore: Send + Sync {
-    fn load_routing_state(
+    fn subscribe_routing_events(
         &self,
-    ) -> impl Future<Output = Result<ployz_types::model::RoutingState, DnsError>> + Send + '_;
-    fn subscribe_routing_invalidations(
-        &self,
-    ) -> impl Future<Output = Result<mpsc::Receiver<()>, DnsError>> + Send + '_;
+    ) -> impl Future<
+        Output = Result<
+            (
+                ployz_types::model::RoutingState,
+                mpsc::Receiver<ployz_types::model::RoutingEvent>,
+            ),
+            DnsError,
+        >,
+    > + Send
+    + '_;
 }
 
 // ---------------------------------------------------------------------------
@@ -31,28 +35,96 @@ pub async fn run_sync_loop<S>(store: S, snapshot: SharedDnsSnapshot) -> Result<(
 where
     S: DnsStore + Send + Sync + 'static,
 {
-    let mut refresh_rx = store.subscribe_routing_invalidations().await?;
+    loop {
+        let (mut state, mut routing_rx) = store.subscribe_routing_events().await?;
+        replace_dns_snapshot(&state, &snapshot);
 
-    while refresh_rx.recv().await.is_some() {
-        tokio::time::sleep(REFRESH_DEBOUNCE).await;
-        while refresh_rx.try_recv().is_ok() {}
-        match store.load_routing_state().await {
-            Ok(state) => {
-                let next = project_dns(&state);
-                let service_count: usize = next.services.values().map(HashMap::len).sum();
-                snapshot.replace(next);
-                info!(service_count, "dns snapshot refreshed");
+        while let Some(event) = routing_rx.recv().await {
+            apply_routing_event(&mut state, event);
+            while let Ok(event) = routing_rx.try_recv() {
+                apply_routing_event(&mut state, event);
             }
-            Err(err) => {
-                warn!(
-                    ?err,
-                    "failed to refresh dns snapshot; keeping previous state"
-                );
-            }
+            replace_dns_snapshot(&state, &snapshot);
+        }
+        warn!("dns routing event stream closed; resubscribing");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+fn replace_dns_snapshot(state: &ployz_types::model::RoutingState, snapshot: &SharedDnsSnapshot) {
+    let next = project_dns(state);
+    let service_count: usize = next.services.values().map(HashMap::len).sum();
+    snapshot.replace(next);
+    info!(service_count, "dns snapshot refreshed");
+}
+
+fn apply_routing_event(
+    state: &mut ployz_types::model::RoutingState,
+    event: ployz_types::model::RoutingEvent,
+) {
+    use ployz_types::model::RoutingEvent;
+    match event {
+        RoutingEvent::MachineAdded(record) => state.machines.push(record),
+        RoutingEvent::MachineUpdated { old, new } => {
+            replace_by(&mut state.machines, |record| record.id == old.id, new);
+        }
+        RoutingEvent::MachineRemoved(record) => {
+            state.machines.retain(|machine| machine.id != record.id);
+        }
+        RoutingEvent::RevisionAdded(record) => state.revisions.push(record),
+        RoutingEvent::RevisionUpdated { old, new } => {
+            replace_by(
+                &mut state.revisions,
+                |record| {
+                    record.namespace == old.namespace
+                        && record.service == old.service
+                        && record.revision_hash == old.revision_hash
+                },
+                new,
+            );
+        }
+        RoutingEvent::RevisionRemoved(record) => {
+            state.revisions.retain(|revision| {
+                !(revision.namespace == record.namespace
+                    && revision.service == record.service
+                    && revision.revision_hash == record.revision_hash)
+            });
+        }
+        RoutingEvent::ReleaseAdded(record) => state.releases.push(record),
+        RoutingEvent::ReleaseUpdated { old, new } => {
+            replace_by(
+                &mut state.releases,
+                |record| record.namespace == old.namespace && record.service == old.service,
+                new,
+            );
+        }
+        RoutingEvent::ReleaseRemoved(record) => {
+            state.releases.retain(|release| {
+                !(release.namespace == record.namespace && release.service == record.service)
+            });
+        }
+        RoutingEvent::InstanceAdded(record) => state.instances.push(record),
+        RoutingEvent::InstanceUpdated { old, new } => {
+            replace_by(
+                &mut state.instances,
+                |record| record.instance_id == old.instance_id,
+                new,
+            );
+        }
+        RoutingEvent::InstanceRemoved(record) => {
+            state
+                .instances
+                .retain(|instance| instance.instance_id != record.instance_id);
         }
     }
+}
 
-    Ok(())
+fn replace_by<T>(values: &mut Vec<T>, mut matches: impl FnMut(&T) -> bool, replacement: T) {
+    if let Some(value) = values.iter_mut().find(|value| matches(value)) {
+        *value = replacement;
+    } else {
+        values.push(replacement);
+    }
 }
 
 pub fn spawn_sync_thread_with_store<S>(

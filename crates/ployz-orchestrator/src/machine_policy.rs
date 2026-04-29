@@ -1,4 +1,6 @@
-use crate::model::{MachineId, MachineLifecycle, MachineMembership, PlacementCandidate, RegionName};
+use crate::model::{
+    MachineId, MachineLifecycle, MachineMembership, PlacementCandidate, RegionName,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticRole {

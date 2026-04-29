@@ -10,9 +10,7 @@ use tracing::{debug, info, warn};
 use crate::mesh::driver::WireguardDriver;
 use crate::mesh::peer_state::PeerStateMap;
 use crate::mesh::{DevicePeer, WireGuardDevice};
-use crate::model::{
-    MachineEvent, MachineId, MachineMembership, MachineObservation, PublicKey,
-};
+use crate::model::{MachineEvent, MachineId, MachineMembership, MachineObservation, PublicKey};
 
 const ENDPOINT_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(1);
 const ENDPOINT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);

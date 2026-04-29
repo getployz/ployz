@@ -30,7 +30,7 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
             &self,
         ) -> Result<ployz_types::model::RoutingState, ployz_gateway::GatewayError> {
             info!("gateway store call start: load_routing_state");
-            match ployz_store_api::RoutingSnapshotReader::load_routing_state(&self.0).await {
+            match self.0.load_routing_state().await {
                 Ok(state) => {
                     info!(
                         revisions = state.revisions.len(),
@@ -47,21 +47,30 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
             }
         }
 
-        async fn subscribe_routing_invalidations(
+        async fn subscribe_routing_events(
             &self,
-        ) -> Result<tokio::sync::mpsc::Receiver<()>, ployz_gateway::GatewayError> {
-            info!("gateway store call start: subscribe_routing_invalidations");
-            match ployz_store_api::RoutingSnapshotReader::subscribe_routing_invalidations(&self.0)
-                .await
-            {
-                Ok(rx) => {
-                    info!("gateway store call complete: subscribe_routing_invalidations");
-                    Ok(rx)
+        ) -> Result<
+            (
+                ployz_types::model::RoutingState,
+                tokio::sync::mpsc::Receiver<ployz_types::model::RoutingEvent>,
+            ),
+            ployz_gateway::GatewayError,
+        > {
+            info!("gateway store call start: subscribe_routing_events");
+            match ployz_store_api::RoutingSnapshotReader::subscribe_routing_events(&self.0).await {
+                Ok((state, rx)) => {
+                    info!(
+                        revisions = state.revisions.len(),
+                        releases = state.releases.len(),
+                        instances = state.instances.len(),
+                        "gateway store call complete: subscribe_routing_events"
+                    );
+                    Ok((state, rx))
                 }
                 Err(err) => {
                     warn!(
                         error = %err,
-                        "gateway store call failed: subscribe_routing_invalidations"
+                        "gateway store call failed: subscribe_routing_events"
                     );
                     Err(ployz_gateway::GatewayError::Store(err.to_string()))
                 }
@@ -181,12 +190,7 @@ async fn probe_corrosion_startup(store: &ployz_corrosion::CorrosionStore) {
         }
     }
 
-    match timeout(
-        Duration::from_secs(5),
-        ployz_store_api::RoutingSnapshotReader::load_routing_state(store),
-    )
-    .await
-    {
+    match timeout(Duration::from_secs(5), store.load_routing_state()).await {
         Ok(Ok(state)) => {
             info!(
                 revisions = state.revisions.len(),

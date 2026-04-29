@@ -33,7 +33,10 @@ impl ParticipantProbe for OverlayRpcProbe {
             Ok(response) if response.ok => Ok(()),
             Ok(response) => Err(ProbeError {
                 kind: ProbeErrorKind::Unexpected,
-                detail: format!("remote daemon error [{}]: {}", response.code, response.message),
+                detail: format!(
+                    "remote daemon error [{}]: {}",
+                    response.code, response.message
+                ),
             }),
             Err(error) => {
                 let kind = if error.contains("timed out") {
@@ -41,7 +44,10 @@ impl ParticipantProbe for OverlayRpcProbe {
                 } else {
                     ProbeErrorKind::Refused
                 };
-                Err(ProbeError { kind, detail: error })
+                Err(ProbeError {
+                    kind,
+                    detail: error,
+                })
             }
         }
     }
