@@ -206,7 +206,7 @@ where
         Some(Ok(TypedQueryEvent::Columns(_) | TypedQueryEvent::EndOfQuery { .. })) => Ok(None),
         Some(Ok(TypedQueryEvent::Error(err))) => {
             warn!(%label, ?err, "routing subscription error");
-            Err(())
+            Ok(None)
         }
         Some(Ok(TypedQueryEvent::Row(rowid, cells))) => apply_routing_change(
             ChangeType::Insert,
@@ -230,7 +230,7 @@ where
         }
         Some(Err(err)) => {
             warn!(%label, ?err, "routing stream error");
-            Err(())
+            Ok(None)
         }
         None => Err(()),
     }
@@ -299,7 +299,7 @@ pub(crate) async fn subscribe_routing_events(
     .await?;
 
     let initial = state.to_routing_state();
-    let (tx, rx) = mpsc::channel(16);
+    let (tx, rx) = mpsc::channel(1024);
 
     tokio::spawn(async move {
         loop {

@@ -347,7 +347,7 @@ fn gateway_tls_listener(config: &GatewayConfig) -> Option<GatewayTlsListener<'_>
 mod tests {
     use super::{EmbeddedShutdownWatch, run_server};
     use crate::SharedSnapshot;
-    use crate::routes::{BackendView, GatewaySnapshot, HttpRouteView};
+    use crate::routes::{BackendView, GatewaySnapshot, HttpRouteView, RouteId, ServiceKey};
     use pingora::prelude::Opt;
     use ployz_types::model::{InstanceId, MachineId, MachineTopology};
     use ployz_types::spec::Namespace;
@@ -371,7 +371,10 @@ mod tests {
 
         let snapshot = GatewaySnapshot {
             http_routes: vec![HttpRouteView {
-                route_id: "http:prod:web:0".into(),
+                route_id: RouteId::http(
+                    &ServiceKey::new(Namespace("prod".into()), "web".into()),
+                    0,
+                ),
                 namespace: Namespace("prod".into()),
                 service: "web".into(),
                 revision_hash: "rev-1".into(),
@@ -645,7 +648,10 @@ mod tests {
     fn gateway_snapshot(upstream_addr: SocketAddr) -> GatewaySnapshot {
         GatewaySnapshot {
             http_routes: vec![HttpRouteView {
-                route_id: "http:prod:web:0".into(),
+                route_id: RouteId::http(
+                    &ServiceKey::new(Namespace("prod".into()), "web".into()),
+                    0,
+                ),
                 namespace: Namespace("prod".into()),
                 service: "web".into(),
                 revision_hash: "rev-1".into(),

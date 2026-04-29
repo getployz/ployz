@@ -2,6 +2,8 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::net::{SocketAddr, SocketAddrV4};
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use pingora::tls::pkey::{PKey, Private};
 use pingora::tls::x509::X509;
@@ -14,6 +16,11 @@ use ployz_types::spec::{Namespace, RouteSpec, ServiceSpec};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::warn;
+
+#[cfg(test)]
+static HTTP_CONFLICT_VALIDATION_VISITS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static TCP_CONFLICT_VALIDATION_VISITS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone)]
 pub struct GatewaySnapshot {
@@ -62,7 +69,7 @@ pub struct CertificateView {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HttpRouteView {
-    pub route_id: String,
+    pub route_id: RouteId,
     pub namespace: Namespace,
     pub service: String,
     pub revision_hash: String,
@@ -73,7 +80,7 @@ pub struct HttpRouteView {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TcpRouteView {
-    pub route_id: String,
+    pub route_id: RouteId,
     pub namespace: Namespace,
     pub service: String,
     pub revision_hash: String,
@@ -131,7 +138,7 @@ impl RevisionKey {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct RouteId(String);
 
 impl RouteId {
@@ -155,11 +162,11 @@ impl RouteId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
 
-    #[cfg(test)]
-    #[must_use]
-    pub fn from_raw_for_tests(value: &str) -> Self {
-        Self(value.to_string())
+impl std::fmt::Display for RouteId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
@@ -300,11 +307,12 @@ pub struct GatewayProjector {
     specs: HashMap<RevisionKey, ServiceSpec>,
     releases: HashMap<ServiceKey, ployz_types::model::ServiceReleaseRecord>,
     instances: HashMap<InstanceId, InstanceStatusRecord>,
-    instances_by_service: HashMap<ServiceKey, HashSet<InstanceId>>,
     instances_by_machine: HashMap<MachineId, HashSet<InstanceId>>,
     service_routes: HashMap<ServiceKey, BTreeSet<RouteId>>,
     http_routes: BTreeMap<RouteId, HttpRouteView>,
     tcp_routes: BTreeMap<RouteId, TcpRouteView>,
+    http_conflicts: HashMap<(String, String), RouteId>,
+    tcp_conflicts: HashMap<u16, RouteId>,
     acme_challenges: HashMap<(String, String), AcmeChallengeView>,
     certificates: HashMap<String, CertificateView>,
     #[cfg(test)]
@@ -347,11 +355,12 @@ impl GatewayProjector {
                 .map(|release| (ServiceKey::from_release(&release), release))
                 .collect(),
             instances: HashMap::new(),
-            instances_by_service: HashMap::new(),
             instances_by_machine: HashMap::new(),
             service_routes: HashMap::new(),
             http_routes: BTreeMap::new(),
             tcp_routes: BTreeMap::new(),
+            http_conflicts: HashMap::new(),
+            tcp_conflicts: HashMap::new(),
             acme_challenges: HashMap::new(),
             certificates: HashMap::new(),
             #[cfg(test)]
@@ -451,7 +460,7 @@ impl GatewayProjector {
             RoutingEvent::ReleaseRemoved(release) => {
                 let service = ServiceKey::from_release(&release);
                 self.releases.remove(&service);
-                self.clear_service_routes(&service);
+                services.insert(service);
             }
             RoutingEvent::InstanceAdded(instance) => {
                 services.insert(ServiceKey::from_instance(&instance));
@@ -546,14 +555,6 @@ impl GatewayProjector {
                 }
             }
         }
-        if let Err(err) = validate_http_conflicts(self.http_routes.values()) {
-            self.restore_service_routes(saved_routes);
-            return Err(err);
-        }
-        if let Err(err) = validate_tcp_conflicts(self.tcp_routes.values()) {
-            self.restore_service_routes(saved_routes);
-            return Err(err);
-        }
         let removed = removed_route_ids.into_iter().collect::<BTreeSet<_>>();
         let mut upserted_http = Vec::new();
         let mut upserted_tcp = Vec::new();
@@ -603,7 +604,7 @@ impl GatewayProjector {
                         index,
                         route,
                         &backends_by_port,
-                    );
+                    )?;
                 }
                 RouteSpec::Tcp(route) => {
                     self.project_tcp(
@@ -613,7 +614,7 @@ impl GatewayProjector {
                         index,
                         route,
                         &backends_by_port,
-                    );
+                    )?;
                 }
             }
         }
@@ -628,7 +629,7 @@ impl GatewayProjector {
         index: usize,
         route: &ployz_types::spec::HttpRoute,
         backends_by_port: &BTreeMap<String, Vec<BackendView>>,
-    ) {
+    ) -> Result<(), ProjectionError> {
         let route_id = RouteId::http(service, index);
         let hostnames = route
             .hostnames
@@ -643,21 +644,20 @@ impl GatewayProjector {
             .entry(service.clone())
             .or_default()
             .insert(route_id.clone());
-        self.http_routes.insert(
-            route_id.clone(),
-            HttpRouteView {
-                route_id: route_id.as_str().to_string(),
-                namespace: service.namespace.clone(),
-                service: spec.name.clone(),
-                revision_hash: revision_hash.to_string(),
-                hostnames,
-                path_prefix: normalize_path_prefix(&route.path_prefix),
-                backends: backends_by_port
-                    .get(&route.service_port)
-                    .cloned()
-                    .unwrap_or_default(),
-            },
-        );
+        let route = HttpRouteView {
+            route_id: route_id.clone(),
+            namespace: service.namespace.clone(),
+            service: spec.name.clone(),
+            revision_hash: revision_hash.to_string(),
+            hostnames,
+            path_prefix: normalize_path_prefix(&route.path_prefix),
+            backends: backends_by_port
+                .get(&route.service_port)
+                .cloned()
+                .unwrap_or_default(),
+        };
+        self.insert_projected_http_route(route_id, route)?;
+        Ok(())
     }
 
     fn project_tcp(
@@ -668,26 +668,25 @@ impl GatewayProjector {
         index: usize,
         route: &ployz_types::spec::TcpRoute,
         backends_by_port: &BTreeMap<String, Vec<BackendView>>,
-    ) {
+    ) -> Result<(), ProjectionError> {
         let route_id = RouteId::tcp(service, index);
         self.service_routes
             .entry(service.clone())
             .or_default()
             .insert(route_id.clone());
-        self.tcp_routes.insert(
-            route_id.clone(),
-            TcpRouteView {
-                route_id: route_id.as_str().to_string(),
-                namespace: service.namespace.clone(),
-                service: spec.name.clone(),
-                revision_hash: revision_hash.to_string(),
-                listen_port: route.listen_port,
-                backends: backends_by_port
-                    .get(&route.service_port)
-                    .cloned()
-                    .unwrap_or_default(),
-            },
-        );
+        let route = TcpRouteView {
+            route_id: route_id.clone(),
+            namespace: service.namespace.clone(),
+            service: spec.name.clone(),
+            revision_hash: revision_hash.to_string(),
+            listen_port: route.listen_port,
+            backends: backends_by_port
+                .get(&route.service_port)
+                .cloned()
+                .unwrap_or_default(),
+        };
+        self.insert_projected_tcp_route(route_id, route)?;
+        Ok(())
     }
 
     fn project_backends(
@@ -705,6 +704,53 @@ impl GatewayProjector {
             &self.instances,
             &self.machines,
         )
+    }
+
+    fn insert_projected_http_route(
+        &mut self,
+        route_id: RouteId,
+        route: HttpRouteView,
+    ) -> Result<(), ProjectionError> {
+        let hosts = conflict_hosts(&route);
+        for host in &hosts {
+            let key = (host.clone(), route.path_prefix.clone());
+            if let Some(existing) = self.http_conflicts.get(&key)
+                && existing != &route_id
+            {
+                return Err(ProjectionError::HttpRouteConflict {
+                    left: existing.to_string(),
+                    right: route_id.to_string(),
+                    host: host.clone(),
+                    path_prefix: route.path_prefix.clone(),
+                });
+            }
+        }
+        for host in hosts {
+            self.http_conflicts
+                .insert((host, route.path_prefix.clone()), route_id.clone());
+        }
+        self.http_routes.insert(route_id, route);
+        Ok(())
+    }
+
+    fn insert_projected_tcp_route(
+        &mut self,
+        route_id: RouteId,
+        route: TcpRouteView,
+    ) -> Result<(), ProjectionError> {
+        if let Some(existing) = self.tcp_conflicts.get(&route.listen_port)
+            && existing != &route_id
+        {
+            return Err(ProjectionError::TcpRouteConflict {
+                left: existing.to_string(),
+                right: route_id.to_string(),
+                listen_port: route.listen_port,
+            });
+        }
+        self.tcp_conflicts
+            .insert(route.listen_port, route_id.clone());
+        self.tcp_routes.insert(route_id, route);
+        Ok(())
     }
 
     fn project_certificate(&mut self, record: CertificateRecord) {
@@ -748,24 +794,27 @@ impl GatewayProjector {
     }
 
     fn spec_for_revision(&mut self, key: &RevisionKey) -> Result<&ServiceSpec, ProjectionError> {
-        if !self.specs.contains_key(key) {
-            let Some(revision) = self.revisions.get(key) else {
-                return Err(ProjectionError::MissingRevision {
-                    namespace: key.namespace.clone(),
-                    service: key.service.clone(),
-                    revision_hash: key.revision_hash.clone(),
-                });
-            };
-            let spec = serde_json::from_str(&revision.spec_json).map_err(|err| {
-                ProjectionError::InvalidRevisionSpec {
-                    namespace: revision.namespace.clone(),
-                    service: revision.service.clone(),
-                    message: err.to_string(),
-                }
-            })?;
-            self.specs.insert(key.clone(), spec);
+        use std::collections::hash_map::Entry;
+        match self.specs.entry(key.clone()) {
+            Entry::Occupied(entry) => Ok(entry.into_mut()),
+            Entry::Vacant(entry) => {
+                let Some(revision) = self.revisions.get(key) else {
+                    return Err(ProjectionError::MissingRevision {
+                        namespace: key.namespace.clone(),
+                        service: key.service.clone(),
+                        revision_hash: key.revision_hash.clone(),
+                    });
+                };
+                let spec = serde_json::from_str(&revision.spec_json).map_err(|err| {
+                    ProjectionError::InvalidRevisionSpec {
+                        namespace: revision.namespace.clone(),
+                        service: revision.service.clone(),
+                        message: err.to_string(),
+                    }
+                })?;
+                Ok(entry.insert(spec))
+            }
         }
-        Ok(self.specs.get(key).expect("spec inserted before lookup"))
     }
 
     fn clear_service_routes(&mut self, service: &ServiceKey) {
@@ -773,8 +822,19 @@ impl GatewayProjector {
             return;
         };
         for route_id in routes {
-            self.http_routes.remove(&route_id);
-            self.tcp_routes.remove(&route_id);
+            self.remove_projected_route(&route_id);
+        }
+    }
+
+    fn remove_projected_route(&mut self, route_id: &RouteId) {
+        if let Some(route) = self.http_routes.remove(route_id) {
+            for host in conflict_hosts(&route) {
+                self.http_conflicts
+                    .remove(&(host, route.path_prefix.clone()));
+            }
+        }
+        if let Some(route) = self.tcp_routes.remove(route_id) {
+            self.tcp_conflicts.remove(&route.listen_port);
         }
     }
 
@@ -814,21 +874,30 @@ impl GatewayProjector {
                 self.service_routes.insert(snapshot.service, route_ids);
             }
             for (route_id, route) in snapshot.http_routes {
-                self.http_routes.insert(route_id, route);
+                self.restore_projected_http_route(route_id, route);
             }
             for (route_id, route) in snapshot.tcp_routes {
-                self.tcp_routes.insert(route_id, route);
+                self.restore_projected_tcp_route(route_id, route);
             }
         }
     }
 
+    fn restore_projected_http_route(&mut self, route_id: RouteId, route: HttpRouteView) {
+        for host in conflict_hosts(&route) {
+            self.http_conflicts
+                .insert((host, route.path_prefix.clone()), route_id.clone());
+        }
+        self.http_routes.insert(route_id, route);
+    }
+
+    fn restore_projected_tcp_route(&mut self, route_id: RouteId, route: TcpRouteView) {
+        self.tcp_conflicts
+            .insert(route.listen_port, route_id.clone());
+        self.tcp_routes.insert(route_id, route);
+    }
+
     fn insert_instance(&mut self, instance: InstanceStatusRecord) {
         self.remove_instance(&instance.instance_id);
-        let service = ServiceKey::from_instance(&instance);
-        self.instances_by_service
-            .entry(service)
-            .or_default()
-            .insert(instance.instance_id.clone());
         self.instances_by_machine
             .entry(instance.machine_id.clone())
             .or_default()
@@ -841,13 +910,6 @@ impl GatewayProjector {
         let Some(instance) = self.instances.remove(instance_id) else {
             return;
         };
-        let service = ServiceKey::from_instance(&instance);
-        if let Some(instances) = self.instances_by_service.get_mut(&service) {
-            instances.remove(instance_id);
-            if instances.is_empty() {
-                self.instances_by_service.remove(&service);
-            }
-        }
         if let Some(instances) = self.instances_by_machine.get_mut(&instance.machine_id) {
             instances.remove(instance_id);
             if instances.is_empty() {
@@ -1138,23 +1200,30 @@ fn allowed_revision_hashes(release: &ServiceRelease) -> HashSet<String> {
     }
 }
 
+fn conflict_hosts(route: &HttpRouteView) -> Vec<String> {
+    if route.hostnames.is_empty() {
+        vec!["*".to_string()]
+    } else {
+        route.hostnames.clone()
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
 fn validate_http_conflicts<'a>(
     routes: impl IntoIterator<Item = &'a HttpRouteView>,
 ) -> Result<(), ProjectionError> {
     let mut seen = HashMap::new();
     for route in routes {
-        let hosts = if route.hostnames.is_empty() {
-            vec!["*".to_string()]
-        } else {
-            route.hostnames.clone()
-        };
-        for host in hosts {
+        #[cfg(test)]
+        HTTP_CONFLICT_VALIDATION_VISITS.fetch_add(1, Ordering::Relaxed);
+        for host in conflict_hosts(route) {
             let path_prefix = route.path_prefix.clone();
             let key = (host.clone(), path_prefix.clone());
             if let Some(existing) = seen.insert(key, route.route_id.clone()) {
                 return Err(ProjectionError::HttpRouteConflict {
-                    left: existing,
-                    right: route.route_id.clone(),
+                    left: existing.to_string(),
+                    right: route.route_id.to_string(),
                     host,
                     path_prefix,
                 });
@@ -1164,15 +1233,19 @@ fn validate_http_conflicts<'a>(
     Ok(())
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn validate_tcp_conflicts<'a>(
     routes: impl IntoIterator<Item = &'a TcpRouteView>,
 ) -> Result<(), ProjectionError> {
     let mut seen = HashMap::new();
     for route in routes {
+        #[cfg(test)]
+        TCP_CONFLICT_VALIDATION_VISITS.fetch_add(1, Ordering::Relaxed);
         if let Some(existing) = seen.insert(route.listen_port, route.route_id.clone()) {
             return Err(ProjectionError::TcpRouteConflict {
-                left: existing,
-                right: route.route_id.clone(),
+                left: existing.to_string(),
+                right: route.route_id.to_string(),
                 listen_port: route.listen_port,
             });
         }
@@ -1188,6 +1261,17 @@ fn route_matches_host(route: &HttpRouteView, host: Option<&str>) -> bool {
         return false;
     };
     route.hostnames.iter().any(|candidate| candidate == host)
+}
+
+#[cfg(test)]
+fn reset_conflict_validation_visits() {
+    HTTP_CONFLICT_VALIDATION_VISITS.store(0, Ordering::Relaxed);
+    TCP_CONFLICT_VALIDATION_VISITS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn http_conflict_validation_visits() -> usize {
+    HTTP_CONFLICT_VALIDATION_VISITS.load(Ordering::Relaxed)
 }
 
 pub(crate) fn normalize_path_prefix(path_prefix: &str) -> String {
@@ -1337,11 +1421,14 @@ mod tests {
 
     #[test]
     fn specific_host_beats_wildcard_and_longer_path_beats_shorter() {
+        let namespace = Namespace("prod".into());
+        let specific_route_id =
+            RouteId::http(&ServiceKey::new(namespace.clone(), "specific".into()), 0);
         let snapshot = GatewaySnapshot {
             http_routes: vec![
                 HttpRouteView {
-                    route_id: "specific".into(),
-                    namespace: Namespace("prod".into()),
+                    route_id: specific_route_id.clone(),
+                    namespace: namespace.clone(),
                     service: "specific".into(),
                     revision_hash: "r2".into(),
                     hostnames: vec!["api.example.com".into()],
@@ -1349,8 +1436,8 @@ mod tests {
                     backends: vec![backend("specific")],
                 },
                 HttpRouteView {
-                    route_id: "wild".into(),
-                    namespace: Namespace("prod".into()),
+                    route_id: RouteId::http(&ServiceKey::new(namespace.clone(), "wild".into()), 0),
+                    namespace,
                     service: "wild".into(),
                     revision_hash: "r1".into(),
                     hostnames: Vec::new(),
@@ -1365,7 +1452,7 @@ mod tests {
 
         let route = match_http_route(&snapshot, Some("api.example.com"), "/v1/users")
             .expect("matched route");
-        assert_eq!(route.route_id, "specific");
+        assert_eq!(route.route_id, specific_route_id);
     }
 
     #[test]
@@ -1686,6 +1773,51 @@ mod tests {
     }
 
     #[test]
+    fn single_route_update_does_not_run_global_http_validation() {
+        let namespace = Namespace("prod".into());
+        let mut revisions = Vec::new();
+        let mut releases = Vec::new();
+        for index in 0..1_000 {
+            let service = format!("svc-{index}");
+            let spec = service_spec(
+                &namespace,
+                &service,
+                "v1",
+                vec![format!("{service}.example.com")],
+            );
+            let revision_hash = spec.revision_hash().expect("revision hash");
+            revisions.push(revision_record(&spec));
+            releases.push(release_record(
+                &namespace,
+                &service,
+                &revision_hash,
+                Vec::new(),
+            ));
+        }
+
+        let mut projector = GatewayProjector::new(RoutingState {
+            machines: Vec::new(),
+            revisions,
+            releases: releases.clone(),
+            instances: Vec::new(),
+        })
+        .expect("initial projection");
+
+        reset_conflict_validation_visits();
+        projector
+            .apply(GatewayProjectionEvent::Routing(
+                RoutingEvent::ReleaseUpdated {
+                    old: releases[421].clone(),
+                    new: releases[421].clone(),
+                },
+            ))
+            .expect("release update should apply");
+
+        let visits = http_conflict_validation_visits();
+        assert_eq!(visits, 0, "single route update ran global validation");
+    }
+
+    #[test]
     fn failed_reprojection_restores_existing_routes() {
         let namespace = Namespace("prod".into());
         let spec = service_spec(&namespace, "api", "v1", vec!["api.example.com".into()]);
@@ -1733,6 +1865,47 @@ mod tests {
             "failed reprojection must restore previously published routes"
         );
         assert_eq!(projector.snapshot_value().tcp_routes, before.tcp_routes);
+    }
+
+    #[test]
+    fn release_removed_emits_route_removal_delta() {
+        let namespace = Namespace("prod".into());
+        let spec = service_spec(&namespace, "api", "v1", vec!["api.example.com".into()]);
+        let release = release_record(
+            &namespace,
+            "api",
+            &spec.revision_hash().expect("revision hash"),
+            Vec::new(),
+        );
+        let mut projector = GatewayProjector::new(RoutingState {
+            machines: Vec::new(),
+            revisions: vec![revision_record(&spec)],
+            releases: vec![release.clone()],
+            instances: Vec::new(),
+        })
+        .expect("initial projection");
+
+        let delta = projector
+            .apply(GatewayProjectionEvent::Routing(
+                RoutingEvent::ReleaseRemoved(release),
+            ))
+            .expect("release removal should apply");
+
+        assert!(projector.snapshot_value().http_routes.is_empty());
+        match delta {
+            ProjectionDelta::RoutesChanged {
+                removed_route_ids,
+                upserted_http,
+                upserted_tcp,
+            } => {
+                assert_eq!(removed_route_ids.len(), 1);
+                assert!(upserted_http.is_empty());
+                assert!(upserted_tcp.is_empty());
+            }
+            ProjectionDelta::CertificateChanged { .. }
+            | ProjectionDelta::ChallengeChanged { .. }
+            | ProjectionDelta::Empty => panic!("expected route removal delta"),
+        }
     }
 
     fn service_spec(
