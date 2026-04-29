@@ -155,6 +155,12 @@ impl RouteId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    #[cfg(test)]
+    #[must_use]
+    pub fn from_raw_for_tests(value: &str) -> Self {
+        Self(value.to_string())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -188,6 +194,24 @@ pub enum GatewayProjectionEvent {
     Routing(RoutingEvent),
     Certificate(CertificateEvent),
     AcmeChallenge(AcmeChallengeEvent),
+}
+
+#[derive(Debug, Clone)]
+pub enum ProjectionDelta {
+    RoutesChanged {
+        removed_route_ids: Vec<RouteId>,
+        upserted_http: Vec<HttpRouteView>,
+        upserted_tcp: Vec<TcpRouteView>,
+    },
+    CertificateChanged {
+        hostname: String,
+        value: Option<CertificateView>,
+    },
+    ChallengeChanged {
+        key: (String, String),
+        value: Option<AcmeChallengeView>,
+    },
+    Empty,
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -342,13 +366,15 @@ impl GatewayProjector {
         Ok(projector)
     }
 
-    pub fn apply(&mut self, event: GatewayProjectionEvent) -> Result<(), ProjectionError> {
+    pub fn apply(
+        &mut self,
+        event: GatewayProjectionEvent,
+    ) -> Result<ProjectionDelta, ProjectionError> {
         match event {
-            GatewayProjectionEvent::Routing(event) => self.apply_routing(event)?,
-            GatewayProjectionEvent::Certificate(event) => self.apply_certificate(event),
-            GatewayProjectionEvent::AcmeChallenge(event) => self.apply_acme(event),
+            GatewayProjectionEvent::Routing(event) => self.apply_routing(event),
+            GatewayProjectionEvent::Certificate(event) => Ok(self.apply_certificate(event)),
+            GatewayProjectionEvent::AcmeChallenge(event) => Ok(self.apply_acme(event)),
         }
-        Ok(())
     }
 
     #[must_use]
@@ -373,7 +399,7 @@ impl GatewayProjector {
         }
     }
 
-    fn apply_routing(&mut self, event: RoutingEvent) -> Result<(), ProjectionError> {
+    fn apply_routing(&mut self, event: RoutingEvent) -> Result<ProjectionDelta, ProjectionError> {
         let mut services = BTreeSet::new();
         match event {
             RoutingEvent::MachineAdded(machine) => {
@@ -444,7 +470,14 @@ impl GatewayProjector {
         self.reproject_services(services.into_iter().collect())
     }
 
-    fn apply_certificate(&mut self, event: CertificateEvent) {
+    fn apply_certificate(&mut self, event: CertificateEvent) -> ProjectionDelta {
+        let hostname = match &event {
+            CertificateEvent::Added(record)
+            | CertificateEvent::Updated(record)
+            | CertificateEvent::Removed(record) => {
+                NormalizedHostname::parse(&record.hostname).map(NormalizedHostname::into_string)
+            }
+        };
         match event {
             CertificateEvent::Added(record) | CertificateEvent::Updated(record) => {
                 self.project_certificate(record);
@@ -455,9 +488,22 @@ impl GatewayProjector {
                 }
             }
         }
+        hostname.map_or(ProjectionDelta::Empty, |hostname| {
+            ProjectionDelta::CertificateChanged {
+                value: self.certificates.get(&hostname).cloned(),
+                hostname,
+            }
+        })
     }
 
-    fn apply_acme(&mut self, event: AcmeChallengeEvent) {
+    fn apply_acme(&mut self, event: AcmeChallengeEvent) -> ProjectionDelta {
+        let key = match &event {
+            AcmeChallengeEvent::Added(record)
+            | AcmeChallengeEvent::Updated(record)
+            | AcmeChallengeEvent::Removed(record) => NormalizedHostname::parse(&record.hostname)
+                .map(NormalizedHostname::into_string)
+                .map(|hostname| (hostname, record.token.clone())),
+        };
         match event {
             AcmeChallengeEvent::Added(record) | AcmeChallengeEvent::Updated(record) => {
                 self.project_acme(record);
@@ -469,11 +515,28 @@ impl GatewayProjector {
                 }
             }
         }
+        key.map_or(ProjectionDelta::Empty, |key| {
+            ProjectionDelta::ChallengeChanged {
+                value: self.acme_challenges.get(&key).cloned(),
+                key,
+            }
+        })
     }
 
-    fn reproject_services(&mut self, services: Vec<ServiceKey>) -> Result<(), ProjectionError> {
+    fn reproject_services(
+        &mut self,
+        services: Vec<ServiceKey>,
+    ) -> Result<ProjectionDelta, ProjectionError> {
         let services = services.into_iter().collect::<BTreeSet<_>>();
+        if services.is_empty() {
+            return Ok(ProjectionDelta::Empty);
+        }
+        let affected_services = services.clone();
         let saved_routes = self.save_service_routes(&services);
+        let removed_route_ids = saved_routes
+            .iter()
+            .flat_map(|snapshot| snapshot.route_ids.iter().flatten().cloned())
+            .collect::<Vec<_>>();
         for service in services {
             self.clear_service_routes(&service);
             if self.releases.contains_key(&service) {
@@ -491,7 +554,26 @@ impl GatewayProjector {
             self.restore_service_routes(saved_routes);
             return Err(err);
         }
-        Ok(())
+        let removed = removed_route_ids.into_iter().collect::<BTreeSet<_>>();
+        let mut upserted_http = Vec::new();
+        let mut upserted_tcp = Vec::new();
+        for service in affected_services {
+            if let Some(route_ids) = self.service_routes.get(&service) {
+                for route_id in route_ids {
+                    if let Some(route) = self.http_routes.get(route_id) {
+                        upserted_http.push(route.clone());
+                    }
+                    if let Some(route) = self.tcp_routes.get(route_id) {
+                        upserted_tcp.push(route.clone());
+                    }
+                }
+            }
+        }
+        Ok(ProjectionDelta::RoutesChanged {
+            removed_route_ids: removed.into_iter().collect(),
+            upserted_http,
+            upserted_tcp,
+        })
     }
 
     fn project_service(&mut self, service: &ServiceKey) -> Result<(), ProjectionError> {
@@ -1108,7 +1190,7 @@ fn route_matches_host(route: &HttpRouteView, host: Option<&str>) -> bool {
     route.hostnames.iter().any(|candidate| candidate == host)
 }
 
-fn normalize_path_prefix(path_prefix: &str) -> String {
+pub(crate) fn normalize_path_prefix(path_prefix: &str) -> String {
     let trimmed = path_prefix.trim();
     if trimmed.is_empty() {
         return "/".into();
@@ -1538,6 +1620,69 @@ mod tests {
 
         assert_eq!(projector.project_count(&api_service), 2);
         assert_eq!(projector.project_count(&web_service), 1);
+    }
+
+    #[test]
+    fn thousand_route_release_update_touches_one_route() {
+        let namespace = Namespace("prod".into());
+        let mut revisions = Vec::new();
+        let mut releases = Vec::new();
+        let mut service_keys = Vec::new();
+        for index in 0..1_000 {
+            let service = format!("svc-{index}");
+            let spec = service_spec(
+                &namespace,
+                &service,
+                "v1",
+                vec![format!("{service}.example.com")],
+            );
+            let revision_hash = spec.revision_hash().expect("revision hash");
+            revisions.push(revision_record(&spec));
+            releases.push(release_record(
+                &namespace,
+                &service,
+                &revision_hash,
+                Vec::new(),
+            ));
+            service_keys.push(ServiceKey::new(namespace.clone(), service));
+        }
+
+        let mut projector = GatewayProjector::new(RoutingState {
+            machines: Vec::new(),
+            revisions,
+            releases: releases.clone(),
+            instances: Vec::new(),
+        })
+        .expect("initial projection");
+
+        let target = 421;
+        let target_service = service_keys[target].clone();
+        let neighbor_service = service_keys[target + 1].clone();
+        let delta = projector
+            .apply(GatewayProjectionEvent::Routing(
+                RoutingEvent::ReleaseUpdated {
+                    old: releases[target].clone(),
+                    new: releases[target].clone(),
+                },
+            ))
+            .expect("release update should apply");
+
+        assert_eq!(projector.project_count(&target_service), 2);
+        assert_eq!(projector.project_count(&neighbor_service), 1);
+        match delta {
+            ProjectionDelta::RoutesChanged {
+                removed_route_ids,
+                upserted_http,
+                upserted_tcp,
+            } => {
+                assert_eq!(removed_route_ids.len(), 1);
+                assert_eq!(upserted_http.len(), 1);
+                assert!(upserted_tcp.is_empty());
+            }
+            ProjectionDelta::CertificateChanged { .. }
+            | ProjectionDelta::ChallengeChanged { .. }
+            | ProjectionDelta::Empty => panic!("expected route delta"),
+        }
     }
 
     #[test]
