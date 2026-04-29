@@ -90,7 +90,3 @@ pub struct WorkloadLabels {
     pub revision_hash: String,
     pub deploy_id: String,
 }
-
-// Old label constants for migration-period adoption
-pub(crate) const LEGACY_LABEL_CONFIG_HASH: &str = "ployz.config-hash";
-pub(crate) const LEGACY_LABEL_PARENT_ID: &str = "ployz.parent-container-id";
