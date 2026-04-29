@@ -8,6 +8,7 @@ use ployz_types::model::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -17,6 +18,8 @@ use base64::Engine as _;
 
 const BOOTSTRAP_PEERS_FILE: &str = "bootstrap-peers.json";
 const SEED_CACHE_DEBOUNCE: Duration = Duration::from_millis(250);
+
+static SEED_CACHE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BootstrapPeerRecord {
@@ -82,13 +85,13 @@ impl BootstrapPeerRecord {
     }
 }
 
+#[must_use = "dropping the handle leaves the seed cache task running detached; call shutdown to cancel and observe join errors"]
 pub struct BootstrapSeedCacheTask {
     cancel: CancellationToken,
     handle: JoinHandle<()>,
 }
 
 impl BootstrapSeedCacheTask {
-    #[must_use]
     pub fn spawn(
         network_dir: std::path::PathBuf,
         store: StoreDriver,
@@ -147,8 +150,11 @@ pub fn write_bootstrap_peer_records(
 
     let body = serde_json::to_string_pretty(&peers)
         .map_err(|error| format!("encode bootstrap peers '{}': {error}", path.display()))?;
-    let tmp_path =
-        path.with_file_name(format!("{BOOTSTRAP_PEERS_FILE}.tmp.{}", std::process::id()));
+    let seq = SEED_CACHE_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp_path = path.with_file_name(format!(
+        "{BOOTSTRAP_PEERS_FILE}.tmp.{}.{seq}",
+        std::process::id()
+    ));
     std::fs::write(&tmp_path, body)
         .map_err(|error| format!("write bootstrap peers '{}': {error}", tmp_path.display()))?;
     std::fs::rename(&tmp_path, &path).map_err(|error| {
@@ -173,27 +179,6 @@ pub fn resolve_bootstrap_addrs(
         .collect()
 }
 
-pub async fn refresh_bootstrap_peer_records_from_store(
-    network_dir: &Path,
-    store: &StoreDriver,
-    local_machine_id: &MachineId,
-) -> Result<(), String> {
-    let machines = store
-        .list_machines()
-        .await
-        .map_err(|error| format!("list machines for bootstrap seed cache: {error}"))?;
-    let peers = remote_peer_records(machines.iter(), local_machine_id);
-    write_bootstrap_peer_records(network_dir, &peers)
-}
-
-fn upsert_machine(records: &mut Vec<MachineMembership>, record: MachineMembership) {
-    if let Some(existing) = records.iter_mut().find(|machine| machine.id == record.id) {
-        *existing = record;
-    } else {
-        records.push(record);
-    }
-}
-
 pub async fn build_seed_records(
     identity: &Identity,
     net_config: &NetworkConfig,
@@ -206,7 +191,6 @@ pub async fn build_seed_records(
         .iter()
         .filter(|peer| peer.machine_id != identity.machine_id)
         .cloned()
-        .into_iter()
         .map(BootstrapPeerRecord::into_machine_record)
         .collect();
 
@@ -224,7 +208,7 @@ pub async fn build_seed_records(
     if self_control_target.is_some() {
         self_record.control_target = self_control_target;
     }
-    upsert_machine(&mut seed_records, self_record);
+    seed_records.push(self_record);
 
     seed_records
 }
@@ -277,6 +261,8 @@ async fn run_bootstrap_seed_cache_task(
 
             apply_machine_event(&mut machines, event);
             let mut subscription_ended = false;
+            // The debounce timer is shared across the burst — a steady stream of
+            // events still allows it to elapse, bounding write latency under churn.
             let debounce = tokio::time::sleep(SEED_CACHE_DEBOUNCE);
             tokio::pin!(debounce);
             loop {

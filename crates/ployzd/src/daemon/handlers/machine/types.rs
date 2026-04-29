@@ -9,7 +9,6 @@ use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_store_api::StoreDriver;
 use ployz_types::model::{MachineId, NetworkId};
 use std::fmt;
-use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -17,9 +16,7 @@ use tokio::sync::mpsc;
 #[derive(Clone)]
 pub(super) struct MachineAddContext {
     pub network_name: String,
-    pub network_dir: PathBuf,
     pub network_id: NetworkId,
-    pub local_machine_id: MachineId,
     pub cluster_cidr: String,
     pub store: StoreDriver,
     pub reservations: Arc<PendingReservations>,

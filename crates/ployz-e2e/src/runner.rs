@@ -226,7 +226,7 @@ impl ScenarioRun {
                 docker_outer_raw(["logs", node.container_name.as_str()]).unwrap_or_default();
             fs::write(
                 logs_dir.join(format!("{}-container.log", node.name)),
-                container_logs.stdout,
+                container_logs.combined(),
             )
             .map_err(|error| {
                 Error::Io(format!(
@@ -319,7 +319,7 @@ impl ScenarioRun {
                     docker_outer_raw(["logs", container_name.as_str()]).unwrap_or_default();
                 fs::write(
                     logs_dir.join(format!("{container_name}.log")),
-                    container_logs.stdout,
+                    container_logs.combined(),
                 )
                 .map_err(|error| {
                     Error::Io(format!("write container log '{container_name}': {error}"))
