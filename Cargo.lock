@@ -3044,7 +3044,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "ployz"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "clap",
  "ployz-config",
@@ -3126,7 +3126,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-dns"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "hickory-server",
@@ -3170,7 +3170,7 @@ version = "0.1.0"
 
 [[package]]
 name = "ployz-gateway"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3331,7 +3331,7 @@ dependencies = [
 
 [[package]]
 name = "ployzd"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "base64",
