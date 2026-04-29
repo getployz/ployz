@@ -1,7 +1,8 @@
 [package]
 name = "ployz-corrosion"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 publish = false
 
 [dependencies]
@@ -10,17 +11,14 @@ ployz-store-api = { path = "../ployz-store-api" }
 ployz-types = { path = "../ployz-types" }
 corro-api-types = { git = "https://github.com/getployz/corrosion.git", branch = "main" }
 tokio = { workspace = true }
-hyper = { version = "1", features = ["client", "http2"] }
-# TODO: remove client-legacy when migrating to hyper's modern conn::http2 API
-hyper-util = { version = "0.1", features = ["client", "client-legacy", "http2", "tokio"] }
 http = { workspace = true }
-http-body-util = "0.1"
-tower = { version = "0.5", features = ["util"] }
+http-body = "1"
+reqwest = { version = "0.12", default-features = false, features = ["http2", "rustls-tls"] }
 bytes = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 futures-util = { workspace = true }
-tokio-util = { workspace = true }
+tokio-util = { workspace = true, features = ["codec", "io"] }
 pin-project-lite = "0.2"
 uuid = { workspace = true }
 tracing = { workspace = true }

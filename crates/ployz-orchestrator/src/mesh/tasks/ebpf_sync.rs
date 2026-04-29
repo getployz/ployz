@@ -1,12 +1,12 @@
 use crate::mesh::MeshDataplane;
-use crate::model::{MachineEvent, MachineId, MachineRecord};
+use crate::model::{MachineEvent, MachineId, MachineMembership};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 pub(crate) async fn run_ebpf_sync_task(
-    snapshot: Vec<MachineRecord>,
+    snapshot: Vec<MachineMembership>,
     mut events: mpsc::Receiver<MachineEvent>,
     dataplane: Arc<dyn MeshDataplane>,
     wg_ifindex: u32,

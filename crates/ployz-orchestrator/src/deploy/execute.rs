@@ -1,14 +1,26 @@
-use crate::deploy::plan::{PlanFingerprint, ResolvedPlan, resolve_plan};
-use crate::deploy::probe::probe_participants;
+use crate::certificates::{
+    AcmeAccountCoordinator, AcmeIssuerFactory, Http01ChallengeReadiness, IssuanceCoordinator,
+    LocalHttp01ChallengeReadiness, NoopAcmeAccountCoordinator, NoopAcmeIssuerFactory,
+    NoopIssuanceCoordinator, spawn_certificate_finalization_with_coordination,
+    start_pending_orders,
+};
+use crate::deploy::managed_domains;
+use crate::deploy::plan::{
+    PlanFingerprint, ResolvedPlan, VolumeChange, resolve_plan, volume_record_change,
+};
+use crate::deploy::probe::{NoopParticipantProbe, ParticipantProbe, probe_participants};
 use crate::deploy::session::{self, DeploySessionFactory};
+use crate::deploy::transaction::{CleanupPlan, PreparedDeploy};
 use crate::error::{Error, Result};
 use crate::model::{
-    DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployRecord, DeployState,
-    InstanceId, InstanceStatusRecord, MachineId, ServiceRelease, ServiceReleaseRecord,
-    ServiceRevisionRecord, ServiceRoutingPolicy,
+    DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployState, InstanceId,
+    InstanceStatusRecord, MachineId, ServiceRevisionRecord, VolumeRecord,
 };
 use futures_util::stream::{self, StreamExt, TryStreamExt};
-use ployz_store_api::{DeployStore, StoreDriver};
+use ployz_store_api::{
+    DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, InstanceStatusRepository,
+    StoreDriver,
+};
 use ployz_types::time::now_unix_secs;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -27,6 +39,7 @@ struct StartTask {
     machine_id: MachineId,
     instance_id: InstanceId,
     spec_json: String,
+    volumes_json: String,
 }
 
 #[derive(Debug)]
@@ -151,9 +164,38 @@ pub(super) async fn apply(
     local_machine_id: &MachineId,
     manifest: &ployz_types::spec::DeployManifest,
 ) -> Result<DeployApplyResult> {
+    apply_with_certificate_coordination(
+        store,
+        session_factory,
+        local_machine_id,
+        manifest,
+        Arc::new(NoopIssuanceCoordinator),
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+        &NoopParticipantProbe,
+    )
+    .await
+}
+
+pub(super) async fn apply_with_certificate_coordination(
+    store: &StoreDriver,
+    session_factory: &dyn DeploySessionFactory,
+    local_machine_id: &MachineId,
+    manifest: &ployz_types::spec::DeployManifest,
+    certificate_coordinator: Arc<dyn IssuanceCoordinator>,
+    account_coordinator: Arc<dyn AcmeAccountCoordinator>,
+    challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
+    issuer_factory: Arc<dyn AcmeIssuerFactory>,
+    prober: &dyn ParticipantProbe,
+) -> Result<DeployApplyResult> {
     let initial_plan = resolve_plan(store, local_machine_id, manifest).await?;
-    let reachability =
-        probe_participants(initial_plan.participants(), initial_plan.machine_map()).await;
+    let reachability = probe_participants(
+        prober,
+        initial_plan.participants(),
+        initial_plan.machine_map(),
+    )
+    .await;
     if !reachability.unreachable.is_empty() {
         let unreachable = reachability
             .unreachable
@@ -172,22 +214,52 @@ pub(super) async fn apply(
         ));
     }
 
-    apply_with_initial_plan(
+    apply_with_initial_plan_and_certificate_coordination(
         store,
         session_factory,
         local_machine_id,
         manifest,
         initial_plan,
+        certificate_coordinator,
+        account_coordinator,
+        challenge_readiness,
+        issuer_factory,
     )
     .await
 }
 
+#[cfg(test)]
 pub(super) async fn apply_with_initial_plan(
     store: &StoreDriver,
     session_factory: &dyn DeploySessionFactory,
     local_machine_id: &MachineId,
     manifest: &ployz_types::spec::DeployManifest,
     initial_plan: ResolvedPlan,
+) -> Result<DeployApplyResult> {
+    apply_with_initial_plan_and_certificate_coordination(
+        store,
+        session_factory,
+        local_machine_id,
+        manifest,
+        initial_plan,
+        Arc::new(NoopIssuanceCoordinator),
+        Arc::new(NoopAcmeAccountCoordinator),
+        Arc::new(LocalHttp01ChallengeReadiness),
+        Arc::new(NoopAcmeIssuerFactory::default()),
+    )
+    .await
+}
+
+pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
+    store: &StoreDriver,
+    session_factory: &dyn DeploySessionFactory,
+    local_machine_id: &MachineId,
+    manifest: &ployz_types::spec::DeployManifest,
+    initial_plan: ResolvedPlan,
+    certificate_coordinator: Arc<dyn IssuanceCoordinator>,
+    account_coordinator: Arc<dyn AcmeAccountCoordinator>,
+    challenge_readiness: Arc<dyn Http01ChallengeReadiness>,
+    issuer_factory: Arc<dyn AcmeIssuerFactory>,
 ) -> Result<DeployApplyResult> {
     let deploy_id = DeployId(Uuid::new_v4().to_string());
     let started_at = now_unix_secs();
@@ -200,76 +272,85 @@ pub(super) async fn apply_with_initial_plan(
         let final_plan = resolve_plan(store, local_machine_id, manifest).await?;
         let final_fingerprint = final_plan.fingerprint();
         ensure_plan_stable(&initial_fingerprint, &final_fingerprint)?;
+        managed_domains::validate_hostname_ownership(store, &final_plan).await?;
 
-        let final_preview = final_plan.to_preview(Vec::new());
-        let mut deploy_record = DeployRecord {
-            deploy_id: deploy_id.clone(),
-            namespace: final_plan.namespace().clone(),
-            coordinator_machine_id: local_machine_id.clone(),
-            manifest_hash: final_plan.manifest_hash().to_string(),
-            state: DeployState::Applying,
+        let prepared = PreparedDeploy::new(
+            deploy_id.clone(),
             started_at,
-            committed_at: None,
-            finished_at: None,
-            summary_json: serde_json::to_string(&final_preview).map_err(|error| {
-                Error::operation("deploy_apply", format!("serialize preview: {error}"))
-            })?,
-        };
-        store.upsert_deploy(&deploy_record).await?;
+            local_machine_id.clone(),
+            final_plan,
+        )?;
+        store
+            .update_deploy_record(&DeployRecordUpdate {
+                deploy: prepared.applying_record().clone(),
+            })
+            .await?;
 
-        upsert_revisions(store, &final_plan, local_machine_id, started_at).await?;
-        let startup = run_phase_startup(store, &sessions, &final_plan, &deploy_id).await?;
+        upsert_revisions(store, prepared.revisions()).await?;
+        let startup = run_phase_startup(store, &sessions, prepared.plan(), &deploy_id).await?;
         events.extend(startup.events);
 
-        let committed_releases =
-            build_committed_releases(&final_plan, &startup.started, &deploy_id)?;
-        let removed_services = final_plan
-            .services()
-            .iter()
-            .filter(|service| service.action == DeployChangeKind::Remove)
-            .map(|service| service.service.clone())
-            .collect::<Vec<_>>();
+        let started = prepared.into_started(startup.started);
+        let committed_volumes = build_committed_volumes(
+            started.plan(),
+            started.started(),
+            started.deploy_id(),
+            started_at,
+        )?;
+        let removed_volumes_list = removed_volumes(store, started.plan()).await?;
 
-        deploy_record.state = DeployState::Committed;
-        deploy_record.committed_at = Some(now_unix_secs());
-        deploy_record.finished_at = deploy_record.committed_at;
-        deploy_record.summary_json = serde_json::to_string(&final_preview).map_err(|error| {
-            Error::operation("deploy_apply", format!("serialize preview: {error}"))
-        })?;
+        let commit_plan = started.into_commit_plan(removed_volumes_list, committed_volumes)?;
+        store.commit_deploy(commit_plan.commit()).await?;
+        let mut committed = commit_plan.into_committed();
+        events.push(committed.commit_event());
 
-        store
-            .commit_deploy(
-                final_plan.namespace(),
-                &removed_services,
-                &committed_releases,
-                &deploy_record,
-            )
-            .await?;
-        events.push(DeployEvent {
-            step: "commit".into(),
-            message: format!(
-                "committed deploy {} for '{}'",
-                deploy_id,
-                final_plan.namespace()
-            ),
-        });
-
-        let cleanup = cleanup_stale_instances(
+        let managed_hostnames = managed_domains::ensure_certificate_intents(
             store,
-            &sessions,
-            final_plan.namespace(),
-            final_plan.participants(),
-            committed_releases.as_slice(),
+            committed.plan(),
+            issuer_factory.issuer_url(),
         )
         .await?;
+        let issuer = issuer_factory.create(
+            Arc::new(LocalHttp01ChallengeReadiness),
+            account_coordinator.clone(),
+        );
+        let acme_warnings = start_pending_orders(
+            store,
+            issuer.as_ref(),
+            certificate_coordinator.as_ref(),
+            &managed_hostnames,
+        )
+        .await;
+        let mut managed_warnings =
+            managed_domains::warnings_for_plan(store, committed.plan()).await?;
+        managed_warnings.extend(acme_warnings);
+        committed.set_warnings(managed_warnings)?;
+        store
+            .update_deploy_record(&DeployRecordUpdate {
+                deploy: committed.deploy_record().clone(),
+            })
+            .await?;
+        spawn_certificate_finalization_with_coordination(
+            store.clone(),
+            issuer_factory.clone(),
+            challenge_readiness.clone(),
+            account_coordinator.clone(),
+            certificate_coordinator.clone(),
+        );
+
+        let cleanup_plan = committed.cleanup_plan();
+        let cleanup = cleanup_stale_instances(store, &sessions, &cleanup_plan).await?;
         events.extend(cleanup.events);
 
         let final_state = if cleanup.errors.is_empty() {
             DeployState::Committed
         } else {
-            deploy_record.state = DeployState::CleanupPending;
-            deploy_record.finished_at = Some(now_unix_secs());
-            store.upsert_deploy(&deploy_record).await?;
+            let cleanup_pending_record = committed.cleanup_pending_record(now_unix_secs());
+            store
+                .update_deploy_record(&DeployRecordUpdate {
+                    deploy: cleanup_pending_record,
+                })
+                .await?;
             for error in cleanup.errors {
                 events.push(DeployEvent {
                     step: "cleanup_pending".into(),
@@ -280,8 +361,8 @@ pub(super) async fn apply_with_initial_plan(
         };
 
         Ok(DeployApplyResult {
-            deploy_id: deploy_id.clone(),
-            preview: final_preview,
+            deploy_id: committed.deploy_id().clone(),
+            preview: committed.preview().clone(),
             state: final_state,
             events,
         })
@@ -292,27 +373,11 @@ pub(super) async fn apply_with_initial_plan(
     result
 }
 
-async fn upsert_revisions(
-    store: &StoreDriver,
-    plan: &ResolvedPlan,
-    local_machine_id: &MachineId,
-    created_at: u64,
-) -> Result<()> {
-    for service in plan.services() {
-        let Some(spec_json) = service.spec_json() else {
-            continue;
-        };
-        let Some(revision_hash) = service.next_revision_hash() else {
-            continue;
-        };
+async fn upsert_revisions(store: &StoreDriver, revisions: &[ServiceRevisionRecord]) -> Result<()> {
+    for revision in revisions {
         store
-            .upsert_service_revision(&ServiceRevisionRecord {
-                namespace: plan.namespace().clone(),
-                service: service.service.clone(),
-                revision_hash: revision_hash.to_string(),
-                spec_json: spec_json.to_string(),
-                created_by: local_machine_id.clone(),
-                created_at,
+            .record_service_revision(&DeployRevisionUpsert {
+                revision: revision.clone(),
             })
             .await?;
     }
@@ -350,6 +415,7 @@ pub(super) async fn run_phase_startup(
                     machine_id: slot.machine_id.clone(),
                     instance_id: InstanceId(Uuid::new_v4().to_string()),
                     spec_json: spec_json.to_string(),
+                    volumes_json: plan.volumes_json().to_string(),
                 });
         }
     }
@@ -430,10 +496,11 @@ async fn run_machine_start_queue(
                     slot_id: task.slot_id.clone(),
                     instance_id: task.instance_id.clone(),
                     spec_json: task.spec_json.clone(),
+                    volumes_json: task.volumes_json.clone(),
                 })
                 .await?
         };
-        store.upsert_instance_status(&status).await?;
+        store.record_instance_status(&status).await?;
         events.push(DeployEvent {
             step: "start_candidate".into(),
             message: format!(
@@ -455,93 +522,93 @@ async fn run_machine_start_queue(
     })
 }
 
-fn build_committed_releases(
+async fn removed_volumes(store: &StoreDriver, plan: &ResolvedPlan) -> Result<Vec<String>> {
+    let declared = plan
+        .volumes()
+        .iter()
+        .map(|volume| volume.declaration.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut removed = store
+        .list_volumes(plan.namespace())
+        .await?
+        .into_iter()
+        .filter(|record| !declared.contains(record.volume_name.as_str()))
+        .map(|record| record.volume_name)
+        .collect::<Vec<_>>();
+    removed.sort();
+    Ok(removed)
+}
+
+fn build_committed_volumes(
     plan: &ResolvedPlan,
     started: &HashMap<(String, String), InstanceStatusRecord>,
     deploy_id: &DeployId,
-) -> Result<Vec<ServiceReleaseRecord>> {
-    let mut releases = Vec::new();
-    for service in plan.services() {
-        let Some(revision_hash) = service.next_revision_hash() else {
-            continue;
-        };
-
-        let mut next_slots = Vec::new();
-        for slot in &service.slots {
-            let active_instance_id = match slot.action {
-                DeployChangeKind::Unchanged => {
-                    let Some(current) = &slot.current else {
-                        return Err(Error::operation(
-                            "deploy_apply",
-                            format!(
-                                "missing current slot for unchanged service '{}' slot '{}'",
-                                service.service, slot.slot_id
-                            ),
-                        ));
-                    };
-                    current.active_instance_id.clone()
-                }
-                DeployChangeKind::Create | DeployChangeKind::Replace => {
-                    let key = (service.service.clone(), slot.slot_id.0.clone());
-                    let Some(status) = started.get(&key) else {
-                        return Err(Error::operation(
-                            "deploy_apply",
-                            format!(
-                                "missing started instance for service '{}' slot '{}'",
-                                service.service, slot.slot_id
-                            ),
-                        ));
-                    };
-                    status.instance_id.clone()
-                }
-                DeployChangeKind::Remove => continue,
-            };
-            next_slots.push(crate::model::ServiceReleaseSlot {
-                slot_id: slot.slot_id.clone(),
-                machine_id: slot.machine_id.clone(),
-                active_instance_id,
-                revision_hash: revision_hash.to_string(),
-            });
+    now: u64,
+) -> Result<Vec<VolumeRecord>> {
+    let mut volumes = Vec::new();
+    for planned in plan
+        .volumes()
+        .iter()
+        .filter(|planned| !matches!(volume_record_change(planned), VolumeChange::Skip))
+    {
+        if !planned.attached_services.is_empty()
+            && !planned.attached_services.iter().any(|service| {
+                started
+                    .keys()
+                    .any(|(started_service, _)| started_service == service)
+            })
+        {
+            return Err(Error::operation(
+                "deploy_apply",
+                format!(
+                    "volume '{}' changed but no attached service was reconciled",
+                    planned.declaration.name
+                ),
+            ));
         }
 
-        releases.push(ServiceReleaseRecord {
+        let created_at = planned
+            .current
+            .as_ref()
+            .map(|record| record.created_at)
+            .unwrap_or(now);
+        let created_by_deploy_id = planned
+            .current
+            .as_ref()
+            .map(|record| record.created_by_deploy_id.clone())
+            .unwrap_or_else(|| deploy_id.clone());
+        volumes.push(VolumeRecord {
             namespace: plan.namespace().clone(),
-            service: service.service.clone(),
-            release: ServiceRelease {
-                primary_revision_hash: revision_hash.to_string(),
-                referenced_revision_hashes: vec![revision_hash.to_string()],
-                routing: ServiceRoutingPolicy::Direct {
-                    revision_hash: revision_hash.to_string(),
-                },
-                slots: next_slots,
-                updated_by_deploy_id: deploy_id.clone(),
-                updated_at: now_unix_secs(),
-            },
+            volume_name: planned.declaration.name.clone(),
+            scope: planned.declaration.scope,
+            machine_id: planned.machine_id.clone(),
+            quota: planned.declaration.quota.clone(),
+            mode: planned.declaration.mode.clone(),
+            owner: planned.declaration.owner.clone(),
+            attached_services: planned.attached_services.clone(),
+            created_at,
+            created_by_deploy_id,
+            last_modified_at: now,
+            last_modified_by_deploy_id: deploy_id.clone(),
         });
     }
-    Ok(releases)
+    Ok(volumes)
 }
 
 async fn cleanup_stale_instances(
     store: &StoreDriver,
     sessions: &SessionSet,
-    namespace: &ployz_types::spec::Namespace,
-    participants: &BTreeSet<MachineId>,
-    committed_releases: &[ServiceReleaseRecord],
+    plan: &CleanupPlan,
 ) -> Result<CleanupResult> {
-    let active_instance_ids = committed_releases
-        .iter()
-        .flat_map(|release| release.release.slots.iter())
-        .map(|slot| slot.active_instance_id.0.clone())
-        .collect::<BTreeSet<_>>();
-    let participant_ids = participants
+    let participant_ids = plan
+        .participants()
         .iter()
         .map(|machine_id| machine_id.0.clone())
         .collect::<BTreeSet<_>>();
 
     let mut stale_by_machine: BTreeMap<MachineId, Vec<InstanceStatusRecord>> = BTreeMap::new();
-    for status in store.list_instance_status(namespace).await? {
-        if active_instance_ids.contains(&status.instance_id.0) {
+    for status in store.list_instance_status(plan.namespace()).await? {
+        if plan.active_instance_ids().contains(&status.instance_id.0) {
             continue;
         }
         if !participant_ids.contains(&status.machine_id.0) {

@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use ployz_config::{RuntimeTarget, ServiceMode};
+use ployz_config::{RuntimeTarget, ServiceMode, StorageConfig};
 use ployz_metrics::{set_build_info, spawn_metrics_listener};
 use ployz_runtime_api::Identity;
 use tokio::sync::{RwLock, mpsc};
@@ -17,6 +17,7 @@ use crate::metrics::{
     ContainerResourceMetricsSource, DockerContainerResourceMetricsSource,
     spawn_container_resource_metrics_loop,
 };
+use ployz_types::model::MachineTopology;
 use ployz_types::model::NetworkLifecycle;
 
 pub fn init_tracing() {
@@ -30,12 +31,15 @@ pub async fn run_daemon(
     service_mode: ServiceMode,
     socket_path: &str,
     built_in_images: BuiltInImages,
+    storage: StorageConfig,
     cluster_cidr: String,
     subnet_prefix_len: u8,
     remote_control_port: u16,
     peer_control_target: Option<String>,
     gateway_listen_addr: String,
+    gateway_https_listen_addr: Option<String>,
     gateway_threads: usize,
+    configured_topology: Option<MachineTopology>,
     daemon_metrics_listen_addr: Option<String>,
     dns_metrics_listen_addr: Option<String>,
     gateway_metrics_listen_addr: Option<String>,
@@ -46,12 +50,15 @@ pub async fn run_daemon(
         service_mode,
         socket_path,
         built_in_images,
+        storage,
         cluster_cidr,
         subnet_prefix_len,
         remote_control_port,
         peer_control_target,
         gateway_listen_addr,
+        gateway_https_listen_addr,
         gateway_threads,
+        configured_topology,
         daemon_metrics_listen_addr,
         dns_metrics_listen_addr,
         gateway_metrics_listen_addr,
@@ -68,12 +75,15 @@ async fn run_daemon_with_resource_metrics_source(
     service_mode: ServiceMode,
     socket_path: &str,
     built_in_images: BuiltInImages,
+    storage: StorageConfig,
     cluster_cidr: String,
     subnet_prefix_len: u8,
     remote_control_port: u16,
     peer_control_target: Option<String>,
     gateway_listen_addr: String,
+    gateway_https_listen_addr: Option<String>,
     gateway_threads: usize,
+    configured_topology: Option<MachineTopology>,
     daemon_metrics_listen_addr: Option<String>,
     dns_metrics_listen_addr: Option<String>,
     gateway_metrics_listen_addr: Option<String>,
@@ -85,12 +95,15 @@ async fn run_daemon_with_resource_metrics_source(
         service_mode,
         socket_path,
         built_in_images,
+        storage,
         cluster_cidr,
         subnet_prefix_len,
         remote_control_port,
         peer_control_target,
         gateway_listen_addr,
+        gateway_https_listen_addr,
         gateway_threads,
+        configured_topology,
         daemon_metrics_listen_addr,
         dns_metrics_listen_addr,
         gateway_metrics_listen_addr,
@@ -106,12 +119,15 @@ async fn run_daemon_inner(
     service_mode: ServiceMode,
     socket_path: &str,
     built_in_images: BuiltInImages,
+    storage: StorageConfig,
     cluster_cidr: String,
     subnet_prefix_len: u8,
     remote_control_port: u16,
     peer_control_target: Option<String>,
     gateway_listen_addr: String,
+    gateway_https_listen_addr: Option<String>,
     gateway_threads: usize,
+    configured_topology: Option<MachineTopology>,
     daemon_metrics_listen_addr: Option<String>,
     dns_metrics_listen_addr: Option<String>,
     gateway_metrics_listen_addr: Option<String>,
@@ -152,12 +168,15 @@ async fn run_daemon_inner(
         identity,
         runtime_target,
         service_mode,
+        storage,
         built_in_images,
         cluster_cidr,
         subnet_prefix_len,
         remote_control_port,
         gateway_listen_addr,
+        gateway_https_listen_addr,
         gateway_threads,
+        configured_topology,
         dns_metrics_listen_addr,
         gateway_metrics_listen_addr,
     );
@@ -274,17 +293,19 @@ async fn resume_running_network(state: &Arc<RwLock<DaemonState>>) {
 async fn reconcile_startup_operations(state: &Arc<RwLock<DaemonState>>) {
     let state_guard = state.read().await;
     state_guard.reconcile_machine_operations_on_startup().await;
+    state_guard.reconcile_zfs_transfers_on_startup().await;
 }
 
 fn spawn_command_task(
     state: Arc<RwLock<DaemonState>>,
     cancel: CancellationToken,
-    command: IncomingCommand,
+    mut command: IncomingCommand,
 ) {
     tokio::spawn(async move {
         let request_name = crate::metrics::request_name(&command.request);
         let lane = DaemonState::request_lane(&command.request);
         let started_at = std::time::Instant::now();
+        let response_flushed = command.response_flushed.take();
         let response = tokio::select! {
             _ = cancel.cancelled() => ployz_api::DaemonResponse {
                 ok: false,
@@ -300,7 +321,9 @@ fn spawn_command_task(
                     }
                     RequestLane::Exclusive => {
                         let mut state_guard = state.write_owned().await;
-                        state_guard.handle_exclusive(command.request).await
+                        state_guard
+                            .handle_exclusive(command.request, response_flushed)
+                            .await
                     }
                 }
             } => response,
@@ -319,11 +342,17 @@ async fn shutdown_active_mesh(state: &Arc<RwLock<DaemonState>>) {
             mut mesh,
             remote_control,
             peer_control,
+            zfs_transfer,
             gateway,
             dns,
+            certificate_renewal,
         } = active;
+        if let Some(task) = certificate_renewal {
+            task.shutdown().await;
+        }
         let _ = dns.detach().await;
         let _ = gateway.detach().await;
+        let _ = zfs_transfer.shutdown().await;
         let _ = peer_control.shutdown().await;
         let _ = remote_control.shutdown().await;
         let _ = mesh.detach().await;
@@ -337,7 +366,7 @@ mod tests {
     use crate::metrics::ContainerResourceMetricsSource;
     use async_trait::async_trait;
     use ployz_api::DaemonRequest;
-    use ployz_config::{RuntimeTarget, ServiceMode};
+    use ployz_config::{RuntimeTarget, ServiceMode, StorageConfig};
     use ployz_runtime_backends::runtime::WorkloadResourceSnapshot;
     use ployz_sdk::{Transport, UnixSocketTransport};
     use std::path::PathBuf;
@@ -363,12 +392,15 @@ mod tests {
                 ServiceMode::User,
                 &socket_string,
                 BuiltInImages::load(None).expect("built-in images should load"),
+                StorageConfig::default(),
                 "10.210.0.0/16".into(),
                 24,
                 4317,
                 None,
                 "127.0.0.1:8080".into(),
+                None,
                 1,
+                None,
                 Some(metrics_addr.to_string()),
                 None,
                 None,
@@ -449,12 +481,15 @@ mod tests {
                 ServiceMode::User,
                 &socket_string,
                 BuiltInImages::load(None).expect("built-in images should load"),
+                StorageConfig::default(),
                 "10.210.0.0/16".into(),
                 24,
                 4317,
                 None,
                 "127.0.0.1:8080".into(),
+                None,
                 1,
+                None,
                 Some(metrics_addr.to_string()),
                 None,
                 None,

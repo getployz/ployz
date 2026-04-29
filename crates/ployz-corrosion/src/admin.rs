@@ -30,6 +30,13 @@ pub struct ClusterMembershipState {
     pub timestamp: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClusterMemberRtt {
+    pub addr: SocketAddr,
+    pub id: String,
+    pub rtts_ms: Vec<u64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct AdminClient {
     sock_path: PathBuf,
@@ -72,6 +79,37 @@ impl AdminClient {
                             latest.insert(state.id.clone(), state);
                         }
                     }
+                }
+                Value::Null
+                | Value::Bool(_)
+                | Value::Number(_)
+                | Value::String(_)
+                | Value::Array(_) => {}
+            }
+        }
+    }
+
+    pub async fn cluster_member_rtts(&self) -> Result<Vec<ClusterMemberRtt>, AdminError> {
+        let mut stream = UnixStream::connect(&self.sock_path).await?;
+        stream
+            .write_all(&encode_frame(br#"{"Cluster":"Members"}"#))
+            .await?;
+
+        let mut members = Vec::new();
+        loop {
+            let frame = read_frame(&mut stream).await?;
+            match serde_json::from_slice::<Value>(&frame)? {
+                Value::String(success) if success == "Success" => {
+                    return Ok(members);
+                }
+                Value::Object(mut object) => {
+                    if let Some(error) = object.remove("Error") {
+                        return Err(AdminError::Response(parse_error_message(&error)));
+                    }
+                    let Some(json) = object.remove("Json") else {
+                        continue;
+                    };
+                    members.push(parse_cluster_member_rtt(&json)?);
                 }
                 Value::Null
                 | Value::Bool(_)
@@ -167,6 +205,54 @@ fn parse_cluster_membership_state(value: &Value) -> Result<ClusterMembershipStat
     })
 }
 
+fn parse_cluster_member_rtt(value: &Value) -> Result<ClusterMemberRtt, AdminError> {
+    let Value::Object(object) = value else {
+        return Err(AdminError::InvalidPayload(format!(
+            "member payload is not an object: {value}"
+        )));
+    };
+    let Some(Value::String(id)) = object.get("id") else {
+        return Err(AdminError::InvalidPayload(format!(
+            "member payload missing actor id: {value}"
+        )));
+    };
+    let Some(Value::Object(state_object)) = object.get("state") else {
+        return Err(AdminError::InvalidPayload(format!(
+            "member payload missing state object: {value}"
+        )));
+    };
+    let Some(Value::String(addr)) = state_object.get("addr") else {
+        return Err(AdminError::InvalidPayload(format!(
+            "member payload missing state addr: {value}"
+        )));
+    };
+    let addr = addr.parse().map_err(|error| {
+        AdminError::InvalidPayload(format!("invalid member addr '{addr}': {error}"))
+    })?;
+    let rtts_ms = match object.get("rtts") {
+        Some(Value::Array(values)) => values
+            .iter()
+            .map(|value| {
+                value.as_u64().ok_or_else(|| {
+                    AdminError::InvalidPayload(format!("invalid member rtt value: {value}"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        Some(Value::Null) | None => Vec::new(),
+        Some(other) => {
+            return Err(AdminError::InvalidPayload(format!(
+                "member rtts is not an array: {other}"
+            )));
+        }
+    };
+
+    Ok(ClusterMemberRtt {
+        addr,
+        id: id.clone(),
+        rtts_ms,
+    })
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AdminError {
     #[error(transparent)]
@@ -181,7 +267,7 @@ pub enum AdminError {
 
 #[cfg(test)]
 mod tests {
-    use super::{MembershipState, parse_cluster_membership_state};
+    use super::{MembershipState, parse_cluster_member_rtt, parse_cluster_membership_state};
     use serde_json::json;
 
     #[test]
@@ -199,5 +285,89 @@ mod tests {
         assert_eq!(state.id, "actor-1");
         assert_eq!(state.state, MembershipState::Suspect);
         assert_eq!(state.timestamp, 123);
+    }
+
+    #[test]
+    fn parses_alive_and_down_membership_states() {
+        for (raw, expected) in [
+            ("Alive", MembershipState::Alive),
+            ("Down", MembershipState::Down),
+        ] {
+            let payload = json!({
+                "id": {
+                    "addr": "[fd00::1]:51001",
+                    "id": "actor-1",
+                    "ts": 123_u64,
+                },
+                "state": raw,
+            });
+
+            let state = parse_cluster_membership_state(&payload).expect("parse membership state");
+            assert_eq!(state.state, expected);
+        }
+    }
+
+    #[test]
+    fn rejects_membership_state_missing_addr() {
+        let payload = json!({
+            "id": {
+                "id": "actor-1",
+                "ts": 123_u64,
+            },
+            "state": "Alive",
+        });
+
+        let error = parse_cluster_membership_state(&payload).expect_err("missing addr rejected");
+        assert!(error.to_string().contains("missing addr"));
+    }
+
+    #[test]
+    fn rejects_membership_state_invalid_addr() {
+        let payload = json!({
+            "id": {
+                "addr": "not-an-addr",
+                "id": "actor-1",
+                "ts": 123_u64,
+            },
+            "state": "Alive",
+        });
+
+        let error = parse_cluster_membership_state(&payload).expect_err("invalid addr rejected");
+        assert!(error.to_string().contains("invalid membership addr"));
+    }
+
+    #[test]
+    fn parses_member_rtts() {
+        let payload = json!({
+            "id": "actor-1",
+            "state": {
+                "addr": "[fd00::1]:51001",
+                "ts": 123_u64,
+                "cluster_id": 0,
+                "ring": 2,
+                "last_sync_ts": null,
+                "member_id": 1,
+            },
+            "rtts": [140_u64, 120_u64, 160_u64],
+        });
+
+        let member = parse_cluster_member_rtt(&payload).expect("parse member rtt");
+        assert_eq!(member.id, "actor-1");
+        assert_eq!(member.addr, "[fd00::1]:51001".parse().expect("valid addr"));
+        assert_eq!(member.rtts_ms, vec![140, 120, 160]);
+    }
+
+    #[test]
+    fn parses_member_rtts_missing_samples_as_empty() {
+        let payload = json!({
+            "id": "actor-1",
+            "state": {
+                "addr": "[fd00::1]:51001",
+            },
+            "rtts": null,
+        });
+
+        let member = parse_cluster_member_rtt(&payload).expect("parse member rtt");
+        assert!(member.rtts_ms.is_empty());
     }
 }

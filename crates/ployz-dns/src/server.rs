@@ -11,6 +11,7 @@ use hickory_server::proto::rr::{Name, RData, Record, RecordType};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::oneshot;
+use tokio::time::{sleep, timeout};
 use tracing::{info, trace, warn};
 
 use crate::config::{DnsConfig, DnsError};
@@ -23,6 +24,9 @@ use crate::sync::DnsStore;
 // an in-memory snapshot, so the cost per query is negligible.
 const DNS_TTL: u32 = 0;
 const TCP_TIMEOUT: Duration = Duration::from_secs(30);
+const STORE_READY_TIMEOUT: Duration = Duration::from_secs(30);
+const STORE_READY_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
+const STORE_READY_POLL: Duration = Duration::from_millis(250);
 
 // ---------------------------------------------------------------------------
 // DnsHandler — implements hickory-server RequestHandler
@@ -63,10 +67,22 @@ impl RequestHandler for DnsHandler {
 
         let snapshot = self.snapshot.load();
 
-        // Determine caller namespace from source IPv4
+        // Determine caller namespace from source IPv4. The mesh issues IPv4
+        // overlay addresses, so the reverse map is keyed by Ipv4Addr; an IPv6
+        // caller has no namespace mapping and bare-name lookups will NXDOMAIN.
+        // Explicit `<service>.<namespace>.ployz.internal` queries still work.
         let caller_namespace = match src_ip {
             IpAddr::V4(ip) => snapshot.ip_to_namespace.get(&ip).cloned(),
-            IpAddr::V6(_) => None,
+            IpAddr::V6(_) => {
+                static WARNED: std::sync::Once = std::sync::Once::new();
+                WARNED.call_once(|| {
+                    warn!(
+                        ?src_ip,
+                        "ipv6 dns caller has no namespace mapping; bare-name lookups will NXDOMAIN"
+                    );
+                });
+                None
+            }
         };
 
         let dns_query = parse_query(&name_str);
@@ -94,7 +110,7 @@ impl RequestHandler for DnsHandler {
                 let response = builder.build(header, records.iter(), &[], &[], &[]);
                 send(&mut response_handle, response).await
             }
-            ResolveResult::ServiceList(names)
+            ResolveResult::ServiceList(names) | ResolveResult::InstanceList(names)
                 if rtype == RecordType::TXT || rtype == RecordType::ANY =>
             {
                 let records: Vec<Record> = names
@@ -111,7 +127,9 @@ impl RequestHandler for DnsHandler {
                 let response = builder.build(header, records.iter(), &[], &[], &[]);
                 send(&mut response_handle, response).await
             }
-            ResolveResult::Addresses(_) | ResolveResult::ServiceList(_) => {
+            ResolveResult::Addresses(_)
+            | ResolveResult::ServiceList(_)
+            | ResolveResult::InstanceList(_) => {
                 // Query type doesn't match (e.g., AAAA for an A-only record)
                 header.set_response_code(ResponseCode::NoError);
                 let response = builder.build_no_records(header);
@@ -215,9 +233,26 @@ where
 {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        .thread_name("ployz-dns-async")
+        .worker_threads(2)
         .build()
         .map_err(|err| DnsError::Runtime(err.to_string()))?;
+    run_dns_process_on_runtime(runtime, config, store)
+}
 
+/// Run the DNS process on an externally-provided tokio runtime.
+///
+/// Corrosion's `reqwest::Client` pins its HTTP/2 connection driver to the
+/// runtime that first used it, so the store must stay on a single runtime
+/// for the entire lifetime of the process.
+pub fn run_dns_process_on_runtime<S>(
+    runtime: tokio::runtime::Runtime,
+    config: DnsConfig,
+    store: S,
+) -> Result<(), DnsError>
+where
+    S: DnsStore + Send + Sync + 'static,
+{
     runtime.block_on(async {
         if let Some(metrics_listen_addr) = config.metrics_listen_addr.as_deref() {
             let metrics_addr = ployz_metrics::spawn_metrics_listener(metrics_listen_addr)
@@ -230,7 +265,7 @@ where
             info!(listen = %metrics_addr, "dns metrics listener running");
         }
 
-        let state = DnsStore::load_routing_state(&store).await?;
+        let state = wait_for_initial_routing_state(&store).await?;
         let initial_snapshot = project_dns(&state);
         let shared = SharedDnsSnapshot::new(initial_snapshot);
 
@@ -258,12 +293,52 @@ where
     })
 }
 
+async fn wait_for_initial_routing_state<S>(
+    store: &S,
+) -> Result<ployz_types::model::RoutingState, DnsError>
+where
+    S: DnsStore + Send + Sync,
+{
+    let deadline = tokio::time::Instant::now() + STORE_READY_TIMEOUT;
+    loop {
+        match timeout(
+            STORE_READY_ATTEMPT_TIMEOUT,
+            DnsStore::subscribe_routing_events(store),
+        )
+        .await
+        {
+            Ok(Ok((state, _rx))) => return Ok(state),
+            Ok(Err(error)) if tokio::time::Instant::now() < deadline => {
+                warn!(?error, "dns waiting for corrosion query readiness");
+            }
+            Err(_) if tokio::time::Instant::now() < deadline => {
+                warn!("dns timed out loading initial routing state; retrying");
+            }
+            Ok(Err(error)) => {
+                return Err(DnsError::Store(format!(
+                    "corrosion query API did not become ready within {:?}: {error}",
+                    STORE_READY_TIMEOUT
+                )));
+            }
+            Err(_) => {
+                return Err(DnsError::Store(format!(
+                    "corrosion query API did not return initial routing state within {:?}",
+                    STORE_READY_TIMEOUT
+                )));
+            }
+        }
+        sleep(STORE_READY_POLL).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::run_dns_server;
-    use crate::SharedDnsSnapshot;
-    use hickory_server::proto::op::{Message, MessageType, OpCode, Query};
-    use hickory_server::proto::rr::{Name, RecordType};
+    use crate::{DnsInstanceDiagnostic, SharedDnsSnapshot};
+    use hickory_server::proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
+    use hickory_server::proto::rr::rdata::A;
+    use hickory_server::proto::rr::{Name, RData, RecordType};
+    use ployz_types::model::MachineTopology;
     use std::collections::HashMap;
     use std::net::{Ipv4Addr, SocketAddr};
     use std::time::Duration;
@@ -294,6 +369,7 @@ mod tests {
                 ployz_types::spec::Namespace("prod".into()),
                 vec!["web".into()],
             )]),
+            instances: HashMap::new(),
         };
         let listen_addrs = vec![dns_addr];
 
@@ -320,7 +396,138 @@ mod tests {
         let _ = server.await;
     }
 
-    async fn send_dns_query(addr: SocketAddr, name: &str, record_type: RecordType) {
+    #[tokio::test]
+    async fn dns_server_returns_instance_txt_records() {
+        let dns_addr = free_local_addr();
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+        let namespace = ployz_types::spec::Namespace("prod".into());
+        let instance = DnsInstanceDiagnostic {
+            service: "web".into(),
+            instance_id: "inst-1".into(),
+            machine_id: "machine-1".into(),
+            topology: MachineTopology::local(),
+            slot_id: "slot-1".into(),
+            overlay_ip: Ipv4Addr::new(10, 42, 0, 2),
+        };
+        let snapshot = crate::DnsSnapshot {
+            services: HashMap::from([(
+                namespace.clone(),
+                HashMap::from([("web".into(), vec![instance.overlay_ip])]),
+            )]),
+            ip_to_namespace: HashMap::new(),
+            service_names: HashMap::from([(namespace.clone(), vec!["web".into()])]),
+            instances: HashMap::from([(namespace, vec![instance])]),
+        };
+        let listen_addrs = vec![dns_addr];
+
+        let server = tokio::spawn(async move {
+            run_dns_server(&listen_addrs, SharedDnsSnapshot::new(snapshot), shutdown_rx).await
+        });
+
+        let response = send_dns_query(
+            dns_addr,
+            "_instances.web.ns.prod.ployz.internal.",
+            RecordType::TXT,
+        )
+        .await;
+
+        assert_eq!(response.response_code(), ResponseCode::NoError);
+        assert_eq!(
+            txt_answers(&response),
+            vec![
+                "service=web,instance=inst-1,machine=machine-1,region=local,az=none,slot=slot-1,ip=10.42.0.2"
+            ]
+        );
+
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn dns_server_returns_direct_instance_a_record() {
+        let dns_addr = free_local_addr();
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+        let namespace = ployz_types::spec::Namespace("prod".into());
+        let instance = DnsInstanceDiagnostic {
+            service: "web".into(),
+            instance_id: "inst-1".into(),
+            machine_id: "machine-1".into(),
+            topology: MachineTopology::local(),
+            slot_id: "slot-1".into(),
+            overlay_ip: Ipv4Addr::new(10, 42, 0, 2),
+        };
+        let snapshot = crate::DnsSnapshot {
+            services: HashMap::from([(
+                namespace.clone(),
+                HashMap::from([("web".into(), vec![instance.overlay_ip])]),
+            )]),
+            ip_to_namespace: HashMap::new(),
+            service_names: HashMap::from([(namespace.clone(), vec!["web".into()])]),
+            instances: HashMap::from([(namespace, vec![instance])]),
+        };
+        let listen_addrs = vec![dns_addr];
+
+        let server = tokio::spawn(async move {
+            run_dns_server(&listen_addrs, SharedDnsSnapshot::new(snapshot), shutdown_rx).await
+        });
+
+        let response = send_dns_query(
+            dns_addr,
+            "inst-1.instance.web.prod.ployz.internal.",
+            RecordType::A,
+        )
+        .await;
+
+        assert_eq!(response.response_code(), ResponseCode::NoError);
+        assert_eq!(a_answers(&response), vec![Ipv4Addr::new(10, 42, 0, 2)]);
+
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn dns_server_returns_no_records_for_known_name_wrong_type() {
+        let dns_addr = free_local_addr();
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+        let namespace = ployz_types::spec::Namespace("prod".into());
+        let instance = DnsInstanceDiagnostic {
+            service: "web".into(),
+            instance_id: "inst-1".into(),
+            machine_id: "machine-1".into(),
+            topology: MachineTopology::local(),
+            slot_id: "slot-1".into(),
+            overlay_ip: Ipv4Addr::new(10, 42, 0, 2),
+        };
+        let snapshot = crate::DnsSnapshot {
+            services: HashMap::from([(
+                namespace.clone(),
+                HashMap::from([("web".into(), vec![instance.overlay_ip])]),
+            )]),
+            ip_to_namespace: HashMap::new(),
+            service_names: HashMap::from([(namespace.clone(), vec!["web".into()])]),
+            instances: HashMap::from([(namespace, vec![instance])]),
+        };
+        let listen_addrs = vec![dns_addr];
+
+        let server = tokio::spawn(async move {
+            run_dns_server(&listen_addrs, SharedDnsSnapshot::new(snapshot), shutdown_rx).await
+        });
+
+        let response = send_dns_query(
+            dns_addr,
+            "inst-1.instance.web.prod.ployz.internal.",
+            RecordType::TXT,
+        )
+        .await;
+
+        assert_eq!(response.response_code(), ResponseCode::NoError);
+        assert!(response.answers().is_empty());
+
+        server.abort();
+        let _ = server.await;
+    }
+
+    async fn send_dns_query(addr: SocketAddr, name: &str, record_type: RecordType) -> Message {
         let mut message = Message::new();
         message
             .set_id(7)
@@ -349,7 +556,34 @@ mod tests {
         let Some(response_bytes) = response.get(..received) else {
             panic!("response length exceeded buffer");
         };
-        let _ = Message::from_vec(response_bytes).expect("response should decode");
+        Message::from_vec(response_bytes).expect("response should decode")
+    }
+
+    fn a_answers(response: &Message) -> Vec<Ipv4Addr> {
+        response
+            .answers()
+            .iter()
+            .filter_map(|record| match record.data() {
+                RData::A(A(ip)) => Some(*ip),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn txt_answers(response: &Message) -> Vec<String> {
+        response
+            .answers()
+            .iter()
+            .filter_map(|record| match record.data() {
+                RData::TXT(txt) => Some(
+                    txt.iter()
+                        .flat_map(|bytes| bytes.iter().copied())
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            })
+            .map(|bytes| String::from_utf8(bytes).expect("TXT answer should be valid utf-8"))
+            .collect()
     }
 
     async fn fetch_http_body(addr: SocketAddr, path: &str) -> String {

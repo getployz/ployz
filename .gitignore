@@ -1,4 +1,5 @@
 /target/
+.DS_Store
 .agents/*
 !.agents/skills/
 !.agents/skills/**
@@ -12,8 +13,10 @@ ebpf/target/
 .lab/
 .e2e-artifacts/
 e2e-artifacts/
+.payload-cache/
 packaging/e2e/preloaded-images/*
 !packaging/e2e/preloaded-images/.gitkeep
 lab/lab.env
 ployz-sh/.wrangler/
 ployz-sh/dist/
+docs/review.md

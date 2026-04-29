@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use ployz_config::{Os, RuntimeTarget, ServiceMode};
 
 use crate::platform::HostPlatform;
-use crate::{InstallManifest, SERVICE_LABEL, ServiceBackend};
+use crate::{InstallManifest, ServiceBackend, SERVICE_LABEL};
 
 use super::manifest::{runtime_target_name, service_mode_name};
 use super::render::{systemd_quote, xml_escape};
@@ -191,6 +191,7 @@ pub(super) fn install_system_service(
         )
     })?;
     run_command("systemctl", ["daemon-reload"])?;
-    run_command("systemctl", ["enable", "--now", "ployzd.service"])?;
+    run_command("systemctl", ["enable", "ployzd.service"])?;
+    run_command("systemctl", ["restart", "ployzd.service"])?;
     Ok(())
 }

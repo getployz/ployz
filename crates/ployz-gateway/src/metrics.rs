@@ -50,6 +50,10 @@ pub fn observe_request(method: &str, status_code: u16, matched: bool, duration: 
 }
 
 pub fn update_route_counts(snapshot: &GatewaySnapshot) {
+    update_route_count_values(snapshot.http_routes.len(), snapshot.tcp_routes.len());
+}
+
+pub fn update_route_count_values(http_routes: usize, tcp_routes: usize) {
     let metric = register_metric(&GATEWAY_ROUTES, || {
         let metric = IntGaugeVec::new(
             Opts::new(
@@ -64,8 +68,8 @@ pub fn update_route_counts(snapshot: &GatewaySnapshot) {
             .expect("gateway route gauge should register");
         metric
     });
-    let http_count = i64::try_from(snapshot.http_routes.len()).unwrap_or(i64::MAX);
-    let tcp_count = i64::try_from(snapshot.tcp_routes.len()).unwrap_or(i64::MAX);
+    let http_count = i64::try_from(http_routes).unwrap_or(i64::MAX);
+    let tcp_count = i64::try_from(tcp_routes).unwrap_or(i64::MAX);
     metric.with_label_values(&["http"]).set(http_count);
     metric.with_label_values(&["tcp"]).set(tcp_count);
 }

@@ -423,6 +423,84 @@ download_file() {
   die "curl or wget is required to download ${url}"
 }
 
+# --- Docker requirement ---
+
+docker_ready() {
+  command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1
+}
+
+docker_ready_as_root() {
+  command -v docker >/dev/null 2>&1 && run_as_root docker info >/dev/null 2>&1
+}
+
+run_as_root() {
+  if [[ ${EUID} -eq 0 ]]; then
+    "$@"
+    return
+  fi
+
+  command -v sudo >/dev/null 2>&1 || die "root or sudo is required to install Docker"
+  sudo "$@"
+}
+
+start_docker_linux() {
+  if command -v systemctl >/dev/null 2>&1; then
+    run_as_root systemctl enable --now docker >/dev/null 2>&1 || true
+    return
+  fi
+
+  if command -v service >/dev/null 2>&1; then
+    run_as_root service docker start >/dev/null 2>&1 || true
+  fi
+}
+
+install_docker_linux() {
+  local install_script
+
+  install_script="$(mktemp)"
+  download_file "https://get.docker.com" "${install_script}"
+  if ! run_as_root sh "${install_script}"; then
+    rm -f "${install_script}"
+    die "Docker installation failed"
+  fi
+  rm -f "${install_script}"
+}
+
+ensure_docker() {
+  local os
+
+  os="$(current_os)"
+  if docker_ready || { [[ "${os}" == "linux" ]] && docker_ready_as_root; }; then
+    return
+  fi
+
+  case "${os}" in
+    linux)
+      if command -v docker >/dev/null 2>&1; then
+        step "Starting Docker"
+        start_docker_linux
+      else
+        step "Installing Docker"
+        install_docker_linux
+        start_docker_linux
+      fi
+      ;;
+    darwin)
+      die "Docker is required. Install and start OrbStack, then re-run this installer: https://orbstack.dev"
+      ;;
+    *)
+      die "Docker is required, but automatic Docker installation is only supported on Linux"
+      ;;
+  esac
+
+  if [[ "${os}" == "linux" ]]; then
+    docker_ready || docker_ready_as_root || die "Docker is installed, but the Docker daemon is not reachable"
+    return
+  fi
+
+  docker_ready || die "Docker is installed, but the Docker daemon is not reachable"
+}
+
 # --- Payload validation ---
 
 required_payload_file() {
@@ -913,6 +991,8 @@ main() {
       info "OS: $(current_os), Arch: $(current_arch)"
       info "Runtime: ${resolved_runtime}, Service mode: ${resolved_service_mode}"
       info "Source: ${source}$([ "${source}" = "release" ] && printf ", version: ${version}" || true)"
+
+      ensure_docker
 
       work_dir="$(mktemp -d)"
       trap "rm -rf -- \"${work_dir}\"" EXIT

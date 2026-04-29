@@ -1,4 +1,3 @@
-use std::fs::OpenOptions;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -14,15 +13,20 @@ use ployz_runtime_backends::runtime::{
     ContainerEngine, EnsureAction, PullPolicy, RuntimeContainerSpec,
 };
 use ployz_store_api::{
-    DeployStore, InviteStore, MachineStore, RoutingStore, StoreBackend, StoreDriver,
-    StoreRuntimeControl, SyncProbe, SyncStatus,
+    AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
+    DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
+    InstanceStatusRepository, InviteRepository, MachineRegistry, PeerMembershipObservation,
+    PeerMembershipStore, PeerRttObservation, PeerRttStore, RoutingSnapshotReader, StoreBackend,
+    StoreDriver, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use ployz_types::Result;
 use ployz_types::model::{
-    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
-    MachineId, MachineRecord, OverlayIp, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
+    InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineMembership, OverlayIp,
+    RoutingEvent, RoutingState, ServiceReleaseRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, mpsc};
 use tracing::{info, warn};
@@ -165,11 +169,11 @@ where
         self.store.init().await
     }
 
-    async fn list_machines(&self) -> Result<Vec<MachineRecord>> {
+    async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
         self.store.list_machines().await
     }
 
-    async fn upsert_self_machine(&self, record: &MachineRecord) -> Result<()> {
+    async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()> {
         self.store.upsert_self_machine(record).await
     }
 
@@ -179,7 +183,7 @@ where
 
     async fn subscribe_machines(
         &self,
-    ) -> Result<(Vec<MachineRecord>, mpsc::Receiver<MachineEvent>)> {
+    ) -> Result<(Vec<MachineMembership>, mpsc::Receiver<MachineEvent>)> {
         self.store.subscribe_machines().await
     }
 
@@ -214,22 +218,37 @@ where
         self.store.load_routing_state().await
     }
 
-    async fn subscribe_routing_invalidations(&self) -> Result<mpsc::Receiver<()>> {
-        self.store.subscribe_routing_invalidations().await
-    }
-
-    async fn list_service_revisions(
+    async fn subscribe_routing_events(
         &self,
-        namespace: &Namespace,
-    ) -> Result<Vec<ServiceRevisionRecord>> {
-        self.store.list_service_revisions(namespace).await
+    ) -> Result<(RoutingState, mpsc::Receiver<RoutingEvent>)> {
+        self.store.subscribe_routing_events().await
     }
 
-    async fn list_service_releases(
+    async fn list_deploy_releases(
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<ServiceReleaseRecord>> {
-        self.store.list_service_releases(namespace).await
+        self.store.list_deploy_releases(namespace).await
+    }
+
+    async fn load_deploy_snapshot(&self, namespace: &Namespace) -> Result<DeploySnapshot> {
+        self.store.load_deploy_snapshot(namespace).await
+    }
+
+    async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()> {
+        self.store.record_service_revision(command).await
+    }
+
+    async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
+        self.store.commit_deploy(command).await
+    }
+
+    async fn update_deploy_record(&self, command: &DeployRecordUpdate) -> Result<()> {
+        self.store.update_deploy_record(command).await
+    }
+
+    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
+        self.store.get_deploy(deploy_id).await
     }
 
     async fn list_instance_status(
@@ -239,48 +258,76 @@ where
         self.store.list_instance_status(namespace).await
     }
 
-    async fn upsert_service_revision(&self, record: &ServiceRevisionRecord) -> Result<()> {
-        self.store.upsert_service_revision(record).await
+    async fn list_volumes(&self, namespace: &Namespace) -> Result<Vec<VolumeRecord>> {
+        self.store.list_volumes(namespace).await
     }
 
-    async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> Result<()> {
-        self.store.upsert_service_release(record).await
-    }
-
-    async fn delete_service_release(&self, namespace: &Namespace, service: &str) -> Result<()> {
-        self.store.delete_service_release(namespace, service).await
-    }
-
-    async fn upsert_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
-        self.store.upsert_instance_status(record).await
-    }
-
-    async fn delete_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
-        self.store.delete_instance_status(instance_id).await
-    }
-
-    async fn upsert_deploy(&self, record: &DeployRecord) -> Result<()> {
-        self.store.upsert_deploy(record).await
-    }
-
-    async fn commit_deploy(
+    async fn get_volume(
         &self,
         namespace: &Namespace,
-        removed_services: &[String],
-        releases: &[ServiceReleaseRecord],
-        deploy: &DeployRecord,
-    ) -> Result<()> {
-        self.store
-            .commit_deploy(namespace, removed_services, releases, deploy)
-            .await
+        volume_name: &str,
+    ) -> Result<Option<VolumeRecord>> {
+        self.store.get_volume(namespace, volume_name).await
     }
 
-    async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
-        self.store.get_deploy(deploy_id).await
+    async fn record_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
+        self.store.record_instance_status(record).await
+    }
+
+    async fn remove_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
+        self.store.remove_instance_status(instance_id).await
+    }
+
+    async fn get_acme_account(&self, issuer_url: &str) -> Result<Option<AcmeAccountRecord>> {
+        self.store.get_acme_account(issuer_url).await
+    }
+
+    async fn upsert_acme_account(&self, record: &AcmeAccountRecord) -> Result<()> {
+        self.store.upsert_acme_account(record).await
+    }
+
+    async fn list_certificates(&self) -> Result<Vec<CertificateRecord>> {
+        self.store.list_certificates().await
+    }
+
+    async fn get_certificate(&self, hostname: &str) -> Result<Option<CertificateRecord>> {
+        self.store.get_certificate(hostname).await
+    }
+
+    async fn upsert_certificate(&self, record: &CertificateRecord) -> Result<()> {
+        self.store.upsert_certificate(record).await
+    }
+
+    async fn list_acme_challenges(&self) -> Result<Vec<AcmeChallengeRecord>> {
+        self.store.list_acme_challenges().await
+    }
+
+    async fn upsert_acme_challenge(&self, record: &AcmeChallengeRecord) -> Result<()> {
+        self.store.upsert_acme_challenge(record).await
+    }
+
+    async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> Result<()> {
+        self.store.delete_acme_challenge(hostname, token).await
+    }
+
+    async fn subscribe_certificates(&self) -> Result<CertificateSubscription> {
+        self.store.subscribe_certificates().await
+    }
+
+    async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
+        self.store.subscribe_acme_challenges().await
     }
 
     async fn sync_status(&self) -> Result<SyncStatus> {
         self.store.sync_status().await
+    }
+
+    async fn peer_rtt_observations(&self) -> Result<Vec<PeerRttObservation>> {
+        self.store.peer_rtt_observations().await
+    }
+
+    async fn peer_membership_observations(&self) -> Result<Vec<PeerMembershipObservation>> {
+        self.store.peer_membership_observations().await
     }
 }
 
@@ -290,6 +337,24 @@ where
 {
     async fn sync_status(&self) -> Result<SyncStatus> {
         self.store.sync_status().await
+    }
+}
+
+impl<S> PeerRttStore for CorrosionBackend<S>
+where
+    S: StoreRuntimeControl + Send + Sync + 'static,
+{
+    async fn peer_rtt_observations(&self) -> Result<Vec<PeerRttObservation>> {
+        self.store.peer_rtt_observations().await
+    }
+}
+
+impl<S> PeerMembershipStore for CorrosionBackend<S>
+where
+    S: StoreRuntimeControl + Send + Sync + 'static,
+{
+    async fn peer_membership_observations(&self) -> Result<Vec<PeerMembershipObservation>> {
+        self.store.peer_membership_observations().await
     }
 }
 
@@ -356,6 +421,76 @@ fn configured_log_path(default_log_path: &Path) -> Option<PathBuf> {
     }
 }
 
+fn forward_corrosion_output<R>(stream_name: &'static str, stream: R, log_path: Option<PathBuf>)
+where
+    R: AsyncRead + Send + Unpin + 'static,
+{
+    tokio::spawn(async move {
+        let mut log_file = match log_path {
+            Some(path) => match tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .await
+            {
+                Ok(file) => Some((path, file)),
+                Err(error) => {
+                    warn!(
+                        stream = stream_name,
+                        ?error,
+                        "failed to open corrosion log file"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+        let mut lines = BufReader::new(stream).lines();
+
+        loop {
+            match lines.next_line().await {
+                Ok(Some(output)) => {
+                    info!(
+                        stream = stream_name,
+                        output = %output,
+                        "corrosion process output"
+                    );
+                    if let Some((path, file)) = log_file.as_mut() {
+                        if let Err(error) = file.write_all(output.as_bytes()).await {
+                            warn!(
+                                stream = stream_name,
+                                log = %path.display(),
+                                ?error,
+                                "failed to write corrosion log file"
+                            );
+                            log_file = None;
+                            continue;
+                        }
+                        if let Err(error) = file.write_all(b"\n").await {
+                            warn!(
+                                stream = stream_name,
+                                log = %path.display(),
+                                ?error,
+                                "failed to write corrosion log file"
+                            );
+                            log_file = None;
+                        }
+                    }
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    warn!(
+                        stream = stream_name,
+                        ?error,
+                        "failed to read corrosion output"
+                    );
+                    break;
+                }
+            }
+        }
+    });
+}
+
 #[async_trait]
 impl StoreRuntimeControl for HostCorrosion {
     async fn start(&self) -> Result<()> {
@@ -380,47 +515,29 @@ impl StoreRuntimeControl for HostCorrosion {
             .stdin(Stdio::null())
             .kill_on_drop(true);
 
-        match configured_log_path(&self.log_path) {
-            Some(log_path) => {
-                let log_file = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&log_path)
-                    .map_err(|error| {
-                        ployz_types::Error::operation(
-                            "corrosion start",
-                            format!("failed to open log file {}: {error}", log_path.display()),
-                        )
-                    })?;
-                let stdout_log = log_file.try_clone().map_err(|error| {
-                    ployz_types::Error::operation(
-                        "corrosion start",
-                        format!(
-                            "failed to clone log file handle {}: {error}",
-                            log_path.display()
-                        ),
-                    )
-                })?;
-                command
-                    .stdout(Stdio::from(stdout_log))
-                    .stderr(Stdio::from(log_file));
-                info!(log = %log_path.display(), "corrosion file logging enabled");
-            }
-            None => {
-                command.stdout(Stdio::null()).stderr(Stdio::null());
-            }
+        let log_path = configured_log_path(&self.log_path);
+        if let Some(log_path) = &log_path {
+            info!(log = %log_path.display(), "corrosion file logging enabled");
         }
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         if let Ok(rust_log) = std::env::var(CORROSION_RUST_LOG_ENV) {
             command.env("RUST_LOG", rust_log);
         }
 
-        let child = command.spawn().map_err(|error| {
+        let mut child = command.spawn().map_err(|error| {
             ployz_types::Error::operation(
                 "corrosion start",
                 format!("failed to spawn {}: {error}", self.binary.display()),
             )
         })?;
+
+        if let Some(stdout) = child.stdout.take() {
+            forward_corrosion_output("stdout", stdout, log_path.clone());
+        }
+        if let Some(stderr) = child.stderr.take() {
+            forward_corrosion_output("stderr", stderr, log_path.clone());
+        }
 
         info!(
             pid = child.id(),
