@@ -6,13 +6,17 @@ use std::time::Duration;
 use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, MachineUpdatePayload, MachineUpdateRow,
 };
-use ployz_types::model::{MachineId, MachineMembership, NetworkId};
+use ployz_types::model::{MachineId, MachineMembership};
 use tokio::process::Command;
 use tokio::sync::oneshot;
 use tokio::time::{Instant, sleep};
 
 use crate::daemon::DaemonState;
 use crate::daemon::handlers::machine::list::find_machine_record;
+use crate::daemon::handlers::machine::operations::{
+    MachineOperationArtifacts, MachineOperationKind, MachineOperationRecord,
+    MachineOperationStatus, MachineOperationStore,
+};
 use crate::daemon::handlers::peer_rpc::{overlay_rpc, overlay_rpc_expect_ok};
 
 const UPDATE_READINESS_TIMEOUT: Duration = Duration::from_secs(120);
@@ -42,20 +46,67 @@ impl DaemonState {
             );
         }
 
-        let operation_id = format!("machine-update-{}", NetworkId::random());
+        let operation_store = self.machine_operation_store();
+        let mut operation = match operation_store.begin(
+            MachineOperationKind::Update,
+            self.active
+                .as_ref()
+                .map(|active| active.config.name.0.clone()),
+            targets.clone(),
+            "resolved",
+            MachineOperationArtifacts {
+                requested_version: Some(version.clone()),
+                ..MachineOperationArtifacts::default()
+            },
+        ) {
+            Ok(operation) => operation,
+            Err(error) => return self.err("MACHINE_UPDATE_OPERATION_FAILED", error),
+        };
+        let operation_id = operation.id.clone();
         let mut updated = Vec::new();
         for target in targets {
+            if let Err(error) =
+                operation_store.update_stage(&mut operation, format!("updating:{target}"))
+            {
+                return self.err("MACHINE_UPDATE_OPERATION_FAILED", error);
+            }
             let result = if target == self.identity.machine_id.0 {
-                self.update_local_machine(&operation_id, &version, response_flushed.take())
-                    .await
+                self.update_local_machine(
+                    &operation_id,
+                    &version,
+                    response_flushed.take(),
+                    operation_store.clone(),
+                    operation.clone(),
+                )
+                .await
             } else {
                 self.update_remote_machine(&operation_id, &target, &version)
                     .await
             };
 
             match result {
-                Ok(row) => updated.push(row),
+                Ok(row) => {
+                    let deferred_self_update = target == self.identity.machine_id.0
+                        && row.message == "scheduled local update";
+                    updated.push(row);
+                    if deferred_self_update {
+                        let payload = MachineUpdatePayload {
+                            operation_id,
+                            updated,
+                            failed: Vec::new(),
+                        };
+                        return self.ok_with_payload(
+                            "machine update scheduled",
+                            Some(DaemonPayload::MachineUpdate(payload)),
+                        );
+                    }
+                }
                 Err(row) => {
+                    let _ = operation_store.update_status(
+                        &mut operation,
+                        MachineOperationStatus::Failed,
+                        Some(row.message.clone()),
+                    );
                     let payload = MachineUpdatePayload {
                         operation_id,
                         updated,
@@ -70,6 +121,11 @@ impl DaemonState {
             }
         }
 
+        if let Err(error) =
+            operation_store.update_status(&mut operation, MachineOperationStatus::Succeeded, None)
+        {
+            return self.err("MACHINE_UPDATE_OPERATION_FAILED", error);
+        }
         let payload = MachineUpdatePayload {
             operation_id,
             updated,
@@ -104,13 +160,47 @@ impl DaemonState {
         }
 
         if requested_version_matches_current(&version) {
+            let operation_store = self.machine_operation_store();
+            if let Err(error) = ensure_update_operation(
+                &operation_store,
+                operation_id,
+                &[self.identity.machine_id.0.clone()],
+                &version,
+                "already-current",
+            )
+            .and_then(|mut operation| {
+                operation_store.update_status(
+                    &mut operation,
+                    MachineOperationStatus::Succeeded,
+                    None,
+                )
+            }) {
+                return self.err("MACHINE_UPDATE_OPERATION_FAILED", error);
+            }
             return self.ok(format!(
                 "machine update '{operation_id}' skipped; daemon already reports version {}",
                 env!("CARGO_PKG_VERSION")
             ));
         }
 
-        spawn_update_after_response(operation_id.to_string(), version, response_flushed);
+        let operation_store = self.machine_operation_store();
+        let operation = match ensure_update_operation(
+            &operation_store,
+            operation_id,
+            &[self.identity.machine_id.0.clone()],
+            &version,
+            "execute",
+        ) {
+            Ok(operation) => operation,
+            Err(error) => return self.err("MACHINE_UPDATE_OPERATION_FAILED", error),
+        };
+        spawn_update_after_response(
+            operation_id.to_string(),
+            version,
+            response_flushed,
+            operation_store,
+            operation,
+        );
         self.ok(format!("machine update '{operation_id}' scheduled"))
     }
 
@@ -119,6 +209,8 @@ impl DaemonState {
         operation_id: &str,
         version: &str,
         response_flushed: Option<oneshot::Receiver<()>>,
+        operation_store: MachineOperationStore,
+        mut operation: MachineOperationRecord,
     ) -> Result<MachineUpdateRow, MachineUpdateRow> {
         if let Err(error) = prepare_machine_update(version).await {
             return Err(update_row(
@@ -129,6 +221,13 @@ impl DaemonState {
         }
 
         if requested_version_matches_current(version) {
+            if let Err(error) = operation_store.update_status(
+                &mut operation,
+                MachineOperationStatus::Succeeded,
+                None,
+            ) {
+                return Err(update_row(&self.identity.machine_id, version, error));
+            }
             return Ok(update_row(
                 &self.identity.machine_id,
                 version,
@@ -136,10 +235,15 @@ impl DaemonState {
             ));
         }
 
+        if let Err(error) = operation_store.update_stage(&mut operation, "execute") {
+            return Err(update_row(&self.identity.machine_id, version, error));
+        }
         spawn_update_after_response(
             operation_id.to_string(),
             version.to_string(),
             response_flushed,
+            operation_store,
+            operation,
         );
         Ok(update_row(
             &self.identity.machine_id,
@@ -211,7 +315,7 @@ impl DaemonState {
             ));
         }
 
-        match wait_for_remote_update(record, peer_rpc_port, version).await {
+        match wait_for_remote_update(record, peer_rpc_port, operation_id, version).await {
             Ok(message) => Ok(update_row(&machine_id, version, message)),
             Err(error) => Err(update_row(&machine_id, version, error)),
         }
@@ -258,29 +362,50 @@ async fn ensure_installer_reports_existing_install(installer: &Path) -> Result<(
 async fn wait_for_remote_update(
     record: MachineMembership,
     peer_rpc_port: u16,
+    operation_id: &str,
     version: &str,
 ) -> Result<String, String> {
     sleep(Duration::from_secs(2)).await;
     let deadline = Instant::now() + UPDATE_READINESS_TIMEOUT;
-    let mut last_error = String::from("remote daemon did not report readiness");
+    let mut last_error = String::from("remote update operation did not complete");
     while Instant::now() < deadline {
-        match overlay_rpc(record.overlay_ip, peer_rpc_port, DaemonRequest::Status).await {
+        match overlay_rpc(
+            record.overlay_ip,
+            peer_rpc_port,
+            DaemonRequest::MachineOperationGet {
+                id: operation_id.to_string(),
+            },
+        )
+        .await
+        {
             Ok(response) if response.ok => {
-                let Some(DaemonPayload::Status(status)) = response.payload else {
-                    last_error = "remote status response did not include status payload".into();
+                let Some(DaemonPayload::MachineOperation(payload)) = response.payload else {
+                    last_error =
+                        "remote operation response did not include machine operation payload"
+                            .into();
                     sleep(UPDATE_READINESS_INTERVAL).await;
                     continue;
                 };
-                if version == "latest" {
-                    return Ok(format!("ready with version {}", status.version));
+                match payload.operation.status.as_str() {
+                    "succeeded" => {
+                        if version == "latest" {
+                            return Ok("remote update operation succeeded".into());
+                        }
+                        verify_remote_version(record.overlay_ip, peer_rpc_port, version).await?;
+                        return Ok(format!("ready with version {version}"));
+                    }
+                    "failed" | "interrupted" => {
+                        return Err(payload.operation.last_error.unwrap_or_else(|| {
+                            format!("remote update {}", payload.operation.status)
+                        }));
+                    }
+                    "running" => {
+                        last_error = format!("remote update stage {}", payload.operation.stage);
+                    }
+                    other => {
+                        last_error = format!("remote update has unknown status '{other}'");
+                    }
                 }
-                if status.version == version {
-                    return Ok(format!("ready with version {}", status.version));
-                }
-                last_error = format!(
-                    "remote reports version {}, waiting for {}",
-                    status.version, version
-                );
             }
             Ok(response) => {
                 last_error = format!(
@@ -297,19 +422,91 @@ async fn wait_for_remote_update(
     Err(last_error)
 }
 
+async fn verify_remote_version(
+    overlay_ip: ployz_types::model::OverlayIp,
+    peer_rpc_port: u16,
+    version: &str,
+) -> Result<(), String> {
+    let response = overlay_rpc(overlay_ip, peer_rpc_port, DaemonRequest::Status).await?;
+    if !response.ok {
+        return Err(format!(
+            "remote status failed [{}]: {}",
+            response.code, response.message
+        ));
+    }
+    let Some(DaemonPayload::Status(status)) = response.payload else {
+        return Err("remote status response did not include status payload".into());
+    };
+    if status.version == version {
+        Ok(())
+    } else {
+        Err(format!(
+            "remote reports version {}, expected {}",
+            status.version, version
+        ))
+    }
+}
+
 fn spawn_update_after_response(
     operation_id: String,
     version: String,
     response_flushed: Option<oneshot::Receiver<()>>,
+    operation_store: MachineOperationStore,
+    mut operation: MachineOperationRecord,
 ) {
     tokio::spawn(async move {
         if let Some(response_flushed) = response_flushed {
             let _ = response_flushed.await;
         }
-        if let Err(error) = run_update_installer(&version).await {
-            tracing::error!(%operation_id, %version, %error, "machine update installer failed");
+        if let Err(error) = operation_store.update_stage(&mut operation, "installing") {
+            tracing::error!(%operation_id, %version, %error, "machine update operation stage update failed");
+        }
+        match run_update_installer(&version).await {
+            Ok(()) => {
+                if let Err(error) = operation_store.update_status(
+                    &mut operation,
+                    MachineOperationStatus::Succeeded,
+                    None,
+                ) {
+                    tracing::error!(%operation_id, %version, %error, "machine update operation success update failed");
+                }
+            }
+            Err(error) => {
+                if let Err(save_error) = operation_store.update_status(
+                    &mut operation,
+                    MachineOperationStatus::Failed,
+                    Some(error.clone()),
+                ) {
+                    tracing::error!(%operation_id, %version, %error, %save_error, "machine update operation failure update failed");
+                }
+                tracing::error!(%operation_id, %version, %error, "machine update installer failed");
+            }
         }
     });
+}
+
+fn ensure_update_operation(
+    operation_store: &MachineOperationStore,
+    operation_id: &str,
+    targets: &[String],
+    version: &str,
+    stage: &str,
+) -> Result<MachineOperationRecord, String> {
+    if let Some(mut existing) = operation_store.load(operation_id)? {
+        operation_store.update_stage(&mut existing, stage)?;
+        return Ok(existing);
+    }
+    operation_store.begin_with_id(
+        operation_id.to_string(),
+        MachineOperationKind::Update,
+        None,
+        targets.to_vec(),
+        stage,
+        MachineOperationArtifacts {
+            requested_version: Some(version.to_string()),
+            ..MachineOperationArtifacts::default()
+        },
+    )
 }
 
 async fn run_update_installer(version: &str) -> Result<(), String> {
