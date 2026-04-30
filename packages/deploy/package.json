@@ -1,6 +1,6 @@
 {
   "name": "@ployz/deploy",
-  "version": "0.5.3-alpha.1",
+  "version": "0.5.4",
   "private": false,
   "type": "module",
   "types": "./index.d.ts",
