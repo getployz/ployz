@@ -287,6 +287,21 @@ mod tests {
         }
     }
 
+    #[test]
+    fn decode_manifest_accepts_empty_services() {
+        let manifest_json = serde_json::to_string(&DeployManifest {
+            namespace: Namespace("prod".into()),
+            volumes: Vec::new(),
+            services: Vec::new(),
+        })
+        .expect("serialize manifest");
+
+        let manifest = decode_manifest(&manifest_json).expect("decode manifest");
+
+        assert_eq!(manifest.namespace, Namespace("prod".into()));
+        assert!(manifest.services.is_empty());
+    }
+
     #[tokio::test]
     async fn export_manifest_includes_stored_volume_declarations() {
         let store = StoreDriver::memory();
