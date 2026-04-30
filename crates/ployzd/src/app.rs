@@ -303,6 +303,74 @@ fn spawn_command_task(
 ) {
     tokio::spawn(async move {
         let request_name = crate::metrics::request_name(&command.request);
+        if matches!(command.request, ployz_api::DaemonRequest::RuntimeSubscribe) {
+            let started_at = std::time::Instant::now();
+            let Some(stream) = command.stream.take() else {
+                let response = ployz_api::DaemonResponse {
+                    ok: false,
+                    code: "INTERNAL".into(),
+                    message: "runtime stream channel missing".into(),
+                    payload: None,
+                };
+                crate::metrics::observe_request(
+                    request_name,
+                    RequestLane::Shared,
+                    response.ok,
+                    started_at.elapsed(),
+                );
+                let _ = command.reply.send(response);
+                return;
+            };
+
+            let opened = {
+                let state_guard = state.read_owned().await;
+                state_guard.open_runtime_subscription().await
+            };
+
+            let (initial, events) = match opened {
+                Ok(subscription) => subscription,
+                Err(response) => {
+                    crate::metrics::observe_request(
+                        request_name,
+                        RequestLane::Shared,
+                        response.ok,
+                        started_at.elapsed(),
+                    );
+                    let _ = command.reply.send(*response);
+                    return;
+                }
+            };
+
+            let response = ployz_api::DaemonResponse {
+                ok: true,
+                code: "OK".into(),
+                message: "runtime stream opened".into(),
+                payload: None,
+            };
+            let ok = response.ok;
+            if command.reply.send(response).is_err() {
+                crate::metrics::observe_request(
+                    request_name,
+                    RequestLane::Shared,
+                    false,
+                    started_at.elapsed(),
+                );
+                return;
+            }
+
+            crate::daemon::handlers::runtime::stream_runtime_frames(
+                initial, events, stream, cancel,
+            )
+            .await;
+            crate::metrics::observe_request(
+                request_name,
+                RequestLane::Shared,
+                ok,
+                started_at.elapsed(),
+            );
+            return;
+        }
+
         let lane = DaemonState::request_lane(&command.request);
         let started_at = std::time::Instant::now();
         let response_flushed = command.response_flushed.take();

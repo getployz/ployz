@@ -1,4 +1,4 @@
-use ployz_api::{DaemonRequest, DaemonResponse};
+use ployz_api::{DaemonRequest, DaemonResponse, RuntimeWatchFrame};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::{mpsc, oneshot};
@@ -10,6 +10,7 @@ pub struct IncomingCommand {
     pub request: DaemonRequest,
     pub reply: oneshot::Sender<DaemonResponse>,
     pub response_flushed: Option<oneshot::Receiver<()>>,
+    pub stream: Option<mpsc::Sender<RuntimeWatchFrame>>,
 }
 
 /// Listen on a Unix socket and forward incoming requests as IncomingCommand.
@@ -61,11 +62,19 @@ async fn handle_connection(
     let request: DaemonRequest = serde_json::from_str(&line)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
+    let streaming = matches!(request, DaemonRequest::RuntimeSubscribe);
     let (reply_tx, reply_rx) = oneshot::channel();
+    let (stream_tx, mut stream_rx) = if streaming {
+        let (stream_tx, stream_rx) = mpsc::channel(128);
+        (Some(stream_tx), Some(stream_rx))
+    } else {
+        (None, None)
+    };
     let cmd = IncomingCommand {
         request,
         reply: reply_tx,
         response_flushed: None,
+        stream: stream_tx,
     };
 
     tx.send(cmd).await.map_err(|_| {
@@ -83,6 +92,19 @@ async fn handle_connection(
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     resp_line.push('\n');
     writer.write_all(resp_line.as_bytes()).await?;
+
+    if response.ok {
+        if let Some(stream_rx) = stream_rx.as_mut() {
+            while let Some(frame) = stream_rx.recv().await {
+                let mut frame_line = serde_json::to_string(&frame)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                frame_line.push('\n');
+                if writer.write_all(frame_line.as_bytes()).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
 
     Ok(())
 }

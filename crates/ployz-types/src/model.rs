@@ -1,6 +1,7 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use derive_more::Display;
 use ipnet::Ipv4Net;
+use schemars::JsonSchema;
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -10,7 +11,9 @@ use strum::EnumString;
 
 use crate::spec::{Namespace, VolumeScope};
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display, JsonSchema,
+)]
 pub struct MachineId(pub String);
 
 impl AsRef<str> for MachineId {
@@ -50,7 +53,7 @@ impl NetworkId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, JsonSchema)]
 pub struct RegionName(pub String);
 
 impl RegionName {
@@ -79,7 +82,7 @@ impl<'de> Deserialize<'de> for RegionName {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, JsonSchema)]
 pub struct AvailabilityZoneName(pub String);
 
 impl AvailabilityZoneName {
@@ -105,7 +108,7 @@ impl<'de> Deserialize<'de> for AvailabilityZoneName {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MachineTopology {
     pub region: RegionName,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -173,7 +176,7 @@ fn normalize_topology_label(value: &str, field: &str) -> Result<String, String> 
     Ok(normalized)
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct PublicKey(pub [u8; 32]);
 
 impl fmt::Debug for PublicKey {
@@ -194,12 +197,22 @@ impl fmt::Debug for PrivateKey {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Display, JsonSchema)]
 #[display("{_0}")]
 pub struct OverlayIp(pub Ipv6Addr);
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString, Default,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    Display,
+    EnumString,
+    Default,
+    JsonSchema,
 )]
 pub enum MachineLifecycle {
     #[default]
@@ -227,7 +240,7 @@ pub enum NetworkLifecycle {
     Running,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MachineMembership {
     pub id: MachineId,
     pub public_key: PublicKey,
@@ -235,6 +248,7 @@ pub struct MachineMembership {
     pub topology: MachineTopology,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub control_target: Option<String>,
+    #[schemars(with = "Option<String>")]
     pub subnet: Option<Ipv4Net>,
     pub bridge_ip: Option<OverlayIp>,
     pub endpoints: Vec<String>,
@@ -507,16 +521,16 @@ pub struct SidecarRecord {
     pub sidecar_container: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display, JsonSchema)]
 pub struct InstanceId(pub String);
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display, JsonSchema)]
 pub struct DeployId(pub String);
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display, JsonSchema)]
 pub struct SlotId(pub String);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ServiceRevisionRecord {
     pub namespace: Namespace,
     pub service: String,
@@ -526,14 +540,14 @@ pub struct ServiceRevisionRecord {
     pub created_at: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ServiceReleaseRecord {
     pub namespace: Namespace,
     pub service: String,
     pub release: ServiceRelease,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ServiceRelease {
     pub primary_revision_hash: String,
     pub referenced_revision_hashes: Vec<String>,
@@ -543,7 +557,7 @@ pub struct ServiceRelease {
     pub updated_at: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ServiceRoutingPolicy {
     Direct {
@@ -554,14 +568,14 @@ pub enum ServiceRoutingPolicy {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ServiceTrafficAllocation {
     pub revision_hash: String,
     pub percent: u8,
     pub label: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ServiceReleaseSlot {
     pub slot_id: SlotId,
     pub machine_id: MachineId,
@@ -569,7 +583,7 @@ pub struct ServiceReleaseSlot {
     pub revision_hash: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RoutingState {
     pub machines: Vec<MachineMembership>,
     pub revisions: Vec<ServiceRevisionRecord>,
@@ -703,7 +717,9 @@ pub struct DomainDnsAdvice {
     pub recommended_ips: Vec<IpAddr>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString, JsonSchema,
+)]
 pub enum InstancePhase {
     #[display("pending")]
     #[strum(serialize = "pending")]
@@ -725,7 +741,9 @@ pub enum InstancePhase {
     Removed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString, JsonSchema,
+)]
 pub enum DrainState {
     #[display("none")]
     #[strum(serialize = "none")]
@@ -738,7 +756,7 @@ pub enum DrainState {
     Complete,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct InstanceStatusRecord {
     pub instance_id: InstanceId,
     pub namespace: Namespace,

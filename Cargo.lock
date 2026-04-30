@@ -3063,6 +3063,7 @@ version = "0.5.3"
 dependencies = [
  "ipnet",
  "ployz-types",
+ "schemars",
  "serde",
  "serde_json",
 ]

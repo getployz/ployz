@@ -175,6 +175,10 @@ pub(crate) enum Command {
         action: DebugAction,
     },
     Deploy(Box<DeployCommand>),
+    Runtime {
+        #[command(subcommand)]
+        action: RuntimeAction,
+    },
     #[command(alias = "network")]
     Mesh {
         #[command(subcommand)]
@@ -218,6 +222,11 @@ pub(crate) struct DeployCommand {
 pub(crate) enum DeployAction {
     Preview(DeployManifestArgs),
     Service(DeployServiceArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum RuntimeAction {
+    Stream,
 }
 
 #[derive(Debug, Subcommand)]
