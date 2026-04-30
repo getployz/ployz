@@ -93,6 +93,7 @@ async fn handle_connection(
         request,
         reply: reply_tx,
         response_flushed: Some(response_flushed_rx),
+        stream: None,
     })
     .await
     .map_err(|_| {

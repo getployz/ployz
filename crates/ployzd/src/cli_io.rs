@@ -7,6 +7,8 @@ use ployz_api::{
 };
 use ployz_sdk::{Transport, UnixSocketTransport};
 use std::io::{BufRead, BufReader, Read, Write};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader};
+use tokio::net::UnixStream;
 
 pub(crate) async fn cmd_rpc_stdio(socket: &str) -> Result<i32> {
     let mut line = String::new();
@@ -48,6 +50,79 @@ pub(crate) async fn request_daemon<T: Transport>(
             socket: socket.to_string(),
             message: error.to_string(),
         })
+}
+
+pub(crate) async fn cmd_runtime_stream(socket: &str) -> Result<i32> {
+    let stream = UnixStream::connect(socket)
+        .await
+        .map_err(|error| CliError::Transport {
+            socket: socket.to_string(),
+            message: error.to_string(),
+        })?;
+    let (reader, mut writer) = stream.into_split();
+    let mut line = serde_json::to_string(&DaemonRequest::RuntimeSubscribe).map_err(|error| {
+        CliError::Serialize(format!("failed to encode runtime stream request: {error}"))
+    })?;
+    line.push('\n');
+    writer
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|error| CliError::Transport {
+            socket: socket.to_string(),
+            message: error.to_string(),
+        })?;
+    writer
+        .shutdown()
+        .await
+        .map_err(|error| CliError::Transport {
+            socket: socket.to_string(),
+            message: error.to_string(),
+        })?;
+
+    let mut reader = TokioBufReader::new(reader);
+    let mut response_line = String::new();
+    reader
+        .read_line(&mut response_line)
+        .await
+        .map_err(|error| CliError::Transport {
+            socket: socket.to_string(),
+            message: error.to_string(),
+        })?;
+    let response: DaemonResponse = serde_json::from_str(&response_line).map_err(|error| {
+        CliError::Serialize(format!("failed to decode runtime stream response: {error}"))
+    })?;
+    if !response.ok {
+        return Err(CliError::Daemon {
+            code: response.code,
+            message: response.message,
+        });
+    }
+
+    let mut stdout = tokio::io::stdout();
+    loop {
+        let mut frame_line = String::new();
+        let read =
+            reader
+                .read_line(&mut frame_line)
+                .await
+                .map_err(|error| CliError::Transport {
+                    socket: socket.to_string(),
+                    message: error.to_string(),
+                })?;
+        if read == 0 {
+            break;
+        }
+        stdout
+            .write_all(frame_line.as_bytes())
+            .await
+            .map_err(|error| CliError::Io(format!("failed to write runtime frame: {error}")))?;
+        stdout
+            .flush()
+            .await
+            .map_err(|error| CliError::Io(format!("failed to flush runtime frame: {error}")))?;
+    }
+
+    Ok(0)
 }
 
 pub(crate) fn render_response(

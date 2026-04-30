@@ -15,6 +15,7 @@ RELEASE_FILES=(
   "Cargo.lock"
   "ebpf/Cargo.toml"
   "ebpf/Cargo.lock"
+  "packages/deploy/package.json"
 )
 
 usage() {

@@ -1,18 +1,21 @@
 {
   "name": "@ployz/deploy",
-  "version": "0.5.2",
+  "version": "0.5.3-alpha.1",
   "private": false,
   "type": "module",
   "types": "./index.d.ts",
   "files": [
     "index.d.ts",
-    "deploy-manifest.schema.json"
+    "runtime.d.ts",
+    "deploy-manifest.schema.json",
+    "runtime.schema.json"
   ],
   "exports": {
     ".": {
       "types": "./index.d.ts"
     },
-    "./deploy-manifest.schema.json": "./deploy-manifest.schema.json"
+    "./deploy-manifest.schema.json": "./deploy-manifest.schema.json",
+    "./runtime.schema.json": "./runtime.schema.json"
   },
   "publishConfig": {
     "access": "public"

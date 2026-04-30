@@ -1,8 +1,9 @@
 use ipnet::Ipv4Net;
 use ployz_types::model::{
     InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, NetworkId,
-    NetworkLifecycle,
+    NetworkLifecycle, RoutingEvent, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -264,6 +265,7 @@ pub enum DaemonRequest {
     DeployExport {
         namespace: String,
     },
+    RuntimeSubscribe,
     VolumeZfsInspect {
         namespace: String,
         volume: String,
@@ -327,6 +329,141 @@ pub enum DaemonPayload {
     VolumeZfsPeerSend(VolumeZfsPeerSendPayload),
     VolumeZfsTransfer(VolumeZfsTransferPayload),
     VolumeZfsTransferList(VolumeZfsTransferListPayload),
+    RuntimeState(RuntimeStatePayload),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeTable {
+    Machine,
+    Revision,
+    Release,
+    Instance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum RuntimeRecord {
+    Machine(MachineMembership),
+    Revision(ServiceRevisionRecord),
+    Release(ServiceReleaseRecord),
+    Instance(InstanceStatusRecord),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RuntimeWatchFrame {
+    Snapshot {
+        state: RoutingState,
+    },
+    Upsert {
+        table: RuntimeTable,
+        key: String,
+        record: RuntimeRecord,
+    },
+    Remove {
+        table: RuntimeTable,
+        key: String,
+        record: RuntimeRecord,
+    },
+    Heartbeat,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RuntimeStatePayload {
+    pub state: RoutingState,
+}
+
+#[must_use]
+pub fn machine_runtime_key(record: &MachineMembership) -> String {
+    record.id.0.clone()
+}
+
+#[must_use]
+pub fn revision_runtime_key(record: &ServiceRevisionRecord) -> String {
+    format!(
+        "{}:{}:{}",
+        record.namespace, record.service, record.revision_hash
+    )
+}
+
+#[must_use]
+pub fn release_runtime_key(record: &ServiceReleaseRecord) -> String {
+    format!("{}:{}", record.namespace, record.service)
+}
+
+#[must_use]
+pub fn instance_runtime_key(record: &InstanceStatusRecord) -> String {
+    record.instance_id.0.clone()
+}
+
+pub fn sort_routing_state(state: &mut RoutingState) {
+    state
+        .machines
+        .sort_by_key(|record| machine_runtime_key(record));
+    state
+        .revisions
+        .sort_by_key(|record| revision_runtime_key(record));
+    state
+        .releases
+        .sort_by_key(|record| release_runtime_key(record));
+    state
+        .instances
+        .sort_by_key(|record| instance_runtime_key(record));
+}
+
+#[must_use]
+pub fn runtime_frame_from_event(event: RoutingEvent) -> RuntimeWatchFrame {
+    match event {
+        RoutingEvent::MachineAdded(record) | RoutingEvent::MachineUpdated { new: record, .. } => {
+            RuntimeWatchFrame::Upsert {
+                key: machine_runtime_key(&record),
+                table: RuntimeTable::Machine,
+                record: RuntimeRecord::Machine(record),
+            }
+        }
+        RoutingEvent::MachineRemoved(record) => RuntimeWatchFrame::Remove {
+            key: machine_runtime_key(&record),
+            table: RuntimeTable::Machine,
+            record: RuntimeRecord::Machine(record),
+        },
+        RoutingEvent::RevisionAdded(record) | RoutingEvent::RevisionUpdated { new: record, .. } => {
+            RuntimeWatchFrame::Upsert {
+                key: revision_runtime_key(&record),
+                table: RuntimeTable::Revision,
+                record: RuntimeRecord::Revision(record),
+            }
+        }
+        RoutingEvent::RevisionRemoved(record) => RuntimeWatchFrame::Remove {
+            key: revision_runtime_key(&record),
+            table: RuntimeTable::Revision,
+            record: RuntimeRecord::Revision(record),
+        },
+        RoutingEvent::ReleaseAdded(record) | RoutingEvent::ReleaseUpdated { new: record, .. } => {
+            RuntimeWatchFrame::Upsert {
+                key: release_runtime_key(&record),
+                table: RuntimeTable::Release,
+                record: RuntimeRecord::Release(record),
+            }
+        }
+        RoutingEvent::ReleaseRemoved(record) => RuntimeWatchFrame::Remove {
+            key: release_runtime_key(&record),
+            table: RuntimeTable::Release,
+            record: RuntimeRecord::Release(record),
+        },
+        RoutingEvent::InstanceAdded(record) | RoutingEvent::InstanceUpdated { new: record, .. } => {
+            RuntimeWatchFrame::Upsert {
+                key: instance_runtime_key(&record),
+                table: RuntimeTable::Instance,
+                record: RuntimeRecord::Instance(record),
+            }
+        }
+        RoutingEvent::InstanceRemoved(record) => RuntimeWatchFrame::Remove {
+            key: instance_runtime_key(&record),
+            table: RuntimeTable::Instance,
+            record: RuntimeRecord::Instance(record),
+        },
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -675,7 +812,20 @@ pub enum DeployFrame {
 
 #[cfg(test)]
 mod tests {
-    use super::DeployFrame;
+    use super::{
+        DeployFrame, RuntimeRecord, RuntimeTable, RuntimeWatchFrame, instance_runtime_key,
+        machine_runtime_key, release_runtime_key, revision_runtime_key, runtime_frame_from_event,
+        sort_routing_state,
+    };
+    use ployz_types::model::{
+        DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
+        MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey, RoutingEvent,
+        RoutingState, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot,
+        ServiceRevisionRecord, ServiceRoutingPolicy, SlotId,
+    };
+    use ployz_types::spec::Namespace;
+    use std::collections::BTreeMap;
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
     #[test]
     fn start_candidate_roundtrip_is_session_scoped() {
@@ -710,5 +860,236 @@ mod tests {
         assert_eq!(instance_id, "inst-1");
         assert_eq!(spec_json, "{\"name\":\"api\"}");
         assert_eq!(volumes_json, "[]");
+    }
+
+    #[test]
+    fn sort_routing_state_orders_all_tables_by_runtime_key() {
+        let mut state = RoutingState {
+            machines: vec![machine_record("machine-b"), machine_record("machine-a")],
+            revisions: vec![
+                revision_record("prod", "web", "bbbb"),
+                revision_record("prod", "api", "aaaa"),
+            ],
+            releases: vec![release_record("prod", "web"), release_record("dev", "api")],
+            instances: vec![
+                instance_record("instance-b", "prod", "web"),
+                instance_record("instance-a", "prod", "api"),
+            ],
+        };
+
+        sort_routing_state(&mut state);
+
+        assert_eq!(
+            state
+                .machines
+                .iter()
+                .map(machine_runtime_key)
+                .collect::<Vec<_>>(),
+            ["machine-a", "machine-b"]
+        );
+        assert_eq!(
+            state
+                .revisions
+                .iter()
+                .map(revision_runtime_key)
+                .collect::<Vec<_>>(),
+            ["prod:api:aaaa", "prod:web:bbbb"]
+        );
+        assert_eq!(
+            state
+                .releases
+                .iter()
+                .map(release_runtime_key)
+                .collect::<Vec<_>>(),
+            ["dev:api", "prod:web"]
+        );
+        assert_eq!(
+            state
+                .instances
+                .iter()
+                .map(instance_runtime_key)
+                .collect::<Vec<_>>(),
+            ["instance-a", "instance-b"]
+        );
+    }
+
+    #[test]
+    fn instance_events_map_to_idempotent_watch_frames() {
+        let old = instance_record("instance-1", "prod", "api");
+        let mut new = old.clone();
+        new.ready = true;
+
+        let added = runtime_frame_from_event(RoutingEvent::InstanceAdded(old.clone()));
+        let updated = runtime_frame_from_event(RoutingEvent::InstanceUpdated {
+            old: old.clone(),
+            new: new.clone(),
+        });
+        let removed = runtime_frame_from_event(RoutingEvent::InstanceRemoved(new.clone()));
+
+        assert_eq!(
+            added,
+            RuntimeWatchFrame::Upsert {
+                table: RuntimeTable::Instance,
+                key: String::from("instance-1"),
+                record: RuntimeRecord::Instance(old.clone()),
+            }
+        );
+        assert_eq!(
+            updated,
+            RuntimeWatchFrame::Upsert {
+                table: RuntimeTable::Instance,
+                key: String::from("instance-1"),
+                record: RuntimeRecord::Instance(new.clone()),
+            }
+        );
+        assert_eq!(
+            removed,
+            RuntimeWatchFrame::Remove {
+                table: RuntimeTable::Instance,
+                key: String::from("instance-1"),
+                record: RuntimeRecord::Instance(new),
+            }
+        );
+    }
+
+    #[test]
+    fn runtime_frame_keys_are_deterministic() {
+        assert_eq!(
+            machine_runtime_key(&machine_record("machine-1")),
+            "machine-1"
+        );
+        assert_eq!(
+            revision_runtime_key(&revision_record("prod", "api", "abcd")),
+            "prod:api:abcd"
+        );
+        assert_eq!(
+            release_runtime_key(&release_record("prod", "api")),
+            "prod:api"
+        );
+        assert_eq!(
+            instance_runtime_key(&instance_record("instance-1", "prod", "api")),
+            "instance-1"
+        );
+    }
+
+    #[test]
+    fn runtime_watch_frame_serialization_roundtrips() {
+        let frame = RuntimeWatchFrame::Upsert {
+            table: RuntimeTable::Instance,
+            key: String::from("instance-1"),
+            record: RuntimeRecord::Instance(instance_record("instance-1", "prod", "api")),
+        };
+
+        let json = serde_json::to_value(&frame).expect("serialize runtime watch frame");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "kind": "upsert",
+                "table": "instance",
+                "key": "instance-1",
+                "record": {
+                    "instance_id": "instance-1",
+                    "namespace": "prod",
+                    "service": "api",
+                    "slot_id": "slot-1",
+                    "machine_id": "machine-1",
+                    "revision_hash": "rev-1",
+                    "deploy_id": "deploy-1",
+                    "docker_container_id": "container-1",
+                    "overlay_ip": "10.0.0.2",
+                    "backend_ports": {
+                        "http": 8080
+                    },
+                    "phase": "Ready",
+                    "ready": false,
+                    "drain_state": "None",
+                    "error": null,
+                    "started_at": 10,
+                    "updated_at": 20
+                }
+            })
+        );
+
+        let decoded: RuntimeWatchFrame =
+            serde_json::from_value(json).expect("deserialize runtime watch frame");
+        assert_eq!(decoded, frame);
+    }
+
+    fn machine_record(id: &str) -> MachineMembership {
+        MachineMembership {
+            id: MachineId(id.into()),
+            public_key: PublicKey([7; 32]),
+            overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
+            topology: MachineTopology::local(),
+            control_target: None,
+            subnet: None,
+            bridge_ip: None,
+            endpoints: vec![String::from("127.0.0.1:51820")],
+            lifecycle: MachineLifecycle::Active,
+            created_at: 1,
+            updated_at: 2,
+            labels: BTreeMap::new(),
+        }
+    }
+
+    fn revision_record(
+        namespace: &str,
+        service: &str,
+        revision_hash: &str,
+    ) -> ServiceRevisionRecord {
+        ServiceRevisionRecord {
+            namespace: Namespace(namespace.into()),
+            service: service.into(),
+            revision_hash: revision_hash.into(),
+            spec_json: String::from("{}"),
+            created_by: MachineId(String::from("machine-1")),
+            created_at: 1,
+        }
+    }
+
+    fn release_record(namespace: &str, service: &str) -> ServiceReleaseRecord {
+        ServiceReleaseRecord {
+            namespace: Namespace(namespace.into()),
+            service: service.into(),
+            release: ServiceRelease {
+                primary_revision_hash: String::from("rev-1"),
+                referenced_revision_hashes: vec![String::from("rev-1")],
+                routing: ServiceRoutingPolicy::Direct {
+                    revision_hash: String::from("rev-1"),
+                },
+                slots: vec![ServiceReleaseSlot {
+                    slot_id: SlotId(String::from("slot-1")),
+                    machine_id: MachineId(String::from("machine-1")),
+                    active_instance_id: InstanceId(String::from("instance-1")),
+                    revision_hash: String::from("rev-1"),
+                }],
+                updated_by_deploy_id: DeployId(String::from("deploy-1")),
+                updated_at: 1,
+            },
+        }
+    }
+
+    fn instance_record(id: &str, namespace: &str, service: &str) -> InstanceStatusRecord {
+        let mut backend_ports = BTreeMap::new();
+        backend_ports.insert(String::from("http"), 8080);
+        InstanceStatusRecord {
+            instance_id: InstanceId(id.into()),
+            namespace: Namespace(namespace.into()),
+            service: service.into(),
+            slot_id: SlotId(String::from("slot-1")),
+            machine_id: MachineId(String::from("machine-1")),
+            revision_hash: String::from("rev-1"),
+            deploy_id: DeployId(String::from("deploy-1")),
+            docker_container_id: String::from("container-1"),
+            overlay_ip: Some(Ipv4Addr::new(10, 0, 0, 2)),
+            backend_ports,
+            phase: InstancePhase::Ready,
+            ready: false,
+            drain_state: DrainState::None,
+            error: None,
+            started_at: 10,
+            updated_at: 20,
+        }
     }
 }

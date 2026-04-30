@@ -10,9 +10,9 @@ pub(crate) use cli::DebugTickTaskArg;
 pub(crate) use cli::{
     Cli, CliError, Command, DebugAction, DeployAction, DeployCommand, DeployManifestArgs,
     DeployServiceArgs, InstallSourceArg, MachineAction, MachineInviteAction,
-    MachineOperationAction, MeshAction, RuntimeTargetArg, ServiceModeArg,
+    MachineOperationAction, MeshAction, RuntimeAction, RuntimeTargetArg, ServiceModeArg,
 };
-use cli_io::{cmd_rpc_stdio, render_response, request_daemon};
+use cli_io::{cmd_rpc_stdio, cmd_runtime_stream, render_response, request_daemon};
 #[cfg(test)]
 use ployz_api::DaemonRequest;
 #[cfg(test)]
@@ -103,6 +103,7 @@ async fn run() -> Result<i32> {
         | other @ Command::Doctor
         | other @ Command::Debug { .. }
         | other @ Command::Deploy(_)
+        | other @ Command::Runtime { .. }
         | other @ Command::Mesh { .. }
         | other @ Command::Machine { .. }
         | other @ Command::Volume { .. }
@@ -113,6 +114,15 @@ async fn run() -> Result<i32> {
             let socket = resolved.socket;
             if let Command::RpcStdio = other {
                 return cmd_rpc_stdio(&socket).await;
+            }
+            if let Command::Runtime {
+                action: RuntimeAction::Stream,
+            } = other
+            {
+                if !cli.json {
+                    return Err(CliError::Usage("runtime stream requires --json".into()));
+                }
+                return cmd_runtime_stream(&socket).await;
             }
             let transport = UnixSocketTransport::new(socket.clone());
             let request = build_request(other, &transport, &socket).await?;

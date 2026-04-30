@@ -10,6 +10,7 @@ ployz-types = { path = "../ployz-types" }
 ipnet = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+schemars = { workspace = true }
 
 [lints.clippy]
 indexing_slicing = "warn"
