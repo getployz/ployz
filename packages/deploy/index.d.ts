@@ -225,3 +225,5 @@ export interface VolumeDeclaration {
   scope: VolumeScope;
   [k: string]: any;
 }
+
+export * from "./runtime";

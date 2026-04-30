@@ -6,6 +6,7 @@ mod invite;
 pub(crate) mod machine;
 mod mesh;
 pub(crate) mod peer_rpc;
+pub(crate) mod runtime;
 mod status;
 pub(crate) mod volume;
 
@@ -43,6 +44,7 @@ impl DaemonState {
             | DaemonRequest::DeployPreview { .. }
             | DaemonRequest::DeployApply { .. }
             | DaemonRequest::DeployExport { .. }
+            | DaemonRequest::RuntimeSubscribe
             | DaemonRequest::VolumeZfsInspect { .. }
             | DaemonRequest::VolumeZfsSnapshot { .. }
             | DaemonRequest::VolumeZfsSend { .. }
@@ -95,6 +97,9 @@ impl DaemonState {
             | DaemonRequest::MachineRemove { .. }
             | DaemonRequest::MeshPeerRemoveMachine { .. } => {
                 self.err("INTERNAL", "exclusive request routed to shared handler")
+            }
+            DaemonRequest::RuntimeSubscribe => {
+                self.err("INTERNAL", "streaming request routed to shared handler")
             }
             DaemonRequest::DeployPreview {
                 manifest_json,
@@ -297,6 +302,7 @@ impl DaemonState {
             | DaemonRequest::DeployPreview { .. }
             | DaemonRequest::DeployApply { .. }
             | DaemonRequest::DeployExport { .. }
+            | DaemonRequest::RuntimeSubscribe
             | DaemonRequest::VolumeZfsInspect { .. }
             | DaemonRequest::VolumeZfsSnapshot { .. }
             | DaemonRequest::VolumeZfsSend { .. }

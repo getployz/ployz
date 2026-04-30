@@ -1,0 +1,579 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RuntimeWatchFrame",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "kind",
+        "state"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "snapshot"
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/RoutingState"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "key",
+        "kind",
+        "record",
+        "table"
+      ],
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "upsert"
+          ]
+        },
+        "record": {
+          "$ref": "#/definitions/RuntimeRecord"
+        },
+        "table": {
+          "$ref": "#/definitions/RuntimeTable"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "key",
+        "kind",
+        "record",
+        "table"
+      ],
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "remove"
+          ]
+        },
+        "record": {
+          "$ref": "#/definitions/RuntimeRecord"
+        },
+        "table": {
+          "$ref": "#/definitions/RuntimeTable"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "heartbeat"
+          ]
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "AvailabilityZoneName": {
+      "type": "string"
+    },
+    "DeployId": {
+      "type": "string"
+    },
+    "DrainState": {
+      "type": "string",
+      "enum": [
+        "None",
+        "Requested",
+        "Complete"
+      ]
+    },
+    "InstanceId": {
+      "type": "string"
+    },
+    "InstancePhase": {
+      "type": "string",
+      "enum": [
+        "Pending",
+        "Starting",
+        "Ready",
+        "Failed",
+        "Draining",
+        "Removed"
+      ]
+    },
+    "InstanceStatusRecord": {
+      "type": "object",
+      "required": [
+        "backend_ports",
+        "deploy_id",
+        "docker_container_id",
+        "drain_state",
+        "instance_id",
+        "machine_id",
+        "namespace",
+        "phase",
+        "ready",
+        "revision_hash",
+        "service",
+        "slot_id",
+        "started_at",
+        "updated_at"
+      ],
+      "properties": {
+        "backend_ports": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "uint16",
+            "minimum": 0.0
+          }
+        },
+        "deploy_id": {
+          "$ref": "#/definitions/DeployId"
+        },
+        "docker_container_id": {
+          "type": "string"
+        },
+        "drain_state": {
+          "$ref": "#/definitions/DrainState"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "machine_id": {
+          "$ref": "#/definitions/MachineId"
+        },
+        "namespace": {
+          "$ref": "#/definitions/Namespace"
+        },
+        "overlay_ip": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "ipv4"
+        },
+        "phase": {
+          "$ref": "#/definitions/InstancePhase"
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "revision_hash": {
+          "type": "string"
+        },
+        "service": {
+          "type": "string"
+        },
+        "slot_id": {
+          "$ref": "#/definitions/SlotId"
+        },
+        "started_at": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "updated_at": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "MachineId": {
+      "type": "string"
+    },
+    "MachineLifecycle": {
+      "type": "string",
+      "enum": [
+        "Standby",
+        "Active",
+        "Draining"
+      ]
+    },
+    "MachineMembership": {
+      "type": "object",
+      "required": [
+        "created_at",
+        "endpoints",
+        "id",
+        "labels",
+        "overlay_ip",
+        "public_key",
+        "topology",
+        "updated_at"
+      ],
+      "properties": {
+        "bridge_ip": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OverlayIp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "control_target": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "endpoints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "id": {
+          "$ref": "#/definitions/MachineId"
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "lifecycle": {
+          "default": "Standby",
+          "allOf": [
+            {
+              "$ref": "#/definitions/MachineLifecycle"
+            }
+          ]
+        },
+        "overlay_ip": {
+          "$ref": "#/definitions/OverlayIp"
+        },
+        "public_key": {
+          "$ref": "#/definitions/PublicKey"
+        },
+        "subnet": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "topology": {
+          "$ref": "#/definitions/MachineTopology"
+        },
+        "updated_at": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "MachineTopology": {
+      "type": "object",
+      "required": [
+        "region"
+      ],
+      "properties": {
+        "availability_zone": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AvailabilityZoneName"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "region": {
+          "$ref": "#/definitions/RegionName"
+        }
+      }
+    },
+    "Namespace": {
+      "type": "string"
+    },
+    "OverlayIp": {
+      "type": "string",
+      "format": "ipv6"
+    },
+    "PublicKey": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "format": "uint8",
+        "minimum": 0.0
+      },
+      "maxItems": 32,
+      "minItems": 32
+    },
+    "RegionName": {
+      "type": "string"
+    },
+    "RoutingState": {
+      "type": "object",
+      "required": [
+        "instances",
+        "machines",
+        "releases",
+        "revisions"
+      ],
+      "properties": {
+        "instances": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/InstanceStatusRecord"
+          }
+        },
+        "machines": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/MachineMembership"
+          }
+        },
+        "releases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ServiceReleaseRecord"
+          }
+        },
+        "revisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ServiceRevisionRecord"
+          }
+        }
+      }
+    },
+    "RuntimeRecord": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/MachineMembership"
+        },
+        {
+          "$ref": "#/definitions/ServiceRevisionRecord"
+        },
+        {
+          "$ref": "#/definitions/ServiceReleaseRecord"
+        },
+        {
+          "$ref": "#/definitions/InstanceStatusRecord"
+        }
+      ]
+    },
+    "RuntimeTable": {
+      "type": "string",
+      "enum": [
+        "machine",
+        "revision",
+        "release",
+        "instance"
+      ]
+    },
+    "ServiceRelease": {
+      "type": "object",
+      "required": [
+        "primary_revision_hash",
+        "referenced_revision_hashes",
+        "routing",
+        "slots",
+        "updated_at",
+        "updated_by_deploy_id"
+      ],
+      "properties": {
+        "primary_revision_hash": {
+          "type": "string"
+        },
+        "referenced_revision_hashes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "routing": {
+          "$ref": "#/definitions/ServiceRoutingPolicy"
+        },
+        "slots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ServiceReleaseSlot"
+          }
+        },
+        "updated_at": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "updated_by_deploy_id": {
+          "$ref": "#/definitions/DeployId"
+        }
+      }
+    },
+    "ServiceReleaseRecord": {
+      "type": "object",
+      "required": [
+        "namespace",
+        "release",
+        "service"
+      ],
+      "properties": {
+        "namespace": {
+          "$ref": "#/definitions/Namespace"
+        },
+        "release": {
+          "$ref": "#/definitions/ServiceRelease"
+        },
+        "service": {
+          "type": "string"
+        }
+      }
+    },
+    "ServiceReleaseSlot": {
+      "type": "object",
+      "required": [
+        "active_instance_id",
+        "machine_id",
+        "revision_hash",
+        "slot_id"
+      ],
+      "properties": {
+        "active_instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "machine_id": {
+          "$ref": "#/definitions/MachineId"
+        },
+        "revision_hash": {
+          "type": "string"
+        },
+        "slot_id": {
+          "$ref": "#/definitions/SlotId"
+        }
+      }
+    },
+    "ServiceRevisionRecord": {
+      "type": "object",
+      "required": [
+        "created_at",
+        "created_by",
+        "namespace",
+        "revision_hash",
+        "service",
+        "spec_json"
+      ],
+      "properties": {
+        "created_at": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "created_by": {
+          "$ref": "#/definitions/MachineId"
+        },
+        "namespace": {
+          "$ref": "#/definitions/Namespace"
+        },
+        "revision_hash": {
+          "type": "string"
+        },
+        "service": {
+          "type": "string"
+        },
+        "spec_json": {
+          "type": "string"
+        }
+      }
+    },
+    "ServiceRoutingPolicy": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "revision_hash"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "direct"
+              ]
+            },
+            "revision_hash": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "allocations",
+            "kind"
+          ],
+          "properties": {
+            "allocations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ServiceTrafficAllocation"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "split"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "ServiceTrafficAllocation": {
+      "type": "object",
+      "required": [
+        "percent",
+        "revision_hash"
+      ],
+      "properties": {
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "percent": {
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0.0
+        },
+        "revision_hash": {
+          "type": "string"
+        }
+      }
+    },
+    "SlotId": {
+      "type": "string"
+    }
+  }
+}

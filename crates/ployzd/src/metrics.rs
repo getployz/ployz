@@ -110,6 +110,7 @@ pub fn request_name(request: &ployz_api::DaemonRequest) -> &'static str {
         ployz_api::DaemonRequest::DeployPreview { .. } => "deploy_preview",
         ployz_api::DaemonRequest::DeployApply { .. } => "deploy_apply",
         ployz_api::DaemonRequest::DeployExport { .. } => "deploy_export",
+        ployz_api::DaemonRequest::RuntimeSubscribe => "runtime_subscribe",
         ployz_api::DaemonRequest::VolumeZfsInspect { .. } => "volume_zfs_inspect",
         ployz_api::DaemonRequest::VolumeZfsSnapshot { .. } => "volume_zfs_snapshot",
         ployz_api::DaemonRequest::VolumeZfsSend { .. } => "volume_zfs_send",

@@ -27,6 +27,9 @@ pub(crate) async fn build_request<T: Transport>(
         Command::Doctor => Ok(DaemonRequest::Doctor),
         Command::Debug { action } => build_debug_request(action),
         Command::Deploy(command) => build_deploy_request(*command, transport, socket).await,
+        Command::Runtime { .. } => Err(CliError::Usage(
+            "internal error: runtime stream is handled directly".into(),
+        )),
         Command::Mesh { action } => build_mesh_request(action),
         Command::Machine { action } => build_machine_request(action),
         Command::Volume { action } => build_volume_request(action),
