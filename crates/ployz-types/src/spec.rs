@@ -846,6 +846,19 @@ mod tests {
     }
 
     #[test]
+    fn manifest_accepts_empty_services() {
+        let manifest = DeployManifest {
+            namespace: Namespace::default_ns(),
+            volumes: Vec::new(),
+            services: Vec::new(),
+        };
+
+        manifest
+            .validate()
+            .expect("empty services means remove current releases");
+    }
+
+    #[test]
     fn manifest_rejects_empty_namespace() {
         let manifest = DeployManifest {
             namespace: Namespace(String::new()),
