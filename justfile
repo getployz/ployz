@@ -21,6 +21,9 @@ test:
 test-all:
     cargo test
 
+deploy-types:
+    bash ./scripts/generate-deploy-types.sh
+
 bootstrap-linux *args:
     ./scripts/bootstrap-linux.sh {{args}}
 

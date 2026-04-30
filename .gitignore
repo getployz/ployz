@@ -1,4 +1,7 @@
 /target/
+node_modules/
+npm-debug.log*
+*.tgz
 .DS_Store
 .agents/*
 !.agents/skills/
