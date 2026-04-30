@@ -199,6 +199,10 @@ pub enum DaemonRequest {
         targets: Vec<String>,
         options: MachineAddOptions,
     },
+    MachineUpdate {
+        ids: Vec<String>,
+        version: String,
+    },
     MachineActivate {
         target: String,
     },
@@ -215,6 +219,14 @@ pub enum DaemonRequest {
     },
     MachineRtt,
     MeshPeerRttSnapshot,
+    MeshPeerPrepareUpdate {
+        operation_id: String,
+        version: String,
+    },
+    MeshPeerExecuteUpdate {
+        operation_id: String,
+        version: String,
+    },
     MeshPeerRemoveMachine {
         operation_id: String,
         network_id: NetworkId,
@@ -316,6 +328,7 @@ pub enum DaemonPayload {
     MachineList(MachineListPayload),
     MachineRtt(MachineRttPayload),
     MachineAdd(MachineAddPayload),
+    MachineUpdate(MachineUpdatePayload),
     MachineRemove(MachineRemovePayload),
     MeshList(MeshListPayload),
     MeshStatus(MeshStatusPayload),
@@ -502,6 +515,7 @@ pub struct MachineRttRow {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusPayload {
     pub machine_id: String,
+    pub version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -590,6 +604,22 @@ pub struct MachineAwaitingSelfPublication {
 pub struct MachineRemovePayload {
     pub id: String,
     pub force: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MachineUpdatePayload {
+    pub operation_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub updated: Vec<MachineUpdateRow>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed: Vec<MachineUpdateRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MachineUpdateRow {
+    pub id: String,
+    pub version: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

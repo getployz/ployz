@@ -85,6 +85,7 @@ fn build_dns_sidecar_spec(config: &DnsConfig, image: &str) -> SidecarSpec {
 
     SidecarSpec {
         name: format!("dns-{}", config.network),
+        version: env!("CARGO_PKG_VERSION").to_string(),
         image: image.to_string(),
         binary_name: "ployz-dns".to_string(),
         container_name: "ployz-dns".to_string(),

@@ -704,7 +704,7 @@ impl DockerCorrosion {
             pull_policy: PullPolicy::IfNotPresent,
             cmd: self.cmd.clone(),
             env,
-            labels: build_system_labels(&key, None),
+            labels: build_system_labels(&key, None, Some(env!("CARGO_PKG_VERSION"))),
             binds: self.volumes.clone(),
             network_mode: self.network_mode.clone(),
             ..Default::default()

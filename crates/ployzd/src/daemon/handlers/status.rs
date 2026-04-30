@@ -15,6 +15,7 @@ impl DaemonState {
                 let net = &active.config;
                 let payload = StatusPayload {
                     machine_id: id.machine_id.0.clone(),
+                    version: env!("CARGO_PKG_VERSION").to_string(),
                     network: Some(net.name.0.clone()),
                     network_lifecycle: Some(net.lifecycle),
                     local_machine_lifecycle,
@@ -23,8 +24,9 @@ impl DaemonState {
                 };
                 self.ok_with_payload(
                     format!(
-                        "machine:            {}\nnetwork:            {}\nnetwork lifecycle:  {}\nlocal lifecycle:    {}\noverlay:            {}\nmesh phase:         {:?}",
+                        "machine:            {}\nversion:            {}\nnetwork:            {}\nnetwork lifecycle:  {}\nlocal lifecycle:    {}\noverlay:            {}\nmesh phase:         {:?}",
                         id.machine_id,
+                        env!("CARGO_PKG_VERSION"),
                         net.name,
                         net.lifecycle,
                         local_machine_lifecycle
@@ -38,11 +40,13 @@ impl DaemonState {
             }
             None => self.ok_with_payload(
                 format!(
-                    "machine:            {}\nnetwork:            none\nnetwork lifecycle:  —\nlocal lifecycle:    —\nmesh phase:         idle",
-                    id.machine_id
+                    "machine:            {}\nversion:            {}\nnetwork:            none\nnetwork lifecycle:  —\nlocal lifecycle:    —\nmesh phase:         idle",
+                    id.machine_id,
+                    env!("CARGO_PKG_VERSION")
                 ),
                 Some(DaemonPayload::Status(StatusPayload {
                     machine_id: id.machine_id.0.clone(),
+                    version: env!("CARGO_PKG_VERSION").to_string(),
                     network: None,
                     network_lifecycle: None,
                     local_machine_lifecycle: None,
