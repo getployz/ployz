@@ -2,6 +2,7 @@
 set -euo pipefail
 
 PLOYZ_REPO="${PLOYZ_REPO:-getployz/ployz}"
+PLOYZ_RELEASE_BASE_URL="${PLOYZ_RELEASE_BASE_URL:-https://ployz.sh/releases}"
 
 # Set PLOYZ_QUIET=1 to suppress progress output (useful for CI/e2e).
 # Warnings and errors always print regardless.
@@ -637,9 +638,9 @@ download_release_payload() {
   local asset url
   asset="$(payload_asset_name_for_host)"
   if [[ "${version}" == "latest" ]]; then
-    url="https://github.com/${PLOYZ_REPO}/releases/latest/download/${asset}"
+    url="${PLOYZ_RELEASE_BASE_URL%/}/latest/download/${asset}"
   else
-    url="https://github.com/${PLOYZ_REPO}/releases/download/${version}/${asset}"
+    url="${PLOYZ_RELEASE_BASE_URL%/}/download/${version}/${asset}"
   fi
 
   step "Downloading release payload (version: ${version})"

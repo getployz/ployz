@@ -1,0 +1,20 @@
+{
+  "name": "@ployz/deploy",
+  "version": "0.5.2",
+  "private": false,
+  "type": "module",
+  "types": "./index.d.ts",
+  "files": [
+    "index.d.ts",
+    "deploy-manifest.schema.json"
+  ],
+  "exports": {
+    ".": {
+      "types": "./index.d.ts"
+    },
+    "./deploy-manifest.schema.json": "./deploy-manifest.schema.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
