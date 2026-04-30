@@ -37,14 +37,14 @@ impl DaemonState {
         let targets = if ids.is_empty() {
             vec![self.identity.machine_id.0.clone()]
         } else {
+            if let Some(duplicate) = first_duplicate(ids) {
+                return self.err(
+                    "DUPLICATE_MACHINE",
+                    format!("machine '{duplicate}' was targeted more than once"),
+                );
+            }
             update_targets_with_self_last(ids, &self.identity.machine_id)
         };
-        if let Some(duplicate) = first_duplicate(targets.as_slice()) {
-            return self.err(
-                "DUPLICATE_MACHINE",
-                format!("machine '{duplicate}' was targeted more than once"),
-            );
-        }
 
         let operation_store = self.machine_operation_store();
         let mut operation = match operation_store.begin(
@@ -513,13 +513,14 @@ fn ensure_update_operation(
 
 async fn run_update_installer(version: &str) -> Result<(), String> {
     let installer = ployz_install::find_installer_script()?;
+    let installer_version = installer_version_argument(version);
     let status = Command::new("bash")
         .arg(&installer)
         .arg("install")
         .arg("--source")
         .arg("release")
         .arg("--version")
-        .arg(version)
+        .arg(&installer_version)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -530,6 +531,14 @@ async fn run_update_installer(version: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("installer exited with status {status}"))
+    }
+}
+
+fn installer_version_argument(canonical: &str) -> String {
+    if canonical == "latest" {
+        canonical.to_string()
+    } else {
+        format!("v{canonical}")
     }
 }
 
@@ -578,8 +587,8 @@ fn update_targets_with_self_last(ids: &[String], local_machine_id: &MachineId) -
 #[cfg(test)]
 mod tests {
     use super::{
-        first_duplicate, normalize_requested_version, requested_version_matches_current,
-        update_targets_with_self_last,
+        first_duplicate, installer_version_argument, normalize_requested_version,
+        requested_version_matches_current, update_targets_with_self_last,
     };
     use ployz_types::model::MachineId;
 
@@ -609,6 +618,12 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_detection_catches_repeated_self() {
+        let values = vec!["self".to_string(), "self".to_string()];
+        assert_eq!(first_duplicate(values.as_slice()).as_deref(), Some("self"));
+    }
+
+    #[test]
     fn explicit_self_target_is_moved_last() {
         let targets = update_targets_with_self_last(
             &[
@@ -620,5 +635,15 @@ mod tests {
         );
 
         assert_eq!(targets, vec!["remote-a", "remote-b", "self"]);
+    }
+
+    #[test]
+    fn installer_version_argument_re_adds_v_prefix_for_pinned_versions() {
+        assert_eq!(installer_version_argument("0.5.3"), "v0.5.3");
+        assert_eq!(
+            installer_version_argument("0.5.3-alpha.1"),
+            "v0.5.3-alpha.1"
+        );
+        assert_eq!(installer_version_argument("latest"), "latest");
     }
 }
