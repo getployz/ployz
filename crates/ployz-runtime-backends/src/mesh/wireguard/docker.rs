@@ -367,13 +367,30 @@ mod tests {
     use super::*;
     use std::net::Ipv6Addr;
 
+    // Build a `Docker` handle that does not require `/var/run/docker.sock`.
+    // The unix-socket constructors (`connect_with_socket_defaults`,
+    // `connect_with_unix`) eagerly stat the socket and fail when it is
+    // missing - which breaks pure-data tests in sandboxes/CI without a Docker
+    // daemon. `connect_with_http` only builds an HTTP client and never
+    // touches the network until a request is issued, so it works as a stub
+    // for fixtures that store but never invoke the handle. Don't use this in
+    // tests that actually exercise Docker requests.
+    fn placeholder_docker() -> Docker {
+        Docker::connect_with_http(
+            "http://127.0.0.1:1",
+            1,
+            bollard::API_DEFAULT_VERSION,
+        )
+        .expect("placeholder docker handle")
+    }
+
     fn sample_wireguard() -> DockerWireGuard {
         let private_key = PrivateKey([7; 32]);
         let public_key_bytes =
             x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(private_key.0))
                 .to_bytes();
         DockerWireGuard {
-            docker: Docker::connect_with_socket_defaults().expect("docker client"),
+            docker: placeholder_docker(),
             container_name: "test-wireguard".to_string(),
             image: DEFAULT_IMAGE.to_string(),
             paths: WgPaths::new(Path::new("/tmp/ployz-test")),

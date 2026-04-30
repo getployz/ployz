@@ -125,7 +125,10 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_keeps_in_flight_response_writable() {
-        let probe = std::net::TcpListener::bind("[::1]:0").expect("bind probe listener");
+        // Use IPv4 loopback so the test still runs on hosts/sandboxes without
+        // an IPv6 stack. We only need an ephemeral port for the probe, the
+        // address family is not part of what's being asserted.
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe listener");
         let addr = probe.local_addr().expect("probe listener address");
         drop(probe);
 
