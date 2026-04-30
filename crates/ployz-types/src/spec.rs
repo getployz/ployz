@@ -55,10 +55,6 @@ impl DeployManifest {
             ));
         }
 
-        if self.services.is_empty() {
-            return Err("manifest must contain at least one service".into());
-        }
-
         let mut volumes_by_name = BTreeMap::new();
         for volume in &self.volumes {
             volume.validate()?;

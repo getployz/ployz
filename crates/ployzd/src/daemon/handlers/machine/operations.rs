@@ -69,6 +69,8 @@ pub(super) struct MachineOperationArtifacts {
     pub uses_operation_identity: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -390,7 +392,16 @@ impl DaemonState {
             .requested_version
             .as_deref()
             .unwrap_or("latest");
-        if requested_version == "latest" || requested_version == env!("CARGO_PKG_VERSION") {
+        let version_matches = if requested_version == "latest" {
+            record
+                .artifacts
+                .previous_version
+                .as_deref()
+                .is_some_and(|previous_version| previous_version != env!("CARGO_PKG_VERSION"))
+        } else {
+            requested_version == env!("CARGO_PKG_VERSION")
+        };
+        if version_matches {
             current.status = MachineOperationStatus::Succeeded;
             current.last_error = None;
             current.updated_at = now_unix_secs();
