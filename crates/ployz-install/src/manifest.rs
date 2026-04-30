@@ -19,7 +19,7 @@ impl InstallManifest {
         let mut data_dir = None;
         let mut socket_path = None;
         let mut installer_path = None;
-        let mut ployz_path = None;
+        let mut ployzctl_path = None;
         let mut ployzd_path = None;
         let mut gateway_path = None;
         let mut dns_path = None;
@@ -51,7 +51,7 @@ impl InstallManifest {
                 "DATA_DIR" => data_dir = Some(PathBuf::from(value)),
                 "SOCKET_PATH" => socket_path = Some(value),
                 "INSTALLER_PATH" => installer_path = Some(PathBuf::from(value)),
-                "PLOYZ_PATH" => ployz_path = Some(PathBuf::from(value)),
+                "PLOYZCTL_PATH" => ployzctl_path = Some(PathBuf::from(value)),
                 "PLOYZD_PATH" => ployzd_path = Some(PathBuf::from(value)),
                 "PLOYZ_GATEWAY_PATH" => gateway_path = Some(PathBuf::from(value)),
                 "PLOYZ_DNS_PATH" => dns_path = Some(PathBuf::from(value)),
@@ -78,7 +78,7 @@ impl InstallManifest {
             data_dir: required_value(data_dir, "DATA_DIR", path)?,
             socket_path: required_value(socket_path, "SOCKET_PATH", path)?,
             installer_path: required_value(installer_path, "INSTALLER_PATH", path)?,
-            ployz_path: required_value(ployz_path, "PLOYZ_PATH", path)?,
+            ployzctl_path: required_value(ployzctl_path, "PLOYZCTL_PATH", path)?,
             ployzd_path: required_value(ployzd_path, "PLOYZD_PATH", path)?,
             gateway_path: required_value(gateway_path, "PLOYZ_GATEWAY_PATH", path)?,
             dns_path: required_value(dns_path, "PLOYZ_DNS_PATH", path)?,
@@ -113,7 +113,7 @@ impl InstallManifest {
             env_line("DATA_DIR", &self.data_dir.display().to_string()),
             env_line("SOCKET_PATH", &self.socket_path),
             env_line("INSTALLER_PATH", &self.installer_path.display().to_string()),
-            env_line("PLOYZ_PATH", &self.ployz_path.display().to_string()),
+            env_line("PLOYZCTL_PATH", &self.ployzctl_path.display().to_string()),
             env_line("PLOYZD_PATH", &self.ployzd_path.display().to_string()),
             env_line(
                 "PLOYZ_GATEWAY_PATH",
@@ -137,7 +137,7 @@ impl InstallManifest {
 pub(super) fn validate_install_manifest(manifest: &InstallManifest) -> Result<(), String> {
     let required = [
         &manifest.installer_path,
-        &manifest.ployz_path,
+        &manifest.ployzctl_path,
         &manifest.ployzd_path,
         &manifest.gateway_path,
         &manifest.dns_path,

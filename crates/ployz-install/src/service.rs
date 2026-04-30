@@ -130,7 +130,7 @@ pub(super) fn promote_system_binaries(manifest: &InstallManifest) -> Result<(), 
     })?;
     let copies = [
         (&manifest.installer_path, system_bin_dir.join("ployz.sh")),
-        (&manifest.ployz_path, system_bin_dir.join("ployz")),
+        (&manifest.ployzctl_path, system_bin_dir.join("ployzctl")),
         (&manifest.ployzd_path, system_bin_dir.join("ployzd")),
         (&manifest.gateway_path, system_bin_dir.join("ployz-gateway")),
         (&manifest.dns_path, system_bin_dir.join("ployz-dns")),

@@ -36,7 +36,7 @@ impl From<ServiceModeArg> for ServiceMode {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "ployz", about = "Ployz operator CLI", version)]
+#[command(name = "ployzctl", about = "Ployz operator CLI", version)]
 struct Cli {
     #[command(subcommand)]
     command: Option<CommandLine>,

@@ -17,7 +17,7 @@ const REMOTE_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const REMOTE_READY_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 const MACHINE_STATE_SYNC_TIMEOUT: Duration = Duration::from_secs(20);
 const MACHINE_STATE_SYNC_POLL_INTERVAL: Duration = Duration::from_millis(500);
-const REMOTE_RPC_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" rpc-stdio";
+const REMOTE_RPC_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployzctl\" rpc-stdio";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ExpectedSubnetState {
@@ -346,7 +346,7 @@ fn decode_joiner_record(output: &str) -> Result<MachineMembership, String> {
         Some(line) => line,
         None => {
             return Err(format!(
-                "self-record output missing {JOIN_RESPONSE_PREFIX} line\nhint: run `ployz mesh self-record` on the joiner and `ployz mesh accept <response>` on this machine"
+                "self-record output missing {JOIN_RESPONSE_PREFIX} line\nhint: run `ployzctl mesh self-record` on the joiner and `ployzctl mesh accept <response>` on this machine"
             ));
         }
     };

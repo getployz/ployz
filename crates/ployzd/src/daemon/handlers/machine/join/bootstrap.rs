@@ -4,21 +4,22 @@ use ployz_api::{InstallRuntimeTarget, InstallServiceMode, InstallSource, Machine
 
 use crate::daemon::ssh::{SshOptions, run_ssh, run_ssh_with_stdin};
 
-const REMOTE_STATUS_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" status >/dev/null";
-const REMOTE_PLOYZ_VERSION_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployz\" --version";
+const REMOTE_STATUS_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployzctl\" status >/dev/null";
+const REMOTE_PLOYZCTL_VERSION_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployzctl\" --version";
 
 pub(super) async fn bootstrap_remote_machine(
     target: &str,
     install: &MachineInstallOptions,
     ssh_options: &SshOptions,
 ) -> Result<(), String> {
-    let local_version = local_ployz_version()?;
-    if let Ok(remote_version) = run_ssh(target, REMOTE_PLOYZ_VERSION_COMMAND, ssh_options).await {
+    let local_version = local_ployzctl_version()?;
+    if let Ok(remote_version) = run_ssh(target, REMOTE_PLOYZCTL_VERSION_COMMAND, ssh_options).await
+    {
         if remote_version.trim() == local_version.trim() {
             tracing::info!(
                 %target,
                 version = remote_version.trim(),
-                "machine add bootstrap: remote ployz version already matches, skipping install"
+                "machine add bootstrap: remote ployzctl version already matches, skipping install"
             );
             return run_ssh(target, REMOTE_STATUS_COMMAND, ssh_options)
                 .await
@@ -28,10 +29,10 @@ pub(super) async fn bootstrap_remote_machine(
             %target,
             local_version = local_version.trim(),
             remote_version = remote_version.trim(),
-            "machine add bootstrap: remote ployz version mismatch, reinstalling"
+            "machine add bootstrap: remote ployzctl version mismatch, reinstalling"
         );
     } else {
-        tracing::info!(%target, "machine add bootstrap: remote ployz missing, installing");
+        tracing::info!(%target, "machine add bootstrap: remote ployzctl missing, installing");
     }
 
     let installer_path = ployz_install::find_installer_script()?;
@@ -44,17 +45,17 @@ pub(super) async fn bootstrap_remote_machine(
         .map(|_| ())
 }
 
-fn local_ployz_version() -> Result<String, String> {
-    let ployz_path = local_ployz_path()?;
-    let output = std::process::Command::new(&ployz_path)
+fn local_ployzctl_version() -> Result<String, String> {
+    let ployzctl_path = local_ployzctl_path()?;
+    let output = std::process::Command::new(&ployzctl_path)
         .arg("--version")
         .output()
-        .map_err(|error| format!("run '{}' --version: {error}", ployz_path.display()))?;
+        .map_err(|error| format!("run '{}' --version: {error}", ployzctl_path.display()))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(format!(
             "'{}' --version failed (status: {}){}",
-            ployz_path.display(),
+            ployzctl_path.display(),
             output
                 .status
                 .code()
@@ -70,29 +71,29 @@ fn local_ployz_version() -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn local_ployz_path() -> Result<PathBuf, String> {
+fn local_ployzctl_path() -> Result<PathBuf, String> {
     #[cfg(test)]
-    if let Some(path) = crate::daemon::ssh::test_ssh_env_value("PLOYZ_TEST_LOCAL_PLOYZ") {
+    if let Some(path) = crate::daemon::ssh::test_ssh_env_value("PLOYZ_TEST_LOCAL_PLOYZCTL") {
         return Ok(PathBuf::from(path));
     }
 
     let current_exe =
         std::env::current_exe().map_err(|error| format!("current_exe failed: {error}"))?;
     let candidates = [
-        current_exe.with_file_name("ployz"),
+        current_exe.with_file_name("ployzctl"),
         current_exe
             .parent()
-            .map(|parent| parent.join("ployz"))
-            .unwrap_or_else(|| PathBuf::from("ployz")),
-        PathBuf::from("/usr/local/bin/ployz"),
-        PathBuf::from("/usr/bin/ployz"),
+            .map(|parent| parent.join("ployzctl"))
+            .unwrap_or_else(|| PathBuf::from("ployzctl")),
+        PathBuf::from("/usr/local/bin/ployzctl"),
+        PathBuf::from("/usr/bin/ployzctl"),
     ];
     for candidate in candidates {
         if Path::new(&candidate).exists() {
             return Ok(candidate);
         }
     }
-    Err("ployz binary not found next to current daemon".into())
+    Err("ployzctl binary not found next to current daemon".into())
 }
 
 fn install_script_args(install: &MachineInstallOptions) -> String {
