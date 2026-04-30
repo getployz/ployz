@@ -22,6 +22,7 @@ const OPERATIONS_DIR_NAME: &str = "machine-operations";
 pub(super) enum MachineOperationKind {
     Init,
     Add,
+    Update,
 }
 
 impl MachineOperationKind {
@@ -30,6 +31,7 @@ impl MachineOperationKind {
         match self {
             Self::Init => "init",
             Self::Add => "add",
+            Self::Update => "update",
         }
     }
 }
@@ -65,6 +67,8 @@ pub(super) struct MachineOperationArtifacts {
     pub allocated_subnet: Option<String>,
     #[serde(default)]
     pub uses_operation_identity: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +131,32 @@ impl MachineOperationStore {
         let now = now_unix_secs();
         let record = MachineOperationRecord {
             id: unique_operation_id(kind, now),
+            kind,
+            network_name,
+            targets,
+            status: MachineOperationStatus::Running,
+            stage: stage.into(),
+            started_at: now,
+            updated_at: now,
+            last_error: None,
+            artifacts,
+        };
+        self.save(&record)?;
+        Ok(record)
+    }
+
+    pub(super) fn begin_with_id(
+        &self,
+        id: String,
+        kind: MachineOperationKind,
+        network_name: Option<String>,
+        targets: Vec<String>,
+        stage: impl Into<String>,
+        artifacts: MachineOperationArtifacts,
+    ) -> Result<MachineOperationRecord, String> {
+        let now = now_unix_secs();
+        let record = MachineOperationRecord {
+            id,
             kind,
             network_name,
             targets,
@@ -341,7 +371,37 @@ impl DaemonState {
         match record.kind {
             MachineOperationKind::Init => Ok(None),
             MachineOperationKind::Add => self.reconcile_machine_add_operation(record).await,
+            MachineOperationKind::Update => self.reconcile_machine_update_operation(record).await,
         }
+    }
+
+    async fn reconcile_machine_update_operation(
+        &self,
+        record: &MachineOperationRecord,
+    ) -> Result<Option<String>, String> {
+        let store = self.machine_operation_store();
+        let Some(mut current) = store.load(&record.id)? else {
+            return Ok(Some(
+                "update operation disappeared during reconciliation".into(),
+            ));
+        };
+        let requested_version = record
+            .artifacts
+            .requested_version
+            .as_deref()
+            .unwrap_or("latest");
+        if requested_version == "latest" || requested_version == env!("CARGO_PKG_VERSION") {
+            current.status = MachineOperationStatus::Succeeded;
+            current.last_error = None;
+            current.updated_at = now_unix_secs();
+            store.save(&current)?;
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "daemon restarted but reports version {}; expected {}",
+            env!("CARGO_PKG_VERSION"),
+            requested_version
+        )))
     }
 
     async fn reconcile_machine_add_operation(

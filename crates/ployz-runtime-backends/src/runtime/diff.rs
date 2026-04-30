@@ -201,9 +201,12 @@ fn labels_match(
     observed: &std::collections::HashMap<String, String>,
     desired: &std::collections::HashMap<String, String>,
 ) -> bool {
-    desired
-        .iter()
-        .all(|(key, value)| observed.get(key) == Some(value))
+    if desired.get(LABEL_KIND).map(String::as_str) == Some("system") {
+        return desired
+            .iter()
+            .all(|(key, value)| observed.get(key) == Some(value));
+    }
+    observed == desired
 }
 
 fn network_mode_equal(observed: Option<&str>, desired: Option<&str>) -> bool {
@@ -358,8 +361,14 @@ mod tests {
         let mut observed = base_observed();
         observed
             .labels
+            .insert("dev.ployz.kind".into(), "system".into());
+        observed
+            .labels
             .insert("dev.ployz.version".into(), "0.5.2".into());
         let mut desired = base_spec();
+        desired
+            .labels
+            .insert("dev.ployz.kind".into(), "system".into());
         desired
             .labels
             .insert("dev.ployz.version".into(), "0.5.3".into());
@@ -373,14 +382,40 @@ mod tests {
     }
 
     #[test]
-    fn extra_observed_label_is_adopted() {
+    fn extra_observed_system_label_is_adopted() {
         let mut observed = base_observed();
+        observed
+            .labels
+            .insert("dev.ployz.kind".into(), "system".into());
         observed.labels.insert("extra".into(), "value".into());
-        let desired = base_spec();
+        let mut desired = base_spec();
+        desired
+            .labels
+            .insert("dev.ployz.kind".into(), "system".into());
 
         let change = eval_spec_change(Some(&observed), &desired);
 
         assert!(change.is_in_sync());
+    }
+
+    #[test]
+    fn extra_observed_workload_label_is_drifted() {
+        let mut observed = base_observed();
+        observed
+            .labels
+            .insert("dev.ployz.kind".into(), "workload".into());
+        observed.labels.insert("extra".into(), "value".into());
+        let mut desired = base_spec();
+        desired
+            .labels
+            .insert("dev.ployz.kind".into(), "workload".into());
+
+        let change = eval_spec_change(Some(&observed), &desired);
+
+        let SpecChange::Drifted { fields } = change else {
+            panic!("expected drifted change");
+        };
+        assert!(fields.contains(&ChangedField::Labels));
     }
 
     #[test]
