@@ -156,6 +156,7 @@ impl MachineOperationStore {
         stage: impl Into<String>,
         artifacts: MachineOperationArtifacts,
     ) -> Result<MachineOperationRecord, String> {
+        validate_operation_id(&id)?;
         let now = now_unix_secs();
         let record = MachineOperationRecord {
             id,
@@ -214,6 +215,7 @@ impl MachineOperationStore {
     }
 
     pub(super) fn load(&self, id: &str) -> Result<Option<MachineOperationRecord>, String> {
+        validate_operation_id(id)?;
         let path = self.path_for(id);
         if !path.exists() {
             return Ok(None);
@@ -483,6 +485,28 @@ fn unique_operation_id(kind: MachineOperationKind, now: u64) -> String {
     format!("machine-{}-{now}-{nanos}", kind.as_str())
 }
 
+const MAX_OPERATION_ID_LEN: usize = 128;
+
+fn validate_operation_id(id: &str) -> Result<(), String> {
+    if id.is_empty() {
+        return Err("machine operation id cannot be empty".into());
+    }
+    if id.len() > MAX_OPERATION_ID_LEN {
+        return Err(format!(
+            "machine operation id exceeds {MAX_OPERATION_ID_LEN} characters"
+        ));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(format!(
+            "machine operation id '{id}' contains characters outside [A-Za-z0-9_-]"
+        ));
+    }
+    Ok(())
+}
+
 fn read_machine_operation(path: &Path) -> Result<MachineOperationRecord, String> {
     let body = std::fs::read(path)
         .map_err(|err| format!("read machine operation '{}': {err}", path.display()))?;
@@ -497,4 +521,73 @@ fn merge_operation_notes(existing: Option<&str>, next: &str) -> String {
     }
     notes.insert(next.to_string(), ());
     notes.into_keys().collect::<Vec<_>>().join("; ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        MAX_OPERATION_ID_LEN, MachineOperationArtifacts, MachineOperationKind,
+        MachineOperationStore, unique_operation_id, validate_operation_id,
+    };
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+        let sequence = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{label}-{}-{nanos}-{sequence}", std::process::id()))
+    }
+
+    #[test]
+    fn validate_operation_id_accepts_generated_ids() {
+        assert!(
+            validate_operation_id(&unique_operation_id(MachineOperationKind::Update, 42)).is_ok()
+        );
+        assert!(validate_operation_id("custom_id-123").is_ok());
+    }
+
+    #[test]
+    fn validate_operation_id_rejects_path_traversal() {
+        assert!(validate_operation_id("../etc/passwd").is_err());
+        assert!(validate_operation_id("/etc/passwd").is_err());
+        assert!(validate_operation_id("a/b").is_err());
+        assert!(validate_operation_id("..").is_err());
+        assert!(validate_operation_id(".hidden").is_err());
+        assert!(validate_operation_id("with space").is_err());
+    }
+
+    #[test]
+    fn validate_operation_id_rejects_empty_and_oversized() {
+        assert!(validate_operation_id("").is_err());
+        let oversized = "a".repeat(MAX_OPERATION_ID_LEN + 1);
+        assert!(validate_operation_id(&oversized).is_err());
+    }
+
+    #[test]
+    fn store_begin_with_id_rejects_traversal_id() {
+        let store = MachineOperationStore::new(unique_temp_dir("ployz-machine-ops-test"));
+        let result = store.begin_with_id(
+            "../../etc/passwd".into(),
+            MachineOperationKind::Update,
+            None,
+            vec!["self".into()],
+            "execute",
+            MachineOperationArtifacts::default(),
+        );
+        assert!(
+            result.is_err(),
+            "begin_with_id should reject path traversal"
+        );
+    }
+
+    #[test]
+    fn store_load_rejects_traversal_id() {
+        let store = MachineOperationStore::new(unique_temp_dir("ployz-machine-ops-test"));
+        assert!(store.load("../../etc/passwd").is_err());
+    }
 }
