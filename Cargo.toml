@@ -18,7 +18,7 @@ members = [
     "crates/ployz-dns",
     "crates/ployz-dns-config",
     "crates/ployz-install",
-    "crates/ployz",
+    "crates/ployzctl",
     "crates/ebpf-common",
     "crates/ployz-bpfctl",
 ]
@@ -41,7 +41,7 @@ default-members = [
     "crates/ployz-dns",
     "crates/ployz-dns-config",
     "crates/ployz-install",
-    "crates/ployz",
+    "crates/ployzctl",
     "crates/ebpf-common",
 ]
 resolver = "3"

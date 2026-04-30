@@ -292,7 +292,7 @@ payload_is_fresh() {
 
   [[ -f "${metadata_path}" ]] || return 1
   [[ -f "${OUTPUT_DIR}/ployz.sh" ]] || return 1
-  [[ -f "${OUTPUT_DIR}/bin/ployz" ]] || return 1
+  [[ -f "${OUTPUT_DIR}/bin/ployzctl" ]] || return 1
   [[ -f "${OUTPUT_DIR}/bin/ployzd" ]] || return 1
   [[ -f "${OUTPUT_DIR}/bin/ployz-gateway" ]] || return 1
   [[ -f "${OUTPUT_DIR}/bin/ployz-dns" ]] || return 1
@@ -363,11 +363,11 @@ build_binaries() {
       "${REPO_DIR}/scripts/install-ebpf-bytecode.sh"
     fi
     cargo build "${cargo_args[@]}" -p ployzd --features ebpf-native --bins
-    cargo build "${cargo_args[@]}" -p ployz -p ployz-gateway -p ployz-dns
+    cargo build "${cargo_args[@]}" -p ployzctl -p ployz-gateway -p ployz-dns
     return
   fi
 
-  cargo build "${cargo_args[@]}" -p ployz -p ployzd --bins
+  cargo build "${cargo_args[@]}" -p ployzctl -p ployzd --bins
   cargo build "${cargo_args[@]}" -p ployz-gateway -p ployz-dns
 }
 
@@ -452,7 +452,7 @@ trap 'rm -rf "${tmp_output_dir}"' EXIT
 
 install -d "${tmp_output_dir}/bin" "${tmp_output_dir}/assets/systemd"
 copy_file "${REPO_DIR}/ployz.sh" "${tmp_output_dir}/ployz.sh" 0755
-copy_file "$(binary_build_dir)/ployz" "${tmp_output_dir}/bin/ployz" 0755
+copy_file "$(binary_build_dir)/ployzctl" "${tmp_output_dir}/bin/ployzctl" 0755
 copy_file "$(binary_build_dir)/ployzd" "${tmp_output_dir}/bin/ployzd" 0755
 copy_file "$(binary_build_dir)/ployz-gateway" "${tmp_output_dir}/bin/ployz-gateway" 0755
 copy_file "$(binary_build_dir)/ployz-dns" "${tmp_output_dir}/bin/ployz-dns" 0755

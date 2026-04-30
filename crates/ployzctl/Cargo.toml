@@ -1,12 +1,12 @@
 [package]
-name = "ployz"
+name = "ployzctl"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish = false
 
 [[bin]]
-name = "ployz"
+name = "ployzctl"
 path = "src/main.rs"
 
 [dependencies]

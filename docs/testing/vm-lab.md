@@ -119,9 +119,9 @@ It supports:
 
 Its contract in v1 is:
 
-- install `ployzd`, `ployz`, `ployz-gateway`, `ployz-dns`, and `corrosion` into user space
+- install `ployzd`, `ployzctl`, `ployz-gateway`, `ployz-dns`, and `corrosion` into user space
 - write an install manifest and client config
-- run `ployz daemon install --runtime ... --service-mode ...`
+- run `ployzctl daemon install --runtime ... --service-mode ...`
 - for lab, promote into `runtime=host` and `service-mode=system`
 - remain safe to rerun
 
