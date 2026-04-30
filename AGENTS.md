@@ -75,7 +75,7 @@ Three categories, each with a different audience and a different shape:
 - **Background-autonomous** (cert renewal, cleanup, finalization): no direct
   consumer. Audience is the operator. Failure must preserve prior state,
   emit an explicit observation, retry with backoff, and escalate to an
-  operator-visible status surface (`ployz status`, metrics, telemetry)
+  operator-visible status surface (`ployzctl status`, metrics, telemetry)
   after N failures. Fire-and-forget `tokio::spawn` without a supervisor
   is a bug.
 

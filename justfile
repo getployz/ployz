@@ -10,10 +10,10 @@ build-release:
     if [[ "$(uname -s)" == "Linux" ]]; then
       ./scripts/install-ebpf-bytecode.sh
       cargo build --release -p ployzd --features ebpf-native --bins
-      cargo build --release -p ployz -p ployz-gateway -p ployz-dns
+      cargo build --release -p ployzctl -p ployz-gateway -p ployz-dns
       exit 0
     fi
-    cargo build --release -p ployzd --bins -p ployz -p ployz-gateway -p ployz-dns
+    cargo build --release -p ployzd --bins -p ployzctl -p ployz-gateway -p ployz-dns
 
 test:
     cargo test --workspace --exclude ployzd --exclude ployz-runtime-backends
@@ -43,7 +43,7 @@ install prefix="/usr/local":
     just build-release
     install -d "{{prefix}}/bin"
     install -m 0755 ployz.sh "{{prefix}}/bin/ployz.sh"
-    install -m 0755 target/release/ployz "{{prefix}}/bin/ployz"
+    install -m 0755 target/release/ployzctl "{{prefix}}/bin/ployzctl"
     install -m 0755 target/release/ployzd "{{prefix}}/bin/ployzd"
     install -m 0755 target/release/ployz-gateway "{{prefix}}/bin/ployz-gateway"
     install -m 0755 target/release/ployz-dns "{{prefix}}/bin/ployz-dns"

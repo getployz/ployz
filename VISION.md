@@ -120,7 +120,7 @@ product lives.
 
 This project is the open core. It is fully usable without ployz-cloud:
 self-host on your own machines, drive it with the CLI or with any
-general-purpose coding agent (Claude Code, Cursor, etc.), run `ployz dev`
+general-purpose coding agent (Claude Code, Cursor, etc.), run `ployzctl dev`
 locally, never pay anyone. The cloud exists for people who want the
 managed experience and the hosted agent; the core exists for everyone.
 
@@ -140,7 +140,7 @@ cloud's UI flows. The bet is that if these primitives are great,
 ployz-cloud — and any other downstream consumer, including general-purpose
 agents driving the CLI directly — is great as a consequence.
 
-The same primitives drive `ployz dev` on a developer's Mac, the cloud's
+The same primitives drive `ployzctl dev` on a developer's Mac, the cloud's
 hosted environments, and any future on-prem deployment. One model, three
 deployment shapes.
 
@@ -150,23 +150,23 @@ The operations below define the product. Each is a single command in the
 CLI, with matching SDK and agent-drivable surface. None rely on a
 background reconciler to "eventually" complete.
 
-- **`ployz machine add`** — provision a fresh machine into the cluster.
-- **`ployz machine remove`** — drain workloads off a machine, transfer
+- **`ployzctl machine add`** — provision a fresh machine into the cluster.
+- **`ployzctl machine remove`** — drain workloads off a machine, transfer
   their state, take it out of the cluster.
-- **`ployz migrate <workload> --to <machine>`** — move a workload,
+- **`ployzctl migrate <workload> --to <machine>`** — move a workload,
   including its persistent state, between machines.
-- **`ployz branch <env>`** — fork an environment, including its full state
+- **`ployzctl branch <env>`** — fork an environment, including its full state
   (datasets, volumes, secrets, routing), as a single atomic operation.
-- **`ployz promote <branch>`** — atomically switch traffic from one
+- **`ployzctl promote <branch>`** — atomically switch traffic from one
   environment to another. Old environment remains snapshotted for rollback.
-- **`ployz rollback`** — restore the previous deploy point, including
+- **`ployzctl rollback`** — restore the previous deploy point, including
   state.
-- **`ployz fork-volume`** — clone a volume (e.g. a database) for use by
+- **`ployzctl fork-volume`** — clone a volume (e.g. a database) for use by
   another workload. Instant, copy-on-write.
-- **`ployz dev`** — run the same model locally on a developer machine,
+- **`ployzctl dev`** — run the same model locally on a developer machine,
   with the same primitives.
 
-If a user finds themselves writing a script to compose multiple ployz
+If a user finds themselves writing a script to compose multiple ployzctl
 commands to achieve a workflow, that workflow is a missing primitive.
 
 ## Core Beliefs
@@ -257,7 +257,7 @@ mechanism — not a privacy flag on a Corrosion table.
 
 ### 10. Local and cloud share one model
 
-A developer running `ployz dev` on a Mac gets the same primitives as a
+A developer running `ployzctl dev` on a Mac gets the same primitives as a
 fleet operator. Branching, migration, rollback all work the same way. The
 model does not bifurcate between "dev mode" and "real mode."
 
