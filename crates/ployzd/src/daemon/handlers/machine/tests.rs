@@ -309,7 +309,7 @@ async fn machine_add_activates_joiner_lifecycle() {
     let fake_ssh = write_fake_ssh(&ssh_dir);
     let _ssh_guard = TestSshProgramGuard::set(fake_ssh.clone());
     let _ployz_guard = TestSshEnvGuard::set(
-        "PLOYZ_TEST_LOCAL_PLOYZ",
+        "PLOYZ_TEST_LOCAL_PLOYZCTL",
         Some(fake_ssh.clone().into_os_string()),
     );
     let self_record_response = serde_json::to_string(&DaemonResponse {
@@ -395,7 +395,7 @@ async fn machine_add_requires_sync_connected_for_running_joiner() {
     let fake_ssh = write_fake_ssh(&ssh_dir);
     let _ssh_guard = TestSshProgramGuard::set(fake_ssh.clone());
     let _ployz_guard = TestSshEnvGuard::set(
-        "PLOYZ_TEST_LOCAL_PLOYZ",
+        "PLOYZ_TEST_LOCAL_PLOYZCTL",
         Some(fake_ssh.clone().into_os_string()),
     );
     let self_record_response = serde_json::to_string(&DaemonResponse {
@@ -801,7 +801,7 @@ async fn reserve_machine_subnet_clears_local_hold_when_quorum_denies() {
     let fake_ssh = write_fake_ssh(&ssh_dir);
     let _ssh_guard = TestSshProgramGuard::set(fake_ssh.clone());
     let _ployz_guard = TestSshEnvGuard::set(
-        "PLOYZ_TEST_LOCAL_PLOYZ",
+        "PLOYZ_TEST_LOCAL_PLOYZCTL",
         Some(fake_ssh.clone().into_os_string()),
     );
     let _deny_prepare_guard = TestSshEnvGuard::set(
@@ -946,7 +946,7 @@ async fn machine_add_releases_reserved_subnet_when_remote_bootstrap_fails() {
     let fake_ssh = write_fake_ssh(&ssh_dir);
     let _ssh_guard = TestSshProgramGuard::set(fake_ssh.clone());
     let _ployz_guard = TestSshEnvGuard::set(
-        "PLOYZ_TEST_LOCAL_PLOYZ",
+        "PLOYZ_TEST_LOCAL_PLOYZCTL",
         Some(fake_ssh.clone().into_os_string()),
     );
     let _status_fail_guard =
@@ -987,7 +987,7 @@ async fn machine_add_rejects_remote_subnet_mismatch_before_invite_consume() {
     let fake_ssh = write_fake_ssh(&ssh_dir);
     let _ssh_guard = TestSshProgramGuard::set(fake_ssh.clone());
     let _ployz_guard = TestSshEnvGuard::set(
-        "PLOYZ_TEST_LOCAL_PLOYZ",
+        "PLOYZ_TEST_LOCAL_PLOYZCTL",
         Some(fake_ssh.clone().into_os_string()),
     );
     let self_record_response = serde_json::to_string(&DaemonResponse {
@@ -1336,7 +1336,7 @@ fn write_fake_ssh(dir: &Path) -> PathBuf {
     let script = dir.join("ssh");
     std::fs::write(
         &script,
-        "#!/bin/sh\nprev=''\nfor arg in \"$@\"; do\n  target=\"$prev\"\n  command=\"$arg\"\n  prev=\"$arg\"\ndone\nif [ \"$command\" = 'set -eu; \"$HOME/.local/bin/ployz\" rpc-stdio' ]; then\n  req=$(cat)\n  case \"$req\" in\n    *'\"Coord\"'*)\n      case \"$req\" in\n        *'\"Prepare\"'*)\n          case \",$PLOYZ_TEST_COORD_PREPARE_DENY_TARGETS,\" in\n            *\",$target,\"*) printf '{\"ok\":false,\"code\":\"COORDINATION_DENIED\",\"message\":\"denied\",\"payload\":null}' ;;\n            *) printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"allow\",\"payload\":null}' ;;\n          esac\n          ;;\n        *'\"Release\"'*)\n          case \",$PLOYZ_TEST_COORD_RELEASE_DENY_TARGETS,\" in\n            *\",$target,\"*) printf '{\"ok\":false,\"code\":\"COORDINATION_DENIED\",\"message\":\"denied\",\"payload\":null}' ;;\n            *) printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"allow\",\"payload\":null}' ;;\n          esac\n          ;;\n        *)\n          printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"ack\",\"payload\":null}'\n          ;;\n      esac\n      ;;\n    *'\"MeshBootstrap\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"bootstrapped\",\"payload\":null}'\n      ;;\n    *'\"MeshJoin\"'*)\n      printf '{\"ok\":false,\"code\":\"UNSUPPORTED\",\"message\":\"unsupported\",\"payload\":null}'\n      ;;\n    *'\"MeshInit\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"init\",\"payload\":null}'\n      ;;\n    *'\"MeshDestroy\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"destroyed\",\"payload\":null}'\n      ;;\n    *'\"MeshDown\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"down\",\"payload\":null}'\n      ;;\n    *'\"MeshSelfRecord\"'*)\n      printf '%s' \"$PLOYZ_TEST_SELF_RECORD_RESPONSE\"\n      ;;\n    *'\"MeshReady\"'*)\n      printf '%s' \"$PLOYZ_TEST_READY_RESPONSE\"\n      ;;\n    *)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"ok\",\"payload\":null}'\n      ;;\n  esac\n  exit 0\nfi\ncase \"$command\" in\n  *'--version'*)\n    printf 'ployz test-version'\n    exit 0\n    ;;\n  *'status >/dev/null'*)\n    case \",$PLOYZ_TEST_STATUS_FAIL_TARGETS,\" in\n      *\",$target,\"*) exit 1 ;;\n      *) exit 0 ;;\n    esac\n    ;;\n  *'bash -s -- install'*)\n    cat >/dev/null\n    exit 0\n    ;;\n  *)\n    exit 0\n    ;;\nesac\n",
+        "#!/bin/sh\nprev=''\nfor arg in \"$@\"; do\n  target=\"$prev\"\n  command=\"$arg\"\n  prev=\"$arg\"\ndone\nif [ \"$command\" = 'set -eu; \"$HOME/.local/bin/ployzctl\" rpc-stdio' ]; then\n  req=$(cat)\n  case \"$req\" in\n    *'\"Coord\"'*)\n      case \"$req\" in\n        *'\"Prepare\"'*)\n          case \",$PLOYZ_TEST_COORD_PREPARE_DENY_TARGETS,\" in\n            *\",$target,\"*) printf '{\"ok\":false,\"code\":\"COORDINATION_DENIED\",\"message\":\"denied\",\"payload\":null}' ;;\n            *) printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"allow\",\"payload\":null}' ;;\n          esac\n          ;;\n        *'\"Release\"'*)\n          case \",$PLOYZ_TEST_COORD_RELEASE_DENY_TARGETS,\" in\n            *\",$target,\"*) printf '{\"ok\":false,\"code\":\"COORDINATION_DENIED\",\"message\":\"denied\",\"payload\":null}' ;;\n            *) printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"allow\",\"payload\":null}' ;;\n          esac\n          ;;\n        *)\n          printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"ack\",\"payload\":null}'\n          ;;\n      esac\n      ;;\n    *'\"MeshBootstrap\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"bootstrapped\",\"payload\":null}'\n      ;;\n    *'\"MeshJoin\"'*)\n      printf '{\"ok\":false,\"code\":\"UNSUPPORTED\",\"message\":\"unsupported\",\"payload\":null}'\n      ;;\n    *'\"MeshInit\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"init\",\"payload\":null}'\n      ;;\n    *'\"MeshDestroy\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"destroyed\",\"payload\":null}'\n      ;;\n    *'\"MeshDown\"'*)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"down\",\"payload\":null}'\n      ;;\n    *'\"MeshSelfRecord\"'*)\n      printf '%s' \"$PLOYZ_TEST_SELF_RECORD_RESPONSE\"\n      ;;\n    *'\"MeshReady\"'*)\n      printf '%s' \"$PLOYZ_TEST_READY_RESPONSE\"\n      ;;\n    *)\n      printf '{\"ok\":true,\"code\":\"OK\",\"message\":\"ok\",\"payload\":null}'\n      ;;\n  esac\n  exit 0\nfi\ncase \"$command\" in\n  *'--version'*)\n    printf 'ployzctl test-version'\n    exit 0\n    ;;\n  *'status >/dev/null'*)\n    case \",$PLOYZ_TEST_STATUS_FAIL_TARGETS,\" in\n      *\",$target,\"*) exit 1 ;;\n      *) exit 0 ;;\n    esac\n    ;;\n  *'bash -s -- install'*)\n    cat >/dev/null\n    exit 0\n    ;;\n  *)\n    exit 0\n    ;;\nesac\n",
     )
     .expect("write fake ssh");
 

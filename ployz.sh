@@ -61,7 +61,7 @@ Options:
   --git-url URL          Git repository URL for --source git
   --git-ref REF          Git ref for --source git
   --payload-dir PATH     Payload directory for --source payload
-  --no-daemon-install    Skip `ployz daemon install`
+  --no-daemon-install    Skip `ployzctl daemon install`
   --json                 Emit newline-delimited JSON progress for provisioning UIs
 EOF
 }
@@ -548,7 +548,7 @@ CONFIG_PATH=$(shell_quote "${config_path}")
 DATA_DIR=$(shell_quote "${data_dir}")
 SOCKET_PATH=$(shell_quote "${socket_path}")
 INSTALLER_PATH=$(shell_quote "${bin_dir}/ployz.sh")
-PLOYZ_PATH=$(shell_quote "${bin_dir}/ployz")
+PLOYZCTL_PATH=$(shell_quote "${bin_dir}/ployzctl")
 PLOYZD_PATH=$(shell_quote "${bin_dir}/ployzd")
 PLOYZ_GATEWAY_PATH=$(shell_quote "${bin_dir}/ployz-gateway")
 PLOYZ_DNS_PATH=$(shell_quote "${bin_dir}/ployz-dns")
@@ -580,7 +580,7 @@ install_payload() {
 
   step "Validating payload contents"
   required_payload_file "${payload_dir}" "ployz.sh"
-  required_payload_file "${payload_dir}" "bin/ployz"
+  required_payload_file "${payload_dir}" "bin/ployzctl"
   required_payload_file "${payload_dir}" "bin/ployzd"
   required_payload_file "${payload_dir}" "bin/ployz-gateway"
   required_payload_file "${payload_dir}" "bin/ployz-dns"
@@ -595,8 +595,8 @@ install_payload() {
   install -d "${bin_dir}" "${assets_path}"
   info "ployz.sh      -> ${bin_dir}/ployz.sh"
   install -m 0755 "${payload_dir}/ployz.sh" "${bin_dir}/ployz.sh"
-  info "ployz         -> ${bin_dir}/ployz"
-  install -m 0755 "${payload_dir}/bin/ployz" "${bin_dir}/ployz"
+  info "ployzctl      -> ${bin_dir}/ployzctl"
+  install -m 0755 "${payload_dir}/bin/ployzctl" "${bin_dir}/ployzctl"
   info "ployzd        -> ${bin_dir}/ployzd"
   install -m 0755 "${payload_dir}/bin/ployzd" "${bin_dir}/ployzd"
   info "ployz-gateway -> ${bin_dir}/ployz-gateway"
@@ -685,20 +685,20 @@ daemon_install() {
   local runtime_target=$1
   local manifest=$2
   local service_mode=$3
-  local ployz_bin
+  local ployzctl_bin
 
-  ployz_bin="$(user_bin_dir)/ployz"
+  ployzctl_bin="$(user_bin_dir)/ployzctl"
 
   step "Registering daemon service (runtime: ${runtime_target}, mode: ${service_mode})"
   if [[ "${runtime_target}" == "host" && "${service_mode}" == "system" && ${EUID} -ne 0 ]]; then
     warn "System-mode daemon install requires root privileges"
-    info "Running: sudo ${ployz_bin} daemon install --runtime host --service-mode system --install-manifest ${manifest}"
-    run_logged "service" sudo "${ployz_bin}" daemon install --runtime host --service-mode system --install-manifest "${manifest}"
+    info "Running: sudo ${ployzctl_bin} daemon install --runtime host --service-mode system --install-manifest ${manifest}"
+    run_logged "service" sudo "${ployzctl_bin}" daemon install --runtime host --service-mode system --install-manifest "${manifest}"
     return
   fi
 
-  info "Running: ${ployz_bin} daemon install --runtime ${runtime_target} --service-mode ${service_mode} --install-manifest ${manifest}"
-  run_logged "service" "${ployz_bin}" daemon install \
+  info "Running: ${ployzctl_bin} daemon install --runtime ${runtime_target} --service-mode ${service_mode} --install-manifest ${manifest}"
+  run_logged "service" "${ployzctl_bin}" daemon install \
     --runtime "${runtime_target}" \
     --service-mode "${service_mode}" \
     --install-manifest "${manifest}"
@@ -1088,7 +1088,7 @@ main() {
         info "Data:      $(default_data_dir)"
         info "Socket:    $(default_socket_path)"
         info ""
-        info "Run 'ployz status' to check the daemon."
+        info "Run 'ployzctl status' to check the daemon."
       fi
       ;;
     probe)
