@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT_MANIFEST="${ROOT_DIR}/Cargo.toml"
 EBPF_MANIFEST="${ROOT_DIR}/ebpf/Cargo.toml"
+DEPLOY_PACKAGE_MANIFEST="${ROOT_DIR}/packages/deploy/package.json"
 ROOT_LOCKFILE="${ROOT_DIR}/Cargo.lock"
 EBPF_LOCKFILE="${ROOT_DIR}/ebpf/Cargo.lock"
 BUMP_LEVEL=""
@@ -84,6 +85,7 @@ while [[ $# -gt 0 ]]; do
       ROOT_DIR=${2:-}
       ROOT_MANIFEST="${ROOT_DIR}/Cargo.toml"
       EBPF_MANIFEST="${ROOT_DIR}/ebpf/Cargo.toml"
+      DEPLOY_PACKAGE_MANIFEST="${ROOT_DIR}/packages/deploy/package.json"
       ROOT_LOCKFILE="${ROOT_DIR}/Cargo.lock"
       EBPF_LOCKFILE="${ROOT_DIR}/ebpf/Cargo.lock"
       shift 2
@@ -131,6 +133,10 @@ fi
 
 set_version_line "${ROOT_MANIFEST}" '\[workspace\.package\]\s*version = "' "${TARGET_VERSION}"
 set_version_line "${EBPF_MANIFEST}" '\[package\]\s*name = "ployz-ebpf"\s*version = "' "${TARGET_VERSION}"
+
+if [[ -f "${DEPLOY_PACKAGE_MANIFEST}" ]]; then
+  npm pkg set "version=${TARGET_VERSION}" --prefix "$(dirname "${DEPLOY_PACKAGE_MANIFEST}")" >/dev/null
+fi
 
 if [[ -f "${ROOT_LOCKFILE}" ]]; then
   cargo metadata --format-version 1 --manifest-path "${ROOT_MANIFEST}" >/dev/null

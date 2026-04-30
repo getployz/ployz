@@ -1,8 +1,11 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
 pub struct Namespace(pub String);
 
 impl AsRef<str> for Namespace {
@@ -35,7 +38,7 @@ impl std::fmt::Display for Namespace {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DeployManifest {
     pub namespace: Namespace,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -113,7 +116,7 @@ impl DeployManifest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ServiceSpec {
     // This type is serialized into ServiceRevisionRecord.spec_json and read by ployzd,
     // ployz-gateway, and ployz-dns. Shape changes must remain backward compatible during
@@ -301,14 +304,14 @@ impl ServiceSpec {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Placement {
     Global,
     Replicated { count: u16 },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkMode {
     Overlay,
@@ -318,7 +321,7 @@ pub enum NetworkMode {
     None,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ContainerSpec {
     pub image: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -349,7 +352,7 @@ pub struct ContainerSpec {
     pub sysctls: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MountSource {
     Volume(String),
@@ -357,7 +360,7 @@ pub enum MountSource {
     Tmpfs,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Mount {
     pub source: MountSource,
     pub target: String,
@@ -365,14 +368,14 @@ pub struct Mount {
     pub readonly: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum VolumeScope {
     Single,
     Shared,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct VolumeDeclaration {
     pub name: String,
     pub scope: VolumeScope,
@@ -480,7 +483,7 @@ fn valid_owner(value: &str) -> bool {
         && gid.chars().all(|ch| ch.is_ascii_digit())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ServicePort {
     pub name: String,
     pub container_port: u16,
@@ -488,7 +491,7 @@ pub struct ServicePort {
     pub protocol: PortProtocol,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PublishedPort {
     pub service_port: String,
     pub host_port: u16,
@@ -496,14 +499,14 @@ pub struct PublishedPort {
     pub host_ip: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RouteSpec {
     Http(HttpRoute),
     Tcp(TcpRoute),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct HttpRoute {
     pub service_port: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -512,13 +515,13 @@ pub struct HttpRoute {
     pub path_prefix: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TcpRoute {
     pub service_port: String,
     pub listen_port: u16,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ReadinessProbe {
     #[serde(flatten)]
     pub check: ReadinessCheck,
@@ -594,7 +597,7 @@ impl ReadinessProbe {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadinessCheck {
     Http { service_port: String, path: String },
@@ -602,7 +605,7 @@ pub enum ReadinessCheck {
     Exec { command: Vec<String> },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PortProtocol {
     Tcp,
@@ -616,7 +619,7 @@ impl PortProtocol {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PullPolicy {
     IfNotPresent,
@@ -631,7 +634,7 @@ impl PullPolicy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RolloutStrategy {
     Recreate,
@@ -645,7 +648,7 @@ impl RolloutStrategy {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum RestartPolicy {
     UnlessStopped,
@@ -661,7 +664,7 @@ impl RestartPolicy {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Resources {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_millicores: Option<u32>,
