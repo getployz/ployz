@@ -173,14 +173,16 @@ fn render_plain_success(response: &DaemonResponse) -> String {
             render_plain_machine_operation_list(payload)
         }
         Some(DaemonPayload::MachineOperation(payload)) => render_plain_machine_operation(payload),
+        Some(DaemonPayload::MachineUpdate(payload)) => render_plain_machine_update(payload),
         _ => response.message.clone(),
     }
 }
 
 fn render_plain_status(payload: &StatusPayload) -> String {
     format!(
-        "machine={} network={} overlay={} network_lifecycle={} local_machine_lifecycle={} mesh_phase={}",
+        "machine={} version={} network={} overlay={} network_lifecycle={} local_machine_lifecycle={} mesh_phase={}",
         payload.machine_id,
+        payload.version,
         payload.network.as_deref().unwrap_or("none"),
         payload.overlay_ip.as_deref().unwrap_or("—"),
         payload
@@ -193,6 +195,27 @@ fn render_plain_status(payload: &StatusPayload) -> String {
             .unwrap_or_else(|| "—".into()),
         payload.mesh_phase
     )
+}
+
+fn render_plain_machine_update(payload: &ployz_api::MachineUpdatePayload) -> String {
+    let mut lines = Vec::new();
+    for row in &payload.updated {
+        lines.push(format!(
+            "updated machine={} version={} message={}",
+            row.id, row.version, row.message
+        ));
+    }
+    for row in &payload.failed {
+        lines.push(format!(
+            "failed machine={} version={} message={}",
+            row.id, row.version, row.message
+        ));
+    }
+    if lines.is_empty() {
+        format!("operation={} no updates", payload.operation_id)
+    } else {
+        lines.join("\n")
+    }
 }
 
 fn render_plain_machine_list(payload: &MachineListPayload) -> String {
@@ -546,6 +569,7 @@ mod tests {
             message: String::from("status"),
             payload: Some(DaemonPayload::Status(StatusPayload {
                 machine_id: String::from("founder"),
+                version: String::from("0.1.0"),
                 network: Some(String::from("alpha")),
                 overlay_ip: Some(String::from("fd00::1")),
                 network_lifecycle: Some(ployz_types::model::NetworkLifecycle::Running),
@@ -556,7 +580,7 @@ mod tests {
 
         assert_eq!(
             render_plain_success(&response),
-            "machine=founder network=alpha overlay=fd00::1 network_lifecycle=running local_machine_lifecycle=active mesh_phase=Running"
+            "machine=founder version=0.1.0 network=alpha overlay=fd00::1 network_lifecycle=running local_machine_lifecycle=active mesh_phase=Running"
         );
     }
 

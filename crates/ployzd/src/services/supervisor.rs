@@ -29,6 +29,7 @@ pub enum ServiceSupervision {
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub struct SidecarSpec {
     pub name: String,
+    pub version: String,
     pub image: String,
     pub binary_name: String,
     pub container_name: String,
@@ -50,7 +51,7 @@ fn sidecar_to_runtime_spec(spec: &SidecarSpec) -> RuntimeContainerSpec {
         .as_ref()
         .map(|name| format!("container:{name}"));
 
-    let labels = build_system_labels(&key, None);
+    let labels = build_system_labels(&key, None, Some(&spec.version));
 
     RuntimeContainerSpec {
         key,
@@ -367,8 +368,9 @@ fn build_unit_content(spec: &SidecarSpec, binary: &std::path::Path) -> String {
     };
 
     format!(
-        "[Unit]\nDescription=Ployz {name}\nAfter=network-online.target\n\n[Service]\nType=simple\n{env_lines}\nExecStart={exec_start}\n{extra}Restart=on-failure\n\n[Install]\nWantedBy=multi-user.target\n",
+        "[Unit]\nDescription=Ployz {name}\nAfter=network-online.target\n\n[Service]\nType=simple\n# PloyzComponentVersion={version}\n{env_lines}\nExecStart={exec_start}\n{extra}Restart=on-failure\n\n[Install]\nWantedBy=multi-user.target\n",
         name = spec.name,
+        version = spec.version,
         extra = spec.systemd_extra,
     )
 }

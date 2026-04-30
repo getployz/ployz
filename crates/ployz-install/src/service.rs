@@ -68,7 +68,8 @@ fn install_systemd_user_service(
     fs::write(&unit_path, unit)
         .map_err(|error| format!("write systemd user unit '{}': {error}", unit_path.display()))?;
     run_command("systemctl", ["--user", "daemon-reload"])?;
-    run_command("systemctl", ["--user", "enable", "--now", "ployzd.service"])?;
+    run_command("systemctl", ["--user", "enable", "ployzd.service"])?;
+    run_command("systemctl", ["--user", "restart", "ployzd.service"])?;
     Ok(())
 }
 

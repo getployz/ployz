@@ -64,6 +64,7 @@ async fn handle_connection(
 
     let streaming = matches!(request, DaemonRequest::RuntimeSubscribe);
     let (reply_tx, reply_rx) = oneshot::channel();
+    let (response_flushed_tx, response_flushed_rx) = oneshot::channel();
     let (stream_tx, mut stream_rx) = if streaming {
         let (stream_tx, stream_rx) = mpsc::channel(128);
         (Some(stream_tx), Some(stream_rx))
@@ -73,7 +74,7 @@ async fn handle_connection(
     let cmd = IncomingCommand {
         request,
         reply: reply_tx,
-        response_flushed: None,
+        response_flushed: Some(response_flushed_rx),
         stream: stream_tx,
     };
 
@@ -92,6 +93,8 @@ async fn handle_connection(
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     resp_line.push('\n');
     writer.write_all(resp_line.as_bytes()).await?;
+    writer.flush().await?;
+    let _ = response_flushed_tx.send(());
 
     if response.ok {
         if let Some(stream_rx) = stream_rx.as_mut() {
