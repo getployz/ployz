@@ -1215,7 +1215,7 @@ async fn interrupted_machine_add_is_marked_interrupted_on_startup() {
 }
 
 #[tokio::test]
-async fn interrupted_latest_machine_update_is_marked_succeeded_on_startup() {
+async fn interrupted_latest_machine_update_without_version_change_stays_interrupted_on_startup() {
     let (state, _, _) = make_state(false).await;
     let store = state.machine_operation_store();
     let operation = store
@@ -1226,6 +1226,42 @@ async fn interrupted_latest_machine_update_is_marked_succeeded_on_startup() {
             "installing",
             MachineOperationArtifacts {
                 requested_version: Some("latest".into()),
+                previous_version: Some(env!("CARGO_PKG_VERSION").into()),
+                ..MachineOperationArtifacts::default()
+            },
+        )
+        .expect("begin operation");
+
+    state.reconcile_machine_operations_on_startup().await;
+
+    let reconciled = state
+        .machine_operation_store()
+        .load(&operation.id)
+        .expect("load operation")
+        .expect("operation exists");
+    assert_eq!(reconciled.status, MachineOperationStatus::Interrupted);
+    assert!(
+        reconciled
+            .last_error
+            .as_deref()
+            .expect("last error")
+            .contains("expected latest")
+    );
+}
+
+#[tokio::test]
+async fn interrupted_latest_machine_update_with_version_change_succeeds_on_startup() {
+    let (state, _, _) = make_state(false).await;
+    let store = state.machine_operation_store();
+    let operation = store
+        .begin(
+            MachineOperationKind::Update,
+            Some("alpha".into()),
+            vec!["founder".into()],
+            "installing",
+            MachineOperationArtifacts {
+                requested_version: Some("latest".into()),
+                previous_version: Some("0.0.0-before-update".into()),
                 ..MachineOperationArtifacts::default()
             },
         )

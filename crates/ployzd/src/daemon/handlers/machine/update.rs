@@ -37,7 +37,7 @@ impl DaemonState {
         let targets = if ids.is_empty() {
             vec![self.identity.machine_id.0.clone()]
         } else {
-            ids.to_vec()
+            update_targets_with_self_last(ids, &self.identity.machine_id)
         };
         if let Some(duplicate) = first_duplicate(targets.as_slice()) {
             return self.err(
@@ -56,6 +56,7 @@ impl DaemonState {
             "resolved",
             MachineOperationArtifacts {
                 requested_version: Some(version.clone()),
+                previous_version: Some(env!("CARGO_PKG_VERSION").to_string()),
                 ..MachineOperationArtifacts::default()
             },
         ) {
@@ -504,6 +505,7 @@ fn ensure_update_operation(
         stage,
         MachineOperationArtifacts {
             requested_version: Some(version.to_string()),
+            previous_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             ..MachineOperationArtifacts::default()
         },
     )
@@ -561,9 +563,25 @@ fn first_duplicate(values: &[String]) -> Option<String> {
     None
 }
 
+fn update_targets_with_self_last(ids: &[String], local_machine_id: &MachineId) -> Vec<String> {
+    let mut targets: Vec<String> = ids
+        .iter()
+        .filter(|id| *id != &local_machine_id.0)
+        .cloned()
+        .collect();
+    if ids.iter().any(|id| id == &local_machine_id.0) {
+        targets.push(local_machine_id.0.clone());
+    }
+    targets
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{first_duplicate, normalize_requested_version, requested_version_matches_current};
+    use super::{
+        first_duplicate, normalize_requested_version, requested_version_matches_current,
+        update_targets_with_self_last,
+    };
+    use ployz_types::model::MachineId;
 
     #[test]
     fn version_normalization_trims_and_drops_v_prefix() {
@@ -588,5 +606,19 @@ mod tests {
     fn duplicate_detection_returns_first_repeated_value() {
         let values = vec!["a".to_string(), "b".to_string(), "a".to_string()];
         assert_eq!(first_duplicate(values.as_slice()).as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn explicit_self_target_is_moved_last() {
+        let targets = update_targets_with_self_last(
+            &[
+                "self".to_string(),
+                "remote-a".to_string(),
+                "remote-b".to_string(),
+            ],
+            &MachineId("self".into()),
+        );
+
+        assert_eq!(targets, vec!["remote-a", "remote-b", "self"]);
     }
 }

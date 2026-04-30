@@ -162,15 +162,6 @@ fn decode_manifest(manifest_json: &str) -> Result<DeployManifest, Box<DaemonResp
         })
     })?;
 
-    if manifest.services.is_empty() {
-        return Err(Box::new(DaemonResponse {
-            ok: false,
-            code: "INVALID_MANIFEST".into(),
-            message: "deploy manifest must contain at least one service".into(),
-            payload: None,
-        }));
-    }
-
     Ok(manifest)
 }
 
