@@ -160,6 +160,44 @@ pub(super) async fn nats_rpc_expect_ok(
     Err(remote_response_error(&response))
 }
 
+pub(super) async fn wait_for_nats_command_responder(
+    client: &NatsNodeRpcClient,
+    machine: &MachineMembership,
+) -> Result<(), String> {
+    let deadline = Instant::now() + REMOTE_READY_TIMEOUT;
+    let mut attempt: u32 = 0;
+
+    loop {
+        attempt += 1;
+        let last_error = match timeout(
+            REMOTE_READY_RPC_TIMEOUT,
+            client.request(NodeCommandSubject::ping(&machine.id), &DaemonRequest::Ping),
+        )
+        .await
+        {
+            Ok(Ok(response)) if response.ok => {
+                tracing::debug!(machine = %machine.id, attempt, "NATS command responder confirmed");
+                return Ok(());
+            }
+            Ok(Ok(response)) => remote_response_error(&response),
+            Ok(Err(err)) => err.to_string(),
+            Err(_) => format!(
+                "NATS command responder probe exceeded {:?}",
+                REMOTE_READY_RPC_TIMEOUT
+            ),
+        };
+
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timed out waiting for NATS command responder after {:?}: {last_error}",
+                REMOTE_READY_TIMEOUT,
+            ));
+        }
+
+        sleep(REMOTE_READY_POLL_INTERVAL).await;
+    }
+}
+
 fn mesh_ready_payload(response: &DaemonResponse) -> Result<MeshReadyPayload, String> {
     match &response.payload {
         Some(DaemonPayload::MeshReady(payload)) => Ok(payload.clone()),
