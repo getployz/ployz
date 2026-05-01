@@ -547,7 +547,7 @@ Tracked in code comments and the implementation plan. Highlights:
    API doesn't expose update-with-TTL — workaround is a delete+create
    cycle (race risk) or wait for the client API to catch up to 2.11+
    server features.
-4. Standalone gateway and DNS still depend on Corrosion in their `main.rs`
+4. Standalone gateway and DNS use NATS in their `main.rs`
    files. ployzd switched, the sidecars didn't.
 5. Coordination layer — `coord/jobs.rs` and `coord/rpc.rs` are
    skeleton-only. Old paths (`PendingReservations`, `OverlayIssuanceCoordinator`,

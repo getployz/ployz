@@ -43,7 +43,7 @@ The lab now supports three VM bases:
 
 - `raw`: the upstream cloud image for a distro family
 - `bootstrapped-pristine`: first boot complete, cloud-init complete, SSH working, but still no Docker, no `ployzd`, no service unit, and no Ployz data dir
-- `post-install`: `ployzd`, `ployz`, `ployz-gateway`, `ployz-dns`, and `corrosion` installed via `ployz.sh`, `ployzd.service` enabled and active, and reboot survival verified
+- `post-install`: `ployzd`, `ployzctl`, `ployz-gateway`, `ployz-dns`, and `nats-server` installed via `ployz.sh`, `ployzd.service` enabled and active, and reboot survival verified
 
 Build cached bases explicitly:
 
@@ -119,7 +119,7 @@ It supports:
 
 Its contract in v1 is:
 
-- install `ployzd`, `ployzctl`, `ployz-gateway`, `ployz-dns`, and `corrosion` into user space
+- install `ployzd`, `ployzctl`, `ployz-gateway`, `ployz-dns`, and `nats-server` into user space
 - write an install manifest and client config
 - run `ployzctl daemon install --runtime ... --service-mode ...`
 - for lab, promote into `runtime=host` and `service-mode=system`

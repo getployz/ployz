@@ -4,11 +4,11 @@ How services get deployed onto machines and how traffic finds its way to them.
 
 ## Data Model
 
-The distributed store (Corrosion) holds all the state that drives both routing and
+The distributed store holds all the state that drives both routing and
 deployment. The tables divide into three conceptual groups:
 
-**Mesh infrastructure** — the machine registry and join tokens. Who's in the mesh,
-what their keys and overlay IPs are, when they last heartbeated.
+**Mesh infrastructure** — the machine registry and join tokens. Who's in the mesh
+and what their keys and overlay IPs are.
 
 **Service versioning & placement** — an append-only ledger of service spec versions
 (content-addressed, immutable), a mutable head pointer per service (which version is
@@ -19,11 +19,9 @@ and deploy lifecycle tracking. This is what routing reads to decide who's health
 
 ### Design Rationale
 
-Corrosion replicates entire rows, so fields that change together live in the same table.
-Instance phase, readiness, and drain state all change during deploy transitions — they
-belong together. Service head pointers change atomically at commit — they're separate
-from the append-only revision ledger. This isn't normalized for query convenience; it's
-shaped for replication efficiency.
+Deploy commits are append-only authority events. Readers project those commits into
+routing state in stream order, which keeps deploy visibility atomic without exposing
+partially-published release/volume state.
 
 ---
 
@@ -80,9 +78,9 @@ are no-ops by design.
 containers and wait for readiness probes (TCP/HTTP/exec). Readiness is non-negotiable —
 nothing enters routing until it passes.
 
-**Commit** — A single Corrosion transaction flips all head pointers, slot assignments,
-and deploy state atomically. This is the point of no return. Corrosion replicates the
-transaction to every machine in the mesh.
+**Commit** — A single immutable deploy commit publishes the new release, volume, and
+deploy envelope. This is the point of no return. NATS persists the event and readers
+project it atomically.
 
 **Cleanup** — Old instances are drained (marked unhealthy so routing drops them) then
 removed. If cleanup fails, the deploy enters CleanupPending — the new version is live
@@ -165,7 +163,7 @@ drained instances.
    b. Register revision (content-addressed, idempotent)
    c. Start containers on A, B, C, wait for readiness probes
    d. Atomic commit — single transaction flips all routing pointers
-   e. Corrosion replicates to all machines
+   e. NATS replicates the commit to storage candidates and mirrors
 
 4. Gateway reloads:
    - Loads snapshot, projects routes, finds 3 healthy backends
