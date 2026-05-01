@@ -28,6 +28,7 @@ use tracing::warn;
 use crate::NatsStore;
 use crate::buckets::ensure_assets;
 use crate::store::instances::list_all_instance_status;
+use crate::store::kv_json;
 use crate::store::routing::{
     NATS_BATCH_COMMIT, NATS_BATCH_ID, NATS_BATCH_SEQUENCE, PLOYZ_ROUTING_CAUSE,
     PLOYZ_ROUTING_COUNT, PLOYZ_ROUTING_SEQUENCE,
@@ -238,6 +239,9 @@ impl RoutingSnapshotReader for NatsStore {
             .get_stream(ROUTING_EVENTS_STREAM)
             .await
             .map_err(|error| Error::operation("nats_routing_stream", format!("{error:?}")))?;
+        let mut stream = stream;
+        let start_sequence = routing_subscription_start_sequence(&mut stream).await?;
+        let state = RoutingSnapshotReader::load_routing_state(self).await?;
         if !temporary {
             delete_existing_routing_consumer(&stream, &consumer_name).await?;
         }
@@ -245,6 +249,7 @@ impl RoutingSnapshotReader for NatsStore {
             .create_consumer(routing_consumer_config(
                 &subscription,
                 &consumer_name,
+                start_sequence,
                 self.client().new_inbox(),
             ))
             .await
@@ -253,7 +258,6 @@ impl RoutingSnapshotReader for NatsStore {
             .messages()
             .await
             .map_err(|error| Error::operation("nats_routing_messages", format!("{error:?}")))?;
-        let state = RoutingSnapshotReader::load_routing_state(self).await?;
         let (tx, rx) = mpsc::channel(ROUTING_CONSUMER_CHANNEL_CAPACITY);
         tokio::spawn(async move {
             let mut pending = PendingRoutingBatches::default();
@@ -311,11 +315,12 @@ impl RoutingSnapshotReader for NatsStore {
 fn routing_consumer_config(
     subscription: &RoutingSubscription,
     consumer_name: &str,
+    start_sequence: u64,
     deliver_subject: String,
 ) -> push::Config {
     let mut config = push::Config {
         deliver_subject,
-        deliver_policy: DeliverPolicy::New,
+        deliver_policy: DeliverPolicy::ByStartSequence { start_sequence },
         ack_policy: AckPolicy::Explicit,
         ack_wait: ROUTING_CONSUMER_ACK_WAIT,
         idle_heartbeat: ROUTING_CONSUMER_IDLE_HEARTBEAT,
@@ -337,6 +342,16 @@ fn routing_consumer_config(
         }
     }
     config
+}
+
+async fn routing_subscription_start_sequence(
+    stream: &mut async_nats::jetstream::stream::Stream,
+) -> Result<u64> {
+    stream
+        .info()
+        .await
+        .map(|info| kv_json::next_sequence(info.state.last_sequence))
+        .map_err(|error| Error::operation("nats_routing_stream_info", format!("{error:?}")))
 }
 
 async fn delete_existing_routing_consumer(
@@ -529,10 +544,14 @@ mod tests {
     fn temporary_routing_consumers_are_ephemeral() {
         let subscription = RoutingSubscription::temporary("ployzd.runtime.founder.1");
         let config =
-            routing_consumer_config(&subscription, "unused", "_INBOX.runtime.1".to_string());
+            routing_consumer_config(&subscription, "unused", 42, "_INBOX.runtime.1".to_string());
 
         assert_eq!(config.durable_name, None);
         assert_eq!(config.name, None);
+        assert_eq!(
+            config.deliver_policy,
+            DeliverPolicy::ByStartSequence { start_sequence: 42 }
+        );
         assert!(config.memory_storage);
         assert_eq!(
             config.inactive_threshold,
@@ -547,11 +566,16 @@ mod tests {
         let config = routing_consumer_config(
             &subscription,
             &consumer_name,
+            99,
             "_INBOX.gateway.1".to_string(),
         );
 
         assert_eq!(config.durable_name.as_deref(), Some("gateway%2Efounder"));
         assert_eq!(config.name.as_deref(), Some("gateway%2Efounder"));
+        assert_eq!(
+            config.deliver_policy,
+            DeliverPolicy::ByStartSequence { start_sequence: 99 }
+        );
         assert!(!config.memory_storage);
         assert_eq!(config.inactive_threshold, Duration::ZERO);
     }
