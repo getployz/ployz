@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::{Semaphore, mpsc, oneshot};
+use tokio::sync::{Mutex, Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -67,13 +67,12 @@ pub async fn serve(
         .queue_subscribe(subject.clone(), queue_group.clone())
         .await
         .map_err(|error| format!("queue subscribe {subject} {queue_group}: {error}"))?;
-    write_health(&health_path, healthy_health()).await;
+    let health = Arc::new(NodeRpcHealthRecorder::new(health_path));
+    health.force_healthy().await;
     let cancel = CancellationToken::new();
     let task_cancel = cancel.clone();
     let task = tokio::spawn(async move {
         let permits = Arc::new(Semaphore::new(MAX_IN_FLIGHT_COMMANDS));
-        let mut consecutive_failures = 0_u64;
-        let mut stale_since_unix_secs = None;
         info!(%subject, %queue_group, max_in_flight = MAX_IN_FLIGHT_COMMANDS, "nats node rpc listener subscribed");
         loop {
             tokio::select! {
@@ -84,25 +83,16 @@ pub async fn serve(
                 next = subscriber.next() => {
                     let Some(message) = next else {
                         warn!(%subject, %queue_group, "nats node rpc subscription closed; resubscribing");
-                        record_unhealthy(
-                            &health_path,
-                            &mut consecutive_failures,
-                            &mut stale_since_unix_secs,
-                            "nats node rpc subscription closed",
-                        ).await;
+                        health.record_unhealthy("nats node rpc subscription closed").await;
                         subscriber = match resubscribe(
                             &client,
                             &subject,
                             &queue_group,
                             &task_cancel,
-                            &health_path,
-                            &mut consecutive_failures,
-                            &mut stale_since_unix_secs,
+                            health.clone(),
                         ).await {
                             Some(subscriber) => {
-                                consecutive_failures = 0;
-                                stale_since_unix_secs = None;
-                                write_health(&health_path, healthy_health()).await;
+                                health.force_healthy().await;
                                 subscriber
                             }
                             None => break,
@@ -121,10 +111,16 @@ pub async fn serve(
                     };
                     let client = client.clone();
                     let tx = tx.clone();
+                    let health = health.clone();
                     tokio::spawn(async move {
                         let _permit = permit;
                         if let Err(error) = handle_message(client, message, tx).await {
                             warn!(%error, "nats node rpc message failed");
+                            health
+                                .record_unhealthy(format!("nats node rpc message failed: {error}"))
+                                .await;
+                        } else {
+                            health.record_healthy_if_stale().await;
                         }
                     });
                 }
@@ -139,9 +135,7 @@ async fn resubscribe(
     subject: &str,
     queue_group: &str,
     cancel: &CancellationToken,
-    health_path: &PathBuf,
-    consecutive_failures: &mut u64,
-    stale_since_unix_secs: &mut Option<u64>,
+    health: Arc<NodeRpcHealthRecorder>,
 ) -> Option<async_nats::Subscriber> {
     loop {
         tokio::select! {
@@ -158,13 +152,9 @@ async fn resubscribe(
             }
             Err(error) => {
                 warn!(%subject, %queue_group, %error, "nats node rpc resubscribe failed");
-                record_unhealthy(
-                    health_path,
-                    consecutive_failures,
-                    stale_since_unix_secs,
-                    format!("nats node rpc resubscribe failed: {error}"),
-                )
-                .await;
+                health
+                    .record_unhealthy(format!("nats node rpc resubscribe failed: {error}"))
+                    .await;
             }
         }
     }
@@ -176,6 +166,62 @@ pub async fn load_health(path: PathBuf) -> std::io::Result<NatsNodeRpcHealth> {
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
+struct NodeRpcHealthRecorder {
+    path: PathBuf,
+    state: Mutex<NodeRpcHealthState>,
+}
+
+#[derive(Debug, Default)]
+struct NodeRpcHealthState {
+    consecutive_failures: u64,
+    stale_since_unix_secs: Option<u64>,
+}
+
+impl NodeRpcHealthRecorder {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            state: Mutex::new(NodeRpcHealthState::default()),
+        }
+    }
+
+    async fn force_healthy(&self) {
+        let mut state = self.state.lock().await;
+        state.consecutive_failures = 0;
+        state.stale_since_unix_secs = None;
+        write_health(&self.path, healthy_health()).await;
+    }
+
+    async fn record_healthy_if_stale(&self) {
+        let mut state = self.state.lock().await;
+        if state.consecutive_failures == 0 && state.stale_since_unix_secs.is_none() {
+            return;
+        }
+        state.consecutive_failures = 0;
+        state.stale_since_unix_secs = None;
+        write_health(&self.path, healthy_health()).await;
+    }
+
+    async fn record_unhealthy(&self, error: impl Into<String>) {
+        let mut state = self.state.lock().await;
+        state.consecutive_failures += 1;
+        let now = unix_secs();
+        let stale_since = *state.stale_since_unix_secs.get_or_insert(now);
+        write_health(
+            &self.path,
+            NatsNodeRpcHealth {
+                healthy: false,
+                updated_at_unix_secs: now,
+                stale_since_unix_secs: Some(stale_since),
+                consecutive_failures: state.consecutive_failures,
+                last_error: Some(error.into()),
+            },
+        )
+        .await;
+    }
+}
+
+#[cfg(test)]
 async fn record_unhealthy(
     path: &PathBuf,
     consecutive_failures: &mut u64,
@@ -233,7 +279,10 @@ fn unix_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{NatsNodeRpcHealth, healthy_health, load_health, record_unhealthy, write_health};
+    use super::{
+        NatsNodeRpcHealth, NodeRpcHealthRecorder, healthy_health, load_health, record_unhealthy,
+        write_health,
+    };
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -283,6 +332,31 @@ mod tests {
         assert_eq!(health.last_error, None);
     }
 
+    #[tokio::test]
+    async fn node_rpc_recorder_clears_stale_health_after_success() {
+        let path = temp_path("node-rpc-health-recorder").join("health.json");
+        let recorder = NodeRpcHealthRecorder::new(path.clone());
+
+        recorder.force_healthy().await;
+        recorder.record_unhealthy("publish response failed").await;
+        let unhealthy = load_health(path.clone()).await.expect("load unhealthy");
+
+        assert!(!unhealthy.healthy);
+        assert_eq!(unhealthy.consecutive_failures, 1);
+        assert_eq!(
+            unhealthy.last_error.as_deref(),
+            Some("publish response failed")
+        );
+
+        recorder.record_healthy_if_stale().await;
+        let healthy = load_health(path).await.expect("load healthy");
+
+        assert!(healthy.healthy);
+        assert_eq!(healthy.consecutive_failures, 0);
+        assert_eq!(healthy.stale_since_unix_secs, None);
+        assert_eq!(healthy.last_error, None);
+    }
+
     fn temp_path(label: &str) -> PathBuf {
         let sequence = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
         let nanos = SystemTime::now()
@@ -299,7 +373,8 @@ async fn handle_message(
     tx: mpsc::Sender<IncomingCommand>,
 ) -> Result<(), String> {
     let Some(reply) = message.reply.clone() else {
-        return Err("request missing reply subject".into());
+        warn!("nats node rpc request missing reply subject");
+        return Ok(());
     };
     let request = match decode_daemon_request(message.payload.as_ref()) {
         Ok(request) => request,
@@ -328,7 +403,7 @@ async fn handle_message(
             "daemon command channel closed",
         )
         .await?;
-        return Ok(());
+        return Err("daemon command channel closed".into());
     }
     let response = match reply_rx.await {
         Ok(response) => response,
@@ -340,7 +415,7 @@ async fn handle_message(
                 "daemon dropped response",
             )
             .await?;
-            return Ok(());
+            return Err("daemon dropped response".into());
         }
     };
     let payload = encode_daemon_response(&response).map_err(|error| error.to_string())?;

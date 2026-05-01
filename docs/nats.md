@@ -630,8 +630,11 @@ Tracked in code comments and the implementation plan. Highlights:
    is narrow data movement such as ZFS send/receive payload streams. The node
    RPC listener writes `nats-node-rpc-health.json` in the network data directory
    and `ployzctl status` reports it as `control_plane
-   component=node_rpc_listener`, so command subscription loss has stale-since,
-   consecutive failure, and last-error visibility instead of only logs.
+   component=node_rpc_listener`, so command subscription loss, resubscribe
+   failure, daemon command-channel closure, response drop, and response
+   publish/flush failure have stale-since, consecutive failure, and last-error
+   visibility instead of only logs. A later successful command clears stale
+   command-path health.
    The certificate renewal worker writes `nats-cert-renewal-health.json` in the
    same directory and appears as `control_plane
    component=cert_renewal_worker`, so work-queue fetch, renewal job, ack, and
