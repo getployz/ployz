@@ -506,11 +506,13 @@ used to reject the plan.
 |--------------------|------------------------------|------------------------|------------------------------------------------------------------|
 | `StorageCandidate` | `cluster { listen, routes }` | hub domain, R=N replicas | Authoritative storage. Raft voting member.                     |
 | `Leaf`             | `leafnodes { remotes }`      | disabled or stub      | Bridge subjects to hub. Every read crosses the network.          |
-| `Mirror` (planned) | `leafnodes { remotes }` + `jetstream { domain: leaf-<id> }` | leaf domain with mirrors of hub streams | Local read replica. Sub-ms reads. Read continuity through hub outage. |
+| `Mirror`           | `leafnodes { remotes }` + `jetstream { domain: leaf-<id> }` | leaf domain; hub mirror provisioning still pending | Non-authoritative node. Local JetStream is available, but hub streams remain the write authority. |
 
-The Mirror role is what we want as the eventual default for non-storage
-machines. Today every machine is hardcoded as StorageCandidate (see
-"Known gaps" below).
+Machine init creates the founder as `StorageCandidate`. Machine add currently
+creates joiners as `Mirror`, and e2e asserts that adding two joiners leaves all
+NATS assets at R=1. A mirror is not eligible for R=3/R=5 promotion until an
+operator explicitly changes storage intent and the storage-promotion guardrails
+accept it.
 
 ### Cluster lifecycle
 
@@ -610,13 +612,15 @@ Tracked in code comments and the implementation plan. Highlights:
    path. `PendingReservations`, `OverlayIssuanceCoordinator`, the peer TCP RPC
    client, and the peer control listener have been removed. Remaining direct TCP
    is narrow data movement such as ZFS send/receive payload streams.
-7. `MachineRole` is hardcoded to `StorageCandidate` in join/bootstrap flows.
-8. Joiner bootstrap still uses SSH stdio to deliver the bootstrap command and
+6. Joiner bootstrap still uses SSH stdio to deliver the bootstrap command and
    scoped cluster information. The introducer writes a bootstrap membership seed
    into NATS so existing nodes learn the joiner's WireGuard identity through the
    machines subscription; after bootstrap, node commands use NATS request/reply.
    The intended v2 flow is for the joiner to receive scoped NATS credentials and
    publish its own membership without an introducer-authored seed.
+7. Mirror nodes render local leaf-domain JetStream config, but automatic mirror
+   provisioning for the hub streams/KV buckets that local services need is not
+   complete. Until then, authoritative reads and writes remain hub-owned.
 
 ## Future planning
 
@@ -629,20 +633,15 @@ membership changes, and failure visibility. Machine add does not promote storage
 authority; R=3/R=5 promotion is an explicit guarded operator operation. TCP
 remains only for true byte streams such as ZFS send/receive payloads.
 
-### Mirror role default
+### Mirror read locality
 
-The biggest open architectural question is making Mirror the default for
-non-storage machines. Today's hardcoded-StorageCandidate pattern means
-adding any machine grows the Raft cluster, which is wrong for mesh sizes
-beyond 3–5.
+The remaining Mirror work is read locality, not role defaulting. New joiners
+already default to `Mirror`; becoming an authoritative storage candidate must be
+operator intent recorded by a storage-promotion command, not a consequence of
+being the first, second, or third machine.
 
 Concrete shape:
 
-- Add `MachineRole::Mirror` variant alongside `StorageCandidate` and
-  `Leaf`.
-- Default new-joiner role: Mirror/Leaf. Becoming an authoritative storage
-  candidate is operator intent recorded by a storage-promotion command, not a
-  consequence of being the first, second, or third machine.
 - Mirror config templating: `leafnodes.remotes` plus
   `jetstream { domain: leaf-<machine_id> }`, plus mirror provisioning for
   each hub stream/KV the local services need.
