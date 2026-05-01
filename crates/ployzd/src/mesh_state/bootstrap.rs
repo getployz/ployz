@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 use base64::Engine as _;
 
 const BOOTSTRAP_PEERS_FILE: &str = "bootstrap-peers.json";
+const BOOTSTRAP_SEED_CACHE_HEALTH_FILE: &str = "bootstrap-seed-cache-health.json";
 const SEED_CACHE_DEBOUNCE: Duration = Duration::from_millis(250);
 
 static SEED_CACHE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -32,6 +33,17 @@ pub struct BootstrapPeerRecord {
     pub bridge_ip: Option<OverlayIp>,
     pub role: MachineRole,
     pub endpoints: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BootstrapSeedCacheHealth {
+    pub healthy: bool,
+    pub updated_at_unix_secs: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_since_unix_secs: Option<u64>,
+    pub consecutive_failures: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
 }
 
 impl BootstrapPeerRecord {
@@ -124,6 +136,33 @@ pub fn bootstrap_peers_path(network_dir: &Path) -> std::path::PathBuf {
     network_dir.join(BOOTSTRAP_PEERS_FILE)
 }
 
+#[must_use]
+pub fn bootstrap_seed_cache_health_path(network_dir: &Path) -> std::path::PathBuf {
+    network_dir.join(BOOTSTRAP_SEED_CACHE_HEALTH_FILE)
+}
+
+#[cfg(test)]
+fn load_bootstrap_seed_cache_health(
+    network_dir: &Path,
+) -> Result<Option<BootstrapSeedCacheHealth>, String> {
+    let path = bootstrap_seed_cache_health_path(network_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let data = std::fs::read_to_string(&path).map_err(|error| {
+        format!(
+            "read bootstrap seed cache health '{}': {error}",
+            path.display()
+        )
+    })?;
+    serde_json::from_str(&data).map(Some).map_err(|error| {
+        format!(
+            "parse bootstrap seed cache health '{}': {error}",
+            path.display()
+        )
+    })
+}
+
 pub fn load_bootstrap_peer_records(network_dir: &Path) -> Result<Vec<BootstrapPeerRecord>, String> {
     let path = bootstrap_peers_path(network_dir);
     if !path.exists() {
@@ -165,6 +204,44 @@ pub fn write_bootstrap_peer_records(
         let _ = std::fs::remove_file(&tmp_path);
         format!(
             "replace bootstrap peers '{}' with '{}': {error}",
+            tmp_path.display(),
+            path.display()
+        )
+    })
+}
+
+fn write_bootstrap_seed_cache_health(
+    network_dir: &Path,
+    health: &BootstrapSeedCacheHealth,
+) -> Result<(), String> {
+    let path = bootstrap_seed_cache_health_path(network_dir);
+    std::fs::create_dir_all(network_dir).map_err(|error| {
+        format!(
+            "create bootstrap seed cache health dir '{}': {error}",
+            network_dir.display()
+        )
+    })?;
+    let body = serde_json::to_string_pretty(health).map_err(|error| {
+        format!(
+            "encode bootstrap seed cache health '{}': {error}",
+            path.display()
+        )
+    })?;
+    let seq = SEED_CACHE_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp_path = path.with_file_name(format!(
+        "{BOOTSTRAP_SEED_CACHE_HEALTH_FILE}.tmp.{}.{seq}",
+        std::process::id()
+    ));
+    std::fs::write(&tmp_path, body).map_err(|error| {
+        format!(
+            "write bootstrap seed cache health '{}': {error}",
+            tmp_path.display()
+        )
+    })?;
+    std::fs::rename(&tmp_path, &path).map_err(|error| {
+        let _ = std::fs::remove_file(&tmp_path);
+        format!(
+            "replace bootstrap seed cache health '{}' with '{}': {error}",
             tmp_path.display(),
             path.display()
         )
@@ -239,6 +316,8 @@ async fn run_bootstrap_seed_cache_task(
     cancel: CancellationToken,
 ) {
     let retry_delay = Duration::from_secs(5);
+    let mut consecutive_failures = 0u64;
+    let mut stale_since_unix_secs = None;
     loop {
         let subscription = tokio::select! {
             _ = cancel.cancelled() => return,
@@ -249,6 +328,12 @@ async fn run_bootstrap_seed_cache_task(
             Ok(subscription) => subscription,
             Err(error) => {
                 tracing::warn!(%error, "bootstrap seed cache machine subscription failed");
+                mark_seed_cache_failed(
+                    &network_dir,
+                    &mut consecutive_failures,
+                    &mut stale_since_unix_secs,
+                    error.to_string(),
+                );
                 if sleep_or_cancel(retry_delay, &cancel).await {
                     return;
                 }
@@ -267,6 +352,9 @@ async fn run_bootstrap_seed_cache_task(
             &local_machine_id,
             &mut last_written,
         );
+        consecutive_failures = 0;
+        stale_since_unix_secs = None;
+        mark_seed_cache_healthy(&network_dir);
 
         loop {
             let event = tokio::select! {
@@ -275,12 +363,24 @@ async fn run_bootstrap_seed_cache_task(
             };
             let Some(event) = event else {
                 tracing::warn!("bootstrap seed cache machine subscription ended");
+                mark_seed_cache_failed(
+                    &network_dir,
+                    &mut consecutive_failures,
+                    &mut stale_since_unix_secs,
+                    "machine subscription ended",
+                );
                 break;
             };
             let event = match event {
                 Ok(event) => event,
                 Err(error) => {
                     tracing::warn!(%error, "bootstrap seed cache machine subscription failed");
+                    mark_seed_cache_failed(
+                        &network_dir,
+                        &mut consecutive_failures,
+                        &mut stale_since_unix_secs,
+                        error.to_string(),
+                    );
                     break;
                 }
             };
@@ -297,6 +397,12 @@ async fn run_bootstrap_seed_cache_task(
                     event = events.recv() => {
                         let Some(event) = event else {
                             tracing::warn!("bootstrap seed cache machine subscription ended");
+                            mark_seed_cache_failed(
+                                &network_dir,
+                                &mut consecutive_failures,
+                                &mut stale_since_unix_secs,
+                                "machine subscription ended",
+                            );
                             subscription_ended = true;
                             break;
                         };
@@ -304,6 +410,12 @@ async fn run_bootstrap_seed_cache_task(
                             Ok(event) => event,
                             Err(error) => {
                                 tracing::warn!(%error, "bootstrap seed cache machine subscription failed");
+                                mark_seed_cache_failed(
+                                    &network_dir,
+                                    &mut consecutive_failures,
+                                    &mut stale_since_unix_secs,
+                                    error.to_string(),
+                                );
                                 subscription_ended = true;
                                 break;
                             }
@@ -319,6 +431,11 @@ async fn run_bootstrap_seed_cache_task(
                 &local_machine_id,
                 &mut last_written,
             );
+            if !subscription_ended {
+                consecutive_failures = 0;
+                stale_since_unix_secs = None;
+                mark_seed_cache_healthy(&network_dir);
+            }
             if subscription_ended {
                 break;
             }
@@ -345,6 +462,40 @@ async fn sleep_or_cancel(delay: Duration, cancel: &CancellationToken) -> bool {
     tokio::select! {
         _ = cancel.cancelled() => true,
         _ = tokio::time::sleep(delay) => false,
+    }
+}
+
+fn mark_seed_cache_healthy(network_dir: &Path) {
+    let health = BootstrapSeedCacheHealth {
+        healthy: true,
+        updated_at_unix_secs: ployz_types::time::now_unix_secs(),
+        stale_since_unix_secs: None,
+        consecutive_failures: 0,
+        last_error: None,
+    };
+    if let Err(error) = write_bootstrap_seed_cache_health(network_dir, &health) {
+        tracing::warn!(%error, "failed to write bootstrap seed cache health");
+    }
+}
+
+fn mark_seed_cache_failed(
+    network_dir: &Path,
+    consecutive_failures: &mut u64,
+    stale_since_unix_secs: &mut Option<u64>,
+    error: impl Into<String>,
+) {
+    let now = ployz_types::time::now_unix_secs();
+    let stale_since = *stale_since_unix_secs.get_or_insert(now);
+    *consecutive_failures = consecutive_failures.saturating_add(1);
+    let health = BootstrapSeedCacheHealth {
+        healthy: false,
+        updated_at_unix_secs: now,
+        stale_since_unix_secs: Some(stale_since),
+        consecutive_failures: *consecutive_failures,
+        last_error: Some(error.into()),
+    };
+    if let Err(error) = write_bootstrap_seed_cache_health(network_dir, &health) {
+        tracing::warn!(%error, "failed to write bootstrap seed cache health");
     }
 }
 
@@ -479,6 +630,26 @@ mod tests {
         let loaded = load_bootstrap_peer_records(&network_dir).expect("load seed cache");
 
         assert_eq!(loaded, vec![record]);
+        let _ = std::fs::remove_dir_all(&network_dir);
+    }
+
+    #[test]
+    fn bootstrap_seed_cache_health_roundtrip() {
+        let network_dir = temp_network_dir("health-roundtrip");
+        let health = BootstrapSeedCacheHealth {
+            healthy: false,
+            updated_at_unix_secs: 123,
+            stale_since_unix_secs: Some(100),
+            consecutive_failures: 2,
+            last_error: Some("watch failed".into()),
+        };
+
+        write_bootstrap_seed_cache_health(&network_dir, &health).expect("write health");
+        let loaded = load_bootstrap_seed_cache_health(&network_dir)
+            .expect("load health")
+            .expect("health");
+
+        assert_eq!(loaded, health);
         let _ = std::fs::remove_dir_all(&network_dir);
     }
 
@@ -633,6 +804,12 @@ mod tests {
 
         task.shutdown().await;
         assert!(wrote_peer);
+        let health = load_bootstrap_seed_cache_health(&network_dir)
+            .expect("load health")
+            .expect("health");
+        assert!(health.healthy);
+        assert_eq!(health.consecutive_failures, 0);
+        assert!(health.stale_since_unix_secs.is_none());
         let _ = std::fs::remove_dir_all(&network_dir);
     }
 

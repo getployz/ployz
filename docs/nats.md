@@ -627,6 +627,11 @@ Tracked in code comments and the implementation plan. Highlights:
    scoped cluster information. The introducer writes a bootstrap membership seed
    into NATS so existing nodes learn the joiner's WireGuard identity through the
    machines subscription; after bootstrap, node commands use NATS request/reply.
+   Each daemon also maintains a local `bootstrap-peers.json` seed cache plus
+   `bootstrap-seed-cache-health.json`. The peer file is only a restart/bootstrap
+   hint; the health file records whether the machines subscription feeding it is
+   fresh, stale-since time, consecutive failures, and the last error so a stale
+   bootstrap hint is not silent.
    The intended v2 flow is for the joiner to receive scoped NATS credentials and
    publish its own membership without an introducer-authored seed.
 7. Mirror nodes render local leaf-domain JetStream config, but automatic mirror
