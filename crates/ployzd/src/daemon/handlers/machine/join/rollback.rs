@@ -30,6 +30,7 @@ pub(super) async fn rollback_machine_add_target(
     if matches!(
         stage,
         MachineAddStage::TransientPeerInstalled
+            | MachineAddStage::PreAdmitted
             | MachineAddStage::Ready
             | MachineAddStage::Enabled
             | MachineAddStage::Finalized

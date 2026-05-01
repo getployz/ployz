@@ -3,6 +3,7 @@ use futures_util::{StreamExt, TryStreamExt};
 use ployz_store_api::{MachineRegistry, MachineSubscription};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{MachineEvent, MachineId, MachineMembership};
+use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tracing::warn;
 
@@ -59,7 +60,12 @@ impl MachineRegistry for NatsStore {
             .await
             .map_err(|error| Error::operation("nats_machines_watch", format!("{error:?}")))?;
         let (tx, rx) = mpsc::channel(128);
+        let last_seen_snapshot = snapshot.clone();
         tokio::spawn(async move {
+            let mut last_seen = last_seen_snapshot
+                .iter()
+                .map(|record| (record.id.0.clone(), record.clone()))
+                .collect::<HashMap<_, _>>();
             while let Some(next) = watch.next().await {
                 let entry = match next {
                     Ok(entry) => entry,
@@ -70,20 +76,25 @@ impl MachineRegistry for NatsStore {
                 };
                 let event = match entry.operation {
                     kv::Operation::Put => match decode_machine(&entry.key, entry.value.as_ref()) {
-                        Ok(machine) => MachineEvent::Updated(machine),
+                        Ok(machine) => {
+                            let event = if last_seen.contains_key(&entry.key) {
+                                MachineEvent::Updated(machine.clone())
+                            } else {
+                                MachineEvent::Added(machine.clone())
+                            };
+                            last_seen.insert(entry.key, machine);
+                            event
+                        }
                         Err(error) => {
                             warn!(?error, key = %entry.key, "NATS machine event decode failed");
                             continue;
                         }
                     },
                     kv::Operation::Delete | kv::Operation::Purge => {
-                        MachineEvent::Removed(MachineMembership::seed(
-                            MachineId(entry.key),
-                            ployz_types::model::PublicKey([0; 32]),
-                            ployz_types::model::OverlayIp(std::net::Ipv6Addr::UNSPECIFIED),
-                            None,
-                            Vec::new(),
-                        ))
+                        match last_seen.remove(&entry.key) {
+                            Some(machine) => MachineEvent::Removed(machine),
+                            None => continue,
+                        }
                     }
                 };
                 if tx.send(event).await.is_err() {

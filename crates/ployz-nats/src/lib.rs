@@ -8,10 +8,14 @@ pub mod subjects;
 
 use async_nats::Client;
 use buckets::AssetPolicy;
+use ployz_store_api::StoreRuntimeControl;
+use ployz_types::error::{Error, Result};
+use ployz_types::model::OverlayIp;
+use serde::Deserialize;
+use std::path::Path;
 use std::sync::Arc;
 use store::deploys::projection::DeployProjection;
 use tokio::sync::RwLock;
-use ployz_types::error::{Error, Result};
 
 #[derive(Clone)]
 pub struct NatsStore {
@@ -35,7 +39,7 @@ impl NatsStore {
 
     #[must_use]
     pub fn with_policy(client: Client, asset_policy: AssetPolicy) -> Self {
-        let jetstream = async_nats::jetstream::new(client.clone());
+        let jetstream = async_nats::jetstream::with_domain(client.clone(), config::HUB_DOMAIN);
         Self {
             client,
             jetstream,
@@ -64,5 +68,34 @@ impl NatsStore {
             .await
             .map_err(|error| Error::operation("nats_connect", error.to_string()))?;
         Ok(Self::new(client))
+    }
+
+    pub async fn connect_for_network(data_dir: &Path, network: &str) -> Result<Self> {
+        #[derive(Deserialize)]
+        struct NetworkConfig {
+            overlay_ip: OverlayIp,
+        }
+
+        let path = data_dir.join("networks").join(network).join("network.json");
+        let data = std::fs::read_to_string(&path).map_err(|error| {
+            Error::operation(
+                "nats_network_config_read",
+                format!("read {}: {error}", path.display()),
+            )
+        })?;
+        let config: NetworkConfig = serde_json::from_str(&data).map_err(|error| {
+            Error::operation(
+                "nats_network_config_decode",
+                format!("decode {}: {error}", path.display()),
+            )
+        })?;
+        let store = Self::connect(&format!(
+            "nats://[{}]:{}",
+            config.overlay_ip.0,
+            config::CLIENT_PORT
+        ))
+        .await?;
+        store.start().await?;
+        Ok(store)
     }
 }

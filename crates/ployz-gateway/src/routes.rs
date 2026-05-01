@@ -9,9 +9,8 @@ use pingora::tls::pkey::{PKey, Private};
 use pingora::tls::x509::X509;
 use ployz_types::model::{
     AcmeChallengeEvent, AcmeChallengeRecord, CertificateEvent, CertificateRecord, InstanceId,
-    InstancePhase, InstanceStatusRecord, MachineId, MachineMembership, MachineRole,
-    MachineTopology, RoutingEvent, RoutingState, ServiceRelease, ServiceReleaseSlot,
-    ServiceRoutingPolicy,
+    InstancePhase, InstanceStatusRecord, MachineId, MachineMembership, MachineTopology,
+    RoutingEvent, RoutingState, ServiceRelease, ServiceReleaseSlot, ServiceRoutingPolicy,
 };
 use ployz_types::spec::{Namespace, RouteSpec, ServiceSpec};
 use serde::{Deserialize, Serialize};

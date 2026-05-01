@@ -32,6 +32,7 @@ pub(super) struct MachineAddContext {
 pub(super) enum MachineAddStage {
     Preflight,
     Bootstrapped,
+    PreAdmitted,
     Joined,
     SelfRecorded,
     TransientPeerInstalled,
@@ -45,6 +46,7 @@ impl fmt::Display for MachineAddStage {
         let value = match self {
             Self::Preflight => "preflight",
             Self::Bootstrapped => "bootstrapped",
+            Self::PreAdmitted => "pre-admitted",
             Self::Joined => "joined",
             Self::SelfRecorded => "self-recorded",
             Self::TransientPeerInstalled => "transient-peer-installed",
@@ -63,6 +65,7 @@ impl FromStr for MachineAddStage {
         match value {
             "preflight" => Ok(Self::Preflight),
             "bootstrapped" => Ok(Self::Bootstrapped),
+            "pre-admitted" => Ok(Self::PreAdmitted),
             "joined" => Ok(Self::Joined),
             "self-recorded" => Ok(Self::SelfRecorded),
             "transient-peer-installed" => Ok(Self::TransientPeerInstalled),

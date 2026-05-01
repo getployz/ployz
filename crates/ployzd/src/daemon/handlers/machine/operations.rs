@@ -448,6 +448,7 @@ impl DaemonState {
         if !matches!(
             add_stage,
             MachineAddStage::Joined
+                | MachineAddStage::PreAdmitted
                 | MachineAddStage::SelfRecorded
                 | MachineAddStage::TransientPeerInstalled
                 | MachineAddStage::Ready

@@ -5,6 +5,7 @@ use std::time::Duration;
 
 const SERVICE_WAIT_TIMEOUT: Duration = Duration::from_secs(180);
 const GATEWAY_LISTENER_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
+const ACME_CHALLENGE_WAIT_TIMEOUT: Duration = Duration::from_secs(120);
 const HTTPS_WAIT_TIMEOUT: Duration = Duration::from_secs(240);
 const ACME_SMOKE_HOSTNAME: &str = "acme-smoke.test";
 const ACME_SMOKE_BODY: &str = "ployz acme smoke";
@@ -42,10 +43,58 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
     run.wait_service_container_name("founder", "default", "web")?;
     run.log_progress("wait founder direct http");
     wait_for_service_http(run, "founder", "default", "web")?;
+    run.log_progress("wait ACME challenge on every gateway");
+    wait_for_acme_challenge_on_all_gateways(run, &["founder", "peer"])?;
     run.log_progress("wait founder gateway https");
     wait_for_gateway_https(run, "founder")?;
     run.log_progress("wait peer gateway https");
     wait_for_gateway_https(run, "peer")
+}
+
+fn wait_for_acme_challenge_on_all_gateways(run: &ScenarioRun, node_names: &[&str]) -> Result<()> {
+    let token = wait_for_acme_challenge_token(run, "founder")?;
+    for node_name in node_names {
+        wait_for_acme_challenge(run, node_name, &token)?;
+    }
+    Ok(())
+}
+
+fn wait_for_acme_challenge_token(run: &ScenarioRun, node_name: &str) -> Result<String> {
+    let command = format!(
+        "sh -lc 'find /var/lib/ployz/networks/alpha/nats/data/jetstream/\\$G/streams/KV_acme_challenges/msgs \
+         -type f -name \"*.blk\" -exec grep -aoh \"\\\\\\\"hostname\\\\\\\":\\\\\\\"{ACME_SMOKE_HOSTNAME}\\\\\\\",\\\\\\\"token\\\\\\\":\\\\\\\"[^\\\\\\\"]*\" {{}} \\; 2>/dev/null | tail -1 | \
+         sed \"s/.*\\\\\\\"token\\\\\\\":\\\\\\\"//\"'"
+    );
+
+    let mut last_output = String::new();
+    wait_until(ACME_CHALLENGE_WAIT_TIMEOUT, || {
+        let output = run.ssh_run_name(node_name, &command)?;
+        last_output = output.stdout.trim().to_string();
+        Ok(output.status.success() && !last_output.is_empty())
+    })
+    .map_err(|error| {
+        Error::Message(format!(
+            "ACME challenge token for '{ACME_SMOKE_HOSTNAME}' did not appear on {node_name}: {error}"
+        ))
+    })?;
+    Ok(last_output)
+}
+
+fn wait_for_acme_challenge(run: &ScenarioRun, node_name: &str, token: &str) -> Result<()> {
+    let command = format!(
+        "curl -fsS --resolve {ACME_SMOKE_HOSTNAME}:80:127.0.0.1 \
+         http://{ACME_SMOKE_HOSTNAME}/.well-known/acme-challenge/{token} | grep -Fq '{token}.'"
+    );
+
+    wait_until(ACME_CHALLENGE_WAIT_TIMEOUT, || {
+        let output = run.ssh_run_name(node_name, &command)?;
+        Ok(output.status.success())
+    })
+    .map_err(|error| {
+        Error::Message(format!(
+            "gateway on {node_name} did not serve ACME HTTP-01 challenge for '{ACME_SMOKE_HOSTNAME}': {error}"
+        ))
+    })
 }
 
 fn wait_for_gateway_listener(run: &ScenarioRun, node_name: &str, port: u16) -> Result<()> {

@@ -234,6 +234,9 @@ pub enum MachineRole {
     #[display("storage_candidate")]
     #[strum(serialize = "storage_candidate")]
     StorageCandidate,
+    #[display("mirror")]
+    #[strum(serialize = "mirror")]
+    Mirror,
     #[display("leaf")]
     #[strum(serialize = "leaf")]
     Leaf,

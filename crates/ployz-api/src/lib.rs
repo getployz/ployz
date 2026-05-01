@@ -1,7 +1,8 @@
 use ipnet::Ipv4Net;
 use ployz_types::model::{
     InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, NetworkId,
-    NetworkLifecycle, RoutingEvent, RoutingState, ServiceReleaseRecord, ServiceRevisionRecord,
+    NetworkLifecycle, PublicKey, RoutingEvent, RoutingState, ServiceReleaseRecord,
+    ServiceRevisionRecord,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -515,6 +516,7 @@ pub struct MachineRttRow {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusPayload {
     pub machine_id: String,
+    pub public_key: PublicKey,
     pub version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,

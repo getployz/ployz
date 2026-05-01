@@ -80,7 +80,7 @@ impl DaemonState {
         }
 
         let options = MeshStartOptions {
-            allow_disconnected_bootstrap: !request.bootstrap_peers.is_empty(),
+            allow_disconnected_bootstrap: false,
         };
         net_config.lifecycle = NetworkLifecycle::Running;
         match self.start_mesh(net_config.clone(), options).await {

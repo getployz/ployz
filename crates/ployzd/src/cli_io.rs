@@ -569,6 +569,7 @@ mod tests {
             message: String::from("status"),
             payload: Some(DaemonPayload::Status(StatusPayload {
                 machine_id: String::from("founder"),
+                public_key: ployz_types::model::PublicKey([1; 32]),
                 version: String::from("0.1.0"),
                 network: Some(String::from("alpha")),
                 overlay_ip: Some(String::from("fd00::1")),

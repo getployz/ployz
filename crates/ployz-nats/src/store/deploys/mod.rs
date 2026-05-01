@@ -24,13 +24,11 @@ impl DeployRepository for NatsStore {
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<ServiceReleaseRecord>> {
-        Ok(replay_projection(self.jetstream())
-            .await?
-            .releases(namespace))
+        Ok(self.deploy_projection_snapshot().await?.releases(namespace))
     }
 
     async fn load_deploy_snapshot(&self, namespace: &Namespace) -> Result<DeploySnapshot> {
-        let projection = replay_projection(self.jetstream()).await?;
+        let projection = self.deploy_projection_snapshot().await?;
         Ok(DeploySnapshot {
             revisions: projection.revisions(namespace),
             releases: projection.releases(namespace),
@@ -39,9 +37,7 @@ impl DeployRepository for NatsStore {
     }
 
     async fn list_volumes(&self, namespace: &Namespace) -> Result<Vec<VolumeRecord>> {
-        Ok(replay_projection(self.jetstream())
-            .await?
-            .volumes(namespace))
+        Ok(self.deploy_projection_snapshot().await?.volumes(namespace))
     }
 
     async fn get_volume(
@@ -49,7 +45,8 @@ impl DeployRepository for NatsStore {
         namespace: &Namespace,
         volume_name: &str,
     ) -> Result<Option<VolumeRecord>> {
-        Ok(replay_projection(self.jetstream())
+        Ok(self
+            .deploy_projection_snapshot()
             .await?
             .volume(namespace, volume_name)
             .cloned())
@@ -61,6 +58,7 @@ impl DeployRepository for NatsStore {
 
     async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
         publish_commit(self.jetstream(), command).await?;
+        self.apply_deploy_commit_to_cache(command).await;
         if let Err(error) = write_deploy_status(self.jetstream(), &command.deploy).await {
             warn!(?error, deploy_id = %command.deploy.deploy_id, "initial deploy status write failed after commit");
         }
@@ -75,10 +73,30 @@ impl DeployRepository for NatsStore {
         if let Some(status) = read_deploy_status(self.jetstream(), deploy_id).await? {
             return Ok(Some(status));
         }
-        Ok(replay_projection(self.jetstream())
+        Ok(self
+            .deploy_projection_snapshot()
             .await?
             .deploy(deploy_id)
             .cloned())
+    }
+}
+
+impl NatsStore {
+    pub(crate) async fn deploy_projection_snapshot(&self) -> Result<DeployProjection> {
+        if let Some(projection) = self.deploy_projection.read().await.as_ref() {
+            return Ok(projection.clone());
+        }
+
+        let projection = replay_projection(self.jetstream()).await?;
+        *self.deploy_projection.write().await = Some(projection.clone());
+        Ok(projection)
+    }
+
+    pub(crate) async fn apply_deploy_commit_to_cache(&self, commit: &DeployCommit) {
+        let mut guard = self.deploy_projection.write().await;
+        if let Some(projection) = guard.as_mut() {
+            projection.apply_commit(commit);
+        }
     }
 }
 

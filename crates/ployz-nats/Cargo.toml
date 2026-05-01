@@ -7,6 +7,7 @@ rust-version.workspace = true
 [dependencies]
 async-nats = "0.46"
 async-trait.workspace = true
+base64.workspace = true
 futures-util.workspace = true
 ipnet.workspace = true
 ployz-store-api = { path = "../ployz-store-api" }
