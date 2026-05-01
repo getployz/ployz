@@ -1,7 +1,7 @@
 # E2E Strategy
 
 Ployz E2E tests live in `crates/ployz-e2e`. They are the only long-running
-system harness. There is no separate lab harness.
+system harness.
 
 The NATS-native control-plane work should reshape E2E around product
 guarantees, not old implementation mechanics. In particular, machine add is not
