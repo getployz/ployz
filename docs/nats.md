@@ -587,6 +587,9 @@ Tracked in code comments and the implementation plan. Highlights:
    either a domain event or an explicit watcher failure. If a watcher fails or
    closes, consumers stop using the stale event stream. Mesh task groups cancel
    on unexpected task exit; broader operator status remains a hardening item.
+   KV subscriptions create the watch before loading the initial snapshot, so
+   updates after the watch boundary are delivered even if they race with the
+   snapshot read.
 3. `replay_projection` runs full N-RPC replay on every read.
 4. Lock TTL doesn't refresh on `kv.update` because the current async-nats
    API doesn't expose update-with-TTL — workaround is a delete+create
