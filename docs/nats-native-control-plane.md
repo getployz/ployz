@@ -323,7 +323,7 @@ Data touched:
 
 Latency shape:
 
-- NATS coordination is a few hub writes,
+- NATS coordination is a scheduled work queue delivery plus a few hub writes,
 - external ACME and HTTP-01 validation dominate,
 - scheduled renewal timing is broker-owned and survives daemon restart.
 
