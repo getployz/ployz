@@ -588,7 +588,9 @@ Tracked in code comments and the implementation plan. Highlights:
 2. Machine/certificate/ACME challenge subscriptions are KV watchers that carry
    either a domain event or an explicit watcher failure. If a watcher fails or
    closes, consumers stop using the stale event stream. Mesh task groups cancel
-   on unexpected task exit; broader operator status remains a hardening item.
+   on unexpected task exit. Gateway and DNS edge projection freshness is exposed
+   through sidecar metrics and, when those metrics endpoints are configured, in
+   `ployzctl status` as per-stream `edge_sync` health.
    KV subscriptions create the watch before loading the initial snapshot, so
    updates after the watch boundary are delivered even if they race with the
    snapshot read.

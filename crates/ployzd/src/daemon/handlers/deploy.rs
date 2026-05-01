@@ -10,7 +10,7 @@ use ployz_api::{
 use ployz_cert_backends::InstantAcmeIssuerFactory;
 use ployz_config::RuntimeTarget;
 use ployz_nats::coord::locks::{NatsDeployLock, NatsLocks};
-use ployz_nats::coord::rpc::{NatsNodeRpcClient, NodeCommandSubject};
+use ployz_nats::coord::rpc::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
 use ployz_orchestrator::certificates::{AcmeAccountCoordinator, CertificateManagerConfig};
 use ployz_orchestrator::coordination::ReservationId;
 use ployz_orchestrator::deploy::participant::{DeployParticipantClient, StartCandidateRequest};
@@ -26,6 +26,7 @@ use ployz_types::spec::{DeployManifest, Namespace, ServiceSpec, VolumeDeclaratio
 
 const DEPLOY_LOCK_TTL: Duration = Duration::from_secs(30 * 60);
 const DEPLOY_LOCK_RENEW_INTERVAL: Duration = Duration::from_secs(10 * 60);
+const DEPLOY_PARTICIPANT_RPC_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 impl DaemonState {
     fn overlay_network_name(&self) -> Option<String> {
@@ -146,7 +147,10 @@ impl DaemonState {
             ployz_nats::coord::rpc::NatsNodeRpcClient::new(nats_store.client().clone()),
         );
         let participant_client = NatsDeployParticipantClient::new(
-            ployz_nats::coord::rpc::NatsNodeRpcClient::new(nats_store.client().clone()),
+            ployz_nats::coord::rpc::NatsNodeRpcClient::new(nats_store.client().clone())
+                .with_policy(RpcPolicy {
+                    timeout: DEPLOY_PARTICIPANT_RPC_TIMEOUT,
+                }),
         );
 
         let apply = apply_with_certificate_coordination(
