@@ -149,7 +149,13 @@ impl NatsStore {
             return Ok(cached.projection.clone());
         }
 
-        let cached = replay_projection_from_stream(&mut stream, info).await?;
+        let current = self.deploy_projection.read().await.clone();
+        let cached = match current {
+            Some(cached) if can_extend_cached_projection(&cached, &info) => {
+                extend_projection_from_stream(&mut stream, cached, info).await?
+            }
+            Some(_) | None => replay_projection_from_stream(&mut stream, info).await?,
+        };
         *self.deploy_projection.write().await = Some(cached.clone());
         Ok(cached.projection)
     }
@@ -189,7 +195,74 @@ async fn replay_projection_from_stream(
             last_sequence: info.state.last_sequence,
         });
     }
-    for sequence in info.state.first_sequence..=info.state.last_sequence {
+    apply_projection_range(
+        stream,
+        &mut projection,
+        info.state.first_sequence,
+        info.state.last_sequence,
+    )
+    .await?;
+    Ok(CachedDeployProjection {
+        projection,
+        last_sequence: info.state.last_sequence,
+    })
+}
+
+async fn extend_projection_from_stream(
+    stream: &mut async_nats::jetstream::stream::Stream,
+    cached: CachedDeployProjection,
+    info: async_nats::jetstream::stream::Info,
+) -> Result<CachedDeployProjection> {
+    let mut projection = cached.projection;
+    apply_projection_range(
+        stream,
+        &mut projection,
+        cached.last_sequence.saturating_add(1),
+        info.state.last_sequence,
+    )
+    .await?;
+    Ok(CachedDeployProjection {
+        projection,
+        last_sequence: info.state.last_sequence,
+    })
+}
+
+fn can_extend_cached_projection(
+    cached: &CachedDeployProjection,
+    info: &async_nats::jetstream::stream::Info,
+) -> bool {
+    cached_projection_extension_start(
+        cached.last_sequence,
+        info.state.first_sequence,
+        info.state.last_sequence,
+        info.state.messages,
+    )
+    .is_some()
+}
+
+fn cached_projection_extension_start(
+    cached_last_sequence: u64,
+    first_sequence: u64,
+    last_sequence: u64,
+    messages: u64,
+) -> Option<u64> {
+    if messages == 0 || cached_last_sequence >= last_sequence {
+        return None;
+    }
+    let next_sequence = cached_last_sequence.saturating_add(1);
+    if next_sequence < first_sequence {
+        return None;
+    }
+    Some(next_sequence)
+}
+
+async fn apply_projection_range(
+    stream: &mut async_nats::jetstream::stream::Stream,
+    projection: &mut DeployProjection,
+    first_sequence: u64,
+    last_sequence: u64,
+) -> Result<()> {
+    for sequence in first_sequence..=last_sequence {
         let message = match stream.direct_get(sequence).await {
             Ok(message) => message,
             Err(error) if error.kind() == DirectGetErrorKind::NotFound => continue,
@@ -204,10 +277,7 @@ async fn replay_projection_from_stream(
             .map_err(|error| Error::operation("nats_deploy_commit_decode", error.to_string()))?;
         projection.apply_commit(&commit);
     }
-    Ok(CachedDeployProjection {
-        projection,
-        last_sequence: info.state.last_sequence,
-    })
+    Ok(())
 }
 
 async fn publish_revision(js: &jetstream::Context, command: &DeployRevisionUpsert) -> Result<()> {
@@ -270,6 +340,22 @@ mod tests {
     use super::*;
     use ployz_types::model::MachineId;
     use ployz_types::spec::Namespace;
+
+    #[test]
+    fn cached_projection_extends_from_next_sequence() {
+        assert_eq!(cached_projection_extension_start(10, 1, 12, 12), Some(11));
+    }
+
+    #[test]
+    fn cached_projection_replays_when_cache_precedes_stream_start() {
+        assert_eq!(cached_projection_extension_start(10, 12, 15, 4), None);
+    }
+
+    #[test]
+    fn cached_projection_replays_when_stream_is_empty_or_not_ahead() {
+        assert_eq!(cached_projection_extension_start(10, 0, 10, 0), None);
+        assert_eq!(cached_projection_extension_start(10, 1, 10, 10), None);
+    }
 
     #[test]
     fn unchanged_revision_still_emits_idempotent_routing_event() {
