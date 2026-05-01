@@ -3,10 +3,13 @@ use ployz_nats::coord::rpc::{decode_daemon_request, encode_daemon_response};
 use ployz_runtime_api::RuntimeHandle;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
+use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use super::listener::IncomingCommand;
+
+const RESUBSCRIBE_DELAY: Duration = Duration::from_secs(1);
 
 pub struct NatsListenerHandle {
     cancel: CancellationToken,
@@ -57,8 +60,12 @@ pub async fn serve(
                 }
                 next = subscriber.next() => {
                     let Some(message) = next else {
-                        warn!(%subject, "nats node rpc subscription closed");
-                        break;
+                        warn!(%subject, "nats node rpc subscription closed; resubscribing");
+                        subscriber = match resubscribe(&client, &subject, &task_cancel).await {
+                            Some(subscriber) => subscriber,
+                            None => break,
+                        };
+                        continue;
                     };
                     let client = client.clone();
                     let tx = tx.clone();
@@ -72,6 +79,28 @@ pub async fn serve(
         }
     });
     Ok(NatsListenerHandle { cancel, task })
+}
+
+async fn resubscribe(
+    client: &async_nats::Client,
+    subject: &str,
+    cancel: &CancellationToken,
+) -> Option<async_nats::Subscriber> {
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => return None,
+            _ = tokio::time::sleep(RESUBSCRIBE_DELAY) => {}
+        }
+        match client.subscribe(subject.to_string()).await {
+            Ok(subscriber) => {
+                info!(%subject, "nats node rpc listener resubscribed");
+                return Some(subscriber);
+            }
+            Err(error) => {
+                warn!(%subject, %error, "nats node rpc resubscribe failed");
+            }
+        }
+    }
 }
 
 async fn handle_message(
