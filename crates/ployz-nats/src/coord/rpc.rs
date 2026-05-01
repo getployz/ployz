@@ -317,6 +317,10 @@ mod tests {
         let subject = NodeCommandSubject::status(&machine_id);
 
         assert_eq!(subject.as_str(), "node.machine%2Ea.cmd.status");
+        assert_eq!(
+            subjects::node_command_queue_group(&machine_id),
+            "ployzd-node-machine%2Ea"
+        );
     }
 
     #[test]
