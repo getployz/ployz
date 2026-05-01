@@ -4,7 +4,7 @@ use ployz_store_api::{AcmeChallengeSubscription, CertificateStore, CertificateSu
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
-    CertificateEvent, CertificateRecord, MachineId,
+    CertificateEvent, CertificateRecord, CertificateState, MachineId,
 };
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -15,6 +15,7 @@ use crate::buckets::{
     ACME_ACCOUNTS_BUCKET, ACME_CHALLENGE_READINESS_BUCKET, ACME_CHALLENGES_BUCKET,
     CERTIFICATES_BUCKET,
 };
+use crate::coord::jobs::{JobSchedule, publish_cert_renewal_job};
 use crate::store::kv_json;
 use crate::subjects;
 
@@ -81,6 +82,7 @@ impl CertificateStore for NatsStore {
     }
 
     async fn upsert_certificate(&self, record: &CertificateRecord) -> Result<()> {
+        schedule_certificate_renewal(self, record).await?;
         let bucket = certificates_bucket(self).await?;
         kv_json::put_json(
             &bucket,
@@ -283,6 +285,20 @@ impl CertificateStore for NatsStore {
             })
             .collect())
     }
+}
+
+async fn schedule_certificate_renewal(store: &NatsStore, record: &CertificateRecord) -> Result<()> {
+    let Some(schedule) = certificate_renewal_job_schedule(record) else {
+        return Ok(());
+    };
+    publish_cert_renewal_job(store.jetstream(), &record.hostname, schedule).await
+}
+
+fn certificate_renewal_job_schedule(record: &CertificateRecord) -> Option<JobSchedule> {
+    if record.state != CertificateState::Active {
+        return None;
+    }
+    record.next_renewal_at.map(JobSchedule::AtUnixSecs)
 }
 
 async fn certificates_bucket(store: &NatsStore) -> Result<kv::Store> {
@@ -572,6 +588,26 @@ mod tests {
             matches!(event, Some(CertificateEvent::Added(event_record)) if event_record == record)
         );
         assert_eq!(last_seen.get("example.com"), Some(&record));
+    }
+
+    #[test]
+    fn active_certificate_schedules_next_renewal_job() {
+        let mut record = certificate("example.com");
+        record.state = CertificateState::Active;
+        record.next_renewal_at = Some(1_803_619_200);
+
+        let schedule = certificate_renewal_job_schedule(&record);
+
+        assert_eq!(schedule, Some(JobSchedule::AtUnixSecs(1_803_619_200)));
+    }
+
+    #[test]
+    fn non_active_certificate_does_not_schedule_renewal_job() {
+        let mut record = certificate("example.com");
+        record.state = CertificateState::RenewalDue;
+        record.next_renewal_at = Some(1_803_619_200);
+
+        assert_eq!(certificate_renewal_job_schedule(&record), None);
     }
 
     #[test]

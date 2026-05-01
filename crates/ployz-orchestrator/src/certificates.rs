@@ -5,6 +5,7 @@ use ployz_types::model::{CertificateRecord, CertificateState, CertificateVersion
 use ployz_types::time::now_unix_secs;
 use rand::RngExt;
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -737,15 +738,27 @@ impl RenewalConfig {
 pub struct CertificateRenewalTask {
     cancel: CancellationToken,
     task: JoinHandle<()>,
+    name: &'static str,
 }
 
 impl CertificateRenewalTask {
+    pub fn spawn<F>(name: &'static str, run: impl FnOnce(CancellationToken) -> F) -> Self
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let task = tokio::spawn(run(task_cancel));
+        Self { cancel, task, name }
+    }
+
     pub async fn shutdown(self) {
         self.cancel.cancel();
         if let Err(error) = self.task.await {
             tracing::warn!(
                 ?error,
-                "certificate renewal ticker task failed during shutdown"
+                task = self.name,
+                "certificate renewal task failed during shutdown"
             );
         }
     }
@@ -762,9 +775,7 @@ pub fn spawn_certificate_renewal_ticker(
     readiness: Arc<dyn Http01ChallengeReadiness>,
     account_coordinator: Arc<dyn AcmeAccountCoordinator>,
 ) -> CertificateRenewalTask {
-    let cancel = CancellationToken::new();
-    let task_cancel = cancel.clone();
-    let task = tokio::spawn(async move {
+    CertificateRenewalTask::spawn("certificate renewal ticker", |task_cancel| async move {
         let issuer = issuer_factory.create(
             Arc::new(LocalHttp01ChallengeReadiness),
             account_coordinator.clone(),
@@ -790,8 +801,7 @@ pub fn spawn_certificate_renewal_ticker(
                 () = tokio::time::sleep(jittered(renewal_config.interval)) => {}
             }
         }
-    });
-    CertificateRenewalTask { cancel, task }
+    })
 }
 
 /// Walk certificates and process each hostname that currently needs renewal
