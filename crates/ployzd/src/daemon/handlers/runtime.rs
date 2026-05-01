@@ -1,40 +1,55 @@
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ployz_api::{RuntimeWatchFrame, runtime_frame_from_event, sort_routing_state};
-use ployz_store_api::RoutingSnapshotReader;
-use ployz_types::model::{RoutingEvent, RoutingState};
+use ployz_store_api::{RoutingEventBatch, RoutingSnapshotReader};
+use ployz_types::model::{MachineId, RoutingEvent, RoutingState};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::daemon::DaemonState;
+
+static RUNTIME_SUBSCRIPTION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 impl DaemonState {
     pub async fn open_runtime_subscription(
         &self,
     ) -> Result<(RoutingState, mpsc::Receiver<RoutingEvent>), Box<ployz_api::DaemonResponse>> {
         let active = self.require_active("NO_MESH", "no mesh is running")?;
+        let consumer_id = runtime_subscription_consumer_id(&self.identity.machine_id);
         let (state, mut batches) = active
             .mesh
             .store
-            .subscribe_routing_batches("ployzd.runtime")
+            .subscribe_routing_batches(&consumer_id)
             .await
             .map_err(|error| Box::new(self.err("RUNTIME_SUBSCRIBE_FAILED", error.to_string())))?;
         let (tx, rx) = mpsc::channel(1024);
-        tokio::spawn(async move {
-            while let Some(batch) = batches.recv().await {
-                let mut sent_all = true;
-                for event in batch.events.clone() {
-                    if tx.send(event).await.is_err() {
-                        sent_all = false;
-                        break;
-                    }
-                }
-                if sent_all {
-                    let _ = batch.ack().await;
-                }
-            }
-        });
+        tokio::spawn(async move { relay_runtime_batches(&mut batches, tx).await });
         Ok((state, rx))
+    }
+}
+
+fn runtime_subscription_consumer_id(machine_id: &MachineId) -> String {
+    let sequence = RUNTIME_SUBSCRIPTION_SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
+    let started = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    format!("ployzd.runtime.{}.{}.{}", machine_id.0, started, sequence)
+}
+
+async fn relay_runtime_batches(
+    batches: &mut mpsc::Receiver<RoutingEventBatch>,
+    tx: mpsc::Sender<RoutingEvent>,
+) {
+    while let Some(batch) = batches.recv().await {
+        for event in batch.events.clone() {
+            if tx.send(event).await.is_err() {
+                let _ = batch.ack().await;
+                return;
+            }
+        }
+        let _ = batch.ack().await;
     }
 }
 
@@ -84,8 +99,9 @@ pub async fn stream_runtime_frames(
 
 #[cfg(test)]
 mod tests {
-    use super::stream_runtime_frames;
+    use super::{relay_runtime_batches, runtime_subscription_consumer_id, stream_runtime_frames};
     use ployz_api::{RuntimeRecord, RuntimeTable, RuntimeWatchFrame};
+    use ployz_store_api::RoutingEventBatch;
     use ployz_types::model::{
         DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
         RoutingEvent, RoutingState, SlotId,
@@ -143,6 +159,44 @@ mod tests {
                 record: RuntimeRecord::Instance(instance_record("instance-c", "prod", "worker")),
             }
         );
+    }
+
+    #[test]
+    fn runtime_subscription_consumer_id_is_unique_per_subscription() {
+        let machine = MachineId(String::from("founder"));
+
+        let first = runtime_subscription_consumer_id(&machine);
+        let second = runtime_subscription_consumer_id(&machine);
+
+        assert_ne!(first, second);
+        assert!(first.starts_with("ployzd.runtime.founder."));
+        assert!(second.starts_with("ployzd.runtime.founder."));
+    }
+
+    #[tokio::test]
+    async fn relay_runtime_batches_acks_and_exits_when_receiver_closes() {
+        let (batch_tx, mut batch_rx) = mpsc::channel(1);
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        batch_tx
+            .send(RoutingEventBatch::with_ack(
+                "batch-1",
+                None,
+                vec![RoutingEvent::InstanceAdded(instance_record(
+                    "instance-a",
+                    "prod",
+                    "web",
+                ))],
+                ack_tx,
+            ))
+            .await
+            .expect("queue batch");
+        drop(batch_tx);
+        let (event_tx, event_rx) = mpsc::channel(1);
+        drop(event_rx);
+
+        relay_runtime_batches(&mut batch_rx, event_tx).await;
+
+        ack_rx.await.expect("batch should be acked");
     }
 
     fn instance_record(id: &str, namespace: &str, service: &str) -> InstanceStatusRecord {
