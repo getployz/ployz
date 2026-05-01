@@ -169,7 +169,12 @@ impl NatsLocks {
                 self.bucket
                     .update(key, payload.into(), entry.revision)
                     .await
-                    .map_err(|error| Error::operation("nats_lock_acquire", format!("{error:?}")))?
+                    .map_err(|error| {
+                        Error::operation(
+                            "nats_lock_acquire",
+                            format!("lock '{key}' contention: {error:?}"),
+                        )
+                    })?
             }
         };
         Ok(Lease::new(key, revision, value))

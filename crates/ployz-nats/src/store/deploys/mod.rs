@@ -21,6 +21,12 @@ use crate::store::deploys::projection::DeployProjection;
 use crate::store::kv_json;
 use crate::subjects::{self, DEPLOY_COMMITS_STREAM};
 
+#[derive(Debug, Clone)]
+pub(crate) struct CachedDeployProjection {
+    projection: DeployProjection,
+    last_sequence: u64,
+}
+
 impl DeployRepository for NatsStore {
     async fn list_deploy_releases(
         &self,
@@ -90,7 +96,7 @@ impl DeployRepository for NatsStore {
         let mut projection = self.deploy_projection_snapshot().await?;
         let routing_events = projection.apply_commit_events(command);
         publish_commit(self.jetstream(), command).await?;
-        *self.deploy_projection.write().await = Some(projection);
+        *self.deploy_projection.write().await = None;
         self.publish_routing_batch(
             format!("deploy:{}", command.deploy.deploy_id.0),
             "deploy.commit",
@@ -121,13 +127,25 @@ impl DeployRepository for NatsStore {
 
 impl NatsStore {
     pub(crate) async fn deploy_projection_snapshot(&self) -> Result<DeployProjection> {
-        if let Some(projection) = self.deploy_projection.read().await.as_ref() {
-            return Ok(projection.clone());
+        let mut stream = self
+            .jetstream()
+            .get_stream(DEPLOY_COMMITS_STREAM)
+            .await
+            .map_err(|error| Error::operation("nats_deploy_stream", format!("{error:?}")))?;
+        let info = stream
+            .info()
+            .await
+            .map_err(|error| Error::operation("nats_deploy_stream_info", format!("{error:?}")))?
+            .clone();
+        if let Some(cached) = self.deploy_projection.read().await.as_ref()
+            && cached.last_sequence == info.state.last_sequence
+        {
+            return Ok(cached.projection.clone());
         }
 
-        let projection = replay_projection(self.jetstream()).await?;
-        *self.deploy_projection.write().await = Some(projection.clone());
-        Ok(projection)
+        let cached = replay_projection_from_stream(&mut stream, info).await?;
+        *self.deploy_projection.write().await = Some(cached.clone());
+        Ok(cached.projection)
     }
 }
 
@@ -154,18 +172,16 @@ pub async fn publish_commit(js: &jetstream::Context, commit: &DeployCommit) -> R
     }
 }
 
-pub(crate) async fn replay_projection(js: &jetstream::Context) -> Result<DeployProjection> {
-    let mut stream = js
-        .get_stream(DEPLOY_COMMITS_STREAM)
-        .await
-        .map_err(|error| Error::operation("nats_deploy_stream", format!("{error:?}")))?;
-    let info = stream
-        .info()
-        .await
-        .map_err(|error| Error::operation("nats_deploy_stream_info", format!("{error:?}")))?;
+async fn replay_projection_from_stream(
+    stream: &mut async_nats::jetstream::stream::Stream,
+    info: async_nats::jetstream::stream::Info,
+) -> Result<CachedDeployProjection> {
     let mut projection = DeployProjection::new();
     if info.state.messages == 0 {
-        return Ok(projection);
+        return Ok(CachedDeployProjection {
+            projection,
+            last_sequence: info.state.last_sequence,
+        });
     }
     for sequence in info.state.first_sequence..=info.state.last_sequence {
         let message = match stream.direct_get(sequence).await {
@@ -182,7 +198,10 @@ pub(crate) async fn replay_projection(js: &jetstream::Context) -> Result<DeployP
             .map_err(|error| Error::operation("nats_deploy_commit_decode", error.to_string()))?;
         projection.apply_commit(&commit);
     }
-    Ok(projection)
+    Ok(CachedDeployProjection {
+        projection,
+        last_sequence: info.state.last_sequence,
+    })
 }
 
 async fn publish_revision(js: &jetstream::Context, command: &DeployRevisionUpsert) -> Result<()> {

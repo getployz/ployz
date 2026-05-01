@@ -12,9 +12,10 @@ use ployz_store_api::StoreRuntimeControl;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::OverlayIp;
 use serde::Deserialize;
+use std::net::Ipv4Addr;
 use std::path::Path;
 use std::sync::Arc;
-use store::deploys::projection::DeployProjection;
+use store::deploys::CachedDeployProjection;
 use tokio::sync::RwLock;
 
 #[derive(Clone)]
@@ -22,7 +23,7 @@ pub struct NatsStore {
     client: Client,
     jetstream: async_nats::jetstream::Context,
     asset_policy: AssetPolicy,
-    pub(crate) deploy_projection: Arc<RwLock<Option<DeployProjection>>>,
+    pub(crate) deploy_projection: Arc<RwLock<Option<CachedDeployProjection>>>,
 }
 
 impl NatsStore {
@@ -89,13 +90,39 @@ impl NatsStore {
                 format!("decode {}: {error}", path.display()),
             )
         })?;
-        let store = Self::connect(&format!(
-            "nats://[{}]:{}",
-            config.overlay_ip.0,
-            config::CLIENT_PORT
-        ))
-        .await?;
-        store.start().await?;
-        Ok(store)
+        let mut last_error = None;
+        for url in client_urls_for_network(config.overlay_ip) {
+            match Self::connect(&url).await {
+                Ok(store) => match store.start().await {
+                    Ok(()) => return Ok(store),
+                    Err(error) => last_error = Some(error),
+                },
+                Err(error) => last_error = Some(error),
+            }
+        }
+        let Some(error) = last_error else {
+            return Err(Error::operation("nats_connect", "no client URLs available"));
+        };
+        Err(error)
+    }
+}
+
+fn client_urls_for_network(overlay_ip: OverlayIp) -> [String; 2] {
+    [
+        format!("nats://{}:{}", Ipv4Addr::LOCALHOST, config::CLIENT_PORT),
+        format!("nats://[{}]:{}", overlay_ip.0, config::CLIENT_PORT),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_client_urls_try_local_bridge_before_overlay() {
+        let urls = client_urls_for_network(OverlayIp("fd00::1".parse().expect("valid ip")));
+
+        assert_eq!(urls[0], "nats://127.0.0.1:4222");
+        assert_eq!(urls[1], "nats://[fd00::1]:4222");
     }
 }

@@ -3,6 +3,7 @@ use async_nats::jetstream;
 use async_nats::jetstream::message::PublishMessage;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::RoutingEvent;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::NatsStore;
 use crate::subjects::{self, ROUTING_EVENTS_STREAM};
@@ -66,6 +67,7 @@ pub(crate) fn routing_publish_specs(
         return Ok(Vec::new());
     }
 
+    let publish_id = unique_routing_publish_id();
     events
         .iter()
         .enumerate()
@@ -74,7 +76,10 @@ pub(crate) fn routing_publish_specs(
             let mut headers = HeaderMap::new();
             headers.insert(NATS_BATCH_ID, batch_id);
             headers.insert(NATS_BATCH_SEQUENCE, sequence.to_string());
-            headers.insert("Nats-Msg-Id", format!("routing:{batch_id}:{sequence}"));
+            headers.insert(
+                "Nats-Msg-Id",
+                format!("routing:{batch_id}:{publish_id}:{sequence}"),
+            );
             headers.insert(PLOYZ_ROUTING_CAUSE, cause);
             headers.insert(PLOYZ_ROUTING_COUNT, count.to_string());
             if sequence == count {
@@ -90,6 +95,15 @@ pub(crate) fn routing_publish_specs(
             })
         })
         .collect()
+}
+
+fn unique_routing_publish_id() -> String {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+    let sequence = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => format!("{:x}-{sequence:x}", duration.as_nanos()),
+        Err(error) => format!("clock-error-{}-{sequence:x}", error.duration().as_nanos()),
+    }
 }
 
 #[cfg(test)]
@@ -113,14 +127,28 @@ mod tests {
         assert_eq!(specs.len(), 2);
         assert_eq!(header(&specs[0].headers, NATS_BATCH_ID), "batch-1");
         assert_eq!(header(&specs[0].headers, NATS_BATCH_SEQUENCE), "1");
-        assert_eq!(
-            header(&specs[0].headers, "Nats-Msg-Id"),
-            "routing:batch-1:1"
-        );
+        let msg_id = header(&specs[0].headers, "Nats-Msg-Id");
+        assert!(msg_id.starts_with("routing:batch-1:"));
+        assert!(msg_id.ends_with(":1"));
         assert!(specs[0].headers.get(NATS_BATCH_COMMIT).is_none());
         assert_eq!(header(&specs[1].headers, NATS_BATCH_SEQUENCE), "2");
         assert_eq!(header(&specs[1].headers, NATS_BATCH_COMMIT), "2");
         assert_eq!(header(&specs[1].headers, PLOYZ_ROUTING_COUNT), "2");
+    }
+
+    #[test]
+    fn routing_batch_message_ids_change_between_publish_attempts() {
+        let events = vec![RoutingEvent::MachineAdded(test_machine("machine-1"))];
+
+        let first = routing_publish_specs("machine:machine-1", "machine.upsert", &events)
+            .expect("first specs");
+        let second = routing_publish_specs("machine:machine-1", "machine.upsert", &events)
+            .expect("second specs");
+
+        assert_ne!(
+            header(&first[0].headers, "Nats-Msg-Id"),
+            header(&second[0].headers, "Nats-Msg-Id")
+        );
     }
 
     fn header(headers: &HeaderMap, name: &str) -> String {
