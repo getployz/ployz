@@ -56,31 +56,37 @@ impl Mesh {
                 &initial_device_peers,
                 tokio::time::Instant::now(),
             )));
-        task_set.spawn(run_peer_sync_task(PeerSyncTask {
-            snapshot,
-            events,
-            bootstrap_peers,
-            network: self.network.clone(),
-            local_machine_id: self.machine_id.clone(),
-            endpoint_selections: endpoint_selections.clone(),
-            cancel: cancel.clone(),
-        }));
-        task_set.spawn(run_endpoint_maintainer_task(EndpointMaintainerTask {
-            snapshot: maint_snapshot,
-            events: maint_events,
-            commands: maint_rx,
-            bootstrap_peers: self
-                .seed_records
-                .iter()
-                .filter(|machine| machine.id != self.machine_id)
-                .map(|machine| machine.observation())
-                .collect(),
-            network: self.network.clone(),
-            local_machine_id: self.machine_id.clone(),
-            endpoint_selections,
-            initial_device_peers,
-            cancel: cancel.clone(),
-        }));
+        task_set.spawn_named(
+            "mesh_peer_sync",
+            run_peer_sync_task(PeerSyncTask {
+                snapshot,
+                events,
+                bootstrap_peers,
+                network: self.network.clone(),
+                local_machine_id: self.machine_id.clone(),
+                endpoint_selections: endpoint_selections.clone(),
+                cancel: cancel.clone(),
+            }),
+        );
+        task_set.spawn_named(
+            "mesh_endpoint_maintainer",
+            run_endpoint_maintainer_task(EndpointMaintainerTask {
+                snapshot: maint_snapshot,
+                events: maint_events,
+                commands: maint_rx,
+                bootstrap_peers: self
+                    .seed_records
+                    .iter()
+                    .filter(|machine| machine.id != self.machine_id)
+                    .map(|machine| machine.observation())
+                    .collect(),
+                network: self.network.clone(),
+                local_machine_id: self.machine_id.clone(),
+                endpoint_selections,
+                initial_device_peers,
+                cancel: cancel.clone(),
+            }),
+        );
 
         self.endpoint_maintainer_tx = Some(endpoint_maintainer_tx);
         self.task_cancel = Some(cancel);
@@ -125,12 +131,15 @@ impl Mesh {
 
         let (self_record_tx, self_record_rx) = mpsc::channel(64);
         self.self_record_tx = Some(self_record_tx.clone());
-        task_set.spawn(run_self_record_writer_task(
-            authoritative_self.clone(),
-            self.store.clone(),
-            self_record_rx,
-            cancel.clone(),
-        ));
+        task_set.spawn_named(
+            "mesh_self_record_writer",
+            run_self_record_writer_task(
+                authoritative_self.clone(),
+                self.store.clone(),
+                self_record_rx,
+                cancel.clone(),
+            ),
+        );
         let bridge_ip = self.network.bridge_ip().await;
         let _ = apply_self_record_mutation(
             &self_record_tx,
@@ -143,11 +152,10 @@ impl Mesh {
             .subscribe_machines()
             .await
             .map_err(TaskSetError::Subscribe)?;
-        task_set.spawn(run_subnet_claim_monitor_task(
-            subnet_snapshot,
-            subnet_events,
-            cancel.clone(),
-        ));
+        task_set.spawn_named(
+            "mesh_subnet_claim_monitor",
+            run_subnet_claim_monitor_task(subnet_snapshot, subnet_events, cancel.clone()),
+        );
 
         if let Some(ref dataplane) = self.dataplane {
             let (ebpf_snapshot, ebpf_events) = self
@@ -155,14 +163,17 @@ impl Mesh {
                 .subscribe_machines()
                 .await
                 .map_err(TaskSetError::Subscribe)?;
-            task_set.spawn(run_ebpf_sync_task(
-                ebpf_snapshot,
-                ebpf_events,
-                dataplane.clone(),
-                self.wg_ifindex,
-                self.machine_id.clone(),
-                cancel.clone(),
-            ));
+            task_set.spawn_named(
+                "mesh_ebpf_sync",
+                run_ebpf_sync_task(
+                    ebpf_snapshot,
+                    ebpf_events,
+                    dataplane.clone(),
+                    self.wg_ifindex,
+                    self.machine_id.clone(),
+                    cancel.clone(),
+                ),
+            );
         }
 
         Ok(())

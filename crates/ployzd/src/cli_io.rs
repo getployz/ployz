@@ -769,6 +769,13 @@ mod tests {
                         consecutive_failures: Some(0),
                         error: None,
                     },
+                    ployz_api::ControlPlaneStatus {
+                        component: String::from("mesh_peer_sync"),
+                        healthy: Some(false),
+                        stale_since_unix_secs: Some(1_777_646_300),
+                        consecutive_failures: Some(1),
+                        error: Some(String::from("task exited unexpectedly")),
+                    },
                 ],
             })),
         };
@@ -782,6 +789,9 @@ mod tests {
         ));
         assert!(rendered.contains(
             "control_plane component=bootstrap_seed_cache state=healthy consecutive_failures=0"
+        ));
+        assert!(rendered.contains(
+            "control_plane component=mesh_peer_sync state=stale stale_since=1777646300 consecutive_failures=1"
         ));
     }
 

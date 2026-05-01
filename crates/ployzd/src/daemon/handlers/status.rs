@@ -173,6 +173,15 @@ impl DaemonState {
                 error: Some(format!("read bootstrap seed cache health: {error}")),
             }),
         }
+        for health in active.mesh.task_health() {
+            status.push(ControlPlaneStatus {
+                component: health.name,
+                healthy: Some(health.healthy),
+                stale_since_unix_secs: health.stale_since_unix_secs,
+                consecutive_failures: Some(health.consecutive_failures),
+                error: health.last_error,
+            });
+        }
         status
     }
 
