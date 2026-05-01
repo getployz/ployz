@@ -31,7 +31,11 @@ pub(crate) async fn run_ebpf_sync_task(
                 info!("ebpf sync task cancelled");
                 break;
             }
-            Some(event) = events.recv() => {
+            event = events.recv() => {
+                let Some(event) = event else {
+                    warn!("eBPF sync machine subscription closed");
+                    break;
+                };
                 match &event {
                     MachineEvent::Added(m) | MachineEvent::Updated(m) => {
                         if m.id == local_machine_id {
@@ -54,5 +58,54 @@ pub(crate) async fn run_ebpf_sync_task(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::Result;
+    use async_trait::async_trait;
+    use ipnet::Ipv4Net;
+
+    struct NoopDataplane;
+
+    #[async_trait]
+    impl MeshDataplane for NoopDataplane {
+        async fn set_observe(&self, _enabled: bool) -> Result<()> {
+            Ok(())
+        }
+
+        async fn upsert_route(&self, _subnet: Ipv4Net, _ifindex: u32) -> Result<()> {
+            Ok(())
+        }
+
+        async fn remove_route(&self, _subnet: Ipv4Net) -> Result<()> {
+            Ok(())
+        }
+
+        async fn detach(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn exits_when_machine_subscription_closes() {
+        let (event_tx, event_rx) = mpsc::channel::<MachineEvent>(4);
+        drop(event_tx);
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            run_ebpf_sync_task(
+                Vec::new(),
+                event_rx,
+                Arc::new(NoopDataplane),
+                1,
+                MachineId("self".into()),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("eBPF sync should exit when machine subscription closes");
     }
 }
