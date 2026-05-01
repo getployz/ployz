@@ -32,6 +32,10 @@ use crate::store::routing::{
 };
 use crate::subjects::ROUTING_EVENTS_STREAM;
 
+const ROUTING_CONSUMER_CHANNEL_CAPACITY: usize = 128;
+const ROUTING_CONSUMER_ACK_WAIT: Duration = Duration::from_secs(30);
+const ROUTING_CONSUMER_IDLE_HEARTBEAT: Duration = Duration::from_secs(5);
+
 #[async_trait]
 impl StoreBackend for NatsStore {
     async fn init(&self) -> Result<()> {
@@ -237,7 +241,9 @@ impl RoutingSnapshotReader for NatsStore {
                 deliver_subject: self.client().new_inbox(),
                 deliver_policy: DeliverPolicy::New,
                 ack_policy: AckPolicy::Explicit,
-                ack_wait: Duration::from_secs(30),
+                ack_wait: ROUTING_CONSUMER_ACK_WAIT,
+                idle_heartbeat: ROUTING_CONSUMER_IDLE_HEARTBEAT,
+                max_ack_pending: ROUTING_CONSUMER_CHANNEL_CAPACITY as i64,
                 filter_subject: "routing.events.>".to_string(),
                 ..Default::default()
             })
@@ -248,7 +254,7 @@ impl RoutingSnapshotReader for NatsStore {
             .await
             .map_err(|error| Error::operation("nats_routing_messages", format!("{error:?}")))?;
         let state = RoutingSnapshotReader::load_routing_state(self).await?;
-        let (tx, rx) = mpsc::channel(128);
+        let (tx, rx) = mpsc::channel(ROUTING_CONSUMER_CHANNEL_CAPACITY);
         tokio::spawn(async move {
             let stream = stream;
             let consumer_name = consumer_name;
