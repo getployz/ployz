@@ -597,7 +597,10 @@ Tracked in code comments and the implementation plan. Highlights:
    replaces any old consumer with the same id and starts delivery from the next
    stream sequence. Updates carry either a complete batch or an explicit
    consumer failure. Runtime watch clients receive that failure as an explicit
-   error frame before the watch stream closes.
+   error frame before the watch stream closes. Batch `ack()` waits for the
+   underlying JetStream message ack result; gateway/DNS mark routing sync stale
+   on ack failure, and runtime watches surface an error frame instead of
+   silently advancing.
    Routing consumer `max_ack_pending` is bounded to the local bridge-channel
    capacity, and idle heartbeats surface broken delivery paths as failures.
 2. Machine/certificate/ACME challenge subscriptions are KV watchers that carry
@@ -615,7 +618,8 @@ Tracked in code comments and the implementation plan. Highlights:
    KV subscriptions read the bucket stream sequence as a snapshot boundary,
    load the current snapshot, then watch from the next sequence. Updates that
    race with snapshot loading are delivered from the bounded watch stream, and
-   duplicate observations collapse through the subscriber's last-seen state.
+   duplicate observations collapse through the subscriber's last-seen state, so
+   idempotent puts do not wake downstream projections.
    Watcher tasks also exit as soon as their downstream receiver closes, and
    event decode failures are surfaced as subscription failures instead of being
    logged while the stale stream continues.

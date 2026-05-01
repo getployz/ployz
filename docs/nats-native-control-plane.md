@@ -200,7 +200,11 @@ The important split:
   old consumer with the same id after reading the routing stream sequence and
   loading a fresh snapshot; the new consumer starts from the next stream
   sequence. Routing consumers bound in-flight delivery to the local bridge
-  channel and use idle heartbeats to detect broken delivery.
+  channel and use idle heartbeats to detect broken delivery. Batch `ack()` is
+  the real NATS message ack boundary: gateway, DNS, and runtime watch consumers
+  do not report a batch acknowledged until the underlying JetStream ack has
+  succeeded. Ack failure makes edge projection freshness stale or sends a
+  runtime watch error frame.
 - KV watcher consumers must treat watcher failure or closure as a lost
   freshness boundary. Machine, certificate, and ACME challenge subscriptions
   carry explicit failure updates; consumers should stop using the stale stream,
@@ -210,7 +214,9 @@ The important split:
   updates that race with snapshot loading are still delivered. KV watcher tasks
   terminate when their downstream receiver closes, and malformed event payloads
   become explicit subscription failures because stale projections need an
-  operator-visible audience.
+  operator-visible audience. Identical KV puts are collapsed by the subscriber's
+  last-seen state, so idempotent writes do not create low-signal projection
+  churn.
 - Edge projections expose their subscription freshness as sidecar metrics:
   gateway reports routing, certificates, and ACME challenge streams; DNS reports
   routing. When those metrics endpoints are configured, `ployzctl status`

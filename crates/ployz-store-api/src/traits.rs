@@ -70,7 +70,7 @@ pub struct RoutingEventBatch {
     pub batch_id: String,
     pub cause: Option<String>,
     pub events: Vec<RoutingEvent>,
-    ack: Option<oneshot::Sender<()>>,
+    ack: Option<oneshot::Sender<oneshot::Sender<Result<()>>>>,
 }
 
 impl RoutingEventBatch {
@@ -93,7 +93,7 @@ impl RoutingEventBatch {
         batch_id: impl Into<String>,
         cause: Option<String>,
         events: Vec<RoutingEvent>,
-        ack: oneshot::Sender<()>,
+        ack: oneshot::Sender<oneshot::Sender<Result<()>>>,
     ) -> Self {
         Self {
             batch_id: batch_id.into(),
@@ -107,12 +107,22 @@ impl RoutingEventBatch {
         let Some(ack) = self.ack.take() else {
             return Ok(());
         };
-        ack.send(()).map_err(|()| {
+        let (result_tx, result_rx) = oneshot::channel();
+        ack.send(result_tx).map_err(|_| {
             Error::operation(
                 "routing_batch_ack_failed",
                 format!("routing batch '{}' ack receiver closed", self.batch_id),
             )
-        })
+        })?;
+        result_rx.await.map_err(|error| {
+            Error::operation(
+                "routing_batch_ack_failed",
+                format!(
+                    "routing batch '{}' ack result dropped: {error}",
+                    self.batch_id
+                ),
+            )
+        })?
     }
 }
 
@@ -189,7 +199,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::RoutingSubscription;
+    use super::{RoutingEventBatch, RoutingSubscription};
 
     #[test]
     fn routing_subscription_kind_tracks_consumer_lifetime() {
@@ -200,6 +210,37 @@ mod tests {
         assert!(!durable.is_temporary());
         assert_eq!(temporary.consumer_id(), "ployzd.runtime.founder.1");
         assert!(temporary.is_temporary());
+    }
+
+    #[tokio::test]
+    async fn routing_batch_ack_waits_for_broker_result() {
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        let batch = RoutingEventBatch::with_ack("batch-1", None, Vec::new(), ack_tx);
+
+        let ack = tokio::spawn(batch.ack());
+        let result_tx = ack_rx.await.expect("ack request should arrive");
+        assert!(!ack.is_finished());
+        result_tx.send(Ok(())).expect("ack result should send");
+
+        ack.await.expect("ack task should not panic").expect("ack");
+    }
+
+    #[tokio::test]
+    async fn routing_batch_ack_returns_broker_error() {
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        let batch = RoutingEventBatch::with_ack("batch-1", None, Vec::new(), ack_tx);
+
+        let ack = tokio::spawn(batch.ack());
+        let result_tx = ack_rx.await.expect("ack request should arrive");
+        result_tx
+            .send(Err(ployz_types::Error::operation("test_ack", "failed")))
+            .expect("ack result should send");
+
+        let error = ack
+            .await
+            .expect("ack task should not panic")
+            .expect_err("ack should fail");
+        assert_eq!(error.to_string(), "test_ack: failed");
     }
 }
 
