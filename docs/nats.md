@@ -584,15 +584,15 @@ Tracked in code comments and the implementation plan. Highlights:
    server features.
 4. Standalone gateway and DNS use NATS in their `main.rs`
    files. ployzd switched, the sidecars didn't.
-5. Coordination layer — KV lock helpers and node RPC foundations exist, but
-   many call sites still use peer TCP. `PendingReservations` and
-   `OverlayIssuanceCoordinator` have been removed; transitional TCP
-   `deploy_session` control is still wired and should be replaced with NATS
-   request/reply commands.
+5. Coordination layer — KV lock helpers and node RPC are now the daemon command
+   path. `PendingReservations`, `OverlayIssuanceCoordinator`, the peer TCP RPC
+   client, and the peer control listener have been removed. Remaining direct TCP
+   is narrow data movement such as ZFS send/receive payload streams.
 6. `MachineRole` is hardcoded to `StorageCandidate` everywhere.
-7. Joiner bootstrap currently runs each joiner with a standalone NATS
-   store (pragmatic fix for a join-time deadlock; not the intended
-   architecture).
+7. Joiner bootstrap still uses SSH stdio to deliver the bootstrap command and
+   scoped cluster information. After bootstrap, node commands use NATS
+   request/reply. The intended v2 flow is for the joiner to receive scoped NATS
+   credentials and publish its own membership without founder pre-admission.
 8. `subjects::subject_token` collision risk for namespace/hostname names
    that differ only in punctuation.
 

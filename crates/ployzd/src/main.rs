@@ -86,7 +86,7 @@ async fn run() -> Result<i32> {
                 cfg.cluster_cidr,
                 cfg.subnet_prefix_len,
                 cfg.remote_control_port,
-                cfg.peer_control_target,
+                cfg.control_target,
                 cfg.gateway_listen_addr,
                 cfg.gateway_https_listen_addr,
                 cfg.gateway_threads,

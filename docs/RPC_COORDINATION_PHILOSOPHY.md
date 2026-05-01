@@ -146,8 +146,10 @@ This keeps future work obvious and removes ad-hoc lock implementations.
   through `NodeStatus.drain_state`.
 - **Mutations:** deploy, cert, account, and subnet coordination are moving to
   NATS KV CAS leases with owner+nonce idempotency.
-- **Node command path:** NATS request/reply exists as the target path for small
-  daemon commands. Old peer TCP call sites should be migrated in small slices.
+- **Node command path:** NATS request/reply is the path for small bounded daemon
+  commands. The old peer TCP RPC client and peer control listener have been
+  removed; direct TCP remains only for narrow byte streams such as ZFS transfer
+  payloads.
 - **Background tasks:** focused on reconciliation/subscription work
   (`self_record`, `peer_sync`, endpoint and subnet monitors, eBPF sync) rather
   than liveness pulse publication.
