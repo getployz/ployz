@@ -64,6 +64,14 @@ pub fn cert_renewal_job(hostname: &str) -> String {
 }
 
 #[must_use]
+pub fn cert_renewal_schedule(hostname: &str) -> String {
+    format!(
+        "cert.jobs.schedule.{}",
+        subject_token(&hostname.to_ascii_lowercase())
+    )
+}
+
+#[must_use]
 pub fn node_command(machine_id: &MachineId, command: &str) -> String {
     format!("node.{}.cmd.{}", subject_token(&machine_id.0), command)
 }
