@@ -31,7 +31,6 @@ pub struct ActiveMesh {
     pub cached_subnet: Option<Ipv4Net>,
     pub mesh: Mesh,
     pub nats_control: Box<dyn RuntimeHandle>,
-    pub peer_control: Box<dyn RuntimeHandle>,
     pub zfs_transfer: Box<dyn RuntimeHandle>,
     pub gateway: Box<dyn RuntimeHandle>,
     pub dns: Box<dyn RuntimeHandle>,

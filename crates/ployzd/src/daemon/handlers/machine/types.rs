@@ -4,6 +4,7 @@ use ployz_api::{
     MachineAddPayload, MachineAwaitingSelfPublication, MachineInstallOptions, MachineListPayload,
     MachineListRow,
 };
+use ployz_nats::coord::rpc::NatsNodeRpcClient;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_store_api::StoreDriver;
 use ployz_types::model::{MachineId, NetworkId};
@@ -20,7 +21,7 @@ pub(super) struct MachineAddContext {
     pub local_machine_id: MachineId,
     pub cluster_cidr: String,
     pub store: StoreDriver,
-    pub peer_rpc_port: u16,
+    pub nats_rpc: Option<NatsNodeRpcClient>,
     pub peer_sync_tx: mpsc::Sender<PeerSyncCommand>,
     pub ssh_options: SshOptions,
     pub install: MachineInstallOptions,

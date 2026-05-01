@@ -4,7 +4,6 @@ mod doctor;
 mod invite;
 pub(crate) mod machine;
 mod mesh;
-pub(crate) mod peer_rpc;
 pub(crate) mod runtime;
 mod status;
 pub(crate) mod volume;

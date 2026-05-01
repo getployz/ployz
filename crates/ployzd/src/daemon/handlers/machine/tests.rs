@@ -6,8 +6,8 @@ use crate::daemon::ssh::{TestSshEnvGuard, TestSshProgramGuard, test_ssh_env_lock
 use crate::mesh_state::network::{DEFAULT_CLUSTER_CIDR, NetworkConfig};
 use ipnet::Ipv4Net;
 use ployz_api::{
-    DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MachineTransitionGoal,
-    MeshReadyPayload, MeshSelfRecordPayload, StatusPayload,
+    DaemonPayload, DaemonResponse, MachineAddOptions, MachineTransitionGoal, MeshSelfRecordPayload,
+    StatusPayload,
 };
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::mesh::driver::WireguardDriver;
@@ -24,10 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
-use tokio::time::{Duration, sleep};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -89,11 +86,11 @@ async fn machine_rtt_does_not_fan_out_to_unreachable_peer() {
     let listener = TcpListener::bind("[::1]:0")
         .await
         .expect("bind overlay listener");
-    let peer_rpc_port = listener.local_addr().expect("listener addr").port();
+    let unused_listener_port = listener.local_addr().expect("listener addr").port();
     drop(listener);
-    let remote_control_port = peer_rpc_port
+    let remote_control_port = unused_listener_port
         .checked_sub(1)
-        .expect("peer rpc port has preceding base control port");
+        .expect("test listener port has preceding base control port");
     let (mut state, store, _) = make_state_with_remote_port(true, remote_control_port).await;
 
     let mut peer = test_machine_record(
@@ -121,14 +118,7 @@ async fn machine_rtt_does_not_fan_out_to_unreachable_peer() {
 #[tokio::test]
 async fn machine_add_activates_joiner_lifecycle() {
     let _guard = test_ssh_env_lock().lock().await;
-    let listener = TcpListener::bind("[::1]:0")
-        .await
-        .expect("bind overlay listener");
-    let peer_rpc_port = listener.local_addr().expect("listener addr").port();
-    let remote_control_port = peer_rpc_port
-        .checked_sub(1)
-        .expect("peer rpc port has preceding base control port");
-    let (mut state, store, network) = make_state_with_remote_port(true, remote_control_port).await;
+    let (mut state, store, network) = make_state(true).await;
     let mut stale_peer = test_machine_record(
         "stale-peer",
         "10.210.1.0/24",
@@ -140,69 +130,6 @@ async fn machine_add_activates_joiner_lifecycle() {
         .upsert_self_machine(&stale_peer)
         .await
         .expect("upsert stale peer");
-
-    let server_store = store.clone();
-    let server = tokio::spawn(async move {
-        for _ in 0..2 {
-            let (stream, _) = listener.accept().await.expect("accept overlay rpc");
-            let (reader, mut writer) = stream.into_split();
-            let mut buf = BufReader::new(reader);
-            let mut line = String::new();
-            buf.read_line(&mut line).await.expect("read request");
-            let request: DaemonRequest =
-                serde_json::from_str(&line).expect("decode daemon request");
-            let response = if matches!(request, DaemonRequest::MeshReady { .. }) {
-                DaemonResponse {
-                    ok: true,
-                    code: "OK".into(),
-                    message: "ready".into(),
-                    payload: Some(DaemonPayload::MeshReady(MeshReadyPayload {
-                        ready: true,
-                        phase: "running".into(),
-                        store_healthy: true,
-                        sync_connected: true,
-                        workload_subnet_present: true,
-                    })),
-                }
-            } else if let DaemonRequest::MachineTransitionSelf {
-                goal: MachineTransitionGoal::Activate,
-                assigned_subnet,
-                ..
-            } = request
-            {
-                {
-                    let mut joiner_record = MachineMembership::seed(
-                        MachineId("joiner-1".into()),
-                        PublicKey([4; 32]),
-                        "::1".parse().map(OverlayIp).expect("valid overlay"),
-                        Some("10.210.99.0/24".parse().expect("valid subnet")),
-                        vec!["203.0.113.10:51820".into()],
-                    );
-                    joiner_record.subnet = assigned_subnet;
-                    joiner_record.lifecycle = MachineLifecycle::Active;
-                    server_store
-                        .upsert_self_machine(&joiner_record)
-                        .await
-                        .expect("upsert joiner for projection");
-                    DaemonResponse {
-                        ok: true,
-                        code: "OK".into(),
-                        message: "enabled".into(),
-                        payload: None,
-                    }
-                }
-            } else {
-                panic!("unexpected daemon request: {request:?}");
-            };
-            let mut response_line = serde_json::to_string(&response).expect("encode response");
-            response_line.push('\n');
-            writer
-                .write_all(response_line.as_bytes())
-                .await
-                .expect("write response");
-            writer.shutdown().await.expect("shutdown writer");
-        }
-    });
 
     let mut reserved = state
         .reserve_machine_subnet(&MachineId("join-target".into()))
@@ -280,8 +207,6 @@ async fn machine_add_activates_joiner_lifecycle() {
             .into_iter()
             .any(|peer| peer.id().0 == "joiner-1")
     );
-    server.await.expect("overlay server exit");
-
     teardown_state(&mut state).await;
 }
 
@@ -443,119 +368,6 @@ async fn machine_remove_refuses_offline_peer_without_force() {
     let response = state.handle_machine_remove("peer-1", false).await;
     assert!(!response.ok);
     assert!(response.message.contains("--force"));
-}
-
-#[tokio::test]
-async fn machine_remove_reports_peer_rejection_without_unreachable_hint() {
-    let listener = TcpListener::bind("[::1]:0")
-        .await
-        .expect("bind overlay listener");
-    let peer_rpc_port = listener.local_addr().expect("listener addr").port();
-    let remote_control_port = peer_rpc_port
-        .checked_sub(1)
-        .expect("peer rpc port has preceding base control port");
-    let (mut state, store, _) = make_state_with_remote_port(true, remote_control_port).await;
-
-    let mut peer = test_machine_record(
-        "peer-1",
-        "10.210.1.0/24",
-        MachineLifecycle::Active,
-        PublicKey([2; 32]),
-    );
-    peer.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
-    store.upsert_self_machine(&peer).await.expect("upsert peer");
-
-    let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.expect("accept overlay rpc");
-        let (reader, mut writer) = stream.into_split();
-        let mut buf = BufReader::new(reader);
-        let mut line = String::new();
-        buf.read_line(&mut line).await.expect("read request");
-        let request: DaemonRequest = serde_json::from_str(&line).expect("decode daemon request");
-        assert!(matches!(
-            request,
-            DaemonRequest::MeshPeerRemoveMachine { .. }
-        ));
-        let mut response_line = serde_json::to_string(&DaemonResponse {
-            ok: false,
-            code: "MACHINE_REMOVE_FAILED".into(),
-            message: "remote cleanup rejected".into(),
-            payload: None,
-        })
-        .expect("encode response");
-        response_line.push('\n');
-        writer
-            .write_all(response_line.as_bytes())
-            .await
-            .expect("write response");
-        writer.shutdown().await.expect("shutdown writer");
-    });
-
-    let response = state.handle_machine_remove("peer-1", false).await;
-    assert!(!response.ok);
-    assert_eq!(response.code, "MACHINE_REMOVE_PEER_REJECTED");
-    assert!(response.message.contains("MACHINE_REMOVE_FAILED"));
-    assert!(!response.message.contains("did not confirm online removal"));
-
-    server.await.expect("overlay server exit");
-    teardown_state(&mut state).await;
-}
-
-#[tokio::test]
-async fn machine_remove_waits_for_long_running_peer_teardown() {
-    let listener = TcpListener::bind("[::1]:0")
-        .await
-        .expect("bind overlay listener");
-    let peer_rpc_port = listener.local_addr().expect("listener addr").port();
-    let remote_control_port = peer_rpc_port
-        .checked_sub(1)
-        .expect("peer rpc port has preceding base control port");
-    let (mut state, store, _) = make_state_with_remote_port(true, remote_control_port).await;
-
-    let mut peer = test_machine_record(
-        "peer-1",
-        "10.210.1.0/24",
-        MachineLifecycle::Active,
-        PublicKey([2; 32]),
-    );
-    peer.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
-    store.upsert_self_machine(&peer).await.expect("upsert peer");
-
-    let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.expect("accept overlay rpc");
-        let (reader, mut writer) = stream.into_split();
-        let mut buf = BufReader::new(reader);
-        let mut line = String::new();
-        buf.read_line(&mut line).await.expect("read request");
-        let request: DaemonRequest = serde_json::from_str(&line).expect("decode daemon request");
-        assert!(matches!(
-            request,
-            DaemonRequest::MeshPeerRemoveMachine { .. }
-        ));
-        sleep(Duration::from_secs(4)).await;
-        let mut response_line = serde_json::to_string(&DaemonResponse {
-            ok: true,
-            code: "OK".into(),
-            message: "removed".into(),
-            payload: None,
-        })
-        .expect("encode response");
-        response_line.push('\n');
-        writer
-            .write_all(response_line.as_bytes())
-            .await
-            .expect("write response");
-        writer.shutdown().await.expect("shutdown writer");
-    });
-
-    let response = state.handle_machine_remove("peer-1", false).await;
-    assert!(response.ok, "{}", response.message);
-
-    let machines = store.list_machines().await.expect("list machines");
-    assert!(!machines.into_iter().any(|machine| machine.id.0 == "peer-1"));
-
-    server.await.expect("overlay server exit");
-    teardown_state(&mut state).await;
 }
 
 #[tokio::test]
@@ -841,112 +653,6 @@ async fn local_activate_restores_subnet_before_active_finalization() {
 }
 
 #[tokio::test]
-async fn machine_activate_rolls_back_remote_activate_when_self_record_fails() {
-    let listener = TcpListener::bind("[::1]:0")
-        .await
-        .expect("bind overlay listener");
-    let peer_rpc_port = listener.local_addr().expect("listener addr").port();
-    let remote_control_port = peer_rpc_port
-        .checked_sub(1)
-        .expect("peer rpc port has preceding base control port");
-    let (mut state, store, _) = make_state_with_remote_port(true, remote_control_port).await;
-
-    let mut peer = test_machine_record(
-        "peer",
-        "10.210.1.0/24",
-        MachineLifecycle::Standby,
-        PublicKey([7; 32]),
-    );
-    peer.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
-    peer.subnet = None;
-    store.upsert_self_machine(&peer).await.expect("upsert peer");
-
-    let seen_requests = Arc::new(Mutex::new(Vec::<String>::new()));
-    let server_seen_requests = Arc::clone(&seen_requests);
-    let server = tokio::spawn(async move {
-        for _ in 0..3 {
-            let (stream, _) = listener.accept().await.expect("accept overlay rpc");
-            let (reader, mut writer) = stream.into_split();
-            let mut buf = BufReader::new(reader);
-            let mut line = String::new();
-            buf.read_line(&mut line).await.expect("read request");
-            let request: DaemonRequest =
-                serde_json::from_str(&line).expect("decode daemon request");
-            let (label, response) = if let DaemonRequest::MachineTransitionSelf {
-                goal: MachineTransitionGoal::Activate,
-                ..
-            } = request
-            {
-                (
-                    "activate",
-                    DaemonResponse {
-                        ok: true,
-                        code: "OK".into(),
-                        message: "activated".into(),
-                        payload: None,
-                    },
-                )
-            } else if matches!(request, DaemonRequest::MeshSelfRecord) {
-                (
-                    "self_record",
-                    DaemonResponse {
-                        ok: false,
-                        code: "BROKEN_SELF_RECORD".into(),
-                        message: "self record unavailable".into(),
-                        payload: None,
-                    },
-                )
-            } else if let DaemonRequest::MachineTransitionSelf {
-                goal: MachineTransitionGoal::Standby,
-                force,
-                ..
-            } = request
-            {
-                {
-                    assert!(force);
-                    (
-                        "standby",
-                        DaemonResponse {
-                            ok: true,
-                            code: "OK".into(),
-                            message: "standby".into(),
-                            payload: None,
-                        },
-                    )
-                }
-            } else {
-                panic!("unexpected daemon request: {request:?}");
-            };
-            server_seen_requests.lock().await.push(label.into());
-            let mut response_line = serde_json::to_string(&response).expect("encode response");
-            response_line.push('\n');
-            writer
-                .write_all(response_line.as_bytes())
-                .await
-                .expect("write response");
-            writer.shutdown().await.expect("shutdown writer");
-        }
-    });
-
-    let response = state.handle_machine_activate("peer").await;
-    assert!(!response.ok, "{}", response.message);
-    assert_eq!(response.code, "SELF_RECORD_FAILED");
-
-    server.await.expect("overlay server exit");
-    let seen_requests = seen_requests.lock().await.clone();
-    assert_eq!(
-        seen_requests,
-        vec![
-            "activate".to_string(),
-            "self_record".to_string(),
-            "standby".to_string()
-        ]
-    );
-
-    teardown_state(&mut state).await;
-}
-
-#[tokio::test]
 async fn interrupted_machine_add_is_marked_interrupted_on_startup() {
     let (state, _, _) = make_state(false).await;
     let store = state.machine_operation_store();
@@ -1151,7 +857,6 @@ async fn make_state_with_remote_port(
         cached_subnet,
         mesh,
         nats_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
-        peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),

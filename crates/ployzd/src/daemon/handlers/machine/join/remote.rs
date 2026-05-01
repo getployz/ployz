@@ -6,12 +6,10 @@ use ployz_nats::coord::rpc::{NatsNodeRpcClient, NodeCommandSubject};
 use ployz_sdk::Transport;
 use ployz_store_api::StoreDriver;
 use ployz_types::model::{
-    JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineLifecycle, MachineMembership, OverlayIp,
-    PublicKey,
+    JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineLifecycle, MachineMembership, PublicKey,
 };
 use tokio::time::{Duration, Instant, sleep, timeout};
 
-use crate::daemon::handlers::peer_rpc;
 use crate::daemon::ssh::{SshOptions, ssh_stdio_transport};
 
 const REMOTE_READY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -192,29 +190,6 @@ fn remote_join_ready(payload: &MeshReadyPayload) -> bool {
     payload.ready || (payload.phase == "running" && payload.store_healthy && payload.sync_connected)
 }
 
-pub(super) async fn overlay_rpc(
-    overlay_ip: OverlayIp,
-    peer_rpc_port: u16,
-    request: DaemonRequest,
-) -> Result<DaemonResponse, String> {
-    peer_rpc::overlay_rpc(overlay_ip, peer_rpc_port, request).await
-}
-
-pub(super) async fn overlay_rpc_expect_ok_with_read_timeout(
-    overlay_ip: OverlayIp,
-    peer_rpc_port: u16,
-    request: DaemonRequest,
-    read_timeout: Duration,
-) -> Result<(), String> {
-    peer_rpc::overlay_rpc_expect_ok_with_read_timeout(
-        overlay_ip,
-        peer_rpc_port,
-        request,
-        read_timeout,
-    )
-    .await
-}
-
 pub(super) async fn log_nats_enable_rollback(
     client: &NatsNodeRpcClient,
     machine: &MachineMembership,
@@ -238,53 +213,6 @@ pub(super) async fn log_nats_enable_rollback(
             original_error,
             "remote enable rollback failed"
         );
-    }
-}
-
-pub(super) async fn wait_for_overlay_ready(
-    machine: &MachineMembership,
-    peer_rpc_port: u16,
-) -> Result<(), String> {
-    let deadline = Instant::now() + REMOTE_READY_TIMEOUT;
-    let mut attempt: u32 = 0;
-
-    loop {
-        attempt += 1;
-        let last_error = match timeout(
-            REMOTE_READY_RPC_TIMEOUT,
-            overlay_rpc(
-                machine.overlay_ip,
-                peer_rpc_port,
-                DaemonRequest::MeshReady { json: false },
-            ),
-        )
-        .await
-        {
-            Ok(Ok(response)) => match mesh_ready_payload(&response) {
-                Ok(payload) => {
-                    if remote_join_ready(&payload) {
-                        tracing::debug!(machine = %machine.id, attempt, "overlay mesh ready confirmed");
-                        return Ok(());
-                    }
-                    format!("mesh reported not ready yet: {}", response.message)
-                }
-                Err(err) => err,
-            },
-            Ok(Err(err)) => err,
-            Err(_) => format!(
-                "overlay readiness probe exceeded {:?}",
-                REMOTE_READY_RPC_TIMEOUT
-            ),
-        };
-
-        if Instant::now() >= deadline {
-            return Err(format!(
-                "timed out waiting for overlay mesh readiness after {:?}: {last_error}",
-                REMOTE_READY_TIMEOUT,
-            ));
-        }
-
-        sleep(REMOTE_READY_POLL_INTERVAL).await;
     }
 }
 

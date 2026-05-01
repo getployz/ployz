@@ -1,5 +1,6 @@
 use ipnet::Ipv4Net;
 use ployz_api::{DaemonRequest, MachineTransitionGoal, MeshBootstrapRequest};
+use ployz_nats::coord::rpc::NodeCommandSubject;
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_store_api::MachineRegistry;
 use ployz_types::model::{
@@ -18,12 +19,10 @@ use super::coordination::{
     release_reserved_subnet,
 };
 use super::remote::{
-    ExpectedSubnetState, overlay_rpc_expect_ok_with_read_timeout, remote_daemon_identity,
-    remote_rpc_expect_ok, remote_self_record, wait_for_machine_projection, wait_for_overlay_ready,
-    wait_for_remote_ready,
+    ExpectedSubnetState, nats_rpc_expect_ok, remote_daemon_identity, remote_rpc_expect_ok,
+    remote_self_record, wait_for_machine_projection, wait_for_nats_ready, wait_for_remote_ready,
 };
 use super::rollback::rollback_machine_add_target;
-use crate::daemon::handlers::peer_rpc::PEER_RPC_DESTRUCTIVE_READ_TIMEOUT;
 use crate::mesh_state::bootstrap::refresh_bootstrap_peer_records_from_store;
 
 pub(super) async fn run_machine_add_target(
@@ -193,7 +192,6 @@ pub(super) async fn run_machine_add_target(
     tracing::info!(%target, "machine add target: self-record complete");
 
     let machine_id = record.id.clone();
-    let joiner_overlay_ip = record.overlay_ip;
     if let Err(err) = persist_machine_control_target(&context, &machine_id, &target).await {
         let _ = release_reserved_subnet(&mut subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
@@ -263,16 +261,16 @@ pub(super) async fn run_machine_add_target(
     let _ = operation_store.update_stage(&mut operation, stage.to_string());
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: remote ready");
 
-    tracing::info!(%target, joiner_id = %machine_id, "machine add target: waiting for overlay ready");
+    tracing::info!(%target, joiner_id = %machine_id, "machine add target: waiting for NATS command responder");
     let joiner_ref = MachineMembership::seed(
         machine_id.clone(),
         record.public_key.clone(),
-        joiner_overlay_ip,
+        record.overlay_ip,
         Some(subnet_claim.subnet),
         vec![],
     );
-    if let Err(err) = wait_for_overlay_ready(&joiner_ref, context.peer_rpc_port).await {
-        tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: overlay ready failed");
+    if let Err(err) = wait_for_joiner_command_ready(&context, &joiner_ref).await {
+        tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: NATS command responder failed");
         let _ = release_reserved_subnet(&mut subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
@@ -287,18 +285,7 @@ pub(super) async fn run_machine_add_target(
     }
 
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: activating lifecycle");
-    if let Err(err) = overlay_rpc_expect_ok_with_read_timeout(
-        joiner_overlay_ip,
-        context.peer_rpc_port,
-        DaemonRequest::MachineTransitionSelf {
-            goal: MachineTransitionGoal::Activate,
-            assigned_subnet: Some(subnet_claim.subnet()),
-            force: false,
-        },
-        PEER_RPC_DESTRUCTIVE_READ_TIMEOUT,
-    )
-    .await
-    {
+    if let Err(err) = activate_joiner_lifecycle(&context, &record, subnet_claim.subnet()).await {
         tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: activate lifecycle failed");
         let _ = release_reserved_subnet(&mut subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
@@ -310,26 +297,6 @@ pub(super) async fn run_machine_add_target(
         return MachineAddTargetResult::Failed {
             target,
             failure: MachineAddFailure::Enable { reason: err },
-        };
-    }
-    let mut active_record = record.clone();
-    active_record.lifecycle = MachineLifecycle::Active;
-    active_record.subnet = Some(subnet_claim.subnet());
-    active_record.updated_at = ployz_types::time::now_unix_secs();
-    if let Err(err) = context.store.upsert_self_machine(&active_record).await {
-        tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: active self-record persistence failed");
-        let _ = release_reserved_subnet(&mut subnet_claim).await;
-        let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
-        let _ = operation_store.update_status(
-            &mut operation,
-            MachineOperationStatus::Failed,
-            Some(err.to_string()),
-        );
-        return MachineAddTargetResult::Failed {
-            target,
-            failure: MachineAddFailure::Enable {
-                reason: format!("persist active self-record: {err}"),
-            },
         };
     }
 
@@ -470,6 +437,65 @@ pub(super) async fn upsert_transient_peer(
         )
         .await
         .map_err(|err| format!("failed to install founder-local transient peer: {err}"))
+}
+
+async fn wait_for_joiner_command_ready(
+    context: &MachineAddContext,
+    machine: &MachineMembership,
+) -> Result<(), String> {
+    if let Some(client) = &context.nats_rpc {
+        return wait_for_nats_ready(client, machine).await;
+    }
+
+    #[cfg(test)]
+    {
+        let _ = machine;
+        return Ok(());
+    }
+
+    #[cfg(not(test))]
+    {
+        let _ = machine;
+        Err("NATS RPC client unavailable".into())
+    }
+}
+
+async fn activate_joiner_lifecycle(
+    context: &MachineAddContext,
+    record: &MachineMembership,
+    assigned_subnet: Ipv4Net,
+) -> Result<(), String> {
+    let request = DaemonRequest::MachineTransitionSelf {
+        goal: MachineTransitionGoal::Activate,
+        assigned_subnet: Some(assigned_subnet),
+        force: false,
+    };
+    if let Some(client) = &context.nats_rpc {
+        return nats_rpc_expect_ok(
+            client,
+            NodeCommandSubject::machine_transition_self(&record.id),
+            request,
+        )
+        .await;
+    }
+
+    #[cfg(test)]
+    {
+        let mut active_record = record.clone();
+        active_record.lifecycle = MachineLifecycle::Active;
+        active_record.subnet = Some(assigned_subnet);
+        active_record.updated_at = ployz_types::time::now_unix_secs();
+        return context
+            .store
+            .upsert_self_machine(&active_record)
+            .await
+            .map_err(|err| format!("persist active self-record: {err}"));
+    }
+
+    #[cfg(not(test))]
+    {
+        Err("NATS RPC client unavailable".into())
+    }
 }
 
 async fn build_mesh_bootstrap_request(
