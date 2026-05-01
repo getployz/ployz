@@ -1,0 +1,18 @@
+[package]
+name = "ployz-nats"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-nats = "0.46"
+async-trait.workspace = true
+futures-util.workspace = true
+ipnet.workspace = true
+ployz-store-api = { path = "../ployz-store-api" }
+ployz-types = { path = "../ployz-types" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true

@@ -75,7 +75,9 @@ mod tests {
     use super::*;
     use crate::mesh::driver::WireguardDriver;
     use crate::mesh::wireguard::MemoryWireGuard;
-    use crate::model::{MachineEvent, MachineLifecycle, MachineTopology, OverlayIp, PublicKey};
+    use crate::model::{
+        MachineEvent, MachineLifecycle, MachineRole, MachineTopology, OverlayIp, PublicKey,
+    };
     use std::collections::HashMap;
     use std::net::Ipv6Addr;
     use std::sync::Arc;
@@ -94,6 +96,7 @@ mod tests {
             bridge_ip: None,
             endpoints: endpoints.into_iter().map(String::from).collect(),
             lifecycle: MachineLifecycle::Standby,
+            role: MachineRole::StorageCandidate,
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),

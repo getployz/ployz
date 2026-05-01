@@ -7,6 +7,7 @@ use ployz_types::model::{
     ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
+use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::net::SocketAddr;
 use tokio::sync::mpsc;
@@ -16,9 +17,10 @@ pub type CertificateSubscription = (Vec<CertificateRecord>, mpsc::Receiver<Certi
 pub type AcmeChallengeSubscription = (Vec<AcmeChallengeRecord>, mpsc::Receiver<AcmeChallengeEvent>);
 pub type RoutingSubscription = (RoutingState, mpsc::Receiver<RoutingEvent>);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployCommit {
     pub namespace: Namespace,
+    pub revisions: Vec<ServiceRevisionRecord>,
     pub removed_services: Vec<String>,
     pub removed_volumes: Vec<String>,
     pub releases: Vec<ServiceReleaseRecord>,
@@ -26,17 +28,17 @@ pub struct DeployCommit {
     pub deploy: DeployRecord,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployRevisionUpsert {
     pub revision: ServiceRevisionRecord,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployRecordUpdate {
     pub deploy: DeployRecord,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeploySnapshot {
     pub revisions: Vec<ServiceRevisionRecord>,
     pub releases: Vec<ServiceReleaseRecord>,

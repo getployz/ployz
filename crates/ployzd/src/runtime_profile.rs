@@ -2,14 +2,15 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 
 use crate::built_in_images::{BuiltInImage, BuiltInImages};
-use crate::services::corrosion::{corrosion_docker, corrosion_host};
 use crate::services::dns::{DnsHandle, start_managed_dns};
 use crate::services::gateway::{GatewayHandle, start_managed_gateway};
+use crate::services::nats::{nats_docker, nats_host};
 use crate::services::supervisor::ServiceSupervision;
 use ipnet::Ipv4Net;
 use ployz_config::{RuntimeTarget, ServiceMode};
 use ployz_dns_config::DnsConfig;
 use ployz_gateway_config::GatewayConfig;
+use ployz_nats::config as nats_config;
 use ployz_orchestrator::WireguardDriver;
 use ployz_runtime_api::Identity;
 use ployz_runtime_api::NamespaceLockManager;
@@ -139,6 +140,7 @@ impl RuntimeProfile {
                     identity,
                     overlay_ip,
                     network_dir,
+                    nats_config::CLIENT_PORT,
                     exposed_tcp_ports,
                     self.built_in_images.resolve(BuiltInImage::Networking),
                 )
@@ -152,18 +154,16 @@ impl RuntimeProfile {
         let store = match self.execution_backend {
             ExecutionBackend::Memory => StoreDriver::memory(),
             ExecutionBackend::Docker => {
-                corrosion_docker(
+                nats_docker(
                     overlay_ip,
                     network_dir,
                     bootstrap,
                     network_id,
-                    self.built_in_images.resolve(BuiltInImage::Corrosion),
+                    self.built_in_images.resolve(BuiltInImage::Nats),
                 )
                 .await?
             }
-            ExecutionBackend::Host => {
-                corrosion_host(overlay_ip, network_dir, bootstrap, network_id)?
-            }
+            ExecutionBackend::Host => nats_host(overlay_ip, network_dir, bootstrap, network_id)?,
         };
 
         let container_network = match (self.execution_backend, subnet) {

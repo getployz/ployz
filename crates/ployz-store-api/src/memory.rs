@@ -370,14 +370,9 @@ impl DeployRepository for MemoryStore {
     async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()> {
         let mut inner = self.lock_inner();
         let old = Self::record_service_revision_inner(&mut inner, &command.revision);
-        let event = match old {
-            Some(old) => RoutingEvent::RevisionUpdated {
-                old,
-                new: command.revision.clone(),
-            },
-            None => RoutingEvent::RevisionAdded(command.revision.clone()),
-        };
-        Self::broadcast_routing_event(&mut inner, event);
+        if let Some(event) = revision_event(old, &command.revision) {
+            Self::broadcast_routing_event(&mut inner, event);
+        }
         Ok(())
     }
 
@@ -484,6 +479,13 @@ impl MemoryStore {
 
     fn commit_deploy_inner(inner: &mut StoreInner, command: &DeployCommit) -> Vec<RoutingEvent> {
         let mut events = Vec::new();
+        for revision in &command.revisions {
+            let old = Self::record_service_revision_inner(inner, revision);
+            if let Some(event) = revision_event(old, revision) {
+                events.push(event);
+            }
+        }
+
         let touched_services: HashSet<&str> = command
             .removed_services
             .iter()
@@ -546,6 +548,20 @@ impl MemoryStore {
             .deploys
             .insert(command.deploy.deploy_id.clone(), command.deploy.clone());
         events
+    }
+}
+
+fn revision_event(
+    old: Option<ServiceRevisionRecord>,
+    new: &ServiceRevisionRecord,
+) -> Option<RoutingEvent> {
+    match old {
+        Some(old) if old == *new => None,
+        Some(old) => Some(RoutingEvent::RevisionUpdated {
+            old,
+            new: new.clone(),
+        }),
+        None => Some(RoutingEvent::RevisionAdded(new.clone())),
     }
 }
 
@@ -848,6 +864,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn commit_deploy_records_inlined_revisions() {
+        let store = MemoryStore::new();
+        let namespace = Namespace("prod".into());
+        let revision = ServiceRevisionRecord {
+            namespace: namespace.clone(),
+            service: "api".into(),
+            revision_hash: "rev-1".into(),
+            spec_json: "{}".into(),
+            created_by: MachineId("machine-1".into()),
+            created_at: 1,
+        };
+
+        store
+            .commit_deploy(&DeployCommit {
+                namespace: namespace.clone(),
+                revisions: vec![revision],
+                removed_services: Vec::new(),
+                removed_volumes: Vec::new(),
+                releases: vec![test_release(&namespace, "api", "rev-1", "deploy-1")],
+                volumes: Vec::new(),
+                deploy: test_deploy(&namespace, "deploy-1"),
+            })
+            .await
+            .expect("commit deploy");
+
+        let snapshot = store
+            .load_routing_state()
+            .await
+            .expect("load routing state");
+        assert_eq!(snapshot.revisions.len(), 1);
+        assert_eq!(snapshot.revisions[0].revision_hash, "rev-1");
+    }
+
+    #[tokio::test]
     async fn commit_deploy_replaces_touched_releases_and_records_deploy() {
         let store = MemoryStore::new();
         let namespace = Namespace("prod".into());
@@ -855,6 +905,7 @@ mod tests {
         store
             .commit_deploy(&DeployCommit {
                 namespace: namespace.clone(),
+                revisions: Vec::new(),
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
                 releases: vec![
@@ -870,6 +921,7 @@ mod tests {
         store
             .commit_deploy(&DeployCommit {
                 namespace: namespace.clone(),
+                revisions: Vec::new(),
                 removed_services: vec!["worker".into()],
                 removed_volumes: Vec::new(),
                 releases: vec![test_release(&namespace, "api", "rev-new", "deploy-new")],
@@ -906,6 +958,7 @@ mod tests {
         store
             .commit_deploy(&DeployCommit {
                 namespace: namespace.clone(),
+                revisions: Vec::new(),
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
                 releases: vec![test_release(&namespace, "api", "rev-old", "deploy-old")],
@@ -920,6 +973,7 @@ mod tests {
         store
             .commit_deploy(&DeployCommit {
                 namespace: namespace.clone(),
+                revisions: Vec::new(),
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
                 releases: vec![test_release(&namespace, "api", "rev-new", "deploy-new")],
@@ -1054,6 +1108,7 @@ mod tests {
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle: ployz_types::model::MachineLifecycle::Active,
+            role: ployz_types::model::MachineRole::StorageCandidate,
             created_at: 1,
             updated_at: 1,
             labels: std::collections::BTreeMap::new(),
@@ -1083,6 +1138,7 @@ mod tests {
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle: ployz_types::model::MachineLifecycle::Active,
+            role: ployz_types::model::MachineRole::StorageCandidate,
             created_at: 1,
             updated_at: 1,
             labels: std::collections::BTreeMap::new(),
@@ -1166,6 +1222,7 @@ mod tests {
         store
             .commit_deploy(&DeployCommit {
                 namespace: namespace.clone(),
+                revisions: Vec::new(),
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
                 releases: Vec::new(),

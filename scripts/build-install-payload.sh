@@ -11,6 +11,7 @@ BUILD_INPUT_PATHS=(
   Cargo.toml
   Cargo.lock
   .corrosion-version
+  .nats-version
   ployz.sh
   crates
   ebpf
@@ -144,9 +145,13 @@ build_linux_payload_in_docker() {
     bash -c "
       set -euo pipefail
       export PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-      apt-get update >/dev/null
-      apt-get install -y --no-install-recommends cmake libclang-dev pkg-config >/dev/null
-      rm -rf /var/lib/apt/lists/*
+      if ! command -v cmake >/dev/null 2>&1 \\
+         || ! command -v pkg-config >/dev/null 2>&1 \\
+         || ! dpkg -s libclang-dev >/dev/null 2>&1; then
+        apt-get update >/dev/null
+        apt-get install -y --no-install-recommends cmake libclang-dev pkg-config >/dev/null
+        rm -rf /var/lib/apt/lists/*
+      fi
       bash /repo/scripts/build-install-payload.sh \
         --repo /repo \
         --output /out/${output_name} \
@@ -297,6 +302,7 @@ payload_is_fresh() {
   [[ -f "${OUTPUT_DIR}/bin/ployz-gateway" ]] || return 1
   [[ -f "${OUTPUT_DIR}/bin/ployz-dns" ]] || return 1
   [[ -f "${OUTPUT_DIR}/bin/corrosion" ]] || return 1
+  [[ -f "${OUTPUT_DIR}/bin/nats-server" ]] || return 1
 
   metadata_fingerprint="$(metadata_value "${metadata_path}" BUILD_FINGERPRINT)"
   metadata_platform="$(metadata_value "${metadata_path}" PLATFORM)"
@@ -338,6 +344,51 @@ install_corrosion() {
   tar -xzf "${tmp_dir}/${asset}" -C "${tmp_dir}"
   copy_file "${tmp_dir}/corrosion" "${output_dir}/bin/corrosion" 0755
   printf 'CORROSION_VERSION=%s\n' "${version}" > "${output_dir}/metadata.env"
+}
+
+install_nats_server() {
+  local output_dir=$1
+  local version os arch asset tmp_dir cache_dir archive_url extracted_binary
+  version="$(tr -d '[:space:]' < "${REPO_DIR}/.nats-version")"
+  case "$(uname -s)" in
+    Darwin)
+      os="darwin"
+      ;;
+    Linux)
+      os="linux"
+      ;;
+    *)
+      printf 'unsupported nats-server platform: %s/%s\n' "$(uname -s)" "$(uname -m)" >&2
+      exit 1
+      ;;
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64)
+      arch="amd64"
+      ;;
+    aarch64|arm64)
+      arch="arm64"
+      ;;
+    *)
+      printf 'unsupported nats-server platform: %s/%s\n' "$(uname -s)" "$(uname -m)" >&2
+      exit 1
+      ;;
+  esac
+
+  asset="nats-server-${version}-${os}-${arch}.tar.gz"
+  cache_dir="$(repo_cache_root "${REPO_DIR}")/.payload-cache/nats-server"
+  archive_url="https://github.com/nats-io/nats-server/releases/download/${version}/${asset}"
+  tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "${tmp_dir}"' RETURN
+  cached_download "${archive_url}" "${tmp_dir}/${asset}" "${cache_dir}" "${version}-${asset}"
+  tar -xzf "${tmp_dir}/${asset}" -C "${tmp_dir}"
+  extracted_binary="$(find "${tmp_dir}" -type f -name nats-server -perm -111 | head -n 1)"
+  if [[ -z "${extracted_binary}" ]]; then
+    printf 'archive %s did not contain executable nats-server\n' "${asset}" >&2
+    exit 1
+  fi
+  copy_file "${extracted_binary}" "${output_dir}/bin/nats-server" 0755
+  printf 'NATS_SERVER_VERSION=%s\n' "${version}" >> "${output_dir}/metadata.env"
 }
 
 copy_file() {
@@ -443,6 +494,7 @@ fi
 mkdir -p "${OUTPUT_DIR}"
 install -d "${OUTPUT_DIR}/bin"
 install_corrosion "${OUTPUT_DIR}"
+install_nats_server "${OUTPUT_DIR}"
 build_binaries
 
 output_parent="$(dirname "${OUTPUT_DIR}")"
@@ -458,8 +510,10 @@ copy_file "$(binary_build_dir)/ployz-gateway" "${tmp_output_dir}/bin/ployz-gatew
 copy_file "$(binary_build_dir)/ployz-dns" "${tmp_output_dir}/bin/ployz-dns" 0755
 copy_file "${REPO_DIR}/packaging/systemd/ployzd.service" "${tmp_output_dir}/assets/systemd/ployzd.service" 0644
 copy_file "${OUTPUT_DIR}/bin/corrosion" "${tmp_output_dir}/bin/corrosion" 0755
+copy_file "${OUTPUT_DIR}/bin/nats-server" "${tmp_output_dir}/bin/nats-server" 0755
 
 {
+  cat "${OUTPUT_DIR}/metadata.env"
   printf 'GIT_REV=%s\n' "$(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
   printf 'PLATFORM=%s\n' "${TARGET_PLATFORM}"
   printf 'PROFILE=%s\n' "${BUILD_PROFILE}"

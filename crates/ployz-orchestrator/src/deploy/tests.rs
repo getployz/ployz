@@ -8,8 +8,8 @@ use crate::error::Result;
 use crate::model::{
     AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, DeployState,
     DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, MachineLifecycle,
-    MachineMembership, MachineTopology, OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord,
-    ServiceReleaseSlot, ServiceRoutingPolicy, SlotId, VolumeRecord,
+    MachineMembership, MachineRole, MachineTopology, OverlayIp, PublicKey, ServiceRelease,
+    ServiceReleaseRecord, ServiceReleaseSlot, ServiceRoutingPolicy, SlotId, VolumeRecord,
 };
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
@@ -47,6 +47,7 @@ impl TestStoreSeed for StoreDriver {
     async fn upsert_service_release(&self, record: &ServiceReleaseRecord) -> PloyzResult<()> {
         self.commit_deploy(&DeployCommit {
             namespace: record.namespace.clone(),
+            revisions: Vec::new(),
             removed_services: Vec::new(),
             removed_volumes: Vec::new(),
             releases: vec![record.clone()],
@@ -1820,6 +1821,7 @@ async fn seed_volume_with(
     store
         .commit_deploy(&DeployCommit {
             namespace: namespace.clone(),
+            revisions: Vec::new(),
             removed_services: Vec::new(),
             removed_volumes: Vec::new(),
             releases: Vec::new(),
@@ -1972,6 +1974,7 @@ fn test_machine(id: &str, lifecycle: MachineLifecycle) -> MachineMembership {
         bridge_ip: None,
         endpoints: vec!["127.0.0.1:51820".into()],
         lifecycle,
+        role: MachineRole::StorageCandidate,
         created_at: 0,
         updated_at: 0,
         labels: BTreeMap::new(),

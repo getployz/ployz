@@ -2,8 +2,6 @@
 use crate::mesh::wireguard::DockerWireGuard;
 use crate::mesh::wireguard::HostWireGuard;
 use async_trait::async_trait;
-#[cfg(feature = "docker")]
-use ployz_corrosion::config as corrosion_config;
 use ployz_orchestrator::WireguardDriver;
 use ployz_orchestrator::mesh::driver::{WireguardBackend, WireguardBackendMode};
 use ployz_orchestrator::mesh::{DevicePeer, MeshNetwork, WireGuardDevice};
@@ -20,12 +18,12 @@ pub async fn docker(
     identity: &Identity,
     overlay_ip: OverlayIp,
     network_dir: &Path,
+    bridge_tcp_port: u16,
     exposed_tcp_ports: &[u16],
     image: &str,
 ) -> std::result::Result<WireguardDriver, String> {
-    let api_port = corrosion_config::DEFAULT_API_PORT;
-    let overlay_api = SocketAddr::new(IpAddr::V6(overlay_ip.0), api_port);
-    let local_api = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), api_port);
+    let overlay_api = SocketAddr::new(IpAddr::V6(overlay_ip.0), bridge_tcp_port);
+    let local_api = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), bridge_tcp_port);
 
     let mut builder = DockerWireGuard::new(
         "ployz-networking",

@@ -18,6 +18,7 @@ ployz-cert-backends = { path = "../ployz-cert-backends" }
 ployz-config = { path = "../ployz-config" }
 ployz-corrosion = { path = "../ployz-corrosion" }
 ployz-metrics = { path = "../ployz-metrics" }
+ployz-nats = { path = "../ployz-nats" }
 ployz-orchestrator = { path = "../ployz-orchestrator" }
 ployz-runtime-api = { path = "../ployz-runtime-api" }
 ployz-runtime-backends = { path = "../ployz-runtime-backends" }

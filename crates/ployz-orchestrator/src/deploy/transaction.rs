@@ -147,7 +147,7 @@ impl StartedCandidates {
             plan,
             preview,
             applying_record,
-            revisions: _,
+            revisions,
         } = self.prepared;
         let committed_at = now_unix_secs();
         let releases = build_committed_releases(&plan, &self.started, &deploy_id, committed_at)?;
@@ -176,6 +176,7 @@ impl StartedCandidates {
             participants,
             commit: DeployCommit {
                 namespace,
+                revisions,
                 removed_services,
                 removed_volumes,
                 releases,

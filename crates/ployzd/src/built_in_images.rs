@@ -8,6 +8,7 @@ const EMBEDDED_MANIFEST: &str = include_str!("../assets/built_in_images.toml");
 pub enum BuiltInImage {
     Networking,
     Corrosion,
+    Nats,
     Dns,
     Gateway,
 }
@@ -16,6 +17,7 @@ pub enum BuiltInImage {
 pub struct BuiltInImages {
     pub networking: String,
     pub corrosion: String,
+    pub nats: String,
     pub dns: String,
     pub gateway: String,
 }
@@ -24,6 +26,7 @@ pub struct BuiltInImages {
 struct PartialBuiltInImages {
     networking: Option<String>,
     corrosion: Option<String>,
+    nats: Option<String>,
     dns: Option<String>,
     gateway: Option<String>,
 }
@@ -54,6 +57,7 @@ impl BuiltInImages {
         match image {
             BuiltInImage::Networking => &self.networking,
             BuiltInImage::Corrosion => &self.corrosion,
+            BuiltInImage::Nats => &self.nats,
             BuiltInImage::Dns => &self.dns,
             BuiltInImage::Gateway => &self.gateway,
         }
@@ -63,6 +67,7 @@ impl BuiltInImages {
         let PartialBuiltInImages {
             networking,
             corrosion,
+            nats,
             dns,
             gateway,
         } = partial;
@@ -72,6 +77,9 @@ impl BuiltInImages {
         }
         if let Some(corrosion) = corrosion {
             self.corrosion = corrosion;
+        }
+        if let Some(nats) = nats {
+            self.nats = nats;
         }
         if let Some(dns) = dns {
             self.dns = dns;
@@ -112,6 +120,7 @@ mod tests {
 
         assert!(images.resolve(BuiltInImage::Networking).contains("sha256:"));
         assert!(images.resolve(BuiltInImage::Corrosion).contains("sha256:"));
+        assert!(!images.resolve(BuiltInImage::Nats).is_empty());
         assert!(images.resolve(BuiltInImage::Dns).contains("sha256:"));
         assert!(images.resolve(BuiltInImage::Gateway).contains("sha256:"));
     }
@@ -137,6 +146,7 @@ mod tests {
             "ployz-dev/ployz-dns:test"
         );
         assert!(images.resolve(BuiltInImage::Corrosion).contains("sha256:"));
+        assert!(!images.resolve(BuiltInImage::Nats).is_empty());
         assert!(images.resolve(BuiltInImage::Gateway).contains("sha256:"));
     }
 

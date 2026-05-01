@@ -11,9 +11,9 @@ use crate::mesh_state::bootstrap::{
 use crate::mesh_state::network::NetworkConfig;
 use ployz_cert_backends::InstantAcmeIssuerFactory;
 use ployz_config::RuntimeTarget;
-use ployz_corrosion::config as corrosion_config;
 use ployz_dns_config::DnsConfig;
 use ployz_gateway_config::GatewayConfig;
+use ployz_nats::config as nats_config;
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::certificates::{
     CertificateManagerConfig, RenewalConfig, spawn_certificate_renewal_ticker,
@@ -575,7 +575,7 @@ impl DaemonState {
         let bootstrap_addrs = resolve_bootstrap_addrs(
             &bootstrap_peer_records,
             &self.identity.machine_id,
-            corrosion_config::DEFAULT_GOSSIP_PORT,
+            nats_config::ROUTE_PORT,
         );
         let gateway_ports = self.gateway_ports()?;
         let remote_control_bind_addr =
@@ -748,12 +748,12 @@ mod tests {
     }
 
     #[test]
-    fn plan_mesh_start_uses_seed_cache_and_ignores_corrosion_db_path() {
+    fn plan_mesh_start_uses_seed_cache_and_ignores_store_data_path() {
         let state = make_test_state("0.0.0.0:80");
         let config = make_network_config(&state, "alpha");
         let network_dir = state.network_dir(&config.name.0);
-        let db_path = ployz_corrosion::config::Paths::new(&network_dir).db;
-        fs::create_dir_all(&db_path).expect("create db path that would break sqlite open");
+        let data_path = ployz_nats::config::Paths::new(&network_dir).data;
+        fs::create_dir_all(&data_path).expect("create store data path");
         let peer = BootstrapPeerRecord {
             machine_id: MachineId("peer".into()),
             public_key: PublicKey([8; 32]),
@@ -770,10 +770,10 @@ mod tests {
             .expect("plan should succeed");
 
         assert_eq!(plan.bootstrap_peer_records, vec![peer]);
-        assert_eq!(plan.bootstrap_addrs, vec!["[fd00::8]:51001"]);
+        assert_eq!(plan.bootstrap_addrs, vec!["[fd00::8]:6222"]);
         assert!(
             plan.allow_disconnected_bootstrap,
-            "cached remote seed should let restart stay up while Corrosion converges"
+            "cached remote seed should let restart stay up while NATS converges"
         );
     }
 
