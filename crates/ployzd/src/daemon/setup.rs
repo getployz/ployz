@@ -226,9 +226,16 @@ impl MeshStartTx {
             .await
             .map_err(|error| StartMeshError::MeshUp(format!("nats start for node rpc: {error}")))?;
         let subject = ployz_nats::subjects::node_command(&state.identity.machine_id, ">");
-        let handle = nats_listener::serve(nats_store.client().clone(), subject, command_tx)
-            .await
-            .map_err(StartMeshError::MeshUp)?;
+        let queue_group =
+            ployz_nats::subjects::node_command_queue_group(&state.identity.machine_id);
+        let handle = nats_listener::serve(
+            nats_store.client().clone(),
+            subject,
+            queue_group,
+            command_tx,
+        )
+        .await
+        .map_err(StartMeshError::MeshUp)?;
         let _ = mesh;
         self.nats_control = Box::new(handle);
         Ok(())

@@ -68,6 +68,11 @@ pub fn node_command(machine_id: &MachineId, command: &str) -> String {
     format!("node.{}.cmd.{}", subject_token(&machine_id.0), command)
 }
 
+#[must_use]
+pub fn node_command_queue_group(machine_id: &MachineId) -> String {
+    format!("ployzd-node-{}", subject_token(&machine_id.0))
+}
+
 pub(crate) fn subject_token(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.bytes() {

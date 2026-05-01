@@ -1,7 +1,8 @@
 use futures_util::StreamExt;
 use ployz_nats::coord::rpc::{decode_daemon_request, encode_daemon_response};
 use ployz_runtime_api::RuntimeHandle;
-use tokio::sync::{mpsc, oneshot};
+use std::sync::Arc;
+use tokio::sync::{Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -10,6 +11,7 @@ use tracing::{info, warn};
 use super::listener::IncomingCommand;
 
 const RESUBSCRIBE_DELAY: Duration = Duration::from_secs(1);
+const MAX_IN_FLIGHT_COMMANDS: usize = 64;
 
 pub struct NatsListenerHandle {
     cancel: CancellationToken,
@@ -42,34 +44,47 @@ impl RuntimeHandle for NatsListenerHandle {
 pub async fn serve(
     client: async_nats::Client,
     subject: String,
+    queue_group: String,
     tx: mpsc::Sender<IncomingCommand>,
 ) -> Result<NatsListenerHandle, String> {
     let mut subscriber = client
-        .subscribe(subject.clone())
+        .queue_subscribe(subject.clone(), queue_group.clone())
         .await
-        .map_err(|error| format!("subscribe {subject}: {error}"))?;
+        .map_err(|error| format!("queue subscribe {subject} {queue_group}: {error}"))?;
     let cancel = CancellationToken::new();
     let task_cancel = cancel.clone();
     let task = tokio::spawn(async move {
-        info!(%subject, "nats node rpc listener subscribed");
+        let permits = Arc::new(Semaphore::new(MAX_IN_FLIGHT_COMMANDS));
+        info!(%subject, %queue_group, max_in_flight = MAX_IN_FLIGHT_COMMANDS, "nats node rpc listener subscribed");
         loop {
             tokio::select! {
                 _ = task_cancel.cancelled() => {
-                    info!(%subject, "nats node rpc listener shutting down");
+                    info!(%subject, %queue_group, "nats node rpc listener shutting down");
                     break;
                 }
                 next = subscriber.next() => {
                     let Some(message) = next else {
-                        warn!(%subject, "nats node rpc subscription closed; resubscribing");
-                        subscriber = match resubscribe(&client, &subject, &task_cancel).await {
+                        warn!(%subject, %queue_group, "nats node rpc subscription closed; resubscribing");
+                        subscriber = match resubscribe(&client, &subject, &queue_group, &task_cancel).await {
                             Some(subscriber) => subscriber,
                             None => break,
                         };
                         continue;
                     };
+                    let permit = tokio::select! {
+                        _ = task_cancel.cancelled() => break,
+                        permit = permits.clone().acquire_owned() => match permit {
+                            Ok(permit) => permit,
+                            Err(error) => {
+                                warn!(%error, "nats node rpc concurrency limiter closed");
+                                break;
+                            }
+                        },
+                    };
                     let client = client.clone();
                     let tx = tx.clone();
                     tokio::spawn(async move {
+                        let _permit = permit;
                         if let Err(error) = handle_message(client, message, tx).await {
                             warn!(%error, "nats node rpc message failed");
                         }
@@ -84,6 +99,7 @@ pub async fn serve(
 async fn resubscribe(
     client: &async_nats::Client,
     subject: &str,
+    queue_group: &str,
     cancel: &CancellationToken,
 ) -> Option<async_nats::Subscriber> {
     loop {
@@ -91,13 +107,16 @@ async fn resubscribe(
             _ = cancel.cancelled() => return None,
             _ = tokio::time::sleep(RESUBSCRIBE_DELAY) => {}
         }
-        match client.subscribe(subject.to_string()).await {
+        match client
+            .queue_subscribe(subject.to_string(), queue_group.to_string())
+            .await
+        {
             Ok(subscriber) => {
-                info!(%subject, "nats node rpc listener resubscribed");
+                info!(%subject, %queue_group, "nats node rpc listener resubscribed");
                 return Some(subscriber);
             }
             Err(error) => {
-                warn!(%subject, %error, "nats node rpc resubscribe failed");
+                warn!(%subject, %queue_group, %error, "nats node rpc resubscribe failed");
             }
         }
     }

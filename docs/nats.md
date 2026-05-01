@@ -425,8 +425,10 @@ cert renewal jobs at issuance time instead of running a renewal ticker.
 ### Request/reply RPC
 
 Direct point-to-point RPC over subjects. Each daemon subscribes to
-`node.<self_machine_id>.cmd.>` (queue group of size 1 to prevent local
-fights). Callers send NATS requests with a built-in timeout; no-responder
+`node.<self_machine_id>.cmd.>` using a stable per-machine queue group. That
+keeps duplicate local responders from fanning out the same command, while the
+daemon listener bounds in-flight command handling so request bursts apply
+backpressure. Callers send NATS requests with a built-in timeout; no-responder
 detection fires immediately if the target is offline.
 
 ```rust
