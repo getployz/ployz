@@ -13,8 +13,8 @@ use ployz_runtime_backends::runtime::{
 };
 use ployz_store_api::{
     AcmeChallengeSubscription, CertificateSubscription, DeployCommit, DeployRecordUpdate,
-    PeerRttObservation, RoutingBatchSubscription, StoreBackend, StoreDriver, StoreRuntimeControl,
-    SyncStatus,
+    DeployRevisionUpsert, DeploySnapshot, MachineSubscription, PeerRttObservation,
+    RoutingBatchSubscription, StoreBackend, StoreDriver, StoreRuntimeControl, SyncStatus,
 };
 use ployz_types::Result;
 use ployz_types::error::Error;
