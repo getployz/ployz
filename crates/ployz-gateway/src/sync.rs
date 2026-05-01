@@ -20,6 +20,10 @@ use crate::snapshot::SharedSnapshot;
 // Safety belt against runaway upstream growth — not capacity targets.
 const MAX_CACHED_CERTIFICATES: usize = 10_000;
 const MAX_CACHED_CHALLENGES: usize = 10_000;
+const STREAM_ROUTING: &str = "routing";
+const STREAM_CERTIFICATES: &str = "certificates";
+const STREAM_ACME_CHALLENGES: &str = "acme_challenges";
+const STORE_SYNC_STREAMS: [&str; 3] = [STREAM_ROUTING, STREAM_CERTIFICATES, STREAM_ACME_CHALLENGES];
 
 // ---------------------------------------------------------------------------
 // RoutingSnapshotReader trait — consumer contract
@@ -106,7 +110,7 @@ where
         {
             Ok(subscription) => subscription,
             Err(error) => {
-                crate::metrics::set_store_sync_healthy("routing", false);
+                set_store_sync_generation_healthy(false);
                 warn!(
                     ?error,
                     "gateway routing subscription setup failed; retrying"
@@ -118,7 +122,7 @@ where
         let (cert_records, mut cert_rx) = match store.subscribe_certificates().await {
             Ok(subscription) => subscription,
             Err(error) => {
-                crate::metrics::set_store_sync_healthy("certificates", false);
+                set_store_sync_generation_healthy(false);
                 warn!(
                     ?error,
                     "gateway certificate subscription setup failed; retrying"
@@ -130,7 +134,7 @@ where
         let (challenge_records, mut chal_rx) = match store.subscribe_acme_challenges().await {
             Ok(subscription) => subscription,
             Err(error) => {
-                crate::metrics::set_store_sync_healthy("acme_challenges", false);
+                set_store_sync_generation_healthy(false);
                 warn!(
                     ?error,
                     "gateway ACME challenge subscription setup failed; retrying"
@@ -142,7 +146,7 @@ where
         let mut projector = match GatewayProjector::new(routing_state) {
             Ok(projector) => projector,
             Err(error) => {
-                crate::metrics::set_store_sync_healthy("routing", false);
+                set_store_sync_generation_healthy(false);
                 warn!(?error, "gateway routing projection setup failed; retrying");
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
@@ -152,22 +156,20 @@ where
         let ready_challenges = apply_initial_challenges(&mut projector, challenge_records);
         publish_full_snapshot(&snapshot, projector.snapshot_value());
         publish_challenge_readiness(&store, &machine_id, &ready_challenges).await;
-        crate::metrics::set_store_sync_healthy("routing", true);
-        crate::metrics::set_store_sync_healthy("certificates", true);
-        crate::metrics::set_store_sync_healthy("acme_challenges", true);
+        set_store_sync_generation_healthy(true);
 
         loop {
             tokio::select! {
                 batch = routing_rx.recv() => {
                     let Some(batch) = batch else {
-                        crate::metrics::set_store_sync_healthy("routing", false);
+                        set_store_sync_generation_healthy(false);
                         warn!("gateway routing event stream closed; resubscribing");
                         break;
                     };
                     let batch = match batch {
                         Ok(batch) => batch,
                         Err(error) => {
-                            crate::metrics::set_store_sync_healthy("routing", false);
+                            set_store_sync_generation_healthy(false);
                             warn!(%error, "gateway routing event stream failed; resubscribing");
                             break;
                         }
@@ -176,33 +178,33 @@ where
                 }
                 event = cert_rx.recv() => {
                     let Some(event) = event else {
-                        crate::metrics::set_store_sync_healthy("certificates", false);
+                        set_store_sync_generation_healthy(false);
                         warn!("gateway certificate event stream closed; resubscribing");
                         break;
                     };
                     let event = match event {
                         Ok(event) => event,
                         Err(error) => {
-                            crate::metrics::set_store_sync_healthy("certificates", false);
+                            set_store_sync_generation_healthy(false);
                             warn!(%error, "gateway certificate event stream failed; resubscribing");
                             break;
                         }
                     };
                     if apply_certificate_batch(&mut projector, event, &mut cert_rx, &snapshot) {
-                        crate::metrics::set_store_sync_healthy("certificates", false);
+                        set_store_sync_generation_healthy(false);
                         break;
                     }
                 }
                 event = chal_rx.recv() => {
                     let Some(event) = event else {
-                        crate::metrics::set_store_sync_healthy("acme_challenges", false);
+                        set_store_sync_generation_healthy(false);
                         warn!("gateway ACME challenge event stream closed; resubscribing");
                         break;
                     };
                     let event = match event {
                         Ok(event) => event,
                         Err(error) => {
-                            crate::metrics::set_store_sync_healthy("acme_challenges", false);
+                            set_store_sync_generation_healthy(false);
                             warn!(%error, "gateway ACME challenge event stream failed; resubscribing");
                             break;
                         }
@@ -210,13 +212,19 @@ where
                     let (ready_challenges, challenge_stream_failed) = apply_challenge_batch(&mut projector, event, &mut chal_rx, &snapshot);
                     publish_challenge_readiness(&store, &machine_id, &ready_challenges).await;
                     if challenge_stream_failed {
-                        crate::metrics::set_store_sync_healthy("acme_challenges", false);
+                        set_store_sync_generation_healthy(false);
                         break;
                     }
                 }
             }
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+fn set_store_sync_generation_healthy(healthy: bool) {
+    for stream in STORE_SYNC_STREAMS {
+        crate::metrics::set_store_sync_healthy(stream, healthy);
     }
 }
 
@@ -509,6 +517,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use prometheus::Encoder;
 
     #[test]
     fn managed_tls_caps_are_nonzero() {
@@ -582,5 +591,31 @@ mod tests {
 
         assert_eq!(ready, vec![record]);
         assert!(!stream_failed);
+    }
+
+    #[test]
+    fn gateway_sync_generation_health_covers_all_streams() {
+        let _metrics_guard = crate::metrics::ROUTE_METRICS_TEST_LOCK
+            .lock()
+            .expect("route metrics test lock should not be poisoned");
+
+        set_store_sync_generation_healthy(true);
+        set_store_sync_generation_healthy(false);
+
+        let metrics = prometheus::gather();
+        let mut buffer = Vec::new();
+        prometheus::TextEncoder::new()
+            .encode(&metrics, &mut buffer)
+            .expect("encode metrics");
+        let text = String::from_utf8(buffer).expect("metrics should be utf8");
+
+        for stream in STORE_SYNC_STREAMS {
+            assert!(
+                text.contains(&format!(
+                    "ployz_gateway_store_sync_healthy{{stream=\"{stream}\"}} 0"
+                )),
+                "missing unhealthy metric for {stream}:\n{text}"
+            );
+        }
     }
 }
