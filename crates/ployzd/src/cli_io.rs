@@ -196,12 +196,18 @@ fn render_plain_status(payload: &StatusPayload) -> String {
         payload.mesh_phase
     )];
     for sync in &payload.edge_sync {
-        let state = match (sync.healthy, sync.error.as_deref()) {
+        let mut state = match (sync.healthy, sync.error.as_deref()) {
             (Some(true), _) => "healthy".to_string(),
             (Some(false), _) => "stale".to_string(),
             (None, Some(error)) => format!("unknown error={error}"),
             (None, None) => "unknown".to_string(),
         };
+        if let Some(stale_since) = sync.stale_since_unix_secs {
+            state.push_str(&format!(" stale_since={stale_since}"));
+        }
+        if let Some(failures) = sync.failures_total {
+            state.push_str(&format!(" failures_total={failures}"));
+        }
         lines.push(format!(
             "edge_sync service={} stream={} state={}",
             sync.service, sync.stream, state
@@ -637,12 +643,24 @@ mod tests {
                         service: String::from("gateway"),
                         stream: String::from("routing"),
                         healthy: Some(true),
+                        stale_since_unix_secs: None,
+                        failures_total: Some(0),
                         error: None,
                     },
                     ployz_api::EdgeSyncStatus {
                         service: String::from("dns"),
                         stream: String::from("routing"),
+                        healthy: Some(false),
+                        stale_since_unix_secs: Some(1_777_646_000),
+                        failures_total: Some(3),
+                        error: None,
+                    },
+                    ployz_api::EdgeSyncStatus {
+                        service: String::from("gateway"),
+                        stream: String::from("certificates"),
                         healthy: None,
+                        stale_since_unix_secs: None,
+                        failures_total: None,
                         error: Some(String::from("connect metrics endpoint: refused")),
                     },
                 ],
@@ -653,7 +671,10 @@ mod tests {
         let rendered = render_plain_success(&response);
         assert!(rendered.contains("edge_sync service=gateway stream=routing state=healthy"));
         assert!(rendered.contains(
-            "edge_sync service=dns stream=routing state=unknown error=connect metrics endpoint: refused"
+            "edge_sync service=dns stream=routing state=stale stale_since=1777646000 failures_total=3"
+        ));
+        assert!(rendered.contains(
+            "edge_sync service=gateway stream=certificates state=unknown error=connect metrics endpoint: refused"
         ));
     }
 

@@ -206,7 +206,9 @@ The important split:
   gateway reports routing, certificates, and ACME challenge streams; DNS reports
   routing. When those metrics endpoints are configured, `ployzctl status`
   includes an `edge_sync` row for each stream so an operator can distinguish
-  stale routing projection from a healthy data-plane process.
+  stale routing projection from a healthy data-plane process. The metrics also
+  expose when the current health state began and a cumulative failure count, so
+  stale projections have age and trend signals instead of a bare boolean.
 
 - **authority** lives in hub JetStream/KV/Object Store,
 - **hot read models** live in process memory and are rebuilt from authority,

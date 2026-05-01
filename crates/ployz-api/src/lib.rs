@@ -494,6 +494,10 @@ pub struct EdgeSyncStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub healthy: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_since_unix_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failures_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 

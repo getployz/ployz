@@ -107,6 +107,8 @@ impl DaemonState {
                     "gateway",
                     stream,
                     "ployz_gateway_store_sync_healthy",
+                    "ployz_gateway_store_sync_state_since_unix_seconds",
+                    "ployz_gateway_store_sync_failures_total",
                     metrics.as_ref(),
                 ));
             }
@@ -117,6 +119,8 @@ impl DaemonState {
                 "dns",
                 "routing",
                 "ployz_dns_store_sync_healthy",
+                "ployz_dns_store_sync_state_since_unix_seconds",
+                "ployz_dns_store_sync_failures_total",
                 metrics.as_ref(),
             ));
         }
@@ -233,34 +237,66 @@ async fn fetch_metrics_inner(addr: &str) -> Result<String, String> {
 fn metric_status(
     service: &str,
     stream: &str,
-    metric: &str,
+    healthy_metric: &str,
+    state_since_metric: &str,
+    failures_metric: &str,
     metrics: Result<&String, &String>,
 ) -> EdgeSyncStatus {
     match metrics {
-        Ok(body) => match parse_sync_metric(body, metric, stream) {
-            Some(healthy) => EdgeSyncStatus {
-                service: service.to_string(),
-                stream: stream.to_string(),
-                healthy: Some(healthy),
-                error: None,
-            },
+        Ok(body) => match parse_sync_metric(body, healthy_metric, stream) {
+            Some(healthy) => {
+                let state_since = parse_sync_metric_u64(body, state_since_metric, stream);
+                EdgeSyncStatus {
+                    service: service.to_string(),
+                    stream: stream.to_string(),
+                    healthy: Some(healthy),
+                    stale_since_unix_secs: if healthy { None } else { state_since },
+                    failures_total: parse_sync_metric_u64(body, failures_metric, stream),
+                    error: None,
+                }
+            }
             None => EdgeSyncStatus {
                 service: service.to_string(),
                 stream: stream.to_string(),
                 healthy: None,
-                error: Some(format!("metric {metric} for stream {stream} was absent")),
+                stale_since_unix_secs: None,
+                failures_total: parse_sync_metric_u64(body, failures_metric, stream),
+                error: Some(format!(
+                    "metric {healthy_metric} for stream {stream} was absent"
+                )),
             },
         },
         Err(error) => EdgeSyncStatus {
             service: service.to_string(),
             stream: stream.to_string(),
             healthy: None,
+            stale_since_unix_secs: None,
+            failures_total: None,
             error: Some(error.clone()),
         },
     }
 }
 
 fn parse_sync_metric(metrics: &str, metric: &str, stream: &str) -> Option<bool> {
+    let value = parse_sync_metric_value(metrics, metric, stream)?;
+    if (value - 1.0).abs() < f64::EPSILON {
+        Some(true)
+    } else if value.abs() < f64::EPSILON {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn parse_sync_metric_u64(metrics: &str, metric: &str, stream: &str) -> Option<u64> {
+    let value = parse_sync_metric_value(metrics, metric, stream)?;
+    if !value.is_finite() || value < 0.0 {
+        return None;
+    }
+    Some(value as u64)
+}
+
+fn parse_sync_metric_value(metrics: &str, metric: &str, stream: &str) -> Option<f64> {
     let prefix = format!("{metric}{{");
     let stream_label = format!("stream=\"{stream}\"");
     for line in metrics.lines() {
@@ -269,18 +305,14 @@ fn parse_sync_metric(metrics: &str, metric: &str, stream: &str) -> Option<bool> 
             continue;
         }
         let value = line.rsplit_once(' ')?.1;
-        return match value {
-            "1" | "1.0" => Some(true),
-            "0" | "0.0" => Some(false),
-            _ => None,
-        };
+        return value.parse::<f64>().ok();
     }
     None
 }
 
 #[cfg(test)]
 mod tests {
-    use super::parse_sync_metric;
+    use super::{parse_sync_metric, parse_sync_metric_u64};
 
     #[test]
     fn parses_sidecar_sync_metric_by_stream() {
@@ -289,6 +321,8 @@ mod tests {
 # TYPE ployz_gateway_store_sync_healthy gauge
 ployz_gateway_store_sync_healthy{stream="routing"} 1
 ployz_gateway_store_sync_healthy{stream="certificates"} 0
+ployz_gateway_store_sync_state_since_unix_seconds{stream="certificates"} 1777646000
+ployz_gateway_store_sync_failures_total{stream="certificates"} 3
 "#;
 
         assert_eq!(
@@ -306,6 +340,22 @@ ployz_gateway_store_sync_healthy{stream="certificates"} 0
                 "acme_challenges"
             ),
             None
+        );
+        assert_eq!(
+            parse_sync_metric_u64(
+                metrics,
+                "ployz_gateway_store_sync_state_since_unix_seconds",
+                "certificates"
+            ),
+            Some(1_777_646_000)
+        );
+        assert_eq!(
+            parse_sync_metric_u64(
+                metrics,
+                "ployz_gateway_store_sync_failures_total",
+                "certificates"
+            ),
+            Some(3)
         );
     }
 }

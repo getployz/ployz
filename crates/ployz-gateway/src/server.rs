@@ -395,6 +395,8 @@ mod tests {
             certificates: std::collections::HashMap::new(),
         };
         crate::metrics::update_route_counts(&snapshot);
+        crate::metrics::set_store_sync_healthy("routing", true);
+        crate::metrics::set_store_sync_healthy("certificates", false);
 
         let shared_snapshot = SharedSnapshot::new(snapshot);
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -430,6 +432,13 @@ mod tests {
         ));
         assert!(metrics.contains("ployz_gateway_routes{protocol=\"http\"} 1"));
         assert!(metrics.contains("ployz_gateway_routes{protocol=\"tcp\"} 0"));
+        assert!(metrics.contains("ployz_gateway_store_sync_healthy{stream=\"routing\"} 1"));
+        assert!(metrics.contains(
+            "ployz_gateway_store_sync_state_since_unix_seconds{stream=\"certificates\"}"
+        ));
+        assert!(
+            metrics.contains("ployz_gateway_store_sync_failures_total{stream=\"certificates\"}")
+        );
 
         let _ = shutdown_tx.send(());
         gateway_thread.join().expect("gateway thread should join");
