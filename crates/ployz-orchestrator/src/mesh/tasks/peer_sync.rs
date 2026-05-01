@@ -7,16 +7,9 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-#[derive(Debug, Clone)]
-pub enum PeerSyncCommand {
-    UpsertTransient(MachineObservation),
-    RemoveTransient(MachineId),
-}
-
 pub(crate) struct PeerSyncTask {
     pub(crate) snapshot: Vec<MachineMembership>,
     pub(crate) events: mpsc::Receiver<MachineEvent>,
-    pub(crate) commands: mpsc::Receiver<PeerSyncCommand>,
     pub(crate) bootstrap_peers: Vec<MachineObservation>,
     pub(crate) network: WireguardDriver,
     pub(crate) local_machine_id: MachineId,
@@ -28,7 +21,6 @@ pub(crate) async fn run_peer_sync_task(task: PeerSyncTask) {
     let PeerSyncTask {
         snapshot,
         mut events,
-        mut commands,
         bootstrap_peers,
         network,
         local_machine_id,
@@ -54,16 +46,6 @@ pub(crate) async fn run_peer_sync_task(task: PeerSyncTask) {
             Some(event) = events.recv() => {
                 debug!(?event, "peer sync event");
                 state.apply_event(&event, Instant::now());
-                sync_peers(&state, &network, &local_machine_id, &endpoint_selections).await;
-            }
-            Some(command) = commands.recv() => {
-                debug!(?command, "peer sync command");
-                match command {
-                    PeerSyncCommand::UpsertTransient(observation) => {
-                        state.upsert_transient(&observation, Instant::now());
-                    }
-                    PeerSyncCommand::RemoveTransient(id) => state.remove_transient(&id),
-                }
                 sync_peers(&state, &network, &local_machine_id, &endpoint_selections).await;
             }
         }
@@ -125,7 +107,6 @@ mod tests {
             vec!["founder:1"],
         )];
         let (_event_tx, event_rx) = mpsc::channel::<MachineEvent>(4);
-        let (_command_tx, command_rx) = mpsc::channel::<PeerSyncCommand>(4);
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();
 
@@ -133,7 +114,6 @@ mod tests {
             run_peer_sync_task(PeerSyncTask {
                 snapshot,
                 events: event_rx,
-                commands: command_rx,
                 bootstrap_peers,
                 network: driver,
                 local_machine_id,

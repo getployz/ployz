@@ -5,20 +5,10 @@ use crate::daemon::ssh::SshOptions;
 
 use super::super::types::{MachineAddContext, MachineAddStage};
 use super::remote::remote_rpc;
-use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
+use ployz_store_api::MachineRegistry;
 use ployz_types::model::MachineId;
 
 const REMOTE_CLEANUP_RPC_TIMEOUT: Duration = Duration::from_secs(10);
-
-pub(in super::super) async fn remove_transient_peer(
-    peer_sync_tx: &tokio::sync::mpsc::Sender<PeerSyncCommand>,
-    machine_id: &MachineId,
-) -> Result<(), String> {
-    peer_sync_tx
-        .send(PeerSyncCommand::RemoveTransient(machine_id.clone()))
-        .await
-        .map_err(|err| format!("failed to clear founder-local transient peer: {err}"))
-}
 
 pub(super) async fn rollback_machine_add_target(
     context: &MachineAddContext,
@@ -29,21 +19,21 @@ pub(super) async fn rollback_machine_add_target(
     let mut errors = Vec::new();
     if matches!(
         stage,
-        MachineAddStage::TransientPeerInstalled
-            | MachineAddStage::PreAdmitted
+        MachineAddStage::BootstrapPublished
+            | MachineAddStage::Joined
+            | MachineAddStage::SelfRecorded
             | MachineAddStage::Ready
             | MachineAddStage::Enabled
             | MachineAddStage::Finalized
     ) && let Some(joiner_id) = joiner_id
-        && let Err(err) = remove_transient_peer(&context.peer_sync_tx, joiner_id).await
+        && let Err(err) = context.store.delete_machine(joiner_id).await
     {
-        errors.push(err);
+        errors.push(format!("delete bootstrap membership seed: {err}"));
     }
     if matches!(
         stage,
         MachineAddStage::Joined
             | MachineAddStage::SelfRecorded
-            | MachineAddStage::TransientPeerInstalled
             | MachineAddStage::Ready
             | MachineAddStage::Enabled
             | MachineAddStage::Finalized

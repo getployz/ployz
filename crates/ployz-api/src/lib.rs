@@ -192,9 +192,6 @@ pub enum DaemonRequest {
         token: String,
     },
     MeshSelfRecord,
-    MeshAccept {
-        response: String,
-    },
     DeployPreview {
         manifest_json: String,
         options: DeployOptions,
@@ -612,7 +609,6 @@ pub enum MachineTransitionGoal {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeshSelfRecordPayload {
-    pub encoded: String,
     pub record: MachineMembership,
 }
 

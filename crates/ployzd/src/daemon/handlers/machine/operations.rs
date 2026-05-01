@@ -9,10 +9,11 @@ use crate::daemon::ssh::SshOptions;
 use ployz_api::{
     DaemonPayload, MachineOperationInfo, MachineOperationListPayload, MachineOperationPayload,
 };
-use ployz_types::model::MachineId;
+use ployz_store_api::MachineRegistry;
+use ployz_types::model::{MachineId, MachineLifecycle};
 use ployz_types::time::now_unix_secs;
 
-use super::join::rollback::{best_effort_remote_cleanup, remove_transient_peer};
+use super::join::rollback::best_effort_remote_cleanup;
 use super::types::MachineAddStage;
 
 const OPERATIONS_DIR_NAME: &str = "machine-operations";
@@ -424,17 +425,28 @@ impl DaemonState {
         let mut notes = Vec::new();
         if let Some(machine_id) = &record.artifacts.machine_id {
             let Some(active) = self.active.as_ref() else {
-                notes.push("transient peer cleanup skipped: no running network".into());
+                notes.push("bootstrap membership cleanup skipped: no running network".into());
                 return Ok(Some(notes.join("; ")));
             };
-            let Some(peer_sync_tx) = active.mesh.peer_sync_sender() else {
-                notes.push("transient peer cleanup skipped: peer sync unavailable".into());
-                return Ok(Some(notes.join("; ")));
-            };
-            if let Err(err) = remove_transient_peer(&peer_sync_tx, machine_id).await {
-                notes.push(format!("transient peer cleanup failed: {err}"));
-            } else {
-                notes.push(format!("transient peer '{}' removed", machine_id.0));
+            match super::list::find_machine_record(&active.mesh.store, machine_id).await {
+                Ok(Some(machine)) if machine.lifecycle == MachineLifecycle::Active => {
+                    notes.push(format!(
+                        "bootstrap membership cleanup skipped: machine '{}' is active",
+                        machine_id.0
+                    ));
+                }
+                Ok(Some(_machine)) => {
+                    if let Err(err) = active.mesh.store.delete_machine(machine_id).await {
+                        notes.push(format!("bootstrap membership cleanup failed: {err}"));
+                    } else {
+                        notes.push(format!(
+                            "bootstrap membership seed '{}' removed",
+                            machine_id.0
+                        ));
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => notes.push(format!("bootstrap membership lookup failed: {err}")),
             }
         }
 
@@ -448,9 +460,8 @@ impl DaemonState {
         if !matches!(
             add_stage,
             MachineAddStage::Joined
-                | MachineAddStage::PreAdmitted
+                | MachineAddStage::BootstrapPublished
                 | MachineAddStage::SelfRecorded
-                | MachineAddStage::TransientPeerInstalled
                 | MachineAddStage::Ready
                 | MachineAddStage::Enabled
                 | MachineAddStage::Finalized

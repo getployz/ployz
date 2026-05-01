@@ -20,8 +20,6 @@ pub(crate) type EndpointSelectionMap = Arc<RwLock<HashMap<MachineId, String>>>;
 
 #[derive(Debug)]
 pub(crate) enum EndpointMaintainerCommand {
-    UpsertTransient(MachineObservation),
-    RemoveTransient(MachineId),
     TickNow {
         force_rotate: bool,
         complete: oneshot::Sender<()>,
@@ -422,10 +420,6 @@ pub(crate) async fn run_endpoint_maintainer_task(task: EndpointMaintainerTask) {
             }
             Some(command) = commands.recv() => {
                 match command {
-                    EndpointMaintainerCommand::UpsertTransient(observation) => {
-                        peer_map.upsert_transient(&observation, Instant::now());
-                    }
-                    EndpointMaintainerCommand::RemoveTransient(id) => peer_map.remove_transient(&id),
                     EndpointMaintainerCommand::TickNow { force_rotate, complete } => {
                         run_endpoint_maintenance_pass(
                             &mut runtime,
@@ -435,12 +429,8 @@ pub(crate) async fn run_endpoint_maintainer_task(task: EndpointMaintainerTask) {
                         )
                         .await;
                         let _ = complete.send(());
-                        continue;
                     }
                 }
-                let device_peers = network.read_peers().await.unwrap_or_default();
-                runtime.refresh_candidates(&peer_map, &local_machine_id, &device_peers, Instant::now());
-                publish_endpoint_selections(&endpoint_selections, &runtime).await;
             }
         }
     }

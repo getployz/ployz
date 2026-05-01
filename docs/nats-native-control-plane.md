@@ -234,14 +234,16 @@ ms. Container startup and readiness dominate deploy time.
 Data touched:
 
 1. invite read/update in `invites`,
-2. joiner local NATS startup/connectivity,
-3. joiner writes its `machines` membership record,
-4. existing daemons observe membership through subscription/projection.
+2. introducer writes a bootstrap membership seed to `machines` so existing
+   nodes learn the joiner's WireGuard identity through NATS,
+3. joiner local NATS startup/connectivity,
+4. joiner overwrites its `machines` membership record from its own daemon,
+5. existing daemons observe membership through subscription/projection.
 
 Latency shape:
 
 - bootstrap/install is out-of-band and dominates,
-- membership write is one hub quorum write,
+- bootstrap and self-published membership writes are hub quorum writes,
 - visibility is subscription delivery plus local projection,
 - no stream/KV replica reconfiguration occurs.
 

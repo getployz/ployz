@@ -1,4 +1,3 @@
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use derive_more::Display;
 use ipnet::Ipv4Net;
 use schemars::JsonSchema;
@@ -516,17 +515,6 @@ pub enum AcmeChallengeEvent {
     Removed(AcmeChallengeRecord),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JoinResponse {
-    pub machine_id: MachineId,
-    pub public_key: PublicKey,
-    pub overlay_ip: OverlayIp,
-    pub topology: MachineTopology,
-    pub role: MachineRole,
-    pub subnet: Option<Ipv4Net>,
-    pub endpoints: Vec<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
 pub struct SidecarId(pub String);
 
@@ -902,48 +890,6 @@ pub struct DeployApplyResult {
     pub events: Vec<DeployEvent>,
 }
 
-pub const JOIN_RESPONSE_PREFIX: &str = "PLOYZ_JOIN_RESPONSE:";
-
-impl JoinResponse {
-    pub fn encode(&self) -> Result<String, String> {
-        let json = serde_json::to_string(self).map_err(|e| format!("serialize: {e}"))?;
-        Ok(format!(
-            "{}{}",
-            JOIN_RESPONSE_PREFIX,
-            URL_SAFE_NO_PAD.encode(json.as_bytes())
-        ))
-    }
-
-    pub fn decode(s: &str) -> Result<Self, String> {
-        let payload = s
-            .strip_prefix(JOIN_RESPONSE_PREFIX)
-            .ok_or_else(|| format!("missing prefix '{JOIN_RESPONSE_PREFIX}'"))?;
-        let bytes = URL_SAFE_NO_PAD
-            .decode(payload)
-            .map_err(|e| format!("base64 decode: {e}"))?;
-        serde_json::from_slice(&bytes).map_err(|e| format!("json decode: {e}"))
-    }
-
-    #[must_use]
-    pub fn into_seed_machine_membership(self) -> MachineMembership {
-        MachineMembership {
-            id: self.machine_id,
-            public_key: self.public_key,
-            overlay_ip: self.overlay_ip,
-            topology: self.topology,
-            control_target: None,
-            subnet: self.subnet,
-            bridge_ip: None,
-            endpoints: self.endpoints,
-            lifecycle: MachineLifecycle::Standby,
-            role: self.role,
-            created_at: 0,
-            updated_at: 0,
-            labels: BTreeMap::new(),
-        }
-    }
-}
-
 /// Derive a deterministic overlay IP from a public key (fd00::/8 ULA + first 15 key bytes).
 #[must_use]
 pub fn management_ip_from_key(key: &PublicKey) -> OverlayIp {
@@ -972,48 +918,6 @@ mod tests {
         let k1 = PublicKey([0x01; 32]);
         let k2 = PublicKey([0x02; 32]);
         assert_ne!(management_ip_from_key(&k1), management_ip_from_key(&k2));
-    }
-
-    #[test]
-    fn join_response_encode_decode_roundtrip() {
-        let resp = JoinResponse {
-            machine_id: MachineId("joiner-1".into()),
-            public_key: PublicKey([0xab; 32]),
-            overlay_ip: OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1)),
-            topology: MachineTopology::local(),
-            role: MachineRole::Mirror,
-            subnet: Some("10.42.1.0/24".parse().unwrap()),
-            endpoints: vec!["1.2.3.4:51820".into()],
-        };
-
-        let encoded = resp.encode().unwrap();
-        assert!(encoded.starts_with(JOIN_RESPONSE_PREFIX));
-
-        let decoded = JoinResponse::decode(&encoded).unwrap();
-        assert_eq!(decoded.machine_id, resp.machine_id);
-        assert_eq!(decoded.public_key, resp.public_key);
-        assert_eq!(decoded.overlay_ip, resp.overlay_ip);
-        assert_eq!(decoded.topology, resp.topology);
-        assert_eq!(decoded.role, resp.role);
-        assert_eq!(decoded.subnet, resp.subnet);
-        assert_eq!(decoded.endpoints, resp.endpoints);
-    }
-
-    #[test]
-    fn join_response_into_seed_machine_membership() {
-        let resp = JoinResponse {
-            machine_id: MachineId("joiner-1".into()),
-            public_key: PublicKey([0xab; 32]),
-            overlay_ip: OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1)),
-            topology: MachineTopology::local(),
-            role: MachineRole::Mirror,
-            subnet: None,
-            endpoints: vec![],
-        };
-        let record = resp.into_seed_machine_membership();
-        assert_eq!(record.id.0, "joiner-1");
-        assert_eq!(record.role, MachineRole::Mirror);
-        assert!(record.bridge_ip.is_none());
     }
 
     #[test]

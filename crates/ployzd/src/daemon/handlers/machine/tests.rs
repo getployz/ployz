@@ -17,8 +17,8 @@ use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{InviteRepository, MachineRegistry};
 use ployz_types::model::{
-    JoinResponse, MachineId, MachineLifecycle, MachineMembership, MachineRole, MachineTopology,
-    NetworkLifecycle, OverlayIp, PublicKey,
+    MachineId, MachineLifecycle, MachineMembership, MachineRole, MachineTopology, NetworkLifecycle,
+    OverlayIp, PublicKey,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -140,17 +140,15 @@ async fn machine_add_activates_joiner_lifecycle() {
         .await
         .expect("release reserved subnet for re-acquire");
 
-    let join_response = JoinResponse {
-        machine_id: MachineId("joiner-1".into()),
-        public_key: PublicKey([4; 32]),
-        overlay_ip: "::1".parse().map(OverlayIp).expect("valid overlay"),
-        topology: MachineTopology::local(),
-        role: MachineRole::Mirror,
-        subnet: Some(expected_subnet),
-        endpoints: vec!["203.0.113.10:51820".into()],
-    }
-    .encode()
-    .expect("encode join response");
+    let mut joiner_record = test_machine_record(
+        "joiner-1",
+        &expected_subnet.to_string(),
+        MachineLifecycle::Standby,
+        PublicKey([4; 32]),
+    );
+    joiner_record.overlay_ip = "::1".parse().map(OverlayIp).expect("valid overlay");
+    joiner_record.role = MachineRole::Mirror;
+    joiner_record.endpoints = vec!["203.0.113.10:51820".into()];
 
     let ssh_dir = unique_temp_dir("ployz-fake-ssh");
     std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
@@ -163,12 +161,9 @@ async fn machine_add_activates_joiner_lifecycle() {
     let self_record_response = serde_json::to_string(&DaemonResponse {
         ok: true,
         code: "OK".into(),
-        message: join_response.clone(),
+        message: "self-record".into(),
         payload: Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
-            encoded: join_response.clone(),
-            record: JoinResponse::decode(&join_response)
-                .expect("decode join response")
-                .into_seed_machine_membership(),
+            record: joiner_record.clone(),
         })),
     })
     .expect("encode self-record response");
@@ -178,7 +173,7 @@ async fn machine_add_activates_joiner_lifecycle() {
     );
     let _status_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_STATUS_RESPONSE",
-        Some(status_response_for_join_response(&join_response).into()),
+        Some(status_response_for_record(&joiner_record).into()),
     );
     let _ready_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_READY_RESPONSE",
@@ -224,17 +219,15 @@ async fn machine_add_requires_sync_connected_for_running_joiner() {
         .await
         .expect("release reserved subnet for re-acquire");
 
-    let join_response = JoinResponse {
-        machine_id: MachineId("joiner-2".into()),
-        public_key: PublicKey([5; 32]),
-        overlay_ip: "fd00::5".parse().map(OverlayIp).expect("valid overlay"),
-        topology: MachineTopology::local(),
-        role: MachineRole::Mirror,
-        subnet: Some(expected_subnet),
-        endpoints: vec!["203.0.113.11:51820".into()],
-    }
-    .encode()
-    .expect("encode join response");
+    let mut joiner_record = test_machine_record(
+        "joiner-2",
+        &expected_subnet.to_string(),
+        MachineLifecycle::Standby,
+        PublicKey([5; 32]),
+    );
+    joiner_record.overlay_ip = "fd00::5".parse().map(OverlayIp).expect("valid overlay");
+    joiner_record.role = MachineRole::Mirror;
+    joiner_record.endpoints = vec!["203.0.113.11:51820".into()];
 
     let ssh_dir = unique_temp_dir("ployz-fake-ssh");
     std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
@@ -247,12 +240,9 @@ async fn machine_add_requires_sync_connected_for_running_joiner() {
     let self_record_response = serde_json::to_string(&DaemonResponse {
         ok: true,
         code: "OK".into(),
-        message: join_response.clone(),
+        message: "self-record".into(),
         payload: Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
-            encoded: join_response.clone(),
-            record: JoinResponse::decode(&join_response)
-                .expect("decode join response")
-                .into_seed_machine_membership(),
+            record: joiner_record.clone(),
         })),
     })
     .expect("encode self-record response");
@@ -262,7 +252,7 @@ async fn machine_add_requires_sync_connected_for_running_joiner() {
     );
     let _status_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_STATUS_RESPONSE",
-        Some(status_response_for_join_response(&join_response).into()),
+        Some(status_response_for_record(&joiner_record).into()),
     );
     let _ready_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_READY_RESPONSE",
@@ -564,17 +554,15 @@ async fn machine_add_rejects_remote_subnet_mismatch_before_invite_consume() {
     let _guard = test_ssh_env_lock().lock().await;
     let (state, store, _) = make_state(true).await;
 
-    let join_response = JoinResponse {
-        machine_id: MachineId("joiner-mismatch".into()),
-        public_key: PublicKey([14; 32]),
-        overlay_ip: "fd00::14".parse().map(OverlayIp).expect("valid overlay"),
-        topology: MachineTopology::local(),
-        role: MachineRole::Mirror,
-        subnet: Some("10.210.99.0/24".parse().expect("valid subnet")),
-        endpoints: vec!["203.0.113.14:51820".into()],
-    }
-    .encode()
-    .expect("encode join response");
+    let mut joiner_record = test_machine_record(
+        "joiner-mismatch",
+        "10.210.99.0/24",
+        MachineLifecycle::Standby,
+        PublicKey([14; 32]),
+    );
+    joiner_record.overlay_ip = "fd00::14".parse().map(OverlayIp).expect("valid overlay");
+    joiner_record.role = MachineRole::Mirror;
+    joiner_record.endpoints = vec!["203.0.113.14:51820".into()];
 
     let ssh_dir = unique_temp_dir("ployz-fake-ssh-mismatch");
     std::fs::create_dir_all(&ssh_dir).expect("create ssh dir");
@@ -587,12 +575,9 @@ async fn machine_add_rejects_remote_subnet_mismatch_before_invite_consume() {
     let self_record_response = serde_json::to_string(&DaemonResponse {
         ok: true,
         code: "OK".into(),
-        message: join_response.clone(),
+        message: "self-record".into(),
         payload: Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
-            encoded: join_response.clone(),
-            record: JoinResponse::decode(&join_response)
-                .expect("decode join response")
-                .into_seed_machine_membership(),
+            record: joiner_record.clone(),
         })),
     })
     .expect("encode self-record response");
@@ -602,7 +587,7 @@ async fn machine_add_rejects_remote_subnet_mismatch_before_invite_consume() {
     );
     let _status_guard = TestSshEnvGuard::set(
         "PLOYZ_TEST_STATUS_RESPONSE",
-        Some(status_response_for_join_response(&join_response).into()),
+        Some(status_response_for_record(&joiner_record).into()),
     );
 
     let response = state
@@ -661,7 +646,7 @@ async fn interrupted_machine_add_is_marked_interrupted_on_startup() {
             MachineOperationKind::Add,
             Some("alpha".into()),
             vec!["join-target".into()],
-            "transient-peer-installed",
+            "bootstrap-published",
             MachineOperationArtifacts {
                 machine_id: Some(MachineId("joiner-1".into())),
                 invite_id: Some("invite-1".into()),
@@ -910,17 +895,14 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{label}-{}-{nanos}-{sequence}", std::process::id()))
 }
 
-fn status_response_for_join_response(join_response: &str) -> String {
-    let record = JoinResponse::decode(join_response)
-        .expect("decode join response")
-        .into_seed_machine_membership();
+fn status_response_for_record(record: &MachineMembership) -> String {
     serde_json::to_string(&DaemonResponse {
         ok: true,
         code: "OK".into(),
         message: "status".into(),
         payload: Some(DaemonPayload::Status(StatusPayload {
-            machine_id: record.id.0,
-            public_key: record.public_key,
+            machine_id: record.id.0.clone(),
+            public_key: record.public_key.clone(),
             version: "test-version".into(),
             network: None,
             overlay_ip: None,

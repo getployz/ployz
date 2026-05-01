@@ -77,8 +77,7 @@ impl DaemonState {
             | DaemonRequest::MachineInviteList
             | DaemonRequest::MachineInviteImport { .. }
             | DaemonRequest::AcmeChallengeReady { .. }
-            | DaemonRequest::MeshSelfRecord
-            | DaemonRequest::MeshAccept { .. } => RequestLane::Shared,
+            | DaemonRequest::MeshSelfRecord => RequestLane::Shared,
         }
     }
 
@@ -274,7 +273,6 @@ impl DaemonState {
                 self.handle_acme_challenge_ready(&hostname, &token).await
             }
             DaemonRequest::MeshSelfRecord => self.handle_mesh_self_record().await,
-            DaemonRequest::MeshAccept { response } => self.handle_mesh_accept(&response).await,
         }
     }
 
@@ -395,8 +393,7 @@ impl DaemonState {
             | DaemonRequest::MachineInviteList
             | DaemonRequest::MachineInviteImport { .. }
             | DaemonRequest::AcmeChallengeReady { .. }
-            | DaemonRequest::MeshSelfRecord
-            | DaemonRequest::MeshAccept { .. } => {
+            | DaemonRequest::MeshSelfRecord => {
                 self.err("INTERNAL", "shared request routed to exclusive handler")
             }
         }

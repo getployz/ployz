@@ -1,13 +1,12 @@
 use ployz_orchestrator::mesh::WireGuardDevice;
-use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
 use ployz_orchestrator::{Mesh, Phase, WireguardDriver};
 use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{MachineRegistry, SyncStatus};
 use ployz_types::model::{
-    JoinResponse, MachineId, MachineLifecycle, MachineMembership, MachineRole, MachineTopology,
-    OverlayIp, PublicKey,
+    MachineId, MachineLifecycle, MachineMembership, MachineRole, MachineTopology, OverlayIp,
+    PublicKey,
 };
 use std::net::Ipv6Addr;
 use std::sync::Arc;
@@ -386,77 +385,6 @@ async fn bootstrap_proceeds_on_membership() {
 
     mesh.up().await.unwrap();
     assert_eq!(mesh.phase(), Phase::Running);
-}
-
-// --- Two-node join ---
-
-/// Founder-side join bootstrap must be able to configure a remote peer without
-/// durably publishing that remote machine row into the store.
-#[tokio::test]
-async fn founder_can_configure_joiner_from_transient_peer() {
-    // Founder node
-    let founder_wg = Arc::new(MemoryWireGuard::new());
-    let founder_svc = Arc::new(MemoryService::new());
-    let founder_store = Arc::new(MemoryStore::new());
-
-    let founder_record = test_record("founder", 1);
-    founder_store
-        .upsert_self_machine(&founder_record)
-        .await
-        .unwrap();
-
-    let mut founder_mesh = make_mesh(
-        "founder",
-        founder_wg.clone(),
-        founder_svc,
-        founder_store.clone(),
-    );
-    founder_mesh.up().await.unwrap();
-    assert_eq!(founder_mesh.phase(), Phase::Running);
-
-    // Simulate the JoinResponse flow: joiner builds a JoinResponse from its identity
-    // and founder installs it as a transient peer only.
-    let joiner_record = test_record("joiner", 2);
-    let join_resp = JoinResponse {
-        machine_id: joiner_record.id.clone(),
-        public_key: joiner_record.public_key.clone(),
-        overlay_ip: joiner_record.overlay_ip,
-        topology: joiner_record.topology.clone(),
-        role: joiner_record.role,
-        subnet: joiner_record.subnet,
-        endpoints: joiner_record.endpoints.clone(),
-    };
-
-    // Encode → decode roundtrip (simulates SSH transport)
-    let encoded = join_resp.encode().unwrap();
-    let decoded = JoinResponse::decode(&encoded).unwrap();
-    let record = decoded.into_seed_machine_membership();
-
-    founder_mesh
-        .peer_sync_sender()
-        .expect("peer sync sender")
-        .send(PeerSyncCommand::UpsertTransient(record.observation()))
-        .await
-        .unwrap();
-
-    // Give peer_sync time to pick up the record.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    assert!(
-        founder_wg
-            .current_peers()
-            .iter()
-            .any(|peer| peer.id().0 == "joiner"),
-        "transient joiner peer must be configured for the overlay to form"
-    );
-
-    let machines = founder_store.list_machines().await.unwrap();
-    assert!(
-        !machines.iter().any(|m| m.id.0 == "joiner"),
-        "founder must not durably publish the joiner row"
-    );
-
-    founder_mesh.destroy().await.unwrap();
 }
 
 // --- Store events ---
