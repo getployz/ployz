@@ -16,9 +16,8 @@ pub use traits::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
     DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
     InstanceStatusRepository, InviteRepository, MachineRegistry, MachineSubscription,
-    PeerMembershipObservation, PeerMembershipState, PeerMembershipStore, PeerRttObservation,
-    PeerRttStore, RoutingSnapshotReader, RoutingSubscription, StoreRuntimeControl, SyncProbe,
-    SyncStatus,
+    PeerRttObservation, PeerRttStore, RoutingSnapshotReader, RoutingSubscription,
+    StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 
 #[async_trait]
@@ -91,10 +90,6 @@ pub trait StoreBackend: Send + Sync {
     }
 
     async fn peer_rtt_observations(&self) -> Result<Vec<PeerRttObservation>> {
-        Ok(Vec::new())
-    }
-
-    async fn peer_membership_observations(&self) -> Result<Vec<PeerMembershipObservation>> {
         Ok(Vec::new())
     }
 }

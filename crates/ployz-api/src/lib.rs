@@ -566,11 +566,6 @@ pub struct DoctorPeer {
     pub subnet: Option<String>,
     pub wg_state: String,
     pub probe_state: String,
-    pub corrosion_state: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub corrosion_actor_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub corrosion_timestamp: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rtt_median_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

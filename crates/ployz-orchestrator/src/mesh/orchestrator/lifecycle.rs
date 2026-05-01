@@ -186,7 +186,7 @@ impl Mesh {
                                 warn!(
                                     ?e,
                                     consecutive_errors,
-                                    "sync probe keeps failing — corrosion transport may be stuck"
+                                    "sync probe keeps failing"
                                 );
                             }
                         }
@@ -202,14 +202,14 @@ impl Mesh {
         if !connected {
             let reason = match result {
                 Ok(_) => {
-                    "corrosion gossip could not reach any remote peer within the timeout. \
-                     The gossip transport (QUIC) may be stuck — try restarting the mesh on both nodes"
+                    "store sync could not reach any remote peer within the timeout. \
+                     Try restarting the mesh on both nodes"
                         .to_string()
                 }
                 Err(e) => {
                     format!(
-                        "corrosion API never became healthy: {e}. \
-                         The gossip transport (QUIC) may be stuck — try restarting the mesh on both nodes"
+                        "store never became healthy: {e}. \
+                         Try restarting the mesh on both nodes"
                     )
                 }
             };

@@ -143,7 +143,7 @@ async fn machine_add_activates_joiner_lifecycle() {
 
     let server_store = store.clone();
     let server = tokio::spawn(async move {
-        for _ in 0..5 {
+        for _ in 0..2 {
             let (stream, _) = listener.accept().await.expect("accept overlay rpc");
             let (reader, mut writer) = stream.into_split();
             let mut buf = BufReader::new(reader);
@@ -151,14 +151,7 @@ async fn machine_add_activates_joiner_lifecycle() {
             buf.read_line(&mut line).await.expect("read request");
             let request: DaemonRequest =
                 serde_json::from_str(&line).expect("decode daemon request");
-            let response = if matches!(request, DaemonRequest::Coord { .. }) {
-                DaemonResponse {
-                    ok: true,
-                    code: "OK".into(),
-                    message: "allow".into(),
-                    payload: None,
-                }
-            } else if matches!(request, DaemonRequest::MeshReady { .. }) {
+            let response = if matches!(request, DaemonRequest::MeshReady { .. }) {
                 DaemonResponse {
                     ok: true,
                     code: "OK".into(),

@@ -3,9 +3,8 @@ use crate::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
     DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
     InstanceStatusRepository, InviteRepository, MachineRegistry, MachineSubscription,
-    PeerMembershipObservation, PeerMembershipStore, PeerRttObservation, PeerRttStore,
-    RoutingSnapshotReader, RoutingSubscription, StoreBackend, StoreRuntimeControl, SyncProbe,
-    SyncStatus,
+    PeerRttObservation, PeerRttStore, RoutingSnapshotReader, RoutingSubscription, StoreBackend,
+    StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::Result;
@@ -216,12 +215,6 @@ impl SyncProbe for StoreDriver {
 impl PeerRttStore for StoreDriver {
     async fn peer_rtt_observations(&self) -> Result<Vec<PeerRttObservation>> {
         self.backend.peer_rtt_observations().await
-    }
-}
-
-impl PeerMembershipStore for StoreDriver {
-    async fn peer_membership_observations(&self) -> Result<Vec<PeerMembershipObservation>> {
-        self.backend.peer_membership_observations().await
     }
 }
 

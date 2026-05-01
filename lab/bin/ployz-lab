@@ -1204,7 +1204,7 @@ refresh_post_install_node() {
 
 verify_bootstrap() {
   local node=$1
-  guest_exec "${node}" "sudo test -x /usr/local/bin/ployzd && sudo test -x /usr/local/bin/ployzctl && sudo test -x /usr/local/bin/ployz-gateway && sudo test -x /usr/local/bin/ployz-dns && sudo test -x /usr/local/bin/corrosion"
+  guest_exec "${node}" "sudo test -x /usr/local/bin/ployzd && sudo test -x /usr/local/bin/ployzctl && sudo test -x /usr/local/bin/ployz-gateway && sudo test -x /usr/local/bin/ployz-dns && sudo test -x /usr/local/bin/nats-server"
   guest_exec "${node}" "sudo systemctl is-enabled ployzd.service"
   guest_exec "${node}" "sudo systemctl is-active ployzd.service"
 }

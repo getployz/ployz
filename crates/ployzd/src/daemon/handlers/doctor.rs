@@ -5,10 +5,7 @@ use ployz_orchestrator::machine_policy::{DiagnosticRole, diagnostic_role};
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_orchestrator::mesh::{DevicePeer, WireGuardDevice};
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
-use ployz_store_api::{
-    MachineRegistry, PeerMembershipObservation, PeerMembershipState, PeerMembershipStore,
-    PeerRttObservation, PeerRttStore,
-};
+use ployz_store_api::{MachineRegistry, PeerRttObservation, PeerRttStore};
 use ployz_types::model::{MachineId, MachineMembership, PublicKey};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -54,21 +51,12 @@ impl DaemonState {
                 );
             }
         };
-        let membership_observations = match active.mesh.store.peer_membership_observations().await {
-            Ok(observations) => observations,
-            Err(err) => {
-                return self.err(
-                    "PEER_MEMBERSHIP_READ_FAILED",
-                    format!("failed to read Corrosion peer membership: {err}"),
-                );
-            }
-        };
         let rtt_observations = match active.mesh.store.peer_rtt_observations().await {
             Ok(observations) => observations,
             Err(err) => {
                 return self.err(
                     "PEER_RTT_READ_FAILED",
-                    format!("failed to read Corrosion peer RTTs: {err}"),
+                    format!("failed to read peer RTT observations: {err}"),
                 );
             }
         };
@@ -78,7 +66,6 @@ impl DaemonState {
             &machines,
             local_record,
             &device_peers,
-            &membership_observations,
             &rtt_observations,
             &detected_local_endpoints,
             local_endpoint_watch_supported(),
@@ -96,21 +83,13 @@ fn build_doctor_payload(
     machines: &[MachineMembership],
     local_record: &MachineMembership,
     device_peers: &[DevicePeer],
-    membership_observations: &[PeerMembershipObservation],
     rtt_observations: &[PeerRttObservation],
     detected_local_endpoints: &[String],
     endpoint_watch_supported: bool,
 ) -> DoctorPayload {
     let handshake_by_key = handshake_state_map(device_peers);
-    let membership_by_ip = membership_state_map(membership_observations);
     let rtt_by_ip = rtt_state_map(rtt_observations);
-    let peers = build_participation_rows(
-        machines,
-        &local_record.id,
-        &handshake_by_key,
-        &membership_by_ip,
-        &rtt_by_ip,
-    );
+    let peers = build_participation_rows(machines, &local_record.id, &handshake_by_key, &rtt_by_ip);
     DoctorPayload {
         overall: DoctorOverall {
             lifecycle: if peers.iter().any(|row| row.blocking) {
@@ -202,12 +181,6 @@ fn append_peer_section(lines: &mut Vec<String>, rows: &[&DoctorPeer], include_ca
         .max()
         .unwrap_or("wg=fresh".len())
         .max("wg=fresh".len());
-    let w_corrosion = rows
-        .iter()
-        .map(|row| corrosion_status_column(row).len())
-        .max()
-        .unwrap_or("corrosion=unknown".len())
-        .max("corrosion=unknown".len());
     let w_rtt = rows
         .iter()
         .map(|row| rtt_status_column(row).len())
@@ -216,10 +189,9 @@ fn append_peer_section(lines: &mut Vec<String>, rows: &[&DoctorPeer], include_ca
         .max("rtt=none".len());
     for row in rows {
         let base = format!(
-            "  {:<w_id$}  {:<w_store$}  {:<w_corrosion$}  {:<w_wg$}  {:<w_rtt$}",
+            "  {:<w_id$}  {:<w_store$}  {:<w_wg$}  {:<w_rtt$}",
             row.machine_id,
             store_status_column(row),
-            corrosion_status_column(row),
             wg_status_column(row),
             rtt_status_column(row),
         );
@@ -244,10 +216,6 @@ fn wg_status_column(row: &DoctorPeer) -> String {
     format!("wg={}", row.wg_state)
 }
 
-fn corrosion_status_column(row: &DoctorPeer) -> String {
-    format!("corrosion={}", row.corrosion_state)
-}
-
 fn rtt_status_column(row: &DoctorPeer) -> String {
     match (row.rtt_median_ms, row.rtt_stddev_ms) {
         (Some(median), Some(stddev)) => {
@@ -269,52 +237,15 @@ fn diagnostic_role_name(role: DiagnosticRole) -> &'static str {
     }
 }
 
-fn cause_parts(
-    handshake: HandshakeState,
-    corrosion: &CorrosionPeerState,
-) -> (&'static str, &'static str) {
-    match (corrosion.state, handshake) {
-        (CorrosionState::Alive, _) => ("corrosion-alive", "corrosion reports peer alive"),
-        (_, HandshakeState::Fresh) => (
+fn cause_parts(handshake: HandshakeState) -> (&'static str, &'static str) {
+    match handshake {
+        HandshakeState::Fresh => (
             "fresh-wireguard-handshake",
             "wireguard has a recent peer handshake",
         ),
-        (CorrosionState::Suspect, HandshakeState::Absent) => (
-            "corrosion-suspect-no-direct-peer",
-            "corrosion reports peer suspect and no direct peer is configured",
-        ),
-        (CorrosionState::Suspect, HandshakeState::None) => (
-            "corrosion-suspect-no-handshake",
-            "corrosion reports peer suspect and direct peer has no handshake yet",
-        ),
-        (CorrosionState::Suspect, HandshakeState::Stale) => (
-            "corrosion-suspect-stale-handshake",
-            "corrosion reports peer suspect and wireguard handshake is stale",
-        ),
-        (CorrosionState::Down, HandshakeState::Absent) => (
-            "corrosion-down-no-direct-peer",
-            "corrosion reports peer down and no direct peer is configured",
-        ),
-        (CorrosionState::Down, HandshakeState::None) => (
-            "corrosion-down-no-handshake",
-            "corrosion reports peer down and direct peer has no handshake yet",
-        ),
-        (CorrosionState::Down, HandshakeState::Stale) => (
-            "corrosion-down-stale-handshake",
-            "corrosion reports peer down and wireguard handshake is stale",
-        ),
-        (CorrosionState::Unknown, HandshakeState::Absent) => (
-            "no-corrosion-membership-no-direct-peer",
-            "no corrosion membership observation and no direct peer is configured",
-        ),
-        (CorrosionState::Unknown, HandshakeState::None) => (
-            "no-corrosion-membership-no-handshake",
-            "no corrosion membership observation and direct peer has no handshake yet",
-        ),
-        (CorrosionState::Unknown, HandshakeState::Stale) => (
-            "no-corrosion-membership-stale-handshake",
-            "no corrosion membership observation and wireguard handshake is stale",
-        ),
+        HandshakeState::Absent => ("no-direct-peer", "no direct peer is configured"),
+        HandshakeState::None => ("no-wireguard-handshake", "direct peer has no handshake yet"),
+        HandshakeState::Stale => ("stale-wireguard-handshake", "wireguard handshake is stale"),
     }
 }
 
@@ -322,7 +253,6 @@ fn build_participation_rows(
     machines: &[MachineMembership],
     local_machine_id: &MachineId,
     handshake_by_key: &HashMap<PublicKey, HandshakeState>,
-    membership_by_ip: &HashMap<IpAddr, CorrosionPeerState>,
     rtt_by_ip: &HashMap<IpAddr, RttState>,
 ) -> Vec<DoctorPeer> {
     let mut rows: Vec<DoctorPeer> = machines
@@ -333,14 +263,9 @@ fn build_participation_rows(
                 .get(&machine.public_key)
                 .copied()
                 .unwrap_or(HandshakeState::Absent);
-            let corrosion = membership_by_ip
-                .get(&IpAddr::V6(machine.overlay_ip.0))
-                .cloned()
-                .unwrap_or_default();
             let rtt = rtt_by_ip.get(&IpAddr::V6(machine.overlay_ip.0)).copied();
-            let (cause_code, cause_message) = cause_parts(handshake_state, &corrosion);
-            let healthy = corrosion.state == CorrosionState::Alive
-                || handshake_state == HandshakeState::Fresh;
+            let (cause_code, cause_message) = cause_parts(handshake_state);
+            let healthy = handshake_state == HandshakeState::Fresh;
             Some(DoctorPeer {
                 machine_id: machine.id.0.clone(),
                 role: diagnostic_role_name(role).to_string(),
@@ -350,9 +275,6 @@ fn build_participation_rows(
                 subnet: machine.subnet.map(|subnet| subnet.to_string()),
                 wg_state: handshake_state.as_str().to_string(),
                 probe_state: String::from("not-used"),
-                corrosion_state: corrosion.state.as_str().to_string(),
-                corrosion_actor_id: corrosion.actor_id,
-                corrosion_timestamp: corrosion.timestamp,
                 rtt_median_ms: rtt.map(|state| state.median_ms),
                 rtt_stddev_ms: rtt.map(|state| state.stddev_ms),
                 cause_code: cause_code.to_string(),
@@ -371,38 +293,6 @@ enum HandshakeState {
     Stale,
     None,
     Absent,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CorrosionState {
-    Alive,
-    Suspect,
-    Down,
-    Unknown,
-}
-
-impl CorrosionState {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Alive => "alive",
-            Self::Suspect => "suspect",
-            Self::Down => "down",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-struct CorrosionPeerState {
-    state: CorrosionState,
-    actor_id: Option<String>,
-    timestamp: Option<u64>,
-}
-
-impl Default for CorrosionState {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -443,28 +333,6 @@ fn handshake_state_map(device_peers: &[DevicePeer]) -> HashMap<PublicKey, Handsh
             (
                 peer.public_key.clone(),
                 handshake_state(now, peer.last_handshake),
-            )
-        })
-        .collect()
-}
-
-fn membership_state_map(
-    observations: &[PeerMembershipObservation],
-) -> HashMap<IpAddr, CorrosionPeerState> {
-    observations
-        .iter()
-        .map(|observation| {
-            (
-                observation.addr.ip(),
-                CorrosionPeerState {
-                    state: match observation.state {
-                        PeerMembershipState::Alive => CorrosionState::Alive,
-                        PeerMembershipState::Suspect => CorrosionState::Suspect,
-                        PeerMembershipState::Down => CorrosionState::Down,
-                    },
-                    actor_id: Some(observation.actor_id.clone()),
-                    timestamp: Some(observation.timestamp),
-                },
             )
         })
         .collect()
@@ -533,9 +401,9 @@ mod tests {
     use ployz_orchestrator::mesh::driver::WireguardDriver;
     use ployz_orchestrator::mesh::wireguard::MemoryWireGuard;
     use ployz_runtime_api::Identity;
+    use ployz_store_api::PeerRttObservation;
     use ployz_store_api::StoreDriver;
     use ployz_store_api::memory::{MemoryService, MemoryStore};
-    use ployz_store_api::{PeerMembershipObservation, PeerMembershipState, PeerRttObservation};
     use ployz_types::model::{
         MachineId, MachineLifecycle, MachineRole, MachineTopology, NetworkLifecycle, OverlayIp,
         PublicKey,
@@ -586,31 +454,27 @@ mod tests {
                 && peer.role == "blocking"
                 && peer.store_lifecycle == "active"
                 && peer.wg_state == "absent"
-                && peer.corrosion_state == "unknown"
-                && peer.cause_code == "no-corrosion-membership-no-direct-peer"
+                && peer.cause_code == "no-direct-peer"
         }));
-        assert!(payload.peers.iter().any(|peer| {
-            peer.machine_id == "stale-peer"
-                && peer.wg_state == "stale"
-                && peer.corrosion_state == "unknown"
-        }));
+        assert!(
+            payload
+                .peers
+                .iter()
+                .any(|peer| { peer.machine_id == "stale-peer" && peer.wg_state == "stale" })
+        );
         assert!(response.message.contains("lifecycle: blocked"));
         assert!(response.message.contains("blocking peers:"));
         assert!(response.message.lines().any(|line| {
             line.contains("peer")
                 && line.contains("store=active")
-                && line.contains("corrosion=unknown")
                 && line.contains("wg=absent")
                 && line.contains("rtt=none")
-                && line.contains(
-                    "cause=no corrosion membership observation and no direct peer is configured",
-                )
+                && line.contains("cause=no direct peer is configured")
         }));
         assert!(response.message.contains("all peers:"));
         assert!(response.message.lines().any(|line| {
             line.contains("stale-peer")
                 && line.contains("store=active")
-                && line.contains("corrosion=unknown")
                 && line.contains("wg=stale")
         }));
         assert!(!response.message.contains("probe="));
@@ -646,7 +510,6 @@ mod tests {
             peer.machine_id == "peer"
                 && !peer.blocking
                 && peer.wg_state == "fresh"
-                && peer.corrosion_state == "unknown"
                 && peer.cause_code == "fresh-wireguard-handshake"
         }));
         assert!(response.message.contains("lifecycle: healthy"));
@@ -655,7 +518,6 @@ mod tests {
         assert!(response.message.lines().any(|line| {
             line.contains("peer")
                 && line.contains("store=active")
-                && line.contains("corrosion=unknown")
                 && line.contains("wg=fresh")
                 && line.contains("rtt=none")
         }));
@@ -663,7 +525,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn doctor_projects_corrosion_membership_rtt_and_wireguard_state() {
+    async fn doctor_projects_rtt_and_wireguard_state() {
         let local_record =
             test_machine_record("joiner5", MachineLifecycle::Standby, PublicKey([1; 32]));
         let mut peer_record =
@@ -671,12 +533,6 @@ mod tests {
         peer_record.overlay_ip = OverlayIp("fd00::2".parse().expect("valid overlay"));
         let machines = vec![local_record.clone(), peer_record.clone()];
         let peer_addr = SocketAddr::new(IpAddr::V6(peer_record.overlay_ip.0), 51001);
-        let memberships = vec![PeerMembershipObservation {
-            addr: peer_addr,
-            actor_id: String::from("actor-2"),
-            state: PeerMembershipState::Alive,
-            timestamp: 123,
-        }];
         let rtts = vec![PeerRttObservation {
             addr: peer_addr,
             rtts_ms: vec![120, 140, 160],
@@ -686,24 +542,19 @@ mod tests {
             machines.as_slice(),
             &local_record,
             &[],
-            memberships.as_slice(),
             rtts.as_slice(),
             &local_record.endpoints,
             true,
         );
         let report = render_doctor_report(&payload);
 
-        assert_eq!(payload.overall.lifecycle, "healthy");
+        assert_eq!(payload.overall.lifecycle, "blocked");
         assert!(payload.peers.iter().any(|peer| {
             peer.machine_id == "peer"
-                && peer.corrosion_state == "alive"
-                && peer.corrosion_actor_id.as_deref() == Some("actor-2")
-                && peer.corrosion_timestamp == Some(123)
                 && peer.rtt_median_ms == Some(140.0)
-                && peer.cause_code == "corrosion-alive"
+                && peer.cause_code == "no-direct-peer"
         }));
-        assert!(report.contains("lifecycle: healthy"));
-        assert!(report.contains("corrosion=alive"));
+        assert!(report.contains("lifecycle: blocked"));
         assert!(report.contains("wg=absent"));
         assert!(report.contains("rtt=140ms±16.3ms"));
         assert!(!report.contains("probe="));

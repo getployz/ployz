@@ -79,6 +79,6 @@ fn doctor_has_healthy_peer(report: &str, peer_name: &str) -> Result<bool> {
             peer.machine_id == peer_name
                 && !peer.blocking
                 && peer.wg_state != "absent"
-                && (peer.corrosion_state == "alive" || peer.wg_state == "fresh")
+                && peer.wg_state == "fresh"
         }))
 }

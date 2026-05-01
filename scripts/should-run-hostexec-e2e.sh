@@ -74,7 +74,7 @@ fi
 
 for path in "${changed_files[@]}"; do
   case "${path}" in
-    .github/workflows/hostexec-e2e.yml|Cargo.toml|Cargo.lock|.corrosion-version|.nats-version|ployz.sh|Dockerfile.e2e-node|Dockerfile.payload-builder|scripts/build-install-payload.sh|scripts/install-ebpf-bytecode.sh|packaging/e2e/*|packaging/systemd/*|ebpf/*)
+    .github/workflows/hostexec-e2e.yml|Cargo.toml|Cargo.lock|.nats-version|ployz.sh|Dockerfile.e2e-node|Dockerfile.payload-builder|scripts/build-install-payload.sh|scripts/install-ebpf-bytecode.sh|packaging/e2e/*|packaging/systemd/*|ebpf/*)
       emit_true "hostexec e2e enabled: critical input changed (${path})"
       ;;
   esac

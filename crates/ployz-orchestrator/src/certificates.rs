@@ -17,8 +17,8 @@ use x509_parser::pem::parse_x509_pem;
 pub const DEFAULT_ACME_DIRECTORY_URL: &str = "https://acme-v02.api.letsencrypt.org/directory";
 const CERT_VALIDITY_FALLBACK_SECS: u64 = 90 * 24 * 60 * 60;
 pub const CHALLENGE_TTL_SECS: u64 = 15 * 60;
-// Finalization runs in the background, so this can cover unusually slow
-// Corrosion replication before reachable peers must observe the HTTP-01 row.
+// Finalization runs in the background, so this can cover unusually slow store
+// propagation before reachable peers must observe the HTTP-01 row.
 pub const HTTP01_CHALLENGE_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 const HTTP01_CHALLENGE_VISIBILITY_POLL: Duration = Duration::from_millis(100);
 pub const HTTP01_GATEWAY_SNAPSHOT_SETTLE: Duration = Duration::from_secs(1);
@@ -409,11 +409,10 @@ where
         }
     };
 
-    // Re-read inside the lock. Corrosion is CRDT-replicated and offers no
-    // native CAS, so the row we were handed by `start_pending_orders` may
-    // already be stale: another daemon could have raced ahead while we were
-    // waiting on the cluster lock. The lock-bound re-read is what makes
-    // this critical section publish-coherent.
+    // Re-read inside the lock. The row we were handed by `start_pending_orders`
+    // may already be stale: another daemon could have raced ahead while we were
+    // waiting on the cluster lock. The lock-bound re-read is what makes this
+    // critical section publish-coherent.
     // Keep a single lock-release point, similar to Go's `defer`: everything in
     // this critical section exits through `'under_lock`, then we release.
     let warning =
@@ -997,9 +996,8 @@ mod tests {
     //      reconciler can read the still-Pending row in the gap, acquire
     //      the (released) lock, and create a duplicate order.
     //
-    //   2. After acquiring the lock, the row must be re-read; Corrosion
-    //      replicates as a CRDT and offers no native CAS, so the snapshot
-    //      handed in by `start_pending_orders` may already be stale.
+    //   2. After acquiring the lock, the row must be re-read, because the
+    //      snapshot handed in by `start_pending_orders` may already be stale.
     //      A row that is no longer Pending/Failed/RenewalDue must not
     //      trigger a new ACME order.
     // -------------------------------------------------------------------
