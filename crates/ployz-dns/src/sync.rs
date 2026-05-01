@@ -62,8 +62,6 @@ where
             replace_dns_snapshot(&state, &snapshot);
             if let Err(error) = batch.ack().await {
                 warn!(?error, "dns routing batch ack failed after snapshot swap");
-                crate::metrics::set_store_sync_healthy("routing", false);
-                break;
             }
         }
         crate::metrics::set_store_sync_healthy("routing", false);

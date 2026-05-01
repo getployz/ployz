@@ -174,10 +174,7 @@ where
                             break;
                         }
                     };
-                    if apply_routing_batch(&mut projector, batch, &snapshot).await {
-                        set_store_sync_generation_healthy(false);
-                        break;
-                    }
+                    apply_routing_batch(&mut projector, batch, &snapshot).await;
                 }
                 event = cert_rx.recv() => {
                     let Some(event) = event else {
@@ -268,7 +265,7 @@ async fn apply_routing_batch(
     projector: &mut GatewayProjector,
     batch: RoutingEventBatch,
     snapshot: &SharedSnapshot,
-) -> bool {
+) {
     let batch_id = batch.batch_id.clone();
     let mut deltas = Vec::new();
     let mut candidate = projector.clone();
@@ -282,7 +279,7 @@ async fn apply_routing_batch(
                     batch_id = %batch_id,
                     "failed to apply gateway routing batch; keeping previous snapshot"
                 );
-                return true;
+                return;
             }
         }
     }
@@ -292,9 +289,7 @@ async fn apply_routing_batch(
     }
     if let Err(error) = batch.ack().await {
         warn!(?error, batch_id = %batch_id, "gateway routing batch ack failed");
-        return true;
     }
-    false
 }
 
 fn apply_certificate_batch(
@@ -596,31 +591,6 @@ mod tests {
 
         assert_eq!(ready, vec![record]);
         assert!(!stream_failed);
-    }
-
-    #[tokio::test]
-    async fn routing_ack_failure_is_stream_failure() {
-        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-        let batch = RoutingEventBatch::with_ack("batch-1", None, Vec::new(), ack_tx);
-
-        let apply = tokio::spawn(async move {
-            let mut projector = GatewayProjector::new(RoutingState {
-                machines: Vec::new(),
-                revisions: Vec::new(),
-                releases: Vec::new(),
-                instances: Vec::new(),
-            })
-            .expect("empty routing state projects");
-            let snapshot = SharedSnapshot::new(projector.snapshot_value());
-            apply_routing_batch(&mut projector, batch, &snapshot).await
-        });
-        ack_rx
-            .await
-            .expect("ack request should arrive")
-            .send(Err(ployz_types::Error::operation("test_ack", "failed")))
-            .expect("ack result should send");
-
-        assert!(apply.await.expect("apply task should not panic"));
     }
 
     #[test]
