@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::daemon::DaemonState;
 use ployz_api::{
@@ -22,6 +23,9 @@ use ployz_types::model::{
     DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineMembership,
 };
 use ployz_types::spec::{DeployManifest, Namespace, ServiceSpec, VolumeDeclaration};
+
+const DEPLOY_LOCK_TTL: Duration = Duration::from_secs(30 * 60);
+const DEPLOY_LOCK_RENEW_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
 impl DaemonState {
     fn overlay_network_name(&self) -> Option<String> {
@@ -116,7 +120,7 @@ impl DaemonState {
             &manifest.namespace,
             &ReservationId::random().0,
             &self.identity.machine_id,
-            std::time::Duration::from_secs(30 * 60),
+            DEPLOY_LOCK_TTL,
         )
         .await
         {
@@ -145,7 +149,7 @@ impl DaemonState {
             ployz_nats::coord::rpc::NatsNodeRpcClient::new(nats_store.client().clone()),
         );
 
-        let result = apply_with_certificate_coordination(
+        let apply = apply_with_certificate_coordination(
             &active.mesh.store,
             &participant_client,
             &self.identity.machine_id,
@@ -155,8 +159,33 @@ impl DaemonState {
             challenge_readiness,
             issuer_factory,
             &prober,
-        )
-        .await;
+        );
+        tokio::pin!(apply);
+        let mut deploy_lock_renewer = tokio::spawn(renew_deploy_lock(
+            deploy_lock.clone(),
+            DEPLOY_LOCK_TTL,
+            DEPLOY_LOCK_RENEW_INTERVAL,
+        ));
+        let result = tokio::select! {
+            result = &mut apply => result,
+            renewal = &mut deploy_lock_renewer => {
+                let message = match renewal {
+                    Ok(Ok(())) => "deploy lock renewal task exited before apply completed".to_string(),
+                    Ok(Err(error)) => error.to_string(),
+                    Err(error) => format!("deploy lock renewal task failed: {error}"),
+                };
+                if let Err(error) = deploy_lock.release().await {
+                    tracing::warn!(%error, "failed to release NATS deploy lock after renewal failure");
+                }
+                return self.err("DEPLOY_LOCK_FAILED", message);
+            }
+        };
+        deploy_lock_renewer.abort();
+        if let Err(error) = deploy_lock_renewer.await
+            && !error.is_cancelled()
+        {
+            tracing::warn!(%error, "deploy lock renewal task failed during shutdown");
+        }
         if let Err(error) = deploy_lock.release().await {
             tracing::warn!(%error, "failed to release NATS deploy lock");
         }
@@ -311,6 +340,20 @@ impl DaemonState {
             overlay_dns_server,
             storage_driver,
         ))
+    }
+}
+
+async fn renew_deploy_lock(
+    deploy_lock: NatsDeployLock,
+    ttl: Duration,
+    interval: Duration,
+) -> ployz_types::Result<()> {
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ticker.tick().await;
+    loop {
+        ticker.tick().await;
+        deploy_lock.renew(ttl).await?;
     }
 }
 
