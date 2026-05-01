@@ -9,7 +9,6 @@ on:
       - "Cargo.lock"
       - "crates/ployz-dns/**"
       - "crates/ployz-sdk/**"
-      - "crates/ployz-corrosion/**"
       - "Dockerfile.dns"
   workflow_dispatch:
 
