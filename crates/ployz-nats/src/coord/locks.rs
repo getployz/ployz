@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_nats::jetstream::kv;
+use async_nats::{HeaderMap, header};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::MachineId;
 use ployz_types::spec::Namespace;
@@ -11,6 +12,7 @@ use tokio::sync::Mutex;
 
 use crate::NatsStore;
 use crate::buckets::LOCKS_BUCKET;
+use crate::config;
 use crate::store::kv_json;
 use crate::subjects;
 
@@ -150,6 +152,7 @@ pub fn release_is_allowed(
 
 #[derive(Clone)]
 pub struct NatsLocks {
+    jetstream: async_nats::jetstream::Context,
     bucket: kv::Store,
 }
 
@@ -157,7 +160,10 @@ impl NatsLocks {
     pub async fn new(store: &NatsStore) -> Result<Self> {
         let bucket =
             kv_json::get_bucket(store.jetstream(), LOCKS_BUCKET, "nats_locks_bucket").await?;
-        Ok(Self { bucket })
+        Ok(Self {
+            jetstream: store.jetstream().clone(),
+            bucket,
+        })
     }
 
     pub async fn acquire(
@@ -176,7 +182,7 @@ impl NatsLocks {
         };
         let payload = serde_json::to_vec(&value)
             .map_err(|error| Error::operation("nats_lock_encode", error.to_string()))?;
-        let revision = match self.bucket.create(key, payload.clone().into()).await {
+        let revision = match self.update_with_ttl(key, payload.clone(), 0, ttl).await {
             Ok(revision) => revision,
             Err(create_error) => {
                 let Some(entry) = self.bucket.entry(key).await.map_err(|error| {
@@ -201,8 +207,7 @@ impl NatsLocks {
                     }
                     kv::Operation::Delete | kv::Operation::Purge => {}
                 }
-                self.bucket
-                    .update(key, payload.into(), entry.revision)
+                self.update_with_ttl(key, payload, entry.revision, ttl)
                     .await
                     .map_err(|error| {
                         Error::operation(
@@ -215,7 +220,7 @@ impl NatsLocks {
         Ok(Lease::new(key, revision, value))
     }
 
-    pub async fn renew(&self, lease: &Lease, _ttl: Duration, expires_at: u64) -> Result<Lease> {
+    pub async fn renew(&self, lease: &Lease, ttl: Duration, expires_at: u64) -> Result<Lease> {
         let value = LeaseValue {
             owner: lease.value.owner.clone(),
             nonce: lease.value.nonce.clone(),
@@ -224,8 +229,7 @@ impl NatsLocks {
         let payload = serde_json::to_vec(&value)
             .map_err(|error| Error::operation("nats_lock_encode", error.to_string()))?;
         let revision = self
-            .bucket
-            .update(&lease.key, payload.into(), lease.revision)
+            .update_with_ttl(&lease.key, payload, lease.revision, ttl)
             .await
             .map_err(|error| Error::operation("nats_lock_renew", format!("{error:?}")))?;
         Ok(Lease::new(lease.key.clone(), revision, value))
@@ -258,11 +262,90 @@ impl NatsLocks {
             .await
             .map_err(|error| Error::operation("nats_lock_release", format!("{error:?}")))
     }
+
+    async fn update_with_ttl(
+        &self,
+        key: &str,
+        value: Vec<u8>,
+        revision: u64,
+        ttl: Duration,
+    ) -> Result<u64> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::NATS_EXPECTED_LAST_SUBJECT_SEQUENCE,
+            revision.to_string(),
+        );
+        headers.insert(header::NATS_MESSAGE_TTL, ttl.as_secs().to_string());
+        self.jetstream
+            .publish_with_headers(kv_put_subject(&self.bucket, key), headers, value.into())
+            .await
+            .map_err(|error| Error::operation("nats_lock_publish", format!("{error:?}")))?
+            .await
+            .map(|ack| ack.sequence)
+            .map_err(|error| Error::operation("nats_lock_publish_ack", format!("{error:?}")))
+    }
+}
+
+fn kv_put_subject(bucket: &kv::Store, key: &str) -> String {
+    kv_put_subject_parts(
+        bucket.use_jetstream_prefix,
+        bucket.put_prefix.as_deref(),
+        &bucket.prefix,
+        key,
+    )
+}
+
+fn kv_put_subject_parts(
+    use_jetstream_prefix: bool,
+    put_prefix: Option<&str>,
+    prefix: &str,
+    key: &str,
+) -> String {
+    let mut subject = String::new();
+    if use_jetstream_prefix {
+        subject.push_str("$JS.");
+        subject.push_str(config::HUB_DOMAIN);
+        subject.push_str(".API.");
+    }
+    subject.push_str(put_prefix.unwrap_or(prefix));
+    subject.push_str(key);
+    subject
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_guard_requires_revision_and_nonce() {
+        let current = LeaseValue {
+            owner: "node-a".into(),
+            nonce: "nonce-a".into(),
+            expires_at: 10,
+        };
+        let guard = ReleaseGuard {
+            key: "locks.deploy.default".into(),
+            expected_revision: 7,
+            expected_nonce: "nonce-a".into(),
+        };
+
+        assert!(release_is_allowed(7, &current, &guard));
+        assert!(!release_is_allowed(8, &current, &guard));
+
+        let stale_nonce = LeaseValue {
+            nonce: "nonce-b".into(),
+            ..current
+        };
+        assert!(!release_is_allowed(7, &stale_nonce, &guard));
+    }
+
+    #[test]
+    fn kv_subject_uses_hub_prefix_for_domain_scoped_bucket() {
+        assert_eq!(
+            kv_put_subject_parts(true, None, "$KV.locks.", "locks.deploy.default"),
+            "$JS.hub.API.$KV.locks.locks.deploy.default"
+        );
+    }
 
     #[test]
     fn stale_holder_cannot_release_newer_lease() {

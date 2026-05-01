@@ -193,9 +193,10 @@ configurable history). Operations:
 
 Per-message TTL (2.11+) on KV: write with `Nats-TTL: <duration>` to set a
 per-key expiry. Critically, the TTL **applies to the new revision**, so
-`update_with_ttl` (where the API exposes it) refreshes the lease window —
-the right primitive for renewable leases. async-nats had been behind on
-this; check the current version.
+CAS updates that include `Nats-TTL` refresh the lease window. ployz lock
+renewals publish the same KV update headers as async-nats and add `Nats-TTL`
+explicitly so the broker-side expiry moves forward with each successful
+revision.
 
 Limit markers on KV: when a value expires by TTL, the broker can emit a
 delete marker with `Nats-Marker-Reason: MaxAge` so watchers see why a
@@ -598,13 +599,9 @@ Tracked in code comments and the implementation plan. Highlights:
 3. Deploy projections cache the last replayed stream sequence and extend from
    the next commit when the cached sequence is still within the retained stream
    window. They fall back to full replay only after compaction or cache loss.
-4. Lock TTL doesn't refresh on `kv.update` because the current async-nats
-   API doesn't expose update-with-TTL — workaround is a delete+create
-   cycle (race risk) or wait for the client API to catch up to 2.11+
-   server features.
-5. Standalone gateway and DNS now use NATS-backed store subscriptions through
+4. Standalone gateway and DNS now use NATS-backed store subscriptions through
    their `main.rs` wrappers.
-6. Coordination layer — KV lock helpers and node RPC are now the daemon command
+5. Coordination layer — KV lock helpers and node RPC are now the daemon command
    path. `PendingReservations`, `OverlayIssuanceCoordinator`, the peer TCP RPC
    client, and the peer control listener have been removed. Remaining direct TCP
    is narrow data movement such as ZFS send/receive payload streams.
