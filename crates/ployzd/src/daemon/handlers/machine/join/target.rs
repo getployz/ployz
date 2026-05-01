@@ -19,8 +19,9 @@ use super::coordination::{
     release_reserved_subnet,
 };
 use super::remote::{
-    ExpectedSubnetState, nats_rpc_expect_ok, remote_daemon_identity, remote_rpc_expect_ok,
-    remote_self_record, wait_for_machine_projection, wait_for_nats_ready, wait_for_remote_ready,
+    ExpectedSubnetState, nats_rpc_expect_ok, nats_self_record, remote_daemon_identity,
+    remote_rpc_expect_ok, remote_self_record, wait_for_machine_projection,
+    wait_for_nats_command_responder, wait_for_nats_ready, wait_for_remote_ready,
 };
 use super::rollback::rollback_machine_add_target;
 use crate::mesh_state::bootstrap::refresh_bootstrap_peer_records_from_store;
@@ -159,8 +160,24 @@ pub(super) async fn run_machine_add_target(
     let _ = operation_store.update_stage(&mut operation, stage.to_string());
     tracing::info!(%target, "machine add target: remote join complete");
 
+    tracing::info!(%target, joiner_id = %remote_identity.machine_id, "machine add target: waiting for NATS command responder");
+    if let Err(err) = wait_for_joiner_command_responder(&context, &bootstrap_record).await {
+        tracing::warn!(%target, joiner_id = %remote_identity.machine_id, error = %err, "machine add target: NATS command responder failed");
+        let _ = release_reserved_subnet(&mut subnet_claim).await;
+        let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
+        let _ = operation_store.update_status(
+            &mut operation,
+            MachineOperationStatus::Failed,
+            Some(err.clone()),
+        );
+        return MachineAddTargetResult::Failed {
+            target,
+            failure: MachineAddFailure::Ready { reason: err },
+        };
+    }
+
     tracing::info!(%target, "machine add target: self-record starting");
-    let mut record = match remote_self_record(&target, &context.ssh_options).await {
+    let mut record = match joiner_self_record(&context, &target, &bootstrap_record).await {
         Ok(record) => record,
         Err(err) => {
             let _ = release_reserved_subnet(&mut subnet_claim).await;
@@ -223,7 +240,7 @@ pub(super) async fn run_machine_add_target(
         };
     }
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: waiting for remote ready");
-    if let Err(err) = wait_for_remote_ready(&target, &context.ssh_options).await {
+    if let Err(err) = wait_for_joiner_ready(&context, &target, &record).await {
         let _ = release_reserved_subnet(&mut subnet_claim).await;
         tracing::warn!(
             %target,
@@ -245,29 +262,6 @@ pub(super) async fn run_machine_add_target(
     stage = MachineAddStage::Ready;
     let _ = operation_store.update_stage(&mut operation, stage.to_string());
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: remote ready");
-
-    tracing::info!(%target, joiner_id = %machine_id, "machine add target: waiting for NATS command responder");
-    let joiner_ref = MachineMembership::seed(
-        machine_id.clone(),
-        record.public_key.clone(),
-        record.overlay_ip,
-        Some(subnet_claim.subnet),
-        vec![],
-    );
-    if let Err(err) = wait_for_joiner_command_ready(&context, &joiner_ref).await {
-        tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: NATS command responder failed");
-        let _ = release_reserved_subnet(&mut subnet_claim).await;
-        let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
-        let _ = operation_store.update_status(
-            &mut operation,
-            MachineOperationStatus::Failed,
-            Some(err.clone()),
-        );
-        return MachineAddTargetResult::Failed {
-            target,
-            failure: MachineAddFailure::Enable { reason: err },
-        };
-    }
 
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: activating lifecycle");
     if let Err(err) = activate_joiner_lifecycle(&context, &record, subnet_claim.subnet()).await {
@@ -431,12 +425,12 @@ async fn publish_bootstrap_membership_seed(
         .map_err(|err| format!("publish bootstrap membership seed: {err}"))
 }
 
-async fn wait_for_joiner_command_ready(
+async fn wait_for_joiner_command_responder(
     context: &MachineAddContext,
     machine: &MachineMembership,
 ) -> Result<(), String> {
     if let Some(client) = &context.nats_rpc {
-        return wait_for_nats_ready(client, machine).await;
+        return wait_for_nats_command_responder(client, machine).await;
     }
 
     #[cfg(test)]
@@ -450,6 +444,28 @@ async fn wait_for_joiner_command_ready(
         let _ = machine;
         Err("NATS RPC client unavailable".into())
     }
+}
+
+async fn joiner_self_record(
+    context: &MachineAddContext,
+    target: &str,
+    machine: &MachineMembership,
+) -> Result<MachineMembership, String> {
+    if let Some(client) = &context.nats_rpc {
+        return nats_self_record(client, machine).await;
+    }
+    remote_self_record(target, &context.ssh_options).await
+}
+
+async fn wait_for_joiner_ready(
+    context: &MachineAddContext,
+    target: &str,
+    machine: &MachineMembership,
+) -> Result<(), String> {
+    if let Some(client) = &context.nats_rpc {
+        return wait_for_nats_ready(client, machine).await;
+    }
+    wait_for_remote_ready(target, &context.ssh_options).await
 }
 
 async fn activate_joiner_lifecycle(
