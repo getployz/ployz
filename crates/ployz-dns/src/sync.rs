@@ -34,15 +34,26 @@ where
 {
     loop {
         let consumer_id = format!("dns.{}", machine_id.0);
-        let (mut state, mut routing_rx) = store
+        let (mut state, mut routing_rx) = match store
             .subscribe_routing_batches(RoutingSubscription::durable(consumer_id))
-            .await?;
+            .await
+        {
+            Ok(subscription) => subscription,
+            Err(error) => {
+                crate::metrics::set_store_sync_healthy("routing", false);
+                warn!(?error, "dns routing subscription setup failed; retrying");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+        };
         replace_dns_snapshot(&state, &snapshot);
+        crate::metrics::set_store_sync_healthy("routing", true);
 
         while let Some(batch) = routing_rx.recv().await {
             let batch = match batch {
                 Ok(batch) => batch,
                 Err(error) => {
+                    crate::metrics::set_store_sync_healthy("routing", false);
                     warn!(%error, "dns routing event stream failed; resubscribing");
                     break;
                 }
@@ -53,6 +64,7 @@ where
                 warn!(?error, "dns routing batch ack failed after snapshot swap");
             }
         }
+        crate::metrics::set_store_sync_healthy("routing", false);
         warn!("dns routing event stream closed; resubscribing");
         tokio::time::sleep(Duration::from_secs(1)).await;
     }

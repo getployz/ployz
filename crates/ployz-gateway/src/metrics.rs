@@ -9,6 +9,7 @@ use crate::routes::GatewaySnapshot;
 static GATEWAY_REQUESTS_TOTAL: OnceLock<IntCounterVec> = OnceLock::new();
 static GATEWAY_REQUEST_DURATION: OnceLock<HistogramVec> = OnceLock::new();
 static GATEWAY_ROUTES: OnceLock<IntGaugeVec> = OnceLock::new();
+static GATEWAY_STORE_SYNC_HEALTHY: OnceLock<IntGaugeVec> = OnceLock::new();
 
 #[cfg(test)]
 pub(crate) static ROUTE_METRICS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -75,6 +76,26 @@ pub fn update_route_count_values(http_routes: usize, tcp_routes: usize) {
     let tcp_count = i64::try_from(tcp_routes).unwrap_or(i64::MAX);
     metric.with_label_values(&["http"]).set(http_count);
     metric.with_label_values(&["tcp"]).set(tcp_count);
+}
+
+pub fn set_store_sync_healthy(stream: &str, healthy: bool) {
+    let metric = register_metric(&GATEWAY_STORE_SYNC_HEALTHY, || {
+        let metric = IntGaugeVec::new(
+            Opts::new(
+                "ployz_gateway_store_sync_healthy",
+                "Whether ployz-gateway store subscriptions are current.",
+            ),
+            &["stream"],
+        )
+        .expect("gateway store sync gauge should be valid");
+        prometheus::default_registry()
+            .register(Box::new(metric.clone()))
+            .expect("gateway store sync gauge should register");
+        metric
+    });
+    metric
+        .with_label_values(&[stream])
+        .set(if healthy { 1 } else { 0 });
 }
 
 fn bool_label(value: bool) -> &'static str {
