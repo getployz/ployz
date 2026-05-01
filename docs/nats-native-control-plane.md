@@ -212,6 +212,7 @@ The important split:
 | KV/stream write at R=3 cross-region | Raft quorum across WAN | WAN RTT to fastest quorum | high tail latency; should require explicit operator acceptance |
 | NATS node request/reply same region | core NATS route/leaf path | round trip to target daemon | no durable write unless command performs one |
 | NATS request/reply to offline node | core NATS no responder or timeout | subscription absence or timeout | foreground failure; caller decides retry/abort |
+| NATS node listener subscription loss | daemon edge task | local NATS client reconnect/resubscribe | daemon resubscribes; callers see no responder/timeout while absent |
 | Work queue dispatch | JetStream write + consumer delivery | stream write plus consumer pull/ack | exactly-one-worker behavior, not zero-latency signaling |
 | Scheduled message | broker schedule | schedule time plus dispatch latency | daemon restart does not lose timer |
 | Mirror read | local mirror stream/KV | mirror lag and local read | fast but not authoritative for writes |

@@ -142,7 +142,7 @@ The key domains:
 - **store** — distributed state (NATS backend, memory backend, bootstrap, network config)
 - **network** — non-WireGuard networking (Docker bridge, eBPF classifiers, endpoint discovery)
 - **services** — long-lived sidecar management (supervisor lifecycle, gateway, DNS)
-- **deploy** — workload deployment (preview/apply coordination, container CRUD, remote sessions)
+- **deploy** — workload deployment (preview/apply coordination, container CRUD, NATS participant commands)
 - **daemon** — request handling, mesh startup orchestration
 - **node** — machine identity
 - **transport** — Unix socket listener
