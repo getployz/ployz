@@ -212,6 +212,10 @@ The important split:
   stale routing projection from a healthy data-plane process. The metrics also
   expose when the current health state began and a cumulative failure count, so
   stale projections have age and trend signals instead of a bare boolean.
+  Gateway routing, certificate, and ACME subscriptions are one snapshot
+  generation: if any stream setup or delivery fails, the generation is dropped
+  and all three streams are marked stale until a fresh snapshot and all
+  subscriptions are established again.
 - The daemon's NATS node RPC listener records its own subscription freshness in
   `nats-node-rpc-health.json` under the network data directory. `ployzctl
   status` reports that as `control_plane component=node_rpc_listener`, including
