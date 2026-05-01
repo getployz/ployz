@@ -294,6 +294,8 @@ impl RoutingSnapshotReader for NatsStore {
                     }
                     Err(error) => {
                         warn!(?error, "NATS routing batch decode failed");
+                        let _ = tx.send(Err(error)).await;
+                        break;
                     }
                 }
             }
