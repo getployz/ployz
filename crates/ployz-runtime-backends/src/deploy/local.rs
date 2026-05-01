@@ -762,8 +762,18 @@ mod tests {
         // Construct a runtime via the test seam so the no-zfs_root path is
         // exercised through start_candidate, not just the inner resolver.
         // resolve_mounts short-circuits before any Docker call, so the engine
-        // here is never reached at runtime.
-        let docker = Docker::connect_with_socket_defaults().expect("bollard client init");
+        // here is never reached at runtime. We build the Docker handle via
+        // `connect_with_http` instead of `connect_with_socket_defaults` so the
+        // test still runs in sandboxes/CI without `/var/run/docker.sock`;
+        // `connect_with_http` only builds an HTTP client and never touches
+        // the network until a request is issued. Don't switch back unless the
+        // test starts actually exercising Docker.
+        let docker = Docker::connect_with_http(
+            "http://127.0.0.1:1",
+            1,
+            bollard::API_DEFAULT_VERSION,
+        )
+        .expect("placeholder docker handle");
         let engine = ContainerEngine::new(docker);
         let runtime = LocalDeployRuntime::from_engine(engine, None, None, None);
 
