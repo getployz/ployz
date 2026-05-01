@@ -2,7 +2,9 @@ use ipnet::Ipv4Net;
 use ployz_api::{DaemonRequest, MachineTransitionGoal, MeshBootstrapRequest};
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_store_api::MachineRegistry;
-use ployz_types::model::{MachineLifecycle, MachineMembership, management_ip_from_key};
+use ployz_types::model::{
+    MachineLifecycle, MachineMembership, MachineRole, management_ip_from_key,
+};
 
 use super::super::operations::{
     MachineOperationRecord, MachineOperationStatus, MachineOperationStore,
@@ -71,13 +73,14 @@ pub(super) async fn run_machine_add_target(
         }
     };
     let pre_admitted_overlay_ip = management_ip_from_key(&remote_identity.public_key);
-    let pre_admitted_record = MachineMembership::seed(
+    let mut pre_admitted_record = MachineMembership::seed(
         remote_identity.machine_id.clone(),
         remote_identity.public_key.clone(),
         pre_admitted_overlay_ip,
         Some(subnet_claim.subnet),
         bootstrap_wireguard_endpoints(&target),
     );
+    pre_admitted_record.role = MachineRole::Mirror;
     joiner_id = Some(remote_identity.machine_id.clone());
     operation.artifacts.machine_id = Some(remote_identity.machine_id.clone());
     let _ = operation_store.save(&operation);

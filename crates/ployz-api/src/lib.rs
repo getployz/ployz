@@ -169,7 +169,6 @@ pub enum DaemonRequest {
     },
     MeshStart {
         network: String,
-        allow_disconnected_bootstrap: bool,
     },
     MeshStop {
         force: bool,
@@ -547,6 +546,7 @@ pub struct DoctorLocal {
     pub network: String,
     pub network_lifecycle: String,
     pub machine_lifecycle: String,
+    pub machine_role: String,
     pub config_subnet: Option<String>,
     pub record_subnet: Option<String>,
     pub runtime_running: bool,
@@ -559,6 +559,7 @@ pub struct DoctorLocal {
 pub struct DoctorPeer {
     pub machine_id: String,
     pub role: String,
+    pub machine_role: String,
     pub blocking: bool,
     pub store_lifecycle: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1059,6 +1060,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec![String::from("127.0.0.1:51820")],
             lifecycle: MachineLifecycle::Active,
+            role: ployz_types::model::MachineRole::StorageCandidate,
             created_at: 1,
             updated_at: 2,
             labels: BTreeMap::new(),

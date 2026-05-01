@@ -43,7 +43,6 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
     run.partition_groups(&founder_side, &peer_side)?;
     run.log_progress("wait peer connectivity to drop");
     wait_for_doctor_peer_status(run, "founder", "peer", "blocked", "active", "unreachable")?;
-    wait_for_doctor_peer_status(run, "peer", "founder", "blocked", "active", "unreachable")?;
 
     run.log_progress("clear partition");
     run.clear_partition_rules()?;
@@ -133,8 +132,8 @@ fn doctor_report_matches(
             && peer.wg_state != "absent"
             && peer.probe_state == "not-used"
             && match overall_lifecycle {
-                "healthy" => peer.corrosion_state == "alive" || peer.wg_state == "fresh",
-                "blocked" => peer.corrosion_state != "alive" && peer.wg_state != "fresh",
+                "healthy" => peer.wg_state == "fresh",
+                "blocked" => peer.wg_state != "fresh",
                 _ => false,
             }
     }))

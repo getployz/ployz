@@ -299,6 +299,7 @@ async fn machine_add_activates_joiner_lifecycle() {
         public_key: PublicKey([4; 32]),
         overlay_ip: "::1".parse().map(OverlayIp).expect("valid overlay"),
         topology: MachineTopology::local(),
+        role: MachineRole::Mirror,
         subnet: Some(expected_subnet),
         endpoints: vec!["203.0.113.10:51820".into()],
     }
@@ -389,6 +390,7 @@ async fn machine_add_requires_sync_connected_for_running_joiner() {
         public_key: PublicKey([5; 32]),
         overlay_ip: "fd00::5".parse().map(OverlayIp).expect("valid overlay"),
         topology: MachineTopology::local(),
+        role: MachineRole::Mirror,
         subnet: Some(expected_subnet),
         endpoints: vec!["203.0.113.11:51820".into()],
     }
@@ -739,7 +741,7 @@ async fn mesh_start_reactivates_local_machine_after_stop() {
     let down = state.handle_mesh_stop(true).await;
     assert!(down.ok, "{}", down.message);
 
-    let up = state.handle_mesh_start("alpha", false).await;
+    let up = state.handle_mesh_start("alpha").await;
     assert!(up.ok, "{}", up.message);
 
     let local = state
@@ -985,6 +987,7 @@ async fn machine_add_rejects_remote_subnet_mismatch_before_invite_consume() {
         public_key: PublicKey([14; 32]),
         overlay_ip: "fd00::14".parse().map(OverlayIp).expect("valid overlay"),
         topology: MachineTopology::local(),
+        role: MachineRole::Mirror,
         subnet: Some("10.210.99.0/24".parse().expect("valid subnet")),
         endpoints: vec!["203.0.113.14:51820".into()],
     }

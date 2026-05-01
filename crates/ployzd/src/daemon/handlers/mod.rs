@@ -253,13 +253,7 @@ impl DaemonState {
                     .await
             }
             DaemonRequest::MeshInit { network } => self.handle_mesh_init(&network).await,
-            DaemonRequest::MeshStart {
-                network,
-                allow_disconnected_bootstrap,
-            } => {
-                self.handle_mesh_start(&network, allow_disconnected_bootstrap)
-                    .await
-            }
+            DaemonRequest::MeshStart { network } => self.handle_mesh_start(&network).await,
             DaemonRequest::MeshStop { force } => self.handle_mesh_stop(force).await,
             DaemonRequest::MeshDestroy { network } => self.handle_mesh_destroy(&network).await,
             DaemonRequest::MeshPeerPrepareDestroy {

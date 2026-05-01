@@ -19,7 +19,7 @@ use ployz_runtime_backends::mesh::driver as mesh_backends;
 use ployz_runtime_backends::network::docker_bridge_network;
 use ployz_runtime_backends::storage::{TokioShellRunner, ZfsDriver};
 use ployz_store_api::StoreDriver;
-use ployz_types::model::{MachineId, OverlayIp};
+use ployz_types::model::{MachineId, MachineRole, OverlayIp};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExecutionBackend {
@@ -59,7 +59,7 @@ pub(crate) struct MeshBuildRequest<'a> {
     pub(crate) exposed_tcp_ports: &'a [u16],
     pub(crate) bootstrap: &'a [String],
     pub(crate) network_id: &'a str,
-    pub(crate) allow_disconnected_bootstrap: bool,
+    pub(crate) machine_role: MachineRole,
 }
 
 impl RuntimeProfile {
@@ -133,7 +133,7 @@ impl RuntimeProfile {
             exposed_tcp_ports,
             bootstrap,
             network_id,
-            allow_disconnected_bootstrap,
+            machine_role,
         } = request;
         let network = match self.execution_backend {
             ExecutionBackend::Memory => WireguardDriver::memory(),
@@ -161,18 +161,14 @@ impl RuntimeProfile {
                     network_dir,
                     bootstrap,
                     network_id,
-                    allow_disconnected_bootstrap,
+                    machine_role,
                     self.built_in_images.resolve(BuiltInImage::Nats),
                 )
                 .await?
             }
-            ExecutionBackend::Host => nats_host(
-                overlay_ip,
-                network_dir,
-                bootstrap,
-                network_id,
-                allow_disconnected_bootstrap,
-            )?,
+            ExecutionBackend::Host => {
+                nats_host(overlay_ip, network_dir, bootstrap, network_id, machine_role)?
+            }
         };
 
         let container_network = match (self.execution_backend, subnet) {

@@ -26,11 +26,6 @@ use crate::daemon::handlers::volume::transfer_listener;
 use crate::ipc::peer_listener;
 use crate::runtime_profile::MeshBuildRequest;
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct MeshStartOptions {
-    pub allow_disconnected_bootstrap: bool,
-}
-
 const PEER_RPC_PORT_OFFSET: u16 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,7 +55,6 @@ struct StartPlan {
     network_dir: PathBuf,
     bootstrap_peer_records: Vec<BootstrapPeerRecord>,
     bootstrap_addrs: Vec<String>,
-    allow_disconnected_bootstrap: bool,
     gateway_ports: Vec<u16>,
     remote_control_bind_addr: SocketAddr,
     peer_control_bind_addr: SocketAddr,
@@ -113,7 +107,7 @@ impl MeshStartTx {
                 exposed_tcp_ports: &exposed_tcp_ports,
                 bootstrap: &plan.bootstrap_addrs,
                 network_id: &self.config.id.0,
-                allow_disconnected_bootstrap: plan.allow_disconnected_bootstrap,
+                machine_role: self.config.machine_role,
             })
             .await
             .map_err(StartMeshError::NetworkDriver)?;
@@ -136,8 +130,7 @@ impl MeshStartTx {
             state.identity.machine_id.clone(),
             listen_port,
         )
-        .with_seed_records(seed_records)
-        .with_disconnected_bootstrap_allowed(plan.allow_disconnected_bootstrap);
+        .with_seed_records(seed_records);
 
         mesh.up()
             .await
@@ -391,7 +384,7 @@ impl DaemonState {
         let config_path = NetworkConfig::path(&self.data_dir, network);
         let net_config = NetworkConfig::load(&config_path)
             .map_err(|error| format!("load network config: {error}"))?;
-        self.start_mesh(net_config, MeshStartOptions::default())
+        self.start_mesh(net_config)
             .await
             .map_err(|error| error.to_string())
     }
@@ -399,9 +392,8 @@ impl DaemonState {
     pub async fn start_mesh(
         &mut self,
         net_config: NetworkConfig,
-        options: MeshStartOptions,
     ) -> Result<MeshStartSummary, StartMeshError> {
-        let plan = self.plan_mesh_start(&net_config, options)?;
+        let plan = self.plan_mesh_start(&net_config)?;
         tracing::info!(
             ?self.runtime_target,
             ?self.service_mode,
@@ -474,7 +466,7 @@ impl DaemonState {
                 exposed_tcp_ports: &exposed_tcp_ports,
                 bootstrap: &[],
                 network_id: &net_config.id.0,
-                allow_disconnected_bootstrap: false,
+                machine_role: net_config.machine_role,
             })
             .await
             .map_err(|error| format!("runtime components failed: {error}"))?;
@@ -566,7 +558,6 @@ impl DaemonState {
     fn plan_mesh_start(
         &self,
         net_config: &NetworkConfig,
-        options: MeshStartOptions,
     ) -> Result<StartPlan, StartMeshError> {
         let network_dir = self.network_dir(&net_config.name.0);
         let bootstrap_peer_records =
@@ -609,7 +600,6 @@ impl DaemonState {
             network_dir,
             bootstrap_peer_records,
             bootstrap_addrs,
-            allow_disconnected_bootstrap: options.allow_disconnected_bootstrap,
             gateway_ports,
             remote_control_bind_addr,
             peer_control_bind_addr,
@@ -680,7 +670,7 @@ mod tests {
     use crate::mesh_state::bootstrap::write_bootstrap_peer_records;
     use ployz_config::{RuntimeTarget, ServiceMode};
     use ployz_runtime_api::Identity;
-    use ployz_types::model::{MachineId, NetworkName, OverlayIp, PublicKey};
+    use ployz_types::model::{MachineId, MachineRole, NetworkName, OverlayIp, PublicKey};
 
     #[test]
     fn plan_mesh_start_uses_localhost_for_docker_remote_control() {
@@ -688,7 +678,7 @@ mod tests {
         let config = make_network_config(&state, "alpha");
 
         let plan = state
-            .plan_mesh_start(&config, MeshStartOptions::default())
+            .plan_mesh_start(&config)
             .expect("plan should succeed");
 
         assert_eq!(
@@ -703,7 +693,7 @@ mod tests {
         let config = make_network_config(&state, "alpha");
 
         let plan = state
-            .plan_mesh_start(&config, MeshStartOptions::default())
+            .plan_mesh_start(&config)
             .expect("plan should succeed");
 
         assert_eq!(
@@ -717,7 +707,7 @@ mod tests {
         let state = make_test_state("not-a-socket");
         let config = make_network_config(&state, "alpha");
 
-        let error = match state.plan_mesh_start(&config, MeshStartOptions::default()) {
+        let error = match state.plan_mesh_start(&config) {
             Ok(_) => panic!("plan should fail"),
             Err(error) => error,
         };
@@ -737,7 +727,7 @@ mod tests {
         )
         .expect("write corrupt seed cache");
 
-        let error = match state.plan_mesh_start(&config, MeshStartOptions::default()) {
+        let error = match state.plan_mesh_start(&config) {
             Ok(_) => panic!("plan should fail"),
             Err(error) => error,
         };
@@ -758,38 +748,18 @@ mod tests {
             overlay_ip: OverlayIp("fd00::8".parse().expect("valid overlay")),
             subnet: None,
             bridge_ip: None,
+            role: MachineRole::StorageCandidate,
             endpoints: vec!["peer:51820".into()],
         };
         write_bootstrap_peer_records(&network_dir, std::slice::from_ref(&peer))
             .expect("write seed cache");
 
         let plan = state
-            .plan_mesh_start(&config, MeshStartOptions::default())
+            .plan_mesh_start(&config)
             .expect("plan should succeed");
 
         assert_eq!(plan.bootstrap_peer_records, vec![peer]);
         assert_eq!(plan.bootstrap_addrs, vec!["[fd00::8]:6222"]);
-        assert!(
-            !plan.allow_disconnected_bootstrap,
-            "cached remote seed configures hub connectivity, not a standalone authority"
-        );
-    }
-
-    #[test]
-    fn plan_mesh_start_preserves_explicit_disconnected_bootstrap_without_seed_cache() {
-        let state = make_test_state("0.0.0.0:80");
-        let config = make_network_config(&state, "alpha");
-
-        let plan = state
-            .plan_mesh_start(
-                &config,
-                MeshStartOptions {
-                    allow_disconnected_bootstrap: true,
-                },
-            )
-            .expect("plan should succeed");
-
-        assert!(plan.allow_disconnected_bootstrap);
     }
 
     #[tokio::test]
@@ -798,7 +768,7 @@ mod tests {
         let config = make_network_config(&state, "alpha");
 
         let summary = state
-            .start_mesh(config, MeshStartOptions::default())
+            .start_mesh(config)
             .await
             .expect("mesh start should succeed");
 

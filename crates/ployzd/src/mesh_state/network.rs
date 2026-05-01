@@ -1,6 +1,7 @@
 use ipnet::Ipv4Net;
 use ployz_types::model::{
-    NetworkId, NetworkLifecycle, NetworkName, OverlayIp, PublicKey, management_ip_from_key,
+    MachineRole, NetworkId, NetworkLifecycle, NetworkName, OverlayIp, PublicKey,
+    management_ip_from_key,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -47,6 +48,7 @@ pub struct NetworkConfig {
     pub lifecycle: NetworkLifecycle,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subnet: Option<Ipv4Net>,
+    pub machine_role: MachineRole,
 }
 
 impl NetworkConfig {
@@ -65,6 +67,7 @@ impl NetworkConfig {
             cluster_cidr: cluster_cidr.to_string(),
             lifecycle: NetworkLifecycle::Stopped,
             subnet: Some(subnet),
+            machine_role: MachineRole::StorageCandidate,
         }
     }
 

@@ -522,6 +522,7 @@ pub struct JoinResponse {
     pub public_key: PublicKey,
     pub overlay_ip: OverlayIp,
     pub topology: MachineTopology,
+    pub role: MachineRole,
     pub subnet: Option<Ipv4Net>,
     pub endpoints: Vec<String>,
 }
@@ -927,7 +928,7 @@ impl JoinResponse {
             bridge_ip: None,
             endpoints: self.endpoints,
             lifecycle: MachineLifecycle::Standby,
-            role: MachineRole::StorageCandidate,
+            role: self.role,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -972,6 +973,7 @@ mod tests {
             public_key: PublicKey([0xab; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1)),
             topology: MachineTopology::local(),
+            role: MachineRole::Mirror,
             subnet: Some("10.42.1.0/24".parse().unwrap()),
             endpoints: vec!["1.2.3.4:51820".into()],
         };
@@ -984,6 +986,7 @@ mod tests {
         assert_eq!(decoded.public_key, resp.public_key);
         assert_eq!(decoded.overlay_ip, resp.overlay_ip);
         assert_eq!(decoded.topology, resp.topology);
+        assert_eq!(decoded.role, resp.role);
         assert_eq!(decoded.subnet, resp.subnet);
         assert_eq!(decoded.endpoints, resp.endpoints);
     }
@@ -995,11 +998,13 @@ mod tests {
             public_key: PublicKey([0xab; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1)),
             topology: MachineTopology::local(),
+            role: MachineRole::Mirror,
             subnet: None,
             endpoints: vec![],
         };
         let record = resp.into_seed_machine_membership();
         assert_eq!(record.id.0, "joiner-1");
+        assert_eq!(record.role, MachineRole::Mirror);
         assert!(record.bridge_ip.is_none());
     }
 

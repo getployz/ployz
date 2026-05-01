@@ -105,6 +105,7 @@ mod tests {
             public_key: PublicKey([2; 32]),
             overlay_ip: "fd00::2".parse().map(OverlayIp).expect("valid overlay"),
             topology: MachineTopology::local(),
+            role: MachineRole::Mirror,
             subnet: Some("10.210.1.0/24".parse().expect("valid subnet")),
             endpoints: vec!["203.0.113.10:51820".into()],
         }

@@ -81,6 +81,7 @@ pub(crate) struct MachineListRow {
 #[derive(Debug, Deserialize)]
 pub(crate) struct DoctorPayload {
     pub(crate) overall: DoctorOverall,
+    pub(crate) local: DoctorLocal,
     pub(crate) peers: Vec<DoctorPeer>,
 }
 
@@ -90,8 +91,14 @@ pub(crate) struct DoctorOverall {
 }
 
 #[derive(Debug, Deserialize)]
+pub(crate) struct DoctorLocal {
+    pub(crate) machine_role: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub(crate) struct DoctorPeer {
     pub(crate) machine_id: String,
+    pub(crate) machine_role: String,
     pub(crate) blocking: bool,
     pub(crate) store_lifecycle: String,
     pub(crate) wg_state: String,
