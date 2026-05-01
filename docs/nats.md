@@ -595,7 +595,9 @@ Tracked in code comments and the implementation plan. Highlights:
    KV subscriptions create the watch before loading the initial snapshot, so
    updates after the watch boundary are delivered even if they race with the
    snapshot read.
-3. `replay_projection` runs full N-RPC replay on every read.
+3. Deploy projections cache the last replayed stream sequence and extend from
+   the next commit when the cached sequence is still within the retained stream
+   window. They fall back to full replay only after compaction or cache loss.
 4. Lock TTL doesn't refresh on `kv.update` because the current async-nats
    API doesn't expose update-with-TTL — workaround is a delete+create
    cycle (race risk) or wait for the client API to catch up to 2.11+
