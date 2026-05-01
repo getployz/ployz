@@ -19,13 +19,13 @@ impl DaemonState {
     }
 
     #[must_use]
-    pub(crate) fn control_bind_addr(
+    pub(crate) fn zfs_transfer_bind_addr(
         &self,
-        remote_control_port: u16,
+        zfs_transfer_port: u16,
         overlay_ip: OverlayIp,
     ) -> SocketAddr {
         self.runtime_profile
-            .control_bind_addr(remote_control_port, overlay_ip)
+            .zfs_transfer_bind_addr(zfs_transfer_port, overlay_ip)
     }
 
     pub(crate) async fn start_runtime_gateway(

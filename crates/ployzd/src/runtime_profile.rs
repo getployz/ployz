@@ -26,7 +26,7 @@ enum ExecutionBackend {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ControlPlaneBinding {
+pub(crate) enum ZfsTransferBinding {
     Loopback,
     Overlay,
 }
@@ -36,7 +36,7 @@ pub(crate) struct RuntimeProfile {
     execution_backend: ExecutionBackend,
     runtime_target: RuntimeTarget,
     service_mode: ServiceMode,
-    control_plane_binding: ControlPlaneBinding,
+    zfs_transfer_binding: ZfsTransferBinding,
     sidecar_supervision: Option<ServiceSupervision>,
     built_in_images: BuiltInImages,
 }
@@ -71,7 +71,7 @@ impl RuntimeProfile {
                 execution_backend: ExecutionBackend::Docker,
                 runtime_target,
                 service_mode,
-                control_plane_binding: ControlPlaneBinding::Loopback,
+                zfs_transfer_binding: ZfsTransferBinding::Loopback,
                 sidecar_supervision: Some(ServiceSupervision::DockerContainer),
                 built_in_images,
             },
@@ -79,7 +79,7 @@ impl RuntimeProfile {
                 execution_backend: ExecutionBackend::Host,
                 runtime_target,
                 service_mode,
-                control_plane_binding: ControlPlaneBinding::Overlay,
+                zfs_transfer_binding: ZfsTransferBinding::Overlay,
                 sidecar_supervision: Some(match service_mode {
                     ServiceMode::User => ServiceSupervision::ChildProcess,
                     ServiceMode::System => ServiceSupervision::Systemd,
@@ -98,7 +98,7 @@ impl RuntimeProfile {
             execution_backend: ExecutionBackend::Memory,
             runtime_target: RuntimeTarget::Host,
             service_mode: ServiceMode::User,
-            control_plane_binding: ControlPlaneBinding::Loopback,
+            zfs_transfer_binding: ZfsTransferBinding::Loopback,
             sidecar_supervision: None,
             built_in_images,
         }
@@ -178,17 +178,15 @@ impl RuntimeProfile {
     }
 
     #[must_use]
-    pub(crate) fn control_bind_addr(
+    pub(crate) fn zfs_transfer_bind_addr(
         &self,
-        remote_control_port: u16,
+        zfs_transfer_port: u16,
         overlay_ip: OverlayIp,
     ) -> SocketAddr {
-        match self.control_plane_binding {
-            ControlPlaneBinding::Loopback => {
-                SocketAddr::from(([127, 0, 0, 1], remote_control_port))
-            }
-            ControlPlaneBinding::Overlay => {
-                SocketAddr::new(IpAddr::V6(overlay_ip.0), remote_control_port)
+        match self.zfs_transfer_binding {
+            ZfsTransferBinding::Loopback => SocketAddr::from(([127, 0, 0, 1], zfs_transfer_port)),
+            ZfsTransferBinding::Overlay => {
+                SocketAddr::new(IpAddr::V6(overlay_ip.0), zfs_transfer_port)
             }
         }
     }

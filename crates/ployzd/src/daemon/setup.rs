@@ -559,10 +559,8 @@ impl DaemonState {
             nats_config::ROUTE_PORT,
         );
         let gateway_ports = self.gateway_ports()?;
-        let control_bind_addr =
-            self.control_bind_addr(self.remote_control_port, net_config.overlay_ip);
         let zfs_transfer_bind_addr =
-            SocketAddr::new(control_bind_addr.ip(), self.zfs_transfer_port()?);
+            self.zfs_transfer_bind_addr(self.zfs_transfer_port, net_config.overlay_ip);
         let gateway_config = net_config.subnet.map(|_| {
             GatewayConfig::for_network(
                 &self.data_dir,
@@ -627,15 +625,6 @@ impl DaemonState {
         port.parse::<u16>()
             .map_err(|_| StartMeshError::GatewayListenAddr(gateway_listen_addr.to_string()))
     }
-
-    pub(crate) fn zfs_transfer_port(&self) -> Result<u16, StartMeshError> {
-        self.remote_control_port.checked_add(2).ok_or_else(|| {
-            StartMeshError::ControlPlaneListener {
-                bind: SocketAddr::from(([127, 0, 0, 1], self.remote_control_port)),
-                error: "zfs transfer port overflow".into(),
-            }
-        })
-    }
 }
 
 #[cfg(test)]
@@ -660,7 +649,7 @@ mod tests {
 
         assert_eq!(
             plan.zfs_transfer_bind_addr.ip(),
-            SocketAddr::from(([127, 0, 0, 1], state.zfs_transfer_port().unwrap())).ip()
+            SocketAddr::from(([127, 0, 0, 1], state.zfs_transfer_port)).ip()
         );
     }
 
@@ -673,11 +662,7 @@ mod tests {
 
         assert_eq!(
             plan.zfs_transfer_bind_addr.ip(),
-            SocketAddr::new(
-                IpAddr::V6(config.overlay_ip.0),
-                state.zfs_transfer_port().unwrap()
-            )
-            .ip()
+            SocketAddr::new(IpAddr::V6(config.overlay_ip.0), state.zfs_transfer_port).ip()
         );
     }
 
@@ -773,7 +758,7 @@ mod tests {
                 .expect("embedded built-in images manifest should parse"),
             "10.210.0.0/16".into(),
             24,
-            4317,
+            4319,
             gateway_listen_addr.into(),
             None,
             1,
@@ -792,7 +777,7 @@ mod tests {
             identity,
             "10.210.0.0/16".into(),
             24,
-            4317,
+            4319,
             gateway_listen_addr.into(),
             None,
             1,

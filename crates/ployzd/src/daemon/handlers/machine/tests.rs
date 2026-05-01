@@ -88,10 +88,7 @@ async fn machine_rtt_does_not_fan_out_to_unreachable_peer() {
         .expect("bind overlay listener");
     let unused_listener_port = listener.local_addr().expect("listener addr").port();
     drop(listener);
-    let remote_control_port = unused_listener_port
-        .checked_sub(1)
-        .expect("test listener port has preceding base control port");
-    let (mut state, store, _) = make_state_with_remote_port(true, remote_control_port).await;
+    let (mut state, store, _) = make_state_with_zfs_transfer_port(true, unused_listener_port).await;
 
     let mut peer = test_machine_record(
         "peer-1",
@@ -775,12 +772,12 @@ async fn interrupted_pinned_machine_update_requires_matching_version_on_startup(
 }
 
 async fn make_state(start_mesh: bool) -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {
-    make_state_with_remote_port(start_mesh, 4317).await
+    make_state_with_zfs_transfer_port(start_mesh, 4319).await
 }
 
-async fn make_state_with_remote_port(
+async fn make_state_with_zfs_transfer_port(
     start_mesh: bool,
-    remote_control_port: u16,
+    zfs_transfer_port: u16,
 ) -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {
     let identity = Identity::generate(MachineId("founder".into()), [1; 32]);
     let founder_subnet: Ipv4Net = "10.210.0.0/24".parse().expect("valid subnet");
@@ -825,7 +822,7 @@ async fn make_state_with_remote_port(
         identity,
         DEFAULT_CLUSTER_CIDR.into(),
         24,
-        remote_control_port,
+        zfs_transfer_port,
         "127.0.0.1:0".into(),
         None,
         1,
