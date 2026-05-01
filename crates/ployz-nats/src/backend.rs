@@ -17,6 +17,7 @@ use ployz_types::model::{
     MachineMembership, RoutingEvent, RoutingState, ServiceReleaseRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
+use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::warn;
@@ -245,7 +246,7 @@ impl RoutingSnapshotReader for NatsStore {
         let state = RoutingSnapshotReader::load_routing_state(self).await?;
         let (tx, rx) = mpsc::channel(128);
         tokio::spawn(async move {
-            let mut pending = PendingRoutingBatch::default();
+            let mut pending = PendingRoutingBatches::default();
             while let Some(next) = messages.next().await {
                 let message = match next {
                     Ok(message) => message,
@@ -287,8 +288,12 @@ impl RoutingSnapshotReader for NatsStore {
 }
 
 #[derive(Default)]
+struct PendingRoutingBatches {
+    by_id: HashMap<String, PendingRoutingBatch>,
+}
+
+#[derive(Default)]
 struct PendingRoutingBatch {
-    batch_id: Option<String>,
     cause: Option<String>,
     messages: Vec<Message>,
     events: Vec<RoutingEvent>,
@@ -301,12 +306,29 @@ struct CompleteRoutingBatch {
     events: Vec<RoutingEvent>,
 }
 
-impl PendingRoutingBatch {
+impl PendingRoutingBatches {
     fn push(&mut self, message: Message) -> Result<Option<CompleteRoutingBatch>> {
         let headers = message.headers.as_ref().ok_or_else(|| {
             Error::operation("nats_routing_headers", "routing event missing headers")
         })?;
         let batch_id = header(headers, NATS_BATCH_ID)?.to_string();
+        let complete = self
+            .by_id
+            .entry(batch_id.clone())
+            .or_default()
+            .push(batch_id.clone(), message)?;
+        if complete.is_some() {
+            self.by_id.remove(&batch_id);
+        }
+        Ok(complete)
+    }
+}
+
+impl PendingRoutingBatch {
+    fn push(&mut self, batch_id: String, message: Message) -> Result<Option<CompleteRoutingBatch>> {
+        let headers = message.headers.as_ref().ok_or_else(|| {
+            Error::operation("nats_routing_headers", "routing event missing headers")
+        })?;
         let sequence = header(headers, NATS_BATCH_SEQUENCE)?
             .parse::<usize>()
             .map_err(|error| Error::operation("nats_routing_sequence", error.to_string()))?;
@@ -319,20 +341,10 @@ impl PendingRoutingBatch {
                 ),
             ));
         }
-        match &self.batch_id {
-            Some(existing) if existing != &batch_id => {
-                return Err(Error::operation(
-                    "nats_routing_batch_id",
-                    format!("batch changed from '{existing}' to '{batch_id}' before commit"),
-                ));
-            }
-            Some(_) => {}
-            None => {
-                self.batch_id = Some(batch_id.clone());
-                self.cause = headers
-                    .get(PLOYZ_ROUTING_CAUSE)
-                    .map(|value| value.as_str().to_string());
-            }
+        if self.events.is_empty() {
+            self.cause = headers
+                .get(PLOYZ_ROUTING_CAUSE)
+                .map(|value| value.as_str().to_string());
         }
         let event = serde_json::from_slice::<RoutingEvent>(message.payload.as_ref())
             .map_err(|error| Error::operation("nats_routing_event_decode", error.to_string()))?;
@@ -359,7 +371,6 @@ impl PendingRoutingBatch {
                 ),
             ));
         }
-        let batch_id = self.batch_id.take().unwrap_or_default();
         Ok(Some(CompleteRoutingBatch {
             batch_id,
             cause: self.cause.take(),
