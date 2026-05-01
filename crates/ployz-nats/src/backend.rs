@@ -517,6 +517,43 @@ fn routing_consumer_name(consumer_id: &str) -> String {
     crate::subjects::subject_token(consumer_id)
 }
 
+impl SyncProbe for NatsStore {
+    async fn sync_status(&self) -> Result<SyncStatus> {
+        match self.client().connection_state() {
+            async_nats::connection::State::Connected => {
+                if self.client().flush().await.is_ok() {
+                    Ok(SyncStatus::Synced)
+                } else {
+                    Ok(SyncStatus::Disconnected)
+                }
+            }
+            async_nats::connection::State::Pending => Ok(SyncStatus::Disconnected),
+            async_nats::connection::State::Disconnected => Ok(SyncStatus::Disconnected),
+        }
+    }
+}
+
+impl PeerRttStore for NatsStore {}
+
+#[async_trait]
+impl StoreRuntimeControl for NatsStore {
+    async fn start(&self) -> Result<()> {
+        ensure_assets(self.jetstream(), self.asset_policy()).await
+    }
+
+    async fn stop(&self) -> Result<()> {
+        Ok(())
+    }
+
+    async fn wipe_data(&self) -> Result<()> {
+        Ok(())
+    }
+
+    async fn healthy(&self) -> bool {
+        self.client().flush().await.is_ok()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -592,42 +629,5 @@ mod tests {
             async_nats::jetstream::stream::ConsumerError::new(ConsumerErrorKind::JetStream(error));
 
         assert!(is_missing_consumer(&error));
-    }
-}
-
-impl SyncProbe for NatsStore {
-    async fn sync_status(&self) -> Result<SyncStatus> {
-        match self.client().connection_state() {
-            async_nats::connection::State::Connected => {
-                if self.client().flush().await.is_ok() {
-                    Ok(SyncStatus::Synced)
-                } else {
-                    Ok(SyncStatus::Disconnected)
-                }
-            }
-            async_nats::connection::State::Pending => Ok(SyncStatus::Disconnected),
-            async_nats::connection::State::Disconnected => Ok(SyncStatus::Disconnected),
-        }
-    }
-}
-
-impl PeerRttStore for NatsStore {}
-
-#[async_trait]
-impl StoreRuntimeControl for NatsStore {
-    async fn start(&self) -> Result<()> {
-        ensure_assets(self.jetstream(), self.asset_policy()).await
-    }
-
-    async fn stop(&self) -> Result<()> {
-        Ok(())
-    }
-
-    async fn wipe_data(&self) -> Result<()> {
-        Ok(())
-    }
-
-    async fn healthy(&self) -> bool {
-        self.client().flush().await.is_ok()
     }
 }
