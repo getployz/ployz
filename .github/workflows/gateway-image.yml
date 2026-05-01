@@ -10,7 +10,6 @@ on:
       - "crates/ployz-gateway/**"
       - "crates/ployz-sdk/**"
       - "crates/ployz-routes/**"
-      - "crates/ployz-corrosion/**"
       - "Dockerfile.gateway"
   workflow_dispatch:
 

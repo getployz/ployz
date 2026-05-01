@@ -8,7 +8,6 @@ on:
       - ".github/workflows/hostexec-e2e.yml"
       - "Cargo.toml"
       - "Cargo.lock"
-      - ".corrosion-version"
       - ".nats-version"
       - "ployz.sh"
       - "Dockerfile.e2e-node"
@@ -22,7 +21,6 @@ on:
       - ".github/workflows/hostexec-e2e.yml"
       - "Cargo.toml"
       - "Cargo.lock"
-      - ".corrosion-version"
       - ".nats-version"
       - "ployz.sh"
       - "Dockerfile.e2e-node"
@@ -236,9 +234,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .payload-build-cache
-          key: ${{ runner.os }}-${{ matrix.arch.suffix }}-payload-${{ hashFiles('Cargo.lock', '.corrosion-version', '.nats-version', 'scripts/build-install-payload.sh', 'Dockerfile.payload-builder') }}-${{ github.sha }}
+          key: ${{ runner.os }}-${{ matrix.arch.suffix }}-payload-${{ hashFiles('Cargo.lock', '.nats-version', 'scripts/build-install-payload.sh', 'Dockerfile.payload-builder') }}-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.arch.suffix }}-payload-${{ hashFiles('Cargo.lock', '.corrosion-version', '.nats-version', 'scripts/build-install-payload.sh', 'Dockerfile.payload-builder') }}-
+            ${{ runner.os }}-${{ matrix.arch.suffix }}-payload-${{ hashFiles('Cargo.lock', '.nats-version', 'scripts/build-install-payload.sh', 'Dockerfile.payload-builder') }}-
             ${{ runner.os }}-${{ matrix.arch.suffix }}-payload-
 
       - name: Build E2E payload
