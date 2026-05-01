@@ -479,6 +479,8 @@ pub struct StatusPayload {
     pub mesh_phase: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edge_sync: Vec<EdgeSyncStatus>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nats_assets: Vec<NatsAssetStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -487,6 +489,16 @@ pub struct EdgeSyncStatus {
     pub stream: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub healthy: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NatsAssetStatus {
+    pub name: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replicas: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }

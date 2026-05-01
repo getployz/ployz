@@ -207,6 +207,17 @@ fn render_plain_status(payload: &StatusPayload) -> String {
             sync.service, sync.stream, state
         ));
     }
+    for asset in &payload.nats_assets {
+        let state = match (asset.replicas, asset.error.as_deref()) {
+            (Some(replicas), _) => format!("replicas={replicas}"),
+            (None, Some(error)) => format!("unknown error={error}"),
+            (None, None) => "unknown".to_string(),
+        };
+        lines.push(format!(
+            "nats_asset kind={} name={} state={}",
+            asset.kind, asset.name, state
+        ));
+    }
     lines.join("\n")
 }
 
@@ -596,6 +607,7 @@ mod tests {
                 local_machine_lifecycle: Some(ployz_types::model::MachineLifecycle::Active),
                 mesh_phase: String::from("Running"),
                 edge_sync: Vec::new(),
+                nats_assets: Vec::new(),
             })),
         };
 
@@ -634,6 +646,7 @@ mod tests {
                         error: Some(String::from("connect metrics endpoint: refused")),
                     },
                 ],
+                nats_assets: Vec::new(),
             })),
         };
 
@@ -642,6 +655,35 @@ mod tests {
         assert!(rendered.contains(
             "edge_sync service=dns stream=routing state=unknown error=connect metrics endpoint: refused"
         ));
+    }
+
+    #[test]
+    fn plain_status_renders_nats_asset_replicas() {
+        let response = DaemonResponse {
+            ok: true,
+            code: String::from("OK"),
+            message: String::from("status"),
+            payload: Some(DaemonPayload::Status(StatusPayload {
+                machine_id: String::from("founder"),
+                public_key: ployz_types::model::PublicKey([1; 32]),
+                version: String::from("0.1.0"),
+                network: Some(String::from("alpha")),
+                overlay_ip: Some(String::from("fd00::1")),
+                network_lifecycle: Some(ployz_types::model::NetworkLifecycle::Running),
+                local_machine_lifecycle: Some(ployz_types::model::MachineLifecycle::Active),
+                mesh_phase: String::from("Running"),
+                edge_sync: Vec::new(),
+                nats_assets: vec![ployz_api::NatsAssetStatus {
+                    kind: String::from("stream"),
+                    name: String::from("routing_events"),
+                    replicas: Some(1),
+                    error: None,
+                }],
+            })),
+        };
+
+        let rendered = render_plain_success(&response);
+        assert!(rendered.contains("nats_asset kind=stream name=routing_events state=replicas=1"));
     }
 
     #[test]

@@ -682,6 +682,67 @@ impl ScenarioRun {
         Ok(())
     }
 
+    pub(crate) fn assert_nats_asset_replicas(
+        &self,
+        node_name: &str,
+        expected_replicas: usize,
+    ) -> Result<()> {
+        use crate::support::{DaemonJsonPayload, parse_daemon_json_response};
+        const REQUIRED_ASSETS: &[&str] = &[
+            "deploy_commits",
+            "routing_events",
+            "revisions",
+            "cert_jobs",
+            "KV_machines",
+            "KV_invites",
+            "KV_deploy_status",
+            "KV_instances",
+            "KV_locks",
+            "KV_coordinator_lease",
+        ];
+
+        self.log_progress(&format!(
+            "assert_nats_asset_replicas node={node_name} replicas={expected_replicas}"
+        ));
+        let output = self.ssh_expect_ok_name(node_name, "ployzd --json status")?;
+        let response = parse_daemon_json_response(&output.stdout)?;
+        if !response.ok {
+            return Err(Error::Message(format!(
+                "status on {node_name} returned non-ok response: {}",
+                response.message
+            )));
+        }
+        let Some(DaemonJsonPayload::Status(payload)) = response.payload else {
+            return Err(Error::Message(format!(
+                "status on {node_name} missing status payload"
+            )));
+        };
+        for asset_name in REQUIRED_ASSETS {
+            let Some(asset) = payload
+                .nats_assets
+                .iter()
+                .find(|asset| asset.name == *asset_name)
+            else {
+                return Err(Error::Message(format!(
+                    "status on {node_name} has no NATS asset row for '{asset_name}'"
+                )));
+            };
+            if let Some(error) = asset.error.as_deref() {
+                return Err(Error::Message(format!(
+                    "status on {node_name} reports NATS asset '{}' error: {error}",
+                    asset.name
+                )));
+            }
+            if asset.replicas != Some(expected_replicas) {
+                return Err(Error::Message(format!(
+                    "status on {node_name} reports NATS asset '{}' kind='{}' replicas={:?}, expected {expected_replicas}",
+                    asset.name, asset.kind, asset.replicas
+                )));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn partition_groups(&self, left: &[&str], right: &[&str]) -> Result<()> {
         self.log_progress(&format!(
             "partition_groups start left={} right={}",

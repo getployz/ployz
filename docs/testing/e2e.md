@@ -20,7 +20,7 @@ Useful existing scenarios:
 |------------------|----------------|--------|
 | `single_node_init` | keep and deepen | Base R=1 semantics, daemon restart/adoption, NATS health. |
 | `machine_add_basic` | keep and change assertions | Machine add should prove membership/connectivity without storage promotion. |
-| `machine_add_does_not_promote_storage` | keep and deepen | Adds a second and third machine, proving membership changes do not promote storage authority. |
+| `machine_add_does_not_promote_storage` | keep | Adds a second and third machine, proving membership changes do not promote storage authority by checking roles and NATS asset replicas. |
 | `machine_drain_standby_activate_cycle` | keep | Operator intent and lifecycle state remain important. |
 | `mesh_restart_from_seed_cache` | keep and deepen | Data plane/control plane adoption remains core. |
 | `wireguard_reconnect` | keep | Substrate continuity matters. |
@@ -217,7 +217,9 @@ Useful existing scenarios:
 
 The NATS-native suite needs helpers that can inspect NATS-visible state:
 
-- stream replica count and leader,
+- stream replica count is available through `ployzd --json status` and asserted
+  by `machine_add_does_not_promote_storage`,
+- stream leader,
 - stream/consumer lag,
 - KV bucket metadata and revision,
 - object store metadata,
@@ -233,9 +235,9 @@ where time is spent.
 
 ## Migration Order
 
-1. Add NATS inspection helpers.
-2. Add `machine_add_does_not_promote_storage`.
-3. Add storage-promotion plan guardrail scenarios.
-4. Add R=3 success, one-loss, below-quorum, and rejoin scenarios.
-5. Add deploy-lock and participant-offline scenarios.
-6. Add latency/region/mirror scenarios once topology support exists.
+1. Add remaining NATS inspection helpers for leader, lag, KV revisions, and
+   no-responder/timeout classification.
+2. Add storage-promotion plan guardrail scenarios.
+3. Add R=3 success, one-loss, below-quorum, and rejoin scenarios.
+4. Add deploy-lock and participant-offline scenarios.
+5. Add latency/region/mirror scenarios once topology support exists.
