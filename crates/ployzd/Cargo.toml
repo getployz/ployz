@@ -28,7 +28,7 @@ ployz-gateway-config = { path = "../ployz-gateway-config" }
 ployz-dns-config = { path = "../ployz-dns-config" }
 ployz-install = { path = "../ployz-install" }
 futures-util = { workspace = true }
-async-nats = "0.46"
+async-nats = "0.47"
 clap = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }

@@ -285,6 +285,9 @@ pub fn classify_request_error(error: async_nats::RequestError) -> RpcFailure {
         async_nats::RequestErrorKind::Other => {
             RpcFailure::new(RpcFailureKind::Transport, error.to_string())
         }
+        async_nats::RequestErrorKind::InvalidSubject => {
+            RpcFailure::new(RpcFailureKind::Transport, error.to_string())
+        }
     }
 }
 

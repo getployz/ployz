@@ -94,10 +94,11 @@ The target protocol for small participant commands is NATS request/reply on
 candidate, drain instance, and remove instance. No-responder and timeout errors
 fail the foreground deploy operation.
 
-The current implementation still has a transitional deploy session abstraction for
-participant runtime commands. It is lock-free: namespace lock ownership lives in NATS,
-not in the participant connection. Direct TCP should disappear from deploy control once
-those commands move to NATS RPC.
+The implementation models participants as explicit command targets, not long-lived
+sessions. Each runtime action is its own NATS request/reply command. Namespace lock
+ownership lives in NATS KV and is held only by the deploy coordinator; participant
+command subscriptions do not carry authority beyond handling the requested local
+runtime action.
 
 ---
 

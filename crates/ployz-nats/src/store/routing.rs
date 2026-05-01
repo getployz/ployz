@@ -13,6 +13,8 @@ pub const NATS_BATCH_SEQUENCE: &str = "Nats-Batch-Sequence";
 pub const NATS_BATCH_COMMIT: &str = "Nats-Batch-Commit";
 pub const PLOYZ_ROUTING_CAUSE: &str = "Ployz-Routing-Cause";
 pub const PLOYZ_ROUTING_COUNT: &str = "Ployz-Routing-Count";
+pub const PLOYZ_ROUTING_LOGICAL_BATCH_ID: &str = "Ployz-Routing-Logical-Batch-Id";
+pub const PLOYZ_ROUTING_SEQUENCE: &str = "Ployz-Routing-Sequence";
 
 pub(crate) struct RoutingPublishSpec {
     pub subject: String,
@@ -38,22 +40,29 @@ pub(crate) async fn publish_routing_batch(
     events: &[RoutingEvent],
 ) -> Result<()> {
     let specs = routing_publish_specs(batch_id.as_ref(), cause.as_ref(), events)?;
-    let mut ack_futures = Vec::with_capacity(specs.len());
-    for spec in specs {
-        let publish = PublishMessage::build()
-            .payload(spec.payload.into())
-            .headers(spec.headers)
-            .expected_stream(ROUTING_EVENTS_STREAM);
-        let ack = js
-            .send_publish(spec.subject, publish)
+    let Some((commit, staged)) = specs.split_last() else {
+        return Ok(());
+    };
+    for spec in staged {
+        js.client()
+            .publish_with_headers(
+                spec.subject.clone(),
+                spec.headers.clone(),
+                spec.payload.clone().into(),
+            )
             .await
             .map_err(|error| Error::operation("nats_routing_publish", format!("{error:?}")))?;
-        ack_futures.push(ack);
     }
-    for ack in ack_futures {
-        ack.await
-            .map_err(|error| Error::operation("nats_routing_ack", format!("{error:?}")))?;
-    }
+    let publish = PublishMessage::build()
+        .payload(commit.payload.clone().into())
+        .headers(commit.headers.clone())
+        .expected_stream(ROUTING_EVENTS_STREAM);
+    let ack = js
+        .send_publish(commit.subject.clone(), publish)
+        .await
+        .map_err(|error| Error::operation("nats_routing_publish", format!("{error:?}")))?;
+    ack.await
+        .map_err(|error| Error::operation("nats_routing_ack", format!("{error:?}")))?;
     Ok(())
 }
 
@@ -67,23 +76,21 @@ pub(crate) fn routing_publish_specs(
         return Ok(Vec::new());
     }
 
-    let publish_id = unique_routing_publish_id();
+    let atomic_batch_id = format!("{batch_id}:{}", unique_routing_publish_id());
     events
         .iter()
         .enumerate()
         .map(|(index, event)| {
             let sequence = index + 1;
             let mut headers = HeaderMap::new();
-            headers.insert(NATS_BATCH_ID, batch_id);
+            headers.insert(NATS_BATCH_ID, atomic_batch_id.as_str());
             headers.insert(NATS_BATCH_SEQUENCE, sequence.to_string());
-            headers.insert(
-                "Nats-Msg-Id",
-                format!("routing:{batch_id}:{publish_id}:{sequence}"),
-            );
+            headers.insert(PLOYZ_ROUTING_LOGICAL_BATCH_ID, batch_id);
             headers.insert(PLOYZ_ROUTING_CAUSE, cause);
             headers.insert(PLOYZ_ROUTING_COUNT, count.to_string());
+            headers.insert(PLOYZ_ROUTING_SEQUENCE, sequence.to_string());
             if sequence == count {
-                headers.insert(NATS_BATCH_COMMIT, count.to_string());
+                headers.insert(NATS_BATCH_COMMIT, "1");
             }
             let payload = serde_json::to_vec(event).map_err(|error| {
                 Error::operation("nats_routing_event_encode", error.to_string())
@@ -125,14 +132,17 @@ mod tests {
             routing_publish_specs("batch-1", "machine.upsert", &events).expect("build specs");
 
         assert_eq!(specs.len(), 2);
-        assert_eq!(header(&specs[0].headers, NATS_BATCH_ID), "batch-1");
+        assert!(header(&specs[0].headers, NATS_BATCH_ID).starts_with("batch-1:"));
+        assert_eq!(
+            header(&specs[0].headers, PLOYZ_ROUTING_LOGICAL_BATCH_ID),
+            "batch-1"
+        );
         assert_eq!(header(&specs[0].headers, NATS_BATCH_SEQUENCE), "1");
-        let msg_id = header(&specs[0].headers, "Nats-Msg-Id");
-        assert!(msg_id.starts_with("routing:batch-1:"));
-        assert!(msg_id.ends_with(":1"));
+        assert_eq!(header(&specs[0].headers, PLOYZ_ROUTING_SEQUENCE), "1");
         assert!(specs[0].headers.get(NATS_BATCH_COMMIT).is_none());
         assert_eq!(header(&specs[1].headers, NATS_BATCH_SEQUENCE), "2");
-        assert_eq!(header(&specs[1].headers, NATS_BATCH_COMMIT), "2");
+        assert_eq!(header(&specs[1].headers, PLOYZ_ROUTING_SEQUENCE), "2");
+        assert_eq!(header(&specs[1].headers, NATS_BATCH_COMMIT), "1");
         assert_eq!(header(&specs[1].headers, PLOYZ_ROUTING_COUNT), "2");
     }
 
@@ -146,9 +156,28 @@ mod tests {
             .expect("second specs");
 
         assert_ne!(
-            header(&first[0].headers, "Nats-Msg-Id"),
-            header(&second[0].headers, "Nats-Msg-Id")
+            header(&first[0].headers, NATS_BATCH_ID),
+            header(&second[0].headers, NATS_BATCH_ID)
         );
+        assert!(first[0].headers.get("Nats-Msg-Id").is_none());
+        assert!(second[0].headers.get("Nats-Msg-Id").is_none());
+    }
+
+    #[test]
+    fn atomic_routing_batches_do_not_use_unsupported_message_id_headers() {
+        let specs = routing_publish_specs(
+            "deploy:deploy-1",
+            "deploy.commit",
+            &[RoutingEvent::MachineAdded(test_machine("machine-1"))],
+        )
+        .expect("build specs");
+
+        let headers = &specs[0].headers;
+        assert!(headers.get(NATS_BATCH_ID).is_some());
+        assert!(headers.get(NATS_BATCH_SEQUENCE).is_some());
+        assert!(headers.get(NATS_BATCH_COMMIT).is_some());
+        assert!(headers.get("Nats-Msg-Id").is_none());
+        assert!(headers.get("Nats-Expected-Last-Msg-Id").is_none());
     }
 
     fn header(headers: &HeaderMap, name: &str) -> String {

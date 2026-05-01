@@ -24,11 +24,22 @@ const PARTITION_OUTPUT_CHAIN: &str = "PLOYZ_E2E_PARTITION_OUTPUT";
 const E2E_PAYLOAD_BUILD_PROFILE: &str = "debug";
 const PAYLOAD_STAMP_FILE: &str = ".payload-stamp";
 const PAYLOAD_LOCK_FILE: &str = ".payload.lock";
+const PRELOADED_IMAGES_LOCK_FILE: &str = ".preloaded-images.lock";
 const PAYLOAD_LOCK_TIMEOUT: Duration = Duration::from_secs(300);
 const PAYLOAD_LOCK_POLL: Duration = Duration::from_millis(200);
 const PEBBLE_IMAGE: &str = "ployz-e2e-preload/pebble:latest";
 const PEBBLE_CHALLTESTSRV_IMAGE: &str = "ployz-e2e-preload/pebble-challtestsrv:latest";
 const PEBBLE_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
+const PRELOADED_IMAGE_FILES: &[&str] = &[
+    "networking.tar",
+    "nats.tar",
+    "dns.tar",
+    "gateway.tar",
+    "pebble.tar",
+    "pebble-challtestsrv.tar",
+    "http-smoke.tar",
+    "built_in_images.toml",
+];
 
 #[derive(Debug, Clone)]
 pub(crate) struct Node {
@@ -47,6 +58,7 @@ pub(crate) struct ScenarioRun {
     zfs_mode: ZfsMode,
     root_dir: PathBuf,
     payload_dir: PathBuf,
+    preloaded_images_dir: PathBuf,
     outer_network: String,
     private_key_path: PathBuf,
     public_key_path: PathBuf,
@@ -76,7 +88,7 @@ struct NodeStartMounts {
     pebble: String,
 }
 
-fn node_start_mounts(repo_root: &Path) -> NodeStartMounts {
+fn node_start_mounts(repo_root: &Path, preloaded_images_dir: &Path) -> NodeStartMounts {
     NodeStartMounts {
         dind: format!(
             "{}:/usr/local/bin/e2e-dind.sh:ro",
@@ -92,9 +104,7 @@ fn node_start_mounts(repo_root: &Path) -> NodeStartMounts {
         ),
         preloaded_images: format!(
             "{}:/opt/ployz-e2e/preloaded-images:ro",
-            repo_root
-                .join("packaging/e2e/preloaded-images")
-                .to_string_lossy()
+            preloaded_images_dir.to_string_lossy()
         ),
         pebble: format!(
             "{}:/e2e-pebble:ro",
@@ -119,6 +129,13 @@ impl ScenarioRun {
         let root_dir = artifacts_root.join(&run_id);
         let key_dir = root_dir.join("keys");
         let payload_dir = artifacts_root.join("payload-cache");
+        let repo_root = repo_root()?;
+        let repo_preloaded_images_dir = repo_root.join("packaging/e2e/preloaded-images");
+        let preloaded_images_dir = if preloaded_images_ready(&repo_preloaded_images_dir) {
+            repo_preloaded_images_dir
+        } else {
+            artifacts_root.join("preloaded-images")
+        };
 
         fs::create_dir_all(&key_dir).map_err(|error| {
             Error::Io(format!("create key dir '{}': {error}", key_dir.display()))
@@ -138,6 +155,7 @@ impl ScenarioRun {
             zfs_mode,
             root_dir,
             payload_dir,
+            preloaded_images_dir,
             outer_network: format!("ployz-e2e-net-{run_id}"),
             private_key_path,
             public_key_path,
@@ -146,6 +164,7 @@ impl ScenarioRun {
             nodes: Vec::new(),
         };
         run.ensure_payload()?;
+        run.ensure_preloaded_images()?;
         run.write_metadata()?;
         Ok(run)
     }
@@ -894,11 +913,7 @@ impl ScenarioRun {
 
     fn ensure_payload(&self) -> Result<()> {
         self.log_progress("build payload manifest start");
-        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(Path::parent)
-            .ok_or_else(|| Error::Message("failed to resolve repo root".into()))?
-            .to_path_buf();
+        let repo_root = repo_root()?;
         let artifacts_dir = self
             .payload_dir
             .parent()
@@ -951,13 +966,45 @@ impl ScenarioRun {
         Ok(())
     }
 
-    fn start_nodes(&mut self, names: &[&str]) -> Result<()> {
-        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    fn ensure_preloaded_images(&self) -> Result<()> {
+        if preloaded_images_ready(&self.preloaded_images_dir) {
+            return Ok(());
+        }
+
+        self.log_progress("prepare preloaded images start");
+        let repo_root = repo_root()?;
+        let artifacts_dir = self
+            .preloaded_images_dir
             .parent()
-            .and_then(Path::parent)
-            .ok_or_else(|| Error::Message("failed to resolve repo root".into()))?
-            .to_path_buf();
-        let mounts = node_start_mounts(&repo_root);
+            .ok_or_else(|| Error::Message("preloaded images dir has no parent".into()))?;
+        let _lock = acquire_named_lock(artifacts_dir, PRELOADED_IMAGES_LOCK_FILE)?;
+        if preloaded_images_ready(&self.preloaded_images_dir) {
+            self.log_progress("prepare preloaded images complete");
+            return Ok(());
+        }
+
+        let script = repo_root.join("scripts/export-e2e-preloaded-images.sh");
+        run_command_expect_ok(
+            "bash",
+            &[
+                script.to_string_lossy().as_ref(),
+                "--output",
+                self.preloaded_images_dir.to_string_lossy().as_ref(),
+            ],
+        )?;
+        if !preloaded_images_ready(&self.preloaded_images_dir) {
+            return Err(Error::Message(format!(
+                "preloaded image export did not create the required files in '{}'",
+                self.preloaded_images_dir.display()
+            )));
+        }
+        self.log_progress("prepare preloaded images complete");
+        Ok(())
+    }
+
+    fn start_nodes(&mut self, names: &[&str]) -> Result<()> {
+        let repo_root = repo_root()?;
+        let mounts = node_start_mounts(&repo_root, &self.preloaded_images_dir);
 
         for name in names {
             self.start_node(name, &mounts)?;
@@ -1235,6 +1282,11 @@ impl ScenarioRun {
         let _ = writeln!(&mut metadata, "image={}", self.image);
         let _ = writeln!(&mut metadata, "image_id={}", self.image_id);
         let _ = writeln!(&mut metadata, "image_platform={}", self.image_platform);
+        let _ = writeln!(
+            &mut metadata,
+            "preloaded_images_dir={}",
+            self.preloaded_images_dir.display()
+        );
         let _ = writeln!(&mut metadata, "outer_network={}", self.outer_network);
         let _ = writeln!(
             &mut metadata,
@@ -1276,6 +1328,20 @@ fn payload_stamp(repo_root: &Path, target_platform: &str, build_profile: &str) -
     Ok(output.stdout.trim().to_string())
 }
 
+fn repo_root() -> Result<PathBuf> {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| Error::Message("failed to resolve repo root".into()))
+        .map(Path::to_path_buf)
+}
+
+fn preloaded_images_ready(path: &Path) -> bool {
+    PRELOADED_IMAGE_FILES
+        .iter()
+        .all(|file| path.join(file).is_file())
+}
+
 struct PayloadLock {
     path: PathBuf,
 }
@@ -1287,7 +1353,11 @@ impl Drop for PayloadLock {
 }
 
 fn acquire_payload_lock(artifacts_dir: &Path) -> Result<PayloadLock> {
-    let lock_path = artifacts_dir.join(PAYLOAD_LOCK_FILE);
+    acquire_named_lock(artifacts_dir, PAYLOAD_LOCK_FILE)
+}
+
+fn acquire_named_lock(artifacts_dir: &Path, lock_file: &str) -> Result<PayloadLock> {
+    let lock_path = artifacts_dir.join(lock_file);
     let deadline = std::time::Instant::now() + PAYLOAD_LOCK_TIMEOUT;
 
     loop {
@@ -1300,7 +1370,7 @@ fn acquire_payload_lock(artifacts_dir: &Path) -> Result<PayloadLock> {
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 if std::time::Instant::now() >= deadline {
                     return Err(Error::Io(format!(
-                        "timed out waiting for payload lock '{}'",
+                        "timed out waiting for lock '{}'",
                         lock_path.display()
                     )));
                 }
@@ -1308,7 +1378,7 @@ fn acquire_payload_lock(artifacts_dir: &Path) -> Result<PayloadLock> {
             }
             Err(error) => {
                 return Err(Error::Io(format!(
-                    "create payload lock '{}': {error}",
+                    "create lock '{}': {error}",
                     lock_path.display()
                 )));
             }

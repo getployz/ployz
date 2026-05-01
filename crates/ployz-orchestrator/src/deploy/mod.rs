@@ -1,4 +1,4 @@
-pub mod session;
+pub mod participant;
 
 mod execute;
 mod managed_domains;
@@ -12,7 +12,7 @@ mod tests;
 use crate::certificates::{
     AcmeAccountCoordinator, AcmeIssuerFactory, Http01ChallengeReadiness, IssuanceCoordinator,
 };
-use crate::deploy::session::DeploySessionFactory;
+use crate::deploy::participant::DeployParticipantClient;
 use crate::error::Result;
 use crate::model::{DeployApplyResult, DeployPreview, MachineId};
 use plan::resolve_plan;
@@ -39,16 +39,16 @@ pub async fn preview(
 
 pub async fn apply(
     store: &StoreDriver,
-    session_factory: &dyn DeploySessionFactory,
+    participant_client: &dyn DeployParticipantClient,
     local_machine_id: &MachineId,
     manifest: &DeployManifest,
 ) -> Result<DeployApplyResult> {
-    execute::apply(store, session_factory, local_machine_id, manifest).await
+    execute::apply(store, participant_client, local_machine_id, manifest).await
 }
 
 pub async fn apply_with_certificate_coordination(
     store: &StoreDriver,
-    session_factory: &dyn DeploySessionFactory,
+    participant_client: &dyn DeployParticipantClient,
     local_machine_id: &MachineId,
     manifest: &DeployManifest,
     certificate_coordinator: Arc<dyn IssuanceCoordinator>,
@@ -59,7 +59,7 @@ pub async fn apply_with_certificate_coordination(
 ) -> Result<DeployApplyResult> {
     execute::apply_with_certificate_coordination(
         store,
-        session_factory,
+        participant_client,
         local_machine_id,
         manifest,
         certificate_coordinator,
