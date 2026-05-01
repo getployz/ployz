@@ -6,6 +6,7 @@ use ployz_types::spec::Namespace;
 pub const DEPLOY_COMMITS_STREAM: &str = "deploy_commits";
 pub const REVISIONS_STREAM: &str = "revisions";
 pub const CERT_JOBS_STREAM: &str = "cert_jobs";
+pub const ROUTING_EVENTS_STREAM: &str = "routing_events";
 
 #[must_use]
 pub fn deploy_commit(namespace: &Namespace, deploy_id: &DeployId) -> String {
@@ -14,6 +15,11 @@ pub fn deploy_commit(namespace: &Namespace, deploy_id: &DeployId) -> String {
         subject_token(&namespace.0),
         subject_token(&deploy_id.0)
     )
+}
+
+#[must_use]
+pub fn routing_event(batch_id: &str, index: usize) -> String {
+    format!("routing.events.{}.{}", subject_token(batch_id), index)
 }
 
 #[must_use]

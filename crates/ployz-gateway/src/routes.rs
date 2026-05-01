@@ -301,6 +301,7 @@ pub fn match_http_route<'a>(
     })
 }
 
+#[derive(Clone)]
 pub struct GatewayProjector {
     machines: HashMap<MachineId, MachineMembership>,
     revisions: HashMap<RevisionKey, ployz_types::model::ServiceRevisionRecord>,
