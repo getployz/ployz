@@ -100,28 +100,74 @@ where
 {
     loop {
         let consumer_id = format!("gateway.{}", machine_id.0);
-        let (routing_state, mut routing_rx) = store
+        let (routing_state, mut routing_rx) = match store
             .subscribe_routing_batches(RoutingSubscription::durable(consumer_id))
-            .await?;
-        let (cert_records, mut cert_rx) = store.subscribe_certificates().await?;
-        let (challenge_records, mut chal_rx) = store.subscribe_acme_challenges().await?;
-        let mut projector = GatewayProjector::new(routing_state)
-            .map_err(|err| GatewayError::Projection(err.to_string()))?;
+            .await
+        {
+            Ok(subscription) => subscription,
+            Err(error) => {
+                crate::metrics::set_store_sync_healthy("routing", false);
+                warn!(
+                    ?error,
+                    "gateway routing subscription setup failed; retrying"
+                );
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+        let (cert_records, mut cert_rx) = match store.subscribe_certificates().await {
+            Ok(subscription) => subscription,
+            Err(error) => {
+                crate::metrics::set_store_sync_healthy("certificates", false);
+                warn!(
+                    ?error,
+                    "gateway certificate subscription setup failed; retrying"
+                );
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+        let (challenge_records, mut chal_rx) = match store.subscribe_acme_challenges().await {
+            Ok(subscription) => subscription,
+            Err(error) => {
+                crate::metrics::set_store_sync_healthy("acme_challenges", false);
+                warn!(
+                    ?error,
+                    "gateway ACME challenge subscription setup failed; retrying"
+                );
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+        let mut projector = match GatewayProjector::new(routing_state) {
+            Ok(projector) => projector,
+            Err(error) => {
+                crate::metrics::set_store_sync_healthy("routing", false);
+                warn!(?error, "gateway routing projection setup failed; retrying");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+        };
         apply_initial_certificates(&mut projector, cert_records);
         let ready_challenges = apply_initial_challenges(&mut projector, challenge_records);
         publish_full_snapshot(&snapshot, projector.snapshot_value());
         publish_challenge_readiness(&store, &machine_id, &ready_challenges).await;
+        crate::metrics::set_store_sync_healthy("routing", true);
+        crate::metrics::set_store_sync_healthy("certificates", true);
+        crate::metrics::set_store_sync_healthy("acme_challenges", true);
 
         loop {
             tokio::select! {
                 batch = routing_rx.recv() => {
                     let Some(batch) = batch else {
+                        crate::metrics::set_store_sync_healthy("routing", false);
                         warn!("gateway routing event stream closed; resubscribing");
                         break;
                     };
                     let batch = match batch {
                         Ok(batch) => batch,
                         Err(error) => {
+                            crate::metrics::set_store_sync_healthy("routing", false);
                             warn!(%error, "gateway routing event stream failed; resubscribing");
                             break;
                         }
@@ -130,28 +176,33 @@ where
                 }
                 event = cert_rx.recv() => {
                     let Some(event) = event else {
+                        crate::metrics::set_store_sync_healthy("certificates", false);
                         warn!("gateway certificate event stream closed; resubscribing");
                         break;
                     };
                     let event = match event {
                         Ok(event) => event,
                         Err(error) => {
+                            crate::metrics::set_store_sync_healthy("certificates", false);
                             warn!(%error, "gateway certificate event stream failed; resubscribing");
                             break;
                         }
                     };
                     if apply_certificate_batch(&mut projector, event, &mut cert_rx, &snapshot) {
+                        crate::metrics::set_store_sync_healthy("certificates", false);
                         break;
                     }
                 }
                 event = chal_rx.recv() => {
                     let Some(event) = event else {
+                        crate::metrics::set_store_sync_healthy("acme_challenges", false);
                         warn!("gateway ACME challenge event stream closed; resubscribing");
                         break;
                     };
                     let event = match event {
                         Ok(event) => event,
                         Err(error) => {
+                            crate::metrics::set_store_sync_healthy("acme_challenges", false);
                             warn!(%error, "gateway ACME challenge event stream failed; resubscribing");
                             break;
                         }
@@ -159,6 +210,7 @@ where
                     let (ready_challenges, challenge_stream_failed) = apply_challenge_batch(&mut projector, event, &mut chal_rx, &snapshot);
                     publish_challenge_readiness(&store, &machine_id, &ready_challenges).await;
                     if challenge_stream_failed {
+                        crate::metrics::set_store_sync_healthy("acme_challenges", false);
                         break;
                     }
                 }
