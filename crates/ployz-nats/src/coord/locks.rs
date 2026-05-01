@@ -247,7 +247,10 @@ impl NatsLocks {
         else {
             return Ok(());
         };
-        let current: LeaseValue = kv_json::decode_json("nats_lock_decode", entry.value.as_ref())?;
+        let Some(current) = release_value_for_operation(entry.operation, entry.value.as_ref())?
+        else {
+            return Ok(());
+        };
         if !release_is_allowed(entry.revision, &current, &guard) {
             return Err(Error::operation(
                 "nats_lock_release",
@@ -283,6 +286,16 @@ impl NatsLocks {
             .await
             .map(|ack| ack.sequence)
             .map_err(|error| Error::operation("nats_lock_publish_ack", format!("{error:?}")))
+    }
+}
+
+fn release_value_for_operation(
+    operation: kv::Operation,
+    value: &[u8],
+) -> Result<Option<LeaseValue>> {
+    match operation {
+        kv::Operation::Put => kv_json::decode_json("nats_lock_decode", value).map(Some),
+        kv::Operation::Delete | kv::Operation::Purge => Ok(None),
     }
 }
 
@@ -365,5 +378,32 @@ mod tests {
             expires_at: 20,
         };
         assert!(!release_is_allowed(8, &current, &stale));
+    }
+
+    #[test]
+    fn release_treats_delete_marker_as_already_gone() {
+        assert_eq!(
+            release_value_for_operation(kv::Operation::Delete, b"").expect("delete marker"),
+            None
+        );
+        assert_eq!(
+            release_value_for_operation(kv::Operation::Purge, b"").expect("purge marker"),
+            None
+        );
+    }
+
+    #[test]
+    fn release_put_marker_still_decodes_lease_value() {
+        let value = LeaseValue {
+            owner: "node-a".into(),
+            nonce: "nonce-a".into(),
+            expires_at: 10,
+        };
+        let encoded = serde_json::to_vec(&value).expect("encode lease");
+
+        assert_eq!(
+            release_value_for_operation(kv::Operation::Put, &encoded).expect("put marker"),
+            Some(value)
+        );
     }
 }
