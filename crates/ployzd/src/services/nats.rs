@@ -20,9 +20,9 @@ use ployz_store_api::{
 use ployz_types::Result;
 use ployz_types::error::Error;
 use ployz_types::model::{
-    AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
-    InstanceStatusRecord, InviteRecord, MachineId, MachineMembership, MachineRole, OverlayIp,
-    RoutingState, ServiceReleaseRecord, VolumeRecord,
+    AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
+    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
+    MachineMembership, MachineRole, OverlayIp, RoutingState, ServiceReleaseRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -156,11 +156,11 @@ fn parse_peer_route(raw: &str) -> Option<PeerRoute> {
     Some(PeerRoute { overlay_ip })
 }
 
-fn overlay_client_url(overlay_ip: OverlayIp) -> String {
+pub(crate) fn overlay_client_url(overlay_ip: OverlayIp) -> String {
     format!("nats://[{}]:{}", overlay_ip.0, CLIENT_PORT)
 }
 
-fn local_client_url() -> String {
+pub(crate) fn local_client_url() -> String {
     format!("nats://{}:{}", Ipv4Addr::LOCALHOST, CLIENT_PORT)
 }
 
@@ -214,18 +214,16 @@ where
             );
             match tokio::time::timeout(CONNECT_TIMEOUT, NatsStore::connect(&self.client_url)).await
             {
-                Ok(Ok(store)) => {
-                    match store.start().await {
-                        Ok(()) => {
-                            *self.store.lock().await = Some(Arc::new(store));
-                            return Ok(());
-                        }
-                        Err(error) => {
-                            last_error = Some(error);
-                            tokio::time::sleep(CONNECT_RETRY_DELAY).await;
-                        }
+                Ok(Ok(store)) => match store.start().await {
+                    Ok(()) => {
+                        *self.store.lock().await = Some(Arc::new(store));
+                        return Ok(());
                     }
-                }
+                    Err(error) => {
+                        last_error = Some(error);
+                        tokio::time::sleep(CONNECT_RETRY_DELAY).await;
+                    }
+                },
                 Ok(Err(error)) => {
                     last_error = Some(error);
                     tokio::time::sleep(CONNECT_RETRY_DELAY).await;
@@ -430,6 +428,27 @@ where
 
     async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
         self.store().await?.subscribe_acme_challenges().await
+    }
+
+    async fn upsert_acme_challenge_readiness(
+        &self,
+        record: &AcmeChallengeReadinessRecord,
+    ) -> Result<()> {
+        self.store()
+            .await?
+            .upsert_acme_challenge_readiness(record)
+            .await
+    }
+
+    async fn list_acme_challenge_readiness(
+        &self,
+        hostname: &str,
+        token: &str,
+    ) -> Result<Vec<AcmeChallengeReadinessRecord>> {
+        self.store()
+            .await?
+            .list_acme_challenge_readiness(hostname, token)
+            .await
     }
 
     async fn sync_status(&self) -> Result<SyncStatus> {

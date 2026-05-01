@@ -13,13 +13,18 @@ use ployz_cert_backends::InstantAcmeIssuerFactory;
 use ployz_config::RuntimeTarget;
 use ployz_dns_config::DnsConfig;
 use ployz_gateway_config::GatewayConfig;
+use ployz_nats::NatsStore;
 use ployz_nats::config as nats_config;
+use ployz_nats::coord::locks::NatsLocks;
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::certificates::{
     CertificateManagerConfig, RenewalConfig, spawn_certificate_renewal_ticker,
 };
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_runtime_api::{NoopRuntimeHandle, RuntimeHandle};
+use ployz_store_api::StoreRuntimeControl;
+
+use crate::daemon::subnet_coordination::NatsSubnetCoordinator;
 
 use super::{ActiveMesh, DaemonState};
 use crate::daemon::handlers::volume::transfer_listener;
@@ -27,6 +32,32 @@ use crate::ipc::peer_listener;
 use crate::runtime_profile::MeshBuildRequest;
 
 const PEER_RPC_PORT_OFFSET: u16 = 1;
+
+/// Connect to the network's NATS broker and replace the daemon's subnet
+/// coordinator with a JetStream-KV-backed implementation. Memory-runtime
+/// tests skip this and keep the in-memory coordinator wired at construction.
+async fn install_nats_subnet_coordinator(
+    state: &mut DaemonState,
+    overlay_ip: ployz_types::model::OverlayIp,
+) -> Result<(), StartMeshError> {
+    let client_url = if state.runtime_target == RuntimeTarget::Docker {
+        crate::services::nats::local_client_url()
+    } else {
+        crate::services::nats::overlay_client_url(overlay_ip)
+    };
+    let nats_store = NatsStore::connect(&client_url).await.map_err(|error| {
+        StartMeshError::MeshUp(format!("nats connect for subnet coord: {error}"))
+    })?;
+    nats_store
+        .start()
+        .await
+        .map_err(|error| StartMeshError::MeshUp(format!("nats start for subnet coord: {error}")))?;
+    let locks = NatsLocks::new(&nats_store)
+        .await
+        .map_err(|error| StartMeshError::MeshUp(format!("nats locks bucket: {error}")))?;
+    state.subnet_coord = std::sync::Arc::new(NatsSubnetCoordinator::new(locks));
+    Ok(())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeshStartSummary {
@@ -279,6 +310,10 @@ impl MeshStartTx {
                 "startup transaction missing mesh at commit".into(),
             ));
         };
+
+        if spawn_renewal_ticker {
+            install_nats_subnet_coordinator(state, self.config.overlay_ip).await?;
+        }
         let remote_control =
             std::mem::replace(&mut self.remote_control, Box::new(NoopRuntimeHandle));
         let peer_control = std::mem::replace(&mut self.peer_control, Box::new(NoopRuntimeHandle));
@@ -310,11 +345,7 @@ impl MeshStartTx {
             );
             let account_coordinator = coordinator.clone();
             let readiness = std::sync::Arc::new(
-                crate::daemon::cert_coordination::OverlayChallengeReadiness::new(
-                    store.clone(),
-                    state.identity.machine_id.clone(),
-                    peer_rpc_port,
-                ),
+                crate::daemon::cert_coordination::NatsChallengeReadiness::new(store.clone()),
             );
             let issuer_factory = std::sync::Arc::new(InstantAcmeIssuerFactory::new(
                 CertificateManagerConfig::from_env(),
@@ -475,6 +506,7 @@ impl DaemonState {
             let gateway_config = GatewayConfig::for_network(
                 &self.data_dir,
                 &net_config.name.0,
+                self.identity.machine_id.0.clone(),
                 self.gateway_listen_addr.clone(),
                 self.gateway_https_listen_addr.clone(),
                 None,
@@ -555,10 +587,7 @@ impl DaemonState {
     }
 
     /// Fatal before startup: resolve every startup input and explicit policy value into a `StartPlan`.
-    fn plan_mesh_start(
-        &self,
-        net_config: &NetworkConfig,
-    ) -> Result<StartPlan, StartMeshError> {
+    fn plan_mesh_start(&self, net_config: &NetworkConfig) -> Result<StartPlan, StartMeshError> {
         let network_dir = self.network_dir(&net_config.name.0);
         let bootstrap_peer_records =
             load_bootstrap_peer_records(&network_dir).map_err(StartMeshError::BootstrapResolve)?;
@@ -578,6 +607,7 @@ impl DaemonState {
             GatewayConfig::for_network(
                 &self.data_dir,
                 &net_config.name.0,
+                self.identity.machine_id.0.clone(),
                 self.gateway_listen_addr.clone(),
                 self.gateway_https_listen_addr.clone(),
                 None,
@@ -677,9 +707,7 @@ mod tests {
         let state = make_state(RuntimeTarget::Docker, ServiceMode::User, "0.0.0.0:80");
         let config = make_network_config(&state, "alpha");
 
-        let plan = state
-            .plan_mesh_start(&config)
-            .expect("plan should succeed");
+        let plan = state.plan_mesh_start(&config).expect("plan should succeed");
 
         assert_eq!(
             plan.remote_control_bind_addr,
@@ -692,9 +720,7 @@ mod tests {
         let state = make_state(RuntimeTarget::Host, ServiceMode::User, "0.0.0.0:80");
         let config = make_network_config(&state, "alpha");
 
-        let plan = state
-            .plan_mesh_start(&config)
-            .expect("plan should succeed");
+        let plan = state.plan_mesh_start(&config).expect("plan should succeed");
 
         assert_eq!(
             plan.remote_control_bind_addr,
@@ -754,9 +780,7 @@ mod tests {
         write_bootstrap_peer_records(&network_dir, std::slice::from_ref(&peer))
             .expect("write seed cache");
 
-        let plan = state
-            .plan_mesh_start(&config)
-            .expect("plan should succeed");
+        let plan = state.plan_mesh_start(&config).expect("plan should succeed");
 
         assert_eq!(plan.bootstrap_peer_records, vec![peer]);
         assert_eq!(plan.bootstrap_addrs, vec!["[fd00::8]:6222"]);

@@ -21,9 +21,10 @@ use ployz_store_api::{
 };
 use ployz_types::Result;
 use ployz_types::model::{
-    AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
-    InstanceStatusRecord, InviteRecord, MachineEvent, MachineId, MachineMembership, OverlayIp,
-    RoutingEvent, RoutingState, ServiceReleaseRecord, VolumeRecord,
+    AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
+    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineEvent,
+    MachineId, MachineMembership, OverlayIp, RoutingEvent, RoutingState, ServiceReleaseRecord,
+    VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
@@ -316,6 +317,21 @@ where
 
     async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
         self.store.subscribe_acme_challenges().await
+    }
+
+    async fn upsert_acme_challenge_readiness(
+        &self,
+        _record: &AcmeChallengeReadinessRecord,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn list_acme_challenge_readiness(
+        &self,
+        _hostname: &str,
+        _token: &str,
+    ) -> Result<Vec<AcmeChallengeReadinessRecord>> {
+        Ok(Vec::new())
     }
 
     async fn sync_status(&self) -> Result<SyncStatus> {

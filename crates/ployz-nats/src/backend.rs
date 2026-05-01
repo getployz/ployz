@@ -13,9 +13,9 @@ use ployz_store_api::{
 };
 use ployz_types::Result;
 use ployz_types::model::{
-    AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
-    InstanceStatusRecord, InviteRecord, MachineId, MachineMembership, RoutingEvent, RoutingState,
-    ServiceReleaseRecord, VolumeRecord,
+    AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
+    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
+    MachineMembership, RoutingEvent, RoutingState, ServiceReleaseRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::collections::HashMap;
@@ -176,6 +176,21 @@ impl StoreBackend for NatsStore {
 
     async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
         CertificateStore::subscribe_acme_challenges(self).await
+    }
+
+    async fn upsert_acme_challenge_readiness(
+        &self,
+        record: &AcmeChallengeReadinessRecord,
+    ) -> Result<()> {
+        CertificateStore::upsert_acme_challenge_readiness(self, record).await
+    }
+
+    async fn list_acme_challenge_readiness(
+        &self,
+        hostname: &str,
+        token: &str,
+    ) -> Result<Vec<AcmeChallengeReadinessRecord>> {
+        CertificateStore::list_acme_challenge_readiness(self, hostname, token).await
     }
 
     async fn sync_status(&self) -> Result<SyncStatus> {
@@ -383,7 +398,17 @@ fn instance_routing_event(
 
 impl SyncProbe for NatsStore {
     async fn sync_status(&self) -> Result<SyncStatus> {
-        Ok(SyncStatus::Synced)
+        match self.client().connection_state() {
+            async_nats::connection::State::Connected => {
+                if self.client().flush().await.is_ok() {
+                    Ok(SyncStatus::Synced)
+                } else {
+                    Ok(SyncStatus::Disconnected)
+                }
+            }
+            async_nats::connection::State::Pending => Ok(SyncStatus::Disconnected),
+            async_nats::connection::State::Disconnected => Ok(SyncStatus::Disconnected),
+        }
     }
 }
 

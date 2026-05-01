@@ -4,14 +4,12 @@ use ployz_api::{
     MachineAddPayload, MachineAwaitingSelfPublication, MachineInstallOptions, MachineListPayload,
     MachineListRow,
 };
-use ployz_orchestrator::coordination::PendingReservations;
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_store_api::StoreDriver;
 use ployz_types::model::{MachineId, NetworkId};
 use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Arc;
 use tokio::sync::mpsc;
 
 #[derive(Clone)]
@@ -22,7 +20,7 @@ pub(super) struct MachineAddContext {
     pub local_machine_id: MachineId,
     pub cluster_cidr: String,
     pub store: StoreDriver,
-    pub reservations: Arc<PendingReservations>,
+    pub peer_rpc_port: u16,
     pub peer_sync_tx: mpsc::Sender<PeerSyncCommand>,
     pub ssh_options: SshOptions,
     pub install: MachineInstallOptions,

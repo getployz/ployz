@@ -768,12 +768,9 @@ mod tests {
         // `connect_with_http` only builds an HTTP client and never touches
         // the network until a request is issued. Don't switch back unless the
         // test starts actually exercising Docker.
-        let docker = Docker::connect_with_http(
-            "http://127.0.0.1:1",
-            1,
-            bollard::API_DEFAULT_VERSION,
-        )
-        .expect("placeholder docker handle");
+        let docker =
+            Docker::connect_with_http("http://127.0.0.1:1", 1, bollard::API_DEFAULT_VERSION)
+                .expect("placeholder docker handle");
         let engine = ContainerEngine::new(docker);
         let runtime = LocalDeployRuntime::from_engine(engine, None, None, None);
 

@@ -93,10 +93,7 @@ impl DaemonState {
         Ok(net_config)
     }
 
-    pub(crate) async fn handle_mesh_start(
-        &mut self,
-        network: &str,
-    ) -> ployz_api::DaemonResponse {
+    pub(crate) async fn handle_mesh_start(&mut self, network: &str) -> ployz_api::DaemonResponse {
         if let Some(active) = &self.active {
             return self.err(
                 "NETWORK_ALREADY_RUNNING",

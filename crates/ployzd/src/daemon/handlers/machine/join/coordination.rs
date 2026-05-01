@@ -1,65 +1,49 @@
 use std::collections::HashSet;
-use std::hash::{Hash, Hasher};
+use std::time::Duration;
 
 use ipnet::Ipv4Net;
-use ployz_api::{CoordOp, DaemonRequest, ResourceKey as ApiResourceKey};
-use ployz_orchestrator::coordination::{
-    PrepareVote, Reservation, ReservationId, ResourceKey, Vote, quorum_prepare,
-};
+use ployz_orchestrator::coordination::{ClaimError, SubnetClaim};
 use ployz_orchestrator::ipam::pick_candidate_subnet;
-use ployz_orchestrator::machine_policy::is_coordination_peer;
 use ployz_store_api::{InviteRepository, MachineRegistry, StoreDriver};
-use ployz_types::model::{MachineId, MachineMembership, OverlayIp};
+use ployz_types::model::MachineId;
 use ployz_types::time::now_unix_secs;
 
 use crate::daemon::DaemonState;
 
 use super::super::types::MachineAddContext;
-use super::remote::{overlay_rpc, remote_response_error};
 
-const SUBNET_RESERVATION_TTL_SECS: u64 = 30;
+const SUBNET_RESERVATION_TTL: Duration = Duration::from_secs(30);
 const MAX_SUBNET_ATTEMPTS: usize = 64;
 
-#[derive(Debug, Clone)]
 pub(in super::super) struct BootstrapSubnetClaim {
-    reservation: Reservation,
+    claim: Option<SubnetClaim>,
     pub(super) subnet: Ipv4Net,
-    quorum_peers: Vec<CoordinationPeer>,
-    pub(super) peer_rpc_port: u16,
 }
 
 impl BootstrapSubnetClaim {
-    #[cfg_attr(not(test), allow(dead_code))]
     #[must_use]
     pub(in crate::daemon::handlers::machine) fn subnet(&self) -> Ipv4Net {
         self.subnet
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[must_use]
-    pub(in crate::daemon::handlers::machine) fn reservation_key(&self) -> &ResourceKey {
-        &self.reservation.key
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[must_use]
-    pub(in crate::daemon::handlers::machine) fn reservation_nonce(&self) -> &str {
-        &self.reservation.nonce
-    }
-
-    #[must_use]
-    pub(in crate::daemon::handlers::machine) fn quorum_peer_ids(&self) -> Vec<MachineId> {
-        self.quorum_peers
-            .iter()
-            .map(|peer| peer.machine_id.clone())
-            .collect()
+    /// Release the underlying lock immediately. Used by tests that want to
+    /// re-acquire the same subnet after a probe; production code should
+    /// release through [`release_reserved_subnet`] so the call site is
+    /// uniform with other rollback paths.
+    pub(in crate::daemon::handlers::machine) async fn release_now(&mut self) -> Result<(), String> {
+        let Some(claim) = self.claim.take() else {
+            return Ok(());
+        };
+        claim.release().await
     }
 }
 
-#[derive(Debug, Clone)]
-struct CoordinationPeer {
-    machine_id: MachineId,
-    overlay_ip: OverlayIp,
+impl std::fmt::Debug for BootstrapSubnetClaim {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BootstrapSubnetClaim")
+            .field("subnet", &self.subnet)
+            .finish_non_exhaustive()
+    }
 }
 
 impl DaemonState {
@@ -71,14 +55,10 @@ impl DaemonState {
             .active
             .as_ref()
             .ok_or_else(|| "no running network".to_string())?;
-        let peer_rpc_port = self
-            .peer_control_port()
-            .map_err(|error| error.to_string())?;
         let cluster: Ipv4Net = self
             .cluster_cidr
             .parse()
             .map_err(|err| format!("invalid cluster CIDR '{}': {err}", self.cluster_cidr))?;
-        let now = now_unix_secs();
         let machines = active
             .mesh
             .store
@@ -87,12 +67,10 @@ impl DaemonState {
             .map_err(|err| format!("list machines for subnet reservation: {err}"))?;
         let bias_seed = machine_bias_seed(owner);
 
-        let mut taken = machines
+        let mut taken: HashSet<Ipv4Net> = machines
             .iter()
             .filter_map(|machine| machine.subnet)
-            .collect::<HashSet<_>>();
-        taken.extend(self.reservations.active_subnets(now).await);
-        let quorum_peers = coordination_peers(&machines, &self.identity.machine_id);
+            .collect();
 
         for _ in 0..MAX_SUBNET_ATTEMPTS {
             let Some(candidate) =
@@ -100,54 +78,26 @@ impl DaemonState {
             else {
                 return Err("no available subnets".into());
             };
-            let reservation = Reservation {
-                id: ReservationId::random(),
-                key: ResourceKey::Subnet(candidate),
-                owner: owner.clone(),
-                nonce: ReservationId::random().0,
-                expires_at: now.saturating_add(SUBNET_RESERVATION_TTL_SECS),
-            };
-            let committed_taken = machines
-                .iter()
-                .any(|machine| machine.subnet == Some(candidate));
-            let local_vote = self
-                .reservations
-                .prepare(reservation.clone(), committed_taken, now)
-                .await;
-            match local_vote {
-                Vote::Allow => {}
-                Vote::Deny(_) => {
+
+            match self
+                .subnet_coord
+                .try_claim(candidate, owner, SUBNET_RESERVATION_TTL)
+                .await
+            {
+                Ok(claim) => {
+                    return Ok(BootstrapSubnetClaim {
+                        claim: Some(claim),
+                        subnet: candidate,
+                    });
+                }
+                Err(ClaimError::AlreadyHeld) => {
                     taken.insert(candidate);
                     continue;
                 }
+                Err(ClaimError::Backend(message)) => {
+                    return Err(format!("subnet lock backend: {message}"));
+                }
             }
-
-            let decision = quorum_prepare(&quorum_peers, PrepareVote::Allow, |peer| {
-                let reservation = reservation.clone();
-                async move { remote_coord_prepare(&peer, &reservation, peer_rpc_port).await }
-            })
-            .await;
-            if decision.allowed {
-                return Ok(BootstrapSubnetClaim {
-                    reservation,
-                    subnet: candidate,
-                    quorum_peers,
-                    peer_rpc_port,
-                });
-            }
-            let _ = self
-                .reservations
-                .release(&reservation.key, &reservation.nonce, now_unix_secs())
-                .await;
-            release_remote_reservation_holds(&quorum_peers, &reservation, peer_rpc_port, candidate)
-                .await;
-            if !decision.retry_could_succeed() {
-                return Err(format!(
-                    "failed to reach quorum for subnet reservation ({}/{})",
-                    decision.votes_for, decision.votes_total
-                ));
-            }
-            taken.insert(candidate);
         }
 
         Err("no available subnets".into())
@@ -155,51 +105,20 @@ impl DaemonState {
 }
 
 pub(super) async fn release_reserved_subnet(
-    context: &MachineAddContext,
-    subnet_claim: &BootstrapSubnetClaim,
+    _context: &MachineAddContext,
+    subnet_claim: &mut BootstrapSubnetClaim,
 ) -> Result<(), String> {
-    let now = now_unix_secs();
-    let local_vote = context
-        .reservations
-        .release(
-            &subnet_claim.reservation.key,
-            &subnet_claim.reservation.nonce,
-            now,
-        )
-        .await;
-    if let Vote::Deny(conflict) = local_vote {
+    let Some(claim) = subnet_claim.claim.take() else {
+        return Ok(());
+    };
+    if let Err(err) = claim.release().await {
         tracing::warn!(
-            ?conflict,
             subnet = %subnet_claim.subnet,
-            "subnet reservation release denied locally"
+            error = %err,
+            "subnet reservation release failed; lease will expire by TTL"
         );
     }
-    release_remote_reservation_holds(
-        &subnet_claim.quorum_peers,
-        &subnet_claim.reservation,
-        subnet_claim.peer_rpc_port,
-        subnet_claim.subnet,
-    )
-    .await;
     Ok(())
-}
-
-async fn release_remote_reservation_holds(
-    peers: &[CoordinationPeer],
-    reservation: &Reservation,
-    peer_rpc_port: u16,
-    subnet: Ipv4Net,
-) {
-    for peer in peers {
-        if let Err(err) = remote_coord_release(peer, reservation, peer_rpc_port).await {
-            tracing::warn!(
-                peer = %peer.machine_id,
-                subnet = %subnet,
-                error = %err,
-                "subnet reservation release fanout failed"
-            );
-        }
-    }
 }
 
 pub(super) async fn consume_invite(
@@ -216,90 +135,10 @@ pub(super) async fn consume_invite(
 }
 
 fn machine_bias_seed(machine_id: &MachineId) -> u64 {
+    use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     machine_id.hash(&mut hasher);
     hasher.finish()
-}
-
-fn coordination_peers(
-    machines: &[MachineMembership],
-    self_id: &MachineId,
-) -> Vec<CoordinationPeer> {
-    machines
-        .iter()
-        .filter(|machine| is_coordination_peer(&machine.placement_candidate(), self_id))
-        .map(|machine| CoordinationPeer {
-            machine_id: machine.id.clone(),
-            overlay_ip: machine.overlay_ip,
-        })
-        .collect()
-}
-
-async fn remote_coord_prepare(
-    peer: &CoordinationPeer,
-    reservation: &Reservation,
-    peer_rpc_port: u16,
-) -> PrepareVote {
-    match overlay_rpc(
-        peer.overlay_ip,
-        peer_rpc_port,
-        DaemonRequest::Coord {
-            op: CoordOp::Prepare {
-                id: reservation.id.0.clone(),
-                key: api_resource_key(&reservation.key),
-                owner: reservation.owner.clone(),
-                nonce: reservation.nonce.clone(),
-                ttl_secs: reservation.expires_at.saturating_sub(now_unix_secs()),
-            },
-        },
-    )
-    .await
-    {
-        Ok(response) if response.ok => PrepareVote::Allow,
-        Ok(response) => {
-            tracing::warn!(
-                peer = %peer.machine_id,
-                code = %response.code,
-                message = %response.message,
-                "subnet reservation prepare denied by peer"
-            );
-            classify_remote_prepare_denial(&response.message)
-        }
-        Err(err) => {
-            tracing::warn!(peer = %peer.machine_id, error = %err, "subnet reservation prepare rpc failed");
-            PrepareVote::TerminalDeny
-        }
-    }
-}
-
-fn classify_remote_prepare_denial(message: &str) -> PrepareVote {
-    if message.contains("HeldBy") || message.contains("AlreadyCommitted") {
-        return PrepareVote::RetryableDeny;
-    }
-    PrepareVote::TerminalDeny
-}
-
-async fn remote_coord_release(
-    peer: &CoordinationPeer,
-    reservation: &Reservation,
-    peer_rpc_port: u16,
-) -> Result<(), String> {
-    let response = overlay_rpc(
-        peer.overlay_ip,
-        peer_rpc_port,
-        DaemonRequest::Coord {
-            op: CoordOp::Release {
-                id: reservation.id.0.clone(),
-                key: api_resource_key(&reservation.key),
-                nonce: reservation.nonce.clone(),
-            },
-        },
-    )
-    .await?;
-    if response.ok {
-        return Ok(());
-    }
-    Err(remote_response_error(&response))
 }
 
 pub(super) async fn persist_machine_control_target(
@@ -349,17 +188,6 @@ pub(super) async fn assert_subnet_unique(
         claimed_subnet,
         conflicting_machine_ids.join(", ")
     ))
-}
-
-fn api_resource_key(key: &ResourceKey) -> ApiResourceKey {
-    match key {
-        ResourceKey::Subnet(subnet) => ApiResourceKey::Subnet(*subnet),
-        ResourceKey::DeployNamespace(namespace) => {
-            ApiResourceKey::DeployNamespace(namespace.clone())
-        }
-        ResourceKey::CertIssuance(hostname) => ApiResourceKey::CertIssuance(hostname.clone()),
-        ResourceKey::AcmeAccount(issuer_url) => ApiResourceKey::AcmeAccount(issuer_url.clone()),
-    }
 }
 
 #[cfg(test)]

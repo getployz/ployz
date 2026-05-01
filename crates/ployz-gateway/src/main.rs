@@ -168,6 +168,40 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
                 }
             }
         }
+
+        async fn upsert_acme_challenge_readiness(
+            &self,
+            record: &ployz_types::model::AcmeChallengeReadinessRecord,
+        ) -> Result<(), ployz_gateway::GatewayError> {
+            info!(
+                hostname = %record.hostname,
+                token = %record.token,
+                machine_id = %record.machine_id,
+                "gateway store call start: upsert_acme_challenge_readiness"
+            );
+            match ployz_store_api::CertificateStore::upsert_acme_challenge_readiness(
+                &self.0, record,
+            )
+            .await
+            {
+                Ok(()) => {
+                    info!(
+                        hostname = %record.hostname,
+                        token = %record.token,
+                        machine_id = %record.machine_id,
+                        "gateway store call complete: upsert_acme_challenge_readiness"
+                    );
+                    Ok(())
+                }
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        "gateway store call failed: upsert_acme_challenge_readiness"
+                    );
+                    Err(ployz_gateway::GatewayError::Store(err.to_string()))
+                }
+            }
+        }
     }
     ployz_gateway::run_gateway_process_on_runtime(runtime, config, StandaloneStore(store))
 }

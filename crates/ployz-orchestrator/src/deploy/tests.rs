@@ -6,10 +6,11 @@ use super::transaction::PreparedDeploy;
 use crate::deploy::session::{DeploySession, DeploySessionFactory, StartCandidateRequest};
 use crate::error::Result;
 use crate::model::{
-    AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, DeployState,
-    DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId, MachineLifecycle,
-    MachineMembership, MachineRole, MachineTopology, OverlayIp, PublicKey, ServiceRelease,
-    ServiceReleaseRecord, ServiceReleaseSlot, ServiceRoutingPolicy, SlotId, VolumeRecord,
+    AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
+    DeployId, DeployRecord, DeployState, DrainState, InstanceId, InstancePhase,
+    InstanceStatusRecord, MachineId, MachineLifecycle, MachineMembership, MachineRole,
+    MachineTopology, OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord,
+    ServiceReleaseSlot, ServiceRoutingPolicy, SlotId, VolumeRecord,
 };
 use async_trait::async_trait;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
@@ -2134,6 +2135,23 @@ impl StoreBackend for CountingBackend {
 
     async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> PloyzResult<()> {
         self.store.delete_acme_challenge(hostname, token).await
+    }
+
+    async fn upsert_acme_challenge_readiness(
+        &self,
+        record: &AcmeChallengeReadinessRecord,
+    ) -> PloyzResult<()> {
+        self.store.upsert_acme_challenge_readiness(record).await
+    }
+
+    async fn list_acme_challenge_readiness(
+        &self,
+        hostname: &str,
+        token: &str,
+    ) -> PloyzResult<Vec<AcmeChallengeReadinessRecord>> {
+        self.store
+            .list_acme_challenge_readiness(hostname, token)
+            .await
     }
 
     async fn subscribe_certificates(

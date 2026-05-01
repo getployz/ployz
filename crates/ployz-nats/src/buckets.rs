@@ -15,6 +15,7 @@ pub const INSTANCES_BUCKET: &str = "instances";
 pub const ACME_ACCOUNTS_BUCKET: &str = "acme_accounts";
 pub const CERTIFICATES_BUCKET: &str = "certificates";
 pub const ACME_CHALLENGES_BUCKET: &str = "acme_challenges";
+pub const ACME_CHALLENGE_READINESS_BUCKET: &str = "acme_challenge_readiness";
 pub const LOCKS_BUCKET: &str = "locks";
 pub const COORDINATOR_LEASE_BUCKET: &str = "coordinator_lease";
 
@@ -133,6 +134,7 @@ fn durable_buckets(replicas: usize) -> Vec<kv::Config> {
         ACME_ACCOUNTS_BUCKET,
         CERTIFICATES_BUCKET,
         ACME_CHALLENGES_BUCKET,
+        ACME_CHALLENGE_READINESS_BUCKET,
     ]
     .into_iter()
     .map(|bucket| kv::Config {

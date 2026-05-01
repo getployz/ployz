@@ -10,8 +10,7 @@ use ployz_orchestrator::certificates::{AcmeAccountCoordinator, CertificateManage
 use ployz_orchestrator::deploy::{apply_with_certificate_coordination, preview};
 use ployz_runtime_backends::deploy::remote::DeployAgent;
 use ployz_runtime_backends::deploy::session::DefaultDeploySessionFactory;
-use ployz_store_api::DeployRepository;
-use ployz_store_api::StoreDriver;
+use ployz_store_api::{DeployRepository, StoreDriver, StoreRuntimeControl};
 use ployz_types::Error as PloyzError;
 use ployz_types::spec::{DeployManifest, Namespace, ServiceSpec, VolumeDeclaration};
 
@@ -100,15 +99,18 @@ impl DaemonState {
             Ok(port) => port,
             Err(error) => return self.err("DEPLOY_APPLY_FAILED", error.to_string()),
         };
-        let nats_store = match ployz_nats::NatsStore::connect_for_network(
-            &self.data_dir,
-            &active.config.name.0,
-        )
-        .await
-        {
+        let nats_client_url = if self.runtime_target == RuntimeTarget::Docker {
+            crate::services::nats::local_client_url()
+        } else {
+            crate::services::nats::overlay_client_url(active.config.overlay_ip)
+        };
+        let nats_store = match ployz_nats::NatsStore::connect(&nats_client_url).await {
             Ok(store) => store,
             Err(error) => return self.err("DEPLOY_APPLY_FAILED", error.to_string()),
         };
+        if let Err(error) = nats_store.start().await {
+            return self.err("DEPLOY_APPLY_FAILED", error.to_string());
+        }
         let nats_locks = match NatsLocks::new(&nats_store).await {
             Ok(locks) => locks,
             Err(error) => return self.err("DEPLOY_APPLY_FAILED", error.to_string()),
@@ -121,10 +123,8 @@ impl DaemonState {
         );
         let account_coordinator: Arc<dyn AcmeAccountCoordinator> = certificate_coordinator.clone();
         let challenge_readiness = Arc::new(
-            crate::daemon::cert_coordination::OverlayChallengeReadiness::new(
+            crate::daemon::cert_coordination::NatsChallengeReadiness::new(
                 active.mesh.store.clone(),
-                self.identity.machine_id.clone(),
-                peer_rpc_port,
             ),
         );
         let issuer_factory = Arc::new(InstantAcmeIssuerFactory::new(
