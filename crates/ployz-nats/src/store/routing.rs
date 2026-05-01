@@ -1,4 +1,5 @@
 use async_nats::HeaderMap;
+use async_nats::header::NATS_EXPECTED_STREAM;
 use async_nats::jetstream;
 use async_nats::jetstream::message::PublishMessage;
 use ployz_types::error::{Error, Result};
@@ -44,14 +45,7 @@ pub(crate) async fn publish_routing_batch(
         return Ok(());
     };
     for spec in staged {
-        js.client()
-            .publish_with_headers(
-                spec.subject.clone(),
-                spec.headers.clone(),
-                spec.payload.clone().into(),
-            )
-            .await
-            .map_err(|error| Error::operation("nats_routing_publish", format!("{error:?}")))?;
+        publish_routing_batch_part(js, spec).await?;
     }
     let publish = PublishMessage::build()
         .payload(commit.payload.clone().into())
@@ -64,6 +58,32 @@ pub(crate) async fn publish_routing_batch(
     ack.await
         .map_err(|error| Error::operation("nats_routing_ack", format!("{error:?}")))?;
     Ok(())
+}
+
+async fn publish_routing_batch_part(
+    js: &jetstream::Context,
+    spec: &RoutingPublishSpec,
+) -> Result<()> {
+    let response = js
+        .client()
+        .request_with_headers(
+            spec.subject.clone(),
+            spec.headers.clone(),
+            spec.payload.clone().into(),
+        )
+        .await
+        .map_err(|error| Error::operation("nats_routing_publish", format!("{error:?}")))?;
+    if response.payload.is_empty() {
+        return Ok(());
+    }
+    Err(Error::operation(
+        "nats_routing_ack",
+        format!(
+            "unexpected batch part ack for '{}': {}",
+            spec.subject,
+            String::from_utf8_lossy(response.payload.as_ref())
+        ),
+    ))
 }
 
 pub(crate) fn routing_publish_specs(
@@ -85,6 +105,7 @@ pub(crate) fn routing_publish_specs(
             let mut headers = HeaderMap::new();
             headers.insert(NATS_BATCH_ID, atomic_batch_id.as_str());
             headers.insert(NATS_BATCH_SEQUENCE, sequence.to_string());
+            headers.insert(NATS_EXPECTED_STREAM, ROUTING_EVENTS_STREAM);
             headers.insert(PLOYZ_ROUTING_LOGICAL_BATCH_ID, batch_id);
             headers.insert(PLOYZ_ROUTING_CAUSE, cause);
             headers.insert(PLOYZ_ROUTING_COUNT, count.to_string());
@@ -138,9 +159,17 @@ mod tests {
             "batch-1"
         );
         assert_eq!(header(&specs[0].headers, NATS_BATCH_SEQUENCE), "1");
+        assert_eq!(
+            header(&specs[0].headers, "Nats-Expected-Stream"),
+            ROUTING_EVENTS_STREAM
+        );
         assert_eq!(header(&specs[0].headers, PLOYZ_ROUTING_SEQUENCE), "1");
         assert!(specs[0].headers.get(NATS_BATCH_COMMIT).is_none());
         assert_eq!(header(&specs[1].headers, NATS_BATCH_SEQUENCE), "2");
+        assert_eq!(
+            header(&specs[1].headers, "Nats-Expected-Stream"),
+            ROUTING_EVENTS_STREAM
+        );
         assert_eq!(header(&specs[1].headers, PLOYZ_ROUTING_SEQUENCE), "2");
         assert_eq!(header(&specs[1].headers, NATS_BATCH_COMMIT), "1");
         assert_eq!(header(&specs[1].headers, PLOYZ_ROUTING_COUNT), "2");
