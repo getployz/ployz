@@ -61,8 +61,25 @@ pub(crate) struct DaemonJsonResponse {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub(crate) enum DaemonJsonPayload {
     Doctor(DoctorPayload),
+    Status(StatusPayload),
     MachineList(MachineListPayload),
     VolumeZfsTransfer(VolumeZfsTransferPayload),
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct StatusPayload {
+    #[serde(default)]
+    pub(crate) nats_assets: Vec<NatsAssetStatus>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct NatsAssetStatus {
+    pub(crate) name: String,
+    pub(crate) kind: String,
+    #[serde(default)]
+    pub(crate) replicas: Option<usize>,
+    #[serde(default)]
+    pub(crate) error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

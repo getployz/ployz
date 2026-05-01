@@ -42,5 +42,6 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
         "joiner2",
         "mirror",
         &[("founder", "storage_candidate"), ("joiner1", "mirror")],
-    )
+    )?;
+    run.assert_nats_asset_replicas("founder", 1)
 }

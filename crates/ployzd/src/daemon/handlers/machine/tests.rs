@@ -907,6 +907,7 @@ fn status_response_for_record(record: &MachineMembership) -> String {
             local_machine_lifecycle: None,
             mesh_phase: "idle".into(),
             edge_sync: Vec::new(),
+            nats_assets: Vec::new(),
         })),
     })
     .expect("encode status response")
