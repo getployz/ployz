@@ -580,11 +580,10 @@ Tracked in code comments and the implementation plan. Highlights:
 1. Routing events are live JetStream atomic batches. Gateway/DNS use durable
    per-machine consumers; runtime watches and readiness probes use temporary
    consumers that are deleted when the watcher closes.
-2. Machine subscriptions are KV watchers that carry either a machine event or
-   an explicit watcher failure. If a watcher fails or closes, mesh consumers
-   stop using the stale event stream. Certificate/ACME challenge watchers still
-   close on failure. Stronger task supervision and operator status is still a
-   hardening item.
+2. Machine/certificate/ACME challenge subscriptions are KV watchers that carry
+   either a domain event or an explicit watcher failure. If a watcher fails or
+   closes, consumers stop using the stale event stream. Stronger task
+   supervision and operator status is still a hardening item.
 3. `replay_projection` runs full N-RPC replay on every read.
 4. Lock TTL doesn't refresh on `kv.update` because the current async-nats
    API doesn't expose update-with-TTL — workaround is a delete+create

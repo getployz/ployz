@@ -35,9 +35,9 @@ struct StoreInner {
     deploys: HashMap<DeployId, DeployRecord>,
     acme_accounts: HashMap<String, AcmeAccountRecord>,
     certificates: HashMap<String, CertificateRecord>,
-    certificate_subscribers: Vec<mpsc::Sender<CertificateEvent>>,
+    certificate_subscribers: Vec<mpsc::Sender<crate::CertificateSubscriptionUpdate>>,
     acme_challenges: HashMap<(String, String), AcmeChallengeRecord>,
-    acme_challenge_subscribers: Vec<mpsc::Sender<AcmeChallengeEvent>>,
+    acme_challenge_subscribers: Vec<mpsc::Sender<crate::AcmeChallengeSubscriptionUpdate>>,
     acme_challenge_readiness: HashMap<(String, String, MachineId), AcmeChallengeReadinessRecord>,
     sync_status: SyncStatus,
 }
@@ -157,7 +157,7 @@ impl MemoryStore {
     fn broadcast_certificate(inner: &mut StoreInner, event: CertificateEvent) {
         inner
             .certificate_subscribers
-            .retain(|sender| match sender.try_send(event.clone()) {
+            .retain(|sender| match sender.try_send(Ok(event.clone())) {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Closed(_)) => false,
                 Err(mpsc::error::TrySendError::Full(_)) => {
@@ -168,16 +168,16 @@ impl MemoryStore {
     }
 
     fn broadcast_acme_challenge(inner: &mut StoreInner, event: AcmeChallengeEvent) {
-        inner
-            .acme_challenge_subscribers
-            .retain(|sender| match sender.try_send(event.clone()) {
+        inner.acme_challenge_subscribers.retain(|sender| {
+            match sender.try_send(Ok(event.clone())) {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Closed(_)) => false,
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     warn!("acme challenge subscriber channel full, event dropped");
                     true
                 }
-            });
+            }
+        });
     }
 }
 

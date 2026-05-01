@@ -2,7 +2,10 @@ use std::future::Future;
 use std::time::Duration;
 
 use crate::routes::{GatewayProjectionEvent, GatewayProjector, GatewaySnapshot, ProjectionDelta};
-use ployz_store_api::{RoutingBatchSubscription, RoutingEventBatch, RoutingSubscription};
+use ployz_store_api::{
+    AcmeChallengeSubscriptionUpdate, CertificateSubscriptionUpdate, RoutingBatchSubscription,
+    RoutingEventBatch, RoutingSubscription,
+};
 use ployz_types::model::{
     AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateEvent,
     CertificateRecord, MachineId, RoutingState,
@@ -37,7 +40,13 @@ pub trait RoutingSnapshotReader: Send + Sync {
     fn subscribe_certificates(
         &self,
     ) -> impl Future<
-        Output = Result<(Vec<CertificateRecord>, mpsc::Receiver<CertificateEvent>), GatewayError>,
+        Output = Result<
+            (
+                Vec<CertificateRecord>,
+                mpsc::Receiver<CertificateSubscriptionUpdate>,
+            ),
+            GatewayError,
+        >,
     > + Send
     + '_;
     fn list_acme_challenges(
@@ -47,7 +56,10 @@ pub trait RoutingSnapshotReader: Send + Sync {
         &self,
     ) -> impl Future<
         Output = Result<
-            (Vec<AcmeChallengeRecord>, mpsc::Receiver<AcmeChallengeEvent>),
+            (
+                Vec<AcmeChallengeRecord>,
+                mpsc::Receiver<AcmeChallengeSubscriptionUpdate>,
+            ),
             GatewayError,
         >,
     > + Send
@@ -114,15 +126,34 @@ where
                         warn!("gateway certificate event stream closed; resubscribing");
                         break;
                     };
-                    apply_certificate_batch(&mut projector, event, &mut cert_rx, &snapshot);
+                    let event = match event {
+                        Ok(event) => event,
+                        Err(error) => {
+                            warn!(%error, "gateway certificate event stream failed; resubscribing");
+                            break;
+                        }
+                    };
+                    if apply_certificate_batch(&mut projector, event, &mut cert_rx, &snapshot) {
+                        break;
+                    }
                 }
                 event = chal_rx.recv() => {
                     let Some(event) = event else {
                         warn!("gateway ACME challenge event stream closed; resubscribing");
                         break;
                     };
-                    let ready_challenges = apply_challenge_batch(&mut projector, event, &mut chal_rx, &snapshot);
+                    let event = match event {
+                        Ok(event) => event,
+                        Err(error) => {
+                            warn!(%error, "gateway ACME challenge event stream failed; resubscribing");
+                            break;
+                        }
+                    };
+                    let (ready_challenges, challenge_stream_failed) = apply_challenge_batch(&mut projector, event, &mut chal_rx, &snapshot);
                     publish_challenge_readiness(&store, &machine_id, &ready_challenges).await;
+                    if challenge_stream_failed {
+                        break;
+                    }
                 }
             }
         }
@@ -197,14 +228,23 @@ async fn apply_routing_batch(
 fn apply_certificate_batch(
     projector: &mut GatewayProjector,
     event: CertificateEvent,
-    cert_rx: &mut mpsc::Receiver<CertificateEvent>,
+    cert_rx: &mut mpsc::Receiver<CertificateSubscriptionUpdate>,
     snapshot: &SharedSnapshot,
-) {
+) -> bool {
     let mut deltas = Vec::new();
     if let Some(delta) = apply_certificate_event(projector, event) {
         deltas.push(delta);
     }
+    let mut stream_failed = false;
     while let Ok(event) = cert_rx.try_recv() {
+        let event = match event {
+            Ok(event) => event,
+            Err(error) => {
+                warn!(%error, "gateway certificate event stream failed while draining; resubscribing");
+                stream_failed = true;
+                break;
+            }
+        };
         if let Some(delta) = apply_certificate_event(projector, event) {
             deltas.push(delta);
         }
@@ -212,16 +252,18 @@ fn apply_certificate_batch(
     if !deltas.is_empty() {
         publish_deltas(snapshot, &deltas);
     }
+    stream_failed
 }
 
 fn apply_challenge_batch(
     projector: &mut GatewayProjector,
     event: AcmeChallengeEvent,
-    chal_rx: &mut mpsc::Receiver<AcmeChallengeEvent>,
+    chal_rx: &mut mpsc::Receiver<AcmeChallengeSubscriptionUpdate>,
     snapshot: &SharedSnapshot,
-) -> Vec<AcmeChallengeRecord> {
+) -> (Vec<AcmeChallengeRecord>, bool) {
     let mut deltas = Vec::new();
     let mut ready_challenges = Vec::new();
+    let mut stream_failed = false;
     if let Some(delta) = apply_challenge_event(projector, event.clone()) {
         deltas.push(delta);
         if let Some(record) = challenge_record_for_readiness(&event) {
@@ -229,6 +271,14 @@ fn apply_challenge_batch(
         }
     }
     while let Ok(event) = chal_rx.try_recv() {
+        let event = match event {
+            Ok(event) => event,
+            Err(error) => {
+                warn!(%error, "gateway ACME challenge event stream failed while draining; resubscribing");
+                stream_failed = true;
+                break;
+            }
+        };
         if let Some(delta) = apply_challenge_event(projector, event.clone()) {
             deltas.push(delta);
             if let Some(record) = challenge_record_for_readiness(&event) {
@@ -239,7 +289,7 @@ fn apply_challenge_batch(
     if !deltas.is_empty() {
         publish_deltas(snapshot, &deltas);
     }
-    ready_challenges
+    (ready_challenges, stream_failed)
 }
 
 fn challenge_record_for_readiness(event: &AcmeChallengeEvent) -> Option<AcmeChallengeRecord> {
@@ -464,7 +514,7 @@ mod tests {
         };
         let mut rx = mpsc::channel(1).1;
 
-        let ready = apply_challenge_batch(
+        let (ready, stream_failed) = apply_challenge_batch(
             &mut projector,
             AcmeChallengeEvent::Updated(record.clone()),
             &mut rx,
@@ -472,5 +522,6 @@ mod tests {
         );
 
         assert_eq!(ready, vec![record]);
+        assert!(!stream_failed);
     }
 }

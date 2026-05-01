@@ -18,8 +18,16 @@ pub type MachineSubscription = (
     Vec<MachineMembership>,
     mpsc::Receiver<MachineSubscriptionUpdate>,
 );
-pub type CertificateSubscription = (Vec<CertificateRecord>, mpsc::Receiver<CertificateEvent>);
-pub type AcmeChallengeSubscription = (Vec<AcmeChallengeRecord>, mpsc::Receiver<AcmeChallengeEvent>);
+pub type CertificateSubscriptionUpdate = Result<CertificateEvent>;
+pub type CertificateSubscription = (
+    Vec<CertificateRecord>,
+    mpsc::Receiver<CertificateSubscriptionUpdate>,
+);
+pub type AcmeChallengeSubscriptionUpdate = Result<AcmeChallengeEvent>;
+pub type AcmeChallengeSubscription = (
+    Vec<AcmeChallengeRecord>,
+    mpsc::Receiver<AcmeChallengeSubscriptionUpdate>,
+);
 pub type RoutingBatchSubscription = (RoutingState, mpsc::Receiver<RoutingEventBatch>);
 
 #[derive(Debug, Clone, PartialEq, Eq)]

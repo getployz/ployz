@@ -1,7 +1,7 @@
 use async_nats::jetstream::kv;
 use futures_util::{StreamExt, TryStreamExt};
 use ployz_store_api::{AcmeChallengeSubscription, CertificateStore, CertificateSubscription};
-use ployz_types::error::Result;
+use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
     CertificateEvent, CertificateRecord, MachineId,
@@ -142,7 +142,10 @@ impl CertificateStore for NatsStore {
                 let entry = match next {
                     Ok(entry) => entry,
                     Err(error) => {
+                        let error =
+                            Error::operation("nats_certificates_watch", format!("{error:?}"));
                         warn!(?error, "NATS certificate watcher failed");
+                        let _ = tx.send(Err(error)).await;
                         break;
                     }
                 };
@@ -174,7 +177,7 @@ impl CertificateStore for NatsStore {
                         }
                     }
                 };
-                if tx.send(event).await.is_err() {
+                if tx.send(Ok(event)).await.is_err() {
                     break;
                 }
             }
@@ -204,7 +207,10 @@ impl CertificateStore for NatsStore {
                 let entry = match next {
                     Ok(entry) => entry,
                     Err(error) => {
+                        let error =
+                            Error::operation("nats_acme_challenges_watch", format!("{error:?}"));
                         warn!(?error, "NATS ACME challenge watcher failed");
+                        let _ = tx.send(Err(error)).await;
                         break;
                     }
                 };
@@ -234,7 +240,7 @@ impl CertificateStore for NatsStore {
                         }
                     }
                 };
-                if tx.send(event).await.is_err() {
+                if tx.send(Ok(event)).await.is_err() {
                     break;
                 }
             }

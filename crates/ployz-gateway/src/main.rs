@@ -108,7 +108,7 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
         ) -> Result<
             (
                 Vec<ployz_types::model::CertificateRecord>,
-                tokio::sync::mpsc::Receiver<ployz_types::model::CertificateEvent>,
+                tokio::sync::mpsc::Receiver<ployz_store_api::CertificateSubscriptionUpdate>,
             ),
             ployz_gateway::GatewayError,
         > {
@@ -153,7 +153,7 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
         ) -> Result<
             (
                 Vec<ployz_types::model::AcmeChallengeRecord>,
-                tokio::sync::mpsc::Receiver<ployz_types::model::AcmeChallengeEvent>,
+                tokio::sync::mpsc::Receiver<ployz_store_api::AcmeChallengeSubscriptionUpdate>,
             ),
             ployz_gateway::GatewayError,
         > {
