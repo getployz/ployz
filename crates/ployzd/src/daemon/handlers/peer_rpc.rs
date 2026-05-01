@@ -1,4 +1,3 @@
-use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
@@ -26,29 +25,6 @@ const DEFAULT_OVERLAY_RPC_TIMEOUTS: OverlayRpcTimeouts = OverlayRpcTimeouts {
     read: PEER_RPC_TIMEOUT,
 };
 
-const ZFS_TRANSFER_RPC_TIMEOUTS: OverlayRpcTimeouts = OverlayRpcTimeouts {
-    connect: PEER_RPC_TIMEOUT,
-    write: PEER_RPC_TIMEOUT,
-    shutdown: PEER_RPC_TIMEOUT,
-    read: Duration::from_secs(24 * 60 * 60),
-};
-
-pub(super) enum OverlayRpcExpectOkError {
-    Transport(String),
-    Remote { code: String, message: String },
-}
-
-impl Display for OverlayRpcExpectOkError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Transport(error) => write!(f, "{error}"),
-            Self::Remote { code, message } => {
-                write!(f, "remote daemon error [{code}]: {message}")
-            }
-        }
-    }
-}
-
 pub(crate) async fn overlay_rpc(
     overlay_ip: OverlayIp,
     peer_rpc_port: u16,
@@ -59,20 +35,6 @@ pub(crate) async fn overlay_rpc(
         peer_rpc_port,
         request,
         DEFAULT_OVERLAY_RPC_TIMEOUTS,
-    )
-    .await
-}
-
-pub(crate) async fn overlay_rpc_zfs_transfer(
-    overlay_ip: OverlayIp,
-    peer_rpc_port: u16,
-    request: DaemonRequest,
-) -> Result<DaemonResponse, String> {
-    overlay_rpc_with_timeouts(
-        overlay_ip,
-        peer_rpc_port,
-        request,
-        ZFS_TRANSFER_RPC_TIMEOUTS,
     )
     .await
 }
@@ -131,52 +93,12 @@ async fn overlay_rpc_with_timeouts(
         .map_err(|error| format!("decode overlay rpc response: {error}"))
 }
 
-pub(super) async fn overlay_rpc_expect_ok(
-    overlay_ip: OverlayIp,
-    peer_rpc_port: u16,
-    request: DaemonRequest,
-) -> Result<(), String> {
-    overlay_rpc_expect_ok_classified(overlay_ip, peer_rpc_port, request)
-        .await
-        .map_err(|error| error.to_string())
-}
-
-pub(super) async fn overlay_rpc_expect_ok_classified(
-    overlay_ip: OverlayIp,
-    peer_rpc_port: u16,
-    request: DaemonRequest,
-) -> Result<(), OverlayRpcExpectOkError> {
-    overlay_rpc_expect_ok_classified_with_read_timeout(
-        overlay_ip,
-        peer_rpc_port,
-        request,
-        PEER_RPC_TIMEOUT,
-    )
-    .await
-}
-
 pub(crate) async fn overlay_rpc_expect_ok_with_read_timeout(
     overlay_ip: OverlayIp,
     peer_rpc_port: u16,
     request: DaemonRequest,
     read_timeout: Duration,
 ) -> Result<(), String> {
-    overlay_rpc_expect_ok_classified_with_read_timeout(
-        overlay_ip,
-        peer_rpc_port,
-        request,
-        read_timeout,
-    )
-    .await
-    .map_err(|error| error.to_string())
-}
-
-pub(super) async fn overlay_rpc_expect_ok_classified_with_read_timeout(
-    overlay_ip: OverlayIp,
-    peer_rpc_port: u16,
-    request: DaemonRequest,
-    read_timeout: Duration,
-) -> Result<(), OverlayRpcExpectOkError> {
     let response = overlay_rpc_with_timeouts(
         overlay_ip,
         peer_rpc_port,
@@ -186,13 +108,12 @@ pub(super) async fn overlay_rpc_expect_ok_classified_with_read_timeout(
             ..DEFAULT_OVERLAY_RPC_TIMEOUTS
         },
     )
-    .await
-    .map_err(OverlayRpcExpectOkError::Transport)?;
+    .await?;
     if response.ok {
         return Ok(());
     }
-    Err(OverlayRpcExpectOkError::Remote {
-        code: response.code,
-        message: response.message,
-    })
+    Err(format!(
+        "remote daemon error [{}]: {}",
+        response.code, response.message
+    ))
 }

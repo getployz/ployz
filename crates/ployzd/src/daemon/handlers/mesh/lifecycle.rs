@@ -1,14 +1,12 @@
-use crate::daemon::handlers::peer_rpc::{
-    PEER_RPC_DESTRUCTIVE_READ_TIMEOUT, overlay_rpc, overlay_rpc_expect_ok,
-    overlay_rpc_expect_ok_with_read_timeout,
-};
 use crate::mesh_state::network::NetworkConfig;
 use ployz_api::{DaemonRequest, MachineTransitionGoal};
+use ployz_nats::coord::rpc::{NodeCommandSubject, RpcPolicy};
 use ployz_orchestrator::ipam::pick_candidate_subnet;
 use ployz_store_api::MachineRegistry;
 use ployz_types::model::MachineMembership;
 use ployz_types::model::{MachineId, MachineLifecycle, NetworkId, NetworkLifecycle, NetworkName};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tokio::sync::oneshot;
 use tracing::{error, warn};
 
@@ -19,6 +17,8 @@ struct MeshControlHandles {
     peer_control: Box<dyn ployz_runtime_api::RuntimeHandle>,
     nats_control: Box<dyn ployz_runtime_api::RuntimeHandle>,
 }
+
+const MESH_DESTRUCTIVE_RPC_TIMEOUT: Duration = Duration::from_secs(120);
 
 impl DaemonState {
     pub(crate) fn handle_mesh_create(&self, network: &str) -> ployz_api::DaemonResponse {
@@ -226,9 +226,9 @@ impl DaemonState {
             );
         }
 
-        let peer_rpc_port = match self.peer_control_port() {
-            Ok(port) => port,
-            Err(error) => return self.err("PEER_RPC_UNAVAILABLE", error.to_string()),
+        let rpc_client = match self.nats_node_rpc_client().await {
+            Ok(client) => client,
+            Err(error) => return self.err("NATS_RPC_UNAVAILABLE", error),
         };
         let network_id = active.config.id.clone();
         let machines = match active.mesh.store.list_machines().await {
@@ -251,17 +251,17 @@ impl DaemonState {
         let mut prepared = Vec::new();
         let mut failures = Vec::new();
         for peer in &peers {
-            let response = overlay_rpc(
-                peer.overlay_ip,
-                peer_rpc_port,
-                DaemonRequest::MeshPeerPrepareDestroy {
-                    operation_id: operation_id.clone(),
-                    network_id: network_id.clone(),
-                    coordinator_id: self.identity.machine_id.clone(),
-                    expected_machine_ids: expected_machine_ids.clone(),
-                },
-            )
-            .await;
+            let response = rpc_client
+                .request(
+                    NodeCommandSubject::mesh_prepare_destroy(&peer.id),
+                    &DaemonRequest::MeshPeerPrepareDestroy {
+                        operation_id: operation_id.clone(),
+                        network_id: network_id.clone(),
+                        coordinator_id: self.identity.machine_id.clone(),
+                        expected_machine_ids: expected_machine_ids.clone(),
+                    },
+                )
+                .await;
             match response {
                 Ok(response) if response.ok => prepared.push(peer.clone()),
                 Ok(response) => failures.push(format!(
@@ -274,14 +274,14 @@ impl DaemonState {
 
         if !failures.is_empty() {
             for peer in &prepared {
-                if let Err(error) = overlay_rpc_expect_ok(
-                    peer.overlay_ip,
-                    peer_rpc_port,
-                    DaemonRequest::MeshPeerCancelDestroy {
-                        operation_id: operation_id.clone(),
-                    },
-                )
-                .await
+                if let Err(error) = rpc_client
+                    .request_expect_ok(
+                        NodeCommandSubject::mesh_cancel_destroy(&peer.id),
+                        &DaemonRequest::MeshPeerCancelDestroy {
+                            operation_id: operation_id.clone(),
+                        },
+                    )
+                    .await
                 {
                     warn!(peer = %peer.id, %operation_id, error = %error, "mesh destroy cancel failed");
                 }
@@ -295,18 +295,20 @@ impl DaemonState {
             );
         }
 
+        let execute_client = rpc_client.with_policy(RpcPolicy {
+            timeout: MESH_DESTRUCTIVE_RPC_TIMEOUT,
+        });
         let mut execute_failures = Vec::new();
         for peer in &prepared {
-            if let Err(error) = overlay_rpc_expect_ok_with_read_timeout(
-                peer.overlay_ip,
-                peer_rpc_port,
-                DaemonRequest::MeshPeerExecuteDestroy {
-                    operation_id: operation_id.clone(),
-                    network_id: network_id.clone(),
-                },
-                PEER_RPC_DESTRUCTIVE_READ_TIMEOUT,
-            )
-            .await
+            if let Err(error) = execute_client
+                .request_expect_ok(
+                    NodeCommandSubject::mesh_execute_destroy(&peer.id),
+                    &DaemonRequest::MeshPeerExecuteDestroy {
+                        operation_id: operation_id.clone(),
+                        network_id: network_id.clone(),
+                    },
+                )
+                .await
             {
                 execute_failures.push(format!("{} execute failed: {error}", peer.id));
                 warn!(peer = %peer.id, %operation_id, error = %error, "mesh destroy execute failed");

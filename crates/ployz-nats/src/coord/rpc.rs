@@ -63,6 +63,26 @@ impl NodeCommandSubject {
     }
 
     #[must_use]
+    pub fn mesh_prepare_destroy(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "mesh.prepare_destroy")
+    }
+
+    #[must_use]
+    pub fn mesh_cancel_destroy(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "mesh.cancel_destroy")
+    }
+
+    #[must_use]
+    pub fn mesh_execute_destroy(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "mesh.execute_destroy")
+    }
+
+    #[must_use]
+    pub fn mesh_remove_machine(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "mesh.remove_machine")
+    }
+
+    #[must_use]
     pub fn machine_transition_self(machine_id: &MachineId) -> Self {
         Self::new(machine_id, "machine.transition_self")
     }
@@ -289,6 +309,20 @@ mod tests {
         let subject = NodeCommandSubject::status(&machine_id);
 
         assert_eq!(subject.as_str(), "node.machine%2Ea.cmd.status");
+    }
+
+    #[test]
+    fn mesh_command_subjects_name_operation() {
+        let machine_id = MachineId("machine-a".into());
+
+        assert_eq!(
+            NodeCommandSubject::mesh_prepare_destroy(&machine_id).as_str(),
+            "node.machine-a.cmd.mesh.prepare_destroy"
+        );
+        assert_eq!(
+            NodeCommandSubject::mesh_execute_destroy(&machine_id).as_str(),
+            "node.machine-a.cmd.mesh.execute_destroy"
+        );
     }
 
     #[test]
