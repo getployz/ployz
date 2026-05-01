@@ -578,8 +578,9 @@ KV buckets:
 Tracked in code comments and the implementation plan. Highlights:
 
 1. Routing events are live JetStream atomic batches. Gateway/DNS use durable
-   per-machine consumers; runtime watches and readiness probes use temporary
-   consumers that are deleted when the watcher closes. Routing subscription
+   per-machine consumers; runtime watches and readiness probes use ephemeral
+   memory-backed push consumers with an inactivity threshold, so short-lived
+   reads do not leave durable cursor state behind. Durable routing subscription
    setup replaces any old consumer with the same id so a fresh snapshot is the
    catch-up boundary. Updates carry either a complete batch or an explicit
    consumer failure.
