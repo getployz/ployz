@@ -183,6 +183,7 @@ fn cert_jobs_stream(replicas: usize) -> stream::Config {
         storage: stream::StorageType::File,
         num_replicas: replicas,
         duplicate_window: Duration::from_secs(60 * 60),
+        allow_message_schedules: true,
         ..Default::default()
     }
 }
@@ -254,6 +255,21 @@ mod tests {
         assert_eq!(config.num_replicas, 3);
         assert!(config.allow_direct);
         assert!(config.allow_atomic_publish);
+    }
+
+    #[test]
+    fn cert_jobs_stream_allows_scheduled_messages() {
+        let config = asset_configs(AssetPolicy {
+            storage_candidates: 3,
+            replica_preference: ReplicaPreference::Three,
+        })
+        .cert_jobs;
+        assert_eq!(config.name, CERT_JOBS_STREAM);
+        assert_eq!(config.subjects, vec!["cert.jobs.>".to_string()]);
+        assert_eq!(config.retention, stream::RetentionPolicy::WorkQueue);
+        assert_eq!(config.num_replicas, 3);
+        assert_eq!(config.duplicate_window, Duration::from_secs(60 * 60));
+        assert!(config.allow_message_schedules);
     }
 
     #[test]
