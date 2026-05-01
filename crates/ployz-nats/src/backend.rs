@@ -257,7 +257,9 @@ impl RoutingSnapshotReader for NatsStore {
                 let message = match next {
                     Ok(message) => message,
                     Err(error) => {
+                        let error = Error::operation("nats_routing_consumer", format!("{error:?}"));
                         warn!(?error, "NATS routing batch consumer failed");
+                        let _ = tx.send(Err(error)).await;
                         break;
                     }
                 };
@@ -271,7 +273,7 @@ impl RoutingSnapshotReader for NatsStore {
                             complete.events,
                             ack_tx,
                         );
-                        if tx.send(batch).await.is_err() {
+                        if tx.send(Ok(batch)).await.is_err() {
                             break;
                         }
                         if ack_rx.await.is_ok() {

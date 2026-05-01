@@ -2,10 +2,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ployz_api::{RuntimeWatchFrame, runtime_frame_from_event, sort_routing_state};
-use ployz_store_api::{RoutingEventBatch, RoutingSnapshotReader, RoutingSubscription};
+use ployz_store_api::{RoutingBatchSubscriptionUpdate, RoutingSnapshotReader, RoutingSubscription};
 use ployz_types::model::{MachineId, RoutingEvent, RoutingState};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
 
 use crate::daemon::DaemonState;
 
@@ -39,10 +40,17 @@ fn runtime_subscription_consumer_id(machine_id: &MachineId) -> String {
 }
 
 async fn relay_runtime_batches(
-    batches: &mut mpsc::Receiver<RoutingEventBatch>,
+    batches: &mut mpsc::Receiver<RoutingBatchSubscriptionUpdate>,
     tx: mpsc::Sender<RoutingEvent>,
 ) {
     while let Some(batch) = batches.recv().await {
+        let batch = match batch {
+            Ok(batch) => batch,
+            Err(error) => {
+                warn!(%error, "runtime routing batch relay failed");
+                return;
+            }
+        };
         for event in batch.events.clone() {
             if tx.send(event).await.is_err() {
                 let _ = batch.ack().await;
@@ -178,7 +186,7 @@ mod tests {
         let (batch_tx, mut batch_rx) = mpsc::channel(1);
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
         batch_tx
-            .send(RoutingEventBatch::with_ack(
+            .send(Ok(RoutingEventBatch::with_ack(
                 "batch-1",
                 None,
                 vec![RoutingEvent::InstanceAdded(instance_record(
@@ -187,7 +195,7 @@ mod tests {
                     "web",
                 ))],
                 ack_tx,
-            ))
+            )))
             .await
             .expect("queue batch");
         drop(batch_tx);
@@ -197,6 +205,24 @@ mod tests {
         relay_runtime_batches(&mut batch_rx, event_tx).await;
 
         ack_rx.await.expect("batch should be acked");
+    }
+
+    #[tokio::test]
+    async fn relay_runtime_batches_exits_on_subscription_failure() {
+        let (batch_tx, mut batch_rx) = mpsc::channel(1);
+        batch_tx
+            .send(Err(ployz_types::Error::operation(
+                "test_routing_subscription",
+                "closed",
+            )))
+            .await
+            .expect("queue failure");
+        drop(batch_tx);
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+
+        relay_runtime_batches(&mut batch_rx, event_tx).await;
+
+        assert!(event_rx.recv().await.is_none());
     }
 
     fn instance_record(id: &str, namespace: &str, service: &str) -> InstanceStatusRecord {

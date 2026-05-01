@@ -28,7 +28,8 @@ pub type AcmeChallengeSubscription = (
     Vec<AcmeChallengeRecord>,
     mpsc::Receiver<AcmeChallengeSubscriptionUpdate>,
 );
-pub type RoutingBatchSubscription = (RoutingState, mpsc::Receiver<RoutingEventBatch>);
+pub type RoutingBatchSubscriptionUpdate = Result<RoutingEventBatch>;
+pub type RoutingBatchSubscription = (RoutingState, mpsc::Receiver<RoutingBatchSubscriptionUpdate>);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutingSubscription {

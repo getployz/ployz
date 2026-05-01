@@ -40,6 +40,13 @@ where
         replace_dns_snapshot(&state, &snapshot);
 
         while let Some(batch) = routing_rx.recv().await {
+            let batch = match batch {
+                Ok(batch) => batch,
+                Err(error) => {
+                    warn!(%error, "dns routing event stream failed; resubscribing");
+                    break;
+                }
+            };
             ployz_store_api::apply_routing_events(&mut state, batch.events.clone());
             replace_dns_snapshot(&state, &snapshot);
             if let Err(error) = batch.ack().await {

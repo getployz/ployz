@@ -187,6 +187,9 @@ The important split:
 - Durable service projections use stable per-machine consumers.
 - Short-lived watches use temporary consumers and do not leave durable cursor
   state behind.
+- Routing batch subscriptions carry complete atomic batches or explicit
+  consumer failures, so projection consumers can reload instead of silently
+  continuing from a stale event stream.
 - KV watcher consumers must treat watcher failure or closure as a lost
   freshness boundary. Machine, certificate, and ACME challenge subscriptions
   carry explicit failure updates; consumers should stop using the stale stream,
