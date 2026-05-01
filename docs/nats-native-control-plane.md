@@ -185,14 +185,15 @@ fault injection and record observed p50/p95/p99.
 The important split:
 
 - Durable service projections use stable per-machine consumers.
-- Short-lived watches use temporary consumers and do not leave durable cursor
-  state behind.
+- Short-lived watches use ephemeral memory-backed consumers with an inactivity
+  threshold and do not leave durable cursor state behind if the watcher exits or
+  the daemon crashes.
 - Routing batch subscriptions carry complete atomic batches or explicit
   consumer failures, so projection consumers can reload instead of silently
-  continuing from a stale event stream. Subscription setup replaces any old
-  consumer with the same id, making the fresh snapshot the catch-up boundary.
-  Routing consumers bound in-flight delivery to the local bridge channel and use
-  idle heartbeats to detect broken delivery.
+  continuing from a stale event stream. Durable subscription setup replaces any
+  old consumer with the same id, making the fresh snapshot the catch-up
+  boundary. Routing consumers bound in-flight delivery to the local bridge
+  channel and use idle heartbeats to detect broken delivery.
 - KV watcher consumers must treat watcher failure or closure as a lost
   freshness boundary. Machine, certificate, and ACME challenge subscriptions
   carry explicit failure updates; consumers should stop using the stale stream,

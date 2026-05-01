@@ -37,6 +37,7 @@ use crate::subjects::ROUTING_EVENTS_STREAM;
 const ROUTING_CONSUMER_CHANNEL_CAPACITY: usize = 128;
 const ROUTING_CONSUMER_ACK_WAIT: Duration = Duration::from_secs(30);
 const ROUTING_CONSUMER_IDLE_HEARTBEAT: Duration = Duration::from_secs(5);
+const ROUTING_EPHEMERAL_INACTIVE_THRESHOLD: Duration = Duration::from_secs(60);
 
 #[async_trait]
 impl StoreBackend for NatsStore {
@@ -229,27 +230,23 @@ impl RoutingSnapshotReader for NatsStore {
         &self,
         subscription: RoutingSubscription,
     ) -> Result<RoutingBatchSubscription> {
-        let consumer_name = routing_consumer_name(subscription.consumer_id());
-        let delete_on_close = subscription.delete_on_close();
+        let consumer_id = subscription.consumer_id().to_string();
+        let consumer_name = routing_consumer_name(&consumer_id);
+        let temporary = subscription.is_temporary();
         let stream = self
             .jetstream()
             .get_stream(ROUTING_EVENTS_STREAM)
             .await
             .map_err(|error| Error::operation("nats_routing_stream", format!("{error:?}")))?;
-        delete_existing_routing_consumer(&stream, &consumer_name).await?;
+        if !temporary {
+            delete_existing_routing_consumer(&stream, &consumer_name).await?;
+        }
         let consumer: async_nats::jetstream::consumer::PushConsumer = stream
-            .create_consumer(push::Config {
-                durable_name: Some(consumer_name.clone()),
-                name: Some(consumer_name.clone()),
-                deliver_subject: self.client().new_inbox(),
-                deliver_policy: DeliverPolicy::New,
-                ack_policy: AckPolicy::Explicit,
-                ack_wait: ROUTING_CONSUMER_ACK_WAIT,
-                idle_heartbeat: ROUTING_CONSUMER_IDLE_HEARTBEAT,
-                max_ack_pending: ROUTING_CONSUMER_CHANNEL_CAPACITY as i64,
-                filter_subject: "routing.events.>".to_string(),
-                ..Default::default()
-            })
+            .create_consumer(routing_consumer_config(
+                &subscription,
+                &consumer_name,
+                self.client().new_inbox(),
+            ))
             .await
             .map_err(|error| Error::operation("nats_routing_consumer", format!("{error:?}")))?;
         let mut messages = consumer
@@ -259,8 +256,6 @@ impl RoutingSnapshotReader for NatsStore {
         let state = RoutingSnapshotReader::load_routing_state(self).await?;
         let (tx, rx) = mpsc::channel(ROUTING_CONSUMER_CHANNEL_CAPACITY);
         tokio::spawn(async move {
-            let stream = stream;
-            let consumer_name = consumer_name;
             let mut pending = PendingRoutingBatches::default();
             loop {
                 let next = tokio::select! {
@@ -308,16 +303,40 @@ impl RoutingSnapshotReader for NatsStore {
                     }
                 }
             }
-            if delete_on_close && let Err(error) = stream.delete_consumer(&consumer_name).await {
-                warn!(
-                    ?error,
-                    consumer = %consumer_name,
-                    "temporary NATS routing consumer cleanup failed"
-                );
-            }
         });
         Ok((state, rx))
     }
+}
+
+fn routing_consumer_config(
+    subscription: &RoutingSubscription,
+    consumer_name: &str,
+    deliver_subject: String,
+) -> push::Config {
+    let mut config = push::Config {
+        deliver_subject,
+        deliver_policy: DeliverPolicy::New,
+        ack_policy: AckPolicy::Explicit,
+        ack_wait: ROUTING_CONSUMER_ACK_WAIT,
+        idle_heartbeat: ROUTING_CONSUMER_IDLE_HEARTBEAT,
+        max_ack_pending: ROUTING_CONSUMER_CHANNEL_CAPACITY as i64,
+        filter_subject: "routing.events.>".to_string(),
+        ..Default::default()
+    };
+    match subscription {
+        RoutingSubscription::Durable { .. } => {
+            config.durable_name = Some(consumer_name.to_string());
+            config.name = Some(consumer_name.to_string());
+        }
+        RoutingSubscription::Temporary { consumer_id } => {
+            config.description = Some(format!(
+                "temporary ployz routing subscription {consumer_id}"
+            ));
+            config.memory_storage = true;
+            config.inactive_threshold = ROUTING_EPHEMERAL_INACTIVE_THRESHOLD;
+        }
+    }
+    config
 }
 
 async fn delete_existing_routing_consumer(
@@ -501,9 +520,40 @@ mod tests {
 
     #[test]
     fn runtime_routing_consumers_are_temporary() {
-        assert!(RoutingSubscription::temporary("ployzd.runtime.founder.1").delete_on_close());
-        assert!(!RoutingSubscription::durable("gateway.founder").delete_on_close());
-        assert!(!RoutingSubscription::durable("dns.founder").delete_on_close());
+        assert!(RoutingSubscription::temporary("ployzd.runtime.founder.1").is_temporary());
+        assert!(!RoutingSubscription::durable("gateway.founder").is_temporary());
+        assert!(!RoutingSubscription::durable("dns.founder").is_temporary());
+    }
+
+    #[test]
+    fn temporary_routing_consumers_are_ephemeral() {
+        let subscription = RoutingSubscription::temporary("ployzd.runtime.founder.1");
+        let config =
+            routing_consumer_config(&subscription, "unused", "_INBOX.runtime.1".to_string());
+
+        assert_eq!(config.durable_name, None);
+        assert_eq!(config.name, None);
+        assert!(config.memory_storage);
+        assert_eq!(
+            config.inactive_threshold,
+            ROUTING_EPHEMERAL_INACTIVE_THRESHOLD
+        );
+    }
+
+    #[test]
+    fn durable_routing_consumers_are_named() {
+        let subscription = RoutingSubscription::durable("gateway.founder");
+        let consumer_name = routing_consumer_name(subscription.consumer_id());
+        let config = routing_consumer_config(
+            &subscription,
+            &consumer_name,
+            "_INBOX.gateway.1".to_string(),
+        );
+
+        assert_eq!(config.durable_name.as_deref(), Some("gateway%2Efounder"));
+        assert_eq!(config.name.as_deref(), Some("gateway%2Efounder"));
+        assert!(!config.memory_storage);
+        assert_eq!(config.inactive_threshold, Duration::ZERO);
     }
 
     #[test]

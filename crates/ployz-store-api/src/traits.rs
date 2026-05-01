@@ -60,7 +60,7 @@ impl RoutingSubscription {
     }
 
     #[must_use]
-    pub fn delete_on_close(&self) -> bool {
+    pub fn is_temporary(&self) -> bool {
         matches!(self, Self::Temporary { .. })
     }
 }
@@ -192,14 +192,14 @@ mod tests {
     use super::RoutingSubscription;
 
     #[test]
-    fn routing_subscription_kind_controls_consumer_cleanup() {
+    fn routing_subscription_kind_tracks_consumer_lifetime() {
         let durable = RoutingSubscription::durable("gateway.founder");
         let temporary = RoutingSubscription::temporary("ployzd.runtime.founder.1");
 
         assert_eq!(durable.consumer_id(), "gateway.founder");
-        assert!(!durable.delete_on_close());
+        assert!(!durable.is_temporary());
         assert_eq!(temporary.consumer_id(), "ployzd.runtime.founder.1");
-        assert!(temporary.delete_on_close());
+        assert!(temporary.is_temporary());
     }
 }
 
