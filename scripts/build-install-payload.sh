@@ -11,7 +11,6 @@ BUILD_PROFILE="${PLOYZ_PAYLOAD_BUILD_PROFILE:-release}"
 BUILD_INPUT_PATHS=(
   Cargo.toml
   Cargo.lock
-  .corrosion-version
   .nats-version
   ployz.sh
   crates
@@ -239,16 +238,16 @@ cached_download() {
 
   if [[ -f "${cache_path}" ]]; then
     cp "${cache_path}" "${dest}"
-    printf 'corrosion archive cache hit %s\n' "${cache_name}" >&2
+    printf 'archive cache hit %s\n' "${cache_name}" >&2
     return
   fi
 
   tmp_path="${cache_path}.tmp.$$"
-  printf 'corrosion archive download start %s\n' "${cache_name}" >&2
+  printf 'archive download start %s\n' "${cache_name}" >&2
   download "${url}" "${tmp_path}"
   mv "${tmp_path}" "${cache_path}"
   cp "${cache_path}" "${dest}"
-  printf 'corrosion archive download complete %s\n' "${cache_name}" >&2
+  printf 'archive download complete %s\n' "${cache_name}" >&2
 }
 
 hash_file() {
@@ -346,7 +345,6 @@ payload_is_fresh() {
   [[ -f "${OUTPUT_DIR}/bin/ployzd" ]] || return 1
   [[ -f "${OUTPUT_DIR}/bin/ployz-gateway" ]] || return 1
   [[ -f "${OUTPUT_DIR}/bin/ployz-dns" ]] || return 1
-  [[ -f "${OUTPUT_DIR}/bin/corrosion" ]] || return 1
   [[ -f "${OUTPUT_DIR}/bin/nats-server" ]] || return 1
 
   metadata_fingerprint="$(metadata_value "${metadata_path}" BUILD_FINGERPRINT)"
@@ -356,39 +354,6 @@ payload_is_fresh() {
   [[ "${metadata_fingerprint}" == "${build_fingerprint}" ]] || return 1
   [[ "${metadata_platform}" == "${TARGET_PLATFORM}" ]] || return 1
   [[ "${metadata_profile}" == "${BUILD_PROFILE}" ]] || return 1
-}
-
-install_corrosion() {
-  local output_dir=$1
-  local version asset tmp_dir cache_dir archive_url
-  version="$(tr -d '[:space:]' < "${REPO_DIR}/.corrosion-version")"
-  case "$(uname -s):$(uname -m)" in
-    Darwin:arm64)
-      asset="corrosion-aarch64-apple-darwin.tar.gz"
-      ;;
-    Darwin:x86_64)
-      asset="corrosion-x86_64-apple-darwin.tar.gz"
-      ;;
-    Linux:aarch64|Linux:arm64)
-      asset="corrosion-aarch64-unknown-linux-gnu.tar.gz"
-      ;;
-    Linux:x86_64|Linux:amd64)
-      asset="corrosion-x86_64-unknown-linux-gnu.tar.gz"
-      ;;
-    *)
-      printf 'unsupported corrosion platform: %s/%s\n' "$(uname -s)" "$(uname -m)" >&2
-      exit 1
-      ;;
-  esac
-
-  cache_dir="$(repo_cache_root "${REPO_DIR}")/.payload-cache/corrosion"
-  archive_url="https://github.com/getployz/corrosion/releases/download/${version}/${asset}"
-  tmp_dir="$(mktemp -d)"
-  trap 'rm -rf "${tmp_dir}"' RETURN
-  cached_download "${archive_url}" "${tmp_dir}/${asset}" "${cache_dir}" "${version}-${asset}"
-  tar -xzf "${tmp_dir}/${asset}" -C "${tmp_dir}"
-  copy_file "${tmp_dir}/corrosion" "${output_dir}/bin/corrosion" 0755
-  printf 'CORROSION_VERSION=%s\n' "${version}" > "${output_dir}/metadata.env"
 }
 
 install_nats_server() {
@@ -538,7 +503,6 @@ fi
 
 mkdir -p "${OUTPUT_DIR}"
 install -d "${OUTPUT_DIR}/bin"
-install_corrosion "${OUTPUT_DIR}"
 install_nats_server "${OUTPUT_DIR}"
 build_binaries
 
@@ -554,7 +518,6 @@ copy_file "$(binary_build_dir)/ployzd" "${tmp_output_dir}/bin/ployzd" 0755
 copy_file "$(binary_build_dir)/ployz-gateway" "${tmp_output_dir}/bin/ployz-gateway" 0755
 copy_file "$(binary_build_dir)/ployz-dns" "${tmp_output_dir}/bin/ployz-dns" 0755
 copy_file "${REPO_DIR}/packaging/systemd/ployzd.service" "${tmp_output_dir}/assets/systemd/ployzd.service" 0644
-copy_file "${OUTPUT_DIR}/bin/corrosion" "${tmp_output_dir}/bin/corrosion" 0755
 copy_file "${OUTPUT_DIR}/bin/nats-server" "${tmp_output_dir}/bin/nats-server" 0755
 
 {

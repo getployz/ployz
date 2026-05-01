@@ -13,9 +13,8 @@ use ployz_runtime_backends::runtime::{
 };
 use ployz_store_api::{
     AcmeChallengeSubscription, CertificateSubscription, DeployCommit, DeployRecordUpdate,
-    DeployRevisionUpsert, DeploySnapshot, MachineSubscription, PeerMembershipObservation,
-    PeerRttObservation, RoutingSubscription, StoreBackend, StoreDriver, StoreRuntimeControl,
-    SyncStatus,
+    DeployRevisionUpsert, DeploySnapshot, MachineSubscription, PeerRttObservation,
+    RoutingSubscription, StoreBackend, StoreDriver, StoreRuntimeControl, SyncStatus,
 };
 use ployz_types::Result;
 use ployz_types::error::Error;
@@ -457,10 +456,6 @@ where
 
     async fn peer_rtt_observations(&self) -> Result<Vec<PeerRttObservation>> {
         self.store().await?.peer_rtt_observations().await
-    }
-
-    async fn peer_membership_observations(&self) -> Result<Vec<PeerMembershipObservation>> {
-        self.store().await?.peer_membership_observations().await
     }
 }
 

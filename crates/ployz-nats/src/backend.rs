@@ -7,9 +7,8 @@ use ployz_store_api::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
     DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
     InstanceStatusRepository, InviteRepository, MachineRegistry, MachineSubscription,
-    PeerMembershipObservation, PeerMembershipStore, PeerRttObservation, PeerRttStore,
-    RoutingSnapshotReader, RoutingSubscription, StoreBackend, StoreRuntimeControl, SyncProbe,
-    SyncStatus,
+    PeerRttObservation, PeerRttStore, RoutingSnapshotReader, RoutingSubscription, StoreBackend,
+    StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use ployz_types::Result;
 use ployz_types::model::{
@@ -199,10 +198,6 @@ impl StoreBackend for NatsStore {
 
     async fn peer_rtt_observations(&self) -> Result<Vec<PeerRttObservation>> {
         PeerRttStore::peer_rtt_observations(self).await
-    }
-
-    async fn peer_membership_observations(&self) -> Result<Vec<PeerMembershipObservation>> {
-        PeerMembershipStore::peer_membership_observations(self).await
     }
 }
 
@@ -413,8 +408,6 @@ impl SyncProbe for NatsStore {
 }
 
 impl PeerRttStore for NatsStore {}
-
-impl PeerMembershipStore for NatsStore {}
 
 #[async_trait]
 impl StoreRuntimeControl for NatsStore {

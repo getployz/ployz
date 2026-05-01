@@ -23,7 +23,6 @@ impl InstallManifest {
         let mut ployzd_path = None;
         let mut gateway_path = None;
         let mut dns_path = None;
-        let mut corrosion_path = None;
         let mut runtime_target = None;
         let mut service_mode = None;
         let mut service_backend = None;
@@ -55,7 +54,6 @@ impl InstallManifest {
                 "PLOYZD_PATH" => ployzd_path = Some(PathBuf::from(value)),
                 "PLOYZ_GATEWAY_PATH" => gateway_path = Some(PathBuf::from(value)),
                 "PLOYZ_DNS_PATH" => dns_path = Some(PathBuf::from(value)),
-                "CORROSION_PATH" => corrosion_path = Some(PathBuf::from(value)),
                 "RUNTIME_TARGET" => runtime_target = Some(parse_runtime_target(&value)?),
                 "SERVICE_MODE" => service_mode = Some(parse_service_mode(&value)?),
                 "SERVICE_BACKEND" => {
@@ -82,7 +80,6 @@ impl InstallManifest {
             ployzd_path: required_value(ployzd_path, "PLOYZD_PATH", path)?,
             gateway_path: required_value(gateway_path, "PLOYZ_GATEWAY_PATH", path)?,
             dns_path: required_value(dns_path, "PLOYZ_DNS_PATH", path)?,
-            corrosion_path: required_value(corrosion_path, "CORROSION_PATH", path)?,
             runtime_target: required_value(runtime_target, "RUNTIME_TARGET", path)?,
             service_mode: required_value(service_mode, "SERVICE_MODE", path)?,
             service_backend,
@@ -120,7 +117,6 @@ impl InstallManifest {
                 &self.gateway_path.display().to_string(),
             ),
             env_line("PLOYZ_DNS_PATH", &self.dns_path.display().to_string()),
-            env_line("CORROSION_PATH", &self.corrosion_path.display().to_string()),
             env_line("RUNTIME_TARGET", runtime_target_name(self.runtime_target)),
             env_line("SERVICE_MODE", service_mode_name(self.service_mode)),
             env_line_opt(
@@ -141,7 +137,6 @@ pub(super) fn validate_install_manifest(manifest: &InstallManifest) -> Result<()
         &manifest.ployzd_path,
         &manifest.gateway_path,
         &manifest.dns_path,
-        &manifest.corrosion_path,
     ];
     for path in required {
         if !path.exists() {

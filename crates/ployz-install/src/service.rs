@@ -135,7 +135,6 @@ pub(super) fn promote_system_binaries(manifest: &InstallManifest) -> Result<(), 
         (&manifest.ployzd_path, system_bin_dir.join("ployzd")),
         (&manifest.gateway_path, system_bin_dir.join("ployz-gateway")),
         (&manifest.dns_path, system_bin_dir.join("ployz-dns")),
-        (&manifest.corrosion_path, system_bin_dir.join("corrosion")),
     ];
     for (src, dest) in copies {
         let Some(file_name) = dest.file_name() else {

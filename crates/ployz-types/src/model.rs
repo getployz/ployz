@@ -643,9 +643,9 @@ pub struct AcmeAccountRecord {
     pub issuer_url: String,
     pub contact_email: Option<String>,
     // SECURITY: serialized `instant_acme::AccountCredentials` containing the
-    // account private key. Replicated as plaintext JSON via Corrosion. Safe
-    // only while replication stays inside the WireGuard mesh and SQLite files
-    // are not backed up unencrypted; revisit if either assumption changes.
+    // account private key. Safe only while replication stays inside the
+    // WireGuard mesh and local store files are not backed up unencrypted;
+    // revisit if either assumption changes.
     pub account_credentials_json: String,
     pub created_at: u64,
     pub updated_at: u64,

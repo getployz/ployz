@@ -23,8 +23,6 @@ const CONTAINER_WAIT_TIMEOUT: Duration = Duration::from_secs(180);
 const PARTITION_INPUT_CHAIN: &str = "PLOYZ_E2E_PARTITION_INPUT";
 const PARTITION_OUTPUT_CHAIN: &str = "PLOYZ_E2E_PARTITION_OUTPUT";
 const E2E_PAYLOAD_BUILD_PROFILE: &str = "debug";
-const CORROSION_LOG_PATH_ENV: &str = "PLOYZ_CORROSION_LOG_PATH";
-const CORROSION_RUST_LOG_ENV: &str = "PLOYZ_CORROSION_RUST_LOG";
 const PAYLOAD_STAMP_FILE: &str = ".payload-stamp";
 const PAYLOAD_LOCK_FILE: &str = ".payload.lock";
 const PAYLOAD_LOCK_TIMEOUT: Duration = Duration::from_secs(300);
@@ -1077,13 +1075,6 @@ impl ScenarioRun {
         let payload_mount = format!("{}:/e2e-payload:ro", self.payload_dir.to_string_lossy());
         let mut args = self.node_run_base_args(name, container_name, ssh_port);
 
-        for env_name in [CORROSION_LOG_PATH_ENV, CORROSION_RUST_LOG_ENV] {
-            if let Ok(value) = std::env::var(env_name) {
-                args.push("-e".to_string());
-                args.push(format!("{env_name}={value}"));
-            }
-        }
-
         args.push("-v".to_string());
         args.push(key_mount);
         args.push("-v".to_string());
@@ -1150,12 +1141,6 @@ impl ScenarioRun {
             args.push("PLOYZ_ACME_ROOT_CA_PATH=/e2e-pebble/pebble.minica.pem".to_string());
             args.push("-e".to_string());
             args.push("PLOYZ_GATEWAY_HTTPS_LISTEN_ADDR=0.0.0.0:443".to_string());
-            if std::env::var(CORROSION_RUST_LOG_ENV).is_err() {
-                args.push("-e".to_string());
-                args.push(format!(
-                    "{CORROSION_RUST_LOG_ENV}=info,tower_http=debug,corro_agent::api::public=debug"
-                ));
-            }
         }
 
         if self.zfs_mode != ZfsMode::Off {

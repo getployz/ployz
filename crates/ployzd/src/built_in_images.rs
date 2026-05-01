@@ -7,7 +7,6 @@ const EMBEDDED_MANIFEST: &str = include_str!("../assets/built_in_images.toml");
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltInImage {
     Networking,
-    Corrosion,
     Nats,
     Dns,
     Gateway,
@@ -16,7 +15,6 @@ pub enum BuiltInImage {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct BuiltInImages {
     pub networking: String,
-    pub corrosion: String,
     pub nats: String,
     pub dns: String,
     pub gateway: String,
@@ -25,7 +23,6 @@ pub struct BuiltInImages {
 #[derive(Debug, Deserialize)]
 struct PartialBuiltInImages {
     networking: Option<String>,
-    corrosion: Option<String>,
     nats: Option<String>,
     dns: Option<String>,
     gateway: Option<String>,
@@ -56,7 +53,6 @@ impl BuiltInImages {
     pub fn resolve(&self, image: BuiltInImage) -> &str {
         match image {
             BuiltInImage::Networking => &self.networking,
-            BuiltInImage::Corrosion => &self.corrosion,
             BuiltInImage::Nats => &self.nats,
             BuiltInImage::Dns => &self.dns,
             BuiltInImage::Gateway => &self.gateway,
@@ -66,7 +62,6 @@ impl BuiltInImages {
     fn apply(&mut self, partial: PartialBuiltInImages) {
         let PartialBuiltInImages {
             networking,
-            corrosion,
             nats,
             dns,
             gateway,
@@ -74,9 +69,6 @@ impl BuiltInImages {
 
         if let Some(networking) = networking {
             self.networking = networking;
-        }
-        if let Some(corrosion) = corrosion {
-            self.corrosion = corrosion;
         }
         if let Some(nats) = nats {
             self.nats = nats;
@@ -119,7 +111,6 @@ mod tests {
         let images = BuiltInImages::load(None).expect("embedded manifest should parse");
 
         assert!(images.resolve(BuiltInImage::Networking).contains("sha256:"));
-        assert!(images.resolve(BuiltInImage::Corrosion).contains("sha256:"));
         assert!(!images.resolve(BuiltInImage::Nats).is_empty());
         assert!(images.resolve(BuiltInImage::Dns).contains("sha256:"));
         assert!(images.resolve(BuiltInImage::Gateway).contains("sha256:"));
@@ -145,7 +136,6 @@ mod tests {
             images.resolve(BuiltInImage::Dns),
             "ployz-dev/ployz-dns:test"
         );
-        assert!(images.resolve(BuiltInImage::Corrosion).contains("sha256:"));
         assert!(!images.resolve(BuiltInImage::Nats).is_empty());
         assert!(images.resolve(BuiltInImage::Gateway).contains("sha256:"));
     }

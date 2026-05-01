@@ -242,9 +242,7 @@ where
 
 /// Run the DNS process on an externally-provided tokio runtime.
 ///
-/// Corrosion's `reqwest::Client` pins its HTTP/2 connection driver to the
-/// runtime that first used it, so the store must stay on a single runtime
-/// for the entire lifetime of the process.
+/// Run the store subscription and DNS server on one runtime for the process.
 pub fn run_dns_process_on_runtime<S>(
     runtime: tokio::runtime::Runtime,
     config: DnsConfig,
@@ -309,20 +307,20 @@ where
         {
             Ok(Ok((state, _rx))) => return Ok(state),
             Ok(Err(error)) if tokio::time::Instant::now() < deadline => {
-                warn!(?error, "dns waiting for corrosion query readiness");
+                warn!(?error, "dns waiting for store readiness");
             }
             Err(_) if tokio::time::Instant::now() < deadline => {
                 warn!("dns timed out loading initial routing state; retrying");
             }
             Ok(Err(error)) => {
                 return Err(DnsError::Store(format!(
-                    "corrosion query API did not become ready within {:?}: {error}",
+                    "store did not become ready within {:?}: {error}",
                     STORE_READY_TIMEOUT
                 )));
             }
             Err(_) => {
                 return Err(DnsError::Store(format!(
-                    "corrosion query API did not return initial routing state within {:?}",
+                    "store did not return initial routing state within {:?}",
                     STORE_READY_TIMEOUT
                 )));
             }

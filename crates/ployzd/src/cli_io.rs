@@ -328,13 +328,12 @@ fn render_plain_doctor(payload: &DoctorPayload) -> String {
     ));
     lines.extend(payload.peers.iter().map(|peer| {
         format!(
-            "peer={} role={} blocking={} store_lifecycle={} subnet={} corrosion_state={} wg_state={} rtt={} cause_code={}",
+            "peer={} role={} blocking={} store_lifecycle={} subnet={} wg_state={} rtt={} cause_code={}",
             peer.machine_id,
             peer.role,
             peer.blocking,
             peer.store_lifecycle,
             peer.subnet.as_deref().unwrap_or("—"),
-            peer.corrosion_state,
             peer.wg_state,
             render_plain_peer_rtt(peer),
             peer.cause_code,
@@ -541,13 +540,10 @@ mod tests {
                     subnet: Some(String::from("10.210.1.0/24")),
                     wg_state: String::from("fresh"),
                     probe_state: String::from("not-used"),
-                    corrosion_state: String::from("alive"),
-                    corrosion_actor_id: Some(String::from("actor-1")),
-                    corrosion_timestamp: Some(123),
                     rtt_median_ms: Some(40.0),
                     rtt_stddev_ms: Some(2.0),
-                    cause_code: String::from("corrosion-alive"),
-                    cause_message: String::from("corrosion reports peer alive"),
+                    cause_code: String::from("fresh-wireguard-handshake"),
+                    cause_message: String::from("wireguard has a recent peer handshake"),
                 }],
             })),
         };
@@ -557,9 +553,8 @@ mod tests {
         assert!(rendered.contains("local_machine=founder"));
         assert!(rendered.contains("peer=peer"));
         assert!(rendered.contains("store_lifecycle=active"));
-        assert!(rendered.contains("corrosion_state=alive"));
         assert!(rendered.contains("rtt=40ms±2.0ms"));
-        assert!(rendered.contains("cause_code=corrosion-alive"));
+        assert!(rendered.contains("cause_code=fresh-wireguard-handshake"));
         assert!(!rendered.contains("probe_state="));
     }
 

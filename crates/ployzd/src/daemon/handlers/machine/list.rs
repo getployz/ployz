@@ -205,7 +205,7 @@ async fn machine_rtt_rows_for(
     let observations = store
         .peer_rtt_observations()
         .await
-        .map_err(|err| format!("failed to read Corrosion peer RTTs: {err}"))?;
+        .map_err(|err| format!("failed to read peer RTT observations: {err}"))?;
     Ok(rows_from_rtt_observations(
         source_machine_id,
         machines,

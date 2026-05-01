@@ -16,7 +16,6 @@ ebpf-native = ["ployz-orchestrator/ebpf-native"]
 ployz-api = { path = "../ployz-api" }
 ployz-cert-backends = { path = "../ployz-cert-backends" }
 ployz-config = { path = "../ployz-config" }
-ployz-corrosion = { path = "../ployz-corrosion" }
 ployz-metrics = { path = "../ployz-metrics" }
 ployz-nats = { path = "../ployz-nats" }
 ployz-orchestrator = { path = "../ployz-orchestrator" }
@@ -35,7 +34,7 @@ chrono = { workspace = true }
 ipnet = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["process", "fs"] }
+tokio = { workspace = true, features = ["process", "fs", "io-std"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

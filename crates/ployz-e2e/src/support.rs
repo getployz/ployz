@@ -103,7 +103,6 @@ pub(crate) struct DoctorPeer {
     pub(crate) store_lifecycle: String,
     pub(crate) wg_state: String,
     pub(crate) probe_state: String,
-    pub(crate) corrosion_state: String,
 }
 
 #[derive(Debug, Deserialize)]
