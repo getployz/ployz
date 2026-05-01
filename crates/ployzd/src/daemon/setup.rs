@@ -21,13 +21,16 @@ use ployz_orchestrator::Mesh;
 use ployz_orchestrator::certificates::{
     AcmeAccountCoordinator, AcmeIssuerFactory, CertificateManagerConfig, CertificateRenewalTask,
     Http01ChallengeReadiness, IssuanceCoordinator, LocalHttp01ChallengeReadiness,
-    process_renewal_job, spawn_certificate_finalization_with_coordination,
+    finalize_due_certificates, process_renewal_job,
 };
 use ployz_orchestrator::coordination::SubnetReservationCoordinator;
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_runtime_api::{NoopRuntimeHandle, RuntimeHandle};
-use ployz_store_api::{StoreDriver, StoreRuntimeControl};
+use ployz_store_api::{CertificateStore, StoreDriver, StoreRuntimeControl};
+use ployz_types::error::Error as PloyzError;
+use ployz_types::model::CertificateState;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::daemon::subnet_coordination::NatsSubnetCoordinator;
 
@@ -35,6 +38,10 @@ use super::{ActiveMesh, DaemonState};
 use crate::daemon::handlers::volume::transfer_listener;
 use crate::ipc::nats_listener;
 use crate::runtime_profile::MeshBuildRequest;
+
+const CERT_RENEWAL_FETCH_ERROR_BACKOFF_MIN: Duration = Duration::from_secs(1);
+const CERT_RENEWAL_FETCH_ERROR_BACKOFF_MAX: Duration = Duration::from_secs(30);
+const CERT_RENEWAL_JOB_RETRY_DELAY: Duration = Duration::from_secs(60);
 
 /// Connect to the network's NATS broker and build a JetStream-KV-backed subnet
 /// coordinator. Memory-runtime tests skip this and keep the in-memory
@@ -82,34 +89,40 @@ async fn start_nats_certificate_renewal_worker(
                 Arc::new(LocalHttp01ChallengeReadiness),
                 account_coordinator.clone(),
             );
+            let finalization_issuer =
+                issuer_factory.create(readiness.clone(), account_coordinator.clone());
+            let mut fetch_error_backoff = CERT_RENEWAL_FETCH_ERROR_BACKOFF_MIN;
             loop {
                 tokio::select! {
                     () = cancel.cancelled() => break,
                     next = consumer.next() => {
                         match next {
                             Ok(Some(job)) => {
+                                fetch_error_backoff = CERT_RENEWAL_FETCH_ERROR_BACKOFF_MIN;
                                 let hostname = job.hostname.clone();
-                                match process_renewal_job(
-                                    &store,
-                                    issuer.as_ref(),
-                                    coordinator.as_ref(),
-                                    &hostname,
-                                ).await {
+                                let job_result = async {
+                                    process_renewal_job(
+                                        &store,
+                                        issuer.as_ref(),
+                                        coordinator.as_ref(),
+                                        &hostname,
+                                    ).await?;
+                                    finalize_due_certificates(
+                                        &store,
+                                        finalization_issuer.as_ref(),
+                                        coordinator.as_ref(),
+                                    ).await?;
+                                    renewal_job_is_complete(&store, &hostname).await
+                                }.await;
+                                match job_result {
                                     Ok(()) => {
-                                        spawn_certificate_finalization_with_coordination(
-                                            store.clone(),
-                                            issuer_factory.clone(),
-                                            readiness.clone(),
-                                            account_coordinator.clone(),
-                                            coordinator.clone(),
-                                        );
                                         if let Err(error) = job.ack().await {
                                             tracing::warn!(?error, hostname, "certificate renewal job ack failed");
                                         }
                                     }
                                     Err(error) => {
                                         tracing::warn!(?error, hostname, "certificate renewal job failed");
-                                        if let Err(nak_error) = job.nak().await {
+                                        if let Err(nak_error) = job.nak_after(Some(CERT_RENEWAL_JOB_RETRY_DELAY)).await {
                                             tracing::warn!(
                                                 ?nak_error,
                                                 hostname,
@@ -119,15 +132,44 @@ async fn start_nats_certificate_renewal_worker(
                                     }
                                 }
                             }
-                            Ok(None) => {}
+                            Ok(None) => {
+                                fetch_error_backoff = CERT_RENEWAL_FETCH_ERROR_BACKOFF_MIN;
+                            }
                             Err(error) => {
-                                tracing::warn!(?error, "certificate renewal worker fetch failed");
+                                let delay = fetch_error_backoff;
+                                fetch_error_backoff = fetch_error_backoff
+                                    .saturating_mul(2)
+                                    .min(CERT_RENEWAL_FETCH_ERROR_BACKOFF_MAX);
+                                tracing::warn!(?error, ?delay, "certificate renewal worker fetch failed");
+                                tokio::select! {
+                                    () = cancel.cancelled() => break,
+                                    () = tokio::time::sleep(delay) => {}
+                                }
                             }
                         }
                     }
                 }
             }
         },
+    ))
+}
+
+async fn renewal_job_is_complete(
+    store: &StoreDriver,
+    hostname: &str,
+) -> ployz_types::error::Result<()> {
+    let Some(record) = store.get_certificate(hostname).await? else {
+        return Ok(());
+    };
+    if record.state == CertificateState::Active {
+        return Ok(());
+    }
+    Err(PloyzError::operation(
+        "certificate_renewal_incomplete",
+        format!(
+            "certificate {hostname} remains {} after renewal job",
+            record.state
+        ),
     ))
 }
 

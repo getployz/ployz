@@ -209,8 +209,12 @@ impl CertRenewalJobDelivery {
     }
 
     pub async fn nak(&self) -> Result<()> {
+        self.nak_after(None).await
+    }
+
+    pub async fn nak_after(&self, delay: Option<Duration>) -> Result<()> {
         self.message
-            .ack_with(AckKind::Nak(None))
+            .ack_with(AckKind::Nak(delay))
             .await
             .map_err(|error| Error::operation("nats_cert_job_nak_delivery", format!("{error:?}")))
     }
