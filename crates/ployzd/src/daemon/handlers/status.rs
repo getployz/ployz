@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use async_nats::jetstream::stream::ClusterInfo;
 use ployz_api::{
     ControlPlaneStatus, DaemonPayload, DaemonResponse, EdgeSyncStatus, NatsAssetStatus,
     StatusPayload,
@@ -260,12 +261,34 @@ async fn read_stream_status(store: &NatsStore, stream: &str, kind: &str) -> Nats
                 name: stream.to_string(),
                 kind: kind.to_string(),
                 replicas: Some(info.config.num_replicas),
+                healthy: Some(nats_asset_is_healthy(
+                    info.config.num_replicas,
+                    info.cluster.as_ref(),
+                )),
+                current_replicas: Some(nats_current_replicas(
+                    info.config.num_replicas,
+                    info.cluster.as_ref(),
+                )),
+                offline_replicas: Some(nats_offline_replicas(
+                    info.config.num_replicas,
+                    info.cluster.as_ref(),
+                )),
+                max_lag: Some(nats_max_lag(info.cluster.as_ref())),
+                leader: info
+                    .cluster
+                    .as_ref()
+                    .and_then(|cluster| cluster.leader.clone()),
                 error: None,
             },
             Err(error) => NatsAssetStatus {
                 name: stream.to_string(),
                 kind: kind.to_string(),
                 replicas: None,
+                healthy: None,
+                current_replicas: None,
+                offline_replicas: None,
+                max_lag: None,
+                leader: None,
                 error: Some(format!("{error:?}")),
             },
         },
@@ -273,9 +296,65 @@ async fn read_stream_status(store: &NatsStore, stream: &str, kind: &str) -> Nats
             name: stream.to_string(),
             kind: kind.to_string(),
             replicas: None,
+            healthy: None,
+            current_replicas: None,
+            offline_replicas: None,
+            max_lag: None,
+            leader: None,
             error: Some(format!("{error:?}")),
         },
     }
+}
+
+fn nats_asset_is_healthy(replicas: usize, cluster: Option<&ClusterInfo>) -> bool {
+    nats_current_replicas(replicas, cluster) == replicas
+        && nats_offline_replicas(replicas, cluster) == 0
+        && nats_max_lag(cluster) == 0
+}
+
+fn nats_current_replicas(replicas: usize, cluster: Option<&ClusterInfo>) -> usize {
+    if replicas <= 1 && cluster.is_none() {
+        return 1;
+    }
+    let Some(cluster) = cluster else {
+        return 0;
+    };
+    usize::from(cluster.leader.is_some())
+        + cluster
+            .replicas
+            .iter()
+            .filter(|replica| replica.current && !replica.offline)
+            .count()
+}
+
+fn nats_offline_replicas(replicas: usize, cluster: Option<&ClusterInfo>) -> usize {
+    if replicas <= 1 && cluster.is_none() {
+        return 0;
+    }
+    let Some(cluster) = cluster else {
+        return replicas;
+    };
+    let known_offline = cluster
+        .replicas
+        .iter()
+        .filter(|replica| replica.offline)
+        .count();
+    let leader_missing = usize::from(cluster.leader.is_none());
+    let known_replicas = 1 + cluster.replicas.len();
+    known_offline + leader_missing + replicas.saturating_sub(known_replicas)
+}
+
+fn nats_max_lag(cluster: Option<&ClusterInfo>) -> u64 {
+    cluster
+        .map(|cluster| {
+            cluster
+                .replicas
+                .iter()
+                .filter_map(|replica| replica.lag)
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0)
 }
 
 fn nats_asset_probe_error(error: String) -> Vec<NatsAssetStatus> {
@@ -283,6 +362,11 @@ fn nats_asset_probe_error(error: String) -> Vec<NatsAssetStatus> {
         name: String::from("hub"),
         kind: String::from("connection"),
         replicas: None,
+        healthy: None,
+        current_replicas: None,
+        offline_replicas: None,
+        max_lag: None,
+        leader: None,
         error: Some(error),
     }]
 }
@@ -399,7 +483,33 @@ fn parse_sync_metric_value(metrics: &str, metric: &str, stream: &str) -> Option<
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_sync_metric, parse_sync_metric_u64};
+    use super::{
+        nats_asset_is_healthy, nats_current_replicas, nats_max_lag, nats_offline_replicas,
+        parse_sync_metric, parse_sync_metric_u64,
+    };
+    use async_nats::jetstream::stream::{ClusterInfo, PeerInfo};
+    use std::time::Duration;
+
+    fn peer(name: &str, current: bool, offline: bool, lag: Option<u64>) -> PeerInfo {
+        PeerInfo {
+            name: name.to_string(),
+            current,
+            active: Duration::from_secs(1),
+            offline,
+            lag,
+        }
+    }
+
+    fn cluster(leader: Option<&str>, replicas: Vec<PeerInfo>) -> ClusterInfo {
+        ClusterInfo {
+            name: None,
+            raft_group: None,
+            leader: leader.map(str::to_string),
+            leader_since: None,
+            replicas,
+            ..ClusterInfo::default()
+        }
+    }
 
     #[test]
     fn parses_sidecar_sync_metric_by_stream() {
@@ -444,5 +554,53 @@ ployz_gateway_store_sync_failures_total{stream="certificates"} 3
             ),
             Some(3)
         );
+    }
+
+    #[test]
+    fn nats_asset_health_treats_single_replica_without_cluster_as_current() {
+        assert!(nats_asset_is_healthy(1, None));
+        assert_eq!(nats_current_replicas(1, None), 1);
+        assert_eq!(nats_offline_replicas(1, None), 0);
+        assert_eq!(nats_max_lag(None), 0);
+    }
+
+    #[test]
+    fn nats_asset_health_reports_current_cluster_replicas() {
+        let cluster = cluster(
+            Some("nats-a"),
+            vec![
+                peer("nats-b", true, false, Some(0)),
+                peer("nats-c", true, false, Some(0)),
+            ],
+        );
+
+        assert!(nats_asset_is_healthy(3, Some(&cluster)));
+        assert_eq!(nats_current_replicas(3, Some(&cluster)), 3);
+        assert_eq!(nats_offline_replicas(3, Some(&cluster)), 0);
+        assert_eq!(nats_max_lag(Some(&cluster)), 0);
+    }
+
+    #[test]
+    fn nats_asset_health_reports_lagging_or_offline_replicas() {
+        let cluster = cluster(
+            Some("nats-a"),
+            vec![
+                peer("nats-b", false, false, Some(12)),
+                peer("nats-c", false, true, Some(44)),
+            ],
+        );
+
+        assert!(!nats_asset_is_healthy(3, Some(&cluster)));
+        assert_eq!(nats_current_replicas(3, Some(&cluster)), 1);
+        assert_eq!(nats_offline_replicas(3, Some(&cluster)), 1);
+        assert_eq!(nats_max_lag(Some(&cluster)), 44);
+    }
+
+    #[test]
+    fn nats_asset_health_reports_missing_cluster_for_replicated_asset() {
+        assert!(!nats_asset_is_healthy(3, None));
+        assert_eq!(nats_current_replicas(3, None), 0);
+        assert_eq!(nats_offline_replicas(3, None), 3);
+        assert_eq!(nats_max_lag(None), 0);
     }
 }

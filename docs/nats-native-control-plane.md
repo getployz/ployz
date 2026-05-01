@@ -69,6 +69,12 @@ Promotion succeeds only after NATS reports the assets at the requested replica
 count and candidates are caught up. Partial promotion is a failed operation with
 explicit status.
 
+`ployzctl status` reports each authoritative stream/KV-backed asset with the
+configured replica count, current replica count, offline replica count, maximum
+reported follower lag, and leader when NATS exposes one. A replica-count match
+alone is not enough to call promotion healthy; the status row must show the
+requested replicas current, zero offline replicas, and zero lag.
+
 ### Storage Demotion And Removal
 
 Removing a machine that participates in storage authority requires an explicit

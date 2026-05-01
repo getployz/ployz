@@ -739,6 +739,30 @@ impl ScenarioRun {
                     asset.name, asset.kind, asset.replicas
                 )));
             }
+            if asset.healthy != Some(true) {
+                return Err(Error::Message(format!(
+                    "status on {node_name} reports NATS asset '{}' kind='{}' healthy={:?}, expected true",
+                    asset.name, asset.kind, asset.healthy
+                )));
+            }
+            if asset.current_replicas != Some(expected_replicas) {
+                return Err(Error::Message(format!(
+                    "status on {node_name} reports NATS asset '{}' kind='{}' current_replicas={:?}, expected {expected_replicas}",
+                    asset.name, asset.kind, asset.current_replicas
+                )));
+            }
+            if asset.offline_replicas != Some(0) {
+                return Err(Error::Message(format!(
+                    "status on {node_name} reports NATS asset '{}' kind='{}' offline_replicas={:?}, expected 0",
+                    asset.name, asset.kind, asset.offline_replicas
+                )));
+            }
+            if asset.max_lag != Some(0) {
+                return Err(Error::Message(format!(
+                    "status on {node_name} reports NATS asset '{}' kind='{}' max_lag={:?}, expected 0",
+                    asset.name, asset.kind, asset.max_lag
+                )));
+            }
         }
         Ok(())
     }
