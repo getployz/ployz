@@ -223,6 +223,7 @@ impl RoutingSnapshotReader for NatsStore {
         consumer_id: &str,
     ) -> Result<RoutingBatchSubscription> {
         let consumer_name = routing_consumer_name(consumer_id);
+        let delete_on_close = routing_consumer_delete_on_close(consumer_id);
         let stream = self
             .jetstream()
             .get_stream(ROUTING_EVENTS_STREAM)
@@ -231,7 +232,7 @@ impl RoutingSnapshotReader for NatsStore {
         let consumer: async_nats::jetstream::consumer::PushConsumer = stream
             .create_consumer(push::Config {
                 durable_name: Some(consumer_name.clone()),
-                name: Some(consumer_name),
+                name: Some(consumer_name.clone()),
                 deliver_subject: self.client().new_inbox(),
                 deliver_policy: DeliverPolicy::New,
                 ack_policy: AckPolicy::Explicit,
@@ -248,6 +249,8 @@ impl RoutingSnapshotReader for NatsStore {
         let state = RoutingSnapshotReader::load_routing_state(self).await?;
         let (tx, rx) = mpsc::channel(128);
         tokio::spawn(async move {
+            let stream = stream;
+            let consumer_name = consumer_name;
             let mut pending = PendingRoutingBatches::default();
             while let Some(next) = messages.next().await {
                 let message = match next {
@@ -283,6 +286,13 @@ impl RoutingSnapshotReader for NatsStore {
                         warn!(?error, "NATS routing batch decode failed");
                     }
                 }
+            }
+            if delete_on_close && let Err(error) = stream.delete_consumer(&consumer_name).await {
+                warn!(
+                    ?error,
+                    consumer = %consumer_name,
+                    "temporary NATS routing consumer cleanup failed"
+                );
             }
         });
         Ok((state, rx))
@@ -424,6 +434,10 @@ fn routing_consumer_name(consumer_id: &str) -> String {
     crate::subjects::subject_token(consumer_id)
 }
 
+fn routing_consumer_delete_on_close(consumer_id: &str) -> bool {
+    consumer_id.starts_with("ployzd.runtime.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,6 +452,13 @@ mod tests {
             routing_consumer_name("dns.machine/one"),
             "dns%2Emachine%2Fone"
         );
+    }
+
+    #[test]
+    fn runtime_routing_consumers_are_temporary() {
+        assert!(routing_consumer_delete_on_close("ployzd.runtime.founder.1"));
+        assert!(!routing_consumer_delete_on_close("gateway.founder"));
+        assert!(!routing_consumer_delete_on_close("dns.founder"));
     }
 }
 

@@ -165,7 +165,7 @@ pub(crate) enum Command {
         #[arg(long, value_enum, default_value_t = ServiceModeArg::User)]
         service_mode: ServiceModeArg,
         #[arg(long)]
-        remote_control_port: Option<u16>,
+        zfs_transfer_port: Option<u16>,
     },
     Status,
     Doctor,

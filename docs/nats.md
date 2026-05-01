@@ -563,7 +563,9 @@ KV buckets:
 
 - **Ports.** Client `4222`, route `6222`, leafnode `7422` — all on overlay
   V6 IP. Monitoring `8222` — `127.0.0.1` only. The monitoring port has no
-  auth in NATS by design.
+  auth in NATS by design. ZFS transfer payloads use the separate daemon
+  `zfs_transfer_port` setting, default `4319`; that listener is a data-plane
+  byte-stream endpoint, not a control-plane command port.
 - **Health probe.** Daemon's primary health is its own async-nats
   round-trip on `4222` (works in Host and Docker because the client port
   binds to overlay). `/healthz` on `8222` is reached via `docker exec`

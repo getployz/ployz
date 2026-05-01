@@ -10,7 +10,7 @@ use ployz_store_api::{
 };
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
-    DeployId, DeployRecord, RoutingEvent, ServiceReleaseRecord, VolumeRecord,
+    DeployId, DeployRecord, RoutingEvent, ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use tracing::warn;
@@ -71,14 +71,7 @@ impl DeployRepository for NatsStore {
             )
             .cloned();
         publish_revision(self.jetstream(), command).await?;
-        let event = match existing {
-            Some(old) if old != command.revision => RoutingEvent::RevisionUpdated {
-                old,
-                new: command.revision.clone(),
-            },
-            Some(_) => return Ok(()),
-            None => RoutingEvent::RevisionAdded(command.revision.clone()),
-        };
+        let event = revision_routing_event(existing, &command.revision);
         self.publish_routing_batch(
             format!(
                 "revision:{}:{}:{}",
@@ -122,6 +115,19 @@ impl DeployRepository for NatsStore {
             .await?
             .deploy(deploy_id)
             .cloned())
+    }
+}
+
+fn revision_routing_event(
+    existing: Option<ServiceRevisionRecord>,
+    revision: &ServiceRevisionRecord,
+) -> RoutingEvent {
+    match existing {
+        Some(old) if old != *revision => RoutingEvent::RevisionUpdated {
+            old,
+            new: revision.clone(),
+        },
+        Some(_) | None => RoutingEvent::RevisionAdded(revision.clone()),
     }
 }
 
@@ -257,4 +263,45 @@ async fn read_deploy_status(
         "nats_deploy_status_decode",
         bytes.as_ref(),
     )?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_types::model::MachineId;
+    use ployz_types::spec::Namespace;
+
+    #[test]
+    fn unchanged_revision_still_emits_idempotent_routing_event() {
+        let revision = revision("rev-a", "{}");
+
+        let event = revision_routing_event(Some(revision.clone()), &revision);
+
+        assert!(matches!(event, RoutingEvent::RevisionAdded(record) if record == revision));
+    }
+
+    #[test]
+    fn changed_revision_emits_update_routing_event() {
+        let old = revision("rev-a", "{\"old\":true}");
+        let new = revision("rev-a", "{\"new\":true}");
+
+        let event = revision_routing_event(Some(old.clone()), &new);
+
+        assert!(matches!(
+            event,
+            RoutingEvent::RevisionUpdated { old: event_old, new: event_new }
+                if event_old == old && event_new == new
+        ));
+    }
+
+    fn revision(hash: &str, spec_json: &str) -> ServiceRevisionRecord {
+        ServiceRevisionRecord {
+            namespace: Namespace(String::from("prod")),
+            service: String::from("web"),
+            revision_hash: hash.into(),
+            spec_json: spec_json.into(),
+            created_by: MachineId(String::from("founder")),
+            created_at: 10,
+        }
+    }
 }

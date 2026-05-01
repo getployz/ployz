@@ -57,7 +57,7 @@ async fn run() -> Result<i32> {
         Command::Run {
             runtime,
             service_mode,
-            remote_control_port,
+            zfs_transfer_port,
         } => {
             init_tracing();
             let platform = HostPlatform::detect();
@@ -65,7 +65,7 @@ async fn run() -> Result<i32> {
                 cli.config,
                 cli.data_dir,
                 cli.socket,
-                remote_control_port,
+                zfs_transfer_port,
                 &platform.paths_context(),
             )
             .map_err(|err| CliError::Config(err.to_string()))?;
@@ -85,7 +85,7 @@ async fn run() -> Result<i32> {
                 cfg.storage,
                 cfg.cluster_cidr,
                 cfg.subnet_prefix_len,
-                cfg.remote_control_port,
+                cfg.zfs_transfer_port,
                 cfg.control_target,
                 cfg.gateway_listen_addr,
                 cfg.gateway_https_listen_addr,

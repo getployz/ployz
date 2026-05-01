@@ -306,6 +306,10 @@ Data touched:
 4. direct TCP stream for send payload,
 5. final volume/routing metadata write if ownership changes.
 
+The direct listener is configured by `zfs_transfer_port` and defaults to
+`4319`. It is intentionally named as a transfer endpoint: no daemon command
+authority is attached to this port.
+
 Latency shape:
 
 - setup is request/reply RTT plus local zfs command time,

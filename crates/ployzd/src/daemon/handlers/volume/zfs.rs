@@ -368,10 +368,7 @@ impl DaemonState {
             } else {
                 None
             };
-        let transfer_port = match self.zfs_transfer_port() {
-            Ok(port) => port,
-            Err(error) => return self.err("VOLUME_ZFS_SEND_FAILED", error.to_string()),
-        };
+        let transfer_port = self.zfs_transfer_port;
         let needs_nats_rpc = source.id != self.identity.machine_id
             || (from_snapshot.is_some() && target.id != self.identity.machine_id);
         let nats_rpc = if needs_nats_rpc {
@@ -504,10 +501,7 @@ impl DaemonState {
             Ok(driver) => driver,
             Err(error) => return self.err("VOLUME_ZFS_PEER_START_SEND_FAILED", error),
         };
-        let transfer_port = match self.zfs_transfer_port() {
-            Ok(port) => port,
-            Err(error) => return self.err("VOLUME_ZFS_PEER_START_SEND_FAILED", error.to_string()),
-        };
+        let transfer_port = self.zfs_transfer_port;
         match send_zfs_stream_from_local(
             &record,
             &target,
