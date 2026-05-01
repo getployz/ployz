@@ -25,11 +25,13 @@ use ployz_types::model::{
     RoutingState, ServiceReleaseRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const CONNECT_RETRY_DELAY: Duration = Duration::from_millis(250);
 const CONNECT_ATTEMPTS: usize = 40;
 
@@ -38,6 +40,7 @@ pub async fn nats_docker(
     network_dir: &Path,
     bootstrap: &[String],
     network_id: &str,
+    allow_disconnected_bootstrap: bool,
     image: &str,
 ) -> std::result::Result<StoreDriver, String> {
     let paths = config::Paths::new(network_dir);
@@ -46,8 +49,15 @@ pub async fn nats_docker(
         config: PathBuf::from("/etc/nats/nats.conf"),
         data: PathBuf::from("/data/jetstream"),
     };
-    write_node_config(&paths, &container_paths, overlay_ip, bootstrap, network_id)
-        .map_err(|error| format!("write nats config: {error}"))?;
+    write_node_config(
+        &paths,
+        &container_paths,
+        overlay_ip,
+        bootstrap,
+        network_id,
+        allow_disconnected_bootstrap,
+    )
+    .map_err(|error| format!("write nats config: {error}"))?;
 
     let config_host = paths.config.to_string_lossy().into_owned();
     let data_volume = nats_data_volume_name(network_id);
@@ -60,7 +70,12 @@ pub async fn nats_docker(
         .await
         .map_err(|error| format!("docker service: {error}"))?;
 
-    Ok(nats_driver(Arc::new(service), local_client_url()))
+    let client_url = if allow_disconnected_bootstrap {
+        local_client_url()
+    } else {
+        remote_storage_client_url(overlay_ip, bootstrap).unwrap_or_else(local_client_url)
+    };
+    Ok(nats_driver(Arc::new(service), client_url))
 }
 
 pub fn nats_host(
@@ -68,20 +83,31 @@ pub fn nats_host(
     network_dir: &Path,
     bootstrap: &[String],
     network_id: &str,
+    allow_disconnected_bootstrap: bool,
 ) -> std::result::Result<StoreDriver, String> {
     let paths = config::Paths::new(network_dir);
-    write_node_config(&paths, &paths, overlay_ip, bootstrap, network_id)
-        .map_err(|error| format!("write nats config: {error}"))?;
+    write_node_config(
+        &paths,
+        &paths,
+        overlay_ip,
+        bootstrap,
+        network_id,
+        allow_disconnected_bootstrap,
+    )
+    .map_err(|error| format!("write nats config: {error}"))?;
     let service = HostNats::new(
         which_nats_server()?,
         paths.config.clone(),
         paths.data.clone(),
     );
 
-    Ok(nats_driver(
-        Arc::new(service),
-        overlay_client_url(overlay_ip),
-    ))
+    let client_url = if allow_disconnected_bootstrap {
+        overlay_client_url(overlay_ip)
+    } else {
+        remote_storage_client_url(overlay_ip, bootstrap)
+            .unwrap_or_else(|| overlay_client_url(overlay_ip))
+    };
+    Ok(nats_driver(Arc::new(service), client_url))
 }
 
 fn nats_driver<S>(service: Arc<S>, client_url: String) -> StoreDriver
@@ -105,12 +131,16 @@ fn write_node_config(
     overlay_ip: OverlayIp,
     bootstrap: &[String],
     network_id: &str,
+    allow_disconnected_bootstrap: bool,
 ) -> std::io::Result<()> {
-    let storage_peers: Vec<_> = bootstrap
+    let mut storage_peers: Vec<_> = bootstrap
         .iter()
         .filter_map(|peer| parse_peer_route(peer))
         .filter(|peer| peer.overlay_ip != overlay_ip.0)
         .collect();
+    if allow_disconnected_bootstrap {
+        storage_peers.clear();
+    }
     let role = if storage_peers.is_empty() {
         MachineRole::StorageCandidate
     } else {
@@ -141,6 +171,14 @@ fn parse_peer_route(raw: &str) -> Option<PeerRoute> {
 
 fn overlay_client_url(overlay_ip: OverlayIp) -> String {
     format!("nats://[{}]:{}", overlay_ip.0, CLIENT_PORT)
+}
+
+fn remote_storage_client_url(overlay_ip: OverlayIp, bootstrap: &[String]) -> Option<String> {
+    bootstrap
+        .iter()
+        .filter_map(|peer| parse_peer_route(peer))
+        .find(|peer| peer.overlay_ip != overlay_ip.0)
+        .map(|peer| format!("nats://[{}]:{}", peer.overlay_ip, CLIENT_PORT))
 }
 
 fn local_client_url() -> String {
@@ -188,15 +226,29 @@ where
         self.service.start().await?;
 
         let mut last_error = None;
-        for _ in 0..CONNECT_ATTEMPTS {
-            match NatsStore::connect(&self.client_url).await {
-                Ok(store) => {
+        for attempt in 1..=CONNECT_ATTEMPTS {
+            info!(
+                attempt,
+                max_attempts = CONNECT_ATTEMPTS,
+                url = %self.client_url,
+                "connecting to nats store"
+            );
+            match tokio::time::timeout(CONNECT_TIMEOUT, NatsStore::connect(&self.client_url)).await
+            {
+                Ok(Ok(store)) => {
                     store.start().await?;
                     *self.store.lock().await = Some(Arc::new(store));
                     return Ok(());
                 }
-                Err(error) => {
+                Ok(Err(error)) => {
                     last_error = Some(error);
+                    tokio::time::sleep(CONNECT_RETRY_DELAY).await;
+                }
+                Err(_) => {
+                    last_error = Some(Error::operation(
+                        "nats_connect",
+                        format!("timed out connecting to {}", self.client_url),
+                    ));
                     tokio::time::sleep(CONNECT_RETRY_DELAY).await;
                 }
             }
@@ -425,6 +477,29 @@ impl HostNats {
     }
 }
 
+fn log_nats_output<R>(stream: R, stream_name: &'static str)
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stream).lines();
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => info!(stream = stream_name, line = %line, "nats-server output"),
+                Ok(None) => break,
+                Err(error) => {
+                    warn!(
+                        stream = stream_name,
+                        ?error,
+                        "failed to read nats-server output"
+                    );
+                    break;
+                }
+            }
+        }
+    });
+}
+
 #[async_trait]
 impl StoreRuntimeControl for HostNats {
     async fn start(&self) -> Result<()> {
@@ -444,8 +519,8 @@ impl StoreRuntimeControl for HostNats {
             .arg("-c")
             .arg(&self.config_path)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
             .map_err(|error| {
@@ -454,6 +529,13 @@ impl StoreRuntimeControl for HostNats {
                     format!("failed to spawn {}: {error}", self.binary.display()),
                 )
             })?;
+        let mut child = child;
+        if let Some(stdout) = child.stdout.take() {
+            log_nats_output(stdout, "stdout");
+        }
+        if let Some(stderr) = child.stderr.take() {
+            log_nats_output(stderr, "stderr");
+        }
         info!(
             pid = child.id(),
             binary = %self.binary.display(),
@@ -693,13 +775,13 @@ mod tests {
             overlay_ip,
             &["[fd00::10]:6222".into()],
             "alpha",
+            false,
         )
         .expect("config should write");
 
         let rendered = std::fs::read_to_string(&host_paths.config).expect("config should read");
         std::fs::remove_dir_all(&root).ok();
-        assert!(rendered.contains("cluster {"));
-        assert!(rendered.contains("\"nats://[fd00::10]:6222\""));
+        assert!(!rendered.contains("cluster {"));
         assert!(rendered.contains("jetstream {"));
     }
 
@@ -720,6 +802,7 @@ mod tests {
             overlay_ip,
             &["[fd00::10]:6222".into()],
             "alpha",
+            false,
         )
         .expect("config should write");
 
@@ -727,6 +810,34 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
         assert!(!rendered.contains("jetstream {"));
         assert!(rendered.contains("url: \"nats://[fd00::10]:7422\""));
+    }
+
+    #[test]
+    fn disconnected_bootstrap_uses_local_standalone_storage() {
+        let root = std::env::temp_dir().join(format!(
+            "ployz-nats-config-test-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let host_paths = config::Paths::new(&root);
+        let runtime_paths = config::Paths::new(&root);
+        let overlay_ip = OverlayIp("fd00::11".parse().expect("valid overlay"));
+
+        write_node_config(
+            &host_paths,
+            &runtime_paths,
+            overlay_ip,
+            &["[fd00::10]:6222".into()],
+            "alpha",
+            true,
+        )
+        .expect("config should write");
+
+        let rendered = std::fs::read_to_string(&host_paths.config).expect("config should read");
+        std::fs::remove_dir_all(&root).ok();
+        assert!(rendered.contains("jetstream {"));
+        assert!(!rendered.contains("cluster {"));
+        assert!(!rendered.contains("remotes: ["));
     }
 
     #[test]

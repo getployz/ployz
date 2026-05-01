@@ -113,6 +113,7 @@ impl MeshStartTx {
                 exposed_tcp_ports: &exposed_tcp_ports,
                 bootstrap: &plan.bootstrap_addrs,
                 network_id: &self.config.id.0,
+                allow_disconnected_bootstrap: plan.allow_disconnected_bootstrap,
             })
             .await
             .map_err(StartMeshError::NetworkDriver)?;
@@ -473,6 +474,7 @@ impl DaemonState {
                 exposed_tcp_ports: &exposed_tcp_ports,
                 bootstrap: &[],
                 network_id: &net_config.id.0,
+                allow_disconnected_bootstrap: false,
             })
             .await
             .map_err(|error| format!("runtime components failed: {error}"))?;

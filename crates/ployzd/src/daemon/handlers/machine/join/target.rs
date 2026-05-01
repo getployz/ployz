@@ -167,7 +167,7 @@ pub(super) async fn run_machine_add_target(
         };
     }
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: transient peer install starting");
-    if let Err(err) = upsert_transient_peer(&context.peer_sync_tx, record).await {
+    if let Err(err) = upsert_transient_peer(&context.peer_sync_tx, record.clone()).await {
         let _ = release_reserved_subnet(&context, &subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
@@ -254,6 +254,25 @@ pub(super) async fn run_machine_add_target(
         return MachineAddTargetResult::Failed {
             target,
             failure: MachineAddFailure::Enable { reason: err },
+        };
+    }
+    let mut active_record = record.clone();
+    active_record.lifecycle = MachineLifecycle::Active;
+    active_record.subnet = Some(subnet_claim.subnet());
+    active_record.updated_at = ployz_types::time::now_unix_secs();
+    if let Err(err) = context.store.upsert_self_machine(&active_record).await {
+        tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: active self-record persistence failed");
+        let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
+        let _ = operation_store.update_status(
+            &mut operation,
+            MachineOperationStatus::Failed,
+            Some(err.to_string()),
+        );
+        return MachineAddTargetResult::Failed {
+            target,
+            failure: MachineAddFailure::Enable {
+                reason: format!("persist active self-record: {err}"),
+            },
         };
     }
 
