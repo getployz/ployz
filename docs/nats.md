@@ -83,6 +83,8 @@ Key fields:
 - `duplicate_window` — dedup window for `Nats-Msg-Id` (default 2 min).
 - `allow_direct` — enable `direct_get` for fast key-style reads.
 - `allow_atomic_publish` — accept atomic batch publishes (2.12+).
+- `allow_message_ttl` — accept per-message `Nats-TTL` writes (2.11+);
+  required for renewable lease KV buckets.
 - `subject_delete_marker_ttl` — emit a delete marker when MaxAge expires
   the last message for a subject (2.11+).
 
@@ -557,8 +559,10 @@ KV buckets:
 - `acme_challenges` — key=`<hostname>.<token>`.
 - `deploy_status` — key=deploy_id. Mutable lifecycle overlay over the
   immutable commit envelope.
-- `locks` — key=`locks.deploy.<ns>` / `locks.cert.<hostname>`. TTL leases.
-- `coordinator_lease` — key=election lease id. TTL leases.
+- `locks` — key=`locks.deploy.<ns>` / `locks.cert.<hostname>`. TTL leases;
+  stream allows per-message TTL and retains MaxAge delete markers for one hour.
+- `coordinator_lease` — key=election lease id. TTL leases; same per-message
+  TTL/delete-marker behavior as `locks`.
 
 ### Operational details
 
@@ -593,9 +597,10 @@ Tracked in code comments and the implementation plan. Highlights:
    on unexpected task exit. Gateway and DNS edge projection freshness is exposed
    through sidecar metrics and, when those metrics endpoints are configured, in
    `ployzctl status` as per-stream `edge_sync` health.
-   KV subscriptions create the watch before loading the initial snapshot, so
-   updates after the watch boundary are delivered even if they race with the
-   snapshot read.
+   KV subscriptions read the bucket stream sequence as a snapshot boundary,
+   load the current snapshot, then watch from the next sequence. Updates that
+   race with snapshot loading are delivered from the bounded watch stream, and
+   duplicate observations collapse through the subscriber's last-seen state.
 3. Deploy projections cache the last replayed stream sequence and extend from
    the next commit when the cached sequence is still within the retained stream
    window. They fall back to full replay only after compaction or cache loss.

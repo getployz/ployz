@@ -198,8 +198,9 @@ The important split:
   freshness boundary. Machine, certificate, and ACME challenge subscriptions
   carry explicit failure updates; consumers should stop using the stale stream,
   reload from authority, or surface degraded health to an operator-visible
-  status. KV subscriptions establish the watch before loading the initial
-  snapshot so updates that race with snapshot loading are still delivered.
+  status. KV subscriptions read the bucket stream sequence as the snapshot
+  boundary, load the current snapshot, then watch from the next sequence so
+  updates that race with snapshot loading are still delivered.
 - Edge projections expose their subscription freshness as sidecar metrics:
   gateway reports routing, certificates, and ACME challenge streams; DNS reports
   routing. When those metrics endpoints are configured, `ployzctl status`

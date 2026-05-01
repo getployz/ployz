@@ -14,6 +14,20 @@ pub async fn get_bucket(
         .map_err(|error| Error::operation(operation, format!("{error:?}")))
 }
 
+pub async fn latest_sequence(store: &kv::Store, operation: &'static str) -> Result<u64> {
+    let mut stream = store.stream.clone();
+    stream
+        .info()
+        .await
+        .map(|info| info.state.last_sequence)
+        .map_err(|error| Error::operation(operation, format!("{error:?}")))
+}
+
+#[must_use]
+pub fn next_sequence(sequence: u64) -> u64 {
+    sequence.saturating_add(1)
+}
+
 pub async fn list_json<T>(
     store: &kv::Store,
     decode_operation: &'static str,
@@ -74,4 +88,15 @@ where
     T: DeserializeOwned,
 {
     serde_json::from_slice(bytes).map_err(|error| Error::operation(operation, error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_sequence;
+
+    #[test]
+    fn next_sequence_saturates_at_u64_max() {
+        assert_eq!(next_sequence(0), 1);
+        assert_eq!(next_sequence(u64::MAX), u64::MAX);
+    }
 }

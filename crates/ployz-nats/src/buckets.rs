@@ -20,6 +20,7 @@ pub const ACME_CHALLENGES_BUCKET: &str = "acme_challenges";
 pub const ACME_CHALLENGE_READINESS_BUCKET: &str = "acme_challenge_readiness";
 pub const LOCKS_BUCKET: &str = "locks";
 pub const COORDINATOR_LEASE_BUCKET: &str = "coordinator_lease";
+const LEASE_DELETE_MARKER_TTL: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AssetPolicy {
@@ -78,12 +79,50 @@ async fn ensure_stream(js: &jetstream::Context, config: stream::Config) -> Resul
 
 async fn ensure_kv(js: &jetstream::Context, config: kv::Config) -> Result<()> {
     match js.get_key_value(config.bucket.clone()).await {
-        Ok(_) => Ok(()),
+        Ok(bucket) => ensure_existing_kv(js, bucket, config).await,
         Err(_) => js
             .create_key_value(config)
             .await
             .map(|_| ())
             .map_err(|error| Error::operation("nats_ensure_kv", format!("{error:?}"))),
+    }
+}
+
+async fn ensure_existing_kv(
+    js: &jetstream::Context,
+    bucket: kv::Store,
+    config: kv::Config,
+) -> Result<()> {
+    if !existing_kv_needs_update(&bucket, &config).await? {
+        return Ok(());
+    }
+    js.update_key_value(config)
+        .await
+        .map(|_| ())
+        .map_err(|error| Error::operation("nats_update_kv", format!("{error:?}")))
+}
+
+async fn existing_kv_needs_update(bucket: &kv::Store, desired: &kv::Config) -> Result<bool> {
+    let mut stream = bucket.stream.clone();
+    let info = stream
+        .info()
+        .await
+        .map_err(|error| Error::operation("nats_kv_info", format!("{error:?}")))?;
+    Ok(ttl_policy_needs_update(
+        info.config.allow_message_ttl,
+        info.config.subject_delete_marker_ttl,
+        desired.limit_markers,
+    ))
+}
+
+fn ttl_policy_needs_update(
+    allow_message_ttl: bool,
+    subject_delete_marker_ttl: Option<Duration>,
+    desired_limit_markers: Option<Duration>,
+) -> bool {
+    match desired_limit_markers {
+        Some(desired) => !allow_message_ttl || subject_delete_marker_ttl != Some(desired),
+        None => false,
     }
 }
 
@@ -179,6 +218,7 @@ fn lease_buckets(replicas: usize) -> Vec<kv::Config> {
             history: 1,
             storage: stream::StorageType::File,
             num_replicas: replicas,
+            limit_markers: Some(LEASE_DELETE_MARKER_TTL),
             ..Default::default()
         })
         .collect()
@@ -227,5 +267,39 @@ mod tests {
             assert_eq!(bucket.max_age, Duration::ZERO);
             assert_eq!(bucket.history, 1);
         }
+    }
+
+    #[test]
+    fn lease_buckets_enable_per_message_ttl() {
+        let configs = asset_configs(AssetPolicy {
+            storage_candidates: 3,
+            replica_preference: ReplicaPreference::Three,
+        });
+
+        for bucket in configs.lease_kv {
+            assert_eq!(bucket.history, 1);
+            assert_eq!(bucket.num_replicas, 3);
+            assert_eq!(bucket.limit_markers, Some(LEASE_DELETE_MARKER_TTL));
+        }
+    }
+
+    #[test]
+    fn existing_lease_bucket_updates_when_message_ttl_is_disabled() {
+        assert!(ttl_policy_needs_update(
+            false,
+            None,
+            Some(LEASE_DELETE_MARKER_TTL)
+        ));
+        assert!(ttl_policy_needs_update(
+            true,
+            Some(Duration::from_secs(1)),
+            Some(LEASE_DELETE_MARKER_TTL)
+        ));
+        assert!(!ttl_policy_needs_update(
+            true,
+            Some(LEASE_DELETE_MARKER_TTL),
+            Some(LEASE_DELETE_MARKER_TTL)
+        ));
+        assert!(!ttl_policy_needs_update(false, None, None));
     }
 }
