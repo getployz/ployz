@@ -11,11 +11,13 @@ use tracing::warn;
 use crate::daemon::DaemonState;
 
 static RUNTIME_SUBSCRIPTION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+type RuntimeEventUpdate = Result<RoutingEvent, String>;
 
 impl DaemonState {
     pub async fn open_runtime_subscription(
         &self,
-    ) -> Result<(RoutingState, mpsc::Receiver<RoutingEvent>), Box<ployz_api::DaemonResponse>> {
+    ) -> Result<(RoutingState, mpsc::Receiver<RuntimeEventUpdate>), Box<ployz_api::DaemonResponse>>
+    {
         let active = self.require_active("NO_MESH", "no mesh is running")?;
         let consumer_id = runtime_subscription_consumer_id(&self.identity.machine_id);
         let (state, mut batches) = active
@@ -41,18 +43,19 @@ fn runtime_subscription_consumer_id(machine_id: &MachineId) -> String {
 
 async fn relay_runtime_batches(
     batches: &mut mpsc::Receiver<RoutingBatchSubscriptionUpdate>,
-    tx: mpsc::Sender<RoutingEvent>,
+    tx: mpsc::Sender<RuntimeEventUpdate>,
 ) {
     while let Some(batch) = batches.recv().await {
         let batch = match batch {
             Ok(batch) => batch,
             Err(error) => {
                 warn!(%error, "runtime routing batch relay failed");
+                let _ = tx.send(Err(error.to_string())).await;
                 return;
             }
         };
         for event in batch.events.clone() {
-            if tx.send(event).await.is_err() {
+            if tx.send(Ok(event)).await.is_err() {
                 let _ = batch.ack().await;
                 return;
             }
@@ -63,7 +66,7 @@ async fn relay_runtime_batches(
 
 pub async fn stream_runtime_frames(
     mut initial: RoutingState,
-    mut events: mpsc::Receiver<RoutingEvent>,
+    mut events: mpsc::Receiver<RuntimeEventUpdate>,
     frames: mpsc::Sender<RuntimeWatchFrame>,
     cancel: CancellationToken,
 ) {
@@ -96,7 +99,13 @@ pub async fn stream_runtime_frames(
                 let Some(event) = event else {
                     return;
                 };
-                let frame = runtime_frame_from_event(event);
+                let frame = match event {
+                    Ok(event) => runtime_frame_from_event(event),
+                    Err(message) => RuntimeWatchFrame::Error {
+                        code: String::from("RUNTIME_SUBSCRIPTION_FAILED"),
+                        message,
+                    },
+                };
                 if frames.send(frame).await.is_err() {
                     return;
                 }
@@ -133,11 +142,11 @@ mod tests {
         };
         let (event_tx, event_rx) = mpsc::channel(1);
         event_tx
-            .send(RoutingEvent::InstanceAdded(instance_record(
+            .send(Ok(RoutingEvent::InstanceAdded(instance_record(
                 "instance-c",
                 "prod",
                 "worker",
-            )))
+            ))))
             .await
             .expect("queue event");
         drop(event_tx);
@@ -167,6 +176,37 @@ mod tests {
                 record: RuntimeRecord::Instance(instance_record("instance-c", "prod", "worker")),
             }
         );
+    }
+
+    #[tokio::test]
+    async fn stream_runtime_frames_emits_error_frame_before_closing() {
+        let initial = RoutingState {
+            machines: Vec::new(),
+            revisions: Vec::new(),
+            releases: Vec::new(),
+            instances: Vec::new(),
+        };
+        let (event_tx, event_rx) = mpsc::channel(1);
+        event_tx
+            .send(Err(String::from("routing consumer failed")))
+            .await
+            .expect("queue failure");
+        drop(event_tx);
+        let (frame_tx, mut frame_rx) = mpsc::channel(4);
+
+        stream_runtime_frames(initial, event_rx, frame_tx, CancellationToken::new()).await;
+
+        let first = frame_rx.recv().await.expect("snapshot frame");
+        assert!(matches!(first, RuntimeWatchFrame::Snapshot { .. }));
+        let second = frame_rx.recv().await.expect("error frame");
+        assert_eq!(
+            second,
+            RuntimeWatchFrame::Error {
+                code: String::from("RUNTIME_SUBSCRIPTION_FAILED"),
+                message: String::from("routing consumer failed"),
+            }
+        );
+        assert!(frame_rx.recv().await.is_none());
     }
 
     #[test]
@@ -222,6 +262,10 @@ mod tests {
 
         relay_runtime_batches(&mut batch_rx, event_tx).await;
 
+        assert_eq!(
+            event_rx.recv().await,
+            Some(Err(String::from("test_routing_subscription: closed")))
+        );
         assert!(event_rx.recv().await.is_none());
     }
 

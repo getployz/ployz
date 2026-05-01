@@ -593,7 +593,8 @@ Tracked in code comments and the implementation plan. Highlights:
    setup reads the routing stream sequence, loads a fresh snapshot, then
    replaces any old consumer with the same id and starts delivery from the next
    stream sequence. Updates carry either a complete batch or an explicit
-   consumer failure.
+   consumer failure. Runtime watch clients receive that failure as an explicit
+   error frame before the watch stream closes.
    Routing consumer `max_ack_pending` is bounded to the local bridge-channel
    capacity, and idle heartbeats surface broken delivery paths as failures.
 2. Machine/certificate/ACME challenge subscriptions are KV watchers that carry

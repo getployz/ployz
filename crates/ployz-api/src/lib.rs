@@ -330,6 +330,10 @@ pub enum RuntimeWatchFrame {
         key: String,
         record: RuntimeRecord,
     },
+    Error {
+        code: String,
+        message: String,
+    },
     Heartbeat,
 }
 
