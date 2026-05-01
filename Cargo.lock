@@ -3050,7 +3050,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "ployz-api"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "ipnet",
  "ployz-types",
@@ -3061,7 +3061,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-bpfctl"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "aya",
  "ipnet",
@@ -3071,7 +3071,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-cert-backends"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "async-trait",
  "instant-acme",
@@ -3086,7 +3086,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-config"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "directories",
  "figment",
@@ -3097,7 +3097,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-corrosion"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "bytes",
  "corro-api-types",
@@ -3123,7 +3123,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-dns"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "async-trait",
  "hickory-server",
@@ -3143,7 +3143,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-dns-config"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "ployz-config",
  "ployz-types",
@@ -3152,7 +3152,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-e2e"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "clap",
  "serde",
@@ -3163,11 +3163,11 @@ dependencies = [
 
 [[package]]
 name = "ployz-ebpf-common"
-version = "0.5.4"
+version = "0.5.5"
 
 [[package]]
 name = "ployz-gateway"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3192,7 +3192,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-gateway-config"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "ployz-config",
  "thiserror 2.0.18",
@@ -3200,7 +3200,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-install"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "libc",
  "ployz-config",
@@ -3208,7 +3208,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-metrics"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "httparse",
  "prometheus",
@@ -3217,7 +3217,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-orchestrator"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "async-trait",
  "aya",
@@ -3242,7 +3242,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-runtime-api"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "async-trait",
  "hostname",
@@ -3256,7 +3256,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-runtime-backends"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "async-trait",
  "base64",
@@ -3293,7 +3293,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-sdk"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "ployz-api",
  "ployz-config",
@@ -3304,7 +3304,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-store-api"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "async-trait",
  "ployz-types",
@@ -3314,7 +3314,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-types"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "base64",
  "derive_more",
@@ -3329,7 +3329,7 @@ dependencies = [
 
 [[package]]
 name = "ployzctl"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "clap",
  "ployz-config",
@@ -3338,7 +3338,7 @@ dependencies = [
 
 [[package]]
 name = "ployzd"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "async-trait",
  "base64",
