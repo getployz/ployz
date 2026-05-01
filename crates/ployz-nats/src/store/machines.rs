@@ -104,7 +104,9 @@ impl MachineRegistry for NatsStore {
                 let entry = match next {
                     Ok(entry) => entry,
                     Err(error) => {
+                        let error = Error::operation("nats_machines_watch", format!("{error:?}"));
                         warn!(?error, "NATS machines watcher failed");
+                        let _ = tx.send(Err(error)).await;
                         break;
                     }
                 };
@@ -131,7 +133,7 @@ impl MachineRegistry for NatsStore {
                         }
                     }
                 };
-                if tx.send(event).await.is_err() {
+                if tx.send(Ok(event)).await.is_err() {
                     break;
                 }
             }

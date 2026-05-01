@@ -187,9 +187,10 @@ The important split:
 - Durable service projections use stable per-machine consumers.
 - Short-lived watches use temporary consumers and do not leave durable cursor
   state behind.
-- KV watcher consumers must treat watcher closure as a lost freshness boundary.
-  They should stop using the stale stream, reload from authority, or surface
-  degraded health to an operator-visible status.
+- KV watcher consumers must treat watcher failure or closure as a lost
+  freshness boundary. Machine subscriptions carry explicit failure updates;
+  consumers should stop using the stale stream, reload from authority, or
+  surface degraded health to an operator-visible status.
 
 - **authority** lives in hub JetStream/KV/Object Store,
 - **hot read models** live in process memory and are rebuilt from authority,

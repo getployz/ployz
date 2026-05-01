@@ -7,6 +7,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+use crate::error::Result as PloyzResult;
 use crate::mesh::driver::WireguardDriver;
 use crate::mesh::peer_state::PeerStateMap;
 use crate::mesh::{DevicePeer, WireGuardDevice};
@@ -352,7 +353,7 @@ pub(crate) fn build_initial_endpoint_selections(
 
 pub(crate) struct EndpointMaintainerTask {
     pub(crate) snapshot: Vec<MachineMembership>,
-    pub(crate) events: mpsc::Receiver<MachineEvent>,
+    pub(crate) events: mpsc::Receiver<PloyzResult<MachineEvent>>,
     pub(crate) commands: mpsc::Receiver<EndpointMaintainerCommand>,
     pub(crate) bootstrap_peers: Vec<MachineObservation>,
     pub(crate) network: WireguardDriver,
@@ -416,6 +417,13 @@ pub(crate) async fn run_endpoint_maintainer_task(task: EndpointMaintainerTask) {
                 let Some(event) = event else {
                     warn!("endpoint maintainer machine subscription closed");
                     break;
+                };
+                let event = match event {
+                    Ok(event) => event,
+                    Err(error) => {
+                        warn!(%error, "endpoint maintainer machine subscription failed");
+                        break;
+                    }
                 };
                 peer_map.apply_event(&event, Instant::now());
                 let device_peers = network.read_peers().await.unwrap_or_default();
@@ -566,7 +574,7 @@ mod tests {
         let network = crate::mesh::driver::WireguardDriver::memory_with(std::sync::Arc::new(
             crate::mesh::wireguard::MemoryWireGuard::new(),
         ));
-        let (event_tx, event_rx) = mpsc::channel::<MachineEvent>(4);
+        let (event_tx, event_rx) = mpsc::channel(4);
         let (_command_tx, command_rx) = mpsc::channel::<EndpointMaintainerCommand>(4);
 
         drop(event_tx);

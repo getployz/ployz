@@ -1,3 +1,4 @@
+use crate::error::Result as PloyzResult;
 use crate::mesh::MeshDataplane;
 use crate::model::{MachineEvent, MachineId, MachineMembership};
 use std::sync::Arc;
@@ -7,7 +8,7 @@ use tracing::{info, warn};
 
 pub(crate) async fn run_ebpf_sync_task(
     snapshot: Vec<MachineMembership>,
-    mut events: mpsc::Receiver<MachineEvent>,
+    mut events: mpsc::Receiver<PloyzResult<MachineEvent>>,
     dataplane: Arc<dyn MeshDataplane>,
     wg_ifindex: u32,
     local_machine_id: MachineId,
@@ -35,6 +36,13 @@ pub(crate) async fn run_ebpf_sync_task(
                 let Some(event) = event else {
                     warn!("eBPF sync machine subscription closed");
                     break;
+                };
+                let event = match event {
+                    Ok(event) => event,
+                    Err(error) => {
+                        warn!(%error, "eBPF sync machine subscription failed");
+                        break;
+                    }
                 };
                 match &event {
                     MachineEvent::Added(m) | MachineEvent::Updated(m) => {
@@ -91,7 +99,7 @@ mod tests {
 
     #[tokio::test]
     async fn exits_when_machine_subscription_closes() {
-        let (event_tx, event_rx) = mpsc::channel::<MachineEvent>(4);
+        let (event_tx, event_rx) = mpsc::channel(4);
         drop(event_tx);
 
         tokio::time::timeout(
