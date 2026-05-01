@@ -46,7 +46,14 @@ impl TaskSet {
     }
 
     pub(crate) fn spawn(&mut self, future: impl std::future::Future<Output = ()> + Send + 'static) {
-        self.tasks.spawn(future);
+        let cancel = self.cancel.clone();
+        self.tasks.spawn(async move {
+            future.await;
+            if !cancel.is_cancelled() {
+                warn!("mesh background task exited; cancelling task set");
+                cancel.cancel();
+            }
+        });
     }
 
     pub(crate) async fn stop(&mut self) -> Result<(), TaskSetError> {
@@ -62,5 +69,22 @@ impl TaskSet {
             Some(e) => Err(e),
             None => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn unexpected_task_exit_cancels_task_set() {
+        let (mut task_set, cancel) = TaskSet::new();
+
+        task_set.spawn(async {});
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), cancel.cancelled())
+            .await
+            .expect("task set should cancel when a task exits unexpectedly");
+        task_set.stop().await.expect("task set should stop cleanly");
     }
 }
