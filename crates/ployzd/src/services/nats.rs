@@ -14,7 +14,7 @@ use ployz_runtime_backends::runtime::{
 use ployz_store_api::{
     AcmeChallengeSubscription, CertificateSubscription, DeployCommit, DeployRecordUpdate,
     DeployRevisionUpsert, DeploySnapshot, MachineSubscription, PeerRttObservation,
-    RoutingSubscription, StoreBackend, StoreDriver, StoreRuntimeControl, SyncStatus,
+    RoutingBatchSubscription, StoreBackend, StoreDriver, StoreRuntimeControl, SyncStatus,
 };
 use ployz_types::Result;
 use ployz_types::error::Error;
@@ -325,8 +325,14 @@ where
         self.store().await?.load_routing_state().await
     }
 
-    async fn subscribe_routing_events(&self) -> Result<RoutingSubscription> {
-        self.store().await?.subscribe_routing_events().await
+    async fn subscribe_routing_batches(
+        &self,
+        consumer_id: &str,
+    ) -> Result<RoutingBatchSubscription> {
+        self.store()
+            .await?
+            .subscribe_routing_batches(consumer_id)
+            .await
     }
 
     async fn list_deploy_releases(

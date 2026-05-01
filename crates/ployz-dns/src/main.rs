@@ -23,16 +23,11 @@ fn main() -> Result<(), ployz_dns::DnsError> {
     })?;
     struct StandaloneStore(ployz_nats::NatsStore);
     impl ployz_dns::DnsStore for StandaloneStore {
-        async fn subscribe_routing_events(
+        async fn subscribe_routing_batches(
             &self,
-        ) -> Result<
-            (
-                ployz_types::model::RoutingState,
-                tokio::sync::mpsc::Receiver<ployz_types::model::RoutingEvent>,
-            ),
-            ployz_dns::DnsError,
-        > {
-            ployz_store_api::RoutingSnapshotReader::subscribe_routing_events(&self.0)
+            consumer_id: &str,
+        ) -> Result<ployz_store_api::RoutingBatchSubscription, ployz_dns::DnsError> {
+            ployz_store_api::RoutingSnapshotReader::subscribe_routing_batches(&self.0, consumer_id)
                 .await
                 .map_err(|err| ployz_dns::DnsError::Store(err.to_string()))
         }

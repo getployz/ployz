@@ -9,7 +9,9 @@ use ployz_store_api::{
     InstanceStatusRepository,
 };
 use ployz_types::error::{Error, Result};
-use ployz_types::model::{DeployId, DeployRecord, ServiceReleaseRecord, VolumeRecord};
+use ployz_types::model::{
+    DeployId, DeployRecord, RoutingEvent, ServiceReleaseRecord, VolumeRecord,
+};
 use ployz_types::spec::Namespace;
 use tracing::warn;
 
@@ -53,12 +55,48 @@ impl DeployRepository for NatsStore {
     }
 
     async fn record_service_revision(&self, command: &DeployRevisionUpsert) -> Result<()> {
-        publish_revision(self.jetstream(), command).await
+        let existing = self
+            .deploy_projection_snapshot()
+            .await?
+            .revision(
+                &command.revision.namespace,
+                &command.revision.service,
+                &command.revision.revision_hash,
+            )
+            .cloned();
+        publish_revision(self.jetstream(), command).await?;
+        let event = match existing {
+            Some(old) if old != command.revision => RoutingEvent::RevisionUpdated {
+                old,
+                new: command.revision.clone(),
+            },
+            Some(_) => return Ok(()),
+            None => RoutingEvent::RevisionAdded(command.revision.clone()),
+        };
+        self.publish_routing_batch(
+            format!(
+                "revision:{}:{}:{}",
+                command.revision.namespace.0,
+                command.revision.service,
+                command.revision.revision_hash
+            ),
+            "deploy.revision",
+            &[event],
+        )
+        .await
     }
 
     async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
+        let mut projection = self.deploy_projection_snapshot().await?;
+        let routing_events = projection.apply_commit_events(command);
         publish_commit(self.jetstream(), command).await?;
-        self.apply_deploy_commit_to_cache(command).await;
+        *self.deploy_projection.write().await = Some(projection);
+        self.publish_routing_batch(
+            format!("deploy:{}", command.deploy.deploy_id.0),
+            "deploy.commit",
+            &routing_events,
+        )
+        .await?;
         if let Err(error) = write_deploy_status(self.jetstream(), &command.deploy).await {
             warn!(?error, deploy_id = %command.deploy.deploy_id, "initial deploy status write failed after commit");
         }
@@ -90,13 +128,6 @@ impl NatsStore {
         let projection = replay_projection(self.jetstream()).await?;
         *self.deploy_projection.write().await = Some(projection.clone());
         Ok(projection)
-    }
-
-    pub(crate) async fn apply_deploy_commit_to_cache(&self, commit: &DeployCommit) {
-        let mut guard = self.deploy_projection.write().await;
-        if let Some(projection) = guard.as_mut() {
-            projection.apply_commit(commit);
-        }
     }
 }
 

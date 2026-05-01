@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use ployz_types::Result;
+use ployz_types::error::Error;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
     CertificateEvent, CertificateRecord, DeployId, DeployRecord, InstanceId, InstanceStatusRecord,
@@ -10,12 +11,134 @@ use ployz_types::spec::Namespace;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::net::SocketAddr;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 pub type MachineSubscription = (Vec<MachineMembership>, mpsc::Receiver<MachineEvent>);
 pub type CertificateSubscription = (Vec<CertificateRecord>, mpsc::Receiver<CertificateEvent>);
 pub type AcmeChallengeSubscription = (Vec<AcmeChallengeRecord>, mpsc::Receiver<AcmeChallengeEvent>);
-pub type RoutingSubscription = (RoutingState, mpsc::Receiver<RoutingEvent>);
+pub type RoutingBatchSubscription = (RoutingState, mpsc::Receiver<RoutingEventBatch>);
+
+#[derive(Debug)]
+pub struct RoutingEventBatch {
+    pub batch_id: String,
+    pub cause: Option<String>,
+    pub events: Vec<RoutingEvent>,
+    ack: Option<oneshot::Sender<()>>,
+}
+
+impl RoutingEventBatch {
+    #[must_use]
+    pub fn unacked(
+        batch_id: impl Into<String>,
+        cause: Option<String>,
+        events: Vec<RoutingEvent>,
+    ) -> Self {
+        Self {
+            batch_id: batch_id.into(),
+            cause,
+            events,
+            ack: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_ack(
+        batch_id: impl Into<String>,
+        cause: Option<String>,
+        events: Vec<RoutingEvent>,
+        ack: oneshot::Sender<()>,
+    ) -> Self {
+        Self {
+            batch_id: batch_id.into(),
+            cause,
+            events,
+            ack: Some(ack),
+        }
+    }
+
+    pub async fn ack(mut self) -> Result<()> {
+        let Some(ack) = self.ack.take() else {
+            return Ok(());
+        };
+        ack.send(()).map_err(|()| {
+            Error::operation(
+                "routing_batch_ack_failed",
+                format!("routing batch '{}' ack receiver closed", self.batch_id),
+            )
+        })
+    }
+}
+
+pub fn apply_routing_event(state: &mut RoutingState, event: RoutingEvent) {
+    match event {
+        RoutingEvent::MachineAdded(record) | RoutingEvent::MachineUpdated { new: record, .. } => {
+            upsert_by(&mut state.machines, record, |record| record.id.clone());
+        }
+        RoutingEvent::MachineRemoved(record) => {
+            state.machines.retain(|candidate| candidate.id != record.id);
+        }
+        RoutingEvent::RevisionAdded(record) | RoutingEvent::RevisionUpdated { new: record, .. } => {
+            upsert_by(&mut state.revisions, record, |record| {
+                (
+                    record.namespace.clone(),
+                    record.service.clone(),
+                    record.revision_hash.clone(),
+                )
+            });
+        }
+        RoutingEvent::RevisionRemoved(record) => {
+            state.revisions.retain(|candidate| {
+                candidate.namespace != record.namespace
+                    || candidate.service != record.service
+                    || candidate.revision_hash != record.revision_hash
+            });
+        }
+        RoutingEvent::ReleaseAdded(record) | RoutingEvent::ReleaseUpdated { new: record, .. } => {
+            upsert_by(&mut state.releases, record, |record| {
+                (record.namespace.clone(), record.service.clone())
+            });
+        }
+        RoutingEvent::ReleaseRemoved(record) => {
+            state.releases.retain(|candidate| {
+                candidate.namespace != record.namespace || candidate.service != record.service
+            });
+        }
+        RoutingEvent::InstanceAdded(record) | RoutingEvent::InstanceUpdated { new: record, .. } => {
+            upsert_by(&mut state.instances, record, |record| {
+                record.instance_id.clone()
+            });
+        }
+        RoutingEvent::InstanceRemoved(record) => {
+            state
+                .instances
+                .retain(|candidate| candidate.instance_id != record.instance_id);
+        }
+    }
+}
+
+pub fn apply_routing_events(
+    state: &mut RoutingState,
+    events: impl IntoIterator<Item = RoutingEvent>,
+) {
+    for event in events {
+        apply_routing_event(state, event);
+    }
+}
+
+fn upsert_by<T, K>(items: &mut Vec<T>, value: T, key: impl Fn(&T) -> K)
+where
+    K: PartialEq,
+{
+    let value_key = key(&value);
+    if let Some(existing) = items
+        .iter_mut()
+        .find(|candidate| key(candidate) == value_key)
+    {
+        *existing = value;
+    } else {
+        items.push(value);
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployCommit {
@@ -95,9 +218,10 @@ pub trait InviteRepository: Send + Sync {
 pub trait RoutingSnapshotReader: Send + Sync {
     fn load_routing_state(&self) -> impl Future<Output = Result<RoutingState>> + Send + '_;
 
-    fn subscribe_routing_events(
-        &self,
-    ) -> impl Future<Output = Result<RoutingSubscription>> + Send + '_;
+    fn subscribe_routing_batches<'a>(
+        &'a self,
+        consumer_id: &'a str,
+    ) -> impl Future<Output = Result<RoutingBatchSubscription>> + Send + 'a;
 }
 
 pub trait DeployRepository: Send + Sync {

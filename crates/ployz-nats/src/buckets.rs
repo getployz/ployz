@@ -6,7 +6,9 @@ use async_nats::jetstream::stream;
 use ployz_types::error::{Error, Result};
 
 use crate::role::{ReplicaPreference, desired_replicas};
-use crate::subjects::{CERT_JOBS_STREAM, DEPLOY_COMMITS_STREAM, REVISIONS_STREAM};
+use crate::subjects::{
+    CERT_JOBS_STREAM, DEPLOY_COMMITS_STREAM, REVISIONS_STREAM, ROUTING_EVENTS_STREAM,
+};
 
 pub const MACHINES_BUCKET: &str = "machines";
 pub const INVITES_BUCKET: &str = "invites";
@@ -35,6 +37,7 @@ impl AssetPolicy {
 #[derive(Debug, Clone)]
 pub struct AssetConfigs {
     pub deploy_commits: stream::Config,
+    pub routing_events: stream::Config,
     pub revisions: stream::Config,
     pub cert_jobs: stream::Config,
     pub durable_kv: Vec<kv::Config>,
@@ -46,6 +49,7 @@ pub fn asset_configs(policy: AssetPolicy) -> AssetConfigs {
     let replicas = policy.replicas();
     AssetConfigs {
         deploy_commits: deploy_commits_stream(replicas),
+        routing_events: routing_events_stream(replicas),
         revisions: revisions_stream(replicas),
         cert_jobs: cert_jobs_stream(replicas),
         durable_kv: durable_buckets(replicas),
@@ -56,6 +60,7 @@ pub fn asset_configs(policy: AssetPolicy) -> AssetConfigs {
 pub async fn ensure_assets(js: &jetstream::Context, policy: AssetPolicy) -> Result<()> {
     let configs = asset_configs(policy);
     ensure_stream(js, configs.deploy_commits).await?;
+    ensure_stream(js, configs.routing_events).await?;
     ensure_stream(js, configs.revisions).await?;
     ensure_stream(js, configs.cert_jobs).await?;
     for config in configs.durable_kv.into_iter().chain(configs.lease_kv) {
@@ -95,6 +100,24 @@ fn deploy_commits_stream(replicas: usize) -> stream::Config {
         discard: stream::DiscardPolicy::New,
         duplicate_window: Duration::from_secs(60 * 60),
         allow_direct: true,
+        ..Default::default()
+    }
+}
+
+fn routing_events_stream(replicas: usize) -> stream::Config {
+    stream::Config {
+        name: ROUTING_EVENTS_STREAM.into(),
+        subjects: vec!["routing.events.>".into()],
+        retention: stream::RetentionPolicy::Limits,
+        storage: stream::StorageType::File,
+        num_replicas: replicas,
+        max_age: Duration::ZERO,
+        max_messages_per_subject: -1,
+        max_messages: -1,
+        discard: stream::DiscardPolicy::New,
+        duplicate_window: Duration::from_secs(60 * 60),
+        allow_direct: true,
+        allow_atomic_publish: true,
         ..Default::default()
     }
 }
@@ -176,6 +199,21 @@ mod tests {
         assert_eq!(config.max_age, Duration::ZERO);
         assert_eq!(config.max_messages_per_subject, -1);
         assert_eq!(config.num_replicas, 3);
+    }
+
+    #[test]
+    fn routing_events_stream_allows_atomic_publish() {
+        let config = asset_configs(AssetPolicy {
+            storage_candidates: 3,
+            replica_preference: ReplicaPreference::Default,
+        })
+        .routing_events;
+        assert_eq!(config.name, ROUTING_EVENTS_STREAM);
+        assert_eq!(config.subjects, vec!["routing.events.>".to_string()]);
+        assert_eq!(config.retention, stream::RetentionPolicy::Limits);
+        assert_eq!(config.num_replicas, 3);
+        assert!(config.allow_direct);
+        assert!(config.allow_atomic_publish);
     }
 
     #[test]
