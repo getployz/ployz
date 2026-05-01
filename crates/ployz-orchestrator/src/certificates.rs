@@ -794,10 +794,9 @@ pub fn spawn_certificate_renewal_ticker(
     CertificateRenewalTask { cancel, task }
 }
 
-/// Walk certificates and flip state based on wall-clock: `Active` past its
-/// renewal threshold → `RenewalDue`, `Issuing` stale > 24h → `Pending`.
-/// Then queue any new orders via `start_pending_orders`. Does NOT call
-/// `finalize_order` — that's the ticker's job, spawned separately.
+/// Walk certificates and process each hostname that currently needs renewal
+/// consideration. Does NOT call `finalize_order` — that's the caller's job,
+/// spawned separately by the ticker today and by the NATS job worker later.
 pub async fn reconcile_renewals<I, C>(
     store: &StoreDriver,
     issuer: &I,
@@ -807,40 +806,62 @@ where
     I: AcmeIssuer + Sync + ?Sized,
     C: IssuanceCoordinator + ?Sized,
 {
-    let now = now_unix_secs();
     let records = store.list_certificates().await?;
-    let mut due_hostnames = Vec::new();
-    for mut record in records {
-        match record.state {
-            CertificateState::Active => {
-                let Some(threshold) = record.next_renewal_at else {
-                    continue;
-                };
-                if now < threshold {
-                    continue;
-                }
-                record.state = CertificateState::RenewalDue;
-                record.updated_at = now;
-                store.upsert_certificate(&record).await?;
-                due_hostnames.push(record.hostname);
-            }
-            CertificateState::Issuing => {
-                if now.saturating_sub(record.updated_at) < STUCK_ISSUING_MAX_AGE_SECS {
-                    continue;
-                }
-                record.state = CertificateState::Pending;
-                record.order_url = None;
-                record.last_error = Some("previous order stalled; re-ordering".into());
-                record.updated_at = now;
-                store.upsert_certificate(&record).await?;
-                due_hostnames.push(record.hostname);
-            }
-            CertificateState::Pending | CertificateState::Failed | CertificateState::RenewalDue => {
-                due_hostnames.push(record.hostname);
-            }
-        }
+    for record in records {
+        process_renewal_job(store, issuer, coordinator, &record.hostname).await?;
     }
-    for warning in start_pending_orders(store, issuer, coordinator, &due_hostnames).await {
+    Ok(())
+}
+
+/// Process one certificate renewal job. This is the unit of work for NATS
+/// `cert_jobs` delivery: the job names a hostname, this function re-reads the
+/// authoritative certificate row, applies wall-clock state transitions, then
+/// starts an ACME order if that row still needs one.
+pub async fn process_renewal_job<I, C>(
+    store: &StoreDriver,
+    issuer: &I,
+    coordinator: &C,
+    hostname: &str,
+) -> Result<()>
+where
+    I: AcmeIssuer + Sync + ?Sized,
+    C: IssuanceCoordinator + ?Sized,
+{
+    let Some(mut record) = store.get_certificate(hostname).await? else {
+        tracing::info!(hostname, "certificate renewal job skipped missing row");
+        return Ok(());
+    };
+    let now = now_unix_secs();
+    let due = match record.state {
+        CertificateState::Active => {
+            let Some(threshold) = record.next_renewal_at else {
+                return Ok(());
+            };
+            if now < threshold {
+                return Ok(());
+            }
+            record.state = CertificateState::RenewalDue;
+            record.updated_at = now;
+            store.upsert_certificate(&record).await?;
+            true
+        }
+        CertificateState::Issuing => {
+            if now.saturating_sub(record.updated_at) < STUCK_ISSUING_MAX_AGE_SECS {
+                return Ok(());
+            }
+            record.state = CertificateState::Pending;
+            record.order_url = None;
+            record.last_error = Some("previous order stalled; re-ordering".into());
+            record.updated_at = now;
+            store.upsert_certificate(&record).await?;
+            true
+        }
+        CertificateState::Pending | CertificateState::Failed | CertificateState::RenewalDue => true,
+    };
+    if !due {
+        return Ok(());
+    }
+    for warning in start_pending_orders(store, issuer, coordinator, &[record.hostname]).await {
         tracing::warn!(%warning, "certificate renewal");
     }
     Ok(())
@@ -1963,6 +1984,105 @@ mod tests {
         // a new order and moved it to Issuing with the fresh URL.
         assert_eq!(record.state, CertificateState::Issuing);
         assert_eq!(record.order_url.as_deref(), Some("https://acme/orders/new"));
+    }
+
+    #[tokio::test]
+    async fn renewal_job_skips_active_before_threshold() {
+        let store = StoreDriver::memory();
+        let now = now_unix_secs();
+        let mut record = pending_record("example.com");
+        record.state = CertificateState::Active;
+        record.active_version_id = Some("v1".into());
+        record.next_renewal_at = Some(now.saturating_add(3600));
+        store
+            .upsert_certificate(&record)
+            .await
+            .expect("active cert should persist");
+
+        process_renewal_job(
+            &store,
+            &FakeIssuer::start_only(Err(Error::operation(
+                "fake_start_order",
+                "should not be called",
+            ))),
+            &NoopIssuanceCoordinator,
+            "example.com",
+        )
+        .await
+        .expect("renewal job should run");
+
+        let record = store
+            .get_certificate("example.com")
+            .await
+            .expect("cert lookup should work")
+            .expect("cert record should exist");
+        assert_eq!(record.state, CertificateState::Active);
+        assert!(record.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn renewal_job_processes_one_due_hostname() {
+        let store = StoreDriver::memory();
+        let now = now_unix_secs();
+        let mut due = pending_record("due.example.com");
+        due.state = CertificateState::Active;
+        due.active_version_id = Some("v1".into());
+        due.next_renewal_at = Some(now.saturating_sub(1));
+        let mut other = pending_record("other.example.com");
+        other.state = CertificateState::Active;
+        other.active_version_id = Some("v1".into());
+        other.next_renewal_at = Some(now.saturating_sub(1));
+        store
+            .upsert_certificate(&due)
+            .await
+            .expect("due cert should persist");
+        store
+            .upsert_certificate(&other)
+            .await
+            .expect("other cert should persist");
+
+        process_renewal_job(
+            &store,
+            &FakeIssuer::start_only(Ok(StartedOrder {
+                order_url: "https://acme/orders/due".into(),
+            })),
+            &NoopIssuanceCoordinator,
+            "due.example.com",
+        )
+        .await
+        .expect("renewal job should run");
+
+        let due = store
+            .get_certificate("due.example.com")
+            .await
+            .expect("cert lookup should work")
+            .expect("due cert should exist");
+        let other = store
+            .get_certificate("other.example.com")
+            .await
+            .expect("cert lookup should work")
+            .expect("other cert should exist");
+        assert_eq!(due.state, CertificateState::Issuing);
+        assert_eq!(due.order_url.as_deref(), Some("https://acme/orders/due"));
+        assert_eq!(other.state, CertificateState::Active);
+        assert!(other.order_url.is_none());
+    }
+
+    #[tokio::test]
+    async fn renewal_job_skips_missing_hostname() {
+        let store = StoreDriver::memory();
+
+        process_renewal_job(
+            &store,
+            &FakeIssuer::start_only(Err(Error::operation(
+                "fake_start_order",
+                "should not be called",
+            ))),
+            &NoopIssuanceCoordinator,
+            "missing.example.com",
+        )
+        .await
+        .expect("missing row should be a no-op");
     }
 
     #[tokio::test(start_paused = true)]
