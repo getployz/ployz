@@ -70,7 +70,6 @@ impl InstanceStatusRepository for NatsStore {
             .map_err(|error| Error::operation("nats_instance_get", format!("{error:?}")))?
             .map(|bytes| kv_json::decode_json("nats_instance_decode", bytes.as_ref()))
             .transpose()?;
-        kv_json::delete(&bucket, &instance_id.0, "nats_instance_delete").await?;
         let Some(old) = old else {
             return Ok(());
         };
@@ -79,7 +78,8 @@ impl InstanceStatusRepository for NatsStore {
             "instance.remove",
             &[RoutingEvent::InstanceRemoved(old)],
         )
-        .await
+        .await?;
+        kv_json::delete(&bucket, &instance_id.0, "nats_instance_delete").await
     }
 }
 

@@ -74,7 +74,6 @@ impl MachineRegistry for NatsStore {
             .map_err(|error| Error::operation("nats_machine_get", format!("{error:?}")))?
             .map(|bytes| decode_machine(id.0.as_str(), bytes.as_ref()))
             .transpose()?;
-        kv_json::delete(&kv, id.0.as_str(), "nats_machine_delete").await?;
         let Some(old) = old else {
             return Ok(());
         };
@@ -83,7 +82,8 @@ impl MachineRegistry for NatsStore {
             "machine.delete",
             &[RoutingEvent::MachineRemoved(old)],
         )
-        .await
+        .await?;
+        kv_json::delete(&kv, id.0.as_str(), "nats_machine_delete").await
     }
 
     async fn subscribe_machines(&self) -> Result<MachineSubscription> {
