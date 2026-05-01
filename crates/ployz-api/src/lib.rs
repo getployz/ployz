@@ -366,18 +366,10 @@ pub fn instance_runtime_key(record: &InstanceStatusRecord) -> String {
 }
 
 pub fn sort_routing_state(state: &mut RoutingState) {
-    state
-        .machines
-        .sort_by_key(|record| machine_runtime_key(record));
-    state
-        .revisions
-        .sort_by_key(|record| revision_runtime_key(record));
-    state
-        .releases
-        .sort_by_key(|record| release_runtime_key(record));
-    state
-        .instances
-        .sort_by_key(|record| instance_runtime_key(record));
+    state.machines.sort_by_key(machine_runtime_key);
+    state.revisions.sort_by_key(revision_runtime_key);
+    state.releases.sort_by_key(release_runtime_key);
+    state.instances.sort_by_key(instance_runtime_key);
 }
 
 #[must_use]
