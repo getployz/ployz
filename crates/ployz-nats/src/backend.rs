@@ -253,7 +253,14 @@ impl RoutingSnapshotReader for NatsStore {
             let stream = stream;
             let consumer_name = consumer_name;
             let mut pending = PendingRoutingBatches::default();
-            while let Some(next) = messages.next().await {
+            loop {
+                let next = tokio::select! {
+                    _ = tx.closed() => break,
+                    next = messages.next() => next,
+                };
+                let Some(next) = next else {
+                    break;
+                };
                 let message = match next {
                     Ok(message) => message,
                     Err(error) => {

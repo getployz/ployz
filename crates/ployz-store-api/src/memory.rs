@@ -90,8 +90,8 @@ impl MemoryStore {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Closed(_)) => false,
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                    warn!("subscriber channel full, event dropped");
-                    true
+                    warn!("machine subscriber channel full, closing stale event stream");
+                    false
                 }
             });
     }
@@ -164,8 +164,8 @@ impl MemoryStore {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Closed(_)) => false,
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                    warn!("certificate subscriber channel full, event dropped");
-                    true
+                    warn!("certificate subscriber channel full, closing stale event stream");
+                    false
                 }
             });
     }
@@ -176,8 +176,8 @@ impl MemoryStore {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Closed(_)) => false,
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                    warn!("acme challenge subscriber channel full, event dropped");
-                    true
+                    warn!("acme challenge subscriber channel full, closing stale event stream");
+                    false
                 }
             }
         });
@@ -882,6 +882,24 @@ impl StoreRuntimeControl for MemoryService {
 mod tests {
     use super::*;
 
+    fn test_machine(id: impl Into<String>) -> MachineMembership {
+        MachineMembership {
+            id: MachineId(id.into()),
+            public_key: ployz_types::model::PublicKey([0; 32]),
+            overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
+            topology: ployz_types::model::MachineTopology::local(),
+            control_target: None,
+            subnet: None,
+            bridge_ip: None,
+            endpoints: Vec::new(),
+            lifecycle: ployz_types::model::MachineLifecycle::Active,
+            role: ployz_types::model::MachineRole::StorageCandidate,
+            created_at: 1,
+            updated_at: 1,
+            labels: std::collections::BTreeMap::new(),
+        }
+    }
+
     #[tokio::test]
     async fn invite_is_single_use() {
         let store = MemoryStore::new();
@@ -1333,6 +1351,28 @@ mod tests {
         assert_eq!(
             received, 1024,
             "full delta channels must close after buffered events instead of silently skipping one"
+        );
+    }
+
+    #[tokio::test]
+    async fn full_machine_event_channel_closes_subscriber() {
+        let store = MemoryStore::new();
+        let (_snapshot, mut event_rx) = store.subscribe_machines().await.expect("subscribe");
+
+        for index in 0..70 {
+            store
+                .upsert_self_machine(&test_machine(format!("machine-{index}")))
+                .await
+                .expect("upsert machine");
+        }
+
+        let mut received = 0;
+        while event_rx.recv().await.is_some() {
+            received += 1;
+        }
+        assert_eq!(
+            received, 64,
+            "full machine event channels must close after buffered events instead of silently skipping one"
         );
     }
 
