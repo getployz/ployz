@@ -741,15 +741,18 @@ on success. The ticker disappears entirely.
 
 `ployz-nats::coord::jobs` now provides the typed renewal job publish spec:
 stable `Nats-Msg-Id`, `Nats-Expected-Stream: cert_jobs`, JSON hostname payload,
-and optional `Nats-Schedule`. It also defines the durable pull consumer
-`ployzd_cert_renewal`, filtered to `cert.jobs.renew.>`, with explicit ack,
-single-message fetches, bounded ack pending, and malformed job termination.
-NATS-backed certificate writes schedule the next renewal before the active
-certificate row is stored, so an active row implies a broker-owned renewal job
-has been accepted. The daemon starts the durable worker instead of the local
-ticker. The orchestrator renewal logic has a per-host `process_renewal_job`
-entrypoint that re-reads the certificate row from authority before applying
-renewal state transitions.
+and optional schedule headers. Delayed renewals publish the holding message to
+`cert.jobs.schedule.<hostname>` with `Nats-Schedule: @at <rfc3339>` and
+`Nats-Schedule-Target: cert.jobs.renew.<hostname>` because NATS requires the
+scheduling subject and target subject to be distinct. It also defines the
+durable pull consumer `ployzd_cert_renewal`, filtered to `cert.jobs.renew.>`,
+with explicit ack, single-message fetches, bounded ack pending, and malformed
+job termination. NATS-backed certificate writes schedule the next renewal before
+the active certificate row is stored, so an active row implies a broker-owned
+renewal job has been accepted. The daemon starts the durable worker instead of
+the local ticker. The orchestrator renewal logic has a per-host
+`process_renewal_job` entrypoint that re-reads the certificate row from
+authority before applying renewal state transitions.
 
 ### Consumer reset for projection migrations
 
