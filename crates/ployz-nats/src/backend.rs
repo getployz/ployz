@@ -1,4 +1,8 @@
+use async_nats::jetstream::consumer::push;
+use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy};
+use async_nats::jetstream::kv;
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use ployz_store_api::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
     DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
@@ -10,16 +14,20 @@ use ployz_store_api::{
 use ployz_types::Result;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
-    InstanceStatusRecord, InviteRecord, MachineId, MachineMembership, RoutingState,
+    InstanceStatusRecord, InviteRecord, MachineId, MachineMembership, RoutingEvent, RoutingState,
     ServiceReleaseRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
+use std::collections::HashMap;
+use std::time::Duration;
 use tokio::sync::mpsc;
+use tracing::warn;
 
 use crate::NatsStore;
-use crate::buckets::ensure_assets;
-use crate::store::deploys::replay_projection;
+use crate::buckets::{INSTANCES_BUCKET, MACHINES_BUCKET, ensure_assets};
 use crate::store::instances::list_all_instance_status;
+use crate::store::kv_json;
+use crate::subjects::DEPLOY_COMMITS_STREAM;
 
 #[async_trait]
 impl StoreBackend for NatsStore {
@@ -185,7 +193,7 @@ impl StoreBackend for NatsStore {
 
 impl RoutingSnapshotReader for NatsStore {
     async fn load_routing_state(&self) -> Result<RoutingState> {
-        let projection = replay_projection(self.jetstream()).await?;
+        let projection = self.deploy_projection_snapshot().await?;
         Ok(RoutingState {
             machines: MachineRegistry::list_machines(self).await?,
             revisions: projection.all_revisions(),
@@ -195,9 +203,181 @@ impl RoutingSnapshotReader for NatsStore {
     }
 
     async fn subscribe_routing_events(&self) -> Result<RoutingSubscription> {
+        let machines_bucket =
+            kv_json::get_bucket(self.jetstream(), MACHINES_BUCKET, "nats_machines_bucket").await?;
+        let instances_bucket =
+            kv_json::get_bucket(self.jetstream(), INSTANCES_BUCKET, "nats_instances_bucket")
+                .await?;
+        let mut machine_watch = machines_bucket.watch_all().await.map_err(|error| {
+            ployz_types::error::Error::operation("nats_machines_watch", format!("{error:?}"))
+        })?;
+        let mut instance_watch = instances_bucket.watch_all().await.map_err(|error| {
+            ployz_types::error::Error::operation("nats_instances_watch", format!("{error:?}"))
+        })?;
+        let deploy_stream = self
+            .jetstream()
+            .get_stream(DEPLOY_COMMITS_STREAM)
+            .await
+            .map_err(|error| {
+                ployz_types::error::Error::operation("nats_deploy_stream", format!("{error:?}"))
+            })?;
+        let consumer: async_nats::jetstream::consumer::PushConsumer = deploy_stream
+            .create_consumer(push::Config {
+                deliver_subject: self.client().new_inbox(),
+                deliver_policy: DeliverPolicy::New,
+                ack_policy: AckPolicy::Explicit,
+                inactive_threshold: Duration::from_secs(60),
+                ..Default::default()
+            })
+            .await
+            .map_err(|error| {
+                ployz_types::error::Error::operation("nats_deploy_consumer", format!("{error:?}"))
+            })?;
+        let mut deploy_messages = consumer.messages().await.map_err(|error| {
+            ployz_types::error::Error::operation("nats_deploy_messages", format!("{error:?}"))
+        })?;
         let state = RoutingSnapshotReader::load_routing_state(self).await?;
-        let (_tx, rx) = mpsc::channel(128);
+        let mut machines = state
+            .machines
+            .iter()
+            .map(|record| (record.id.0.clone(), record.clone()))
+            .collect::<HashMap<_, _>>();
+        let mut instances = state
+            .instances
+            .iter()
+            .map(|record| (record.instance_id.0.clone(), record.clone()))
+            .collect::<HashMap<_, _>>();
+        let deploy_projection = self.deploy_projection.clone();
+        let (tx, rx) = mpsc::channel(128);
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    next = machine_watch.next() => {
+                        let Some(next) = next else { break };
+                        match next {
+                            Ok(entry) => {
+                                if let Some(event) = machine_routing_event(entry, &mut machines) {
+                                    if tx.send(event).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                warn!(?error, "NATS routing machine watcher failed");
+                                break;
+                            }
+                        }
+                    }
+                    next = instance_watch.next() => {
+                        let Some(next) = next else { break };
+                        match next {
+                            Ok(entry) => {
+                                if let Some(event) = instance_routing_event(entry, &mut instances) {
+                                    if tx.send(event).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                warn!(?error, "NATS routing instance watcher failed");
+                                break;
+                            }
+                        }
+                    }
+                    next = deploy_messages.next() => {
+                        let Some(next) = next else { break };
+                        match next {
+                            Ok(message) => {
+                                let commit = match serde_json::from_slice::<DeployCommit>(message.payload.as_ref()) {
+                                    Ok(commit) => commit,
+                                    Err(error) => {
+                                        warn!(?error, "NATS deploy commit routing event decode failed");
+                                        let _ = message.ack().await;
+                                        continue;
+                                    }
+                                };
+                                let events = {
+                                    let mut guard = deploy_projection.write().await;
+                                    let projection = guard.get_or_insert_with(Default::default);
+                                    projection.apply_commit_events(&commit)
+                                };
+                                let _ = message.ack().await;
+                                for event in events {
+                                    if tx.send(event).await.is_err() {
+                                        return;
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                warn!(?error, "NATS deploy commit routing consumer failed");
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        });
         Ok((state, rx))
+    }
+}
+
+fn machine_routing_event(
+    entry: kv::Entry,
+    machines: &mut HashMap<String, MachineMembership>,
+) -> Option<RoutingEvent> {
+    match entry.operation {
+        kv::Operation::Put => {
+            let record = match kv_json::decode_json::<MachineMembership>(
+                "nats_machine_decode",
+                entry.value.as_ref(),
+            ) {
+                Ok(record) => record,
+                Err(error) => {
+                    warn!(?error, key = %entry.key, "NATS machine routing event decode failed");
+                    return None;
+                }
+            };
+            match machines.insert(entry.key, record.clone()) {
+                Some(old) if old != record => {
+                    Some(RoutingEvent::MachineUpdated { old, new: record })
+                }
+                Some(_) => None,
+                None => Some(RoutingEvent::MachineAdded(record)),
+            }
+        }
+        kv::Operation::Delete | kv::Operation::Purge => machines
+            .remove(&entry.key)
+            .map(RoutingEvent::MachineRemoved),
+    }
+}
+
+fn instance_routing_event(
+    entry: kv::Entry,
+    instances: &mut HashMap<String, InstanceStatusRecord>,
+) -> Option<RoutingEvent> {
+    match entry.operation {
+        kv::Operation::Put => {
+            let record = match kv_json::decode_json::<InstanceStatusRecord>(
+                "nats_instance_decode",
+                entry.value.as_ref(),
+            ) {
+                Ok(record) => record,
+                Err(error) => {
+                    warn!(?error, key = %entry.key, "NATS instance routing event decode failed");
+                    return None;
+                }
+            };
+            match instances.insert(entry.key, record.clone()) {
+                Some(old) if old != record => {
+                    Some(RoutingEvent::InstanceUpdated { old, new: record })
+                }
+                Some(_) => None,
+                None => Some(RoutingEvent::InstanceAdded(record)),
+            }
+        }
+        kv::Operation::Delete | kv::Operation::Purge => instances
+            .remove(&entry.key)
+            .map(RoutingEvent::InstanceRemoved),
     }
 }
 

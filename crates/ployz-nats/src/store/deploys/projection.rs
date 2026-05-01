@@ -2,8 +2,7 @@ use std::collections::HashMap;
 
 use ployz_store_api::DeployCommit;
 use ployz_types::model::{
-    DeployId, DeployRecord, RoutingEvent, ServiceReleaseRecord, ServiceRevisionRecord,
-    VolumeRecord,
+    DeployId, DeployRecord, RoutingEvent, ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 
@@ -51,7 +50,10 @@ impl DeployProjection {
     pub fn apply_commit_events(&mut self, commit: &DeployCommit) -> Vec<RoutingEvent> {
         let mut events = Vec::new();
         for revision in &commit.revisions {
-            match self.revisions.insert(revision_key(revision), revision.clone()) {
+            match self
+                .revisions
+                .insert(revision_key(revision), revision.clone())
+            {
                 Some(old) if old != *revision => events.push(RoutingEvent::RevisionUpdated {
                     old,
                     new: revision.clone(),

@@ -4,6 +4,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures_util::future::join_all;
 use ployz_api::{CoordOp, DaemonRequest, ResourceKey as ApiResourceKey};
+use ployz_nats::coord::locks::{Lease, NatsLocks};
+use ployz_nats::subjects;
 use ployz_orchestrator::certificates::{
     AccountAcquisition, AcmeAccountCoordinator, HTTP01_CHALLENGE_VISIBILITY_TIMEOUT,
     Http01ChallengeReadiness, IssuanceAcquisition, IssuanceCoordinator, IssuanceHold,
@@ -36,6 +38,65 @@ pub struct OverlayIssuanceCoordinator {
 }
 
 const DEFAULT_ISSUANCE_TTL_SECS: u64 = 5 * 60;
+
+#[derive(Clone)]
+pub struct NatsIssuanceCoordinator {
+    locks: NatsLocks,
+    owner: MachineId,
+    ttl: Duration,
+}
+
+impl NatsIssuanceCoordinator {
+    #[must_use]
+    pub fn new(locks: NatsLocks, owner: MachineId) -> Self {
+        Self {
+            locks,
+            owner,
+            ttl: Duration::from_secs(DEFAULT_ISSUANCE_TTL_SECS),
+        }
+    }
+
+    async fn acquire_key(&self, key: String) -> std::result::Result<Lease, Error> {
+        self.locks
+            .acquire(
+                &key,
+                self.owner.0.clone(),
+                ReservationId::random().0,
+                self.ttl,
+                now_unix_secs().saturating_add(self.ttl.as_secs()),
+            )
+            .await
+    }
+
+    fn hold_for(&self, lease: Lease) -> IssuanceHold {
+        let locks = self.locks.clone();
+        IssuanceHold::new(move || async move {
+            if let Err(error) = locks.release(lease).await {
+                warn!(%error, "failed to release NATS ACME coordination lock");
+            }
+        })
+    }
+}
+
+#[async_trait]
+impl IssuanceCoordinator for NatsIssuanceCoordinator {
+    async fn try_acquire(&self, hostname: &str) -> IssuanceAcquisition {
+        match self.acquire_key(subjects::cert_lock(hostname)).await {
+            Ok(lease) => IssuanceAcquisition::Allowed(self.hold_for(lease)),
+            Err(error) => IssuanceAcquisition::VetoedByPeer(error.to_string()),
+        }
+    }
+}
+
+#[async_trait]
+impl AcmeAccountCoordinator for NatsIssuanceCoordinator {
+    async fn try_acquire_account(&self, issuer_url: &str) -> AccountAcquisition {
+        match self.acquire_key(subjects::acme_account_lock(issuer_url)).await {
+            Ok(lease) => AccountAcquisition::Allowed(self.hold_for(lease)),
+            Err(error) => AccountAcquisition::VetoedByPeer(error.to_string()),
+        }
+    }
+}
 
 impl OverlayIssuanceCoordinator {
     #[must_use]

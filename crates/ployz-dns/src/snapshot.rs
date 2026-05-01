@@ -3,8 +3,7 @@ use std::net::Ipv4Addr;
 use std::sync::{Arc, RwLock};
 
 use ployz_types::model::{
-    DrainState, InstancePhase, MachineId, MachineMembership, MachineRole, MachineTopology,
-    RoutingState,
+    DrainState, InstancePhase, MachineId, MachineMembership, MachineTopology, RoutingState,
 };
 use ployz_types::spec::Namespace;
 use tracing::warn;

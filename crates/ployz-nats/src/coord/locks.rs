@@ -93,6 +93,7 @@ impl NatsLocks {
         ttl: Duration,
         expires_at: u64,
     ) -> Result<Lease> {
+        let now = expires_at.saturating_sub(ttl.as_secs());
         let value = LeaseValue {
             owner: owner.into(),
             nonce: nonce.into(),
@@ -100,15 +101,41 @@ impl NatsLocks {
         };
         let payload = serde_json::to_vec(&value)
             .map_err(|error| Error::operation("nats_lock_encode", error.to_string()))?;
-        let revision = self
-            .bucket
-            .create_with_ttl(key, payload.into(), ttl)
-            .await
-            .map_err(|error| Error::operation("nats_lock_acquire", format!("{error:?}")))?;
+        let revision = match self.bucket.create(key, payload.clone().into()).await {
+            Ok(revision) => revision,
+            Err(create_error) => {
+                let Some(entry) = self.bucket.entry(key).await.map_err(|error| {
+                    Error::operation("nats_lock_read_for_acquire", format!("{error:?}"))
+                })?
+                else {
+                    return Err(Error::operation(
+                        "nats_lock_acquire",
+                        format!("{create_error:?}"),
+                    ));
+                };
+                match entry.operation {
+                    kv::Operation::Put => {
+                        let current: LeaseValue =
+                            kv_json::decode_json("nats_lock_decode", entry.value.as_ref())?;
+                        if current.expires_at > now {
+                            return Err(Error::operation(
+                                "nats_lock_acquire",
+                                format!("lock '{key}' is already held"),
+                            ));
+                        }
+                    }
+                    kv::Operation::Delete | kv::Operation::Purge => {}
+                }
+                self.bucket
+                    .update(key, payload.into(), entry.revision)
+                    .await
+                    .map_err(|error| Error::operation("nats_lock_acquire", format!("{error:?}")))?
+            }
+        };
         Ok(Lease::new(key, revision, value))
     }
 
-    pub async fn renew(&self, lease: &Lease, ttl: Duration, expires_at: u64) -> Result<Lease> {
+    pub async fn renew(&self, lease: &Lease, _ttl: Duration, expires_at: u64) -> Result<Lease> {
         let value = LeaseValue {
             owner: lease.value.owner.clone(),
             nonce: lease.value.nonce.clone(),
@@ -121,13 +148,6 @@ impl NatsLocks {
             .update(&lease.key, payload.into(), lease.revision)
             .await
             .map_err(|error| Error::operation("nats_lock_renew", format!("{error:?}")))?;
-        if ttl != Duration::ZERO {
-            tracing::debug!(
-                key = %lease.key,
-                ?ttl,
-                "NATS lock renewed without per-message TTL refresh; async-nats 0.46 exposes TTL only on create"
-            );
-        }
         Ok(Lease::new(lease.key.clone(), revision, value))
     }
 

@@ -571,9 +571,6 @@ impl DaemonState {
         let network_dir = self.network_dir(&net_config.name.0);
         let bootstrap_peer_records =
             load_bootstrap_peer_records(&network_dir).map_err(StartMeshError::BootstrapResolve)?;
-        let has_remote_bootstrap_seed = bootstrap_peer_records
-            .iter()
-            .any(|peer| peer.machine_id != self.identity.machine_id);
         let bootstrap_addrs = resolve_bootstrap_addrs(
             &bootstrap_peer_records,
             &self.identity.machine_id,
@@ -612,8 +609,7 @@ impl DaemonState {
             network_dir,
             bootstrap_peer_records,
             bootstrap_addrs,
-            allow_disconnected_bootstrap: options.allow_disconnected_bootstrap
-                || has_remote_bootstrap_seed,
+            allow_disconnected_bootstrap: options.allow_disconnected_bootstrap,
             gateway_ports,
             remote_control_bind_addr,
             peer_control_bind_addr,
@@ -774,8 +770,8 @@ mod tests {
         assert_eq!(plan.bootstrap_peer_records, vec![peer]);
         assert_eq!(plan.bootstrap_addrs, vec!["[fd00::8]:6222"]);
         assert!(
-            plan.allow_disconnected_bootstrap,
-            "cached remote seed should let restart stay up while NATS converges"
+            !plan.allow_disconnected_bootstrap,
+            "cached remote seed configures hub connectivity, not a standalone authority"
         );
     }
 

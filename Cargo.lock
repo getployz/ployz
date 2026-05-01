@@ -3238,6 +3238,7 @@ dependencies = [
  "ployz-corrosion",
  "ployz-dns-config",
  "ployz-metrics",
+ "ployz-nats",
  "ployz-store-api",
  "ployz-types",
  "prometheus",
@@ -3284,6 +3285,7 @@ dependencies = [
  "ployz-corrosion",
  "ployz-gateway-config",
  "ployz-metrics",
+ "ployz-nats",
  "ployz-store-api",
  "ployz-types",
  "prometheus",
@@ -3327,6 +3329,7 @@ version = "0.5.5"
 dependencies = [
  "async-nats",
  "async-trait",
+ "base64",
  "futures-util",
  "ipnet",
  "ployz-store-api",

@@ -70,11 +70,7 @@ pub async fn nats_docker(
         .await
         .map_err(|error| format!("docker service: {error}"))?;
 
-    let client_url = if allow_disconnected_bootstrap {
-        local_client_url()
-    } else {
-        remote_storage_client_url(overlay_ip, bootstrap).unwrap_or_else(local_client_url)
-    };
+    let client_url = local_client_url();
     Ok(nats_driver(Arc::new(service), client_url))
 }
 
@@ -101,12 +97,7 @@ pub fn nats_host(
         paths.data.clone(),
     );
 
-    let client_url = if allow_disconnected_bootstrap {
-        overlay_client_url(overlay_ip)
-    } else {
-        remote_storage_client_url(overlay_ip, bootstrap)
-            .unwrap_or_else(|| overlay_client_url(overlay_ip))
-    };
+    let client_url = overlay_client_url(overlay_ip);
     Ok(nats_driver(Arc::new(service), client_url))
 }
 
@@ -144,7 +135,7 @@ fn write_node_config(
     let role = if storage_peers.is_empty() {
         MachineRole::StorageCandidate
     } else {
-        MachineRole::Leaf
+        MachineRole::Mirror
     };
     let server_config = ServerConfig {
         server_name: format!("ployz-{network_id}"),
@@ -171,14 +162,6 @@ fn parse_peer_route(raw: &str) -> Option<PeerRoute> {
 
 fn overlay_client_url(overlay_ip: OverlayIp) -> String {
     format!("nats://[{}]:{}", overlay_ip.0, CLIENT_PORT)
-}
-
-fn remote_storage_client_url(overlay_ip: OverlayIp, bootstrap: &[String]) -> Option<String> {
-    bootstrap
-        .iter()
-        .filter_map(|peer| parse_peer_route(peer))
-        .find(|peer| peer.overlay_ip != overlay_ip.0)
-        .map(|peer| format!("nats://[{}]:{}", peer.overlay_ip, CLIENT_PORT))
 }
 
 fn local_client_url() -> String {
@@ -236,9 +219,16 @@ where
             match tokio::time::timeout(CONNECT_TIMEOUT, NatsStore::connect(&self.client_url)).await
             {
                 Ok(Ok(store)) => {
-                    store.start().await?;
-                    *self.store.lock().await = Some(Arc::new(store));
-                    return Ok(());
+                    match store.start().await {
+                        Ok(()) => {
+                            *self.store.lock().await = Some(Arc::new(store));
+                            return Ok(());
+                        }
+                        Err(error) => {
+                            last_error = Some(error);
+                            tokio::time::sleep(CONNECT_RETRY_DELAY).await;
+                        }
+                    }
                 }
                 Ok(Err(error)) => {
                     last_error = Some(error);
@@ -786,7 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_bootstrap_address_configures_leaf_node() {
+    fn remote_bootstrap_address_configures_mirror_node() {
         let root = std::env::temp_dir().join(format!(
             "ployz-nats-config-test-{}-{}",
             std::process::id(),
@@ -808,8 +798,10 @@ mod tests {
 
         let rendered = std::fs::read_to_string(&host_paths.config).expect("config should read");
         std::fs::remove_dir_all(&root).ok();
-        assert!(!rendered.contains("jetstream {"));
+        assert!(rendered.contains("jetstream {"));
+        assert!(rendered.contains("domain: leaf-fd00--11"));
         assert!(rendered.contains("url: \"nats://[fd00::10]:7422\""));
+        assert!(!rendered.contains("cluster {"));
     }
 
     #[test]

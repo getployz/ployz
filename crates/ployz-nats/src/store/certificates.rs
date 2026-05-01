@@ -5,12 +5,14 @@ use ployz_types::error::Result;
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeRecord, CertificateEvent, CertificateRecord,
 };
+use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::NatsStore;
 use crate::buckets::{ACME_ACCOUNTS_BUCKET, ACME_CHALLENGES_BUCKET, CERTIFICATES_BUCKET};
 use crate::store::kv_json;
+use crate::subjects;
 
 impl CertificateStore for NatsStore {
     async fn get_acme_account(&self, issuer_url: &str) -> Result<Option<AcmeAccountRecord>> {
@@ -20,7 +22,7 @@ impl CertificateStore for NatsStore {
             "nats_acme_accounts_bucket",
         )
         .await?;
-        let Some(bytes) = bucket.get(issuer_url).await.map_err(|error| {
+        let Some(bytes) = bucket.get(acme_account_key(issuer_url)).await.map_err(|error| {
             ployz_types::Error::operation("nats_acme_account_get", format!("{error:?}"))
         })?
         else {
@@ -41,7 +43,7 @@ impl CertificateStore for NatsStore {
         .await?;
         kv_json::put_json(
             &bucket,
-            &record.issuer_url,
+            &acme_account_key(&record.issuer_url),
             record,
             "nats_acme_account_encode",
             "nats_acme_account_put",
@@ -122,7 +124,12 @@ impl CertificateStore for NatsStore {
             ployz_types::Error::operation("nats_certificates_watch", format!("{error:?}"))
         })?;
         let (tx, rx) = mpsc::channel(128);
+        let last_seen_snapshot = snapshot.clone();
         tokio::spawn(async move {
+            let mut last_seen = last_seen_snapshot
+                .iter()
+                .map(|record| (certificate_key(&record.hostname), record.clone()))
+                .collect::<HashMap<_, _>>();
             while let Some(next) = watch.next().await {
                 let entry = match next {
                     Ok(entry) => entry,
@@ -137,14 +144,27 @@ impl CertificateStore for NatsStore {
                             "nats_certificate_decode",
                             entry.value.as_ref(),
                         ) {
-                            Ok(record) => CertificateEvent::Updated(record),
+                            Ok(record) => {
+                                let event = if last_seen.contains_key(&entry.key) {
+                                    CertificateEvent::Updated(record.clone())
+                                } else {
+                                    CertificateEvent::Added(record.clone())
+                                };
+                                last_seen.insert(entry.key, record);
+                                event
+                            }
                             Err(error) => {
                                 warn!(?error, key = %entry.key, "NATS certificate event decode failed");
                                 continue;
                             }
                         }
                     }
-                    kv::Operation::Delete | kv::Operation::Purge => continue,
+                    kv::Operation::Delete | kv::Operation::Purge => {
+                        match last_seen.remove(&entry.key) {
+                            Some(record) => CertificateEvent::Removed(record),
+                            None => continue,
+                        }
+                    }
                 };
                 if tx.send(event).await.is_err() {
                     break;
@@ -161,7 +181,17 @@ impl CertificateStore for NatsStore {
             ployz_types::Error::operation("nats_acme_challenges_watch", format!("{error:?}"))
         })?;
         let (tx, rx) = mpsc::channel(128);
+        let last_seen_snapshot = snapshot.clone();
         tokio::spawn(async move {
+            let mut last_seen = last_seen_snapshot
+                .iter()
+                .map(|record| {
+                    (
+                        challenge_key(&record.hostname, &record.token),
+                        record.clone(),
+                    )
+                })
+                .collect::<HashMap<_, _>>();
             while let Some(next) = watch.next().await {
                 let entry = match next {
                     Ok(entry) => entry,
@@ -175,23 +205,25 @@ impl CertificateStore for NatsStore {
                         "nats_acme_challenge_decode",
                         entry.value.as_ref(),
                     ) {
-                        Ok(record) => AcmeChallengeEvent::Updated(record),
+                        Ok(record) => {
+                            let event = if last_seen.contains_key(&entry.key) {
+                                AcmeChallengeEvent::Updated(record.clone())
+                            } else {
+                                AcmeChallengeEvent::Added(record.clone())
+                            };
+                            last_seen.insert(entry.key, record);
+                            event
+                        }
                         Err(error) => {
                             warn!(?error, key = %entry.key, "NATS ACME challenge event decode failed");
                             continue;
                         }
                     },
                     kv::Operation::Delete | kv::Operation::Purge => {
-                        let Some((hostname, token)) = split_challenge_key(&entry.key) else {
-                            continue;
-                        };
-                        AcmeChallengeEvent::Removed(AcmeChallengeRecord {
-                            hostname,
-                            token,
-                            key_authorization: String::new(),
-                            expires_at: 0,
-                            created_at: 0,
-                        })
+                        match last_seen.remove(&entry.key) {
+                            Some(record) => AcmeChallengeEvent::Removed(record),
+                            None => continue,
+                        }
                     }
                 };
                 if tx.send(event).await.is_err() {
@@ -229,7 +261,6 @@ fn challenge_key(hostname: &str, token: &str) -> String {
     format!("{}.{}", certificate_key(hostname), token)
 }
 
-fn split_challenge_key(key: &str) -> Option<(String, String)> {
-    let (hostname, token) = key.rsplit_once('.')?;
-    Some((hostname.to_string(), token.to_string()))
+fn acme_account_key(issuer_url: &str) -> String {
+    subjects::kv_key_token(issuer_url)
 }

@@ -7,6 +7,7 @@ pub const CLIENT_PORT: u16 = 4222;
 pub const ROUTE_PORT: u16 = 6222;
 pub const LEAFNODE_PORT: u16 = 7422;
 pub const MONITOR_PORT: u16 = 8222;
+pub const HUB_DOMAIN: &str = "hub";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
@@ -70,7 +71,8 @@ impl ServerConfig {
         match self.role {
             MachineRole::StorageCandidate => {
                 config.push_str(&format!(
-                    "jetstream {{\n  store_dir: \"{}\"\n}}\n",
+                    "jetstream {{\n  domain: {}\n  store_dir: \"{}\"\n}}\n",
+                    HUB_DOMAIN,
                     self.data_dir.display()
                 ));
                 if !self.storage_peers.is_empty() {
@@ -90,6 +92,18 @@ impl ServerConfig {
                     self.overlay_ip, LEAFNODE_PORT
                 ));
             }
+            MachineRole::Mirror => {
+                config.push_str(&format!(
+                    "jetstream {{\n  domain: {}\n  store_dir: \"{}\"\n}}\n",
+                    self.leaf_domain(),
+                    self.data_dir.display()
+                ));
+                config.push_str("leafnodes {\n  remotes: [\n");
+                for peer in &self.storage_peers {
+                    config.push_str(&format!("    {{ url: \"{}\" }}\n", peer.leafnode_url()));
+                }
+                config.push_str("  ]\n}\n");
+            }
             MachineRole::Leaf => {
                 config.push_str("leafnodes {\n  remotes: [\n");
                 for peer in &self.storage_peers {
@@ -99,6 +113,11 @@ impl ServerConfig {
             }
         }
         config
+    }
+
+    #[must_use]
+    pub fn leaf_domain(&self) -> String {
+        format!("leaf-{}", self.overlay_ip.to_string().replace(':', "-"))
     }
 }
 
@@ -134,6 +153,7 @@ mod tests {
         .render();
         assert!(!rendered.contains("cluster {"));
         assert!(rendered.contains("jetstream {"));
+        assert!(rendered.contains("domain: hub"));
         assert!(rendered.contains("leafnodes {"));
     }
 
@@ -152,6 +172,25 @@ mod tests {
         .render();
         assert!(!rendered.contains("jetstream {"));
         assert!(rendered.contains("url: \"nats://[fd00::1]:7422\""));
+    }
+
+    #[test]
+    fn mirror_node_enables_local_jetstream_and_leafnode_remotes() {
+        let rendered = ServerConfig {
+            server_name: "mirror-1".into(),
+            cluster_name: "ployz-alpha".into(),
+            role: MachineRole::Mirror,
+            overlay_ip: "fd00::10".parse().expect("valid ip"),
+            storage_peers: vec![PeerRoute {
+                overlay_ip: "fd00::1".parse().expect("valid ip"),
+            }],
+            data_dir: PathBuf::from("/data"),
+        }
+        .render();
+        assert!(rendered.contains("jetstream {"));
+        assert!(rendered.contains("domain: leaf-fd00--10"));
+        assert!(rendered.contains("url: \"nats://[fd00::1]:7422\""));
+        assert!(!rendered.contains("cluster {"));
     }
 
     #[test]

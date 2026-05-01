@@ -1,7 +1,8 @@
 use ipnet::Ipv4Net;
 use ployz_api::{DaemonRequest, MachineTransitionGoal, MeshBootstrapRequest};
+use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_store_api::MachineRegistry;
-use ployz_types::model::{MachineLifecycle, MachineMembership, PublicKey};
+use ployz_types::model::{MachineLifecycle, MachineMembership, management_ip_from_key};
 
 use super::super::operations::{
     MachineOperationRecord, MachineOperationStatus, MachineOperationStore,
@@ -15,8 +16,9 @@ use super::coordination::{
     release_reserved_subnet,
 };
 use super::remote::{
-    ExpectedSubnetState, overlay_rpc_expect_ok_with_read_timeout, remote_rpc_expect_ok,
-    remote_self_record, wait_for_machine_projection, wait_for_overlay_ready, wait_for_remote_ready,
+    ExpectedSubnetState, overlay_rpc_expect_ok_with_read_timeout, remote_daemon_identity,
+    remote_rpc_expect_ok, remote_self_record, wait_for_machine_projection, wait_for_overlay_ready,
+    wait_for_remote_ready,
 };
 use super::rollback::rollback_machine_add_target;
 use crate::daemon::handlers::peer_rpc::PEER_RPC_DESTRUCTIVE_READ_TIMEOUT;
@@ -31,7 +33,7 @@ pub(super) async fn run_machine_add_target(
     subnet_claim: BootstrapSubnetClaim,
 ) -> MachineAddTargetResult {
     let mut stage;
-    let mut joiner_id = None;
+    let mut joiner_id: Option<ployz_types::model::MachineId>;
 
     tracing::info!(%target, "machine add target: bootstrap starting");
     if let Err(err) =
@@ -51,6 +53,54 @@ pub(super) async fn run_machine_add_target(
     stage = MachineAddStage::Bootstrapped;
     let _ = operation_store.update_stage(&mut operation, stage.to_string());
     tracing::info!(%target, "machine add target: bootstrap complete");
+
+    tracing::info!(%target, "machine add target: pre-admission identity starting");
+    let remote_identity = match remote_daemon_identity(&target, &context.ssh_options).await {
+        Ok(identity) => identity,
+        Err(err) => {
+            let _ = release_reserved_subnet(&context, &subnet_claim).await;
+            let _ = operation_store.update_status(
+                &mut operation,
+                MachineOperationStatus::Failed,
+                Some(err.clone()),
+            );
+            return MachineAddTargetResult::Failed {
+                target,
+                failure: MachineAddFailure::Preflight { reason: err },
+            };
+        }
+    };
+    let pre_admitted_overlay_ip = management_ip_from_key(&remote_identity.public_key);
+    let pre_admitted_record = MachineMembership::seed(
+        remote_identity.machine_id.clone(),
+        remote_identity.public_key.clone(),
+        pre_admitted_overlay_ip,
+        Some(subnet_claim.subnet),
+        bootstrap_wireguard_endpoints(&target),
+    );
+    joiner_id = Some(remote_identity.machine_id.clone());
+    operation.artifacts.machine_id = Some(remote_identity.machine_id.clone());
+    let _ = operation_store.save(&operation);
+    tracing::info!(
+        %target,
+        joiner_id = %remote_identity.machine_id,
+        "machine add target: installing pre-admission peer"
+    );
+    if let Err(err) = upsert_transient_peer(&context.peer_sync_tx, pre_admitted_record).await {
+        let _ = release_reserved_subnet(&context, &subnet_claim).await;
+        let _ = operation_store.update_status(
+            &mut operation,
+            MachineOperationStatus::Failed,
+            Some(err.clone()),
+        );
+        return MachineAddTargetResult::Failed {
+            target,
+            failure: MachineAddFailure::Preflight { reason: err },
+        };
+    }
+    stage = MachineAddStage::PreAdmitted;
+    let _ = operation_store.update_stage(&mut operation, stage.to_string());
+    tracing::info!(%target, joiner_id = %remote_identity.machine_id, "machine add target: pre-admission peer installed");
 
     tracing::info!(%target, "machine add target: remote join starting");
     match remote_rpc_expect_ok(
@@ -85,6 +135,7 @@ pub(super) async fn run_machine_add_target(
         Ok(()) => {}
         Err(err) => {
             let _ = release_reserved_subnet(&context, &subnet_claim).await;
+            let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
             let _ = operation_store.update_status(
                 &mut operation,
                 MachineOperationStatus::Failed,
@@ -150,8 +201,6 @@ pub(super) async fn run_machine_add_target(
             failure: MachineAddFailure::SelfRecord { reason: err },
         };
     }
-    operation.artifacts.machine_id = Some(machine_id.clone());
-    let _ = operation_store.save(&operation);
     joiner_id = Some(machine_id.clone());
     if let Err(err) = consume_invite(&context, &invite_id, &machine_id).await {
         let _ = release_reserved_subnet(&context, &subnet_claim).await;
@@ -166,7 +215,7 @@ pub(super) async fn run_machine_add_target(
             failure: MachineAddFailure::Join { reason: err },
         };
     }
-    tracing::info!(%target, joiner_id = %machine_id, "machine add target: transient peer install starting");
+    tracing::info!(%target, joiner_id = %machine_id, "machine add target: transient peer refresh starting");
     if let Err(err) = upsert_transient_peer(&context.peer_sync_tx, record.clone()).await {
         let _ = release_reserved_subnet(&context, &subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
@@ -182,7 +231,7 @@ pub(super) async fn run_machine_add_target(
     }
     stage = MachineAddStage::TransientPeerInstalled;
     let _ = operation_store.update_stage(&mut operation, stage.to_string());
-    tracing::info!(%target, joiner_id = %machine_id, "machine add target: transient peer installed");
+    tracing::info!(%target, joiner_id = %machine_id, "machine add target: transient peer refreshed");
 
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: waiting for remote ready");
     if let Err(err) = wait_for_remote_ready(&target, &context.ssh_options).await {
@@ -212,7 +261,7 @@ pub(super) async fn run_machine_add_target(
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: waiting for overlay ready");
     let joiner_ref = MachineMembership::seed(
         machine_id.clone(),
-        PublicKey([0; 32]),
+        record.public_key.clone(),
         joiner_overlay_ip,
         Some(subnet_claim.subnet),
         vec![],
@@ -352,6 +401,57 @@ pub(super) async fn run_machine_add_target(
     MachineAddTargetResult::AwaitingSelfPublication {
         target,
         joiner_id: machine_id,
+    }
+}
+
+fn bootstrap_wireguard_endpoints(target: &str) -> Vec<String> {
+    let host = target
+        .rsplit_once('@')
+        .map_or(target, |(_, host)| host)
+        .trim();
+    let Some(host) = host.split_whitespace().next() else {
+        return Vec::new();
+    };
+    if host.is_empty() {
+        return Vec::new();
+    }
+
+    if host.starts_with('[') {
+        let Some((address, _rest)) = host[1..].split_once(']') else {
+            return Vec::new();
+        };
+        return vec![format!("[{address}]:{DEFAULT_LISTEN_PORT}")];
+    }
+
+    if host.contains(':') {
+        return vec![format!("[{host}]:{DEFAULT_LISTEN_PORT}")];
+    }
+
+    vec![format!("{host}:{DEFAULT_LISTEN_PORT}")]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bootstrap_wireguard_endpoint_uses_ssh_target_host() {
+        assert_eq!(
+            bootstrap_wireguard_endpoints("root@192.168.227.3"),
+            vec!["192.168.227.3:51820"]
+        );
+    }
+
+    #[test]
+    fn bootstrap_wireguard_endpoint_brackets_ipv6_hosts() {
+        assert_eq!(
+            bootstrap_wireguard_endpoints("root@fd00::12"),
+            vec!["[fd00::12]:51820"]
+        );
+        assert_eq!(
+            bootstrap_wireguard_endpoints("root@[fd00::12]"),
+            vec!["[fd00::12]:51820"]
+        );
     }
 }
 

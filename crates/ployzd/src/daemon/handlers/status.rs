@@ -15,6 +15,7 @@ impl DaemonState {
                 let net = &active.config;
                 let payload = StatusPayload {
                     machine_id: id.machine_id.0.clone(),
+                    public_key: id.public_key.clone(),
                     version: env!("CARGO_PKG_VERSION").to_string(),
                     network: Some(net.name.0.clone()),
                     network_lifecycle: Some(net.lifecycle),
@@ -46,6 +47,7 @@ impl DaemonState {
                 ),
                 Some(DaemonPayload::Status(StatusPayload {
                     machine_id: id.machine_id.0.clone(),
+                    public_key: id.public_key.clone(),
                     version: env!("CARGO_PKG_VERSION").to_string(),
                     network: None,
                     network_lifecycle: None,

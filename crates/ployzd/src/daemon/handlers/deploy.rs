@@ -5,6 +5,7 @@ use crate::daemon::DaemonState;
 use ployz_api::{DaemonResponse, DeployOptions};
 use ployz_cert_backends::InstantAcmeIssuerFactory;
 use ployz_config::RuntimeTarget;
+use ployz_nats::coord::locks::NatsLocks;
 use ployz_orchestrator::certificates::{AcmeAccountCoordinator, CertificateManagerConfig};
 use ployz_orchestrator::deploy::{apply_with_certificate_coordination, preview};
 use ployz_runtime_backends::deploy::remote::DeployAgent;
@@ -99,12 +100,23 @@ impl DaemonState {
             Ok(port) => port,
             Err(error) => return self.err("DEPLOY_APPLY_FAILED", error.to_string()),
         };
+        let nats_store = match ployz_nats::NatsStore::connect_for_network(
+            &self.data_dir,
+            &active.config.name.0,
+        )
+        .await
+        {
+            Ok(store) => store,
+            Err(error) => return self.err("DEPLOY_APPLY_FAILED", error.to_string()),
+        };
+        let nats_locks = match NatsLocks::new(&nats_store).await {
+            Ok(locks) => locks,
+            Err(error) => return self.err("DEPLOY_APPLY_FAILED", error.to_string()),
+        };
         let certificate_coordinator = Arc::new(
-            crate::daemon::cert_coordination::OverlayIssuanceCoordinator::new(
-                active.mesh.store.clone(),
-                self.reservations.clone(),
+            crate::daemon::cert_coordination::NatsIssuanceCoordinator::new(
+                nats_locks,
                 self.identity.machine_id.clone(),
-                peer_rpc_port,
             ),
         );
         let account_coordinator: Arc<dyn AcmeAccountCoordinator> = certificate_coordinator.clone();

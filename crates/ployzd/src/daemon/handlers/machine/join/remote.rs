@@ -1,11 +1,12 @@
 use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, MachineTransitionGoal, MeshReadyPayload,
-    MeshSelfRecordPayload,
+    MeshSelfRecordPayload, StatusPayload,
 };
 use ployz_sdk::Transport;
 use ployz_store_api::StoreDriver;
 use ployz_types::model::{
     JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineLifecycle, MachineMembership, OverlayIp,
+    PublicKey,
 };
 use tokio::time::{Duration, Instant, sleep, timeout};
 
@@ -23,6 +24,34 @@ const REMOTE_RPC_COMMAND: &str = "set -eu; \"$HOME/.local/bin/ployzctl\" rpc-std
 pub(super) enum ExpectedSubnetState {
     Present,
     Absent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RemoteDaemonIdentity {
+    pub machine_id: MachineId,
+    pub public_key: PublicKey,
+}
+
+pub(super) async fn remote_daemon_identity(
+    target: &str,
+    ssh_options: &SshOptions,
+) -> Result<RemoteDaemonIdentity, String> {
+    let response = remote_rpc(target, DaemonRequest::Status, ssh_options).await?;
+    if !response.ok {
+        return Err(remote_response_error(&response));
+    }
+    match response.payload {
+        Some(DaemonPayload::Status(StatusPayload {
+            machine_id,
+            public_key,
+            ..
+        })) => Ok(RemoteDaemonIdentity {
+            machine_id: MachineId(machine_id),
+            public_key,
+        }),
+        Some(payload) => Err(format!("unexpected status payload: {payload:?}")),
+        None => Err("status response missing structured payload".to_string()),
+    }
 }
 
 pub(super) async fn wait_for_remote_ready(
