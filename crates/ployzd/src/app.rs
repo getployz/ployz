@@ -35,7 +35,7 @@ pub async fn run_daemon(
     cluster_cidr: String,
     subnet_prefix_len: u8,
     remote_control_port: u16,
-    peer_control_target: Option<String>,
+    control_target: Option<String>,
     gateway_listen_addr: String,
     gateway_https_listen_addr: Option<String>,
     gateway_threads: usize,
@@ -54,7 +54,7 @@ pub async fn run_daemon(
         cluster_cidr,
         subnet_prefix_len,
         remote_control_port,
-        peer_control_target,
+        control_target,
         gateway_listen_addr,
         gateway_https_listen_addr,
         gateway_threads,
@@ -79,7 +79,7 @@ async fn run_daemon_with_resource_metrics_source(
     cluster_cidr: String,
     subnet_prefix_len: u8,
     remote_control_port: u16,
-    peer_control_target: Option<String>,
+    control_target: Option<String>,
     gateway_listen_addr: String,
     gateway_https_listen_addr: Option<String>,
     gateway_threads: usize,
@@ -99,7 +99,7 @@ async fn run_daemon_with_resource_metrics_source(
         cluster_cidr,
         subnet_prefix_len,
         remote_control_port,
-        peer_control_target,
+        control_target,
         gateway_listen_addr,
         gateway_https_listen_addr,
         gateway_threads,
@@ -123,7 +123,7 @@ async fn run_daemon_inner(
     cluster_cidr: String,
     subnet_prefix_len: u8,
     remote_control_port: u16,
-    peer_control_target: Option<String>,
+    control_target: Option<String>,
     gateway_listen_addr: String,
     gateway_https_listen_addr: Option<String>,
     gateway_threads: usize,
@@ -180,7 +180,7 @@ async fn run_daemon_inner(
         dns_metrics_listen_addr,
         gateway_metrics_listen_addr,
     );
-    daemon_state.peer_control_target = peer_control_target;
+    daemon_state.control_target = control_target;
     daemon_state.command_tx = Some(command_tx.clone());
     let state = Arc::new(RwLock::new(daemon_state));
     spawn_local_endpoint_maintenance(Arc::clone(&state), cancel.clone());

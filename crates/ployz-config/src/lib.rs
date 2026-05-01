@@ -101,7 +101,7 @@ pub struct DaemonConfig {
     #[serde(default = "default_remote_control_port")]
     pub remote_control_port: u16,
     #[serde(default)]
-    pub peer_control_target: Option<String>,
+    pub control_target: Option<String>,
     #[serde(default = "default_gateway_listen_addr")]
     pub gateway_listen_addr: String,
     #[serde(default)]
@@ -172,7 +172,7 @@ struct RuntimeDefaults {
     subnet_prefix_len: u8,
     remote_control_port: u16,
     #[serde(skip_serializing_if = "Option::is_none")]
-    peer_control_target: Option<String>,
+    control_target: Option<String>,
     gateway_listen_addr: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     gateway_https_listen_addr: Option<String>,
@@ -212,7 +212,7 @@ struct DaemonOverrides {
     #[serde(skip_serializing_if = "Option::is_none")]
     remote_control_port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    peer_control_target: Option<String>,
+    control_target: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     gateway_listen_addr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -316,7 +316,7 @@ pub fn load_daemon_config(
         cluster_cidr: None,
         subnet_prefix_len: None,
         remote_control_port: cli_remote_control_port,
-        peer_control_target: None,
+        control_target: None,
         gateway_listen_addr: None,
         gateway_https_listen_addr: None,
         gateway_threads: None,
@@ -342,7 +342,7 @@ fn build_figment(cli_config_path: Option<PathBuf>, context: &HostPathsContext) -
         cluster_cidr: default_cluster_cidr(),
         subnet_prefix_len: default_subnet_prefix_len(),
         remote_control_port: default_remote_control_port(),
-        peer_control_target: None,
+        control_target: None,
         gateway_listen_addr: default_gateway_listen_addr(),
         gateway_https_listen_addr: None,
         gateway_threads: default_gateway_threads(),
@@ -446,6 +446,25 @@ mod tests {
         unsafe {
             std::env::remove_var("PLOYZ_REGION");
             std::env::remove_var("PLOYZ_AZ");
+        }
+    }
+
+    #[test]
+    fn daemon_config_reads_control_target_from_env() {
+        unsafe {
+            std::env::set_var("PLOYZ_CONTROL_TARGET", "ops@example.internal");
+        }
+
+        let loaded = load_daemon_config(None, None, None, None, &context(Os::Darwin, false))
+            .expect("daemon config should load");
+
+        assert_eq!(
+            loaded.control_target.as_deref(),
+            Some("ops@example.internal")
+        );
+
+        unsafe {
+            std::env::remove_var("PLOYZ_CONTROL_TARGET");
         }
     }
 
