@@ -588,8 +588,9 @@ Tracked in code comments and the implementation plan. Highlights:
    per-machine consumers; runtime watches and readiness probes use ephemeral
    memory-backed push consumers with an inactivity threshold, so short-lived
    reads do not leave durable cursor state behind. Durable routing subscription
-   setup replaces any old consumer with the same id so a fresh snapshot is the
-   catch-up boundary. Updates carry either a complete batch or an explicit
+   setup reads the routing stream sequence, loads a fresh snapshot, then
+   replaces any old consumer with the same id and starts delivery from the next
+   stream sequence. Updates carry either a complete batch or an explicit
    consumer failure.
    Routing consumer `max_ack_pending` is bounded to the local bridge-channel
    capacity, and idle heartbeats surface broken delivery paths as failures.
