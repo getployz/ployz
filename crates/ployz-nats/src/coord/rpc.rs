@@ -63,6 +63,11 @@ impl NodeCommandSubject {
     }
 
     #[must_use]
+    pub fn mesh_ready(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "mesh.ready")
+    }
+
+    #[must_use]
     pub fn mesh_prepare_destroy(machine_id: &MachineId) -> Self {
         Self::new(machine_id, "mesh.prepare_destroy")
     }
@@ -322,6 +327,10 @@ mod tests {
         assert_eq!(
             NodeCommandSubject::mesh_execute_destroy(&machine_id).as_str(),
             "node.machine-a.cmd.mesh.execute_destroy"
+        );
+        assert_eq!(
+            NodeCommandSubject::mesh_ready(&machine_id).as_str(),
+            "node.machine-a.cmd.mesh.ready"
         );
     }
 

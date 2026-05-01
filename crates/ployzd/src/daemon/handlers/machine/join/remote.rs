@@ -2,6 +2,7 @@ use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, MachineTransitionGoal, MeshReadyPayload,
     MeshSelfRecordPayload, StatusPayload,
 };
+use ployz_nats::coord::rpc::{NatsNodeRpcClient, NodeCommandSubject};
 use ployz_sdk::Transport;
 use ployz_store_api::StoreDriver;
 use ployz_types::model::{
@@ -127,6 +128,42 @@ pub(super) async fn remote_self_record(
     }
 }
 
+pub(super) async fn nats_self_record(
+    client: &NatsNodeRpcClient,
+    machine: &MachineMembership,
+) -> Result<MachineMembership, String> {
+    let response = client
+        .request(
+            NodeCommandSubject::mesh_self_record(&machine.id),
+            &DaemonRequest::MeshSelfRecord,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.ok {
+        return Err(remote_response_error(&response));
+    }
+    match response.payload {
+        Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload { record, .. })) => Ok(record),
+        Some(payload) => Err(format!("unexpected self-record payload: {payload:?}")),
+        None => decode_joiner_record(&response.message),
+    }
+}
+
+pub(super) async fn nats_rpc_expect_ok(
+    client: &NatsNodeRpcClient,
+    subject: NodeCommandSubject,
+    request: DaemonRequest,
+) -> Result<(), String> {
+    let response = client
+        .request(subject, &request)
+        .await
+        .map_err(|error| error.to_string())?;
+    if response.ok {
+        return Ok(());
+    }
+    Err(remote_response_error(&response))
+}
+
 fn mesh_ready_payload(response: &DaemonResponse) -> Result<MeshReadyPayload, String> {
     match &response.payload {
         Some(DaemonPayload::MeshReady(payload)) => Ok(payload.clone()),
@@ -163,18 +200,6 @@ pub(super) async fn overlay_rpc(
     peer_rpc::overlay_rpc(overlay_ip, peer_rpc_port, request).await
 }
 
-pub(super) async fn overlay_rpc_expect_ok(
-    overlay_ip: OverlayIp,
-    peer_rpc_port: u16,
-    request: DaemonRequest,
-) -> Result<(), String> {
-    let response = overlay_rpc(overlay_ip, peer_rpc_port, request).await?;
-    if response.ok {
-        return Ok(());
-    }
-    Err(remote_response_error(&response))
-}
-
 pub(super) async fn overlay_rpc_expect_ok_with_read_timeout(
     overlay_ip: OverlayIp,
     peer_rpc_port: u16,
@@ -190,52 +215,29 @@ pub(super) async fn overlay_rpc_expect_ok_with_read_timeout(
     .await
 }
 
-async fn rollback_remote_enable(overlay_ip: OverlayIp, peer_rpc_port: u16) -> Result<(), String> {
-    overlay_rpc_expect_ok_with_read_timeout(
-        overlay_ip,
-        peer_rpc_port,
-        DaemonRequest::MachineTransitionSelf {
-            goal: MachineTransitionGoal::Standby,
-            assigned_subnet: None,
-            force: true,
-        },
-        peer_rpc::PEER_RPC_DESTRUCTIVE_READ_TIMEOUT,
-    )
-    .await
-}
-
-pub(super) async fn log_remote_enable_rollback(
+pub(super) async fn log_nats_enable_rollback(
+    client: &NatsNodeRpcClient,
     machine: &MachineMembership,
-    peer_rpc_port: u16,
     original_error: &str,
 ) {
-    if let Err(rollback_error) = rollback_remote_enable(machine.overlay_ip, peer_rpc_port).await {
+    let request = DaemonRequest::MachineTransitionSelf {
+        goal: MachineTransitionGoal::Standby,
+        assigned_subnet: None,
+        force: true,
+    };
+    if let Err(rollback_error) = nats_rpc_expect_ok(
+        client,
+        NodeCommandSubject::machine_transition_self(&machine.id),
+        request,
+    )
+    .await
+    {
         tracing::warn!(
             machine = %machine.id,
             error = %rollback_error,
             original_error,
             "remote enable rollback failed"
         );
-    }
-}
-
-pub(super) async fn overlay_self_record(
-    machine: &MachineMembership,
-    peer_rpc_port: u16,
-) -> Result<MachineMembership, String> {
-    let response = overlay_rpc(
-        machine.overlay_ip,
-        peer_rpc_port,
-        DaemonRequest::MeshSelfRecord,
-    )
-    .await?;
-    if !response.ok {
-        return Err(remote_response_error(&response));
-    }
-    match response.payload {
-        Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload { record, .. })) => Ok(record),
-        Some(payload) => Err(format!("unexpected self-record payload: {payload:?}")),
-        None => decode_joiner_record(&response.message),
     }
 }
 
@@ -278,6 +280,52 @@ pub(super) async fn wait_for_overlay_ready(
         if Instant::now() >= deadline {
             return Err(format!(
                 "timed out waiting for overlay mesh readiness after {:?}: {last_error}",
+                REMOTE_READY_TIMEOUT,
+            ));
+        }
+
+        sleep(REMOTE_READY_POLL_INTERVAL).await;
+    }
+}
+
+pub(super) async fn wait_for_nats_ready(
+    client: &NatsNodeRpcClient,
+    machine: &MachineMembership,
+) -> Result<(), String> {
+    let deadline = Instant::now() + REMOTE_READY_TIMEOUT;
+    let mut attempt: u32 = 0;
+
+    loop {
+        attempt += 1;
+        let last_error = match timeout(
+            REMOTE_READY_RPC_TIMEOUT,
+            client.request(
+                NodeCommandSubject::mesh_ready(&machine.id),
+                &DaemonRequest::MeshReady { json: false },
+            ),
+        )
+        .await
+        {
+            Ok(Ok(response)) => match mesh_ready_payload(&response) {
+                Ok(payload) => {
+                    if remote_join_ready(&payload) {
+                        tracing::debug!(machine = %machine.id, attempt, "NATS mesh ready confirmed");
+                        return Ok(());
+                    }
+                    format!("mesh reported not ready yet: {}", response.message)
+                }
+                Err(err) => err,
+            },
+            Ok(Err(err)) => err.to_string(),
+            Err(_) => format!(
+                "NATS readiness probe exceeded {:?}",
+                REMOTE_READY_RPC_TIMEOUT
+            ),
+        };
+
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timed out waiting for NATS mesh readiness after {:?}: {last_error}",
                 REMOTE_READY_TIMEOUT,
             ));
         }
