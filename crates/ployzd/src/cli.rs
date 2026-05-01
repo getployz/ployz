@@ -351,9 +351,6 @@ pub(crate) enum MeshAction {
         name_stdin: bool,
     },
     SelfRecord,
-    Accept {
-        response: String,
-    },
 }
 
 #[derive(Debug, Subcommand)]

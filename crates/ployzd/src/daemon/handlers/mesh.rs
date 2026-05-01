@@ -45,16 +45,14 @@ mod tests {
     use ployz_store_api::MachineRegistry;
     use ployz_store_api::StoreDriver;
     use ployz_store_api::memory::{MemoryService, MemoryStore};
-    use ployz_types::model::{
-        MachineId, MachineLifecycle, MachineRole, MachineTopology, OverlayIp, PublicKey,
-    };
+    use ployz_types::model::{MachineId, MachineLifecycle, MachineRole, MachineTopology};
     use ployz_types::time::now_unix_secs;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[tokio::test]
-    async fn mesh_join_is_unsupported_in_founder_mediated_mode() {
+    async fn mesh_join_is_unsupported_without_machine_add() {
         let founder_identity =
             Identity::generate(ployz_types::model::MachineId("founder".into()), [7; 32]);
         let joiner_identity =
@@ -95,41 +93,6 @@ mod tests {
         let response = state.handle_mesh_join(&token).await;
         assert!(!response.ok);
         assert_eq!(response.code, "UNSUPPORTED");
-    }
-
-    #[tokio::test]
-    async fn mesh_accept_installs_transient_peer_without_store_write() {
-        let (mut state, store, network) = make_active_state().await;
-        let response = ployz_types::model::JoinResponse {
-            machine_id: MachineId("joiner".into()),
-            public_key: PublicKey([2; 32]),
-            overlay_ip: "fd00::2".parse().map(OverlayIp).expect("valid overlay"),
-            topology: MachineTopology::local(),
-            role: MachineRole::Mirror,
-            subnet: Some("10.210.1.0/24".parse().expect("valid subnet")),
-            endpoints: vec!["203.0.113.10:51820".into()],
-        }
-        .encode()
-        .expect("encode join response");
-
-        let result = state.handle_mesh_accept(&response).await;
-        assert!(result.ok, "{}", result.message);
-        assert!(result.message.contains("awaiting self-publication"));
-
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let machines = store.list_machines().await.expect("list machines");
-        assert!(!machines.into_iter().any(|machine| machine.id.0 == "joiner"));
-        assert!(
-            network
-                .current_peers()
-                .into_iter()
-                .any(|peer| peer.id().0 == "joiner")
-        );
-
-        if let Some(active) = state.active.as_mut() {
-            active.mesh.destroy().await.expect("destroy mesh");
-        }
     }
 
     #[tokio::test]

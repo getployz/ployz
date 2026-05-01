@@ -124,9 +124,6 @@ impl DaemonState {
             .unwrap_or_default();
         let (running, context) = match self.active.as_ref() {
             Some(active) => {
-                let Some(peer_sync_tx) = active.mesh.peer_sync_sender() else {
-                    return self.err("PEER_SYNC_UNAVAILABLE", "peer sync task is not running");
-                };
                 let nats_rpc = if self.runtime_is_memory_test() {
                     None
                 } else {
@@ -147,7 +144,6 @@ impl DaemonState {
                         cluster_cidr: active.config.cluster_cidr.clone(),
                         store: active.mesh.store.clone(),
                         nats_rpc,
-                        peer_sync_tx,
                         ssh_options,
                         install: options.install.clone().unwrap_or_default(),
                     },

@@ -9,7 +9,6 @@ pub(crate) use endpoint_maintainer::{
     EndpointMaintainerCommand, EndpointMaintainerTask, EndpointSelectionMap,
     build_initial_endpoint_selections, run_endpoint_maintainer_task,
 };
-pub use peer_sync::PeerSyncCommand;
 pub(crate) use peer_sync::{PeerSyncTask, run_peer_sync_task};
 pub(crate) use self_record::SelfRecordCommand;
 pub(crate) use self_record::SelfRecordMutation;

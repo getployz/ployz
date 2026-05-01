@@ -6,10 +6,8 @@ use ployz_api::{
     DaemonPayload, DaemonResponse, MachineTransitionGoal, MeshBootstrapRequest,
     MeshSelfRecordPayload,
 };
-use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
-use ployz_types::model::{JoinResponse, NetworkName};
-use ployz_types::model::{MachineRole, NetworkLifecycle};
+use ployz_types::model::{MachineRole, NetworkLifecycle, NetworkName};
 
 use super::DaemonState;
 
@@ -18,7 +16,7 @@ impl DaemonState {
         let _ = token;
         self.err(
             "UNSUPPORTED",
-            "standalone `mesh join` is not supported in founder-mediated mode",
+            "standalone `mesh join` is not supported; use `machine add` from an active mesh",
         )
     }
 
@@ -146,61 +144,14 @@ impl DaemonState {
         let Some(self_record) = active.mesh.authoritative_self_record().await else {
             return self.err("SELF_RECORD_MISSING", "mesh self record unavailable");
         };
-        let resp = JoinResponse {
-            machine_id: self.identity.machine_id.clone(),
-            public_key: self.identity.public_key.clone(),
-            overlay_ip: active.config.overlay_ip,
-            topology: self_record.topology.clone(),
-            role: self_record.role,
-            subnet: self_record.subnet,
-            endpoints,
-        };
-
-        match resp.encode() {
-            Ok(encoded) => self.ok_with_payload(
-                encoded.clone(),
-                Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
-                    encoded,
-                    record: resp.into_seed_machine_membership(),
-                })),
-            ),
-            Err(e) => self.err(
-                "ENCODE_FAILED",
-                format!("failed to encode self-record: {e}"),
-            ),
-        }
-    }
-
-    pub(crate) async fn handle_mesh_accept(&self, response: &str) -> DaemonResponse {
-        let active = match self.active.as_ref() {
-            Some(a) => a,
-            None => return self.err("NO_RUNNING_NETWORK", "no mesh running"),
-        };
-
-        let join_resp = match JoinResponse::decode(response) {
-            Ok(r) => r,
-            Err(e) => return self.err("INVALID_JOIN_RESPONSE", format!("decode failed: {e}")),
-        };
-
-        let Some(peer_sync_tx) = active.mesh.peer_sync_sender() else {
-            return self.err("PEER_SYNC_UNAVAILABLE", "peer sync task is not running");
-        };
-
-        let record = join_resp.into_seed_machine_membership();
-        let machine_id = record.id.clone();
-        let observation = record.observation();
-        match peer_sync_tx
-            .send(PeerSyncCommand::UpsertTransient(observation))
-            .await
-        {
-            Ok(()) => self.ok(format!(
-                "accepted transient peer '{}' (awaiting self-publication)",
-                machine_id
-            )),
-            Err(e) => self.err(
-                "PEER_SYNC_UNAVAILABLE",
-                format!("failed to install transient peer: {e}"),
-            ),
-        }
+        let mut record = self_record;
+        record.endpoints = endpoints;
+        record.overlay_ip = active.config.overlay_ip;
+        self.ok_with_payload(
+            format!("machine self record '{}'", record.id),
+            Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload {
+                record,
+            })),
+        )
     }
 }

@@ -8,7 +8,6 @@ use super::{Mesh, MeshError, Result};
 
 impl Mesh {
     fn clear_task_channels(&mut self) {
-        self.peer_sync_tx = None;
         self.endpoint_maintainer_tx = None;
         self.self_record_tx = None;
         self.task_cancel = None;

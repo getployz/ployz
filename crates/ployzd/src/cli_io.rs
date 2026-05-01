@@ -311,7 +311,16 @@ fn render_plain_mesh_ready(payload: &MeshReadyPayload) -> String {
 }
 
 fn render_plain_mesh_self_record(payload: &MeshSelfRecordPayload) -> String {
-    payload.encoded.clone()
+    format!(
+        "machine={} lifecycle={} subnet={}",
+        payload.record.id,
+        payload.record.lifecycle,
+        payload
+            .record
+            .subnet
+            .map(|subnet| subnet.to_string())
+            .unwrap_or_else(|| "none".into())
+    )
 }
 
 fn render_plain_doctor(payload: &DoctorPayload) -> String {

@@ -5,9 +5,7 @@ use ployz_api::{
 use ployz_nats::coord::rpc::{NatsNodeRpcClient, NodeCommandSubject};
 use ployz_sdk::Transport;
 use ployz_store_api::StoreDriver;
-use ployz_types::model::{
-    JOIN_RESPONSE_PREFIX, JoinResponse, MachineId, MachineLifecycle, MachineMembership, PublicKey,
-};
+use ployz_types::model::{MachineId, MachineLifecycle, MachineMembership, PublicKey};
 use tokio::time::{Duration, Instant, sleep, timeout};
 
 use crate::daemon::ssh::{SshOptions, ssh_stdio_transport};
@@ -120,9 +118,9 @@ pub(super) async fn remote_self_record(
         return Err(remote_response_error(&response));
     }
     match response.payload {
-        Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload { record, .. })) => Ok(record),
+        Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload { record })) => Ok(record),
         Some(payload) => Err(format!("unexpected self-record payload: {payload:?}")),
-        None => decode_joiner_record(&response.message),
+        None => Err("self-record response missing structured payload".to_string()),
     }
 }
 
@@ -141,9 +139,9 @@ pub(super) async fn nats_self_record(
         return Err(remote_response_error(&response));
     }
     match response.payload {
-        Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload { record, .. })) => Ok(record),
+        Some(DaemonPayload::MeshSelfRecord(MeshSelfRecordPayload { record })) => Ok(record),
         Some(payload) => Err(format!("unexpected self-record payload: {payload:?}")),
-        None => decode_joiner_record(&response.message),
+        None => Err("self-record response missing structured payload".to_string()),
     }
 }
 
@@ -341,22 +339,4 @@ pub(super) fn remote_response_error(response: &DaemonResponse) -> String {
         "remote daemon error [{}]: {}",
         response.code, response.message
     )
-}
-
-fn decode_joiner_record(output: &str) -> Result<MachineMembership, String> {
-    let response_line = match output
-        .lines()
-        .find(|line| line.starts_with(JOIN_RESPONSE_PREFIX))
-    {
-        Some(line) => line,
-        None => {
-            return Err(format!(
-                "self-record output missing {JOIN_RESPONSE_PREFIX} line\nhint: run `ployzctl mesh self-record` on the joiner and `ployzctl mesh accept <response>` on this machine"
-            ));
-        }
-    };
-
-    let join_response = JoinResponse::decode(response_line)
-        .map_err(|err| format!("failed to decode join response: {err}"))?;
-    Ok(join_response.into_seed_machine_membership())
 }

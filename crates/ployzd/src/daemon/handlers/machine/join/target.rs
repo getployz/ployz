@@ -55,7 +55,7 @@ pub(super) async fn run_machine_add_target(
     let _ = operation_store.update_stage(&mut operation, stage.to_string());
     tracing::info!(%target, "machine add target: bootstrap complete");
 
-    tracing::info!(%target, "machine add target: pre-admission identity starting");
+    tracing::info!(%target, "machine add target: bootstrap identity starting");
     let remote_identity = match remote_daemon_identity(&target, &context.ssh_options).await {
         Ok(identity) => identity,
         Err(err) => {
@@ -71,24 +71,27 @@ pub(super) async fn run_machine_add_target(
             };
         }
     };
-    let pre_admitted_overlay_ip = management_ip_from_key(&remote_identity.public_key);
-    let mut pre_admitted_record = MachineMembership::seed(
+    let bootstrap_overlay_ip = management_ip_from_key(&remote_identity.public_key);
+    let mut bootstrap_record = MachineMembership::seed(
         remote_identity.machine_id.clone(),
         remote_identity.public_key.clone(),
-        pre_admitted_overlay_ip,
+        bootstrap_overlay_ip,
         Some(subnet_claim.subnet),
         bootstrap_wireguard_endpoints(&target),
     );
-    pre_admitted_record.role = MachineRole::Mirror;
+    bootstrap_record.role = MachineRole::Mirror;
+    bootstrap_record.control_target = Some(target.clone());
+    bootstrap_record.created_at = ployz_types::time::now_unix_secs();
+    bootstrap_record.updated_at = bootstrap_record.created_at;
     joiner_id = Some(remote_identity.machine_id.clone());
     operation.artifacts.machine_id = Some(remote_identity.machine_id.clone());
     let _ = operation_store.save(&operation);
     tracing::info!(
         %target,
         joiner_id = %remote_identity.machine_id,
-        "machine add target: installing pre-admission peer"
+        "machine add target: publishing bootstrap membership seed"
     );
-    if let Err(err) = upsert_transient_peer(&context.peer_sync_tx, pre_admitted_record).await {
+    if let Err(err) = publish_bootstrap_membership_seed(&context, &bootstrap_record).await {
         let _ = release_reserved_subnet(&mut subnet_claim).await;
         let _ = operation_store.update_status(
             &mut operation,
@@ -100,9 +103,9 @@ pub(super) async fn run_machine_add_target(
             failure: MachineAddFailure::Preflight { reason: err },
         };
     }
-    stage = MachineAddStage::PreAdmitted;
+    stage = MachineAddStage::BootstrapPublished;
     let _ = operation_store.update_stage(&mut operation, stage.to_string());
-    tracing::info!(%target, joiner_id = %remote_identity.machine_id, "machine add target: pre-admission peer installed");
+    tracing::info!(%target, joiner_id = %remote_identity.machine_id, "machine add target: bootstrap membership seed published");
 
     tracing::info!(%target, "machine add target: remote join starting");
     match remote_rpc_expect_ok(
@@ -219,24 +222,6 @@ pub(super) async fn run_machine_add_target(
             failure: MachineAddFailure::Join { reason: err },
         };
     }
-    tracing::info!(%target, joiner_id = %machine_id, "machine add target: transient peer refresh starting");
-    if let Err(err) = upsert_transient_peer(&context.peer_sync_tx, record.clone()).await {
-        let _ = release_reserved_subnet(&mut subnet_claim).await;
-        let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
-        let _ = operation_store.update_status(
-            &mut operation,
-            MachineOperationStatus::Failed,
-            Some(err.clone()),
-        );
-        return MachineAddTargetResult::Failed {
-            target,
-            failure: MachineAddFailure::Preflight { reason: err },
-        };
-    }
-    stage = MachineAddStage::TransientPeerInstalled;
-    let _ = operation_store.update_stage(&mut operation, stage.to_string());
-    tracing::info!(%target, joiner_id = %machine_id, "machine add target: transient peer refreshed");
-
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: waiting for remote ready");
     if let Err(err) = wait_for_remote_ready(&target, &context.ssh_options).await {
         let _ = release_reserved_subnet(&mut subnet_claim).await;
@@ -427,16 +412,23 @@ mod tests {
     }
 }
 
-pub(super) async fn upsert_transient_peer(
-    peer_sync_tx: &tokio::sync::mpsc::Sender<ployz_orchestrator::mesh::tasks::PeerSyncCommand>,
-    record: MachineMembership,
+async fn publish_bootstrap_membership_seed(
+    context: &MachineAddContext,
+    record: &MachineMembership,
 ) -> Result<(), String> {
-    peer_sync_tx
-        .send(
-            ployz_orchestrator::mesh::tasks::PeerSyncCommand::UpsertTransient(record.observation()),
-        )
+    if let Some(existing) =
+        super::super::list::find_machine_record(&context.store, &record.id).await?
+    {
+        return Err(format!(
+            "machine '{}' already exists with lifecycle '{}'",
+            existing.id, existing.lifecycle
+        ));
+    }
+    context
+        .store
+        .upsert_self_machine(record)
         .await
-        .map_err(|err| format!("failed to install founder-local transient peer: {err}"))
+        .map_err(|err| format!("publish bootstrap membership seed: {err}"))
 }
 
 async fn wait_for_joiner_command_ready(

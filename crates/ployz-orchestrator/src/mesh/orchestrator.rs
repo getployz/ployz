@@ -10,7 +10,7 @@ use crate::mesh::container_network::ContainerNetwork;
 use crate::mesh::driver::WireguardDriver;
 use crate::mesh::phase::{Phase, TransitionError};
 use crate::mesh::tasks::{
-    EndpointMaintainerCommand, PeerSyncCommand, SelfRecordMutation, TaskSet, TaskSetError,
+    EndpointMaintainerCommand, SelfRecordMutation, TaskSet, TaskSetError,
     apply_self_record_mutation,
 };
 use crate::model::{MachineId, MachineMembership};
@@ -49,7 +49,6 @@ pub struct Mesh {
     container_network: Option<ContainerNetwork>,
     tasks: Option<TaskSet>,
     task_cancel: Option<tokio_util::sync::CancellationToken>,
-    peer_sync_tx: Option<mpsc::Sender<PeerSyncCommand>>,
     endpoint_maintainer_tx: Option<mpsc::Sender<EndpointMaintainerCommand>>,
     self_record_tx: Option<mpsc::Sender<crate::mesh::tasks::SelfRecordCommand>>,
     bootstrap_interval: Duration,
@@ -79,7 +78,6 @@ impl Mesh {
             container_network,
             tasks: None,
             task_cancel: None,
-            peer_sync_tx: None,
             endpoint_maintainer_tx: None,
             self_record_tx: None,
             bootstrap_interval: Duration::from_millis(500),
@@ -121,11 +119,6 @@ impl Mesh {
     #[must_use]
     pub fn phase(&self) -> Phase {
         self.phase
-    }
-
-    #[must_use]
-    pub fn peer_sync_sender(&self) -> Option<mpsc::Sender<PeerSyncCommand>> {
-        self.peer_sync_tx.clone()
     }
 
     pub async fn run_endpoint_maintenance_once(&self, force_rotate: bool) -> bool {

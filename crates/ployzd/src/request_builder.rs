@@ -265,7 +265,6 @@ fn build_mesh_request(action: MeshAction) -> Result<DaemonRequest> {
             )?,
         }),
         MeshAction::SelfRecord => Ok(DaemonRequest::MeshSelfRecord),
-        MeshAction::Accept { response } => Ok(DaemonRequest::MeshAccept { response }),
     }
 }
 

@@ -59,10 +59,6 @@ impl PeerStateMap {
         self.stored_peers.remove(id);
     }
 
-    pub(crate) fn remove_transient(&mut self, id: &MachineId) {
-        self.transient_peers.remove(id);
-    }
-
     pub(crate) fn effective_peers<'a>(
         &'a self,
         local_machine_id: &'a MachineId,

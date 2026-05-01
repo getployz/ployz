@@ -16,7 +16,7 @@ use super::{Mesh, Result};
 
 impl Mesh {
     pub(super) async fn start_peer_sync_task(&mut self) -> Result<()> {
-        if self.peer_sync_tx.is_some() {
+        if self.endpoint_maintainer_tx.is_some() {
             return Ok(());
         }
 
@@ -30,9 +30,6 @@ impl Mesh {
             .subscribe_machines()
             .await
             .map_err(TaskSetError::Subscribe)?;
-        let (peer_sync_tx, mut peer_sync_rx) =
-            mpsc::channel::<crate::mesh::tasks::PeerSyncCommand>(64);
-        let (planner_tx, planner_rx) = mpsc::channel::<crate::mesh::tasks::PeerSyncCommand>(64);
         let (endpoint_maintainer_tx, maint_rx) = mpsc::channel::<EndpointMaintainerCommand>(64);
         let (mut task_set, cancel) = crate::mesh::tasks::TaskSet::new();
         let bootstrap_peers: Vec<_> = self
@@ -59,36 +56,9 @@ impl Mesh {
                 &initial_device_peers,
                 tokio::time::Instant::now(),
             )));
-        let planner_cancel = cancel.clone();
-        let endpoint_maintainer_cmd_tx = endpoint_maintainer_tx.clone();
-        task_set.spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = planner_cancel.cancelled() => break,
-                    Some(command) = peer_sync_rx.recv() => {
-                        if planner_tx.send(command.clone()).await.is_err() {
-                            break;
-                        }
-                        let maintainer_command = match command {
-                            crate::mesh::tasks::PeerSyncCommand::UpsertTransient(record) => {
-                                EndpointMaintainerCommand::UpsertTransient(record)
-                            }
-                            crate::mesh::tasks::PeerSyncCommand::RemoveTransient(id) => {
-                                EndpointMaintainerCommand::RemoveTransient(id)
-                            }
-                        };
-                        if endpoint_maintainer_cmd_tx.send(maintainer_command).await.is_err() {
-                            break;
-                        }
-                    }
-                    else => break,
-                }
-            }
-        });
         task_set.spawn(run_peer_sync_task(PeerSyncTask {
             snapshot,
             events,
-            commands: planner_rx,
             bootstrap_peers,
             network: self.network.clone(),
             local_machine_id: self.machine_id.clone(),
@@ -112,7 +82,6 @@ impl Mesh {
             cancel: cancel.clone(),
         }));
 
-        self.peer_sync_tx = Some(peer_sync_tx);
         self.endpoint_maintainer_tx = Some(endpoint_maintainer_tx);
         self.task_cancel = Some(cancel);
         self.tasks = Some(task_set);

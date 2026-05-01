@@ -590,9 +590,11 @@ Tracked in code comments and the implementation plan. Highlights:
    is narrow data movement such as ZFS send/receive payload streams.
 6. `MachineRole` is hardcoded to `StorageCandidate` everywhere.
 7. Joiner bootstrap still uses SSH stdio to deliver the bootstrap command and
-   scoped cluster information. After bootstrap, node commands use NATS
-   request/reply. The intended v2 flow is for the joiner to receive scoped NATS
-   credentials and publish its own membership without founder pre-admission.
+   scoped cluster information. The introducer writes a bootstrap membership seed
+   into NATS so existing nodes learn the joiner's WireGuard identity through the
+   machines subscription; after bootstrap, node commands use NATS request/reply.
+   The intended v2 flow is for the joiner to receive scoped NATS credentials and
+   publish its own membership without an introducer-authored seed.
 8. `subjects::subject_token` collision risk for namespace/hostname names
    that differ only in punctuation.
 
