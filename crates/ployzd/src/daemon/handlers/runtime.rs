@@ -60,11 +60,7 @@ async fn relay_runtime_batches(
                 return;
             }
         }
-        if let Err(error) = batch.ack().await {
-            warn!(%error, "runtime routing batch ack failed");
-            let _ = tx.send(Err(error.to_string())).await;
-            return;
-        }
+        let _ = batch.ack().await;
     }
 }
 
@@ -246,16 +242,9 @@ mod tests {
         let (event_tx, event_rx) = mpsc::channel(1);
         drop(event_rx);
 
-        let relay = tokio::spawn(async move {
-            relay_runtime_batches(&mut batch_rx, event_tx).await;
-        });
+        relay_runtime_batches(&mut batch_rx, event_tx).await;
 
-        ack_rx
-            .await
-            .expect("batch should be acked")
-            .send(Ok(()))
-            .expect("ack result should send");
-        relay.await.expect("relay should not panic");
+        ack_rx.await.expect("batch should be acked");
     }
 
     #[tokio::test]
@@ -278,46 +267,6 @@ mod tests {
             Some(Err(String::from("test_routing_subscription: closed")))
         );
         assert!(event_rx.recv().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn relay_runtime_batches_surfaces_ack_failure() {
-        let (batch_tx, mut batch_rx) = mpsc::channel(1);
-        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-        batch_tx
-            .send(Ok(RoutingEventBatch::with_ack(
-                "batch-1",
-                None,
-                vec![RoutingEvent::InstanceAdded(instance_record(
-                    "instance-a",
-                    "prod",
-                    "web",
-                ))],
-                ack_tx,
-            )))
-            .await
-            .expect("queue batch");
-        drop(batch_tx);
-        let (event_tx, mut event_rx) = mpsc::channel(2);
-
-        let relay = tokio::spawn(async move {
-            relay_runtime_batches(&mut batch_rx, event_tx).await;
-        });
-        ack_rx
-            .await
-            .expect("batch should be acked")
-            .send(Err(ployz_types::Error::operation("test_ack", "failed")))
-            .expect("ack result should send");
-
-        assert!(matches!(
-            event_rx.recv().await,
-            Some(Ok(RoutingEvent::InstanceAdded(_)))
-        ));
-        assert_eq!(
-            event_rx.recv().await,
-            Some(Err(String::from("test_ack: failed")))
-        );
-        relay.await.expect("relay should not panic");
     }
 
     fn instance_record(id: &str, namespace: &str, service: &str) -> InstanceStatusRecord {

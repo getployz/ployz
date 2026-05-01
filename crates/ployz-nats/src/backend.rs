@@ -282,7 +282,6 @@ impl RoutingSnapshotReader for NatsStore {
                     Ok(None) => {}
                     Ok(Some(complete)) => {
                         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-                        let batch_id = complete.batch_id.clone();
                         let batch = RoutingEventBatch::with_ack(
                             complete.batch_id,
                             complete.cause,
@@ -292,9 +291,13 @@ impl RoutingSnapshotReader for NatsStore {
                         if tx.send(Ok(batch)).await.is_err() {
                             break;
                         }
-                        if let Ok(result_tx) = ack_rx.await {
-                            let _ = result_tx
-                                .send(ack_routing_messages(batch_id, complete.messages).await);
+                        if ack_rx.await.is_ok() {
+                            for message in complete.messages {
+                                if let Err(error) = message.ack().await {
+                                    warn!(?error, "NATS routing batch message ack failed");
+                                    break;
+                                }
+                            }
                         }
                     }
                     Err(error) => {
@@ -307,18 +310,6 @@ impl RoutingSnapshotReader for NatsStore {
         });
         Ok((state, rx))
     }
-}
-
-async fn ack_routing_messages(batch_id: String, messages: Vec<Message>) -> Result<()> {
-    for message in messages {
-        message.ack().await.map_err(|error| {
-            Error::operation(
-                "nats_routing_ack",
-                format!("batch '{batch_id}' message ack failed: {error:?}"),
-            )
-        })?;
-    }
-    Ok(())
 }
 
 fn routing_consumer_config(
