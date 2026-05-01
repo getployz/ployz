@@ -739,6 +739,11 @@ NATS holds the message until the scheduled time, then delivers it to the
 work queue. One worker pulls, performs ACME, schedules the next renewal
 on success. The ticker disappears entirely.
 
+`ployz-nats::coord::jobs` now provides the typed renewal job publish spec:
+stable `Nats-Msg-Id`, `Nats-Expected-Stream: cert_jobs`, JSON hostname payload,
+and optional `Nats-Schedule`. The remaining daemon work is to replace the local
+renewal ticker with a durable pull worker over that stream.
+
 ### Consumer reset for projection migrations
 
 When `DeployCommit` gains or changes a field and the in-memory projection
