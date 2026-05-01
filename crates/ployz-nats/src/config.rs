@@ -73,23 +73,18 @@ impl ServerConfig {
                     "jetstream {{\n  store_dir: \"{}\"\n}}\n",
                     self.data_dir.display()
                 ));
-                config.push_str(&format!(
-                    "cluster {{\n  name: {}\n  listen: \"[{}]:{}\"\n",
-                    self.cluster_name, self.overlay_ip, ROUTE_PORT
-                ));
-                config.push_str("  routes: [\n");
-                if self.storage_peers.is_empty() {
+                if !self.storage_peers.is_empty() {
                     config.push_str(&format!(
-                        "    \"nats://[{}]:{}\"\n",
-                        self.overlay_ip, ROUTE_PORT
+                        "cluster {{\n  name: {}\n  listen: \"[{}]:{}\"\n",
+                        self.cluster_name, self.overlay_ip, ROUTE_PORT
                     ));
-                } else {
+                    config.push_str("  routes: [\n");
                     for peer in &self.storage_peers {
                         config.push_str(&format!("    \"{}\"\n", peer.route_url()));
                     }
+                    config.push_str("  ]\n");
+                    config.push_str("}\n");
                 }
-                config.push_str("  ]\n");
-                config.push_str("}\n");
                 config.push_str(&format!(
                     "leafnodes {{\n  listen: \"[{}]:{}\"\n}}\n",
                     self.overlay_ip, LEAFNODE_PORT
@@ -127,7 +122,7 @@ mod tests {
     }
 
     #[test]
-    fn single_storage_node_uses_self_route_for_jetstream_cluster_mode() {
+    fn single_storage_node_does_not_enable_jetstream_cluster_mode() {
         let rendered = ServerConfig {
             server_name: "m1".into(),
             cluster_name: "ployz-alpha".into(),
@@ -137,8 +132,7 @@ mod tests {
             data_dir: PathBuf::from("/data"),
         }
         .render();
-        assert!(rendered.contains("cluster {"));
-        assert!(rendered.contains("\"nats://[fd00::1]:6222\""));
+        assert!(!rendered.contains("cluster {"));
         assert!(rendered.contains("jetstream {"));
         assert!(rendered.contains("leafnodes {"));
     }

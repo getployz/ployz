@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use ployz_store_api::DeployCommit;
 use ployz_types::model::{
-    DeployId, DeployRecord, ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
+    DeployId, DeployRecord, RoutingEvent, ServiceReleaseRecord, ServiceRevisionRecord,
+    VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 
@@ -45,6 +46,48 @@ impl DeployProjection {
         }
         self.deploys
             .insert(commit.deploy.deploy_id.clone(), commit.deploy.clone());
+    }
+
+    pub fn apply_commit_events(&mut self, commit: &DeployCommit) -> Vec<RoutingEvent> {
+        let mut events = Vec::new();
+        for revision in &commit.revisions {
+            match self.revisions.insert(revision_key(revision), revision.clone()) {
+                Some(old) if old != *revision => events.push(RoutingEvent::RevisionUpdated {
+                    old,
+                    new: revision.clone(),
+                }),
+                Some(_) => {}
+                None => events.push(RoutingEvent::RevisionAdded(revision.clone())),
+            }
+        }
+        for service in &commit.removed_services {
+            if let Some(old) = self
+                .releases
+                .remove(&(commit.namespace.clone(), service.clone()))
+            {
+                events.push(RoutingEvent::ReleaseRemoved(old));
+            }
+        }
+        for volume in &commit.removed_volumes {
+            self.volumes
+                .remove(&(commit.namespace.clone(), volume.clone()));
+        }
+        for release in &commit.releases {
+            match self.releases.insert(release_key(release), release.clone()) {
+                Some(old) if old != *release => events.push(RoutingEvent::ReleaseUpdated {
+                    old,
+                    new: release.clone(),
+                }),
+                Some(_) => {}
+                None => events.push(RoutingEvent::ReleaseAdded(release.clone())),
+            }
+        }
+        for volume in &commit.volumes {
+            self.volumes.insert(volume_key(volume), volume.clone());
+        }
+        self.deploys
+            .insert(commit.deploy.deploy_id.clone(), commit.deploy.clone());
+        events
     }
 
     #[must_use]

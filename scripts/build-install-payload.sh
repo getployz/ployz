@@ -5,7 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_DIR="${ROOT_DIR}"
 OUTPUT_DIR=""
 TARGET_PLATFORM=""
-BUILDER_IMAGE="${PLOYZ_PAYLOAD_BUILDER_IMAGE:-rust:1-bookworm}"
+BUILDER_IMAGE_FALLBACK="rust:1-bookworm"
+BUILDER_IMAGE="${PLOYZ_PAYLOAD_BUILDER_IMAGE:-}"
 BUILD_PROFILE="${PLOYZ_PAYLOAD_BUILD_PROFILE:-release}"
 BUILD_INPUT_PATHS=(
   Cargo.toml
@@ -86,6 +87,48 @@ cache_key() {
   printf '%s' "$(basename "${cache_root}")"
 }
 
+hashfiles_single() {
+  local path=$1
+  local file_hash
+  file_hash="$(hash_file "${path}")"
+  printf '%s' "${file_hash}" | xxd -r -p | shasum -a 256 | awk '{print $1}'
+}
+
+resolve_builder_image() {
+  local target_platform=$1
+  local repo_dir=$2
+  local arch_suffix dockerfile candidate hash
+
+  if [[ -n "${BUILDER_IMAGE}" ]]; then
+    return
+  fi
+
+  dockerfile="${repo_dir}/Dockerfile.payload-builder"
+  if [[ ! -f "${dockerfile}" ]]; then
+    BUILDER_IMAGE="${BUILDER_IMAGE_FALLBACK}"
+    return
+  fi
+
+  arch_suffix="${target_platform##*/}"
+  hash="$(hashfiles_single "${dockerfile}")"
+  candidate="ghcr.io/getployz/ployz-payload-builder:bookworm-${hash}-${arch_suffix}"
+
+  if docker image inspect "${candidate}" >/dev/null 2>&1; then
+    printf 'using prebuilt builder image (local): %s\n' "${candidate}" >&2
+    BUILDER_IMAGE="${candidate}"
+    return
+  fi
+
+  if docker pull --quiet "${candidate}" >/dev/null 2>&1; then
+    printf 'using prebuilt builder image (pulled): %s\n' "${candidate}" >&2
+    BUILDER_IMAGE="${candidate}"
+    return
+  fi
+
+  printf 'prebuilt builder image unavailable, falling back to %s (run `docker login ghcr.io` to enable)\n' "${BUILDER_IMAGE_FALLBACK}" >&2
+  BUILDER_IMAGE="${BUILDER_IMAGE_FALLBACK}"
+}
+
 build_linux_payload_in_docker() {
   local output_dir=$1
   local repo_dir=$2
@@ -94,6 +137,8 @@ build_linux_payload_in_docker() {
   local repo_abs output_parent_abs output_name target_cache_dir owner_uid owner_gid
   local cache_suffix cargo_registry_mount cargo_git_mount target_mount
   local host_cache_dir host_registry host_git host_target
+
+  resolve_builder_image "${target_platform}" "${repo_dir}"
 
   repo_abs="$(cd "${repo_dir}" && pwd)"
   output_parent_abs="$(output_dir_parent "${output_dir}")"

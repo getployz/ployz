@@ -8,6 +8,9 @@ pub mod subjects;
 
 use async_nats::Client;
 use buckets::AssetPolicy;
+use std::sync::Arc;
+use store::deploys::projection::DeployProjection;
+use tokio::sync::RwLock;
 use ployz_types::error::{Error, Result};
 
 #[derive(Clone)]
@@ -15,6 +18,7 @@ pub struct NatsStore {
     client: Client,
     jetstream: async_nats::jetstream::Context,
     asset_policy: AssetPolicy,
+    pub(crate) deploy_projection: Arc<RwLock<Option<DeployProjection>>>,
 }
 
 impl NatsStore {
@@ -36,6 +40,7 @@ impl NatsStore {
             client,
             jetstream,
             asset_policy,
+            deploy_projection: Arc::new(RwLock::new(None)),
         }
     }
 
