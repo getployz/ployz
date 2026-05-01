@@ -581,10 +581,12 @@ Tracked in code comments and the implementation plan. Highlights:
    per-machine consumers; runtime watches and readiness probes use temporary
    consumers that are deleted when the watcher closes. Routing subscription
    updates carry either a complete batch or an explicit consumer failure.
+   Routing consumer `max_ack_pending` is bounded to the local bridge-channel
+   capacity, and idle heartbeats surface broken delivery paths as failures.
 2. Machine/certificate/ACME challenge subscriptions are KV watchers that carry
    either a domain event or an explicit watcher failure. If a watcher fails or
-   closes, consumers stop using the stale event stream. Stronger task
-   supervision and operator status is still a hardening item.
+   closes, consumers stop using the stale event stream. Mesh task groups cancel
+   on unexpected task exit; broader operator status remains a hardening item.
 3. `replay_projection` runs full N-RPC replay on every read.
 4. Lock TTL doesn't refresh on `kv.update` because the current async-nats
    API doesn't expose update-with-TTL — workaround is a delete+create

@@ -120,7 +120,9 @@ Routing event consumers declare their durability explicitly:
 
 - **Durable subscriptions** are used by long-lived service projections such as
   gateway and DNS. Their consumer ids are stable per machine, so each process
-  receives every routing batch independently.
+  receives every routing batch independently. The consumer's
+  `max_ack_pending` matches the process bridge-channel capacity, and idle
+  heartbeats turn a broken delivery path into an explicit subscription failure.
 - **Temporary subscriptions** are used by live watch clients such as
   `RuntimeSubscribe` and startup readiness probes. They are cleaned up when the
   watcher closes.
