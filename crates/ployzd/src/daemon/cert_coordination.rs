@@ -68,7 +68,10 @@ impl IssuanceCoordinator for NatsIssuanceCoordinator {
     async fn try_acquire(&self, hostname: &str) -> IssuanceAcquisition {
         match self.acquire_key(subjects::cert_lock(hostname)).await {
             Ok(lease) => IssuanceAcquisition::Allowed(self.hold_for(lease)),
-            Err(error) => IssuanceAcquisition::VetoedByPeer(error.to_string()),
+            Err(error) if is_lock_contention(&error) => {
+                IssuanceAcquisition::VetoedByPeer(error.to_string())
+            }
+            Err(error) => IssuanceAcquisition::CoordinationFailed(error.to_string()),
         }
     }
 }
@@ -81,8 +84,21 @@ impl AcmeAccountCoordinator for NatsIssuanceCoordinator {
             .await
         {
             Ok(lease) => AccountAcquisition::Allowed(self.hold_for(lease)),
-            Err(error) => AccountAcquisition::VetoedByPeer(error.to_string()),
+            Err(error) if is_lock_contention(&error) => {
+                AccountAcquisition::VetoedByPeer(error.to_string())
+            }
+            Err(error) => AccountAcquisition::CoordinationFailed(error.to_string()),
         }
+    }
+}
+
+fn is_lock_contention(error: &Error) -> bool {
+    match error {
+        Error::Operation {
+            operation: "nats_lock_acquire",
+            message,
+        } => message.contains("already held") || message.contains("contention:"),
+        Error::Operation { .. } => false,
     }
 }
 
@@ -364,6 +380,26 @@ mod tests {
         let missing = missing_readiness(&eligibility, &observed);
 
         assert_eq!(missing, vec![MachineId("machine-b".into())]);
+    }
+
+    #[test]
+    fn lock_contention_is_not_backend_failure() {
+        let held = Error::operation(
+            "nats_lock_acquire",
+            "lock 'locks.cert.example' is already held",
+        );
+        let raced = Error::operation(
+            "nats_lock_acquire",
+            "lock 'locks.cert.example' contention: wrong last sequence",
+        );
+        let backend = Error::operation(
+            "nats_lock_read_for_acquire",
+            "request timed out while reading lock",
+        );
+
+        assert!(is_lock_contention(&held));
+        assert!(is_lock_contention(&raced));
+        assert!(!is_lock_contention(&backend));
     }
 
     fn test_machine(id: &str, lifecycle: MachineLifecycle, has_subnet: bool) -> MachineMembership {
