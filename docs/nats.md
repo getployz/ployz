@@ -613,8 +613,6 @@ Tracked in code comments and the implementation plan. Highlights:
    machines subscription; after bootstrap, node commands use NATS request/reply.
    The intended v2 flow is for the joiner to receive scoped NATS credentials and
    publish its own membership without an introducer-authored seed.
-9. `subjects::subject_token` collision risk for namespace/hostname names
-   that differ only in punctuation.
 
 ## Future planning
 
