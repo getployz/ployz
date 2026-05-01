@@ -116,6 +116,7 @@ impl DaemonState {
         let cert_renewal_health_path = self
             .network_dir(&active.config.name.0)
             .join(crate::daemon::cert_renewal_health::NATS_CERT_RENEWAL_HEALTH_FILE);
+        let network_dir = self.network_dir(&active.config.name.0);
         let mut status = Vec::new();
         match crate::ipc::nats_listener::load_health(node_rpc_health_path).await {
             Ok(health) => status.push(ControlPlaneStatus {
@@ -147,6 +148,29 @@ impl DaemonState {
                 stale_since_unix_secs: None,
                 consecutive_failures: None,
                 error: Some(format!("read cert renewal health: {error}")),
+            }),
+        }
+        match crate::mesh_state::bootstrap::load_bootstrap_seed_cache_health(&network_dir) {
+            Ok(Some(health)) => status.push(ControlPlaneStatus {
+                component: String::from("bootstrap_seed_cache"),
+                healthy: Some(health.healthy),
+                stale_since_unix_secs: health.stale_since_unix_secs,
+                consecutive_failures: Some(health.consecutive_failures),
+                error: health.last_error,
+            }),
+            Ok(None) => status.push(ControlPlaneStatus {
+                component: String::from("bootstrap_seed_cache"),
+                healthy: None,
+                stale_since_unix_secs: None,
+                consecutive_failures: None,
+                error: Some(String::from("bootstrap seed cache health file missing")),
+            }),
+            Err(error) => status.push(ControlPlaneStatus {
+                component: String::from("bootstrap_seed_cache"),
+                healthy: None,
+                stale_since_unix_secs: None,
+                consecutive_failures: None,
+                error: Some(format!("read bootstrap seed cache health: {error}")),
             }),
         }
         status

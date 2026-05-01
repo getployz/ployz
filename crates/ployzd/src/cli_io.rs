@@ -762,6 +762,13 @@ mod tests {
                         consecutive_failures: Some(3),
                         error: Some(String::from("certificate renewal worker fetch failed")),
                     },
+                    ployz_api::ControlPlaneStatus {
+                        component: String::from("bootstrap_seed_cache"),
+                        healthy: Some(true),
+                        stale_since_unix_secs: None,
+                        consecutive_failures: Some(0),
+                        error: None,
+                    },
                 ],
             })),
         };
@@ -772,6 +779,9 @@ mod tests {
         ));
         assert!(rendered.contains(
             "control_plane component=cert_renewal_worker state=stale stale_since=1777646200 consecutive_failures=3"
+        ));
+        assert!(rendered.contains(
+            "control_plane component=bootstrap_seed_cache state=healthy consecutive_failures=0"
         ));
     }
 

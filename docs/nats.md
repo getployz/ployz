@@ -639,7 +639,8 @@ Tracked in code comments and the implementation plan. Highlights:
    `bootstrap-seed-cache-health.json`. The peer file is only a restart/bootstrap
    hint; the health file records whether the machines subscription feeding it is
    fresh, stale-since time, consecutive failures, and the last error so a stale
-   bootstrap hint is not silent.
+   bootstrap hint is not silent. `ployzctl status` reports this as
+   `control_plane component=bootstrap_seed_cache`.
    The intended v2 flow is for the joiner to receive scoped NATS credentials and
    publish its own membership without an introducer-authored seed.
 7. Mirror nodes render local leaf-domain JetStream config, but automatic mirror
