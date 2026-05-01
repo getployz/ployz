@@ -111,8 +111,9 @@ tables. After the snapshot, live consumers apply ordered routing event batches f
 the `routing_events` JetStream stream.
 
 The snapshot is the catch-up boundary. If a process restarts or loses its local
-projection, it subscribes again, reads a fresh snapshot, then receives only new
-batches (`DeliverPolicy::New`) for that subscription.
+projection, it subscribes again, replaces any old consumer with the same id,
+reads a fresh snapshot, then receives only new batches (`DeliverPolicy::New`) for
+that subscription.
 
 ### Subscription Model
 
