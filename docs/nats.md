@@ -627,6 +627,10 @@ Tracked in code comments and the implementation plan. Highlights:
    and `ployzctl status` reports it as `control_plane
    component=node_rpc_listener`, so command subscription loss has stale-since,
    consecutive failure, and last-error visibility instead of only logs.
+   The certificate renewal worker writes `nats-cert-renewal-health.json` in the
+   same directory and appears as `control_plane
+   component=cert_renewal_worker`, so work-queue fetch, renewal job, ack, and
+   nak failures have the same operator-visible health surface.
 6. Joiner bootstrap still uses SSH stdio to deliver the bootstrap command and
    scoped cluster information. The introducer writes a bootstrap membership seed
    into NATS so existing nodes learn the joiner's WireGuard identity through the
@@ -762,6 +766,10 @@ renewal job has been accepted. The daemon starts the durable worker instead of
 the local ticker. The orchestrator renewal logic has a per-host
 `process_renewal_job` entrypoint that re-reads the certificate row from
 authority before applying renewal state transitions.
+The worker writes `nats-cert-renewal-health.json` under the network data
+directory and `ployzctl status` exposes it as `control_plane
+component=cert_renewal_worker`, with stale-since, consecutive failure count, and
+the last work-queue or job error.
 
 ### Consumer reset for projection migrations
 

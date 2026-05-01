@@ -223,6 +223,12 @@ The important split:
   the listener is stale, foreground request/reply calls to that node fail with
   no-responder or timeout; recovery is the listener resubscribing, not a hidden
   control-plane fallback.
+- The daemon's certificate renewal worker records work-queue health in
+  `nats-cert-renewal-health.json` under the network data directory. `ployzctl
+  status` reports it as `control_plane component=cert_renewal_worker`, including
+  stale-since time, consecutive failures, and the last fetch, job, ack, or nak
+  error. A fetch failure can clear after the consumer fetch path recovers; a job
+  failure remains stale until a renewal job completes and acks successfully.
 
 - **authority** lives in hub JetStream/KV/Object Store,
 - **hot read models** live in process memory and are rebuilt from authority,

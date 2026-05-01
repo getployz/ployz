@@ -110,25 +110,46 @@ impl DaemonState {
         if self.runtime_is_memory_test() {
             return Vec::new();
         }
-        let health_path = self
+        let node_rpc_health_path = self
             .network_dir(&active.config.name.0)
             .join(crate::ipc::nats_listener::NATS_NODE_RPC_HEALTH_FILE);
-        match crate::ipc::nats_listener::load_health(health_path).await {
-            Ok(health) => vec![ControlPlaneStatus {
+        let cert_renewal_health_path = self
+            .network_dir(&active.config.name.0)
+            .join(crate::daemon::cert_renewal_health::NATS_CERT_RENEWAL_HEALTH_FILE);
+        let mut status = Vec::new();
+        match crate::ipc::nats_listener::load_health(node_rpc_health_path).await {
+            Ok(health) => status.push(ControlPlaneStatus {
                 component: String::from("node_rpc_listener"),
                 healthy: Some(health.healthy),
                 stale_since_unix_secs: health.stale_since_unix_secs,
                 consecutive_failures: Some(health.consecutive_failures),
                 error: health.last_error,
-            }],
-            Err(error) => vec![ControlPlaneStatus {
+            }),
+            Err(error) => status.push(ControlPlaneStatus {
                 component: String::from("node_rpc_listener"),
                 healthy: None,
                 stale_since_unix_secs: None,
                 consecutive_failures: None,
                 error: Some(format!("read listener health: {error}")),
-            }],
+            }),
         }
+        match crate::daemon::cert_renewal_health::load_health(cert_renewal_health_path).await {
+            Ok(health) => status.push(ControlPlaneStatus {
+                component: String::from("cert_renewal_worker"),
+                healthy: Some(health.healthy),
+                stale_since_unix_secs: health.stale_since_unix_secs,
+                consecutive_failures: Some(health.consecutive_failures),
+                error: health.last_error,
+            }),
+            Err(error) => status.push(ControlPlaneStatus {
+                component: String::from("cert_renewal_worker"),
+                healthy: None,
+                stale_since_unix_secs: None,
+                consecutive_failures: None,
+                error: Some(format!("read cert renewal health: {error}")),
+            }),
+        }
+        status
     }
 
     async fn edge_sync_status(&self) -> Vec<EdgeSyncStatus> {
