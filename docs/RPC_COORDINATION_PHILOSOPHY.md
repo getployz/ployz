@@ -85,18 +85,20 @@ promote a node and present the operation as successful.
 
 ## Latency expectations
 
-These values are planning estimates and must be replaced by e2e measurements
-as the NATS-native E2E suite grows.
+Detailed internal data placement and operation latency semantics are tracked in
+[`docs/nats-native-control-plane.md`](nats-native-control-plane.md). This section
+only states the coordination rule of thumb.
 
 For a NATS KV or stream write, latency is approximately:
 
-- `max_rtt_to_fastest_quorum + broker processing`
+- `max_rtt_to_fastest_quorum + broker/disk processing`
 
-Typical global ranges:
+For R=3, that means the leader and fastest healthy follower determine the
+happy-path commit latency. The slowest third node affects catch-up and degraded
+status, not the normal write path while quorum remains healthy.
 
-- p50: ~220-380ms
-- p95: ~450-900ms
-- p99 tail in stressed scenarios: ~1.1-1.8s
+Request/reply latency is a round trip to the target daemon plus the target's
+local work. It is not durable unless the command performs a KV or stream write.
 
 ### N+1 tail scenarios
 

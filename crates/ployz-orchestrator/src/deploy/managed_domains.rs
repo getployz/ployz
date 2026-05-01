@@ -66,8 +66,8 @@ pub(super) async fn validate_hostname_ownership(
     let routing_state = store.load_routing_state().await?;
     // This is admission validation, not a concurrency primitive. Same-namespace
     // deploys are already namespace-locked, but concurrent deploys in different
-    // namespaces can still race for a brand-new hostname. Full serialization would
-    // require a durable ownership record or a hostname-scoped fanout lock.
+    // namespaces can still race for a brand-new hostname. Full serialization
+    // belongs in a durable hostname ownership record or a scoped NATS lease.
     let committed = hostname_owners_for_routing_state(&routing_state, plan.namespace())?;
     for desired_owner in desired {
         let Some(existing_owner) = committed
