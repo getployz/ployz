@@ -602,7 +602,8 @@ Tracked in code comments and the implementation plan. Highlights:
    closes, consumers stop using the stale event stream. Mesh task groups cancel
    on unexpected task exit. Gateway and DNS edge projection freshness is exposed
    through sidecar metrics and, when those metrics endpoints are configured, in
-   `ployzctl status` as per-stream `edge_sync` health.
+   `ployzctl status` as per-stream `edge_sync` health, stale-since timestamp,
+   and cumulative failure count.
    KV subscriptions read the bucket stream sequence as a snapshot boundary,
    load the current snapshot, then watch from the next sequence. Updates that
    race with snapshot loading are delivered from the bounded watch stream, and
