@@ -183,11 +183,7 @@ impl Mesh {
                             if consecutive_errors <= 3 {
                                 warn!(?e, "sync probe failed during bootstrap");
                             } else if consecutive_errors == 4 {
-                                warn!(
-                                    ?e,
-                                    consecutive_errors,
-                                    "sync probe keeps failing"
-                                );
+                                warn!(?e, consecutive_errors, "sync probe keeps failing");
                             }
                         }
                     }
@@ -201,11 +197,9 @@ impl Mesh {
 
         if !connected {
             let reason = match result {
-                Ok(_) => {
-                    "store sync could not reach any remote peer within the timeout. \
+                Ok(_) => "store sync could not reach any remote peer within the timeout. \
                      Try restarting the mesh on both nodes"
-                        .to_string()
-                }
+                    .to_string(),
                 Err(e) => {
                     format!(
                         "store never became healthy: {e}. \
