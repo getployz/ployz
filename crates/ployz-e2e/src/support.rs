@@ -79,6 +79,14 @@ pub(crate) struct NatsAssetStatus {
     #[serde(default)]
     pub(crate) replicas: Option<usize>,
     #[serde(default)]
+    pub(crate) healthy: Option<bool>,
+    #[serde(default)]
+    pub(crate) current_replicas: Option<usize>,
+    #[serde(default)]
+    pub(crate) offline_replicas: Option<usize>,
+    #[serde(default)]
+    pub(crate) max_lag: Option<u64>,
+    #[serde(default)]
     pub(crate) error: Option<String>,
 }
 

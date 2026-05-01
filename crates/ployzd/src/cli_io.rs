@@ -214,11 +214,26 @@ fn render_plain_status(payload: &StatusPayload) -> String {
         ));
     }
     for asset in &payload.nats_assets {
-        let state = match (asset.replicas, asset.error.as_deref()) {
-            (Some(replicas), _) => format!("replicas={replicas}"),
-            (None, Some(error)) => format!("unknown error={error}"),
-            (None, None) => "unknown".to_string(),
+        let mut state = match (asset.healthy, asset.replicas, asset.error.as_deref()) {
+            (Some(true), Some(replicas), _) => format!("healthy replicas={replicas}"),
+            (Some(false), Some(replicas), _) => format!("stale replicas={replicas}"),
+            (None, Some(replicas), _) => format!("replicas={replicas}"),
+            (None, None, Some(error)) => format!("unknown error={error}"),
+            (Some(_), None, Some(error)) => format!("unknown error={error}"),
+            (Some(_), None, None) | (None, None, None) => "unknown".to_string(),
         };
+        if let Some(current) = asset.current_replicas {
+            state.push_str(&format!(" current={current}"));
+        }
+        if let Some(offline) = asset.offline_replicas {
+            state.push_str(&format!(" offline={offline}"));
+        }
+        if let Some(max_lag) = asset.max_lag {
+            state.push_str(&format!(" max_lag={max_lag}"));
+        }
+        if let Some(leader) = asset.leader.as_deref() {
+            state.push_str(&format!(" leader={leader}"));
+        }
         lines.push(format!(
             "nats_asset kind={} name={} state={}",
             asset.kind, asset.name, state
@@ -718,6 +733,11 @@ mod tests {
                     kind: String::from("stream"),
                     name: String::from("routing_events"),
                     replicas: Some(1),
+                    healthy: Some(true),
+                    current_replicas: Some(1),
+                    offline_replicas: Some(0),
+                    max_lag: Some(0),
+                    leader: Some(String::from("nats-a")),
                     error: None,
                 }],
                 control_plane: Vec::new(),
@@ -725,7 +745,9 @@ mod tests {
         };
 
         let rendered = render_plain_success(&response);
-        assert!(rendered.contains("nats_asset kind=stream name=routing_events state=replicas=1"));
+        assert!(rendered.contains(
+            "nats_asset kind=stream name=routing_events state=healthy replicas=1 current=1 offline=0 max_lag=0 leader=nats-a"
+        ));
     }
 
     #[test]

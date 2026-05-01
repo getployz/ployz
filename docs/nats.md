@@ -607,6 +607,11 @@ Tracked in code comments and the implementation plan. Highlights:
    through sidecar metrics and, when those metrics endpoints are configured, in
    `ployzctl status` as per-stream `edge_sync` health, stale-since timestamp,
    and cumulative failure count.
+   `ployzctl status` also reports each authoritative NATS stream/KV asset with
+   configured replicas, current replicas, offline replicas, maximum reported
+   follower lag, and leader. Replica count alone is not considered operationally
+   healthy; the row is healthy only when all configured replicas are current,
+   no replica is offline, and max lag is zero.
    KV subscriptions read the bucket stream sequence as a snapshot boundary,
    load the current snapshot, then watch from the next sequence. Updates that
    race with snapshot loading are delivered from the bounded watch stream, and

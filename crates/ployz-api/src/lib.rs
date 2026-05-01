@@ -502,6 +502,16 @@ pub struct NatsAssetStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replicas: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub healthy: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_replicas: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offline_replicas: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_lag: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leader: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 

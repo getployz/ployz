@@ -219,9 +219,9 @@ Useful existing scenarios:
 
 The NATS-native suite needs helpers that can inspect NATS-visible state:
 
-- stream replica count is available through `ployzd --json status` and asserted
-  by `machine_add_does_not_promote_storage`,
-- stream leader,
+- stream replica health is available through `ployzd --json status`, including
+  configured replicas, current replicas, offline replicas, max lag, and leader;
+  `machine_add_does_not_promote_storage` asserts configured replicas stay at R=1,
 - stream/consumer lag,
 - KV bucket metadata and revision,
 - object store metadata,
