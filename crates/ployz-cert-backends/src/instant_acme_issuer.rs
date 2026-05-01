@@ -234,6 +234,15 @@ async fn load_or_create_account(
                 ),
             ));
         }
+        AccountAcquisition::CoordinationFailed(reason) => {
+            return Err(Error::operation(
+                "acme_account_coordination",
+                format!(
+                    "could not acquire ACME account lock for {}: {reason}",
+                    config.issuer_url
+                ),
+            ));
+        }
     };
 
     let result = load_or_create_account_under_lock(store, config).await;
@@ -351,6 +360,15 @@ mod tests {
         }
     }
 
+    struct FailingAccountCoordinator;
+
+    #[async_trait]
+    impl AcmeAccountCoordinator for FailingAccountCoordinator {
+        async fn try_acquire_account(&self, issuer_url: &str) -> AccountAcquisition {
+            AccountAcquisition::CoordinationFailed(format!("lock backend failed for {issuer_url}"))
+        }
+    }
+
     fn config_with_issuer(issuer_url: &str) -> CertificateManagerConfig {
         CertificateManagerConfig {
             issuer_url: issuer_url.into(),
@@ -421,6 +439,29 @@ mod tests {
             error.to_string().contains("ACME account creation deferred"),
             "{error}"
         );
+    }
+
+    #[tokio::test]
+    async fn account_creation_surfaces_coordination_backend_failure() {
+        let store = StoreDriver::memory();
+        let config = config_with_issuer("https://acme.test/dir");
+
+        let error = match load_or_create_account(&store, &config, &FailingAccountCoordinator).await
+        {
+            Ok(_) => {
+                panic!(
+                    "missing account plus coordination backend failure should fail before ACME create"
+                )
+            }
+            Err(error) => error,
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("could not acquire ACME account lock")
+        );
+        assert!(error.to_string().contains("lock backend failed"));
     }
 
     #[tokio::test]

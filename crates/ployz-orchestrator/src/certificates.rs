@@ -108,6 +108,7 @@ pub trait AcmeAccountCoordinator: Send + Sync {
 pub enum AccountAcquisition {
     Allowed(IssuanceHold),
     VetoedByPeer(String),
+    CoordinationFailed(String),
 }
 
 pub struct NoopAcmeAccountCoordinator;
@@ -141,6 +142,7 @@ pub trait IssuanceCoordinator: Send + Sync {
 pub enum IssuanceAcquisition {
     Allowed(IssuanceHold),
     VetoedByPeer(String),
+    CoordinationFailed(String),
 }
 
 pub struct IssuanceHold {
@@ -336,9 +338,27 @@ where
     I: AcmeIssuer + Sync + ?Sized,
     C: IssuanceCoordinator + ?Sized,
 {
+    match start_pending_orders_checked(store, issuer, coordinator, hostnames).await {
+        Ok(warnings) => warnings,
+        Err(error) => vec![format!(
+            "Could not start managed certificate order: {error}"
+        )],
+    }
+}
+
+async fn start_pending_orders_checked<I, C>(
+    store: &StoreDriver,
+    issuer: &I,
+    coordinator: &C,
+    hostnames: &[String],
+) -> Result<Vec<String>>
+where
+    I: AcmeIssuer + Sync + ?Sized,
+    C: IssuanceCoordinator + ?Sized,
+{
     let hostnames = hostnames.iter().cloned().collect::<BTreeSet<_>>();
     if hostnames.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let mut warnings = Vec::new();
     let records = match store.list_certificates().await {
@@ -347,7 +367,7 @@ where
             warnings.push(format!(
                 "Could not list managed certificates for ACME order: {error}"
             ));
-            return warnings;
+            return Ok(warnings);
         }
     };
     for record in records {
@@ -357,11 +377,11 @@ where
         if !needs_start_order(&record) {
             continue;
         }
-        if let Some(warning) = start_one(store, issuer, coordinator, record).await {
+        if let Some(warning) = start_one(store, issuer, coordinator, record).await? {
             warnings.push(warning);
         }
     }
-    warnings
+    Ok(warnings)
 }
 
 fn needs_start_order(record: &CertificateRecord) -> bool {
@@ -392,7 +412,7 @@ async fn start_one<I, C>(
     issuer: &I,
     coordinator: &C,
     record: CertificateRecord,
-) -> Option<String>
+) -> Result<Option<String>>
 where
     I: AcmeIssuer + Sync + ?Sized,
     C: IssuanceCoordinator + ?Sized,
@@ -406,7 +426,13 @@ where
                 reason = %reason,
                 "cert issuance deferred: another orchestrator holds the hostname lock"
             );
-            return None;
+            return Ok(None);
+        }
+        IssuanceAcquisition::CoordinationFailed(reason) => {
+            return Err(Error::operation(
+                "certificate_issuance_coordination",
+                format!("could not acquire certificate lock for {hostname}: {reason}"),
+            ));
         }
     };
 
@@ -472,7 +498,7 @@ where
     // another daemon's reconciler can read the still-Pending row, acquire
     // the (now-free) lock, and create a duplicate ACME order.
     hold.release().await;
-    warning
+    Ok(warning)
 }
 
 /// Background: for every certificate with an open order (`Issuing` + stored
@@ -529,6 +555,12 @@ where
                 "ACME finalization deferred: another orchestrator holds the hostname lock"
             );
             return Ok(());
+        }
+        IssuanceAcquisition::CoordinationFailed(reason) => {
+            return Err(Error::operation(
+                "certificate_finalization_coordination",
+                format!("could not acquire certificate lock for {hostname}: {reason}"),
+            ));
         }
     };
 
@@ -871,7 +903,9 @@ where
     if !due {
         return Ok(());
     }
-    for warning in start_pending_orders(store, issuer, coordinator, &[record.hostname]).await {
+    for warning in
+        start_pending_orders_checked(store, issuer, coordinator, &[record.hostname]).await?
+    {
         tracing::warn!(%warning, "certificate renewal");
     }
     Ok(())
@@ -1095,7 +1129,9 @@ mod tests {
         // observed it before peer A's write reached this daemon.
         let stale = pending_record("example.com");
 
-        let warning = start_one(&store, &PanickingIssuer, &NoopIssuanceCoordinator, stale).await;
+        let warning = start_one(&store, &PanickingIssuer, &NoopIssuanceCoordinator, stale)
+            .await
+            .expect("stale start should not fail coordination");
         assert!(warning.is_none(), "stale start should be skipped silently");
 
         // Row is unchanged: A's order_url and Issuing state are intact.
@@ -1140,7 +1176,8 @@ mod tests {
             &coordinator,
             stale,
         )
-        .await;
+        .await
+        .expect("happy-path start should not fail coordination");
         assert!(warning.is_none(), "happy-path start should not warn");
 
         let snapshot_at_release = captured
@@ -1201,7 +1238,8 @@ mod tests {
             &NoopIssuanceCoordinator,
             failed,
         )
-        .await;
+        .await
+        .expect("happy retry should not fail coordination");
         assert!(warning.is_none(), "happy retry should not warn");
 
         let remaining = store
@@ -1599,6 +1637,61 @@ mod tests {
         }
     }
 
+    struct FailingCoordinator;
+
+    #[async_trait]
+    impl IssuanceCoordinator for FailingCoordinator {
+        async fn try_acquire(&self, _hostname: &str) -> IssuanceAcquisition {
+            IssuanceAcquisition::CoordinationFailed("nats lock backend unavailable".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn start_pending_surfaces_coordination_failure_as_warning() {
+        let store = StoreDriver::memory();
+        store
+            .upsert_certificate(&pending_record("example.com"))
+            .await
+            .expect("pending cert should persist");
+
+        let warnings = start_pending_orders(
+            &store,
+            &PanickingIssuer,
+            &FailingCoordinator,
+            &["example.com".into()],
+        )
+        .await;
+
+        let [warning] = warnings.as_slice() else {
+            panic!("expected one coordination warning, got {warnings:?}");
+        };
+        assert!(warning.contains("certificate_issuance_coordination"));
+        assert!(warning.contains("nats lock backend unavailable"));
+    }
+
+    #[tokio::test]
+    async fn process_renewal_job_fails_on_coordination_backend_error() {
+        let store = StoreDriver::memory();
+        let mut record = pending_record("example.com");
+        record.state = CertificateState::RenewalDue;
+        store
+            .upsert_certificate(&record)
+            .await
+            .expect("renewal due cert should persist");
+
+        let error =
+            process_renewal_job(&store, &PanickingIssuer, &FailingCoordinator, "example.com")
+                .await
+                .expect_err("renewal job should fail on lock backend error");
+
+        assert!(
+            error
+                .to_string()
+                .contains("certificate_issuance_coordination")
+        );
+        assert!(error.to_string().contains("nats lock backend unavailable"));
+    }
+
     #[tokio::test]
     async fn finalize_one_skips_acme_when_coordinator_vetoes() {
         let store = StoreDriver::memory();
@@ -1635,6 +1728,37 @@ mod tests {
         assert_eq!(row.state, CertificateState::Issuing);
         assert_eq!(row.order_url.as_deref(), Some("https://acme/orders/42"));
         assert!(row.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn finalize_one_fails_on_coordination_backend_error() {
+        let store = StoreDriver::memory();
+        let mut record = pending_record("example.com");
+        record.state = CertificateState::Issuing;
+        record.order_url = Some("https://acme/orders/42".into());
+        store
+            .upsert_certificate(&record)
+            .await
+            .expect("issuing cert should persist");
+
+        let issuer = RecordingFinalizeIssuer::new();
+        let error = finalize_one(
+            &store,
+            &issuer,
+            &FailingCoordinator,
+            record,
+            "https://acme/orders/42",
+        )
+        .await
+        .expect_err("lock backend failure should fail finalization");
+
+        assert!(
+            error
+                .to_string()
+                .contains("certificate_finalization_coordination")
+        );
+        assert!(error.to_string().contains("nats lock backend unavailable"));
+        assert_eq!(issuer.finalize_call_count(), 0);
     }
 
     #[tokio::test]
