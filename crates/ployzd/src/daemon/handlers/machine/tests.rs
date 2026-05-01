@@ -16,7 +16,7 @@ use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{InviteRepository, MachineRegistry};
 use ployz_types::model::{
-    JoinResponse, MachineId, MachineLifecycle, MachineMembership, MachineTopology,
+    JoinResponse, MachineId, MachineLifecycle, MachineMembership, MachineRole, MachineTopology,
     NetworkLifecycle, OverlayIp, PublicKey,
 };
 use ployz_types::time::now_unix_secs;
@@ -1417,6 +1417,7 @@ fn test_machine_record(
         bridge_ip: None,
         endpoints: vec!["127.0.0.1:51820".into()],
         lifecycle,
+        role: MachineRole::StorageCandidate,
         created_at: 0,
         updated_at: 0,
         labels: std::collections::BTreeMap::new(),

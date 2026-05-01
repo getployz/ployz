@@ -3,7 +3,8 @@ use std::net::Ipv4Addr;
 use std::sync::{Arc, RwLock};
 
 use ployz_types::model::{
-    DrainState, InstancePhase, MachineId, MachineMembership, MachineTopology, RoutingState,
+    DrainState, InstancePhase, MachineId, MachineMembership, MachineRole, MachineTopology,
+    RoutingState,
 };
 use ployz_types::spec::Namespace;
 use tracing::warn;
@@ -294,6 +295,7 @@ mod tests {
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle: MachineLifecycle::Active,
+            role: MachineRole::StorageCandidate,
             created_at: 1,
             updated_at: 1,
             labels: BTreeMap::new(),

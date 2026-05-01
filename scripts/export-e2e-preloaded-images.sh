@@ -40,7 +40,7 @@ tmp_dir="$(mktemp -d "${OUTPUT_DIR}/.tmp.XXXXXX")"
 trap 'rm -rf "${tmp_dir}"' EXIT
 
 {
-  for key in networking corrosion dns gateway; do
+  for key in networking corrosion nats dns gateway; do
     ref="$(manifest_value "${key}")"
     if [[ -z "${ref}" ]]; then
       printf 'missing %s in %s\n' "${key}" "${MANIFEST_PATH}" >&2

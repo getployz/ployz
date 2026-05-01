@@ -380,8 +380,8 @@ mod tests {
     use crate::store::tables::service_releases;
     use corro_api_types::{RowId, SqliteValue, sqlite::ChangeType};
     use ployz_types::model::{
-        DeployId, MachineId, MachineLifecycle, MachineMembership, MachineTopology, OverlayIp,
-        PublicKey, ServiceRelease, ServiceReleaseRecord, ServiceRoutingPolicy,
+        DeployId, MachineId, MachineLifecycle, MachineMembership, MachineRole, MachineTopology,
+        OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord, ServiceRoutingPolicy,
     };
     use ployz_types::spec::Namespace;
     use std::collections::{BTreeMap, HashMap};
@@ -421,6 +421,7 @@ mod tests {
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle: MachineLifecycle::Active,
+            role: MachineRole::StorageCandidate,
             created_at: 1,
             updated_at: 1,
             labels: BTreeMap::new(),

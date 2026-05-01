@@ -392,15 +392,16 @@ zfs_root = "${zfs_root}"
 EOF
 fi
 
-HOME=/root /usr/local/bin/ployz.sh install --source payload --payload-dir /e2e-payload --runtime "${runtime}" --service-mode user --no-daemon-install
+HOME=/root /e2e-payload/ployz.sh install --source payload --payload-dir /e2e-payload --runtime "${runtime}" --service-mode user --no-daemon-install
 
 ln -sf /root/.local/bin/ployzctl /usr/local/bin/ployzctl
 ln -sf /root/.local/bin/ployzd /usr/local/bin/ployzd
 ln -sf /root/.local/bin/ployz-gateway /usr/local/bin/ployz-gateway
 ln -sf /root/.local/bin/ployz-dns /usr/local/bin/ployz-dns
 ln -sf /root/.local/bin/corrosion /usr/local/bin/corrosion
+ln -sf /root/.local/bin/nats-server /usr/local/bin/nats-server
 
-for binary in /root/.local/bin/ployzctl /root/.local/bin/ployzd /root/.local/bin/corrosion; do
+for binary in /root/.local/bin/ployzctl /root/.local/bin/ployzd /root/.local/bin/corrosion /root/.local/bin/nats-server; do
   if [[ -x "${binary}" ]]; then
     sha256="$(sha256sum "${binary}" | awk '{print $1}')"
     echo "ployz-e2e binary: path=${binary} sha256=${sha256}"

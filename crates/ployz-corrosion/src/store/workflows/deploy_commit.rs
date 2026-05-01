@@ -113,6 +113,7 @@ mod tests {
 
         let commit = DeployCommit {
             namespace,
+            revisions: Vec::new(),
             removed_services,
             removed_volumes: Vec::new(),
             releases,

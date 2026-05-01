@@ -228,6 +228,18 @@ pub enum MachineLifecycle {
 }
 
 #[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString, JsonSchema,
+)]
+pub enum MachineRole {
+    #[display("storage_candidate")]
+    #[strum(serialize = "storage_candidate")]
+    StorageCandidate,
+    #[display("leaf")]
+    #[strum(serialize = "leaf")]
+    Leaf,
+}
+
+#[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString, Default,
 )]
 pub enum NetworkLifecycle {
@@ -254,6 +266,7 @@ pub struct MachineMembership {
     pub endpoints: Vec<String>,
     #[serde(default)]
     pub lifecycle: MachineLifecycle,
+    pub role: MachineRole,
     pub created_at: u64,
     pub updated_at: u64,
     pub labels: BTreeMap<String, String>,
@@ -282,6 +295,7 @@ impl MachineMembership {
             bridge_ip: None,
             endpoints,
             lifecycle: MachineLifecycle::Standby,
+            role: MachineRole::StorageCandidate,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -910,6 +924,7 @@ impl JoinResponse {
             bridge_ip: None,
             endpoints: self.endpoints,
             lifecycle: MachineLifecycle::Standby,
+            role: MachineRole::StorageCandidate,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),
@@ -1180,6 +1195,7 @@ mod tests {
             bridge_ip: Some(OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 8))),
             endpoints: vec!["1.2.3.4:51820".into(), "5.6.7.8:51820".into()],
             lifecycle: MachineLifecycle::Active,
+            role: MachineRole::StorageCandidate,
             created_at: 100,
             updated_at: 200,
             labels,

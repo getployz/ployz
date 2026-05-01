@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
-  echo "usage: $0 OUTPUT_PATH [networking=REF] [corrosion=REF] [dns=REF] [gateway=REF]" >&2
+  echo "usage: $0 OUTPUT_PATH [networking=REF] [corrosion=REF] [nats=REF] [dns=REF] [gateway=REF]" >&2
   exit 1
 fi
 
@@ -11,6 +11,7 @@ shift
 
 networking=''
 corrosion=''
+nats=''
 dns=''
 gateway=''
 
@@ -21,6 +22,9 @@ for assignment in "$@"; do
       ;;
     corrosion=*)
       corrosion="${assignment#corrosion=}"
+      ;;
+    nats=*)
+      nats="${assignment#nats=}"
       ;;
     dns=*)
       dns="${assignment#dns=}"
@@ -43,6 +47,9 @@ mkdir -p "$(dirname "$output_path")"
   fi
   if [[ -n "$corrosion" ]]; then
     printf 'corrosion = "%s"\n' "$corrosion"
+  fi
+  if [[ -n "$nats" ]]; then
+    printf 'nats = "%s"\n' "$nats"
   fi
   if [[ -n "$dns" ]]; then
     printf 'dns = "%s"\n' "$dns"

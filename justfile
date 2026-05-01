@@ -48,6 +48,7 @@ install prefix="/usr/local":
     install -m 0755 target/release/ployz-gateway "{{prefix}}/bin/ployz-gateway"
     install -m 0755 target/release/ployz-dns "{{prefix}}/bin/ployz-dns"
     just install-corrosion {{prefix}}
+    just install-nats-server {{prefix}}
 
 install-corrosion prefix="/usr/local" repo="getployz/corrosion":
     #!/usr/bin/env bash
@@ -161,6 +162,86 @@ install-corrosion prefix="/usr/local" repo="getployz/corrosion":
       xattr -d com.apple.quarantine "${install_path}" 2>/dev/null || true
     fi
     echo "installed corrosion ${install_path} (${version} for ${os}/${arch})"
+
+install-nats-server prefix="/usr/local" repo="nats-io/nats-server":
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    download() {
+      local url="$1"
+      local dest="$2"
+      if command -v curl >/dev/null 2>&1; then
+        curl -fsSL -o "${dest}" "${url}"
+        return
+      fi
+      if command -v wget >/dev/null 2>&1; then
+        wget -qO "${dest}" "${url}"
+        return
+      fi
+      echo "curl or wget is required to download nats-server" >&2
+      exit 1
+    }
+
+    version_file=".nats-version"
+    if [[ ! -f "${version_file}" ]]; then
+      echo "missing ${version_file}" >&2
+      exit 1
+    fi
+    version="$(tr -d '[:space:]' < "${version_file}")"
+    if [[ -z "${version}" ]]; then
+      echo "empty nats-server version in ${version_file}" >&2
+      exit 1
+    fi
+
+    install_path="{{prefix}}/bin/nats-server"
+    version_stamp="{{prefix}}/bin/.nats-server-release-version"
+    if [[ -x "${install_path}" && -f "${version_stamp}" ]]; then
+      installed_version="$(tr -d '[:space:]' < "${version_stamp}")"
+      if [[ "${installed_version}" == "${version}" ]]; then
+        echo "nats-server ${version} already installed at ${install_path}; skipping"
+        exit 0
+      fi
+    fi
+
+    os="$(uname -s)"
+    arch="$(uname -m)"
+    case "${os}" in
+      Darwin) asset_os="darwin" ;;
+      Linux) asset_os="linux" ;;
+      *)
+        echo "unsupported platform: ${os}/${arch}" >&2
+        exit 1
+        ;;
+    esac
+    case "${arch}" in
+      x86_64|amd64) asset_arch="amd64" ;;
+      aarch64|arm64) asset_arch="arm64" ;;
+      *)
+        echo "unsupported platform: ${os}/${arch}" >&2
+        exit 1
+        ;;
+    esac
+
+    asset="nats-server-${version}-${asset_os}-${asset_arch}.tar.gz"
+    tmp_dir="$(mktemp -d)"
+    trap 'rm -rf "${tmp_dir}"' EXIT
+
+    url="https://github.com/{{repo}}/releases/download/${version}/${asset}"
+    download "${url}" "${tmp_dir}/${asset}"
+    tar -xzf "${tmp_dir}/${asset}" -C "${tmp_dir}"
+    binary="$(find "${tmp_dir}" -type f -name nats-server -perm -111 | head -n 1)"
+    if [[ -z "${binary}" ]]; then
+      echo "archive ${asset} did not contain executable nats-server" >&2
+      exit 1
+    fi
+
+    install -d "{{prefix}}/bin"
+    install -m 0755 "${binary}" "${install_path}"
+    printf '%s\n' "${version}" > "${version_stamp}"
+    if [[ "${os}" == "Darwin" ]]; then
+      xattr -d com.apple.quarantine "${install_path}" 2>/dev/null || true
+    fi
+    echo "installed nats-server ${install_path} (${version} for ${os}/${arch})"
 
 install-ebpf repo="getployz/ployz":
     ./scripts/install-ebpf-bytecode.sh {{repo}}

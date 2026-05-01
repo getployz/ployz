@@ -1,0 +1,186 @@
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
+
+use async_nats::jetstream::kv;
+use ployz_types::error::{Error, Result};
+
+use crate::NatsStore;
+use crate::buckets::LOCKS_BUCKET;
+use crate::store::kv_json;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeaseValue {
+    pub owner: String,
+    pub nonce: String,
+    pub expires_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Lease {
+    key: String,
+    revision: u64,
+    value: LeaseValue,
+}
+
+impl Lease {
+    #[must_use]
+    pub fn new(key: impl Into<String>, revision: u64, value: LeaseValue) -> Self {
+        Self {
+            key: key.into(),
+            revision,
+            value,
+        }
+    }
+
+    #[must_use]
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    #[must_use]
+    pub fn nonce(&self) -> &str {
+        &self.value.nonce
+    }
+
+    #[must_use]
+    pub fn into_release_guard(self) -> ReleaseGuard {
+        ReleaseGuard {
+            key: self.key,
+            expected_revision: self.revision,
+            expected_nonce: self.value.nonce,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseGuard {
+    pub key: String,
+    pub expected_revision: u64,
+    pub expected_nonce: String,
+}
+
+#[must_use]
+pub fn release_is_allowed(
+    current_revision: u64,
+    current: &LeaseValue,
+    guard: &ReleaseGuard,
+) -> bool {
+    current_revision == guard.expected_revision && current.nonce == guard.expected_nonce
+}
+
+#[derive(Clone)]
+pub struct NatsLocks {
+    bucket: kv::Store,
+}
+
+impl NatsLocks {
+    pub async fn new(store: &NatsStore) -> Result<Self> {
+        let bucket =
+            kv_json::get_bucket(store.jetstream(), LOCKS_BUCKET, "nats_locks_bucket").await?;
+        Ok(Self { bucket })
+    }
+
+    pub async fn acquire(
+        &self,
+        key: &str,
+        owner: impl Into<String>,
+        nonce: impl Into<String>,
+        ttl: Duration,
+        expires_at: u64,
+    ) -> Result<Lease> {
+        let value = LeaseValue {
+            owner: owner.into(),
+            nonce: nonce.into(),
+            expires_at,
+        };
+        let payload = serde_json::to_vec(&value)
+            .map_err(|error| Error::operation("nats_lock_encode", error.to_string()))?;
+        let revision = self
+            .bucket
+            .create_with_ttl(key, payload.into(), ttl)
+            .await
+            .map_err(|error| Error::operation("nats_lock_acquire", format!("{error:?}")))?;
+        Ok(Lease::new(key, revision, value))
+    }
+
+    pub async fn renew(&self, lease: &Lease, ttl: Duration, expires_at: u64) -> Result<Lease> {
+        let value = LeaseValue {
+            owner: lease.value.owner.clone(),
+            nonce: lease.value.nonce.clone(),
+            expires_at,
+        };
+        let payload = serde_json::to_vec(&value)
+            .map_err(|error| Error::operation("nats_lock_encode", error.to_string()))?;
+        let revision = self
+            .bucket
+            .update(&lease.key, payload.into(), lease.revision)
+            .await
+            .map_err(|error| Error::operation("nats_lock_renew", format!("{error:?}")))?;
+        if ttl != Duration::ZERO {
+            tracing::debug!(
+                key = %lease.key,
+                ?ttl,
+                "NATS lock renewed without per-message TTL refresh; async-nats 0.46 exposes TTL only on create"
+            );
+        }
+        Ok(Lease::new(lease.key.clone(), revision, value))
+    }
+
+    pub async fn release(&self, lease: Lease) -> Result<()> {
+        let guard = lease.into_release_guard();
+        let Some(entry) = self
+            .bucket
+            .entry(guard.key.clone())
+            .await
+            .map_err(|error| {
+                Error::operation("nats_lock_read_for_release", format!("{error:?}"))
+            })?
+        else {
+            return Ok(());
+        };
+        let current: LeaseValue = kv_json::decode_json("nats_lock_decode", entry.value.as_ref())?;
+        if !release_is_allowed(entry.revision, &current, &guard) {
+            return Err(Error::operation(
+                "nats_lock_release",
+                format!(
+                    "lock '{}' is held by another lease; refusing stale release",
+                    guard.key
+                ),
+            ));
+        }
+        self.bucket
+            .delete_expect_revision(&guard.key, Some(guard.expected_revision))
+            .await
+            .map_err(|error| Error::operation("nats_lock_release", format!("{error:?}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_holder_cannot_release_newer_lease() {
+        let stale = Lease::new(
+            "locks.deploy.prod",
+            7,
+            LeaseValue {
+                owner: "a".into(),
+                nonce: "old".into(),
+                expires_at: 10,
+            },
+        )
+        .into_release_guard();
+        let current = LeaseValue {
+            owner: "b".into(),
+            nonce: "new".into(),
+            expires_at: 20,
+        };
+        assert!(!release_is_allowed(8, &current, &stale));
+    }
+}

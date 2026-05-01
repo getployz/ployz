@@ -327,6 +327,7 @@ mod tests {
         store
             .commit_deploy(&DeployCommit {
                 namespace: namespace.clone(),
+                revisions: Vec::new(),
                 removed_services: Vec::new(),
                 removed_volumes: Vec::new(),
                 releases: vec![ServiceReleaseRecord {

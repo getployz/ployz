@@ -533,7 +533,8 @@ mod tests {
     use ployz_store_api::memory::{MemoryService, MemoryStore};
     use ployz_store_api::{PeerMembershipObservation, PeerMembershipState, PeerRttObservation};
     use ployz_types::model::{
-        MachineId, MachineLifecycle, MachineTopology, NetworkLifecycle, OverlayIp, PublicKey,
+        MachineId, MachineLifecycle, MachineRole, MachineTopology, NetworkLifecycle, OverlayIp,
+        PublicKey,
     };
     use std::net::{IpAddr, Ipv6Addr, SocketAddr};
     use std::path::PathBuf;
@@ -775,6 +776,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec![String::from("127.0.0.1:51820")],
             lifecycle,
+            role: MachineRole::StorageCandidate,
             created_at: 0,
             updated_at: 0,
             labels: std::collections::BTreeMap::new(),

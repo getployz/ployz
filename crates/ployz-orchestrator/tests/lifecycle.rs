@@ -6,8 +6,8 @@ use ployz_store_api::StoreDriver;
 use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{MachineRegistry, SyncStatus};
 use ployz_types::model::{
-    JoinResponse, MachineId, MachineLifecycle, MachineMembership, MachineTopology, OverlayIp,
-    PublicKey,
+    JoinResponse, MachineId, MachineLifecycle, MachineMembership, MachineRole, MachineTopology,
+    OverlayIp, PublicKey,
 };
 use std::net::Ipv6Addr;
 use std::sync::Arc;
@@ -24,6 +24,7 @@ fn test_record(id: &str, key_byte: u8) -> MachineMembership {
         bridge_ip: None,
         endpoints: vec![format!("10.0.0.{key_byte}:51820")],
         lifecycle: MachineLifecycle::Standby,
+        role: MachineRole::StorageCandidate,
         created_at: 0,
         updated_at: 0,
         labels: std::collections::BTreeMap::new(),
