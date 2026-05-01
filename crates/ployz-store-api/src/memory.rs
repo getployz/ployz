@@ -26,7 +26,7 @@ pub struct MemoryStore {
 struct StoreInner {
     machines: HashMap<MachineId, MachineMembership>,
     machine_subscribers: Vec<mpsc::Sender<crate::MachineSubscriptionUpdate>>,
-    routing_subscribers: Vec<mpsc::Sender<RoutingEventBatch>>,
+    routing_subscribers: Vec<mpsc::Sender<crate::RoutingBatchSubscriptionUpdate>>,
     invites: HashMap<String, InviteRecord>,
     service_revisions: HashMap<(Namespace, String, String), ServiceRevisionRecord>,
     service_releases: HashMap<(Namespace, String), ServiceReleaseRecord>,
@@ -106,11 +106,11 @@ impl MemoryStore {
             return;
         }
         inner.routing_subscribers.retain(|sender| {
-            match sender.try_send(RoutingEventBatch::unacked(
+            match sender.try_send(Ok(RoutingEventBatch::unacked(
                 batch_id.clone(),
                 cause.clone(),
                 events.clone(),
-            )) {
+            ))) {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Closed(_)) => false,
                 Err(mpsc::error::TrySendError::Full(_)) => {
@@ -144,6 +144,9 @@ impl MemoryStore {
         let (tx, rx) = mpsc::channel(1024);
         tokio::spawn(async move {
             while let Some(batch) = batches.recv().await {
+                let Ok(batch) = batch else {
+                    return;
+                };
                 for event in batch.events {
                     if tx.send(event).await.is_err() {
                         return;

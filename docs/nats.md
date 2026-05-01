@@ -579,7 +579,8 @@ Tracked in code comments and the implementation plan. Highlights:
 
 1. Routing events are live JetStream atomic batches. Gateway/DNS use durable
    per-machine consumers; runtime watches and readiness probes use temporary
-   consumers that are deleted when the watcher closes.
+   consumers that are deleted when the watcher closes. Routing subscription
+   updates carry either a complete batch or an explicit consumer failure.
 2. Machine/certificate/ACME challenge subscriptions are KV watchers that carry
    either a domain event or an explicit watcher failure. If a watcher fails or
    closes, consumers stop using the stale event stream. Stronger task

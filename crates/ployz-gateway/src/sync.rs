@@ -119,6 +119,13 @@ where
                         warn!("gateway routing event stream closed; resubscribing");
                         break;
                     };
+                    let batch = match batch {
+                        Ok(batch) => batch,
+                        Err(error) => {
+                            warn!(%error, "gateway routing event stream failed; resubscribing");
+                            break;
+                        }
+                    };
                     apply_routing_batch(&mut projector, batch, &snapshot).await;
                 }
                 event = cert_rx.recv() => {
