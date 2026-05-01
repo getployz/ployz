@@ -108,6 +108,7 @@ impl DaemonState {
                         MachineOperationStatus::Failed,
                         Some(row.message.clone()),
                     );
+                    let message = format!("machine '{}' update failed: {}", row.id, row.message);
                     let payload = MachineUpdatePayload {
                         operation_id,
                         updated,
@@ -115,7 +116,7 @@ impl DaemonState {
                     };
                     return self.err_with_payload(
                         "MACHINE_UPDATE_FAILED",
-                        "machine update failed",
+                        message,
                         Some(DaemonPayload::MachineUpdate(payload)),
                     );
                 }
