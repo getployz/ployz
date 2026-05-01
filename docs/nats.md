@@ -552,8 +552,8 @@ Streams:
 - `revisions` — audit-only history of `ServiceRevisionRecord`. Subject
   `revisions.<ns>.<svc>.<hash>`, `MaxMsgsPerSubject=1`. Not on the
   projection critical path (revisions are inlined in commits).
-- `cert_jobs` — Workqueue retention. Subjects under `cert.jobs.renew.<hostname>`,
-  `cert.jobs.finalize.<order_id>`.
+- `cert_jobs` — Workqueue retention with `allow_msg_schedules=true`.
+  Subjects under `cert.jobs.renew.<hostname>`.
 
 KV buckets:
 
