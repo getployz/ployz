@@ -5,16 +5,16 @@ use crate::certificates::{
     start_pending_orders,
 };
 use crate::deploy::managed_domains;
+use crate::deploy::participant::{self, DeployParticipantClient};
 use crate::deploy::plan::{
     PlanFingerprint, ResolvedPlan, VolumeChange, resolve_plan, volume_record_change,
 };
 use crate::deploy::probe::{NoopParticipantProbe, ParticipantProbe, probe_participants};
-use crate::deploy::session::{self, DeploySessionFactory};
 use crate::deploy::transaction::{CleanupPlan, PreparedDeploy};
 use crate::error::{Error, Result};
 use crate::model::{
     DeployApplyResult, DeployChangeKind, DeployEvent, DeployId, DeployState, InstanceId,
-    InstanceStatusRecord, MachineId, ServiceRevisionRecord, VolumeRecord,
+    InstanceStatusRecord, MachineId, MachineMembership, ServiceRevisionRecord, VolumeRecord,
 };
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use ployz_store_api::{
@@ -24,13 +24,10 @@ use ployz_store_api::{
 use ployz_types::time::now_unix_secs;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use uuid::Uuid;
 
-const SESSION_OPEN_CONCURRENCY: usize = 64;
+const PARTICIPANT_INSPECT_CONCURRENCY: usize = 64;
 const PHASE_MACHINE_CONCURRENCY: usize = 64;
-
-type SharedSession = Arc<Mutex<Option<Box<dyn session::DeploySession>>>>;
 
 #[derive(Debug, Clone)]
 struct StartTask {
@@ -68,29 +65,31 @@ struct CleanupResult {
     errors: Vec<String>,
 }
 
-struct OpenedSession {
+struct InspectedParticipant {
     participant: MachineId,
     instance_count: usize,
-    session: Box<dyn session::DeploySession>,
 }
 
-pub(super) struct SessionSet {
-    sessions: BTreeMap<MachineId, SharedSession>,
+pub(super) struct ParticipantSet {
+    machines: BTreeMap<MachineId, MachineMembership>,
+    namespace: ployz_types::spec::Namespace,
+    deploy_id: DeployId,
 }
 
-impl SessionSet {
-    pub(super) async fn open(
-        session_factory: &dyn DeploySessionFactory,
+impl ParticipantSet {
+    pub(super) async fn inspect(
+        participant_client: &dyn DeployParticipantClient,
         plan: &ResolvedPlan,
         local_machine_id: &MachineId,
         deploy_id: &DeployId,
     ) -> Result<(Self, Vec<DeployEvent>)> {
         let sorted_participants = plan.participants().iter().cloned().collect::<Vec<_>>();
         let namespace = plan.namespace().clone();
-        let opened: Vec<OpenedSession> = stream::iter(sorted_participants.into_iter())
+        let inspected: Vec<InspectedParticipant> = stream::iter(sorted_participants.into_iter())
             .map(|participant| {
                 let machine = plan.machine_map().get(&participant).cloned();
                 let namespace = namespace.clone();
+                let deploy_id = deploy_id.clone();
                 async move {
                     let Some(machine) = machine else {
                         return Err(Error::operation(
@@ -101,72 +100,78 @@ impl SessionSet {
                             ),
                         ));
                     };
-                    let (session, instances) = session_factory
-                        .open(&machine, &namespace, deploy_id, local_machine_id)
+                    let instances = participant_client
+                        .inspect_namespace(&machine, &namespace, &deploy_id, local_machine_id)
                         .await?;
-                    Ok(OpenedSession {
+                    Ok(InspectedParticipant {
                         participant,
                         instance_count: instances.len(),
-                        session,
                     })
                 }
             })
-            .buffer_unordered(SESSION_OPEN_CONCURRENCY)
+            .buffer_unordered(PARTICIPANT_INSPECT_CONCURRENCY)
             .try_collect()
             .await?;
 
-        let mut opened = opened;
-        opened.sort_by(|left, right| left.participant.0.cmp(&right.participant.0));
+        let mut inspected = inspected;
+        inspected.sort_by(|left, right| left.participant.0.cmp(&right.participant.0));
 
-        let mut sessions = BTreeMap::new();
+        let machines = plan
+            .participants()
+            .iter()
+            .map(|machine_id| {
+                let machine = plan.machine_map().get(machine_id).cloned().ok_or_else(|| {
+                    Error::operation(
+                        "deploy_apply",
+                        format!(
+                            "participant '{}' is missing from machine inventory",
+                            machine_id
+                        ),
+                    )
+                })?;
+                Ok((machine_id.clone(), machine))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
         let mut events = Vec::new();
-        for opened_session in opened {
+        for inspected in inspected {
             events.push(DeployEvent {
-                step: "lock".into(),
+                step: "inspect".into(),
                 message: format!(
-                    "acquired lock on '{}' ({} instances)",
-                    opened_session.participant, opened_session.instance_count
+                    "inspected '{}' ({} instances)",
+                    inspected.participant, inspected.instance_count
                 ),
             });
-            sessions.insert(
-                opened_session.participant,
-                Arc::new(Mutex::new(Some(opened_session.session))),
-            );
         }
 
-        Ok((Self { sessions }, events))
+        Ok((
+            Self {
+                machines,
+                namespace,
+                deploy_id: deploy_id.clone(),
+            },
+            events,
+        ))
     }
 
-    fn get(&self, machine_id: &MachineId) -> Result<SharedSession> {
-        self.sessions.get(machine_id).cloned().ok_or_else(|| {
+    fn get(&self, machine_id: &MachineId) -> Result<&MachineMembership> {
+        self.machines.get(machine_id).ok_or_else(|| {
             Error::operation(
                 "deploy_apply",
-                format!("no session was available for machine '{}'", machine_id),
+                format!("no participant was available for machine '{}'", machine_id),
             )
         })
-    }
-
-    pub(super) async fn close_all(self) {
-        for (_machine_id, session) in self.sessions {
-            let mut guard = session.lock().await;
-            let Some(session) = guard.take() else {
-                continue;
-            };
-            drop(guard);
-            let _ = session.close().await;
-        }
     }
 }
 
 pub(super) async fn apply(
     store: &StoreDriver,
-    session_factory: &dyn DeploySessionFactory,
+    participant_client: &dyn DeployParticipantClient,
     local_machine_id: &MachineId,
     manifest: &ployz_types::spec::DeployManifest,
 ) -> Result<DeployApplyResult> {
     apply_with_certificate_coordination(
         store,
-        session_factory,
+        participant_client,
         local_machine_id,
         manifest,
         Arc::new(NoopIssuanceCoordinator),
@@ -180,7 +185,7 @@ pub(super) async fn apply(
 
 pub(super) async fn apply_with_certificate_coordination(
     store: &StoreDriver,
-    session_factory: &dyn DeploySessionFactory,
+    participant_client: &dyn DeployParticipantClient,
     local_machine_id: &MachineId,
     manifest: &ployz_types::spec::DeployManifest,
     certificate_coordinator: Arc<dyn IssuanceCoordinator>,
@@ -216,7 +221,7 @@ pub(super) async fn apply_with_certificate_coordination(
 
     apply_with_initial_plan_and_certificate_coordination(
         store,
-        session_factory,
+        participant_client,
         local_machine_id,
         manifest,
         initial_plan,
@@ -231,14 +236,14 @@ pub(super) async fn apply_with_certificate_coordination(
 #[cfg(test)]
 pub(super) async fn apply_with_initial_plan(
     store: &StoreDriver,
-    session_factory: &dyn DeploySessionFactory,
+    participant_client: &dyn DeployParticipantClient,
     local_machine_id: &MachineId,
     manifest: &ployz_types::spec::DeployManifest,
     initial_plan: ResolvedPlan,
 ) -> Result<DeployApplyResult> {
     apply_with_initial_plan_and_certificate_coordination(
         store,
-        session_factory,
+        participant_client,
         local_machine_id,
         manifest,
         initial_plan,
@@ -252,7 +257,7 @@ pub(super) async fn apply_with_initial_plan(
 
 pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
     store: &StoreDriver,
-    session_factory: &dyn DeploySessionFactory,
+    participant_client: &dyn DeployParticipantClient,
     local_machine_id: &MachineId,
     manifest: &ployz_types::spec::DeployManifest,
     initial_plan: ResolvedPlan,
@@ -265,8 +270,13 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
     let started_at = now_unix_secs();
     let initial_fingerprint = initial_plan.fingerprint();
 
-    let (sessions, mut events) =
-        SessionSet::open(session_factory, &initial_plan, local_machine_id, &deploy_id).await?;
+    let (participants, mut events) = ParticipantSet::inspect(
+        participant_client,
+        &initial_plan,
+        local_machine_id,
+        &deploy_id,
+    )
+    .await?;
 
     let result = async {
         let final_plan = resolve_plan(store, local_machine_id, manifest).await?;
@@ -287,7 +297,8 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
             .await?;
 
         upsert_revisions(store, prepared.revisions()).await?;
-        let startup = run_phase_startup(store, &sessions, prepared.plan(), &deploy_id).await?;
+        let startup =
+            run_phase_startup(store, participant_client, &participants, prepared.plan()).await?;
         events.extend(startup.events);
 
         let started = prepared.into_started(startup.started);
@@ -339,7 +350,9 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
         );
 
         let cleanup_plan = committed.cleanup_plan();
-        let cleanup = cleanup_stale_instances(store, &sessions, &cleanup_plan).await?;
+        let cleanup =
+            cleanup_stale_instances(store, participant_client, &participants, &cleanup_plan)
+                .await?;
         events.extend(cleanup.events);
 
         let final_state = if cleanup.errors.is_empty() {
@@ -369,7 +382,6 @@ pub(super) async fn apply_with_initial_plan_and_certificate_coordination(
     }
     .await;
 
-    sessions.close_all().await;
     result
 }
 
@@ -386,9 +398,9 @@ async fn upsert_revisions(store: &StoreDriver, revisions: &[ServiceRevisionRecor
 
 pub(super) async fn run_phase_startup(
     store: &StoreDriver,
-    sessions: &SessionSet,
+    participant_client: &dyn DeployParticipantClient,
+    participants: &ParticipantSet,
     plan: &ResolvedPlan,
-    deploy_id: &DeployId,
 ) -> Result<PhaseStartupResult> {
     let mut phase_queues: BTreeMap<u32, BTreeMap<MachineId, Vec<StartTask>>> = BTreeMap::new();
     for service in plan.services() {
@@ -424,8 +436,9 @@ pub(super) async fn run_phase_startup(
     for (_phase, machine_tasks) in phase_queues {
         let machine_results: Vec<MachineStartupResult> = stream::iter(machine_tasks.into_iter())
             .map(|(machine_id, tasks)| async move {
-                let session = sessions.get(&machine_id)?;
-                run_machine_start_queue(store, session, tasks, deploy_id).await
+                let machine = participants.get(&machine_id)?;
+                run_machine_start_queue(store, participant_client, participants, machine, tasks)
+                    .await
             })
             .buffer_unordered(PHASE_MACHINE_CONCURRENCY)
             .try_collect()
@@ -467,9 +480,10 @@ pub(super) fn ensure_plan_stable(
 
 async fn run_machine_start_queue(
     store: &StoreDriver,
-    session: SharedSession,
+    participant_client: &dyn DeployParticipantClient,
+    participants: &ParticipantSet,
+    machine: &MachineMembership,
     tasks: Vec<StartTask>,
-    _deploy_id: &DeployId,
 ) -> Result<MachineStartupResult> {
     let machine_id = tasks
         .first()
@@ -479,27 +493,20 @@ async fn run_machine_start_queue(
     let mut started = Vec::new();
 
     for task in tasks {
-        let status = {
-            let mut guard = session.lock().await;
-            let Some(session) = guard.as_mut() else {
-                return Err(Error::operation(
-                    "deploy_apply",
-                    format!(
-                        "session for machine '{}' was already closed",
-                        task.machine_id
-                    ),
-                ));
-            };
-            session
-                .start_candidate(session::StartCandidateRequest {
+        let status = participant_client
+            .start_candidate(
+                &machine.id,
+                &participants.namespace,
+                &participants.deploy_id,
+                participant::StartCandidateRequest {
                     service: task.service.clone(),
                     slot_id: task.slot_id.clone(),
                     instance_id: task.instance_id.clone(),
                     spec_json: task.spec_json.clone(),
                     volumes_json: task.volumes_json.clone(),
-                })
-                .await?
-        };
+                },
+            )
+            .await?;
         store.record_instance_status(&status).await?;
         events.push(DeployEvent {
             step: "start_candidate".into(),
@@ -597,7 +604,8 @@ fn build_committed_volumes(
 
 async fn cleanup_stale_instances(
     store: &StoreDriver,
-    sessions: &SessionSet,
+    participant_client: &dyn DeployParticipantClient,
+    participants: &ParticipantSet,
     plan: &CleanupPlan,
 ) -> Result<CleanupResult> {
     let participant_ids = plan
@@ -622,13 +630,13 @@ async fn cleanup_stale_instances(
 
     let cleanup_results: Vec<CleanupResult> = stream::iter(stale_by_machine.into_iter())
         .map(|(machine_id, statuses)| async move {
-            let Some(session) = sessions.sessions.get(&machine_id).cloned() else {
+            let Some(machine) = participants.machines.get(&machine_id) else {
                 return Ok(CleanupResult {
                     events: Vec::new(),
                     errors: Vec::new(),
                 });
             };
-            run_machine_cleanup(session, statuses).await
+            run_machine_cleanup(participant_client, participants, machine, statuses).await
         })
         .buffer_unordered(PHASE_MACHINE_CONCURRENCY)
         .try_collect()
@@ -650,44 +658,36 @@ async fn cleanup_stale_instances(
 }
 
 async fn run_machine_cleanup(
-    session: SharedSession,
+    participant_client: &dyn DeployParticipantClient,
+    participants: &ParticipantSet,
+    machine: &MachineMembership,
     statuses: Vec<InstanceStatusRecord>,
 ) -> Result<CleanupResult> {
     let mut events = Vec::new();
     let mut errors = Vec::new();
 
     for status in statuses {
-        let drain_result = {
-            let mut guard = session.lock().await;
-            let Some(session) = guard.as_mut() else {
-                return Err(Error::operation(
-                    "deploy_apply",
-                    format!(
-                        "session for machine '{}' was already closed",
-                        status.machine_id
-                    ),
-                ));
-            };
-            session.drain_instance(&status.instance_id).await
-        };
+        let drain_result = participant_client
+            .drain_instance(
+                &machine.id,
+                &participants.namespace,
+                &participants.deploy_id,
+                &status.instance_id,
+            )
+            .await;
         if let Err(error) = drain_result {
             errors.push(error.to_string());
             continue;
         }
 
-        let remove_result = {
-            let mut guard = session.lock().await;
-            let Some(session) = guard.as_mut() else {
-                return Err(Error::operation(
-                    "deploy_apply",
-                    format!(
-                        "session for machine '{}' was already closed",
-                        status.machine_id
-                    ),
-                ));
-            };
-            session.remove_instance(&status.instance_id).await
-        };
+        let remove_result = participant_client
+            .remove_instance(
+                &machine.id,
+                &participants.namespace,
+                &participants.deploy_id,
+                &status.instance_id,
+            )
+            .await;
 
         match remove_result {
             Ok(()) => events.push(DeployEvent {

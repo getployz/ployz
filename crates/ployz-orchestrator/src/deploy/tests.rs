@@ -1,9 +1,11 @@
-use super::execute::{SessionSet, apply_with_initial_plan, ensure_plan_stable, run_phase_startup};
+use super::execute::{
+    ParticipantSet, apply_with_initial_plan, ensure_plan_stable, run_phase_startup,
+};
 use super::plan::{deployable_machines, desired_slots, resolve_plan};
 use super::preview;
 use super::probe::NoopParticipantProbe;
 use super::transaction::PreparedDeploy;
-use crate::deploy::session::{DeploySession, DeploySessionFactory, StartCandidateRequest};
+use crate::deploy::participant::{DeployParticipantClient, StartCandidateRequest};
 use crate::error::Result;
 use crate::model::{
     AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
@@ -331,7 +333,7 @@ async fn apply_commits_volume_records_and_sends_volume_payload_to_startup() {
         .await
         .expect("initial plan");
     let controller = FakeController::default();
-    let factory = FakeSessionFactory::new(controller.clone());
+    let factory = FakeParticipantClient::new(controller.clone());
 
     let first =
         apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
@@ -399,7 +401,7 @@ async fn apply_reconciles_attached_service_before_committing_volume_quota_change
         .await
         .expect("initial plan");
     let controller = FakeController::default();
-    let factory = FakeSessionFactory::new(controller.clone());
+    let factory = FakeParticipantClient::new(controller.clone());
 
     let first =
         apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
@@ -462,7 +464,7 @@ async fn apply_deletes_volume_records_removed_from_manifest() {
         .await
         .expect("initial plan");
     let controller = FakeController::default();
-    let factory = FakeSessionFactory::new(controller);
+    let factory = FakeParticipantClient::new(controller);
 
     apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
         .await
@@ -518,7 +520,7 @@ async fn apply_keeps_retained_volume_when_attached_service_is_removed() {
         .await
         .expect("initial plan");
     let controller = FakeController::default();
-    let factory = FakeSessionFactory::new(controller);
+    let factory = FakeParticipantClient::new(controller);
 
     apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
         .await
@@ -588,7 +590,7 @@ async fn apply_commits_unattached_volume_declarations_without_service_reconcilia
         .await
         .expect("initial plan");
     let controller = FakeController::default();
-    let factory = FakeSessionFactory::new(controller.clone());
+    let factory = FakeParticipantClient::new(controller.clone());
 
     apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
         .await
@@ -627,7 +629,7 @@ async fn apply_preserves_unattached_volume_record_on_unchanged_redeploy() {
         .await
         .expect("initial plan");
     let controller = FakeController::default();
-    let factory = FakeSessionFactory::new(controller);
+    let factory = FakeParticipantClient::new(controller);
 
     let first =
         apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
@@ -913,7 +915,7 @@ async fn resolve_plan_fingerprint_is_stable_across_release_insert_order() {
 }
 
 #[tokio::test]
-async fn session_set_opens_sessions_in_parallel_for_noop_plan() {
+async fn participant_set_inspects_participants_in_parallel_for_noop_plan() {
     let store = seeded_store_with_machines(&[
         "machine-a",
         "machine-b",
@@ -956,13 +958,13 @@ async fn session_set_opens_sessions_in_parallel_for_noop_plan() {
     let plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
         .expect("resolve plan");
-    let factory = FakeSessionFactory::new(controller.clone());
+    let factory = FakeParticipantClient::new(controller.clone());
     let deploy_id = DeployId("deploy-open".into());
 
-    let (sessions, _events) = SessionSet::open(&factory, &plan, &local_machine_id, &deploy_id)
-        .await
-        .expect("open sessions");
-    sessions.close_all().await;
+    let (_participants, _events) =
+        ParticipantSet::inspect(&factory, &plan, &local_machine_id, &deploy_id)
+            .await
+            .expect("inspect participants");
 
     assert_eq!(controller.max_open_seen(), 5);
     assert_eq!(controller.start_count(), 0);
@@ -984,15 +986,15 @@ async fn phase_startup_uses_one_worker_per_machine_but_parallel_across_machines(
     let plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
         .expect("resolve plan");
-    let factory = FakeSessionFactory::new(controller.clone());
+    let factory = FakeParticipantClient::new(controller.clone());
     let deploy_id = DeployId("deploy-phase".into());
-    let (sessions, _events) = SessionSet::open(&factory, &plan, &local_machine_id, &deploy_id)
-        .await
-        .expect("open sessions");
-    let startup = run_phase_startup(&store, &sessions, &plan, &deploy_id)
+    let (participants, _events) =
+        ParticipantSet::inspect(&factory, &plan, &local_machine_id, &deploy_id)
+            .await
+            .expect("inspect participants");
+    let startup = run_phase_startup(&store, &factory, &participants, &plan)
         .await
         .expect("run startup");
-    sessions.close_all().await;
 
     assert_eq!(startup.started.len(), 4);
     assert_eq!(controller.start_count(), 4);
@@ -1022,16 +1024,16 @@ async fn run_phase_startup_waits_for_previous_phase_before_next_phase() {
         start_delay: Duration::from_millis(20),
         ..Default::default()
     };
-    let factory = FakeSessionFactory::new(controller.clone());
+    let factory = FakeParticipantClient::new(controller.clone());
     let deploy_id = DeployId("deploy-test".into());
-    let (sessions, _events) = SessionSet::open(&factory, &plan, &local_machine_id, &deploy_id)
-        .await
-        .expect("open sessions");
+    let (participants, _events) =
+        ParticipantSet::inspect(&factory, &plan, &local_machine_id, &deploy_id)
+            .await
+            .expect("inspect participants");
 
-    let startup = run_phase_startup(&store, &sessions, &plan, &deploy_id)
+    let startup = run_phase_startup(&store, &factory, &participants, &plan)
         .await
         .expect("run phases");
-    sessions.close_all().await;
 
     assert_eq!(startup.started.len(), 4);
     let log = controller.start_log().await;
@@ -1154,7 +1156,7 @@ async fn apply_rejects_hostname_owned_by_another_namespace_before_commit() {
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
         .expect("initial plan");
-    let factory = FakeSessionFactory::new(FakeController::default());
+    let factory = FakeParticipantClient::new(FakeController::default());
 
     let error =
         apply_with_initial_plan(&store, &factory, &local_machine_id, &manifest, initial_plan)
@@ -1190,7 +1192,7 @@ async fn preview_allows_hostname_move_within_same_namespace() {
 }
 
 #[tokio::test]
-async fn apply_with_initial_plan_does_not_commit_when_session_open_fails() {
+async fn apply_with_initial_plan_does_not_commit_when_participant_inspect_fails() {
     let (store, backend) = counting_store_with_machines(&["machine-a", "machine-b"]).await;
     let local_machine_id = MachineId("local".into());
     let manifest = test_manifest(vec![test_service_spec(
@@ -1201,7 +1203,7 @@ async fn apply_with_initial_plan_does_not_commit_when_session_open_fails() {
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
         .expect("initial plan");
-    let factory = FakeSessionFactory::new(FakeController {
+    let factory = FakeParticipantClient::new(FakeController {
         fail_open_machine: Some("machine-b".into()),
         ..Default::default()
     });
@@ -1227,7 +1229,7 @@ async fn apply_with_initial_plan_does_not_commit_when_start_candidate_fails() {
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
         .expect("initial plan");
-    let factory = FakeSessionFactory::new(FakeController {
+    let factory = FakeParticipantClient::new(FakeController {
         fail_start_service: Some("api".into()),
         ..Default::default()
     });
@@ -1274,7 +1276,7 @@ async fn apply_with_initial_plan_sets_cleanup_pending_after_cleanup_failure() {
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
         .expect("initial plan");
-    let factory = FakeSessionFactory::new(FakeController {
+    let factory = FakeParticipantClient::new(FakeController {
         fail_remove_instance: Some("old-instance".into()),
         ..Default::default()
     });
@@ -1322,7 +1324,7 @@ async fn apply_with_initial_plan_commits_once_after_all_starts_finish() {
     let initial_plan = resolve_plan(&store, &local_machine_id, &manifest)
         .await
         .expect("initial plan");
-    let factory = FakeSessionFactory::new(FakeController {
+    let factory = FakeParticipantClient::new(FakeController {
         start_delay: Duration::from_millis(10),
         ..Default::default()
     });
@@ -1591,25 +1593,25 @@ impl FakeController {
     }
 }
 
-struct FakeSessionFactory {
+struct FakeParticipantClient {
     controller: FakeController,
 }
 
-impl FakeSessionFactory {
+impl FakeParticipantClient {
     fn new(controller: FakeController) -> Self {
         Self { controller }
     }
 }
 
 #[async_trait::async_trait]
-impl DeploySessionFactory for FakeSessionFactory {
-    async fn open(
+impl DeployParticipantClient for FakeParticipantClient {
+    async fn inspect_namespace(
         &self,
         machine: &MachineMembership,
-        namespace: &Namespace,
-        deploy_id: &DeployId,
+        _namespace: &Namespace,
+        _deploy_id: &DeployId,
         _coordinator_id: &MachineId,
-    ) -> Result<(Box<dyn DeploySession>, Vec<InstanceStatusRecord>)> {
+    ) -> Result<Vec<InstanceStatusRecord>> {
         self.controller.on_open_start().await;
         if self.controller.should_fail_open(&machine.id) {
             return Err(ployz_types::error::Error::operation(
@@ -1617,37 +1619,14 @@ impl DeploySessionFactory for FakeSessionFactory {
                 format!("injected open failure for '{}'", machine.id),
             ));
         }
-        Ok((
-            Box::new(FakeSession {
-                controller: self.controller.clone(),
-                machine_id: machine.id.clone(),
-                namespace: namespace.clone(),
-                deploy_id: deploy_id.clone(),
-            }),
-            Vec::new(),
-        ))
-    }
-}
-
-struct FakeSession {
-    controller: FakeController,
-    machine_id: MachineId,
-    namespace: Namespace,
-    deploy_id: DeployId,
-}
-
-#[async_trait::async_trait]
-impl DeploySession for FakeSession {
-    fn machine_id(&self) -> &MachineId {
-        &self.machine_id
-    }
-
-    async fn inspect_namespace(&mut self) -> Result<Vec<InstanceStatusRecord>> {
         Ok(Vec::new())
     }
 
     async fn start_candidate(
-        &mut self,
+        &self,
+        machine_id: &MachineId,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
         req: StartCandidateRequest,
     ) -> Result<InstanceStatusRecord> {
         self.controller
@@ -1656,25 +1635,25 @@ impl DeploySession for FakeSession {
             .await
             .push(req.clone());
         self.controller
-            .on_start_begin(&self.machine_id, &req.service, &req.slot_id)
+            .on_start_begin(machine_id, &req.service, &req.slot_id)
             .await;
         if self.controller.should_fail_start(&req.service) {
-            self.controller.on_start_end(&self.machine_id).await;
+            self.controller.on_start_end(machine_id).await;
             return Err(ployz_types::error::Error::operation(
                 "fake_start",
                 format!("injected start failure for '{}'", req.service),
             ));
         }
         sleep(self.controller.start_delay).await;
-        self.controller.on_start_end(&self.machine_id).await;
+        self.controller.on_start_end(machine_id).await;
         Ok(InstanceStatusRecord {
             instance_id: req.instance_id.clone(),
-            namespace: self.namespace.clone(),
+            namespace: namespace.clone(),
             service: req.service,
             slot_id: req.slot_id,
-            machine_id: self.machine_id.clone(),
+            machine_id: machine_id.clone(),
             revision_hash: "fake-revision".into(),
-            deploy_id: self.deploy_id.clone(),
+            deploy_id: deploy_id.clone(),
             docker_container_id: format!("container-{}", req.instance_id.0),
             overlay_ip: None,
             backend_ports: BTreeMap::new(),
@@ -1687,12 +1666,24 @@ impl DeploySession for FakeSession {
         })
     }
 
-    async fn drain_instance(&mut self, _instance_id: &InstanceId) -> Result<()> {
+    async fn drain_instance(
+        &self,
+        _machine_id: &MachineId,
+        _namespace: &Namespace,
+        _deploy_id: &DeployId,
+        _instance_id: &InstanceId,
+    ) -> Result<()> {
         self.controller.on_drain();
         Ok(())
     }
 
-    async fn remove_instance(&mut self, instance_id: &InstanceId) -> Result<()> {
+    async fn remove_instance(
+        &self,
+        _machine_id: &MachineId,
+        _namespace: &Namespace,
+        _deploy_id: &DeployId,
+        instance_id: &InstanceId,
+    ) -> Result<()> {
         self.controller.on_remove();
         if self.controller.should_fail_remove(instance_id) {
             return Err(ployz_types::error::Error::operation(
@@ -1700,10 +1691,6 @@ impl DeploySession for FakeSession {
                 format!("injected remove failure for '{}'", instance_id),
             ));
         }
-        Ok(())
-    }
-
-    async fn close(self: Box<Self>) -> Result<()> {
         Ok(())
     }
 }

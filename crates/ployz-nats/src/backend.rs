@@ -27,6 +27,7 @@ use crate::buckets::ensure_assets;
 use crate::store::instances::list_all_instance_status;
 use crate::store::routing::{
     NATS_BATCH_COMMIT, NATS_BATCH_ID, NATS_BATCH_SEQUENCE, PLOYZ_ROUTING_CAUSE,
+    PLOYZ_ROUTING_COUNT, PLOYZ_ROUTING_SEQUENCE,
 };
 use crate::subjects::ROUTING_EVENTS_STREAM;
 
@@ -221,6 +222,7 @@ impl RoutingSnapshotReader for NatsStore {
         &self,
         consumer_id: &str,
     ) -> Result<RoutingBatchSubscription> {
+        let consumer_name = routing_consumer_name(consumer_id);
         let stream = self
             .jetstream()
             .get_stream(ROUTING_EVENTS_STREAM)
@@ -228,8 +230,8 @@ impl RoutingSnapshotReader for NatsStore {
             .map_err(|error| Error::operation("nats_routing_stream", format!("{error:?}")))?;
         let consumer: async_nats::jetstream::consumer::PushConsumer = stream
             .create_consumer(push::Config {
-                durable_name: Some(consumer_id.to_string()),
-                name: Some(consumer_id.to_string()),
+                durable_name: Some(consumer_name.clone()),
+                name: Some(consumer_name),
                 deliver_subject: self.client().new_inbox(),
                 deliver_policy: DeliverPolicy::New,
                 ack_policy: AckPolicy::Explicit,
@@ -312,11 +314,12 @@ impl PendingRoutingBatches {
             Error::operation("nats_routing_headers", "routing event missing headers")
         })?;
         let batch_id = header(headers, NATS_BATCH_ID)?.to_string();
-        let complete = self
-            .by_id
-            .entry(batch_id.clone())
-            .or_default()
-            .push(batch_id.clone(), message)?;
+        let sequence = routing_sequence(headers)?;
+        let batch = self.by_id.entry(batch_id.clone()).or_default();
+        if sequence == 1 && !batch.events.is_empty() {
+            *batch = PendingRoutingBatch::default();
+        }
+        let complete = batch.push(batch_id.clone(), sequence, message)?;
         if complete.is_some() {
             self.by_id.remove(&batch_id);
         }
@@ -325,13 +328,15 @@ impl PendingRoutingBatches {
 }
 
 impl PendingRoutingBatch {
-    fn push(&mut self, batch_id: String, message: Message) -> Result<Option<CompleteRoutingBatch>> {
+    fn push(
+        &mut self,
+        batch_id: String,
+        sequence: usize,
+        message: Message,
+    ) -> Result<Option<CompleteRoutingBatch>> {
         let headers = message.headers.as_ref().ok_or_else(|| {
             Error::operation("nats_routing_headers", "routing event missing headers")
         })?;
-        let sequence = header(headers, NATS_BATCH_SEQUENCE)?
-            .parse::<usize>()
-            .map_err(|error| Error::operation("nats_routing_sequence", error.to_string()))?;
         if sequence != self.events.len() + 1 {
             return Err(Error::operation(
                 "nats_routing_sequence",
@@ -357,9 +362,21 @@ impl PendingRoutingBatch {
                     .map_err(|error| Error::operation("nats_routing_commit", error.to_string()))
             })
             .transpose()?;
+        let count = if commit.is_some() {
+            Some(
+                header(headers, PLOYZ_ROUTING_COUNT)?
+                    .parse::<usize>()
+                    .map_err(|error| Error::operation("nats_routing_count", error.to_string()))?,
+            )
+        } else {
+            None
+        };
         self.events.push(event);
         self.messages.push(message);
-        let Some(count) = commit else {
+        if commit.is_none() {
+            return Ok(None);
+        };
+        let Some(count) = count else {
             return Ok(None);
         };
         if count != self.events.len() {
@@ -385,6 +402,43 @@ fn header<'a>(headers: &'a async_nats::HeaderMap, name: &str) -> Result<&'a str>
         .get(name)
         .map(|value| value.as_str())
         .ok_or_else(|| Error::operation("nats_routing_headers", format!("missing {name} header")))
+}
+
+fn routing_sequence(headers: &async_nats::HeaderMap) -> Result<usize> {
+    let value = headers
+        .get(PLOYZ_ROUTING_SEQUENCE)
+        .or_else(|| headers.get(NATS_BATCH_SEQUENCE))
+        .map(|value| value.as_str())
+        .ok_or_else(|| {
+            Error::operation(
+                "nats_routing_headers",
+                format!("missing {PLOYZ_ROUTING_SEQUENCE} header"),
+            )
+        })?;
+    value
+        .parse::<usize>()
+        .map_err(|error| Error::operation("nats_routing_sequence", error.to_string()))
+}
+
+fn routing_consumer_name(consumer_id: &str) -> String {
+    crate::subjects::subject_token(consumer_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn routing_consumer_names_escape_subject_separators() {
+        assert_eq!(
+            routing_consumer_name("gateway.founder"),
+            "gateway%2Efounder"
+        );
+        assert_eq!(
+            routing_consumer_name("dns.machine/one"),
+            "dns%2Emachine%2Fone"
+        );
+    }
 }
 
 impl SyncProbe for NatsStore {

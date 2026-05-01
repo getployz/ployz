@@ -25,17 +25,10 @@ pub struct DeployAgent {
     storage_driver: Option<Arc<ZfsDriver<TokioShellRunner>>>,
 }
 
-/// Per-session runtime context. Coordination locks are owned by the deploy
-/// coordinator, not by participant connections.
-pub struct SessionState {
+/// Runtime context for one deploy participant command. Coordination locks are
+/// owned by the deploy coordinator, not by participant command handlers.
+pub struct DeployCommandContext {
     namespace: Namespace,
-    deploy_id: DeployId,
-}
-
-impl SessionState {
-    pub(super) fn deploy_id(&self) -> &DeployId {
-        &self.deploy_id
-    }
 }
 
 impl DeployAgent {
@@ -56,38 +49,25 @@ impl DeployAgent {
         }
     }
 
-    /// Open a session: adopt orphaned containers and return a snapshot of
-    /// current instances.
-    pub async fn open_session(
+    /// Adopt orphaned containers and return a snapshot of current instances.
+    pub async fn inspect_namespace(
         &self,
         namespace: &Namespace,
-        deploy_id: &DeployId,
-    ) -> Result<(SessionState, Vec<InstanceStatusRecord>)> {
+    ) -> Result<Vec<InstanceStatusRecord>> {
         if let Ok(runtime) = self.new_runtime() {
             adopt_instances(&self.store, &runtime, namespace).await?;
         }
-        let instances =
-            list_local_instance_status(&self.store, namespace, &self.local_machine_id).await?;
-        let state = SessionState {
-            namespace: namespace.clone(),
-            deploy_id: deploy_id.clone(),
-        };
-        Ok((state, instances))
+        list_local_instance_status(&self.store, namespace, &self.local_machine_id).await
     }
 
-    pub async fn inspect_namespace(
-        &self,
-        session: &SessionState,
-    ) -> Result<Vec<InstanceStatusRecord>> {
-        if let Ok(runtime) = self.new_runtime() {
-            adopt_instances(&self.store, &runtime, &session.namespace).await?;
-        }
-        list_local_instance_status(&self.store, &session.namespace, &self.local_machine_id).await
+    #[must_use]
+    pub fn command_context(&self, namespace: Namespace) -> DeployCommandContext {
+        DeployCommandContext { namespace }
     }
 
     pub async fn start_candidate(
         &self,
-        session: &SessionState,
+        context: &DeployCommandContext,
         service: &str,
         slot_id: &SlotId,
         instance_id: &InstanceId,
@@ -97,7 +77,7 @@ impl DeployAgent {
     ) -> Result<InstanceStatusRecord> {
         // Idempotent: if instance already exists, return its status.
         if let Some(existing) = self
-            .find_local_instance_status(&session.namespace, instance_id)
+            .find_local_instance_status(&context.namespace, instance_id)
             .await?
         {
             return Ok(existing);
@@ -126,7 +106,7 @@ impl DeployAgent {
         let runtime = self.new_runtime()?;
         let instance = runtime
             .start_candidate(StartCandidate {
-                namespace: &session.namespace,
+                namespace: &context.namespace,
                 spec: &spec,
                 deploy_id,
                 instance_id,
@@ -138,7 +118,7 @@ impl DeployAgent {
             .await?;
         runtime.wait_ready(&spec, &instance).await?;
         let status = build_instance_status_record(
-            &session.namespace,
+            &context.namespace,
             &instance,
             InstancePhase::Ready,
             true,
@@ -151,11 +131,11 @@ impl DeployAgent {
 
     pub async fn drain_instance(
         &self,
-        session: &SessionState,
+        context: &DeployCommandContext,
         instance_id: &InstanceId,
     ) -> Result<()> {
         let Some(mut status) = self
-            .find_local_instance_status(&session.namespace, instance_id)
+            .find_local_instance_status(&context.namespace, instance_id)
             .await?
         else {
             // Idempotent: already gone is not an error.
@@ -175,11 +155,11 @@ impl DeployAgent {
 
     pub async fn remove_instance(
         &self,
-        session: &SessionState,
+        context: &DeployCommandContext,
         instance_id: &InstanceId,
     ) -> Result<()> {
         let Some(status) = self
-            .find_local_instance_status(&session.namespace, instance_id)
+            .find_local_instance_status(&context.namespace, instance_id)
             .await?
         else {
             // Idempotent: already gone is not an error.
@@ -187,7 +167,7 @@ impl DeployAgent {
         };
         let runtime = self.new_runtime()?;
         runtime
-            .remove_instance(&status.instance_id, &session.namespace, &status.service)
+            .remove_instance(&status.instance_id, &context.namespace, &status.service)
             .await?;
         self.store
             .remove_instance_status(&status.instance_id)

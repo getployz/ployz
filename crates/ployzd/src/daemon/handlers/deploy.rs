@@ -12,9 +12,7 @@ use ployz_nats::coord::locks::{NatsDeployLock, NatsLocks};
 use ployz_nats::coord::rpc::{NatsNodeRpcClient, NodeCommandSubject};
 use ployz_orchestrator::certificates::{AcmeAccountCoordinator, CertificateManagerConfig};
 use ployz_orchestrator::coordination::ReservationId;
-use ployz_orchestrator::deploy::session::{
-    DeploySession, DeploySessionFactory, StartCandidateRequest,
-};
+use ployz_orchestrator::deploy::participant::{DeployParticipantClient, StartCandidateRequest};
 use ployz_orchestrator::deploy::{apply_with_certificate_coordination, preview};
 use ployz_runtime_backends::deploy::remote::DeployAgent;
 use ployz_store_api::{DeployRepository, StoreDriver, StoreRuntimeControl};
@@ -143,13 +141,13 @@ impl DaemonState {
         let prober = crate::daemon::deploy_probe::NatsRpcProbe::new(
             ployz_nats::coord::rpc::NatsNodeRpcClient::new(nats_store.client().clone()),
         );
-        let factory = NatsDeploySessionFactory::new(
+        let participant_client = NatsDeployParticipantClient::new(
             ployz_nats::coord::rpc::NatsNodeRpcClient::new(nats_store.client().clone()),
         );
 
         let result = apply_with_certificate_coordination(
             &active.mesh.store,
-            &factory,
+            &participant_client,
             &self.identity.machine_id,
             &manifest,
             certificate_coordinator,
@@ -184,16 +182,15 @@ impl DaemonState {
     pub async fn handle_deploy_node_inspect_namespace(
         &self,
         namespace: &str,
-        deploy_id: &str,
+        _deploy_id: &str,
     ) -> DaemonResponse {
         let namespace = Namespace(namespace.to_string());
-        let deploy_id = DeployId(deploy_id.to_string());
         let agent = match self.deploy_node_agent().await {
             Ok(agent) => agent,
             Err(error) => return self.err("DEPLOY_NODE_FAILED", error),
         };
-        match agent.open_session(&namespace, &deploy_id).await {
-            Ok((_state, instances)) => self.ok_with_payload(
+        match agent.inspect_namespace(&namespace).await {
+            Ok(instances) => self.ok_with_payload(
                 "namespace inspected",
                 Some(DaemonPayload::DeployNamespaceSnapshot(
                     DeployNamespaceSnapshotPayload { instances },
@@ -220,13 +217,10 @@ impl DaemonState {
             Ok(agent) => agent,
             Err(error) => return self.err("DEPLOY_NODE_FAILED", error),
         };
-        let (state, _) = match agent.open_session(&namespace, &deploy_id).await {
-            Ok(result) => result,
-            Err(error) => return self.err("DEPLOY_NODE_FAILED", error.to_string()),
-        };
+        let context = agent.command_context(namespace);
         match agent
             .start_candidate(
-                &state,
+                &context,
                 service,
                 &SlotId(slot_id.to_string()),
                 &InstanceId(instance_id.to_string()),
@@ -279,24 +273,20 @@ impl DaemonState {
     async fn handle_deploy_node_instance_command(
         &self,
         namespace: &str,
-        deploy_id: &str,
+        _deploy_id: &str,
         instance_id: &str,
         op: DeployNodeOp,
     ) -> DaemonResponse {
         let namespace = Namespace(namespace.to_string());
-        let deploy_id = DeployId(deploy_id.to_string());
         let agent = match self.deploy_node_agent().await {
             Ok(agent) => agent,
             Err(error) => return self.err("DEPLOY_NODE_FAILED", error),
         };
-        let (state, _) = match agent.open_session(&namespace, &deploy_id).await {
-            Ok(result) => result,
-            Err(error) => return self.err("DEPLOY_NODE_FAILED", error.to_string()),
-        };
+        let context = agent.command_context(namespace);
         let instance_id = InstanceId(instance_id.to_string());
         let result = match op {
-            DeployNodeOp::Drain => agent.drain_instance(&state, &instance_id).await,
-            DeployNodeOp::Remove => agent.remove_instance(&state, &instance_id).await,
+            DeployNodeOp::Drain => agent.drain_instance(&context, &instance_id).await,
+            DeployNodeOp::Remove => agent.remove_instance(&context, &instance_id).await,
         };
         match result {
             Ok(()) => self.ok("deploy node command completed"),
@@ -330,11 +320,11 @@ enum DeployNodeOp {
 }
 
 #[derive(Clone)]
-struct NatsDeploySessionFactory {
+struct NatsDeployParticipantClient {
     client: NatsNodeRpcClient,
 }
 
-impl NatsDeploySessionFactory {
+impl NatsDeployParticipantClient {
     #[must_use]
     fn new(client: NatsNodeRpcClient) -> Self {
         Self { client }
@@ -342,46 +332,21 @@ impl NatsDeploySessionFactory {
 }
 
 #[async_trait::async_trait]
-impl DeploySessionFactory for NatsDeploySessionFactory {
-    async fn open(
+impl DeployParticipantClient for NatsDeployParticipantClient {
+    async fn inspect_namespace(
         &self,
         machine: &MachineMembership,
         namespace: &Namespace,
         deploy_id: &DeployId,
         _coordinator_id: &MachineId,
-    ) -> ployz_types::Result<(Box<dyn DeploySession>, Vec<InstanceStatusRecord>)> {
-        let mut session = NatsDeploySession {
-            machine_id: machine.id.clone(),
-            namespace: namespace.clone(),
-            deploy_id: deploy_id.clone(),
-            client: self.client.clone(),
-        };
-        let instances = session.inspect_namespace().await?;
-        Ok((Box::new(session), instances))
-    }
-}
-
-struct NatsDeploySession {
-    machine_id: MachineId,
-    namespace: Namespace,
-    deploy_id: DeployId,
-    client: NatsNodeRpcClient,
-}
-
-#[async_trait::async_trait]
-impl DeploySession for NatsDeploySession {
-    fn machine_id(&self) -> &MachineId {
-        &self.machine_id
-    }
-
-    async fn inspect_namespace(&mut self) -> ployz_types::Result<Vec<InstanceStatusRecord>> {
+    ) -> ployz_types::Result<Vec<InstanceStatusRecord>> {
         let response = self
             .client
             .request(
-                NodeCommandSubject::deploy_inspect_namespace(&self.machine_id),
+                NodeCommandSubject::deploy_inspect_namespace(&machine.id),
                 &ployz_api::DaemonRequest::DeployNodeInspectNamespace {
-                    namespace: self.namespace.0.clone(),
-                    deploy_id: self.deploy_id.0.clone(),
+                    namespace: namespace.0.clone(),
+                    deploy_id: deploy_id.0.clone(),
                 },
             )
             .await
@@ -405,16 +370,19 @@ impl DeploySession for NatsDeploySession {
     }
 
     async fn start_candidate(
-        &mut self,
+        &self,
+        machine_id: &MachineId,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
         request: StartCandidateRequest,
     ) -> ployz_types::Result<InstanceStatusRecord> {
         let response = self
             .client
             .request(
-                NodeCommandSubject::deploy_start_candidate(&self.machine_id),
+                NodeCommandSubject::deploy_start_candidate(machine_id),
                 &ployz_api::DaemonRequest::DeployNodeStartCandidate {
-                    namespace: self.namespace.0.clone(),
-                    deploy_id: self.deploy_id.0.clone(),
+                    namespace: namespace.0.clone(),
+                    deploy_id: deploy_id.0.clone(),
                     service: request.service,
                     slot_id: request.slot_id.0,
                     instance_id: request.instance_id.0,
@@ -442,12 +410,18 @@ impl DeploySession for NatsDeploySession {
         Ok(payload.status)
     }
 
-    async fn drain_instance(&mut self, instance_id: &InstanceId) -> ployz_types::Result<()> {
+    async fn drain_instance(
+        &self,
+        machine_id: &MachineId,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+        instance_id: &InstanceId,
+    ) -> ployz_types::Result<()> {
         self.expect_ok(
-            NodeCommandSubject::deploy_drain_instance(&self.machine_id),
+            NodeCommandSubject::deploy_drain_instance(machine_id),
             ployz_api::DaemonRequest::DeployNodeDrainInstance {
-                namespace: self.namespace.0.clone(),
-                deploy_id: self.deploy_id.0.clone(),
+                namespace: namespace.0.clone(),
+                deploy_id: deploy_id.0.clone(),
                 instance_id: instance_id.0.clone(),
             },
             "deploy_node_drain",
@@ -455,25 +429,27 @@ impl DeploySession for NatsDeploySession {
         .await
     }
 
-    async fn remove_instance(&mut self, instance_id: &InstanceId) -> ployz_types::Result<()> {
+    async fn remove_instance(
+        &self,
+        machine_id: &MachineId,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+        instance_id: &InstanceId,
+    ) -> ployz_types::Result<()> {
         self.expect_ok(
-            NodeCommandSubject::deploy_remove_instance(&self.machine_id),
+            NodeCommandSubject::deploy_remove_instance(machine_id),
             ployz_api::DaemonRequest::DeployNodeRemoveInstance {
-                namespace: self.namespace.0.clone(),
-                deploy_id: self.deploy_id.0.clone(),
+                namespace: namespace.0.clone(),
+                deploy_id: deploy_id.0.clone(),
                 instance_id: instance_id.0.clone(),
             },
             "deploy_node_remove",
         )
         .await
     }
-
-    async fn close(self: Box<Self>) -> ployz_types::Result<()> {
-        Ok(())
-    }
 }
 
-impl NatsDeploySession {
+impl NatsDeployParticipantClient {
     async fn expect_ok(
         &self,
         subject: NodeCommandSubject,

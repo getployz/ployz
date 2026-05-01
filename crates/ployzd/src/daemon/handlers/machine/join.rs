@@ -20,7 +20,7 @@ use self::bootstrap::bootstrap_remote_machine;
 use self::coordination::BootstrapSubnetClaim;
 use self::remote::{
     ExpectedSubnetState, log_nats_enable_rollback, nats_rpc_expect_ok, nats_self_record,
-    remote_rpc_expect_ok, wait_for_machine_projection, wait_for_nats_ready,
+    remote_response_error, remote_rpc_expect_ok, wait_for_machine_projection, wait_for_nats_ready,
 };
 use self::target::run_machine_add_target;
 use super::operations::{MachineOperationArtifacts, MachineOperationKind, MachineOperationStatus};
@@ -461,18 +461,46 @@ impl DaemonState {
             }),
             Err(error) => return self.err("NATS_RPC_UNAVAILABLE", error),
         };
-        if let Err(err) = nats_rpc_expect_ok(
-            &nats_client,
-            NodeCommandSubject::machine_transition_self(&record.id),
-            DaemonRequest::MachineTransitionSelf {
-                goal: MachineTransitionGoal::Standby,
-                assigned_subnet: None,
-                force,
-            },
-        )
-        .await
-        {
-            return self.err("REMOTE_STANDBY_FAILED", err);
+        let transition = nats_client
+            .request(
+                NodeCommandSubject::machine_transition_self(&record.id),
+                &DaemonRequest::MachineTransitionSelf {
+                    goal: MachineTransitionGoal::Standby,
+                    assigned_subnet: None,
+                    force,
+                },
+            )
+            .await;
+        match transition {
+            Ok(response) if response.ok => {}
+            Ok(response) => {
+                return self.err("REMOTE_STANDBY_FAILED", remote_response_error(&response));
+            }
+            Err(err) => {
+                let projection = wait_for_machine_projection(
+                    &active.mesh.store,
+                    &machine_id,
+                    MachineLifecycle::Standby,
+                    ExpectedSubnetState::Absent,
+                )
+                .await;
+                match projection {
+                    Ok(()) => {
+                        tracing::warn!(
+                            machine = %machine_id,
+                            error = %err,
+                            "machine standby NATS reply failed after projected state reached expected value"
+                        );
+                        return self.ok(format!("machine '{}' standby", machine_id));
+                    }
+                    Err(projection_err) => {
+                        return self.err(
+                            "REMOTE_STANDBY_FAILED",
+                            format!("{err}; projection did not confirm standby: {projection_err}"),
+                        );
+                    }
+                }
+            }
         }
 
         match wait_for_machine_projection(
