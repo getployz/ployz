@@ -1,3 +1,4 @@
+use crate::error::Result as PloyzResult;
 use crate::mesh::driver::WireguardDriver;
 use crate::mesh::peer_state::{PeerStateMap, sync_peers};
 use crate::mesh::tasks::EndpointSelectionMap;
@@ -9,7 +10,7 @@ use tracing::{debug, info, warn};
 
 pub(crate) struct PeerSyncTask {
     pub(crate) snapshot: Vec<MachineMembership>,
-    pub(crate) events: mpsc::Receiver<MachineEvent>,
+    pub(crate) events: mpsc::Receiver<PloyzResult<MachineEvent>>,
     pub(crate) bootstrap_peers: Vec<MachineObservation>,
     pub(crate) network: WireguardDriver,
     pub(crate) local_machine_id: MachineId,
@@ -48,6 +49,13 @@ pub(crate) async fn run_peer_sync_task(task: PeerSyncTask) {
                     warn!("peer sync machine subscription closed");
                     break;
                 };
+                let event = match event {
+                    Ok(event) => event,
+                    Err(error) => {
+                        warn!(%error, "peer sync machine subscription failed");
+                        break;
+                    }
+                };
                 debug!(?event, "peer sync event");
                 state.apply_event(&event, Instant::now());
                 sync_peers(&state, &network, &local_machine_id, &endpoint_selections).await;
@@ -61,9 +69,7 @@ mod tests {
     use super::*;
     use crate::mesh::driver::WireguardDriver;
     use crate::mesh::wireguard::MemoryWireGuard;
-    use crate::model::{
-        MachineEvent, MachineLifecycle, MachineRole, MachineTopology, OverlayIp, PublicKey,
-    };
+    use crate::model::{MachineLifecycle, MachineRole, MachineTopology, OverlayIp, PublicKey};
     use std::collections::HashMap;
     use std::net::Ipv6Addr;
     use std::sync::Arc;
@@ -110,7 +116,7 @@ mod tests {
             PublicKey([2; 32]),
             vec!["founder:1"],
         )];
-        let (_event_tx, event_rx) = mpsc::channel::<MachineEvent>(4);
+        let (_event_tx, event_rx) = mpsc::channel(4);
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();
 
@@ -143,7 +149,7 @@ mod tests {
         let network = Arc::new(MemoryWireGuard::new());
         let driver = WireguardDriver::memory_with(network);
         let local_machine_id = MachineId("self".into());
-        let (event_tx, event_rx) = mpsc::channel::<MachineEvent>(4);
+        let (event_tx, event_rx) = mpsc::channel(4);
         let cancel = CancellationToken::new();
 
         drop(event_tx);
@@ -162,5 +168,37 @@ mod tests {
         )
         .await
         .expect("peer sync should exit when machine subscription closes");
+    }
+
+    #[tokio::test]
+    async fn exits_when_machine_subscription_reports_failure() {
+        let network = Arc::new(MemoryWireGuard::new());
+        let driver = WireguardDriver::memory_with(network);
+        let local_machine_id = MachineId("self".into());
+        let (event_tx, event_rx) = mpsc::channel(4);
+        let cancel = CancellationToken::new();
+
+        event_tx
+            .send(Err(crate::error::Error::operation(
+                "test_subscription",
+                "closed",
+            )))
+            .await
+            .expect("failure event should send");
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            run_peer_sync_task(PeerSyncTask {
+                snapshot: Vec::new(),
+                events: event_rx,
+                bootstrap_peers: Vec::new(),
+                network: driver,
+                local_machine_id,
+                endpoint_selections: Arc::new(RwLock::new(HashMap::new())),
+                cancel,
+            }),
+        )
+        .await
+        .expect("peer sync should exit when machine subscription reports failure");
     }
 }

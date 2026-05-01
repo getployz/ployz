@@ -1,3 +1,4 @@
+use crate::error::Result as PloyzResult;
 use crate::model::{MachineEvent, MachineMembership};
 use std::collections::BTreeMap;
 use tokio::sync::mpsc;
@@ -6,7 +7,7 @@ use tracing::{info, warn};
 
 pub(crate) async fn run_subnet_claim_monitor_task(
     snapshot: Vec<MachineMembership>,
-    mut events: mpsc::Receiver<MachineEvent>,
+    mut events: mpsc::Receiver<PloyzResult<MachineEvent>>,
     cancel: CancellationToken,
 ) {
     let mut machines = snapshot
@@ -32,6 +33,13 @@ pub(crate) async fn run_subnet_claim_monitor_task(
                 let Some(event) = event else {
                     warn!("subnet claim monitor machine subscription closed");
                     break;
+                };
+                let event = match event {
+                    Ok(event) => event,
+                    Err(error) => {
+                        warn!(%error, "subnet claim monitor machine subscription failed");
+                        break;
+                    }
                 };
                 match event {
                     MachineEvent::Added(machine) | MachineEvent::Updated(machine) => {
@@ -135,7 +143,7 @@ mod tests {
 
     #[tokio::test]
     async fn exits_when_machine_subscription_closes() {
-        let (event_tx, event_rx) = mpsc::channel::<MachineEvent>(4);
+        let (event_tx, event_rx) = mpsc::channel(4);
         drop(event_tx);
 
         tokio::time::timeout(

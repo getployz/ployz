@@ -13,7 +13,11 @@ use std::future::Future;
 use std::net::SocketAddr;
 use tokio::sync::{mpsc, oneshot};
 
-pub type MachineSubscription = (Vec<MachineMembership>, mpsc::Receiver<MachineEvent>);
+pub type MachineSubscriptionUpdate = Result<MachineEvent>;
+pub type MachineSubscription = (
+    Vec<MachineMembership>,
+    mpsc::Receiver<MachineSubscriptionUpdate>,
+);
 pub type CertificateSubscription = (Vec<CertificateRecord>, mpsc::Receiver<CertificateEvent>);
 pub type AcmeChallengeSubscription = (Vec<AcmeChallengeRecord>, mpsc::Receiver<AcmeChallengeEvent>);
 pub type RoutingBatchSubscription = (RoutingState, mpsc::Receiver<RoutingEventBatch>);

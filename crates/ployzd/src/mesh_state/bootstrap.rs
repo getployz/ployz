@@ -277,6 +277,13 @@ async fn run_bootstrap_seed_cache_task(
                 tracing::warn!("bootstrap seed cache machine subscription ended");
                 break;
             };
+            let event = match event {
+                Ok(event) => event,
+                Err(error) => {
+                    tracing::warn!(%error, "bootstrap seed cache machine subscription failed");
+                    break;
+                }
+            };
 
             apply_machine_event(&mut machines, event);
             let mut subscription_ended = false;
@@ -292,6 +299,14 @@ async fn run_bootstrap_seed_cache_task(
                             tracing::warn!("bootstrap seed cache machine subscription ended");
                             subscription_ended = true;
                             break;
+                        };
+                        let event = match event {
+                            Ok(event) => event,
+                            Err(error) => {
+                                tracing::warn!(%error, "bootstrap seed cache machine subscription failed");
+                                subscription_ended = true;
+                                break;
+                            }
                         };
                         apply_machine_event(&mut machines, event);
                     }

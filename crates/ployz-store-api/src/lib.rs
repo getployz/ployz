@@ -16,9 +16,9 @@ pub use traits::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
     DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
     InstanceStatusRepository, InviteRepository, MachineRegistry, MachineSubscription,
-    PeerRttObservation, PeerRttStore, RoutingBatchSubscription, RoutingEventBatch,
-    RoutingSnapshotReader, RoutingSubscription, StoreRuntimeControl, SyncProbe, SyncStatus,
-    apply_routing_event, apply_routing_events,
+    MachineSubscriptionUpdate, PeerRttObservation, PeerRttStore, RoutingBatchSubscription,
+    RoutingEventBatch, RoutingSnapshotReader, RoutingSubscription, StoreRuntimeControl, SyncProbe,
+    SyncStatus, apply_routing_event, apply_routing_events,
 };
 
 #[async_trait]

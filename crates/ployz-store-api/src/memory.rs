@@ -25,7 +25,7 @@ pub struct MemoryStore {
 
 struct StoreInner {
     machines: HashMap<MachineId, MachineMembership>,
-    machine_subscribers: Vec<mpsc::Sender<MachineEvent>>,
+    machine_subscribers: Vec<mpsc::Sender<crate::MachineSubscriptionUpdate>>,
     routing_subscribers: Vec<mpsc::Sender<RoutingEventBatch>>,
     invites: HashMap<String, InviteRecord>,
     service_revisions: HashMap<(Namespace, String, String), ServiceRevisionRecord>,
@@ -86,7 +86,7 @@ impl MemoryStore {
     fn broadcast_machine(inner: &mut StoreInner, event: MachineEvent) {
         inner
             .machine_subscribers
-            .retain(|sender| match sender.try_send(event.clone()) {
+            .retain(|sender| match sender.try_send(Ok(event.clone())) {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Closed(_)) => false,
                 Err(mpsc::error::TrySendError::Full(_)) => {
