@@ -63,10 +63,9 @@ impl ZfsMode {
 pub(crate) enum Scenario {
     SingleNodeInit,
     MachineAddBasic,
+    MachineAddDoesNotPromoteStorage,
     MachineDrainStandbyActivateCycle,
     MeshRestartFromSeedCache,
-    TwoNodeEqualSplitAddDenied,
-    ThreeNodeMajorityAddSucceeds,
     DestroyWithDeadPeer,
     WireguardReconnect,
     DeploySmoke,
@@ -76,13 +75,12 @@ pub(crate) enum Scenario {
 }
 
 impl Scenario {
-    const DEFAULT: [Self; 10] = [
+    const DEFAULT: [Self; 9] = [
         Self::SingleNodeInit,
         Self::MachineAddBasic,
+        Self::MachineAddDoesNotPromoteStorage,
         Self::MachineDrainStandbyActivateCycle,
         Self::MeshRestartFromSeedCache,
-        Self::TwoNodeEqualSplitAddDenied,
-        Self::ThreeNodeMajorityAddSucceeds,
         Self::DestroyWithDeadPeer,
         Self::WireguardReconnect,
         Self::DeploySmoke,
@@ -109,10 +107,9 @@ impl Scenario {
             Self::VolumeSmoke | Self::ZfsTransferSmoke => ZfsMode::Real,
             Self::SingleNodeInit
             | Self::MachineAddBasic
+            | Self::MachineAddDoesNotPromoteStorage
             | Self::MachineDrainStandbyActivateCycle
             | Self::MeshRestartFromSeedCache
-            | Self::TwoNodeEqualSplitAddDenied
-            | Self::ThreeNodeMajorityAddSucceeds
             | Self::DestroyWithDeadPeer
             | Self::WireguardReconnect
             | Self::DeploySmoke
@@ -130,10 +127,9 @@ impl Scenario {
             }
             Self::SingleNodeInit
             | Self::MachineAddBasic
+            | Self::MachineAddDoesNotPromoteStorage
             | Self::MachineDrainStandbyActivateCycle
             | Self::MeshRestartFromSeedCache
-            | Self::TwoNodeEqualSplitAddDenied
-            | Self::ThreeNodeMajorityAddSucceeds
             | Self::DestroyWithDeadPeer
             | Self::WireguardReconnect
             | Self::DeploySmoke
@@ -149,13 +145,10 @@ impl Scenario {
             Self::SingleNodeInit | Self::BridgeForwardSmoke | Self::VolumeSmoke => &["founder"],
             Self::DeploySmoke | Self::ZfsTransferSmoke => &["founder", "peer"],
             Self::MachineAddBasic => &["founder", "joiner"],
+            Self::MachineAddDoesNotPromoteStorage => &["founder", "joiner1", "joiner2"],
             Self::MachineDrainStandbyActivateCycle
             | Self::MeshRestartFromSeedCache
             | Self::WireguardReconnect => &["founder", "peer"],
-            Self::TwoNodeEqualSplitAddDenied => &["founder", "peer", "target1", "target2"],
-            Self::ThreeNodeMajorityAddSucceeds => {
-                &["founder", "peer1", "peer2", "target1", "target2"]
-            }
             Self::DestroyWithDeadPeer => &["founder", "peer1", "peer2"],
         }
     }
@@ -165,10 +158,9 @@ impl Scenario {
         match self {
             Self::SingleNodeInit => "single_node_init",
             Self::MachineAddBasic => "machine_add_basic",
+            Self::MachineAddDoesNotPromoteStorage => "machine_add_does_not_promote_storage",
             Self::MachineDrainStandbyActivateCycle => "machine_drain_standby_activate_cycle",
             Self::MeshRestartFromSeedCache => "mesh_restart_from_seed_cache",
-            Self::TwoNodeEqualSplitAddDenied => "two_node_equal_split_add_denied",
-            Self::ThreeNodeMajorityAddSucceeds => "three_node_majority_add_succeeds",
             Self::DestroyWithDeadPeer => "destroy_with_dead_peer",
             Self::WireguardReconnect => "wireguard_reconnect",
             Self::DeploySmoke => "deploy_smoke",
@@ -184,15 +176,54 @@ impl Scenario {
             Self::BridgeForwardSmoke => "docker",
             Self::SingleNodeInit
             | Self::MachineAddBasic
+            | Self::MachineAddDoesNotPromoteStorage
             | Self::MachineDrainStandbyActivateCycle
             | Self::MeshRestartFromSeedCache
-            | Self::TwoNodeEqualSplitAddDenied
-            | Self::ThreeNodeMajorityAddSucceeds
             | Self::DestroyWithDeadPeer
             | Self::WireguardReconnect
             | Self::DeploySmoke
             | Self::VolumeSmoke
             | Self::ZfsTransferSmoke => "host",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Scenario, ZfsMode};
+
+    #[test]
+    fn real_ci_order_includes_machine_add_without_storage_promotion() {
+        let scenarios = Scenario::default_order(ZfsMode::Real);
+
+        assert!(scenarios.contains(&Scenario::MachineAddDoesNotPromoteStorage));
+        assert_eq!(
+            scenarios,
+            vec![
+                Scenario::SingleNodeInit,
+                Scenario::MachineAddBasic,
+                Scenario::MachineAddDoesNotPromoteStorage,
+                Scenario::MachineDrainStandbyActivateCycle,
+                Scenario::MeshRestartFromSeedCache,
+                Scenario::DestroyWithDeadPeer,
+                Scenario::WireguardReconnect,
+                Scenario::DeploySmoke,
+                Scenario::BridgeForwardSmoke,
+                Scenario::VolumeSmoke,
+                Scenario::ZfsTransferSmoke,
+            ]
+        );
+    }
+
+    #[test]
+    fn machine_add_without_promotion_uses_three_nodes_and_no_zfs() {
+        assert_eq!(
+            Scenario::MachineAddDoesNotPromoteStorage.node_names(),
+            ["founder", "joiner1", "joiner2"]
+        );
+        assert_eq!(
+            Scenario::MachineAddDoesNotPromoteStorage.ci_zfs_mode(),
+            ZfsMode::Off
+        );
     }
 }

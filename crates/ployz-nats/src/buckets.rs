@@ -192,7 +192,7 @@ mod tests {
     fn deploy_commit_stream_is_unpruned_and_not_collapsed() {
         let config = asset_configs(AssetPolicy {
             storage_candidates: 3,
-            replica_preference: ReplicaPreference::Default,
+            replica_preference: ReplicaPreference::Three,
         })
         .deploy_commits;
         assert_eq!(config.retention, stream::RetentionPolicy::Limits);
@@ -205,7 +205,7 @@ mod tests {
     fn routing_events_stream_allows_atomic_publish() {
         let config = asset_configs(AssetPolicy {
             storage_candidates: 3,
-            replica_preference: ReplicaPreference::Default,
+            replica_preference: ReplicaPreference::Three,
         })
         .routing_events;
         assert_eq!(config.name, ROUTING_EVENTS_STREAM);

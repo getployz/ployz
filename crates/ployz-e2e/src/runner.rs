@@ -6,7 +6,6 @@ use crate::support::{
     parse_ready, parse_ready_payload, pick_free_port, run_command, run_command_expect_ok,
     wait_until,
 };
-use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::fs::OpenOptions;
@@ -664,25 +663,6 @@ impl ScenarioRun {
         Ok(())
     }
 
-    pub(crate) fn assert_unique_machine_subnets(&self, node_name: &str) -> Result<()> {
-        let output = self.ssh_expect_ok_name(node_name, "ployzd --json machine ls")?;
-        let mut seen: BTreeMap<String, String> = BTreeMap::new();
-
-        for prefix in machine_rows(&output.stdout)? {
-            if !prefix.subnet.contains('/') {
-                continue;
-            }
-            if let Some(existing) = seen.insert(prefix.subnet.clone(), prefix.id.clone()) {
-                return Err(Error::Message(format!(
-                    "duplicate subnet '{}' reported by {} for machines '{}' and '{}'",
-                    prefix.subnet, node_name, existing, prefix.id
-                )));
-            }
-        }
-
-        Ok(())
-    }
-
     pub(crate) fn partition_groups(&self, left: &[&str], right: &[&str]) -> Result<()> {
         self.log_progress(&format!(
             "partition_groups start left={} right={}",
@@ -830,34 +810,6 @@ impl ScenarioRun {
         script: &str,
     ) -> Result<CommandOutput> {
         self.ssh_expect_ok(self.node(node_name)?, script)
-    }
-
-    pub(crate) fn ssh_run_concurrent(
-        &self,
-        commands: &[(&str, String)],
-    ) -> Result<Vec<CommandOutput>> {
-        let mut handles = Vec::with_capacity(commands.len());
-
-        for (node_name, script) in commands {
-            let node = self.node(node_name)?.clone();
-            let private_key_path = self.private_key_path.clone();
-            let script = script.clone();
-            handles.push(thread::spawn(move || {
-                ssh_run_with_key(private_key_path.as_path(), &node, &script)
-            }));
-        }
-
-        let mut outputs = Vec::with_capacity(commands.len());
-        for (node_name, handle) in commands.iter().map(|(node_name, _)| node_name).zip(handles) {
-            let output = handle.join().map_err(|_| {
-                Error::Message(format!(
-                    "concurrent ssh command panicked on node '{node_name}'"
-                ))
-            })??;
-            outputs.push(output);
-        }
-
-        Ok(outputs)
     }
 
     pub(crate) fn ssh_run_name(&self, node_name: &str, script: &str) -> Result<CommandOutput> {

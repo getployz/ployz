@@ -56,13 +56,14 @@ Planning -> Applying -> Committed
                     \-> CleanupPending (committed but old instances failed to remove)
 ```
 
-### How Apply Works
+### Target Apply Model
 
-The apply phase is a distributed coordination protocol:
+The apply phase is an operator-triggered distributed operation with NATS as the
+coordination authority:
 
-**Lock** — The coordinator acquires namespace locks on all participant machines over TCP.
-Locks are tied to the TCP connection lifetime — if the coordinator crashes, locks release
-automatically.
+**Lock** — The coordinator acquires one namespace lease in NATS KV
+(`locks.deploy.<namespace>`) using CAS. The lease carries owner, nonce, and expiry.
+Participants do not own the deploy lock.
 
 **Discover** — Reconcile live container state with the store on every participant.
 Orphaned containers get re-registered. This recovers from any prior inconsistency.
@@ -88,12 +89,15 @@ but old containers linger. This is a recoverable state, not a failure.
 
 ### Remote Deploy Protocol
 
-The coordinator talks to participant machines over line-delimited JSON/TCP. The protocol
-is request-response: the coordinator sends commands (open session, inspect namespace,
-start candidate, drain/remove instance, close session) and the participant responds.
+The target protocol for small participant commands is NATS request/reply on
+`node.<machine>.cmd.deploy.*` subjects. Commands include inspect namespace, start
+candidate, drain instance, and remove instance. No-responder and timeout errors
+fail the foreground deploy operation.
 
-The namespace lock is implicit in the session — opening a session acquires it, closing
-(or disconnecting) releases it. No explicit heartbeat needed.
+The current implementation still has a transitional deploy session abstraction for
+participant runtime commands. It is lock-free: namespace lock ownership lives in NATS,
+not in the participant connection. Direct TCP should disappear from deploy control once
+those commands move to NATS RPC.
 
 ---
 
@@ -159,7 +163,7 @@ drained instances.
    -> "api" needs 3 new slots on machines A, B, C
 
 3. Apply:
-   a. Lock namespace on A, B, C
+   a. Acquire one NATS deploy lease for the namespace
    b. Register revision (content-addressed, idempotent)
    c. Start containers on A, B, C, wait for readiness probes
    d. Atomic commit — single transaction flips all routing pointers

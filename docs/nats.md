@@ -10,6 +10,10 @@ This is a working reference. The deployment specifics that change as the
 implementation evolves live in code; the conceptual model and the NATS
 features we depend on live here.
 
+For the product target and failure semantics, read
+[`docs/nats-native-control-plane.md`](nats-native-control-plane.md). For the
+system-test plan, read [`docs/testing/e2e.md`](testing/e2e.md).
+
 ## Version baseline
 
 ployz pins `nats:2.14-alpine` in `crates/ployzd/assets/built_in_images.toml`.
@@ -454,14 +458,44 @@ stream — keeps the commit log immutable and replay-safe.
 
 ### Replica policy
 
-```
-0–2 storage candidates  → R=1
-3–4 storage candidates  → R=3
-5+ storage candidates   → R=3 (default) or R=5 (opt-in)
-```
+Replica count is operator intent, not a side effect of machine count.
+Machine add only adds a machine and starts its local NATS role. It does not
+promote the cluster to R=3, does not add a Raft voter to authoritative streams,
+and does not change write quorum.
 
-R=2 is never selected. Reconfig runs on machine-add/remove/role-change
-events, not periodically.
+The allowed replica targets are:
+
+| Target | Meaning |
+|--------|---------|
+| R=1 | single authoritative copy; no HA claim |
+| R=3 | minimum HA; survives one storage candidate loss |
+| R=5 | opt-in higher HA; survives two storage candidate losses |
+
+R=2 is never selected. Reconfiguration is an explicit operator command
+(`ployzctl nats storage promote ...`, name TBD), not a background reaction to
+machine-add/remove. The command must produce a plan and fail loudly if the
+requested storage set is not eligible.
+
+Storage-promotion guardrails:
+
+- exactly 1, 3, or 5 storage candidates for the requested replica target,
+- every candidate is active, non-draining, and has a current local NATS health
+  check,
+- every candidate has persistent storage configured and enough free capacity for
+  JetStream,
+- every candidate is mutually reachable on NATS route and client ports over the
+  overlay,
+- candidate RTT and packet loss are inside the operator-selected latency class
+  (`local`, `regional`, or explicitly accepted `cross-region`),
+- candidates are spread across declared failure domains when region/AZ metadata
+  exists,
+- no candidate is already in an upgrade, remove, wipe, or bootstrap operation,
+- demotion/removal plans preserve quorum unless the operator passes an explicit
+  degradation flag and accepts the resulting R=1 state.
+
+The command output should distinguish desired storage intent, current NATS
+membership, stream replica status, catch-up progress, and any live observations
+used to reject the plan.
 
 ### Topology roles
 
@@ -480,8 +514,9 @@ machines. Today every machine is hardcoded as StorageCandidate (see
 | Transition  | What happens                                                                              |
 |-------------|-------------------------------------------------------------------------------------------|
 | 1 machine   | StorageCandidate, R=1. No fault tolerance.                                                |
-| 1 → 2       | Joiner = Leaf. Replicas stay R=1 on founder.                                              |
-| 2 → 3       | Joiner = StorageCandidate (or promote a Leaf). Reconfigure all assets to R=3.             |
+| 1 → 2       | Joiner is added as Leaf/Mirror/eligible candidate according to the invite. Replicas stay R=1. |
+| 2 → 3       | Joiner is added. Replicas still stay R=1 until an explicit storage-promotion command succeeds. |
+| explicit R=3 promotion | Operator selects three eligible storage candidates; NATS assets reconfigure to R=3 after plan validation. |
 | 3 → 2 planned   | Demote first (drops to R=1 with `--accept-storage-degradation`), then remove the Leaf. |
 | 3 → 2 unplanned | R=3 maintains quorum at 2/3. Leader election ~250ms–2s. Recovery on rejoin.        |
 | 2 simul. losses on R=3 | Below quorum. Reads stale, writes blocked. Data plane keeps serving cache. |
@@ -549,9 +584,11 @@ Tracked in code comments and the implementation plan. Highlights:
    server features.
 4. Standalone gateway and DNS use NATS in their `main.rs`
    files. ployzd switched, the sidecars didn't.
-5. Coordination layer — `coord/jobs.rs` and `coord/rpc.rs` are
-   skeleton-only. Old paths (`PendingReservations`, `OverlayIssuanceCoordinator`,
-   TCP `deploy_session`) still wired.
+5. Coordination layer — KV lock helpers and node RPC foundations exist, but
+   many call sites still use peer TCP. `PendingReservations` and
+   `OverlayIssuanceCoordinator` have been removed; transitional TCP
+   `deploy_session` control is still wired and should be replaced with NATS
+   request/reply commands.
 6. `MachineRole` is hardcoded to `StorageCandidate` everywhere.
 7. Joiner bootstrap currently runs each joiner with a standalone NATS
    store (pragmatic fix for a join-time deadlock; not the intended
@@ -560,6 +597,15 @@ Tracked in code comments and the implementation plan. Highlights:
    that differ only in punctuation.
 
 ## Future planning
+
+### Long-term target
+
+Ployz's control-plane target is documented in
+[`docs/nats-native-control-plane.md`](nats-native-control-plane.md). The short
+version: NATS is the native authority for state, coordination, node commands,
+membership changes, and failure visibility. Machine add does not promote storage
+authority; R=3/R=5 promotion is an explicit guarded operator operation. TCP
+remains only for true byte streams such as ZFS send/receive payloads.
 
 ### Mirror role default
 
@@ -572,15 +618,17 @@ Concrete shape:
 
 - Add `MachineRole::Mirror` variant alongside `StorageCandidate` and
   `Leaf`.
-- Default new-joiner role: Mirror once the cluster has 3 candidates;
-  StorageCandidate for the first 3 machines.
+- Default new-joiner role: Mirror/Leaf. Becoming an authoritative storage
+  candidate is operator intent recorded by a storage-promotion command, not a
+  consequence of being the first, second, or third machine.
 - Mirror config templating: `leafnodes.remotes` plus
   `jetstream { domain: leaf-<machine_id> }`, plus mirror provisioning for
   each hub stream/KV the local services need.
 - ployzd on a Mirror machine connects to its local NATS; reads come from
   local mirrors, writes route through the leafnode bridge.
-- Mirror provisioning runs on `MachineAdded` events alongside replica
-  reconfiguration. Same one-shot reconciliation pattern.
+- Mirror provisioning runs on explicit role/intent changes. Machine add writes
+  membership and connectivity state; it does not silently reconfigure
+  authoritative stream replicas.
 
 The plan section of `docs/future/` should grow a phase for this once the
 storage layer's known gaps are closed.
