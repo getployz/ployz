@@ -641,6 +641,9 @@ Tracked in code comments and the implementation plan. Highlights:
    fresh, stale-since time, consecutive failures, and the last error so a stale
    bootstrap hint is not silent. `ployzctl status` reports this as
    `control_plane component=bootstrap_seed_cache`.
+   Mesh background tasks that consume machine subscriptions also report
+   `control_plane component=mesh_*` health, so a dead local membership
+   projection is visible even while WireGuard/NATS sidecars keep running.
    The intended v2 flow is for the joiner to receive scoped NATS credentials and
    publish its own membership without an introducer-authored seed.
 7. Mirror nodes render local leaf-domain JetStream config, but automatic mirror

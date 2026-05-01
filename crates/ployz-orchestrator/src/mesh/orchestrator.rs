@@ -10,7 +10,7 @@ use crate::mesh::container_network::ContainerNetwork;
 use crate::mesh::driver::WireguardDriver;
 use crate::mesh::phase::{Phase, TransitionError};
 use crate::mesh::tasks::{
-    EndpointMaintainerCommand, SelfRecordMutation, TaskSet, TaskSetError,
+    EndpointMaintainerCommand, MeshTaskHealth, SelfRecordMutation, TaskSet, TaskSetError,
     apply_self_record_mutation,
 };
 use crate::model::{MachineId, MachineMembership};
@@ -149,6 +149,10 @@ impl Mesh {
     pub async fn authoritative_self_record(&self) -> Option<MachineMembership> {
         let authoritative_self = self.authoritative_self.as_ref()?.clone();
         Some(authoritative_self.read().await.clone())
+    }
+
+    pub fn task_health(&self) -> Vec<MeshTaskHealth> {
+        self.tasks.as_ref().map(TaskSet::health).unwrap_or_default()
     }
 
     pub async fn update_authoritative_self_record(

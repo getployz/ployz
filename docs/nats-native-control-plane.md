@@ -234,6 +234,10 @@ The important split:
   data directory. `ployzctl status` reports it as
   `control_plane component=bootstrap_seed_cache`; stale health means the local
   `bootstrap-peers.json` restart hint may lag NATS membership authority.
+- Mesh background tasks that consume NATS-backed machine subscriptions are also
+  reported under `control_plane` with `mesh_*` component names. If a machine
+  subscription closes or reports a watcher failure, the task exits, the mesh task
+  set cancels, and status preserves which local projection task went stale.
 
 - **authority** lives in hub JetStream/KV/Object Store,
 - **hot read models** live in process memory and are rebuilt from authority,
