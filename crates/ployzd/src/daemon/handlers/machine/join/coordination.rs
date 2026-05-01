@@ -129,29 +129,6 @@ fn machine_bias_seed(machine_id: &MachineId) -> u64 {
     hasher.finish()
 }
 
-pub(super) async fn persist_machine_control_target(
-    context: &MachineAddContext,
-    machine_id: &MachineId,
-    control_target: &str,
-) -> Result<(), String> {
-    let Some(mut record) =
-        super::super::list::find_machine_record(&context.store, machine_id).await?
-    else {
-        tracing::info!(
-            machine_id = %machine_id,
-            control_target,
-            "machine record not visible in store yet; deferring control target persistence"
-        );
-        return Ok(());
-    };
-    record.control_target = Some(control_target.to_string());
-    context
-        .store
-        .upsert_self_machine(&record)
-        .await
-        .map_err(|err| format!("persist control target: {err}"))
-}
-
 pub(super) async fn assert_subnet_unique(
     store: &StoreDriver,
     machine_id: &MachineId,

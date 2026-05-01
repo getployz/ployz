@@ -189,7 +189,6 @@ fn merge_authoritative_self(
             stored.public_key = seed.public_key;
             stored.overlay_ip = seed.overlay_ip;
             stored.topology = seed.topology;
-            stored.control_target = seed.control_target;
             stored.subnet = seed.subnet;
             stored.bridge_ip = seed.bridge_ip;
             stored.endpoints = seed.endpoints;

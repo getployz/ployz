@@ -870,7 +870,6 @@ fn test_machine_record(
             .map(OverlayIp)
             .expect("valid overlay"),
         topology: MachineTopology::local(),
-        control_target: Some(id.into()),
         subnet: Some(subnet.parse().expect("valid subnet")),
         bridge_ip: None,
         endpoints: vec!["127.0.0.1:51820".into()],

@@ -305,7 +305,6 @@ impl MeshStartTx {
         let seed_records = build_seed_records(
             &state.identity,
             &self.config,
-            state.control_target.clone(),
             listen_port,
             &plan.bootstrap_peer_records,
             state.configured_topology.as_ref(),

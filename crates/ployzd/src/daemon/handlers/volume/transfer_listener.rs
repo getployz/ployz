@@ -608,7 +608,6 @@ mod tests {
             public_key: PublicKey([1; 32]),
             overlay_ip: OverlayIp(overlay),
             topology: MachineTopology::local(),
-            control_target: None,
             subnet: None,
             bridge_ip: None,
             endpoints: Vec::new(),

@@ -491,7 +491,6 @@ mod tests {
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::new("local", availability_zone)
                 .expect("test topology should be valid"),
-            control_target: None,
             subnet: None,
             bridge_ip: None,
             endpoints: Vec::new(),

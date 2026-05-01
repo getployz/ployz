@@ -1957,7 +1957,6 @@ fn test_machine(id: &str, lifecycle: MachineLifecycle) -> MachineMembership {
         public_key: PublicKey([7; 32]),
         overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
         topology: MachineTopology::local(),
-        control_target: None,
         subnet: None,
         bridge_ip: None,
         endpoints: vec!["127.0.0.1:51820".into()],

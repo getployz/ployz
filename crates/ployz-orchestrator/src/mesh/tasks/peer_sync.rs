@@ -84,7 +84,6 @@ mod tests {
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
             subnet: None,
-            control_target: None,
             bridge_ip: None,
             endpoints: endpoints.into_iter().map(String::from).collect(),
             lifecycle: MachineLifecycle::Standby,

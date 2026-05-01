@@ -888,7 +888,6 @@ mod tests {
             public_key: ployz_types::model::PublicKey([0; 32]),
             overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
             topology: ployz_types::model::MachineTopology::local(),
-            control_target: None,
             subnet: None,
             bridge_ip: None,
             endpoints: Vec::new(),
@@ -1269,7 +1268,6 @@ mod tests {
             overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
             topology: ployz_types::model::MachineTopology::new("us-east", Some("use1-a"))
                 .expect("topology should parse"),
-            control_target: None,
             subnet: None,
             bridge_ip: None,
             endpoints: Vec::new(),
@@ -1299,7 +1297,6 @@ mod tests {
             public_key: ployz_types::model::PublicKey([0; 32]),
             overlay_ip: ployz_types::model::OverlayIp("fd00::1".parse().expect("valid overlay")),
             topology: ployz_types::model::MachineTopology::local(),
-            control_target: None,
             subnet: None,
             bridge_ip: None,
             endpoints: Vec::new(),

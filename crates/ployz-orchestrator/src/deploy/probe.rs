@@ -181,7 +181,6 @@ mod tests {
             public_key: PublicKey([7; 32]),
             overlay_ip: OverlayIp(overlay_ip.parse::<Ipv6Addr>().expect("valid overlay ip")),
             topology: MachineTopology::local(),
-            control_target: None,
             subnet: None,
             bridge_ip: None,
             endpoints: Vec::new(),

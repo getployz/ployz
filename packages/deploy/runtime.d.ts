@@ -115,7 +115,6 @@ export interface InstanceStatusRecord {
 }
 export interface MachineMembership {
   bridge_ip?: OverlayIp | null;
-  control_target?: string | null;
   created_at: number;
   endpoints: string[];
   id: MachineId;

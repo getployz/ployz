@@ -188,7 +188,6 @@ mod tests {
                 network_name: "alpha".into(),
                 cluster_cidr: "10.210.0.0/16".into(),
                 assigned_subnet: "10.210.2.0/24".parse().expect("valid subnet"),
-                self_control_target: None,
                 bootstrap_peers: Vec::new(),
             })
             .await;
@@ -240,7 +239,6 @@ mod tests {
                 overlay_ip: config.overlay_ip,
                 topology: MachineTopology::local(),
                 subnet: config.subnet,
-                control_target: None,
                 bridge_ip: None,
                 endpoints: vec!["127.0.0.1:51820".into()],
                 lifecycle: MachineLifecycle::Standby,

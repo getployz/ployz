@@ -15,8 +15,7 @@ use super::super::types::{
 };
 use super::bootstrap::bootstrap_remote_machine;
 use super::coordination::{
-    BootstrapSubnetClaim, assert_subnet_unique, consume_invite, persist_machine_control_target,
-    release_reserved_subnet,
+    BootstrapSubnetClaim, assert_subnet_unique, consume_invite, release_reserved_subnet,
 };
 use super::remote::{
     ExpectedSubnetState, nats_rpc_expect_ok, nats_self_record, remote_daemon_identity,
@@ -81,7 +80,6 @@ pub(super) async fn run_machine_add_target(
         bootstrap_wireguard_endpoints(&target),
     );
     bootstrap_record.role = MachineRole::Mirror;
-    bootstrap_record.control_target = Some(target.clone());
     bootstrap_record.created_at = ployz_types::time::now_unix_secs();
     bootstrap_record.updated_at = bootstrap_record.created_at;
     joiner_id = Some(remote_identity.machine_id.clone());
@@ -112,13 +110,7 @@ pub(super) async fn run_machine_add_target(
     match remote_rpc_expect_ok(
         &target,
         DaemonRequest::MeshBootstrap {
-            request: match build_mesh_bootstrap_request(
-                &context,
-                subnet_claim.subnet,
-                Some(target.clone()),
-            )
-            .await
-            {
+            request: match build_mesh_bootstrap_request(&context, subnet_claim.subnet).await {
                 Ok(request) => request,
                 Err(err) => {
                     let _ = release_reserved_subnet(&mut subnet_claim).await;
@@ -177,7 +169,7 @@ pub(super) async fn run_machine_add_target(
     }
 
     tracing::info!(%target, "machine add target: self-record starting");
-    let mut record = match joiner_self_record(&context, &target, &bootstrap_record).await {
+    let record = match joiner_self_record(&context, &target, &bootstrap_record).await {
         Ok(record) => record,
         Err(err) => {
             let _ = release_reserved_subnet(&mut subnet_claim).await;
@@ -206,25 +198,11 @@ pub(super) async fn run_machine_add_target(
             failure: MachineAddFailure::SelfRecord { reason: err },
         };
     }
-    record.control_target = Some(target.clone());
     stage = MachineAddStage::SelfRecorded;
     let _ = operation_store.update_stage(&mut operation, stage.to_string());
     tracing::info!(%target, "machine add target: self-record complete");
 
     let machine_id = record.id.clone();
-    if let Err(err) = persist_machine_control_target(&context, &machine_id, &target).await {
-        let _ = release_reserved_subnet(&mut subnet_claim).await;
-        let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
-        let _ = operation_store.update_status(
-            &mut operation,
-            MachineOperationStatus::Failed,
-            Some(err.clone()),
-        );
-        return MachineAddTargetResult::Failed {
-            target,
-            failure: MachineAddFailure::SelfRecord { reason: err },
-        };
-    }
     joiner_id = Some(machine_id.clone());
     if let Err(err) = consume_invite(&context, &invite_id, &machine_id).await {
         let _ = release_reserved_subnet(&mut subnet_claim).await;
@@ -509,7 +487,6 @@ async fn activate_joiner_lifecycle(
 async fn build_mesh_bootstrap_request(
     context: &MachineAddContext,
     assigned_subnet: Ipv4Net,
-    self_control_target: Option<String>,
 ) -> Result<MeshBootstrapRequest, String> {
     let bootstrap_peers = context
         .store
@@ -525,7 +502,6 @@ async fn build_mesh_bootstrap_request(
         network_name: context.network_name.clone(),
         cluster_cidr: context.cluster_cidr.clone(),
         assigned_subnet,
-        self_control_target,
         bootstrap_peers,
     })
 }

@@ -19,7 +19,6 @@ fn test_record(id: &str, key_byte: u8) -> MachineMembership {
         overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
         topology: MachineTopology::local(),
         subnet: None,
-        control_target: None,
         bridge_ip: None,
         endpoints: vec![format!("10.0.0.{key_byte}:51820")],
         lifecycle: MachineLifecycle::Standby,
@@ -109,7 +108,7 @@ async fn startup_reaches_running_single_node() {
 }
 
 #[tokio::test]
-async fn startup_preserves_stored_self_control_fields_when_seed_rebuilds_runtime_fields() {
+async fn startup_preserves_stored_self_state_when_seed_rebuilds_runtime_fields() {
     let wg = Arc::new(MemoryWireGuard::new());
     let svc = Arc::new(MemoryService::new());
     let store = Arc::new(MemoryStore::new());
@@ -128,7 +127,6 @@ async fn startup_preserves_stored_self_control_fields_when_seed_rebuilds_runtime
     seed.topology =
         MachineTopology::new("seed-region", Some("seed-a")).expect("valid seed topology");
     seed.subnet = Some("10.210.9.0/24".parse().expect("valid subnet"));
-    seed.control_target = Some("https://self.example".into());
     seed.endpoints = vec!["new.example:51820".into()];
 
     let mut mesh = Mesh::new(
@@ -155,7 +153,6 @@ async fn startup_preserves_stored_self_control_fields_when_seed_rebuilds_runtime
     assert_eq!(self_record.overlay_ip, seed.overlay_ip);
     assert_eq!(self_record.topology, seed.topology);
     assert_eq!(self_record.subnet, seed.subnet);
-    assert_eq!(self_record.control_target, seed.control_target);
     assert_eq!(self_record.endpoints, seed.endpoints);
     assert_eq!(self_record.bridge_ip, None);
 
