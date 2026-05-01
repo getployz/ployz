@@ -8,8 +8,8 @@ use ployz_api::{
 };
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
-use ployz_types::model::{MachineRole, NetworkLifecycle};
 use ployz_types::model::{JoinResponse, NetworkName};
+use ployz_types::model::{MachineRole, NetworkLifecycle};
 
 use super::DaemonState;
 

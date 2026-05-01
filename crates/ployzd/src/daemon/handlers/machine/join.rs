@@ -120,6 +120,10 @@ impl DaemonState {
             .map(EphemeralSshIdentityFile::ssh_options)
             .unwrap_or_default();
 
+        let peer_rpc_port = match self.peer_control_port() {
+            Ok(port) => port,
+            Err(error) => return self.err("CONTROL_TRANSPORT_FAILED", error.to_string()),
+        };
         let (running, context) = match self.active.as_ref() {
             Some(active) => {
                 let Some(peer_sync_tx) = active.mesh.peer_sync_sender() else {
@@ -134,7 +138,7 @@ impl DaemonState {
                         local_machine_id: self.identity.machine_id.clone(),
                         cluster_cidr: active.config.cluster_cidr.clone(),
                         store: active.mesh.store.clone(),
-                        reservations: self.reservations.clone(),
+                        peer_rpc_port,
                         peer_sync_tx,
                         ssh_options,
                         install: options.install.clone().unwrap_or_default(),
@@ -170,7 +174,7 @@ impl DaemonState {
             };
             tracing::info!(%target, "machine add invite token issued");
             let target_machine_id = MachineId(target.clone());
-            let subnet_claim = match self.reserve_machine_subnet(&target_machine_id).await {
+            let mut subnet_claim = match self.reserve_machine_subnet(&target_machine_id).await {
                 Ok(claim) => claim,
                 Err(err) => {
                     report.push(super::types::MachineAddTargetResult::Failed {
@@ -190,14 +194,15 @@ impl DaemonState {
                 super::types::MachineAddStage::Preflight.to_string(),
                 MachineOperationArtifacts {
                     invite_id: Some(invite.invite_id.clone()),
-                    allocated_subnet: Some(subnet_claim.subnet.to_string()),
+                    allocated_subnet: Some(subnet_claim.subnet().to_string()),
                     uses_operation_identity: options.ssh_identity_private_key.is_some(),
                     ..MachineOperationArtifacts::default()
                 },
             ) {
                 Ok(operation) => operation,
                 Err(err) => {
-                    if let Err(release_err) = release_reserved_subnet(&context, &subnet_claim).await
+                    if let Err(release_err) =
+                        release_reserved_subnet(&context, &mut subnet_claim).await
                     {
                         tracing::warn!(
                             target = %target,
@@ -290,7 +295,7 @@ impl DaemonState {
             local_machine_id: self.identity.machine_id.clone(),
             cluster_cidr: active.config.cluster_cidr.clone(),
             store: active.mesh.store.clone(),
-            reservations: self.reservations.clone(),
+            peer_rpc_port,
             peer_sync_tx: {
                 let Some(peer_sync_tx) = active.mesh.peer_sync_sender() else {
                     return self.err("PEER_SYNC_UNAVAILABLE", "peer sync task is not running");
@@ -301,7 +306,7 @@ impl DaemonState {
             install: MachineInstallOptions::default(),
         };
 
-        let subnet_claim = match self.reserve_machine_subnet(&machine_id).await {
+        let mut subnet_claim = match self.reserve_machine_subnet(&machine_id).await {
             Ok(claim) => claim,
             Err(err) => return self.err("SUBNET_RESERVATION_FAILED", err),
         };
@@ -312,7 +317,7 @@ impl DaemonState {
                 &record,
                 peer_rpc_port,
                 &context,
-                &subnet_claim,
+                &mut subnet_claim,
             )
             .await;
 
@@ -348,14 +353,15 @@ impl DaemonState {
         record: &MachineMembership,
         peer_rpc_port: u16,
         context: &MachineAddContext,
-        subnet_claim: &BootstrapSubnetClaim,
+        subnet_claim: &mut BootstrapSubnetClaim,
     ) -> DaemonResponse {
+        let assigned_subnet = subnet_claim.subnet();
         if let Err(err) = overlay_rpc_expect_ok_with_read_timeout(
             record.overlay_ip,
             peer_rpc_port,
             DaemonRequest::MachineTransitionSelf {
                 goal: MachineTransitionGoal::Activate,
-                assigned_subnet: Some(subnet_claim.subnet),
+                assigned_subnet: Some(assigned_subnet),
                 force: false,
             },
             PEER_RPC_DESTRUCTIVE_READ_TIMEOUT,
@@ -393,7 +399,7 @@ impl DaemonState {
         let _ = release_reserved_subnet(context, subnet_claim).await;
         self.ok(format!(
             "machine activated\n  machine: {}\n  subnet:  {}",
-            machine_id, subnet_claim.subnet
+            machine_id, assigned_subnet
         ))
     }
 

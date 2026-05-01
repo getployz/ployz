@@ -376,12 +376,8 @@ mod tests {
     // for fixtures that store but never invoke the handle. Don't use this in
     // tests that actually exercise Docker requests.
     fn placeholder_docker() -> Docker {
-        Docker::connect_with_http(
-            "http://127.0.0.1:1",
-            1,
-            bollard::API_DEFAULT_VERSION,
-        )
-        .expect("placeholder docker handle")
+        Docker::connect_with_http("http://127.0.0.1:1", 1, bollard::API_DEFAULT_VERSION)
+            .expect("placeholder docker handle")
     }
 
     fn sample_wireguard() -> DockerWireGuard {

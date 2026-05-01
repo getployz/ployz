@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 use ployz_types::Result;
 use ployz_types::model::{
-    AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeRecord, CertificateEvent,
-    CertificateRecord, DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord,
-    MachineEvent, MachineId, MachineMembership, RoutingEvent, RoutingState, ServiceReleaseRecord,
-    ServiceRevisionRecord, VolumeRecord,
+    AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
+    CertificateEvent, CertificateRecord, DeployId, DeployRecord, InstanceId, InstanceStatusRecord,
+    InviteRecord, MachineEvent, MachineId, MachineMembership, RoutingEvent, RoutingState,
+    ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use serde::{Deserialize, Serialize};
@@ -206,6 +206,17 @@ pub trait CertificateStore: Send + Sync {
     fn subscribe_acme_challenges(
         &self,
     ) -> impl Future<Output = Result<AcmeChallengeSubscription>> + Send + '_;
+
+    fn upsert_acme_challenge_readiness<'a>(
+        &'a self,
+        record: &'a AcmeChallengeReadinessRecord,
+    ) -> impl Future<Output = Result<()>> + Send + 'a;
+
+    fn list_acme_challenge_readiness<'a>(
+        &'a self,
+        hostname: &'a str,
+        token: &'a str,
+    ) -> impl Future<Output = Result<Vec<AcmeChallengeReadinessRecord>>> + Send + 'a;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

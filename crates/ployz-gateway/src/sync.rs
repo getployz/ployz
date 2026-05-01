@@ -3,9 +3,10 @@ use std::time::Duration;
 
 use crate::routes::{GatewayProjectionEvent, GatewayProjector, GatewaySnapshot, ProjectionDelta};
 use ployz_types::model::{
-    AcmeChallengeEvent, AcmeChallengeRecord, CertificateEvent, CertificateRecord, RoutingEvent,
-    RoutingState,
+    AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateEvent,
+    CertificateRecord, MachineId, RoutingEvent, RoutingState,
 };
+use ployz_types::time::now_unix_secs;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -51,6 +52,10 @@ pub trait RoutingSnapshotReader: Send + Sync {
         >,
     > + Send
     + '_;
+    fn upsert_acme_challenge_readiness<'a>(
+        &'a self,
+        record: &'a AcmeChallengeReadinessRecord,
+    ) -> impl Future<Output = Result<(), GatewayError>> + Send + 'a;
 }
 
 // ---------------------------------------------------------------------------
@@ -73,7 +78,11 @@ where
     Ok(projector.snapshot_value())
 }
 
-pub async fn run_sync_loop<S>(store: S, snapshot: SharedSnapshot) -> Result<(), GatewayError>
+pub async fn run_sync_loop<S>(
+    store: S,
+    snapshot: SharedSnapshot,
+    machine_id: MachineId,
+) -> Result<(), GatewayError>
 where
     S: RoutingSnapshotReader + Send + Sync + 'static,
 {
@@ -84,8 +93,9 @@ where
         let mut projector = GatewayProjector::new(routing_state)
             .map_err(|err| GatewayError::Projection(err.to_string()))?;
         apply_initial_certificates(&mut projector, cert_records);
-        apply_initial_challenges(&mut projector, challenge_records);
+        let ready_challenges = apply_initial_challenges(&mut projector, challenge_records);
         publish_full_snapshot(&snapshot, projector.snapshot_value());
+        publish_challenge_readiness(&store, &machine_id, &ready_challenges).await;
 
         loop {
             tokio::select! {
@@ -108,7 +118,8 @@ where
                         warn!("gateway ACME challenge event stream closed; resubscribing");
                         break;
                     };
-                    apply_challenge_batch(&mut projector, event, &mut chal_rx, &snapshot);
+                    let ready_challenges = apply_challenge_batch(&mut projector, event, &mut chal_rx, &snapshot);
+                    publish_challenge_readiness(&store, &machine_id, &ready_challenges).await;
                 }
             }
         }
@@ -129,7 +140,10 @@ fn apply_initial_certificates(projector: &mut GatewayProjector, records: Vec<Cer
     }
 }
 
-fn apply_initial_challenges(projector: &mut GatewayProjector, records: Vec<AcmeChallengeRecord>) {
+fn apply_initial_challenges(
+    projector: &mut GatewayProjector,
+    records: Vec<AcmeChallengeRecord>,
+) -> Vec<AcmeChallengeRecord> {
     if records.len() > MAX_CACHED_CHALLENGES {
         warn!(
             challenges = records.len(),
@@ -137,9 +151,13 @@ fn apply_initial_challenges(projector: &mut GatewayProjector, records: Vec<AcmeC
             "initial ACME challenge snapshot exceeds gateway cap"
         );
     }
+    let mut applied = Vec::new();
     for record in records.into_iter().take(MAX_CACHED_CHALLENGES) {
-        apply_challenge_event(projector, AcmeChallengeEvent::Added(record));
+        if apply_challenge_event(projector, AcmeChallengeEvent::Added(record.clone())).is_some() {
+            applied.push(record);
+        }
     }
+    applied
 }
 
 fn apply_routing_batch(
@@ -187,18 +205,61 @@ fn apply_challenge_batch(
     event: AcmeChallengeEvent,
     chal_rx: &mut mpsc::Receiver<AcmeChallengeEvent>,
     snapshot: &SharedSnapshot,
-) {
+) -> Vec<AcmeChallengeRecord> {
     let mut deltas = Vec::new();
-    if let Some(delta) = apply_challenge_event(projector, event) {
+    let mut ready_challenges = Vec::new();
+    if let Some(delta) = apply_challenge_event(projector, event.clone()) {
         deltas.push(delta);
+        if let Some(record) = challenge_record_for_readiness(&event) {
+            ready_challenges.push(record);
+        }
     }
     while let Ok(event) = chal_rx.try_recv() {
-        if let Some(delta) = apply_challenge_event(projector, event) {
+        if let Some(delta) = apply_challenge_event(projector, event.clone()) {
             deltas.push(delta);
+            if let Some(record) = challenge_record_for_readiness(&event) {
+                ready_challenges.push(record);
+            }
         }
     }
     if !deltas.is_empty() {
         publish_deltas(snapshot, &deltas);
+    }
+    ready_challenges
+}
+
+fn challenge_record_for_readiness(event: &AcmeChallengeEvent) -> Option<AcmeChallengeRecord> {
+    match event {
+        AcmeChallengeEvent::Added(record) | AcmeChallengeEvent::Updated(record) => {
+            Some(record.clone())
+        }
+        AcmeChallengeEvent::Removed(_) => None,
+    }
+}
+
+async fn publish_challenge_readiness<S>(
+    store: &S,
+    machine_id: &MachineId,
+    records: &[AcmeChallengeRecord],
+) where
+    S: RoutingSnapshotReader + Send + Sync,
+{
+    for record in records {
+        let readiness = AcmeChallengeReadinessRecord {
+            hostname: record.hostname.clone(),
+            token: record.token.clone(),
+            machine_id: machine_id.clone(),
+            observed_at: now_unix_secs(),
+        };
+        if let Err(error) = store.upsert_acme_challenge_readiness(&readiness).await {
+            warn!(
+                hostname = %readiness.hostname,
+                token = %readiness.token,
+                machine_id = %readiness.machine_id,
+                ?error,
+                "failed to publish ACME challenge readiness observation"
+            );
+        }
     }
 }
 
@@ -294,6 +355,7 @@ fn publish_deltas(snapshot: &SharedSnapshot, deltas: &[ProjectionDelta]) {
 pub fn spawn_sync_thread_with_store<S>(
     store: S,
     snapshot: SharedSnapshot,
+    machine_id: MachineId,
 ) -> Result<(), GatewayError>
 where
     S: RoutingSnapshotReader + Send + Sync + 'static,
@@ -312,7 +374,7 @@ where
                 }
             };
             runtime.block_on(async move {
-                if let Err(err) = run_sync_loop(store, snapshot).await {
+                if let Err(err) = run_sync_loop(store, snapshot, machine_id).await {
                     warn!(?err, "gateway sync loop exited");
                 }
             });
@@ -329,5 +391,40 @@ mod tests {
     fn managed_tls_caps_are_nonzero() {
         assert!(MAX_CACHED_CERTIFICATES > 0);
         assert!(MAX_CACHED_CHALLENGES > 0);
+    }
+
+    #[test]
+    fn initial_challenge_snapshot_marks_applied_records_ready() {
+        let mut projector = GatewayProjector::new(RoutingState {
+            machines: Vec::new(),
+            revisions: Vec::new(),
+            releases: Vec::new(),
+            instances: Vec::new(),
+        })
+        .expect("empty routing state projects");
+        let record = AcmeChallengeRecord {
+            hostname: "example.com".into(),
+            token: "token-a".into(),
+            key_authorization: "token-a.auth".into(),
+            expires_at: 100,
+            created_at: 1,
+        };
+
+        let ready = apply_initial_challenges(&mut projector, vec![record.clone()]);
+
+        assert_eq!(ready, vec![record]);
+    }
+
+    #[test]
+    fn removed_challenge_event_does_not_publish_readiness() {
+        let event = AcmeChallengeEvent::Removed(AcmeChallengeRecord {
+            hostname: "example.com".into(),
+            token: "token-a".into(),
+            key_authorization: "token-a.auth".into(),
+            expires_at: 100,
+            created_at: 1,
+        });
+
+        assert!(challenge_record_for_readiness(&event).is_none());
     }
 }

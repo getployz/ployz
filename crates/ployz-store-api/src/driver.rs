@@ -10,9 +10,9 @@ use crate::{
 use async_trait::async_trait;
 use ployz_types::Result;
 use ployz_types::model::{
-    AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
-    InstanceStatusRecord, InviteRecord, MachineId, MachineMembership, RoutingState,
-    ServiceReleaseRecord, VolumeRecord,
+    AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
+    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
+    MachineMembership, RoutingState, ServiceReleaseRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::sync::Arc;
@@ -265,6 +265,23 @@ impl CertificateStore for StoreDriver {
     async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
         self.backend.subscribe_acme_challenges().await
     }
+
+    async fn upsert_acme_challenge_readiness(
+        &self,
+        record: &AcmeChallengeReadinessRecord,
+    ) -> Result<()> {
+        self.backend.upsert_acme_challenge_readiness(record).await
+    }
+
+    async fn list_acme_challenge_readiness(
+        &self,
+        hostname: &str,
+        token: &str,
+    ) -> Result<Vec<AcmeChallengeReadinessRecord>> {
+        self.backend
+            .list_acme_challenge_readiness(hostname, token)
+            .await
+    }
 }
 
 struct MemoryStoreBackend {
@@ -421,6 +438,23 @@ impl StoreBackend for MemoryStoreBackend {
 
     async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
         self.store.subscribe_acme_challenges().await
+    }
+
+    async fn upsert_acme_challenge_readiness(
+        &self,
+        record: &AcmeChallengeReadinessRecord,
+    ) -> Result<()> {
+        self.store.upsert_acme_challenge_readiness(record).await
+    }
+
+    async fn list_acme_challenge_readiness(
+        &self,
+        hostname: &str,
+        token: &str,
+    ) -> Result<Vec<AcmeChallengeReadinessRecord>> {
+        self.store
+            .list_acme_challenge_readiness(hostname, token)
+            .await
     }
 
     async fn sync_status(&self) -> Result<SyncStatus> {

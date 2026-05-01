@@ -4,6 +4,7 @@ pub mod handlers;
 mod runtime;
 mod setup;
 pub mod ssh;
+mod subnet_coordination;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,7 +19,9 @@ use ployz_api::{DaemonPayload, DaemonResponse};
 use ployz_config::{RuntimeTarget, ServiceMode, StorageConfig};
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::certificates::CertificateRenewalTask;
-use ployz_orchestrator::coordination::PendingReservations;
+use ployz_orchestrator::coordination::{
+    MemorySubnetCoordinator, PendingReservations, SubnetReservationCoordinator,
+};
 use ployz_runtime_api::Identity;
 use ployz_runtime_api::{NamespaceLockManager, RuntimeHandle};
 use ployz_types::model::MachineTopology;
@@ -72,6 +75,7 @@ pub struct DaemonState {
     pub active: Option<ActiveMesh>,
     pub namespace_locks: NamespaceLockManager,
     pub reservations: Arc<PendingReservations>,
+    pub subnet_coord: Arc<dyn SubnetReservationCoordinator>,
     pub command_tx: Option<mpsc::Sender<IncomingCommand>>,
 }
 
@@ -187,6 +191,7 @@ impl DaemonState {
             active: None,
             namespace_locks: NamespaceLockManager::default(),
             reservations: Arc::new(PendingReservations::new()),
+            subnet_coord: Arc::new(MemorySubnetCoordinator::new()),
             command_tx: None,
         }
     }

@@ -729,6 +729,14 @@ pub struct AcmeChallengeRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcmeChallengeReadinessRecord {
+    pub hostname: String,
+    pub token: String,
+    pub machine_id: MachineId,
+    pub observed_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DomainDnsAdvice {
     pub hostname: String,
     pub resolved_ips: Vec<IpAddr>,

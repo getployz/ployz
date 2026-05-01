@@ -123,6 +123,7 @@ fn build_gateway_sidecar_spec(
         env: vec![
             ("PLOYZ_GATEWAY_DATA_DIR".into(), data_dir_str.clone()),
             ("PLOYZ_GATEWAY_NETWORK".into(), config.network.clone()),
+            ("PLOYZ_GATEWAY_MACHINE_ID".into(), config.machine_id.clone()),
             (
                 "PLOYZ_GATEWAY_LISTEN_ADDR".into(),
                 config.listen_addr.clone(),
@@ -211,6 +212,7 @@ mod tests {
         let config = GatewayConfig::for_network(
             Path::new("/tmp/ployz"),
             "alpha",
+            "founder".into(),
             "0.0.0.0:80".into(),
             None,
             None,
@@ -221,6 +223,11 @@ mod tests {
         let paths = GatewayPaths::for_config(&config);
 
         let spec = build_gateway_sidecar_spec(&config, &paths, "ployz-gateway:latest");
+        assert!(
+            spec.env
+                .iter()
+                .any(|(key, value)| { key == "PLOYZ_GATEWAY_MACHINE_ID" && value == "founder" })
+        );
         assert!(spec.env.iter().any(|(key, value)| {
             key == "PLOYZ_GATEWAY_METRICS_LISTEN_ADDR" && value == "127.0.0.1:9180"
         }));
@@ -231,6 +238,7 @@ mod tests {
         let config = GatewayConfig::for_network(
             Path::new("/tmp/ployz"),
             "alpha",
+            "founder".into(),
             "0.0.0.0:80".into(),
             None,
             None,

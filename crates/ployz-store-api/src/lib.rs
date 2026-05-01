@@ -5,9 +5,9 @@ mod traits;
 use async_trait::async_trait;
 use ployz_types::Result;
 use ployz_types::model::{
-    AcmeAccountRecord, AcmeChallengeRecord, CertificateRecord, DeployId, DeployRecord, InstanceId,
-    InstanceStatusRecord, InviteRecord, MachineId, MachineMembership, RoutingState,
-    ServiceReleaseRecord, VolumeRecord,
+    AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
+    DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
+    MachineMembership, RoutingState, ServiceReleaseRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 
@@ -76,6 +76,15 @@ pub trait StoreBackend: Send + Sync {
     async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> Result<()>;
     async fn subscribe_certificates(&self) -> Result<CertificateSubscription>;
     async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription>;
+    async fn upsert_acme_challenge_readiness(
+        &self,
+        record: &AcmeChallengeReadinessRecord,
+    ) -> Result<()>;
+    async fn list_acme_challenge_readiness(
+        &self,
+        hostname: &str,
+        token: &str,
+    ) -> Result<Vec<AcmeChallengeReadinessRecord>>;
 
     async fn sync_status(&self) -> Result<SyncStatus> {
         Ok(SyncStatus::Synced)

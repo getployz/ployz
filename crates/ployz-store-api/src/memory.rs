@@ -7,10 +7,10 @@ use crate::{
 use async_trait::async_trait;
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
-    AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeRecord, CertificateEvent,
-    CertificateRecord, DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord,
-    MachineEvent, MachineId, MachineMembership, RoutingEvent, RoutingState, ServiceReleaseRecord,
-    ServiceRevisionRecord, VolumeRecord,
+    AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
+    CertificateEvent, CertificateRecord, DeployId, DeployRecord, InstanceId, InstanceStatusRecord,
+    InviteRecord, MachineEvent, MachineId, MachineMembership, RoutingEvent, RoutingState,
+    ServiceReleaseRecord, ServiceRevisionRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::collections::{HashMap, HashSet};
@@ -38,6 +38,7 @@ struct StoreInner {
     certificate_subscribers: Vec<mpsc::Sender<CertificateEvent>>,
     acme_challenges: HashMap<(String, String), AcmeChallengeRecord>,
     acme_challenge_subscribers: Vec<mpsc::Sender<AcmeChallengeEvent>>,
+    acme_challenge_readiness: HashMap<(String, String, MachineId), AcmeChallengeReadinessRecord>,
     sync_status: SyncStatus,
 }
 
@@ -66,6 +67,7 @@ impl MemoryStore {
                 certificate_subscribers: Vec::new(),
                 acme_challenges: HashMap::new(),
                 acme_challenge_subscribers: Vec::new(),
+                acme_challenge_readiness: HashMap::new(),
                 sync_status: SyncStatus::Synced,
             }),
         }
@@ -649,6 +651,42 @@ impl CertificateStore for MemoryStore {
         inner.acme_challenge_subscribers.push(sender);
         Ok((snapshot, receiver))
     }
+
+    async fn upsert_acme_challenge_readiness(
+        &self,
+        record: &AcmeChallengeReadinessRecord,
+    ) -> Result<()> {
+        let mut inner = self.lock_inner();
+        inner.acme_challenge_readiness.insert(
+            (
+                record.hostname.clone(),
+                record.token.clone(),
+                record.machine_id.clone(),
+            ),
+            record.clone(),
+        );
+        Ok(())
+    }
+
+    async fn list_acme_challenge_readiness(
+        &self,
+        hostname: &str,
+        token: &str,
+    ) -> Result<Vec<AcmeChallengeReadinessRecord>> {
+        let inner = self.lock_inner();
+        Ok(inner
+            .acme_challenge_readiness
+            .values()
+            .filter(|record| {
+                record
+                    .hostname
+                    .trim_end_matches('.')
+                    .eq_ignore_ascii_case(hostname.trim_end_matches('.'))
+                    && record.token == token
+            })
+            .cloned()
+            .collect())
+    }
 }
 
 impl MemoryStore {
@@ -680,6 +718,7 @@ impl MemoryStore {
         inner.acme_accounts.clear();
         inner.certificates.clear();
         inner.acme_challenges.clear();
+        inner.acme_challenge_readiness.clear();
 
         for record in removed {
             Self::broadcast_machine(&mut inner, MachineEvent::Removed(record.clone()));
@@ -1035,6 +1074,38 @@ mod tests {
             .await
             .expect("load routing state");
         assert!(snapshot.instances.is_empty());
+    }
+
+    #[tokio::test]
+    async fn acme_readiness_is_scoped_by_hostname_token_and_machine() {
+        let store = MemoryStore::new();
+        store
+            .upsert_acme_challenge_readiness(&AcmeChallengeReadinessRecord {
+                hostname: "example.com".into(),
+                token: "old-token".into(),
+                machine_id: MachineId("machine-a".into()),
+                observed_at: 1,
+            })
+            .await
+            .expect("write old readiness");
+        store
+            .upsert_acme_challenge_readiness(&AcmeChallengeReadinessRecord {
+                hostname: "example.com".into(),
+                token: "new-token".into(),
+                machine_id: MachineId("machine-a".into()),
+                observed_at: 2,
+            })
+            .await
+            .expect("write new readiness");
+
+        let records = store
+            .list_acme_challenge_readiness("example.com", "new-token")
+            .await
+            .expect("list readiness");
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].token, "new-token");
+        assert_eq!(records[0].machine_id, MachineId("machine-a".into()));
     }
 
     fn test_release(

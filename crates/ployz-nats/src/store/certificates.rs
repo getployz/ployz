@@ -3,14 +3,18 @@ use futures_util::StreamExt;
 use ployz_store_api::{AcmeChallengeSubscription, CertificateStore, CertificateSubscription};
 use ployz_types::error::Result;
 use ployz_types::model::{
-    AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeRecord, CertificateEvent, CertificateRecord,
+    AcmeAccountRecord, AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord,
+    CertificateEvent, CertificateRecord, MachineId,
 };
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::NatsStore;
-use crate::buckets::{ACME_ACCOUNTS_BUCKET, ACME_CHALLENGES_BUCKET, CERTIFICATES_BUCKET};
+use crate::buckets::{
+    ACME_ACCOUNTS_BUCKET, ACME_CHALLENGE_READINESS_BUCKET, ACME_CHALLENGES_BUCKET,
+    CERTIFICATES_BUCKET,
+};
 use crate::store::kv_json;
 use crate::subjects;
 
@@ -22,9 +26,12 @@ impl CertificateStore for NatsStore {
             "nats_acme_accounts_bucket",
         )
         .await?;
-        let Some(bytes) = bucket.get(acme_account_key(issuer_url)).await.map_err(|error| {
-            ployz_types::Error::operation("nats_acme_account_get", format!("{error:?}"))
-        })?
+        let Some(bytes) = bucket
+            .get(acme_account_key(issuer_url))
+            .await
+            .map_err(|error| {
+                ployz_types::Error::operation("nats_acme_account_get", format!("{error:?}"))
+            })?
         else {
             return Ok(None);
         };
@@ -233,6 +240,42 @@ impl CertificateStore for NatsStore {
         });
         Ok((snapshot, rx))
     }
+
+    async fn upsert_acme_challenge_readiness(
+        &self,
+        record: &AcmeChallengeReadinessRecord,
+    ) -> Result<()> {
+        let bucket = readiness_bucket(self).await?;
+        kv_json::put_json(
+            &bucket,
+            &readiness_key(&record.hostname, &record.token, &record.machine_id),
+            record,
+            "nats_acme_readiness_encode",
+            "nats_acme_readiness_put",
+        )
+        .await
+    }
+
+    async fn list_acme_challenge_readiness(
+        &self,
+        hostname: &str,
+        token: &str,
+    ) -> Result<Vec<AcmeChallengeReadinessRecord>> {
+        let bucket = readiness_bucket(self).await?;
+        let records = kv_json::list_json::<AcmeChallengeReadinessRecord>(
+            &bucket,
+            "nats_acme_readiness_decode",
+            "nats_acme_readiness_list",
+        )
+        .await?;
+        let normalized_hostname = certificate_key(hostname);
+        Ok(records
+            .into_iter()
+            .filter(|record| {
+                certificate_key(&record.hostname) == normalized_hostname && record.token == token
+            })
+            .collect())
+    }
 }
 
 async fn certificates_bucket(store: &NatsStore) -> Result<kv::Store> {
@@ -253,14 +296,59 @@ async fn challenges_bucket(store: &NatsStore) -> Result<kv::Store> {
     .await
 }
 
+async fn readiness_bucket(store: &NatsStore) -> Result<kv::Store> {
+    kv_json::get_bucket(
+        store.jetstream(),
+        ACME_CHALLENGE_READINESS_BUCKET,
+        "nats_acme_readiness_bucket",
+    )
+    .await
+}
+
 fn certificate_key(hostname: &str) -> String {
     hostname.trim_end_matches('.').to_ascii_lowercase()
 }
 
 fn challenge_key(hostname: &str, token: &str) -> String {
-    format!("{}.{}", certificate_key(hostname), token)
+    format!(
+        "{}.{}",
+        subjects::kv_key_token(&certificate_key(hostname)),
+        subjects::kv_key_token(token)
+    )
+}
+
+fn readiness_key(hostname: &str, token: &str, machine_id: &MachineId) -> String {
+    format!(
+        "{}.{}",
+        challenge_key(hostname, token),
+        subjects::kv_key_token(&machine_id.0)
+    )
 }
 
 fn acme_account_key(issuer_url: &str) -> String {
     subjects::kv_key_token(issuer_url)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn acme_challenge_readiness_key_is_collision_safe() {
+        let machine = MachineId("machine.1".into());
+
+        let dotted = readiness_key("foo.bar.example", "token", &machine);
+        let underscored = readiness_key("foo_bar.example", "token", &machine);
+
+        assert_ne!(dotted, underscored);
+        assert!(!dotted.contains("foo.bar"));
+    }
+
+    #[test]
+    fn acme_challenge_key_includes_token() {
+        let old = readiness_key("example.com", "old-token", &MachineId("machine-a".into()));
+        let new = readiness_key("example.com", "new-token", &MachineId("machine-a".into()));
+
+        assert_ne!(old, new);
+    }
 }

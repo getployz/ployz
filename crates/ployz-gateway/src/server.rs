@@ -20,6 +20,7 @@ use crate::routes::GatewaySnapshot;
 use crate::routes::ProjectedTlsMaterial;
 use crate::snapshot::SharedSnapshot;
 use crate::sync::load_projected_snapshot_from_store;
+use ployz_types::model::MachineId;
 
 const STORE_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const STORE_READY_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -267,8 +268,9 @@ where
     // crosses runtimes. The multi-thread runtime's worker threads keep
     // polling while pingora blocks the main thread.
     let sync_snapshot = shared_snapshot.clone();
+    let sync_machine_id = MachineId(config.machine_id.clone());
     runtime.spawn(async move {
-        if let Err(err) = crate::sync::run_sync_loop(store, sync_snapshot).await {
+        if let Err(err) = crate::sync::run_sync_loop(store, sync_snapshot, sync_machine_id).await {
             tracing::warn!(?err, "gateway sync loop exited");
         }
     });
