@@ -138,7 +138,14 @@ impl DaemonState {
                 Ok(client) => client.with_policy(RpcPolicy {
                     timeout: MACHINE_REMOVE_RPC_TIMEOUT,
                 }),
-                Err(error) => return self.err("NATS_RPC_UNAVAILABLE", error),
+                Err(error) => {
+                    return self.err(
+                        "MACHINE_REMOVE_PEER_UNREACHABLE",
+                        format!(
+                            "machine '{id}' did not confirm online removal; rerun with --force for registry-only removal: {error}"
+                        ),
+                    );
+                }
             };
             let operation_id = format!("machine-rm-{}", ployz_types::model::NetworkId::random());
             let response = rpc_client

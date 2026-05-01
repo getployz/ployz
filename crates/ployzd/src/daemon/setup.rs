@@ -29,10 +29,7 @@ use crate::daemon::subnet_coordination::NatsSubnetCoordinator;
 use super::{ActiveMesh, DaemonState};
 use crate::daemon::handlers::volume::transfer_listener;
 use crate::ipc::nats_listener;
-use crate::ipc::peer_listener;
 use crate::runtime_profile::MeshBuildRequest;
-
-const PEER_RPC_PORT_OFFSET: u16 = 1;
 
 /// Connect to the network's NATS broker and replace the daemon's subnet
 /// coordinator with a JetStream-KV-backed implementation. Memory-runtime
@@ -88,7 +85,6 @@ struct StartPlan {
     bootstrap_peer_records: Vec<BootstrapPeerRecord>,
     bootstrap_addrs: Vec<String>,
     gateway_ports: Vec<u16>,
-    peer_control_bind_addr: SocketAddr,
     zfs_transfer_bind_addr: SocketAddr,
     gateway_config: Option<GatewayConfig>,
     dns_config: Option<DnsConfig>,
@@ -98,7 +94,6 @@ struct MeshStartTx {
     config: NetworkConfig,
     mesh: Option<Mesh>,
     nats_control: Box<dyn RuntimeHandle>,
-    peer_control: Box<dyn RuntimeHandle>,
     zfs_transfer: Box<dyn RuntimeHandle>,
     gateway: Box<dyn RuntimeHandle>,
     dns: Box<dyn RuntimeHandle>,
@@ -110,7 +105,6 @@ impl MeshStartTx {
             config,
             mesh: None,
             nats_control: Box::new(NoopRuntimeHandle),
-            peer_control: Box::new(NoopRuntimeHandle),
             zfs_transfer: Box::new(NoopRuntimeHandle),
             gateway: Box::new(NoopRuntimeHandle),
             dns: Box::new(NoopRuntimeHandle),
@@ -204,31 +198,6 @@ impl MeshStartTx {
         Ok(())
     }
 
-    async fn start_peer_control(
-        &mut self,
-        state: &DaemonState,
-        plan: &StartPlan,
-    ) -> Result<(), StartMeshError> {
-        if state.runtime_is_memory_test() {
-            self.peer_control = Box::new(peer_listener::PeerListenerHandle::noop());
-            return Ok(());
-        }
-        let Some(command_tx) = state.command_tx.clone() else {
-            return Err(StartMeshError::ControlPlaneListener {
-                bind: plan.peer_control_bind_addr,
-                error: "daemon command channel unavailable".into(),
-            });
-        };
-        let handle = peer_listener::serve(plan.peer_control_bind_addr, command_tx)
-            .await
-            .map_err(|error| StartMeshError::ControlPlaneListener {
-                bind: plan.peer_control_bind_addr,
-                error: error.to_string(),
-            })?;
-        self.peer_control = Box::new(handle);
-        Ok(())
-    }
-
     async fn start_nats_control(&mut self, state: &DaemonState) -> Result<(), StartMeshError> {
         if state.runtime_is_memory_test() {
             self.nats_control = Box::new(nats_listener::NatsListenerHandle::noop());
@@ -310,7 +279,6 @@ impl MeshStartTx {
             install_nats_subnet_coordinator(state, self.config.overlay_ip).await?;
         }
         let nats_control = std::mem::replace(&mut self.nats_control, Box::new(NoopRuntimeHandle));
-        let peer_control = std::mem::replace(&mut self.peer_control, Box::new(NoopRuntimeHandle));
         let zfs_transfer = std::mem::replace(&mut self.zfs_transfer, Box::new(NoopRuntimeHandle));
         let gateway = std::mem::replace(&mut self.gateway, Box::new(NoopRuntimeHandle));
         let dns = std::mem::replace(&mut self.dns, Box::new(NoopRuntimeHandle));
@@ -369,7 +337,6 @@ impl MeshStartTx {
             cached_subnet: self.config.subnet,
             mesh,
             nats_control,
-            peer_control,
             zfs_transfer,
             gateway,
             dns,
@@ -392,8 +359,6 @@ impl MeshStartTx {
 
         let nats_control = std::mem::replace(&mut self.nats_control, Box::new(NoopRuntimeHandle));
         let _ = nats_control.shutdown().await;
-        let peer_control = std::mem::replace(&mut self.peer_control, Box::new(NoopRuntimeHandle));
-        let _ = peer_control.shutdown().await;
         let zfs_transfer = std::mem::replace(&mut self.zfs_transfer, Box::new(NoopRuntimeHandle));
         let _ = zfs_transfer.shutdown().await;
 
@@ -435,11 +400,6 @@ impl DaemonState {
 
         let mut tx = MeshStartTx::new(net_config);
         tx.build_mesh(self, &plan).await?;
-
-        if let Err(error) = tx.start_peer_control(self, &plan).await {
-            tx.rollback_startup().await;
-            return Err(error);
-        }
 
         if let Err(error) = tx.start_nats_control(self).await {
             tx.rollback_startup().await;
@@ -600,8 +560,6 @@ impl DaemonState {
         let gateway_ports = self.gateway_ports()?;
         let control_bind_addr =
             self.control_bind_addr(self.remote_control_port, net_config.overlay_ip);
-        let peer_control_bind_addr =
-            SocketAddr::new(control_bind_addr.ip(), self.peer_control_port()?);
         let zfs_transfer_bind_addr =
             SocketAddr::new(control_bind_addr.ip(), self.zfs_transfer_port()?);
         let gateway_config = net_config.subnet.map(|_| {
@@ -632,7 +590,6 @@ impl DaemonState {
             bootstrap_peer_records,
             bootstrap_addrs,
             gateway_ports,
-            peer_control_bind_addr,
             zfs_transfer_bind_addr,
             gateway_config,
             dns_config,
@@ -669,15 +626,6 @@ impl DaemonState {
             .map_err(|_| StartMeshError::GatewayListenAddr(gateway_listen_addr.to_string()))
     }
 
-    pub(crate) fn peer_control_port(&self) -> Result<u16, StartMeshError> {
-        self.remote_control_port
-            .checked_add(PEER_RPC_PORT_OFFSET)
-            .ok_or_else(|| StartMeshError::ControlPlaneListener {
-                bind: SocketAddr::from(([127, 0, 0, 1], self.remote_control_port)),
-                error: "peer control port overflow".into(),
-            })
-    }
-
     pub(crate) fn zfs_transfer_port(&self) -> Result<u16, StartMeshError> {
         self.remote_control_port.checked_add(2).ok_or_else(|| {
             StartMeshError::ControlPlaneListener {
@@ -702,30 +650,30 @@ mod tests {
     use ployz_types::model::{MachineId, MachineRole, NetworkName, OverlayIp, PublicKey};
 
     #[test]
-    fn plan_mesh_start_uses_localhost_for_docker_control_plane() {
+    fn plan_mesh_start_uses_localhost_for_docker_zfs_transfer() {
         let state = make_state(RuntimeTarget::Docker, ServiceMode::User, "0.0.0.0:80");
         let config = make_network_config(&state, "alpha");
 
         let plan = state.plan_mesh_start(&config).expect("plan should succeed");
 
         assert_eq!(
-            plan.peer_control_bind_addr.ip(),
-            SocketAddr::from(([127, 0, 0, 1], state.peer_control_port().unwrap())).ip()
+            plan.zfs_transfer_bind_addr.ip(),
+            SocketAddr::from(([127, 0, 0, 1], state.zfs_transfer_port().unwrap())).ip()
         );
     }
 
     #[test]
-    fn plan_mesh_start_uses_overlay_ip_for_host_control_plane() {
+    fn plan_mesh_start_uses_overlay_ip_for_host_zfs_transfer() {
         let state = make_state(RuntimeTarget::Host, ServiceMode::User, "0.0.0.0:80");
         let config = make_network_config(&state, "alpha");
 
         let plan = state.plan_mesh_start(&config).expect("plan should succeed");
 
         assert_eq!(
-            plan.peer_control_bind_addr.ip(),
+            plan.zfs_transfer_bind_addr.ip(),
             SocketAddr::new(
                 IpAddr::V6(config.overlay_ip.0),
-                state.peer_control_port().unwrap()
+                state.zfs_transfer_port().unwrap()
             )
             .ip()
         );
