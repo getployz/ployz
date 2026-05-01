@@ -427,4 +427,33 @@ mod tests {
 
         assert!(challenge_record_for_readiness(&event).is_none());
     }
+
+    #[test]
+    fn challenge_update_event_marks_record_ready() {
+        let mut projector = GatewayProjector::new(RoutingState {
+            machines: Vec::new(),
+            revisions: Vec::new(),
+            releases: Vec::new(),
+            instances: Vec::new(),
+        })
+        .expect("empty routing state projects");
+        let snapshot = SharedSnapshot::new(projector.snapshot_value());
+        let record = AcmeChallengeRecord {
+            hostname: "example.com".into(),
+            token: "token-a".into(),
+            key_authorization: "token-a.auth".into(),
+            expires_at: 100,
+            created_at: 1,
+        };
+        let mut rx = mpsc::channel(1).1;
+
+        let ready = apply_challenge_batch(
+            &mut projector,
+            AcmeChallengeEvent::Updated(record.clone()),
+            &mut rx,
+            &snapshot,
+        );
+
+        assert_eq!(ready, vec![record]);
+    }
 }

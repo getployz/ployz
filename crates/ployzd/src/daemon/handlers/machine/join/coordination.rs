@@ -25,17 +25,6 @@ impl BootstrapSubnetClaim {
     pub(in crate::daemon::handlers::machine) fn subnet(&self) -> Ipv4Net {
         self.subnet
     }
-
-    /// Release the underlying lock immediately. Used by tests that want to
-    /// re-acquire the same subnet after a probe; production code should
-    /// release through [`release_reserved_subnet`] so the call site is
-    /// uniform with other rollback paths.
-    pub(in crate::daemon::handlers::machine) async fn release_now(&mut self) -> Result<(), String> {
-        let Some(claim) = self.claim.take() else {
-            return Ok(());
-        };
-        claim.release().await
-    }
 }
 
 impl std::fmt::Debug for BootstrapSubnetClaim {
@@ -104,8 +93,7 @@ impl DaemonState {
     }
 }
 
-pub(super) async fn release_reserved_subnet(
-    _context: &MachineAddContext,
+pub(in crate::daemon::handlers::machine) async fn release_reserved_subnet(
     subnet_claim: &mut BootstrapSubnetClaim,
 ) -> Result<(), String> {
     let Some(claim) = subnet_claim.claim.take() else {

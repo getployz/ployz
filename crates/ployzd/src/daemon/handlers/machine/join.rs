@@ -4,6 +4,8 @@ mod remote;
 pub(super) mod rollback;
 mod target;
 
+pub(in crate::daemon::handlers::machine) use self::coordination::release_reserved_subnet;
+
 use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, MachineAddOptions, MachineInstallOptions,
     MachineTransitionGoal,
@@ -15,7 +17,7 @@ use crate::daemon::DaemonState;
 use crate::daemon::ssh::{EphemeralSshIdentityFile, SshOptions};
 
 use self::bootstrap::bootstrap_remote_machine;
-use self::coordination::{BootstrapSubnetClaim, release_reserved_subnet};
+use self::coordination::BootstrapSubnetClaim;
 use self::remote::{
     ExpectedSubnetState, log_remote_enable_rollback, overlay_rpc_expect_ok,
     overlay_rpc_expect_ok_with_read_timeout, overlay_self_record, remote_rpc_expect_ok,
@@ -201,9 +203,7 @@ impl DaemonState {
             ) {
                 Ok(operation) => operation,
                 Err(err) => {
-                    if let Err(release_err) =
-                        release_reserved_subnet(&context, &mut subnet_claim).await
-                    {
+                    if let Err(release_err) = release_reserved_subnet(&mut subnet_claim).await {
                         tracing::warn!(
                             target = %target,
                             error = %release_err,
@@ -352,7 +352,7 @@ impl DaemonState {
         machine_id: &MachineId,
         record: &MachineMembership,
         peer_rpc_port: u16,
-        context: &MachineAddContext,
+        _context: &MachineAddContext,
         subnet_claim: &mut BootstrapSubnetClaim,
     ) -> DaemonResponse {
         let assigned_subnet = subnet_claim.subnet();
@@ -368,7 +368,7 @@ impl DaemonState {
         )
         .await
         {
-            let _ = release_reserved_subnet(context, subnet_claim).await;
+            let _ = release_reserved_subnet(subnet_claim).await;
             return self.err("REMOTE_ACTIVATE_FAILED", err);
         }
 
@@ -376,7 +376,7 @@ impl DaemonState {
             Ok(record) => record,
             Err(err) => {
                 log_remote_enable_rollback(record, peer_rpc_port, &err).await;
-                let _ = release_reserved_subnet(context, subnet_claim).await;
+                let _ = release_reserved_subnet(subnet_claim).await;
                 return self.err("SELF_RECORD_FAILED", err);
             }
         };
@@ -386,17 +386,17 @@ impl DaemonState {
                 remote_record.id, machine_id
             );
             log_remote_enable_rollback(record, peer_rpc_port, &mismatch).await;
-            let _ = release_reserved_subnet(context, subnet_claim).await;
+            let _ = release_reserved_subnet(subnet_claim).await;
             return self.err("MACHINE_ID_MISMATCH", mismatch);
         }
 
         if let Err(err) = wait_for_overlay_ready(record, peer_rpc_port).await {
             log_remote_enable_rollback(record, peer_rpc_port, &err).await;
-            let _ = release_reserved_subnet(context, subnet_claim).await;
+            let _ = release_reserved_subnet(subnet_claim).await;
             return self.err("REMOTE_READY_FAILED", err);
         }
 
-        let _ = release_reserved_subnet(context, subnet_claim).await;
+        let _ = release_reserved_subnet(subnet_claim).await;
         self.ok(format!(
             "machine activated\n  machine: {}\n  subnet:  {}",
             machine_id, assigned_subnet

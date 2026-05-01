@@ -1,6 +1,4 @@
 use crate::daemon::DaemonState;
-use futures_util::StreamExt;
-use futures_util::stream::FuturesUnordered;
 use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, MachineRemovePayload, MachineRttPayload,
     MachineRttRow,
@@ -61,48 +59,6 @@ impl DaemonState {
             Ok(rows) => rows,
             Err(err) => return self.err("RTT_READ_FAILED", err),
         };
-        let peer_rpc_port = match self.peer_control_port() {
-            Ok(port) => port,
-            Err(error) => return self.err("PEER_RPC_UNAVAILABLE", error.to_string()),
-        };
-
-        let mut remotes = FuturesUnordered::new();
-        for machine in machines
-            .iter()
-            .filter(|machine| machine.id != self.identity.machine_id)
-        {
-            let machine_id = machine.id.clone();
-            let overlay_ip = machine.overlay_ip;
-            remotes.push(async move {
-                let response = crate::daemon::handlers::peer_rpc::overlay_rpc(
-                    overlay_ip,
-                    peer_rpc_port,
-                    DaemonRequest::MeshPeerRttSnapshot,
-                )
-                .await;
-                (machine_id, response)
-            });
-        }
-
-        let mut warnings = Vec::new();
-        while let Some((machine_id, response)) = remotes.next().await {
-            match response {
-                Ok(response) if response.ok => match response.payload {
-                    Some(DaemonPayload::MachineRtt(payload)) => rows.extend(payload.rows),
-                    Some(_) | None => {
-                        warnings.push(format!("machine '{}' returned no RTT payload", machine_id))
-                    }
-                },
-                Ok(response) => warnings.push(format!(
-                    "machine '{}' RTT snapshot failed [{}]: {}",
-                    machine_id, response.code, response.message
-                )),
-                Err(error) => warnings.push(format!(
-                    "machine '{}' RTT snapshot unreachable: {error}",
-                    machine_id
-                )),
-            }
-        }
 
         rows.sort_by(|left, right| {
             left.machine
@@ -111,10 +67,10 @@ impl DaemonState {
         });
         let payload = MachineRttPayload {
             rows,
-            warnings: warnings.clone(),
+            warnings: Vec::new(),
         };
         self.ok_with_payload(
-            render_machine_rtt_report(&payload, warnings.as_slice()),
+            render_machine_rtt_report(&payload, payload.warnings.as_slice()),
             Some(DaemonPayload::MachineRtt(payload)),
         )
     }
