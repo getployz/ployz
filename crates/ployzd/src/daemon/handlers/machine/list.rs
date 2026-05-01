@@ -10,11 +10,11 @@ use std::net::IpAddr;
 
 use super::render::{format_lifecycle, format_timestamp, render_machine_list_report};
 use super::types::{MachineListReport, MachineListReportRow};
-use crate::daemon::handlers::peer_rpc::{
-    OverlayRpcExpectOkError, PEER_RPC_DESTRUCTIVE_READ_TIMEOUT,
-    overlay_rpc_expect_ok_classified_with_read_timeout,
-};
 use crate::mesh_state::bootstrap::refresh_bootstrap_peer_records_from_store;
+use ployz_nats::coord::rpc::{NodeCommandSubject, RpcPolicy};
+use std::time::Duration;
+
+const MACHINE_REMOVE_RPC_TIMEOUT: Duration = Duration::from_secs(120);
 
 impl DaemonState {
     pub(crate) async fn handle_machine_list(&self) -> DaemonResponse {
@@ -134,37 +134,42 @@ impl DaemonState {
         }
 
         if !force {
-            let peer_rpc_port = match self.peer_control_port() {
-                Ok(port) => port,
-                Err(error) => return self.err("PEER_RPC_UNAVAILABLE", error.to_string()),
+            let rpc_client = match self.nats_node_rpc_client().await {
+                Ok(client) => client.with_policy(RpcPolicy {
+                    timeout: MACHINE_REMOVE_RPC_TIMEOUT,
+                }),
+                Err(error) => return self.err("NATS_RPC_UNAVAILABLE", error),
             };
             let operation_id = format!("machine-rm-{}", ployz_types::model::NetworkId::random());
-            if let Err(error) = overlay_rpc_expect_ok_classified_with_read_timeout(
-                record.overlay_ip,
-                peer_rpc_port,
-                DaemonRequest::MeshPeerRemoveMachine {
-                    operation_id,
-                    network_id: active.config.id.clone(),
-                    machine_id: record.id.clone(),
-                },
-                PEER_RPC_DESTRUCTIVE_READ_TIMEOUT,
-            )
-            .await
-            {
-                return match error {
-                    OverlayRpcExpectOkError::Transport(error) => self.err(
+            let response = rpc_client
+                .request(
+                    NodeCommandSubject::mesh_remove_machine(&record.id),
+                    &DaemonRequest::MeshPeerRemoveMachine {
+                        operation_id,
+                        network_id: active.config.id.clone(),
+                        machine_id: record.id.clone(),
+                    },
+                )
+                .await;
+            match response {
+                Ok(response) if response.ok => {}
+                Ok(response) => {
+                    return self.err(
+                        "MACHINE_REMOVE_PEER_REJECTED",
+                        format!(
+                            "machine '{id}' rejected coordinated removal [{}]: {}; resolve the remote failure or rerun with --force only if you intend registry-only removal",
+                            response.code, response.message
+                        ),
+                    );
+                }
+                Err(error) => {
+                    return self.err(
                         "MACHINE_REMOVE_PEER_UNREACHABLE",
                         format!(
                             "machine '{id}' did not confirm online removal; rerun with --force for registry-only removal: {error}"
                         ),
-                    ),
-                    OverlayRpcExpectOkError::Remote { code, message } => self.err(
-                        "MACHINE_REMOVE_PEER_REJECTED",
-                        format!(
-                            "machine '{id}' rejected coordinated removal [{code}]: {message}; resolve the remote failure or rerun with --force only if you intend registry-only removal"
-                        ),
-                    ),
-                };
+                    );
+                }
             }
         }
 

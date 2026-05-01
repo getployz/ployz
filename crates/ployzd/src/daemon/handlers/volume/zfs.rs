@@ -6,7 +6,7 @@ use ployz_api::{
     VolumeZfsSnapshotInfo, VolumeZfsSnapshotPayload, VolumeZfsTransferInfo,
     VolumeZfsTransferListPayload, VolumeZfsTransferPayload,
 };
-use ployz_nats::coord::rpc::NodeCommandSubject;
+use ployz_nats::coord::rpc::{NatsNodeRpcClient, NodeCommandSubject, RpcPolicy};
 use ployz_runtime_backends::storage::{TokioShellRunner, ZfsDriver};
 use ployz_store_api::{DeployRepository, MachineRegistry};
 use ployz_types::model::{MachineId, MachineLifecycle, MachineMembership, VolumeRecord};
@@ -17,11 +17,11 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
 use crate::daemon::DaemonState;
-use crate::daemon::handlers::peer_rpc::{overlay_rpc, overlay_rpc_zfs_transfer};
 use crate::daemon::handlers::volume::transfer_listener::{ZfsTransferOpen, ZfsTransferReceived};
 
 const TRANSFERS_DIR_NAME: &str = "zfs-transfers";
 const ACK_READ_TIMEOUT: Duration = Duration::from_secs(30);
+const ZFS_SEND_RPC_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_ACK_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy)]
@@ -372,9 +372,18 @@ impl DaemonState {
             Ok(port) => port,
             Err(error) => return self.err("VOLUME_ZFS_SEND_FAILED", error.to_string()),
         };
-        let peer_port = self
-            .peer_control_port()
-            .unwrap_or(self.remote_control_port + 1);
+        let needs_nats_rpc = source.id != self.identity.machine_id
+            || (from_snapshot.is_some() && target.id != self.identity.machine_id);
+        let nats_rpc = if needs_nats_rpc {
+            match self.nats_node_rpc_client().await {
+                Ok(client) => Some(client.with_policy(RpcPolicy {
+                    timeout: ZFS_SEND_RPC_TIMEOUT,
+                })),
+                Err(error) => return self.err("VOLUME_ZFS_SEND_FAILED", error),
+            }
+        } else {
+            None
+        };
 
         let store = self.zfs_transfer_store();
         let transfer = match store.begin(
@@ -407,8 +416,8 @@ impl DaemonState {
                 &task_source,
                 &task_target,
                 task_local_driver.as_ref(),
+                nats_rpc,
                 transfer_port,
-                peer_port,
                 &task_local,
                 &task_snapshot,
                 task_from.as_deref(),
@@ -770,8 +779,8 @@ async fn run_coordinated_zfs_transfer_inner(
     source: &MachineMembership,
     target: &MachineMembership,
     local_driver: Option<&ZfsDriver<TokioShellRunner>>,
+    nats_rpc: Option<NatsNodeRpcClient>,
     transfer_port: u16,
-    peer_port: u16,
     local_machine_id: &MachineId,
     snapshot: &str,
     from_snapshot: Option<&str>,
@@ -780,8 +789,8 @@ async fn run_coordinated_zfs_transfer_inner(
     let snap_info = snapshot_on_machine(
         source,
         local_driver,
+        nats_rpc.as_ref(),
         local_machine_id,
-        peer_port,
         &record.namespace,
         &record.volume_name,
         snapshot,
@@ -795,8 +804,8 @@ async fn run_coordinated_zfs_transfer_inner(
         let from_guid = snapshot_guid_on_machine(
             source,
             local_driver,
+            nats_rpc.as_ref(),
             local_machine_id,
-            peer_port,
             &record.namespace,
             &record.volume_name,
             from_snapshot,
@@ -805,8 +814,8 @@ async fn run_coordinated_zfs_transfer_inner(
         let target_from_guid = snapshot_guid_on_machine(
             target,
             local_driver,
+            nats_rpc.as_ref(),
             local_machine_id,
-            peer_port,
             &record.namespace,
             &record.volume_name,
             from_snapshot,
@@ -827,9 +836,9 @@ async fn run_coordinated_zfs_transfer_inner(
         source,
         target,
         local_driver,
+        nats_rpc.as_ref(),
         local_machine_id,
         transfer_port,
-        peer_port,
         record,
         snapshot,
         snap_info.guid,
@@ -986,8 +995,8 @@ async fn send_zfs_stream_from_local(
 async fn snapshot_on_machine(
     machine: &MachineMembership,
     local_driver: Option<&ZfsDriver<TokioShellRunner>>,
+    nats_rpc: Option<&NatsNodeRpcClient>,
     local_machine_id: &MachineId,
-    peer_port: u16,
     namespace: &Namespace,
     volume: &str,
     snapshot: &str,
@@ -1010,24 +1019,26 @@ async fn snapshot_on_machine(
         });
     }
 
-    let response = overlay_rpc(
-        machine.overlay_ip,
-        peer_port,
-        ployz_api::DaemonRequest::VolumeZfsPeerSnapshot {
-            namespace: namespace.0.clone(),
-            volume: volume.to_string(),
-            snapshot: snapshot.to_string(),
-        },
-    )
-    .await?;
+    let nats_rpc = nats_rpc.ok_or_else(|| "NATS RPC client is not configured".to_string())?;
+    let response = nats_rpc
+        .request(
+            NodeCommandSubject::volume_zfs_snapshot(&machine.id),
+            &ployz_api::DaemonRequest::VolumeZfsPeerSnapshot {
+                namespace: namespace.0.clone(),
+                volume: volume.to_string(),
+                snapshot: snapshot.to_string(),
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
     expect_snapshot_payload(response, "remote peer snapshot")
 }
 
 async fn snapshot_guid_on_machine(
     machine: &MachineMembership,
     local_driver: Option<&ZfsDriver<TokioShellRunner>>,
+    nats_rpc: Option<&NatsNodeRpcClient>,
     local_machine_id: &MachineId,
-    peer_port: u16,
     namespace: &Namespace,
     volume: &str,
     snapshot: &str,
@@ -1050,16 +1061,18 @@ async fn snapshot_guid_on_machine(
         });
     }
 
-    let response = overlay_rpc(
-        machine.overlay_ip,
-        peer_port,
-        ployz_api::DaemonRequest::VolumeZfsPeerSnapshotGuid {
-            namespace: namespace.0.clone(),
-            volume: volume.to_string(),
-            snapshot: snapshot.to_string(),
-        },
-    )
-    .await?;
+    let nats_rpc = nats_rpc.ok_or_else(|| "NATS RPC client is not configured".to_string())?;
+    let response = nats_rpc
+        .request(
+            NodeCommandSubject::volume_zfs_snapshot_guid(&machine.id),
+            &ployz_api::DaemonRequest::VolumeZfsPeerSnapshotGuid {
+                namespace: namespace.0.clone(),
+                volume: volume.to_string(),
+                snapshot: snapshot.to_string(),
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
     expect_snapshot_payload(response, "remote peer snapshot guid")
 }
 
@@ -1068,9 +1081,9 @@ async fn start_send_on_machine(
     source: &MachineMembership,
     target: &MachineMembership,
     local_driver: Option<&ZfsDriver<TokioShellRunner>>,
+    nats_rpc: Option<&NatsNodeRpcClient>,
     local_machine_id: &MachineId,
     transfer_port: u16,
-    peer_port: u16,
     record: &VolumeRecord,
     snapshot: &str,
     expected_guid: u64,
@@ -1094,20 +1107,22 @@ async fn start_send_on_machine(
         .await;
     }
 
-    let response = overlay_rpc_zfs_transfer(
-        source.overlay_ip,
-        peer_port,
-        ployz_api::DaemonRequest::VolumeZfsPeerStartSend {
-            namespace: record.namespace.0.clone(),
-            volume: record.volume_name.clone(),
-            snapshot: snapshot.to_string(),
-            target_machine: target.id.0.clone(),
-            expected_guid,
-            from_snapshot: from_snapshot.map(str::to_string),
-            from_snapshot_guid,
-        },
-    )
-    .await?;
+    let nats_rpc = nats_rpc.ok_or_else(|| "NATS RPC client is not configured".to_string())?;
+    let response = nats_rpc
+        .request(
+            NodeCommandSubject::volume_zfs_start_send(&source.id),
+            &ployz_api::DaemonRequest::VolumeZfsPeerStartSend {
+                namespace: record.namespace.0.clone(),
+                volume: record.volume_name.clone(),
+                snapshot: snapshot.to_string(),
+                target_machine: target.id.0.clone(),
+                expected_guid,
+                from_snapshot: from_snapshot.map(str::to_string),
+                from_snapshot_guid,
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
     if !response.ok {
         return Err(format!(
             "remote peer start-send failed [{}]: {}",
