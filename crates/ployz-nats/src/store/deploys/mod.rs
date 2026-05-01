@@ -27,6 +27,12 @@ pub(crate) struct CachedDeployProjection {
     last_sequence: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeployCommitPublish {
+    Created,
+    Existing { sequence: u64 },
+}
+
 impl DeployRepository for NatsStore {
     async fn list_deploy_releases(
         &self,
@@ -88,7 +94,13 @@ impl DeployRepository for NatsStore {
     async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
         let mut projection = self.deploy_projection_snapshot().await?;
         let routing_events = projection.apply_commit_events(command);
-        publish_commit(self.jetstream(), command).await?;
+        let publish = publish_commit(self.jetstream(), command).await?;
+        let routing_events = match publish {
+            DeployCommitPublish::Created => routing_events,
+            DeployCommitPublish::Existing { sequence } => {
+                duplicate_commit_repair_events(self.jetstream(), command, sequence).await?
+            }
+        };
         *self.deploy_projection.write().await = None;
         self.publish_routing_batch(
             format!("deploy:{}", command.deploy.deploy_id.0),
@@ -161,7 +173,10 @@ impl NatsStore {
     }
 }
 
-pub async fn publish_commit(js: &jetstream::Context, commit: &DeployCommit) -> Result<()> {
+pub async fn publish_commit(
+    js: &jetstream::Context,
+    commit: &DeployCommit,
+) -> Result<DeployCommitPublish> {
     let subject = subjects::deploy_commit(&commit.namespace, &commit.deploy.deploy_id);
     let payload = serde_json::to_vec(commit)
         .map_err(|error| Error::operation("nats_deploy_commit_encode", error.to_string()))?;
@@ -171,17 +186,117 @@ pub async fn publish_commit(js: &jetstream::Context, commit: &DeployCommit) -> R
         .expected_last_subject_sequence(0)
         .message_id(format!("deploy-commit:{}", commit.deploy.deploy_id.0));
     let ack = js
-        .send_publish(subject, publish)
+        .send_publish(subject.clone(), publish)
         .await
         .map_err(|error| Error::operation("nats_deploy_commit_publish", format!("{error:?}")))?;
     match ack.await {
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == PublishErrorKind::WrongLastSequence => Ok(()),
+        Ok(_) => Ok(DeployCommitPublish::Created),
+        Err(error) if error.kind() == PublishErrorKind::WrongLastSequence => {
+            let stream = js
+                .get_stream(DEPLOY_COMMITS_STREAM)
+                .await
+                .map_err(|error| Error::operation("nats_deploy_stream", format!("{error:?}")))?;
+            let message = stream
+                .direct_get_last_for_subject(subject)
+                .await
+                .map_err(|error| {
+                    Error::operation("nats_deploy_commit_get", format!("{error:?}"))
+                })?;
+            let stored: DeployCommit =
+                serde_json::from_slice(message.payload.as_ref()).map_err(|error| {
+                    Error::operation("nats_deploy_commit_decode", error.to_string())
+                })?;
+            if stored != *commit {
+                return Err(Error::operation(
+                    "nats_deploy_commit_conflict",
+                    format!(
+                        "deploy commit '{}' already exists with different payload",
+                        commit.deploy.deploy_id
+                    ),
+                ));
+            }
+            Ok(DeployCommitPublish::Existing {
+                sequence: message.sequence,
+            })
+        }
         Err(error) => Err(Error::operation(
             "nats_deploy_commit_ack",
             format!("{error:?}"),
         )),
     }
+}
+
+async fn duplicate_commit_repair_events(
+    js: &jetstream::Context,
+    command: &DeployCommit,
+    sequence: u64,
+) -> Result<Vec<RoutingEvent>> {
+    let mut stream = js
+        .get_stream(DEPLOY_COMMITS_STREAM)
+        .await
+        .map_err(|error| Error::operation("nats_deploy_stream", format!("{error:?}")))?;
+    let info = stream
+        .info()
+        .await
+        .map_err(|error| Error::operation("nats_deploy_stream_info", format!("{error:?}")))?
+        .clone();
+    let before = deploy_projection_before_sequence(&mut stream, info.clone(), sequence).await?;
+    let current = replay_projection_from_stream(&mut stream, info)
+        .await?
+        .projection;
+    Ok(repair_events_for_duplicate_commit(
+        &before, &current, command,
+    ))
+}
+
+async fn deploy_projection_before_sequence(
+    stream: &mut async_nats::jetstream::stream::Stream,
+    info: async_nats::jetstream::stream::Info,
+    sequence: u64,
+) -> Result<DeployProjection> {
+    let mut projection = DeployProjection::new();
+    if info.state.messages == 0 || sequence <= info.state.first_sequence {
+        return Ok(projection);
+    }
+    apply_projection_range(
+        stream,
+        &mut projection,
+        info.state.first_sequence,
+        sequence.saturating_sub(1),
+    )
+    .await?;
+    Ok(projection)
+}
+
+fn repair_events_for_duplicate_commit(
+    before: &DeployProjection,
+    current: &DeployProjection,
+    command: &DeployCommit,
+) -> Vec<RoutingEvent> {
+    let mut events = Vec::new();
+    for revision in &command.revisions {
+        if current.revision(
+            &revision.namespace,
+            &revision.service,
+            &revision.revision_hash,
+        ) == Some(revision)
+        {
+            events.push(RoutingEvent::RevisionAdded(revision.clone()));
+        }
+    }
+    for service in &command.removed_services {
+        if current.release(&command.namespace, service).is_none()
+            && let Some(old) = before.release(&command.namespace, service)
+        {
+            events.push(RoutingEvent::ReleaseRemoved(old.clone()));
+        }
+    }
+    for release in &command.releases {
+        if current.release(&release.namespace, &release.service) == Some(release) {
+            events.push(RoutingEvent::ReleaseAdded(release.clone()));
+        }
+    }
+    events
 }
 
 async fn replay_projection_from_stream(
@@ -338,7 +453,7 @@ async fn read_deploy_status(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_types::model::MachineId;
+    use ployz_types::model::{DeployState, MachineId, ServiceRelease, ServiceRoutingPolicy};
     use ployz_types::spec::Namespace;
 
     #[test]
@@ -380,6 +495,65 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn duplicate_commit_repair_republishes_current_truth_for_touched_keys() {
+        let namespace = Namespace(String::from("prod"));
+        let old_release = release(&namespace, "web", "rev-old", "deploy-old");
+        let revision = revision("rev-new", "{}");
+        let new_release = release(&namespace, "api", "rev-new", "deploy-new");
+        let command = deploy_commit(
+            &namespace,
+            "deploy-new",
+            vec![revision.clone()],
+            vec![String::from("web")],
+            vec![new_release.clone()],
+        );
+        let mut before = DeployProjection::new();
+        before.apply_commit(&deploy_commit(
+            &namespace,
+            "deploy-old",
+            Vec::new(),
+            Vec::new(),
+            vec![old_release.clone()],
+        ));
+        let mut current = before.clone();
+        current.apply_commit(&command);
+
+        let events = repair_events_for_duplicate_commit(&before, &current, &command);
+
+        assert!(events.contains(&RoutingEvent::RevisionAdded(revision)));
+        assert!(events.contains(&RoutingEvent::ReleaseRemoved(old_release)));
+        assert!(events.contains(&RoutingEvent::ReleaseAdded(new_release)));
+    }
+
+    #[test]
+    fn duplicate_commit_repair_skips_release_superseded_by_later_commit() {
+        let namespace = Namespace(String::from("prod"));
+        let command_release = release(&namespace, "api", "rev-a", "deploy-a");
+        let later_release = release(&namespace, "api", "rev-b", "deploy-b");
+        let command = deploy_commit(
+            &namespace,
+            "deploy-a",
+            Vec::new(),
+            Vec::new(),
+            vec![command_release.clone()],
+        );
+        let before = DeployProjection::new();
+        let mut current = before.clone();
+        current.apply_commit(&command);
+        current.apply_commit(&deploy_commit(
+            &namespace,
+            "deploy-b",
+            Vec::new(),
+            Vec::new(),
+            vec![later_release],
+        ));
+
+        let events = repair_events_for_duplicate_commit(&before, &current, &command);
+
+        assert!(!events.contains(&RoutingEvent::ReleaseAdded(command_release)));
+    }
+
     fn revision(hash: &str, spec_json: &str) -> ServiceRevisionRecord {
         ServiceRevisionRecord {
             namespace: Namespace(String::from("prod")),
@@ -388,6 +562,56 @@ mod tests {
             spec_json: spec_json.into(),
             created_by: MachineId(String::from("founder")),
             created_at: 10,
+        }
+    }
+
+    fn release(
+        namespace: &Namespace,
+        service: &str,
+        revision_hash: &str,
+        deploy_id: &str,
+    ) -> ServiceReleaseRecord {
+        ServiceReleaseRecord {
+            namespace: namespace.clone(),
+            service: service.into(),
+            release: ServiceRelease {
+                primary_revision_hash: revision_hash.into(),
+                referenced_revision_hashes: vec![revision_hash.into()],
+                routing: ServiceRoutingPolicy::Direct {
+                    revision_hash: revision_hash.into(),
+                },
+                slots: Vec::new(),
+                updated_by_deploy_id: DeployId(deploy_id.into()),
+                updated_at: 1,
+            },
+        }
+    }
+
+    fn deploy_commit(
+        namespace: &Namespace,
+        deploy_id: &str,
+        revisions: Vec<ServiceRevisionRecord>,
+        removed_services: Vec<String>,
+        releases: Vec<ServiceReleaseRecord>,
+    ) -> DeployCommit {
+        DeployCommit {
+            namespace: namespace.clone(),
+            revisions,
+            removed_services,
+            removed_volumes: Vec::new(),
+            releases,
+            volumes: Vec::new(),
+            deploy: DeployRecord {
+                deploy_id: DeployId(deploy_id.into()),
+                namespace: namespace.clone(),
+                coordinator_machine_id: MachineId(String::from("founder")),
+                manifest_hash: String::from("manifest"),
+                state: DeployState::Committed,
+                started_at: 1,
+                committed_at: Some(2),
+                finished_at: Some(2),
+                summary_json: String::from("{}"),
+            },
         }
     }
 }
