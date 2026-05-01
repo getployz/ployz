@@ -196,7 +196,8 @@ The important split:
   freshness boundary. Machine, certificate, and ACME challenge subscriptions
   carry explicit failure updates; consumers should stop using the stale stream,
   reload from authority, or surface degraded health to an operator-visible
-  status.
+  status. KV subscriptions establish the watch before loading the initial
+  snapshot so updates that race with snapshot loading are still delivered.
 
 - **authority** lives in hub JetStream/KV/Object Store,
 - **hot read models** live in process memory and are rebuilt from authority,

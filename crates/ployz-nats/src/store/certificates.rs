@@ -126,11 +126,11 @@ impl CertificateStore for NatsStore {
     }
 
     async fn subscribe_certificates(&self) -> Result<CertificateSubscription> {
-        let snapshot = self.list_certificates().await?;
         let bucket = certificates_bucket(self).await?;
         let mut watch = bucket.watch_all().await.map_err(|error| {
             ployz_types::Error::operation("nats_certificates_watch", format!("{error:?}"))
         })?;
+        let snapshot = self.list_certificates().await?;
         let (tx, rx) = mpsc::channel(128);
         let last_seen_snapshot = snapshot.clone();
         tokio::spawn(async move {
@@ -186,11 +186,11 @@ impl CertificateStore for NatsStore {
     }
 
     async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
-        let snapshot = self.list_acme_challenges().await?;
         let bucket = challenges_bucket(self).await?;
         let mut watch = bucket.watch_all().await.map_err(|error| {
             ployz_types::Error::operation("nats_acme_challenges_watch", format!("{error:?}"))
         })?;
+        let snapshot = self.list_acme_challenges().await?;
         let (tx, rx) = mpsc::channel(128);
         let last_seen_snapshot = snapshot.clone();
         tokio::spawn(async move {

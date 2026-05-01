@@ -87,12 +87,12 @@ impl MachineRegistry for NatsStore {
     }
 
     async fn subscribe_machines(&self) -> Result<MachineSubscription> {
-        let snapshot = self.list_machines().await?;
         let kv = machines_bucket(self).await?;
         let mut watch = kv
             .watch_all()
             .await
             .map_err(|error| Error::operation("nats_machines_watch", format!("{error:?}")))?;
+        let snapshot = self.list_machines().await?;
         let (tx, rx) = mpsc::channel(128);
         let last_seen_snapshot = snapshot.clone();
         tokio::spawn(async move {
