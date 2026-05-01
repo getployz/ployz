@@ -158,6 +158,10 @@ async fn handle_message(
         .publish(reply, payload.into())
         .await
         .map_err(|error| format!("publish response: {error}"))?;
+    client
+        .flush()
+        .await
+        .map_err(|error| format!("flush response: {error}"))?;
     let _ = response_flushed_tx.send(());
     Ok(())
 }
@@ -178,5 +182,9 @@ async fn publish_error_response(
     client
         .publish(reply, payload.into())
         .await
-        .map_err(|error| format!("publish error response: {error}"))
+        .map_err(|error| format!("publish error response: {error}"))?;
+    client
+        .flush()
+        .await
+        .map_err(|error| format!("flush error response: {error}"))
 }

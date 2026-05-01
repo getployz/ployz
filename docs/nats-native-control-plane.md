@@ -199,6 +199,11 @@ The important split:
   reload from authority, or surface degraded health to an operator-visible
   status. KV subscriptions establish the watch before loading the initial
   snapshot so updates that race with snapshot loading are still delivered.
+- Edge projections expose their subscription freshness as sidecar metrics:
+  gateway reports routing, certificates, and ACME challenge streams; DNS reports
+  routing. When those metrics endpoints are configured, `ployzctl status`
+  includes an `edge_sync` row for each stream so an operator can distinguish
+  stale routing projection from a healthy data-plane process.
 
 - **authority** lives in hub JetStream/KV/Object Store,
 - **hot read models** live in process memory and are rebuilt from authority,

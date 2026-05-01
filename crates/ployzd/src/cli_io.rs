@@ -179,7 +179,7 @@ fn render_plain_success(response: &DaemonResponse) -> String {
 }
 
 fn render_plain_status(payload: &StatusPayload) -> String {
-    format!(
+    let mut lines = vec![format!(
         "machine={} version={} network={} overlay={} network_lifecycle={} local_machine_lifecycle={} mesh_phase={}",
         payload.machine_id,
         payload.version,
@@ -194,7 +194,20 @@ fn render_plain_status(payload: &StatusPayload) -> String {
             .map(|value| value.to_string())
             .unwrap_or_else(|| "—".into()),
         payload.mesh_phase
-    )
+    )];
+    for sync in &payload.edge_sync {
+        let state = match (sync.healthy, sync.error.as_deref()) {
+            (Some(true), _) => "healthy".to_string(),
+            (Some(false), _) => "stale".to_string(),
+            (None, Some(error)) => format!("unknown error={error}"),
+            (None, None) => "unknown".to_string(),
+        };
+        lines.push(format!(
+            "edge_sync service={} stream={} state={}",
+            sync.service, sync.stream, state
+        ));
+    }
+    lines.join("\n")
 }
 
 fn render_plain_machine_update(payload: &ployz_api::MachineUpdatePayload) -> String {
@@ -582,6 +595,7 @@ mod tests {
                 network_lifecycle: Some(ployz_types::model::NetworkLifecycle::Running),
                 local_machine_lifecycle: Some(ployz_types::model::MachineLifecycle::Active),
                 mesh_phase: String::from("Running"),
+                edge_sync: Vec::new(),
             })),
         };
 
@@ -589,6 +603,45 @@ mod tests {
             render_plain_success(&response),
             "machine=founder version=0.1.0 network=alpha overlay=fd00::1 network_lifecycle=running local_machine_lifecycle=active mesh_phase=Running"
         );
+    }
+
+    #[test]
+    fn plain_status_renders_edge_sync_health() {
+        let response = DaemonResponse {
+            ok: true,
+            code: String::from("OK"),
+            message: String::from("status"),
+            payload: Some(DaemonPayload::Status(StatusPayload {
+                machine_id: String::from("founder"),
+                public_key: ployz_types::model::PublicKey([1; 32]),
+                version: String::from("0.1.0"),
+                network: Some(String::from("alpha")),
+                overlay_ip: Some(String::from("fd00::1")),
+                network_lifecycle: Some(ployz_types::model::NetworkLifecycle::Running),
+                local_machine_lifecycle: Some(ployz_types::model::MachineLifecycle::Active),
+                mesh_phase: String::from("Running"),
+                edge_sync: vec![
+                    ployz_api::EdgeSyncStatus {
+                        service: String::from("gateway"),
+                        stream: String::from("routing"),
+                        healthy: Some(true),
+                        error: None,
+                    },
+                    ployz_api::EdgeSyncStatus {
+                        service: String::from("dns"),
+                        stream: String::from("routing"),
+                        healthy: None,
+                        error: Some(String::from("connect metrics endpoint: refused")),
+                    },
+                ],
+            })),
+        };
+
+        let rendered = render_plain_success(&response);
+        assert!(rendered.contains("edge_sync service=gateway stream=routing state=healthy"));
+        assert!(rendered.contains(
+            "edge_sync service=dns stream=routing state=unknown error=connect metrics endpoint: refused"
+        ));
     }
 
     #[test]

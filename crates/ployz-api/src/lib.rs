@@ -477,6 +477,18 @@ pub struct StatusPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_machine_lifecycle: Option<MachineLifecycle>,
     pub mesh_phase: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edge_sync: Vec<EdgeSyncStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeSyncStatus {
+    pub service: String,
+    pub stream: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub healthy: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
