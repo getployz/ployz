@@ -27,9 +27,6 @@ deploy-types:
 bootstrap-linux *args:
     ./scripts/bootstrap-linux.sh {{args}}
 
-lab *args:
-    ./lab/bin/ployz-lab {{args}}
-
 e2e *args:
     cargo run -p ployz-e2e -- {{args}}
 
