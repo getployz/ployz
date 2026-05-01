@@ -225,9 +225,12 @@ The important split:
 - The daemon's NATS node RPC listener records its own subscription freshness in
   `nats-node-rpc-health.json` under the network data directory. `ployzctl
   status` reports that as `control_plane component=node_rpc_listener`, including
-  stale-since time, consecutive failures, and the last subscription error. While
-  the listener is stale, foreground request/reply calls to that node fail with
-  no-responder or timeout; recovery is the listener resubscribing, not a hidden
+  stale-since time, consecutive failures, and the last listener error.
+  Subscription loss, resubscribe failures, and command-path failures such as
+  daemon channel closure or response publish failure all land in that health
+  row. While the listener is stale, foreground request/reply calls to that node
+  fail with no-responder or timeout; recovery is the listener resubscribing or a
+  later successful command clearing stale command-path health, not a hidden
   control-plane fallback.
 - The daemon's certificate renewal worker records work-queue health in
   `nats-cert-renewal-health.json` under the network data directory. `ployzctl
