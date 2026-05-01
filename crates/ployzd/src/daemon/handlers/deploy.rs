@@ -162,15 +162,6 @@ fn decode_manifest(manifest_json: &str) -> Result<DeployManifest, Box<DaemonResp
         })
     })?;
 
-    if manifest.services.is_empty() {
-        return Err(Box::new(DaemonResponse {
-            ok: false,
-            code: "INVALID_MANIFEST".into(),
-            message: "deploy manifest must contain at least one service".into(),
-            payload: None,
-        }));
-    }
-
     Ok(manifest)
 }
 
@@ -294,6 +285,21 @@ mod tests {
             labels: BTreeMap::new(),
             restart: RestartPolicy::UnlessStopped,
         }
+    }
+
+    #[test]
+    fn decode_manifest_accepts_empty_services() {
+        let manifest_json = serde_json::to_string(&DeployManifest {
+            namespace: Namespace("prod".into()),
+            volumes: Vec::new(),
+            services: Vec::new(),
+        })
+        .expect("serialize manifest");
+
+        let manifest = decode_manifest(&manifest_json).expect("decode manifest");
+
+        assert_eq!(manifest.namespace, Namespace("prod".into()));
+        assert!(manifest.services.is_empty());
     }
 
     #[tokio::test]

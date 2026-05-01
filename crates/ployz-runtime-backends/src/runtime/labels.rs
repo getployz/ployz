@@ -5,6 +5,7 @@ pub const LABEL_MANAGED: &str = "dev.ployz.managed";
 pub const LABEL_KIND: &str = "dev.ployz.kind";
 pub const LABEL_KEY: &str = "dev.ployz.key";
 pub const LABEL_PARENT_ID: &str = "dev.ployz.parent-id";
+pub const LABEL_VERSION: &str = "dev.ployz.version";
 
 // Workload-specific (set when kind=workload)
 pub const LABEL_NAMESPACE: &str = "dev.ployz.namespace";
@@ -26,13 +27,20 @@ pub struct WorkloadMeta<'a> {
 }
 
 #[must_use]
-pub fn build_system_labels(key: &str, parent_id: Option<&str>) -> HashMap<String, String> {
+pub fn build_system_labels(
+    key: &str,
+    parent_id: Option<&str>,
+    version: Option<&str>,
+) -> HashMap<String, String> {
     let mut labels = HashMap::new();
     labels.insert(LABEL_MANAGED.into(), "true".into());
     labels.insert(LABEL_KIND.into(), "system".into());
     labels.insert(LABEL_KEY.into(), key.into());
     if let Some(pid) = parent_id {
         labels.insert(LABEL_PARENT_ID.into(), pid.into());
+    }
+    if let Some(version) = version {
+        labels.insert(LABEL_VERSION.into(), version.into());
     }
     labels
 }

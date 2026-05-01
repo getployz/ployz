@@ -398,6 +398,13 @@ pub(crate) enum MachineAction {
         #[arg(required = true, num_args = 1..)]
         targets: Vec<String>,
     },
+    #[command(disable_version_flag = true)]
+    Update {
+        #[arg(long = "version", id = "update-version", default_value = "latest")]
+        version: String,
+        #[arg(value_name = "machine-id")]
+        ids: Vec<String>,
+    },
     Activate {
         target: String,
     },

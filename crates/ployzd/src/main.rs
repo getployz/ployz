@@ -335,6 +335,36 @@ mod tests {
     }
 
     #[test]
+    fn parse_machine_update_defaults_to_latest_with_self_target() {
+        let cli = Cli::try_parse_from(["ployzd", "machine", "update"])
+            .expect("machine update args parse");
+
+        let Command::Machine {
+            action: MachineAction::Update { version, ids },
+        } = cli.command
+        else {
+            panic!("expected machine update command");
+        };
+        assert_eq!(version, "latest");
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn build_machine_update_request_defaults_are_encoded() {
+        let request = build_machine_request(MachineAction::Update {
+            version: "latest".into(),
+            ids: Vec::new(),
+        })
+        .expect("machine update request");
+
+        let DaemonRequest::MachineUpdate { ids, version } = request else {
+            panic!("expected machine update request");
+        };
+        assert_eq!(version, "latest");
+        assert!(ids.is_empty());
+    }
+
+    #[test]
     fn json_and_plain_flags_conflict() {
         assert!(Cli::try_parse_from(["ployzd", "--json", "--plain", "doctor"]).is_err());
     }

@@ -331,6 +331,7 @@ pub(crate) fn build_machine_request(action: MachineAction) -> Result<DaemonReque
             };
             Ok(DaemonRequest::MachineAdd { targets, options })
         }
+        MachineAction::Update { version, ids } => Ok(DaemonRequest::MachineUpdate { ids, version }),
         MachineAction::Activate { target } => Ok(DaemonRequest::MachineActivate { target }),
         MachineAction::Drain { target } => Ok(DaemonRequest::MachineDrain { target }),
         MachineAction::Standby { target, force } => {

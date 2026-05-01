@@ -22,6 +22,7 @@ use ployz_types::model::{
 use ployz_types::time::now_unix_secs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
@@ -1213,6 +1214,104 @@ async fn interrupted_machine_add_is_marked_interrupted_on_startup() {
     );
 }
 
+#[tokio::test]
+async fn interrupted_latest_machine_update_without_version_change_stays_interrupted_on_startup() {
+    let (state, _, _) = make_state(false).await;
+    let store = state.machine_operation_store();
+    let operation = store
+        .begin(
+            MachineOperationKind::Update,
+            Some("alpha".into()),
+            vec!["founder".into()],
+            "installing",
+            MachineOperationArtifacts {
+                requested_version: Some("latest".into()),
+                previous_version: Some(env!("CARGO_PKG_VERSION").into()),
+                ..MachineOperationArtifacts::default()
+            },
+        )
+        .expect("begin operation");
+
+    state.reconcile_machine_operations_on_startup().await;
+
+    let reconciled = state
+        .machine_operation_store()
+        .load(&operation.id)
+        .expect("load operation")
+        .expect("operation exists");
+    assert_eq!(reconciled.status, MachineOperationStatus::Interrupted);
+    assert!(
+        reconciled
+            .last_error
+            .as_deref()
+            .expect("last error")
+            .contains("expected latest")
+    );
+}
+
+#[tokio::test]
+async fn interrupted_latest_machine_update_with_version_change_succeeds_on_startup() {
+    let (state, _, _) = make_state(false).await;
+    let store = state.machine_operation_store();
+    let operation = store
+        .begin(
+            MachineOperationKind::Update,
+            Some("alpha".into()),
+            vec!["founder".into()],
+            "installing",
+            MachineOperationArtifacts {
+                requested_version: Some("latest".into()),
+                previous_version: Some("0.0.0-before-update".into()),
+                ..MachineOperationArtifacts::default()
+            },
+        )
+        .expect("begin operation");
+
+    state.reconcile_machine_operations_on_startup().await;
+
+    let reconciled = state
+        .machine_operation_store()
+        .load(&operation.id)
+        .expect("load operation")
+        .expect("operation exists");
+    assert_eq!(reconciled.status, MachineOperationStatus::Succeeded);
+    assert!(reconciled.last_error.is_none());
+}
+
+#[tokio::test]
+async fn interrupted_pinned_machine_update_requires_matching_version_on_startup() {
+    let (state, _, _) = make_state(false).await;
+    let store = state.machine_operation_store();
+    let operation = store
+        .begin(
+            MachineOperationKind::Update,
+            Some("alpha".into()),
+            vec!["founder".into()],
+            "installing",
+            MachineOperationArtifacts {
+                requested_version: Some("999.999.999".into()),
+                ..MachineOperationArtifacts::default()
+            },
+        )
+        .expect("begin operation");
+
+    state.reconcile_machine_operations_on_startup().await;
+
+    let reconciled = state
+        .machine_operation_store()
+        .load(&operation.id)
+        .expect("load operation")
+        .expect("operation exists");
+    assert_eq!(reconciled.status, MachineOperationStatus::Interrupted);
+    assert!(
+        reconciled
+            .last_error
+            .as_deref()
+            .expect("last error")
+            .contains("expected 999.999.999")
+    );
+}
+
 async fn make_state(start_mesh: bool) -> (DaemonState, Arc<MemoryStore>, Arc<MemoryWireGuard>) {
     make_state_with_remote_port(start_mesh, 4317).await
 }
@@ -1325,11 +1424,13 @@ fn test_machine_record(
 }
 
 fn unique_temp_dir(label: &str) -> PathBuf {
+    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+    let sequence = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time after epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!("{label}-{}-{nanos}", std::process::id()))
+    std::env::temp_dir().join(format!("{label}-{}-{nanos}-{sequence}", std::process::id()))
 }
 
 fn write_fake_ssh(dir: &Path) -> PathBuf {

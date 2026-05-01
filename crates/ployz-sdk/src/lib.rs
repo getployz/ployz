@@ -6,9 +6,9 @@ pub use ployz_api::{
     DoctorLocal, DoctorOverall, DoctorPayload, DoctorPeer, InstallSource, MachineAddOptions,
     MachineAddPayload, MachineAwaitingSelfPublication, MachineInstallOptions, MachineListPayload,
     MachineListRow, MachineOperationInfo, MachineOperationListPayload, MachineOperationPayload,
-    MachineRemovePayload, MeshListEntry, MeshListPayload, MeshReadyPayload, MeshSelfRecordPayload,
-    MeshStatusPayload, RuntimeRecord, RuntimeStatePayload, RuntimeTable, RuntimeWatchFrame,
-    StatusPayload,
+    MachineRemovePayload, MachineUpdatePayload, MachineUpdateRow, MeshListEntry, MeshListPayload,
+    MeshReadyPayload, MeshSelfRecordPayload, MeshStatusPayload, RuntimeRecord, RuntimeStatePayload,
+    RuntimeTable, RuntimeWatchFrame, StatusPayload,
 };
 pub use ployz_types::{Error, Result};
 pub use ployz_types::{error, model, spec};
