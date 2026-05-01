@@ -405,13 +405,6 @@ fn self_id_value(self_id: &MachineId) -> MachineId {
     self_id.clone()
 }
 
-#[allow(dead_code)]
-pub struct OverlayChallengeReadiness {
-    store: StoreDriver,
-    self_id: MachineId,
-    peer_rpc_port: u16,
-}
-
 pub struct NatsChallengeReadiness {
     store: StoreDriver,
 }
@@ -433,18 +426,6 @@ struct ChallengeEligibility {
 struct ChallengeReadinessExclusion {
     machine_id: MachineId,
     reason: &'static str,
-}
-
-#[allow(dead_code)]
-impl OverlayChallengeReadiness {
-    #[must_use]
-    pub fn new(store: StoreDriver, self_id: MachineId, peer_rpc_port: u16) -> Self {
-        Self {
-            store,
-            self_id,
-            peer_rpc_port,
-        }
-    }
 }
 
 #[async_trait]
@@ -487,11 +468,7 @@ impl Http01ChallengeReadiness for NatsChallengeReadiness {
                 .into_iter()
                 .map(|record| record.machine_id)
                 .collect::<BTreeSet<_>>();
-            let missing = eligibility
-                .eligible
-                .difference(&observed)
-                .cloned()
-                .collect::<Vec<_>>();
+            let missing = missing_readiness(&eligibility, &observed);
             if missing.is_empty() {
                 return Ok(());
             }
@@ -506,111 +483,6 @@ impl Http01ChallengeReadiness for NatsChallengeReadiness {
                 ));
             }
             sleep(Duration::from_millis(100)).await;
-        }
-    }
-}
-
-#[async_trait]
-impl Http01ChallengeReadiness for OverlayChallengeReadiness {
-    async fn wait_ready(&self, store: &StoreDriver, hostname: &str, token: &str) -> Result<()> {
-        wait_for_local_challenge(store, hostname, token).await?;
-
-        // HTTP-01 readiness is not a mutation lock. It is a projection check:
-        // missing peer inventory falls back to local readiness, known
-        // unreachable peers abstain, and reachable peers that have not yet
-        // replicated the challenge keep the order in Issuing for a later
-        // finalization pass.
-        let peers =
-            challenge_readiness_peers(self.store.list_machines().await, &self.self_id, hostname);
-
-        let outcomes = join_all(peers.iter().map(|peer| {
-            let hostname = hostname.to_string();
-            let token = token.to_string();
-            let peer = peer.clone();
-            let port = self.peer_rpc_port;
-            async move { challenge_ready_peer(&peer, &hostname, &token, port).await }
-        }))
-        .await;
-
-        for (peer, outcome) in peers.iter().zip(outcomes.iter()) {
-            match outcome {
-                ChallengeReadyOutcome::Ready | ChallengeReadyOutcome::Unreachable => {}
-                ChallengeReadyOutcome::NotReady(message) => {
-                    return Err(Error::operation(
-                        "acme_challenge_visibility",
-                        format!(
-                            "HTTP-01 challenge for {hostname} was not visible on peer {} within {:?}: {message}",
-                            peer.machine_id, HTTP01_CHALLENGE_VISIBILITY_TIMEOUT
-                        ),
-                    ));
-                }
-            }
-        }
-
-        Ok(())
-    }
-}
-
-#[allow(dead_code)]
-fn challenge_readiness_peers(
-    machines: Result<Vec<ployz_types::model::MachineMembership>>,
-    self_id: &MachineId,
-    hostname: &str,
-) -> Vec<PeerAddress> {
-    match machines {
-        Ok(machines) => machines
-            .iter()
-            .filter(|machine| is_coordination_peer(&machine.placement_candidate(), self_id))
-            .map(|machine| PeerAddress {
-                machine_id: machine.id.clone(),
-                overlay_ip: machine.overlay_ip,
-            })
-            .collect::<Vec<_>>(),
-        Err(error) => {
-            warn!(
-                hostname = %hostname,
-                ?error,
-                "could not list peers for ACME challenge readiness; proceeding with local confirmation"
-            );
-            Vec::new()
-        }
-    }
-}
-
-#[allow(dead_code)]
-enum ChallengeReadyOutcome {
-    Ready,
-    NotReady(String),
-    Unreachable,
-}
-
-#[allow(dead_code)]
-async fn challenge_ready_peer(
-    peer: &PeerAddress,
-    hostname: &str,
-    token: &str,
-    peer_rpc_port: u16,
-) -> ChallengeReadyOutcome {
-    let request = DaemonRequest::AcmeChallengeReady {
-        hostname: hostname.to_string(),
-        token: token.to_string(),
-    };
-    let read_timeout = HTTP01_CHALLENGE_VISIBILITY_TIMEOUT + peer_rpc::PEER_RPC_TIMEOUT;
-    match peer_rpc::overlay_rpc_expect_ok_with_read_timeout(
-        peer.overlay_ip,
-        peer_rpc_port,
-        request,
-        read_timeout,
-    )
-    .await
-    {
-        Ok(()) => ChallengeReadyOutcome::Ready,
-        Err(error) if error.contains("remote daemon error [ACME_CHALLENGE_NOT_READY]") => {
-            ChallengeReadyOutcome::NotReady(error)
-        }
-        Err(error) => {
-            warn!(peer = %peer.machine_id, %error, "ACME challenge readiness rpc failed; abstaining");
-            ChallengeReadyOutcome::Unreachable
         }
     }
 }
@@ -640,6 +512,17 @@ fn challenge_eligibility(routing: &RoutingState, hostname: &str) -> Result<Chall
     }
 
     Ok(ChallengeEligibility { eligible, excluded })
+}
+
+fn missing_readiness(
+    eligibility: &ChallengeEligibility,
+    observed: &BTreeSet<MachineId>,
+) -> Vec<MachineId> {
+    eligibility
+        .eligible
+        .difference(observed)
+        .cloned()
+        .collect::<Vec<_>>()
 }
 
 fn readiness_exclusion(machine: &MachineMembership) -> Option<&'static str> {
@@ -796,17 +679,6 @@ mod tests {
     }
 
     #[test]
-    fn challenge_readiness_peer_inventory_failure_falls_back_to_local_only() {
-        let peers = challenge_readiness_peers(
-            Err(Error::operation("list_machines", "inventory unavailable")),
-            &MachineId("self".into()),
-            "example.com",
-        );
-
-        assert!(peers.is_empty());
-    }
-
-    #[test]
     fn challenge_eligibility_excludes_standby_and_no_subnet_machines() {
         let routing = RoutingState {
             machines: vec![
@@ -851,6 +723,22 @@ mod tests {
             challenge_eligibility(&routing, "missing.example.com").expect_err("must fail loudly");
 
         assert!(error.to_string().contains("eligibility_unknown"));
+    }
+
+    #[test]
+    fn advertised_eligible_machine_missing_ack_blocks_readiness() {
+        let eligibility = ChallengeEligibility {
+            eligible: BTreeSet::from([
+                MachineId("machine-a".into()),
+                MachineId("machine-b".into()),
+            ]),
+            excluded: Vec::new(),
+        };
+        let observed = BTreeSet::from([MachineId("machine-a".into())]);
+
+        let missing = missing_readiness(&eligibility, &observed);
+
+        assert_eq!(missing, vec![MachineId("machine-b".into())]);
     }
 
     fn test_machine(id: &str, lifecycle: MachineLifecycle, has_subnet: bool) -> MachineMembership {

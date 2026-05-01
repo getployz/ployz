@@ -41,7 +41,7 @@ pub(super) async fn run_machine_add_target(
     if let Err(err) =
         bootstrap_remote_machine(&target, &context.install, &context.ssh_options).await
     {
-        let _ = release_reserved_subnet(&context, &mut subnet_claim).await;
+        let _ = release_reserved_subnet(&mut subnet_claim).await;
         let _ = operation_store.update_status(
             &mut operation,
             MachineOperationStatus::Failed,
@@ -60,7 +60,7 @@ pub(super) async fn run_machine_add_target(
     let remote_identity = match remote_daemon_identity(&target, &context.ssh_options).await {
         Ok(identity) => identity,
         Err(err) => {
-            let _ = release_reserved_subnet(&context, &mut subnet_claim).await;
+            let _ = release_reserved_subnet(&mut subnet_claim).await;
             let _ = operation_store.update_status(
                 &mut operation,
                 MachineOperationStatus::Failed,
@@ -90,7 +90,7 @@ pub(super) async fn run_machine_add_target(
         "machine add target: installing pre-admission peer"
     );
     if let Err(err) = upsert_transient_peer(&context.peer_sync_tx, pre_admitted_record).await {
-        let _ = release_reserved_subnet(&context, &mut subnet_claim).await;
+        let _ = release_reserved_subnet(&mut subnet_claim).await;
         let _ = operation_store.update_status(
             &mut operation,
             MachineOperationStatus::Failed,
@@ -118,7 +118,7 @@ pub(super) async fn run_machine_add_target(
             {
                 Ok(request) => request,
                 Err(err) => {
-                    let _ = release_reserved_subnet(&context, &mut subnet_claim).await;
+                    let _ = release_reserved_subnet(&mut subnet_claim).await;
                     let _ =
                         rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref())
                             .await;
@@ -140,7 +140,7 @@ pub(super) async fn run_machine_add_target(
     {
         Ok(()) => {}
         Err(err) => {
-            let _ = release_reserved_subnet(&context, &mut subnet_claim).await;
+            let _ = release_reserved_subnet(&mut subnet_claim).await;
             let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
             let _ = operation_store.update_status(
                 &mut operation,
@@ -161,7 +161,7 @@ pub(super) async fn run_machine_add_target(
     let mut record = match remote_self_record(&target, &context.ssh_options).await {
         Ok(record) => record,
         Err(err) => {
-            let _ = release_reserved_subnet(&context, &mut subnet_claim).await;
+            let _ = release_reserved_subnet(&mut subnet_claim).await;
             let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
             let _ = operation_store.update_status(
                 &mut operation,
@@ -175,7 +175,7 @@ pub(super) async fn run_machine_add_target(
         }
     };
     if let Err(err) = validate_joined_machine_subnet(&record, subnet_claim.subnet) {
-        let _ = release_reserved_subnet(&context, &mut subnet_claim).await;
+        let _ = release_reserved_subnet(&mut subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
             &mut operation,
@@ -195,7 +195,7 @@ pub(super) async fn run_machine_add_target(
     let machine_id = record.id.clone();
     let joiner_overlay_ip = record.overlay_ip;
     if let Err(err) = persist_machine_control_target(&context, &machine_id, &target).await {
-        let _ = release_reserved_subnet(&context, &mut subnet_claim).await;
+        let _ = release_reserved_subnet(&mut subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
             &mut operation,
@@ -209,7 +209,7 @@ pub(super) async fn run_machine_add_target(
     }
     joiner_id = Some(machine_id.clone());
     if let Err(err) = consume_invite(&context, &invite_id, &machine_id).await {
-        let _ = release_reserved_subnet(&context, &mut subnet_claim).await;
+        let _ = release_reserved_subnet(&mut subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
             &mut operation,
@@ -223,7 +223,7 @@ pub(super) async fn run_machine_add_target(
     }
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: transient peer refresh starting");
     if let Err(err) = upsert_transient_peer(&context.peer_sync_tx, record.clone()).await {
-        let _ = release_reserved_subnet(&context, &mut subnet_claim).await;
+        let _ = release_reserved_subnet(&mut subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
             &mut operation,
@@ -241,7 +241,7 @@ pub(super) async fn run_machine_add_target(
 
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: waiting for remote ready");
     if let Err(err) = wait_for_remote_ready(&target, &context.ssh_options).await {
-        let _ = release_reserved_subnet(&context, &mut subnet_claim).await;
+        let _ = release_reserved_subnet(&mut subnet_claim).await;
         tracing::warn!(
             %target,
             joiner_id = %machine_id,
@@ -262,7 +262,6 @@ pub(super) async fn run_machine_add_target(
     stage = MachineAddStage::Ready;
     let _ = operation_store.update_stage(&mut operation, stage.to_string());
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: remote ready");
-    let _ = release_reserved_subnet(&context, &mut subnet_claim).await;
 
     tracing::info!(%target, joiner_id = %machine_id, "machine add target: waiting for overlay ready");
     let joiner_ref = MachineMembership::seed(
@@ -274,6 +273,7 @@ pub(super) async fn run_machine_add_target(
     );
     if let Err(err) = wait_for_overlay_ready(&joiner_ref, context.peer_rpc_port).await {
         tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: overlay ready failed");
+        let _ = release_reserved_subnet(&mut subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
             &mut operation,
@@ -300,6 +300,7 @@ pub(super) async fn run_machine_add_target(
     .await
     {
         tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: activate lifecycle failed");
+        let _ = release_reserved_subnet(&mut subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
             &mut operation,
@@ -317,6 +318,7 @@ pub(super) async fn run_machine_add_target(
     active_record.updated_at = ployz_types::time::now_unix_secs();
     if let Err(err) = context.store.upsert_self_machine(&active_record).await {
         tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: active self-record persistence failed");
+        let _ = release_reserved_subnet(&mut subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
             &mut operation,
@@ -341,6 +343,7 @@ pub(super) async fn run_machine_add_target(
     .await
     {
         tracing::warn!(%target, joiner_id = %machine_id, error = %err, "machine add target: lifecycle projection failed");
+        let _ = release_reserved_subnet(&mut subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
             &mut operation,
@@ -365,6 +368,7 @@ pub(super) async fn run_machine_add_target(
             error = %err,
             "machine add target: subnet uniqueness invariant violated"
         );
+        let _ = release_reserved_subnet(&mut subnet_claim).await;
         let _ = rollback_machine_add_target(&context, &target, stage, joiner_id.as_ref()).await;
         let _ = operation_store.update_status(
             &mut operation,
@@ -377,6 +381,7 @@ pub(super) async fn run_machine_add_target(
         };
     }
 
+    let _ = release_reserved_subnet(&mut subnet_claim).await;
     let _ = operation_store.update_stage(&mut operation, MachineAddStage::Finalized.to_string());
     if let Err(err) = refresh_bootstrap_peer_records_from_store(
         &context.network_dir,
