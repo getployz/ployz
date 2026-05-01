@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use ployz_api::{DaemonRequest, DaemonResponse};
+use ployz_types::error::{Error, Result};
 use ployz_types::model::MachineId;
 
 use crate::subjects;
@@ -16,13 +18,23 @@ impl NodeCommandSubject {
     }
 
     #[must_use]
+    pub fn deploy_stop(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "deploy.stop")
+    }
+
+    #[must_use]
+    pub fn deploy_inspect_namespace(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "deploy.inspect_namespace")
+    }
+
+    #[must_use]
     pub fn deploy_drain_instance(machine_id: &MachineId) -> Self {
         Self::new(machine_id, "deploy.drain_instance")
     }
 
     #[must_use]
-    pub fn deploy_stop(machine_id: &MachineId) -> Self {
-        Self::new(machine_id, "deploy.stop")
+    pub fn deploy_remove_instance(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "deploy.remove_instance")
     }
 
     #[must_use]
@@ -33,6 +45,61 @@ impl NodeCommandSubject {
     #[must_use]
     pub fn volume_remove(machine_id: &MachineId) -> Self {
         Self::new(machine_id, "volume.remove")
+    }
+
+    #[must_use]
+    pub fn ping(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "ping")
+    }
+
+    #[must_use]
+    pub fn status(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "status")
+    }
+
+    #[must_use]
+    pub fn mesh_self_record(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "mesh.self_record")
+    }
+
+    #[must_use]
+    pub fn machine_transition_self(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "machine.transition_self")
+    }
+
+    #[must_use]
+    pub fn machine_update_prepare(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "machine.update.prepare")
+    }
+
+    #[must_use]
+    pub fn machine_update_execute(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "machine.update.execute")
+    }
+
+    #[must_use]
+    pub fn machine_operation_get(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "machine.operation.get")
+    }
+
+    #[must_use]
+    pub fn volume_zfs_inspect(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "volume.zfs.inspect")
+    }
+
+    #[must_use]
+    pub fn volume_zfs_snapshot(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "volume.zfs.snapshot")
+    }
+
+    #[must_use]
+    pub fn volume_zfs_snapshot_guid(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "volume.zfs.snapshot_guid")
+    }
+
+    #[must_use]
+    pub fn volume_zfs_start_send(machine_id: &MachineId) -> Self {
+        Self::new(machine_id, "volume.zfs.start_send")
     }
 
     #[must_use]
@@ -57,5 +124,177 @@ impl Default for RpcPolicy {
         Self {
             timeout: Duration::from_secs(15),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RpcFailureKind {
+    Timeout,
+    NoResponders,
+    Transport,
+    Encode,
+    Decode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RpcFailure {
+    pub kind: RpcFailureKind,
+    pub message: String,
+}
+
+impl RpcFailure {
+    #[must_use]
+    pub fn new(kind: RpcFailureKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for RpcFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code(), self.message)
+    }
+}
+
+impl std::error::Error for RpcFailure {}
+
+impl RpcFailure {
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self.kind {
+            RpcFailureKind::Timeout => "NATS_RPC_TIMEOUT",
+            RpcFailureKind::NoResponders => "NATS_RPC_NO_RESPONDERS",
+            RpcFailureKind::Transport => "NATS_RPC_TRANSPORT",
+            RpcFailureKind::Encode => "NATS_RPC_ENCODE",
+            RpcFailureKind::Decode => "NATS_RPC_DECODE",
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct NatsNodeRpcClient {
+    client: async_nats::Client,
+    policy: RpcPolicy,
+}
+
+impl NatsNodeRpcClient {
+    #[must_use]
+    pub fn new(client: async_nats::Client) -> Self {
+        Self {
+            client,
+            policy: RpcPolicy::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_policy(mut self, policy: RpcPolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    pub async fn request(
+        &self,
+        subject: NodeCommandSubject,
+        request: &DaemonRequest,
+    ) -> std::result::Result<DaemonResponse, RpcFailure> {
+        let payload = serde_json::to_vec(request).map_err(|error| {
+            RpcFailure::new(
+                RpcFailureKind::Encode,
+                format!("encode node rpc request: {error}"),
+            )
+        })?;
+        let response = tokio::time::timeout(
+            self.policy.timeout,
+            self.client
+                .request(subject.as_str().to_string(), payload.into()),
+        )
+        .await
+        .map_err(|_| {
+            RpcFailure::new(
+                RpcFailureKind::Timeout,
+                format!("request to '{}' timed out", subject.as_str()),
+            )
+        })?
+        .map_err(classify_request_error)?;
+        serde_json::from_slice(response.payload.as_ref()).map_err(|error| {
+            RpcFailure::new(
+                RpcFailureKind::Decode,
+                format!(
+                    "decode node rpc response from '{}': {error}",
+                    subject.as_str()
+                ),
+            )
+        })
+    }
+
+    pub async fn request_expect_ok(
+        &self,
+        subject: NodeCommandSubject,
+        request: &DaemonRequest,
+    ) -> std::result::Result<(), RpcFailure> {
+        let response = self.request(subject, request).await?;
+        if response.ok {
+            return Ok(());
+        }
+        Err(RpcFailure::new(
+            RpcFailureKind::Transport,
+            format!(
+                "remote daemon error [{}]: {}",
+                response.code, response.message
+            ),
+        ))
+    }
+}
+
+#[must_use]
+pub fn classify_request_error(error: async_nats::RequestError) -> RpcFailure {
+    match error.kind() {
+        async_nats::RequestErrorKind::TimedOut => {
+            RpcFailure::new(RpcFailureKind::Timeout, error.to_string())
+        }
+        async_nats::RequestErrorKind::NoResponders => {
+            RpcFailure::new(RpcFailureKind::NoResponders, error.to_string())
+        }
+        async_nats::RequestErrorKind::Other => {
+            RpcFailure::new(RpcFailureKind::Transport, error.to_string())
+        }
+    }
+}
+
+impl From<RpcFailure> for Error {
+    fn from(error: RpcFailure) -> Self {
+        Error::operation(error.code(), error.message)
+    }
+}
+
+pub fn decode_daemon_request(payload: &[u8]) -> Result<DaemonRequest> {
+    serde_json::from_slice(payload)
+        .map_err(|error| Error::operation("nats_rpc_decode_request", error.to_string()))
+}
+
+pub fn encode_daemon_response(response: &DaemonResponse) -> Result<Vec<u8>> {
+    serde_json::to_vec(response)
+        .map_err(|error| Error::operation("nats_rpc_encode_response", error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_command_subject_uses_machine_command_namespace() {
+        let machine_id = MachineId("machine.a".into());
+        let subject = NodeCommandSubject::status(&machine_id);
+
+        assert_eq!(subject.as_str(), "node.machine%2Ea.cmd.status");
+    }
+
+    #[test]
+    fn rpc_failure_codes_are_stable() {
+        let failure = RpcFailure::new(RpcFailureKind::NoResponders, "none");
+
+        assert_eq!(failure.code(), "NATS_RPC_NO_RESPONDERS");
     }
 }

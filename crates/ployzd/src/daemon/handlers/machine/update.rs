@@ -6,6 +6,7 @@ use std::time::Duration;
 use ployz_api::{
     DaemonPayload, DaemonRequest, DaemonResponse, MachineUpdatePayload, MachineUpdateRow,
 };
+use ployz_nats::coord::rpc::{NatsNodeRpcClient, NodeCommandSubject};
 use ployz_types::model::{MachineId, MachineMembership};
 use tokio::process::Command;
 use tokio::sync::oneshot;
@@ -17,7 +18,6 @@ use crate::daemon::handlers::machine::operations::{
     MachineOperationArtifacts, MachineOperationKind, MachineOperationRecord,
     MachineOperationStatus, MachineOperationStore,
 };
-use crate::daemon::handlers::peer_rpc::{overlay_rpc, overlay_rpc_expect_ok};
 
 const UPDATE_READINESS_TIMEOUT: Duration = Duration::from_secs(120);
 const UPDATE_READINESS_INTERVAL: Duration = Duration::from_secs(1);
@@ -288,16 +288,22 @@ impl DaemonState {
                 ));
             }
         };
-        let peer_rpc_port = match self.peer_control_port() {
-            Ok(port) => port,
-            Err(error) => return Err(update_row(&machine_id, version, error.to_string())),
+        let client = match self.nats_node_rpc_client().await {
+            Ok(client) => client,
+            Err(error) => return Err(update_row(&machine_id, version, error)),
         };
 
         let prepare = DaemonRequest::MeshPeerPrepareUpdate {
             operation_id: operation_id.to_string(),
             version: version.to_string(),
         };
-        if let Err(error) = overlay_rpc_expect_ok(record.overlay_ip, peer_rpc_port, prepare).await {
+        if let Err(error) = client
+            .request_expect_ok(
+                NodeCommandSubject::machine_update_prepare(&record.id),
+                &prepare,
+            )
+            .await
+        {
             return Err(update_row(
                 &machine_id,
                 version,
@@ -309,7 +315,13 @@ impl DaemonState {
             operation_id: operation_id.to_string(),
             version: version.to_string(),
         };
-        if let Err(error) = overlay_rpc_expect_ok(record.overlay_ip, peer_rpc_port, execute).await {
+        if let Err(error) = client
+            .request_expect_ok(
+                NodeCommandSubject::machine_update_execute(&record.id),
+                &execute,
+            )
+            .await
+        {
             return Err(update_row(
                 &machine_id,
                 version,
@@ -317,7 +329,7 @@ impl DaemonState {
             ));
         }
 
-        match wait_for_remote_update(record, peer_rpc_port, operation_id, version).await {
+        match wait_for_remote_update(client, record, operation_id, version).await {
             Ok(message) => Ok(update_row(&machine_id, version, message)),
             Err(error) => Err(update_row(&machine_id, version, error)),
         }
@@ -362,8 +374,8 @@ async fn ensure_installer_reports_existing_install(installer: &Path) -> Result<(
 }
 
 async fn wait_for_remote_update(
+    client: NatsNodeRpcClient,
     record: MachineMembership,
-    peer_rpc_port: u16,
     operation_id: &str,
     version: &str,
 ) -> Result<String, String> {
@@ -371,14 +383,14 @@ async fn wait_for_remote_update(
     let deadline = Instant::now() + UPDATE_READINESS_TIMEOUT;
     let mut last_error = String::from("remote update operation did not complete");
     while Instant::now() < deadline {
-        match overlay_rpc(
-            record.overlay_ip,
-            peer_rpc_port,
-            DaemonRequest::MachineOperationGet {
-                id: operation_id.to_string(),
-            },
-        )
-        .await
+        match client
+            .request(
+                NodeCommandSubject::machine_operation_get(&record.id),
+                &DaemonRequest::MachineOperationGet {
+                    id: operation_id.to_string(),
+                },
+            )
+            .await
         {
             Ok(response) if response.ok => {
                 let Some(DaemonPayload::MachineOperation(payload)) = response.payload else {
@@ -393,7 +405,7 @@ async fn wait_for_remote_update(
                         if version == "latest" {
                             return Ok("remote update operation succeeded".into());
                         }
-                        verify_remote_version(record.overlay_ip, peer_rpc_port, version).await?;
+                        verify_remote_version(&client, &record, version).await?;
                         return Ok(format!("ready with version {version}"));
                     }
                     "failed" | "interrupted" => {
@@ -416,7 +428,7 @@ async fn wait_for_remote_update(
                 );
             }
             Err(error) => {
-                last_error = error;
+                last_error = error.to_string();
             }
         }
         sleep(UPDATE_READINESS_INTERVAL).await;
@@ -425,11 +437,17 @@ async fn wait_for_remote_update(
 }
 
 async fn verify_remote_version(
-    overlay_ip: ployz_types::model::OverlayIp,
-    peer_rpc_port: u16,
+    client: &NatsNodeRpcClient,
+    record: &MachineMembership,
     version: &str,
 ) -> Result<(), String> {
-    let response = overlay_rpc(overlay_ip, peer_rpc_port, DaemonRequest::Status).await?;
+    let response = client
+        .request(
+            NodeCommandSubject::status(&record.id),
+            &DaemonRequest::Status,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
     if !response.ok {
         return Err(format!(
             "remote status failed [{}]: {}",

@@ -1,4 +1,3 @@
-mod coordination;
 mod debug;
 mod deploy;
 mod doctor;
@@ -47,6 +46,10 @@ impl DaemonState {
             | DaemonRequest::DeployPreview { .. }
             | DaemonRequest::DeployApply { .. }
             | DaemonRequest::DeployExport { .. }
+            | DaemonRequest::DeployNodeInspectNamespace { .. }
+            | DaemonRequest::DeployNodeStartCandidate { .. }
+            | DaemonRequest::DeployNodeDrainInstance { .. }
+            | DaemonRequest::DeployNodeRemoveInstance { .. }
             | DaemonRequest::RuntimeSubscribe
             | DaemonRequest::VolumeZfsInspect { .. }
             | DaemonRequest::VolumeZfsSnapshot { .. }
@@ -74,7 +77,6 @@ impl DaemonState {
             | DaemonRequest::MachineInviteRevoke { .. }
             | DaemonRequest::MachineInviteList
             | DaemonRequest::MachineInviteImport { .. }
-            | DaemonRequest::Coord { .. }
             | DaemonRequest::AcmeChallengeReady { .. }
             | DaemonRequest::MeshSelfRecord
             | DaemonRequest::MeshAccept { .. } => RequestLane::Shared,
@@ -117,6 +119,49 @@ impl DaemonState {
             } => self.handle_deploy_apply(&manifest_json, &options).await,
             DaemonRequest::DeployExport { namespace } => {
                 self.handle_deploy_export(&namespace).await
+            }
+            DaemonRequest::DeployNodeInspectNamespace {
+                namespace,
+                deploy_id,
+            } => {
+                self.handle_deploy_node_inspect_namespace(&namespace, &deploy_id)
+                    .await
+            }
+            DaemonRequest::DeployNodeStartCandidate {
+                namespace,
+                deploy_id,
+                service,
+                slot_id,
+                instance_id,
+                spec_json,
+                volumes_json,
+            } => {
+                self.handle_deploy_node_start_candidate(
+                    &namespace,
+                    &deploy_id,
+                    &service,
+                    &slot_id,
+                    &instance_id,
+                    &spec_json,
+                    &volumes_json,
+                )
+                .await
+            }
+            DaemonRequest::DeployNodeDrainInstance {
+                namespace,
+                deploy_id,
+                instance_id,
+            } => {
+                self.handle_deploy_node_drain_instance(&namespace, &deploy_id, &instance_id)
+                    .await
+            }
+            DaemonRequest::DeployNodeRemoveInstance {
+                namespace,
+                deploy_id,
+                instance_id,
+            } => {
+                self.handle_deploy_node_remove_instance(&namespace, &deploy_id, &instance_id)
+                    .await
             }
             DaemonRequest::VolumeZfsInspect {
                 namespace,
@@ -226,7 +271,6 @@ impl DaemonState {
             DaemonRequest::MachineInviteImport { token } => {
                 self.handle_machine_invite_import(&token).await
             }
-            DaemonRequest::Coord { op } => self.handle_coord(op).await,
             DaemonRequest::AcmeChallengeReady { hostname, token } => {
                 self.handle_acme_challenge_ready(&hostname, &token).await
             }
@@ -320,6 +364,10 @@ impl DaemonState {
             | DaemonRequest::DeployPreview { .. }
             | DaemonRequest::DeployApply { .. }
             | DaemonRequest::DeployExport { .. }
+            | DaemonRequest::DeployNodeInspectNamespace { .. }
+            | DaemonRequest::DeployNodeStartCandidate { .. }
+            | DaemonRequest::DeployNodeDrainInstance { .. }
+            | DaemonRequest::DeployNodeRemoveInstance { .. }
             | DaemonRequest::RuntimeSubscribe
             | DaemonRequest::VolumeZfsInspect { .. }
             | DaemonRequest::VolumeZfsSnapshot { .. }
@@ -347,7 +395,6 @@ impl DaemonState {
             | DaemonRequest::MachineInviteRevoke { .. }
             | DaemonRequest::MachineInviteList
             | DaemonRequest::MachineInviteImport { .. }
-            | DaemonRequest::Coord { .. }
             | DaemonRequest::AcmeChallengeReady { .. }
             | DaemonRequest::MeshSelfRecord
             | DaemonRequest::MeshAccept { .. } => {

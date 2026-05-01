@@ -72,74 +72,6 @@ pub enum DebugTickTask {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ResourceKey {
-    /// Subnet reservation: missing peers are acceptable only if the strict
-    /// majority quorum still allows the reservation.
-    Subnet(Ipv4Net),
-    /// Namespace deploy lock: all required deploy participants must be
-    /// reachable and session-locked.
-    DeployNamespace(String),
-    /// ACME hostname issuance lock: peer inventory must be available;
-    /// unreachable known peers abstain, explicit denials veto.
-    CertIssuance(String),
-    /// ACME account creation lock: peer inventory must be available;
-    /// unreachable known peers abstain, explicit denials veto.
-    AcmeAccount(String),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum VoteConflict {
-    HeldBy {
-        holder: MachineId,
-        reservation_id: String,
-    },
-    AlreadyCommitted,
-    OwnerMismatch,
-    Expired,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Vote {
-    Allow,
-    Deny(VoteConflict),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum CoordOutcome {
-    SubnetClaimed { subnet: Ipv4Net, owner: MachineId },
-    SubnetReleased { subnet: Ipv4Net, owner: MachineId },
-    DeployCommitted { deploy_id: String },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum CoordOp {
-    Prepare {
-        id: String,
-        key: ResourceKey,
-        owner: MachineId,
-        nonce: String,
-        ttl_secs: u64,
-    },
-    Renew {
-        id: String,
-        key: ResourceKey,
-        nonce: String,
-        ttl_secs: u64,
-    },
-    Commit {
-        id: String,
-        key: ResourceKey,
-        nonce: String,
-        outcome: CoordOutcome,
-    },
-    Release {
-        id: String,
-        key: ResourceKey,
-        nonce: String,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonRequest {
     /// Liveness probe used by deploy reachability checks. Returns immediately
     /// with no side effects so callers can confirm the peer daemon is alive
@@ -255,9 +187,6 @@ pub enum DaemonRequest {
         assigned_subnet: Option<Ipv4Net>,
         force: bool,
     },
-    Coord {
-        op: CoordOp,
-    },
     AcmeChallengeReady {
         hostname: String,
         token: String,
@@ -276,6 +205,29 @@ pub enum DaemonRequest {
     },
     DeployExport {
         namespace: String,
+    },
+    DeployNodeInspectNamespace {
+        namespace: String,
+        deploy_id: String,
+    },
+    DeployNodeStartCandidate {
+        namespace: String,
+        deploy_id: String,
+        service: String,
+        slot_id: String,
+        instance_id: String,
+        spec_json: String,
+        volumes_json: String,
+    },
+    DeployNodeDrainInstance {
+        namespace: String,
+        deploy_id: String,
+        instance_id: String,
+    },
+    DeployNodeRemoveInstance {
+        namespace: String,
+        deploy_id: String,
+        instance_id: String,
     },
     RuntimeSubscribe,
     VolumeZfsInspect {
@@ -337,6 +289,8 @@ pub enum DaemonPayload {
     MachineInviteList(MachineInviteListPayload),
     MachineOperationList(MachineOperationListPayload),
     MachineOperation(MachineOperationPayload),
+    DeployNamespaceSnapshot(DeployNamespaceSnapshotPayload),
+    DeployCandidateStarted(DeployCandidateStartedPayload),
     VolumeZfsInspect(VolumeZfsInspectPayload),
     VolumeZfsSnapshot(VolumeZfsSnapshotPayload),
     VolumeZfsPeerSend(VolumeZfsPeerSendPayload),
@@ -721,6 +675,16 @@ pub struct MachineOperationInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeployNamespaceSnapshotPayload {
+    pub instances: Vec<InstanceStatusRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeployCandidateStartedPayload {
+    pub status: InstanceStatusRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VolumeZfsInspectPayload {
     pub namespace: String,
     pub volume: String,
@@ -798,52 +762,11 @@ pub struct DaemonResponse {
     pub payload: Option<DaemonPayload>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum DeployFrame {
-    Open {
-        namespace: String,
-        deploy_id: String,
-        coordinator_id: String,
-    },
-    InspectNamespace,
-    StartCandidate {
-        service: String,
-        slot_id: String,
-        instance_id: String,
-        spec_json: String,
-        volumes_json: String,
-    },
-    DrainInstance {
-        instance_id: String,
-    },
-    RemoveInstance {
-        instance_id: String,
-    },
-    Close,
-    Opened {
-        instances: Vec<InstanceStatusRecord>,
-    },
-    NamespaceSnapshot {
-        instances: Vec<InstanceStatusRecord>,
-    },
-    CandidateStarted {
-        status: Box<InstanceStatusRecord>,
-    },
-    Ack {
-        message: String,
-    },
-    Error {
-        code: String,
-        message: String,
-    },
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        DeployFrame, RuntimeRecord, RuntimeTable, RuntimeWatchFrame, instance_runtime_key,
-        machine_runtime_key, release_runtime_key, revision_runtime_key, runtime_frame_from_event,
-        sort_routing_state,
+        RuntimeRecord, RuntimeTable, RuntimeWatchFrame, instance_runtime_key, machine_runtime_key,
+        release_runtime_key, revision_runtime_key, runtime_frame_from_event, sort_routing_state,
     };
     use ployz_types::model::{
         DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
@@ -854,41 +777,6 @@ mod tests {
     use ployz_types::spec::Namespace;
     use std::collections::BTreeMap;
     use std::net::{Ipv4Addr, Ipv6Addr};
-
-    #[test]
-    fn start_candidate_roundtrip_is_session_scoped() {
-        let frame = DeployFrame::StartCandidate {
-            service: String::from("api"),
-            slot_id: String::from("slot-1"),
-            instance_id: String::from("inst-1"),
-            spec_json: String::from("{\"name\":\"api\"}"),
-            volumes_json: String::from("[]"),
-        };
-
-        let json = serde_json::to_value(&frame).expect("serialize frame");
-        let start_candidate = json
-            .get("StartCandidate")
-            .expect("enum variant payload should exist");
-
-        assert!(start_candidate.get("deploy_id").is_none());
-
-        let decoded: DeployFrame = serde_json::from_value(json).expect("deserialize frame");
-        let DeployFrame::StartCandidate {
-            service,
-            slot_id,
-            instance_id,
-            spec_json,
-            volumes_json,
-        } = decoded
-        else {
-            panic!("unexpected frame");
-        };
-        assert_eq!(service, "api");
-        assert_eq!(slot_id, "slot-1");
-        assert_eq!(instance_id, "inst-1");
-        assert_eq!(spec_json, "{\"name\":\"api\"}");
-        assert_eq!(volumes_json, "[]");
-    }
 
     #[test]
     fn sort_routing_state_orders_all_tables_by_runtime_key() {

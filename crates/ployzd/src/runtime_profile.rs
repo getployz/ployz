@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 
 use crate::built_in_images::{BuiltInImage, BuiltInImages};
@@ -13,13 +13,10 @@ use ployz_gateway_config::GatewayConfig;
 use ployz_nats::config as nats_config;
 use ployz_orchestrator::WireguardDriver;
 use ployz_runtime_api::Identity;
-use ployz_runtime_api::NamespaceLockManager;
-use ployz_runtime_backends::deploy::remote::{RemoteControlHandle, start_remote_control_listener};
 use ployz_runtime_backends::mesh::driver as mesh_backends;
 use ployz_runtime_backends::network::docker_bridge_network;
-use ployz_runtime_backends::storage::{TokioShellRunner, ZfsDriver};
 use ployz_store_api::StoreDriver;
-use ployz_types::model::{MachineId, MachineRole, OverlayIp};
+use ployz_types::model::{MachineRole, OverlayIp};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExecutionBackend {
@@ -112,14 +109,6 @@ impl RuntimeProfile {
         self.execution_backend == ExecutionBackend::Memory
     }
 
-    #[must_use]
-    pub(crate) fn overlay_network_name(&self, network_name: &str) -> Option<String> {
-        if self.is_memory_test() {
-            return None;
-        }
-        Some(format!("ployz-{network_name}"))
-    }
-
     pub(crate) async fn build_mesh_components(
         &self,
         request: MeshBuildRequest<'_>,
@@ -189,7 +178,7 @@ impl RuntimeProfile {
     }
 
     #[must_use]
-    pub(crate) fn remote_control_bind_addr(
+    pub(crate) fn control_bind_addr(
         &self,
         remote_control_port: u16,
         overlay_ip: OverlayIp,
@@ -202,32 +191,6 @@ impl RuntimeProfile {
                 SocketAddr::new(IpAddr::V6(overlay_ip.0), remote_control_port)
             }
         }
-    }
-
-    pub(crate) async fn start_remote_control(
-        &self,
-        bind_addr: SocketAddr,
-        store: StoreDriver,
-        namespace_locks: NamespaceLockManager,
-        machine_id: MachineId,
-        overlay_network_name: Option<String>,
-        overlay_dns_server: Option<Ipv4Addr>,
-        storage_driver: Option<std::sync::Arc<ZfsDriver<TokioShellRunner>>>,
-    ) -> Result<RemoteControlHandle, String> {
-        if self.is_memory_test() {
-            return Ok(RemoteControlHandle::noop());
-        }
-        start_remote_control_listener(
-            bind_addr,
-            store,
-            namespace_locks,
-            machine_id,
-            overlay_network_name,
-            overlay_dns_server,
-            storage_driver,
-        )
-        .await
-        .map_err(|error| error.to_string())
     }
 
     pub(crate) async fn start_gateway(

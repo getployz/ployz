@@ -3,16 +3,56 @@ use std::time::Duration;
 
 use async_nats::jetstream::kv;
 use ployz_types::error::{Error, Result};
+use ployz_types::model::MachineId;
+use ployz_types::spec::Namespace;
+use ployz_types::time::now_unix_secs;
 
 use crate::NatsStore;
 use crate::buckets::LOCKS_BUCKET;
 use crate::store::kv_json;
+use crate::subjects;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeaseValue {
     pub owner: String,
     pub nonce: String,
     pub expires_at: u64,
+}
+
+pub struct NatsDeployLock {
+    locks: NatsLocks,
+    lease: Option<Lease>,
+}
+
+impl NatsDeployLock {
+    pub async fn acquire(
+        locks: NatsLocks,
+        namespace: &Namespace,
+        nonce: &str,
+        owner: &MachineId,
+        ttl: Duration,
+    ) -> Result<Self> {
+        let lease = locks
+            .acquire(
+                &subjects::deploy_lock(namespace),
+                owner.0.clone(),
+                nonce.to_string(),
+                ttl,
+                now_unix_secs().saturating_add(ttl.as_secs()),
+            )
+            .await?;
+        Ok(Self {
+            locks,
+            lease: Some(lease),
+        })
+    }
+
+    pub async fn release(mut self) -> Result<()> {
+        let Some(lease) = self.lease.take() else {
+            return Ok(());
+        };
+        self.locks.release(lease).await
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

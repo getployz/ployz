@@ -28,6 +28,7 @@ use crate::daemon::subnet_coordination::NatsSubnetCoordinator;
 
 use super::{ActiveMesh, DaemonState};
 use crate::daemon::handlers::volume::transfer_listener;
+use crate::ipc::nats_listener;
 use crate::ipc::peer_listener;
 use crate::runtime_profile::MeshBuildRequest;
 
@@ -74,8 +75,8 @@ pub enum StartMeshError {
     NetworkDriver(String),
     #[error("mesh up failed: {0}")]
     MeshUp(String),
-    #[error("remote control start failed on {bind}: {error}")]
-    RemoteControl { bind: SocketAddr, error: String },
+    #[error("control plane listener start failed on {bind}: {error}")]
+    ControlPlaneListener { bind: SocketAddr, error: String },
     #[error("gateway start failed: {0}")]
     Gateway(String),
     #[error("dns start failed: {0}")]
@@ -87,18 +88,16 @@ struct StartPlan {
     bootstrap_peer_records: Vec<BootstrapPeerRecord>,
     bootstrap_addrs: Vec<String>,
     gateway_ports: Vec<u16>,
-    remote_control_bind_addr: SocketAddr,
     peer_control_bind_addr: SocketAddr,
     zfs_transfer_bind_addr: SocketAddr,
     gateway_config: Option<GatewayConfig>,
     dns_config: Option<DnsConfig>,
-    overlay_network_name: Option<String>,
 }
 
 struct MeshStartTx {
     config: NetworkConfig,
     mesh: Option<Mesh>,
-    remote_control: Box<dyn RuntimeHandle>,
+    nats_control: Box<dyn RuntimeHandle>,
     peer_control: Box<dyn RuntimeHandle>,
     zfs_transfer: Box<dyn RuntimeHandle>,
     gateway: Box<dyn RuntimeHandle>,
@@ -110,7 +109,7 @@ impl MeshStartTx {
         Self {
             config,
             mesh: None,
-            remote_control: Box::new(NoopRuntimeHandle),
+            nats_control: Box::new(NoopRuntimeHandle),
             peer_control: Box::new(NoopRuntimeHandle),
             zfs_transfer: Box::new(NoopRuntimeHandle),
             gateway: Box::new(NoopRuntimeHandle),
@@ -171,42 +170,7 @@ impl MeshStartTx {
         Ok(())
     }
 
-    /// Fatal: start remote control or roll back the mesh.
-    async fn start_remote_control(
-        &mut self,
-        state: &DaemonState,
-        plan: &StartPlan,
-    ) -> Result<(), StartMeshError> {
-        let Some(mesh) = self.mesh.as_ref() else {
-            return Err(StartMeshError::MeshUp(
-                "startup transaction missing mesh before remote control start".into(),
-            ));
-        };
-
-        let handle = state
-            .start_runtime_remote_control(
-                plan.remote_control_bind_addr,
-                mesh.store.clone(),
-                state.namespace_locks.clone(),
-                state.identity.machine_id.clone(),
-                plan.overlay_network_name.clone(),
-                if state.runtime_target == RuntimeTarget::Docker {
-                    mesh.container_dns_server()
-                } else {
-                    None
-                },
-            )
-            .await
-            .map_err(|error| StartMeshError::RemoteControl {
-                bind: plan.remote_control_bind_addr,
-                error,
-            })?;
-
-        self.remote_control = handle;
-        Ok(())
-    }
-
-    /// Fatal: start gateway or roll back remote control plus mesh.
+    /// Fatal: start gateway or roll back control-plane listeners plus mesh.
     async fn start_gateway(
         &mut self,
         state: &DaemonState,
@@ -223,7 +187,7 @@ impl MeshStartTx {
         Ok(())
     }
 
-    /// Fatal: start DNS or roll back gateway, remote control, and mesh.
+    /// Fatal: start DNS or roll back gateway, control-plane listeners, and mesh.
     async fn start_dns(
         &mut self,
         state: &DaemonState,
@@ -250,18 +214,54 @@ impl MeshStartTx {
             return Ok(());
         }
         let Some(command_tx) = state.command_tx.clone() else {
-            return Err(StartMeshError::RemoteControl {
+            return Err(StartMeshError::ControlPlaneListener {
                 bind: plan.peer_control_bind_addr,
                 error: "daemon command channel unavailable".into(),
             });
         };
         let handle = peer_listener::serve(plan.peer_control_bind_addr, command_tx)
             .await
-            .map_err(|error| StartMeshError::RemoteControl {
+            .map_err(|error| StartMeshError::ControlPlaneListener {
                 bind: plan.peer_control_bind_addr,
                 error: error.to_string(),
             })?;
         self.peer_control = Box::new(handle);
+        Ok(())
+    }
+
+    async fn start_nats_control(&mut self, state: &DaemonState) -> Result<(), StartMeshError> {
+        if state.runtime_is_memory_test() {
+            self.nats_control = Box::new(nats_listener::NatsListenerHandle::noop());
+            return Ok(());
+        }
+        let Some(mesh) = self.mesh.as_ref() else {
+            return Err(StartMeshError::MeshUp(
+                "startup transaction missing mesh before nats control start".into(),
+            ));
+        };
+        let Some(command_tx) = state.command_tx.clone() else {
+            return Err(StartMeshError::MeshUp(
+                "daemon command channel unavailable".into(),
+            ));
+        };
+        let client_url = if state.runtime_target == RuntimeTarget::Docker {
+            crate::services::nats::local_client_url()
+        } else {
+            crate::services::nats::overlay_client_url(self.config.overlay_ip)
+        };
+        let nats_store = NatsStore::connect(&client_url).await.map_err(|error| {
+            StartMeshError::MeshUp(format!("nats connect for node rpc: {error}"))
+        })?;
+        nats_store
+            .start()
+            .await
+            .map_err(|error| StartMeshError::MeshUp(format!("nats start for node rpc: {error}")))?;
+        let subject = ployz_nats::subjects::node_command(&state.identity.machine_id, ">");
+        let handle = nats_listener::serve(nats_store.client().clone(), subject, command_tx)
+            .await
+            .map_err(StartMeshError::MeshUp)?;
+        let _ = mesh;
+        self.nats_control = Box::new(handle);
         Ok(())
     }
 
@@ -289,7 +289,7 @@ impl MeshStartTx {
             mesh.store.clone(),
         )
         .await
-        .map_err(|error| StartMeshError::RemoteControl {
+        .map_err(|error| StartMeshError::ControlPlaneListener {
             bind: plan.zfs_transfer_bind_addr,
             error,
         })?;
@@ -300,11 +300,6 @@ impl MeshStartTx {
     /// Commit: publish the active mesh into daemon state.
     async fn publish_active(&mut self, state: &mut DaemonState) -> Result<(), StartMeshError> {
         let spawn_renewal_ticker = !state.runtime_is_memory_test();
-        let peer_rpc_port = if spawn_renewal_ticker {
-            Some(state.peer_control_port()?)
-        } else {
-            None
-        };
         let Some(mesh) = self.mesh.take() else {
             return Err(StartMeshError::MeshUp(
                 "startup transaction missing mesh at commit".into(),
@@ -314,8 +309,7 @@ impl MeshStartTx {
         if spawn_renewal_ticker {
             install_nats_subnet_coordinator(state, self.config.overlay_ip).await?;
         }
-        let remote_control =
-            std::mem::replace(&mut self.remote_control, Box::new(NoopRuntimeHandle));
+        let nats_control = std::mem::replace(&mut self.nats_control, Box::new(NoopRuntimeHandle));
         let peer_control = std::mem::replace(&mut self.peer_control, Box::new(NoopRuntimeHandle));
         let zfs_transfer = std::mem::replace(&mut self.zfs_transfer, Box::new(NoopRuntimeHandle));
         let gateway = std::mem::replace(&mut self.gateway, Box::new(NoopRuntimeHandle));
@@ -329,18 +323,26 @@ impl MeshStartTx {
         ));
 
         let certificate_renewal = if let Some(store) = store_for_ticker {
-            let Some(peer_rpc_port) = peer_rpc_port else {
-                return Err(StartMeshError::RemoteControl {
-                    bind: std::net::SocketAddr::from(([127, 0, 0, 1], state.remote_control_port)),
-                    error: "certificate renewal missing peer control port".into(),
-                });
+            let nats_client_url = if state.runtime_target == RuntimeTarget::Docker {
+                crate::services::nats::local_client_url()
+            } else {
+                crate::services::nats::overlay_client_url(self.config.overlay_ip)
             };
+            let nats_store = NatsStore::connect(&nats_client_url)
+                .await
+                .map_err(|error| {
+                    StartMeshError::MeshUp(format!("nats connect for cert coord: {error}"))
+                })?;
+            nats_store.start().await.map_err(|error| {
+                StartMeshError::MeshUp(format!("nats start for cert coord: {error}"))
+            })?;
+            let locks = NatsLocks::new(&nats_store)
+                .await
+                .map_err(|error| StartMeshError::MeshUp(format!("nats locks bucket: {error}")))?;
             let coordinator = std::sync::Arc::new(
-                crate::daemon::cert_coordination::OverlayIssuanceCoordinator::new(
-                    store.clone(),
-                    state.reservations.clone(),
+                crate::daemon::cert_coordination::NatsIssuanceCoordinator::new(
+                    locks,
                     state.identity.machine_id.clone(),
-                    peer_rpc_port,
                 ),
             );
             let account_coordinator = coordinator.clone();
@@ -366,7 +368,7 @@ impl MeshStartTx {
             config: self.config.clone(),
             cached_subnet: self.config.subnet,
             mesh,
-            remote_control,
+            nats_control,
             peer_control,
             zfs_transfer,
             gateway,
@@ -388,9 +390,8 @@ impl MeshStartTx {
             warn!(?error, "gateway rollback failed");
         }
 
-        let remote_control =
-            std::mem::replace(&mut self.remote_control, Box::new(NoopRuntimeHandle));
-        let _ = remote_control.shutdown().await;
+        let nats_control = std::mem::replace(&mut self.nats_control, Box::new(NoopRuntimeHandle));
+        let _ = nats_control.shutdown().await;
         let peer_control = std::mem::replace(&mut self.peer_control, Box::new(NoopRuntimeHandle));
         let _ = peer_control.shutdown().await;
         let zfs_transfer = std::mem::replace(&mut self.zfs_transfer, Box::new(NoopRuntimeHandle));
@@ -435,12 +436,12 @@ impl DaemonState {
         let mut tx = MeshStartTx::new(net_config);
         tx.build_mesh(self, &plan).await?;
 
-        if let Err(error) = tx.start_remote_control(self, &plan).await {
+        if let Err(error) = tx.start_peer_control(self, &plan).await {
             tx.rollback_startup().await;
             return Err(error);
         }
 
-        if let Err(error) = tx.start_peer_control(self, &plan).await {
+        if let Err(error) = tx.start_nats_control(self).await {
             tx.rollback_startup().await;
             return Err(error);
         }
@@ -597,12 +598,12 @@ impl DaemonState {
             nats_config::ROUTE_PORT,
         );
         let gateway_ports = self.gateway_ports()?;
-        let remote_control_bind_addr =
-            self.remote_control_bind_addr(self.remote_control_port, net_config.overlay_ip);
+        let control_bind_addr =
+            self.control_bind_addr(self.remote_control_port, net_config.overlay_ip);
         let peer_control_bind_addr =
-            SocketAddr::new(remote_control_bind_addr.ip(), self.peer_control_port()?);
+            SocketAddr::new(control_bind_addr.ip(), self.peer_control_port()?);
         let zfs_transfer_bind_addr =
-            SocketAddr::new(remote_control_bind_addr.ip(), self.zfs_transfer_port()?);
+            SocketAddr::new(control_bind_addr.ip(), self.zfs_transfer_port()?);
         let gateway_config = net_config.subnet.map(|_| {
             GatewayConfig::for_network(
                 &self.data_dir,
@@ -631,12 +632,10 @@ impl DaemonState {
             bootstrap_peer_records,
             bootstrap_addrs,
             gateway_ports,
-            remote_control_bind_addr,
             peer_control_bind_addr,
             zfs_transfer_bind_addr,
             gateway_config,
             dns_config,
-            overlay_network_name: self.runtime_overlay_network_name(&net_config.name.0),
         })
     }
 
@@ -673,19 +672,19 @@ impl DaemonState {
     pub(crate) fn peer_control_port(&self) -> Result<u16, StartMeshError> {
         self.remote_control_port
             .checked_add(PEER_RPC_PORT_OFFSET)
-            .ok_or_else(|| StartMeshError::RemoteControl {
+            .ok_or_else(|| StartMeshError::ControlPlaneListener {
                 bind: SocketAddr::from(([127, 0, 0, 1], self.remote_control_port)),
                 error: "peer control port overflow".into(),
             })
     }
 
     pub(crate) fn zfs_transfer_port(&self) -> Result<u16, StartMeshError> {
-        self.remote_control_port
-            .checked_add(2)
-            .ok_or_else(|| StartMeshError::RemoteControl {
+        self.remote_control_port.checked_add(2).ok_or_else(|| {
+            StartMeshError::ControlPlaneListener {
                 bind: SocketAddr::from(([127, 0, 0, 1], self.remote_control_port)),
                 error: "zfs transfer port overflow".into(),
-            })
+            }
+        })
     }
 }
 
@@ -703,28 +702,32 @@ mod tests {
     use ployz_types::model::{MachineId, MachineRole, NetworkName, OverlayIp, PublicKey};
 
     #[test]
-    fn plan_mesh_start_uses_localhost_for_docker_remote_control() {
+    fn plan_mesh_start_uses_localhost_for_docker_control_plane() {
         let state = make_state(RuntimeTarget::Docker, ServiceMode::User, "0.0.0.0:80");
         let config = make_network_config(&state, "alpha");
 
         let plan = state.plan_mesh_start(&config).expect("plan should succeed");
 
         assert_eq!(
-            plan.remote_control_bind_addr,
-            SocketAddr::from(([127, 0, 0, 1], state.remote_control_port))
+            plan.peer_control_bind_addr.ip(),
+            SocketAddr::from(([127, 0, 0, 1], state.peer_control_port().unwrap())).ip()
         );
     }
 
     #[test]
-    fn plan_mesh_start_uses_overlay_ip_for_host_remote_control() {
+    fn plan_mesh_start_uses_overlay_ip_for_host_control_plane() {
         let state = make_state(RuntimeTarget::Host, ServiceMode::User, "0.0.0.0:80");
         let config = make_network_config(&state, "alpha");
 
         let plan = state.plan_mesh_start(&config).expect("plan should succeed");
 
         assert_eq!(
-            plan.remote_control_bind_addr,
-            SocketAddr::new(IpAddr::V6(config.overlay_ip.0), state.remote_control_port)
+            plan.peer_control_bind_addr.ip(),
+            SocketAddr::new(
+                IpAddr::V6(config.overlay_ip.0),
+                state.peer_control_port().unwrap()
+            )
+            .ip()
         );
     }
 

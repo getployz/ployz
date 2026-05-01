@@ -17,7 +17,7 @@ use crate::daemon::ActiveMesh;
 
 struct MeshControlHandles {
     peer_control: Box<dyn ployz_runtime_api::RuntimeHandle>,
-    remote_control: Box<dyn ployz_runtime_api::RuntimeHandle>,
+    nats_control: Box<dyn ployz_runtime_api::RuntimeHandle>,
 }
 
 impl DaemonState {
@@ -173,7 +173,7 @@ impl DaemonState {
             warn!(%error, "failed to persist standby self record after mesh stop");
         }
         let _ = active.peer_control.shutdown().await;
-        let _ = active.remote_control.shutdown().await;
+        let _ = active.nats_control.shutdown().await;
         if let Err(error) = active.dns.shutdown().await {
             warn!(?error, "dns stop failed during mesh stop");
         }
@@ -498,7 +498,7 @@ impl DaemonState {
         let (result, control_handles) =
             Self::perform_mesh_teardown_before_control_shutdown(&data_dir, active).await;
         let _ = control_handles.peer_control.shutdown().await;
-        let _ = control_handles.remote_control.shutdown().await;
+        let _ = control_handles.nats_control.shutdown().await;
         result
     }
 
@@ -509,7 +509,7 @@ impl DaemonState {
         let ActiveMesh {
             config,
             mut mesh,
-            remote_control,
+            nats_control,
             peer_control,
             gateway,
             dns,
@@ -520,7 +520,7 @@ impl DaemonState {
         let network_name = config.name.0;
         let control_handles = MeshControlHandles {
             peer_control,
-            remote_control,
+            nats_control,
         };
 
         let result = async move {
@@ -629,7 +629,7 @@ impl DaemonState {
             warn!(?error, "failed to stop mesh after transition error");
         }
         let _ = active.peer_control.shutdown().await;
-        let _ = active.remote_control.shutdown().await;
+        let _ = active.nats_control.shutdown().await;
         if let Err(error) = active.dns.shutdown().await {
             warn!(?error, "failed to stop dns after transition error");
         }

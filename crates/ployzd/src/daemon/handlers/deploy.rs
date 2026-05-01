@@ -2,16 +2,27 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::daemon::DaemonState;
-use ployz_api::{DaemonResponse, DeployOptions};
+use ployz_api::{
+    DaemonPayload, DaemonResponse, DeployCandidateStartedPayload, DeployNamespaceSnapshotPayload,
+    DeployOptions,
+};
 use ployz_cert_backends::InstantAcmeIssuerFactory;
 use ployz_config::RuntimeTarget;
-use ployz_nats::coord::locks::NatsLocks;
+use ployz_nats::coord::locks::{NatsDeployLock, NatsLocks};
+use ployz_nats::coord::rpc::{NatsNodeRpcClient, NodeCommandSubject};
 use ployz_orchestrator::certificates::{AcmeAccountCoordinator, CertificateManagerConfig};
+use ployz_orchestrator::coordination::ReservationId;
+use ployz_orchestrator::deploy::session::{
+    DeploySession, DeploySessionFactory, StartCandidateRequest,
+};
 use ployz_orchestrator::deploy::{apply_with_certificate_coordination, preview};
 use ployz_runtime_backends::deploy::remote::DeployAgent;
-use ployz_runtime_backends::deploy::session::DefaultDeploySessionFactory;
 use ployz_store_api::{DeployRepository, StoreDriver, StoreRuntimeControl};
 use ployz_types::Error as PloyzError;
+use ployz_types::model::SlotId;
+use ployz_types::model::{
+    DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineMembership,
+};
 use ployz_types::spec::{DeployManifest, Namespace, ServiceSpec, VolumeDeclaration};
 
 impl DaemonState {
@@ -44,11 +55,21 @@ impl DaemonState {
             Err(response) => return *response,
         };
 
-        let peer_rpc_port = match self.peer_control_port() {
-            Ok(port) => port,
+        let nats_client_url = if self.runtime_target == RuntimeTarget::Docker {
+            crate::services::nats::local_client_url()
+        } else {
+            crate::services::nats::overlay_client_url(active.config.overlay_ip)
+        };
+        let nats_store = match ployz_nats::NatsStore::connect(&nats_client_url).await {
+            Ok(store) => store,
             Err(error) => return self.err("DEPLOY_PREVIEW_FAILED", error.to_string()),
         };
-        let prober = crate::daemon::deploy_probe::OverlayRpcProbe::new(peer_rpc_port);
+        if let Err(error) = nats_store.start().await {
+            return self.err("DEPLOY_PREVIEW_FAILED", error.to_string());
+        }
+        let prober = crate::daemon::deploy_probe::NatsRpcProbe::new(
+            ployz_nats::coord::rpc::NatsNodeRpcClient::new(nats_store.client().clone()),
+        );
 
         match preview(
             &active.mesh.store,
@@ -76,29 +97,6 @@ impl DaemonState {
             Ok(active) => active,
             Err(response) => return *response,
         };
-        let storage_driver = match self.zfs_storage_driver().await {
-            Ok(driver) => driver,
-            Err(error) => return self.err("DEPLOY_APPLY_FAILED", error),
-        };
-
-        let agent = Arc::new(DeployAgent::new(
-            active.mesh.store.clone(),
-            self.namespace_locks.clone(),
-            self.identity.machine_id.clone(),
-            self.overlay_network_name(),
-            self.overlay_dns_server(),
-            storage_driver,
-        ));
-        let factory = DefaultDeploySessionFactory::new(
-            agent,
-            self.identity.machine_id.clone(),
-            self.remote_control_port,
-        );
-
-        let peer_rpc_port = match self.peer_control_port() {
-            Ok(port) => port,
-            Err(error) => return self.err("DEPLOY_APPLY_FAILED", error.to_string()),
-        };
         let nats_client_url = if self.runtime_target == RuntimeTarget::Docker {
             crate::services::nats::local_client_url()
         } else {
@@ -115,6 +113,18 @@ impl DaemonState {
             Ok(locks) => locks,
             Err(error) => return self.err("DEPLOY_APPLY_FAILED", error.to_string()),
         };
+        let deploy_lock = match NatsDeployLock::acquire(
+            nats_locks.clone(),
+            &manifest.namespace,
+            &ReservationId::random().0,
+            &self.identity.machine_id,
+            std::time::Duration::from_secs(30 * 60),
+        )
+        .await
+        {
+            Ok(lock) => lock,
+            Err(error) => return self.err("DEPLOY_LOCK_FAILED", error.to_string()),
+        };
         let certificate_coordinator = Arc::new(
             crate::daemon::cert_coordination::NatsIssuanceCoordinator::new(
                 nats_locks,
@@ -130,9 +140,14 @@ impl DaemonState {
         let issuer_factory = Arc::new(InstantAcmeIssuerFactory::new(
             CertificateManagerConfig::from_env(),
         ));
-        let prober = crate::daemon::deploy_probe::OverlayRpcProbe::new(peer_rpc_port);
+        let prober = crate::daemon::deploy_probe::NatsRpcProbe::new(
+            ployz_nats::coord::rpc::NatsNodeRpcClient::new(nats_store.client().clone()),
+        );
+        let factory = NatsDeploySessionFactory::new(
+            ployz_nats::coord::rpc::NatsNodeRpcClient::new(nats_store.client().clone()),
+        );
 
-        match apply_with_certificate_coordination(
+        let result = apply_with_certificate_coordination(
             &active.mesh.store,
             &factory,
             &self.identity.machine_id,
@@ -143,8 +158,11 @@ impl DaemonState {
             issuer_factory,
             &prober,
         )
-        .await
-        {
+        .await;
+        if let Err(error) = deploy_lock.release().await {
+            tracing::warn!(%error, "failed to release NATS deploy lock");
+        }
+        match result {
             Ok(result) => self.ok_json_pretty(&result, "ENCODE_DEPLOY", "encode deploy result"),
             Err(err) => self.err("DEPLOY_APPLY_FAILED", format!("{err}")),
         }
@@ -161,6 +179,322 @@ impl DaemonState {
             Err(err) => return self.err("DEPLOY_EXPORT_FAILED", format!("{err}")),
         };
         self.ok_json_pretty(&manifest, "ENCODE_MANIFEST", "encode manifest")
+    }
+
+    pub async fn handle_deploy_node_inspect_namespace(
+        &self,
+        namespace: &str,
+        deploy_id: &str,
+    ) -> DaemonResponse {
+        let namespace = Namespace(namespace.to_string());
+        let deploy_id = DeployId(deploy_id.to_string());
+        let agent = match self.deploy_node_agent().await {
+            Ok(agent) => agent,
+            Err(error) => return self.err("DEPLOY_NODE_FAILED", error),
+        };
+        match agent.open_session(&namespace, &deploy_id).await {
+            Ok((_state, instances)) => self.ok_with_payload(
+                "namespace inspected",
+                Some(DaemonPayload::DeployNamespaceSnapshot(
+                    DeployNamespaceSnapshotPayload { instances },
+                )),
+            ),
+            Err(error) => self.err("DEPLOY_NODE_FAILED", error.to_string()),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn handle_deploy_node_start_candidate(
+        &self,
+        namespace: &str,
+        deploy_id: &str,
+        service: &str,
+        slot_id: &str,
+        instance_id: &str,
+        spec_json: &str,
+        volumes_json: &str,
+    ) -> DaemonResponse {
+        let namespace = Namespace(namespace.to_string());
+        let deploy_id = DeployId(deploy_id.to_string());
+        let agent = match self.deploy_node_agent().await {
+            Ok(agent) => agent,
+            Err(error) => return self.err("DEPLOY_NODE_FAILED", error),
+        };
+        let (state, _) = match agent.open_session(&namespace, &deploy_id).await {
+            Ok(result) => result,
+            Err(error) => return self.err("DEPLOY_NODE_FAILED", error.to_string()),
+        };
+        match agent
+            .start_candidate(
+                &state,
+                service,
+                &SlotId(slot_id.to_string()),
+                &InstanceId(instance_id.to_string()),
+                &deploy_id,
+                spec_json,
+                volumes_json,
+            )
+            .await
+        {
+            Ok(status) => self.ok_with_payload(
+                "candidate started",
+                Some(DaemonPayload::DeployCandidateStarted(
+                    DeployCandidateStartedPayload { status },
+                )),
+            ),
+            Err(error) => self.err("DEPLOY_NODE_FAILED", error.to_string()),
+        }
+    }
+
+    pub async fn handle_deploy_node_drain_instance(
+        &self,
+        namespace: &str,
+        deploy_id: &str,
+        instance_id: &str,
+    ) -> DaemonResponse {
+        self.handle_deploy_node_instance_command(
+            namespace,
+            deploy_id,
+            instance_id,
+            DeployNodeOp::Drain,
+        )
+        .await
+    }
+
+    pub async fn handle_deploy_node_remove_instance(
+        &self,
+        namespace: &str,
+        deploy_id: &str,
+        instance_id: &str,
+    ) -> DaemonResponse {
+        self.handle_deploy_node_instance_command(
+            namespace,
+            deploy_id,
+            instance_id,
+            DeployNodeOp::Remove,
+        )
+        .await
+    }
+
+    async fn handle_deploy_node_instance_command(
+        &self,
+        namespace: &str,
+        deploy_id: &str,
+        instance_id: &str,
+        op: DeployNodeOp,
+    ) -> DaemonResponse {
+        let namespace = Namespace(namespace.to_string());
+        let deploy_id = DeployId(deploy_id.to_string());
+        let agent = match self.deploy_node_agent().await {
+            Ok(agent) => agent,
+            Err(error) => return self.err("DEPLOY_NODE_FAILED", error),
+        };
+        let (state, _) = match agent.open_session(&namespace, &deploy_id).await {
+            Ok(result) => result,
+            Err(error) => return self.err("DEPLOY_NODE_FAILED", error.to_string()),
+        };
+        let instance_id = InstanceId(instance_id.to_string());
+        let result = match op {
+            DeployNodeOp::Drain => agent.drain_instance(&state, &instance_id).await,
+            DeployNodeOp::Remove => agent.remove_instance(&state, &instance_id).await,
+        };
+        match result {
+            Ok(()) => self.ok("deploy node command completed"),
+            Err(error) => self.err("DEPLOY_NODE_FAILED", error.to_string()),
+        }
+    }
+
+    async fn deploy_node_agent(&self) -> Result<DeployAgent, String> {
+        let active = self
+            .active
+            .as_ref()
+            .ok_or_else(|| "no mesh is running".to_string())?;
+        let store = active.mesh.store.clone();
+        let machine_id = self.identity.machine_id.clone();
+        let overlay_network_name = self.overlay_network_name();
+        let overlay_dns_server = self.overlay_dns_server();
+        let storage_driver = self.zfs_storage_driver().await?;
+        Ok(DeployAgent::new(
+            store,
+            machine_id,
+            overlay_network_name,
+            overlay_dns_server,
+            storage_driver,
+        ))
+    }
+}
+
+enum DeployNodeOp {
+    Drain,
+    Remove,
+}
+
+#[derive(Clone)]
+struct NatsDeploySessionFactory {
+    client: NatsNodeRpcClient,
+}
+
+impl NatsDeploySessionFactory {
+    #[must_use]
+    fn new(client: NatsNodeRpcClient) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait::async_trait]
+impl DeploySessionFactory for NatsDeploySessionFactory {
+    async fn open(
+        &self,
+        machine: &MachineMembership,
+        namespace: &Namespace,
+        deploy_id: &DeployId,
+        _coordinator_id: &MachineId,
+    ) -> ployz_types::Result<(Box<dyn DeploySession>, Vec<InstanceStatusRecord>)> {
+        let mut session = NatsDeploySession {
+            machine_id: machine.id.clone(),
+            namespace: namespace.clone(),
+            deploy_id: deploy_id.clone(),
+            client: self.client.clone(),
+        };
+        let instances = session.inspect_namespace().await?;
+        Ok((Box::new(session), instances))
+    }
+}
+
+struct NatsDeploySession {
+    machine_id: MachineId,
+    namespace: Namespace,
+    deploy_id: DeployId,
+    client: NatsNodeRpcClient,
+}
+
+#[async_trait::async_trait]
+impl DeploySession for NatsDeploySession {
+    fn machine_id(&self) -> &MachineId {
+        &self.machine_id
+    }
+
+    async fn inspect_namespace(&mut self) -> ployz_types::Result<Vec<InstanceStatusRecord>> {
+        let response = self
+            .client
+            .request(
+                NodeCommandSubject::deploy_inspect_namespace(&self.machine_id),
+                &ployz_api::DaemonRequest::DeployNodeInspectNamespace {
+                    namespace: self.namespace.0.clone(),
+                    deploy_id: self.deploy_id.0.clone(),
+                },
+            )
+            .await
+            .map_err(PloyzError::from)?;
+        if !response.ok {
+            return Err(PloyzError::operation(
+                "deploy_node_inspect",
+                format!(
+                    "remote daemon error [{}]: {}",
+                    response.code, response.message
+                ),
+            ));
+        }
+        let Some(DaemonPayload::DeployNamespaceSnapshot(payload)) = response.payload else {
+            return Err(PloyzError::operation(
+                "deploy_node_inspect",
+                "response missing namespace snapshot payload",
+            ));
+        };
+        Ok(payload.instances)
+    }
+
+    async fn start_candidate(
+        &mut self,
+        request: StartCandidateRequest,
+    ) -> ployz_types::Result<InstanceStatusRecord> {
+        let response = self
+            .client
+            .request(
+                NodeCommandSubject::deploy_start_candidate(&self.machine_id),
+                &ployz_api::DaemonRequest::DeployNodeStartCandidate {
+                    namespace: self.namespace.0.clone(),
+                    deploy_id: self.deploy_id.0.clone(),
+                    service: request.service,
+                    slot_id: request.slot_id.0,
+                    instance_id: request.instance_id.0,
+                    spec_json: request.spec_json,
+                    volumes_json: request.volumes_json,
+                },
+            )
+            .await
+            .map_err(PloyzError::from)?;
+        if !response.ok {
+            return Err(PloyzError::operation(
+                "deploy_node_start_candidate",
+                format!(
+                    "remote daemon error [{}]: {}",
+                    response.code, response.message
+                ),
+            ));
+        }
+        let Some(DaemonPayload::DeployCandidateStarted(payload)) = response.payload else {
+            return Err(PloyzError::operation(
+                "deploy_node_start_candidate",
+                "response missing candidate payload",
+            ));
+        };
+        Ok(payload.status)
+    }
+
+    async fn drain_instance(&mut self, instance_id: &InstanceId) -> ployz_types::Result<()> {
+        self.expect_ok(
+            NodeCommandSubject::deploy_drain_instance(&self.machine_id),
+            ployz_api::DaemonRequest::DeployNodeDrainInstance {
+                namespace: self.namespace.0.clone(),
+                deploy_id: self.deploy_id.0.clone(),
+                instance_id: instance_id.0.clone(),
+            },
+            "deploy_node_drain",
+        )
+        .await
+    }
+
+    async fn remove_instance(&mut self, instance_id: &InstanceId) -> ployz_types::Result<()> {
+        self.expect_ok(
+            NodeCommandSubject::deploy_remove_instance(&self.machine_id),
+            ployz_api::DaemonRequest::DeployNodeRemoveInstance {
+                namespace: self.namespace.0.clone(),
+                deploy_id: self.deploy_id.0.clone(),
+                instance_id: instance_id.0.clone(),
+            },
+            "deploy_node_remove",
+        )
+        .await
+    }
+
+    async fn close(self: Box<Self>) -> ployz_types::Result<()> {
+        Ok(())
+    }
+}
+
+impl NatsDeploySession {
+    async fn expect_ok(
+        &self,
+        subject: NodeCommandSubject,
+        request: ployz_api::DaemonRequest,
+        operation: &'static str,
+    ) -> ployz_types::Result<()> {
+        let response = self
+            .client
+            .request(subject, &request)
+            .await
+            .map_err(PloyzError::from)?;
+        if response.ok {
+            return Ok(());
+        }
+        Err(PloyzError::operation(
+            operation,
+            format!(
+                "remote daemon error [{}]: {}",
+                response.code, response.message
+            ),
+        ))
     }
 }
 
