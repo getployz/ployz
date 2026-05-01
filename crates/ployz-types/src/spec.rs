@@ -55,10 +55,6 @@ impl DeployManifest {
             ));
         }
 
-        if self.services.is_empty() {
-            return Err("manifest must contain at least one service".into());
-        }
-
         let mut volumes_by_name = BTreeMap::new();
         for volume in &self.volumes {
             volume.validate()?;
@@ -847,6 +843,19 @@ mod tests {
         };
         let error = manifest.validate().expect_err("duplicates should fail");
         assert!(error.contains("duplicate service"));
+    }
+
+    #[test]
+    fn manifest_accepts_empty_services() {
+        let manifest = DeployManifest {
+            namespace: Namespace::default_ns(),
+            volumes: Vec::new(),
+            services: Vec::new(),
+        };
+
+        manifest
+            .validate()
+            .expect("empty services means remove current releases");
     }
 
     #[test]

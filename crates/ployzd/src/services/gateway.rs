@@ -115,6 +115,7 @@ fn build_gateway_sidecar_spec(
 
     SidecarSpec {
         name: format!("gateway-{}", config.network),
+        version: env!("CARGO_PKG_VERSION").to_string(),
         image: image.to_string(),
         binary_name: "ployz-gateway".to_string(),
         container_name: "ployz-gateway".to_string(),

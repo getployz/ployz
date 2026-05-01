@@ -36,6 +36,9 @@ impl DaemonState {
             | DaemonRequest::MeshPeerPrepareDestroy { .. }
             | DaemonRequest::MeshPeerCancelDestroy { .. }
             | DaemonRequest::MeshPeerExecuteDestroy { .. }
+            | DaemonRequest::MachineUpdate { .. }
+            | DaemonRequest::MeshPeerPrepareUpdate { .. }
+            | DaemonRequest::MeshPeerExecuteUpdate { .. }
             | DaemonRequest::MachineRemove { .. }
             | DaemonRequest::MeshPeerRemoveMachine { .. } => RequestLane::Exclusive,
             DaemonRequest::Ping
@@ -94,6 +97,9 @@ impl DaemonState {
             | DaemonRequest::MeshPeerPrepareDestroy { .. }
             | DaemonRequest::MeshPeerCancelDestroy { .. }
             | DaemonRequest::MeshPeerExecuteDestroy { .. }
+            | DaemonRequest::MachineUpdate { .. }
+            | DaemonRequest::MeshPeerPrepareUpdate { .. }
+            | DaemonRequest::MeshPeerExecuteUpdate { .. }
             | DaemonRequest::MachineRemove { .. }
             | DaemonRequest::MeshPeerRemoveMachine { .. } => {
                 self.err("INTERNAL", "exclusive request routed to shared handler")
@@ -283,6 +289,24 @@ impl DaemonState {
             DaemonRequest::MachineRemove { id, force } => {
                 self.handle_machine_remove(&id, force).await
             }
+            DaemonRequest::MachineUpdate { ids, version } => {
+                self.handle_machine_update(&ids, &version, response_flushed)
+                    .await
+            }
+            DaemonRequest::MeshPeerPrepareUpdate {
+                operation_id,
+                version,
+            } => {
+                self.handle_mesh_peer_prepare_update(&operation_id, &version)
+                    .await
+            }
+            DaemonRequest::MeshPeerExecuteUpdate {
+                operation_id,
+                version,
+            } => {
+                self.handle_mesh_peer_execute_update(&operation_id, &version, response_flushed)
+                    .await
+            }
             DaemonRequest::MeshPeerRemoveMachine {
                 operation_id,
                 network_id,
@@ -350,6 +374,15 @@ mod tests {
         let lane = DaemonState::request_lane(&DaemonRequest::DebugTick {
             task: DebugTickTask::All,
             repeat: 1,
+        });
+        assert_eq!(lane, RequestLane::Exclusive);
+    }
+
+    #[test]
+    fn machine_update_routes_to_exclusive_lane() {
+        let lane = DaemonState::request_lane(&DaemonRequest::MachineUpdate {
+            ids: Vec::new(),
+            version: "latest".into(),
         });
         assert_eq!(lane, RequestLane::Exclusive);
     }

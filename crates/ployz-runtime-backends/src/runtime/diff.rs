@@ -7,6 +7,7 @@ pub enum ChangedField {
     Cmd,
     Entrypoint,
     Env,
+    Labels,
     Binds,
     Tmpfs,
     DnsServers,
@@ -71,6 +72,10 @@ pub fn eval_spec_change(
     // Compare env sorted by key for stable comparison
     if !env_equal(&observed.env, &desired.env) {
         fields.push(ChangedField::Env);
+    }
+
+    if !labels_match(&observed.labels, &desired.labels) {
+        fields.push(ChangedField::Labels);
     }
 
     // Compare binds sorted
@@ -190,6 +195,18 @@ fn env_equal(observed: &[(String, String)], desired: &[(String, String)]) -> boo
     observed_sorted.sort();
     desired_sorted.sort();
     observed_sorted == desired_sorted
+}
+
+fn labels_match(
+    observed: &std::collections::HashMap<String, String>,
+    desired: &std::collections::HashMap<String, String>,
+) -> bool {
+    if desired.get(LABEL_KIND).map(String::as_str) == Some("system") {
+        return desired
+            .iter()
+            .all(|(key, value)| observed.get(key) == Some(value));
+    }
+    observed == desired
 }
 
 fn network_mode_equal(observed: Option<&str>, desired: Option<&str>) -> bool {
@@ -337,6 +354,68 @@ mod tests {
             panic!("expected drifted change");
         };
         assert!(fields.contains(&ChangedField::Env));
+    }
+
+    #[test]
+    fn changed_desired_label_is_drifted() {
+        let mut observed = base_observed();
+        observed
+            .labels
+            .insert("dev.ployz.kind".into(), "system".into());
+        observed
+            .labels
+            .insert("dev.ployz.version".into(), "0.5.2".into());
+        let mut desired = base_spec();
+        desired
+            .labels
+            .insert("dev.ployz.kind".into(), "system".into());
+        desired
+            .labels
+            .insert("dev.ployz.version".into(), "0.5.3".into());
+
+        let change = eval_spec_change(Some(&observed), &desired);
+
+        let SpecChange::Drifted { fields } = change else {
+            panic!("expected drifted change");
+        };
+        assert!(fields.contains(&ChangedField::Labels));
+    }
+
+    #[test]
+    fn extra_observed_system_label_is_adopted() {
+        let mut observed = base_observed();
+        observed
+            .labels
+            .insert("dev.ployz.kind".into(), "system".into());
+        observed.labels.insert("extra".into(), "value".into());
+        let mut desired = base_spec();
+        desired
+            .labels
+            .insert("dev.ployz.kind".into(), "system".into());
+
+        let change = eval_spec_change(Some(&observed), &desired);
+
+        assert!(change.is_in_sync());
+    }
+
+    #[test]
+    fn extra_observed_workload_label_is_drifted() {
+        let mut observed = base_observed();
+        observed
+            .labels
+            .insert("dev.ployz.kind".into(), "workload".into());
+        observed.labels.insert("extra".into(), "value".into());
+        let mut desired = base_spec();
+        desired
+            .labels
+            .insert("dev.ployz.kind".into(), "workload".into());
+
+        let change = eval_spec_change(Some(&observed), &desired);
+
+        let SpecChange::Drifted { fields } = change else {
+            panic!("expected drifted change");
+        };
+        assert!(fields.contains(&ChangedField::Labels));
     }
 
     #[test]
