@@ -2,9 +2,10 @@ use std::future::Future;
 use std::time::Duration;
 
 use crate::routes::{GatewayProjectionEvent, GatewayProjector, GatewaySnapshot, ProjectionDelta};
+use ployz_store_api::{RoutingBatchSubscription, RoutingEventBatch};
 use ployz_types::model::{
     AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateEvent,
-    CertificateRecord, MachineId, RoutingEvent, RoutingState,
+    CertificateRecord, MachineId, RoutingState,
 };
 use ployz_types::time::now_unix_secs;
 use tokio::sync::mpsc;
@@ -26,11 +27,10 @@ pub trait RoutingSnapshotReader: Send + Sync {
         &self,
     ) -> impl Future<Output = Result<RoutingState, GatewayError>> + Send + '_;
 
-    fn subscribe_routing_events(
-        &self,
-    ) -> impl Future<Output = Result<(RoutingState, mpsc::Receiver<RoutingEvent>), GatewayError>>
-    + Send
-    + '_;
+    fn subscribe_routing_batches<'a>(
+        &'a self,
+        consumer_id: &'a str,
+    ) -> impl Future<Output = Result<RoutingBatchSubscription, GatewayError>> + Send + 'a;
     fn list_certificates(
         &self,
     ) -> impl Future<Output = Result<Vec<CertificateRecord>, GatewayError>> + Send + '_;
@@ -87,7 +87,8 @@ where
     S: RoutingSnapshotReader + Send + Sync + 'static,
 {
     loop {
-        let (routing_state, mut routing_rx) = store.subscribe_routing_events().await?;
+        let consumer_id = format!("gateway.{}", machine_id.0);
+        let (routing_state, mut routing_rx) = store.subscribe_routing_batches(&consumer_id).await?;
         let (cert_records, mut cert_rx) = store.subscribe_certificates().await?;
         let (challenge_records, mut chal_rx) = store.subscribe_acme_challenges().await?;
         let mut projector = GatewayProjector::new(routing_state)
@@ -99,12 +100,12 @@ where
 
         loop {
             tokio::select! {
-                event = routing_rx.recv() => {
-                    let Some(event) = event else {
+                batch = routing_rx.recv() => {
+                    let Some(batch) = batch else {
                         warn!("gateway routing event stream closed; resubscribing");
                         break;
                     };
-                    apply_routing_batch(&mut projector, event, &mut routing_rx, &snapshot);
+                    apply_routing_batch(&mut projector, batch, &snapshot).await;
                 }
                 event = cert_rx.recv() => {
                     let Some(event) = event else {
@@ -160,23 +161,34 @@ fn apply_initial_challenges(
     applied
 }
 
-fn apply_routing_batch(
+async fn apply_routing_batch(
     projector: &mut GatewayProjector,
-    event: RoutingEvent,
-    routing_rx: &mut mpsc::Receiver<RoutingEvent>,
+    batch: RoutingEventBatch,
     snapshot: &SharedSnapshot,
 ) {
+    let batch_id = batch.batch_id.clone();
     let mut deltas = Vec::new();
-    if let Some(delta) = apply_one(projector, GatewayProjectionEvent::Routing(event)) {
-        deltas.push(delta);
-    }
-    while let Ok(event) = routing_rx.try_recv() {
-        if let Some(delta) = apply_one(projector, GatewayProjectionEvent::Routing(event)) {
-            deltas.push(delta);
+    let mut candidate = projector.clone();
+    for event in &batch.events {
+        match candidate.apply(GatewayProjectionEvent::Routing(event.clone())) {
+            Ok(ProjectionDelta::Empty) => {}
+            Ok(delta) => deltas.push(delta),
+            Err(err) => {
+                warn!(
+                    ?err,
+                    batch_id = %batch_id,
+                    "failed to apply gateway routing batch; keeping previous snapshot"
+                );
+                return;
+            }
         }
     }
+    *projector = candidate;
     if !deltas.is_empty() {
         publish_deltas(snapshot, &deltas);
+    }
+    if let Err(error) = batch.ack().await {
+        warn!(?error, batch_id = %batch_id, "gateway routing batch ack failed");
     }
 }
 

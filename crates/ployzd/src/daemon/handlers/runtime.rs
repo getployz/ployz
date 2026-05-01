@@ -13,12 +13,28 @@ impl DaemonState {
         &self,
     ) -> Result<(RoutingState, mpsc::Receiver<RoutingEvent>), Box<ployz_api::DaemonResponse>> {
         let active = self.require_active("NO_MESH", "no mesh is running")?;
-        active
+        let (state, mut batches) = active
             .mesh
             .store
-            .subscribe_routing_events()
+            .subscribe_routing_batches("ployzd.runtime")
             .await
-            .map_err(|error| Box::new(self.err("RUNTIME_SUBSCRIBE_FAILED", error.to_string())))
+            .map_err(|error| Box::new(self.err("RUNTIME_SUBSCRIBE_FAILED", error.to_string())))?;
+        let (tx, rx) = mpsc::channel(1024);
+        tokio::spawn(async move {
+            while let Some(batch) = batches.recv().await {
+                let mut sent_all = true;
+                for event in batch.events.clone() {
+                    if tx.send(event).await.is_err() {
+                        sent_all = false;
+                        break;
+                    }
+                }
+                if sent_all {
+                    let _ = batch.ack().await;
+                }
+            }
+        });
+        Ok((state, rx))
     }
 }
 

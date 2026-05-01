@@ -301,7 +301,7 @@ where
     loop {
         match timeout(
             STORE_READY_ATTEMPT_TIMEOUT,
-            DnsStore::subscribe_routing_events(store),
+            DnsStore::subscribe_routing_batches(store, "dns"),
         )
         .await
         {

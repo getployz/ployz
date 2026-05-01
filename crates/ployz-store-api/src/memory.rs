@@ -1,8 +1,8 @@
 use crate::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
     DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
-    InstanceStatusRepository, InviteRepository, MachineRegistry, RoutingSnapshotReader,
-    RoutingSubscription, StoreRuntimeControl, SyncProbe, SyncStatus,
+    InstanceStatusRepository, InviteRepository, MachineRegistry, RoutingBatchSubscription,
+    RoutingEventBatch, RoutingSnapshotReader, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::error::{Error, Result};
@@ -26,7 +26,7 @@ pub struct MemoryStore {
 struct StoreInner {
     machines: HashMap<MachineId, MachineMembership>,
     machine_subscribers: Vec<mpsc::Sender<MachineEvent>>,
-    routing_subscribers: Vec<mpsc::Sender<RoutingEvent>>,
+    routing_subscribers: Vec<mpsc::Sender<RoutingEventBatch>>,
     invites: HashMap<String, InviteRecord>,
     service_revisions: HashMap<(Namespace, String, String), ServiceRevisionRecord>,
     service_releases: HashMap<(Namespace, String), ServiceReleaseRecord>,
@@ -96,17 +96,29 @@ impl MemoryStore {
             });
     }
 
-    fn broadcast_routing_event(inner: &mut StoreInner, event: RoutingEvent) {
-        inner
-            .routing_subscribers
-            .retain(|sender| match sender.try_send(event.clone()) {
+    fn broadcast_routing_batch(
+        inner: &mut StoreInner,
+        batch_id: impl Into<String> + Clone,
+        cause: Option<String>,
+        events: Vec<RoutingEvent>,
+    ) {
+        if events.is_empty() {
+            return;
+        }
+        inner.routing_subscribers.retain(|sender| {
+            match sender.try_send(RoutingEventBatch::unacked(
+                batch_id.clone(),
+                cause.clone(),
+                events.clone(),
+            )) {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Closed(_)) => false,
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     warn!("routing subscriber channel full, closing stale delta stream");
                     false
                 }
-            });
+            }
+        });
     }
 
     fn routing_state(inner: &StoreInner) -> RoutingState {
@@ -121,6 +133,23 @@ impl MemoryStore {
     pub async fn load_routing_state(&self) -> Result<RoutingState> {
         let inner = self.lock_inner();
         Ok(Self::routing_state(&inner))
+    }
+
+    pub async fn subscribe_routing_events(
+        &self,
+    ) -> Result<(RoutingState, mpsc::Receiver<RoutingEvent>)> {
+        let (state, mut batches) = self.subscribe_routing_batches("memory.events").await?;
+        let (tx, rx) = mpsc::channel(1024);
+        tokio::spawn(async move {
+            while let Some(batch) = batches.recv().await {
+                for event in batch.events {
+                    if tx.send(event).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        Ok((state, rx))
     }
 
     fn broadcast_certificate(inner: &mut StoreInner, event: CertificateEvent) {
@@ -179,7 +208,12 @@ impl MachineRegistry for MemoryStore {
             None => RoutingEvent::MachineAdded(record.clone()),
         };
         Self::broadcast_machine(&mut inner, machine_event);
-        Self::broadcast_routing_event(&mut inner, routing_event);
+        Self::broadcast_routing_batch(
+            &mut inner,
+            format!("memory:machine:{}", record.id),
+            Some("machine.upsert".to_string()),
+            vec![routing_event],
+        );
         Ok(())
     }
 
@@ -187,7 +221,12 @@ impl MachineRegistry for MemoryStore {
         let mut inner = self.lock_inner();
         if let Some(record) = inner.machines.remove(id) {
             Self::broadcast_machine(&mut inner, MachineEvent::Removed(record.clone()));
-            Self::broadcast_routing_event(&mut inner, RoutingEvent::MachineRemoved(record));
+            Self::broadcast_routing_batch(
+                &mut inner,
+                format!("memory:machine:delete:{id}"),
+                Some("machine.delete".to_string()),
+                vec![RoutingEvent::MachineRemoved(record)],
+            );
         }
         Ok(())
     }
@@ -206,7 +245,10 @@ impl RoutingSnapshotReader for MemoryStore {
         self.load_routing_state().await
     }
 
-    async fn subscribe_routing_events(&self) -> Result<RoutingSubscription> {
+    async fn subscribe_routing_batches(
+        &self,
+        _consumer_id: &str,
+    ) -> Result<RoutingBatchSubscription> {
         let mut inner = self.lock_inner();
         let state = Self::routing_state(&inner);
         let (sender, receiver) = mpsc::channel(1024);
@@ -373,7 +415,17 @@ impl DeployRepository for MemoryStore {
         let mut inner = self.lock_inner();
         let old = Self::record_service_revision_inner(&mut inner, &command.revision);
         if let Some(event) = revision_event(old, &command.revision) {
-            Self::broadcast_routing_event(&mut inner, event);
+            Self::broadcast_routing_batch(
+                &mut inner,
+                format!(
+                    "memory:revision:{}:{}:{}",
+                    command.revision.namespace,
+                    command.revision.service,
+                    command.revision.revision_hash
+                ),
+                Some("deploy.revision".to_string()),
+                vec![event],
+            );
         }
         Ok(())
     }
@@ -381,9 +433,12 @@ impl DeployRepository for MemoryStore {
     async fn commit_deploy(&self, command: &DeployCommit) -> Result<()> {
         let mut inner = self.lock_inner();
         let events = Self::commit_deploy_inner(&mut inner, command);
-        for event in events {
-            Self::broadcast_routing_event(&mut inner, event);
-        }
+        Self::broadcast_routing_batch(
+            &mut inner,
+            format!("memory:deploy:{}", command.deploy.deploy_id),
+            Some("deploy.commit".to_string()),
+            events,
+        );
         Ok(())
     }
 
@@ -425,14 +480,24 @@ impl InstanceStatusRepository for MemoryStore {
             },
             None => RoutingEvent::InstanceAdded(record.clone()),
         };
-        Self::broadcast_routing_event(&mut inner, event);
+        Self::broadcast_routing_batch(
+            &mut inner,
+            format!("memory:instance:{}", record.instance_id),
+            Some("instance.status".to_string()),
+            vec![event],
+        );
         Ok(())
     }
 
     async fn remove_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
         let mut inner = self.lock_inner();
         if let Some(record) = Self::remove_instance_status_inner(&mut inner, instance_id) {
-            Self::broadcast_routing_event(&mut inner, RoutingEvent::InstanceRemoved(record));
+            Self::broadcast_routing_batch(
+                &mut inner,
+                format!("memory:instance:remove:{instance_id}"),
+                Some("instance.remove".to_string()),
+                vec![RoutingEvent::InstanceRemoved(record)],
+            );
         }
         Ok(())
     }
@@ -720,19 +785,26 @@ impl MemoryStore {
         inner.acme_challenges.clear();
         inner.acme_challenge_readiness.clear();
 
+        let mut events = Vec::new();
         for record in removed {
             Self::broadcast_machine(&mut inner, MachineEvent::Removed(record.clone()));
-            Self::broadcast_routing_event(&mut inner, RoutingEvent::MachineRemoved(record));
+            events.push(RoutingEvent::MachineRemoved(record));
         }
         for record in removed_revisions {
-            Self::broadcast_routing_event(&mut inner, RoutingEvent::RevisionRemoved(record));
+            events.push(RoutingEvent::RevisionRemoved(record));
         }
         for record in removed_releases {
-            Self::broadcast_routing_event(&mut inner, RoutingEvent::ReleaseRemoved(record));
+            events.push(RoutingEvent::ReleaseRemoved(record));
         }
         for record in removed_instances {
-            Self::broadcast_routing_event(&mut inner, RoutingEvent::InstanceRemoved(record));
+            events.push(RoutingEvent::InstanceRemoved(record));
         }
+        Self::broadcast_routing_batch(
+            &mut inner,
+            "memory:wipe",
+            Some("store.wipe".to_string()),
+            events,
+        );
         Ok(())
     }
 }

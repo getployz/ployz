@@ -16,8 +16,9 @@ pub use traits::{
     AcmeChallengeSubscription, CertificateStore, CertificateSubscription, DeployCommit,
     DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
     InstanceStatusRepository, InviteRepository, MachineRegistry, MachineSubscription,
-    PeerRttObservation, PeerRttStore, RoutingSnapshotReader, RoutingSubscription,
-    StoreRuntimeControl, SyncProbe, SyncStatus,
+    PeerRttObservation, PeerRttStore, RoutingBatchSubscription, RoutingEventBatch,
+    RoutingSnapshotReader, StoreRuntimeControl, SyncProbe, SyncStatus, apply_routing_event,
+    apply_routing_events,
 };
 
 #[async_trait]
@@ -40,7 +41,10 @@ pub trait StoreBackend: Send + Sync {
     async fn revoke_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<InviteRecord>;
 
     async fn load_routing_state(&self) -> Result<RoutingState>;
-    async fn subscribe_routing_events(&self) -> Result<RoutingSubscription>;
+    async fn subscribe_routing_batches(
+        &self,
+        consumer_id: &str,
+    ) -> Result<RoutingBatchSubscription>;
 
     async fn list_deploy_releases(
         &self,
