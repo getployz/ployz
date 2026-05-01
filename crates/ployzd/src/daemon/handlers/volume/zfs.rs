@@ -6,6 +6,7 @@ use ployz_api::{
     VolumeZfsSnapshotInfo, VolumeZfsSnapshotPayload, VolumeZfsTransferInfo,
     VolumeZfsTransferListPayload, VolumeZfsTransferPayload,
 };
+use ployz_nats::coord::rpc::NodeCommandSubject;
 use ployz_runtime_backends::storage::{TokioShellRunner, ZfsDriver};
 use ployz_store_api::{DeployRepository, MachineRegistry};
 use ployz_types::model::{MachineId, MachineLifecycle, MachineMembership, VolumeRecord};
@@ -296,7 +297,7 @@ impl DaemonState {
                 serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "ok".into()),
                 Some(DaemonPayload::VolumeZfsInspect(payload)),
             ),
-            Err(error) => self.err("VOLUME_ZFS_INSPECT_FAILED", error),
+            Err(error) => self.err("VOLUME_ZFS_INSPECT_FAILED", error.to_string()),
         }
     }
 
@@ -324,7 +325,7 @@ impl DaemonState {
                 serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "ok".into()),
                 Some(DaemonPayload::VolumeZfsSnapshot(payload)),
             ),
-            Err(error) => self.err("VOLUME_ZFS_SNAPSHOT_FAILED", error),
+            Err(error) => self.err("VOLUME_ZFS_SNAPSHOT_FAILED", error.to_string()),
         }
     }
 
@@ -683,20 +684,23 @@ impl DaemonState {
                 format!("machine '{machine}' not found"),
             );
         };
-        match overlay_rpc(
-            machine.overlay_ip,
-            self.peer_control_port()
-                .unwrap_or(self.remote_control_port + 1),
-            ployz_api::DaemonRequest::VolumeZfsInspect {
-                namespace: namespace.to_string(),
-                volume: volume.to_string(),
-                machine: None,
-            },
-        )
-        .await
+        let client = match self.nats_node_rpc_client().await {
+            Ok(client) => client,
+            Err(error) => return self.err("VOLUME_ZFS_INSPECT_FAILED", error),
+        };
+        match client
+            .request(
+                NodeCommandSubject::volume_zfs_inspect(&machine.id),
+                &ployz_api::DaemonRequest::VolumeZfsInspect {
+                    namespace: namespace.to_string(),
+                    volume: volume.to_string(),
+                    machine: None,
+                },
+            )
+            .await
         {
             Ok(response) => response,
-            Err(error) => self.err("VOLUME_ZFS_INSPECT_FAILED", error),
+            Err(error) => self.err("VOLUME_ZFS_INSPECT_FAILED", error.to_string()),
         }
     }
 
@@ -713,20 +717,23 @@ impl DaemonState {
                 format!("machine '{}' not found", machine_id),
             );
         };
-        match overlay_rpc(
-            machine.overlay_ip,
-            self.peer_control_port()
-                .unwrap_or(self.remote_control_port + 1),
-            ployz_api::DaemonRequest::VolumeZfsSnapshot {
-                namespace: namespace.0.clone(),
-                volume: volume.to_string(),
-                snapshot: snapshot.to_string(),
-            },
-        )
-        .await
+        let client = match self.nats_node_rpc_client().await {
+            Ok(client) => client,
+            Err(error) => return self.err("VOLUME_ZFS_SNAPSHOT_FAILED", error),
+        };
+        match client
+            .request(
+                NodeCommandSubject::volume_zfs_snapshot(&machine.id),
+                &ployz_api::DaemonRequest::VolumeZfsSnapshot {
+                    namespace: namespace.0.clone(),
+                    volume: volume.to_string(),
+                    snapshot: snapshot.to_string(),
+                },
+            )
+            .await
         {
             Ok(response) => response,
-            Err(error) => self.err("VOLUME_ZFS_SNAPSHOT_FAILED", error),
+            Err(error) => self.err("VOLUME_ZFS_SNAPSHOT_FAILED", error.to_string()),
         }
     }
 

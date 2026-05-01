@@ -93,7 +93,7 @@ async fn machine_rtt_does_not_fan_out_to_unreachable_peer() {
     drop(listener);
     let remote_control_port = peer_rpc_port
         .checked_sub(1)
-        .expect("peer rpc port has preceding remote control port");
+        .expect("peer rpc port has preceding base control port");
     let (mut state, store, _) = make_state_with_remote_port(true, remote_control_port).await;
 
     let mut peer = test_machine_record(
@@ -127,7 +127,7 @@ async fn machine_add_activates_joiner_lifecycle() {
     let peer_rpc_port = listener.local_addr().expect("listener addr").port();
     let remote_control_port = peer_rpc_port
         .checked_sub(1)
-        .expect("peer rpc port has preceding remote control port");
+        .expect("peer rpc port has preceding base control port");
     let (mut state, store, network) = make_state_with_remote_port(true, remote_control_port).await;
     let mut stale_peer = test_machine_record(
         "stale-peer",
@@ -453,7 +453,7 @@ async fn machine_remove_reports_peer_rejection_without_unreachable_hint() {
     let peer_rpc_port = listener.local_addr().expect("listener addr").port();
     let remote_control_port = peer_rpc_port
         .checked_sub(1)
-        .expect("peer rpc port has preceding remote control port");
+        .expect("peer rpc port has preceding base control port");
     let (mut state, store, _) = make_state_with_remote_port(true, remote_control_port).await;
 
     let mut peer = test_machine_record(
@@ -509,7 +509,7 @@ async fn machine_remove_waits_for_long_running_peer_teardown() {
     let peer_rpc_port = listener.local_addr().expect("listener addr").port();
     let remote_control_port = peer_rpc_port
         .checked_sub(1)
-        .expect("peer rpc port has preceding remote control port");
+        .expect("peer rpc port has preceding base control port");
     let (mut state, store, _) = make_state_with_remote_port(true, remote_control_port).await;
 
     let mut peer = test_machine_record(
@@ -848,7 +848,7 @@ async fn machine_activate_rolls_back_remote_activate_when_self_record_fails() {
     let peer_rpc_port = listener.local_addr().expect("listener addr").port();
     let remote_control_port = peer_rpc_port
         .checked_sub(1)
-        .expect("peer rpc port has preceding remote control port");
+        .expect("peer rpc port has preceding base control port");
     let (mut state, store, _) = make_state_with_remote_port(true, remote_control_port).await;
 
     let mut peer = test_machine_record(
@@ -1150,7 +1150,7 @@ async fn make_state_with_remote_port(
         config,
         cached_subnet,
         mesh,
-        remote_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
+        nats_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         peer_control: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         zfs_transfer: Box::new(ployz_runtime_api::NoopRuntimeHandle),
         gateway: Box::new(ployz_runtime_api::NoopRuntimeHandle),

@@ -3188,6 +3188,7 @@ dependencies = [
  "base64",
  "futures-util",
  "ipnet",
+ "ployz-api",
  "ployz-store-api",
  "ployz-types",
  "serde",
@@ -3322,6 +3323,7 @@ dependencies = [
 name = "ployzd"
 version = "0.5.5"
 dependencies = [
+ "async-nats",
  "async-trait",
  "base64",
  "chrono",

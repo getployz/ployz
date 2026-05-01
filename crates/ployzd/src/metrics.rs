@@ -106,13 +106,18 @@ pub fn request_name(request: &ployz_api::DaemonRequest) -> &'static str {
         ployz_api::DaemonRequest::MachineInviteImport { .. } => "machine_invite_import",
         ployz_api::DaemonRequest::MeshBootstrap { .. } => "mesh_bootstrap",
         ployz_api::DaemonRequest::MachineTransitionSelf { .. } => "machine_transition_self",
-        ployz_api::DaemonRequest::Coord { .. } => "coord",
         ployz_api::DaemonRequest::AcmeChallengeReady { .. } => "acme_challenge_ready",
         ployz_api::DaemonRequest::MeshSelfRecord => "mesh_self_record",
         ployz_api::DaemonRequest::MeshAccept { .. } => "mesh_accept",
         ployz_api::DaemonRequest::DeployPreview { .. } => "deploy_preview",
         ployz_api::DaemonRequest::DeployApply { .. } => "deploy_apply",
         ployz_api::DaemonRequest::DeployExport { .. } => "deploy_export",
+        ployz_api::DaemonRequest::DeployNodeInspectNamespace { .. } => {
+            "deploy_node_inspect_namespace"
+        }
+        ployz_api::DaemonRequest::DeployNodeStartCandidate { .. } => "deploy_node_start_candidate",
+        ployz_api::DaemonRequest::DeployNodeDrainInstance { .. } => "deploy_node_drain_instance",
+        ployz_api::DaemonRequest::DeployNodeRemoveInstance { .. } => "deploy_node_remove_instance",
         ployz_api::DaemonRequest::RuntimeSubscribe => "runtime_subscribe",
         ployz_api::DaemonRequest::VolumeZfsInspect { .. } => "volume_zfs_inspect",
         ployz_api::DaemonRequest::VolumeZfsSnapshot { .. } => "volume_zfs_snapshot",

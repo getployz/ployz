@@ -408,7 +408,7 @@ async fn shutdown_active_mesh(state: &Arc<RwLock<DaemonState>>) {
             config: _config,
             cached_subnet: _cached_subnet,
             mut mesh,
-            remote_control,
+            nats_control,
             peer_control,
             zfs_transfer,
             gateway,
@@ -426,7 +426,7 @@ async fn shutdown_active_mesh(state: &Arc<RwLock<DaemonState>>) {
         let _ = gateway.detach().await;
         let _ = zfs_transfer.shutdown().await;
         let _ = peer_control.shutdown().await;
-        let _ = remote_control.shutdown().await;
+        let _ = nats_control.shutdown().await;
         let _ = mesh.detach().await;
     }
 }

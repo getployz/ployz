@@ -1,20 +1,18 @@
 use std::sync::Arc;
 
 use crate::error::Result;
-use crate::model::{DeployId, InstanceId, InstanceStatusRecord, MachineId, MachineMembership};
-use crate::spec::Namespace;
+use crate::model::{InstanceId, InstanceStatusRecord, MachineId};
 pub use ployz_orchestrator::deploy::session::{
     DeploySession, DeploySessionFactory, StartCandidateRequest,
 };
 
-use super::remote::{DeployAgent, SessionState, TcpDeploySession};
+use super::remote::{DeployAgent, SessionState};
 
 // ---------------------------------------------------------------------------
 // InProcessDeploySession — local participant
 // ---------------------------------------------------------------------------
 
 /// Deploy session that runs in-process against the local DeployAgent.
-/// Lock is held via SessionState until the session is dropped.
 pub struct InProcessDeploySession {
     agent: Arc<DeployAgent>,
     state: SessionState,
@@ -58,66 +56,6 @@ impl DeploySession for InProcessDeploySession {
     }
 
     async fn close(self: Box<Self>) -> Result<()> {
-        // Lock released on drop via SessionState._lock.
         Ok(())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// DefaultDeploySessionFactory
-// ---------------------------------------------------------------------------
-
-/// Factory that creates in-process sessions for the local machine and
-/// TCP sessions for remote machines.
-pub struct DefaultDeploySessionFactory {
-    agent: Arc<DeployAgent>,
-    local_machine_id: MachineId,
-    remote_control_port: u16,
-}
-
-impl DefaultDeploySessionFactory {
-    #[must_use]
-    pub fn new(
-        agent: Arc<DeployAgent>,
-        local_machine_id: MachineId,
-        remote_control_port: u16,
-    ) -> Self {
-        Self {
-            agent,
-            local_machine_id,
-            remote_control_port,
-        }
-    }
-}
-
-// TODO: remove async_trait when RPITIT is sufficient for dyn dispatch
-#[async_trait::async_trait]
-impl DeploySessionFactory for DefaultDeploySessionFactory {
-    async fn open(
-        &self,
-        machine: &MachineMembership,
-        namespace: &Namespace,
-        deploy_id: &DeployId,
-        coordinator_id: &MachineId,
-    ) -> Result<(Box<dyn DeploySession>, Vec<InstanceStatusRecord>)> {
-        if machine.id == self.local_machine_id {
-            let (state, instances) = self.agent.open_session(namespace, deploy_id).await?;
-            let session = InProcessDeploySession {
-                agent: Arc::clone(&self.agent),
-                state,
-                machine_id: machine.id.clone(),
-            };
-            Ok((Box::new(session), instances))
-        } else {
-            let (session, instances) = TcpDeploySession::connect(
-                machine,
-                self.remote_control_port,
-                namespace,
-                deploy_id,
-                coordinator_id,
-            )
-            .await?;
-            Ok((Box::new(session), instances))
-        }
     }
 }

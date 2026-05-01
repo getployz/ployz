@@ -19,11 +19,9 @@ use ployz_api::{DaemonPayload, DaemonResponse};
 use ployz_config::{RuntimeTarget, ServiceMode, StorageConfig};
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::certificates::CertificateRenewalTask;
-use ployz_orchestrator::coordination::{
-    MemorySubnetCoordinator, PendingReservations, SubnetReservationCoordinator,
-};
+use ployz_orchestrator::coordination::{MemorySubnetCoordinator, SubnetReservationCoordinator};
 use ployz_runtime_api::Identity;
-use ployz_runtime_api::{NamespaceLockManager, RuntimeHandle};
+use ployz_runtime_api::RuntimeHandle;
 use ployz_types::model::MachineTopology;
 use serde::Serialize;
 use tokio::sync::mpsc;
@@ -32,7 +30,7 @@ pub struct ActiveMesh {
     pub config: NetworkConfig,
     pub cached_subnet: Option<Ipv4Net>,
     pub mesh: Mesh,
-    pub remote_control: Box<dyn RuntimeHandle>,
+    pub nats_control: Box<dyn RuntimeHandle>,
     pub peer_control: Box<dyn RuntimeHandle>,
     pub zfs_transfer: Box<dyn RuntimeHandle>,
     pub gateway: Box<dyn RuntimeHandle>,
@@ -73,8 +71,6 @@ pub struct DaemonState {
     pub dns_metrics_listen_addr: Option<String>,
     pub gateway_metrics_listen_addr: Option<String>,
     pub active: Option<ActiveMesh>,
-    pub namespace_locks: NamespaceLockManager,
-    pub reservations: Arc<PendingReservations>,
     pub subnet_coord: Arc<dyn SubnetReservationCoordinator>,
     pub command_tx: Option<mpsc::Sender<IncomingCommand>>,
 }
@@ -189,8 +185,6 @@ impl DaemonState {
             dns_metrics_listen_addr,
             gateway_metrics_listen_addr,
             active: None,
-            namespace_locks: NamespaceLockManager::default(),
-            reservations: Arc::new(PendingReservations::new()),
             subnet_coord: Arc::new(MemorySubnetCoordinator::new()),
             command_tx: None,
         }
@@ -256,5 +250,28 @@ impl DaemonState {
             Ok(json) => self.ok(json),
             Err(err) => self.err(encode_error_code, format!("{context}: {err}")),
         }
+    }
+
+    pub(crate) async fn nats_node_rpc_client(
+        &self,
+    ) -> Result<ployz_nats::coord::rpc::NatsNodeRpcClient, String> {
+        let active = self
+            .active
+            .as_ref()
+            .ok_or_else(|| "no mesh is running".to_string())?;
+        let client_url = if self.runtime_target == RuntimeTarget::Docker {
+            crate::services::nats::local_client_url()
+        } else {
+            crate::services::nats::overlay_client_url(active.config.overlay_ip)
+        };
+        let store = ployz_nats::NatsStore::connect(&client_url)
+            .await
+            .map_err(|error| error.to_string())?;
+        ployz_store_api::StoreRuntimeControl::start(&store)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(ployz_nats::coord::rpc::NatsNodeRpcClient::new(
+            store.client().clone(),
+        ))
     }
 }
