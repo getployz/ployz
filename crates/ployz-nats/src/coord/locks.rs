@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_nats::jetstream::kv;
@@ -6,6 +7,7 @@ use ployz_types::error::{Error, Result};
 use ployz_types::model::MachineId;
 use ployz_types::spec::Namespace;
 use ployz_types::time::now_unix_secs;
+use tokio::sync::Mutex;
 
 use crate::NatsStore;
 use crate::buckets::LOCKS_BUCKET;
@@ -21,7 +23,7 @@ pub struct LeaseValue {
 
 pub struct NatsDeployLock {
     locks: NatsLocks,
-    lease: Option<Lease>,
+    lease: Arc<Mutex<Option<Lease>>>,
 }
 
 impl NatsDeployLock {
@@ -43,15 +45,48 @@ impl NatsDeployLock {
             .await?;
         Ok(Self {
             locks,
-            lease: Some(lease),
+            lease: Arc::new(Mutex::new(Some(lease))),
         })
     }
 
-    pub async fn release(mut self) -> Result<()> {
-        let Some(lease) = self.lease.take() else {
+    pub async fn renew(&self, ttl: Duration) -> Result<()> {
+        let Some(lease) = self.lease.lock().await.clone() else {
+            return Ok(());
+        };
+        let renewed = self
+            .locks
+            .renew(&lease, ttl, now_unix_secs().saturating_add(ttl.as_secs()))
+            .await?;
+        let mut current = self.lease.lock().await;
+        let Some(current_lease) = current.as_ref() else {
+            return Ok(());
+        };
+        if current_lease.revision != lease.revision
+            || current_lease.value.nonce != lease.value.nonce
+        {
+            return Err(Error::operation(
+                "nats_deploy_lock_renew",
+                "deploy lock changed before renewal completed",
+            ));
+        }
+        *current = Some(renewed);
+        Ok(())
+    }
+
+    pub async fn release(self) -> Result<()> {
+        let Some(lease) = self.lease.lock().await.take() else {
             return Ok(());
         };
         self.locks.release(lease).await
+    }
+}
+
+impl Clone for NatsDeployLock {
+    fn clone(&self) -> Self {
+        Self {
+            locks: self.locks.clone(),
+            lease: self.lease.clone(),
+        }
     }
 }
 
