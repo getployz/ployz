@@ -908,6 +908,7 @@ fn status_response_for_record(record: &MachineMembership) -> String {
             mesh_phase: "idle".into(),
             edge_sync: Vec::new(),
             nats_assets: Vec::new(),
+            control_plane: Vec::new(),
         })),
     })
     .expect("encode status response")

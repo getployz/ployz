@@ -622,7 +622,11 @@ Tracked in code comments and the implementation plan. Highlights:
 5. Coordination layer — KV lock helpers and node RPC are now the daemon command
    path. `PendingReservations`, `OverlayIssuanceCoordinator`, the peer TCP RPC
    client, and the peer control listener have been removed. Remaining direct TCP
-   is narrow data movement such as ZFS send/receive payload streams.
+   is narrow data movement such as ZFS send/receive payload streams. The node
+   RPC listener writes `nats-node-rpc-health.json` in the network data directory
+   and `ployzctl status` reports it as `control_plane
+   component=node_rpc_listener`, so command subscription loss has stale-since,
+   consecutive failure, and last-error visibility instead of only logs.
 6. Joiner bootstrap still uses SSH stdio to deliver the bootstrap command and
    scoped cluster information. The introducer writes a bootstrap membership seed
    into NATS so existing nodes learn the joiner's WireGuard identity through the

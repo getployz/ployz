@@ -477,6 +477,8 @@ pub struct StatusPayload {
     pub edge_sync: Vec<EdgeSyncStatus>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub nats_assets: Vec<NatsAssetStatus>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub control_plane: Vec<ControlPlaneStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -499,6 +501,19 @@ pub struct NatsAssetStatus {
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replicas: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlPlaneStatus {
+    pub component: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub healthy: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_since_unix_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consecutive_failures: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
