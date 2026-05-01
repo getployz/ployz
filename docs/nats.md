@@ -577,27 +577,33 @@ KV buckets:
 
 Tracked in code comments and the implementation plan. Highlights:
 
-1. `subscribe_routing_events` returns the snapshot but never emits live
-   events — sender is dropped on the next line.
-2. `replay_projection` runs full N-RPC replay on every read.
-3. Lock TTL doesn't refresh on `kv.update` because the current async-nats
+1. Routing events are live JetStream atomic batches. Gateway/DNS use durable
+   per-machine consumers; runtime watches and readiness probes use temporary
+   consumers that are deleted when the watcher closes.
+2. Machine/certificate/ACME challenge subscriptions are KV watchers. If a
+   watcher closes, consumers must stop using the stale event stream and either
+   resubscribe from a fresh snapshot or surface the degraded state. Mesh runtime
+   tasks currently stop on closure; stronger task supervision and operator
+   status is still a hardening item.
+3. `replay_projection` runs full N-RPC replay on every read.
+4. Lock TTL doesn't refresh on `kv.update` because the current async-nats
    API doesn't expose update-with-TTL — workaround is a delete+create
    cycle (race risk) or wait for the client API to catch up to 2.11+
    server features.
-4. Standalone gateway and DNS use NATS in their `main.rs`
-   files. ployzd switched, the sidecars didn't.
-5. Coordination layer — KV lock helpers and node RPC are now the daemon command
+5. Standalone gateway and DNS now use NATS-backed store subscriptions through
+   their `main.rs` wrappers.
+6. Coordination layer — KV lock helpers and node RPC are now the daemon command
    path. `PendingReservations`, `OverlayIssuanceCoordinator`, the peer TCP RPC
    client, and the peer control listener have been removed. Remaining direct TCP
    is narrow data movement such as ZFS send/receive payload streams.
-6. `MachineRole` is hardcoded to `StorageCandidate` everywhere.
-7. Joiner bootstrap still uses SSH stdio to deliver the bootstrap command and
+7. `MachineRole` is hardcoded to `StorageCandidate` in join/bootstrap flows.
+8. Joiner bootstrap still uses SSH stdio to deliver the bootstrap command and
    scoped cluster information. The introducer writes a bootstrap membership seed
    into NATS so existing nodes learn the joiner's WireGuard identity through the
    machines subscription; after bootstrap, node commands use NATS request/reply.
    The intended v2 flow is for the joiner to receive scoped NATS credentials and
    publish its own membership without an introducer-authored seed.
-8. `subjects::subject_token` collision risk for namespace/hostname names
+9. `subjects::subject_token` collision risk for namespace/hostname names
    that differ only in punctuation.
 
 ## Future planning

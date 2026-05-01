@@ -412,7 +412,11 @@ pub(crate) async fn run_endpoint_maintainer_task(task: EndpointMaintainerTask) {
                 )
                 .await;
             }
-            Some(event) = events.recv() => {
+            event = events.recv() => {
+                let Some(event) = event else {
+                    warn!("endpoint maintainer machine subscription closed");
+                    break;
+                };
                 peer_map.apply_event(&event, Instant::now());
                 let device_peers = network.read_peers().await.unwrap_or_default();
                 runtime.refresh_candidates(&peer_map, &local_machine_id, &device_peers, Instant::now());
@@ -555,5 +559,33 @@ mod tests {
                 .map(String::as_str),
             Some("a:1")
         );
+    }
+
+    #[tokio::test]
+    async fn exits_when_machine_subscription_closes() {
+        let network = crate::mesh::driver::WireguardDriver::memory_with(std::sync::Arc::new(
+            crate::mesh::wireguard::MemoryWireGuard::new(),
+        ));
+        let (event_tx, event_rx) = mpsc::channel::<MachineEvent>(4);
+        let (_command_tx, command_rx) = mpsc::channel::<EndpointMaintainerCommand>(4);
+
+        drop(event_tx);
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            run_endpoint_maintainer_task(EndpointMaintainerTask {
+                snapshot: Vec::new(),
+                events: event_rx,
+                commands: command_rx,
+                bootstrap_peers: Vec::new(),
+                network,
+                local_machine_id: MachineId("self".into()),
+                endpoint_selections: std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+                initial_device_peers: Vec::new(),
+                cancel: CancellationToken::new(),
+            }),
+        )
+        .await
+        .expect("endpoint maintainer should exit when machine subscription closes");
     }
 }

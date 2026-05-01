@@ -5,7 +5,7 @@ use crate::model::{MachineEvent, MachineId, MachineMembership, MachineObservatio
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 pub(crate) struct PeerSyncTask {
     pub(crate) snapshot: Vec<MachineMembership>,
@@ -43,7 +43,11 @@ pub(crate) async fn run_peer_sync_task(task: PeerSyncTask) {
                 info!("peer sync task cancelled");
                 break;
             }
-            Some(event) = events.recv() => {
+            event = events.recv() => {
+                let Some(event) = event else {
+                    warn!("peer sync machine subscription closed");
+                    break;
+                };
                 debug!(?event, "peer sync event");
                 state.apply_event(&event, Instant::now());
                 sync_peers(&state, &network, &local_machine_id, &endpoint_selections).await;
@@ -132,5 +136,31 @@ mod tests {
             panic!("expected one peer");
         };
         assert_eq!(peer.id().0, "founder");
+    }
+
+    #[tokio::test]
+    async fn exits_when_machine_subscription_closes() {
+        let network = Arc::new(MemoryWireGuard::new());
+        let driver = WireguardDriver::memory_with(network);
+        let local_machine_id = MachineId("self".into());
+        let (event_tx, event_rx) = mpsc::channel::<MachineEvent>(4);
+        let cancel = CancellationToken::new();
+
+        drop(event_tx);
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            run_peer_sync_task(PeerSyncTask {
+                snapshot: Vec::new(),
+                events: event_rx,
+                bootstrap_peers: Vec::new(),
+                network: driver,
+                local_machine_id,
+                endpoint_selections: Arc::new(RwLock::new(HashMap::new())),
+                cancel,
+            }),
+        )
+        .await
+        .expect("peer sync should exit when machine subscription closes");
     }
 }

@@ -28,7 +28,11 @@ pub(crate) async fn run_subnet_claim_monitor_task(
                 info!("subnet claim monitor task cancelled");
                 break;
             }
-            Some(event) = events.recv() => {
+            event = events.recv() => {
+                let Some(event) = event else {
+                    warn!("subnet claim monitor machine subscription closed");
+                    break;
+                };
                 match event {
                     MachineEvent::Added(machine) | MachineEvent::Updated(machine) => {
                         machines.insert(machine.id.clone(), machine);
@@ -127,5 +131,18 @@ mod tests {
                 vec![String::from("m2"), String::from("m3")]
             )]
         );
+    }
+
+    #[tokio::test]
+    async fn exits_when_machine_subscription_closes() {
+        let (event_tx, event_rx) = mpsc::channel::<MachineEvent>(4);
+        drop(event_tx);
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            run_subnet_claim_monitor_task(Vec::new(), event_rx, CancellationToken::new()),
+        )
+        .await
+        .expect("subnet claim monitor should exit when machine subscription closes");
     }
 }
