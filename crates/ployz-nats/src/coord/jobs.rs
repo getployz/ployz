@@ -25,7 +25,6 @@ pub struct CertRenewalJob {
     pub hostname: String,
     pub renewal_subject: String,
     pub schedule_subject: String,
-    pub message_id: String,
 }
 
 impl CertRenewalJob {
@@ -35,7 +34,6 @@ impl CertRenewalJob {
         Self {
             renewal_subject: subjects::cert_renewal_job(&hostname),
             schedule_subject: subjects::cert_renewal_schedule(&hostname),
-            message_id: format!("cert-renewal:{hostname}"),
             hostname,
         }
     }
@@ -65,8 +63,9 @@ impl CertRenewalPublishSpec {
         let job = CertRenewalJob::new(hostname);
         let mut headers = HeaderMap::new();
         headers.insert(NATS_EXPECTED_STREAM, CERT_JOBS_STREAM);
-        headers.insert(NATS_MESSAGE_ID, job.message_id.as_str());
-        let subject = match schedule_header_value(schedule)? {
+        let message_id = cert_renewal_message_id(&job.hostname, &schedule);
+        headers.insert(NATS_MESSAGE_ID, message_id.as_str());
+        let subject = match schedule_header_value(&schedule)? {
             Some(schedule) => {
                 headers.insert(NATS_SCHEDULE, schedule);
                 headers.insert(NATS_SCHEDULE_TARGET, job.renewal_subject.as_str());
@@ -250,12 +249,21 @@ fn decode_cert_renewal_message(
     Ok((subject, hostname))
 }
 
-fn schedule_header_value(schedule: JobSchedule) -> Result<Option<String>> {
+fn cert_renewal_message_id(hostname: &str, schedule: &JobSchedule) -> String {
+    let schedule_token = match schedule {
+        JobSchedule::Immediate => String::from("immediate"),
+        JobSchedule::AtUnixSecs(timestamp) => format!("at:{timestamp}"),
+        JobSchedule::Cron(expression) => format!("cron:{}", subjects::kv_key_token(expression)),
+    };
+    format!("cert-renewal:{hostname}:{schedule_token}")
+}
+
+fn schedule_header_value(schedule: &JobSchedule) -> Result<Option<String>> {
     match schedule {
         JobSchedule::Immediate => Ok(None),
-        JobSchedule::Cron(expression) => Ok(Some(expression)),
+        JobSchedule::Cron(expression) => Ok(Some(expression.clone())),
         JobSchedule::AtUnixSecs(timestamp) => {
-            let timestamp = i64::try_from(timestamp)
+            let timestamp = i64::try_from(*timestamp)
                 .map_err(|error| Error::operation("nats_cert_job_schedule", error.to_string()))?;
             let Some(at) = DateTime::<Utc>::from_timestamp(timestamp, 0) else {
                 return Err(Error::operation(
@@ -294,12 +302,24 @@ mod tests {
     use async_nats::header::IntoHeaderName;
 
     #[test]
-    fn renewal_publish_has_stable_dedupe_id() {
+    fn renewal_publish_dedupe_id_is_normalized_and_schedule_scoped() {
         let first = CertRenewalJob::new("Api.Example.Com");
         let second = CertRenewalJob::new("api.example.com");
-        assert_eq!(first.message_id, second.message_id);
         assert_eq!(first.renewal_subject, second.renewal_subject);
         assert_eq!(first.schedule_subject, second.schedule_subject);
+
+        assert_eq!(
+            cert_renewal_message_id(&first.hostname, &JobSchedule::AtUnixSecs(1_803_619_200)),
+            cert_renewal_message_id(&second.hostname, &JobSchedule::AtUnixSecs(1_803_619_200))
+        );
+        assert_ne!(
+            cert_renewal_message_id(&first.hostname, &JobSchedule::AtUnixSecs(1_803_619_200)),
+            cert_renewal_message_id(&second.hostname, &JobSchedule::AtUnixSecs(1_803_622_800))
+        );
+        assert_ne!(
+            cert_renewal_message_id(&first.hostname, &JobSchedule::Immediate),
+            cert_renewal_message_id(&second.hostname, &JobSchedule::AtUnixSecs(1_803_619_200))
+        );
     }
 
     #[test]
@@ -317,7 +337,7 @@ mod tests {
         );
         assert_eq!(
             header(&spec.headers, NATS_MESSAGE_ID),
-            "cert-renewal:api.example.com"
+            "cert-renewal:api.example.com:at:1803619200"
         );
         assert_eq!(
             header(&spec.headers, NATS_SCHEDULE),
@@ -339,6 +359,10 @@ mod tests {
 
         assert!(spec.headers.get(NATS_SCHEDULE).is_none());
         assert!(spec.headers.get(NATS_SCHEDULE_TARGET).is_none());
+        assert_eq!(
+            header(&spec.headers, NATS_MESSAGE_ID),
+            "cert-renewal:api.example.com:immediate"
+        );
         assert_eq!(spec.subject, "cert.jobs.renew.api%2Eexample%2Ecom");
     }
 
@@ -349,6 +373,10 @@ mod tests {
                 .expect("build renewal job");
 
         assert_eq!(header(&spec.headers, NATS_SCHEDULE), "0 3 * * *");
+        assert_eq!(
+            header(&spec.headers, NATS_MESSAGE_ID),
+            cert_renewal_message_id("api.example.com", &JobSchedule::Cron("0 3 * * *".into()))
+        );
         assert_eq!(
             header(&spec.headers, NATS_SCHEDULE_TARGET),
             "cert.jobs.renew.api%2Eexample%2Ecom"
