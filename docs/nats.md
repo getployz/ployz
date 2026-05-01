@@ -611,6 +611,9 @@ Tracked in code comments and the implementation plan. Highlights:
    load the current snapshot, then watch from the next sequence. Updates that
    race with snapshot loading are delivered from the bounded watch stream, and
    duplicate observations collapse through the subscriber's last-seen state.
+   Watcher tasks also exit as soon as their downstream receiver closes, and
+   event decode failures are surfaced as subscription failures instead of being
+   logged while the stale stream continues.
 3. Deploy projections cache the last replayed stream sequence and extend from
    the next commit when the cached sequence is still within the retained stream
    window. They fall back to full replay only after compaction or cache loss.

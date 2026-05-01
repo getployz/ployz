@@ -201,7 +201,10 @@ The important split:
   reload from authority, or surface degraded health to an operator-visible
   status. KV subscriptions read the bucket stream sequence as the snapshot
   boundary, load the current snapshot, then watch from the next sequence so
-  updates that race with snapshot loading are still delivered.
+  updates that race with snapshot loading are still delivered. KV watcher tasks
+  terminate when their downstream receiver closes, and malformed event payloads
+  become explicit subscription failures because stale projections need an
+  operator-visible audience.
 - Edge projections expose their subscription freshness as sidecar metrics:
   gateway reports routing, certificates, and ACME challenge streams; DNS reports
   routing. When those metrics endpoints are configured, `ployzctl status`
