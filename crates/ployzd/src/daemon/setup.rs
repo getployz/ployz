@@ -15,15 +15,19 @@ use ployz_dns_config::DnsConfig;
 use ployz_gateway_config::GatewayConfig;
 use ployz_nats::NatsStore;
 use ployz_nats::config as nats_config;
+use ployz_nats::coord::jobs::{NatsCertRenewalJobConsumer, WorkQueuePolicy};
 use ployz_nats::coord::locks::NatsLocks;
 use ployz_orchestrator::Mesh;
 use ployz_orchestrator::certificates::{
-    CertificateManagerConfig, RenewalConfig, spawn_certificate_renewal_ticker,
+    AcmeAccountCoordinator, AcmeIssuerFactory, CertificateManagerConfig, CertificateRenewalTask,
+    Http01ChallengeReadiness, IssuanceCoordinator, LocalHttp01ChallengeReadiness,
+    process_renewal_job, spawn_certificate_finalization_with_coordination,
 };
 use ployz_orchestrator::coordination::SubnetReservationCoordinator;
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_runtime_api::{NoopRuntimeHandle, RuntimeHandle};
-use ployz_store_api::StoreRuntimeControl;
+use ployz_store_api::{StoreDriver, StoreRuntimeControl};
+use std::sync::Arc;
 
 use crate::daemon::subnet_coordination::NatsSubnetCoordinator;
 
@@ -55,6 +59,76 @@ async fn build_nats_subnet_coordinator(
         .await
         .map_err(|error| StartMeshError::MeshUp(format!("nats locks bucket: {error}")))?;
     Ok(std::sync::Arc::new(NatsSubnetCoordinator::new(locks)))
+}
+
+async fn start_nats_certificate_renewal_worker(
+    store: StoreDriver,
+    nats_store: NatsStore,
+    issuer_factory: Arc<dyn AcmeIssuerFactory>,
+    coordinator: Arc<dyn IssuanceCoordinator>,
+    readiness: Arc<dyn Http01ChallengeReadiness>,
+    account_coordinator: Arc<dyn AcmeAccountCoordinator>,
+) -> Result<CertificateRenewalTask, StartMeshError> {
+    let consumer =
+        NatsCertRenewalJobConsumer::connect(nats_store.jetstream(), WorkQueuePolicy::default())
+            .await
+            .map_err(|error| {
+                StartMeshError::MeshUp(format!("nats cert renewal consumer: {error}"))
+            })?;
+    Ok(CertificateRenewalTask::spawn(
+        "nats certificate renewal worker",
+        |cancel| async move {
+            let issuer = issuer_factory.create(
+                Arc::new(LocalHttp01ChallengeReadiness),
+                account_coordinator.clone(),
+            );
+            loop {
+                tokio::select! {
+                    () = cancel.cancelled() => break,
+                    next = consumer.next() => {
+                        match next {
+                            Ok(Some(job)) => {
+                                let hostname = job.hostname.clone();
+                                match process_renewal_job(
+                                    &store,
+                                    issuer.as_ref(),
+                                    coordinator.as_ref(),
+                                    &hostname,
+                                ).await {
+                                    Ok(()) => {
+                                        spawn_certificate_finalization_with_coordination(
+                                            store.clone(),
+                                            issuer_factory.clone(),
+                                            readiness.clone(),
+                                            account_coordinator.clone(),
+                                            coordinator.clone(),
+                                        );
+                                        if let Err(error) = job.ack().await {
+                                            tracing::warn!(?error, hostname, "certificate renewal job ack failed");
+                                        }
+                                    }
+                                    Err(error) => {
+                                        tracing::warn!(?error, hostname, "certificate renewal job failed");
+                                        if let Err(nak_error) = job.nak().await {
+                                            tracing::warn!(
+                                                ?nak_error,
+                                                hostname,
+                                                "certificate renewal job nak failed"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                tracing::warn!(?error, "certificate renewal worker fetch failed");
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -319,14 +393,17 @@ impl MeshStartTx {
             let issuer_factory = std::sync::Arc::new(InstantAcmeIssuerFactory::new(
                 CertificateManagerConfig::from_env(),
             ));
-            Some(spawn_certificate_renewal_ticker(
-                store,
-                issuer_factory,
-                RenewalConfig::from_env(),
-                coordinator,
-                readiness,
-                account_coordinator,
-            ))
+            Some(
+                start_nats_certificate_renewal_worker(
+                    store,
+                    nats_store,
+                    issuer_factory,
+                    coordinator,
+                    readiness,
+                    account_coordinator,
+                )
+                .await?,
+            )
         } else {
             None
         };
