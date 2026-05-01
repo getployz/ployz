@@ -212,6 +212,13 @@ The important split:
   stale routing projection from a healthy data-plane process. The metrics also
   expose when the current health state began and a cumulative failure count, so
   stale projections have age and trend signals instead of a bare boolean.
+- The daemon's NATS node RPC listener records its own subscription freshness in
+  `nats-node-rpc-health.json` under the network data directory. `ployzctl
+  status` reports that as `control_plane component=node_rpc_listener`, including
+  stale-since time, consecutive failures, and the last subscription error. While
+  the listener is stale, foreground request/reply calls to that node fail with
+  no-responder or timeout; recovery is the listener resubscribing, not a hidden
+  control-plane fallback.
 
 - **authority** lives in hub JetStream/KV/Object Store,
 - **hot read models** live in process memory and are rebuilt from authority,
@@ -229,7 +236,7 @@ The important split:
 | KV/stream write at R=3 cross-region | Raft quorum across WAN | WAN RTT to fastest quorum | high tail latency; should require explicit operator acceptance |
 | NATS node request/reply same region | core NATS route/leaf path | round trip to target daemon | no durable write unless command performs one |
 | NATS request/reply to offline node | core NATS no responder or timeout | subscription absence or timeout | foreground failure; caller decides retry/abort |
-| NATS node listener subscription loss | daemon edge task | local NATS client reconnect/resubscribe | daemon resubscribes; callers see no responder/timeout while absent |
+| NATS node listener subscription loss | daemon edge task | local NATS client reconnect/resubscribe | daemon resubscribes; callers see no responder/timeout while absent; local status records listener staleness |
 | Work queue dispatch | JetStream write + consumer delivery | stream write plus consumer pull/ack | exactly-one-worker behavior, not zero-latency signaling |
 | Scheduled message | broker schedule | schedule time plus dispatch latency | daemon restart does not lose timer |
 | Mirror read | local mirror stream/KV | mirror lag and local read | fast but not authoritative for writes |

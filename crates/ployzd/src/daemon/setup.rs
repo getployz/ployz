@@ -349,6 +349,9 @@ impl MeshStartTx {
             subject,
             queue_group,
             command_tx,
+            state
+                .network_dir(&self.config.name.0)
+                .join(nats_listener::NATS_NODE_RPC_HEALTH_FILE),
         )
         .await
         .map_err(StartMeshError::MeshUp)?;

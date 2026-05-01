@@ -224,6 +224,24 @@ fn render_plain_status(payload: &StatusPayload) -> String {
             asset.kind, asset.name, state
         ));
     }
+    for control in &payload.control_plane {
+        let mut state = match (control.healthy, control.error.as_deref()) {
+            (Some(true), _) => "healthy".to_string(),
+            (Some(false), _) => "stale".to_string(),
+            (None, Some(error)) => format!("unknown error={error}"),
+            (None, None) => "unknown".to_string(),
+        };
+        if let Some(stale_since) = control.stale_since_unix_secs {
+            state.push_str(&format!(" stale_since={stale_since}"));
+        }
+        if let Some(failures) = control.consecutive_failures {
+            state.push_str(&format!(" consecutive_failures={failures}"));
+        }
+        lines.push(format!(
+            "control_plane component={} state={}",
+            control.component, state
+        ));
+    }
     lines.join("\n")
 }
 
@@ -614,6 +632,7 @@ mod tests {
                 mesh_phase: String::from("Running"),
                 edge_sync: Vec::new(),
                 nats_assets: Vec::new(),
+                control_plane: Vec::new(),
             })),
         };
 
@@ -665,6 +684,7 @@ mod tests {
                     },
                 ],
                 nats_assets: Vec::new(),
+                control_plane: Vec::new(),
             })),
         };
 
@@ -700,11 +720,47 @@ mod tests {
                     replicas: Some(1),
                     error: None,
                 }],
+                control_plane: Vec::new(),
             })),
         };
 
         let rendered = render_plain_success(&response);
         assert!(rendered.contains("nats_asset kind=stream name=routing_events state=replicas=1"));
+    }
+
+    #[test]
+    fn plain_status_renders_control_plane_health() {
+        let response = DaemonResponse {
+            ok: true,
+            code: String::from("OK"),
+            message: String::from("status"),
+            payload: Some(DaemonPayload::Status(StatusPayload {
+                machine_id: String::from("founder"),
+                public_key: ployz_types::model::PublicKey([1; 32]),
+                version: String::from("0.1.0"),
+                network: Some(String::from("alpha")),
+                overlay_ip: Some(String::from("fd00::1")),
+                network_lifecycle: Some(ployz_types::model::NetworkLifecycle::Running),
+                local_machine_lifecycle: Some(ployz_types::model::MachineLifecycle::Active),
+                mesh_phase: String::from("Running"),
+                edge_sync: Vec::new(),
+                nats_assets: Vec::new(),
+                control_plane: vec![ployz_api::ControlPlaneStatus {
+                    component: String::from("node_rpc_listener"),
+                    healthy: Some(false),
+                    stale_since_unix_secs: Some(1_777_646_100),
+                    consecutive_failures: Some(2),
+                    error: Some(String::from(
+                        "nats node rpc resubscribe failed: disconnected",
+                    )),
+                }],
+            })),
+        };
+
+        let rendered = render_plain_success(&response);
+        assert!(rendered.contains(
+            "control_plane component=node_rpc_listener state=stale stale_since=1777646100 consecutive_failures=2"
+        ));
     }
 
     #[test]

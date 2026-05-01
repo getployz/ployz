@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use ployz_api::{DaemonPayload, DaemonResponse, EdgeSyncStatus, NatsAssetStatus, StatusPayload};
+use ployz_api::{
+    ControlPlaneStatus, DaemonPayload, DaemonResponse, EdgeSyncStatus, NatsAssetStatus,
+    StatusPayload,
+};
 use ployz_config::RuntimeTarget;
 use ployz_nats::NatsStore;
 use ployz_nats::buckets::{
@@ -59,6 +62,7 @@ impl DaemonState {
                     mesh_phase: format!("{:?}", active.mesh.phase()),
                     edge_sync: self.edge_sync_status().await,
                     nats_assets: self.nats_asset_status().await,
+                    control_plane: self.control_plane_status().await,
                 };
                 self.ok_with_payload(
                     format!(
@@ -93,8 +97,37 @@ impl DaemonState {
                     mesh_phase: String::from("idle"),
                     edge_sync: Vec::new(),
                     nats_assets: Vec::new(),
+                    control_plane: Vec::new(),
                 })),
             ),
+        }
+    }
+
+    async fn control_plane_status(&self) -> Vec<ControlPlaneStatus> {
+        let Some(active) = &self.active else {
+            return Vec::new();
+        };
+        if self.runtime_is_memory_test() {
+            return Vec::new();
+        }
+        let health_path = self
+            .network_dir(&active.config.name.0)
+            .join(crate::ipc::nats_listener::NATS_NODE_RPC_HEALTH_FILE);
+        match crate::ipc::nats_listener::load_health(health_path).await {
+            Ok(health) => vec![ControlPlaneStatus {
+                component: String::from("node_rpc_listener"),
+                healthy: Some(health.healthy),
+                stale_since_unix_secs: health.stale_since_unix_secs,
+                consecutive_failures: Some(health.consecutive_failures),
+                error: health.last_error,
+            }],
+            Err(error) => vec![ControlPlaneStatus {
+                component: String::from("node_rpc_listener"),
+                healthy: None,
+                stale_since_unix_secs: None,
+                consecutive_failures: None,
+                error: Some(format!("read listener health: {error}")),
+            }],
         }
     }
 
