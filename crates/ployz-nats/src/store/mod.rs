@@ -4,3 +4,4 @@ pub mod instances;
 pub mod invites;
 pub(crate) mod kv_json;
 pub mod machines;
+pub mod routing;

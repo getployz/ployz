@@ -116,6 +116,20 @@ impl DeployProjection {
     }
 
     #[must_use]
+    pub fn revision(
+        &self,
+        namespace: &Namespace,
+        service: &str,
+        revision_hash: &str,
+    ) -> Option<&ServiceRevisionRecord> {
+        self.revisions.get(&(
+            namespace.clone(),
+            service.to_string(),
+            revision_hash.to_string(),
+        ))
+    }
+
+    #[must_use]
     pub fn volumes(&self, namespace: &Namespace) -> Vec<VolumeRecord> {
         self.volumes
             .values()

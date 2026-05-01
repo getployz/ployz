@@ -17,8 +17,8 @@ use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{
     CertificateStore, DeployCommit, DeployRecordUpdate, DeployRepository, DeployRevisionUpsert,
     DeploySnapshot, InstanceStatusRepository, InviteRepository, MachineRegistry,
-    MachineSubscription, RoutingSnapshotReader, RoutingSubscription, StoreBackend, StoreDriver,
-    StoreRuntimeControl,
+    MachineSubscription, RoutingBatchSubscription, RoutingSnapshotReader, StoreBackend,
+    StoreDriver, StoreRuntimeControl,
 };
 use ployz_types::Result as PloyzResult;
 use ployz_types::spec::{
@@ -2101,8 +2101,11 @@ impl StoreBackend for CountingBackend {
         self.store.load_routing_state().await
     }
 
-    async fn subscribe_routing_events(&self) -> PloyzResult<RoutingSubscription> {
-        self.store.subscribe_routing_events().await
+    async fn subscribe_routing_batches(
+        &self,
+        consumer_id: &str,
+    ) -> PloyzResult<RoutingBatchSubscription> {
+        self.store.subscribe_routing_batches(consumer_id).await
     }
 
     async fn get_acme_account(&self, issuer_url: &str) -> PloyzResult<Option<AcmeAccountRecord>> {

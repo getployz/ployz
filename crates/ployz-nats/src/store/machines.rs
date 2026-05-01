@@ -2,7 +2,7 @@ use async_nats::jetstream::kv;
 use futures_util::{StreamExt, TryStreamExt};
 use ployz_store_api::{MachineRegistry, MachineSubscription};
 use ployz_types::error::{Error, Result};
-use ployz_types::model::{MachineEvent, MachineId, MachineMembership};
+use ployz_types::model::{MachineEvent, MachineId, MachineMembership, RoutingEvent};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tracing::warn;
@@ -37,6 +37,12 @@ impl MachineRegistry for NatsStore {
 
     async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()> {
         let kv = machines_bucket(self).await?;
+        let old = kv
+            .get(record.id.0.as_str())
+            .await
+            .map_err(|error| Error::operation("nats_machine_get", format!("{error:?}")))?
+            .map(|bytes| decode_machine(record.id.0.as_str(), bytes.as_ref()))
+            .transpose()?;
         kv_json::put_json(
             &kv,
             record.id.0.as_str(),
@@ -44,12 +50,40 @@ impl MachineRegistry for NatsStore {
             "nats_machine_encode",
             "nats_machine_put",
         )
+        .await?;
+        let event = match old {
+            Some(old) => RoutingEvent::MachineUpdated {
+                old,
+                new: record.clone(),
+            },
+            None => RoutingEvent::MachineAdded(record.clone()),
+        };
+        self.publish_routing_batch(
+            format!("machine:{}", record.id.0),
+            "machine.upsert",
+            &[event],
+        )
         .await
     }
 
     async fn delete_machine(&self, id: &MachineId) -> Result<()> {
         let kv = machines_bucket(self).await?;
-        kv_json::delete(&kv, id.0.as_str(), "nats_machine_delete").await
+        let old = kv
+            .get(id.0.as_str())
+            .await
+            .map_err(|error| Error::operation("nats_machine_get", format!("{error:?}")))?
+            .map(|bytes| decode_machine(id.0.as_str(), bytes.as_ref()))
+            .transpose()?;
+        kv_json::delete(&kv, id.0.as_str(), "nats_machine_delete").await?;
+        let Some(old) = old else {
+            return Ok(());
+        };
+        self.publish_routing_batch(
+            format!("machine:delete:{}", id.0),
+            "machine.delete",
+            &[RoutingEvent::MachineRemoved(old)],
+        )
+        .await
     }
 
     async fn subscribe_machines(&self) -> Result<MachineSubscription> {
