@@ -11,5 +11,6 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
             lifecycle: "active",
             subnet: SubnetExpectation::Present,
         }],
-    )
+    )?;
+    run.assert_doctor_roles("founder", "storage_candidate", &[])
 }

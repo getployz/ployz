@@ -251,13 +251,7 @@ fn build_mesh_request(action: MeshAction) -> Result<DaemonRequest> {
         } => Ok(DaemonRequest::MeshInit {
             network: string_arg_or_stdin("mesh init network", "--name-stdin", network, name_stdin)?,
         }),
-        MeshAction::Start {
-            network,
-            allow_disconnected_bootstrap,
-        } => Ok(DaemonRequest::MeshStart {
-            network,
-            allow_disconnected_bootstrap,
-        }),
+        MeshAction::Start { network } => Ok(DaemonRequest::MeshStart { network }),
         MeshAction::Stop { force } => Ok(DaemonRequest::MeshStop { force }),
         MeshAction::Destroy {
             network,

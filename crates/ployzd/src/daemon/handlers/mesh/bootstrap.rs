@@ -1,4 +1,3 @@
-use crate::daemon::setup::MeshStartOptions;
 use crate::mesh_state::bootstrap::{
     BootstrapPeerRecord, refresh_bootstrap_peer_records_from_store, write_bootstrap_peer_records,
 };
@@ -9,7 +8,7 @@ use ployz_api::{
 };
 use ployz_orchestrator::mesh::tasks::PeerSyncCommand;
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
-use ployz_types::model::NetworkLifecycle;
+use ployz_types::model::{MachineRole, NetworkLifecycle};
 use ployz_types::model::{JoinResponse, NetworkName};
 
 use super::DaemonState;
@@ -49,6 +48,7 @@ impl DaemonState {
             request.assigned_subnet,
         );
         net_config.id = request.network_id.clone();
+        net_config.machine_role = MachineRole::Mirror;
 
         let config_path = NetworkConfig::path(&self.data_dir, network);
         if config_path.exists() {
@@ -79,11 +79,8 @@ impl DaemonState {
             );
         }
 
-        let options = MeshStartOptions {
-            allow_disconnected_bootstrap: false,
-        };
         net_config.lifecycle = NetworkLifecycle::Running;
-        match self.start_mesh(net_config.clone(), options).await {
+        match self.start_mesh(net_config.clone()).await {
             Ok(_) => {
                 if let Err(error) = self
                     .transition_local_machine(
@@ -154,6 +151,7 @@ impl DaemonState {
             public_key: self.identity.public_key.clone(),
             overlay_ip: active.config.overlay_ip,
             topology: self_record.topology.clone(),
+            role: self_record.role,
             subnet: self_record.subnet,
             endpoints,
         };

@@ -4,7 +4,7 @@ use crate::support::wait_until;
 use std::time::Duration;
 
 const BRIDGE_WAIT_TIMEOUT: Duration = Duration::from_secs(180);
-const CORROSION_API_PORT: u16 = 51002;
+const NATS_CLIENT_PORT: u16 = 4222;
 
 pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
     run.log_progress("mesh init founder");
@@ -20,7 +20,7 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
             subnet: SubnetExpectation::Present,
         }],
     )?;
-    run.log_progress("probe corrosion bridge forward");
+    run.log_progress("probe nats bridge forward");
     wait_for_bridge_health(run, "founder")?;
     run.log_progress("scenario complete");
     Ok(())
@@ -28,8 +28,7 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
 
 fn wait_for_bridge_health(run: &ScenarioRun, node_name: &str) -> Result<()> {
     let command = format!(
-        "sh -lc 'curl --http2-prior-knowledge -fsS \"http://127.0.0.1:{CORROSION_API_PORT}/v1/health?gaps=0\" | grep -q \"\\\"response\\\"\" && \
-         curl --http2-prior-knowledge -fsS \"http://127.0.0.1:{CORROSION_API_PORT}/v1/health?gaps=0\" | grep -q \"\\\"members\\\"\"'"
+        "timeout 2 bash -lc 'exec 3<>/dev/tcp/127.0.0.1/{NATS_CLIENT_PORT}; IFS= read -r -t 1 line <&3; [[ \"$line\" == INFO* ]]'"
     );
     let mut last_output = String::new();
 
@@ -40,7 +39,7 @@ fn wait_for_bridge_health(run: &ScenarioRun, node_name: &str) -> Result<()> {
     })
     .map_err(|error| {
         Error::Message(format!(
-            "bridge forward on {node_name} did not return corrosion health over 127.0.0.1:{CORROSION_API_PORT}: {error}\nlast output:\n{last_output}"
+            "bridge forward on {node_name} did not return a NATS INFO banner over 127.0.0.1:{NATS_CLIENT_PORT}: {error}\nlast output:\n{last_output}"
         ))
     })
 }

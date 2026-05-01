@@ -59,7 +59,6 @@ pub struct Mesh {
     _listen_port: u16,
     seed_records: Vec<MachineMembership>,
     authoritative_self: Option<Arc<RwLock<MachineMembership>>>,
-    allow_disconnected_bootstrap: bool,
     dataplane: Option<Arc<dyn MeshDataplane>>,
     wg_ifindex: u32,
 }
@@ -90,7 +89,6 @@ impl Mesh {
             _listen_port: listen_port,
             seed_records: Vec::new(),
             authoritative_self: None,
-            allow_disconnected_bootstrap: false,
             dataplane: None,
             wg_ifindex: 0,
         }
@@ -118,15 +116,6 @@ impl Mesh {
         self.container_network
             .as_ref()
             .map(ContainerNetwork::container_v4)
-    }
-
-    #[must_use]
-    pub fn with_disconnected_bootstrap_allowed(
-        mut self,
-        allow_disconnected_bootstrap: bool,
-    ) -> Self {
-        self.allow_disconnected_bootstrap = allow_disconnected_bootstrap;
-        self
     }
 
     #[must_use]

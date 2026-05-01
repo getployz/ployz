@@ -340,8 +340,6 @@ pub(crate) enum MeshAction {
     },
     Start {
         network: String,
-        #[arg(long)]
-        allow_disconnected_bootstrap: bool,
     },
     Stop {
         #[arg(long)]

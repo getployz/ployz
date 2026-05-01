@@ -124,6 +124,7 @@ fn build_doctor_payload(
             network: active.config.name.0.clone(),
             network_lifecycle: active.config.lifecycle.to_string(),
             machine_lifecycle: format_lifecycle(local_record).to_string(),
+            machine_role: local_record.role.to_string(),
             config_subnet: active.config.subnet.map(|subnet| subnet.to_string()),
             record_subnet: local_record.subnet.map(|subnet| subnet.to_string()),
             runtime_running: true,
@@ -153,11 +154,12 @@ fn render_doctor_report(report: &DoctorPayload) -> String {
     }
     lines.push(String::new());
     lines.push(format!(
-        "local: machine={} network={} network_lifecycle={} machine_lifecycle={} runtime_running={}",
+        "local: machine={} network={} network_lifecycle={} machine_lifecycle={} machine_role={} runtime_running={}",
         report.local.machine_id,
         report.local.network,
         report.local.network_lifecycle,
         report.local.machine_lifecycle,
+        report.local.machine_role,
         report.local.runtime_running,
     ));
     if report.local.config_subnet != report.local.record_subnet {
@@ -231,8 +233,9 @@ fn append_peer_section(lines: &mut Vec<String>, rows: &[&DoctorPeer], include_ca
 
 fn store_status_column(row: &DoctorPeer) -> String {
     format!(
-        "store={} subnet={}",
+        "store={} role={} subnet={}",
         row.store_lifecycle,
+        row.machine_role,
         row.subnet.as_deref().unwrap_or("none")
     )
 }
@@ -341,6 +344,7 @@ fn build_participation_rows(
             Some(DoctorPeer {
                 machine_id: machine.id.0.clone(),
                 role: diagnostic_role_name(role).to_string(),
+                machine_role: machine.role.to_string(),
                 blocking: role == DiagnosticRole::Blocking && !healthy,
                 store_lifecycle: format_lifecycle(machine).to_string(),
                 subnet: machine.subnet.map(|subnet| subnet.to_string()),

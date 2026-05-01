@@ -53,12 +53,8 @@ impl Mesh {
             .map(|m| m.wireguard_peer_spec())
             .collect();
         if !pre_start_peers.is_empty() {
-            if let Err(e) = self.network.set_peers(&pre_start_peers).await {
-                warn!(?e, "pre-start peer sync failed");
-            }
-            if self.wait_for_handshake().await.is_err() {
-                warn!("no WG handshake within timeout, continuing anyway");
-            }
+            self.network.set_peers(&pre_start_peers).await?;
+            self.wait_for_handshake().await?;
         }
 
         self.store.start().await?;
@@ -86,7 +82,9 @@ impl Mesh {
         .ok_or_else(|| {
             MeshError::Port(PortError::operation(
                 "handshake wait",
-                "no WG handshake within 10s".to_string(),
+                "no WG handshake with any seeded peer within 10s -- store cannot \
+                 leafnode-bridge to the hub without a working overlay path"
+                    .to_string(),
             ))
         })?;
         info!("WG remote handshake confirmed, proceeding with store start");
@@ -163,12 +161,6 @@ impl Mesh {
         let machines = self.store.list_machines().await?;
         let has_remote_peer = machines.iter().any(|m| m.id != self.machine_id);
         if !has_remote_peer {
-            self.apply(PhaseEvent::SyncComplete)?;
-            return Ok(());
-        }
-
-        if self.allow_disconnected_bootstrap {
-            info!("skipping bootstrap wait because disconnected bootstrap is allowed");
             self.apply(PhaseEvent::SyncComplete)?;
             return Ok(());
         }

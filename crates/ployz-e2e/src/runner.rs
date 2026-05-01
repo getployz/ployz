@@ -624,6 +624,48 @@ impl ScenarioRun {
         Ok(())
     }
 
+    pub(crate) fn assert_doctor_roles(
+        &self,
+        node_name: &str,
+        local_role: &str,
+        peer_roles: &[(&str, &str)],
+    ) -> Result<()> {
+        use crate::support::{DaemonJsonPayload, parse_daemon_json_response};
+        let output = self.ssh_expect_ok_name(node_name, "ployzd --json doctor")?;
+        let response = parse_daemon_json_response(&output.stdout)?;
+        if !response.ok {
+            return Err(Error::Message(format!(
+                "doctor on {node_name} returned non-ok response: {}",
+                response.message
+            )));
+        }
+        let Some(DaemonJsonPayload::Doctor(payload)) = response.payload else {
+            return Err(Error::Message(format!(
+                "doctor on {node_name} missing doctor payload"
+            )));
+        };
+        if payload.local.machine_role != local_role {
+            return Err(Error::Message(format!(
+                "doctor on {node_name} reports local machine_role='{}', expected '{}'",
+                payload.local.machine_role, local_role
+            )));
+        }
+        for (peer_id, expected_role) in peer_roles {
+            let Some(peer) = payload.peers.iter().find(|p| p.machine_id == *peer_id) else {
+                return Err(Error::Message(format!(
+                    "doctor on {node_name} has no peer row for '{peer_id}'"
+                )));
+            };
+            if peer.machine_role != *expected_role {
+                return Err(Error::Message(format!(
+                    "doctor on {node_name} reports peer '{peer_id}' machine_role='{}', expected '{expected_role}'",
+                    peer.machine_role
+                )));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn assert_unique_machine_subnets(&self, node_name: &str) -> Result<()> {
         let output = self.ssh_expect_ok_name(node_name, "ployzd --json machine ls")?;
         let mut seen: BTreeMap<String, String> = BTreeMap::new();

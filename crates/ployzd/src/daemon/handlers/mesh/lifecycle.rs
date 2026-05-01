@@ -2,7 +2,6 @@ use crate::daemon::handlers::peer_rpc::{
     PEER_RPC_DESTRUCTIVE_READ_TIMEOUT, overlay_rpc, overlay_rpc_expect_ok,
     overlay_rpc_expect_ok_with_read_timeout,
 };
-use crate::daemon::setup::MeshStartOptions;
 use crate::mesh_state::network::NetworkConfig;
 use ployz_api::{DaemonRequest, MachineTransitionGoal};
 use ployz_orchestrator::ipam::pick_candidate_subnet;
@@ -54,7 +53,7 @@ impl DaemonState {
             }
         };
 
-        match self.start_network_transition(net_config, false, true).await {
+        match self.start_network_transition(net_config, true).await {
             Ok(message) => self.ok(message),
             Err(error) => self.err("NETWORK_START_FAILED", error),
         }
@@ -97,7 +96,6 @@ impl DaemonState {
     pub(crate) async fn handle_mesh_start(
         &mut self,
         network: &str,
-        allow_disconnected_bootstrap: bool,
     ) -> ployz_api::DaemonResponse {
         if let Some(active) = &self.active {
             return self.err(
@@ -135,10 +133,7 @@ impl DaemonState {
             );
         }
 
-        match self
-            .start_network_transition(net_config, allow_disconnected_bootstrap, false)
-            .await
-        {
+        match self.start_network_transition(net_config, false).await {
             Ok(message) => self.ok(message),
             Err(error) => self.err("NETWORK_START_FAILED", error),
         }
@@ -577,7 +572,6 @@ impl DaemonState {
     async fn start_network_transition(
         &mut self,
         net_config: NetworkConfig,
-        allow_disconnected_bootstrap: bool,
         initialized: bool,
     ) -> Result<String, String> {
         let Some(assigned_subnet) = net_config.subnet else {
@@ -591,14 +585,9 @@ impl DaemonState {
         running_config.lifecycle = NetworkLifecycle::Running;
         let network_name = running_config.name.clone();
         let overlay_ip = running_config.overlay_ip;
-        self.start_mesh(
-            running_config.clone(),
-            MeshStartOptions {
-                allow_disconnected_bootstrap,
-            },
-        )
-        .await
-        .map_err(|error| error.to_string())?;
+        self.start_mesh(running_config.clone())
+            .await
+            .map_err(|error| error.to_string())?;
 
         if let Err(error) = self
             .transition_local_machine(

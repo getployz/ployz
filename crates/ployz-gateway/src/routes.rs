@@ -1290,9 +1290,9 @@ pub(crate) fn normalize_path_prefix(path_prefix: &str) -> String {
 mod tests {
     use super::*;
     use ployz_types::model::{
-        CertificateState, DeployId, DrainState, InstanceStatusRecord, MachineLifecycle, OverlayIp,
-        PublicKey, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot, ServiceRevisionRecord,
-        ServiceRoutingPolicy, SlotId,
+        CertificateState, DeployId, DrainState, InstanceStatusRecord, MachineLifecycle,
+        MachineRole, OverlayIp, PublicKey, ServiceRelease, ServiceReleaseRecord,
+        ServiceReleaseSlot, ServiceRevisionRecord, ServiceRoutingPolicy, SlotId,
     };
     use ployz_types::spec::{
         ContainerSpec, NetworkMode, Placement, PortProtocol, PullPolicy, Resources, RestartPolicy,

@@ -352,37 +352,6 @@ async fn bootstrap_connection_timeout() {
     assert_eq!(mesh.phase(), Phase::Stopped);
 }
 
-#[tokio::test]
-async fn bootstrap_allows_disconnected_store_when_requested() {
-    let wg = Arc::new(MemoryWireGuard::new());
-    let svc = Arc::new(MemoryService::new());
-    let store = Arc::new(MemoryStore::new());
-    let founder_record = test_record("founder", 1);
-    let peer_record = test_record("peer", 2);
-
-    store.upsert_self_machine(&founder_record).await.unwrap();
-    store.upsert_self_machine(&peer_record).await.unwrap();
-    store.set_sync_status(SyncStatus::Disconnected);
-
-    let mut mesh = Mesh::new(
-        WireguardDriver::memory_with(wg),
-        StoreDriver::memory_with(store, svc),
-        None,
-        founder_record.id.clone(),
-        51820,
-    )
-    .with_seed_records(vec![peer_record])
-    .with_disconnected_bootstrap_allowed(true)
-    .with_bootstrap_timing(Duration::from_millis(10), Duration::from_millis(100));
-
-    mesh.up().await.unwrap();
-    assert_eq!(mesh.phase(), Phase::Running);
-
-    let ready = mesh.ready_status().await;
-    assert!(!ready.sync_connected);
-    assert!(!ready.ready);
-}
-
 /// Bootstrap gate proceeds once gossip sees a peer (any non-Disconnected status).
 /// We do NOT wait for gaps == 0 — see bootstrap_gate doc comment.
 #[tokio::test]
@@ -453,6 +422,7 @@ async fn founder_can_configure_joiner_from_transient_peer() {
         public_key: joiner_record.public_key.clone(),
         overlay_ip: joiner_record.overlay_ip,
         topology: joiner_record.topology.clone(),
+        role: joiner_record.role,
         subnet: joiner_record.subnet,
         endpoints: joiner_record.endpoints.clone(),
     };
