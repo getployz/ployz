@@ -23,6 +23,7 @@ Useful existing scenarios:
 | `machine_add_does_not_promote_storage` | keep | Adds a second and third machine, proving membership changes do not promote storage authority by checking roles and NATS asset replicas. |
 | `machine_drain_standby_activate_cycle` | keep | Operator intent and lifecycle state remain important. |
 | `mesh_restart_from_seed_cache` | keep and deepen | Data plane/control plane adoption remains core. |
+| `offline_leaf_node_command_fails_loudly` | keep | Partitions a non-authoritative node, proves NATS request/reply command failure is foreground-visible, and requires explicit `--force` for registry-only removal. |
 | `wireguard_reconnect` | keep | Substrate continuity matters. |
 | `deploy_smoke` | keep and deepen | Deploy should prove NATS lock/commit/projection behavior. |
 | `bridge_forward_smoke` | keep | Docker bridge path remains a supported runtime path. |
@@ -109,11 +110,12 @@ Useful existing scenarios:
 - Assert mutating control-plane operations fail loudly.
 - Assert data-plane readers keep using last-good runtime state where applicable.
 
-`offline_leaf_node_command_fails_loudly`
+`offline_leaf_node_command_fails_loudly` (implemented)
 
 - Add a non-authoritative node.
-- Stop its daemon or NATS subscription.
-- Assert `node.<machine>.cmd.>` request/reply returns no responders or timeout.
+- Partition its daemon from the controller.
+- Assert `node.<machine>.cmd.>` request/reply returns an unreachable foreground
+  error naming the target and explicit recovery.
 - Assert unrelated quorum-healthy writes still work.
 
 `storage_node_rejoin_catches_up_without_intent_rewrite`

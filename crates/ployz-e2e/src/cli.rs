@@ -66,6 +66,7 @@ pub(crate) enum Scenario {
     MachineAddDoesNotPromoteStorage,
     MachineDrainStandbyActivateCycle,
     MeshRestartFromSeedCache,
+    OfflineLeafNodeCommandFailsLoudly,
     DestroyWithDeadPeer,
     WireguardReconnect,
     DeploySmoke,
@@ -75,12 +76,13 @@ pub(crate) enum Scenario {
 }
 
 impl Scenario {
-    const DEFAULT: [Self; 9] = [
+    const DEFAULT: [Self; 10] = [
         Self::SingleNodeInit,
         Self::MachineAddBasic,
         Self::MachineAddDoesNotPromoteStorage,
         Self::MachineDrainStandbyActivateCycle,
         Self::MeshRestartFromSeedCache,
+        Self::OfflineLeafNodeCommandFailsLoudly,
         Self::DestroyWithDeadPeer,
         Self::WireguardReconnect,
         Self::DeploySmoke,
@@ -110,6 +112,7 @@ impl Scenario {
             | Self::MachineAddDoesNotPromoteStorage
             | Self::MachineDrainStandbyActivateCycle
             | Self::MeshRestartFromSeedCache
+            | Self::OfflineLeafNodeCommandFailsLoudly
             | Self::DestroyWithDeadPeer
             | Self::WireguardReconnect
             | Self::DeploySmoke
@@ -130,6 +133,7 @@ impl Scenario {
             | Self::MachineAddDoesNotPromoteStorage
             | Self::MachineDrainStandbyActivateCycle
             | Self::MeshRestartFromSeedCache
+            | Self::OfflineLeafNodeCommandFailsLoudly
             | Self::DestroyWithDeadPeer
             | Self::WireguardReconnect
             | Self::DeploySmoke
@@ -148,6 +152,7 @@ impl Scenario {
             Self::MachineAddDoesNotPromoteStorage => &["founder", "joiner1", "joiner2"],
             Self::MachineDrainStandbyActivateCycle
             | Self::MeshRestartFromSeedCache
+            | Self::OfflineLeafNodeCommandFailsLoudly
             | Self::WireguardReconnect => &["founder", "peer"],
             Self::DestroyWithDeadPeer => &["founder", "peer1", "peer2"],
         }
@@ -161,6 +166,7 @@ impl Scenario {
             Self::MachineAddDoesNotPromoteStorage => "machine_add_does_not_promote_storage",
             Self::MachineDrainStandbyActivateCycle => "machine_drain_standby_activate_cycle",
             Self::MeshRestartFromSeedCache => "mesh_restart_from_seed_cache",
+            Self::OfflineLeafNodeCommandFailsLoudly => "offline_leaf_node_command_fails_loudly",
             Self::DestroyWithDeadPeer => "destroy_with_dead_peer",
             Self::WireguardReconnect => "wireguard_reconnect",
             Self::DeploySmoke => "deploy_smoke",
@@ -179,6 +185,7 @@ impl Scenario {
             | Self::MachineAddDoesNotPromoteStorage
             | Self::MachineDrainStandbyActivateCycle
             | Self::MeshRestartFromSeedCache
+            | Self::OfflineLeafNodeCommandFailsLoudly
             | Self::DestroyWithDeadPeer
             | Self::WireguardReconnect
             | Self::DeploySmoke
@@ -205,6 +212,7 @@ mod tests {
                 Scenario::MachineAddDoesNotPromoteStorage,
                 Scenario::MachineDrainStandbyActivateCycle,
                 Scenario::MeshRestartFromSeedCache,
+                Scenario::OfflineLeafNodeCommandFailsLoudly,
                 Scenario::DestroyWithDeadPeer,
                 Scenario::WireguardReconnect,
                 Scenario::DeploySmoke,
