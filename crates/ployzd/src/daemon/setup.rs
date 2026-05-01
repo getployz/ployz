@@ -20,6 +20,7 @@ use ployz_orchestrator::Mesh;
 use ployz_orchestrator::certificates::{
     CertificateManagerConfig, RenewalConfig, spawn_certificate_renewal_ticker,
 };
+use ployz_orchestrator::coordination::SubnetReservationCoordinator;
 use ployz_orchestrator::mesh::wireguard::DEFAULT_LISTEN_PORT;
 use ployz_runtime_api::{NoopRuntimeHandle, RuntimeHandle};
 use ployz_store_api::StoreRuntimeControl;
@@ -31,13 +32,13 @@ use crate::daemon::handlers::volume::transfer_listener;
 use crate::ipc::nats_listener;
 use crate::runtime_profile::MeshBuildRequest;
 
-/// Connect to the network's NATS broker and replace the daemon's subnet
-/// coordinator with a JetStream-KV-backed implementation. Memory-runtime
-/// tests skip this and keep the in-memory coordinator wired at construction.
-async fn install_nats_subnet_coordinator(
-    state: &mut DaemonState,
+/// Connect to the network's NATS broker and build a JetStream-KV-backed subnet
+/// coordinator. Memory-runtime tests skip this and keep the in-memory
+/// coordinator wired at construction.
+async fn build_nats_subnet_coordinator(
+    state: &DaemonState,
     overlay_ip: ployz_types::model::OverlayIp,
-) -> Result<(), StartMeshError> {
+) -> Result<std::sync::Arc<dyn SubnetReservationCoordinator>, StartMeshError> {
     let client_url = if state.runtime_target == RuntimeTarget::Docker {
         crate::services::nats::local_client_url()
     } else {
@@ -53,8 +54,7 @@ async fn install_nats_subnet_coordinator(
     let locks = NatsLocks::new(&nats_store)
         .await
         .map_err(|error| StartMeshError::MeshUp(format!("nats locks bucket: {error}")))?;
-    state.subnet_coord = std::sync::Arc::new(NatsSubnetCoordinator::new(locks));
-    Ok(())
+    Ok(std::sync::Arc::new(NatsSubnetCoordinator::new(locks)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,28 +269,20 @@ impl MeshStartTx {
     /// Commit: publish the active mesh into daemon state.
     async fn publish_active(&mut self, state: &mut DaemonState) -> Result<(), StartMeshError> {
         let spawn_renewal_ticker = !state.runtime_is_memory_test();
-        let Some(mesh) = self.mesh.take() else {
+        let Some(mesh_ref) = self.mesh.as_ref() else {
             return Err(StartMeshError::MeshUp(
                 "startup transaction missing mesh at commit".into(),
             ));
         };
 
-        if spawn_renewal_ticker {
-            install_nats_subnet_coordinator(state, self.config.overlay_ip).await?;
-        }
-        let nats_control = std::mem::replace(&mut self.nats_control, Box::new(NoopRuntimeHandle));
-        let zfs_transfer = std::mem::replace(&mut self.zfs_transfer, Box::new(NoopRuntimeHandle));
-        let gateway = std::mem::replace(&mut self.gateway, Box::new(NoopRuntimeHandle));
-        let dns = std::mem::replace(&mut self.dns, Box::new(NoopRuntimeHandle));
+        let subnet_coord = if spawn_renewal_ticker {
+            Some(build_nats_subnet_coordinator(state, self.config.overlay_ip).await?)
+        } else {
+            None
+        };
 
-        let store_for_ticker = spawn_renewal_ticker.then(|| mesh.store.clone());
-        let bootstrap_seed_cache = Some(BootstrapSeedCacheTask::spawn(
-            NetworkConfig::dir(&state.data_dir, &self.config.name.0),
-            mesh.store.clone(),
-            state.identity.machine_id.clone(),
-        ));
-
-        let certificate_renewal = if let Some(store) = store_for_ticker {
+        let certificate_renewal = if spawn_renewal_ticker {
+            let store = mesh_ref.store.clone();
             let nats_client_url = if state.runtime_target == RuntimeTarget::Docker {
                 crate::services::nats::local_client_url()
             } else {
@@ -332,6 +324,24 @@ impl MeshStartTx {
             None
         };
 
+        let bootstrap_seed_cache = Some(BootstrapSeedCacheTask::spawn(
+            NetworkConfig::dir(&state.data_dir, &self.config.name.0),
+            mesh_ref.store.clone(),
+            state.identity.machine_id.clone(),
+        ));
+
+        let Some(mesh) = self.mesh.take() else {
+            return Err(StartMeshError::MeshUp(
+                "startup transaction missing mesh at commit".into(),
+            ));
+        };
+        let nats_control = std::mem::replace(&mut self.nats_control, Box::new(NoopRuntimeHandle));
+        let zfs_transfer = std::mem::replace(&mut self.zfs_transfer, Box::new(NoopRuntimeHandle));
+        let gateway = std::mem::replace(&mut self.gateway, Box::new(NoopRuntimeHandle));
+        let dns = std::mem::replace(&mut self.dns, Box::new(NoopRuntimeHandle));
+        if let Some(subnet_coord) = subnet_coord {
+            state.subnet_coord = subnet_coord;
+        }
         state.active = Some(ActiveMesh {
             config: self.config.clone(),
             cached_subnet: self.config.subnet,
@@ -636,6 +646,7 @@ mod tests {
 
     use super::*;
     use crate::mesh_state::bootstrap::write_bootstrap_peer_records;
+    use crate::runtime_profile::RuntimeProfile;
     use ployz_config::{RuntimeTarget, ServiceMode};
     use ployz_runtime_api::Identity;
     use ployz_types::model::{MachineId, MachineRole, NetworkName, OverlayIp, PublicKey};
@@ -738,6 +749,39 @@ mod tests {
         assert!(state.active.is_some());
 
         teardown_active_mesh(&mut state).await;
+    }
+
+    #[tokio::test]
+    async fn publish_active_failure_keeps_startup_resources_for_rollback() {
+        let mut state = make_test_state("127.0.0.1:8080");
+        let mut config = make_network_config(&state, "alpha");
+        config.overlay_ip = OverlayIp("::1".parse().expect("valid overlay"));
+        let plan = state.plan_mesh_start(&config).expect("plan should succeed");
+        let mut tx = MeshStartTx::new(config);
+        tx.build_mesh(&state, &plan)
+            .await
+            .expect("memory mesh should start before commit");
+        state.runtime_profile = RuntimeProfile::from_runtime(
+            RuntimeTarget::Host,
+            ServiceMode::User,
+            crate::BuiltInImages::load(None)
+                .expect("embedded built-in images manifest should parse"),
+        );
+
+        let error = match tx.publish_active(&mut state).await {
+            Ok(_) => panic!("publish_active should fail without local NATS"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, StartMeshError::MeshUp(_)));
+        assert!(
+            tx.mesh.is_some(),
+            "startup transaction must still own mesh after publish failure"
+        );
+        assert!(state.active.is_none());
+
+        tx.rollback_startup().await;
+        assert!(tx.mesh.is_none());
     }
 
     fn make_state(
