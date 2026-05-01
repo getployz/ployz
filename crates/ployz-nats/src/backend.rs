@@ -1,6 +1,8 @@
+use async_nats::jetstream::ErrorCode;
 use async_nats::jetstream::Message;
 use async_nats::jetstream::consumer::push;
 use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy};
+use async_nats::jetstream::stream::ConsumerErrorKind;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use ployz_store_api::{
@@ -234,6 +236,7 @@ impl RoutingSnapshotReader for NatsStore {
             .get_stream(ROUTING_EVENTS_STREAM)
             .await
             .map_err(|error| Error::operation("nats_routing_stream", format!("{error:?}")))?;
+        delete_existing_routing_consumer(&stream, &consumer_name).await?;
         let consumer: async_nats::jetstream::consumer::PushConsumer = stream
             .create_consumer(push::Config {
                 durable_name: Some(consumer_name.clone()),
@@ -314,6 +317,34 @@ impl RoutingSnapshotReader for NatsStore {
             }
         });
         Ok((state, rx))
+    }
+}
+
+async fn delete_existing_routing_consumer(
+    stream: &async_nats::jetstream::stream::Stream,
+    consumer_name: &str,
+) -> Result<()> {
+    match stream.delete_consumer(consumer_name).await {
+        Ok(_) => Ok(()),
+        Err(error) if is_missing_consumer(&error) => Ok(()),
+        Err(error) => Err(Error::operation(
+            "nats_routing_consumer_delete",
+            format!("{error:?}"),
+        )),
+    }
+}
+
+fn is_missing_consumer(error: &async_nats::jetstream::stream::ConsumerError) -> bool {
+    match error.kind() {
+        ConsumerErrorKind::JetStream(error) => {
+            error.error_code() == ErrorCode::CONSUMER_DOES_NOT_EXIST
+                || error.error_code() == ErrorCode::CONSUMER_NOT_FOUND
+        }
+        ConsumerErrorKind::TimedOut
+        | ConsumerErrorKind::Request
+        | ConsumerErrorKind::InvalidConsumerType
+        | ConsumerErrorKind::InvalidName
+        | ConsumerErrorKind::Other => false,
     }
 }
 
@@ -473,6 +504,20 @@ mod tests {
         assert!(RoutingSubscription::temporary("ployzd.runtime.founder.1").delete_on_close());
         assert!(!RoutingSubscription::durable("gateway.founder").delete_on_close());
         assert!(!RoutingSubscription::durable("dns.founder").delete_on_close());
+    }
+
+    #[test]
+    fn consumer_not_found_errors_are_idempotent_delete_success() {
+        let error: async_nats::jetstream::Error = serde_json::from_value(serde_json::json!({
+            "code": 404,
+            "err_code": ErrorCode::CONSUMER_NOT_FOUND.0,
+            "description": "consumer not found"
+        }))
+        .expect("valid JetStream error");
+        let error =
+            async_nats::jetstream::stream::ConsumerError::new(ConsumerErrorKind::JetStream(error));
+
+        assert!(is_missing_consumer(&error));
     }
 }
 

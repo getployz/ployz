@@ -580,7 +580,9 @@ Tracked in code comments and the implementation plan. Highlights:
 1. Routing events are live JetStream atomic batches. Gateway/DNS use durable
    per-machine consumers; runtime watches and readiness probes use temporary
    consumers that are deleted when the watcher closes. Routing subscription
-   updates carry either a complete batch or an explicit consumer failure.
+   setup replaces any old consumer with the same id so a fresh snapshot is the
+   catch-up boundary. Updates carry either a complete batch or an explicit
+   consumer failure.
    Routing consumer `max_ack_pending` is bounded to the local bridge-channel
    capacity, and idle heartbeats surface broken delivery paths as failures.
 2. Machine/certificate/ACME challenge subscriptions are KV watchers that carry

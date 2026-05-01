@@ -189,9 +189,10 @@ The important split:
   state behind.
 - Routing batch subscriptions carry complete atomic batches or explicit
   consumer failures, so projection consumers can reload instead of silently
-  continuing from a stale event stream. Routing consumers bound in-flight
-  delivery to the local bridge channel and use idle heartbeats to detect broken
-  delivery.
+  continuing from a stale event stream. Subscription setup replaces any old
+  consumer with the same id, making the fresh snapshot the catch-up boundary.
+  Routing consumers bound in-flight delivery to the local bridge channel and use
+  idle heartbeats to detect broken delivery.
 - KV watcher consumers must treat watcher failure or closure as a lost
   freshness boundary. Machine, certificate, and ACME challenge subscriptions
   carry explicit failure updates; consumers should stop using the stale stream,
