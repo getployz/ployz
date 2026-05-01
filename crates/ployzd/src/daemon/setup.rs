@@ -75,6 +75,7 @@ async fn start_nats_certificate_renewal_worker(
     coordinator: Arc<dyn IssuanceCoordinator>,
     readiness: Arc<dyn Http01ChallengeReadiness>,
     account_coordinator: Arc<dyn AcmeAccountCoordinator>,
+    health_path: PathBuf,
 ) -> Result<CertificateRenewalTask, StartMeshError> {
     let consumer =
         NatsCertRenewalJobConsumer::connect(nats_store.jetstream(), WorkQueuePolicy::default())
@@ -92,6 +93,10 @@ async fn start_nats_certificate_renewal_worker(
             let finalization_issuer =
                 issuer_factory.create(readiness.clone(), account_coordinator.clone());
             let mut fetch_error_backoff = CERT_RENEWAL_FETCH_ERROR_BACKOFF_MIN;
+            let mut consecutive_failures = 0;
+            let mut stale_since_unix_secs = None;
+            let mut last_failure_kind = None;
+            crate::daemon::cert_renewal_health::record_healthy(&health_path).await;
             loop {
                 tokio::select! {
                     () = cancel.cancelled() => break,
@@ -117,12 +122,37 @@ async fn start_nats_certificate_renewal_worker(
                                 match job_result {
                                     Ok(()) => {
                                         if let Err(error) = job.ack().await {
+                                            last_failure_kind = Some(CertRenewalFailureKind::Job);
+                                            crate::daemon::cert_renewal_health::record_unhealthy(
+                                                &health_path,
+                                                &mut consecutive_failures,
+                                                &mut stale_since_unix_secs,
+                                                format!("certificate renewal job ack failed for {hostname}: {error}"),
+                                            ).await;
                                             tracing::warn!(?error, hostname, "certificate renewal job ack failed");
+                                        } else {
+                                            consecutive_failures = 0;
+                                            stale_since_unix_secs = None;
+                                            last_failure_kind = None;
+                                            crate::daemon::cert_renewal_health::record_healthy(&health_path).await;
                                         }
                                     }
                                     Err(error) => {
+                                        last_failure_kind = Some(CertRenewalFailureKind::Job);
+                                        crate::daemon::cert_renewal_health::record_unhealthy(
+                                            &health_path,
+                                            &mut consecutive_failures,
+                                            &mut stale_since_unix_secs,
+                                            format!("certificate renewal job failed for {hostname}: {error}"),
+                                        ).await;
                                         tracing::warn!(?error, hostname, "certificate renewal job failed");
                                         if let Err(nak_error) = job.nak_after(Some(CERT_RENEWAL_JOB_RETRY_DELAY)).await {
+                                            crate::daemon::cert_renewal_health::record_unhealthy(
+                                                &health_path,
+                                                &mut consecutive_failures,
+                                                &mut stale_since_unix_secs,
+                                                format!("certificate renewal job nak failed for {hostname}: {nak_error}"),
+                                            ).await;
                                             tracing::warn!(
                                                 ?nak_error,
                                                 hostname,
@@ -134,8 +164,21 @@ async fn start_nats_certificate_renewal_worker(
                             }
                             Ok(None) => {
                                 fetch_error_backoff = CERT_RENEWAL_FETCH_ERROR_BACKOFF_MIN;
+                                if last_failure_kind != Some(CertRenewalFailureKind::Job) {
+                                    consecutive_failures = 0;
+                                    stale_since_unix_secs = None;
+                                    last_failure_kind = None;
+                                    crate::daemon::cert_renewal_health::record_healthy(&health_path).await;
+                                }
                             }
                             Err(error) => {
+                                last_failure_kind = Some(CertRenewalFailureKind::Fetch);
+                                crate::daemon::cert_renewal_health::record_unhealthy(
+                                    &health_path,
+                                    &mut consecutive_failures,
+                                    &mut stale_since_unix_secs,
+                                    format!("certificate renewal worker fetch failed: {error}"),
+                                ).await;
                                 let delay = fetch_error_backoff;
                                 fetch_error_backoff = fetch_error_backoff
                                     .saturating_mul(2)
@@ -152,6 +195,12 @@ async fn start_nats_certificate_renewal_worker(
             }
         },
     ))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CertRenewalFailureKind {
+    Fetch,
+    Job,
 }
 
 async fn renewal_job_is_complete(
@@ -446,6 +495,9 @@ impl MeshStartTx {
                     coordinator,
                     readiness,
                     account_coordinator,
+                    state
+                        .network_dir(&self.config.name.0)
+                        .join(crate::daemon::cert_renewal_health::NATS_CERT_RENEWAL_HEALTH_FILE),
                 )
                 .await?,
             )

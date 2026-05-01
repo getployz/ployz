@@ -745,21 +745,33 @@ mod tests {
                 mesh_phase: String::from("Running"),
                 edge_sync: Vec::new(),
                 nats_assets: Vec::new(),
-                control_plane: vec![ployz_api::ControlPlaneStatus {
-                    component: String::from("node_rpc_listener"),
-                    healthy: Some(false),
-                    stale_since_unix_secs: Some(1_777_646_100),
-                    consecutive_failures: Some(2),
-                    error: Some(String::from(
-                        "nats node rpc resubscribe failed: disconnected",
-                    )),
-                }],
+                control_plane: vec![
+                    ployz_api::ControlPlaneStatus {
+                        component: String::from("node_rpc_listener"),
+                        healthy: Some(false),
+                        stale_since_unix_secs: Some(1_777_646_100),
+                        consecutive_failures: Some(2),
+                        error: Some(String::from(
+                            "nats node rpc resubscribe failed: disconnected",
+                        )),
+                    },
+                    ployz_api::ControlPlaneStatus {
+                        component: String::from("cert_renewal_worker"),
+                        healthy: Some(false),
+                        stale_since_unix_secs: Some(1_777_646_200),
+                        consecutive_failures: Some(3),
+                        error: Some(String::from("certificate renewal worker fetch failed")),
+                    },
+                ],
             })),
         };
 
         let rendered = render_plain_success(&response);
         assert!(rendered.contains(
             "control_plane component=node_rpc_listener state=stale stale_since=1777646100 consecutive_failures=2"
+        ));
+        assert!(rendered.contains(
+            "control_plane component=cert_renewal_worker state=stale stale_since=1777646200 consecutive_failures=3"
         ));
     }
 
