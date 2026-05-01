@@ -292,11 +292,21 @@ impl RoutingSnapshotReader for NatsStore {
                             break;
                         }
                         if ack_rx.await.is_ok() {
+                            let mut ack_error = None;
                             for message in complete.messages {
                                 if let Err(error) = message.ack().await {
                                     warn!(?error, "NATS routing batch message ack failed");
-                                    break;
+                                    ack_error.get_or_insert_with(|| {
+                                        Error::operation(
+                                            "nats_routing_ack",
+                                            format!("routing batch message ack failed: {error:?}"),
+                                        )
+                                    });
                                 }
+                            }
+                            if let Some(error) = ack_error {
+                                let _ = tx.send(Err(error)).await;
+                                break;
                             }
                         }
                     }
