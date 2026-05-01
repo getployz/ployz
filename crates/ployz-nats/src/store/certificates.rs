@@ -1,5 +1,5 @@
 use async_nats::jetstream::kv;
-use futures_util::StreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use ployz_store_api::{AcmeChallengeSubscription, CertificateStore, CertificateSubscription};
 use ployz_types::error::Result;
 use ployz_types::model::{
@@ -121,7 +121,8 @@ impl CertificateStore for NatsStore {
             &challenge_key(hostname, token),
             "nats_acme_challenge_delete",
         )
-        .await
+        .await?;
+        delete_acme_challenge_readiness(self, hostname, token).await
     }
 
     async fn subscribe_certificates(&self) -> Result<CertificateSubscription> {
@@ -325,6 +326,34 @@ fn readiness_key(hostname: &str, token: &str, machine_id: &MachineId) -> String 
     )
 }
 
+fn readiness_key_prefix(hostname: &str, token: &str) -> String {
+    format!("{}.", challenge_key(hostname, token))
+}
+
+async fn delete_acme_challenge_readiness(
+    store: &NatsStore,
+    hostname: &str,
+    token: &str,
+) -> Result<()> {
+    let bucket = readiness_bucket(store).await?;
+    let prefix = readiness_key_prefix(hostname, token);
+    let keys = bucket
+        .keys()
+        .await
+        .map_err(|error| {
+            ployz_types::Error::operation("nats_acme_readiness_keys", format!("{error:?}"))
+        })?
+        .try_collect::<Vec<String>>()
+        .await
+        .map_err(|error| {
+            ployz_types::Error::operation("nats_acme_readiness_keys", format!("{error:?}"))
+        })?;
+    for key in keys.into_iter().filter(|key| key.starts_with(&prefix)) {
+        kv_json::delete(&bucket, &key, "nats_acme_readiness_delete").await?;
+    }
+    Ok(())
+}
+
 fn acme_account_key(issuer_url: &str) -> String {
     subjects::kv_key_token(issuer_url)
 }
@@ -350,5 +379,15 @@ mod tests {
         let new = readiness_key("example.com", "new-token", &MachineId("machine-a".into()));
 
         assert_ne!(old, new);
+    }
+
+    #[test]
+    fn readiness_key_prefix_matches_only_challenge_entries() {
+        let prefix = readiness_key_prefix("example.com", "token");
+        let readiness = readiness_key("example.com", "token", &MachineId("machine-a".into()));
+        let other = readiness_key("example.com", "token-extra", &MachineId("machine-a".into()));
+
+        assert!(readiness.starts_with(&prefix));
+        assert!(!other.starts_with(&prefix));
     }
 }

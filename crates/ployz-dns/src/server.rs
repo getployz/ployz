@@ -263,11 +263,16 @@ where
             info!(listen = %metrics_addr, "dns metrics listener running");
         }
 
-        let state = wait_for_initial_routing_state(&store).await?;
+        let machine_id = ployz_types::model::MachineId(config.machine_id.clone());
+        let state = wait_for_initial_routing_state(&store, &machine_id).await?;
         let initial_snapshot = project_dns(&state);
         let shared = SharedDnsSnapshot::new(initial_snapshot);
 
-        tokio::spawn(crate::sync::run_sync_loop(store, shared.clone()));
+        tokio::spawn(crate::sync::run_sync_loop(
+            store,
+            shared.clone(),
+            machine_id.clone(),
+        ));
 
         let mut listen_addrs = vec![config.overlay_listen_addr.parse().map_err(|err| {
             DnsError::Config(format!(
@@ -293,6 +298,7 @@ where
 
 async fn wait_for_initial_routing_state<S>(
     store: &S,
+    machine_id: &ployz_types::model::MachineId,
 ) -> Result<ployz_types::model::RoutingState, DnsError>
 where
     S: DnsStore + Send + Sync,
@@ -301,7 +307,7 @@ where
     loop {
         match timeout(
             STORE_READY_ATTEMPT_TIMEOUT,
-            DnsStore::subscribe_routing_batches(store, "dns"),
+            DnsStore::subscribe_routing_batches(store, &format!("dns.{}", machine_id.0)),
         )
         .await
         {

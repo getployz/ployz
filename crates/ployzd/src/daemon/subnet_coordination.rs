@@ -56,7 +56,7 @@ impl SubnetReservationCoordinator for NatsSubnetCoordinator {
 }
 
 fn classify_acquire_error(message: String) -> ClaimError {
-    if message.contains("already held") {
+    if message.contains("already held") || message.contains("contention") {
         ClaimError::AlreadyHeld
     } else {
         ClaimError::Backend(message)
@@ -76,5 +76,18 @@ impl SubnetClaimRelease for NatsSubnetClaimRelease {
             .release(lease)
             .await
             .map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lock_contention_is_retryable() {
+        assert!(matches!(
+            classify_acquire_error("nats_lock_acquire: lock 'locks.subnet.x' contention".into()),
+            ClaimError::AlreadyHeld
+        ));
     }
 }

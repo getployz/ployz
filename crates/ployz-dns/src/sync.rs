@@ -6,6 +6,7 @@ use tracing::{info, warn};
 
 use crate::config::DnsError;
 use crate::snapshot::{SharedDnsSnapshot, project_dns};
+use ployz_types::model::MachineId;
 
 // ---------------------------------------------------------------------------
 // DnsStore trait — consumer contract
@@ -22,12 +23,17 @@ pub trait DnsStore: Send + Sync {
 // Sync logic
 // ---------------------------------------------------------------------------
 
-pub async fn run_sync_loop<S>(store: S, snapshot: SharedDnsSnapshot) -> Result<(), DnsError>
+pub async fn run_sync_loop<S>(
+    store: S,
+    snapshot: SharedDnsSnapshot,
+    machine_id: MachineId,
+) -> Result<(), DnsError>
 where
     S: DnsStore + Send + Sync + 'static,
 {
     loop {
-        let (mut state, mut routing_rx) = store.subscribe_routing_batches("dns").await?;
+        let consumer_id = format!("dns.{}", machine_id.0);
+        let (mut state, mut routing_rx) = store.subscribe_routing_batches(&consumer_id).await?;
         replace_dns_snapshot(&state, &snapshot);
 
         while let Some(batch) = routing_rx.recv().await {
@@ -52,6 +58,7 @@ fn replace_dns_snapshot(state: &ployz_types::model::RoutingState, snapshot: &Sha
 pub fn spawn_sync_thread_with_store<S>(
     store: S,
     snapshot: SharedDnsSnapshot,
+    machine_id: MachineId,
 ) -> Result<(), DnsError>
 where
     S: DnsStore + Send + Sync + 'static,
@@ -70,7 +77,7 @@ where
                 }
             };
             runtime.block_on(async move {
-                if let Err(err) = run_sync_loop(store, snapshot).await {
+                if let Err(err) = run_sync_loop(store, snapshot, machine_id).await {
                     warn!(?err, "dns sync loop exited");
                 }
             });

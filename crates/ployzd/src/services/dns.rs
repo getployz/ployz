@@ -94,6 +94,7 @@ fn build_dns_sidecar_spec(config: &DnsConfig, image: &str) -> SidecarSpec {
             let mut env = vec![
                 ("PLOYZ_DNS_DATA_DIR".into(), data_dir_str.clone()),
                 ("PLOYZ_DNS_NETWORK".into(), config.network.clone()),
+                ("PLOYZ_DNS_MACHINE_ID".into(), config.machine_id.clone()),
                 (
                     "PLOYZ_DNS_OVERLAY_LISTEN_ADDR".into(),
                     config.overlay_listen_addr.clone(),
@@ -136,12 +137,18 @@ mod tests {
         let config = DnsConfig::for_network(
             Path::new("/tmp/ployz"),
             "alpha",
+            "machine-alpha",
             OverlayIp(Ipv6Addr::LOCALHOST),
             Some("0.0.0.0:53".into()),
             Some("127.0.0.1:9153".into()),
         );
 
         let spec = build_dns_sidecar_spec(&config, "ployz-dns:latest");
+        assert!(
+            spec.env
+                .iter()
+                .any(|(key, value)| key == "PLOYZ_DNS_MACHINE_ID" && value == "machine-alpha")
+        );
         assert!(spec.env.iter().any(|(key, value)| {
             key == "PLOYZ_DNS_METRICS_LISTEN_ADDR" && value == "127.0.0.1:9153"
         }));
@@ -152,6 +159,7 @@ mod tests {
         let config = DnsConfig::for_network(
             Path::new("/tmp/ployz"),
             "alpha",
+            "machine-alpha",
             OverlayIp(Ipv6Addr::LOCALHOST),
             None,
             None,

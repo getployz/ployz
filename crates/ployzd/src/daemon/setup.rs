@@ -485,6 +485,7 @@ impl DaemonState {
             let dns_config = DnsConfig::for_network(
                 &self.data_dir,
                 &net_config.name.0,
+                self.identity.machine_id.0.clone(),
                 net_config.overlay_ip,
                 dns_bridge_listen_addr,
                 self.dns_metrics_listen_addr.clone(),
@@ -579,6 +580,7 @@ impl DaemonState {
             DnsConfig::for_network(
                 &self.data_dir,
                 &net_config.name.0,
+                self.identity.machine_id.0.clone(),
                 net_config.overlay_ip,
                 self.dns_bridge_listen_addr(),
                 self.dns_metrics_listen_addr.clone(),
