@@ -130,6 +130,11 @@ impl DeployProjection {
     }
 
     #[must_use]
+    pub fn release(&self, namespace: &Namespace, service: &str) -> Option<&ServiceReleaseRecord> {
+        self.releases.get(&(namespace.clone(), service.to_string()))
+    }
+
+    #[must_use]
     pub fn volumes(&self, namespace: &Namespace) -> Vec<VolumeRecord> {
         self.volumes
             .values()

@@ -458,6 +458,9 @@ let response = client
 
 `commit_deploy` publishes the envelope with `Nats-Expected-Last-Subject-Sequence: 0`
 (create-only). Retries with the same `deploy_id` are idempotent.
+If the durable commit exists but the following routing batch failed, the retry
+verifies the stored payload and republishes repair events for touched keys that
+still match the authoritative projection; superseded releases are not replayed.
 `update_deploy_record` writes a separate `deploy_status` KV, never the
 stream — keeps the commit log immutable and replay-safe.
 
