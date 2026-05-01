@@ -48,16 +48,17 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
 
         async fn subscribe_routing_batches(
             &self,
-            consumer_id: &str,
+            subscription: ployz_store_api::RoutingSubscription,
         ) -> Result<ployz_store_api::RoutingBatchSubscription, ployz_gateway::GatewayError>
         {
+            let consumer_id = subscription.consumer_id().to_string();
             info!(
-                consumer_id,
+                consumer_id = %consumer_id,
                 "gateway store call start: subscribe_routing_batches"
             );
             match ployz_store_api::RoutingSnapshotReader::subscribe_routing_batches(
                 &self.0,
-                consumer_id,
+                subscription,
             )
             .await
             {
@@ -66,7 +67,7 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
                         revisions = state.revisions.len(),
                         releases = state.releases.len(),
                         instances = state.instances.len(),
-                        consumer_id,
+                        consumer_id = %consumer_id,
                         "gateway store call complete: subscribe_routing_batches"
                     );
                     Ok((state, rx))
@@ -74,7 +75,7 @@ fn main() -> Result<(), ployz_gateway::GatewayError> {
                 Err(err) => {
                     warn!(
                         error = %err,
-                        consumer_id,
+                        consumer_id = %consumer_id,
                         "gateway store call failed: subscribe_routing_batches"
                     );
                     Err(ployz_gateway::GatewayError::Store(err.to_string()))

@@ -138,7 +138,9 @@ impl MemoryStore {
     pub async fn subscribe_routing_events(
         &self,
     ) -> Result<(RoutingState, mpsc::Receiver<RoutingEvent>)> {
-        let (state, mut batches) = self.subscribe_routing_batches("memory.events").await?;
+        let (state, mut batches) = self
+            .subscribe_routing_batches(crate::RoutingSubscription::temporary("memory.events"))
+            .await?;
         let (tx, rx) = mpsc::channel(1024);
         tokio::spawn(async move {
             while let Some(batch) = batches.recv().await {
@@ -247,7 +249,7 @@ impl RoutingSnapshotReader for MemoryStore {
 
     async fn subscribe_routing_batches(
         &self,
-        _consumer_id: &str,
+        _subscription: crate::RoutingSubscription,
     ) -> Result<RoutingBatchSubscription> {
         let mut inner = self.lock_inner();
         let state = Self::routing_state(&inner);

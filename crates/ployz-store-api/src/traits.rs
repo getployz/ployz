@@ -18,6 +18,40 @@ pub type CertificateSubscription = (Vec<CertificateRecord>, mpsc::Receiver<Certi
 pub type AcmeChallengeSubscription = (Vec<AcmeChallengeRecord>, mpsc::Receiver<AcmeChallengeEvent>);
 pub type RoutingBatchSubscription = (RoutingState, mpsc::Receiver<RoutingEventBatch>);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoutingSubscription {
+    Durable { consumer_id: String },
+    Temporary { consumer_id: String },
+}
+
+impl RoutingSubscription {
+    #[must_use]
+    pub fn durable(consumer_id: impl Into<String>) -> Self {
+        Self::Durable {
+            consumer_id: consumer_id.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn temporary(consumer_id: impl Into<String>) -> Self {
+        Self::Temporary {
+            consumer_id: consumer_id.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn consumer_id(&self) -> &str {
+        match self {
+            Self::Durable { consumer_id } | Self::Temporary { consumer_id } => consumer_id,
+        }
+    }
+
+    #[must_use]
+    pub fn delete_on_close(&self) -> bool {
+        matches!(self, Self::Temporary { .. })
+    }
+}
+
 #[derive(Debug)]
 pub struct RoutingEventBatch {
     pub batch_id: String,
@@ -140,6 +174,22 @@ where
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::RoutingSubscription;
+
+    #[test]
+    fn routing_subscription_kind_controls_consumer_cleanup() {
+        let durable = RoutingSubscription::durable("gateway.founder");
+        let temporary = RoutingSubscription::temporary("ployzd.runtime.founder.1");
+
+        assert_eq!(durable.consumer_id(), "gateway.founder");
+        assert!(!durable.delete_on_close());
+        assert_eq!(temporary.consumer_id(), "ployzd.runtime.founder.1");
+        assert!(temporary.delete_on_close());
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployCommit {
     pub namespace: Namespace,
@@ -220,7 +270,7 @@ pub trait RoutingSnapshotReader: Send + Sync {
 
     fn subscribe_routing_batches<'a>(
         &'a self,
-        consumer_id: &'a str,
+        subscription: RoutingSubscription,
     ) -> impl Future<Output = Result<RoutingBatchSubscription>> + Send + 'a;
 }
 

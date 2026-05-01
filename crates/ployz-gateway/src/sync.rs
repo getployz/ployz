@@ -2,7 +2,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use crate::routes::{GatewayProjectionEvent, GatewayProjector, GatewaySnapshot, ProjectionDelta};
-use ployz_store_api::{RoutingBatchSubscription, RoutingEventBatch};
+use ployz_store_api::{RoutingBatchSubscription, RoutingEventBatch, RoutingSubscription};
 use ployz_types::model::{
     AcmeChallengeEvent, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateEvent,
     CertificateRecord, MachineId, RoutingState,
@@ -29,7 +29,7 @@ pub trait RoutingSnapshotReader: Send + Sync {
 
     fn subscribe_routing_batches<'a>(
         &'a self,
-        consumer_id: &'a str,
+        subscription: RoutingSubscription,
     ) -> impl Future<Output = Result<RoutingBatchSubscription, GatewayError>> + Send + 'a;
     fn list_certificates(
         &self,
@@ -88,7 +88,9 @@ where
 {
     loop {
         let consumer_id = format!("gateway.{}", machine_id.0);
-        let (routing_state, mut routing_rx) = store.subscribe_routing_batches(&consumer_id).await?;
+        let (routing_state, mut routing_rx) = store
+            .subscribe_routing_batches(RoutingSubscription::durable(consumer_id))
+            .await?;
         let (cert_records, mut cert_rx) = store.subscribe_certificates().await?;
         let (challenge_records, mut chal_rx) = store.subscribe_acme_challenges().await?;
         let mut projector = GatewayProjector::new(routing_state)
@@ -442,6 +444,9 @@ mod tests {
 
     #[test]
     fn challenge_update_event_marks_record_ready() {
+        let _metrics_guard = crate::metrics::ROUTE_METRICS_TEST_LOCK
+            .lock()
+            .expect("route metrics test lock should not be poisoned");
         let mut projector = GatewayProjector::new(RoutingState {
             machines: Vec::new(),
             revisions: Vec::new(),

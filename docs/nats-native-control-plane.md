@@ -171,6 +171,7 @@ fault injection and record observed p50/p95/p99.
 | Deploy status | NATS KV `deploy_status` | authoritative hub replicas | direct KV/projection | mutable KV update to hub quorum |
 | Instance status | NATS KV `instances` | authoritative hub replicas | routing projection or direct KV | participant writes status to hub quorum |
 | Routing snapshot | local projection | each gateway/DNS/daemon process memory | in-process memory | rebuilt from authoritative NATS state |
+| Routing events | JetStream stream `routing_events` | authoritative hub replicas | durable or temporary consumer | atomic batch publish to hub quorum |
 | Certificates metadata | NATS KV `certificates` | authoritative hub replicas | direct KV/subscription | KV put to hub quorum |
 | Certificate PEM blobs | NATS Object Store | authoritative hub replicas | object get, often cached by consumers | object put to hub quorum |
 | ACME challenges | NATS KV `acme_challenges` | authoritative hub replicas | gateway/cert reader projection | KV put/delete to hub quorum |
@@ -182,6 +183,10 @@ fault injection and record observed p50/p95/p99.
 | Mirror read copies | mirror streams/KV in leaf domain | mirror node local disk | local mirror read | async replication from hub; not write authority |
 
 The important split:
+
+- Durable service projections use stable per-machine consumers.
+- Short-lived watches use temporary consumers and do not leave durable cursor
+  state behind.
 
 - **authority** lives in hub JetStream/KV/Object Store,
 - **hot read models** live in process memory and are rebuilt from authority,

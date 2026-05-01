@@ -10,6 +10,9 @@ static GATEWAY_REQUESTS_TOTAL: OnceLock<IntCounterVec> = OnceLock::new();
 static GATEWAY_REQUEST_DURATION: OnceLock<HistogramVec> = OnceLock::new();
 static GATEWAY_ROUTES: OnceLock<IntGaugeVec> = OnceLock::new();
 
+#[cfg(test)]
+pub(crate) static ROUTE_METRICS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub fn observe_request(method: &str, status_code: u16, matched: bool, duration: Duration) {
     let status_class = status_class_label(status_code);
     let matched = bool_label(matched);

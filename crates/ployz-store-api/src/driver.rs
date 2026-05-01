@@ -4,7 +4,7 @@ use crate::{
     DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
     InstanceStatusRepository, InviteRepository, MachineRegistry, MachineSubscription,
     PeerRttObservation, PeerRttStore, RoutingBatchSubscription, RoutingSnapshotReader,
-    StoreBackend, StoreRuntimeControl, SyncProbe, SyncStatus,
+    RoutingSubscription, StoreBackend, StoreRuntimeControl, SyncProbe, SyncStatus,
 };
 use async_trait::async_trait;
 use ployz_types::Result;
@@ -145,9 +145,9 @@ impl RoutingSnapshotReader for StoreDriver {
 
     async fn subscribe_routing_batches(
         &self,
-        consumer_id: &str,
+        subscription: RoutingSubscription,
     ) -> Result<RoutingBatchSubscription> {
-        self.backend.subscribe_routing_batches(consumer_id).await
+        self.backend.subscribe_routing_batches(subscription).await
     }
 }
 
@@ -340,9 +340,9 @@ impl StoreBackend for MemoryStoreBackend {
 
     async fn subscribe_routing_batches(
         &self,
-        consumer_id: &str,
+        subscription: RoutingSubscription,
     ) -> Result<RoutingBatchSubscription> {
-        self.store.subscribe_routing_batches(consumer_id).await
+        self.store.subscribe_routing_batches(subscription).await
     }
 
     async fn list_deploy_releases(
