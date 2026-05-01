@@ -114,34 +114,45 @@ async fn handle_message(
     let request = match decode_daemon_request(message.payload.as_ref()) {
         Ok(request) => request,
         Err(error) => {
-            let response = ployz_api::DaemonResponse {
-                ok: false,
-                code: "INVALID_REQUEST".into(),
-                message: error.to_string(),
-                payload: None,
-            };
-            let payload = encode_daemon_response(&response).map_err(|error| error.to_string())?;
-            client
-                .publish(reply, payload.into())
-                .await
-                .map_err(|error| format!("publish error response: {error}"))?;
+            publish_error_response(client, reply, "INVALID_REQUEST", error.to_string()).await?;
             return Ok(());
         }
     };
 
     let (reply_tx, reply_rx) = oneshot::channel();
     let (response_flushed_tx, response_flushed_rx) = oneshot::channel();
-    tx.send(IncomingCommand {
-        request,
-        reply: reply_tx,
-        response_flushed: Some(response_flushed_rx),
-        stream: None,
-    })
-    .await
-    .map_err(|_| "daemon command channel closed".to_string())?;
-    let response = reply_rx
+    if tx
+        .send(IncomingCommand {
+            request,
+            reply: reply_tx,
+            response_flushed: Some(response_flushed_rx),
+            stream: None,
+        })
         .await
-        .map_err(|_| "daemon dropped response".to_string())?;
+        .is_err()
+    {
+        publish_error_response(
+            client,
+            reply,
+            "DAEMON_UNAVAILABLE",
+            "daemon command channel closed",
+        )
+        .await?;
+        return Ok(());
+    }
+    let response = match reply_rx.await {
+        Ok(response) => response,
+        Err(_) => {
+            publish_error_response(
+                client,
+                reply,
+                "DAEMON_RESPONSE_DROPPED",
+                "daemon dropped response",
+            )
+            .await?;
+            return Ok(());
+        }
+    };
     let payload = encode_daemon_response(&response).map_err(|error| error.to_string())?;
     client
         .publish(reply, payload.into())
@@ -149,4 +160,23 @@ async fn handle_message(
         .map_err(|error| format!("publish response: {error}"))?;
     let _ = response_flushed_tx.send(());
     Ok(())
+}
+
+async fn publish_error_response(
+    client: async_nats::Client,
+    reply: async_nats::Subject,
+    code: impl Into<String>,
+    message: impl Into<String>,
+) -> Result<(), String> {
+    let response = ployz_api::DaemonResponse {
+        ok: false,
+        code: code.into(),
+        message: message.into(),
+        payload: None,
+    };
+    let payload = encode_daemon_response(&response).map_err(|error| error.to_string())?;
+    client
+        .publish(reply, payload.into())
+        .await
+        .map_err(|error| format!("publish error response: {error}"))
 }
