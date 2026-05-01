@@ -741,10 +741,13 @@ on success. The ticker disappears entirely.
 
 `ployz-nats::coord::jobs` now provides the typed renewal job publish spec:
 stable `Nats-Msg-Id`, `Nats-Expected-Stream: cert_jobs`, JSON hostname payload,
-and optional `Nats-Schedule`. The remaining daemon work is to replace the local
-renewal ticker with a durable pull worker over that stream. The orchestrator
-renewal logic now has a per-host `process_renewal_job` entrypoint that re-reads
-the certificate row from authority before applying renewal state transitions.
+and optional `Nats-Schedule`. It also defines the durable pull consumer
+`ployzd_cert_renewal`, filtered to `cert.jobs.renew.>`, with explicit ack,
+single-message fetches, bounded ack pending, and malformed job termination. The
+remaining daemon work is to replace the local renewal ticker with that worker.
+The orchestrator renewal logic has a per-host `process_renewal_job` entrypoint
+that re-reads the certificate row from authority before applying renewal state
+transitions.
 
 ### Consumer reset for projection migrations
 
