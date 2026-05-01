@@ -1,5 +1,5 @@
 use async_nats::jetstream::kv;
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::TryStreamExt;
 use ployz_store_api::{AcmeChallengeSubscription, CertificateStore, CertificateSubscription};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
@@ -7,8 +7,6 @@ use ployz_types::model::{
     CertificateEvent, CertificateRecord, CertificateState, MachineId,
 };
 use std::collections::HashMap;
-use tokio::sync::mpsc;
-use tracing::warn;
 
 use crate::NatsStore;
 use crate::buckets::{
@@ -17,6 +15,7 @@ use crate::buckets::{
 };
 use crate::coord::jobs::{JobSchedule, publish_cert_renewal_job};
 use crate::store::kv_json;
+use crate::store::kv_watch;
 use crate::subjects;
 
 impl CertificateStore for NatsStore {
@@ -132,58 +131,17 @@ impl CertificateStore for NatsStore {
         let snapshot_boundary =
             kv_json::latest_sequence(&bucket, "nats_certificates_snapshot_boundary").await?;
         let snapshot = self.list_certificates().await?;
-        let mut watch = bucket
-            .watch_all_from_revision(kv_json::next_sequence(snapshot_boundary))
-            .await
-            .map_err(|error| {
-                ployz_types::Error::operation("nats_certificates_watch", format!("{error:?}"))
-            })?;
-        let (tx, rx) = mpsc::channel(128);
-        let last_seen_snapshot = snapshot.clone();
-        tokio::spawn(async move {
-            let mut last_seen = last_seen_snapshot
-                .iter()
-                .map(|record| (certificate_key(&record.hostname), record.clone()))
-                .collect::<HashMap<_, _>>();
-            loop {
-                let next = tokio::select! {
-                    _ = tx.closed() => break,
-                    next = watch.next() => next,
-                };
-                let Some(next) = next else {
-                    break;
-                };
-                let entry = match next {
-                    Ok(entry) => entry,
-                    Err(error) => {
-                        let error =
-                            Error::operation("nats_certificates_watch", format!("{error:?}"));
-                        warn!(?error, "NATS certificate watcher failed");
-                        let _ = tx.send(Err(error)).await;
-                        break;
-                    }
-                };
-                let Some(event) = (match certificate_event_from_kv_entry(
-                    &mut last_seen,
-                    entry.key.as_str(),
-                    entry.value.as_ref(),
-                    entry.operation,
-                ) {
-                    Ok(event) => event,
-                    Err(error) => {
-                        warn!(?error, key = %entry.key, "NATS certificate event decode failed");
-                        let _ = tx.send(Err(error)).await;
-                        break;
-                    }
-                }) else {
-                    continue;
-                };
-                if tx.send(Ok(event)).await.is_err() {
-                    break;
-                }
-            }
-        });
-        Ok((snapshot, rx))
+        kv_watch::subscribe_all(
+            &bucket,
+            snapshot,
+            snapshot_boundary,
+            |record: &CertificateRecord| certificate_key(&record.hostname),
+            "nats_certificates_watch",
+            "NATS certificate watcher failed",
+            "NATS certificate event decode failed",
+            certificate_event_from_kv_entry,
+        )
+        .await
     }
 
     async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
@@ -191,63 +149,17 @@ impl CertificateStore for NatsStore {
         let snapshot_boundary =
             kv_json::latest_sequence(&bucket, "nats_acme_challenges_snapshot_boundary").await?;
         let snapshot = self.list_acme_challenges().await?;
-        let mut watch = bucket
-            .watch_all_from_revision(kv_json::next_sequence(snapshot_boundary))
-            .await
-            .map_err(|error| {
-                ployz_types::Error::operation("nats_acme_challenges_watch", format!("{error:?}"))
-            })?;
-        let (tx, rx) = mpsc::channel(128);
-        let last_seen_snapshot = snapshot.clone();
-        tokio::spawn(async move {
-            let mut last_seen = last_seen_snapshot
-                .iter()
-                .map(|record| {
-                    (
-                        challenge_key(&record.hostname, &record.token),
-                        record.clone(),
-                    )
-                })
-                .collect::<HashMap<_, _>>();
-            loop {
-                let next = tokio::select! {
-                    _ = tx.closed() => break,
-                    next = watch.next() => next,
-                };
-                let Some(next) = next else {
-                    break;
-                };
-                let entry = match next {
-                    Ok(entry) => entry,
-                    Err(error) => {
-                        let error =
-                            Error::operation("nats_acme_challenges_watch", format!("{error:?}"));
-                        warn!(?error, "NATS ACME challenge watcher failed");
-                        let _ = tx.send(Err(error)).await;
-                        break;
-                    }
-                };
-                let Some(event) = (match challenge_event_from_kv_entry(
-                    &mut last_seen,
-                    entry.key.as_str(),
-                    entry.value.as_ref(),
-                    entry.operation,
-                ) {
-                    Ok(event) => event,
-                    Err(error) => {
-                        warn!(?error, key = %entry.key, "NATS ACME challenge event decode failed");
-                        let _ = tx.send(Err(error)).await;
-                        break;
-                    }
-                }) else {
-                    continue;
-                };
-                if tx.send(Ok(event)).await.is_err() {
-                    break;
-                }
-            }
-        });
-        Ok((snapshot, rx))
+        kv_watch::subscribe_all(
+            &bucket,
+            snapshot,
+            snapshot_boundary,
+            |record: &AcmeChallengeRecord| challenge_key(&record.hostname, &record.token),
+            "nats_acme_challenges_watch",
+            "NATS ACME challenge watcher failed",
+            "NATS ACME challenge event decode failed",
+            challenge_event_from_kv_entry,
+        )
+        .await
     }
 
     async fn upsert_acme_challenge_readiness(
@@ -369,10 +281,10 @@ fn certificate_event_from_kv_entry(
                     format!("certificate key {key} does not match payload key {expected_key}"),
                 ));
             }
-            let event = if last_seen.contains_key(key) {
-                CertificateEvent::Updated(record.clone())
-            } else {
-                CertificateEvent::Added(record.clone())
+            let event = match last_seen.get(key) {
+                Some(existing) if existing == &record => return Ok(None),
+                Some(_) => CertificateEvent::Updated(record.clone()),
+                None => CertificateEvent::Added(record.clone()),
             };
             last_seen.insert(key.to_string(), record);
             Ok(Some(event))
@@ -400,10 +312,10 @@ fn challenge_event_from_kv_entry(
                     format!("ACME challenge key {key} does not match payload key {expected_key}"),
                 ));
             }
-            let event = if last_seen.contains_key(key) {
-                AcmeChallengeEvent::Updated(record.clone())
-            } else {
-                AcmeChallengeEvent::Added(record.clone())
+            let event = match last_seen.get(key) {
+                Some(existing) if existing == &record => return Ok(None),
+                Some(_) => AcmeChallengeEvent::Updated(record.clone()),
+                None => AcmeChallengeEvent::Added(record.clone()),
             };
             last_seen.insert(key.to_string(), record);
             Ok(Some(event))
@@ -591,6 +503,24 @@ mod tests {
     }
 
     #[test]
+    fn certificate_kv_put_ignores_identical_value() {
+        let record = certificate("example.com");
+        let bytes = serde_json::to_vec(&record).expect("encode certificate");
+        let mut last_seen = HashMap::from([(String::from("example.com"), record.clone())]);
+
+        let event = certificate_event_from_kv_entry(
+            &mut last_seen,
+            "example.com",
+            &bytes,
+            kv::Operation::Put,
+        )
+        .expect("put should decode");
+
+        assert!(event.is_none());
+        assert_eq!(last_seen.get("example.com"), Some(&record));
+    }
+
+    #[test]
     fn active_certificate_schedules_next_renewal_job() {
         let mut record = certificate("example.com");
         record.state = CertificateState::Active;
@@ -623,6 +553,20 @@ mod tests {
         assert!(
             matches!(event, Some(AcmeChallengeEvent::Added(event_record)) if event_record == record)
         );
+        assert_eq!(last_seen.get(&key), Some(&record));
+    }
+
+    #[test]
+    fn acme_challenge_kv_put_ignores_identical_value() {
+        let record = challenge("example.com", "token");
+        let key = challenge_key(&record.hostname, &record.token);
+        let bytes = serde_json::to_vec(&record).expect("encode challenge");
+        let mut last_seen = HashMap::from([(key.clone(), record.clone())]);
+
+        let event = challenge_event_from_kv_entry(&mut last_seen, &key, &bytes, kv::Operation::Put)
+            .expect("put should decode");
+
+        assert!(event.is_none());
         assert_eq!(last_seen.get(&key), Some(&record));
     }
 

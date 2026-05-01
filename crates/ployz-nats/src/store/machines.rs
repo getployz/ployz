@@ -1,15 +1,14 @@
 use async_nats::jetstream::kv;
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::TryStreamExt;
 use ployz_store_api::{MachineRegistry, MachineSubscription};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{MachineEvent, MachineId, MachineMembership, RoutingEvent};
 use std::collections::HashMap;
-use tokio::sync::mpsc;
-use tracing::warn;
 
 use crate::NatsStore;
 use crate::buckets::MACHINES_BUCKET;
 use crate::store::kv_json;
+use crate::store::kv_watch;
 
 impl MachineRegistry for NatsStore {
     async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
@@ -91,55 +90,17 @@ impl MachineRegistry for NatsStore {
         let snapshot_boundary =
             kv_json::latest_sequence(&kv, "nats_machines_snapshot_boundary").await?;
         let snapshot = self.list_machines().await?;
-        let mut watch = kv
-            .watch_all_from_revision(kv_json::next_sequence(snapshot_boundary))
-            .await
-            .map_err(|error| Error::operation("nats_machines_watch", format!("{error:?}")))?;
-        let (tx, rx) = mpsc::channel(128);
-        let last_seen_snapshot = snapshot.clone();
-        tokio::spawn(async move {
-            let mut last_seen = last_seen_snapshot
-                .iter()
-                .map(|record| (record.id.0.clone(), record.clone()))
-                .collect::<HashMap<_, _>>();
-            loop {
-                let next = tokio::select! {
-                    _ = tx.closed() => break,
-                    next = watch.next() => next,
-                };
-                let Some(next) = next else {
-                    break;
-                };
-                let entry = match next {
-                    Ok(entry) => entry,
-                    Err(error) => {
-                        let error = Error::operation("nats_machines_watch", format!("{error:?}"));
-                        warn!(?error, "NATS machines watcher failed");
-                        let _ = tx.send(Err(error)).await;
-                        break;
-                    }
-                };
-                let Some(event) = (match machine_event_from_kv_entry(
-                    &mut last_seen,
-                    entry.key.as_str(),
-                    entry.value.as_ref(),
-                    entry.operation,
-                ) {
-                    Ok(event) => event,
-                    Err(error) => {
-                        warn!(?error, key = %entry.key, "NATS machine event decode failed");
-                        let _ = tx.send(Err(error)).await;
-                        break;
-                    }
-                }) else {
-                    continue;
-                };
-                if tx.send(Ok(event)).await.is_err() {
-                    break;
-                }
-            }
-        });
-        Ok((snapshot, rx))
+        kv_watch::subscribe_all(
+            &kv,
+            snapshot,
+            snapshot_boundary,
+            |record: &MachineMembership| record.id.0.clone(),
+            "nats_machines_watch",
+            "NATS machines watcher failed",
+            "NATS machine event decode failed",
+            machine_event_from_kv_entry,
+        )
+        .await
     }
 }
 
@@ -156,10 +117,10 @@ fn machine_event_from_kv_entry(
     match operation {
         kv::Operation::Put => {
             let machine = decode_machine(key, bytes)?;
-            let event = if last_seen.contains_key(key) {
-                MachineEvent::Updated(machine.clone())
-            } else {
-                MachineEvent::Added(machine.clone())
+            let event = match last_seen.get(key) {
+                Some(existing) if existing == &machine => return Ok(None),
+                Some(_) => MachineEvent::Updated(machine.clone()),
+                None => MachineEvent::Added(machine.clone()),
             };
             last_seen.insert(key.to_string(), machine);
             Ok(Some(event))
@@ -242,6 +203,20 @@ mod tests {
                 .expect("put should decode");
 
         assert!(matches!(event, Some(MachineEvent::Added(record)) if record == machine));
+        assert_eq!(last_seen.get("machine-a"), Some(&machine));
+    }
+
+    #[test]
+    fn machine_kv_put_ignores_identical_value() {
+        let machine = test_machine("machine-a");
+        let bytes = serde_json::to_vec(&machine).expect("encode machine");
+        let mut last_seen = HashMap::from([(String::from("machine-a"), machine.clone())]);
+
+        let event =
+            machine_event_from_kv_entry(&mut last_seen, "machine-a", &bytes, kv::Operation::Put)
+                .expect("put should decode");
+
+        assert!(event.is_none());
         assert_eq!(last_seen.get("machine-a"), Some(&machine));
     }
 }
