@@ -392,7 +392,7 @@ zfs_root = "${zfs_root}"
 EOF
 fi
 
-HOME=/root /e2e-payload/ployz.sh install --source payload --payload-dir /e2e-payload --runtime "${runtime}" --service-mode user --no-daemon-install
+HOME=/root bash /e2e-payload/ployz.sh install --source payload --payload-dir /e2e-payload --runtime "${runtime}" --service-mode user --no-daemon-install
 
 ln -sf /root/.local/bin/ployzctl /usr/local/bin/ployzctl
 ln -sf /root/.local/bin/ployzd /usr/local/bin/ployzd
