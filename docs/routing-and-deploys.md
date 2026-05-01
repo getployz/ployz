@@ -104,24 +104,35 @@ runtime action.
 
 ## Routing
 
-### Snapshot-Based Routing
+### Snapshot Plus Durable Batches
 
-All routing decisions derive from a single snapshot of the distributed store's routing
-tables. There are no incremental updates — when anything changes, the full snapshot
-reloads and the routing projection rebuilds from scratch.
+All routing decisions start from one snapshot of the distributed store's routing
+tables. After the snapshot, live consumers apply ordered routing event batches from
+the `routing_events` JetStream stream.
 
-This is intentionally simple. The snapshot is small (it's metadata, not payloads), and
-full rebuilds are cheap compared to the complexity of incremental consistency.
+The snapshot is the catch-up boundary. If a process restarts or loses its local
+projection, it subscribes again, reads a fresh snapshot, then receives only new
+batches (`DeliverPolicy::New`) for that subscription.
 
-### Invalidation Model
+### Subscription Model
 
-When any routing-related table is written to, the store broadcasts an invalidation signal.
-Subscribers (gateway, DNS) debounce for 100ms, drain buffered signals, then reload.
+Routing event consumers declare their durability explicitly:
+
+- **Durable subscriptions** are used by long-lived service projections such as
+  gateway and DNS. Their consumer ids are stable per machine, so each process
+  receives every routing batch independently.
+- **Temporary subscriptions** are used by live watch clients such as
+  `RuntimeSubscribe` and startup readiness probes. They are cleaned up when the
+  watcher closes.
 
 Properties:
-- Non-blocking and lossy — extra signals are dropped because the next one triggers a full reload anyway
-- Debounced — rapid writes during a deploy commit batch into a single reload
-- Gracefully degrading — projection errors log and keep the previous snapshot
+
+- Atomic batches — related routing events are published as one JetStream atomic
+  batch, and consumers ack the batch only after applying it.
+- Per-consumer cursors — gateway, DNS, runtime watch, and readiness probes do not
+  share a cursor.
+- Graceful degradation — projection errors log and keep the previous snapshot;
+  a restart rebuilds from durable state.
 
 ### Gateway (HTTP/TCP Proxy)
 

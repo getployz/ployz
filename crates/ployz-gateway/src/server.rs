@@ -361,6 +361,9 @@ mod tests {
 
     #[tokio::test]
     async fn gateway_metrics_listener_reports_requests_and_route_counts() {
+        let _metrics_guard = crate::metrics::ROUTE_METRICS_TEST_LOCK
+            .lock()
+            .expect("route metrics test lock should not be poisoned");
         ployz_metrics::set_build_info("ployz-gateway", env!("CARGO_PKG_VERSION"));
         let gateway_addr = free_local_addr();
         let metrics_addr = free_local_addr();

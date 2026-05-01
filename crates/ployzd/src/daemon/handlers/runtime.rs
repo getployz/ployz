@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ployz_api::{RuntimeWatchFrame, runtime_frame_from_event, sort_routing_state};
-use ployz_store_api::{RoutingEventBatch, RoutingSnapshotReader};
+use ployz_store_api::{RoutingEventBatch, RoutingSnapshotReader, RoutingSubscription};
 use ployz_types::model::{MachineId, RoutingEvent, RoutingState};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -20,7 +20,7 @@ impl DaemonState {
         let (state, mut batches) = active
             .mesh
             .store
-            .subscribe_routing_batches(&consumer_id)
+            .subscribe_routing_batches(RoutingSubscription::temporary(consumer_id))
             .await
             .map_err(|error| Box::new(self.err("RUNTIME_SUBSCRIBE_FAILED", error.to_string())))?;
         let (tx, rx) = mpsc::channel(1024);

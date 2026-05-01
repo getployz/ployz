@@ -6,6 +6,7 @@ use tracing::{info, warn};
 
 use crate::config::DnsError;
 use crate::snapshot::{SharedDnsSnapshot, project_dns};
+use ployz_store_api::RoutingSubscription;
 use ployz_types::model::MachineId;
 
 // ---------------------------------------------------------------------------
@@ -15,7 +16,7 @@ use ployz_types::model::MachineId;
 pub trait DnsStore: Send + Sync {
     fn subscribe_routing_batches<'a>(
         &'a self,
-        consumer_id: &'a str,
+        subscription: RoutingSubscription,
     ) -> impl Future<Output = Result<ployz_store_api::RoutingBatchSubscription, DnsError>> + Send + 'a;
 }
 
@@ -33,7 +34,9 @@ where
 {
     loop {
         let consumer_id = format!("dns.{}", machine_id.0);
-        let (mut state, mut routing_rx) = store.subscribe_routing_batches(&consumer_id).await?;
+        let (mut state, mut routing_rx) = store
+            .subscribe_routing_batches(RoutingSubscription::durable(consumer_id))
+            .await?;
         replace_dns_snapshot(&state, &snapshot);
 
         while let Some(batch) = routing_rx.recv().await {

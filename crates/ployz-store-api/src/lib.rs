@@ -17,8 +17,8 @@ pub use traits::{
     DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
     InstanceStatusRepository, InviteRepository, MachineRegistry, MachineSubscription,
     PeerRttObservation, PeerRttStore, RoutingBatchSubscription, RoutingEventBatch,
-    RoutingSnapshotReader, StoreRuntimeControl, SyncProbe, SyncStatus, apply_routing_event,
-    apply_routing_events,
+    RoutingSnapshotReader, RoutingSubscription, StoreRuntimeControl, SyncProbe, SyncStatus,
+    apply_routing_event, apply_routing_events,
 };
 
 #[async_trait]
@@ -43,7 +43,7 @@ pub trait StoreBackend: Send + Sync {
     async fn load_routing_state(&self) -> Result<RoutingState>;
     async fn subscribe_routing_batches(
         &self,
-        consumer_id: &str,
+        subscription: RoutingSubscription,
     ) -> Result<RoutingBatchSubscription>;
 
     async fn list_deploy_releases(

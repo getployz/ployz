@@ -8,7 +8,8 @@ use ployz_store_api::{
     DeployRecordUpdate, DeployRepository, DeployRevisionUpsert, DeploySnapshot,
     InstanceStatusRepository, InviteRepository, MachineRegistry, MachineSubscription,
     PeerRttObservation, PeerRttStore, RoutingBatchSubscription, RoutingEventBatch,
-    RoutingSnapshotReader, StoreBackend, StoreRuntimeControl, SyncProbe, SyncStatus,
+    RoutingSnapshotReader, RoutingSubscription, StoreBackend, StoreRuntimeControl, SyncProbe,
+    SyncStatus,
 };
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{
@@ -84,9 +85,9 @@ impl StoreBackend for NatsStore {
 
     async fn subscribe_routing_batches(
         &self,
-        consumer_id: &str,
+        subscription: RoutingSubscription,
     ) -> Result<RoutingBatchSubscription> {
-        RoutingSnapshotReader::subscribe_routing_batches(self, consumer_id).await
+        RoutingSnapshotReader::subscribe_routing_batches(self, subscription).await
     }
 
     async fn list_deploy_releases(
@@ -220,10 +221,10 @@ impl RoutingSnapshotReader for NatsStore {
 
     async fn subscribe_routing_batches(
         &self,
-        consumer_id: &str,
+        subscription: RoutingSubscription,
     ) -> Result<RoutingBatchSubscription> {
-        let consumer_name = routing_consumer_name(consumer_id);
-        let delete_on_close = routing_consumer_delete_on_close(consumer_id);
+        let consumer_name = routing_consumer_name(subscription.consumer_id());
+        let delete_on_close = subscription.delete_on_close();
         let stream = self
             .jetstream()
             .get_stream(ROUTING_EVENTS_STREAM)
@@ -434,10 +435,6 @@ fn routing_consumer_name(consumer_id: &str) -> String {
     crate::subjects::subject_token(consumer_id)
 }
 
-fn routing_consumer_delete_on_close(consumer_id: &str) -> bool {
-    consumer_id.starts_with("ployzd.runtime.")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,9 +453,9 @@ mod tests {
 
     #[test]
     fn runtime_routing_consumers_are_temporary() {
-        assert!(routing_consumer_delete_on_close("ployzd.runtime.founder.1"));
-        assert!(!routing_consumer_delete_on_close("gateway.founder"));
-        assert!(!routing_consumer_delete_on_close("dns.founder"));
+        assert!(RoutingSubscription::temporary("ployzd.runtime.founder.1").delete_on_close());
+        assert!(!RoutingSubscription::durable("gateway.founder").delete_on_close());
+        assert!(!RoutingSubscription::durable("dns.founder").delete_on_close());
     }
 }
 

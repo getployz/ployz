@@ -25,9 +25,9 @@ fn main() -> Result<(), ployz_dns::DnsError> {
     impl ployz_dns::DnsStore for StandaloneStore {
         async fn subscribe_routing_batches(
             &self,
-            consumer_id: &str,
+            subscription: ployz_store_api::RoutingSubscription,
         ) -> Result<ployz_store_api::RoutingBatchSubscription, ployz_dns::DnsError> {
-            ployz_store_api::RoutingSnapshotReader::subscribe_routing_batches(&self.0, consumer_id)
+            ployz_store_api::RoutingSnapshotReader::subscribe_routing_batches(&self.0, subscription)
                 .await
                 .map_err(|err| ployz_dns::DnsError::Store(err.to_string()))
         }

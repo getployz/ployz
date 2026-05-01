@@ -307,7 +307,13 @@ where
     loop {
         match timeout(
             STORE_READY_ATTEMPT_TIMEOUT,
-            DnsStore::subscribe_routing_batches(store, &format!("dns.{}", machine_id.0)),
+            DnsStore::subscribe_routing_batches(
+                store,
+                ployz_store_api::RoutingSubscription::temporary(format!(
+                    "dns.ready.{}",
+                    machine_id.0
+                )),
+            ),
         )
         .await
         {

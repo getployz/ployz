@@ -327,11 +327,11 @@ where
 
     async fn subscribe_routing_batches(
         &self,
-        consumer_id: &str,
+        subscription: ployz_store_api::RoutingSubscription,
     ) -> Result<RoutingBatchSubscription> {
         self.store()
             .await?
-            .subscribe_routing_batches(consumer_id)
+            .subscribe_routing_batches(subscription)
             .await
     }
 
