@@ -141,8 +141,7 @@ pub fn bootstrap_seed_cache_health_path(network_dir: &Path) -> std::path::PathBu
     network_dir.join(BOOTSTRAP_SEED_CACHE_HEALTH_FILE)
 }
 
-#[cfg(test)]
-fn load_bootstrap_seed_cache_health(
+pub fn load_bootstrap_seed_cache_health(
     network_dir: &Path,
 ) -> Result<Option<BootstrapSeedCacheHealth>, String> {
     let path = bootstrap_seed_cache_health_path(network_dir);
@@ -346,15 +345,27 @@ async fn run_bootstrap_seed_cache_task(
             .map(|machine| (machine.id.clone(), machine))
             .collect();
         let mut last_written = load_bootstrap_peer_records(&network_dir).ok();
-        sync_seed_cache(
+        match sync_seed_cache(
             &network_dir,
             &machines,
             &local_machine_id,
             &mut last_written,
-        );
-        consecutive_failures = 0;
-        stale_since_unix_secs = None;
-        mark_seed_cache_healthy(&network_dir);
+        ) {
+            Ok(()) => {
+                consecutive_failures = 0;
+                stale_since_unix_secs = None;
+                mark_seed_cache_healthy(&network_dir);
+            }
+            Err(error) => {
+                tracing::warn!(%error, "failed to write bootstrap seed cache");
+                mark_seed_cache_failed(
+                    &network_dir,
+                    &mut consecutive_failures,
+                    &mut stale_since_unix_secs,
+                    error,
+                );
+            }
+        }
 
         loop {
             let event = tokio::select! {
@@ -425,16 +436,29 @@ async fn run_bootstrap_seed_cache_task(
                     _ = &mut debounce => break,
                 }
             }
-            sync_seed_cache(
+            let sync_result = sync_seed_cache(
                 &network_dir,
                 &machines,
                 &local_machine_id,
                 &mut last_written,
             );
             if !subscription_ended {
-                consecutive_failures = 0;
-                stale_since_unix_secs = None;
-                mark_seed_cache_healthy(&network_dir);
+                match sync_result {
+                    Ok(()) => {
+                        consecutive_failures = 0;
+                        stale_since_unix_secs = None;
+                        mark_seed_cache_healthy(&network_dir);
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to write bootstrap seed cache");
+                        mark_seed_cache_failed(
+                            &network_dir,
+                            &mut consecutive_failures,
+                            &mut stale_since_unix_secs,
+                            error,
+                        );
+                    }
+                }
             }
             if subscription_ended {
                 break;
@@ -504,15 +528,14 @@ fn sync_seed_cache(
     machines: &HashMap<MachineId, MachineMembership>,
     local_machine_id: &MachineId,
     last_written: &mut Option<Vec<BootstrapPeerRecord>>,
-) {
+) -> Result<(), String> {
     let peers = remote_peer_records(machines.values(), local_machine_id);
     if last_written.as_ref() == Some(&peers) {
-        return;
+        return Ok(());
     }
-    match write_bootstrap_peer_records(network_dir, &peers) {
-        Ok(()) => *last_written = Some(peers),
-        Err(error) => tracing::warn!(%error, "failed to write bootstrap seed cache"),
-    }
+    write_bootstrap_peer_records(network_dir, &peers)?;
+    *last_written = Some(peers);
+    Ok(())
 }
 
 fn remote_peer_records<'a>(
@@ -845,6 +868,23 @@ mod tests {
         task.shutdown().await;
         assert!(removed_peer);
         let _ = std::fs::remove_dir_all(&network_dir);
+    }
+
+    #[test]
+    fn sync_seed_cache_reports_write_failure() {
+        let parent = temp_network_dir("sync-write-failure");
+        let network_dir = parent.join("not-a-directory");
+        std::fs::write(&network_dir, "occupied").expect("write file at network dir path");
+        let local_id = MachineId("local".into());
+        let peer = machine_record("peer", "fd00::2", vec!["peer:51820"]);
+        let machines = HashMap::from([(peer.id.clone(), peer)]);
+        let mut last_written = None;
+
+        let result = sync_seed_cache(&network_dir, &machines, &local_id, &mut last_written);
+
+        assert!(result.is_err());
+        assert!(last_written.is_none());
+        let _ = std::fs::remove_dir_all(&parent);
     }
 
     #[tokio::test]

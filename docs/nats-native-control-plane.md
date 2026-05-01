@@ -229,6 +229,11 @@ The important split:
   stale-since time, consecutive failures, and the last fetch, job, ack, or nak
   error. A fetch failure can clear after the consumer fetch path recovers; a job
   failure remains stale until a renewal job completes and acks successfully.
+- The daemon's bootstrap seed-cache task records whether its machines
+  subscription is fresh in `bootstrap-seed-cache-health.json` under the network
+  data directory. `ployzctl status` reports it as
+  `control_plane component=bootstrap_seed_cache`; stale health means the local
+  `bootstrap-peers.json` restart hint may lag NATS membership authority.
 
 - **authority** lives in hub JetStream/KV/Object Store,
 - **hot read models** live in process memory and are rebuilt from authority,
