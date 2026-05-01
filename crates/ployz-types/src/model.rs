@@ -260,8 +260,6 @@ pub struct MachineMembership {
     pub public_key: PublicKey,
     pub overlay_ip: OverlayIp,
     pub topology: MachineTopology,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub control_target: Option<String>,
     #[schemars(with = "Option<String>")]
     pub subnet: Option<Ipv4Net>,
     pub bridge_ip: Option<OverlayIp>,
@@ -292,7 +290,6 @@ impl MachineMembership {
             public_key,
             overlay_ip,
             topology: MachineTopology::local(),
-            control_target: None,
             subnet,
             bridge_ip: None,
             endpoints,
@@ -366,7 +363,7 @@ pub struct MachineIdentity {
 }
 
 /// Everything a WireGuard adapter needs to render a peer. No lifecycle,
-/// timestamps, control_target, or labels — those don't influence WG config.
+/// timestamps, or labels — those don't influence WG config.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WireGuardPeerSpec {
     pub identity: MachineIdentity,
@@ -1110,7 +1107,6 @@ mod tests {
             public_key: PublicKey([0x11; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 7)),
             topology: MachineTopology::local(),
-            control_target: Some("https://control.example".into()),
             subnet: Some("10.42.7.0/24".parse().unwrap()),
             bridge_ip: Some(OverlayIp(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 8))),
             endpoints: vec!["1.2.3.4:51820".into(), "5.6.7.8:51820".into()],

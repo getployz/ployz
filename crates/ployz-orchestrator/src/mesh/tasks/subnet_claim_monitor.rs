@@ -112,7 +112,6 @@ mod tests {
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
             subnet,
-            control_target: None,
             bridge_ip: None,
             endpoints: vec![],
             lifecycle: MachineLifecycle::Standby,

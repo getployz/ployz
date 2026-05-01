@@ -35,7 +35,6 @@ pub async fn run_daemon(
     cluster_cidr: String,
     subnet_prefix_len: u8,
     zfs_transfer_port: u16,
-    control_target: Option<String>,
     gateway_listen_addr: String,
     gateway_https_listen_addr: Option<String>,
     gateway_threads: usize,
@@ -54,7 +53,6 @@ pub async fn run_daemon(
         cluster_cidr,
         subnet_prefix_len,
         zfs_transfer_port,
-        control_target,
         gateway_listen_addr,
         gateway_https_listen_addr,
         gateway_threads,
@@ -79,7 +77,6 @@ async fn run_daemon_with_resource_metrics_source(
     cluster_cidr: String,
     subnet_prefix_len: u8,
     zfs_transfer_port: u16,
-    control_target: Option<String>,
     gateway_listen_addr: String,
     gateway_https_listen_addr: Option<String>,
     gateway_threads: usize,
@@ -99,7 +96,6 @@ async fn run_daemon_with_resource_metrics_source(
         cluster_cidr,
         subnet_prefix_len,
         zfs_transfer_port,
-        control_target,
         gateway_listen_addr,
         gateway_https_listen_addr,
         gateway_threads,
@@ -123,7 +119,6 @@ async fn run_daemon_inner(
     cluster_cidr: String,
     subnet_prefix_len: u8,
     zfs_transfer_port: u16,
-    control_target: Option<String>,
     gateway_listen_addr: String,
     gateway_https_listen_addr: Option<String>,
     gateway_threads: usize,
@@ -180,7 +175,6 @@ async fn run_daemon_inner(
         dns_metrics_listen_addr,
         gateway_metrics_listen_addr,
     );
-    daemon_state.control_target = control_target;
     daemon_state.command_tx = Some(command_tx.clone());
     let state = Arc::new(RwLock::new(daemon_state));
     spawn_local_endpoint_maintenance(Arc::clone(&state), cancel.clone());
@@ -466,7 +460,6 @@ mod tests {
                 "10.210.0.0/16".into(),
                 24,
                 4319,
-                None,
                 "127.0.0.1:8080".into(),
                 None,
                 1,
@@ -555,7 +548,6 @@ mod tests {
                 "10.210.0.0/16".into(),
                 24,
                 4319,
-                None,
                 "127.0.0.1:8080".into(),
                 None,
                 1,

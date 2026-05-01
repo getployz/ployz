@@ -235,12 +235,6 @@
             }
           ]
         },
-        "control_target": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "created_at": {
           "type": "integer",
           "format": "uint64",

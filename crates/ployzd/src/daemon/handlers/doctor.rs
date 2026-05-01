@@ -625,7 +625,6 @@ mod tests {
             public_key,
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
-            control_target: None,
             subnet: Some("10.210.0.0/24".parse().expect("valid subnet")),
             bridge_ip: None,
             endpoints: vec![String::from("127.0.0.1:51820")],

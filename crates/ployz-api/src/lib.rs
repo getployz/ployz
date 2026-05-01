@@ -681,8 +681,6 @@ pub struct MeshBootstrapRequest {
     pub network_name: String,
     pub cluster_cidr: String,
     pub assigned_subnet: Ipv4Net,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub self_control_target: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bootstrap_peers: Vec<MachineMembership>,
 }
@@ -983,7 +981,6 @@ mod tests {
             public_key: PublicKey([7; 32]),
             overlay_ip: OverlayIp(Ipv6Addr::LOCALHOST),
             topology: MachineTopology::local(),
-            control_target: None,
             subnet: None,
             bridge_ip: None,
             endpoints: vec![String::from("127.0.0.1:51820")],

@@ -103,16 +103,6 @@ impl DaemonState {
                     }
                 }
                 if let Some(active) = self.active.as_ref()
-                    && let Some(control_target) = request.self_control_target.clone()
-                {
-                    let _ = active
-                        .mesh
-                        .update_authoritative_self_record(|record| {
-                            record.control_target = Some(control_target);
-                        })
-                        .await;
-                }
-                if let Some(active) = self.active.as_ref()
                     && let Err(error) = refresh_bootstrap_peer_records_from_store(
                         &network_dir,
                         &active.mesh.store,

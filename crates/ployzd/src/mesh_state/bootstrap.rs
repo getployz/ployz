@@ -276,7 +276,6 @@ pub fn resolve_bootstrap_addrs(
 pub async fn build_seed_records(
     identity: &Identity,
     net_config: &NetworkConfig,
-    self_control_target: Option<String>,
     listen_port: u16,
     bootstrap_peers: &[BootstrapPeerRecord],
     configured_topology: Option<&MachineTopology>,
@@ -299,9 +298,6 @@ pub async fn build_seed_records(
     self_record.role = net_config.machine_role;
     if let Some(topology) = configured_topology {
         self_record.topology = topology.clone();
-    }
-    if self_control_target.is_some() {
-        self_record.control_target = self_control_target;
     }
     seed_records.push(self_record);
 
@@ -724,7 +720,6 @@ mod tests {
         let seed_records = build_seed_records(
             &identity,
             &net_config,
-            None,
             51820,
             std::slice::from_ref(&founder),
             None,
@@ -750,33 +745,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_seed_records_applies_self_control_target() {
-        let identity = Identity::generate(MachineId("joiner".into()), [4; 32]);
-        let net_config = NetworkConfig::new(
-            NetworkName("alpha".into()),
-            &identity.public_key,
-            DEFAULT_CLUSTER_CIDR,
-            "10.210.1.0/24".parse().expect("valid subnet"),
-        );
-
-        let seed_records = build_seed_records(
-            &identity,
-            &net_config,
-            Some("self-target".into()),
-            51820,
-            &[],
-            None,
-        )
-        .await;
-
-        let self_record = seed_records
-            .into_iter()
-            .find(|machine| machine.id == identity.machine_id)
-            .expect("self record");
-        assert_eq!(self_record.control_target, Some("self-target".into()));
-    }
-
-    #[tokio::test]
     async fn build_seed_records_applies_configured_self_topology() {
         let identity = Identity::generate(MachineId("joiner".into()), [4; 32]);
         let net_config = NetworkConfig::new(
@@ -791,7 +759,6 @@ mod tests {
         let seed_records = build_seed_records(
             &identity,
             &net_config,
-            None,
             51820,
             &[],
             Some(&configured_topology),
