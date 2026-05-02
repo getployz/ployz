@@ -510,6 +510,39 @@ impl MeshStartTx {
             state.identity.machine_id.clone(),
         ));
 
+        let state_view_reconciler = if spawn_renewal_ticker {
+            let nats_client_url = if state.runtime_target == RuntimeTarget::Docker {
+                crate::services::nats::local_client_url()
+            } else {
+                crate::services::nats::overlay_client_url(self.config.overlay_ip)
+            };
+            let leaf_domain = match self.config.machine_role {
+                ployz_types::model::MachineRole::Mirror => Some(ployz_nats::config::leaf_domain(
+                    self.config.overlay_ip.0,
+                )),
+                ployz_types::model::MachineRole::StorageCandidate
+                | ployz_types::model::MachineRole::Leaf => None,
+            };
+            let nats_store = NatsStore::connect_with_role(
+                &nats_client_url,
+                self.config.machine_role,
+                leaf_domain,
+            )
+            .await
+            .map_err(|error| {
+                StartMeshError::MeshUp(format!("nats connect for state view reconciler: {error}"))
+            })?;
+            Some(
+                crate::daemon::state_view_reconciler::spawn(nats_store)
+                    .await
+                    .map_err(|error| {
+                        StartMeshError::MeshUp(format!("state view reconciler: {error}"))
+                    })?,
+            )
+        } else {
+            None
+        };
+
         let Some(mesh) = self.mesh.take() else {
             return Err(StartMeshError::MeshUp(
                 "startup transaction missing mesh at commit".into(),
@@ -532,6 +565,7 @@ impl MeshStartTx {
             dns,
             certificate_renewal,
             bootstrap_seed_cache,
+            state_view_reconciler,
         });
         Ok(())
     }
@@ -1023,6 +1057,7 @@ mod tests {
         };
 
         active.stop_bootstrap_seed_cache().await;
+        active.stop_state_view_reconciler().await;
         active.mesh.destroy().await.expect("destroy mesh");
     }
 

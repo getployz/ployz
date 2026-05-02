@@ -1,56 +1,46 @@
-use async_nats::jetstream::kv;
-use futures_util::TryStreamExt;
+use std::collections::HashMap;
+
+use async_nats::HeaderMap;
+use async_nats::jetstream::context::PublishErrorKind;
+use async_nats::jetstream::message::PublishMessage;
 use ployz_store_api::{MachineRegistry, MachineSubscription};
 use ployz_types::error::{Error, Result};
 use ployz_types::model::{MachineEvent, MachineId, MachineMembership, RoutingEvent};
-use std::collections::HashMap;
 
 use crate::NatsStore;
-use crate::buckets::MACHINES_BUCKET;
+use crate::buckets::{
+    delete_machine_state_assets, ensure_machine_state_assets, local_read_stream_name,
+};
 use crate::store::kv_json;
-use crate::store::kv_watch;
+use crate::store::state_directory;
+use crate::store::state_view::{self, StateChange, StateMessage};
+use crate::subjects::{
+    MACHINE_STATE_VIEW_STREAM, machine_state_stream, machine_state_subject,
+    machine_tombstone_subject,
+};
 
 impl MachineRegistry for NatsStore {
+    /// List all machines from the local view stream. On `StorageCandidate`
+    /// the view lives on hub; on `Mirror` it's mirrored locally so this
+    /// is a local read.
     async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
-        let kv = machines_read_bucket(self).await?;
-        let keys = kv
-            .keys()
-            .await
-            .map_err(|error| Error::operation("nats_machines_keys", format!("{error:?}")))?
-            .try_collect::<Vec<String>>()
-            .await
-            .map_err(|error| Error::operation("nats_machines_keys", format!("{error:?}")))?;
-        let mut machines = Vec::new();
-        for key in keys {
-            let Some(bytes) = kv
-                .get(key.clone())
-                .await
-                .map_err(|error| Error::operation("nats_machine_get", format!("{error:?}")))?
-            else {
-                continue;
-            };
-            machines.push(decode_machine(&key, bytes.as_ref())?);
-        }
-        Ok(machines)
+        let (snapshot, _events) = self.subscribe_machines_internal().await?;
+        Ok(snapshot)
     }
 
+    /// Publish the local node's self-record to its per-machine state
+    /// stream. The first call also ensures the per-machine streams exist
+    /// on hub and registers the machine in `machine_directory`.
+    /// Continues to publish a `RoutingEvent::Machine*` for cross-node
+    /// fan-out signal — consumers that read from `subscribe_machines`
+    /// also use these events on the routing batch path.
     async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()> {
-        let kv = machines_write_bucket(self).await?;
-        let old = kv
-            .get(record.id.0.as_str())
-            .await
-            .map_err(|error| Error::operation("nats_machine_get", format!("{error:?}")))?
-            .map(|bytes| decode_machine(record.id.0.as_str(), bytes.as_ref()))
-            .transpose()?;
-        kv_json::put_json(
-            &kv,
-            record.id.0.as_str(),
-            record,
-            "nats_machine_encode",
-            "nats_machine_put",
-        )
-        .await?;
+        ensure_machine_state_assets(self, &record.id).await?;
+        state_directory::register(self, &record.id).await?;
+        let old = read_machine_state(self, &record.id).await?;
+        publish_machine_state(self, record).await?;
         let event = match old {
+            Some(old) if old == *record => return Ok(()),
             Some(old) => RoutingEvent::MachineUpdated {
                 old,
                 new: record.clone(),
@@ -66,87 +56,163 @@ impl MachineRegistry for NatsStore {
     }
 
     async fn delete_machine(&self, id: &MachineId) -> Result<()> {
-        let kv = machines_write_bucket(self).await?;
-        let old = kv
-            .get(id.0.as_str())
-            .await
-            .map_err(|error| Error::operation("nats_machine_get", format!("{error:?}")))?
-            .map(|bytes| decode_machine(id.0.as_str(), bytes.as_ref()))
-            .transpose()?;
-        let Some(old) = old else {
+        let Some(old) = read_machine_state(self, id).await? else {
             return Ok(());
         };
+        publish_machine_tombstone(self, id).await?;
         self.publish_routing_batch(
             format!("machine:delete:{}", id.0),
             "machine.delete",
             &[RoutingEvent::MachineRemoved(old)],
         )
         .await?;
-        kv_json::delete(&kv, id.0.as_str(), "nats_machine_delete").await
+        state_directory::deregister(self, id).await?;
+        delete_machine_state_assets(self, id).await
     }
 
     async fn subscribe_machines(&self) -> Result<MachineSubscription> {
-        let kv = machines_read_bucket(self).await?;
-        let snapshot_boundary =
-            kv_json::latest_sequence(&kv, "nats_machines_snapshot_boundary").await?;
-        let snapshot = self.list_machines().await?;
-        kv_watch::subscribe_all(
-            &kv,
-            snapshot,
-            snapshot_boundary,
+        self.subscribe_machines_internal().await
+    }
+}
+
+impl NatsStore {
+    async fn subscribe_machines_internal(&self) -> Result<MachineSubscription> {
+        state_view::subscribe(
+            self,
+            &local_read_stream_name(self, MACHINE_STATE_VIEW_STREAM),
+            None,
+            decode_machine_message,
+            machine_event_for,
             |record: &MachineMembership| record.id.0.clone(),
-            "nats_machines_watch",
-            "NATS machines watcher failed",
-            "NATS machine event decode failed",
-            machine_event_from_kv_entry,
         )
         .await
     }
 }
 
-async fn machines_read_bucket(store: &NatsStore) -> Result<kv::Store> {
-    kv_json::read_bucket_for(store, MACHINES_BUCKET, "nats_machines_bucket").await
-}
-
-async fn machines_write_bucket(store: &NatsStore) -> Result<kv::Store> {
-    kv_json::write_bucket_for(store, MACHINES_BUCKET, "nats_machines_bucket").await
-}
-
-fn machine_event_from_kv_entry(
-    last_seen: &mut HashMap<String, MachineMembership>,
-    key: &str,
-    bytes: &[u8],
-    operation: kv::Operation,
-) -> Result<Option<MachineEvent>> {
-    match operation {
-        kv::Operation::Put => {
-            let machine = decode_machine(key, bytes)?;
-            let event = match last_seen.get(key) {
-                Some(existing) if existing == &machine => return Ok(None),
-                Some(_) => MachineEvent::Updated(machine.clone()),
-                None => MachineEvent::Added(machine.clone()),
-            };
-            last_seen.insert(key.to_string(), machine);
-            Ok(Some(event))
-        }
-        kv::Operation::Delete | kv::Operation::Purge => {
-            Ok(last_seen.remove(key).map(MachineEvent::Removed))
-        }
-    }
-}
-
-fn decode_machine(key: &str, bytes: &[u8]) -> Result<MachineMembership> {
-    let record: MachineMembership = kv_json::decode_json("nats_machine_decode", bytes)?;
-    if record.id.0 != key {
-        return Err(Error::operation(
+/// Read the current self-state for `machine_id` from the local view
+/// stream. Returns `None` if the view doesn't carry a record for this
+/// machine yet (e.g. fresh cluster, source replication still catching up).
+async fn read_machine_state(
+    store: &NatsStore,
+    machine_id: &MachineId,
+) -> Result<Option<MachineMembership>> {
+    let stream_name = local_read_stream_name(store, MACHINE_STATE_VIEW_STREAM);
+    let stream = match store.local_jetstream().get_stream(&stream_name).await {
+        Ok(stream) => stream,
+        Err(_) => return Ok(None),
+    };
+    let subject = machine_state_subject(machine_id);
+    match stream.direct_get_last_for_subject(&subject).await {
+        Ok(message) => Ok(Some(kv_json::decode_json::<MachineMembership>(
             "nats_machine_decode",
-            format!(
-                "machine key {key} does not match payload id {}",
-                record.id.0
-            ),
-        ));
+            message.payload.as_ref(),
+        )?)),
+        Err(_) => Ok(None),
     }
-    Ok(record)
+}
+
+async fn publish_machine_state(store: &NatsStore, record: &MachineMembership) -> Result<()> {
+    let payload = serde_json::to_vec(record)
+        .map_err(|error| Error::operation("nats_machine_encode", error.to_string()))?;
+    let publish = PublishMessage::build()
+        .payload(payload.into())
+        .expected_stream(machine_state_stream(&record.id))
+        .message_id(format!("machine_state:{}", record.id.0));
+    let ack = store
+        .hub_jetstream()
+        .send_publish(machine_state_subject(&record.id), publish)
+        .await
+        .map_err(|error| Error::operation("nats_machine_publish", format!("{error:?}")))?;
+    match ack.await {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == PublishErrorKind::WrongLastSequence => {
+            // Idempotent dedup window hit — same record-id within the
+            // duplicate window. Treat as success because the new state is
+            // already (or about to be) on the stream.
+            Ok(())
+        }
+        Err(error) => Err(Error::operation(
+            "nats_machine_ack",
+            format!("{error:?}"),
+        )),
+    }
+}
+
+async fn publish_machine_tombstone(store: &NatsStore, machine_id: &MachineId) -> Result<()> {
+    let publish = PublishMessage::build()
+        .payload(Vec::new().into())
+        .expected_stream(machine_state_stream(machine_id))
+        .headers(HeaderMap::new())
+        .message_id(format!("machine_tombstone:{}", machine_id.0));
+    let ack = store
+        .hub_jetstream()
+        .send_publish(machine_tombstone_subject(machine_id), publish)
+        .await
+        .map_err(|error| {
+            Error::operation("nats_machine_tombstone_publish", format!("{error:?}"))
+        })?;
+    match ack.await {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == PublishErrorKind::WrongLastSequence => Ok(()),
+        Err(error) => Err(Error::operation(
+            "nats_machine_tombstone_ack",
+            format!("{error:?}"),
+        )),
+    }
+}
+
+fn decode_machine_message(subject: &str, payload: &[u8]) -> Result<StateMessage<MachineMembership>> {
+    let key = subject_to_key(subject)?;
+    if subject_is_tombstone(subject) {
+        return Ok(StateMessage::Tombstone { key });
+    }
+    let machine = kv_json::decode_json::<MachineMembership>("nats_machine_decode", payload)?;
+    Ok(StateMessage::Upsert {
+        key,
+        value: machine,
+    })
+}
+
+/// Subject layout: `state.<machine_id>.machine` /
+/// `state.<machine_id>.machine_tombstone`. We key the in-memory map by
+/// `machine_id` so a put on `state` and a tombstone on the tombstone
+/// subject act on the same logical row.
+fn subject_to_key(subject: &str) -> Result<String> {
+    let mut parts = subject.split('.');
+    let prefix = parts.next();
+    let token = parts.next();
+    match (prefix, token) {
+        (Some("state"), Some(token)) => Ok(token.to_string()),
+        _ => Err(Error::operation(
+            "nats_machine_state_subject",
+            format!("unexpected machine state subject: {subject}"),
+        )),
+    }
+}
+
+fn subject_is_tombstone(subject: &str) -> bool {
+    subject.ends_with(".machine_tombstone")
+}
+
+fn machine_event_for(
+    last_seen: &mut HashMap<String, MachineMembership>,
+    decoded: StateMessage<MachineMembership>,
+) -> StateChange<MachineMembership, MachineEvent> {
+    match decoded {
+        StateMessage::Upsert { key, value } => {
+            let event = match last_seen.get(&key) {
+                Some(existing) if existing == &value => return StateChange::Silent,
+                Some(_) => MachineEvent::Updated(value.clone()),
+                None => MachineEvent::Added(value.clone()),
+            };
+            last_seen.insert(key, value);
+            StateChange::Event(event)
+        }
+        StateMessage::Tombstone { key } => match last_seen.remove(&key) {
+            Some(removed) => StateChange::Event(MachineEvent::Removed(removed)),
+            None => StateChange::Silent,
+        },
+    }
 }
 
 #[cfg(test)]
@@ -155,28 +221,6 @@ mod tests {
     use ployz_types::model::{
         MachineLifecycle, MachineRole, MachineTopology, OverlayIp, PublicKey,
     };
-
-    #[test]
-    fn machine_kv_decode_failure_is_subscription_failure() {
-        let mut last_seen = HashMap::new();
-
-        let result =
-            machine_event_from_kv_entry(&mut last_seen, "machine-a", b"{", kv::Operation::Put);
-
-        assert!(result.is_err());
-        assert!(last_seen.is_empty());
-    }
-
-    #[test]
-    fn machine_kv_delete_for_unknown_key_is_noop() {
-        let mut last_seen = HashMap::new();
-
-        let event =
-            machine_event_from_kv_entry(&mut last_seen, "machine-a", &[], kv::Operation::Delete)
-                .expect("delete should not fail");
-
-        assert!(event.is_none());
-    }
 
     fn test_machine(id: &str) -> MachineMembership {
         MachineMembership {
@@ -196,30 +240,135 @@ mod tests {
     }
 
     #[test]
-    fn machine_kv_put_updates_last_seen() {
-        let machine = test_machine("machine-a");
-        let bytes = serde_json::to_vec(&machine).expect("encode machine");
-        let mut last_seen = HashMap::new();
-
-        let event =
-            machine_event_from_kv_entry(&mut last_seen, "machine-a", &bytes, kv::Operation::Put)
-                .expect("put should decode");
-
-        assert!(matches!(event, Some(MachineEvent::Added(record)) if record == machine));
-        assert_eq!(last_seen.get("machine-a"), Some(&machine));
+    fn subject_decode_extracts_machine_id_from_state_subject() {
+        let key = subject_to_key("state.machine-a.machine").expect("decode");
+        assert_eq!(key, "machine-a");
     }
 
     #[test]
-    fn machine_kv_put_ignores_identical_value() {
-        let machine = test_machine("machine-a");
-        let bytes = serde_json::to_vec(&machine).expect("encode machine");
-        let mut last_seen = HashMap::from([(String::from("machine-a"), machine.clone())]);
+    fn subject_decode_extracts_machine_id_from_tombstone_subject() {
+        let key = subject_to_key("state.machine-a.machine_tombstone").expect("decode");
+        assert_eq!(key, "machine-a");
+    }
 
-        let event =
-            machine_event_from_kv_entry(&mut last_seen, "machine-a", &bytes, kv::Operation::Put)
-                .expect("put should decode");
+    #[test]
+    fn subject_decode_rejects_unrelated_subject() {
+        assert!(subject_to_key("foo.bar").is_err());
+        assert!(subject_to_key("state").is_err());
+    }
 
-        assert!(event.is_none());
-        assert_eq!(last_seen.get("machine-a"), Some(&machine));
+    #[test]
+    fn subject_is_tombstone_distinguishes_tombstone_from_live() {
+        assert!(subject_is_tombstone("state.m1.machine_tombstone"));
+        assert!(!subject_is_tombstone("state.m1.machine"));
+    }
+
+    #[test]
+    fn upsert_decode_yields_upsert_state_message() {
+        let machine = test_machine("m1");
+        let bytes = serde_json::to_vec(&machine).expect("encode");
+        let message = decode_machine_message("state.m1.machine", &bytes).expect("decode");
+        match message {
+            StateMessage::Upsert { key, value } => {
+                assert_eq!(key, "m1");
+                assert_eq!(value, machine);
+            }
+            _ => panic!("expected Upsert"),
+        }
+    }
+
+    #[test]
+    fn tombstone_decode_yields_tombstone_state_message() {
+        let message =
+            decode_machine_message("state.m1.machine_tombstone", &[]).expect("decode");
+        match message {
+            StateMessage::Tombstone { key } => assert_eq!(key, "m1"),
+            _ => panic!("expected Tombstone"),
+        }
+    }
+
+    #[test]
+    fn machine_event_for_emits_added_on_first_observation() {
+        let mut last_seen = HashMap::new();
+        let machine = test_machine("m1");
+        let change = machine_event_for(
+            &mut last_seen,
+            StateMessage::Upsert {
+                key: "m1".into(),
+                value: machine.clone(),
+            },
+        );
+        match change {
+            StateChange::Event(MachineEvent::Added(record)) => assert_eq!(record, machine),
+            _ => panic!("expected Added event"),
+        }
+        assert_eq!(last_seen.get("m1"), Some(&machine));
+    }
+
+    #[test]
+    fn machine_event_for_skips_identical_value() {
+        let mut last_seen = HashMap::new();
+        let machine = test_machine("m1");
+        last_seen.insert("m1".into(), machine.clone());
+        let change = machine_event_for(
+            &mut last_seen,
+            StateMessage::Upsert {
+                key: "m1".into(),
+                value: machine,
+            },
+        );
+        assert!(matches!(change, StateChange::Silent));
+    }
+
+    #[test]
+    fn machine_event_for_emits_updated_on_change() {
+        let mut last_seen = HashMap::new();
+        let mut original = test_machine("m1");
+        original.lifecycle = MachineLifecycle::Active;
+        last_seen.insert("m1".into(), original);
+        let mut updated = test_machine("m1");
+        updated.lifecycle = MachineLifecycle::Draining;
+        let change = machine_event_for(
+            &mut last_seen,
+            StateMessage::Upsert {
+                key: "m1".into(),
+                value: updated.clone(),
+            },
+        );
+        match change {
+            StateChange::Event(MachineEvent::Updated(record)) => {
+                assert_eq!(record.lifecycle, MachineLifecycle::Draining);
+                assert_eq!(record, updated);
+            }
+            _ => panic!("expected Updated event"),
+        }
+    }
+
+    #[test]
+    fn machine_event_for_emits_removed_on_tombstone() {
+        let mut last_seen = HashMap::new();
+        let machine = test_machine("m1");
+        last_seen.insert("m1".into(), machine.clone());
+        let change = machine_event_for(
+            &mut last_seen,
+            StateMessage::Tombstone { key: "m1".into() },
+        );
+        match change {
+            StateChange::Event(MachineEvent::Removed(record)) => assert_eq!(record, machine),
+            _ => panic!("expected Removed event"),
+        }
+        assert!(last_seen.is_empty());
+    }
+
+    #[test]
+    fn machine_event_for_silent_on_unknown_tombstone() {
+        let mut last_seen = HashMap::new();
+        let change = machine_event_for(
+            &mut last_seen,
+            StateMessage::Tombstone {
+                key: "unknown".into(),
+            },
+        );
+        assert!(matches!(change, StateChange::Silent));
     }
 }

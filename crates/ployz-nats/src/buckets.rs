@@ -17,10 +17,13 @@ use crate::subjects::{
 };
 use ployz_types::model::MachineId;
 
-pub const MACHINES_BUCKET: &str = "machines";
+// `machines` and `instances` KV buckets used to live here. They're gone
+// because per-machine streams (`state_machine_<id>`, `state_instances_<id>`)
+// own that data now and the local view streams (`machine_state_view`,
+// `instance_state_view`) materialize it for read paths. See `subjects.rs`
+// and `state_view.rs`.
 pub const INVITES_BUCKET: &str = "invites";
 pub const DEPLOY_STATUS_BUCKET: &str = "deploy_status";
-pub const INSTANCES_BUCKET: &str = "instances";
 pub const ACME_ACCOUNTS_BUCKET: &str = "acme_accounts";
 pub const CERTIFICATES_BUCKET: &str = "certificates";
 pub const ACME_CHALLENGES_BUCKET: &str = "acme_challenges";
@@ -59,10 +62,8 @@ pub fn local_read_stream_name(store: &NatsStore, hub_stream: &str) -> String {
 /// intentionally excluded from this list — those need linearizable reads
 /// against the hub and must never be mirrored.
 const DURABLE_BUCKETS: &[&str] = &[
-    MACHINES_BUCKET,
     INVITES_BUCKET,
     DEPLOY_STATUS_BUCKET,
-    INSTANCES_BUCKET,
     ACME_ACCOUNTS_BUCKET,
     CERTIFICATES_BUCKET,
     ACME_CHALLENGES_BUCKET,
@@ -312,6 +313,41 @@ pub fn instance_state_source(machine_id: &MachineId) -> stream::Source {
         name: instance_state_stream(machine_id),
         domain: Some(HUB_DOMAIN.into()),
         ..Default::default()
+    }
+}
+
+/// Reconcile both view streams against the current directory snapshot.
+/// Drives `machine_state_view` and `instance_state_view` to source from
+/// exactly the per-machine streams listed in `machine_ids`.
+///
+/// Idempotent: on first call (or first call after restart) the streams are
+/// created with the desired source set; on subsequent calls the source set
+/// is updated in place via `update_stream`. JetStream tolerates source
+/// list mutations and replays from each new source from sequence 1.
+pub async fn reconcile_view_streams(store: &NatsStore, machine_ids: &[MachineId]) -> Result<()> {
+    let machine_sources: Vec<_> = machine_ids.iter().map(machine_state_source).collect();
+    let instance_sources: Vec<_> = machine_ids.iter().map(instance_state_source).collect();
+    apply_view_stream(store, machine_state_view_config(machine_sources)).await?;
+    apply_view_stream(store, instance_state_view_config(instance_sources)).await
+}
+
+async fn apply_view_stream(store: &NatsStore, config: stream::Config) -> Result<()> {
+    let js = store.local_jetstream();
+    match js.get_stream(config.name.clone()).await {
+        Ok(_) => js
+            .update_stream(&config)
+            .await
+            .map(|_| ())
+            .map_err(|error| {
+                Error::operation("nats_state_view_update", format!("{error:?}"))
+            }),
+        Err(_) => js
+            .create_stream(config)
+            .await
+            .map(|_| ())
+            .map_err(|error| {
+                Error::operation("nats_state_view_create", format!("{error:?}"))
+            }),
     }
 }
 

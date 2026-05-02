@@ -5,6 +5,7 @@ pub mod handlers;
 mod runtime;
 mod setup;
 pub mod ssh;
+mod state_view_reconciler;
 mod subnet_coordination;
 
 use std::path::{Path, PathBuf};
@@ -37,6 +38,7 @@ pub struct ActiveMesh {
     pub dns: Box<dyn RuntimeHandle>,
     pub certificate_renewal: Option<CertificateRenewalTask>,
     pub bootstrap_seed_cache: Option<BootstrapSeedCacheTask>,
+    pub state_view_reconciler: Option<state_view_reconciler::StateViewReconcilerTask>,
 }
 
 impl ActiveMesh {
@@ -48,6 +50,12 @@ impl ActiveMesh {
 
     pub async fn stop_bootstrap_seed_cache(&mut self) {
         if let Some(task) = self.bootstrap_seed_cache.take() {
+            task.shutdown().await;
+        }
+    }
+
+    pub async fn stop_state_view_reconciler(&mut self) {
+        if let Some(task) = self.state_view_reconciler.take() {
             task.shutdown().await;
         }
     }

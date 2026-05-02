@@ -145,6 +145,7 @@ mod tests {
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             certificate_renewal: None,
             bootstrap_seed_cache: None,
+            state_view_reconciler: None,
         });
 
         let error = state
@@ -281,6 +282,7 @@ mod tests {
             dns: Box::new(ployz_runtime_api::NoopRuntimeHandle),
             certificate_renewal: None,
             bootstrap_seed_cache: None,
+            state_view_reconciler: None,
         });
         (state, store, network)
     }

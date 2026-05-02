@@ -6,3 +6,5 @@ pub(crate) mod kv_json;
 pub(crate) mod kv_watch;
 pub mod machines;
 pub mod routing;
+pub mod state_directory;
+pub mod state_view;
