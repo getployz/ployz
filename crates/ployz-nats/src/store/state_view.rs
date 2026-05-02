@@ -72,20 +72,26 @@ where
     // first reader (e.g. orchestrator startup right after the founder's
     // first `upsert_self_machine`), the stream may not exist yet. Fall
     // through with an empty snapshot and a closed receiver; the caller
-    // re-subscribes via the routing-event path once events appear.
-    let mut stream = match store.local_jetstream().get_stream(view_stream).await {
+    // re-subscribes via the routing-event path once events appear. Any
+    // other JetStream error (transport, auth, server outage) propagates
+    // — silently swallowing them would violate the failure-audience
+    // rule by serving an empty snapshot as if it were authoritative.
+    let stream = match store.local_jetstream().get_stream(view_stream).await {
         Ok(stream) => stream,
-        Err(_) => {
-            let (_tx, rx) = mpsc::channel::<Result<E>>(1);
-            return Ok((Vec::new(), rx));
+        Err(error) => {
+            // We can't pattern-match on the kind in async-nats 0.47
+            // without exposing internal types. Distinguish "stream not
+            // found" from other failures by inspecting the debug
+            // formatting; "stream not found" / NATS code 10059 are both
+            // expected during the lazy-create window.
+            let message = format!("{error:?}");
+            if message.contains("stream not found") || message.contains("10059") {
+                let (_tx, rx) = mpsc::channel::<Result<E>>(1);
+                return Ok((Vec::new(), rx));
+            }
+            return Err(Error::operation("nats_state_view_stream", message));
         }
     };
-    let info = stream
-        .info()
-        .await
-        .map_err(|error| Error::operation("nats_state_view_info", format!("{error:?}")))?;
-    let snapshot_boundary = info.state.last_sequence;
-
     let inbox = store.client().new_inbox();
     let mut config = push::Config {
         deliver_subject: inbox,
@@ -100,38 +106,43 @@ where
     if let Some(filter) = filter_subject {
         config.filter_subject = filter;
     }
-    let consumer: async_nats::jetstream::consumer::PushConsumer = stream
+    let mut consumer: async_nats::jetstream::consumer::PushConsumer = stream
         .create_consumer(config)
         .await
         .map_err(|error| Error::operation("nats_state_view_consumer", format!("{error:?}")))?;
+    // Snapshot count is the consumer's `num_pending` after creation: the
+    // number of messages that match the consumer's filter (if any) and
+    // are available to deliver. Using `stream.last_sequence` would
+    // overcount when a `filter_subject` is set — the loop would then
+    // wait forever for messages that don't match the filter.
+    let consumer_info = consumer
+        .info()
+        .await
+        .map_err(|error| Error::operation("nats_state_view_consumer_info", format!("{error:?}")))?
+        .clone();
+    let snapshot_count = consumer_info.num_pending;
     let mut messages = consumer
         .messages()
         .await
         .map_err(|error| Error::operation("nats_state_view_messages", format!("{error:?}")))?;
 
-    // Snapshot phase: drain up to snapshot_boundary, building the map.
+    // Snapshot phase: drain `snapshot_count` filter-matching messages.
     let mut last_seen: HashMap<String, T> = HashMap::new();
-    if snapshot_boundary > 0 {
-        loop {
-            let next = messages.next().await;
-            let Some(item) = next else {
-                return Err(Error::operation(
-                    "nats_state_view_snapshot",
-                    "consumer stream ended before snapshot completed",
-                ));
-            };
-            let message = item.map_err(|error| {
-                Error::operation("nats_state_view_snapshot", format!("{error:?}"))
-            })?;
-            let info = message.info().map_err(|error| {
-                Error::operation("nats_state_view_info", format!("{error:?}"))
-            })?;
-            let decoded = decode(message.subject.as_str(), message.payload.as_ref())?;
-            let _ = event_for(&mut last_seen, decoded);
-            if info.stream_sequence >= snapshot_boundary {
-                break;
-            }
-        }
+    let mut delivered: u64 = 0;
+    while delivered < snapshot_count {
+        let next = messages.next().await;
+        let Some(item) = next else {
+            return Err(Error::operation(
+                "nats_state_view_snapshot",
+                "consumer stream ended before snapshot completed",
+            ));
+        };
+        let message = item.map_err(|error| {
+            Error::operation("nats_state_view_snapshot", format!("{error:?}"))
+        })?;
+        delivered = delivered.saturating_add(1);
+        let decoded = decode(message.subject.as_str(), message.payload.as_ref())?;
+        let _ = event_for(&mut last_seen, decoded);
     }
     let snapshot: Vec<T> = last_seen
         .values()
