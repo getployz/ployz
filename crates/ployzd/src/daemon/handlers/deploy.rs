@@ -63,7 +63,13 @@ impl DaemonState {
         } else {
             crate::services::nats::overlay_client_url(active.config.overlay_ip)
         };
-        let nats_store = match ployz_nats::NatsStore::connect(&nats_client_url).await {
+        let nats_store = match crate::services::nats::connect_for_local_role(
+            &nats_client_url,
+            active.config.machine_role,
+            active.config.overlay_ip,
+        )
+        .await
+        {
             Ok(store) => store,
             Err(error) => return self.err("DEPLOY_PREVIEW_FAILED", error.to_string()),
         };
@@ -105,7 +111,13 @@ impl DaemonState {
         } else {
             crate::services::nats::overlay_client_url(active.config.overlay_ip)
         };
-        let nats_store = match ployz_nats::NatsStore::connect(&nats_client_url).await {
+        let nats_store = match crate::services::nats::connect_for_local_role(
+            &nats_client_url,
+            active.config.machine_role,
+            active.config.overlay_ip,
+        )
+        .await
+        {
             Ok(store) => store,
             Err(error) => return self.err("DEPLOY_APPLY_FAILED", error.to_string()),
         };

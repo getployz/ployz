@@ -176,6 +176,23 @@ fn parse_peer_route(raw: &str) -> Option<PeerRoute> {
     Some(PeerRoute { overlay_ip })
 }
 
+/// Connect a `NatsStore` with the role and leaf domain derived from the
+/// network config of the local node. Mirrors what `connect_for_network`
+/// does internally, but takes inputs directly so call sites that
+/// already have the `MachineRole` and `OverlayIp` don't have to round
+/// trip through `network.json`.
+pub(crate) async fn connect_for_local_role(
+    client_url: &str,
+    machine_role: MachineRole,
+    overlay_ip: OverlayIp,
+) -> ployz_types::error::Result<NatsStore> {
+    let leaf_domain = match machine_role {
+        MachineRole::Mirror => Some(config::leaf_domain(overlay_ip.0)),
+        MachineRole::StorageCandidate | MachineRole::Leaf => None,
+    };
+    NatsStore::connect_with_role(client_url, machine_role, leaf_domain).await
+}
+
 pub(crate) fn overlay_client_url(overlay_ip: OverlayIp) -> String {
     format!("nats://[{}]:{}", overlay_ip.0, CLIENT_PORT)
 }

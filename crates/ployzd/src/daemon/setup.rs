@@ -49,15 +49,19 @@ const CERT_RENEWAL_JOB_RETRY_DELAY: Duration = Duration::from_secs(60);
 async fn build_nats_subnet_coordinator(
     state: &DaemonState,
     overlay_ip: ployz_types::model::OverlayIp,
+    machine_role: ployz_types::model::MachineRole,
 ) -> Result<std::sync::Arc<dyn SubnetReservationCoordinator>, StartMeshError> {
     let client_url = if state.runtime_target == RuntimeTarget::Docker {
         crate::services::nats::local_client_url()
     } else {
         crate::services::nats::overlay_client_url(overlay_ip)
     };
-    let nats_store = NatsStore::connect(&client_url).await.map_err(|error| {
-        StartMeshError::MeshUp(format!("nats connect for subnet coord: {error}"))
-    })?;
+    let nats_store =
+        crate::services::nats::connect_for_local_role(&client_url, machine_role, overlay_ip)
+            .await
+            .map_err(|error| {
+                StartMeshError::MeshUp(format!("nats connect for subnet coord: {error}"))
+            })?;
     nats_store
         .start()
         .await
@@ -382,9 +386,13 @@ impl MeshStartTx {
         } else {
             crate::services::nats::overlay_client_url(self.config.overlay_ip)
         };
-        let nats_store = NatsStore::connect(&client_url).await.map_err(|error| {
-            StartMeshError::MeshUp(format!("nats connect for node rpc: {error}"))
-        })?;
+        let nats_store = crate::services::nats::connect_for_local_role(
+            &client_url,
+            self.config.machine_role,
+            self.config.overlay_ip,
+        )
+        .await
+        .map_err(|error| StartMeshError::MeshUp(format!("nats connect for node rpc: {error}")))?;
         nats_store
             .start()
             .await
@@ -450,7 +458,14 @@ impl MeshStartTx {
         };
 
         let subnet_coord = if spawn_renewal_ticker {
-            Some(build_nats_subnet_coordinator(state, self.config.overlay_ip).await?)
+            Some(
+                build_nats_subnet_coordinator(
+                    state,
+                    self.config.overlay_ip,
+                    self.config.machine_role,
+                )
+                .await?,
+            )
         } else {
             None
         };
@@ -462,7 +477,11 @@ impl MeshStartTx {
             } else {
                 crate::services::nats::overlay_client_url(self.config.overlay_ip)
             };
-            let nats_store = NatsStore::connect(&nats_client_url)
+            let nats_store = crate::services::nats::connect_for_local_role(
+                &nats_client_url,
+                self.config.machine_role,
+                self.config.overlay_ip,
+            )
                 .await
                 .map_err(|error| {
                     StartMeshError::MeshUp(format!("nats connect for cert coord: {error}"))

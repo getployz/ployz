@@ -67,11 +67,19 @@ where
     T: Clone + Send + 'static,
     E: Send + 'static,
 {
-    let mut stream = store
-        .local_jetstream()
-        .get_stream(view_stream)
-        .await
-        .map_err(|error| Error::operation("nats_state_view_stream", format!("{error:?}")))?;
+    // The view stream is created lazily by the directory reconciler — it
+    // only exists once at least one machine has registered. If we're the
+    // first reader (e.g. orchestrator startup right after the founder's
+    // first `upsert_self_machine`), the stream may not exist yet. Fall
+    // through with an empty snapshot and a closed receiver; the caller
+    // re-subscribes via the routing-event path once events appear.
+    let mut stream = match store.local_jetstream().get_stream(view_stream).await {
+        Ok(stream) => stream,
+        Err(_) => {
+            let (_tx, rx) = mpsc::channel::<Result<E>>(1);
+            return Ok((Vec::new(), rx));
+        }
+    };
     let info = stream
         .info()
         .await

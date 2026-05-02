@@ -278,9 +278,13 @@ impl DaemonState {
         } else {
             crate::services::nats::overlay_client_url(active.config.overlay_ip)
         };
-        let store = ployz_nats::NatsStore::connect(&client_url)
-            .await
-            .map_err(|error| error.to_string())?;
+        let store = crate::services::nats::connect_for_local_role(
+            &client_url,
+            active.config.machine_role,
+            active.config.overlay_ip,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
         ployz_store_api::StoreRuntimeControl::start(&store)
             .await
             .map_err(|error| error.to_string())?;

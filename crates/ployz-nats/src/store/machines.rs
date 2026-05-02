@@ -10,6 +10,7 @@ use ployz_types::model::{MachineEvent, MachineId, MachineMembership, RoutingEven
 use crate::NatsStore;
 use crate::buckets::{
     delete_machine_state_assets, ensure_machine_state_assets, local_read_stream_name,
+    reconcile_view_streams,
 };
 use crate::store::kv_json;
 use crate::store::state_directory;
@@ -37,6 +38,18 @@ impl MachineRegistry for NatsStore {
     async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()> {
         ensure_machine_state_assets(self, &record.id).await?;
         state_directory::register(self, &record.id).await?;
+        // Synchronously reconcile the local view streams so the next
+        // reader (e.g. the orchestrator's first `subscribe_machines`
+        // right after this returns) sees a view stream sourcing from
+        // this machine's per-machine streams. The background reconciler
+        // would converge on the same state via the directory event,
+        // but the writer-side eager call closes a startup race.
+        let directory = state_directory::list(self).await?;
+        let machine_ids: Vec<MachineId> = directory
+            .into_iter()
+            .map(|entry| entry.machine_id)
+            .collect();
+        reconcile_view_streams(self, &machine_ids).await?;
         let old = read_machine_state(self, &record.id).await?;
         publish_machine_state(self, record).await?;
         let event = match old {

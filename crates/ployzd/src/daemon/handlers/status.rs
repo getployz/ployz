@@ -6,7 +6,6 @@ use ployz_api::{
     StatusPayload,
 };
 use ployz_config::RuntimeTarget;
-use ployz_nats::NatsStore;
 use ployz_nats::buckets::{
     ACME_ACCOUNTS_BUCKET, ACME_CHALLENGE_READINESS_BUCKET, ACME_CHALLENGES_BUCKET,
     CERTIFICATES_BUCKET, COORDINATOR_LEASE_BUCKET, DEPLOY_STATUS_BUCKET, INVITES_BUCKET,
@@ -23,11 +22,19 @@ use super::super::DaemonState;
 
 const EDGE_SYNC_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 const NATS_ASSET_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+/// Hub-domain JetStream assets queried through `hub_jetstream()`. On a
+/// Mirror these reach hub via leafnode forwarding.
 const NATS_STREAM_ASSETS: &[&str] = &[
     DEPLOY_COMMITS_STREAM,
     ROUTING_EVENTS_STREAM,
     REVISIONS_STREAM,
     CERT_JOBS_STREAM,
+];
+/// Local-domain assets queried through `local_jetstream()`. Equal to
+/// hub on StorageCandidate; leaf domain on Mirror. View streams are
+/// created lazily — only after the directory has at least one entry —
+/// so missing-stream is a normal startup state, not an error.
+const NATS_LOCAL_STREAM_ASSETS: &[&str] = &[
     MACHINE_STATE_VIEW_STREAM,
     INSTANCE_STATE_VIEW_STREAM,
 ];
@@ -280,7 +287,11 @@ impl DaemonState {
         };
         match tokio::time::timeout(
             NATS_ASSET_PROBE_TIMEOUT,
-            read_nats_asset_status(&client_url),
+            read_nats_asset_status(
+                &client_url,
+                active.config.machine_role,
+                active.config.overlay_ip,
+            ),
         )
         .await
         {
@@ -292,24 +303,38 @@ impl DaemonState {
     }
 }
 
-async fn read_nats_asset_status(client_url: &str) -> Vec<NatsAssetStatus> {
-    let store = match NatsStore::connect(client_url).await {
-        Ok(store) => store,
-        Err(error) => return nats_asset_probe_error(error.to_string()),
-    };
+async fn read_nats_asset_status(
+    client_url: &str,
+    machine_role: ployz_types::model::MachineRole,
+    overlay_ip: ployz_types::model::OverlayIp,
+) -> Vec<NatsAssetStatus> {
+    let store =
+        match crate::services::nats::connect_for_local_role(client_url, machine_role, overlay_ip)
+            .await
+        {
+            Ok(store) => store,
+            Err(error) => return nats_asset_probe_error(error.to_string()),
+        };
     let mut status = Vec::new();
     for stream in NATS_STREAM_ASSETS {
-        status.push(read_stream_status(&store, stream, "stream").await);
+        status.push(read_stream_status(store.hub_jetstream(), stream, "stream").await);
     }
     for bucket in NATS_KV_ASSETS {
         let stream = format!("KV_{bucket}");
-        status.push(read_stream_status(&store, &stream, "kv").await);
+        status.push(read_stream_status(store.hub_jetstream(), &stream, "kv").await);
+    }
+    for stream in NATS_LOCAL_STREAM_ASSETS {
+        status.push(read_stream_status(store.local_jetstream(), stream, "view").await);
     }
     status
 }
 
-async fn read_stream_status(store: &NatsStore, stream: &str, kind: &str) -> NatsAssetStatus {
-    match store.jetstream().get_stream(stream).await {
+async fn read_stream_status(
+    js: &async_nats::jetstream::Context,
+    stream: &str,
+    kind: &str,
+) -> NatsAssetStatus {
+    match js.get_stream(stream).await {
         Ok(mut stream_handle) => match stream_handle.info().await {
             Ok(info) => NatsAssetStatus {
                 name: stream.to_string(),
