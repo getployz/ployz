@@ -295,24 +295,35 @@ fn state_view_config(name: &str, sources: Vec<stream::Source>) -> stream::Config
     }
 }
 
-/// Build a hub-domain `Source` referencing one machine's state stream.
-/// Used to assemble the `sources` list for `machine_state_view_config` /
-/// `instance_state_view_config`.
+/// Build a `Source` referencing one machine's state stream from the
+/// perspective of the local view stream. On a `Mirror` the local view
+/// lives in the leaf domain and must reach hub via cross-domain
+/// replication, so `domain` is `Some("hub")`. On a `StorageCandidate`
+/// the view lives in the hub domain itself; setting `domain` to the
+/// local domain is rejected by JetStream as a self-referential source,
+/// so we omit it.
 #[must_use]
-pub fn machine_state_source(machine_id: &MachineId) -> stream::Source {
+pub fn machine_state_source(role: MachineRole, machine_id: &MachineId) -> stream::Source {
     stream::Source {
         name: machine_state_stream(machine_id),
-        domain: Some(HUB_DOMAIN.into()),
+        domain: source_hub_domain(role),
         ..Default::default()
     }
 }
 
 #[must_use]
-pub fn instance_state_source(machine_id: &MachineId) -> stream::Source {
+pub fn instance_state_source(role: MachineRole, machine_id: &MachineId) -> stream::Source {
     stream::Source {
         name: instance_state_stream(machine_id),
-        domain: Some(HUB_DOMAIN.into()),
+        domain: source_hub_domain(role),
         ..Default::default()
+    }
+}
+
+fn source_hub_domain(role: MachineRole) -> Option<String> {
+    match role {
+        MachineRole::Mirror => Some(HUB_DOMAIN.into()),
+        MachineRole::StorageCandidate | MachineRole::Leaf => None,
     }
 }
 
@@ -325,8 +336,15 @@ pub fn instance_state_source(machine_id: &MachineId) -> stream::Source {
 /// is updated in place via `update_stream`. JetStream tolerates source
 /// list mutations and replays from each new source from sequence 1.
 pub async fn reconcile_view_streams(store: &NatsStore, machine_ids: &[MachineId]) -> Result<()> {
-    let machine_sources: Vec<_> = machine_ids.iter().map(machine_state_source).collect();
-    let instance_sources: Vec<_> = machine_ids.iter().map(instance_state_source).collect();
+    let role = store.role();
+    let machine_sources: Vec<_> = machine_ids
+        .iter()
+        .map(|id| machine_state_source(role, id))
+        .collect();
+    let instance_sources: Vec<_> = machine_ids
+        .iter()
+        .map(|id| instance_state_source(role, id))
+        .collect();
     apply_view_stream(store, machine_state_view_config(machine_sources)).await?;
     apply_view_stream(store, instance_state_view_config(instance_sources)).await
 }
