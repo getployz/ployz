@@ -333,21 +333,28 @@ pub async fn reconcile_view_streams(store: &NatsStore, machine_ids: &[MachineId]
 
 async fn apply_view_stream(store: &NatsStore, config: stream::Config) -> Result<()> {
     let js = store.local_jetstream();
-    match js.get_stream(config.name.clone()).await {
-        Ok(_) => js
-            .update_stream(&config)
+    let exists = js.get_stream(config.name.clone()).await.is_ok();
+    let has_sources = config
+        .sources
+        .as_ref()
+        .is_some_and(|sources| !sources.is_empty());
+    if !exists && !has_sources {
+        // A view stream with no subjects and no sources is rejected by
+        // JetStream — there's nothing for the stream to ingest. Defer
+        // creation until the first directory entry arrives; the
+        // reconciler re-runs `apply()` on every directory event.
+        return Ok(());
+    }
+    if exists {
+        js.update_stream(&config)
             .await
             .map(|_| ())
-            .map_err(|error| {
-                Error::operation("nats_state_view_update", format!("{error:?}"))
-            }),
-        Err(_) => js
-            .create_stream(config)
+            .map_err(|error| Error::operation("nats_state_view_update", format!("{error:?}")))
+    } else {
+        js.create_stream(config)
             .await
             .map(|_| ())
-            .map_err(|error| {
-                Error::operation("nats_state_view_create", format!("{error:?}"))
-            }),
+            .map_err(|error| Error::operation("nats_state_view_create", format!("{error:?}")))
     }
 }
 
