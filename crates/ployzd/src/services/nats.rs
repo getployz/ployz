@@ -70,7 +70,12 @@ pub async fn nats_docker(
         .map_err(|error| format!("docker service: {error}"))?;
 
     let client_url = local_client_url();
-    Ok(nats_driver(Arc::new(service), client_url))
+    Ok(nats_driver(
+        Arc::new(service),
+        client_url,
+        machine_role,
+        overlay_ip,
+    ))
 }
 
 pub fn nats_host(
@@ -97,16 +102,32 @@ pub fn nats_host(
     );
 
     let client_url = overlay_client_url(overlay_ip);
-    Ok(nats_driver(Arc::new(service), client_url))
+    Ok(nats_driver(
+        Arc::new(service),
+        client_url,
+        machine_role,
+        overlay_ip,
+    ))
 }
 
-fn nats_driver<S>(service: Arc<S>, client_url: String) -> StoreDriver
+fn nats_driver<S>(
+    service: Arc<S>,
+    client_url: String,
+    machine_role: MachineRole,
+    overlay_ip: OverlayIp,
+) -> StoreDriver
 where
     S: StoreRuntimeControl + Send + Sync + 'static,
 {
+    let leaf_domain = match machine_role {
+        MachineRole::Mirror => Some(config::leaf_domain(overlay_ip.0)),
+        MachineRole::StorageCandidate | MachineRole::Leaf => None,
+    };
     let backend = Arc::new(NatsRuntime {
         service,
         client_url,
+        machine_role,
+        leaf_domain,
         store: Mutex::new(None),
     });
     StoreDriver::from_backend(
@@ -179,6 +200,8 @@ fn which_nats_server() -> std::result::Result<PathBuf, String> {
 struct NatsRuntime<S> {
     service: Arc<S>,
     client_url: String,
+    machine_role: MachineRole,
+    leaf_domain: Option<String>,
     store: Mutex<Option<Arc<NatsStore>>>,
 }
 
@@ -211,7 +234,15 @@ where
                 url = %self.client_url,
                 "connecting to nats store"
             );
-            match tokio::time::timeout(CONNECT_TIMEOUT, NatsStore::connect(&self.client_url)).await
+            match tokio::time::timeout(
+                CONNECT_TIMEOUT,
+                NatsStore::connect_with_role(
+                    &self.client_url,
+                    self.machine_role,
+                    self.leaf_domain.clone(),
+                ),
+            )
+            .await
             {
                 Ok(Ok(store)) => match store.start().await {
                     Ok(()) => {

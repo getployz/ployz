@@ -12,9 +12,8 @@ impl InstanceStatusRepository for NatsStore {
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<InstanceStatusRecord>> {
-        let bucket =
-            kv_json::get_bucket(self.jetstream(), INSTANCES_BUCKET, "nats_instances_bucket")
-                .await?;
+        let bucket = kv_json::read_bucket_for(self, INSTANCES_BUCKET, "nats_instances_bucket")
+            .await?;
         let records = kv_json::list_json::<InstanceStatusRecord>(
             &bucket,
             "nats_instance_decode",
@@ -28,9 +27,8 @@ impl InstanceStatusRepository for NatsStore {
     }
 
     async fn record_instance_status(&self, record: &InstanceStatusRecord) -> Result<()> {
-        let bucket =
-            kv_json::get_bucket(self.jetstream(), INSTANCES_BUCKET, "nats_instances_bucket")
-                .await?;
+        let bucket = kv_json::write_bucket_for(self, INSTANCES_BUCKET, "nats_instances_bucket")
+            .await?;
         let old = bucket
             .get(&record.instance_id.0)
             .await
@@ -61,9 +59,8 @@ impl InstanceStatusRepository for NatsStore {
     }
 
     async fn remove_instance_status(&self, instance_id: &InstanceId) -> Result<()> {
-        let bucket =
-            kv_json::get_bucket(self.jetstream(), INSTANCES_BUCKET, "nats_instances_bucket")
-                .await?;
+        let bucket = kv_json::write_bucket_for(self, INSTANCES_BUCKET, "nats_instances_bucket")
+            .await?;
         let old = bucket
             .get(&instance_id.0)
             .await
@@ -87,7 +84,7 @@ pub(crate) async fn list_all_instance_status(
     store: &NatsStore,
 ) -> Result<Vec<InstanceStatusRecord>> {
     let bucket =
-        kv_json::get_bucket(store.jetstream(), INSTANCES_BUCKET, "nats_instances_bucket").await?;
+        kv_json::read_bucket_for(store, INSTANCES_BUCKET, "nats_instances_bucket").await?;
     kv_json::list_json::<InstanceStatusRecord>(
         &bucket,
         "nats_instance_decode",

@@ -12,7 +12,7 @@ use crate::store::kv_watch;
 
 impl MachineRegistry for NatsStore {
     async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
-        let kv = machines_bucket(self).await?;
+        let kv = machines_read_bucket(self).await?;
         let keys = kv
             .keys()
             .await
@@ -35,7 +35,7 @@ impl MachineRegistry for NatsStore {
     }
 
     async fn upsert_self_machine(&self, record: &MachineMembership) -> Result<()> {
-        let kv = machines_bucket(self).await?;
+        let kv = machines_write_bucket(self).await?;
         let old = kv
             .get(record.id.0.as_str())
             .await
@@ -66,7 +66,7 @@ impl MachineRegistry for NatsStore {
     }
 
     async fn delete_machine(&self, id: &MachineId) -> Result<()> {
-        let kv = machines_bucket(self).await?;
+        let kv = machines_write_bucket(self).await?;
         let old = kv
             .get(id.0.as_str())
             .await
@@ -86,7 +86,7 @@ impl MachineRegistry for NatsStore {
     }
 
     async fn subscribe_machines(&self) -> Result<MachineSubscription> {
-        let kv = machines_bucket(self).await?;
+        let kv = machines_read_bucket(self).await?;
         let snapshot_boundary =
             kv_json::latest_sequence(&kv, "nats_machines_snapshot_boundary").await?;
         let snapshot = self.list_machines().await?;
@@ -104,8 +104,12 @@ impl MachineRegistry for NatsStore {
     }
 }
 
-async fn machines_bucket(store: &NatsStore) -> Result<kv::Store> {
-    kv_json::get_bucket(store.jetstream(), MACHINES_BUCKET, "nats_machines_bucket").await
+async fn machines_read_bucket(store: &NatsStore) -> Result<kv::Store> {
+    kv_json::read_bucket_for(store, MACHINES_BUCKET, "nats_machines_bucket").await
+}
+
+async fn machines_write_bucket(store: &NatsStore) -> Result<kv::Store> {
+    kv_json::write_bucket_for(store, MACHINES_BUCKET, "nats_machines_bucket").await
 }
 
 fn machine_event_from_kv_entry(

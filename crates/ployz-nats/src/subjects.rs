@@ -1,12 +1,28 @@
 use base64::Engine;
 use ipnet::Ipv4Net;
-use ployz_types::model::{DeployId, MachineId};
+use ployz_types::model::{DeployId, InstanceId, MachineId};
 use ployz_types::spec::Namespace;
 
 pub const DEPLOY_COMMITS_STREAM: &str = "deploy_commits";
 pub const REVISIONS_STREAM: &str = "revisions";
 pub const CERT_JOBS_STREAM: &str = "cert_jobs";
 pub const ROUTING_EVENTS_STREAM: &str = "routing_events";
+
+/// Local view stream that aggregates per-machine `state_machine_<id>`
+/// streams via JetStream `sources`. Lives in each node's `local_jetstream`
+/// (hub on StorageCandidate, leaf on Mirror). Subscribers read from this
+/// stream to materialize the full machines view locally.
+pub const MACHINE_STATE_VIEW_STREAM: &str = "machine_state_view";
+
+/// Local view stream that aggregates per-machine `state_instances_<id>`
+/// streams. Same shape as `MACHINE_STATE_VIEW_STREAM`.
+pub const INSTANCE_STATE_VIEW_STREAM: &str = "instance_state_view";
+
+/// Hub-domain KV holding the catalog of per-machine state stream names.
+/// Sole writer is the coordinator handling `handle_machine_add` /
+/// `handle_machine_remove`. Mirrored to leaves via the standard durable
+/// KV mirror plumbing in `buckets.rs`.
+pub const MACHINE_DIRECTORY_BUCKET: &str = "machine_directory";
 
 #[must_use]
 pub fn deploy_commit(namespace: &Namespace, deploy_id: &DeployId) -> String {
@@ -71,6 +87,87 @@ pub fn cert_renewal_schedule(hostname: &str) -> String {
     )
 }
 
+/// Per-machine stream name carrying the machine's own `MachineMembership`
+/// record. Hub-owned. The owning machine is the only writer; every other
+/// node sources this stream into its local `MACHINE_STATE_VIEW_STREAM`.
+#[must_use]
+pub fn machine_state_stream(machine_id: &MachineId) -> String {
+    format!("state_machine_{}", subject_token(&machine_id.0))
+}
+
+#[must_use]
+pub fn machine_state_subject(machine_id: &MachineId) -> String {
+    format!("state.{}.machine", subject_token(&machine_id.0))
+}
+
+#[must_use]
+pub fn machine_tombstone_subject(machine_id: &MachineId) -> String {
+    format!("state.{}.machine_tombstone", subject_token(&machine_id.0))
+}
+
+/// Per-machine stream name carrying the instances hosted by this machine.
+/// Hub-owned. Same single-writer invariant as `machine_state_stream`.
+#[must_use]
+pub fn instance_state_stream(machine_id: &MachineId) -> String {
+    format!("state_instances_{}", subject_token(&machine_id.0))
+}
+
+#[must_use]
+pub fn instance_state_subject(
+    machine_id: &MachineId,
+    namespace: &Namespace,
+    instance_id: &InstanceId,
+) -> String {
+    format!(
+        "state.{}.instance.{}.{}",
+        subject_token(&machine_id.0),
+        subject_token(&namespace.0),
+        subject_token(&instance_id.0)
+    )
+}
+
+#[must_use]
+pub fn instance_tombstone_subject(
+    machine_id: &MachineId,
+    namespace: &Namespace,
+    instance_id: &InstanceId,
+) -> String {
+    format!(
+        "state.{}.instance_tombstone.{}.{}",
+        subject_token(&machine_id.0),
+        subject_token(&namespace.0),
+        subject_token(&instance_id.0)
+    )
+}
+
+/// Subjects for one machine's state streams. The two streams' subject sets
+/// don't overlap.
+#[must_use]
+pub fn machine_state_stream_subjects(machine_id: &MachineId) -> Vec<String> {
+    let token = subject_token(&machine_id.0);
+    vec![
+        format!("state.{token}.machine"),
+        format!("state.{token}.machine_tombstone"),
+    ]
+}
+
+#[must_use]
+pub fn instance_state_stream_subjects(machine_id: &MachineId) -> Vec<String> {
+    let token = subject_token(&machine_id.0);
+    vec![
+        format!("state.{token}.instance.>"),
+        format!("state.{token}.instance_tombstone.>"),
+    ]
+}
+
+/// Filter pattern for `instance_state_view` consumers that only care about
+/// a single namespace. Matches every machine's instances under `namespace`.
+/// Subject layout: `state.<machine>.instance.<namespace>.<instance_id>`.
+#[must_use]
+pub fn instance_state_namespace_filter(namespace: &Namespace) -> String {
+    format!("state.*.instance.{}.>", subject_token(&namespace.0))
+}
+
 #[must_use]
 pub fn node_command(machine_id: &MachineId, command: &str) -> String {
     format!("node.{}.cmd.{}", subject_token(&machine_id.0), command)
@@ -122,6 +219,65 @@ mod tests {
     fn subject_tokens_do_not_collapse_punctuation() {
         assert_ne!(subject_token("foo.bar"), subject_token("foo_bar"));
         assert_eq!(subject_token("foo.bar"), "foo%2Ebar");
+    }
+
+    #[test]
+    fn machine_state_subjects_are_distinct_from_tombstone() {
+        let id = MachineId("m1".into());
+        assert_ne!(machine_state_subject(&id), machine_tombstone_subject(&id));
+    }
+
+    #[test]
+    fn machine_state_stream_subjects_match_state_and_tombstone() {
+        let id = MachineId("m1".into());
+        let subjects = machine_state_stream_subjects(&id);
+        assert!(subjects.contains(&"state.m1.machine".to_string()));
+        assert!(subjects.contains(&"state.m1.machine_tombstone".to_string()));
+    }
+
+    #[test]
+    fn instance_state_subject_encodes_namespace_for_server_side_filter() {
+        let machine = MachineId("m1".into());
+        let namespace = Namespace("ns_alpha".into());
+        let instance = InstanceId("inst-1".into());
+        let subject = instance_state_subject(&machine, &namespace, &instance);
+        assert_eq!(subject, "state.m1.instance.ns_alpha.inst-1");
+    }
+
+    #[test]
+    fn instance_state_namespace_filter_matches_only_target_namespace() {
+        let namespace = Namespace("ns_alpha".into());
+        let filter = instance_state_namespace_filter(&namespace);
+        // Wildcard for machine, then exact namespace token, then anything for instance.
+        assert_eq!(filter, "state.*.instance.ns_alpha.>");
+    }
+
+    #[test]
+    fn instance_subjects_disambiguate_across_namespaces() {
+        let machine = MachineId("m1".into());
+        let instance = InstanceId("inst-1".into());
+        let alpha = instance_state_subject(&machine, &Namespace("alpha".into()), &instance);
+        let beta = instance_state_subject(&machine, &Namespace("beta".into()), &instance);
+        assert_ne!(alpha, beta);
+    }
+
+    #[test]
+    fn instance_tombstone_subject_distinct_from_live_subject() {
+        let machine = MachineId("m1".into());
+        let namespace = Namespace("alpha".into());
+        let instance = InstanceId("inst-1".into());
+        assert_ne!(
+            instance_state_subject(&machine, &namespace, &instance),
+            instance_tombstone_subject(&machine, &namespace, &instance),
+        );
+    }
+
+    #[test]
+    fn per_machine_stream_names_isolate_writers() {
+        let a = MachineId("m1".into());
+        let b = MachineId("m2".into());
+        assert_ne!(machine_state_stream(&a), machine_state_stream(&b));
+        assert_ne!(instance_state_stream(&a), instance_state_stream(&b));
     }
 
     #[test]

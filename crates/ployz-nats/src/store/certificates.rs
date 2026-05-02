@@ -20,8 +20,8 @@ use crate::subjects;
 
 impl CertificateStore for NatsStore {
     async fn get_acme_account(&self, issuer_url: &str) -> Result<Option<AcmeAccountRecord>> {
-        let bucket = kv_json::get_bucket(
-            self.jetstream(),
+        let bucket = kv_json::read_bucket_for(
+            self,
             ACME_ACCOUNTS_BUCKET,
             "nats_acme_accounts_bucket",
         )
@@ -42,8 +42,8 @@ impl CertificateStore for NatsStore {
     }
 
     async fn upsert_acme_account(&self, record: &AcmeAccountRecord) -> Result<()> {
-        let bucket = kv_json::get_bucket(
-            self.jetstream(),
+        let bucket = kv_json::write_bucket_for(
+            self,
             ACME_ACCOUNTS_BUCKET,
             "nats_acme_accounts_bucket",
         )
@@ -59,12 +59,12 @@ impl CertificateStore for NatsStore {
     }
 
     async fn list_certificates(&self) -> Result<Vec<CertificateRecord>> {
-        let bucket = certificates_bucket(self).await?;
+        let bucket = certificates_read_bucket(self).await?;
         kv_json::list_json(&bucket, "nats_certificate_decode", "nats_certificates_list").await
     }
 
     async fn get_certificate(&self, hostname: &str) -> Result<Option<CertificateRecord>> {
-        let bucket = certificates_bucket(self).await?;
+        let bucket = certificates_read_bucket(self).await?;
         let Some(bytes) = bucket
             .get(certificate_key(hostname))
             .await
@@ -82,7 +82,7 @@ impl CertificateStore for NatsStore {
 
     async fn upsert_certificate(&self, record: &CertificateRecord) -> Result<()> {
         schedule_certificate_renewal(self, record).await?;
-        let bucket = certificates_bucket(self).await?;
+        let bucket = certificates_write_bucket(self).await?;
         kv_json::put_json(
             &bucket,
             &certificate_key(&record.hostname),
@@ -94,7 +94,7 @@ impl CertificateStore for NatsStore {
     }
 
     async fn list_acme_challenges(&self) -> Result<Vec<AcmeChallengeRecord>> {
-        let bucket = challenges_bucket(self).await?;
+        let bucket = challenges_read_bucket(self).await?;
         kv_json::list_json(
             &bucket,
             "nats_acme_challenge_decode",
@@ -104,7 +104,7 @@ impl CertificateStore for NatsStore {
     }
 
     async fn upsert_acme_challenge(&self, record: &AcmeChallengeRecord) -> Result<()> {
-        let bucket = challenges_bucket(self).await?;
+        let bucket = challenges_write_bucket(self).await?;
         kv_json::put_json(
             &bucket,
             &challenge_key(&record.hostname, &record.token),
@@ -116,7 +116,7 @@ impl CertificateStore for NatsStore {
     }
 
     async fn delete_acme_challenge(&self, hostname: &str, token: &str) -> Result<()> {
-        let bucket = challenges_bucket(self).await?;
+        let bucket = challenges_write_bucket(self).await?;
         kv_json::delete(
             &bucket,
             &challenge_key(hostname, token),
@@ -127,7 +127,7 @@ impl CertificateStore for NatsStore {
     }
 
     async fn subscribe_certificates(&self) -> Result<CertificateSubscription> {
-        let bucket = certificates_bucket(self).await?;
+        let bucket = certificates_read_bucket(self).await?;
         let snapshot_boundary =
             kv_json::latest_sequence(&bucket, "nats_certificates_snapshot_boundary").await?;
         let snapshot = self.list_certificates().await?;
@@ -145,7 +145,7 @@ impl CertificateStore for NatsStore {
     }
 
     async fn subscribe_acme_challenges(&self) -> Result<AcmeChallengeSubscription> {
-        let bucket = challenges_bucket(self).await?;
+        let bucket = challenges_read_bucket(self).await?;
         let snapshot_boundary =
             kv_json::latest_sequence(&bucket, "nats_acme_challenges_snapshot_boundary").await?;
         let snapshot = self.list_acme_challenges().await?;
@@ -166,7 +166,7 @@ impl CertificateStore for NatsStore {
         &self,
         record: &AcmeChallengeReadinessRecord,
     ) -> Result<()> {
-        let bucket = readiness_bucket(self).await?;
+        let bucket = readiness_write_bucket(self).await?;
         kv_json::put_json(
             &bucket,
             &readiness_key(&record.hostname, &record.token, &record.machine_id),
@@ -182,7 +182,7 @@ impl CertificateStore for NatsStore {
         hostname: &str,
         token: &str,
     ) -> Result<Vec<AcmeChallengeReadinessRecord>> {
-        let bucket = readiness_bucket(self).await?;
+        let bucket = readiness_read_bucket(self).await?;
         let records = kv_json::list_json::<AcmeChallengeReadinessRecord>(
             &bucket,
             "nats_acme_readiness_decode",
@@ -213,27 +213,34 @@ fn certificate_renewal_job_schedule(record: &CertificateRecord) -> Option<JobSch
     record.next_renewal_at.map(JobSchedule::AtUnixSecs)
 }
 
-async fn certificates_bucket(store: &NatsStore) -> Result<kv::Store> {
-    kv_json::get_bucket(
-        store.jetstream(),
-        CERTIFICATES_BUCKET,
-        "nats_certificates_bucket",
+async fn certificates_read_bucket(store: &NatsStore) -> Result<kv::Store> {
+    kv_json::read_bucket_for(store, CERTIFICATES_BUCKET, "nats_certificates_bucket").await
+}
+
+async fn certificates_write_bucket(store: &NatsStore) -> Result<kv::Store> {
+    kv_json::write_bucket_for(store, CERTIFICATES_BUCKET, "nats_certificates_bucket").await
+}
+
+async fn challenges_read_bucket(store: &NatsStore) -> Result<kv::Store> {
+    kv_json::read_bucket_for(store, ACME_CHALLENGES_BUCKET, "nats_acme_challenges_bucket").await
+}
+
+async fn challenges_write_bucket(store: &NatsStore) -> Result<kv::Store> {
+    kv_json::write_bucket_for(store, ACME_CHALLENGES_BUCKET, "nats_acme_challenges_bucket").await
+}
+
+async fn readiness_read_bucket(store: &NatsStore) -> Result<kv::Store> {
+    kv_json::read_bucket_for(
+        store,
+        ACME_CHALLENGE_READINESS_BUCKET,
+        "nats_acme_readiness_bucket",
     )
     .await
 }
 
-async fn challenges_bucket(store: &NatsStore) -> Result<kv::Store> {
-    kv_json::get_bucket(
-        store.jetstream(),
-        ACME_CHALLENGES_BUCKET,
-        "nats_acme_challenges_bucket",
-    )
-    .await
-}
-
-async fn readiness_bucket(store: &NatsStore) -> Result<kv::Store> {
-    kv_json::get_bucket(
-        store.jetstream(),
+async fn readiness_write_bucket(store: &NatsStore) -> Result<kv::Store> {
+    kv_json::write_bucket_for(
+        store,
         ACME_CHALLENGE_READINESS_BUCKET,
         "nats_acme_readiness_bucket",
     )
@@ -331,7 +338,7 @@ async fn delete_acme_challenge_readiness(
     hostname: &str,
     token: &str,
 ) -> Result<()> {
-    let bucket = readiness_bucket(store).await?;
+    let bucket = readiness_write_bucket(store).await?;
     let prefix = readiness_key_prefix(hostname, token);
     let keys = bucket
         .keys()

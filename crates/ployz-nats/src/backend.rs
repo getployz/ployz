@@ -26,7 +26,7 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::NatsStore;
-use crate::buckets::ensure_assets;
+use crate::buckets::{ensure_assets, local_read_stream_name};
 use crate::store::instances::list_all_instance_status;
 use crate::store::kv_json;
 use crate::store::routing::{
@@ -43,7 +43,7 @@ const ROUTING_EPHEMERAL_INACTIVE_THRESHOLD: Duration = Duration::from_secs(60);
 #[async_trait]
 impl StoreBackend for NatsStore {
     async fn init(&self) -> Result<()> {
-        ensure_assets(self.jetstream(), self.asset_policy()).await
+        ensure_assets(self).await
     }
 
     async fn list_machines(&self) -> Result<Vec<MachineMembership>> {
@@ -234,9 +234,10 @@ impl RoutingSnapshotReader for NatsStore {
         let consumer_id = subscription.consumer_id().to_string();
         let consumer_name = routing_consumer_name(&consumer_id);
         let temporary = subscription.is_temporary();
+        let stream_name = local_read_stream_name(self, ROUTING_EVENTS_STREAM);
         let stream = self
-            .jetstream()
-            .get_stream(ROUTING_EVENTS_STREAM)
+            .local_jetstream()
+            .get_stream(&stream_name)
             .await
             .map_err(|error| Error::operation("nats_routing_stream", format!("{error:?}")))?;
         let mut stream = stream;
@@ -548,7 +549,7 @@ impl PeerRttStore for NatsStore {}
 #[async_trait]
 impl StoreRuntimeControl for NatsStore {
     async fn start(&self) -> Result<()> {
-        ensure_assets(self.jetstream(), self.asset_policy()).await
+        ensure_assets(self).await
     }
 
     async fn stop(&self) -> Result<()> {

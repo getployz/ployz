@@ -9,7 +9,7 @@ use crate::store::kv_json;
 impl InviteRepository for NatsStore {
     async fn create_invite(&self, invite: &InviteRecord) -> Result<()> {
         let bucket =
-            kv_json::get_bucket(self.jetstream(), INVITES_BUCKET, "nats_invites_bucket").await?;
+            kv_json::write_bucket_for(self, INVITES_BUCKET, "nats_invites_bucket").await?;
         let payload = serde_json::to_vec(invite)
             .map_err(|error| Error::operation("nats_invite_encode", error.to_string()))?;
         bucket
@@ -29,7 +29,7 @@ impl InviteRepository for NatsStore {
 
     async fn get_invite(&self, invite_id: &str) -> Result<Option<InviteRecord>> {
         let bucket =
-            kv_json::get_bucket(self.jetstream(), INVITES_BUCKET, "nats_invites_bucket").await?;
+            kv_json::read_bucket_for(self, INVITES_BUCKET, "nats_invites_bucket").await?;
         let Some(bytes) = bucket
             .get(invite_id)
             .await
@@ -45,7 +45,7 @@ impl InviteRepository for NatsStore {
 
     async fn list_invites(&self) -> Result<Vec<InviteRecord>> {
         let bucket =
-            kv_json::get_bucket(self.jetstream(), INVITES_BUCKET, "nats_invites_bucket").await?;
+            kv_json::read_bucket_for(self, INVITES_BUCKET, "nats_invites_bucket").await?;
         let mut invites =
             kv_json::list_json::<InviteRecord>(&bucket, "nats_invite_decode", "nats_invites_list")
                 .await?;
@@ -60,7 +60,7 @@ impl InviteRepository for NatsStore {
         now_unix_secs: u64,
     ) -> Result<InviteRecord> {
         let bucket =
-            kv_json::get_bucket(self.jetstream(), INVITES_BUCKET, "nats_invites_bucket").await?;
+            kv_json::write_bucket_for(self, INVITES_BUCKET, "nats_invites_bucket").await?;
         let Some(entry) = bucket
             .entry(invite_id.to_string())
             .await
@@ -87,7 +87,7 @@ impl InviteRepository for NatsStore {
 
     async fn revoke_invite(&self, invite_id: &str, now_unix_secs: u64) -> Result<InviteRecord> {
         let bucket =
-            kv_json::get_bucket(self.jetstream(), INVITES_BUCKET, "nats_invites_bucket").await?;
+            kv_json::write_bucket_for(self, INVITES_BUCKET, "nats_invites_bucket").await?;
         let Some(entry) = bucket
             .entry(invite_id.to_string())
             .await

@@ -4,6 +4,8 @@ use ployz_types::error::{Error, Result};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use crate::NatsStore;
+
 pub async fn get_bucket(
     js: &async_nats::jetstream::Context,
     bucket: &str,
@@ -12,6 +14,28 @@ pub async fn get_bucket(
     js.get_key_value(bucket)
         .await
         .map_err(|error| Error::operation(operation, format!("{error:?}")))
+}
+
+/// Bucket handle for *reads*. On a `Mirror` node this returns the local
+/// leaf-domain mirror; on a `StorageCandidate` it returns the hub bucket.
+/// Mirrored KVs in JetStream are read-only — writes against this handle
+/// will fail. Use [`write_bucket_for`] for writes.
+pub async fn read_bucket_for(
+    store: &NatsStore,
+    bucket: &str,
+    operation: &'static str,
+) -> Result<kv::Store> {
+    get_bucket(store.local_jetstream(), bucket, operation).await
+}
+
+/// Bucket handle for *writes*. Always points at the hub bucket; the
+/// leafnode forwards the publish so writes converge on the source-of-truth.
+pub async fn write_bucket_for(
+    store: &NatsStore,
+    bucket: &str,
+    operation: &'static str,
+) -> Result<kv::Store> {
+    get_bucket(store.hub_jetstream(), bucket, operation).await
 }
 
 pub async fn latest_sequence(store: &kv::Store, operation: &'static str) -> Result<u64> {

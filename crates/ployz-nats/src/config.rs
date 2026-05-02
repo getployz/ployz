@@ -9,6 +9,11 @@ pub const LEAFNODE_PORT: u16 = 7422;
 pub const MONITOR_PORT: u16 = 8222;
 pub const HUB_DOMAIN: &str = "hub";
 
+#[must_use]
+pub fn leaf_domain(overlay_ip: Ipv6Addr) -> String {
+    format!("leaf-{}", overlay_ip.to_string().replace(':', "-"))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
     pub root: PathBuf,
@@ -117,7 +122,7 @@ impl ServerConfig {
 
     #[must_use]
     pub fn leaf_domain(&self) -> String {
-        format!("leaf-{}", self.overlay_ip.to_string().replace(':', "-"))
+        leaf_domain(self.overlay_ip)
     }
 }
 

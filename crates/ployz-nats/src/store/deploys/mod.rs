@@ -108,18 +108,18 @@ impl DeployRepository for NatsStore {
             &routing_events,
         )
         .await?;
-        if let Err(error) = write_deploy_status(self.jetstream(), &command.deploy).await {
+        if let Err(error) = write_deploy_status(self, &command.deploy).await {
             warn!(?error, deploy_id = %command.deploy.deploy_id, "initial deploy status write failed after commit");
         }
         Ok(())
     }
 
     async fn update_deploy_record(&self, command: &DeployRecordUpdate) -> Result<()> {
-        write_deploy_status(self.jetstream(), &command.deploy).await
+        write_deploy_status(self, &command.deploy).await
     }
 
     async fn get_deploy(&self, deploy_id: &DeployId) -> Result<Option<DeployRecord>> {
-        if let Some(status) = read_deploy_status(self.jetstream(), deploy_id).await? {
+        if let Some(status) = read_deploy_status(self, deploy_id).await? {
             return Ok(Some(status));
         }
         Ok(self
@@ -145,9 +145,10 @@ fn revision_routing_event(
 
 impl NatsStore {
     pub(crate) async fn deploy_projection_snapshot(&self) -> Result<DeployProjection> {
+        let stream_name = crate::buckets::local_read_stream_name(self, DEPLOY_COMMITS_STREAM);
         let mut stream = self
-            .jetstream()
-            .get_stream(DEPLOY_COMMITS_STREAM)
+            .local_jetstream()
+            .get_stream(&stream_name)
             .await
             .map_err(|error| Error::operation("nats_deploy_stream", format!("{error:?}")))?;
         let info = stream
@@ -420,8 +421,9 @@ async fn publish_revision(js: &jetstream::Context, command: &DeployRevisionUpser
         .map_err(|error| Error::operation("nats_revision_ack", format!("{error:?}")))
 }
 
-async fn write_deploy_status(js: &jetstream::Context, deploy: &DeployRecord) -> Result<()> {
-    let bucket = kv_json::get_bucket(js, DEPLOY_STATUS_BUCKET, "nats_deploy_status_bucket").await?;
+async fn write_deploy_status(store: &NatsStore, deploy: &DeployRecord) -> Result<()> {
+    let bucket =
+        kv_json::write_bucket_for(store, DEPLOY_STATUS_BUCKET, "nats_deploy_status_bucket").await?;
     kv_json::put_json(
         &bucket,
         &deploy.deploy_id.0,
@@ -433,10 +435,11 @@ async fn write_deploy_status(js: &jetstream::Context, deploy: &DeployRecord) -> 
 }
 
 async fn read_deploy_status(
-    js: &jetstream::Context,
+    store: &NatsStore,
     deploy_id: &DeployId,
 ) -> Result<Option<DeployRecord>> {
-    let bucket = kv_json::get_bucket(js, DEPLOY_STATUS_BUCKET, "nats_deploy_status_bucket").await?;
+    let bucket =
+        kv_json::read_bucket_for(store, DEPLOY_STATUS_BUCKET, "nats_deploy_status_bucket").await?;
     let Some(bytes) = bucket
         .get(deploy_id.0.as_str())
         .await
