@@ -409,6 +409,7 @@ async fn shutdown_active_mesh(state: &Arc<RwLock<DaemonState>>) {
             certificate_renewal,
             bootstrap_seed_cache,
             state_view_reconciler,
+            mirror_lag_health,
         } = active;
         if let Some(task) = certificate_renewal {
             task.shutdown().await;
@@ -417,6 +418,9 @@ async fn shutdown_active_mesh(state: &Arc<RwLock<DaemonState>>) {
             task.shutdown().await;
         }
         if let Some(task) = state_view_reconciler {
+            task.shutdown().await;
+        }
+        if let Some(task) = mirror_lag_health {
             task.shutdown().await;
         }
         let _ = dns.detach().await;

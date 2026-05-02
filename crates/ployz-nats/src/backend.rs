@@ -17,7 +17,7 @@ use ployz_types::error::{Error, Result};
 use ployz_types::model::{
     AcmeAccountRecord, AcmeChallengeReadinessRecord, AcmeChallengeRecord, CertificateRecord,
     DeployId, DeployRecord, InstanceId, InstanceStatusRecord, InviteRecord, MachineId,
-    MachineMembership, RoutingEvent, RoutingState, ServiceReleaseRecord, VolumeRecord,
+    MachineMembership, MachineRole, RoutingEvent, RoutingState, ServiceReleaseRecord, VolumeRecord,
 };
 use ployz_types::spec::Namespace;
 use std::collections::HashMap;
@@ -549,7 +549,30 @@ impl PeerRttStore for NatsStore {}
 #[async_trait]
 impl StoreRuntimeControl for NatsStore {
     async fn start(&self) -> Result<()> {
-        ensure_assets(self).await
+        ensure_assets(self).await?;
+        // On a Mirror node, confirm the leafnode link to hub is healthy
+        // by reading hub stream info for an asset we depend on. The
+        // outer `NatsRuntime::start` retry loop (CONNECT_ATTEMPTS = 40)
+        // covers transient flakes; persistent failures bubble up and
+        // `mesh up` surfaces a loud error to the operator. This is the
+        // failure-audience-rule "loud foreground failure" for the leaf
+        // → hub edge.
+        if matches!(self.role(), MachineRole::Mirror) {
+            self.hub_jetstream()
+                .get_stream(crate::subjects::ROUTING_EVENTS_STREAM)
+                .await
+                .map(|_| ())
+                .map_err(|error| {
+                    Error::operation(
+                        "nats_mirror_hub_probe",
+                        format!(
+                            "leafnode probe to hub failed (cannot reach `{}` on hub): {error:?}",
+                            crate::subjects::ROUTING_EVENTS_STREAM
+                        ),
+                    )
+                })?;
+        }
+        Ok(())
     }
 
     async fn stop(&self) -> Result<()> {

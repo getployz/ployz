@@ -146,6 +146,7 @@ mod tests {
             certificate_renewal: None,
             bootstrap_seed_cache: None,
             state_view_reconciler: None,
+            mirror_lag_health: None,
         });
 
         let error = state
@@ -283,6 +284,7 @@ mod tests {
             certificate_renewal: None,
             bootstrap_seed_cache: None,
             state_view_reconciler: None,
+            mirror_lag_health: None,
         });
         (state, store, network)
     }

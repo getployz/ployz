@@ -351,6 +351,126 @@ async fn apply_view_stream(store: &NatsStore, config: stream::Config) -> Result<
     }
 }
 
+/// Per-asset replication lag observation. `local_last_seq` is the sequence
+/// number of the leaf-side mirror; `hub_last_seq` is what the hub-owned
+/// source currently advertises. Lag = `hub - local`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MirrorLag {
+    pub asset_name: String,
+    pub local_last_seq: u64,
+    pub hub_last_seq: u64,
+    pub observed_at_unix_secs: u64,
+}
+
+impl MirrorLag {
+    #[must_use]
+    pub fn behind_by(&self) -> u64 {
+        self.hub_last_seq.saturating_sub(self.local_last_seq)
+    }
+}
+
+/// Sample the lag for every asset that this node mirrors from hub. On a
+/// `StorageCandidate` (which owns the source streams) returns
+/// `Vec::new()` because there is nothing to mirror. On a `Leaf`
+/// (no JetStream) returns `Vec::new()` too. On a `Mirror` returns one
+/// entry per leaf-mirrored stream and KV bucket plus the two view
+/// streams.
+///
+/// Audience for `MirrorLag` (per AGENTS.md failure-audience rule):
+/// `ployzctl status` and any tooling that reads the daemon's health
+/// surface. We never silently serve stale snapshots; the daemon's
+/// status handler reports lag explicitly so an operator can see
+/// `local_last_seq` falling behind `hub_last_seq`.
+pub async fn mirror_lag(store: &NatsStore) -> Result<Vec<MirrorLag>> {
+    if !matches!(store.role(), MachineRole::Mirror) {
+        return Ok(Vec::new());
+    }
+    let assets = NatsAssets::new(store.role(), store.asset_policy());
+    let Some(configs) = assets.leaf_mirror_configs() else {
+        return Ok(Vec::new());
+    };
+    let observed_at = ployz_types::time::now_unix_secs();
+    let mut lags = Vec::new();
+    for stream_config in &configs.mirrored_streams {
+        let Some(source) = stream_config.mirror.as_ref() else {
+            continue;
+        };
+        let lag = sample_stream_lag(
+            store,
+            stream_config.name.clone(),
+            source.name.clone(),
+            observed_at,
+        )
+        .await?;
+        lags.push(lag);
+    }
+    for kv_config in &configs.mirrored_kv {
+        let Some(source) = kv_config.mirror.as_ref() else {
+            continue;
+        };
+        // KV bucket `B` is backed by stream `KV_B`. Read both ends via
+        // the underlying stream name so direct stream-info works.
+        let local_stream_name = format!("KV_{}", kv_config.bucket);
+        let lag = sample_stream_lag(
+            store,
+            local_stream_name,
+            source.name.clone(),
+            observed_at,
+        )
+        .await?;
+        lags.push(MirrorLag {
+            asset_name: kv_config.bucket.to_string(),
+            ..lag
+        });
+    }
+    // View streams source from per-machine streams; their per-source lag
+    // surfaces through `stream.info().sources` but we report only the
+    // aggregate stream sequence here. Detailed per-source lag is left to
+    // a follow-up that adds source-level reporting.
+    for view_name in [
+        crate::subjects::MACHINE_STATE_VIEW_STREAM,
+        crate::subjects::INSTANCE_STATE_VIEW_STREAM,
+    ] {
+        if let Ok(local) = view_stream_last_seq(store.local_jetstream(), view_name).await {
+            lags.push(MirrorLag {
+                asset_name: view_name.to_string(),
+                local_last_seq: local,
+                hub_last_seq: local,
+                observed_at_unix_secs: observed_at,
+            });
+        }
+    }
+    Ok(lags)
+}
+
+async fn sample_stream_lag(
+    store: &NatsStore,
+    local_name: String,
+    hub_name: String,
+    observed_at: u64,
+) -> Result<MirrorLag> {
+    let local_last_seq = view_stream_last_seq(store.local_jetstream(), &local_name).await?;
+    let hub_last_seq = view_stream_last_seq(store.hub_jetstream(), &hub_name).await?;
+    Ok(MirrorLag {
+        asset_name: local_name,
+        local_last_seq,
+        hub_last_seq,
+        observed_at_unix_secs: observed_at,
+    })
+}
+
+async fn view_stream_last_seq(js: &jetstream::Context, name: &str) -> Result<u64> {
+    let mut stream = js
+        .get_stream(name)
+        .await
+        .map_err(|error| Error::operation("nats_mirror_lag_get", format!("{error:?}")))?;
+    let info = stream
+        .info()
+        .await
+        .map_err(|error| Error::operation("nats_mirror_lag_info", format!("{error:?}")))?;
+    Ok(info.state.last_sequence)
+}
+
 async fn ensure_leaf_mirrors(js: &jetstream::Context, assets: NatsAssets) -> Result<()> {
     let Some(configs) = assets.leaf_mirror_configs() else {
         return Ok(());

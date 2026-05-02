@@ -510,7 +510,7 @@ impl MeshStartTx {
             state.identity.machine_id.clone(),
         ));
 
-        let state_view_reconciler = if spawn_renewal_ticker {
+        let (state_view_reconciler, mirror_lag_health) = if spawn_renewal_ticker {
             let nats_client_url = if state.runtime_target == RuntimeTarget::Docker {
                 crate::services::nats::local_client_url()
             } else {
@@ -523,24 +523,47 @@ impl MeshStartTx {
                 ployz_types::model::MachineRole::StorageCandidate
                 | ployz_types::model::MachineRole::Leaf => None,
             };
-            let nats_store = NatsStore::connect_with_role(
+            let reconciler_store = NatsStore::connect_with_role(
                 &nats_client_url,
                 self.config.machine_role,
-                leaf_domain,
+                leaf_domain.clone(),
             )
             .await
             .map_err(|error| {
                 StartMeshError::MeshUp(format!("nats connect for state view reconciler: {error}"))
             })?;
-            Some(
-                crate::daemon::state_view_reconciler::spawn(nats_store)
-                    .await
-                    .map_err(|error| {
-                        StartMeshError::MeshUp(format!("state view reconciler: {error}"))
-                    })?,
-            )
+            let reconciler = crate::daemon::state_view_reconciler::spawn(reconciler_store)
+                .await
+                .map_err(|error| {
+                    StartMeshError::MeshUp(format!("state view reconciler: {error}"))
+                })?;
+            // Mirror-lag polling only runs on Mirror nodes (the function
+            // returns an empty `Vec` on other roles, so the task would be
+            // pure overhead). Connect a dedicated NatsStore so the task
+            // doesn't share fate with the reconciler.
+            let lag_task = if matches!(
+                self.config.machine_role,
+                ployz_types::model::MachineRole::Mirror
+            ) {
+                let lag_store = NatsStore::connect_with_role(
+                    &nats_client_url,
+                    self.config.machine_role,
+                    leaf_domain,
+                )
+                .await
+                .map_err(|error| {
+                    StartMeshError::MeshUp(format!("nats connect for mirror lag health: {error}"))
+                })?;
+                let health_path = state
+                    .network_dir(&self.config.name.0)
+                    .join(crate::daemon::mirror_lag_health::NATS_MIRROR_LAG_HEALTH_FILE);
+                Some(crate::daemon::mirror_lag_health::spawn(lag_store, health_path))
+            } else {
+                None
+            };
+            (Some(reconciler), lag_task)
         } else {
-            None
+            (None, None)
         };
 
         let Some(mesh) = self.mesh.take() else {
@@ -566,6 +589,7 @@ impl MeshStartTx {
             certificate_renewal,
             bootstrap_seed_cache,
             state_view_reconciler,
+            mirror_lag_health,
         });
         Ok(())
     }
@@ -1058,6 +1082,7 @@ mod tests {
 
         active.stop_bootstrap_seed_cache().await;
         active.stop_state_view_reconciler().await;
+        active.stop_mirror_lag_health().await;
         active.mesh.destroy().await.expect("destroy mesh");
     }
 

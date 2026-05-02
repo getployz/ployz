@@ -2,6 +2,7 @@ mod cert_coordination;
 mod cert_renewal_health;
 mod deploy_probe;
 pub mod handlers;
+pub mod mirror_lag_health;
 mod runtime;
 mod setup;
 pub mod ssh;
@@ -39,6 +40,7 @@ pub struct ActiveMesh {
     pub certificate_renewal: Option<CertificateRenewalTask>,
     pub bootstrap_seed_cache: Option<BootstrapSeedCacheTask>,
     pub state_view_reconciler: Option<state_view_reconciler::StateViewReconcilerTask>,
+    pub mirror_lag_health: Option<mirror_lag_health::MirrorLagHealthTask>,
 }
 
 impl ActiveMesh {
@@ -56,6 +58,12 @@ impl ActiveMesh {
 
     pub async fn stop_state_view_reconciler(&mut self) {
         if let Some(task) = self.state_view_reconciler.take() {
+            task.shutdown().await;
+        }
+    }
+
+    pub async fn stop_mirror_lag_health(&mut self) {
+        if let Some(task) = self.mirror_lag_health.take() {
             task.shutdown().await;
         }
     }

@@ -13,7 +13,8 @@ use ployz_nats::buckets::{
     LOCKS_BUCKET,
 };
 use ployz_nats::subjects::{
-    CERT_JOBS_STREAM, DEPLOY_COMMITS_STREAM, REVISIONS_STREAM, ROUTING_EVENTS_STREAM,
+    CERT_JOBS_STREAM, DEPLOY_COMMITS_STREAM, INSTANCE_STATE_VIEW_STREAM, MACHINE_DIRECTORY_BUCKET,
+    MACHINE_STATE_VIEW_STREAM, REVISIONS_STREAM, ROUTING_EVENTS_STREAM,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -27,6 +28,8 @@ const NATS_STREAM_ASSETS: &[&str] = &[
     ROUTING_EVENTS_STREAM,
     REVISIONS_STREAM,
     CERT_JOBS_STREAM,
+    MACHINE_STATE_VIEW_STREAM,
+    INSTANCE_STATE_VIEW_STREAM,
 ];
 const NATS_KV_ASSETS: &[&str] = &[
     INVITES_BUCKET,
@@ -35,6 +38,7 @@ const NATS_KV_ASSETS: &[&str] = &[
     CERTIFICATES_BUCKET,
     ACME_CHALLENGES_BUCKET,
     ACME_CHALLENGE_READINESS_BUCKET,
+    MACHINE_DIRECTORY_BUCKET,
     LOCKS_BUCKET,
     COORDINATOR_LEASE_BUCKET,
 ];
@@ -148,6 +152,58 @@ impl DaemonState {
                 consecutive_failures: None,
                 error: Some(format!("read cert renewal health: {error}")),
             }),
+        }
+        let mirror_lag_health_path = self
+            .network_dir(&active.config.name.0)
+            .join(crate::daemon::mirror_lag_health::NATS_MIRROR_LAG_HEALTH_FILE);
+        match crate::daemon::mirror_lag_health::load_health(&mirror_lag_health_path).await {
+            Ok(health) => {
+                let lag_summary = if health.lags.is_empty() {
+                    None
+                } else {
+                    Some(
+                        health
+                            .lags
+                            .iter()
+                            .map(|entry| {
+                                format!(
+                                    "{}: behind_by={} (local={} hub={})",
+                                    entry.asset_name,
+                                    entry.behind_by,
+                                    entry.local_last_seq,
+                                    entry.hub_last_seq,
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                    )
+                };
+                status.push(ControlPlaneStatus {
+                    component: String::from("mirror_lag"),
+                    healthy: Some(health.healthy),
+                    stale_since_unix_secs: health.stale_since_unix_secs,
+                    consecutive_failures: Some(health.consecutive_failures),
+                    error: health.last_error.or(lag_summary),
+                });
+            }
+            Err(error) => {
+                // Health file is only written on Mirror nodes. On
+                // StorageCandidate or Leaf, missing-file is the
+                // expected steady state, not a failure — surface
+                // explicitly as `unknown` rather than a hard error.
+                if matches!(
+                    active.config.machine_role,
+                    ployz_types::model::MachineRole::Mirror,
+                ) {
+                    status.push(ControlPlaneStatus {
+                        component: String::from("mirror_lag"),
+                        healthy: None,
+                        stale_since_unix_secs: None,
+                        consecutive_failures: None,
+                        error: Some(format!("read mirror lag health: {error}")),
+                    });
+                }
+            }
         }
         match crate::mesh_state::bootstrap::load_bootstrap_seed_cache_health(&network_dir) {
             Ok(Some(health)) => status.push(ControlPlaneStatus {

@@ -845,6 +845,7 @@ async fn make_state_with_zfs_transfer_port(
         certificate_renewal: None,
         bootstrap_seed_cache: None,
             state_view_reconciler: None,
+            mirror_lag_health: None,
     });
 
     (state, store, network)

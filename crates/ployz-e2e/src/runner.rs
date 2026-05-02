@@ -693,10 +693,11 @@ impl ScenarioRun {
             "routing_events",
             "revisions",
             "cert_jobs",
-            "KV_machines",
+            "machine_state_view",
+            "instance_state_view",
             "KV_invites",
             "KV_deploy_status",
-            "KV_instances",
+            "KV_machine_directory",
             "KV_locks",
             "KV_coordinator_lease",
         ];
