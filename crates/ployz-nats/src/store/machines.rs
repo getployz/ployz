@@ -9,8 +9,7 @@ use ployz_types::model::{MachineEvent, MachineId, MachineMembership, RoutingEven
 
 use crate::NatsStore;
 use crate::buckets::{
-    delete_machine_state_assets, ensure_machine_state_assets, local_read_stream_name,
-    reconcile_view_streams,
+    delete_machine_state_assets, ensure_machine_state_assets, reconcile_view_streams,
 };
 use crate::store::kv_json;
 use crate::store::state_directory;
@@ -92,7 +91,7 @@ impl NatsStore {
     async fn subscribe_machines_internal(&self) -> Result<MachineSubscription> {
         state_view::subscribe(
             self,
-            &local_read_stream_name(self, MACHINE_STATE_VIEW_STREAM),
+            MACHINE_STATE_VIEW_STREAM,
             None,
             decode_machine_message,
             machine_event_for,
@@ -109,8 +108,7 @@ async fn read_machine_state(
     store: &NatsStore,
     machine_id: &MachineId,
 ) -> Result<Option<MachineMembership>> {
-    let stream_name = local_read_stream_name(store, MACHINE_STATE_VIEW_STREAM);
-    let stream = match store.local_jetstream().get_stream(&stream_name).await {
+    let stream = match store.local_jetstream().get_stream(MACHINE_STATE_VIEW_STREAM).await {
         Ok(stream) => stream,
         Err(_) => return Ok(None),
     };
@@ -127,10 +125,16 @@ async fn read_machine_state(
 async fn publish_machine_state(store: &NatsStore, record: &MachineMembership) -> Result<()> {
     let payload = serde_json::to_vec(record)
         .map_err(|error| Error::operation("nats_machine_encode", error.to_string()))?;
+    // Include `updated_at` in the message_id so JetStream's 1h dedup
+    // window only collapses true retries of the same record, not
+    // legitimate state transitions (lifecycle, subnet, endpoints).
     let publish = PublishMessage::build()
         .payload(payload.into())
         .expected_stream(machine_state_stream(&record.id))
-        .message_id(format!("machine_state:{}", record.id.0));
+        .message_id(format!(
+            "machine_state:{}:{}",
+            record.id.0, record.updated_at
+        ));
     let ack = store
         .hub_jetstream()
         .send_publish(machine_state_subject(&record.id), publish)

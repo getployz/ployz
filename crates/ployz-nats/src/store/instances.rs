@@ -9,7 +9,7 @@ use ployz_types::model::{InstanceId, InstanceStatusRecord, MachineId, RoutingEve
 use ployz_types::spec::Namespace;
 
 use crate::NatsStore;
-use crate::buckets::{ensure_machine_state_assets, local_read_stream_name};
+use crate::buckets::ensure_machine_state_assets;
 use crate::store::kv_json;
 use crate::store::state_view::{self, StateChange, StateMessage};
 use crate::subjects::{
@@ -83,7 +83,7 @@ async fn list_instance_view_with_filter(
     let filter = namespace.map(instance_state_namespace_filter);
     state_view::subscribe(
         store,
-        &local_read_stream_name(store, INSTANCE_STATE_VIEW_STREAM),
+        INSTANCE_STATE_VIEW_STREAM,
         filter,
         decode_instance_message,
         instance_event_for,
@@ -101,8 +101,7 @@ async fn read_instance_state(
     namespace: &Namespace,
     instance_id: &InstanceId,
 ) -> Result<Option<InstanceStatusRecord>> {
-    let stream_name = local_read_stream_name(store, INSTANCE_STATE_VIEW_STREAM);
-    let stream = match store.local_jetstream().get_stream(&stream_name).await {
+    let stream = match store.local_jetstream().get_stream(INSTANCE_STATE_VIEW_STREAM).await {
         Ok(stream) => stream,
         Err(_) => return Ok(None),
     };
@@ -132,10 +131,16 @@ async fn locate_instance_state(
 async fn publish_instance_state(store: &NatsStore, record: &InstanceStatusRecord) -> Result<()> {
     let payload = serde_json::to_vec(record)
         .map_err(|error| Error::operation("nats_instance_encode", error.to_string()))?;
+    // Include `updated_at` so JetStream's 1h dedup window doesn't
+    // swallow legitimate Pending → Starting → Ready transitions on the
+    // same instance.
     let publish = PublishMessage::build()
         .payload(payload.into())
         .expected_stream(instance_state_stream(&record.machine_id))
-        .message_id(format!("instance_state:{}", record.instance_id.0));
+        .message_id(format!(
+            "instance_state:{}:{}",
+            record.instance_id.0, record.updated_at
+        ));
     let ack = store
         .hub_jetstream()
         .send_publish(
