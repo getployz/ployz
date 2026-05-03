@@ -156,11 +156,15 @@ async fn publish_machine_state(store: &NatsStore, record: &MachineMembership) ->
 }
 
 async fn publish_machine_tombstone(store: &NatsStore, machine_id: &MachineId) -> Result<()> {
+    // Tombstones must carry a unique id per deletion: a re-add + delete
+    // pair within the 1h dedup window would otherwise drop the second
+    // tombstone and leave the machine visible in the view.
+    let now = ployz_types::time::now_unix_secs();
     let publish = PublishMessage::build()
         .payload(Vec::new().into())
         .expected_stream(machine_state_stream(machine_id))
         .headers(HeaderMap::new())
-        .message_id(format!("machine_tombstone:{}", machine_id.0));
+        .message_id(format!("machine_tombstone:{}:{}", machine_id.0, now));
     let ack = store
         .hub_jetstream()
         .send_publish(machine_tombstone_subject(machine_id), publish)

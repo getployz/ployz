@@ -54,8 +54,13 @@ impl StateViewReconcilerTask {
 /// reconciliation are logged and the task continues — the next event
 /// will drive a retry. Persistent staleness is surfaced through
 /// `mirror_lag` in the status work.
+/// Initial backoff after the directory subscription closes. Doubles on
+/// each consecutive failure, clamped at `RESUBSCRIBE_BACKOFF_MAX`.
+const RESUBSCRIBE_BACKOFF_MIN: std::time::Duration = std::time::Duration::from_millis(250);
+const RESUBSCRIBE_BACKOFF_MAX: std::time::Duration = std::time::Duration::from_secs(15);
+
 pub(crate) async fn spawn(store: NatsStore) -> Result<StateViewReconcilerTask> {
-    let (snapshot, mut events) = state_directory::subscribe(&store).await.map_err(|error| {
+    let (snapshot, events) = state_directory::subscribe(&store).await.map_err(|error| {
         Error::operation(
             "state_view_reconciler_subscribe",
             format!("subscribe directory: {error}"),
@@ -69,31 +74,92 @@ pub(crate) async fn spawn(store: NatsStore) -> Result<StateViewReconcilerTask> {
     info!(count = tracked.len(), "state view reconciler initialised");
 
     Ok(StateViewReconcilerTask::spawn(|cancel| async move {
+        let mut events = events;
+        let mut backoff = RESUBSCRIBE_BACKOFF_MIN;
         loop {
-            let event = tokio::select! {
-                () = cancel.cancelled() => break,
-                next = events.recv() => next,
-            };
-            let Some(event) = event else {
-                warn!("state view reconciler event stream closed");
-                break;
-            };
-            let event = match event {
-                Ok(event) => event,
-                Err(error) => {
-                    warn!(?error, "state view reconciler subscription error");
-                    continue;
+            let exit_inner = run_event_loop(&store, &mut tracked, &mut events, &cancel).await;
+            match exit_inner {
+                EventLoopExit::Cancelled => break,
+                EventLoopExit::ChannelClosed => {
+                    // Subscription died (transport drop, JetStream restart,
+                    // server reconnect). Re-subscribe rather than exit;
+                    // otherwise the view streams drift stale until the
+                    // daemon restarts. Failure-audience rule: the
+                    // reconciler IS the audience for its own subscription
+                    // health.
+                    warn!(
+                        backoff_ms = backoff.as_millis() as u64,
+                        "state view reconciler resubscribing"
+                    );
+                    tokio::select! {
+                        () = cancel.cancelled() => break,
+                        () = tokio::time::sleep(backoff) => {}
+                    }
+                    backoff = (backoff * 2).min(RESUBSCRIBE_BACKOFF_MAX);
+                    match state_directory::subscribe(&store).await {
+                        Ok((snapshot, next_events)) => {
+                            tracked = snapshot
+                                .iter()
+                                .map(|entry| entry.machine_id.clone())
+                                .collect();
+                            if let Err(error) = apply(&store, &tracked).await {
+                                warn!(
+                                    ?error,
+                                    "state view reconcile after resubscribe failed"
+                                );
+                            }
+                            events = next_events;
+                            backoff = RESUBSCRIBE_BACKOFF_MIN;
+                            info!(
+                                count = tracked.len(),
+                                "state view reconciler resubscribed"
+                            );
+                        }
+                        Err(error) => {
+                            warn!(?error, "state view reconciler resubscribe failed");
+                        }
+                    }
                 }
-            };
-            let changed = apply_event(&mut tracked, event);
-            if !changed {
-                continue;
-            }
-            if let Err(error) = apply(&store, &tracked).await {
-                warn!(?error, "state view reconcile after event failed");
             }
         }
     }))
+}
+
+enum EventLoopExit {
+    Cancelled,
+    ChannelClosed,
+}
+
+async fn run_event_loop(
+    store: &NatsStore,
+    tracked: &mut BTreeSet<MachineId>,
+    events: &mut tokio::sync::mpsc::Receiver<Result<DirectoryEvent>>,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> EventLoopExit {
+    loop {
+        let event = tokio::select! {
+            () = cancel.cancelled() => return EventLoopExit::Cancelled,
+            next = events.recv() => next,
+        };
+        let Some(event) = event else {
+            warn!("state view reconciler event stream closed");
+            return EventLoopExit::ChannelClosed;
+        };
+        let event = match event {
+            Ok(event) => event,
+            Err(error) => {
+                warn!(?error, "state view reconciler subscription error");
+                continue;
+            }
+        };
+        let changed = apply_event(tracked, event);
+        if !changed {
+            continue;
+        }
+        if let Err(error) = apply(store, tracked).await {
+            warn!(?error, "state view reconcile after event failed");
+        }
+    }
 }
 
 fn apply_event(tracked: &mut BTreeSet<MachineId>, event: DirectoryEvent) -> bool {

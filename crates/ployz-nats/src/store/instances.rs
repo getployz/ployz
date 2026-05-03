@@ -165,11 +165,14 @@ async fn publish_instance_tombstone(
     namespace: &Namespace,
     instance_id: &InstanceId,
 ) -> Result<()> {
+    // Same reasoning as machine tombstones: dedupe-window swallowing of
+    // a re-add + delete pair would leave the instance visible.
+    let now = ployz_types::time::now_unix_secs();
     let publish = PublishMessage::build()
         .payload(Vec::new().into())
         .expected_stream(instance_state_stream(machine_id))
         .headers(HeaderMap::new())
-        .message_id(format!("instance_tombstone:{}", instance_id.0));
+        .message_id(format!("instance_tombstone:{}:{}", instance_id.0, now));
     let ack = store
         .hub_jetstream()
         .send_publish(
