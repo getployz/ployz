@@ -92,7 +92,7 @@ impl NatsStore {
         state_view::subscribe(
             self,
             MACHINE_STATE_VIEW_STREAM,
-            None,
+            Vec::new(),
             decode_machine_message,
             machine_event_for,
             |record: &MachineMembership| record.id.0.clone(),
@@ -112,13 +112,29 @@ async fn read_machine_state(
         Ok(stream) => stream,
         Err(_) => return Ok(None),
     };
-    let subject = machine_state_subject(machine_id);
-    match stream.direct_get_last_for_subject(&subject).await {
-        Ok(message) => Ok(Some(kv_json::decode_json::<MachineMembership>(
+    // Same tombstone-vs-live logic as instances: the live subject's
+    // retained message survives a delete because `max_messages_per_subject`
+    // is 1 (the message stays until something overwrites it). A
+    // tombstone on a sibling subject doesn't replace it. So we read
+    // both and use the highest stream sequence to decide.
+    let live_subject = machine_state_subject(machine_id);
+    let tombstone_subject = machine_tombstone_subject(machine_id);
+    let live = stream.direct_get_last_for_subject(&live_subject).await.ok();
+    let tombstone = stream
+        .direct_get_last_for_subject(&tombstone_subject)
+        .await
+        .ok();
+    match (live, tombstone) {
+        (None, _) => Ok(None),
+        (Some(live_msg), Some(tombstone_msg))
+            if tombstone_msg.sequence >= live_msg.sequence =>
+        {
+            Ok(None)
+        }
+        (Some(live_msg), _) => Ok(Some(kv_json::decode_json::<MachineMembership>(
             "nats_machine_decode",
-            message.payload.as_ref(),
+            live_msg.payload.as_ref(),
         )?)),
-        Err(_) => Ok(None),
     }
 }
 

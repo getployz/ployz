@@ -13,7 +13,7 @@ use crate::buckets::ensure_machine_state_assets;
 use crate::store::kv_json;
 use crate::store::state_view::{self, StateChange, StateMessage};
 use crate::subjects::{
-    INSTANCE_STATE_VIEW_STREAM, instance_state_namespace_filter, instance_state_stream,
+    INSTANCE_STATE_VIEW_STREAM, instance_state_namespace_filters, instance_state_stream,
     instance_state_subject, instance_tombstone_subject,
 };
 
@@ -80,11 +80,13 @@ async fn list_instance_view_with_filter(
     Vec<InstanceStatusRecord>,
     tokio::sync::mpsc::Receiver<Result<()>>,
 )> {
-    let filter = namespace.map(instance_state_namespace_filter);
+    let filters = namespace
+        .map(instance_state_namespace_filters)
+        .unwrap_or_default();
     state_view::subscribe(
         store,
         INSTANCE_STATE_VIEW_STREAM,
-        filter,
+        filters,
         decode_instance_message,
         instance_event_for,
         |record: &InstanceStatusRecord| record.instance_id.0.clone(),
@@ -93,8 +95,12 @@ async fn list_instance_view_with_filter(
 }
 
 /// Direct-get the most recent state record for one instance from the
-/// local view. Returns `None` if the view doesn't carry the instance
-/// (not yet replicated, never published, or tombstoned).
+/// local view, accounting for tombstones. Returns `None` if the view
+/// doesn't carry the instance, OR if the most recent operation on this
+/// instance was a delete (tombstone seq > live seq). Without the
+/// tombstone check, a re-add after delete would be misclassified as
+/// `InstanceUpdated` because the live subject still retains the
+/// pre-delete record (`max_messages_per_subject = 1` keeps it).
 async fn read_instance_state(
     store: &NatsStore,
     machine_id: &MachineId,
@@ -105,13 +111,24 @@ async fn read_instance_state(
         Ok(stream) => stream,
         Err(_) => return Ok(None),
     };
-    let subject = instance_state_subject(machine_id, namespace, instance_id);
-    match stream.direct_get_last_for_subject(&subject).await {
-        Ok(message) => Ok(Some(kv_json::decode_json::<InstanceStatusRecord>(
+    let live_subject = instance_state_subject(machine_id, namespace, instance_id);
+    let tombstone_subject = instance_tombstone_subject(machine_id, namespace, instance_id);
+    let live = stream.direct_get_last_for_subject(&live_subject).await.ok();
+    let tombstone = stream
+        .direct_get_last_for_subject(&tombstone_subject)
+        .await
+        .ok();
+    match (live, tombstone) {
+        (None, _) => Ok(None),
+        (Some(live_msg), Some(tombstone_msg))
+            if tombstone_msg.sequence >= live_msg.sequence =>
+        {
+            Ok(None)
+        }
+        (Some(live_msg), _) => Ok(Some(kv_json::decode_json::<InstanceStatusRecord>(
             "nats_instance_decode",
-            message.payload.as_ref(),
+            live_msg.payload.as_ref(),
         )?)),
-        Err(_) => Ok(None),
     }
 }
 

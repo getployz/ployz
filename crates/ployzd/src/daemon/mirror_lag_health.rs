@@ -149,6 +149,14 @@ async fn poll_once(
             let now = unix_secs();
             let stale_since_value = *stale_since.get_or_insert(now);
             warn!(?error, "mirror lag poll failed");
+            // Preserve the last successful lag samples so the operator
+            // still has per-asset context while health is degraded —
+            // dropping them would leave the status surface blank
+            // exactly when diagnosis matters most.
+            let stale_lags = match load_health(health_path).await {
+                Ok(previous) => previous.lags,
+                Err(_) => Vec::new(),
+            };
             write_health(
                 health_path,
                 MirrorLagHealth {
@@ -157,7 +165,7 @@ async fn poll_once(
                     stale_since_unix_secs: Some(stale_since_value),
                     consecutive_failures: *consecutive_failures,
                     last_error: Some(error.to_string()),
-                    lags: Vec::new(),
+                    lags: stale_lags,
                 },
             )
             .await;

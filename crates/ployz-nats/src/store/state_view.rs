@@ -55,7 +55,7 @@ pub(crate) enum StateChange<T, E> {
 pub(crate) async fn subscribe<T, E>(
     store: &NatsStore,
     view_stream: &str,
-    filter_subject: Option<String>,
+    filter_subjects: Vec<String>,
     decode: impl Fn(&str, &[u8]) -> Result<StateMessage<T>> + Send + Sync + 'static,
     event_for: impl Fn(&mut HashMap<String, T>, StateMessage<T>) -> StateChange<T, E>
     + Send
@@ -103,8 +103,12 @@ where
         memory_storage: true,
         ..Default::default()
     };
-    if let Some(filter) = filter_subject {
-        config.filter_subject = filter;
+    // Multiple filters cover the live + tombstone subject pattern for
+    // namespace-scoped instance subscriptions; without both, deletes
+    // would never reach a namespace subscriber and stale records would
+    // linger in the snapshot.
+    if !filter_subjects.is_empty() {
+        config.filter_subjects = filter_subjects;
     }
     let mut consumer: async_nats::jetstream::consumer::PushConsumer = stream
         .create_consumer(config)

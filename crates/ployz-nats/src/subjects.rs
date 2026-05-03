@@ -160,12 +160,18 @@ pub fn instance_state_stream_subjects(machine_id: &MachineId) -> Vec<String> {
     ]
 }
 
-/// Filter pattern for `instance_state_view` consumers that only care about
-/// a single namespace. Matches every machine's instances under `namespace`.
-/// Subject layout: `state.<machine>.instance.<namespace>.<instance_id>`.
+/// Filter patterns for `instance_state_view` consumers that only care
+/// about a single namespace. Returns BOTH the live and tombstone
+/// patterns so deletes for that namespace also reach the consumer —
+/// without the tombstone half, removed instances would linger in the
+/// filtered snapshot until a later upsert overwrote the live subject.
 #[must_use]
-pub fn instance_state_namespace_filter(namespace: &Namespace) -> String {
-    format!("state.*.instance.{}.>", subject_token(&namespace.0))
+pub fn instance_state_namespace_filters(namespace: &Namespace) -> Vec<String> {
+    let token = subject_token(&namespace.0);
+    vec![
+        format!("state.*.instance.{token}.>"),
+        format!("state.*.instance_tombstone.{token}.>"),
+    ]
 }
 
 #[must_use]
@@ -245,11 +251,16 @@ mod tests {
     }
 
     #[test]
-    fn instance_state_namespace_filter_matches_only_target_namespace() {
+    fn instance_state_namespace_filters_cover_live_and_tombstone() {
         let namespace = Namespace("ns_alpha".into());
-        let filter = instance_state_namespace_filter(&namespace);
-        // Wildcard for machine, then exact namespace token, then anything for instance.
-        assert_eq!(filter, "state.*.instance.ns_alpha.>");
+        let filters = instance_state_namespace_filters(&namespace);
+        assert_eq!(
+            filters,
+            vec![
+                "state.*.instance.ns_alpha.>".to_string(),
+                "state.*.instance_tombstone.ns_alpha.>".to_string(),
+            ]
+        );
     }
 
     #[test]
