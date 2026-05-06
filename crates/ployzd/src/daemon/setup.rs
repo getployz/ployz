@@ -329,38 +329,46 @@ impl MeshStartTx {
         Ok(())
     }
 
-    /// Fatal: start gateway or roll back control-plane listeners plus mesh.
-    async fn start_gateway(
+    /// Fatal: start edge runtimes or roll back control-plane listeners plus mesh.
+    async fn start_edge_runtimes(
         &mut self,
         state: &DaemonState,
         plan: &StartPlan,
     ) -> Result<(), StartMeshError> {
-        let Some(config) = plan.gateway_config.clone() else {
-            return Ok(());
+        let gateway_config = plan.gateway_config.clone();
+        let dns_config = plan.dns_config.clone();
+        let gateway = async {
+            let Some(config) = gateway_config else {
+                return Ok(Box::new(NoopRuntimeHandle) as Box<dyn RuntimeHandle>);
+            };
+            state.start_runtime_gateway(config).await
         };
-        let handle = state
-            .start_runtime_gateway(config)
-            .await
-            .map_err(StartMeshError::Gateway)?;
-        self.gateway = handle;
-        Ok(())
-    }
+        let dns = async {
+            let Some(config) = dns_config else {
+                return Ok(Box::new(NoopRuntimeHandle) as Box<dyn RuntimeHandle>);
+            };
+            state.start_runtime_dns(config).await
+        };
 
-    /// Fatal: start DNS or roll back gateway, control-plane listeners, and mesh.
-    async fn start_dns(
-        &mut self,
-        state: &DaemonState,
-        plan: &StartPlan,
-    ) -> Result<(), StartMeshError> {
-        let Some(config) = plan.dns_config.clone() else {
-            return Ok(());
-        };
-        let handle = state
-            .start_runtime_dns(config)
-            .await
-            .map_err(StartMeshError::Dns)?;
-        self.dns = handle;
-        Ok(())
+        let (gateway_result, dns_result) = tokio::join!(gateway, dns);
+        match (gateway_result, dns_result) {
+            (Ok(gateway), Ok(dns)) => {
+                self.gateway = gateway;
+                self.dns = dns;
+                Ok(())
+            }
+            (Err(error), Ok(dns)) => {
+                self.dns = dns;
+                Err(StartMeshError::Gateway(error))
+            }
+            (Ok(gateway), Err(error)) => {
+                self.gateway = gateway;
+                Err(StartMeshError::Dns(error))
+            }
+            (Err(gateway_error), Err(dns_error)) => Err(StartMeshError::Gateway(format!(
+                "{gateway_error}; dns start also failed: {dns_error}"
+            ))),
+        }
     }
 
     async fn start_nats_control(&mut self, state: &DaemonState) -> Result<(), StartMeshError> {
@@ -602,12 +610,7 @@ impl DaemonState {
             return Err(error);
         }
 
-        if let Err(error) = tx.start_gateway(self, &plan).await {
-            tx.rollback_startup().await;
-            return Err(error);
-        }
-
-        if let Err(error) = tx.start_dns(self, &plan).await {
+        if let Err(error) = tx.start_edge_runtimes(self, &plan).await {
             tx.rollback_startup().await;
             return Err(error);
         }

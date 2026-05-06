@@ -73,7 +73,7 @@ impl Mesh {
     async fn wait_for_handshake(&self) -> Result<()> {
         poll_until(
             Duration::from_secs(10),
-            Duration::from_millis(200),
+            Duration::from_millis(50),
             Duration::from_millis(200),
             || async { self.network.has_remote_handshake().await },
         )

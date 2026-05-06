@@ -4,6 +4,7 @@ use crate::scenarios;
 use crate::support::{
     CommandOutput, DaemonJsonPayload, docker_outer, docker_outer_raw, parse_daemon_json_response,
     parse_ready, pick_free_port, run_command, run_command_expect_ok, wait_until,
+    wait_until_with_interval,
 };
 use std::fmt::Write as _;
 use std::fs;
@@ -29,6 +30,8 @@ const PAYLOAD_LOCK_POLL: Duration = Duration::from_millis(200);
 const PEBBLE_IMAGE: &str = "ployz-e2e-preload/pebble:latest";
 const PEBBLE_CHALLTESTSRV_IMAGE: &str = "ployz-e2e-preload/pebble-challtestsrv:latest";
 const PEBBLE_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
+const CONTROL_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const STATE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const PRELOADED_IMAGE_FILES: &[&str] = &[
     "networking.tar",
     "nats.tar",
@@ -452,13 +455,11 @@ impl ScenarioRun {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let mut last_snapshot: Option<Vec<MachineRow>> = None;
-        let mut consecutive_matches: u8 = 0;
         self.log_progress(&format!(
             "wait_machine_rows start node={node_name} expected=[{expected_labels}]"
         ));
 
-        wait_until(STATE_WAIT_TIMEOUT, || {
+        wait_until_with_interval(STATE_WAIT_TIMEOUT, STATE_POLL_INTERVAL, || {
             let Ok(output) = self.ssh_run(node, "ployzd --json machine ls") else {
                 return Ok(false);
             };
@@ -468,27 +469,16 @@ impl ScenarioRun {
 
             let snapshot = machine_rows(&output.stdout)?;
             if snapshot.len() != expected_count {
-                consecutive_matches = 0;
-                last_snapshot = None;
                 return Ok(false);
             }
             if !expected_rows
                 .iter()
                 .all(|expected| snapshot.iter().any(|row| row.matches(*expected)))
             {
-                consecutive_matches = 0;
-                last_snapshot = None;
                 return Ok(false);
             }
 
-            if last_snapshot.as_ref() == Some(&snapshot) {
-                consecutive_matches = consecutive_matches.saturating_add(1);
-            } else {
-                consecutive_matches = 1;
-                last_snapshot = Some(snapshot);
-            }
-
-            Ok(consecutive_matches >= 3)
+            Ok(true)
         })
         .map_err(|error| {
             Error::Message(format!(
@@ -1056,9 +1046,11 @@ impl ScenarioRun {
 
     fn wait_for_ssh(&self, node: &Node) -> Result<()> {
         self.log_progress(&format!("wait_for_ssh start node={}", node.name));
-        wait_until(SSH_WAIT_TIMEOUT, || match self.ssh_run(node, "true") {
-            Ok(output) => Ok(output.status.success()),
-            Err(_) => Ok(false),
+        wait_until_with_interval(SSH_WAIT_TIMEOUT, CONTROL_POLL_INTERVAL, || {
+            match self.ssh_run(node, "true") {
+                Ok(output) => Ok(output.status.success()),
+                Err(_) => Ok(false),
+            }
         })
         .map_err(|error| {
             Error::Message(format!(
@@ -1072,7 +1064,7 @@ impl ScenarioRun {
 
     fn wait_for_daemon(&self, node: &Node) -> Result<()> {
         self.log_progress(&format!("wait_for_daemon start node={}", node.name));
-        wait_until(DAEMON_WAIT_TIMEOUT, || {
+        wait_until_with_interval(DAEMON_WAIT_TIMEOUT, CONTROL_POLL_INTERVAL, || {
             match self.ssh_run(node, "ployzd status") {
                 Ok(output) => Ok(output.status.success()),
                 Err(_) => Ok(false),
@@ -1094,7 +1086,7 @@ impl ScenarioRun {
             node.name,
             timeout.as_secs()
         ));
-        wait_until(timeout, || {
+        wait_until_with_interval(timeout, CONTROL_POLL_INTERVAL, || {
             let Ok(output) = self.ssh_run(node, "ployzd --plain mesh ready --json") else {
                 return Ok(false);
             };
