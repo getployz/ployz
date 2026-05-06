@@ -297,7 +297,7 @@ impl MeshStartTx {
                 exposed_tcp_ports: &exposed_tcp_ports,
                 bootstrap: &plan.bootstrap_addrs,
                 network_id: &self.config.id.0,
-                storage: self.config.storage,
+                storage_authority: self.config.storage_participation.is_authority(),
             })
             .await
             .map_err(StartMeshError::NetworkDriver)?;
@@ -649,7 +649,7 @@ impl DaemonState {
                 exposed_tcp_ports: &exposed_tcp_ports,
                 bootstrap: &[],
                 network_id: &net_config.id.0,
-                storage: net_config.storage,
+                storage_authority: net_config.storage_participation.is_authority(),
             })
             .await
             .map_err(|error| format!("runtime components failed: {error}"))?;
@@ -905,6 +905,7 @@ mod tests {
             subnet: None,
             bridge_ip: None,
             storage: true,
+            storage_participation: ployz_types::model::StorageParticipation::default_authority(),
             endpoints: vec!["peer:51820".into()],
         };
         write_bootstrap_peer_records(&network_dir, std::slice::from_ref(&peer))

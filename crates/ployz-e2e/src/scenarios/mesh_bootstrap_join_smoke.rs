@@ -36,7 +36,25 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
         ],
     )?;
     run.wait_mesh_ready_name("peer")?;
-    run.assert_doctor_storage("founder", true, &[("peer", true)])?;
-    run.assert_doctor_storage("peer", true, &[("founder", true)])?;
+    run.assert_doctor_storage(
+        "founder",
+        true,
+        "authority:auth-default",
+        &[("peer", true, "candidate")],
+    )?;
+    run.assert_doctor_storage(
+        "peer",
+        true,
+        "candidate",
+        &[("founder", true, "authority:auth-default")],
+    )?;
+    run.ssh_expect_ok_name(
+        "peer",
+        "sh -lc '! grep -q \"cluster {\" /var/lib/ployz/networks/alpha/nats/nats.conf'",
+    )?;
+    run.ssh_expect_ok_name(
+        "founder",
+        "sh -lc 'grep -q \"jetstream\" /var/lib/ployz/networks/alpha/nats/nats.conf'",
+    )?;
     Ok(())
 }

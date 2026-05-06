@@ -39,7 +39,7 @@ pub async fn nats_docker(
     network_dir: &Path,
     bootstrap: &[String],
     network_id: &str,
-    storage: bool,
+    storage_authority: bool,
     image: &str,
 ) -> std::result::Result<StoreDriver, String> {
     let paths = config::Paths::new(network_dir);
@@ -54,7 +54,7 @@ pub async fn nats_docker(
         overlay_ip,
         bootstrap,
         network_id,
-        storage,
+        storage_authority,
     )
     .map_err(|error| format!("write nats config: {error}"))?;
 
@@ -78,11 +78,18 @@ pub fn nats_host(
     network_dir: &Path,
     bootstrap: &[String],
     network_id: &str,
-    storage: bool,
+    storage_authority: bool,
 ) -> std::result::Result<StoreDriver, String> {
     let paths = config::Paths::new(network_dir);
-    write_node_config(&paths, &paths, overlay_ip, bootstrap, network_id, storage)
-        .map_err(|error| format!("write nats config: {error}"))?;
+    write_node_config(
+        &paths,
+        &paths,
+        overlay_ip,
+        bootstrap,
+        network_id,
+        storage_authority,
+    )
+    .map_err(|error| format!("write nats config: {error}"))?;
     let service = HostNats::new(
         which_nats_server()?,
         paths.config.clone(),
@@ -114,7 +121,7 @@ fn write_node_config(
     overlay_ip: OverlayIp,
     bootstrap: &[String],
     network_id: &str,
-    storage: bool,
+    storage_authority: bool,
 ) -> std::io::Result<()> {
     let storage_peers: Vec<_> = bootstrap
         .iter()
@@ -128,7 +135,7 @@ fn write_node_config(
             overlay_ip.0.to_string().replace(':', "-")
         ),
         cluster_name: format!("ployz-{network_id}"),
-        storage,
+        storage_authority,
         overlay_ip: overlay_ip.0,
         storage_peers,
         data_dir: runtime_paths.data.clone(),

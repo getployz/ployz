@@ -472,7 +472,7 @@ mod tests {
     use ployz_types::error::{Error, Result};
     use ployz_types::model::{
         DeployId, DeployRecord, DeployState, MachineId, MachineLifecycle, MachineMembership,
-        MachineTopology, OverlayIp, PublicKey, VolumeRecord,
+        MachineTopology, OverlayIp, PublicKey, StorageParticipation, VolumeRecord,
     };
     use ployz_types::spec::{Namespace, VolumeScope};
     use std::collections::{BTreeMap, VecDeque};
@@ -613,6 +613,7 @@ mod tests {
             endpoints: Vec::new(),
             lifecycle: MachineLifecycle::Active,
             storage: true,
+            storage_participation: StorageParticipation::default_authority(),
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),

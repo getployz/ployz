@@ -555,6 +555,7 @@ pub struct DoctorLocal {
     pub network_lifecycle: String,
     pub machine_lifecycle: String,
     pub storage: bool,
+    pub storage_participation: String,
     pub config_subnet: Option<String>,
     pub record_subnet: Option<String>,
     pub runtime_running: bool,
@@ -568,6 +569,7 @@ pub struct DoctorPeer {
     pub machine_id: String,
     pub role: String,
     pub storage: bool,
+    pub storage_participation: String,
     pub blocking: bool,
     pub store_lifecycle: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -823,7 +825,7 @@ mod tests {
         DeployId, DrainState, InstanceId, InstancePhase, InstanceStatusRecord, MachineId,
         MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey, RoutingEvent,
         RoutingState, ServiceRelease, ServiceReleaseRecord, ServiceReleaseSlot,
-        ServiceRevisionRecord, ServiceRoutingPolicy, SlotId,
+        ServiceRevisionRecord, ServiceRoutingPolicy, SlotId, StorageParticipation,
     };
     use ployz_types::spec::Namespace;
     use std::collections::BTreeMap;
@@ -994,6 +996,7 @@ mod tests {
             endpoints: vec![String::from("127.0.0.1:51820")],
             lifecycle: MachineLifecycle::Active,
             storage: true,
+            storage_participation: StorageParticipation::default_authority(),
             created_at: 1,
             updated_at: 2,
             labels: BTreeMap::new(),

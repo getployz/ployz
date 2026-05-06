@@ -56,7 +56,7 @@ pub(crate) struct MeshBuildRequest<'a> {
     pub(crate) exposed_tcp_ports: &'a [u16],
     pub(crate) bootstrap: &'a [String],
     pub(crate) network_id: &'a str,
-    pub(crate) storage: bool,
+    pub(crate) storage_authority: bool,
 }
 
 impl RuntimeProfile {
@@ -122,7 +122,7 @@ impl RuntimeProfile {
             exposed_tcp_ports,
             bootstrap,
             network_id,
-            storage,
+            storage_authority,
         } = request;
         let network = match self.execution_backend {
             ExecutionBackend::Memory => WireguardDriver::memory(),
@@ -150,14 +150,18 @@ impl RuntimeProfile {
                     network_dir,
                     bootstrap,
                     network_id,
-                    storage,
+                    storage_authority,
                     self.built_in_images.resolve(BuiltInImage::Nats),
                 )
                 .await?
             }
-            ExecutionBackend::Host => {
-                nats_host(overlay_ip, network_dir, bootstrap, network_id, storage)?
-            }
+            ExecutionBackend::Host => nats_host(
+                overlay_ip,
+                network_dir,
+                bootstrap,
+                network_id,
+                storage_authority,
+            )?,
         };
 
         let container_network = match (self.execution_backend, subnet) {

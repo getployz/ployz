@@ -1962,6 +1962,7 @@ fn test_machine(id: &str, lifecycle: MachineLifecycle) -> MachineMembership {
         endpoints: vec!["127.0.0.1:51820".into()],
         lifecycle,
         storage: true,
+        storage_participation: ployz_types::model::StorageParticipation::default_authority(),
         created_at: 0,
         updated_at: 0,
         labels: BTreeMap::new(),

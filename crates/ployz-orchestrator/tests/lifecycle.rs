@@ -6,6 +6,7 @@ use ployz_store_api::memory::{MemoryService, MemoryStore};
 use ployz_store_api::{MachineRegistry, SyncStatus};
 use ployz_types::model::{
     MachineId, MachineLifecycle, MachineMembership, MachineTopology, OverlayIp, PublicKey,
+    StorageParticipation,
 };
 use std::net::Ipv6Addr;
 use std::sync::Arc;
@@ -22,6 +23,7 @@ fn test_record(id: &str, key_byte: u8) -> MachineMembership {
         endpoints: vec![format!("10.0.0.{key_byte}:51820")],
         lifecycle: MachineLifecycle::Standby,
         storage: true,
+        storage_participation: StorageParticipation::default_authority(),
         created_at: 0,
         updated_at: 0,
         labels: std::collections::BTreeMap::new(),

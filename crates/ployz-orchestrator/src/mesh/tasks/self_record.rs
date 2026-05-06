@@ -105,6 +105,7 @@ mod tests {
             endpoints: vec!["127.0.0.1:51820".into()],
             lifecycle: MachineLifecycle::Standby,
             storage: true,
+            storage_participation: crate::model::StorageParticipation::default_authority(),
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),

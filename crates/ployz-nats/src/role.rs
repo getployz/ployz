@@ -380,6 +380,7 @@ mod tests {
             endpoints: Vec::new(),
             lifecycle,
             storage,
+            storage_participation: ployz_types::model::StorageParticipation::Candidate,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),

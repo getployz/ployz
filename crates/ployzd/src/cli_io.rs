@@ -606,6 +606,7 @@ mod tests {
                 local: DoctorLocal {
                     machine_id: String::from("founder"),
                     storage: true,
+                    storage_participation: String::from("authority:auth-default"),
                     network: String::from("alpha"),
                     network_lifecycle: String::from("running"),
                     machine_lifecycle: String::from("active"),
@@ -619,6 +620,7 @@ mod tests {
                 peers: vec![DoctorPeer {
                     machine_id: String::from("peer"),
                     storage: true,
+                    storage_participation: String::from("candidate"),
                     role: String::from("blocking"),
                     blocking: false,
                     store_lifecycle: String::from("active"),

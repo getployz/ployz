@@ -504,7 +504,8 @@ impl ScenarioRun {
         &self,
         node_name: &str,
         local_storage: bool,
-        peer_storage: &[(&str, bool)],
+        local_storage_participation: &str,
+        peer_storage: &[(&str, bool, &str)],
     ) -> Result<()> {
         use crate::support::{DaemonJsonPayload, parse_daemon_json_response};
         let output = self.ssh_expect_ok_name(node_name, "ployzd --json doctor")?;
@@ -526,7 +527,13 @@ impl ScenarioRun {
                 payload.local.storage, local_storage
             )));
         }
-        for (peer_id, expected_storage) in peer_storage {
+        if payload.local.storage_participation != local_storage_participation {
+            return Err(Error::Message(format!(
+                "doctor on {node_name} reports local storage_participation={}, expected {}",
+                payload.local.storage_participation, local_storage_participation
+            )));
+        }
+        for (peer_id, expected_storage, expected_storage_participation) in peer_storage {
             let Some(peer) = payload.peers.iter().find(|p| p.machine_id == *peer_id) else {
                 return Err(Error::Message(format!(
                     "doctor on {node_name} has no peer row for '{peer_id}'"
@@ -536,6 +543,12 @@ impl ScenarioRun {
                 return Err(Error::Message(format!(
                     "doctor on {node_name} reports peer '{peer_id}' storage={}, expected {expected_storage}",
                     peer.storage
+                )));
+            }
+            if peer.storage_participation != *expected_storage_participation {
+                return Err(Error::Message(format!(
+                    "doctor on {node_name} reports peer '{peer_id}' storage_participation={}, expected {expected_storage_participation}",
+                    peer.storage_participation
                 )));
             }
         }

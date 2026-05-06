@@ -4,6 +4,7 @@ use ployz_runtime_api::Identity;
 use ployz_store_api::{MachineRegistry, StoreDriver};
 use ployz_types::model::{
     MachineEvent, MachineId, MachineMembership, MachineTopology, OverlayIp, PublicKey,
+    StorageParticipation,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -32,6 +33,7 @@ pub struct BootstrapPeerRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge_ip: Option<OverlayIp>,
     pub storage: bool,
+    pub storage_participation: StorageParticipation,
     pub endpoints: Vec<String>,
 }
 
@@ -58,6 +60,7 @@ impl BootstrapPeerRecord {
         );
         record.bridge_ip = self.bridge_ip;
         record.storage = self.storage;
+        record.storage_participation = self.storage_participation;
         record
     }
 
@@ -70,6 +73,7 @@ impl BootstrapPeerRecord {
             subnet: record.subnet,
             bridge_ip: record.bridge_ip,
             storage: record.storage,
+            storage_participation: record.storage_participation.clone(),
             endpoints: record.endpoints.clone(),
         }
     }
@@ -96,6 +100,7 @@ impl BootstrapPeerRecord {
             subnet: None,
             bridge_ip: None,
             storage: true,
+            storage_participation: StorageParticipation::default_authority(),
             endpoints: invite.issuer_endpoints.clone(),
         })
     }
@@ -268,7 +273,7 @@ pub fn resolve_bootstrap_addrs(
     peers
         .iter()
         .filter(|peer| peer.machine_id != *local_machine_id)
-        .filter(|peer| peer.storage)
+        .filter(|peer| peer.storage_participation.is_authority())
         .map(|peer| format!("[{}]:{}", peer.overlay_ip.0, bootstrap_gossip_port))
         .collect()
 }
@@ -296,6 +301,7 @@ pub async fn build_seed_records(
         endpoints,
     );
     self_record.storage = net_config.storage;
+    self_record.storage_participation = net_config.storage_participation.clone();
     if let Some(topology) = configured_topology {
         self_record.topology = topology.clone();
     }
@@ -641,6 +647,7 @@ mod tests {
             subnet: Some("10.210.5.0/24".parse().expect("valid subnet")),
             bridge_ip: Some(OverlayIp("fd00::55".parse().expect("valid bridge"))),
             storage: true,
+            storage_participation: StorageParticipation::default_authority(),
             endpoints: vec!["peer:51820".into()],
         };
 
@@ -673,7 +680,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_bootstrap_addrs_filters_local_self() {
+    fn resolve_bootstrap_addrs_filters_local_self_and_storage_candidates() {
         let local = MachineId("local".into());
         let local_peer = BootstrapPeerRecord {
             machine_id: local.clone(),
@@ -682,6 +689,7 @@ mod tests {
             subnet: None,
             bridge_ip: None,
             storage: true,
+            storage_participation: StorageParticipation::default_authority(),
             endpoints: Vec::new(),
         };
         let remote_peer = BootstrapPeerRecord {
@@ -691,10 +699,22 @@ mod tests {
             subnet: None,
             bridge_ip: None,
             storage: true,
+            storage_participation: StorageParticipation::default_authority(),
+            endpoints: Vec::new(),
+        };
+        let candidate_peer = BootstrapPeerRecord {
+            machine_id: MachineId("candidate".into()),
+            public_key: PublicKey([3; 32]),
+            overlay_ip: OverlayIp("fd00::3".parse().expect("valid overlay")),
+            subnet: None,
+            bridge_ip: None,
+            storage: true,
+            storage_participation: StorageParticipation::Candidate,
             endpoints: Vec::new(),
         };
 
-        let addrs = resolve_bootstrap_addrs(&[local_peer, remote_peer], &local, 51001);
+        let addrs =
+            resolve_bootstrap_addrs(&[local_peer, remote_peer, candidate_peer], &local, 51001);
 
         assert_eq!(addrs, vec!["[fd00::2]:51001"]);
     }
@@ -715,6 +735,7 @@ mod tests {
             subnet: Some("10.210.2.0/24".parse().expect("valid subnet")),
             bridge_ip: Some(OverlayIp("fd00::22".parse().expect("valid bridge"))),
             storage: true,
+            storage_participation: StorageParticipation::default_authority(),
             endpoints: vec!["bootstrap:51820".into()],
         };
         let seed_records = build_seed_records(
@@ -770,6 +791,31 @@ mod tests {
             .find(|machine| machine.id == identity.machine_id)
             .expect("self record");
         assert_eq!(self_record.topology, configured_topology);
+    }
+
+    #[tokio::test]
+    async fn build_seed_records_preserves_storage_capability_and_participation() {
+        let identity = Identity::generate(MachineId("joiner".into()), [5; 32]);
+        let mut net_config = NetworkConfig::new(
+            NetworkName("alpha".into()),
+            &identity.public_key,
+            DEFAULT_CLUSTER_CIDR,
+            "10.210.1.0/24".parse().expect("valid subnet"),
+        );
+        net_config.storage = true;
+        net_config.storage_participation = StorageParticipation::Candidate;
+
+        let seed_records = build_seed_records(&identity, &net_config, 51820, &[], None).await;
+
+        let self_record = seed_records
+            .into_iter()
+            .find(|machine| machine.id == identity.machine_id)
+            .expect("self record");
+        assert!(self_record.storage);
+        assert_eq!(
+            self_record.storage_participation,
+            StorageParticipation::Candidate
+        );
     }
 
     #[tokio::test]

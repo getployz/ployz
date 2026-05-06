@@ -7,7 +7,7 @@ use ployz_api::{
     MeshSelfRecordPayload,
 };
 use ployz_orchestrator::network::endpoints::detect_advertised_endpoints;
-use ployz_types::model::{NetworkLifecycle, NetworkName};
+use ployz_types::model::{NetworkLifecycle, NetworkName, StorageParticipation};
 
 use super::DaemonState;
 
@@ -47,6 +47,7 @@ impl DaemonState {
         );
         net_config.id = request.network_id.clone();
         net_config.storage = true;
+        net_config.storage_participation = StorageParticipation::Candidate;
 
         let config_path = NetworkConfig::path(&self.data_dir, network);
         if config_path.exists() {

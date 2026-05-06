@@ -53,7 +53,7 @@ impl PeerRoute {
 pub struct ServerConfig {
     pub server_name: String,
     pub cluster_name: String,
-    pub storage: bool,
+    pub storage_authority: bool,
     pub overlay_ip: Ipv6Addr,
     pub storage_peers: Vec<PeerRoute>,
     pub data_dir: PathBuf,
@@ -66,7 +66,7 @@ impl ServerConfig {
             "server_name: {}\nlisten: \"[{}]:{}\"\nhttp: \"127.0.0.1:{}\"\n",
             self.server_name, self.overlay_ip, CLIENT_PORT, MONITOR_PORT
         );
-        if self.storage {
+        if self.storage_authority {
             config.push_str(&format!(
                 "jetstream {{\n  domain: {}\n  store_dir: \"{}\"\n}}\n",
                 HUB_DOMAIN,
@@ -108,7 +108,7 @@ mod tests {
         let rendered = ServerConfig {
             server_name: "m1".into(),
             cluster_name: "ployz-alpha".into(),
-            storage: true,
+            storage_authority: true,
             overlay_ip: "fd00::1".parse().expect("valid ip"),
             storage_peers: Vec::new(),
             data_dir: PathBuf::from("/data"),
@@ -123,7 +123,7 @@ mod tests {
         let rendered = ServerConfig {
             server_name: "m1".into(),
             cluster_name: "ployz-alpha".into(),
-            storage: true,
+            storage_authority: true,
             overlay_ip: "fd00::1".parse().expect("valid ip"),
             storage_peers: Vec::new(),
             data_dir: PathBuf::from("/data"),
@@ -136,11 +136,11 @@ mod tests {
     }
 
     #[test]
-    fn non_storage_node_does_not_enable_local_jetstream() {
+    fn storage_candidate_does_not_enable_local_jetstream() {
         let rendered = ServerConfig {
             server_name: "leaf-1".into(),
             cluster_name: "ployz-alpha".into(),
-            storage: false,
+            storage_authority: false,
             overlay_ip: "fd00::10".parse().expect("valid ip"),
             storage_peers: vec![PeerRoute {
                 overlay_ip: "fd00::1".parse().expect("valid ip"),
@@ -153,11 +153,11 @@ mod tests {
     }
 
     #[test]
-    fn non_storage_nodes_use_leafnode_remotes_not_cluster_routes() {
+    fn storage_candidate_uses_leafnode_remotes_not_cluster_routes() {
         let rendered = ServerConfig {
             server_name: "leaf-1".into(),
             cluster_name: "ployz-alpha".into(),
-            storage: false,
+            storage_authority: false,
             overlay_ip: "fd00::10".parse().expect("valid ip"),
             storage_peers: vec![PeerRoute {
                 overlay_ip: "fd00::1".parse().expect("valid ip"),
