@@ -28,20 +28,8 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
             },
         ],
     )?;
-    run.assert_doctor_roles(
-        "founder",
-        "storage_candidate",
-        &[("joiner1", "mirror"), ("joiner2", "mirror")],
-    )?;
-    run.assert_doctor_roles(
-        "joiner1",
-        "mirror",
-        &[("founder", "storage_candidate"), ("joiner2", "mirror")],
-    )?;
-    run.assert_doctor_roles(
-        "joiner2",
-        "mirror",
-        &[("founder", "storage_candidate"), ("joiner1", "mirror")],
-    )?;
+    run.assert_doctor_storage("founder", true, &[("joiner1", true), ("joiner2", true)])?;
+    run.assert_doctor_storage("joiner1", true, &[("founder", true), ("joiner2", true)])?;
+    run.assert_doctor_storage("joiner2", true, &[("founder", true), ("joiner1", true)])?;
     run.assert_nats_asset_replicas("founder", 1)
 }

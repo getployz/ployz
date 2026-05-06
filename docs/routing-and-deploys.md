@@ -182,7 +182,7 @@ drained instances.
    b. Register revision (content-addressed, idempotent)
    c. Start containers on A, B, C, wait for readiness probes
    d. Atomic commit — single transaction flips all routing pointers
-   e. NATS replicates the commit to storage candidates and mirrors
+   e. NATS replicates the commit to the selected storage-enabled stream peers
 
 4. Gateway reloads:
    - Loads snapshot, projects routes, finds 3 healthy backends

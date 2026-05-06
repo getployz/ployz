@@ -335,7 +335,7 @@ fn routing_consumer_config(
         ack_wait: ROUTING_CONSUMER_ACK_WAIT,
         idle_heartbeat: ROUTING_CONSUMER_IDLE_HEARTBEAT,
         max_ack_pending: ROUTING_CONSUMER_CHANNEL_CAPACITY as i64,
-        filter_subject: "routing.events.>".to_string(),
+        filter_subject: "ployz.v1.local.auth-default.route.journal.>".to_string(),
         ..Default::default()
     };
     match subscription {

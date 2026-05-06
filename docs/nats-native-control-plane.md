@@ -32,9 +32,9 @@ Direct TCP remains only for true byte streams such as ZFS send/receive payloads.
 
 ### Machine Add
 
-`machine add` admits a new member and establishes connectivity. It may start a
-local NATS server as Leaf/Mirror/eligible storage candidate according to the
-invite and node capabilities, but it does not:
+`machine add` admits a new member and establishes connectivity. It starts the
+local NATS server according to node capabilities and defaults to
+`storage=true`, but it does not:
 
 - increase JetStream replica count,
 - add a Raft voter to authoritative streams,
@@ -102,15 +102,15 @@ because it reappeared. The command verifies it.
 
 Promotion to R=3 or R=5 must fail before mutation unless all guardrails pass:
 
-- candidate count exactly matches the requested replica count,
-- every candidate is active and non-draining,
-- every candidate has persistent JetStream storage configured,
+- selected storage-enabled node count exactly matches the requested replica count,
+- every selected node is active and non-draining,
+- every selected node has persistent JetStream storage configured,
 - free capacity is sufficient for current data plus catch-up margin,
 - client and route ports are reachable over the overlay,
 - NATS health check succeeds locally and remotely,
 - route RTT/loss fit the selected latency class,
-- candidates are not in bootstrap, remove, wipe, or upgrade operations,
-- candidates are spread across declared region/AZ/failure domains,
+- selected nodes are not in bootstrap, remove, wipe, or upgrade operations,
+- selected nodes are spread across declared region/AZ/failure domains,
 - current stream/KV assets can reconfigure without crossing below quorum,
 - operator has acknowledged any planned degradation.
 
@@ -410,15 +410,12 @@ max(RTT to fastest healthy follower, local disk/broker work) + client path
 It is not the sum of all three nodes. A slow third node affects catch-up and
 degraded status, not the happy-path write, as long as quorum remains healthy.
 
-### Leaf And Mirror Nodes
+### Storage-Eligible Nodes
 
-Leaf nodes do not vote in Raft. A leaf command has request/reply latency to the
-leaf daemon, but authoritative writes still route to the hub and pay hub quorum
-latency.
-
-Mirror nodes can make reads local, but mirror data is not the write authority.
-Any workflow that treats mirror state as a correctness boundary must explicitly
-account for mirror lag.
+Nodes do not have permanent storage or mirror identities. A node can be
+`storage=true` and currently host no stream replicas, or host replicas for some
+streams and app workloads for others. The control plane should report stored
+eligibility separately from current stream placement and live observations.
 
 ### Offline And Slow Nodes
 

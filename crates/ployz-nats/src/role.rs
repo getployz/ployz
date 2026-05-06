@@ -1,6 +1,4 @@
-use ployz_types::model::{
-    AvailabilityZoneName, MachineId, MachineLifecycle, MachineMembership, MachineRole,
-};
+use ployz_types::model::{AvailabilityZoneName, MachineId, MachineLifecycle, MachineMembership};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,7 +14,7 @@ pub enum ReplicaPreference {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReplicaPolicy {
-    pub storage_candidates: usize,
+    pub storage_nodes: usize,
     pub replicas: usize,
 }
 
@@ -45,9 +43,8 @@ pub enum StoragePromotionError {
         machine_id: MachineId,
         lifecycle: MachineLifecycle,
     },
-    IneligibleRole {
+    IneligibleStorage {
         machine_id: MachineId,
-        role: MachineRole,
     },
     InsufficientFailureDomains {
         replicas: usize,
@@ -60,18 +57,15 @@ pub fn replica_policy(
     machines: &[MachineMembership],
     preference: ReplicaPreference,
 ) -> ReplicaPolicy {
-    let storage_candidates = machines
-        .iter()
-        .filter(|machine| machine.role == MachineRole::StorageCandidate)
-        .count();
+    let storage_nodes = machines.iter().filter(|machine| machine.storage).count();
     ReplicaPolicy {
-        storage_candidates,
-        replicas: desired_replicas(storage_candidates, preference),
+        storage_nodes,
+        replicas: desired_replicas(storage_nodes, preference),
     }
 }
 
 #[must_use]
-pub fn desired_replicas(_storage_candidates: usize, preference: ReplicaPreference) -> usize {
+pub fn desired_replicas(_storage_nodes: usize, preference: ReplicaPreference) -> usize {
     match preference {
         ReplicaPreference::Default => 1,
         ReplicaPreference::Three => 3,
@@ -127,14 +121,10 @@ pub fn plan_storage_promotion(
                 });
             }
         }
-        match machine.role {
-            MachineRole::StorageCandidate => {}
-            MachineRole::Mirror | MachineRole::Leaf => {
-                return Err(StoragePromotionError::IneligibleRole {
-                    machine_id: machine.id.clone(),
-                    role: machine.role,
-                });
-            }
+        if !machine.storage {
+            return Err(StoragePromotionError::IneligibleStorage {
+                machine_id: machine.id.clone(),
+            });
         }
     }
 
@@ -180,16 +170,16 @@ fn validate_declared_failure_domains(
 }
 
 #[must_use]
-pub fn demotion_requires_degradation_acceptance(storage_candidates: usize) -> bool {
-    storage_candidates == 3
+pub fn demotion_requires_degradation_acceptance(storage_nodes: usize) -> bool {
+    storage_nodes == 3
 }
 
 #[must_use]
-pub fn removal_preserves_quorum(storage_candidates: usize, replicas: usize) -> bool {
-    if storage_candidates == 0 {
+pub fn removal_preserves_quorum(storage_nodes: usize, replicas: usize) -> bool {
+    if storage_nodes == 0 {
         return true;
     }
-    let remaining = storage_candidates.saturating_sub(1);
+    let remaining = storage_nodes.saturating_sub(1);
     let quorum = (replicas / 2) + 1;
     remaining >= quorum
 }
@@ -215,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn three_storage_candidates_do_not_promote_without_operator_intent() {
+    fn three_storage_nodes_do_not_promote_without_operator_intent() {
         assert_eq!(desired_replicas(3, ReplicaPreference::Default), 1);
     }
 
@@ -225,26 +215,11 @@ mod tests {
     }
 
     #[test]
-    fn storage_promotion_plan_accepts_three_active_storage_candidates() {
+    fn storage_promotion_plan_accepts_three_active_storage_nodes() {
         let machines = vec![
-            machine(
-                "a",
-                MachineLifecycle::Active,
-                MachineRole::StorageCandidate,
-                Some("az-a"),
-            ),
-            machine(
-                "b",
-                MachineLifecycle::Active,
-                MachineRole::StorageCandidate,
-                Some("az-b"),
-            ),
-            machine(
-                "c",
-                MachineLifecycle::Active,
-                MachineRole::StorageCandidate,
-                Some("az-c"),
-            ),
+            machine("a", MachineLifecycle::Active, true, Some("az-a")),
+            machine("b", MachineLifecycle::Active, true, Some("az-b")),
+            machine("c", MachineLifecycle::Active, true, Some("az-c")),
         ];
         let selected = machine_ids(["a", "b", "c"]);
 
@@ -263,24 +238,9 @@ mod tests {
     #[test]
     fn storage_promotion_requires_exact_candidate_count() {
         let machines = vec![
-            machine(
-                "a",
-                MachineLifecycle::Active,
-                MachineRole::StorageCandidate,
-                Some("az-a"),
-            ),
-            machine(
-                "b",
-                MachineLifecycle::Active,
-                MachineRole::StorageCandidate,
-                Some("az-b"),
-            ),
-            machine(
-                "c",
-                MachineLifecycle::Active,
-                MachineRole::StorageCandidate,
-                Some("az-c"),
-            ),
+            machine("a", MachineLifecycle::Active, true, Some("az-a")),
+            machine("b", MachineLifecycle::Active, true, Some("az-b")),
+            machine("c", MachineLifecycle::Active, true, Some("az-c")),
         ];
         let selected = machine_ids(["a", "b"]);
 
@@ -299,24 +259,9 @@ mod tests {
     #[test]
     fn storage_promotion_rejects_duplicate_candidate() {
         let machines = vec![
-            machine(
-                "a",
-                MachineLifecycle::Active,
-                MachineRole::StorageCandidate,
-                Some("az-a"),
-            ),
-            machine(
-                "b",
-                MachineLifecycle::Active,
-                MachineRole::StorageCandidate,
-                Some("az-b"),
-            ),
-            machine(
-                "c",
-                MachineLifecycle::Active,
-                MachineRole::StorageCandidate,
-                Some("az-c"),
-            ),
+            machine("a", MachineLifecycle::Active, true, Some("az-a")),
+            machine("b", MachineLifecycle::Active, true, Some("az-b")),
+            machine("c", MachineLifecycle::Active, true, Some("az-c")),
         ];
         let selected = machine_ids(["a", "a", "c"]);
 
@@ -334,24 +279,9 @@ mod tests {
     #[test]
     fn storage_promotion_rejects_inactive_candidate() {
         let machines = vec![
-            machine(
-                "a",
-                MachineLifecycle::Active,
-                MachineRole::StorageCandidate,
-                Some("az-a"),
-            ),
-            machine(
-                "b",
-                MachineLifecycle::Standby,
-                MachineRole::StorageCandidate,
-                Some("az-b"),
-            ),
-            machine(
-                "c",
-                MachineLifecycle::Active,
-                MachineRole::StorageCandidate,
-                Some("az-c"),
-            ),
+            machine("a", MachineLifecycle::Active, true, Some("az-a")),
+            machine("b", MachineLifecycle::Standby, true, Some("az-b")),
+            machine("c", MachineLifecycle::Active, true, Some("az-c")),
         ];
         let selected = machine_ids(["a", "b", "c"]);
 
@@ -368,37 +298,21 @@ mod tests {
     }
 
     #[test]
-    fn storage_promotion_rejects_non_storage_role() {
+    fn storage_promotion_rejects_storage_ineligible_node() {
         let machines = vec![
-            machine(
-                "a",
-                MachineLifecycle::Active,
-                MachineRole::StorageCandidate,
-                Some("az-a"),
-            ),
-            machine(
-                "b",
-                MachineLifecycle::Active,
-                MachineRole::Mirror,
-                Some("az-b"),
-            ),
-            machine(
-                "c",
-                MachineLifecycle::Active,
-                MachineRole::StorageCandidate,
-                Some("az-c"),
-            ),
+            machine("a", MachineLifecycle::Active, true, Some("az-a")),
+            machine("b", MachineLifecycle::Active, false, Some("az-b")),
+            machine("c", MachineLifecycle::Active, true, Some("az-c")),
         ];
         let selected = machine_ids(["a", "b", "c"]);
 
         let error = plan_storage_promotion(&machines, &selected, ReplicaPreference::Three)
-            .expect_err("mirror candidate should fail");
+            .expect_err("storage-ineligible node should fail");
 
         assert_eq!(
             error,
-            StoragePromotionError::IneligibleRole {
+            StoragePromotionError::IneligibleStorage {
                 machine_id: MachineId("b".into()),
-                role: MachineRole::Mirror,
             }
         );
     }
@@ -406,24 +320,9 @@ mod tests {
     #[test]
     fn storage_promotion_rejects_duplicate_declared_availability_zone() {
         let machines = vec![
-            machine(
-                "a",
-                MachineLifecycle::Active,
-                MachineRole::StorageCandidate,
-                Some("az-a"),
-            ),
-            machine(
-                "b",
-                MachineLifecycle::Active,
-                MachineRole::StorageCandidate,
-                Some("az-a"),
-            ),
-            machine(
-                "c",
-                MachineLifecycle::Active,
-                MachineRole::StorageCandidate,
-                Some("az-c"),
-            ),
+            machine("a", MachineLifecycle::Active, true, Some("az-a")),
+            machine("b", MachineLifecycle::Active, true, Some("az-a")),
+            machine("c", MachineLifecycle::Active, true, Some("az-c")),
         ];
         let selected = machine_ids(["a", "b", "c"]);
 
@@ -442,24 +341,9 @@ mod tests {
     #[test]
     fn storage_promotion_allows_missing_availability_zone_metadata() {
         let machines = vec![
-            machine(
-                "a",
-                MachineLifecycle::Active,
-                MachineRole::StorageCandidate,
-                Some("az-a"),
-            ),
-            machine(
-                "b",
-                MachineLifecycle::Active,
-                MachineRole::StorageCandidate,
-                None,
-            ),
-            machine(
-                "c",
-                MachineLifecycle::Active,
-                MachineRole::StorageCandidate,
-                Some("az-c"),
-            ),
+            machine("a", MachineLifecycle::Active, true, Some("az-a")),
+            machine("b", MachineLifecycle::Active, true, None),
+            machine("c", MachineLifecycle::Active, true, Some("az-c")),
         ];
         let selected = machine_ids(["a", "b", "c"]);
 
@@ -482,7 +366,7 @@ mod tests {
     fn machine(
         id: &str,
         lifecycle: MachineLifecycle,
-        role: MachineRole,
+        storage: bool,
         availability_zone: Option<&str>,
     ) -> MachineMembership {
         MachineMembership {
@@ -495,7 +379,7 @@ mod tests {
             bridge_ip: None,
             endpoints: Vec::new(),
             lifecycle,
-            role,
+            storage,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),

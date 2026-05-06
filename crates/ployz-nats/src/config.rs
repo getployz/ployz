@@ -1,13 +1,11 @@
 use std::net::Ipv6Addr;
 use std::path::{Path, PathBuf};
 
-use ployz_types::model::MachineRole;
-
 pub const CLIENT_PORT: u16 = 4222;
 pub const ROUTE_PORT: u16 = 6222;
 pub const LEAFNODE_PORT: u16 = 7422;
 pub const MONITOR_PORT: u16 = 8222;
-pub const HUB_DOMAIN: &str = "hub";
+pub const HUB_DOMAIN: &str = "dom-auth-default";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
@@ -55,7 +53,7 @@ impl PeerRoute {
 pub struct ServerConfig {
     pub server_name: String,
     pub cluster_name: String,
-    pub role: MachineRole,
+    pub storage: bool,
     pub overlay_ip: Ipv6Addr,
     pub storage_peers: Vec<PeerRoute>,
     pub data_dir: PathBuf,
@@ -68,56 +66,36 @@ impl ServerConfig {
             "server_name: {}\nlisten: \"[{}]:{}\"\nhttp: \"127.0.0.1:{}\"\n",
             self.server_name, self.overlay_ip, CLIENT_PORT, MONITOR_PORT
         );
-        match self.role {
-            MachineRole::StorageCandidate => {
+        if self.storage {
+            config.push_str(&format!(
+                "jetstream {{\n  domain: {}\n  store_dir: \"{}\"\n}}\n",
+                HUB_DOMAIN,
+                self.data_dir.display()
+            ));
+            if !self.storage_peers.is_empty() {
                 config.push_str(&format!(
-                    "jetstream {{\n  domain: {}\n  store_dir: \"{}\"\n}}\n",
-                    HUB_DOMAIN,
-                    self.data_dir.display()
+                    "cluster {{\n  name: {}\n  listen: \"[{}]:{}\"\n",
+                    self.cluster_name, self.overlay_ip, ROUTE_PORT
                 ));
-                if !self.storage_peers.is_empty() {
-                    config.push_str(&format!(
-                        "cluster {{\n  name: {}\n  listen: \"[{}]:{}\"\n",
-                        self.cluster_name, self.overlay_ip, ROUTE_PORT
-                    ));
-                    config.push_str("  routes: [\n");
-                    for peer in &self.storage_peers {
-                        config.push_str(&format!("    \"{}\"\n", peer.route_url()));
-                    }
-                    config.push_str("  ]\n");
-                    config.push_str("}\n");
-                }
-                config.push_str(&format!(
-                    "leafnodes {{\n  listen: \"[{}]:{}\"\n}}\n",
-                    self.overlay_ip, LEAFNODE_PORT
-                ));
-            }
-            MachineRole::Mirror => {
-                config.push_str(&format!(
-                    "jetstream {{\n  domain: {}\n  store_dir: \"{}\"\n}}\n",
-                    self.leaf_domain(),
-                    self.data_dir.display()
-                ));
-                config.push_str("leafnodes {\n  remotes: [\n");
+                config.push_str("  routes: [\n");
                 for peer in &self.storage_peers {
-                    config.push_str(&format!("    {{ url: \"{}\" }}\n", peer.leafnode_url()));
+                    config.push_str(&format!("    \"{}\"\n", peer.route_url()));
                 }
-                config.push_str("  ]\n}\n");
+                config.push_str("  ]\n");
+                config.push_str("}\n");
             }
-            MachineRole::Leaf => {
-                config.push_str("leafnodes {\n  remotes: [\n");
-                for peer in &self.storage_peers {
-                    config.push_str(&format!("    {{ url: \"{}\" }}\n", peer.leafnode_url()));
-                }
-                config.push_str("  ]\n}\n");
+            config.push_str(&format!(
+                "leafnodes {{\n  listen: \"[{}]:{}\"\n}}\n",
+                self.overlay_ip, LEAFNODE_PORT
+            ));
+        } else {
+            config.push_str("leafnodes {\n  remotes: [\n");
+            for peer in &self.storage_peers {
+                config.push_str(&format!("    {{ url: \"{}\" }}\n", peer.leafnode_url()));
             }
+            config.push_str("  ]\n}\n");
         }
         config
-    }
-
-    #[must_use]
-    pub fn leaf_domain(&self) -> String {
-        format!("leaf-{}", self.overlay_ip.to_string().replace(':', "-"))
     }
 }
 
@@ -130,7 +108,7 @@ mod tests {
         let rendered = ServerConfig {
             server_name: "m1".into(),
             cluster_name: "ployz-alpha".into(),
-            role: MachineRole::StorageCandidate,
+            storage: true,
             overlay_ip: "fd00::1".parse().expect("valid ip"),
             storage_peers: Vec::new(),
             data_dir: PathBuf::from("/data"),
@@ -145,7 +123,7 @@ mod tests {
         let rendered = ServerConfig {
             server_name: "m1".into(),
             cluster_name: "ployz-alpha".into(),
-            role: MachineRole::StorageCandidate,
+            storage: true,
             overlay_ip: "fd00::1".parse().expect("valid ip"),
             storage_peers: Vec::new(),
             data_dir: PathBuf::from("/data"),
@@ -153,16 +131,16 @@ mod tests {
         .render();
         assert!(!rendered.contains("cluster {"));
         assert!(rendered.contains("jetstream {"));
-        assert!(rendered.contains("domain: hub"));
+        assert!(rendered.contains("domain: dom-auth-default"));
         assert!(rendered.contains("leafnodes {"));
     }
 
     #[test]
-    fn leaf_node_does_not_enable_local_jetstream() {
+    fn non_storage_node_does_not_enable_local_jetstream() {
         let rendered = ServerConfig {
             server_name: "leaf-1".into(),
             cluster_name: "ployz-alpha".into(),
-            role: MachineRole::Leaf,
+            storage: false,
             overlay_ip: "fd00::10".parse().expect("valid ip"),
             storage_peers: vec![PeerRoute {
                 overlay_ip: "fd00::1".parse().expect("valid ip"),
@@ -175,30 +153,11 @@ mod tests {
     }
 
     #[test]
-    fn mirror_node_enables_local_jetstream_and_leafnode_remotes() {
-        let rendered = ServerConfig {
-            server_name: "mirror-1".into(),
-            cluster_name: "ployz-alpha".into(),
-            role: MachineRole::Mirror,
-            overlay_ip: "fd00::10".parse().expect("valid ip"),
-            storage_peers: vec![PeerRoute {
-                overlay_ip: "fd00::1".parse().expect("valid ip"),
-            }],
-            data_dir: PathBuf::from("/data"),
-        }
-        .render();
-        assert!(rendered.contains("jetstream {"));
-        assert!(rendered.contains("domain: leaf-fd00--10"));
-        assert!(rendered.contains("url: \"nats://[fd00::1]:7422\""));
-        assert!(!rendered.contains("cluster {"));
-    }
-
-    #[test]
-    fn leaf_nodes_use_leafnode_remotes_not_cluster_routes() {
+    fn non_storage_nodes_use_leafnode_remotes_not_cluster_routes() {
         let rendered = ServerConfig {
             server_name: "leaf-1".into(),
             cluster_name: "ployz-alpha".into(),
-            role: MachineRole::Leaf,
+            storage: false,
             overlay_ip: "fd00::10".parse().expect("valid ip"),
             storage_peers: vec![PeerRoute {
                 overlay_ip: "fd00::1".parse().expect("valid ip"),

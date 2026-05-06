@@ -119,7 +119,7 @@ pub fn cert_renewal_consumer_config(policy: WorkQueuePolicy) -> Result<pull::Con
         ack_policy: AckPolicy::Explicit,
         ack_wait: policy.ack_wait,
         max_deliver,
-        filter_subject: "cert.jobs.renew.>".to_string(),
+        filter_subject: "ployz.v1.local.auth-default.work.cert.renew.>".to_string(),
         replay_policy: ReplayPolicy::Instant,
         max_ack_pending: CERT_RENEWAL_MAX_ACK_PENDING,
         max_batch: CERT_RENEWAL_MAX_ACK_PENDING,
@@ -330,7 +330,10 @@ mod tests {
         )
         .expect("build renewal job");
 
-        assert_eq!(spec.subject, "cert.jobs.schedule.api%2Eexample%2Ecom");
+        assert_eq!(
+            spec.subject,
+            "ployz.v1.local.auth-default.work.cert.schedule.api%2Eexample%2Ecom"
+        );
         assert_eq!(
             header(&spec.headers, NATS_EXPECTED_STREAM),
             CERT_JOBS_STREAM
@@ -345,7 +348,7 @@ mod tests {
         );
         assert_eq!(
             header(&spec.headers, NATS_SCHEDULE_TARGET),
-            "cert.jobs.renew.api%2Eexample%2Ecom"
+            "ployz.v1.local.auth-default.work.cert.renew.api%2Eexample%2Ecom"
         );
         let payload: CertRenewalJobPayload =
             serde_json::from_slice(&spec.payload).expect("decode payload");
@@ -363,7 +366,10 @@ mod tests {
             header(&spec.headers, NATS_MESSAGE_ID),
             "cert-renewal:api.example.com:immediate"
         );
-        assert_eq!(spec.subject, "cert.jobs.renew.api%2Eexample%2Ecom");
+        assert_eq!(
+            spec.subject,
+            "ployz.v1.local.auth-default.work.cert.renew.api%2Eexample%2Ecom"
+        );
     }
 
     #[test]
@@ -379,9 +385,12 @@ mod tests {
         );
         assert_eq!(
             header(&spec.headers, NATS_SCHEDULE_TARGET),
-            "cert.jobs.renew.api%2Eexample%2Ecom"
+            "ployz.v1.local.auth-default.work.cert.renew.api%2Eexample%2Ecom"
         );
-        assert_eq!(spec.subject, "cert.jobs.schedule.api%2Eexample%2Ecom");
+        assert_eq!(
+            spec.subject,
+            "ployz.v1.local.auth-default.work.cert.schedule.api%2Eexample%2Ecom"
+        );
     }
 
     #[test]
@@ -393,14 +402,20 @@ mod tests {
         assert_eq!(config.name.as_deref(), Some(CERT_RENEWAL_CONSUMER));
         assert_eq!(config.ack_policy, AckPolicy::Explicit);
         assert_eq!(config.deliver_policy, DeliverPolicy::All);
-        assert_eq!(config.filter_subject, "cert.jobs.renew.>");
+        assert_eq!(
+            config.filter_subject,
+            "ployz.v1.local.auth-default.work.cert.renew.>"
+        );
         assert_eq!(config.max_ack_pending, 1);
         assert_eq!(config.max_batch, 1);
     }
 
     #[test]
     fn renewal_job_decode_accepts_matching_payload_and_subject() {
-        let subject: async_nats::Subject = "cert.jobs.renew.api%2Eexample%2Ecom".to_string().into();
+        let subject: async_nats::Subject =
+            "ployz.v1.local.auth-default.work.cert.renew.api%2Eexample%2Ecom"
+                .to_string()
+                .into();
         let payload = serde_json::to_vec(&CertRenewalJobPayload {
             hostname: "Api.Example.Com".to_string(),
         })
@@ -416,7 +431,9 @@ mod tests {
     #[test]
     fn renewal_job_decode_rejects_subject_payload_mismatch() {
         let subject: async_nats::Subject =
-            "cert.jobs.renew.other%2Eexample%2Ecom".to_string().into();
+            "ployz.v1.local.auth-default.work.cert.renew.other%2Eexample%2Ecom"
+                .to_string()
+                .into();
         let payload = serde_json::to_vec(&CertRenewalJobPayload {
             hostname: "api.example.com".to_string(),
         })
@@ -424,11 +441,9 @@ mod tests {
 
         let error = decode_cert_renewal_message(&subject, &payload).expect_err("decode fails");
 
-        assert!(
-            error
-                .to_string()
-                .contains("subject 'cert.jobs.renew.other%2Eexample%2Ecom'")
-        );
+        assert!(error.to_string().contains(
+            "subject 'ployz.v1.local.auth-default.work.cert.renew.other%2Eexample%2Ecom'"
+        ));
     }
 
     fn header(headers: &HeaderMap, name: impl IntoHeaderName) -> String {

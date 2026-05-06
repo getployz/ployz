@@ -99,14 +99,14 @@ Useful existing scenarios:
 `r3_one_storage_node_offline_remains_writable`
 
 - Promote to R=3.
-- Stop or partition one storage candidate.
+- Stop or partition one storage-enabled node.
 - Assert a small KV/stream mutation succeeds after leader election.
 - Assert status reports degraded-but-writable.
 
 `r3_below_quorum_blocks_mutations`
 
 - Promote to R=3.
-- Stop or partition two storage candidates.
+- Stop or partition two storage-enabled nodes.
 - Assert mutating control-plane operations fail loudly.
 - Assert data-plane readers keep using last-good runtime state where applicable.
 
@@ -160,7 +160,7 @@ Useful existing scenarios:
 
 - Put R=3 into a degraded state.
 - Attempt rolling upgrade.
-- Assert the command fails before restarting another storage candidate.
+- Assert the command fails before restarting another storage-enabled node.
 
 ### Regions And Latency
 

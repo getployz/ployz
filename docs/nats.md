@@ -297,7 +297,7 @@ cluster {
 }
 ```
 
-Routes connect storage candidates to each other. Adding/removing routes
+Routes connect storage-enabled nodes to each other. Adding/removing routes
 historically required restart; 2.14 may improve that — verify before
 relying on it for routes (the documented reload support specifically calls
 out leafnodes).
@@ -318,7 +318,7 @@ Two patterns:
 Configured under `leafnodes {}`:
 
 ```
-# on a hub storage candidate (server side)
+# on a hub storage-enabled node (server side)
 leafnodes {
   listen: [fd00::1]:7422
 }
@@ -351,7 +351,7 @@ jetstream {
 The API prefix changes per domain: `$JS.API.>` becomes `$JS.<domain>.API.>`.
 Mirrors and sources reference the domain via `external.api`.
 
-For ployz the natural shape is one `hub` domain on the storage candidates,
+For ployz the natural shape is one `hub` domain on the storage-enabled nodes,
 plus per-machine leaf domains (`leaf-<machine_id>`) on mirror nodes. The
 hub holds authoritative streams; leaf domains hold mirrors of them.
 
@@ -476,8 +476,8 @@ The allowed replica targets are:
 | Target | Meaning |
 |--------|---------|
 | R=1 | single authoritative copy; no HA claim |
-| R=3 | minimum HA; survives one storage candidate loss |
-| R=5 | opt-in higher HA; survives two storage candidate losses |
+| R=3 | minimum HA; survives one storage-enabled node loss |
+| R=5 | opt-in higher HA; survives two storage-enabled node losses |
 
 R=2 is never selected. Reconfiguration is an explicit operator command
 (`ployzctl nats storage promote ...`, name TBD), not a background reaction to
@@ -486,18 +486,18 @@ requested storage set is not eligible.
 
 Storage-promotion guardrails:
 
-- exactly 1, 3, or 5 storage candidates for the requested replica target,
-- every candidate is active, non-draining, and has a current local NATS health
+- exactly 1, 3, or 5 selected storage-enabled nodes for the requested replica target,
+- every selected node is active, non-draining, and has a current local NATS health
   check,
-- every candidate has persistent storage configured and enough free capacity for
+- every selected node has persistent storage configured and enough free capacity for
   JetStream,
-- every candidate is mutually reachable on NATS route and client ports over the
+- every selected node is mutually reachable on NATS route and client ports over the
   overlay,
-- candidate RTT and packet loss are inside the operator-selected latency class
+- node RTT and packet loss are inside the operator-selected latency class
   (`local`, `regional`, or explicitly accepted `cross-region`),
-- candidates are spread across declared failure domains when region/AZ metadata
+- selected nodes are spread across declared failure domains when region/AZ metadata
   exists,
-- no candidate is already in an upgrade, remove, wipe, or bootstrap operation,
+- no selected node is already in an upgrade, remove, wipe, or bootstrap operation,
 - demotion/removal plans preserve quorum unless the operator passes an explicit
   degradation flag and accepts the resulting R=1 state.
 
@@ -505,29 +505,28 @@ The command output should distinguish desired storage intent, current NATS
 membership, stream replica status, catch-up progress, and any live observations
 used to reject the plan.
 
-### Topology roles
+### Node Storage
 
-| Role               | nats-server config           | JetStream             | Purpose                                                          |
-|--------------------|------------------------------|------------------------|------------------------------------------------------------------|
-| `StorageCandidate` | `cluster { listen, routes }` | hub domain, R=N replicas | Authoritative storage. Raft voting member.                     |
-| `Leaf`             | `leafnodes { remotes }`      | disabled or stub      | Bridge subjects to hub. Every read crosses the network.          |
-| `Mirror`           | `leafnodes { remotes }` + `jetstream { domain: leaf-<id> }` | leaf domain; hub mirror provisioning still pending | Non-authoritative node. Local JetStream is available, but hub streams remain the write authority. |
+Nodes are homogeneous substrate. A machine record carries storage eligibility
+as `storage: true` or `storage: false`; it does not carry a permanent storage
+role. When `storage=true`, the local NATS server runs JetStream in the hub
+domain and can host stream replicas. When `storage=false`, the node may still
+run NATS for command routing, but it is not selected for JetStream replicas.
 
-Machine init creates the founder as `StorageCandidate`. Machine add currently
-creates joiners as `Mirror`, and e2e asserts that adding two joiners leaves all
-NATS assets at R=1. A mirror is not eligible for R=3/R=5 promotion until an
-operator explicitly changes storage intent and the storage-promotion guardrails
-accept it.
+Machine init and machine add both default to `storage=true`. Adding machines
+does not change stream replica counts or write quorum by itself. R=3/R=5 still
+requires an explicit guarded operator operation that chooses the current replica
+placement from the storage-enabled pool.
 
 ### Cluster lifecycle
 
 | Transition  | What happens                                                                              |
 |-------------|-------------------------------------------------------------------------------------------|
-| 1 machine   | StorageCandidate, R=1. No fault tolerance.                                                |
-| 1 → 2       | Joiner is added as Leaf/Mirror/eligible candidate according to the invite. Replicas stay R=1. |
+| 1 machine   | `storage=true`, R=1. No fault tolerance.                                                   |
+| 1 → 2       | Joiner is added as `storage=true` by default. Replicas stay R=1.                            |
 | 2 → 3       | Joiner is added. Replicas still stay R=1 until an explicit storage-promotion command succeeds. |
-| explicit R=3 promotion | Operator selects three eligible storage candidates; NATS assets reconfigure to R=3 after plan validation. |
-| 3 → 2 planned   | Demote first (drops to R=1 with `--accept-storage-degradation`), then remove the Leaf. |
+| explicit R=3 promotion | Operator selects three storage-enabled nodes; NATS assets reconfigure to R=3 after plan validation. |
+| 3 → 2 planned   | Drain storage/app placement first, then remove the empty node.                       |
 | 3 → 2 unplanned | R=3 maintains quorum at 2/3. Leader election ~250ms–2s. Recovery on rejoin.        |
 | 2 simul. losses on R=3 | Below quorum. Reads stale, writes blocked. Data plane keeps serving cache. |
 
@@ -654,9 +653,9 @@ Tracked in code comments and the implementation plan. Highlights:
    projection is visible even while WireGuard/NATS sidecars keep running.
    The intended v2 flow is for the joiner to receive scoped NATS credentials and
    publish its own membership without an introducer-authored seed.
-7. Mirror nodes render local leaf-domain JetStream config, but automatic mirror
-   provisioning for the hub streams/KV buckets that local services need is not
-   complete. Until then, authoritative reads and writes remain hub-owned.
+7. Node records now carry storage eligibility instead of a permanent NATS role.
+   Joiners default to `storage=true`; replica count and stream peer placement
+   still change only through explicit guarded storage operations.
 
 ## Future planning
 
@@ -669,23 +668,21 @@ membership changes, and failure visibility. Machine add does not promote storage
 authority; R=3/R=5 promotion is an explicit guarded operator operation. TCP
 remains only for true byte streams such as ZFS send/receive payloads.
 
-### Mirror read locality
+### Storage Placement
 
-The remaining Mirror work is read locality, not role defaulting. New joiners
-already default to `Mirror`; becoming an authoritative storage candidate must be
-operator intent recorded by a storage-promotion command, not a consequence of
-being the first, second, or third machine.
+The remaining work is stream placement and drain, not node role defaulting.
+New joiners default to `storage=true`, but becoming an active replica host for
+a given stream is still operator intent recorded by a storage-promotion or
+drain command.
 
 Concrete shape:
 
-- Mirror config templating: `leafnodes.remotes` plus
-  `jetstream { domain: leaf-<machine_id> }`, plus mirror provisioning for
-  each hub stream/KV the local services need.
-- ployzd on a Mirror machine connects to its local NATS; reads come from
-  local mirrors, writes route through the leafnode bridge.
-- Mirror provisioning runs on explicit role/intent changes. Machine add writes
-  membership and connectivity state; it does not silently reconfigure
-  authoritative stream replicas.
+- Machine add writes membership, connectivity, labels, capacity, and storage
+  eligibility.
+- Storage promotion chooses current stream peers from the storage-enabled pool.
+- Drain cordons the node, moves app instances, removes JetStream peers from the
+  node, waits for replacement replicas to catch up, and only then marks it
+  removable.
 
 The plan section of `docs/future/` should grow a phase for this once the
 storage layer's known gaps are closed.
@@ -736,8 +733,8 @@ async cross-region mirrors are usually the better shape.
 
 Sketch:
 
-- Region A: 3 storage candidates, hub domain, full R=3.
-- Region B: 3 storage candidates in a separate cluster + JetStream
+- Region A: 3 storage-enabled nodes, hub domain, full R=3.
+- Region B: 3 storage-enabled nodes in a separate cluster + JetStream
   domain, R=3 within Region B.
 - Cross-region: each region's `deploy_commits` mirrors the other's. Reads
   are local; writes are local-first, replicated async to the other region.

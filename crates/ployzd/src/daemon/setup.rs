@@ -296,7 +296,7 @@ impl MeshStartTx {
                 exposed_tcp_ports: &exposed_tcp_ports,
                 bootstrap: &plan.bootstrap_addrs,
                 network_id: &self.config.id.0,
-                machine_role: self.config.machine_role,
+                storage: self.config.storage,
             })
             .await
             .map_err(StartMeshError::NetworkDriver)?;
@@ -389,7 +389,7 @@ impl MeshStartTx {
             .start()
             .await
             .map_err(|error| StartMeshError::MeshUp(format!("nats start for node rpc: {error}")))?;
-        let subject = ployz_nats::subjects::node_command(&state.identity.machine_id, ">");
+        let subject = ployz_nats::subjects::node_command_listener(&state.identity.machine_id);
         let queue_group =
             ployz_nats::subjects::node_command_queue_group(&state.identity.machine_id);
         let handle = nats_listener::serve(
@@ -648,7 +648,7 @@ impl DaemonState {
                 exposed_tcp_ports: &exposed_tcp_ports,
                 bootstrap: &[],
                 network_id: &net_config.id.0,
-                machine_role: net_config.machine_role,
+                storage: net_config.storage,
             })
             .await
             .map_err(|error| format!("runtime components failed: {error}"))?;
@@ -829,7 +829,7 @@ mod tests {
     use crate::runtime_profile::RuntimeProfile;
     use ployz_config::{RuntimeTarget, ServiceMode};
     use ployz_runtime_api::Identity;
-    use ployz_types::model::{MachineId, MachineRole, NetworkName, OverlayIp, PublicKey};
+    use ployz_types::model::{MachineId, NetworkName, OverlayIp, PublicKey};
 
     #[test]
     fn plan_mesh_start_uses_localhost_for_docker_zfs_transfer() {
@@ -903,7 +903,7 @@ mod tests {
             overlay_ip: OverlayIp("fd00::8".parse().expect("valid overlay")),
             subnet: None,
             bridge_ip: None,
-            role: MachineRole::StorageCandidate,
+            storage: true,
             endpoints: vec!["peer:51820".into()],
         };
         write_bootstrap_peer_records(&network_dir, std::slice::from_ref(&peer))

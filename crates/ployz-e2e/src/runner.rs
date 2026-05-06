@@ -640,11 +640,11 @@ impl ScenarioRun {
         Ok(())
     }
 
-    pub(crate) fn assert_doctor_roles(
+    pub(crate) fn assert_doctor_storage(
         &self,
         node_name: &str,
-        local_role: &str,
-        peer_roles: &[(&str, &str)],
+        local_storage: bool,
+        peer_storage: &[(&str, bool)],
     ) -> Result<()> {
         use crate::support::{DaemonJsonPayload, parse_daemon_json_response};
         let output = self.ssh_expect_ok_name(node_name, "ployzd --json doctor")?;
@@ -660,22 +660,22 @@ impl ScenarioRun {
                 "doctor on {node_name} missing doctor payload"
             )));
         };
-        if payload.local.machine_role != local_role {
+        if payload.local.storage != local_storage {
             return Err(Error::Message(format!(
-                "doctor on {node_name} reports local machine_role='{}', expected '{}'",
-                payload.local.machine_role, local_role
+                "doctor on {node_name} reports local storage={}, expected {}",
+                payload.local.storage, local_storage
             )));
         }
-        for (peer_id, expected_role) in peer_roles {
+        for (peer_id, expected_storage) in peer_storage {
             let Some(peer) = payload.peers.iter().find(|p| p.machine_id == *peer_id) else {
                 return Err(Error::Message(format!(
                     "doctor on {node_name} has no peer row for '{peer_id}'"
                 )));
             };
-            if peer.machine_role != *expected_role {
+            if peer.storage != *expected_storage {
                 return Err(Error::Message(format!(
-                    "doctor on {node_name} reports peer '{peer_id}' machine_role='{}', expected '{expected_role}'",
-                    peer.machine_role
+                    "doctor on {node_name} reports peer '{peer_id}' storage={}, expected {expected_storage}",
+                    peer.storage
                 )));
             }
         }
@@ -689,16 +689,16 @@ impl ScenarioRun {
     ) -> Result<()> {
         use crate::support::{DaemonJsonPayload, parse_daemon_json_response};
         const REQUIRED_ASSETS: &[&str] = &[
-            "deploy_commits",
-            "routing_events",
-            "revisions",
-            "cert_jobs",
-            "KV_machines",
-            "KV_invites",
-            "KV_deploy_status",
-            "KV_instances",
-            "KV_locks",
-            "KV_coordinator_lease",
+            "cp_deploy_commits_auth-default",
+            "route_journal_auth-default",
+            "cp_revisions_auth-default",
+            "work_cert_auth-default",
+            "machines_local",
+            "cp_invites_auth-default",
+            "cp_deploy_status_auth-default",
+            "cp_instances_auth-default",
+            "cp_locks_auth-default",
+            "cp_coordinator_lease_auth-default",
         ];
 
         self.log_progress(&format!(

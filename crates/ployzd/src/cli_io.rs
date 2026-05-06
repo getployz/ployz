@@ -234,9 +234,22 @@ fn render_plain_status(payload: &StatusPayload) -> String {
         if let Some(leader) = asset.leader.as_deref() {
             state.push_str(&format!(" leader={leader}"));
         }
+        let mut scope = String::new();
+        if let Some(installation) = asset.installation.as_deref() {
+            scope.push_str(&format!(" installation={installation}"));
+        }
+        if let Some(authority) = asset.authority.as_deref() {
+            scope.push_str(&format!(" authority={authority}"));
+        }
+        if let Some(domain) = asset.domain.as_deref() {
+            scope.push_str(&format!(" domain={domain}"));
+        }
+        if let Some(role) = asset.role.as_deref() {
+            scope.push_str(&format!(" role={role}"));
+        }
         lines.push(format!(
-            "nats_asset kind={} name={} state={}",
-            asset.kind, asset.name, state
+            "nats_asset kind={} name={}{} state={}",
+            asset.kind, asset.name, scope, state
         ));
     }
     for control in &payload.control_plane {
@@ -592,7 +605,7 @@ mod tests {
                 },
                 local: DoctorLocal {
                     machine_id: String::from("founder"),
-                    machine_role: String::from("StorageCandidate"),
+                    storage: true,
                     network: String::from("alpha"),
                     network_lifecycle: String::from("running"),
                     machine_lifecycle: String::from("active"),
@@ -605,7 +618,7 @@ mod tests {
                 },
                 peers: vec![DoctorPeer {
                     machine_id: String::from("peer"),
-                    machine_role: String::from("StorageCandidate"),
+                    storage: true,
                     role: String::from("blocking"),
                     blocking: false,
                     store_lifecycle: String::from("active"),
@@ -731,7 +744,11 @@ mod tests {
                 edge_sync: Vec::new(),
                 nats_assets: vec![ployz_api::NatsAssetStatus {
                     kind: String::from("stream"),
-                    name: String::from("routing_events"),
+                    name: String::from("route_journal_auth-default"),
+                    installation: Some(String::from("local")),
+                    authority: Some(String::from("auth-default")),
+                    domain: Some(String::from("dom-auth-default")),
+                    role: Some(String::from("authority_local")),
                     replicas: Some(1),
                     healthy: Some(true),
                     current_replicas: Some(1),
@@ -746,7 +763,7 @@ mod tests {
 
         let rendered = render_plain_success(&response);
         assert!(rendered.contains(
-            "nats_asset kind=stream name=routing_events state=healthy replicas=1 current=1 offline=0 max_lag=0 leader=nats-a"
+            "nats_asset kind=stream name=route_journal_auth-default installation=local authority=auth-default domain=dom-auth-default role=authority_local state=healthy replicas=1 current=1 offline=0 max_lag=0 leader=nats-a"
         ));
     }
 

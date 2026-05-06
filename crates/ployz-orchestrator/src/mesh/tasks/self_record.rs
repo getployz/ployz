@@ -89,7 +89,7 @@ fn apply_mutation(record: &mut MachineMembership, mutation: SelfRecordMutation) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{MachineId, MachineLifecycle, MachineRole, MachineTopology, PublicKey};
+    use crate::model::{MachineId, MachineLifecycle, MachineTopology, PublicKey};
     use ployz_store_api::memory::{MemoryService, MemoryStore};
     use std::collections::BTreeMap;
     use std::net::Ipv6Addr;
@@ -104,7 +104,7 @@ mod tests {
             bridge_ip: None,
             endpoints: vec!["127.0.0.1:51820".into()],
             lifecycle: MachineLifecycle::Standby,
-            role: MachineRole::StorageCandidate,
+            storage: true,
             created_at: 0,
             updated_at: 0,
             labels: BTreeMap::new(),

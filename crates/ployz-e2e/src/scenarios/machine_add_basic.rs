@@ -21,7 +21,7 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
         ],
     )?;
     run.wait_mesh_ready_name("joiner")?;
-    run.assert_doctor_roles("founder", "storage_candidate", &[("joiner", "mirror")])?;
-    run.assert_doctor_roles("joiner", "mirror", &[("founder", "storage_candidate")])?;
+    run.assert_doctor_storage("founder", true, &[("joiner", true)])?;
+    run.assert_doctor_storage("joiner", true, &[("founder", true)])?;
     Ok(())
 }

@@ -16,6 +16,7 @@ use std::net::Ipv4Addr;
 use std::path::Path;
 use std::sync::Arc;
 use store::deploys::CachedDeployProjection;
+use subjects::NatsScope;
 use tokio::sync::RwLock;
 
 #[derive(Clone)]
@@ -23,6 +24,7 @@ pub struct NatsStore {
     client: Client,
     jetstream: async_nats::jetstream::Context,
     asset_policy: AssetPolicy,
+    scope: NatsScope,
     pub(crate) deploy_projection: Arc<RwLock<Option<CachedDeployProjection>>>,
 }
 
@@ -32,7 +34,7 @@ impl NatsStore {
         Self::with_policy(
             client,
             AssetPolicy {
-                storage_candidates: 1,
+                storage_nodes: 1,
                 replica_preference: role::ReplicaPreference::Default,
             },
         )
@@ -40,11 +42,34 @@ impl NatsStore {
 
     #[must_use]
     pub fn with_policy(client: Client, asset_policy: AssetPolicy) -> Self {
-        let jetstream = async_nats::jetstream::with_domain(client.clone(), config::HUB_DOMAIN);
+        Self::with_scope_and_policy(client, NatsScope::default(), asset_policy)
+    }
+
+    #[must_use]
+    pub fn with_scope(client: Client, scope: NatsScope) -> Self {
+        Self::with_scope_and_policy(
+            client,
+            scope,
+            AssetPolicy {
+                storage_nodes: 1,
+                replica_preference: role::ReplicaPreference::Default,
+            },
+        )
+    }
+
+    #[must_use]
+    pub fn with_scope_and_policy(
+        client: Client,
+        scope: NatsScope,
+        asset_policy: AssetPolicy,
+    ) -> Self {
+        let jetstream =
+            async_nats::jetstream::with_domain(client.clone(), scope.authority_domain());
         Self {
             client,
             jetstream,
             asset_policy,
+            scope,
             deploy_projection: Arc::new(RwLock::new(None)),
         }
     }
@@ -64,11 +89,23 @@ impl NatsStore {
         self.asset_policy
     }
 
+    #[must_use]
+    pub fn scope(&self) -> &NatsScope {
+        &self.scope
+    }
+
     pub async fn connect(url: &str) -> Result<Self> {
         let client = async_nats::connect(url)
             .await
             .map_err(|error| Error::operation("nats_connect", error.to_string()))?;
         Ok(Self::new(client))
+    }
+
+    pub async fn connect_with_scope(url: &str, scope: NatsScope) -> Result<Self> {
+        let client = async_nats::connect(url)
+            .await
+            .map_err(|error| Error::operation("nats_connect", error.to_string()))?;
+        Ok(Self::with_scope(client, scope))
     }
 
     pub async fn connect_for_network(data_dir: &Path, network: &str) -> Result<Self> {
